@@ -407,7 +407,7 @@ describe('runCommand', () => {
     mkdirSync(join(root, '.relavium'), { recursive: true });
     writeFileSync(
       join(root, '.relavium', 'project.toml'),
-      '[defaults.media_cost_estimate]\nimage = 5\naudio = 9\n',
+      '[defaults]\nmax_tokens_estimate = 17\n[defaults.media_cost_estimate]\nimage = 5\naudio = 9\n',
     );
     const client = createClient(':memory:');
     runMigrations(client.db);
@@ -432,6 +432,7 @@ describe('runCommand', () => {
       );
       expect(code).toBe(EXIT_CODES.success);
       expect(captured?.mediaCostEstimate).toEqual({ image: 5, audio: 9 });
+      expect(captured?.maxTokensEstimate).toBe(17);
     } finally {
       client.sqlite.close();
     }
@@ -757,8 +758,8 @@ describe('runCommand', () => {
       deps(io, globalOptions(), { selectRenderer: () => renderer }),
     );
     expect(code).toBe(EXIT_CODES.success); // the run outcome is preserved
-    expect(err()).toContain('renderer teardown failed');
-    expect(err()).toContain('unmount blew up');
+    expect(err()).toContain('The run view could not write its final summary after cleanup.');
+    expect(err()).not.toContain('unmount blew up');
   });
 
   it('renders --json stdout as a schema-valid RunEvent NDJSON stream in sequenceNumber order, ending in run:completed', async () => {

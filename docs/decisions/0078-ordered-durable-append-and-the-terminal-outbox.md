@@ -112,3 +112,49 @@ Stated explicitly, because the next reader will otherwise try to simplify it awa
 - **`uncertain` is a new outcome surfaces must handle**, and a CLI exit code is a user-visible contract change. Mitigated by minting it once for three items rather than three times, and by recording it in ADR-0049's canonical home.
 - **The outbox can itself fail.** A host whose outbox write fails has no further recourse; the run reports `uncertain` and stops there. That is the honest floor, and it is stated rather than papered over.
 - **`CR-10`'s headline property is still not provable from the log alone.** Streamed events consume sequence numbers and are never persisted, so a healthy log legitimately reads `[0,1,2,3,5,10,…]` and a streamed event's absence is indistinguishable from a lost one. Proving "the committed set is a prefix of the asked set" needs a store harness that records what it was *asked* to persist. That harness is built before the implementation, exported from `packages/core` the same way `checkDurableTruth` is, and its own vacuity is checked by mutating it to compare sets instead of prefixes.
+
+## Media retention acknowledgement correction — 2026-10-03, W7 step 10 seventh review
+
+The ordered writer previously recorded produced-media references before entering its append
+region. A held ordinary-gate CAS write could finish after a distinct successor completed and
+reclaimed the run. SQLite correctly refused the stale event's fence, but the old writer had
+already recreated run references. This inherited retention mutation is recoverable by a later
+other-run CLI GC sweep; run references grant no read authority. No extra spend or successor
+terminal corruption was demonstrated.
+
+Produced-media references now follow successful persistence inside the ordered region. A fence
+refusal records no reference. A terminal refused for another store fault records its media before
+the outbox handoff, preserving retention while its terminal waits; a successful terminal records
+then reclaims as before. Seven native controls cover distinct engines with two file-backed SQLite
+connections and real CAS, cancellation/observed-takeover controls, acknowledged terminals,
+uncertain outbox terminals and typed terminal-fence refusal. The latter terminal controls use
+reference run events/leases with actual SQLite retention; they are not SQLite lease proofs.
+Removing the uncertain-terminal retention branch breaks its control.
+
+This corrects the ordering of an existing best-effort retention side effect. It changes no host
+port, money acknowledgement, terminal exemption, non-terminal fault delivery or lease policy.
+
+## Per-append acknowledgement and terminal head — 2026-10-09
+
+The approved ADR-0103 scoped writer integration observes each required money append
+acknowledgement and advances the ordered expected head after a successfully persisted terminal.
+An uncertain terminal refuses subsequent local event asks without displacing its original outbox
+cause. The canonical rules are in [execution-model.md](../architecture/execution-model.md#per-append-acknowledgement-and-late-incurred-receipts)
+and the [event qualification](../reference/contracts/sse-event-schema.md#terminal-publication-and-late-ledger-receipts).
+This does not implement public departure or change ordinary non-terminal fault delivery.
+
+## 2026-10-10 — ADR-0103 lifecycle integration
+
+Terminal delivery/persistence disposition is independent of the actual host join and late required-money/effect health; no new terminal is manufactured during departure.
+See the [canonical engine lifecycle](../architecture/shared-core-engine.md#internal-departure-foundations-adr-0103)
+and [CLI exit/remedy contract](../reference/cli/commands.md#exit-codes). Consolidated independent
+acceptance is tracked in [current.md](../roadmap/current.md); Step 8 and final whole-wave
+validation remain open. The accepted body above is preserved.
+
+### W7 implementation landing — 2026-10-10
+
+The earlier W7 progress note is a historical snapshot. Step 8 and final Step 12 were subsequently
+accepted in the [W7 closing register](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w7-closing-register--2026-10-10).
+The later [post-closure systematic correction register](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#post-closure-systematic-review--2026-10-10)
+tracks reopened review findings and their scoped acceptance; it governs the current PR acceptance status.
+This additive note does not rewrite the original decision or claim that PR #90 has merged.

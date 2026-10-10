@@ -1,5 +1,5 @@
 import { Box, Text, measureElement, type DOMElement } from 'ink';
-import { useEffect, useRef, useState, type ComponentProps, type ReactElement } from 'react';
+import { useLayoutEffect, useRef, useState, type ComponentProps, type ReactElement } from 'react';
 
 import { colorProps, dimProps } from './projection.js';
 import { lineSpan, splitRow, type SelectionRange } from './selection.js';
@@ -14,10 +14,10 @@ import { windowLines, type DisplayLine } from './viewport.js';
  *
  * The window height is the box's flexbox-allocated leftover space: this Box is `flexGrow` beside the fixed live
  * region (the prompt / busy line / footer), so ink sizes it to `terminalRows − liveRegion`. We read that back with
- * `measureElement` (post-commit, in the effect) rather than re-deriving the live-region height — a stale offset or a
+ * `measureElement` (in the layout effect, after Ink computes Yoga) rather than re-deriving the live-region height — a stale offset or a
  * wrong count would corrupt the scroll position (the named risk in ADR-0068 §c). At steady state the height is
  * stable, so the measure/re-window CONVERGES; when the live region changes size (an overlay opens, a reasoning panel
- * appears) the height re-settles over a few frames, and `overflowY: hidden` clips the transient — cosmetic. The
+ * appears) the layout effect synchronously re-windows, and `overflowY: hidden` clips the transient. The
  * height state seeds at 0, so the FIRST paint (before the post-commit measure lands) renders a BLANK transcript
  * region for one frame — deliberately: seeding an over-estimated terminal-rows height instead made the first frame
  * window PAST the real box capacity, and ink's write-coalescing rendered a non-contiguous (garbled) slice — a blank
@@ -62,6 +62,11 @@ export interface TranscriptViewportProps {
    *  viewport windows with (the height lives here, behind `measureElement`), and its MOUSE handler can turn a terminal
    *  row into a transcript line (Step 6). Omitted ⇒ not lifted (a caller with no scroll keymap). */
   readonly onMeasure?: ((geom: ViewportGeometry) => void) | undefined;
+  /** The rows actually included in this committed window, after layout and terminal clipping. */
+  readonly onDisplay?:
+    | ((firstRow: number, endRow: number, measuredWidth: number) => void)
+    | undefined;
+  readonly terminalRows?: number | undefined;
 }
 
 /**
@@ -90,17 +95,27 @@ export function TranscriptViewport(props: Readonly<TranscriptViewportProps>): Re
   // over-estimated terminal-rows height instead windowed past the real box capacity and rendered a garbled,
   // non-contiguous slice on the first frame (Step-4b-1 Sonnet review).
   const [height, setHeight] = useState(0);
-  // Measure AFTER every commit: re-clamp the window AND lift the live geometry up (so the owner's scroll keymap
+  // Measure in every layout commit: Ink's resetAfterCommit computes Yoga before React's layout effects.
+  // Publish geometry and synchronously re-window here so a render flush does not depend on passive-effect
+  // scheduling after a keyed reseat. A layout commit alone still does not acknowledge a terminal write.
+  // Re-clamp the window AND lift the live geometry up (so the owner's scroll keymap
   // reduces against the SAME {totalLines, height} the viewport windows with). The Box's height is flexbox-driven (the
   // leftover space beside the fixed live region), so `setHeight` only fires on a real change (resize / a live-region
   // size change / first layout), converging — never an unconditional loop (the `!==` guard). No dependency array on
   // purpose: a live turn re-renders constantly. `ref.current` is null-guarded (a not-yet-mounted node); `onMeasure`
   // only updates a caller ref (no re-render), so firing it each commit is cheap.
-  useEffect(() => {
+  useLayoutEffect(() => {
     const node = ref.current;
     if (node === null) return;
     const measured = measureElement(node);
     const { top, left } = frameOffset(node);
+    const terminalHeight =
+      props.terminalRows === undefined ? measured.height : Math.max(0, props.terminalRows - top);
+    props.onDisplay?.(
+      offset,
+      offset + Math.max(0, Math.min(visible.length, measured.height, terminalHeight)),
+      measured.width,
+    );
     props.onMeasure?.({
       totalLines: props.lines.length,
       height: measured.height,

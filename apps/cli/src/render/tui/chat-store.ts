@@ -1,6 +1,6 @@
 import type { SessionStreamHandleEvent, ToolApprovalRequest } from '@relavium/core';
 
-import type { ReasoningEffort } from '@relavium/shared';
+import type { Memory, ReasoningEffort } from '@relavium/shared';
 
 import {
   DEFAULT_CHAT_MODE,
@@ -72,6 +72,10 @@ export interface ChatStore {
 
 /** The store plus the control surface the renderer's frame loop + REPL drive. */
 export interface ChatStoreController extends ChatStore {
+  /** Bind the frozen instance policy before the session receives input. */
+  setMemoryPolicy: (memory: Readonly<Memory> | undefined) => void;
+  /** Bind actual endpoint capacity; undefined deliberately clears a catalog alias. */
+  setContextWindow?: (window: number | undefined) => void;
   /** Reduce a session event; flush immediately for a lifecycle event, else mark dirty (coalesced). */
   apply: (event: SessionStreamHandleEvent) => void;
   /** Add the user's typed text as a transcript entry (REPL submit) — flushes immediately. */
@@ -97,10 +101,7 @@ export interface ChatStoreController extends ChatStore {
   /** Toggle the collapsible "thinking" panel's visibility (2.5.H — `/thinking` / `Ctrl+T`); flushes immediately (a
    *  toggle feels instant). A pure UI-view flip — no session/engine effect. */
   toggleReasoning: () => void;
-  /** Clear the compaction "moment" flag (ADR-0062 §7). The host calls this when a MANUAL `/compact` settles — a
-   *  failed/cancelled `/compact` emits NO `session:compacted`/`session:trimmed`, so the flag (set by
-   *  `session:compacting`) would otherwise latch and a later slash command's busy render would show a stale
-   *  "Summarizing…" spinner. Idempotent (a successful compact already cleared it via `session:compacted`). */
+  /** Idempotent command-finally fallback; every admitted compaction also has an engine terminal. */
   clearCompacting: () => void;
   /**
    * The {@link ApprovalPrompt} the mode controller injects: publish a pending approval (flush → the REPL
@@ -168,6 +169,22 @@ export function createChatStore(
   };
 
   return {
+    setMemoryPolicy: (memory) => {
+      const rest = { ...state };
+      delete rest.memoryPolicy;
+      state = memory === undefined ? rest : { ...rest, memoryPolicy: Object.freeze({ ...memory }) };
+      flush();
+    },
+    setContextWindow: (window) => {
+      const rest = { ...state };
+      delete rest.contextWindowTokens;
+      state = {
+        ...rest,
+        contextWindowResolved: true,
+        ...(window === undefined ? {} : { contextWindowTokens: window }),
+      };
+      flush();
+    },
     subscribe: (onStoreChange) => {
       listeners.add(onStoreChange);
       return () => {

@@ -3,7 +3,7 @@ import type { MediaBilledModality } from '@relavium/shared';
 import { catalogPricing, pricedModelIds } from './catalog/pricing.js';
 import { UnknownModelError } from './errors.js';
 import type { ModelPricing } from './pricing.js';
-import type { MediaUnitsEntry, Usage } from './types.js';
+import { UsageSchema, type MediaUnitsEntry, type Usage } from './types.js';
 
 /**
  * Cost tracking Relavium owns, keyed on the canonical model id — never read from a provider
@@ -93,13 +93,18 @@ export interface Rates {
  * number we have. Inventing one by scaling would be a guess on a money path. Filed in deferred-tasks; the exposure is
  * a cache-write-heavy prompt above 272k on the four `gpt-5.6` variants.
  */
-function ratesFor(p: ModelPricing, contextTokens: number): Rates {
+export interface RateBasis {
+  readonly rates: Rates;
+  readonly aboveContextTokens?: number;
+}
+
+function rateBasisFor(p: ModelPricing, contextTokens: number): RateBasis {
   const flat: Rates = {
     input: p.inputPerMtokMicrocents,
     output: p.outputPerMtokMicrocents,
     cachedInput: p.cachedInputPerMtokMicrocents,
   };
-  if (p.contextTiers === undefined || p.contextTiers.length === 0) return flat;
+  if (p.contextTiers === undefined || p.contextTiers.length === 0) return { rates: flat };
   let best: Rates = flat;
   let bestThreshold = -1;
   for (const tier of p.contextTiers) {
@@ -116,7 +121,15 @@ function ratesFor(p: ModelPricing, contextTokens: number): Rates {
       };
     }
   }
-  return best;
+  return bestThreshold < 0 ? { rates: best } : { rates: best, aboveContextTokens: bestThreshold };
+}
+
+function ratesFor(p: ModelPricing, contextTokens: number): Rates {
+  return rateBasisFor(p, contextTokens).rates;
+}
+
+export function worstCaseRateBasis(p: ModelPricing): RateBasis {
+  return rateBasisFor(p, Number.POSITIVE_INFINITY);
 }
 
 /**
@@ -127,7 +140,7 @@ function ratesFor(p: ModelPricing, contextTokens: number): Rates {
  * under-estimates lets real money escape. Only one of those is recoverable.
  */
 export function worstCaseRates(p: ModelPricing): Rates {
-  return ratesFor(p, Number.MAX_SAFE_INTEGER);
+  return worstCaseRateBasis(p).rates;
 }
 
 /**
@@ -142,12 +155,12 @@ export function worstCaseRates(p: ModelPricing): Rates {
  */
 /**
  * Reject a `Usage` that cannot be accounted (#198). Every token/unit count must be a finite, non-negative,
- * safe integer — the same shape `UsageSchema` pins at the seam, re-asserted at the arithmetic.
+ * safe integer — the seam integer shape is strengthened to exact arithmetic here.
  *
  * `Number.isSafeInteger` rather than `>= 0`: beyond 2^53 integer arithmetic stops being exact, so a cumulative
  * total built from such a value is already wrong before any cap compares against it.
  */
-function assertAccountableUsage(modelId: string, usage: Usage): void {
+export function assertAccountableUsage(modelId: string, usage: Usage): void {
   const counts: readonly (readonly [string, number | undefined])[] = [
     ['inputTokens', usage.inputTokens],
     ['outputTokens', usage.outputTokens],
@@ -155,8 +168,8 @@ function assertAccountableUsage(modelId: string, usage: Usage): void {
     ['cacheWriteTokens', usage.cacheWriteTokens],
   ];
   for (const [field, value] of counts) {
-    if (value === undefined) continue;
-    if (!Number.isSafeInteger(value) || value < 0) {
+    if (value === undefined && field !== 'inputTokens' && field !== 'outputTokens') continue;
+    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
       throw new TypeError(
         `cost accounting for '${modelId}' received a non-accountable ${field}: expected a non-negative safe integer`,
       );
@@ -181,7 +194,24 @@ function assertAccountableUsage(modelId: string, usage: Usage): void {
   }
 }
 
+/** Capture provider quantities once, before host pricing can run or mutate them. */
+export function snapshotAccountableUsage(modelId: string, usage: Usage): Usage {
+  const parsed = UsageSchema.safeParse(usage);
+  if (!parsed.success) {
+    throw new TypeError('cost accounting received non-accountable usage');
+  }
+  const snapshot = parsed.data;
+  assertAccountableUsage(modelId, snapshot);
+  for (const entry of snapshot.mediaUnits ?? []) Object.freeze(entry);
+  if (snapshot.mediaUnits !== undefined) Object.freeze(snapshot.mediaUnits);
+  return Object.freeze(snapshot);
+}
+
 export function cost(modelId: string, usage: Usage, overlay?: PricingOverlay): MediaCost {
+  return costSnapshot(modelId, snapshotAccountableUsage(modelId, usage), overlay);
+}
+
+function costSnapshot(modelId: string, usage: Usage, overlay?: PricingOverlay): MediaCost {
   const p = priceModel(modelId, overlay);
   const cacheReadTokens = usage.cacheReadTokens ?? 0;
   const cacheWriteTokens = usage.cacheWriteTokens ?? 0;
@@ -306,15 +336,15 @@ export class CostTracker {
    * where the arithmetic actually happens. Fail loud: a bad number is a defect, never something to round away.
    */
   record(modelId: string, usage: Usage): CostUpdate {
-    assertAccountableUsage(modelId, usage);
-    const priced = cost(modelId, usage, this.#overlay);
+    const snapshot = snapshotAccountableUsage(modelId, usage);
+    const priced = costSnapshot(modelId, snapshot, this.#overlay);
     // The PRICED part is what folds into the running total. An unpriced modality adds nothing here on purpose:
     // fabricating a figure for it would put an invented number inside the cap, which is worse than a known gap.
     // The gap rides out on `unpricedModalities` so the caller can mark the egress unpriced (ADR-0089 §4).
     this.#cumulativeMicrocents += priced.microcents;
     return {
-      inputTokens: usage.inputTokens,
-      outputTokens: usage.outputTokens,
+      inputTokens: snapshot.inputTokens,
+      outputTokens: snapshot.outputTokens,
       costMicrocents: priced.microcents,
       cumulativeCostMicrocents: this.#cumulativeMicrocents,
       ...(priced.unpricedModalities.length === 0

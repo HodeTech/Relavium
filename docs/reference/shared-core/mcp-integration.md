@@ -31,7 +31,7 @@ An agent declares the MCP servers it uses in its `mcp_servers` list (see [../con
 4. Results stream back as `agent:tool_result` events (see [../contracts/sse-event-schema.md](../contracts/sse-event-schema.md)).
 5. The host keeps the MCP server connections alive for the session/run duration, then tears them down.
 
-The `mcp_call` built-in tool is the lower-level path for invoking a registered server's tool by name (see [built-in-tools.md](built-in-tools.md)). In Phase-1/2 it is reached as a granted built-in **inside an agent node**; the dedicated `tool`-node form is an engine-internal node type, not yet an authorable workflow node (see [../contracts/workflow-yaml-spec.md](../contracts/workflow-yaml-spec.md#node-types)).
+The `mcp_call` built-in tool is the lower-level path for invoking a registered server's tool by name (see [built-in-tools.md](built-in-tools.md)). In Phase-1/2 it is reached as a granted built-in **inside an agent node**; the dedicated `tool`-node form is an engine-internal node type, not yet an authorable workflow node (see [../contracts/workflow-yaml-spec.md](../contracts/workflow-yaml-spec.md#nodes)).
 
 ### `McpServerRef` shape
 
@@ -96,6 +96,87 @@ runtime happened to fire first.
 connections down on `SIGINT`/`SIGTERM`/`SIGHUP`/`SIGQUIT`, and a synchronous last-resort reap covers the exit
 paths that cannot await a teardown. `run` keeps its documented cancel contract — the run still drains to
 `run:cancelled` and exits `1`; the teardown does not take the exit code from it.
+
+### Invocation and transport lifetimes
+
+[ADR-0103](../../decisions/0103-a-paused-run-hands-off-its-local-producers-before-its-host-closes.md)
+separates bounded caller completion from acknowledgement that the host's actual work has ended.
+`McpCapability.call` accepts optional trusted `ToolHostCallOptions` as its third argument;
+`McpConnection.callTool` forwards them fourth, after the existing signal. Discovered tools and
+`mcp_call` use the same [tool-host capability](tool-registry.md#the-toolhost-capability-seam).
+Existing fewer-argument connections remain compatible. No callback or lifetime identity belongs
+in tool arguments, `RequestInit`, server data, an event or history.
+
+The SDK adapter transfers a call's aggregate before SDK entry. It owns the actual SDK request,
+transport sends, independently transferred fetch/body work and protocol continuations. A trusted
+retainer is selected once with its original receiver; refusal preserves its opaque identity
+without inspecting its properties or prototype. Native Promise settlement observes the exact
+raw operation. Cancellation or a public deadline retires ordinary entry immediately; it cannot
+acknowledge an independently pending producer. Cancellation notifications keep separate cleanup
+authority after ordinary retirement, without cancelling a sibling's scope.
+
+One initialized SDK Client/session is retained. Streamable HTTP uses request-local transport
+lanes with that same endpoint, negotiated protocol and session identity; it does not initialize
+another Client, replay a tool or issue a per-call session DELETE. Legacy SSE binds POST work by
+the SDK envelope's root ID, never a nested tool argument, while its long-lived GET belongs to
+manager infrastructure. Retired lanes refuse late sends, pulls and reconnect entry. All HTTP/SSE
+requests still use the required validated fetch, existing pinned-IP/TLS policy, redirect refusal
+and message bounds.
+
+A request releases a completed control/reply lane registration only after that exact lane
+acknowledges all raw/body/native-close work. Pending descendants remain retained; completed
+control lanes do not accumulate while their enclosing request remains live.
+
+Incoming peer request IDs have a separate ownership map from outgoing SDK request IDs. A handler
+is admitted before delivery to the SDK's queued callback; its actual handler and response send
+remain owed independently. The response ID stays claimed until that exact work finishes, so a
+duplicate peer ID cannot replace a pending reply. Owner-created duplicate admission refusal
+uses the normal typed `onerror` channel and suppresses that message before SDK delivery,
+instead of throwing the refusal from a native base/lane callback. Close vetoes a queued
+handler before its factory enters without pretending an already-entered handler has settled.
+
+An unused queued reservation is not an entered producer. SDK task/schema rejection can bypass
+the registered handler, and cancellation can suppress its reply. Valid peer cancellation or
+native close revokes that unused reservation; actual entered handlers, sends and descendants
+remain independently owed. Cancellation is validated with the installed SDK schema and follows
+its request-ID acceptance rules, without granting authority over outgoing requests. A callback
+whose original signal is already aborted cannot claim a later request reusing the same peer ID.
+
+A synchronous ownership refusal still observes the deadline guard, including a simultaneous
+abort, while preserving the original refusal. A body cleanup refusal settles its waiting reader
+with the fixed, content-free read error; it cannot leave that reader pending indefinitely.
+
+Concurrent or reentrant transport close returns the same published join. SDK close fulfilment,
+`onerror`, a kill request and an elapsed grace period are not native-close acknowledgements.
+Created stdio/WebSocket resources require the actual native close callback; a proved-empty
+constructor/start refusal needs no fictional callback. Raw operations and admitted cleanup
+remain independently joined, including partial lane-construction failure. A hung producer can
+therefore keep graceful close pending beyond bounded caller rejection. Connect failure starts
+cleanup without extending the caller's connect deadline. It closes the idempotent owner
+independently of the SDK client: a pre-entry refusal can leave the client without an attached
+transport, but must still retire the unused native owner, child registration and PID sampler.
+When SDK entry occurred, both cleanup paths join the same owner close; actual native-close
+acknowledgement and admitted descendants remain owed.
+
+`liveMcpChildPids()` includes pre-initialize stdio children; a connection's `childPid` remains
+latched until positive native-close acknowledgement. `McpClient.childPids` is a current view of
+retained initialized connections. Each acknowledged PID disappears independently while another
+cleanup may still be pending; forced-exit callers must read the current view rather than cache
+an old PID. The manager retains failed connection handles and reports each stored fault once
+per supplied reporter; its default remains best-effort reporting, not semantic receipt health.
+
+Manager startup transfers an aggregate before any server open. `startMcpClient` accepts optional
+trusted work options as its third argument; `McpServerConfig.open` receives them second, and SDK
+adapter constructors fourth. Per-server open/discovery, raw DNS, transport/fetch and failed-start
+cleanup remain joined after bounded connect refusal. Synchronous construction failure seals its
+proved-empty scope. A successful client's close joins startup descendants as well as connections.
+CLI run/resume hosts retain this aggregate before connect and keep their signal guard until its
+cleanup acknowledgement, including failure before a client or engine handle exists.
+
+The engine's [departure contract](../../architecture/shared-core-engine.md#internal-departure-foundations-adr-0103)
+owns all run actors and final receipt health. MCP connection close supplies its own actual-work
+acknowledgement; a bounded public failure does not substitute for it. Consolidated independent
+acceptance is recorded in [current.md](../../roadmap/current.md).
 
 ### Discovery and result ingress bounds
 

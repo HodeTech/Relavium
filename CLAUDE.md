@@ -56,7 +56,8 @@ browsers, competitor-breadth tools, settings/theming/`en`+`tr` localization, and
 run-ops resume follow-up.
 
 **An interlude is running between Wave 1 and Wave 2 of the remediation: Phase 2.6.5 (Core reliability),
-43 of 48 items closed** — `W0` (PR #82, 2026-08-11), `W1`, the eight P0 blockers plus `CR-92`, merged
+47 of 51 items closed on `development`; W7 closes `CR-96`/`CR-97` and restores the non-deferrable
+criterion** — `W0` (PR #82, 2026-08-11), `W1`, the eight P0 blockers plus `CR-92`, merged
 2026-08-24 (PR #83) behind [ADR-0078](docs/decisions/0078-ordered-durable-append-and-the-terminal-outbox.md)–[ADR-0084](docs/decisions/0084-consent-before-a-local-mcp-spawn.md):
 ordered durable append, cross-process run ownership, the durable effect journal, untrusted compaction summaries,
 the stream-grammar seam obligation, engine-side input admission and resume identity, and consent before a local
@@ -71,8 +72,9 @@ absolute admission ceilings, node output / workflow state / durable events are s
 engine no longer retains every finished run. **It merged with a live blocker** — an un-pulled event stream
 drops the terminal event, breaching ADR-0036's gap-free contract — plus nine verified findings, all recorded
 in the `W3` residuals of [deferred-tasks.md](docs/roadmap/deferred-tasks.md).
-[ADR-0087](docs/decisions/0087-consumed-streams-size-bounds-and-run-retention.md) records the fix and is
-**Proposed, not Accepted**. **`W4` — the hostile MCP boundary — merged 2026-09-01 (PR #87)
+[ADR-0087](docs/decisions/0087-consumed-streams-size-bounds-and-run-retention.md) records the fix and, after a
+review that refused acceptance until nine dated corrections existed, is **Accepted (2026-09-04) with its §1
+unimplemented** — so the blocker stands. Its §3 turned out to be implemented already, in `W5`. **`W4` — the hostile MCP boundary — merged 2026-09-01 (PR #87)
 behind [ADR-0088](docs/decisions/0088-the-mcp-boundary-is-hostile.md)**: every MCP call is bounded and
 cancellable, `http`/`sse` connect by validated pinned IP, a redirect is refused, a remote `websocket` is
 refused at admission, a server's ingress is bounded at two levels, and its tool DEFINITIONS are treated as
@@ -87,17 +89,49 @@ the network into the store under a size ceiling, an idle deadline and the run si
 to a content-addressed handle at first resolution; and a missing media rate is unpriced rather than a price of
 zero. A systematic maintainer review of the branch returned **six merge blockers**, all reproduced and fixed
 before it merged. Two items closed one half of a two-part obligation and say so; every residual is written out
-rather than left inside a checked box. **`W6` (authoring correctness) is COMPLETE on `development` and awaiting
-review** behind [ADR-0091](docs/decisions/0091-first-means-first-declared-not-first-to-finish.md)–[ADR-0094](docs/decisions/0094-a-tool-grant-is-checked-when-the-plan-is-built.md):
+rather than left inside a checked box. **`W6` — authoring correctness — MERGED 2026-09-04 (PR #89)** behind [ADR-0091](docs/decisions/0091-first-means-first-declared-not-first-to-finish.md)–[ADR-0094](docs/decisions/0094-a-tool-grant-is-checked-when-the-plan-is-built.md):
 `merge_strategy: first` means first DECLARED and the plan field no longer claims otherwise; a widened tool grant
 is refused when the plan is BUILT rather than mid-run; an expression sees only its transitive dependency closure
 and a literal out-of-closure `run.outputs` read is refused at parse (as is `edges[].condition`, which nothing
 ever read); and an authored `output_schema` is compiled at parse in an allowlist-strict mode and enforced at run
 time — with **no new dependency**, because the JSON-Schema→Zod compiler the deferral claimed we needed already
-existed in `packages/mcp` and simply moved to `@relavium/shared`. Seven review rounds found that **most defects
+existed in `packages/mcp` and simply moved to `@relavium/shared`. Seven internal review rounds found that **most defects
 were in the FIXES rather than the code they repaired** — the branch-order search was wrong three times, the
-expression scan's no-false-refusal claim was false in seven ways, and a stand-down gate silently removed the
-check it was added to protect; each is a dated correction inside its own ADR.
+expression scan's no-false-refusal claim was false in eight ways, and a stand-down gate silently removed the
+check it was added to protect; each is a dated correction inside its own ADR. A systematic maintainer review
+then returned **two merge blockers**, both breaking a headline claim of the wave — `required` was not enforced
+when a property's schema constrained nothing, and the expression scanner's regex was quadratic and synchronous
+on a parser that accepts 2 MiB — plus eight further High findings, all reproduced and fixed before the merge.
+
+
+**Between `W6` and `W7`, the two remaining non-deferrable items closed (2026-09-06)**: `CR-73` — `invoke_agent`
+was advertised to every model granted it while `ctx.invokeAgent` is wired nowhere in the tree, so the
+advertise-filter now checks a tool's declared dispatch DELEGATE and not only its `ToolHost` arm (`read_media`
+rides along, for the same reason and by `CR-50`'s own argument) — and `CR-80` — a rejected custom provider
+`base_url` was caught and the DEFAULT adapter left standing, which is the official API, so a drifted config
+silently sent prompts and keys to `api.openai.com`; it now installs a refusing adapter naming the URL's shape,
+never its credentials. The test that was supposed to pin `CR-80` asserted only `toBeDefined()`, which a
+refusing adapter satisfies too, so it passed either way — the finding under the defect was the test.
+[ADR-0087](docs/decisions/0087-consumed-streams-size-bounds-and-run-retention.md) was also **accepted
+(2026-09-04) with nine dated corrections** after a review refused it as written; its §1 remains unimplemented
+and the `W3` live blocker with it, while its §3 turned out to have shipped in `W5` under a different item
+number.
+
+**W7 is complete and independently accepted on `development`, including final whole-wave Step 12.**
+Steps 1–11, all five genuine overflow records, owned measured requests and consolidated provider/MCP/host
+lifetimes have independent acceptance. ADR-0095–ADR-0103 are Accepted. The six W7 register items are closed
+(47/51 closed); PR #90 is ready for maintainer review and unmerged. The
+[closing register](docs/roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w7-closing-register--2026-10-10)
+joins the accepted scopes, causal controls and systematic-review dispositions. Existing approved deferrals
+stay in [deferred-tasks.md](docs/roadmap/deferred-tasks.md); W8 and the phase remain open. No user decision,
+billing setup, credential or provider capture is pending.
+
+**Post-closure corrections are independently accepted, 2026-10-10:** core, CLI/DB and tooling/docs
+each have two NEW clean complete cumulative review rounds. The supplemental publication-tool
+correction also has two NEW complete clean rounds. The [post-closure register](docs/roadmap/phases/phase-2.6.5-core-reliability-remediation.md#post-closure-systematic-review--2026-10-10)
+joins every report disposition, new permanent/causal evidence and current gates. Published-head checks
+are reported in PR #90, which remains ready for review and unmerged. No W7 implementation, provider,
+billing, key or user decision is pending.
 
 For live status, per-PR history, milestone dates, and open obligations, see the canonical
 home [docs/roadmap/current.md](docs/roadmap/current.md);

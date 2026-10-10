@@ -7,6 +7,7 @@ import type { SessionStreamHandleEvent } from '@relavium/core';
 import type { ProviderId, StreamChunk } from '@relavium/llm';
 import {
   createClient,
+  createEffectJournalStore,
   createModelCatalogStore,
   createProviderStore,
   createSessionStore,
@@ -31,7 +32,9 @@ import type { GlobalOptions } from '../process/options.js';
 import { selectChatDriver } from '../render/tui/chat-ink.js';
 import { createChatStore, type ChatStoreController } from '../render/tui/chat-store.js';
 import { INLINE_TRANSCRIPT_BOUND } from '../render/tui/session-view-model.js';
-import { captureIo, parseNdjson } from '../test-support.js';
+import { formatTurnSummary, errorRecoveryHint } from '../render/tui/chat-projection.js';
+import { captureIo, parseNdjson, OwnedTtyOutput } from '../test-support.js';
+import { processIo } from '../process/io.js';
 import {
   DISABLE_MOUSE,
   ENABLE_MOUSE,
@@ -73,10 +76,16 @@ function globalOptions(cwd: string): GlobalOptions {
   return { json: false, color: false, cwd, configPath: undefined, verbosity: 'normal' };
 }
 
+function writeOutputEstimate(cwd: string): void {
+  mkdirSync(join(cwd, '.relavium'), { recursive: true });
+  writeFileSync(join(cwd, '.relavium', 'project.toml'), '[defaults]\nmax_tokens_estimate = 17\n');
+}
+
 /** A headless driver that feeds a fixed line list through the command core (no TTY / ink). */
 function linesDriver(lines: readonly string[]): ChatDriver {
   return async (ctx) => {
-    ctx.startSession(); // open the session (a real driver does this after wiring its subscription)
+    ctx.startSession();
+    await ctx.onActivated?.(() => !ctx.shouldStop()); // a real driver activates after wiring its subscription
     for (const line of lines) {
       await ctx.processLine(line);
       if (ctx.shouldStop()) break;
@@ -263,6 +272,7 @@ describe('chatCommand', () => {
     let onContinueSignal: () => void = () => undefined;
     const drive: ChatDriver = async (ctx) => {
       ctx.startSession();
+      void ctx.onActivated?.(() => !ctx.shouldStop());
       onContinueSignal(); // stray SIGCONT: no terminal teardown and no redraw before a stop
       onSuspendSignal();
       await ctx.processLine('/exit');
@@ -316,13 +326,13 @@ describe('chatCommand', () => {
 
     const full = store.loadFull(sessionId);
     // The tool-calling turn (read_file dispatched through the fail-closed host) still completes to a reply.
-    expect(full?.messages.map((m) => m.role)).toEqual(['user', 'assistant']);
-    expect(full?.messages[1]?.content[0]).toEqual({ type: 'text', text: 'the answer' });
+    expect(full?.messages.map((m) => m.role)).toEqual(['user', 'assistant', 'tool', 'assistant']);
+    expect(full?.messages[3]?.content[0]).toEqual({ type: 'text', text: 'the answer' });
   });
 
-  it('persists two distinct user turns (the 2nd a tool call) as four sequenced rows with a real cost', async () => {
+  it('persists two distinct user turns (the 2nd a tool call) with structural tool rows with a real cost', async () => {
     // Turn 1: a plain reply. Turn 2: a tool-calling turn (toolUseTurn → the answer streams after the loop).
-    // Three scripted streams, TWO user messages ⇒ four persisted rows in sequenceNumber order.
+    // Three scripted streams, TWO user messages ⇒ six persisted rows in sequenceNumber order.
     const { d, store, sessionId } = deps(
       ['first message', 'use a tool', '/exit'],
       [textTurn('first reply'), toolUseTurn('c1', 'read_file'), textTurn('the answer')],
@@ -331,10 +341,17 @@ describe('chatCommand', () => {
     expect(code).toBe(EXIT_CODES.chatEnded);
 
     const full = store.loadFull(sessionId);
-    expect(full?.messages.map((m) => m.role)).toEqual(['user', 'assistant', 'user', 'assistant']);
-    expect(full?.messages.map((m) => m.sequenceNumber)).toEqual([0, 1, 2, 3]);
+    expect(full?.messages.map((m) => m.role)).toEqual([
+      'user',
+      'assistant',
+      'user',
+      'assistant',
+      'tool',
+      'assistant',
+    ]);
+    expect(full?.messages.map((m) => m.sequenceNumber)).toEqual([0, 1, 2, 3, 4, 5]);
     expect(full?.messages[1]?.content[0]).toEqual({ type: 'text', text: 'first reply' });
-    expect(full?.messages[3]?.content[0]).toEqual({ type: 'text', text: 'the answer' });
+    expect(full?.messages[5]?.content[0]).toEqual({ type: 'text', text: 'the answer' });
     expect(full?.session.totalCostMicrocents).toBeGreaterThan(0); // priced model ⇒ a real running cost
   });
 
@@ -464,6 +481,109 @@ describe('chatCommand', () => {
     expect(err()).toContain('/mode: takes a single mode value (got 2).'); // arity enforced, not silently dropped
   });
 
+  it.each(['', 'nope', '0'])(
+    'none refuses /trim %s before its bound check and /compact before progress',
+    async (bound) => {
+      const path = join(cwd, 'memory.agent.yaml');
+      writeFileSync(
+        path,
+        'id: memory\nprovider: anthropic\nmodel: claude-sonnet-4-6\nsystem_prompt: Be concise.\nmemory:\n  type: none\n',
+      );
+      const { d, err, store, sessionId } = deps(
+        ['q1', 'q2', '/compact', `/trim ${bound}`, '/exit'],
+        [textTurn('a1'), textTurn('a2')],
+      );
+      expect(await chatCommand({ agent: path }, d)).toBe(4);
+      expect(err()).toContain('Compaction refused: memory: none');
+      expect(err()).toContain('Trim refused: memory: none');
+      expect(err()).not.toContain('compacting: summarizing');
+      expect(err()).not.toContain('set a bound');
+      expect(err()).not.toContain('positive whole number');
+      expect(
+        store.loadFull(sessionId)?.messages.some((message) => message.compaction !== undefined),
+      ).toBe(false);
+      expect(
+        store.loadFull(sessionId)?.messages.filter((message) => message.role === 'user'),
+      ).toHaveLength(2);
+    },
+  );
+
+  for (const policy of ['none', 'window', 'summary'] as const) {
+    for (const code of ['context_overflow', 'validation'] as const) {
+      it(`${code} chat display receives frozen ${policy} policy through the actual session binding`, async () => {
+        const path = join(cwd, 'overflow-memory.agent.yaml');
+        writeFileSync(
+          path,
+          `id: memory\nprovider: anthropic\nmodel: claude-sonnet-4-6\nsystem_prompt: Be concise.\nmemory:\n  type: ${policy}\n${policy === 'window' ? '  window_size: 1\n' : ''}`,
+        );
+        let rendered = '';
+        const { d } = deps(
+          [],
+          [
+            [
+              {
+                type: 'error',
+                error: {
+                  kind: code === 'context_overflow' ? 'context_overflow' : 'bad_request',
+                  provider: 'anthropic',
+                  retryable: false,
+                  message: 'maximum context length PRIVATE_SENTINEL',
+                },
+              },
+            ],
+          ],
+          {
+            drive: async (ctx) => {
+              const unsubscribe = ctx.handle.subscribe((event) => ctx.store.apply(event));
+              try {
+                ctx.startSession();
+                await ctx.processLine('overflow please');
+                const entry = ctx.store.getSnapshot().state.transcript.at(-1);
+                if (entry?.role !== 'assistant') throw new Error('missing failed-turn display');
+                rendered =
+                  formatTurnSummary(entry.summary) +
+                  (errorRecoveryHint(
+                    entry.summary.errorCode,
+                    entry.summary.errorMessage,
+                    entry.summary,
+                  ) ?? '');
+                await ctx.processLine('/exit');
+                return { kind: 'exit' };
+              } finally {
+                unsubscribe();
+              }
+            },
+          },
+        );
+        expect(await chatCommand({ agent: path }, d)).toBe(4);
+        expect(rendered).toContain(code);
+        expect(rendered).not.toContain('PRIVATE_SENTINEL');
+        expect(rendered.includes('/compact')).toBe(policy === 'summary');
+        expect(rendered.includes('/trim')).toBe(policy !== 'none');
+        if (code === 'context_overflow') expect(rendered).toContain('No tools ran');
+      });
+    }
+  }
+
+  it('window refuses /compact but permits message-count /trim', async () => {
+    const path = join(cwd, 'memory.agent.yaml');
+    writeFileSync(
+      path,
+      'id: memory\nprovider: anthropic\nmodel: claude-sonnet-4-6\nsystem_prompt: Be concise.\nmemory:\n  type: window\n  window_size: 1\n',
+    );
+    const { d, err, store, sessionId } = deps(
+      ['q1', 'q2', '/compact', '/trim 2', '/exit'],
+      [textTurn('a1'), textTurn('a2')],
+    );
+    expect(await chatCommand({ agent: path }, d)).toBe(4);
+    expect(err()).toContain('Compaction refused: memory: window');
+    expect(err()).not.toContain('compacting: summarizing');
+    expect(err()).toContain('Trimmed 2 older message(s)');
+    expect(
+      store.loadFull(sessionId)?.messages.filter((message) => message.compaction !== undefined),
+    ).toHaveLength(1);
+  });
+
   it('/compact summarises the conversation, reports the notice, and persists a boundary marker (ADR-0062)', async () => {
     const { d, err, store, sessionId } = deps(
       ['q1', 'q2', '/compact', '/exit'],
@@ -477,6 +597,113 @@ describe('chatCommand', () => {
     // The append-only marker was persisted (role:'system', role-filtered boundary), full transcript intact.
     const marker = store.loadFull(sessionId)?.messages.find((m) => m.role === 'system');
     expect(marker?.compaction).toEqual({ droppedThroughSequence: 1 });
+  });
+
+  it('announces one manual progress line through the actual plain event driver', async () => {
+    const { d, err } = deps([], [textTurn('a1'), textTurn('a2'), textTurn('summary')]);
+    await chatCommand(
+      { agent: undefined },
+      {
+        ...d,
+        drive: drivePlain,
+        io: { ...d.io, stdin: Readable.from(['q1\nq2\n/compact\n/exit\n']) },
+      },
+    );
+    expect(err().match(/compacting: summarizing/g)).toHaveLength(1);
+  });
+
+  it('Esc releases shipping manual compaction before a held native warning ACK and the next message works', async () => {
+    class HeldOutput extends OwnedTtyOutput {
+      complete: (() => void) | undefined;
+      override _write(
+        _chunk: unknown,
+        _encoding: BufferEncoding,
+        callback: (error?: Error | null) => void,
+      ): void {
+        this.complete = () => {
+          this.complete = undefined;
+          callback();
+        };
+      }
+    }
+    const stderr = new HeldOutput();
+    const descriptor = Object.getOwnPropertyDescriptor(process, 'stderr');
+    if (descriptor === undefined) throw new Error('expected stderr descriptor');
+    const native = (() => {
+      try {
+        Object.defineProperty(process, 'stderr', { configurable: true, get: () => stderr });
+        return processIo();
+      } finally {
+        Object.defineProperty(process, 'stderr', descriptor);
+      }
+    })();
+    const { d } = deps([], [textTurn('first'), textTurn('second'), textTurn('next')]);
+    const providers = d.providers;
+    if (providers === undefined) throw new Error('expected offline resolver');
+    const provider = providers.resolveProvider('anthropic');
+    if (provider === undefined) throw new Error('expected offline provider');
+    let reached = (): void => undefined,
+      calls = 0;
+    const entered = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    try {
+      await chatCommand(
+        { agent: undefined },
+        {
+          ...d,
+          providers: {
+            keyFor: providers.keyFor,
+            resolveProvider: () => ({
+              ...provider,
+              customEndpoint: true,
+              stream: (...args) => {
+                calls++;
+                return provider.stream(...args);
+              },
+            }),
+          },
+          io: {
+            ...d.io,
+            writeErrAcknowledged: (text) => {
+              const pending = native.writeErrAcknowledged(text);
+              reached();
+              return pending;
+            },
+          },
+          drive: async (ctx) => {
+            ctx.startSession();
+            await ctx.onActivated?.(() => !ctx.shouldStop());
+            await ctx.processLine('one');
+            await ctx.processLine('two');
+            let settled = false;
+            const compaction = ctx.processLine('/compact').then(() => {
+              settled = true;
+            });
+            try {
+              await entered;
+              ctx.onAbort?.();
+              await new Promise<void>((resolve) => setImmediate(resolve));
+              expect(settled).toBe(true);
+              expect(calls).toBe(2);
+              await ctx.processLine('next');
+              expect(calls).toBe(3);
+            } finally {
+              stderr.complete?.();
+              await compaction;
+            }
+            await new Promise<void>((resolve) => setImmediate(resolve));
+            expect(stderr.listenerCount('error')).toBe(0);
+            expect(stderr.listenerCount('close')).toBe(0);
+            await ctx.processLine('/exit');
+            return { kind: 'exit' };
+          },
+        },
+      );
+    } finally {
+      stderr.complete?.();
+      stderr.destroy();
+    }
   });
 
   it('/trim takes a single FREE positional value — rejects `/trim 2 3` (ADR-0062)', async () => {
@@ -581,6 +808,7 @@ describe('chatCommand', () => {
     const fireDuringTurn: ChatDriver = async (ctx) => {
       liveStore = ctx.store;
       ctx.startSession();
+      void ctx.onActivated?.(() => !ctx.shouldStop());
       captured?.({ spentMicrocents: 900, limitMicrocents: 1000, thresholdPct: 90 }); // WHILE the session is live
       await ctx.processLine('/exit');
       return { kind: 'exit' };
@@ -623,6 +851,7 @@ describe('chatCommand', () => {
     let statusAfterExport: string | undefined;
     const probingDrive: ChatDriver = async (ctx) => {
       ctx.startSession();
+      void ctx.onActivated?.(() => !ctx.shouldStop());
       await ctx.processLine('hello'); // turn 1 ⇒ persisted, row status 'active'
       await ctx.processLine('/export'); // export the session-so-far; must NOT mark the row
       statusAfterExport = store.loadFull(sessionId)?.session.status;
@@ -646,6 +875,7 @@ describe('chatCommand', () => {
     const { d, err } = deps([], [textTurn('hi')]);
     const twiceDrive: ChatDriver = async (ctx) => {
       ctx.startSession();
+      void ctx.onActivated?.(() => !ctx.shouldStop());
       await ctx.processLine('hello');
       await ctx.processLine('/export'); // creates id-0.relavium.yaml
       await ctx.processLine('/export'); // must overwrite it (force:true), not error
@@ -668,6 +898,8 @@ describe('chatCommand', () => {
   });
 
   it('/clear ends the current session (persisted + resumable) and re-drives a FRESH one under a new id (ADR-0062 §7)', async () => {
+    writeOutputEstimate(cwd);
+    const estimates: (number | undefined)[] = [];
     const { d, store } = deps([], [textTurn('hi there')]);
     let closeCount = 0;
     const seen: string[] = [];
@@ -676,6 +908,7 @@ describe('chatCommand', () => {
     const clearThenExit: ChatDriver = async (ctx) => {
       seen.push(ctx.handle.sessionId); // record WHICH session this invocation drove
       ctx.startSession();
+      void ctx.onActivated?.(() => !ctx.shouldStop());
       if (call++ === 0) {
         await ctx.processLine('hello'); // a real turn on the OLD session ⇒ persisted
         return { kind: 'clear' };
@@ -687,12 +920,17 @@ describe('chatCommand', () => {
       { agent: undefined },
       {
         ...d,
+        buildSession: (options) => {
+          estimates.push(options.maxTokensEstimate);
+          return buildChatSession(options);
+        },
         openSessionStore: () => ({ store, db: client.db, close: () => (closeCount += 1) }),
         drive: clearThenExit,
       },
     );
 
     expect(code).toBe(EXIT_CODES.chatEnded);
+    expect(estimates).toEqual([17, 17]);
     expect(seen).toHaveLength(2); // drove the original session, THEN a fresh one after /clear
     const [oldId, freshId] = seen;
     expect(freshId).not.toBe(oldId); // a NEW sessionId — not a re-drive of the same session
@@ -720,6 +958,7 @@ describe('chatCommand', () => {
     // fully-inert INERT_HOIST used elsewhere cannot (a total regression here would otherwise pass silently).
     const exitDrive: ChatDriver = async (ctx) => {
       ctx.startSession();
+      void ctx.onActivated?.(() => !ctx.shouldStop());
       await ctx.processLine('/exit');
       return { kind: ctx.stopReason() };
     };
@@ -773,6 +1012,7 @@ describe('chatCommand', () => {
   it('MOUSE: on by default, and `--no-mouse` reaches the real controller (2.6.F Step 5e, ADR-0068 §e)', async () => {
     const exitDrive: ChatDriver = async (ctx) => {
       ctx.startSession();
+      void ctx.onActivated?.(() => !ctx.shouldStop());
       await ctx.processLine('/exit');
       return { kind: ctx.stopReason() };
     };
@@ -816,6 +1056,7 @@ describe('chatCommand', () => {
   it('MOUSE: `[preferences].mouse = false` reaches the real controller (the durable opt-out)', async () => {
     const exitDrive: ChatDriver = async (ctx) => {
       ctx.startSession();
+      void ctx.onActivated?.(() => !ctx.shouldStop());
       await ctx.processLine('/exit');
       return { kind: ctx.stopReason() };
     };
@@ -850,6 +1091,7 @@ describe('chatCommand', () => {
     const clearThenExit: ChatDriver = async (ctx) => {
       alts.push(ctx.altScreen); // capture on both the original + the rebuilt session
       ctx.startSession();
+      void ctx.onActivated?.(() => !ctx.shouldStop());
       if (call++ === 0) {
         await ctx.processLine('hello');
         return { kind: 'clear' };
@@ -870,6 +1112,9 @@ describe('chatCommand', () => {
   });
 
   it('the [preferences].alt_screen preference SURVIVES a /models reseat re-drive (Step-4a threading regression, ADR-0068 §e)', async () => {
+    writeOutputEstimate(cwd);
+    const freshEstimates: (number | undefined)[] = [];
+    const resumedEstimates: (number | undefined)[] = [];
     const { d } = deps([], [textTurn('sonnet reply'), textTurn('opus reply')]);
     seedCatalogModel(client.db, 'anthropic', 'claude-sonnet-4-6');
     seedCatalogModel(client.db, 'anthropic', 'claude-opus-4-8');
@@ -881,6 +1126,7 @@ describe('chatCommand', () => {
     const reseatThenExit: ChatDriver = async (ctx) => {
       alts.push(ctx.altScreen);
       ctx.startSession();
+      void ctx.onActivated?.(() => !ctx.shouldStop());
       if (call++ === 0) {
         await ctx.processLine('first');
         ctx.onReseat?.({ modelId: 'claude-opus-4-8', provider: 'anthropic' });
@@ -897,9 +1143,19 @@ describe('chatCommand', () => {
         io: interactiveIo,
         global: { ...globalOptions(cwd), configPath: cfg },
         drive: reseatThenExit,
+        buildSession: (options) => {
+          freshEstimates.push(options.maxTokensEstimate);
+          return buildChatSession(options);
+        },
+        buildResumedSession: (options) => {
+          resumedEstimates.push(options.maxTokensEstimate);
+          return buildResumedChatSession(options);
+        },
       },
     );
     expect(alts).toEqual([true, true]); // the reseat rebuild keeps the preference (buildReseatWiring threads it)
+    expect(freshEstimates).toEqual([17]);
+    expect(resumedEstimates).toEqual([17]);
   });
 
   /**
@@ -931,6 +1187,7 @@ describe('chatCommand', () => {
         ctx.store.getSnapshot().state.transcript.map((e) => ({ role: e.role, text: e.text })),
       );
       ctx.startSession();
+      void ctx.onActivated?.(() => !ctx.shouldStop());
       if (call++ === 0) {
         await ctx.processLine('first');
         ctx.onReseat?.({ modelId: 'claude-opus-4-8', provider: 'anthropic' });
@@ -968,6 +1225,7 @@ describe('chatCommand', () => {
     const reseatThenExit: ChatDriver = async (ctx) => {
       seen.push(ctx.store.getSnapshot().state.transcript.length);
       ctx.startSession();
+      void ctx.onActivated?.(() => !ctx.shouldStop());
       if (call++ === 0) {
         await ctx.processLine('first');
         ctx.onReseat?.({ modelId: 'claude-opus-4-8', provider: 'anthropic' });
@@ -1000,6 +1258,7 @@ describe('chatCommand', () => {
     const clearThenExit: ChatDriver = async (ctx) => {
       seen.push(ctx.store.getSnapshot().state.transcript.length);
       ctx.startSession();
+      void ctx.onActivated?.(() => !ctx.shouldStop());
       if (call++ === 0) {
         await ctx.processLine('first');
         await ctx.processLine('/clear');
@@ -1031,6 +1290,7 @@ describe('chatCommand', () => {
     };
     const driveClear: ChatDriver = (ctx) => {
       ctx.startSession();
+      void ctx.onActivated?.(() => !ctx.shouldStop());
       return Promise.resolve({ kind: 'clear' as const }); // request the swap; the rebuild then fails (no await needed)
     };
     const code = await chatCommand({ agent: undefined }, { ...d, buildSession, drive: driveClear });
@@ -1055,6 +1315,66 @@ describe('chatCommand', () => {
     expect(rows?.session.status).toBe('ended');
   });
 
+  it('the standalone reseat discloses on the new active transcript before consuming committed evidence', async () => {
+    const { d, store, err } = deps([], [textTurn('first reply')]);
+    let driveCount = 0;
+    const drive: ChatDriver = async (ctx) => {
+      if (driveCount++ === 0) {
+        ctx.startSession();
+        await ctx.onActivated?.(() => !ctx.shouldStop());
+        await ctx.processLine('first');
+        const turn = store.reserveEffectTurnKey(ctx.handle.sessionId);
+        const journal = createEffectJournalStore(client.db, {
+          uuid: () => 'reseat-effect',
+          now: () => 0,
+        });
+        const identity = {
+          scope: `session:${encodeURIComponent(ctx.handle.sessionId)}:${String(turn)}`,
+          slot: 0,
+          toolId: 'run_command',
+        };
+        journal.prepare(
+          identity,
+          { kind: 'session', sessionId: ctx.handle.sessionId, turn },
+          { providerAttempt: 1, toolCallId: `session-tool:${String(turn)}:0` },
+          3,
+          'digest',
+        );
+        journal.settle(identity, 'committed');
+        ctx.onReseat?.({ modelId: 'claude-opus-4-8', provider: 'anthropic' });
+        return { kind: ctx.stopReason() };
+      }
+      expect(client.sqlite.prepare('SELECT * FROM run_effects').all()).toHaveLength(1);
+      expect(
+        ctx.store
+          .getSnapshot()
+          .state.transcript.some((entry) => entry.text.includes('external effect')),
+      ).toBe(false);
+      ctx.startSession();
+      void ctx.onActivated?.(() => !ctx.shouldStop());
+      expect(client.sqlite.prepare('SELECT * FROM run_effects').all()).toEqual([]);
+      expect(
+        ctx.store
+          .getSnapshot()
+          .state.transcript.some(
+            (entry) =>
+              entry.role === 'notice' &&
+              entry.text.includes('landed in a turn that did not complete'),
+          ),
+      ).toBe(true);
+      await ctx.processLine('/exit');
+      return { kind: ctx.stopReason() };
+    };
+    expect(
+      await chatCommand(
+        { agent: undefined },
+        { ...d, ...INERT_HOIST, io: { ...d.io, stdoutIsTty: true }, drive },
+      ),
+    ).toBe(EXIT_CODES.chatEnded);
+    expect(driveCount).toBe(2);
+    expect(err()).not.toContain('external effect');
+  });
+
   it('/models reseat: rebinds the model on the SAME session, carrying the transcript + per-turn attribution (ADR-0059)', async () => {
     const { d, store } = deps([], [textTurn('sonnet reply'), textTurn('opus reply')]);
     // Seed both models into the catalog so attribution resolves the model string → the FK-target UUID.
@@ -1069,6 +1389,7 @@ describe('chatCommand', () => {
       seen.push(ctx.handle.sessionId);
       intros.push(ctx.intro);
       ctx.startSession();
+      void ctx.onActivated?.(() => !ctx.shouldStop());
       if (call++ === 0) {
         await ctx.processLine('first'); // a turn on the sonnet-bound session ⇒ persisted (attributed to sonnet)
         ctx.onReseat?.({ modelId: 'claude-opus-4-8', provider: 'anthropic' }); // switch to opus
@@ -1117,6 +1438,7 @@ describe('chatCommand', () => {
       Promise.reject(new Error('reseat build failed'));
     const reseat: ChatDriver = async (ctx) => {
       ctx.startSession();
+      void ctx.onActivated?.(() => !ctx.shouldStop());
       await ctx.processLine('hello'); // a real turn on the OLD session ⇒ persisted + resumable
       ctx.onReseat?.({ modelId: 'claude-opus-4-8', provider: 'anthropic' });
       return { kind: ctx.stopReason() };
@@ -1138,6 +1460,7 @@ describe('chatCommand', () => {
     let onReseatWired = true;
     const driver: ChatDriver = async (ctx) => {
       ctx.startSession();
+      void ctx.onActivated?.(() => !ctx.shouldStop());
       await ctx.processLine('hello');
       onReseatWired = ctx.onReseat !== undefined;
       ctx.onReseat?.({ modelId: 'claude-opus-4-8', provider: 'anthropic' }); // a no-op when unwired
@@ -1231,6 +1554,7 @@ describe('chatCommand', () => {
     const store = createSessionStore(client.db);
     const failingDrive: ChatDriver = (ctx) => {
       ctx.startSession();
+      void ctx.onActivated?.(() => !ctx.shouldStop());
       return Promise.reject(new Error('boom'));
     };
     await expect(
@@ -1370,6 +1694,7 @@ describe('chatCommand', () => {
       const capture: ChatDriver = async (ctx) => {
         live = ctx.store;
         ctx.startSession();
+        await ctx.onActivated?.(() => !ctx.shouldStop());
         await ctx.processLine('/exit');
         return { kind: 'exit' };
       };
@@ -1480,6 +1805,72 @@ describe('chatResumeCommand (2.N)', () => {
     };
   }
 
+  it.each([false, true])(
+    'discloses and sweeps only after the resumed driver activates (interactive=%s)',
+    async (interactive) => {
+      const store = createSessionStore(client.db);
+      expect(
+        await chatCommand(
+          { agent: undefined },
+          freshDeps(['hello', '/exit'], [textTurn('done')], store),
+        ),
+      ).toBe(EXIT_CODES.chatEnded);
+      const turn = store.reserveEffectTurnKey('id-0');
+      let id = 0;
+      const journal = createEffectJournalStore(client.db, {
+        uuid: () => `resume-effect-${String(++id)}`,
+        now: () => 0,
+      });
+      const identity = { scope: `session:id-0:${String(turn)}`, slot: 0, toolId: 'run_command' };
+      journal.prepare(
+        identity,
+        { kind: 'session', sessionId: 'id-0', turn },
+        { providerAttempt: 1, toolCallId: `session-tool:${String(turn)}:0` },
+        3,
+        'digest',
+      );
+      journal.settle(identity, 'committed', 'synthetic private result');
+      const { d, err } = resumeDeps([], [], store);
+      let activated = false;
+      const drive: ChatDriver = async (ctx) => {
+        expect(client.sqlite.prepare('SELECT * FROM run_effects').all()).toHaveLength(1);
+        expect(err()).not.toContain('external effect');
+        ctx.startSession();
+        await ctx.onActivated?.(() => !ctx.shouldStop());
+        activated = true;
+        expect(client.sqlite.prepare('SELECT * FROM run_effects').all()).toEqual([]);
+        if (interactive) {
+          expect(
+            ctx.store
+              .getSnapshot()
+              .state.transcript.some(
+                (entry) =>
+                  entry.role === 'notice' &&
+                  entry.text.includes('landed in a turn that did not complete'),
+              ),
+          ).toBe(true);
+          expect(err()).not.toContain('external effect');
+        } else expect(err()).toContain('landed in a turn that did not complete');
+        return Promise.resolve({ kind: 'exit' });
+      };
+      expect(
+        await chatResumeCommand(
+          { sessionId: 'id-0' },
+          {
+            ...d,
+            ...INERT_HOIST,
+            io: { ...d.io, stdoutIsTty: interactive, stdinIsTty: interactive },
+            drive,
+          },
+        ),
+      ).toBe(EXIT_CODES.chatEnded);
+      expect(activated).toBe(true);
+      const again = resumeDeps([], [], store, 'second');
+      expect(await chatResumeCommand({ sessionId: 'id-0' }, again.d)).toBe(EXIT_CODES.chatEnded);
+      expect(again.err()).not.toContain('external effect');
+    },
+  );
+
   /**
    * `/cost` READS THE DB (ADR-0070 §7) — the central change of the breakdown, and it had NO coverage.
    *
@@ -1541,6 +1932,9 @@ describe('chatResumeCommand (2.N)', () => {
   });
 
   it('/clear from a resumed session rebinds the SNAPSHOT agent into a fresh session (ADR-0062 §7)', async () => {
+    writeOutputEstimate(cwd);
+    const resumedEstimates: (number | undefined)[] = [];
+    const freshEstimates: (number | undefined)[] = [];
     const store = createSessionStore(client.db);
     // Seed a session so 'id-0' has a persisted agent SNAPSHOT (no on-disk agentRef) to resume + rebind on /clear.
     await chatCommand({ agent: undefined }, freshDeps(['hello', '/exit'], [textTurn('hi')], store));
@@ -1551,23 +1945,78 @@ describe('chatResumeCommand (2.N)', () => {
     let call = 0;
     const clearThenExit: ChatDriver = async (ctx) => {
       seen.push(ctx.handle.sessionId);
-      ctx.startSession(); // no-op for the resumed session; starts the fresh one
+      ctx.startSession();
+      await ctx.onActivated?.(() => !ctx.shouldStop()); // activates the resumed notice surface, or is absent for fresh sessions
       if (call++ === 0) return { kind: 'clear' }; // the resumed session's /clear swap
       await ctx.processLine('/exit');
       return { kind: 'exit' };
     };
     const { d } = resumeDeps([], [], store);
-    expect(await chatResumeCommand({ sessionId: 'id-0' }, { ...d, drive: clearThenExit })).toBe(
-      EXIT_CODES.chatEnded,
-    );
+    expect(
+      await chatResumeCommand(
+        { sessionId: 'id-0' },
+        {
+          ...d,
+          drive: clearThenExit,
+          buildSession: (options) => {
+            freshEstimates.push(options.maxTokensEstimate);
+            return buildChatSession(options);
+          },
+          buildResumedSession: (options) => {
+            resumedEstimates.push(options.maxTokensEstimate);
+            return buildResumedChatSession(options);
+          },
+        },
+      ),
+    ).toBe(EXIT_CODES.chatEnded);
 
     expect(seen).toHaveLength(2); // drove the RESUMED session, then a fresh one after /clear
+    expect(resumedEstimates).toEqual([17]);
+    expect(freshEstimates).toEqual([17]);
     const [resumedId, freshId] = seen;
     expect(resumedId).toBe('id-0'); // resume reuses the persisted id (no mint)
     expect(freshId).not.toBe('id-0'); // /clear started a NEW session
     // The fresh session rebinds the resumed session's SNAPSHOT agent — the whole reason the `agent` override
     // exists (a resumed agent has no on-disk `agentRef` to re-resolve).
     expect(store.loadFull(freshId ?? '')?.session.agentSlug).toBe(originalAgent);
+  });
+
+  it('preserves the configured estimate through a resumed-session model reseat', async () => {
+    writeOutputEstimate(cwd);
+    const store = createSessionStore(client.db);
+    await chatCommand({ agent: undefined }, freshDeps(['hello', '/exit'], [textTurn('hi')], store));
+    seedCatalogModel(client.db, 'anthropic', 'claude-sonnet-4-6');
+    seedCatalogModel(client.db, 'anthropic', 'claude-opus-4-8');
+    const { d } = resumeDeps([], [], store);
+    const estimates: (number | undefined)[] = [];
+    let calls = 0;
+    const drive: ChatDriver = async (ctx) => {
+      ctx.startSession();
+      await ctx.onActivated?.(() => !ctx.shouldStop());
+      if (calls++ === 0) {
+        ctx.onReseat?.({ modelId: 'claude-opus-4-8', provider: 'anthropic' });
+        return { kind: ctx.stopReason() };
+      }
+      await ctx.processLine('/exit');
+      return { kind: ctx.stopReason() };
+    };
+    expect(
+      await chatResumeCommand(
+        { sessionId: 'id-0' },
+        {
+          ...d,
+          ...INERT_HOIST,
+          io: { ...d.io, stdoutIsTty: true },
+          drive,
+          buildResumedSession: (options) => {
+            estimates.push(options.maxTokensEstimate);
+            return buildResumedChatSession(options);
+          },
+        },
+      ),
+    ).toBe(EXIT_CODES.chatEnded);
+    expect(estimates).toEqual([17, 17]);
+    expect(calls).toBe(2);
   });
 
   it('keeps sequence numbers monotonic across THREE resumes (no off-by-one)', async () => {
@@ -1826,6 +2275,30 @@ describe('drivePlain', () => {
     expect(processed).toEqual(['hello', '/exit']);
   });
 
+  it.each([drivePlain, driveJson])(
+    'ends without waiting for input when activation synchronously stops the session (%s)',
+    async (drive) => {
+      const stdin = new PassThrough(); // deliberately never sends a line or EOF before driver completion.
+      const { ctx, processed } = await plainCtx(stdin);
+      const completed = vi.fn();
+      const done = drive({
+        ...ctx,
+        onActivated: () => {
+          void ctx.processLine('/exit');
+        },
+      });
+      void done.then(completed);
+      try {
+        await vi.waitFor(() => expect(completed).toHaveBeenCalledTimes(1));
+        expect(await done).toEqual({ kind: 'exit' });
+        expect(processed).toEqual(['/exit']);
+      } finally {
+        stdin.destroy();
+        await done;
+      }
+    },
+  );
+
   it('a SIGINT closes the input so the loop ends and the finally removes the handler (teardown path)', async () => {
     const stdin = new PassThrough();
     const { ctx } = await plainCtx(stdin);
@@ -1938,6 +2411,36 @@ describe('makePlainPrinter', () => {
     expect(out()).not.toContain('sk-LEAK'); // …but the raw message (secret-ish substring) is NOT echoed
   });
 
+  it('plain classified overflow displays the safe fact once and respects none after tool dispatch', () => {
+    const { io, out } = captureIo();
+    const print = makePlainPrinter(io, true, { type: 'none' });
+    print({
+      type: 'agent:tool_call',
+      ...STAMP,
+      model: 'actual',
+      nodeId: 'n',
+      toolId: 'write_file',
+      toolInput: {},
+    });
+    print({
+      type: 'session:turn_completed',
+      ...STAMP,
+      stopReason: 'error',
+      tokensUsed: { input: 0, output: 0 },
+      error: {
+        code: 'context_overflow',
+        message:
+          'The request exceeded its context window for model actual. Tools already ran in this turn.',
+        retryable: false,
+      },
+    });
+    expect(out()).toContain('model actual');
+    expect(out()).toContain('Check the effects');
+    expect(out()).not.toContain('/compact');
+    expect(out()).not.toContain('/trim');
+    expect(out().split('session is still active')).toHaveLength(2);
+  });
+
   it('emits ONLY the bare code line for a code with no hint (no stray hint text/newline)', () => {
     const { io, out } = captureIo();
     makePlainPrinter(io)({
@@ -1970,10 +2473,22 @@ describe('makePlainPrinter', () => {
 
 describe('chatIsInteractive (the High-9 deadlock derivation — mirrors selectChatDriver`s ink-mount)', () => {
   it('is true ONLY for a TTY without --json; false when piped OR --json (a dropped `!` would break this)', () => {
-    expect(chatIsInteractive({ stdoutIsTty: true }, { json: false })).toBe(true); // ink mounts → can prompt
-    expect(chatIsInteractive({ stdoutIsTty: false }, { json: false })).toBe(false); // piped → reject-immediately
-    expect(chatIsInteractive({ stdoutIsTty: true }, { json: true })).toBe(false); // --json → reject-immediately
-    expect(chatIsInteractive({ stdoutIsTty: false }, { json: true })).toBe(false);
+    expect(chatIsInteractive({ stdoutIsTty: true, env: {} }, { json: false })).toBe(true); // ink mounts → can prompt
+    expect(chatIsInteractive({ stdoutIsTty: false, env: {} }, { json: false })).toBe(false); // piped → reject-immediately
+    expect(chatIsInteractive({ stdoutIsTty: true, env: {} }, { json: true })).toBe(false); // --json → reject-immediately
+    expect(chatIsInteractive({ stdoutIsTty: false, env: {} }, { json: true })).toBe(false);
+  });
+
+  it.each([
+    [{ CI: 'true' }, false],
+    [{ CI: '1' }, false],
+    [{ CI: '' }, true],
+    [{ CI: 'false' }, true],
+    [{ CI: '0' }, true],
+    [{ CONTINUOUS_INTEGRATION: 'true' }, true],
+  ])('uses the shared output policy for a TTY with env=%j', (env, expected) => {
+    expect(chatIsInteractive({ stdoutIsTty: true, env }, { json: false })).toBe(expected);
+    expect(chatIsInteractive({ stdoutIsTty: true, env }, { json: true })).toBe(false);
   });
 });
 

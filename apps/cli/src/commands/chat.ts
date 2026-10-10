@@ -9,7 +9,12 @@ import {
   type UserCommandOutcome,
 } from '@relavium/core';
 import type { ProviderId } from '@relavium/llm';
-import { REASONING_EFFORTS, type AgentSessionRecord, type ReasoningEffort } from '@relavium/shared';
+import {
+  REASONING_EFFORTS,
+  type AgentSessionRecord,
+  type Memory,
+  type ReasoningEffort,
+} from '@relavium/shared';
 import { exportSession } from '../chat/export.js';
 import { createConsentGate } from '../engine/mcp-consent-gate.js';
 import { createConsentPrompter } from '../mcp/consent-prompt.js';
@@ -19,6 +24,7 @@ import {
   catalogNotice,
   clearedNotice,
   compactionNotice,
+  COMPACTION_UNKNOWN_WINDOW_NOTICE,
   costNotice,
   modelSwitchNotice,
   trimNotice,
@@ -64,10 +70,7 @@ import {
   type ChatBudgetWarning,
 } from '../chat/session-host.js';
 import { loadResolvedConfig } from '../config/load.js';
-import {
-  sweepCommittedSessionEffects,
-  unresolvedEffectNotice,
-} from '../engine/effect-retention.js';
+import { reconcileResumedSessionEffects, type NoticeFlush } from '../engine/effect-retention.js';
 import { createModelCatalogPort, type ModelCatalogPort } from '../engine/model-catalog-port.js';
 import { assembleToolEnv } from '../engine/tool-host/assemble.js';
 import { loadUserPricingOverlay, readUserPricingOverlay } from '../engine/pricing-overlay.js';
@@ -108,6 +111,7 @@ import {
 import { DISABLE_BRACKETED_PASTE } from '../render/tui/home-input.js';
 import {
   errorRecoveryHint,
+  contextOverflowRemedy,
   formatToolCall,
   sanitizeInline,
   stripTerminalControls,
@@ -206,6 +210,12 @@ export interface ChatDriveContext {
    * subscription, so the synchronous `session:started` (which carries the model) is observed, not raced.
    */
   readonly startSession: () => void;
+  /** Called once after the notice surface is mounted/ready, before accepting input. The driver owns activity
+   *  through teardown and revalidates it after a synchronous notice-triggered exit or swap. */
+  readonly onActivated?: (
+    isActive: () => boolean,
+    flushNotice?: NoticeFlush,
+  ) => void | Promise<void>;
   /** Handle one line of user input (a slash command or a chat message). Awaits the turn for a message. */
   readonly processLine: (line: string, display?: string) => Promise<void>;
   /** `true` once `/exit` or `/cancel` (or `/clear`, or a `/models` reseat) has run — the driver stops reading input. */
@@ -489,6 +499,25 @@ export const defaultReplLifecycle: ReplLifecycle = {
  * the view store, so a notice pushed there would vanish silently ({@link liveNoticeSinkFor}).
  */
 let liveSessionNotice: ((text: string) => void) | undefined;
+let liveCompactionNotice: ((text: string, isCancelled: () => boolean) => Promise<void>) | undefined;
+
+function compactionStartNotice(
+  io: CliIo,
+): NonNullable<BuildChatSessionOptions['onCompactionStart']> {
+  return async ({ reason, windowUnknown, signal }) => {
+    if (signal.aborted) return;
+    if (windowUnknown) {
+      if (liveCompactionNotice !== undefined)
+        await liveCompactionNotice(COMPACTION_UNKNOWN_WINDOW_NOTICE, () => signal.aborted);
+      else await io.writeErrAcknowledged(`${COMPACTION_UNKNOWN_WINDOW_NOTICE}\n`);
+    }
+    if (signal.aborted) return;
+    // Manual progress is acknowledged here, including drivers without an idle event subscription.
+    // The plain printer leaves that manual moment to this callback; automatic events remain there.
+    if (reason === 'manual' && liveCompactionNotice === undefined)
+      await io.writeErrAcknowledged('compacting: summarizing the conversation…\n');
+  };
+}
 
 /**
  * The live-notice sink for a session, or `undefined` to keep the raw-`io` fallback. ONLY the interactive (ink) driver
@@ -541,6 +570,9 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
   // fail-loud exit-2 CliError, cause stripped) before the session is live.
   const built = await (deps.buildSession ?? buildChatSession)({
     chat: config.chat,
+    ...(config.maxTokensEstimate === undefined
+      ? {}
+      : { maxTokensEstimate: config.maxTokensEstimate }),
     // **Consent before any stdio MCP spawn** (ADR-0084 §1). `chat --agent` is the ordinary way an imported
     // agent is opened, which is the case the gate exists for — and the one the first wiring missed by
     // covering only `relavium run`. No `--allow-mcp-stdio` here: a chat is interactive by construction, so
@@ -561,6 +593,7 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
     mcpRegistrations: config.mcpServers,
     ...(resolvePrice === undefined ? {} : { resolvePrice }),
     onBudgetWarning: (warning) => emitLiveNotice(deps.io, budgetWarningText(warning)),
+    onCompactionStart: compactionStartNotice(deps.io),
     // ADR-0071 §6: a tier the bound model does not take is WITHHELD at send — and said out loud. Without this the
     // turn runs, the field is gone, and the user is billed at the provider's default tier with nothing to explain
     // why the knob they set did nothing.
@@ -586,6 +619,7 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
     persister = createSessionPersister({
       governor: built.governor,
       attachDurabilityProbe: built.attachDurabilityProbe,
+      attachEffectTurnAllocator: built.attachEffectTurnAllocator,
 
       store: opened.store,
       handle: built.handle,
@@ -631,6 +665,9 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
   // shared with `chat-resume` via createClearRebuild so it cannot drift.
   const rebuild = createClearRebuild({
     chat: config.chat,
+    ...(config.maxTokensEstimate === undefined
+      ? {}
+      : { maxTokensEstimate: config.maxTokensEstimate }),
     agent: built.agent,
     projectConfigDir,
     now,
@@ -651,6 +688,9 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
   // just-ended session from the SHARED db, so it does not close over `built.agent` (the reseat swaps the model).
   const reseatRebuild = createReseatRebuild({
     chat: config.chat,
+    ...(config.maxTokensEstimate === undefined
+      ? {}
+      : { maxTokensEstimate: config.maxTokensEstimate }),
     now,
     uuid,
     providers,
@@ -731,6 +771,9 @@ export async function chatResumeCommand(
     resolvePrice = readUserPricingOverlay(opened.db);
     const resumed = await (deps.buildResumedSession ?? buildResumedChatSession)({
       chat: config.chat,
+      ...(config.maxTokensEstimate === undefined
+        ? {}
+        : { maxTokensEstimate: config.maxTokensEstimate }),
       // Consent before any stdio MCP spawn (ADR-0084 §1) — every path that opens an agent, not only `run`.
       consentGate: createConsentGate({
         io: deps.io,
@@ -746,6 +789,7 @@ export async function chatResumeCommand(
       mcpRegistrations: config.mcpServers,
       resolvePrice,
       onBudgetWarning: (warning) => emitLiveNotice(deps.io, budgetWarningText(warning)),
+      onCompactionStart: compactionStartNotice(deps.io),
       // ADR-0071 §6: a tier the bound model does not take is WITHHELD at send — and said out loud. Without this the
       // turn runs, the field is gone, and the user is billed at the provider's default tier with nothing to explain
       // why the knob they set did nothing.
@@ -788,19 +832,6 @@ export async function chatResumeCommand(
         `note: this session has ${turns} turns, at or over the ${cap}-turn cap — new turns will be refused (turn_limit). Raise [chat].max_turns to continue it.\n`,
       );
     }
-    // **A session DISCLOSES and does not block** (effect-journal.md §8). A chat has no operator queue and no
-    // run to pause, so refusing to resume it would halt a conversation over a row nobody can act on from
-    // inside the REPL. Tier 3's actual guarantee — never auto-retried, because nothing re-dispatches a
-    // session's prior turns — is unchanged; what changes is that the fact reaches the one person who can go
-    // look at the target. Best-effort by design: a journal read that fails must not cost the user their
-    // session, which is the opposite of the run path's fail-closed answer and for the opposite reason.
-    // §8's disclosure, on stderr so `--json` stdout stays a clean event stream. The sentence is built in
-    // the shared module so the Home surface — which must route it into the transcript instead — cannot drift.
-    const effectNotice = unresolvedEffectNotice(opened.db, resumed.sessionId, sanitizeInline);
-    if (effectNotice !== undefined) deps.io.writeErr(`${effectNotice}\n`);
-    // …and retention (§9): a past turn can never be resumed, so its COMMITTED rows have no reader left.
-    // `turns` is exclusive, so the turn the user is about to take is untouched.
-    sweepCommittedSessionEffects(deps.io, opened.db, resumed.sessionId, turns);
   } catch (err) {
     // A pre-loop fault (not-found, no snapshot, build failure, or a post-build setup throw) must not strand the
     // open db handle NOR the spawned MCP children — tear BOTH down (a reject in one must not skip the other), and
@@ -826,6 +857,9 @@ export async function chatResumeCommand(
   // `built.agent` is the frozen snapshot agent (no on-disk ref), passed verbatim. Same shared contract as `chat`.
   const rebuild = createClearRebuild({
     chat: config.chat,
+    ...(config.maxTokensEstimate === undefined
+      ? {}
+      : { maxTokensEstimate: config.maxTokensEstimate }),
     agent: built.agent,
     projectConfigDir,
     now,
@@ -845,6 +879,9 @@ export async function chatResumeCommand(
   // Reloads the just-ended session (which may itself already be a resume), so it needs no captured agent.
   const reseatRebuild = createReseatRebuild({
     chat: config.chat,
+    ...(config.maxTokensEstimate === undefined
+      ? {}
+      : { maxTokensEstimate: config.maxTokensEstimate }),
     now,
     uuid,
     providers,
@@ -858,7 +895,7 @@ export async function chatResumeCommand(
   });
 
   // A resumed session already landed at idle inside `AgentSession.resume`; calling start() would throw and
-  // re-emitting `session:started` would double a terminal-less lifecycle event — so startSession is a no-op.
+  // re-emitting `session:started` would double a lifecycle event. Disclose only once the driver is active.
   return runReplLoop(
     {
       built,
@@ -866,7 +903,20 @@ export async function chatResumeCommand(
       store,
       persister,
       doctorProbes,
-      startSession: () => {},
+      startSession: () => undefined,
+      onActivated: (isActive, flushNotice) =>
+        reconcileResumedSessionEffects({
+          io: deps.io,
+          db: opened.db,
+          sessionId: built.sessionId,
+          sanitize: sanitizeInline,
+          isActive,
+          ...(flushNotice === undefined ? {} : { flushNotice }),
+          deliverNotice: (text) => {
+            if (chatIsInteractive(deps.io, deps.global)) return store.notice(text);
+            else return deps.io.writeErrAcknowledged(`${text}\n`);
+          },
+        }),
       intro,
       modelPicker: buildChatModelsPort(opened, providers, built.agent.model, now, uuid),
       altScreen: config.altScreen,
@@ -892,6 +942,10 @@ interface ReplWiring {
   readonly doctorProbes: DoctorProbes;
   /** Open the session: `built.session.start()` for a fresh session, a no-op for a resumed one (already idle). */
   readonly startSession: () => void;
+  readonly onActivated?: (
+    isActive: () => boolean,
+    flushNotice?: NoticeFlush,
+  ) => void | Promise<void>;
   /** The plain-driver banner override (the 2.N resume context line); fresh sessions omit it. */
   readonly intro?: string;
   /** `[chat].max_messages` — the default bound a bare `/trim` uses (ADR-0062); absent ⇒ `/trim` needs an inline `n`. */
@@ -945,15 +999,18 @@ export interface ChatModeControl {
  */
 /**
  * Whether the chat surface can answer an interactive approval prompt — the ink UI is mounted (stdout is a TTY
- * AND not `--json`), the SAME condition `selectChatDriver` (render/tui/chat-ink.tsx) picks `driveInk` on. A
+ * AND neither `--json` nor CI), the SAME condition `selectChatDriver` picks `driveInk` on. A
  * non-interactive driver (plain non-TTY / `--json`) has nothing to answer `requestApproval`, so the mode control
  * uses a reject-immediately prompt (no deadlock, High 9). Named + exported so the derivation is unit-locked.
  */
 export function chatIsInteractive(
-  io: Pick<CliIo, 'stdoutIsTty'>,
+  io: Pick<CliIo, 'stdoutIsTty' | 'env'>,
   global: Pick<GlobalOptions, 'json'>,
 ): boolean {
-  return io.stdoutIsTty && !global.json;
+  return (
+    detectOutputMode({ stdoutIsTty: io.stdoutIsTty, json: global.json, ci: isCiEnv(io.env) }) ===
+    'tui'
+  );
 }
 
 export function createChatModeControl(
@@ -1087,6 +1144,9 @@ export function createChatLineHandler(
   deps: ChatReplDeps,
 ): ChatLineHandler {
   const { built, opened, store, persister, doctorProbes } = wiring;
+  store.setMemoryPolicy(built.session.memoryPolicy);
+  if (Object.hasOwn(built, 'contextWindowTokens'))
+    store.setContextWindow?.(built.contextWindowTokens);
   let stop = false;
   let cancelled = false;
   // Set by `/clear` (ADR-0062 §7): the loop stopped to SWAP the session, not to end the REPL — `stopReason` reports
@@ -1351,11 +1411,14 @@ export function createChatLineHandler(
     // await, then report the deltas. The engine emits session:compacted (→ the persister writes the boundary
     // marker); this notice is the user-facing report. Never crashes the REPL — a failure is reported as output.
     compactHistory: async () => {
-      // The engine emits `session:compacting` at the start (ADR-0062 §7): on an INTERACTIVE surface the store
-      // renders a labeled "Summarizing…" moment off it, so no pre-notice is needed; on a plain/`--json` surface
-      // (no live spinner) keep a one-line stderr progress note so the multi-second summary isn't a silent pause.
-      // Either way `session:compacted` (→ the persister writes the boundary marker) fires and we report the RESULT.
-      if (!interactive) emitOutput('compacting: summarizing the conversation…');
+      const refusal = built.session.compactionRefusal;
+      if (refusal !== undefined) {
+        emitOutput(compactionNotice(refusal));
+        return;
+      }
+      // Actual first admission opens the engine moment; interactive stores observe it and the
+      // onCompactionStart acknowledgement renders plain manual progress outside the turn iterator.
+      // A first-pass budget refusal opens none and is reported by this command's typed result.
       try {
         emitOutput(compactionNotice(await built.session.compact('manual')));
       } catch {
@@ -1363,16 +1426,18 @@ export function createChatLineHandler(
         // the REPL (the discipline every slash command obeys); surface a static, secret-free notice instead.
         emitOutput('compaction failed unexpectedly — the conversation is unchanged.');
       } finally {
-        // ALWAYS reset the moment: a failed/cancelled/no-op /compact (and an unclassified throw) emits NO
-        // session:compacted|trimmed terminal, so without this the store's `compacting` flag (set by
-        // session:compacting) would latch and a later slash command would render a stale "Summarizing…" spinner.
-        // A SUCCESSFUL compact already cleared it via session:compacted, making this an idempotent no-op there.
+        // Idempotent fallback for a command/observer fault; admitted engine work closes its own moment.
         store.clearCompacting();
       }
     },
     // `/trim [n]` (ADR-0062): deterministic drop, no LLM call. Bare `/trim` uses `[chat].max_messages`; an
     // inline `n` overrides it. A missing bound (no arg + no config) is an actionable notice, never a silent no-op.
     trimHistory: (nArg) => {
+      const refusal = built.session.trimRefusal;
+      if (refusal !== undefined) {
+        emitOutput(trimNotice(refusal));
+        return;
+      }
       const trimmed = nArg.trim();
       const n = trimmed.length > 0 ? Number(trimmed) : wiring.chatMaxMessages;
       if (n === undefined) {
@@ -1497,6 +1562,7 @@ export function createChatLineHandler(
  */
 interface FreshChatWiringDeps {
   readonly chat: BuildChatSessionOptions['chat'];
+  readonly maxTokensEstimate?: number;
   readonly agent: AgentDefinition;
   readonly cwd: string;
   readonly projectConfigDir: string | undefined;
@@ -1511,6 +1577,7 @@ interface FreshChatWiringDeps {
   readonly opened: OpenedSessionStore;
   readonly buildSession: typeof buildChatSession;
   readonly onBudgetWarning: NonNullable<BuildChatSessionOptions['onBudgetWarning']>;
+  readonly onCompactionStart?: BuildChatSessionOptions['onCompactionStart'];
   /** Withheld-tier sink (ADR-0071 §6) — threaded exactly like {@link FreshChatWiringDeps.onBudgetWarning}, because a
    *  `/clear` rebuild binds a NEW session and a session with no sink withholds a tier in silence. */
   readonly onEffortWithheld: NonNullable<BuildChatSessionOptions['onEffortWithheld']>;
@@ -1529,6 +1596,7 @@ async function buildFreshChatWiring(deps: FreshChatWiringDeps, intro: string): P
   const resolvePrice = readUserPricingOverlay(deps.opened.db);
   const built = await deps.buildSession({
     chat: deps.chat,
+    ...(deps.maxTokensEstimate === undefined ? {} : { maxTokensEstimate: deps.maxTokensEstimate }),
     agent: deps.agent,
     agentRef: deps.agent.id, // ignored when `agent` is set, but the option key is required
     cwd: deps.cwd,
@@ -1540,6 +1608,7 @@ async function buildFreshChatWiring(deps: FreshChatWiringDeps, intro: string): P
     ...(deps.mcpRegistrations === undefined ? {} : { mcpRegistrations: deps.mcpRegistrations }),
     ...(resolvePrice.size === 0 ? {} : { resolvePrice }),
     onBudgetWarning: deps.onBudgetWarning,
+    ...(deps.onCompactionStart === undefined ? {} : { onCompactionStart: deps.onCompactionStart }),
     onEffortWithheld: deps.onEffortWithheld,
     onListenerError: deps.onListenerError,
     onUnpriced: deps.onUnpriced,
@@ -1566,6 +1635,7 @@ async function buildFreshChatWiring(deps: FreshChatWiringDeps, intro: string): P
     persister = createSessionPersister({
       governor: built.governor,
       attachDurabilityProbe: built.attachDurabilityProbe,
+      attachEffectTurnAllocator: built.attachEffectTurnAllocator,
       store: deps.opened.store,
       handle: built.handle,
       sessionId: built.sessionId,
@@ -1632,6 +1702,7 @@ async function buildFreshChatWiring(deps: FreshChatWiringDeps, intro: string): P
  */
 function createClearRebuild(params: {
   readonly chat: BuildChatSessionOptions['chat'];
+  readonly maxTokensEstimate?: number;
   readonly agent: AgentDefinition;
   readonly projectConfigDir: string | undefined;
   readonly now: () => number;
@@ -1648,6 +1719,9 @@ function createClearRebuild(params: {
 }): (oldSessionId: string) => Promise<ReplWiring> {
   const wiringDeps: FreshChatWiringDeps = {
     chat: params.chat,
+    ...(params.maxTokensEstimate === undefined
+      ? {}
+      : { maxTokensEstimate: params.maxTokensEstimate }),
     agent: params.agent,
     cwd: params.global.cwd,
     projectConfigDir: params.projectConfigDir,
@@ -1663,6 +1737,7 @@ function createClearRebuild(params: {
     buildSession: params.buildSession,
     altScreen: params.altScreen,
     onBudgetWarning: (warning) => emitLiveNotice(params.io, budgetWarningText(warning)),
+    onCompactionStart: compactionStartNotice(params.io),
     onEffortWithheld: onceEffortNotice((note) => emitLiveNotice(params.io, note)),
     onListenerError: (note: string) => emitLiveNotice(params.io, note),
     onUnpriced: (note) => emitLiveNotice(params.io, note),
@@ -1709,6 +1784,7 @@ function seedResumedWiring(
   const persister = createSessionPersister({
     governor: resumed.governor,
     attachDurabilityProbe: resumed.attachDurabilityProbe,
+    attachEffectTurnAllocator: resumed.attachEffectTurnAllocator,
 
     store: opened.store,
     handle: resumed.handle,
@@ -1739,6 +1815,7 @@ function seedResumedWiring(
  *  fresh, and swaps the bound model (so it has no fixed `agent` — the agent is loaded from the just-ended record). */
 interface ReseatWiringDeps {
   readonly chat: BuildChatSessionOptions['chat'];
+  readonly maxTokensEstimate?: number;
   readonly now: () => number;
   readonly uuid: () => string;
   readonly providers: ProviderResolver;
@@ -1750,6 +1827,7 @@ interface ReseatWiringDeps {
   readonly opened: OpenedSessionStore;
   readonly buildResumedSession: typeof buildResumedChatSession;
   readonly onBudgetWarning: NonNullable<BuildChatSessionOptions['onBudgetWarning']>;
+  readonly onCompactionStart?: BuildChatSessionOptions['onCompactionStart'];
   /** Withheld-tier sink (ADR-0071 §6) — a `/models` reseat binds a DIFFERENT model, which is precisely when a tier
    *  that was fine a moment ago stops being accepted. Threaded like {@link ReseatWiringDeps.onBudgetWarning}. */
   readonly onEffortWithheld: NonNullable<BuildChatSessionOptions['onEffortWithheld']>;
@@ -1804,6 +1882,7 @@ async function buildReseatWiring(
   const resolvePrice = readUserPricingOverlay(deps.opened.db);
   const resumed = await deps.buildResumedSession({
     chat: deps.chat,
+    ...(deps.maxTokensEstimate === undefined ? {} : { maxTokensEstimate: deps.maxTokensEstimate }),
     record,
     messages: loaded.messages,
     now: deps.now,
@@ -1812,6 +1891,7 @@ async function buildReseatWiring(
     ...(deps.mcpRegistrations === undefined ? {} : { mcpRegistrations: deps.mcpRegistrations }),
     ...(resolvePrice.size === 0 ? {} : { resolvePrice }),
     onBudgetWarning: deps.onBudgetWarning,
+    ...(deps.onCompactionStart === undefined ? {} : { onCompactionStart: deps.onCompactionStart }),
     onEffortWithheld: deps.onEffortWithheld,
     onListenerError: deps.onListenerError,
     onUnpriced: deps.onUnpriced,
@@ -1850,8 +1930,21 @@ async function buildReseatWiring(
     persister: seeded.persister,
     doctorProbes,
     // A resumed session already landed at idle inside AgentSession.resume; start() would throw + re-emitting
-    // session:started would double a terminal-less lifecycle event — so startSession is a no-op (like chat-resume).
-    startSession: () => {},
+    // session:started would double a lifecycle event. Wait for the reseated driver's live notice sink.
+    startSession: () => undefined,
+    onActivated: (isActive, flushNotice) =>
+      reconcileResumedSessionEffects({
+        io: deps.io,
+        db: deps.opened.db,
+        sessionId: resumed.sessionId,
+        sanitize: sanitizeInline,
+        isActive,
+        ...(flushNotice === undefined ? {} : { flushNotice }),
+        deliverNotice: (text) => {
+          if (chatIsInteractive(deps.io, deps.global)) return seeded.store.notice(text);
+          else return deps.io.writeErrAcknowledged(`${text}\n`);
+        },
+      }),
     intro: modelSwitchNotice(loaded.session.agentSnapshot.model, target.modelId),
     // The picker's `boundModel` is now the SWITCHED model — a further reseat marks it as the ✓ "you are here".
     modelPicker: buildChatModelsPort(
@@ -1874,6 +1967,7 @@ async function buildReseatWiring(
  */
 function createReseatRebuild(params: {
   readonly chat: BuildChatSessionOptions['chat'];
+  readonly maxTokensEstimate?: number;
   readonly now: () => number;
   readonly uuid: () => string;
   readonly providers: ProviderResolver;
@@ -1892,6 +1986,9 @@ function createReseatRebuild(params: {
 ) => Promise<ReplWiring> {
   const wiringDeps: ReseatWiringDeps = {
     chat: params.chat,
+    ...(params.maxTokensEstimate === undefined
+      ? {}
+      : { maxTokensEstimate: params.maxTokensEstimate }),
     onListenerError: (note: string) => emitLiveNotice(params.io, note),
     now: params.now,
     uuid: params.uuid,
@@ -1905,6 +2002,7 @@ function createReseatRebuild(params: {
     buildResumedSession: params.buildResumedSession,
     altScreen: params.altScreen,
     onBudgetWarning: (warning) => emitLiveNotice(params.io, budgetWarningText(warning)),
+    onCompactionStart: compactionStartNotice(params.io),
     onEffortWithheld: onceEffortNotice((note) => emitLiveNotice(params.io, note)),
     onUnpriced: (note) => emitLiveNotice(params.io, note),
   };
@@ -2001,6 +2099,22 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
     liveSessionNotice = liveNoticeSinkFor(interactive, store);
     const outcome = await (deps.drive ?? drivePlain)({
       startSession,
+      onActivated: async (isActive, flushNotice) => {
+        liveCompactionNotice = interactive
+          ? async (text, isCancelled) => {
+              if (isCancelled()) return;
+              if (!isActive() || flushNotice === undefined)
+                throw new Error('The chat renderer is not ready.');
+              await flushNotice(() => {
+                if (isCancelled()) return;
+                if (!isActive()) throw new Error('The chat renderer is not ready.');
+                store.notice(text);
+              });
+              if (!isCancelled() && !isActive()) throw new Error('The chat renderer is not ready.');
+            }
+          : undefined;
+        await wiring.onActivated?.(isActive, flushNotice);
+      },
       processLine,
       shouldStop,
       stopReason,
@@ -2053,6 +2167,7 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
     // A `/models` reseat attaches the captured target here (the one place holding the line handler); see the helper.
     return finalizeReseatOutcome(outcome, reseatTarget);
   } finally {
+    liveCompactionNotice = undefined;
     liveSessionNotice = undefined; // the session is ending — never route a notice to a torn-down store
     cancelOnce(); // emit the terminal even on /exit, /clear, or EOF (idempotent); flips the row to 'ended'
     // Attempt EVERY teardown step (a reject in one must not skip the next) and never let a cleanup fault mask the
@@ -2427,20 +2542,40 @@ export async function runReplLoop(
  * TTY is attached (a pipe / CI without `--json`, which is 2.Q); the TTY ink driver overrides `deps.drive`.
  */
 export async function drivePlain(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
-  const unsubscribe = ctx.handle.subscribe(makePlainPrinter(ctx.io));
+  const unsubscribe = ctx.handle.subscribe(
+    makePlainPrinter(ctx.io, true, ctx.store.getSnapshot().state.memoryPolicy),
+  );
   const rl = createInterface({ input: ctx.io.stdin, terminal: false });
+  const lines = rl[Symbol.asyncIterator](); // buffer piped lines before any awaited activation can yield.
   // Ctrl-C (cooked mode here, unlike the raw-mode ink path) closes the input so the loop ends and the
   // command's finally runs cancelOnce() + close() — the session is marked 'ended', never left orphaned 'active'.
-  const onSigint = (): void => rl.close();
+  let active = true;
+  const isActive = (): boolean => active && !ctx.shouldStop();
+  let interrupt: () => void = () => undefined;
+  const interrupted = new Promise<void>((resolve) => {
+    interrupt = resolve;
+  });
+  const onSigint = (): void => {
+    active = false;
+    interrupt();
+    rl.close();
+  };
   process.once('SIGINT', onSigint);
   try {
     ctx.io.writeOut(`${ctx.intro ?? 'relavium chat — type a message, or /exit to quit.'}\n`);
     ctx.startSession(); // subscription wired above ⇒ session:started is observed (fresh), or a no-op (resume)
-    for await (const line of rl) {
-      await ctx.processLine(line);
-      if (ctx.shouldStop()) break;
+    // A full output pipe must not hold cancellation/teardown hostage. The race observes late
+    // delivery failures; the permanently disarmed activity predicate prevents a late sweep.
+    if (isActive()) await Promise.race([ctx.onActivated?.(isActive), interrupted]);
+    if (isActive()) {
+      for await (const line of lines) {
+        if (!isActive()) break;
+        await ctx.processLine(line);
+        if (ctx.shouldStop()) break;
+      }
     }
   } finally {
+    active = false;
     process.removeListener('SIGINT', onSigint);
     rl.close();
     unsubscribe();
@@ -2462,15 +2597,33 @@ export async function driveJson(ctx: ChatDriveContext): Promise<ChatDriveOutcome
     ctx.io.writeOut(`${stringifyJsonLine(event)}\n`),
   );
   const rl = createInterface({ input: ctx.io.stdin, terminal: false });
-  const onSigint = (): void => rl.close();
+  const lines = rl[Symbol.asyncIterator]();
+  let active = true;
+  const isActive = (): boolean => active && !ctx.shouldStop();
+  let interrupt: () => void = () => undefined;
+  const interrupted = new Promise<void>((resolve) => {
+    interrupt = resolve;
+  });
+  const onSigint = (): void => {
+    active = false;
+    interrupt();
+    rl.close();
+  };
   process.once('SIGINT', onSigint);
   try {
     ctx.startSession(); // subscription wired above ⇒ the synchronous session:started is the first NDJSON line
-    for await (const line of rl) {
-      await ctx.processLine(line);
-      if (ctx.shouldStop()) break;
+    // Keep terminal finalization and resource teardown independent of a blocked diagnostic sink.
+    // Late activation settlement stays observed and cannot recover this driver's activity.
+    if (isActive()) await Promise.race([ctx.onActivated?.(isActive), interrupted]);
+    if (isActive()) {
+      for await (const line of lines) {
+        if (!isActive()) break;
+        await ctx.processLine(line);
+        if (ctx.shouldStop()) break;
+      }
     }
   } finally {
+    active = false;
     process.removeListener('SIGINT', onSigint);
     rl.close();
     // Flush session:cancelled BEFORE unsubscribing, so the NDJSON stream includes its sole terminal event.
@@ -2493,14 +2646,20 @@ export function makePlainPrinter(
   // FALSE for the ONE-SHOT `agent run`, which cancels the session in its `finally` right after: those hints would
   // be false (no live session, no slash REPL to resend into), so a one-shot prints only `[turn failed: <code>]`.
   recoveryHints = true,
+  memoryPolicy?: Memory,
 ): (event: SessionStreamHandleEvent) => void {
+  let toolsRan = false;
   return (event) => {
     switch (event.type) {
+      case 'session:turn_started':
+        toolsRan = false;
+        return;
       case 'agent:token':
         // Sanitize the model's tokens before they reach the terminal (no ANSI/OSC/control injection).
         io.writeOut(stripTerminalControls(event.token));
         return;
       case 'agent:tool_call': {
+        toolsRan = true;
         const annotation = formatToolCall({
           id: `tc-${event.sequenceNumber}`,
           toolId: event.toolId,
@@ -2509,6 +2668,35 @@ export function makePlainPrinter(
         io.writeOut(`\n${annotation}\n`);
         return;
       }
+      case 'session:compacting':
+        if (event.reason !== 'manual') io.writeErr('compacting: summarizing the conversation…\n');
+        return;
+      case 'session:compaction_failed':
+        if (event.reason !== 'manual')
+          io.writeErr(
+            event.error.code === 'budget_exceeded'
+              ? 'Compaction budget refused — the conversation is unchanged.\n'
+              : 'Compaction did not complete — no summary was installed.\n',
+          );
+        return;
+      case 'session:compaction_budget_refused':
+        io.writeErr(
+          'Compaction budget refused — the completed reply and conversation are unchanged.\n',
+        );
+        return;
+      case 'session:compacted':
+        if (event.reason !== 'manual')
+          io.writeErr(
+            `Context compacted — ~${event.tokensBefore} → ~${event.tokensAfter} tokens.\n`,
+          );
+        return;
+      case 'session:trimmed':
+        if (event.reason === 'auto-fallback')
+          io.writeErr(
+            `Auto-compaction summary failed — trimmed ${event.droppedMessageCount} older message(s) instead ` +
+              `(keeping the last ${event.keptMessageCount}).\n`,
+          );
+        return;
       case 'session:turn_completed': {
         if (event.error === undefined) {
           io.writeOut('\n');
@@ -2518,11 +2706,20 @@ export function makePlainPrinter(
         // making explicit the session is still active. A one-shot `agent run` sets `recoveryHints = false` — its
         // session is cancelled immediately after, so a session-continuity hint would be false there.
         const hint = recoveryHints
-          ? errorRecoveryHint(event.error.code, event.error.message)
+          ? event.error.code === 'context_overflow'
+            ? contextOverflowRemedy(memoryPolicy, toolsRan)
+            : errorRecoveryHint(event.error.code, event.error.message, {
+                ...(memoryPolicy === undefined ? {} : { memoryPolicy }),
+                toolsRan,
+              })
           : undefined;
         // Build the optional hint LINE separately (no nested template literal) before composing the output.
         const hintLine = hint === undefined ? '' : `${hint}\n`;
-        io.writeOut(`\n[turn failed: ${event.error.code}]\n${hintLine}`);
+        const fact =
+          event.error.code === 'context_overflow'
+            ? ` — ${sanitizeInline(event.error.message)}`
+            : '';
+        io.writeOut(`\n[turn failed: ${event.error.code}${fact}]\n${hintLine}`);
         return;
       }
       default:

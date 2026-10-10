@@ -1,0 +1,14 @@
+{
+  "captureTool": "w7-overflow-capture-v1",
+  "capturedAt": "2026-10-04T09:03:34.448Z",
+  "provider": "openai",
+  "model": "gpt-4o-mini-2024-07-18",
+  "purpose": "overflow",
+  "syntheticInputCharacters": 786432,
+  "maxOutputTokens": 64,
+  "response": {
+    "status": 400,
+    "contentType": "application/json",
+    "body": "{\n  \"error\": {\n    \"message\": \"This model's maximum context length is 128000 tokens. However, your messages resulted in 206970 tokens. Please reduce the length of the messages.\",\n    \"type\": \"invalid_request_error\",\n    \"param\": \"messages\",\n    \"code\": \"context_length_exceeded\"\n  }\n}"
+  }
+}

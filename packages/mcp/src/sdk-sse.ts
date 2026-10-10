@@ -1,3 +1,5 @@
+import { McpWorkScope } from './work-scope.js';
+import type { ToolHostCallOptions } from '@relavium/core';
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 
 import type { AbortSignalLike } from '@relavium/shared';
@@ -7,6 +9,7 @@ import type { McpFetch } from './sdk-http.js';
 import { MCP_DEADLINES } from './deadlines.js';
 import { McpConnectError } from './errors.js';
 import { connectSdkTransport } from './sdk-stdio.js';
+import { SdkTransportOwner } from './sdk-work.js';
 
 /**
  * The **legacy HTTP+SSE** (`sse`) transport adapter — one of the SDK-fenced files
@@ -31,6 +34,7 @@ export async function openSseConnection(
   serverId: string,
   spec: SseServerSpec,
   signal?: AbortSignalLike,
+  options?: ToolHostCallOptions,
 ): Promise<McpConnection> {
   let endpoint: URL;
   try {
@@ -38,9 +42,24 @@ export async function openSseConnection(
   } catch (err) {
     throw new McpConnectError(serverId, { cause: err });
   }
-  const transport = new SSEClientTransport(endpoint, { fetch: spec.fetch });
-  return connectSdkTransport(serverId, transport, {
-    timeoutMs: spec.connectTimeoutMs ?? MCP_DEADLINES.networkConnectMs,
-    ...(signal === undefined ? {} : { signal }),
-  });
+  const timeoutMs = spec.connectTimeoutMs ?? MCP_DEADLINES.networkConnectMs;
+  const work = new McpWorkScope(options);
+  try {
+    const transport = new SSEClientTransport(endpoint, {
+      fetch: (url, init) => owner.legacyFetch(spec.fetch, url, init),
+    });
+    const owner: SdkTransportOwner = new SdkTransportOwner(transport, work);
+    return connectSdkTransport(
+      serverId,
+      transport,
+      {
+        timeoutMs,
+        ...(signal === undefined ? {} : { signal }),
+      },
+      owner,
+    );
+  } catch (error) {
+    work.seal();
+    throw error;
+  }
 }

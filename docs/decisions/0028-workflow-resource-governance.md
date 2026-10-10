@@ -12,6 +12,35 @@
 
 > **Amended 2026-06-18 by [ADR-0044](0044-media-access-governance-read-media-save-to-cost.md).** A refinement, not a reversal: ADR-0044 adds a **disjoint per-modality media cost class** to this ADR's pre-egress governor — it widens the pre-egress hook to carry `outputModalities`/a media-unit estimate and folds the media estimate into the **existing** `max_cost_microcents` cap (no new cap dimension, no new event/error class). This ADR's budget / timeout / concurrency decisions are unchanged.
 
+> **Amended 2026-09-14 by [ADR-0096](0096-a-request-is-measured-before-it-is-sent.md) and [ADR-0097](0097-a-budget-approval-is-an-allowance-not-an-exemption.md) — refinements, not reversals.**
+>
+> - **The pre-egress estimate prices input**, recomputed at every attempt from the request actually sent (ADR-0096 §6).
+> - **Approving a `pause_for_approval` gate no longer exempts the step.** It grants a dispatch-owned allowance, shown
+>   before approval, that only that dispatch debits. Exhausting it fails the step closed (ADR-0097). This supersedes
+>   the 1.AC "H3" decision that let an approved step run to completion uncapped.
+> - **`pause_for_approval` still reuses the human-gate seam and still continues the deferred call.**
+>
+> Both ADRs are **Accepted** as of 2026-09-14 with their implementation staged for `W7`.
+
+> **Clarified 2026-09-18 (the `W7` pre-implementation review).** "The request actually sent" is the request the
+> TURN CORE builds for the current round: the chain's per-attempt hook never receives the per-entry request, so
+> measuring there would need a seam contract change ADR-0096 does not make. Measuring the round's request
+> over-counts a reasoning part the chain strips on a cross-provider failover, which is the conservative direction.
+> Two figures the projection uses are fixed with it: the input term is priced at the highest context tier and the
+> non-cached input rate (ADR-0071 §11's directional rule), and the output reservation is a shared default of 4096
+> clamped to the model's catalog output ceiling whenever the adapter sends no cap of its own. (Both figures:
+> maintainer, 2026-09-18.)
+
+> Amended 2026-10-02 — [ADR-0101](0101-configured-output-estimates-apply-only-when-the-wire-is-uncapped.md),
+> accepted by the maintainer, narrows the configured `max_tokens_estimate` promise to requests that
+> remain uncapped after adapter lowering. A known canonical/native cap or required adapter default
+> takes precedence; only an uncapped request uses the configured estimate, otherwise 4,096, with
+> official catalog clamping. The required cap-only projection/prepared plan now reaches the chain
+> hook and object-based governor; turn-core pre-strip input estimation stays unchanged. Resolved
+> reservations are priced through a separate rate-only entry without another output clamp. These
+> seam refinements qualify September 18's no-per-entry-request premise and preserve the budget
+> branches, wire behaviour and estimate-only meaning of the setting. Implementation is staged in W7.
+
 ## Context
 
 A workflow can spend real money. A fan-out of agent nodes, a fallback chain that tries several
@@ -86,3 +115,25 @@ timeout and concurrency cap, wired to the existing human-gate seam for the pause
 - The concurrency cap can slow a wide fan-out; it is configurable so authors trade throughput
   against rate-limit/cost risk explicitly.
 - More run outcomes/events (`budget:*`, `run:timeout`) for every surface to render.
+
+## Implementation correction — 2026-10-02, W7 step 6 fifth review
+
+A verified pre-existing callback window violated the live-admission projection: a non-strict
+partial-media notice could synchronously re-enter the governor after headroom evaluation but
+before reservation insertion. Two 600-microcent admissions then passed a 1,000-microcent cap;
+the ordinary sequential control refused the second call. The parent independently replayed
+current source and the pre-step governor, with the latter's runtime LLM import rebound to current
+helpers rather than claiming a frozen predecessor binary.
+
+Allow/warn reservations now enter the ledger before any host callback as well as before any
+warning await. Refused calls keep their notice without reserving; warning-write failure still
+releases each admission. The [canonical hook contract](../reference/shared-core/agent-runner.md#pre-egress-injection-contract)
+and permanent reentry controls record this enforcement correction. The budget policy and
+staged dispatch-owned allowance decision remain unchanged.
+
+### W7 implementation landing — 2026-10-10
+
+The approved W7 implementation and scoped independent reviews are complete. Final whole-wave
+acceptance, per-item causal evidence, canonical landing checks and approved residuals are joined in
+the [W7 closing register](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w7-closing-register--2026-10-10).
+This dated note preserves the earlier decision and status history; W8 and the phase remain open.

@@ -330,3 +330,14 @@ describe('costNotice — the §1 release and durability state', () => {
     expect(costNotice(500, [], { durabilityBroken: false })).toBe(costNotice(500, []));
   });
 });
+
+it('keeps policy refusals on one sanitized terminal line', () => {
+  const message = 'blocked\u001b[31m\nFORGED\u202e';
+  for (const notice of [
+    compactionNotice({ kind: 'policy_refused', memory: 'none', message }),
+    trimNotice({ kind: 'policy_refused', memory: 'none', message }),
+  ]) {
+    expect(notice).toContain('refused: blocked');
+    for (const control of ['\u001b', '\n', '\r', '\u202e']) expect(notice).not.toContain(control);
+  }
+});

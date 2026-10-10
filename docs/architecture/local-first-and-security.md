@@ -1,6 +1,6 @@
 # Local-first architecture and security
 
-> Last updated: 2026-06-03
+> Last updated: 2026-10-02
 
 Relavium is **local-first** in Phase 1: the product runs entirely on the user's
 machine, with no account, no Relavium server, and no cloud dependency. The only
@@ -70,7 +70,7 @@ API calls:
 |------|----------------|-------|
 | Workflow definitions | `.relavium/*.relavium.yaml` on disk | git-committable; see [workflow-yaml-spec.md](../reference/contracts/workflow-yaml-spec.md) |
 | Agent definitions | `*.agent.yaml` on disk | git-committable; see [agent-yaml-spec.md](../reference/contracts/agent-yaml-spec.md) |
-| Run history, events, outputs | local SQLite — **CLI: unencrypted** (`0600`/`0700` owner-only perms + keychain; no credentials at rest); **desktop: SQLCipher** | DDL + at-rest posture in [database-schema.md](../reference/shared-core/database-schema.md); [ADR-0050](../decisions/0050-cli-history-db-at-rest-posture.md) |
+| Run history, events, outputs | local SQLite — **CLI: unencrypted** (`0600`/`0700` owner-only permissions); **desktop: SQLCipher** | Relavium-managed provider keys live in the OS keychain; retained user/tool content can still contain sensitive data or credentials. DDL and retention/at-rest limits live in [database-schema.md](../reference/shared-core/database-schema.md) and [ADR-0050](../decisions/0050-cli-history-db-at-rest-posture.md) |
 | Cost records | local SQLite | per-node and per-run |
 | API keys | OS keychain | never on disk in plaintext, never in the DB |
 | Global config | `~/.relavium/` | global preferences, MCP registrations |

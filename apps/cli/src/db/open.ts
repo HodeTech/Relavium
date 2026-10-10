@@ -1,9 +1,11 @@
 import { chmodSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { createClient, runMigrations, type Db } from '@relavium/db';
+import { createClient, runMigrations, type Db, type SessionEffectCheckpoint } from '@relavium/db';
 
 import { ensureGlobalConfigDir, globalConfigDir } from '../config/paths.js';
+import { processIo } from '../process/io.js';
+import { CHECKPOINT_DEFERRED } from './privacy-notice.js';
 
 /** An opened local database plus the handle to close its SQLite connection. */
 export interface OpenedDb {
@@ -17,10 +19,14 @@ export interface OpenedDb {
  * `better-sqlite3`, apply migrations, then `0600` the db + its `-wal`/`-shm` sidecars — the unencrypted
  * at-rest CLI posture guarded by OS permissions ([ADR-0050](../../../../docs/decisions/0050-cli-history-db-at-rest-posture.md)).
  */
-export function openLocalDb(homeDir: string): OpenedDb {
+export function openLocalDb(
+  homeDir: string,
+  notice: (text: string) => void | Promise<void> = (text) => processIo().writeErrAcknowledged(text),
+): OpenedDb {
   ensureGlobalConfigDir(homeDir); // creates ~/.relavium/ at 0700 (ADR-0050)
   const path = join(globalConfigDir(homeDir), 'history.db');
   const client = createClient(path);
+  let checkpoint: SessionEffectCheckpoint;
   // If setup (migrations / the at-rest chmod) throws, close the just-opened handle before propagating —
   // otherwise the SQLite connection leaks for the lifetime of the failing process.
   try {
@@ -32,11 +38,21 @@ export function openLocalDb(homeDir: string): OpenedDb {
     hardenAtRest(path);
     // The batch is serialized across processes (ADR-0073): two `relavium` invocations racing a fresh
     // `history.db` wait for each other instead of one dying on a duplicate `CREATE TABLE` (#99).
-    runMigrations(client.db, { dbPath: client.path });
+    checkpoint = runMigrations(client.db, { dbPath: client.path });
     hardenAtRest(path);
   } catch (err) {
     client.sqlite.close();
     throw err;
+  }
+  if (checkpoint === 'deferred') {
+    // Logical suppression succeeded; only physical erasure awaits a reader. Diagnostic failure
+    // cannot reject this successful open, close its caller-owned connection or repeat maintenance.
+    try {
+      const delivery = notice(`${CHECKPOINT_DEFERRED}\n`);
+      if (delivery !== undefined) void delivery.catch(() => undefined);
+    } catch {
+      // Best-effort diagnostic only; no stored content or raw driver error is surfaced.
+    }
   }
   return {
     db: client.db,

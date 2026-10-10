@@ -17,6 +17,28 @@
   - [effect-journal.md](../reference/shared-core/effect-journal.md) — the one canonical home for the contract, the identities, the state machine and the table.
 - **Decides**: `CR-12` and `CR-95`'s short-term fix of [phase 2.6.5](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md); implementation staged behind it.
 
+> **Refined 2026-09-14 by [ADR-0098](0098-a-session-effect-row-holds-no-result-and-never-replays.md) — for sessions only.**
+>
+> - A session-scoped effect row retains no result.
+> - A session never replays a stored result.
+> - A model-turn effect's identity never repeats across resume, reseat, compaction, or an errored, aborted or crashed
+>   turn.
+> - A committed effect of a turn that did not complete is disclosed on resume. That extends §6's session posture (effect-journal.md §8) — disclose, and continue — to a case it did not name.
+>
+> Run-scoped behaviour, including re-delivery and the resume gate, is unchanged. ADR-0098 is **Accepted** as of
+> 2026-09-14 with its implementation staged for `W7`.
+
+> **Extended 2026-09-18 (the `W7` pre-implementation review) — the attempt id becomes load-bearing on the session
+> path.** §1 records `EffectAttemptId` as the audit row, "never used for dedup", and
+> [effect-journal.md](../reference/shared-core/effect-journal.md) §2 calls it deliberately unstable. It still is
+> never used for dedup. But ADR-0098's disclosure predicate joins a committed session row to the turn that
+> persisted it, so `W7` threads a per-call, ENGINE-ASSIGNED tool-call id through `EffectDispatchPort.prepare` into
+> the attempt, where every session surface writes a wiring constant today (`'session'`, `'home'`, `'agent-run'`).
+> That id must be stable and unique within its session; the provider's own id is never used, because on the Gemini
+> dialect it is derived from a model-chosen name. effect-journal.md §2, the `EffectAttemptId` docblock in
+> `packages/shared/src/run.ts` and the store's docblock are corrected when `W7` lands. Run-scoped behaviour is
+> unchanged.
+
 ## Context
 
 A tool effect can complete at its target, the process can die before the result persists, and resume re-runs the
@@ -293,3 +315,27 @@ completed tool loop rather than fail it.
   tier-3 behaviour for that occurrence. Named rather than hidden.
 - **Five ADRs are amended.** None is reversed, so all four are dated in-place amendments per the documentation
   standard, and the sentences being corrected are quoted rather than silently rewritten.
+
+### Session privacy and disclosure refinement — 2026-10-02
+
+[ADR-0098](0098-a-session-effect-row-holds-no-result-and-never-replays.md) now governs session correlations:
+their rows keep no result, a matching prepare never replays, and the per-call engine-owned attempt id joins
+all historical structural transcript rows for disclosure. That join is load-bearing **for completion evidence,
+never for dedup**; run occurrence/replay semantics and `blocksResume` are unchanged. Session retention consumes
+only the exact successfully read and disclosed committed snapshot, after the surface activates, and checkpoints
+WAL after its owned transaction commits. The canonical contract is [effect-journal.md §8–§11](../reference/shared-core/effect-journal.md#8-needs_attention).
+
+## 2026-10-10 — ADR-0103 lifecycle integration
+
+Final effect health includes admitted unresolved tier-3 identities and typed/receipt failures observed before cancellation or caller catches; only matching acknowledged commit/discard clears pending identity.
+See the [canonical engine lifecycle](../architecture/shared-core-engine.md#internal-departure-foundations-adr-0103)
+and [CLI exit/remedy contract](../reference/cli/commands.md#exit-codes). Consolidated independent
+acceptance is tracked in [current.md](../roadmap/current.md); Step 8 and final whole-wave
+validation remain open. The accepted body above is preserved.
+
+### W7 implementation landing — 2026-10-10
+
+The approved W7 implementation and scoped independent reviews are complete. Final whole-wave
+acceptance, per-item causal evidence, canonical landing checks and approved residuals are joined in
+the [W7 closing register](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w7-closing-register--2026-10-10).
+This dated note preserves the earlier decision and status history; W8 and the phase remain open.

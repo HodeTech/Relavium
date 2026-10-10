@@ -34,6 +34,15 @@ the seam rather than restating them.
 - A session is **auto-persisted and resumable** (below); it is **not** a workflow run and does not
   appear in run history. It can be **exported** to a workflow ([export](#export-to-workflow)).
 
+Request data handed to the controlled provider chain follows the
+[seam's supported inert-data and ownership contract](../shared-core/llm-provider-seam.md#request-data-ownership).
+The shared turn core captures before admission/money awaits and reuses its owned round through
+pre-attempt hooks and dispatch, retaining live cancellation and creating fresh owned tool rounds.
+The factory-measured first request can be reused by exact identity as described in the
+[runner contract](../shared-core/agent-runner.md#pre-egress-injection-contract). Core reuse and Step 8's
+session measurement, atomic compaction and overflow recovery have independent acceptance;
+[final wave review](../../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w7-closing-register--2026-10-10) is accepted separately.
+
 ## Lifecycle
 
 ```mermaid
@@ -53,12 +62,14 @@ stateDiagram-v2
 | Operation | Meaning |
 | --- | --- |
 | **start** | Open a session for an `agentRef` with an initial [`SessionContext`](#session-context). Allocates a `sessionId` and persists the session row. |
-| **sendMessage** | Append a user [`SessionMessage`](#session-messages), run one assistant turn through the `AgentRunner` (streaming + tool-call loop), and append the assistant + tool messages. |
+| **sendMessage** | Append the pending user to the **working transcript**, run one assistant turn through the shared turn core (streaming + tool-call loop), and retain the final assistant **text** on success. The host atomically persists the completed turn's [durable messages](#session-messages), including content-free tool structure and an explicit terminal even for empty final text. Working context excludes tool pairs; carrying them to a later request is deferred ([ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) §2). |
 | **setTurnPolicy** | Set/clear the **reseat-less mode policy** (ADR-0057) — the advertise-filter + the interactive approval hook — on the **same** session instance (no reseat, no tool-context loss). Snapshotted at each turn start, so a change applies on the **next** turn. The ask / plan / accept-edits / auto enum lives in the host; this is its mode-agnostic engine projection. Callable in any state, including mid-turn; **inert once cancelled** (a cancelled session runs no further turn, so the policy is never read again). |
 | **abort** | **Mid-turn abort** (ADR-0057 EA7): end the *in-flight turn* via its `AbortSignal` but **keep the session alive** — settle **one** `session:turn_completed{stopReason:'aborted'}` (no error), roll the pending user message back, and return to `idle`. **Distinct from `cancel`** (which is terminal): no `session:cancelled`, no new status. No-op when no turn is in flight; a concurrent `cancel` wins. A **late** abort that lands after the turn already resolved is **also a no-op** — that turn completes normally and its reply is **kept** (`abort` interrupts an in-flight turn only, never discards a finished one). |
 | **cancel** | Abort the in-flight turn via `AbortSignal` **and end the session** (the terminal `session:cancelled`); the session stays resumable from its persisted transcript. |
 | **runUserCommand** | Run a **USER-invoked `!`-shell command** (2.5.D, [ADR-0061](../../decisions/0061-cli-input-layer-file-injection-and-shell-escape.md)) — the additive method that routes a shell escape through the **one** `run_command` dispatch boundary, **reusing the same dispatch-context construction as a turn** (`toolPolicy` allowlist, `fsScope`, `gateApproved:false`, the mode-aware `confirmAction`): `enforcePolicy(allowedCommands)` **before** approval → `spawn`/`shell:false`. The caller pre-tokenizes the line into `command` + `args` (no shell expansion); the user grant of `run_command` is scoped to this one-off dispatch and never reaches the model. Returns a classified `UserCommandOutcome` (`ran` \| `denied{allowlist}` \| `failed` \| `cancelled`) — no raw error escapes. Callable only when **started + idle** (a `!` never races a turn); leaves the session idle. |
 | **resume** | Reload a persisted session (messages + context) and continue. |
+| **compact** | Summarise the older working context, retain the latest complete exchange and append a durable boundary marker. Callable only when started and idle; returns a typed `CompactionResult`. Memory-policy refusal precedes no-op detection, provider planning, events and egress. |
+| **trimHistory** | Keep a suffix under a message-unit bound, starting at a user boundary; append a marker without an LLM call. Callable only when started and idle; returns a typed `TrimResult`. Memory-policy refusal precedes bound/no-op checks and mutation. |
 | **export** | Serialize the session to a `.relavium.yaml` scaffold ([export](#export-to-workflow)). |
 
 The turn loop, tool dispatch, streaming, and fallback are the **same** code paths a workflow `agent`
@@ -73,6 +84,107 @@ form) and emits session events through an injected sink; wiring that sink onto t
 (per-session `sequenceNumber` + gap/resync) is **1.W**, and the durable [`SessionMessage`](#session-messages)
 schema + persistence is **1.X**.
 
+### Request projection and history operations
+
+The authored [`memory` contract](agent-yaml-spec.md#conversational-memory) selects one request
+projection, also used by the session's context estimate. It applies to fresh, resumed and model-reseated
+instances. Selection and summary placement happen before same-role folding; generated summaries
+remain untrusted user-role data and cannot change the authored system prompt. Each request owns
+its message/content arrays and text parts, so request consumers cannot mutate the working transcript.
+
+`AgentSession.memoryPolicy` returns the copied, frozen policy. `automaticCompactionAllowed` exposes
+its resolved permission independently of whether a trigger or budget permits a call. `compactionRefusal`
+and `trimRefusal` expose the same `MemoryPolicyRefusal` that the operations return:
+`{ kind: 'policy_refused', memory: 'none' | 'window', message: string }`. The message is a fixed,
+secret-free explanation. Lifecycle misuse still throws `SessionStateError` before a policy outcome.
+Hosts use these getters before progress or bound validation; the engine remains the authority.
+
+`reconstructSessionState(record, messages)` returns a text-only, unfolded `SessionResumeState`.
+Alongside its messages, costs and turn counter, it supplies required `completedTurnSpans`: ordered,
+non-overlapping `{ start, end }` indices into that message array, with exclusive `end`. Each span
+starts with a user and contains either that user alone for an empty final, or the user plus its final
+assistant text. Structural durable rows are excluded. Legacy text remains outside spans rather than
+being invented into a completed turn. The current pending user is tracked separately during a send.
+Build resume state with this helper; `AgentSession.resume` validates span bounds, roles and text-only
+parts before host cost callbacks, refuses invalid metadata with `SessionStateError` code
+`invalid_resume_state`, and copies the admitted state. A compact/trim rebases surviving whole spans;
+a failed, aborted or cancelled turn creates none.
+
+### Measured compaction and one-shot recovery
+
+Automatic work is permitted by the resolved memory policy, independently of funding. Pre-send
+and after-turn triggers measure the actual next owned request (system, projected history, tools,
+kept exchange and pending user), using the first attemptable entry's authoritative window and
+shared output reservation. Billed input/cache/tool-round usage does not drive the trigger.
+Unknown/custom windows and providers managing their own context skip automatic work. A trigger
+compares input with `compactThreshold × window`, and input plus output reservation with the full
+window. The irreducible kept exchange/pending user, tools, system and maximum summary wrapper
+are compared with the full window; if they cannot fit, pre-send compaction is skipped and that
+turn cannot start another recovery cycle. A failed/skipped pre-send operation sends the original
+owned request. Budget refusal or cancellation sends no main request and settles the active turn.
+`SessionDeps.afterTurnCompaction: false` disables only unused after-turn work; the CLI one-shot
+uses it while retaining explicit summary permission at active entry points.
+
+One inner operation shares the active turn's signal; idle `compact()` owns its own controller.
+It greedily folds older whole messages through at most four budget-gated passes, keeping the
+latest completed exchange, following legacy text and the explicit pending user verbatim.
+Every summariser construction fits every known attemptable entry's measured input-plus-output
+bound. An individually oversized foldable message uses disclosed head-and-tail truncation;
+system text, running summary, kept exchange and pending user are never truncated. All passes
+must succeed with nonempty text before one summary/history replacement and one boundary event.
+Cancellation, refusal or failure installs no partial summary; engaged spend remains accounted.
+`keptTurnCount` includes retained legacy user slots and empty-final exchanges, excluding the
+pending user, so the persister advances only the dropped completed-history boundary.
+
+For manual unknown/mixed-window compaction, each pass additionally respects the fixed 16,384-token
+soft input bound. This is an operational bound, not model metadata or a fit guarantee. The
+surface acknowledges a fixed unknown-window disclosure through `SessionDeps.onCompactionStart`
+before the first admitted call can egress. A failed acknowledgement sends nothing. The callback
+receives the current operation's signal and checks it before queued publication. Cancellation
+races a pending acknowledgement, releases unused admission and returns the session to idle
+without waiting for the terminal sink. Late acknowledgement/rejection is observed and grants
+no egress authority. Automatic
+paths never use the soft bound. All opened moments end with success, one failed-moment event,
+or terminal session cancellation; first-admission refusal opens no moment.
+
+`CompactionResult` distinguishes `budget_refused {message, momentOpened}` from ordinary `failed`,
+`cancelled`, `nothing_to_compact` and policy refusal. Manual refusal returns its safe cap message
+without a turn terminal. After-turn refusal preserves the successful reply and all history;
+first-pass refusal emits a standalone side notice, later refusal closes the open moment once.
+Budget refusal never trims. Ordinary after-turn failure retains the configured deterministic
+trim fallback; cancellation does not trim. Active pre-send/recovery refusal settles one
+`budget_exceeded` turn terminal naming the cap. Event shapes have one home in
+[sse-event-schema.md](sse-event-schema.md#session-event-namespace).
+
+### Financial request inputs
+
+`SessionDeps.maxTokensEstimate` is an optional estimate-only fallback copied at construction. CLI
+fresh/resumed/reseated chat and one-shot entry points pass the resolved config value, including when
+no budget governor exists. The shared turn core estimates every current tool round before cross-provider
+reasoning stripping and forwards required cap-plan/request identity, input estimate and the same frozen
+fallback to admission. The canonical estimator, cap precedence, handoff and failure-evidence contract
+lives in [llm-provider-seam.md](../shared-core/llm-provider-seam.md#current-request-estimates-and-bound-output-caps).
+The same owned construction and cap authority govern measured session context and each compaction pass.
+
+### Classified context-window failures
+
+An unrecovered official, fixture-matched overflow settles the turn with `context_overflow`, never a
+provider-authored message. The engine names the attempted model, its authoritative window
+(or fixed `size unknown` wording) and whether tools already ran. The internal recoverability
+fact is true only before any tool round or committed content; it is not persisted or emitted.
+Before content/tool commitment, one genuine overflow may invoke compaction and one fresh measured
+retry when automatic permission and an authoritative applicable window allow it. Observer failures
+cannot forge this private invocation-bound evidence, even by rethrowing a genuine error from a
+previous call. A failed/skipped prior pre-send operation suppresses
+recovery. Nothing to fold or ordinary recovery failure retains the original overflow; budget refusal
+settles `budget_exceeded`. Retry overflow is final. Main-attempt usage is accumulated across the two
+attempts; summariser spend remains separate and never consumes a user-turn slot. A turn
+that already dispatched tools is never restarted by this classification. Native Anthropic
+context stops retain their actual usage through the failed turn and money ledger. The
+[LLM seam](../shared-core/llm-provider-seam.md#classified-context-overflow) owns the dialect
+criteria, custom-endpoint downgrade and admission-release evidence; the
+[CLI](../cli/chat-session.md#actionable-error-recovery-25h) owns command-specific remedies.
+
 ### Hard turn cap
 
 A session carries a **hard turn cap** — a finite DoS fail-safe on the number of turns it will run (engine
@@ -86,6 +198,63 @@ silently *continues* the session — [config-spec.md](config-spec.md)) and the t
 knob** (`SessionDeps.maxTurns`); a surface maps the `[chat].max_turns` config field onto it at construction
 time — that surface field was added in build-phase 2 (workstream **2.M**); see the `[chat]` block in
 [config-spec.md](config-spec.md).
+
+Only provider-engaged turns consume a slot, including failed or aborted turns whose trusted host
+callback throws. Engagement is recorded on actual non-error provider chunks and chain-owned provider
+invocation evidence, independently of a budget hook, the exception type or a positive token count.
+Local preparation, credential, deadline setup and provider-method lookup refusals before invocation
+consume no slot.
+Accounting uses an internal outcome carrier without mutating the thrown value, including frozen
+classified exceptions. Terminal usage retains known prior attempts and an observed valid terminal
+usage chunk; an unreported current attempt adds no
+invented usage. Ordinary raw callback/money errors remain visible to the API caller after the fixed,
+secret-free session terminal. If prototype or diagnostic-field inspection during session presentation itself throws, the fixed
+terminal still uses canonical accounting and the original throwable is rethrown. A successful turn
+counted before its later durability flush is counted
+once even if that flush fails; its known quantities outrank unrelated exception metadata for every
+error class. A later-round budget pause retains earlier engagement and usage. Terminal `cancel()`
+retains its sole cancellation event.
+Provider diagnostic normalization and cause classification follow the normal turn taxonomy, with opaque
+provider causes kept private. Nested diagnostics must retain actual invocation evidence and cannot
+permit another send past the hard turn cap.
+
+The shared turn driver records the exact throwable escaping its attempt observer. Inline generated
+responses preserve that observer failure without entering provider classification, even when the
+observer throws an `LlmProviderError`; genuine provider failures retain their normal mapping. A later
+tool round guards budget-error inspection so a throwing prototype or diagnostic cannot replace the
+original callback failure. External emit/readiness/record and chain clock/backoff failures have
+call-local origin distinct from internal admission settlement. Workflow callers refuse retry/gate
+and failure-writer authority from that origin. Admission/money causes are unwrapped only with exact
+current pre-attempt provenance, never solely by error class.
+Session preserves classified-error delivery and raw rejection while using fixed internal,
+non-retryable observer presentation; the callback diagnostic cannot become public authority.
+Post-success completion and commitment-flush callbacks carry the same exact observer provenance;
+readable classified errors use fixed internal, non-retryable presentation, while raw/opaque failures
+retain their original rejection. Already engaged turns keep their real usage and consume one slot.
+The session attempts its fixed terminal with canonical accounting; a throwing sink cannot guarantee
+publication, and a sink recording before throwing may see multiple notification drafts. Compaction uses the same
+captured outcome and preserves observer origin through its start/finish lifecycle notifications.
+Readable classified observer failures return a fixed private-safe `failed` result; ordinary raw or
+opaque observer failures reject with the original value. Actual cancellation and genuine pre-egress
+budget refusal retain their existing handling. Controller-factory failures in send, compaction and
+user commands release running/abort state and reject the original value without classified delivery.
+A throwing turn-start notification receives the same cleanup before any provider call. Terminal
+cancellation keeps precedence; a refused initialization consumes no provider-engaged slot.
+Compaction clears its running/abort state on every exit. If a trusted controller factory raises
+abort or cancel before returning its controller, the returned signal carries that recorded intent
+before work begins; terminal cancellation permits no later start/compaction notification or command.
+Cold compaction planning also rechecks terminal cancellation after provider resolution and before
+arming a controller. Cancellation there permits no credential or provider call and keeps the session
+closed; idle abort remains a no-op and a warm memoized plan does not rerun the resolver.
+If the resolver starts another real session operation, compaction rechecks its idle precondition
+and throws the existing lifecycle refusal before arming a second controller. The running operation
+retains the controller targeted by abort and cancel.
+A successful commitment flush rechecks terminal cancellation before installing the reply or
+publishing completion. Known usage, cost and provider-engaged turn consumption remain accounted.
+Compaction estimates the prospective summary/history projection before installing it and rechecks
+terminal cancellation after the provider-supplied estimator. A cancellation during that estimator
+retains the previous history and summary. Ordinary estimator failure remains best-effort; the existing
+EA7 late-abort no-op after successful summarisation remains unchanged.
 
 ## Session context
 
@@ -123,28 +292,58 @@ interface SessionMessage {
   sessionId: string;
   sequenceNumber: number;                 // monotonic per session
   role: 'system' | 'user' | 'assistant' | 'tool';
-  content: DurableContentPart[];          // the PERSISTED content union (ADR-0031): handle-only media, signature-less reasoning AND `tool_call`
+  content: SessionContentPart[];          // session-only durable union: structural tools, handle-only media, signature-less reasoning
   modelId?: string;                       // canonical model id for an assistant turn (fallback-aware; mirrors session_messages.model_id)
   compaction?: { droppedThroughSequence: number };  // ADR-0062: present ONLY on a role:'system' compaction/trim boundary marker — the durable seq through which older messages are superseded (mirrors session_messages.compaction_dropped_through_sequence)
   timestamp: string;                      // ISO 8601
 }
 ```
 
-> **Amended 2026-06-10 (ADR-0031 / 1.AD).** A persisted position references the **durable**
-> content union, not the in-flight `ContentPart`: `DurableContentPart` (owned by
-> `@relavium/shared`, see [llm-provider-seam.md](../shared-core/llm-provider-seam.md)
-> §"Seam-shape amendments (ADR-0031)") makes media handle-only and drops the reasoning
-> `signature` structurally — on a `reasoning` part and, since ADR-0090, on a `tool_call` part. The engine's `deInlineMedia` pass is the in-flight→durable
-> transform. Binding on the session-persistence implementation (1.X).
+The session-only `SessionContentPart` union is owned by `@relavium/shared`
+([ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md)). Its exact structural
+tool fields, byte-size units and engine id form live in
+[the database contract](../shared-core/database-schema.md#session-content-parts). It refuses raw arguments,
+results, continuation signatures and unknown fields instead of silently dropping them. Non-tool media
+remains handle-only; tool attachments carry only handle metadata, never result filenames or transcripts.
+The generic `DurableContentPart` used by run/event/IPC positions is unchanged.
 
-`SessionMessage` is **mapped to the seam's `LlmMessage` at call time, never copied** — when the
-session calls a provider, the `AgentRunner` projects the persisted messages into the `LlmMessage`
-shape owned by [llm-provider-seam.md](../shared-core/llm-provider-seam.md). **No vendor SDK type
-crosses the seam** ([ADR-0011](../../decisions/0011-internal-llm-abstraction.md)): both unions are
-Relavium-owned types from `@relavium/shared`, but they are **distinct by design** —
-`DurableContentPart` is the persisted form (handle-only media, signature-less reasoning AND `tool_call`), while
-`ContentPart` is the in-flight form `LlmMessage` carries. The projection bridges the two existing
-types (resolving durable handles for egress); it never invents a new shape.
+`SessionMessage` is mapped into the seam's `LlmMessage`, rather than copied. The next turn sees the
+text-only projection: carrying earlier tool rounds is deferred. Both forms are Relavium-owned, so
+no vendor SDK type crosses the seam ([ADR-0011](../../decisions/0011-internal-llm-abstraction.md)).
+A completed turn persists its user row, ordered structural call/result rows, and one terminal
+assistant row containing a text part, even when that text is empty. The additive `toolHistory`
+field on [the completed-turn event](sse-event-schema.md#session-event-namespace) supplies only
+structure; streaming tool inputs and result summaries never feed transcript persistence.
+The persister commits the entire exchange and session totals atomically. A failure latches
+and stops later model/command egress. Admission checks the live latch at each provider attempt and
+effect preparation, and immediately before every actual tool dispatch, including unjournaled tools,
+a cached idle-command key and a cost-write failure after provider admission. The dispatch check runs
+after asynchronous approval and preparation. Its refusal proves dispatch never started and releases
+any prepared claim. Settling or discarding an already-started effect remains available to record its outcome.
+Errors and aborts commit no transcript; their billed cost remains real.
+
+Resume, model reseat, export, boundary mapping and effect disclosure share the pure structural history
+projection in `@relavium/shared`; existing core exports remain available. `completedSessionTurns`
+selects its completed exchanges; `resumableMessageSequences` and `resumableTurnBoundarySequences`
+supply the matching host boundary seeds. A tool-call row
+with preamble text is never a terminal, and an unfinished exchange rolls back. An empty-final turn
+restores its user message alone and counts as a completed turn. Compaction/trim boundaries retain
+whole turns; `/trim` still takes message units. Export reads all historical completed turns,
+including those superseded by a working-context boundary. The engine's internal projection-event
+emit boundary requires `keptTurnCount` for both compaction and trimming, so current producers cannot
+fall back to message count. The public event schema still accepts older events without that additive
+field; the persister's legacy compatibility does not weaken the current producer requirement.
+
+**Legacy empty-final compatibility.** Before explicit empty terminals, the writer could persist a
+successful empty final as a user row alone. A bare user immediately followed by another user retains
+its text in resumed/reseated context, matching the old projection. It prefixes the next completed
+export prompt and has its own compaction/trim boundary slot. It does not create a terminal row or add
+to the reconstructed hard turn cap. The final bare user still rolls back, and interrupted structural
+exchanges stay excluded. Legacy prefix text without a later terminal remains resumed context and
+export metadata; it does not invent an exported node. Explicit empty-terminal turns retain their
+ordinary distinct identity. No historical row is rewritten.
+The legacy rollback is a read projection: a later append can make a previously trailing bare user
+nontrailing, preserving the old archive's ambiguity rather than permanently deleting its text.
 
 > **Relationship to the run `messages` table.** A session's messages are persisted in
 > **`session_messages`**, bound to a **session** — distinct from the existing per-step run `messages`
@@ -188,10 +387,14 @@ in Phase 1; the steering channel narrative lives in
 Per [ADR-0026](../../decisions/0026-session-export-to-workflow.md), a session exports to a
 `.relavium.yaml` **scaffold** that the author reviews before committing:
 
-- the session's assistant turns become a **linear chain of `agent` nodes**, in order, carrying the
-  agent binding, resolved prompts, and the tools used;
-- the **full transcript is preserved in the workflow's durable `metadata` field** — a schema field that survives parse → serialize round-trips (not fragile comments), with secrets already excluded by
-  the no-interpolation rule above);
+- completed logical turns become a **linear chain of `agent` nodes**, in order, carrying the
+  agent binding, resolved prompts and the deduplicated union of resolved structural tool names,
+  per [ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) §1 and §3.
+  An empty terminal assistant text still completes a turn; tool preambles do not create extra nodes;
+- the **full transcript is preserved in the workflow's durable `metadata` field**, including
+  content-free tool structure and user/terminal assistant text. It survives parse → serialize
+  round-trips. Tool arguments/results are excluded, while user-authored and assistant text can
+  contain sensitive content. Prompt interpolation neutralisation does not redact that text;
 - parallel / conditional / loop structure is **not** auto-inferred — the author adds it on the canvas.
 
 The export **produces** the format owned by [workflow-yaml-spec.md](workflow-yaml-spec.md); the
@@ -204,14 +407,13 @@ reproducible and round-trips):
 
 - **Nodes** — a single `input` node (`id: input`), then **one `agent` node per COMPLETED logical turn** in
   `sequenceNumber` order (`id: turn-1`, `turn-2`, … — 1-based), then one `output` node (`id: output`). A
-  *logical turn* is the contiguous `user` message(s) plus the assistant/tool messages answering them (a host
-  may persist a single turn as split rows — `user → assistant(tool_call) → tool → assistant(text)`); it is one
-  node, not one per assistant message. A turn is *completed* only if it produced final assistant **text** — an
-  unanswered or interrupted-mid-tool-loop turn (no final text) is **omitted from the chain** (kept verbatim in
-  `metadata`), so export and `reconstructSessionState`'s rollback (1.Y) agree on what a turn is. Each `agent`
-  node carries: `agent_ref` = the session's `agentSlug`; `prompt_template` = the **text** of the turn's
-  `user` message(s), with interpolation openers neutralized (omitted if empty); `tools` = the deduped union of
-  tool names invoked across the turn's assistant messages (the `tool_call` parts), omitted when none. No
+  *logical turn* begins at its user row and ends at its terminal assistant text part (empty text counts).
+  Preserved nontrailing legacy bare-user text prefixes the next completed prompt; it creates no extra node.
+  Structural tool preambles/results do not create nodes. An interrupted exchange is omitted from the chain
+  and remains in the full metadata. Each `agent` node carries `agent_ref` = the session's `agentSlug`;
+  `prompt_template` = the user text, with interpolation openers neutralised (omitted if empty);
+  `tools` = the deduplicated union of resolved names in its structural calls, including admitted MCP ids.
+  The fixed unresolved `unknown_tool` marker never becomes a grant. No
   `model`/`temperature`/`max_tokens`/`retry`/`output_schema` are emitted — those are authoring concerns the
   user adds on the canvas, not replay fields.
 - **Edges** — a straight linear chain `input → turn-1 → … → turn-n → output` (just `{ from, to }`); when a
@@ -223,22 +425,30 @@ reproducible and round-trips):
   entry so `agent_ref` resolves; when no snapshot was captured, `agents` is omitted and `agent_ref` resolves
   against the workspace agent registry at author time (the file still parses — `agent_ref` resolution is the
   engine's job, not the schema's).
-- **`metadata`** — the full transcript under a single reserved key: `metadata.relaviumExport = { source:
+- **`metadata`** — the full persisted transcript, including content-free tool structure, under a single reserved key: `metadata.relaviumExport = { source:
   'session', sessionId, agentSlug, title?, createdAt, updatedAt, messages: SessionMessage[] }`. It is a real
   schema field (`z.record`), so it survives parse → serialize round-trips.
 - **Determinism + exclusions** — the YAML emitter (1.Z, `serializeWorkflow`; 1.L is parse-only) sorts map
-  keys alphabetically and preserves array order, so `parse → serialize` is byte-stable. No `secret` value can
-  appear (secrets never enter a message — [ADR-0029](../../decisions/0029-tool-policy-hardening.md)) and no
-  provider continuation `signature` — on a `reasoning` OR a `tool_call` part (ADR-0090) — can appear (the
-  transcript is `DurableContentPart`, which structurally omits both —
-  [ADR-0030](../../decisions/0030-llm-seam-shape-amendment-reasoning-response-format-provider-executed.md)).
+  keys alphabetically and preserves array order, so `parse → serialize` is byte-stable. The strict
+  `SessionContentPart` transcript refuses raw model-issued tool arguments/results and continuation
+  signatures ([ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md)). User
+  conversational text remains user data in the export.
 
 ## Validation and persistence
 
-- Validated against `AgentSessionSchema` / `SessionMessageSchema` / `SessionContextSchema` (Zod, in
+- Validated against `AgentSessionSchema` / strict `SessionMessageSchema` / `SessionContextSchema` (Zod, in
   `@relavium/shared`) — invalid input fails fast, like every other authored/runtime contract
   ([ADR-0023](../../decisions/0023-strict-authored-yaml-validation.md)).
 - Persisted in the global `history.db` (`agent_sessions` + `session_messages`; on the CLI surface
   unencrypted at rest, `0600`/`0700`-guarded per [ADR-0050](../../decisions/0050-cli-history-db-at-rest-posture.md)); the DDL is
-  canonical in [database-schema.md](../shared-core/database-schema.md). API keys never appear in a session
-  row, a message, or an event payload (see [keychain-and-secrets.md](../desktop/keychain-and-secrets.md)).
+  canonical in [database-schema.md](../shared-core/database-schema.md). Credential retrieval uses the OS
+  keychain and does not copy application-held keys into rows, messages or event payloads
+  ([keychain-and-secrets.md](../desktop/keychain-and-secrets.md)); this is distinct from the sensitive
+  content a user can supply in their conversation.
+
+The session store also validates every denormalized metadata field against the canonical body on
+write and read. A text projection must equal its canonical text; structural `toolCalls` must equal
+the canonical call parts; `name` and `toolCallId` must match the appropriate single part; `finishReason`
+is a fixed stop-reason value on an assistant row. Unknown fields and malformed JSON are refused with
+fixed boundary errors. This prevents metadata from becoming a second tool-content channel. User
+conversational text, including `!` output and `@` file injection, remains user data at rest.

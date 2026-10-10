@@ -154,11 +154,13 @@ describe('seam result/usage/error/capability schemas', () => {
         message: 'slow down',
       }).success,
     ).toBe(true);
-    // Ten since ADR-0082 added `protocol` — a provider that broke the stream grammar. The count is pinned
+    // Eleven since ADR-0096 added context_overflow; ADR-0082's protocol remains distinct. The count is pinned
     // deliberately: the kind set is a closed seam taxonomy, and a silent addition would slip past every
     // exhaustive switch that was written before it.
-    expect(LlmErrorKindSchema.options).toHaveLength(10);
+    expect(LlmErrorKindSchema.options).toHaveLength(11);
     expect(LlmErrorKindSchema.options).toContain('protocol');
+    expect(LlmErrorKindSchema.options).toContain('context_overflow');
+    expect(RETRYABLE_KINDS.has('context_overflow')).toBe(false);
     // …and it is NOT retryable (ADR-0082 §9): an implementation that cannot keep the grammar will not keep
     // it on the second call, so a node re-dispatch burns the budget and names the wrong cause.
     expect(RETRYABLE_KINDS.has('protocol')).toBe(false);

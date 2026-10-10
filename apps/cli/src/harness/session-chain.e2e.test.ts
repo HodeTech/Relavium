@@ -130,6 +130,8 @@ describe('session chain e2e (2.5.I S4) — Home→chat→resume→export over a 
         governor: undefined,
         store: first.store,
         handle: built.handle,
+        attachEffectTurnAllocator: built.attachEffectTurnAllocator,
+        attachDurabilityProbe: built.attachDurabilityProbe,
         sessionId: built.sessionId,
         agent: built.agent,
         context: built.context,
@@ -176,6 +178,8 @@ describe('session chain e2e (2.5.I S4) — Home→chat→resume→export over a 
         governor: undefined,
         store: second.store,
         handle: resumed.handle,
+        attachEffectTurnAllocator: resumed.attachEffectTurnAllocator,
+        attachDurabilityProbe: resumed.attachDurabilityProbe,
         sessionId: resumed.sessionId,
         agent: resumed.agent,
         context: resumed.context,
@@ -228,5 +232,5 @@ describe('session chain e2e (2.5.I S4) — Home→chat→resume→export over a 
     } finally {
       second.client.sqlite.close();
     }
-  });
+  }, 30_000); // Functional native-file lifecycle, not a five-second latency contract on CI hosts.
 });

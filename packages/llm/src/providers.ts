@@ -3,6 +3,7 @@ import type { ProviderKind } from '@relavium/shared';
 import { createAnthropicAdapter } from './adapters/anthropic.js';
 import { createGeminiAdapter } from './adapters/gemini.js';
 import { createOpenAiAdapter } from './adapters/openai.js';
+import type { ProviderFetch } from './adapters/invocation-work.js';
 import type { LlmProvider, ProviderId } from './types.js';
 
 /**
@@ -57,17 +58,12 @@ export function providerKind(id: ProviderId): ProviderKind {
 export function createCustomOpenAiProvider(deps: {
   readonly providerId: Extract<ProviderId, 'openai' | 'deepseek'>;
   readonly baseURL: string;
-  readonly fetch?: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
+  readonly fetch?: ProviderFetch;
 }): LlmProvider {
-  // MARKED custom, so the shipped catalog stops governing this provider's models. Without it an endpoint
-  // that serves a tool-capable model under a well-known id inherited that id's OpenAI verdicts and was
-  // refused — breaking the custom-`base_url` feature this factory exists for.
-  return {
-    ...createOpenAiAdapter({
-      providerId: deps.providerId,
-      baseURL: deps.baseURL,
-      ...(deps.fetch === undefined ? {} : { fetch: deps.fetch }),
-    }),
-    customEndpoint: true,
-  };
+  // Preserve the factory's actual-host classification: a spelled official URL stays official.
+  return createOpenAiAdapter({
+    providerId: deps.providerId,
+    baseURL: deps.baseURL,
+    ...(deps.fetch === undefined ? {} : { fetch: deps.fetch }),
+  });
 }

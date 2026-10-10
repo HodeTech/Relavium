@@ -1,9 +1,17 @@
 import {
   collectDurableMediaHandles,
+  type BudgetAllowanceState,
   type AgentTokenEvent,
   type NodeCompletedEvent,
   type RunEvent,
 } from '@relavium/shared';
+import {
+  budgetAllowanceLabel,
+  budgetGateIdentity,
+  budgetIdentifier,
+  budgetPromptContext,
+  budgetPromptDetails,
+} from '../../gate/budget.js';
 
 /**
  * The pure, framework-free view model for the `ink` streaming TUI (workstream **2.E**). It reduces the
@@ -79,6 +87,12 @@ export interface RunViewState {
   readonly gapDetected: boolean;
   /** Bounded, user-facing warnings (gap, budget, timeout, gate). */
   readonly warnings: readonly string[];
+  /** Active budget identities outlive the bounded warning tail; at most one per paused run/node. */
+  readonly pendingBudgetNotices: readonly {
+    readonly runId: string;
+    readonly nodeId: string;
+    readonly gateId: string;
+  }[];
   /** Produced media handles surfaced as nodes complete (2.S) — the run's media deliverables, bounded to the
    *  trailing {@link MAX_PRODUCED_MEDIA}. Handle-only by construction (the engine de-inlines bytes upstream). */
   readonly producedMedia: readonly ProducedMediaView[];
@@ -108,6 +122,7 @@ export function initialRunViewState(): RunViewState {
     cumulativeCostMicrocents: 0,
     gapDetected: false,
     warnings: [],
+    pendingBudgetNotices: [],
     producedMedia: [],
   };
 }
@@ -378,11 +393,19 @@ export function reduceRunEvent(state: RunViewState, event: RunEvent): RunViewSta
       };
 
     case 'human_gate:paused':
+      // Native budget authority/paused events own its scalar notice; their human companion adds no input prompt.
+      if (
+        event.allowanceQuote !== undefined ||
+        base.pendingBudgetNotices.some(
+          (gate) => budgetGateIdentity(gate) === budgetGateIdentity(event),
+        )
+      )
+        return base;
       return {
         ...base,
         warnings: pushBounded(
           base.warnings,
-          `gate "${event.gateId}" (${event.gateType}) awaiting input`,
+          `gate "${event.gateId}" (${event.gateType}) awaiting ${event.gateType === 'input' ? 'input' : 'decision'}`,
           MAX_WARNINGS,
         ),
       };
@@ -390,6 +413,16 @@ export function reduceRunEvent(state: RunViewState, event: RunEvent): RunViewSta
     case 'human_gate:resumed':
       return {
         ...base,
+        pendingBudgetNotices: base.pendingBudgetNotices.filter((gate) =>
+          event.gateId === undefined
+            ? gate.runId !== event.runId || gate.nodeId !== event.nodeId
+            : budgetGateIdentity(gate) !==
+              budgetGateIdentity({
+                runId: event.runId,
+                nodeId: event.nodeId,
+                gateId: event.gateId,
+              }),
+        ),
         warnings: pushBounded(base.warnings, `gate resumed: ${event.decision}`, MAX_WARNINGS),
       };
 
@@ -414,22 +447,30 @@ export function reduceRunEvent(state: RunViewState, event: RunEvent): RunViewSta
         ),
       };
 
-    case 'budget:paused':
+    case 'budget:authorization': {
+      if (event.authorization.state === 'paused')
+        return reduceBudgetNotice(base, event, event.authorization.allowance);
       return {
         ...base,
-        warnings: pushBounded(
-          base.warnings,
-          `budget cap reached at ${event.nodeId} — run paused`,
-          MAX_WARNINGS,
+        pendingBudgetNotices: base.pendingBudgetNotices.filter(
+          (gate) => budgetGateIdentity(gate) !== budgetGateIdentity(event),
         ),
       };
+    }
+    case 'budget:paused': {
+      const allowance =
+        event.allowanceQuote === undefined
+          ? undefined
+          : { kind: 'frozen' as const, quote: event.allowanceQuote };
+      return reduceBudgetNotice(base, event, allowance);
+    }
 
     case 'run:completed':
     case 'run:failed':
     case 'run:cancelled':
       // The three terminal arms live in `reduceTerminal` — each folds a durable cost snapshot onto BOTH the
       // summary and the running total, and keeping them here pushed this switch past its complexity budget.
-      return reduceTerminal(base, event);
+      return reduceTerminal({ ...base, pendingBudgetNotices: [] }, event);
     case 'run:paused':
       return { ...base, summary: { outcome: 'paused', pausedGateIds: event.gateIds } };
 
@@ -450,6 +491,32 @@ export function reduceRunEvent(state: RunViewState, event: RunEvent): RunViewSta
       // Forward-compatible: a future RunEvent variant is reflected only in the seq/gap tracking above.
       return base;
   }
+}
+
+function reduceBudgetNotice(
+  base: RunViewState,
+  event: { readonly runId: string; readonly nodeId: string; readonly gateId: string },
+  allowance: BudgetAllowanceState | undefined,
+): RunViewState {
+  if (
+    base.pendingBudgetNotices.some((gate) => budgetGateIdentity(gate) === budgetGateIdentity(event))
+  )
+    return base;
+  const details = budgetPromptDetails(budgetPromptContext(allowance));
+  const notice = [
+    `budget gate ${budgetIdentifier(event.gateId)} at ${budgetIdentifier(event.nodeId)} — ${budgetAllowanceLabel(allowance)}`,
+    ...details,
+  ].join('; ');
+  return {
+    ...base,
+    pendingBudgetNotices: [
+      ...base.pendingBudgetNotices.filter(
+        (gate) => gate.runId !== event.runId || gate.nodeId !== event.nodeId,
+      ),
+      { runId: event.runId, nodeId: event.nodeId, gateId: event.gateId },
+    ],
+    warnings: pushBounded(base.warnings, notice, MAX_WARNINGS),
+  };
 }
 
 /**

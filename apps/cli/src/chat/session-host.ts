@@ -18,6 +18,8 @@ import {
   type SessionResumeState,
   type ToolDef,
   type ToolHost,
+  type ToolRegistry,
+  ToolExecutionError,
   unwiredEffectJournal,
 } from '@relavium/core';
 import {
@@ -58,6 +60,9 @@ import { resolveChatAgentSource, type ResolvedChatAgent } from './agent-source.j
 import { sanitizeUntrustedInline } from '../render/sanitize.js';
 import { hostDeadlineTimer, hostSleep } from '../process/sleep.js';
 
+const SESSION_DURABILITY_FAILURE =
+  'this session could not be saved, so it will not send anything further — the transcript and cost on disk are behind what you see';
+
 /**
  * Assemble a ready-to-run `relavium chat` session over `@relavium/core`'s {@link AgentSession} (2.M — the
  * agent-first CLI surface, the session analogue of `engine/build-engine.ts`). It binds one agent for the
@@ -72,6 +77,7 @@ import { hostDeadlineTimer, hostSleep } from '../process/sleep.js';
 export interface BuildChatSessionOptions {
   /** The resolved `[chat]` block (default model, fs scope, turn cap, cost cap). */
   readonly chat: ResolvedChatConfig;
+  readonly maxTokensEstimate?: number;
   /** `--agent <ref>` (path or bare id); `undefined` ⇒ the built-in default agent over `[chat].default_model`. */
   readonly agentRef: string | undefined;
   /**
@@ -137,6 +143,10 @@ export interface BuildChatSessionOptions {
    * agent run --input k=v` (2.Q) populates these; a bare `chat` leaves them unset.
    */
   readonly variables?: Record<string, string>;
+  /** One-shot callers disable only unused after-turn work; active authored summary permission survives. */
+  readonly afterTurnCompaction?: boolean;
+  /** Surface acknowledgement of an unknown-window disclosure before the first admitted call. */
+  readonly onCompactionStart?: SessionDeps['onCompactionStart'];
   /**
    * Sink for an `on_exceed: 'warn'` pre-egress budget warning. A session has no `budget:warning` event in
    * its namespace, so the surface (the REPL) is the warning channel — the command wires this to surface a
@@ -185,6 +195,8 @@ export interface ChatBudgetWarning {
 }
 
 export interface BuiltChatSession {
+  /** Host-authoritative base-model window; present undefined for custom/unknown metadata. */
+  readonly contextWindowTokens?: number | undefined;
   readonly session: AgentSession;
   readonly handle: SessionHandle;
   readonly sessionId: string;
@@ -236,11 +248,6 @@ export interface BuiltChatSession {
    */
   readonly governor?: GovernorWiring;
   /**
-   * Late-bind the session's durability probe (#W15-4) — the persister is created by the CALLER, after this,
-   * so `preEgress`'s gate cannot take it as an argument. Same shape as `attachConservativeWriter`, and the
-   * persister self-attaches through it exactly as it does for the commitment writer.
-   */
-  /**
    * Attach the durable effect journal (ADR-0080), late-bound because the journal is owned by the persister,
    * which is built AFTER the session — the same constraint `attachConservativeWriter` has for money.
    *
@@ -250,6 +257,12 @@ export interface BuiltChatSession {
   readonly attachEffectJournal: (
     factory: (correlation: EffectCorrelation) => EffectDispatchPort,
   ) => void;
+  readonly attachEffectTurnAllocator: (allocator: (sessionId: string) => number) => void;
+  /**
+   * Late-bind the session's durability probe (#W15-4) — the persister is created by the CALLER, after this,
+   * so `preEgress`'s gate cannot take it as an argument. Same shape as `attachConservativeWriter`, and the
+   * persister self-attaches through it exactly as it does for the commitment writer.
+   */
   readonly attachDurabilityProbe: (probe: () => Error | undefined) => void;
   /**
    * Tools dropped at MCP discovery (allowlist / unsupported schema / collision / unsafe id) — a non-fatal
@@ -265,9 +278,12 @@ const DEFAULT_FS_SCOPE = 'sandboxed' as const;
 type SessionRuntimeOptions = Pick<
   BuildChatSessionOptions,
   | 'chat'
+  | 'maxTokensEstimate'
   | 'now'
   | 'providers'
   | 'toolHost'
+  | 'afterTurnCompaction'
+  | 'onCompactionStart'
   | 'onBudgetWarning'
   | 'onUnpriced'
   | 'onEffortWithheld'
@@ -299,12 +315,6 @@ function buildSessionRuntime(
   host: ToolHost;
   governor: GovernorWiring | undefined;
   /**
-   * Late-bind the session's durability probe (#W15-4). The persister is created by the CALLER, after this
-   * runtime exists, so the gate inside `preEgress` cannot take it as an argument — the same reason
-   * `attachConservativeWriter` is late-bound. Until it is attached the probe reports healthy, which is
-   * correct: nothing has been persisted yet either.
-   */
-  /**
    * Attach the durable effect journal (ADR-0080), late-bound because the journal is owned by the persister,
    * which is built AFTER the session — the same constraint `attachConservativeWriter` has for money.
    *
@@ -312,6 +322,13 @@ function buildSessionRuntime(
    * fail-closed direction: a silently unjournaled effect is exactly what CR-12 exists to prevent.
    */
   attachEffectJournal: (factory: (correlation: EffectCorrelation) => EffectDispatchPort) => void;
+  attachEffectTurnAllocator: (allocator: (sessionId: string) => number) => void;
+  /**
+   * Late-bind the session's durability probe (#W15-4). The persister is created by the CALLER, after this
+   * runtime exists, so the gate inside `preEgress` cannot take it as an argument — the same reason
+   * `attachConservativeWriter` is late-bound. Until it is attached the probe reports healthy, which is
+   * correct: nothing has been persisted yet either.
+   */
   attachDurabilityProbe: (probe: () => Error | undefined) => void;
 } {
   let durabilityProbe: () => Error | undefined = () => undefined;
@@ -357,7 +374,24 @@ function buildSessionRuntime(
   const baseHost: ToolHost = opts.toolHost ?? factoryEnv.host;
   // Conditional spread ⇒ the inbound-MCP arm is a true MERGE onto fs/process, never a replace (the prior bug).
   const host: ToolHost = mcp === undefined ? baseHost : { ...baseHost, mcp: mcp.capability };
-  const registry = createToolRegistry({ tools, host });
+  const assertDurableDispatch = (toolId: string): void => {
+    if (durabilityProbe() !== undefined)
+      throw new ToolExecutionError(toolId, SESSION_DURABILITY_FAILURE, undefined, {
+        retryable: false,
+      });
+  };
+  const innerRegistry = createToolRegistry({ tools, host });
+  const registry: ToolRegistry = {
+    ...innerRegistry,
+    dispatch: (call, ctx) =>
+      innerRegistry.dispatch(call, {
+        ...ctx,
+        beforeDispatch: (toolId) => {
+          ctx.beforeDispatch?.(toolId);
+          assertDurableDispatch(toolId);
+        },
+      }),
+  };
   // The chat `ToolPolicy` (ADR-0055's single source) extended with the `[chat].allowed_commands` /
   // `allowed_command_globs` `!`-shell allowlist (2.5.D, ADR-0061). Absent/empty ⇒ the factory default (`{}`) ⇒
   // `run_command` denied (the secure `empty ⇒ disabled` symmetry). Threaded into `SessionDeps.toolPolicy`, it is
@@ -378,6 +412,7 @@ function buildSessionRuntime(
     opts.resolvePrice,
     providers.endpointKind,
     opts.onUnpriced,
+    opts.maxTokensEstimate,
   );
   // The session event sink (1.W): a draft → bus → stamped sequenceNumber/timestamp. Hoisted so a SURFACE
   // event (the in-REPL `/export`'s `session:exported`, 2.Q) can ride the same monotonic per-session counter.
@@ -385,9 +420,16 @@ function buildSessionRuntime(
 
   // Late-bound by `attachEffectJournal`: the journal is owned by the persister, which is built AFTER the
   // session — the same constraint the commitment writer has.
+  let effectTurnAllocator: ((sessionId: string) => number) | undefined;
   let effectJournal: ((correlation: EffectCorrelation) => EffectDispatchPort) | undefined;
 
   const deps: SessionDeps = {
+    ...(opts.maxTokensEstimate === undefined ? {} : { maxTokensEstimate: opts.maxTokensEstimate }),
+    reserveEffectTurnKey: (id) => {
+      if (effectTurnAllocator === undefined)
+        throw new Error('session effect allocator is not attached');
+      return effectTurnAllocator(id);
+    },
     resolveProvider: providers.resolveProvider,
     keyFor: providers.keyFor,
     // The durable effect journal (ADR-0080), FORWARDED rather than captured: it is attached later by the
@@ -397,14 +439,21 @@ function buildSessionRuntime(
     effects: (correlation: EffectCorrelation): EffectDispatchPort => {
       const port = effectJournal?.(correlation);
       return {
-        prepare: (slot, toolId, tier, redactedArgs, targetIdempotencyKey) =>
-          (port ?? unwiredEffectJournal()).prepare(
+        prepare: async (slot, toolId, tier, redactedArgs, targetIdempotencyKey, callAttempt) => {
+          // A cached idle-command key is not a durability acknowledgement. Check at the actual effect
+          // boundary, including when cost persistence failed after this model attempt was admitted.
+          // Settling/discarding an existing claim must remain possible after a failure: that records what
+          // already happened rather than admitting another effect.
+          assertDurableDispatch(toolId);
+          return await (port ?? unwiredEffectJournal()).prepare(
             slot,
             toolId,
             tier,
             redactedArgs,
             targetIdempotencyKey,
-          ),
+            callAttempt,
+          );
+        },
         settle: (slot, toolId, state, result) =>
           (port ?? unwiredEffectJournal()).settle(slot, toolId, state, result),
         discard: (slot, toolId) => (port ?? unwiredEffectJournal()).discard(slot, toolId),
@@ -450,9 +499,13 @@ function buildSessionRuntime(
     // rides ONLY the AgentSession chat/Home/one-shot surfaces, never the run-engine's AgentRunner.
     limits: { ...DEFAULT_AGENT_TURN_LIMITS, recoverToolFailures: true },
     ...(opts.chat.maxTurns === undefined ? {} : { maxTurns: opts.chat.maxTurns }),
-    // Context compaction (ADR-0062): auto_compact / compact_threshold gate the after-turn auto-compaction, and
+    // Context compaction (ADR-0062): auto_compact / compact_threshold govern measured automatic compaction, and
     // max_messages is both the `/trim` bound and the auto-compaction failure-degrade target. Absent ⇒ the
     // engine defaults (enabled / 0.8 / no fallback trim). Threaded, not hardcoded, so the config is not re-dead.
+    ...(opts.afterTurnCompaction === undefined
+      ? {}
+      : { afterTurnCompaction: opts.afterTurnCompaction }),
+    ...(opts.onCompactionStart === undefined ? {} : { onCompactionStart: opts.onCompactionStart }),
     ...(opts.chat.autoCompact === undefined ? {} : { autoCompact: opts.chat.autoCompact }),
     ...(opts.chat.compactThreshold === undefined
       ? {}
@@ -470,10 +523,7 @@ function buildSessionRuntime(
         // turn failure and carries this MESSAGE onto the terminal, which is all this needs. Exporting the
         // turn-error class from `@relavium/core` to type it would widen a package's public API for a string.
         // The message names the state without echoing the store's own text, which can carry a path.
-        throw new Error(
-          'this session could not be saved, so it will not send anything further — the transcript and cost on disk are behind what you see',
-          { cause: failure },
-        );
+        throw new Error(SESSION_DURABILITY_FAILURE, { cause: failure });
       }
       return governor?.preEgress(info);
     },
@@ -499,6 +549,9 @@ function buildSessionRuntime(
     emit,
     host,
     governor,
+    attachEffectTurnAllocator: (allocator) => {
+      effectTurnAllocator = allocator;
+    },
     attachDurabilityProbe: (probe) => {
       durabilityProbe = probe;
     },
@@ -607,8 +660,16 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
     : await connectAgentMcp(agent.mcp_servers, mcpOptionsFor(opts, mcpArtifact, opts.cwd));
 
   try {
-    const { bus, deps, emit, host, governor, attachDurabilityProbe, attachEffectJournal } =
-      buildSessionRuntime(opts, sessionId, mcp, context);
+    const {
+      bus,
+      deps,
+      emit,
+      host,
+      governor,
+      attachDurabilityProbe,
+      attachEffectJournal,
+      attachEffectTurnAllocator,
+    } = buildSessionRuntime(opts, sessionId, mcp, context);
     // The session runs against the EFFECTIVE agent: its grant unioned with the discovered MCP tool ids (2.R)
     // and then narrowed by the 2.5.A advertise-filter to the tools whose ToolHost arm is actually wired (an
     // unwired tool is never offered). The ORIGINAL `agent` is what we return + persist (see {@link BuiltChatSession.agent}).
@@ -635,6 +696,7 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
       sessionId,
       agent,
       context,
+      contextWindowTokens: sessionContextWindow(agent, deps),
       tools: deps.tools,
       emitSessionEvent: emit,
       mcpSkipped: mcp?.skipped ?? [],
@@ -645,6 +707,7 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
             mcpChildPids: mcp.childPids,
           }),
       attachDurabilityProbe,
+      attachEffectTurnAllocator,
       attachEffectJournal,
       ...(governor === undefined ? {} : { governor }),
     };
@@ -726,9 +789,13 @@ export interface BuiltResumedChatSession extends BuiltChatSession {
   readonly nextSequenceNumber: number;
 }
 
-export interface BuildResumedChatSessionOptions {
+export interface BuildResumedChatSessionOptions extends Pick<
+  BuildChatSessionOptions,
+  'afterTurnCompaction' | 'onCompactionStart'
+> {
   /** The resolved `[chat]` block (turn cap, cost cap) — applied to the resumed session's deps. */
   readonly chat: ResolvedChatConfig;
+  readonly maxTokensEstimate?: number;
   /**
    * Sink for a WITHHELD reasoning tier (ADR-0071 §6) — see {@link BuildChatSessionOptions.onEffortWithheld}. A
    * RESUMED session is where a stale tier is likeliest: the snapshot carries the tier the agent was authored
@@ -841,8 +908,16 @@ export async function buildResumedChatSession(
   );
 
   try {
-    const { bus, deps, emit, host, governor, attachDurabilityProbe, attachEffectJournal } =
-      buildSessionRuntime(opts, record.id, mcp, context);
+    const {
+      bus,
+      deps,
+      emit,
+      host,
+      governor,
+      attachDurabilityProbe,
+      attachEffectJournal,
+      attachEffectTurnAllocator,
+    } = buildSessionRuntime(opts, record.id, mcp, context);
     // The same late-bound producer-await slot as the fresh-session path (`CR-30`), declared again because
     // this is a separate function. A resumed session streams exactly like a new one, so leaving it out
     // would have shipped the bound on one of the two ways a chat starts.
@@ -874,6 +949,7 @@ export async function buildResumedChatSession(
       sessionId: record.id,
       agent,
       context,
+      contextWindowTokens: sessionContextWindow(agent, deps),
       tools: deps.tools,
       emitSessionEvent: emit,
       resumeState,
@@ -886,6 +962,7 @@ export async function buildResumedChatSession(
             mcpChildPids: mcp.childPids,
           }),
       attachDurabilityProbe,
+      attachEffectTurnAllocator,
       attachEffectJournal,
       ...(governor === undefined ? {} : { governor }),
     };
@@ -957,6 +1034,7 @@ export function buildGovernorWiring(
   resolvePrice?: PricingOverlay,
   endpointKind?: (id: ProviderId) => EndpointKind,
   onUnpriced?: (note: string) => void,
+  maxTokensEstimate?: number,
 ): GovernorWiring | undefined {
   const cap = chat.maxCostMicrocents;
   if (cap === undefined || cap <= 0) return undefined;
@@ -970,14 +1048,11 @@ export function buildGovernorWiring(
   let writeCommitment: ((c: SessionConservativeCommitment) => Promise<void>) | undefined;
   const governor = new BudgetGovernor({
     budget,
+    ...(maxTokensEstimate === undefined ? {} : { defaultMaxTokensEstimate: maxTokensEstimate }),
     // The ADR-0065 §2 user-pricing overlay — so the PRE-EGRESS estimate can price a user-priced (otherwise
     // unknown) model and enforce the cost cap on it. Omit ⇒ an unknown model degrades to `allow` loudly.
     ...(resolvePrice === undefined ? {} : { resolvePrice }),
-    // ADR-0071 §7: the adapter clamps an authored `max_tokens` to the model's ceiling on an OFFICIAL endpoint and
-    // not on a custom one. The estimate must make the same call — assume official on a gateway and it lands BELOW
-    // what the wire can spend, so the governor under-authorizes and waves through the call it exists to stop.
-    // Keyed on the ROUTING provider the governor threads per attempt, not the model's catalog provider — a custom
-    // gateway serving another provider's model id would otherwise be mis-read as official and under-clamped (M2).
+    // Deprecated host-API compatibility only; admission uses the actual factory-bound plan (ADR-0101).
     ...(endpointKind === undefined ? {} : { resolveEndpoint: endpointKind }),
     // ADR-0071 §K7: a turn ran on a model we could not price, so the cap did not apply to it. Say so, once — a cost
     // cap that silently does not apply is a false sense of safety. `strict_cost_cap` is the block-instead option.
@@ -1027,8 +1102,7 @@ export function buildGovernorWiring(
     },
   });
   return {
-    preEgress: (info) =>
-      governor.checkPreEgress(info.model, info.maxTokens, info.mediaUnitsEstimate, info.provider),
+    preEgress: (info) => governor.checkPreEgress(info),
     updateCost: (cumulative) => governor.updateCost(cumulative),
     restoreConservativeCost: (microcents) => governor.restoreConservativeCost(microcents),
     flushBudgetCommitments: () => governor.flushCommitments(),
@@ -1043,4 +1117,17 @@ export function buildGovernorWiring(
       durabilityBroken: governor.conservativeDurabilityBroken,
     }),
   };
+}
+
+/** A catalog alias does not establish the capacity of a custom service. */
+function sessionContextWindow(agent: AgentDefinition, deps: SessionDeps): number | undefined {
+  try {
+    const provider = deps.resolveProvider(agent.provider);
+    if (provider === undefined || provider.customEndpoint === true) return undefined;
+    const window = provider.contextLimit?.(agent.model);
+    return window !== undefined && Number.isSafeInteger(window) && window > 0 ? window : undefined;
+  } catch {
+    // Optional host capacity metadata degrades to unknown; the foreground seam still validates requests.
+    return undefined;
+  }
 }

@@ -327,10 +327,8 @@ export function createProviderResolver(
   // mapping lives in the seam package (`@relavium/llm`); a stored CUSTOM `base_url` (ADR-0065 §3) rebinds its
   // provider's adapter to a validated per-provider endpoint here.
   const adapters: Record<ProviderId, LlmProvider> = { ...defaultProviders() };
-  // The provider ids that ended up pointed at a GENUINELY different host — not merely at a differently-spelled
-  // official one. Feeds `endpointKind`, which the pre-egress estimate reads (ADR-0071 §7).
-  const customEndpoints = new Set<ProviderId>();
-  applyCustomEndpoints(adapters, options, customEndpoints);
+  // Endpoint identity comes from the same adapter factory that lowers the wire cap (ADR-0101).
+  applyCustomEndpoints(adapters, options);
   // The ONE key-resolution path (keychain → env), returning `undefined` for genuine absence — shared by `keyFor`
   // (which throws on absence) and `hasKey` (which returns a boolean), so the two never drift (2.5.G key-awareness).
   const resolveKey = (id: ProviderId): string | undefined => {
@@ -359,7 +357,7 @@ export function createProviderResolver(
   };
   return {
     resolveProvider: (id) => adapters[id],
-    endpointKind: (id) => (customEndpoints.has(id) ? 'custom' : 'official'),
+    endpointKind: (id) => (adapters[id].customEndpoint === true ? 'custom' : 'official'),
     keyFor: (id) => {
       const key = resolveKey(id);
       if (key === undefined) {
@@ -379,23 +377,6 @@ export function createProviderResolver(
   };
 }
 
-/**
- * Is this stored `base_url` a host OTHER than the provider's own API?
- *
- * By HOST, never by string: the CLI stores a `--base-url` VERBATIM, so `https://api.openai.com/v1/` (one trailing
- * slash) and `https://api.openai.com/v1` are different strings for the same API. Mirrors `endpointKindFor` inside
- * the adapter, which decides the same question for the wire — the two must agree, or the estimate stops describing
- * the request. A trailing-dot FQDN (`api.openai.com.`) is the same host too, and DNS says so.
- */
-function isCustomHost(id: ProviderId, baseUrl: string): boolean {
-  try {
-    const host = new URL(baseUrl).hostname.toLowerCase().replace(/\.$/, '');
-    return host !== new URL(KNOWN_PROVIDERS[id].baseUrl).hostname.toLowerCase();
-  } catch {
-    return true; // unparseable ⇒ treat as custom (the conservative side: no clamp, no dialect switch)
-  }
-}
-
 /** One `providerStore.list()` row. Derived so no new import is needed. */
 type StoredProviderRow = ReturnType<ProviderStore['list']>[number];
 
@@ -405,14 +386,13 @@ type StoredProviderRow = ReturnType<ProviderStore['list']>[number];
  * supported this round; `provider add` refuses a custom `base_url` on `anthropic`/`gemini`, so a stored one on them
  * shouldn't exist — skipped defensively. The custom endpoint's egress rides the host's **SSRF-validated fetch**
  * (`connectValidated`), and the adapter's construction-time `assertHttpsBaseUrl` (HTTPS + private-range + no-creds)
- * gate re-validates the URL. A `base_url` that fails that gate is **skipped** (the default endpoint stands) rather
- * than crashing resolver creation for EVERY command — the fail-fast refusal is at `provider add`; this is the
- * defensive net for a pre-S9 / tampered row.
+ * gate re-validates the URL. A `base_url` that fails that gate makes the provider **refuse every call** (`CR-80`)
+ * rather than crashing resolver creation for EVERY command — the fail-fast refusal is at `provider add`; this is
+ * the defensive net for a pre-S9 / tampered row.
  */
 function applyCustomEndpoints(
   adapters: Record<ProviderId, LlmProvider>,
   options: ProviderResolverOptions,
-  custom: Set<ProviderId>,
 ): void {
   const store = options.providerStore;
   if (store === undefined) return; // no registry ⇒ default endpoints only (the pre-S9 behavior)
@@ -422,7 +402,7 @@ function applyCustomEndpoints(
   const getValidatedFetch = (): FetchLike =>
     (validatedFetch ??= options.validatedFetch ?? createValidatedFetch());
   for (const row of store.list()) {
-    applyCustomEndpointForRow(row, adapters, custom, getValidatedFetch);
+    applyCustomEndpointForRow(row, adapters, getValidatedFetch);
   }
 }
 
@@ -430,7 +410,6 @@ function applyCustomEndpoints(
 function applyCustomEndpointForRow(
   row: StoredProviderRow,
   adapters: Record<ProviderId, LlmProvider>,
-  custom: Set<ProviderId>,
   getValidatedFetch: () => FetchLike,
 ): void {
   const id = KNOWN_PROVIDER_IDS.find((known) => known === row.name);
@@ -443,12 +422,65 @@ function applyCustomEndpointForRow(
       baseURL: row.baseUrl,
       fetch: getValidatedFetch(),
     });
-    // Record it for the pre-egress estimate (ADR-0071 §7) — by HOST, so a row that merely SPELLS the official
-    // endpoint differently (a trailing slash, a missing `/v1`) is not mistaken for a gateway. The adapter makes
-    // the same call for the wire; this keeps the estimate describing the request the adapter will send.
-    if (isCustomHost(id, row.baseUrl)) custom.add(id);
   } catch (err) {
-    // A bad stored base_url (non-HTTPS / private / creds) — refuse the custom endpoint, keep the default adapter.
+    // **A bad stored `base_url` fails CLOSED (`CR-80`).** This used to swallow the error and leave the DEFAULT
+    // adapter standing, with a comment calling that "refuse the custom endpoint" — but the default adapter is
+    // the OFFICIAL API. A user who pointed Relavium at an internal gateway, and whose stored row later drifted
+    // to something non-HTTPS, private or credential-bearing, silently sent their prompts and their API key to
+    // `api.openai.com` instead, with nothing on screen to say so. Falling back to the official endpoint is the
+    // one outcome a rejected custom endpoint must never produce.
+    //
+    // Not a throw here: resolver construction runs for EVERY command, so throwing would make `relavium provider
+    // list` — the command you would use to FIND the bad row — unusable. The provider becomes one that refuses
+    // at the point of use instead, which is the earliest place the failure can be both loud and survivable.
     if (!(err instanceof InvalidBaseUrlError)) throw err;
+    adapters[id] = refusingProvider(id, adapters[id], err);
   }
+}
+
+/**
+ * A provider that refuses every call, standing in for one whose stored custom `base_url` was rejected (`CR-80`).
+ *
+ * `supports` is copied from the adapter it replaces rather than blanked: a capability flag is read to decide
+ * whether to SEND tools or an image, and a blanked one would make a caller quietly drop the feature and then
+ * succeed against a provider that was supposed to be unusable. Every path that matters ends at `generate` /
+ * `stream`, and both throw.
+ *
+ * The message names the URL's SHAPE and never its value — `InvalidBaseUrlError` already summarises to
+ * scheme+host, so an embedded `user:pass@` cannot survive into it — and it says which provider is refused and
+ * how to fix the row. The optional seam methods are deliberately omitted: `contextLimit?` / `listModels?` /
+ * `generateMedia?` are absent-means-unsupported, so a host degrades instead of crashing while enumerating.
+ *
+ * **Each arm fails the way its own signature promises**, which a first version got wrong by giving both the same
+ * `(): never` thrower. `generate` is declared to return a `Promise`, so a caller may legitimately write
+ * `.catch()` with no `try`; a synchronous throw escapes that and crashes the process instead of being handled —
+ * a refusal that breaks the contract it is enforcing. It rejects instead. `stream` returns an `AsyncIterable`,
+ * and a real adapter is an async generator whose failure surfaces at the first pull, so this mirrors that: the
+ * call returns, and the error arrives where a `for await` is already positioned to catch it.
+ */
+function refusingProvider(
+  id: ProviderId,
+  replaced: LlmProvider,
+  cause: InvalidBaseUrlError,
+): LlmProvider {
+  const refusal = (): InvalidBaseUrlError =>
+    new InvalidBaseUrlError(
+      cause.url,
+      `${cause.reason} — refusing provider '${id}' rather than falling back to the official endpoint; fix or remove the stored base URL with \`relavium provider add ${id} --base-url <url>\``,
+    );
+  return {
+    id,
+    customEndpoint: true,
+    supports: replaced.supports,
+    generate: () => Promise.reject(refusal()),
+    // An explicit `AsyncIterable` rather than an `async function*` that only throws: a generator with no
+    // `yield` is a lint error, and silencing that would hide the fact that this iterable never yields — which
+    // is the whole point of it. `next()` REJECTS, so the failure lands at the first pull, where a real
+    // adapter's would, and a `for await` already sitting in a `try` catches it.
+    stream: (): AsyncIterable<never> => ({
+      [Symbol.asyncIterator]: (): AsyncIterator<never> => ({
+        next: (): Promise<IteratorResult<never>> => Promise.reject(refusal()),
+      }),
+    }),
+  };
 }

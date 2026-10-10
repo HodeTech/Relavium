@@ -1,7 +1,9 @@
+import { ProviderInvocationWork, retiringStream } from './adapters/invocation-work.js';
+import { ContentPartSchema, StopReasonSchema } from '@relavium/shared';
 import type { AbortSignalLike, BackoffStrategy, ContentPart, MediaSource } from '@relavium/shared';
 
-import type { CostTracker, CostUpdate } from './cost-tracker.js';
-import { UnknownModelError } from './errors.js';
+import { snapshotAccountableUsage, type CostTracker, type CostUpdate } from './cost-tracker.js';
+import { UnknownModelError, UnsupportedRequestDataError } from './errors.js';
 import {
   DEFAULT_ATTEMPT_TIMEOUT_MS,
   openDeadline,
@@ -9,7 +11,7 @@ import {
   type DeadlineScope,
   type SetDeadlineTimer,
 } from './attempt-deadline.js';
-import { isRetryable, LlmProviderError, makeLlmError } from './llm-error.js';
+import { isRetryable, LlmProviderError, makeLlmError, snapshotLlmError } from './llm-error.js';
 import { verifyStreamGrammar } from './stream-grammar.js';
 import { ProviderIdSchema } from './types.js';
 import type {
@@ -22,11 +24,46 @@ import type {
   StreamChunk,
   Usage,
 } from './types.js';
-import { requestSupportReason } from './capabilities.js';
 import { catalogModel } from './catalog/lookup.js';
 import { acceptedTiers } from './reasoning-wire.js';
+import {
+  deriveOwnedRequestMessages,
+  ownLlmRequest,
+  ownedRequestSignal,
+  ownedRequestSupportReason,
+  outputCapPlanForRequest,
+  selectOwnedRequest,
+  withOwnedRequestSignal,
+  withoutOwnedRequestEffort,
+  type OwnedLlmRequest,
+  type RequestCandidate,
+  InvalidOutputCapPlanError,
+  type OutputCapIdentity,
+  type PreparedOutputCapPlan,
+} from './output-cap.js';
 
 export type { BackoffStrategy };
+
+type GeneratedResultProjection =
+  | { readonly ok: true; readonly result: LlmResult }
+  | { readonly ok: false; readonly error: unknown };
+
+/** Own typed output before host pricing runs, while allowing known usage to be charged on failure. */
+function captureGeneratedResult(result: LlmResult, usage: Usage): GeneratedResultProjection {
+  try {
+    return {
+      ok: true,
+      result: {
+        content: ContentPartSchema.array().parse(result.content),
+        stopReason: StopReasonSchema.parse(result.stopReason),
+        usage,
+        raw: result.raw,
+      },
+    };
+  } catch (error) {
+    return { ok: false, error };
+  }
+}
 
 /**
  * The `FallbackChain` runner (1.K) — the seam's last Phase-1 policy layer. It walks an ordered plan
@@ -90,12 +127,18 @@ export type AttemptOutcome = 'succeeded' | 'failed' | 'skipped';
  * `LlmError.cause` (the run-event error shape is only `{ code, message, retryable }`).
  */
 export interface AttemptRecord {
+  /** Chain-observed content/processed response, never an adapter-supplied error flag. */
+  readonly contentReceived: boolean;
+  /** True only after the chain invokes generate/stream; preparation, hooks and key failures stay false. */
+  readonly providerInvoked: boolean;
+  /** The actual entry's endpoint classification, captured by the chain. */
+  readonly customEndpoint: boolean;
   /**
    * 1-based **positional** index of this record in the current `generate`/`stream` call's trace —
    * it counts skipped entries too, so it is NOT the run-event spec's per-real-call "retry attempt"
    * number ([sse-event-schema.md](../../../docs/reference/contracts/sse-event-schema.md)). The
-   * engine (1.O) derives the `cost:updated.attemptNumber` it emits (e.g. by counting only the
-   * non-skipped records), rather than forwarding this field verbatim.
+   * engine (1.O) derives the `cost:updated.attemptNumber` it emits by counting provider-invoked
+   * records, rather than forwarding this field verbatim. Pre-provider failures remain trace records.
    */
   readonly attemptNumber: number;
   /** The provider this attempt targeted. */
@@ -104,7 +147,7 @@ export interface AttemptRecord {
   readonly model: string;
   /** Whether the attempt succeeded, failed (provider error), or was skipped (capability/cooldown). */
   readonly outcome: AttemptOutcome;
-  /** The usage the attempt produced, when it produced any (a successful call). */
+  /** Actual usage supplied by a successful or failed processed response; never a reservation. */
   readonly usage?: Usage;
   /** The cost folded into the tracker for this attempt (present iff a `costTracker` is wired and usage existed). */
   readonly cost?: CostUpdate;
@@ -130,15 +173,11 @@ export interface AttemptRecord {
  * In 1.AC this is where the pre-egress budget governor runs; a rejected hook aborts the attempt
  * and is surfaced as a fatal chain error.
  */
-export type PreAttemptHook = (info: {
-  readonly model: string;
-  readonly maxTokens?: number;
-  /** The provider THIS attempt targets — the routing provider, which on a failover differs from the primary.
-   *  The pre-egress endpoint estimate must key on it (not the model's catalog provider): a custom gateway
-   *  serving another provider's model id is `custom` at the wire yet `official` by catalog, and the mismatch
-   *  under-authorizes real spend (review M2). */
-  readonly provider: ProviderId;
-}) => void | Promise<void>;
+export interface PreAttemptInfo extends OutputCapIdentity {
+  readonly outputCapPlan: PreparedOutputCapPlan;
+}
+
+export type PreAttemptHook = (info: PreAttemptInfo) => void | Promise<void>;
 
 /** Dependencies injected into a {@link FallbackChain} — all timing is injectable so tests are deterministic. */
 export interface FallbackChainOptions {
@@ -164,6 +203,8 @@ export interface FallbackChainOptions {
    * See {@link PreAttemptHook}.
    */
   readonly preAttempt?: PreAttemptHook;
+  /** Execution-local lifetime entry before invoking a raw producer; never request data or admission. */
+  readonly retainWork?: <T>(factory: () => Promise<T>) => Promise<T>;
   /**
    * The delay primitive used for backoff between same-entry retries. **Required and host-injected**:
    * the seam is platform-free (no ambient `setTimeout`), so the host supplies the timer — a
@@ -214,6 +255,24 @@ export interface FallbackChainOptions {
    * `handle` source is sent to the adapter unchanged (no-op).
    */
   readonly resolveForEgress?: (handle: string, provider: ProviderId) => Promise<MediaSource>;
+}
+
+const retainedEntryFailures = new WeakMap<object, { readonly error: unknown }>();
+
+/** Identity lookup never reflects on an arbitrary provider/host throwable. */
+function retainedEntryFailure(error: unknown): { readonly error: unknown } | undefined {
+  return (typeof error === 'object' && error !== null) || typeof error === 'function'
+    ? retainedEntryFailures.get(error)
+    : undefined;
+}
+
+/** Private invocation provenance, unwrapped before leaving the chain; no provider/retry authority. */
+class RetainedWorkEntryError extends Error {
+  constructor(original: unknown) {
+    super('host work registration failed');
+    this.name = 'RetainedWorkEntryError';
+    retainedEntryFailures.set(this, { error: original });
+  }
 }
 
 const DEFAULT_BACKOFF_BASE_MS = 250;
@@ -359,10 +418,10 @@ function backoffDelayMs(
  * which turns a convention into an invariant.
  */
 function disown(error: LlmError): LlmError {
-  if (error.contentCommitted === undefined) return error;
+  if (error.contentCommitted === undefined) return Object.freeze(error);
   const rest = { ...error };
   delete rest.contentCommitted;
-  return rest;
+  return Object.freeze(rest);
 }
 
 /**
@@ -374,7 +433,7 @@ function disown(error: LlmError): LlmError {
  * deliberate suppression from a bug; `contentCommitted: true` says which and why.
  */
 function committed(error: LlmError): LlmError {
-  return { ...error, contentCommitted: true };
+  return Object.freeze({ ...error, contentCommitted: true });
 }
 
 /**
@@ -384,7 +443,7 @@ function committed(error: LlmError): LlmError {
  * in place would leave a disposed scope's signal attached to the next attempt.
  */
 function withSignal(req: LlmRequest, signal: AbortSignalLike): LlmRequest {
-  return { ...req, signal };
+  return withOwnedRequestSignal(req, signal);
 }
 
 /** A content chunk commits a stream — anything other than the terminal `stop`/`error` arms. */
@@ -397,6 +456,34 @@ function hasHandleMedia(req: LlmRequest): boolean {
   return req.messages.some((message) =>
     message.content.some((part) => part.type === 'media' && part.source.kind === 'handle'),
   );
+}
+
+type CapturedChainRequest =
+  | { readonly ok: true; readonly request: OwnedLlmRequest }
+  | { readonly ok: false; readonly error: LlmError };
+
+type SelectedChainRequest =
+  | { readonly ok: true; readonly request: LlmRequest }
+  | { readonly ok: false; readonly error: LlmError };
+
+function candidateFor(entry: FallbackPlanEntry): RequestCandidate {
+  return {
+    model: entry.model,
+    provider: entry.provider.id,
+    endpoint: entry.provider.customEndpoint === true ? 'custom' : 'official',
+  };
+}
+
+function captureResolvedSource(source: MediaSource): MediaSource {
+  const kind = source.kind;
+  switch (kind) {
+    case 'base64':
+      return Object.freeze({ kind, data: source.data });
+    case 'url':
+      return Object.freeze({ kind, url: source.url });
+    case 'handle':
+      return Object.freeze({ kind, ref: source.ref });
+  }
 }
 
 /** What one `generate` attempt produced. */
@@ -472,13 +559,53 @@ export class FallbackChain {
     this.#setTimer = options.setTimer;
   }
 
+  #captureRequest(request: LlmRequest): CapturedChainRequest {
+    try {
+      return { ok: true, request: ownLlmRequest(request, this.#plan.map(candidateFor)) };
+    } catch (error) {
+      return { ok: false, error: this.#errorOf(error, this.#firstEntry().provider.id) };
+    }
+  }
+
+  #firstEntry(): FallbackPlanEntry {
+    const entry = this.#plan[0];
+    if (entry === undefined) throw new Error('FallbackChain requires at least one plan entry');
+    return entry;
+  }
+
+  #captureFailureRecord(): AttemptRecord {
+    const entry = this.#firstEntry();
+    return {
+      attemptNumber: 1,
+      contentReceived: false,
+      providerInvoked: false,
+      customEndpoint: entry.provider.customEndpoint === true,
+      provider: entry.provider.id,
+      model: entry.model,
+      outcome: 'failed',
+    };
+  }
+
+  #beginEntry(entry: FallbackPlanEntry, run: ChainRun): SelectedChainRequest {
+    try {
+      return { ok: true, request: run.beginEntry(entry) };
+    } catch (error) {
+      return { ok: false, error: this.#errorOf(error, entry.provider.id) };
+    }
+  }
+
   /**
    * Run the chain for a non-streaming request. Returns the first entry's `LlmResult`; throws an
    * `LlmProviderError` carrying the classified `LlmError` once the chain is exhausted or a fatal
    * error stops it. Each attempt is reported via `onAttempt`; per-attempt usage is recorded against
    * that attempt's model so cost stays accurate across a failover.
    */
-  async generate(req: LlmRequest): Promise<LlmResult> {
+  async generate(request: LlmRequest): Promise<LlmResult> {
+    const captured = this.#captureRequest(request);
+    if (!captured.ok) {
+      throw new LlmProviderError(this.#emitFailure(this.#captureFailureRecord(), captured.error));
+    }
+    const req = captured.request;
     const run = new ChainRun(req, this.#lastProviderAcrossCalls);
     // Why every skip's reason is kept: when the whole plan is skipped there is no provider error to report,
     // and the synthesized one is the only thing the user sees (`CR-51` — see `#exhaustedError`).
@@ -486,14 +613,17 @@ export class FallbackChain {
     try {
       for (const entry of this.#plan) {
         this.#throwIfAborted(req, entry.provider.id);
-        const skip = this.#skipReason(entry, run.previewRequest(entry));
+        const skip = this.#skipReason(entry, run.source);
         if (skip !== undefined) {
           skipped.push(skip);
           this.#emit(run.next(entry, { outcome: 'skipped', skipReason: skip }));
           continue;
         }
-        const entryReq = run.beginEntry(entry); // strips on a provider boundary — only for attempted entries
-        const materialized = await this.#materializeForEntry(entry, entryReq, run);
+        const selected = this.#beginEntry(entry, run);
+        if (!selected.ok) {
+          throw new LlmProviderError(this.#emitFailure(run.next(entry), selected.error));
+        }
+        const materialized = await this.#materializeForEntry(entry, selected.request, run);
         if (materialized === undefined) {
           continue; // a failed media re-materialization advances to the next provider (retryable-advance)
         }
@@ -516,7 +646,7 @@ export class FallbackChain {
   async #runEntryGenerate(
     entry: FallbackPlanEntry,
     entryReq: LlmRequest,
-    req: LlmRequest,
+    req: OwnedLlmRequest,
     run: ChainRun,
   ): Promise<LlmResult | undefined> {
     const budget = entry.maxAttempts;
@@ -552,7 +682,24 @@ export class FallbackChain {
    * later error chunk is surfaced to the consumer (1.S node-retry) rather than re-issued. Like the
    * seam's `stream`, a terminal failure is surfaced as an `error` chunk, not a throw.
    */
-  async *stream(req: LlmRequest): AsyncIterable<StreamChunk> {
+  stream(request: LlmRequest): AsyncIterable<StreamChunk> {
+    // Async-generator bodies start on first next(). Own caller data now, before that handoff.
+    const captured = this.#captureRequest(request);
+    return retiringStream((setWork) => this.#streamOwned(captured, setWork));
+  }
+
+  async *#streamOwned(
+    captured: CapturedChainRequest,
+    setWork: (work: ProviderInvocationWork) => void,
+  ): AsyncGenerator<StreamChunk, void, unknown> {
+    if (!captured.ok) {
+      yield {
+        type: 'error',
+        error: this.#emitFailure(this.#captureFailureRecord(), captured.error),
+      };
+      return;
+    }
+    const req = captured.request;
     const run = new ChainRun(req, this.#lastProviderAcrossCalls);
     // See the `generate` twin: a wholly-skipped plan has no provider error, so the reasons ARE the report.
     const skipped: string[] = [];
@@ -562,18 +709,22 @@ export class FallbackChain {
           yield { type: 'error', error: this.#cancelledError(entry.provider.id) };
           return;
         }
-        const skip = this.#skipReason(entry, run.previewRequest(entry), { streaming: true });
+        const skip = this.#skipReason(entry, run.source, { streaming: true });
         if (skip !== undefined) {
           skipped.push(skip);
           this.#emit(run.next(entry, { outcome: 'skipped', skipReason: skip }));
           continue;
         }
-        const entryReq = run.beginEntry(entry); // strips on a provider boundary — only for attempted entries
-        const materialized = await this.#materializeForEntry(entry, entryReq, run);
+        const selected = this.#beginEntry(entry, run);
+        if (!selected.ok) {
+          yield { type: 'error', error: this.#emitFailure(run.next(entry), selected.error) };
+          return;
+        }
+        const materialized = await this.#materializeForEntry(entry, selected.request, run);
         if (materialized === undefined) {
           continue; // a failed media re-materialization advances to the next provider (retryable-advance)
         }
-        const action = yield* this.#runEntryStream(entry, materialized, req, run);
+        const action = yield* this.#runEntryStream(entry, materialized, req, run, setWork);
         if (action === 'done') {
           return;
         }
@@ -592,8 +743,9 @@ export class FallbackChain {
   async *#runEntryStream(
     entry: FallbackPlanEntry,
     entryReq: LlmRequest,
-    req: LlmRequest,
+    req: OwnedLlmRequest,
     run: ChainRun,
+    setWork: (work: ProviderInvocationWork) => void,
   ): AsyncGenerator<StreamChunk, 'done' | 'advance'> {
     const budget = entry.maxAttempts;
     let bonus = 0; // one extra attempt granted by a successful auth refresh (never the retry loop)
@@ -604,7 +756,7 @@ export class FallbackChain {
       }
       const record = run.next(entry);
       const attemptState: StreamAttemptState = { committed: false };
-      const failure = yield* this.#runStreamAttempt(entry, entryReq, record, attemptState);
+      const failure = yield* this.#runStreamAttempt(entry, entryReq, record, attemptState, setWork);
       if (attemptState.committed) {
         return 'done'; // content forwarded — any later failure was surfaced inside the attempt
       }
@@ -638,20 +790,35 @@ export class FallbackChain {
     entryReq: LlmRequest,
     run: ChainRun,
   ): Promise<GenerateAttempt> {
-    const record = run.next(entry);
+    let record = run.next(entry);
     // The deadline covers THIS arm too, and a review caught it not doing so. ADR-0082's §5 opens with
     // `generate(): Promise<LlmResult> { return new Promise(() => {}) }` as its motivating hang, and §12.10
     // makes it the first acceptance criterion — yet the wiring landed on `stream()` only. The gap was live:
     // `agent-turn.ts` routes an inline media-out turn (ADR-0046) through `chain.generate()`, so a hung
     // provider on that path waited forever on every surface.
     let deadline: DeadlineScope | undefined;
+    let cleanupFailure: { readonly error: unknown } | undefined;
+    const disposeDeadline = (): void => {
+      try {
+        deadline?.dispose();
+      } catch (error) {
+        cleanupFailure ??= { error };
+      }
+    };
+    let invocation: ProviderInvocationWork | undefined;
+    let providerSucceeded = false;
+    let knownUsage: Usage | undefined;
+    let projection: GeneratedResultProjection | undefined;
+    let captureFailure: { readonly error: unknown } | undefined;
+    let retentionFailure: { readonly error: unknown } | undefined;
+    let outcome: GenerateAttempt;
     try {
-      const maxTokens = entryReq.maxTokens;
-      await this.#options.preAttempt?.({
-        model: entry.model,
-        provider: entry.provider.id,
-        ...(maxTokens === undefined ? {} : { maxTokens }),
-      });
+      const plan = outputCapPlanForRequest(
+        entryReq,
+        entry.provider.id,
+        record.customEndpoint ? 'custom' : 'official',
+      );
+      await this.#options.preAttempt?.({ ...plan, outputCapPlan: plan });
       const key = await this.#resolveKey(entry.provider.id);
       // **Re-check the caller AFTER credential resolution, BEFORE the seam call.** `#resolveKey` is I/O — a
       // keychain read, and in Phase 2 a network one — so a cancel landing inside it used to be invisible
@@ -659,37 +826,140 @@ export class FallbackChain {
       // and `race()` reported `cancelled` for a request that had nonetheless gone out. A cancelled run must
       // not produce provider traffic, let alone a charge.
       if (this.#aborted(entryReq)) {
-        const error = this.#cancelledError(entry.provider.id);
-        this.#emit({ ...record, outcome: 'failed', error });
-        return { status: 'error', error };
+        throw new LlmProviderError(this.#cancelledError(entry.provider.id));
       }
       deadline = this.#openDeadline(entryReq);
-      const call = entry.provider.generate(
-        deadline === undefined ? entryReq : withSignal(entryReq, deadline.signal),
-        key,
-      );
+      const generate = entry.provider.generate.bind(entry.provider);
+      const request = deadline === undefined ? entryReq : withSignal(entryReq, deadline.signal);
+      if (this.#aborted(entryReq)) {
+        throw new LlmProviderError(this.#cancelledError(entry.provider.id));
+      }
+      const call = this.#retainWork(() => {
+        invocation = this.#openInvocation(request);
+        // Registration is a synchronous host boundary and may cancel or expire this attempt.
+        this.#throwIfAborted(entryReq, entry.provider.id);
+        if (this.#aborted(request))
+          throw new LlmProviderError(this.#classifyDeadline(deadline, entry.provider.id));
+        record = { ...record, providerInvoked: true };
+        return invocation === undefined
+          ? generate(request, key)
+          : generate(request, key, invocation);
+      });
       // A `generate()` has no chunks, so there is nothing to commit: a deadline here is always pre-content
       // and may fail over, which is rule 7's other half rather than an exception to it.
       const raced = deadline === undefined ? undefined : await deadline.race(call);
       if (raced?.outcome === 'deadline') {
-        const error = this.#classifyDeadline(deadline, entry.provider.id);
-        this.#emit({ ...record, outcome: 'failed', error });
-        return { status: 'error', error };
+        throw new LlmProviderError(this.#classifyDeadline(deadline, entry.provider.id));
       }
-      const result = raced === undefined ? await call : raced.value;
-      this.#emitSuccess(record, entry.model, result.usage);
-      return { status: 'success', result };
+      outcome = { status: 'success', result: raced === undefined ? await call : raced.value };
+      providerSucceeded = true;
+      // Retirement invokes caller code synchronously. Own quantities and output before that boundary,
+      // but defer capture faults so the normal post-provider path still charges known valid usage.
+      try {
+        const resultUsage = outcome.result.usage;
+        if (resultUsage !== undefined)
+          knownUsage = snapshotAccountableUsage(entry.model, resultUsage);
+        projection = captureGeneratedResult(outcome.result, knownUsage ?? resultUsage);
+      } catch (error) {
+        captureFailure = { error };
+      }
     } catch (err) {
-      const error = this.#abortAware(
-        this.#errorOf(err, entry.provider.id),
-        entryReq,
-        entry.provider.id,
-      );
-      this.#emit({ ...record, outcome: 'failed', error });
-      return { status: 'error', error };
+      retentionFailure = retainedEntryFailure(err);
+      const error =
+        retentionFailure === undefined
+          ? this.#abortAware(this.#errorOf(err, entry.provider.id), entryReq, entry.provider.id)
+          : this.#retentionError(entry.provider.id, retentionFailure.error);
+      outcome = { status: 'error', error };
     } finally {
-      deadline?.dispose();
+      // A successful response must be owned before another custom host callback can mutate it.
+      // Failed provider/admission paths still dispose even if diagnostic normalization throws.
+      try {
+        invocation?.retire();
+      } catch (error) {
+        cleanupFailure = { error };
+      }
+      if (!providerSucceeded) disposeDeadline();
     }
+    // All observers run outside the provider catch, including abort/deadline/failure observations.
+    if (outcome.status === 'error') {
+      // A cleanup fault is secondary to an existing provider/admission failure. Preserve its
+      // original diagnosis, refusal proof and attempt observation instead of replacing them.
+      // A failed generated response may carry real usage (native context-window stop).
+      // Only usage from an invoked provider is processed-response evidence. A typed host-hook
+      // exception cannot establish response processing; provider-supplied commitment is disowned.
+      const received =
+        record.providerInvoked && outcome.error.usage !== undefined
+          ? { ...record, contentReceived: true }
+          : record;
+      const error = this.#emitFailure(received, outcome.error);
+      if (retentionFailure !== undefined) throw retentionFailure.error;
+      return { status: 'error', error: received.contentReceived ? committed(error) : error };
+    }
+    // A returned generation, even empty, was processed. Guard accounting separately from the
+    // provider attempt so a tracker/observer cannot forge a refundable HTTP refusal or cause retries.
+    const receivedRecord = { ...record, contentReceived: true };
+    let usage: Usage | undefined;
+    let folded: FoldedUsage | undefined;
+    let captured: LlmResult;
+    try {
+      usage = knownUsage;
+      folded =
+        knownUsage === undefined ? { unpriced: false } : this.#foldUsage(entry.model, knownUsage);
+      if (captureFailure !== undefined) throw captureFailure.error;
+      if (projection === undefined) throw new Error('generated response capture is missing');
+      if (!projection.ok) throw projection.error;
+      captured = projection.result;
+    } catch (cause) {
+      disposeDeadline();
+      const error = Object.freeze(
+        makeLlmError({
+          provider: entry.provider.id,
+          kind: 'unknown',
+          message:
+            folded === undefined
+              ? 'cost accounting failed after a successful generated attempt'
+              : 'generated result access failed after provider completion',
+          cause,
+        }),
+      );
+      this.#emit({
+        ...receivedRecord,
+        ...(knownUsage === undefined
+          ? {}
+          : {
+              usage: knownUsage,
+              ...(folded === undefined || folded.unpriced ? { priced: false } : {}),
+              ...(folded?.cost === undefined ? {} : { cost: folded.cost }),
+            }),
+        outcome: 'failed',
+        error,
+      });
+      return { status: 'error', error };
+    }
+    disposeDeadline();
+    // The observer is consumer code: its exception propagates once, outside the provider catch.
+    if (cleanupFailure !== undefined) {
+      const error = this.#attemptCleanupError(entry.provider.id, cleanupFailure.error);
+      this.#emit({
+        ...receivedRecord,
+        ...(knownUsage === undefined
+          ? {}
+          : {
+              usage: knownUsage,
+              ...(folded.unpriced ? { priced: false } : {}),
+              ...(folded.cost === undefined ? {} : { cost: folded.cost }),
+            }),
+        outcome: 'failed',
+        error,
+      });
+      return { status: 'error', error };
+    }
+    if (usage === undefined) this.#emitSuccess(receivedRecord, entry.model, undefined);
+    else this.#emitFolded(receivedRecord, usage, folded);
+    return {
+      status: 'success',
+      result: captured,
+    };
   }
 
   /**
@@ -721,11 +991,59 @@ export class FallbackChain {
     error: LlmError,
     state: StreamAttemptState,
   ): Generator<StreamChunk, LlmError | undefined> {
-    this.#emit({ ...record, outcome: 'failed', error });
+    error = this.#emitFailure({ ...record, contentReceived: state.committed }, error);
     if (state.committed) {
       yield { type: 'error', error: committed(error) };
       return undefined;
     }
+    return error;
+  }
+
+  /** Account invoked-provider evidence before observation; local diagnostics cannot invent usage. */
+  #emitFailure(record: AttemptRecord, diagnostic: LlmError): LlmError {
+    if (!record.providerInvoked) {
+      // This catch also handles admission, credentials and host setup. Even a genuine provider
+      // error class thrown there is not evidence of usage from this attempt. Strip its quantities
+      // before pricing, observation and surfacing, while retaining diagnosis and private cause.
+      const localDiagnostic = { ...diagnostic };
+      delete localDiagnostic.usage;
+      diagnostic = Object.freeze(localDiagnostic);
+    }
+    let error =
+      record.customEndpoint && diagnostic.kind === 'context_overflow'
+        ? Object.freeze({ ...diagnostic, kind: 'bad_request' as const, retryable: false })
+        : diagnostic;
+    let usage: Usage | undefined;
+    let folded: FoldedUsage | undefined;
+    try {
+      if (error.usage !== undefined) {
+        usage = snapshotAccountableUsage(record.model, error.usage);
+        folded = this.#foldUsage(record.model, usage);
+      }
+    } catch (cause) {
+      error = Object.freeze({
+        ...makeLlmError({
+          provider: record.provider,
+          kind: 'unknown',
+          message: 'cost accounting failed after a failed provider response',
+          cause,
+        }),
+        ...(usage === undefined ? {} : { usage }),
+      });
+    }
+    // The observer is outside the accounting catch, and its exact exception escapes once.
+    this.#emit({
+      ...record,
+      outcome: 'failed',
+      error,
+      ...(usage === undefined
+        ? {}
+        : {
+            usage,
+            ...(folded === undefined || folded.unpriced ? { priced: false as const } : {}),
+            ...(folded?.cost === undefined ? {} : { cost: folded.cost }),
+          }),
+    });
     return error;
   }
 
@@ -734,8 +1052,12 @@ export class FallbackChain {
     entryReq: LlmRequest,
     record: AttemptRecord,
     state: StreamAttemptState,
+    setWork: (work: ProviderInvocationWork) => void,
   ): AsyncGenerator<StreamChunk, LlmError | undefined> {
     let usage: Usage | undefined;
+    let failure: LlmError | undefined;
+    let retentionFailure: { readonly error: unknown } | undefined;
+    let cleanupFailure: { readonly error: unknown } | undefined;
     // Declared outside the `try` so the `finally` can dispose it on EVERY exit path — including success,
     // which is the one most likely to forget. A leaked timer holds the process awake, which on a CLI is a
     // hang the user cannot explain.
@@ -743,13 +1065,14 @@ export class FallbackChain {
     // Declared beside `deadline`, and for the same reason: the `finally` has to be able to close it on
     // EVERY exit, and a `let` inside the `try` would not be in scope there.
     let iterator: AsyncIterator<StreamChunk> | undefined;
+    let invocation: ProviderInvocationWork | undefined;
     try {
-      const maxTokens = entryReq.maxTokens;
-      await this.#options.preAttempt?.({
-        model: entry.model,
-        provider: entry.provider.id,
-        ...(maxTokens === undefined ? {} : { maxTokens }),
-      });
+      const plan = outputCapPlanForRequest(
+        entryReq,
+        entry.provider.id,
+        record.customEndpoint ? 'custom' : 'official',
+      );
+      await this.#options.preAttempt?.({ ...plan, outputCapPlan: plan });
       const key = await this.#resolveKey(entry.provider.id);
       // **Re-check the caller AFTER credential resolution, BEFORE the seam call.** `#resolveKey` is I/O — a
       // keychain read, and in Phase 2 a network one — so a cancel landing inside it used to be invisible
@@ -757,58 +1080,80 @@ export class FallbackChain {
       // and `race()` reported `cancelled` for a request that had nonetheless gone out. A cancelled run must
       // not produce provider traffic, let alone a charge.
       if (this.#aborted(entryReq)) {
-        return yield* this.#failAttempt(record, this.#cancelledError(entry.provider.id), state);
+        throw new LlmProviderError(this.#cancelledError(entry.provider.id));
       }
       // **The grammar is verified HERE, where the seam is crossed** (ADR-0082 §3). The audited adapters
       // already detect a truncated stream and keep doing so — better-attributed, since an adapter knows it
       // was reading SSE — but the chain accepts ANY `LLMProvider`: a cassette, a test double, and in Phase 2
       // a managed gateway. A rule enforced only inside implementations we happen to own is a coincidence.
       deadline = this.#openDeadline(entryReq);
-      const verified = verifyStreamGrammar(
-        entry.provider.stream(
-          deadline === undefined ? entryReq : withSignal(entryReq, deadline.signal),
-          key,
-        ),
-        entry.provider.id,
-      );
+      const stream = entry.provider.stream.bind(entry.provider);
+      const request = deadline === undefined ? entryReq : withSignal(entryReq, deadline.signal);
+      if (this.#aborted(entryReq)) {
+        throw new LlmProviderError(this.#cancelledError(entry.provider.id));
+      }
+      // Enter the first raw read before even constructing the provider's stream. A seam may begin
+      // work synchronously in stream(), so a refused lifetime entry must still prove no invocation.
+      const openIterator = (): AsyncIterator<StreamChunk> => {
+        if (iterator !== undefined) return iterator;
+        invocation = this.#openInvocation(request);
+        if (invocation !== undefined) setWork(invocation);
+        this.#throwIfAborted(entryReq, entry.provider.id);
+        if (this.#aborted(request))
+          throw new LlmProviderError(this.#classifyDeadline(deadline, entry.provider.id));
+        record = { ...record, providerInvoked: true };
+        const source =
+          invocation === undefined ? stream(request, key) : stream(request, key, invocation);
+        const verified = verifyStreamGrammar(
+          invocation === undefined ? source : invocation.ownIterator(source),
+          entry.provider.id,
+          entry.model,
+          (observed) => {
+            usage = observed;
+          },
+        );
+        iterator = verified[Symbol.asyncIterator]();
+        return iterator;
+      };
       // Manual iteration, not `for await`: every `next()` is raced against the ABSOLUTE deadline. A
       // `for await` can only be bounded by a signal, and a signal is a request the provider may ignore.
-      iterator = verified[Symbol.asyncIterator]();
       for (;;) {
-        const step = await this.#raceStep(iterator, deadline);
+        const step = await this.#raceStep(openIterator, deadline);
         if (step.kind === 'timeout') {
-          return yield* this.#failAttempt(
-            record,
-            this.#classifyDeadline(deadline, entry.provider.id),
-            state,
-          );
+          throw new LlmProviderError(this.#classifyDeadline(deadline, entry.provider.id));
         }
         if (step.kind === 'done') break;
         const chunk = step.chunk;
         if (chunk.type === 'error') {
-          return yield* this.#failAttempt(
-            record,
-            this.#abortAware(chunk.error, entryReq, entry.provider.id),
-            state,
-          );
+          throw new LlmProviderError(chunk.error);
         }
         if (chunk.type === 'stop') {
-          usage = chunk.usage;
+          usage = snapshotAccountableUsage(entry.model, chunk.usage);
+          state.committed = state.committed || isContentChunk(chunk);
+          yield { ...chunk, usage };
+          continue;
         }
         state.committed = state.committed || isContentChunk(chunk);
         yield chunk;
       }
     } catch (err) {
-      return yield* this.#failAttempt(
-        record,
-        this.#abortAware(this.#errorOf(err, entry.provider.id), entryReq, entry.provider.id),
-        state,
-      );
+      retentionFailure = retainedEntryFailure(err);
+      failure =
+        retentionFailure === undefined
+          ? this.#abortAware(this.#errorOf(err, entry.provider.id), entryReq, entry.provider.id)
+          : this.#retentionError(entry.provider.id, retentionFailure.error);
+      // A raced confirming read can replace the diagnostic while the verifier still owns a
+      // valid first terminal. Retain that observation; do not account here or invent a clean stop.
+      if (usage !== undefined) failure = Object.freeze({ ...failure, usage });
     } finally {
       // Every exit path — success, pre-content failure, surfaced failure, an early consumer `break` that
       // calls this generator's `return()`. Idempotent, so the success path below can be reached having
       // already disposed nothing.
-      deadline?.dispose();
+      try {
+        deadline?.dispose();
+      } catch (error) {
+        cleanupFailure = { error };
+      }
       // **And close the source.** Converting `for await` to manual iteration removed the language's own
       // teardown: `for await` calls `return()` on ANY abrupt completion of the body, while the hand-rolled
       // loop only did so on the deadline branch. A review measured two live leaks — a grammar VIOLATION
@@ -819,9 +1164,32 @@ export class FallbackChain {
       // In the `finally` rather than per branch so a future exit cannot miss it, and best-effort without an
       // unbounded await for the same reason `#raceStep`'s teardown is: caller liveness, not resource
       // termination (ADR-0082 §5). `return()` on an already-completed iterator is a no-op.
-      void Promise.resolve(iterator?.return?.(undefined)).catch(() => undefined);
+      try {
+        invocation?.retire();
+      } catch (error) {
+        cleanupFailure ??= { error };
+      }
+      const returnFailure = this.#closeIterator(iterator);
+      // Actual provider/deadline diagnosis stays primary. A standalone host-entry fault escapes only
+      // after the attempt observer has accounted any terminal usage already observed by the verifier.
+      if (failure === undefined && returnFailure !== undefined) retentionFailure = returnFailure;
+      // A public consumer return completes the generator abruptly, bypassing code after finally.
+      // Observe the attempt here so that path preserves known usage and the exact host refusal too.
+      if (retentionFailure !== undefined) {
+        const error = failure ?? this.#retentionError(entry.provider.id, retentionFailure.error);
+        this.#emitFailure(
+          { ...record, contentReceived: state.committed },
+          usage === undefined ? error : Object.freeze({ ...error, usage }),
+        );
+        // Consumer return must reject this entry refusal; overriding its abrupt completion is intentional.
+        // eslint-disable-next-line no-unsafe-finally -- Preserve the exact host refusal after accounting.
+        throw retentionFailure.error;
+      }
     }
-    return yield* this.#settleUsage(entry, record, usage, state);
+    // An existing provider failure keeps its diagnosis and financial evidence; cleanup cannot
+    // replace it with an unrelated host exception or prevent its attempt record.
+    if (failure !== undefined) return yield* this.#failAttempt(record, failure, state);
+    return yield* this.#settleUsage(entry, record, usage, state, cleanupFailure);
   }
 
   /**
@@ -830,8 +1198,8 @@ export class FallbackChain {
    * Sits outside the attempt's `try`/`finally` deliberately, but needs its own guard (#W15-9). `#foldUsage`
    * re-throws anything that is not `UnknownModelError` so a money bug is loud: a provider returning
    * non-integer usage trips `assertAccountableUsage`, and a broken overlay or a custom tracker throws. On the
-   * `generate()` path that work sits INSIDE the attempt's try, so the throw reaches the caller classified.
-   * Here it escaped the async generator raw — breaking `#runStreamAttempt`'s own contract ("a terminal
+   * `generate()` path has its own separate fold guard. Here it once escaped the async generator raw —
+   * breaking `#runStreamAttempt`'s own contract ("a terminal
    * failure is surfaced as an `error` chunk, not a throw") and taking down a turn whose content had already
    * been produced and billed for.
    *
@@ -844,8 +1212,16 @@ export class FallbackChain {
     record: AttemptRecord,
     usage: Usage | undefined,
     state: StreamAttemptState,
+    cleanupFailure?: { readonly error: unknown },
   ): Generator<StreamChunk, undefined> {
+    record = { ...record, contentReceived: state.committed };
     if (usage === undefined) {
+      if (cleanupFailure !== undefined) {
+        const error = this.#attemptCleanupError(entry.provider.id, cleanupFailure.error);
+        this.#emit({ ...record, outcome: 'failed', error });
+        yield { type: 'error', error: state.committed ? committed(error) : error };
+        return undefined;
+      }
       this.#emitSuccess(record, entry.model, undefined); // nothing to fold
       return undefined;
     }
@@ -865,7 +1241,7 @@ export class FallbackChain {
       });
       // The fold runs BEFORE the emit, so no success record was written — this `failed` record is the
       // attempt's only one, not a duplicate.
-      this.#emit({ ...record, outcome: 'failed', error });
+      this.#emit({ ...record, usage, priced: false, outcome: 'failed', error });
       // SURFACED, not returned. `#runEntryStream` checks `state.committed` before it looks at the returned
       // failure, so on the committed path a returned error is dropped on the floor — silence, in the one
       // place the money path was made loud on purpose.
@@ -877,8 +1253,31 @@ export class FallbackChain {
       yield { type: 'error', error: state.committed ? committed(error) : error };
       return undefined;
     }
+    if (cleanupFailure !== undefined) {
+      const error = this.#attemptCleanupError(entry.provider.id, cleanupFailure.error);
+      this.#emit({
+        ...record,
+        usage,
+        ...(folded.unpriced ? { priced: false } : {}),
+        ...(folded.cost === undefined ? {} : { cost: folded.cost }),
+        outcome: 'failed',
+        error,
+      });
+      yield { type: 'error', error: state.committed ? committed(error) : error };
+      return undefined;
+    }
     this.#emitFolded(record, usage, folded);
     return undefined;
+  }
+
+  /** Cleanup is a host fault, with no authority to retry, pause or attribute a money writer. */
+  #attemptCleanupError(provider: ProviderId, cause: unknown): LlmError {
+    return makeLlmError({
+      provider,
+      kind: 'unknown',
+      message: 'the provider attempt cleanup could not be completed',
+      cause,
+    });
   }
 
   /**
@@ -887,6 +1286,7 @@ export class FallbackChain {
    * optional refresh) and the rate-limit cooldown.
    */
   async #afterFailure(entry: FallbackPlanEntry, error: LlmError): Promise<Verdict> {
+    if (error.contentCommitted === true) return 'fatal';
     if (error.kind === 'auth') {
       // Never a blind retry loop — at most ONE out-of-band credential refresh, then fatal.
       const hook = this.#options.onAuthError;
@@ -978,7 +1378,7 @@ export class FallbackChain {
       }
       messages.push({ ...message, content });
     }
-    return { ...req, messages };
+    return deriveOwnedRequestMessages(req, { route: 'media', messages });
   }
 
   /** Resolve one handle for `provider`, caching only a non-base64 ref in the byte-free egress sidecar. */
@@ -992,7 +1392,10 @@ export class FallbackChain {
     if (cached !== undefined) {
       return cached;
     }
-    const resolved = await resolve(handle, provider);
+    const returned = await resolve(handle, provider);
+    // Resolver ownership ends at its return. Copy the typed scalar slots immediately, before
+    // cache insertion or a later media await can expose the returned object to host mutation.
+    const resolved = captureResolvedSource(returned);
     if (resolved.kind !== 'base64') {
       // Cache only a provider ref (url/handle) — a base64 source carries bytes and is never cached, so the
       // sidecar stays byte-free (ADR-0043 §4). A later same-provider re-use then skips the re-upload.
@@ -1004,7 +1407,7 @@ export class FallbackChain {
   /** Whether to skip an entry without consuming an attempt (cooldown or unmet capability). */
   #skipReason(
     entry: FallbackPlanEntry,
-    req: LlmRequest,
+    req: OwnedLlmRequest | LlmRequest,
     opts?: { readonly streaming?: boolean },
   ): string | undefined {
     const cooldownUntil = this.#cooldownUntil.get(entry.provider.id);
@@ -1016,9 +1419,11 @@ export class FallbackChain {
     }
     // The catalog is authoritative only for the OFFICIAL endpoint: a custom `base_url` reusing a known
     // model id must not inherit that id's verdicts (`LlmProvider.customEndpoint`).
-    const unsupported = requestSupportReason(entry.provider.supports, req, {
-      catalogAuthoritative: entry.provider.customEndpoint !== true,
-    });
+    const unsupported = ownedRequestSupportReason(
+      req,
+      candidateFor(entry),
+      entry.provider.supports,
+    );
     if (unsupported !== null) {
       // Per-modality (1.AF): an incapable provider is SKIPPED with the specific reason, never silently
       // flattened; the reason matches the adapter-entry `assertMediaCapabilities` throw (one predicate).
@@ -1027,18 +1432,18 @@ export class FallbackChain {
     return undefined;
   }
 
-  #throwIfAborted(req: LlmRequest, provider: ProviderId): void {
+  #throwIfAborted(req: OwnedLlmRequest | LlmRequest, provider: ProviderId): void {
     if (this.#aborted(req)) {
       throw new LlmProviderError(this.#cancelledError(provider));
     }
   }
 
-  #aborted(req: LlmRequest): boolean {
-    return req.signal?.aborted === true;
+  #aborted(req: OwnedLlmRequest | LlmRequest): boolean {
+    return ownedRequestSignal(req)?.aborted === true;
   }
 
   #cancelledError(provider: ProviderId): LlmError {
-    return makeLlmError({ provider, kind: 'cancelled', message: 'request aborted' });
+    return Object.freeze(makeLlmError({ provider, kind: 'cancelled', message: 'request aborted' }));
   }
 
   /**
@@ -1069,23 +1474,77 @@ export class FallbackChain {
    * wired no timer port, and the reason the port is optional rather than required.
    */
   async #raceStep(
-    iterator: AsyncIterator<StreamChunk>,
+    openIterator: () => AsyncIterator<StreamChunk>,
     deadline: DeadlineScope | undefined,
   ): Promise<{ kind: 'chunk'; chunk: StreamChunk } | { kind: 'done' } | { kind: 'timeout' }> {
+    const next = this.#retainWork(() => openIterator().next());
     if (deadline === undefined) {
-      const plain = await iterator.next();
+      const plain = await next;
       return plain.done === true ? { kind: 'done' } : { kind: 'chunk', chunk: plain.value };
     }
-    const raced = await deadline.race(iterator.next());
+    const raced = await deadline.race(next);
     if (raced.outcome === 'deadline') {
       // Best-effort teardown, deliberately NOT awaited without bound: a hung iterator must not hang the
       // cleanup too. The guarantee is caller liveness, not resource termination (ADR-0082 §5).
-      void Promise.resolve(iterator.return?.(undefined)).catch(() => undefined);
+      this.#closeIterator(openIterator());
       return { kind: 'timeout' };
     }
     return raced.value.done === true
       ? { kind: 'done' }
       : { kind: 'chunk', chunk: raced.value.value };
+  }
+
+  #openInvocation(request: LlmRequest): ProviderInvocationWork | undefined {
+    return this.#options.retainWork === undefined
+      ? undefined
+      : new ProviderInvocationWork(
+          { retainWork: <T>(factory: () => Promise<T>) => this.#retainWork(factory) },
+          request.signal,
+        );
+  }
+
+  /** Register exact producer Promise before invoking it; host-entry failure cannot become failover. */
+  #retainWork<T>(factory: () => Promise<T>): Promise<T> {
+    const retain = this.#options.retainWork;
+    if (retain === undefined) return factory();
+    let factoryFailure: { readonly error: unknown } | undefined;
+    try {
+      return retain(() => {
+        try {
+          return factory();
+        } catch (error) {
+          factoryFailure = { error };
+          throw error;
+        }
+      });
+    } catch (error) {
+      // A synchronous provider throw stays a provider error, including on the no-hook path.
+      if (factoryFailure !== undefined && Object.is(factoryFailure.error, error)) throw error;
+      throw new RetainedWorkEntryError(error);
+    }
+  }
+
+  /** Cleanup lifetime is registered even when its rejection is best-effort and its await unbounded. */
+  #closeIterator(
+    iterator: AsyncIterator<StreamChunk> | undefined,
+  ): { readonly error: unknown } | undefined {
+    const close = iterator?.return?.bind(iterator);
+    if (iterator === undefined || close === undefined) return;
+    try {
+      const closing = this.#retainWork(() => close(undefined));
+      void closing.catch(() => undefined);
+    } catch (error) {
+      const retainedFailure = retainedEntryFailure(error);
+      if (retainedFailure !== undefined) return retainedFailure;
+      // Source cleanup is best-effort; it never replaces an established provider/accounting failure.
+    }
+    return undefined;
+  }
+
+  #retentionError(provider: ProviderId, cause: unknown): LlmError {
+    return Object.freeze(
+      makeLlmError({ provider, kind: 'unknown', message: 'host work registration failed', cause }),
+    );
   }
 
   /** A deadline abort is `timeout`; a caller abort in the same window stays `cancelled` (ADR-0082 §5). */
@@ -1100,7 +1559,12 @@ export class FallbackChain {
   }
 
   #abortAware(error: LlmError, req: LlmRequest, provider: ProviderId): LlmError {
-    return this.#aborted(req) ? this.#cancelledError(provider) : disown(error);
+    return this.#aborted(req)
+      ? Object.freeze({
+          ...this.#cancelledError(provider),
+          ...(error.usage === undefined ? {} : { usage: error.usage }),
+        })
+      : disown(error);
   }
 
   /**
@@ -1141,15 +1605,31 @@ export class FallbackChain {
     });
   }
 
-  /** Normalize a thrown value into an `LlmError` — `LlmProviderError` carries one; anything else is `unknown`. */
+  /** Preserve provider errors, classify local cap refusals as `bad_request`, and keep other diagnostics fixed. */
   #errorOf(caught: unknown, provider: ProviderId): LlmError {
-    if (caught instanceof LlmProviderError) {
-      return caught.llmError;
+    try {
+      if (caught instanceof LlmProviderError) {
+        // Detach and validate nested diagnostics while reflection is still guarded. Cause stays private.
+        return snapshotLlmError(caught.llmError);
+      }
+      if (
+        caught instanceof InvalidOutputCapPlanError ||
+        caught instanceof UnsupportedRequestDataError
+      ) {
+        return makeLlmError({
+          provider,
+          kind: 'bad_request',
+          message: caught.message,
+          cause: caught,
+        });
+      }
+    } catch {
+      // Hostile reflection belongs to the original untyped failure, never a replacement exception.
     }
     return makeLlmError({
       provider,
       kind: 'unknown',
-      message: caught instanceof Error ? caught.message : 'unknown provider failure',
+      message: 'unknown provider failure',
       cause: caught,
     });
   }
@@ -1178,7 +1658,7 @@ export class FallbackChain {
   async #backoff(
     entry: FallbackPlanEntry,
     retryIndex: number,
-    req: LlmRequest,
+    req: OwnedLlmRequest,
     error?: LlmError,
   ): Promise<void> {
     const requested = error?.retryAfterMs;
@@ -1190,7 +1670,7 @@ export class FallbackChain {
         this.#backoffBaseMs,
         this.#backoffMaxMs,
       );
-    await this.#sleep(delay, req.signal);
+    await this.#sleep(delay, ownedRequestSignal(req));
   }
 
   async #resolveKey(provider: ProviderId): Promise<string> {
@@ -1245,7 +1725,13 @@ export class FallbackChain {
     try {
       cost = this.#options.costTracker?.record(model, usage);
     } catch (error_) {
-      if (!(error_ instanceof UnknownModelError)) throw error_;
+      let unknownModel = false;
+      try {
+        unknownModel = error_ instanceof UnknownModelError;
+      } catch {
+        // Reflection cannot replace the original accounting failure.
+      }
+      if (!unknownModel) throw error_;
       return { unpriced: true };
     }
     // TWO ways an egress fails to be priced, and they arrive by different routes (ADR-0089 §4). The throw above
@@ -1270,6 +1756,9 @@ export class FallbackChain {
   }
 
   #emit(record: AttemptRecord): void {
+    // Provider snapshots, locally synthesized failures and cancellation diagnostics all pass this
+    // observer boundary. Preserve their classification before an observer can change retry policy.
+    if (record.error !== undefined) Object.freeze(record.error);
     this.#options.onAttempt?.(record);
   }
 }
@@ -1298,7 +1787,7 @@ const COOLDOWN_SKIP_REASON = 'provider in rate-limit cooldown';
  * latch, the attempt counter, and the most recent failure for exhaustion surfacing.
  */
 class ChainRun {
-  #req: LlmRequest;
+  #req: OwnedLlmRequest | LlmRequest;
   #lastProvider: ProviderId | undefined;
   /** `provider\0model` of the last ATTEMPTED entry — the strip latch's real key (ADR-0090, `CR-52`). */
   #lastIssuer: string | undefined;
@@ -1312,7 +1801,7 @@ class ChainRun {
    * the previous call settled on a *different* provider — closing the multi-turn cross-provider replay
    * hole a fresh-per-call latch left open.
    */
-  constructor(req: LlmRequest, seedLastIssuer?: string) {
+  constructor(req: OwnedLlmRequest, seedLastIssuer?: string) {
     this.#req = req;
     this.#lastIssuer = seedLastIssuer;
     // Derived so `lastProvider` keeps its meaning for any consumer that only cares about the provider half.
@@ -1339,8 +1828,8 @@ class ChainRun {
    * **without** advancing the strip latch. A skipped entry is not a provider boundary, so it must not
    * pollute `#lastProvider` (which would wrongly strip reasoning for a later same-provider entry).
    */
-  previewRequest(entry: FallbackPlanEntry): LlmRequest {
-    return withEntryModel(this.#req, entry.model);
+  get source(): OwnedLlmRequest | LlmRequest {
+    return this.#req;
   }
 
   /**
@@ -1353,6 +1842,7 @@ class ChainRun {
   beginEntry(entry: FallbackPlanEntry): LlmRequest {
     const providerId = entry.provider.id;
     const issuer = `${providerId}\u0000${entry.model}`;
+    let selected = selectOwnedRequest(this.#req, candidateFor(entry)).request;
     // TWO latches, at deliberately different granularities.
     //
     // REASONING strips on a PROVIDER boundary — ADR-0039's accepted rule, unchanged. Narrowing it to the
@@ -1369,14 +1859,25 @@ class ChainRun {
     // entry itself issued, so a continuation is LOST rather than rejected. That is the pre-`CR-52` behaviour
     // — never worse — and closing it needs per-part issuer provenance the seam does not carry. Recorded.
     if (this.#lastProvider !== undefined && this.#lastProvider !== providerId) {
-      this.#req = stripReasoningParts(this.#req);
+      selected = deriveOwnedRequestMessages(selected, {
+        route: 'reasoning',
+        messages: stripReasoningParts(selected).messages,
+      });
     }
     if (this.#lastIssuer !== undefined && this.#lastIssuer !== issuer) {
-      this.#req = stripToolCallSignatures(this.#req);
+      selected = deriveOwnedRequestMessages(selected, {
+        route: 'reasoning',
+        messages: stripToolCallSignatures(selected).messages,
+      });
     }
+    // Keep the pre-effort source for the next candidate; an incapable tier here does not
+    // erase the authored tier for a later model which accepts it.
+    this.#req = selected;
     this.#lastProvider = providerId;
     this.#lastIssuer = issuer;
-    return withEntryModel(this.#req, entry.model);
+    return withEntryModel(selected, entry.model).reasoningEffort === selected.reasoningEffort
+      ? selected
+      : withoutOwnedRequestEffort(selected);
   }
 
   /** Allocate the next 1-based attempt record skeleton for this entry. */
@@ -1387,6 +1888,9 @@ class ChainRun {
     this.#attemptNumber += 1;
     return {
       attemptNumber: this.#attemptNumber,
+      contentReceived: false,
+      providerInvoked: false,
+      customEndpoint: entry.provider.customEndpoint === true,
       provider: entry.provider.id,
       model: entry.model,
       outcome: extra?.outcome ?? 'failed',

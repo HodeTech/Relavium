@@ -25,6 +25,7 @@
 
 import type {
   Agent,
+  Memory,
   AbortSignalLike,
   AgentApprovalRequestedEvent,
   ErrorCode,
@@ -32,11 +33,13 @@ import type {
   SessionContext,
   SessionEvent,
   SessionStopReason,
+  SessionToolHistoryEntry,
+  SessionCompactionReason,
   ToolPolicy,
   EffectCorrelation,
   EffectDispatchPort,
 } from '@relavium/shared';
-import { unwiredEffectJournal } from '@relavium/shared';
+import { createSessionToolCallId, unwiredEffectJournal } from '@relavium/shared';
 
 import { WorkflowGraphError, type GraphIssue } from '../errors.js';
 import { collectAgentCeilingIssues } from '../limits.js';
@@ -69,16 +72,31 @@ import type {
   ToolRegistry,
 } from '../tools/types.js';
 import { modelVisibleDescription } from '../tools/types.js';
+import { delegateAvailable, type ToolDelegates } from '../tools/delegates.js';
 import {
   AgentTurnError,
   DEFAULT_AGENT_TURN_LIMITS,
-  runAgentTurn,
+  captureAgentTurnOutcome,
+  prepareAgentTurnRequest,
+  type AgentTurnParams,
+  type PreparedAgentTurnRequest,
   type AgentTurnLimits,
   type AgentTurnResult,
   type ChainCapabilities,
   type PreEgressHook,
 } from './agent-turn.js';
 import { BudgetPauseError } from './budget-governor.js';
+import {
+  COMPACTION_MAX_PASSES,
+  authoritativeContextWindow,
+  managesOwnContext,
+  preparedOutputReservation,
+  assertMeasuredInput,
+  compactionWindows,
+  compactionRequestFits,
+  renderConversationToSummarise,
+  prepareCompactionChunk,
+} from './session-compaction.js';
 import type { AbortControllerLike } from './execution-host.js';
 import { effortToSend, gateReasoningEffort } from './reasoning-effort.js';
 import type {
@@ -87,7 +105,7 @@ import type {
   ResolveEffortTiers,
 } from './reasoning-effort.js';
 import type { NodeStreamEvent } from './node-executor.js';
-import type { SessionResumeState } from './session-resume.js';
+import type { CompletedTurnSpan, SessionResumeState } from './session-resume.js';
 
 /** The default hard turn cap when {@link SessionDeps.maxTurns} is omitted — a finite DoS fail-safe. */
 export const DEFAULT_SESSION_MAX_TURNS = 50;
@@ -112,16 +130,22 @@ export const COMPACTION_MAX_SUMMARY_TOKENS = 4096;
  * 'compaction' })`. It was the engine's third authored producer and the reason that arm exists at all.
  */
 
+/** The author's request policy makes this operation ineffective; no work or lifecycle event occurs. */
+export interface MemoryPolicyRefusal {
+  readonly kind: 'policy_refused';
+  readonly memory: 'none' | 'window';
+  readonly message: string;
+}
+
 /**
- * The classified result of a {@link AgentSession.compact} (ADR-0062) — a discriminated union so the host renders
- * each case explicitly. `compacted` carries the token deltas + the summary text (the host shows an inline
- * notice + an expandable summary); `nothing_to_compact` means there was ≤1 exchange to fold; `failed` is a
- * secret-free summarisation fault (the caller degrades to `/trim`); `cancelled` = an `Esc`/cancel mid-summary.
+ * The classified result of a {@link AgentSession.compact} (ADR-0062). `compacted` carries inspectable
+ * deltas and summary; `nothing_to_compact` has no effective fold (including an automatic unknown-window skip); `failed` is a secret-free
+ * summarisation fault; `cancelled` is an Esc/cancel mid-summary; `policy_refused` performs no work.
  */
 export type CompactionResult =
   | {
       readonly kind: 'compacted';
-      readonly reason: 'manual' | 'auto-threshold';
+      readonly reason: SessionCompactionReason;
       readonly summary: string;
       readonly keptMessageCount: number;
       readonly tokensBefore: number;
@@ -129,8 +153,18 @@ export type CompactionResult =
       readonly summaryTokens: { readonly input: number; readonly output: number };
     }
   | { readonly kind: 'nothing_to_compact' }
-  | { readonly kind: 'failed'; readonly message: string }
-  | { readonly kind: 'cancelled' };
+  | {
+      readonly kind: 'failed';
+      readonly message: string;
+      readonly error?: {
+        readonly code: ErrorCode;
+        readonly message: string;
+        readonly retryable: boolean;
+      };
+    }
+  | { readonly kind: 'budget_refused'; readonly message: string; readonly momentOpened: boolean }
+  | { readonly kind: 'cancelled' }
+  | MemoryPolicyRefusal;
 
 /**
  * The result of a {@link AgentSession.trimHistory} (ADR-0062) — a deterministic, no-LLM drop. `trimmed` carries
@@ -142,7 +176,8 @@ export type TrimResult =
       readonly keptMessageCount: number;
       readonly droppedMessageCount: number;
     }
-  | { readonly kind: 'nothing_to_trim'; readonly messageCount: number };
+  | { readonly kind: 'nothing_to_trim'; readonly messageCount: number }
+  | MemoryPolicyRefusal;
 
 /** Distribute `Omit` across each union member so the discriminated union (and `.type` narrowing) survives. */
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
@@ -279,6 +314,11 @@ export interface SessionDeps {
    * deliberately run-path-only, while a session's external effects need journaling exactly as a run's do.
    */
   readonly effects?: (correlation: EffectCorrelation) => EffectDispatchPort;
+  /**
+   * ADR-0098 durable effect identity allocator. The host advances the session-row high-water mark before
+   * issuing a key; max_turns retains its reconstructed count. Required even on a text-only turn.
+   */
+  readonly reserveEffectTurnKey: (sessionId: string) => number;
   /** The workflow-wide tool policy threaded into dispatch (default `{}` ⇒ deny-all for gated tools). */
   readonly toolPolicy?: ToolPolicy;
   /** Within-turn tool-loop bounds passed to the turn core (default {@link DEFAULT_AGENT_TURN_LIMITS}). */
@@ -287,6 +327,7 @@ export interface SessionDeps {
   readonly maxTurns?: number;
   /** Pre-egress budget hook (default no-op; 1.AC fills it — ADR-0028). */
   readonly preEgress?: PreEgressHook;
+  readonly maxTokensEstimate?: number;
   /**
    * The user-pricing overlay (2.5.G S10, ADR-0065 §2) — host-injected (like {@link keyFor}) from the
    * `model_catalog` `source='user'` rows, threaded into the turn's REALIZED cost tracker so a user-priced model
@@ -349,12 +390,20 @@ export interface SessionDeps {
    */
   readonly restoreConservativeCost?: (conservativeCostMicrocents: number) => void;
   /**
-   * Automatic context compaction (ADR-0062) — the surface-mapped form of `[chat].auto_compact`. When not
-   * `false` (absent ⇒ enabled), after a turn completes the session compacts if the turn's real input tokens
-   * exceed {@link SessionDeps.compactThreshold} × the serving model's context window. The host wires this from
-   * config; hardcoding it here would re-orphan the config field.
+   * Automatic compaction permission when authored memory is omitted (ADR-0095/0096). Absent means
+   * enabled; explicit memory owns permission. Triggers measure the next owned request at active and
+   * after-turn entry points, not billed usage. The host forwards the configured value.
    */
   readonly autoCompact?: boolean;
+  /** Disable spending on an unused next turn (one-shot hosts); active-entry policy remains authored. */
+  readonly afterTurnCompaction?: boolean;
+  /** Await visible manual unknown-window disclosure after admission, before provider entry. */
+  readonly onCompactionStart?: (info: {
+    readonly reason: SessionCompactionReason;
+    readonly windowUnknown: boolean;
+    /** The current operation only; a queued surface publication must check it before rendering. */
+    readonly signal: AbortSignalLike;
+  }) => void | Promise<void>;
   /** The auto-compaction trigger fraction (`[chat].compact_threshold`; absent ⇒ {@link DEFAULT_COMPACT_THRESHOLD}). */
   readonly compactThreshold?: number;
   /**
@@ -384,10 +433,44 @@ type SessionStatus = 'created' | 'idle' | 'running' | 'cancelled';
 export class SessionStateError extends Error {
   override readonly name = 'SessionStateError';
   constructor(
-    readonly code: 'not_started' | 'already_started' | 'not_active',
+    readonly code: 'not_started' | 'already_started' | 'not_active' | 'invalid_resume_state',
     message: string,
   ) {
     super(message);
+  }
+}
+
+/** Resume metadata is copied only after its bounds and text-only completed-turn shape are proven. */
+function validateCompletedTurnSpans(state: SessionResumeState): void {
+  const invalid = (): never => {
+    throw new SessionStateError(
+      'invalid_resume_state',
+      'The resumed completed-turn metadata is invalid.',
+    );
+  };
+  if (
+    !Array.isArray(state.completedTurnSpans) ||
+    !Number.isSafeInteger(state.turnCount) ||
+    state.turnCount < state.completedTurnSpans.length ||
+    state.messages.some(
+      (message) => message.role === 'tool' || message.content.some((part) => part.type !== 'text'),
+    )
+  )
+    invalid();
+  let previousEnd = 0;
+  for (const span of state.completedTurnSpans) {
+    const length = span.end - span.start;
+    if (
+      !Number.isSafeInteger(span.start) ||
+      !Number.isSafeInteger(span.end) ||
+      span.start < previousEnd ||
+      (length !== 1 && length !== 2) ||
+      span.end > state.messages.length ||
+      state.messages[span.start]?.role !== 'user' ||
+      (length === 2 && state.messages[span.end - 1]?.role !== 'assistant')
+    )
+      invalid();
+    previousEnd = span.end;
   }
 }
 
@@ -457,6 +540,8 @@ export class AgentSession {
 
   readonly #agentRef: string;
   readonly #agent: Agent;
+  readonly #memory: Readonly<Memory> | undefined;
+  readonly #automaticCompactionAllowed: boolean;
   readonly #context: SessionContext;
   readonly #deps: SessionDeps;
   readonly #maxTurns: number;
@@ -464,9 +549,12 @@ export class AgentSession {
 
   /** The in-memory conversation (in-flight `ContentPart` form); the turn core copies it, never mutates it. */
   readonly #messages: LlmMessage[] = [];
+  readonly #completedTurnSpans: CompletedTurnSpan[] = [];
+  #pendingUser: LlmMessage | undefined;
   /**
-   * Turns where a provider actually engaged — a success, or a failure whose {@link AgentTurnError.engaged} is
-   * `true` (a non-skipped attempt ran). The hard cap counts ONLY these, so a pre-egress failure (no plan
+   * Turns where a provider actually engaged — a success, or a failed canonical outcome that observed
+   * provider content/an actual attempt. Error type and positive token counts are not engagement proxies.
+   * The hard cap counts ONLY these, so a pre-egress failure (no plan
    * entries, a budget refusal, a pre-flight cancel) never burns a turn the model never took.
    */
   #turnCount = 0;
@@ -479,6 +567,14 @@ export class AgentSession {
    * turn so a later failure can never inherit an earlier turn's numbers.
    */
   #lastEngagedUsage: { input: number; output: number } | undefined;
+  /** Failed turn accounting is independent of raw/pause/money exception identity. */
+  #failedTurnAccounting:
+    | {
+        readonly engaged: boolean;
+        readonly usage: { readonly input: number; readonly output: number };
+        readonly observerFailure?: { readonly error: unknown };
+      }
+    | undefined;
   /** Session-wide running cost total, authoritatively stamped onto every `cost:updated`. */
   #cumulativeCostMicrocents = 0;
   #status: SessionStatus = 'created';
@@ -507,6 +603,9 @@ export class AgentSession {
   #abortingTurn = false;
   /** Monotonic counter for the synthetic `run_command` tool-call id of a `!`-shell dispatch ({@link runUserCommand}). */
   #userCommandSeq = 0;
+  readonly #maxTokensEstimate: number | undefined;
+  #effectTurnKey: number | undefined;
+  #lastEffectTurnKey = 0;
   /** Memoized provider fallback plan (the agent binding is fixed for the session). */
   #plan: PlanResult | undefined;
   /**
@@ -522,11 +621,11 @@ export class AgentSession {
    */
   #compactionSummary: Untrusted<string> | undefined;
   /**
-   * Set on a CLEAN turn success to the settled turn's model + real input tokens, so `sendMessage` can run the
+   * Set only on a CLEAN turn success so `sendMessage` can measure the next construction in its
    * after-turn auto-compaction check (ADR-0062) AFTER the turn fully settles (status back to idle). Cleared
    * once consumed. Never set on an error/abort/cancel/cap path — those never auto-compact.
    */
-  #autoCompactPending: { readonly model: string; readonly inputTokens: number } | undefined;
+  #autoCompactPending = false;
 
   constructor(params: AgentSessionParams, opts?: { readonly admit?: boolean }) {
     // **The session's half of ADR-0086 §6, and it is a CONSTRUCTOR check on purpose.** `relavium agent run`
@@ -553,8 +652,14 @@ export class AgentSession {
     this.sessionId = params.sessionId;
     this.#agentRef = params.agentRef;
     this.#agent = params.agent;
+    this.#memory =
+      params.agent.memory === undefined ? undefined : Object.freeze({ ...params.agent.memory });
+    this.#automaticCompactionAllowed =
+      this.#memory?.type === 'summary' ||
+      (this.#memory === undefined && params.deps.autoCompact !== false);
     this.#context = params.context;
     this.#deps = params.deps;
+    this.#maxTokensEstimate = params.deps.maxTokensEstimate;
     const max = params.deps.maxTurns;
     this.#maxTurns = max === undefined || max <= 0 ? DEFAULT_SESSION_MAX_TURNS : max;
     this.#limits = params.deps.limits ?? DEFAULT_AGENT_TURN_LIMITS;
@@ -572,21 +677,16 @@ export class AgentSession {
     // `admit: false` — see the constructor. A resume continues a session that was already admitted, on a
     // frozen snapshot its user cannot edit; re-admitting it would strand their transcript.
     const session = new AgentSession(params, { admit: false });
-    session.#messages.push(...state.messages);
+    validateCompletedTurnSpans(state);
+    session.#messages.push(
+      ...state.messages.map((message) => ({
+        ...message,
+        content: message.content.map((part) => ({ ...part })),
+      })),
+    );
+    session.#completedTurnSpans.push(...state.completedTurnSpans.map((span) => ({ ...span })));
     session.#turnCount = state.turnCount;
-    // **`#userCommandSeq` is deliberately NOT restored, and the reason is a limitation rather than a choice.**
-    //
-    // An earlier attempt seeded it from `state.turnCount`, which is wrong: that counts completed ASSISTANT
-    // turns and has no relationship to how many `!`-commands were issued. A review reproduced the resulting
-    // false refusal — two `!`-commands inside one turn window, then a `/models` reseat, and the next command
-    // reuses a slot and is rejected as "already claimed" for something never run before.
-    //
-    // Reconstructing it honestly needs a durable source, and there is none: `!`-commands never enter the
-    // transcript, and the platform-free engine cannot read `run_effects`. So the counter restarts, and the
-    // consequence is recorded in effect-journal.md §14 rather than papered over: a `!`-command issued after a
-    // resume, in a turn window that already had one, can be refused as a false duplicate. It fails CLOSED —
-    // a refusal, never a repeated effect — which is the safe direction, and it is fixed by persisting the
-    // counter with the session row when a surface makes repeated in-window shell commands worth the schema.
+    // Commands restart negative slots under a NEW durable turn key on resume/reseat.
     session.#cumulativeCostMicrocents = state.cumulativeCostMicrocents;
     // ADR-0062: restore the compaction preamble so a compacted session stays compacted across resume AND a
     // model reseat (which reuses this same reconstruct→resume path); without it, resume would silently
@@ -604,6 +704,40 @@ export class AgentSession {
     session.#deps.restoreConservativeCost?.(state.conservativeCostMicrocents);
     session.#status = 'idle';
     return session;
+  }
+
+  /** Frozen at construction/resume; callers cannot alter the author's memory contract mid-session. */
+  get memoryPolicy(): Readonly<Memory> | undefined {
+    return this.#memory;
+  }
+
+  /** The one permission gate consumed by every automatic compaction entry point. */
+  get automaticCompactionAllowed(): boolean {
+    return this.#automaticCompactionAllowed;
+  }
+
+  get compactionRefusal(): MemoryPolicyRefusal | undefined {
+    const memory = this.#memory?.type;
+    if (memory !== 'none' && memory !== 'window') return undefined;
+    return {
+      kind: 'policy_refused',
+      memory,
+      message:
+        memory === 'none'
+          ? 'memory: none sends only the current message; compaction cannot change the request.'
+          : 'memory: window sends completed turns directly; a compaction summary would not reach the request.',
+    };
+  }
+
+  get trimRefusal(): MemoryPolicyRefusal | undefined {
+    return this.#memory?.type === 'none'
+      ? {
+          kind: 'policy_refused',
+          memory: 'none',
+          message:
+            'memory: none sends only the current message; trimming cannot change the request.',
+        }
+      : undefined;
   }
 
   /** Open the session: emit `session:started` and move to idle. Idempotent-guarded (one start per session). */
@@ -660,6 +794,28 @@ export class AgentSession {
     return this.#reasoningEffort ?? this.#agent.reasoning_effort;
   }
 
+  /** A host controller factory cannot leave an operation running when initialization fails. */
+  #armTurnController(): AbortControllerLike {
+    this.#status = 'running';
+    try {
+      const abort = this.#deps.newAbortController();
+      this.#abort = abort;
+      // A trusted host can cancel/abort synchronously while constructing the controller. Carry
+      // that already-recorded intent onto the returned signal before any operation can consume it.
+      if (this.#statusIs('cancelled') || this.#abortingTurn) abort.abort();
+      return abort;
+    } catch (error) {
+      this.#releaseTurnController();
+      throw error;
+    }
+  }
+
+  #releaseTurnController(): void {
+    this.#abort = undefined;
+    this.#abortingTurn = false;
+    if (this.#statusIs('running')) this.#status = 'idle';
+  }
+
   /** Guard the send preconditions: the session must be started and idle (not running/cancelled/ended). */
   #assertSendable(): void {
     if (this.#status === 'created') {
@@ -687,14 +843,21 @@ export class AgentSession {
     // turn_started-emit sink set (which then took a pre-`try` early return, bypassing the `finally` reset)
     // can never leak into this turn's catch path and misclassify a real failure as an abort.
     this.#abortingTurn = false;
-    this.#status = 'running';
     // Arm the abort controller BEFORE the turn_started emit. A host whose sink calls abort() synchronously
     // inside that emit must abort THIS turn's real signal — if #abort were still undefined, abort()'s
     // `#abort?.abort()` would be a no-op while still setting #abortingTurn, and a later GENUINE failure would
     // then be misclassified as `aborted`. The cancel-bail + cap block release it on their early returns.
-    const abort = this.#deps.newAbortController();
-    this.#abort = abort;
-    this.#deps.emit({ type: 'session:turn_started' });
+    const abort = this.#armTurnController();
+    if (this.#statusIs('cancelled')) {
+      this.#releaseTurnController();
+      return;
+    }
+    try {
+      this.#deps.emit({ type: 'session:turn_started' });
+    } catch (error) {
+      this.#releaseTurnController();
+      throw error;
+    }
     // A cancel can fire SYNCHRONOUSLY inside the turn_started emit (a host whose sink calls cancel()). If it
     // did, session:cancelled is the terminal — bail before the cap block and before any egress, else we would
     // overwrite the 'cancelled' status back to 'idle' and emit a second terminal, or silently egress an
@@ -705,18 +868,22 @@ export class AgentSession {
     // blocked turn completes loudly with turn_limit and never calls a provider.
     if (this.#completeIfTurnCapReached()) return;
 
-    this.#messages.push({ role: 'user', content: [{ type: 'text', text }] });
+    this.#pendingUser = { role: 'user', content: [{ type: 'text', text }] };
+    this.#messages.push(this.#pendingUser);
     // Snapshot the reseat-less mode policy for the whole turn (ADR-0057): a mid-turn setTurnPolicy applies
     // only on the NEXT turn, so the advertise-filter + approval regime stay consistent within this turn.
     const turnPolicy = this.#turnPolicy;
+    this.#failedTurnAccounting = undefined;
+    this.#lastEngagedUsage = undefined;
+    let lifecycleObserverFailure: { readonly error: unknown } | undefined;
     try {
-      this.#lastEngagedUsage = undefined; // never inherit an earlier turn's numbers
+      this.#reserveEffectTurnKey();
       const result = await this.#runTurn(abort.signal, turnPolicy);
       // A cancel landed mid-turn — the cancel path owns the terminal session:cancelled; stay quiet, but
       // roll the user message back so a cancelled turn leaves no dangling user turn in the transcript
       // (the "only completed exchanges" invariant — matters for 1.X persistence / 1.Z export).
       if (this.#statusIs('cancelled')) {
-        this.#messages.pop();
+        this.#rollbackPendingUser();
         return;
       }
       // EA7 note: an `abort()` that lands AFTER the turn fully resolved (a late `Esc`, past the turn core's
@@ -749,33 +916,57 @@ export class AgentSession {
       // terminal, and replacing a `provider_auth` failure with a durability failure would hide the cause the
       // user needs; the governor keeps the debit and its sticky `conservativeDurabilityBroken` regardless.
       //
-      // It runs BEFORE the assistant append below, not after. The catch's rollback pops exactly ONE message
-      // and its comment relies on "nothing is pushed after the user message on a throw" — which stopped being
-      // true when this await landed between them: a flush rejection popped the ASSISTANT message and left the
-      // user turn dangling, the exact shape that rollback exists to prevent. Awaiting first restores it.
+      // It runs BEFORE the assistant append and completion notification below. A rejection cannot publish
+      // a completed exchange. Rollback restores the entire pre-turn length, including when a later
+      // completion sink throws after the assistant was appended.
       // Captured BEFORE the flush, so a rejection below still knows what the provider billed (`CR-02`).
       this.#lastEngagedUsage = { input: result.usage.input, output: result.usage.output };
-      await this.#deps.flushBudgetCommitments?.();
+      try {
+        await this.#deps.flushBudgetCommitments?.();
+      } catch (error) {
+        lifecycleObserverFailure = { error };
+        throw error;
+      }
+      // Durability acknowledgement is another asynchronous handoff. Terminal cancellation owns
+      // the session even when the paid result and its accounting are already known.
+      if (this.#statusIs('cancelled')) {
+        this.#rollbackPendingUser();
+        return;
+      }
       if (result.text.length > 0) {
         this.#messages.push({ role: 'assistant', content: [{ type: 'text', text: result.text }] });
       }
-      this.#emitTurnCompleted(result.stopReason, {
-        input: result.usage.input,
-        output: result.usage.output,
-        model: result.model,
-      });
+      try {
+        this.#emitTurnCompleted(
+          result.stopReason,
+          {
+            input: result.usage.input,
+            output: result.usage.output,
+            model: result.model,
+          },
+          undefined,
+          result.toolHistory,
+        );
+      } catch (error) {
+        lifecycleObserverFailure = { error };
+        throw error;
+      }
+      const completedStart =
+        this.#pendingUser === undefined ? -1 : this.#messages.indexOf(this.#pendingUser);
+      if (completedStart >= 0)
+        this.#completedTurnSpans.push({ start: completedStart, end: this.#messages.length });
       // ADR-0062: arm the after-turn auto-compaction check for AFTER this turn fully settles (status back to
       // idle in the `finally`). Set ONLY on this clean-success path — never on an error/abort/cancel/cap exit
       // (those return before here or from the catch, so a failed turn never triggers compaction).
-      this.#autoCompactPending = { model: result.model, inputTokens: result.usage.input };
+      this.#autoCompactPending = true;
     } catch (err) {
       // The turn did not complete — roll the user message back so the transcript holds only COMPLETED
-      // exchanges (no dangling user turn or two consecutive user messages) on EVERY non-completing exit,
-      // including a cancel-during-turn. Nothing is pushed after the user message on a throw (the assistant
-      // append is past the `await`), so the last element is always that message. This also keeps a future
-      // non-AgentTurnError the session does not yet handle — e.g. a 1.AC pre-egress `BudgetPauseError` — from
-      // orphaning it.
-      this.#messages.pop();
+      // exchanges on EVERY non-completing exit, including a cancel-during-turn or a throwing completion
+      // sink after the assistant append. Roll back the entire attempted exchange. This also keeps a
+      // non-AgentTurnError from orphaning it — a pre-egress `BudgetPauseError` is settled loudly as
+      // `budget_exceeded` by `#settleTurnError` below (a session has no pause/resume gate machinery), and an
+      // unclassified throw is settled and re-raised.
+      this.#rollbackPendingUser();
       if (this.#statusIs('cancelled')) return; // cancel-during-turn: session:cancelled is the terminal
       if (this.#abortingTurn) {
         // EA7 mid-turn abort: the turn core threw on the aborted signal (an AgentTurnError 'cancelled').
@@ -783,13 +974,20 @@ export class AgentSession {
         // failure) — and keep the session alive; the `finally` returns #status to idle. Count the turn
         // against the hard cap only when a provider engaged + report its real EA2 usage (consistent with
         // #settleTurnError). It is NOT `cancel()`/`session:cancelled` (which is terminal).
-        const aborted = err instanceof AgentTurnError ? err : undefined;
-        if (aborted?.engaged === true) this.#turnCount += 1;
-        this.#emitTurnCompleted('aborted', aborted?.usage ?? { input: 0, output: 0 });
+        const failedAccounting = this.#readFailedTurnAccounting();
+        if (failedAccounting?.engaged === true) this.#turnCount += 1;
+        this.#emitTurnCompleted(
+          'aborted',
+          failedAccounting?.usage ?? this.#lastEngagedUsage ?? { input: 0, output: 0 },
+        );
         return;
       }
-      this.#settleTurnError(err); // emits the terminal by error class; RE-THROWS an unclassified error
+      this.#settleTurnError(err, lifecycleObserverFailure);
     } finally {
+      this.#failedTurnAccounting = undefined;
+      this.#pendingUser = undefined;
+      this.#effectTurnKey = undefined; // consumed even by an errored, aborted or crashed turn
+      this.#userCommandSeq = 0;
       this.#abort = undefined;
       this.#abortingTurn = false; // clear the per-turn EA7 marker (no stale abort leaks into the next turn)
       if (this.#statusIs('running')) this.#status = 'idle';
@@ -799,8 +997,8 @@ export class AgentSession {
     // this line is unreachable on an error/abort/cancel/cap turn. Runs within `sendMessage`, so the host's
     // "turn running" indicator naturally covers the summarisation moment and the caller awaits it.
     const pending = this.#autoCompactPending;
-    this.#autoCompactPending = undefined;
-    if (pending !== undefined) await this.#maybeAutoCompact(pending.model, pending.inputTokens);
+    this.#autoCompactPending = false;
+    if (pending) await this.#maybeAutoCompact();
   }
 
   /**
@@ -829,53 +1027,80 @@ export class AgentSession {
    * Settle a turn that ended in a throw onto a terminal `session:turn_completed`, by error class. The caller has
    * already rolled the user message back and ruled out a cancel-during-turn.
    * - A classified {@link AgentTurnError} completes with its mapped code, counting the turn against the cap ONLY
-   *   when a provider engaged (see {@link AgentTurnError.engaged}) and reporting its real EA2 usage.
-   * - A pre-egress {@link BudgetPauseError} completes as `budget_exceeded` (it engaged no provider → uncounted).
+   *   when canonical accounting proves provider engagement and reporting its real EA2 usage.
+   * - A {@link BudgetPauseError} completes as `budget_exceeded`; earlier engagement/usage is retained.
    * - Any other (unclassified) error completes as `internal` and is **re-thrown** so the caller still sees the bug.
    */
-  #settleTurnError(err: unknown): void {
-    if (err instanceof AgentTurnError) {
-      // Count the turn against the cap ONLY when a provider actually engaged (a non-skipped attempt ran — an
-      // explicit signal the turn core attaches). A failure BEFORE any egress (no plan entries, a pre-egress
-      // budget refusal, a pre-flight cancel) must not burn a turn the model never got to take; `engaged !== true`
-      // (covering an undefined from an error that bypassed the wrapper) leaves the counter untouched.
-      if (err.engaged === true) this.#turnCount += 1;
-      // EA2 (ADR-0055): report the turn's REAL accumulated usage when a provider engaged (the turn core attaches
-      // it), not a hardcoded zero — `?? {0,0}` covers a failure that never engaged a provider.
-      this.#emitTurnCompleted('error', err.usage ?? { input: 0, output: 0 }, {
-        code: err.code,
-        message: err.message,
-        retryable: err.retryable,
-      });
-      return;
+  #settleTurnError(err: unknown, lifecycleObserverFailure?: { readonly error: unknown }): void {
+    // Failed canonical outcomes count once regardless of exception class. A successful turn was
+    // already counted before flushing; its known usage outranks any unrelated host-error metadata.
+    if (this.#failedTurnAccounting?.engaged === true) this.#turnCount += 1;
+    const usage = this.#failedTurnAccounting?.usage ??
+      this.#lastEngagedUsage ?? { input: 0, output: 0 };
+    let presentation: { code: ErrorCode; message: string; retryable: boolean } | undefined;
+    const observerFailure = lifecycleObserverFailure ?? this.#failedTurnAccounting?.observerFailure;
+    let rethrowObserver = false;
+    if (observerFailure !== undefined && Object.is(observerFailure.error, err)) {
+      // Preserve the session's classified-error delivery contract, with fixed internal presentation.
+      // The callback's prototype grants neither its message/code nor a budget or retry decision.
+      presentation = {
+        code: 'internal',
+        message: 'the session turn failed with an unexpected error',
+        retryable: false,
+      };
+      rethrowObserver = !this.#hasReadableObserverDiagnostic(err);
+    } else {
+      try {
+        if (err instanceof AgentTurnError) {
+          presentation = { code: err.code, message: err.message, retryable: err.retryable };
+        } else if (err instanceof BudgetPauseError) {
+          // Sessions have no resumable budget gate. A later pause still retains canonical engagement/usage.
+          presentation = { code: 'budget_exceeded', message: err.message, retryable: false };
+        }
+      } catch {
+        // The original throwable can have hostile prototype/diagnostic accessors. Presentation must not
+        // replace it or suppress the raw terminal; canonical accounting was already settled above.
+      }
     }
-    if (err instanceof BudgetPauseError) {
-      // A session has no pause/resume gate machinery in 1.V (full session pause/resume is a deferred 1.V×1.AC
-      // item), so a pre-egress `pause_for_approval` settles the turn LOUDLY as `budget_exceeded` rather than
-      // escaping `sendMessage` as a raw throw — which would leave the turn with no terminal, breaking the M1
-      // event contract. It engaged NO provider (the pause is pre-egress), so it does NOT count.
-      this.#emitTurnCompleted(
-        'error',
-        { input: 0, output: 0 },
-        { code: 'budget_exceeded', message: err.message, retryable: false },
-      );
+    if (presentation !== undefined) {
+      this.#emitTurnCompleted('error', usage, presentation);
+      if (rethrowObserver) throw err;
       return;
     }
     // An unexpected (non-classified) error — settle the turn LOUDLY first so the stream stays balanced (every
     // session:turn_started gets a terminal), then re-raise so the caller still sees the bug.
     //
-    // `#lastEngagedUsage`, not a hardcoded zero (`CR-02`). The only unclassified error that reaches here in
-    // practice is a `flushBudgetCommitments` rejection — a turn whose provider ALREADY engaged and billed,
-    // which is exactly why the same decision counts it against the cap. Reporting `{0,0}` here consumed the
-    // cap slot and silently dropped the turn's real tokens from every total, which is the mirror of the error
-    // the counter decision refuses to make, and contradicts EA2/ADR-0055's rule to report real usage whenever
-    // a provider engaged. Falls back to zero when nothing engaged, which stays truthful.
-    this.#emitTurnCompleted('error', this.#lastEngagedUsage ?? { input: 0, output: 0 }, {
+    // A failed canonical outcome consumes its engaged slot here. A successful turn whose later
+    // durability/completion callback failed was already counted before that callback; no outcome is
+    // stored for it, so do not count twice. Both paths retain known usage and preserve the raw error.
+    this.#emitTurnCompleted('error', usage, {
       code: 'internal',
       message: 'the session turn failed with an unexpected error',
       retryable: false,
     });
     throw err;
+  }
+
+  /** Preserve legacy classified delivery; hostile reflection rethrows the original, never its trap. */
+  #hasReadableObserverDiagnostic(error: unknown): boolean {
+    try {
+      if (error instanceof AgentTurnError) {
+        return (
+          typeof error.code === 'string' &&
+          typeof error.message === 'string' &&
+          typeof error.retryable === 'boolean'
+        );
+      }
+      if (error instanceof BudgetPauseError) return typeof error.message === 'string';
+    } catch {
+      // The diagnostic is not used for presentation or authority; preserve its original raw escape.
+    }
+    return false;
+  }
+
+  /** Read through a method: a called/awaited turn mutates this private field outside TS narrowing. */
+  #readFailedTurnAccounting() {
+    return this.#failedTurnAccounting;
   }
 
   /**
@@ -925,18 +1150,15 @@ export class AgentSession {
     turnPolicy: SessionTurnPolicy | undefined,
   ): Omit<ToolDispatchContext, 'signal'> {
     return {
-      // The SESSION correlation — `{ kind: 'session', sessionId, turn }`, which this path can supply without
-      // fabricating anything. ADR-0024 gives a session no `runId`, and the discriminated union is exactly why
-      // it never has to invent one. The turn count is the session's own durable counter, restored on resume.
-      // The SESSION correlation, stamped with THIS turn. `#turnCount` is the session's own durable counter,
-      // restored on resume, so a resumed session continues its numbering instead of colliding with the turns
-      // it already ran.
+      // A monotonic host-issued key, independent of the reconstructed max_turns counter.
       effects:
-        this.#deps.effects?.({
-          kind: 'session',
-          sessionId: this.sessionId,
-          turn: this.#turnCount,
-        }) ?? unwiredEffectJournal(),
+        this.#effectTurnKey === undefined
+          ? unwiredEffectJournal()
+          : (this.#deps.effects?.({
+              kind: 'session',
+              sessionId: this.sessionId,
+              turn: this.#effectTurnKey,
+            }) ?? unwiredEffectJournal()),
       effectSlot: 0, // per-CALL; the dispatch sites override it with the tool call's ordinal
       nodeId: this.#agentRef,
       grantedToolIds,
@@ -974,6 +1196,20 @@ export class AgentSession {
     };
   }
 
+  #reserveEffectTurnKey(): number {
+    if (this.#effectTurnKey !== undefined) return this.#effectTurnKey;
+    try {
+      const key = this.#deps.reserveEffectTurnKey(this.sessionId);
+      if (!Number.isSafeInteger(key) || key <= this.#lastEffectTurnKey)
+        throw new Error('invalid key');
+      this.#lastEffectTurnKey = key;
+      this.#effectTurnKey = key;
+      return key;
+    } catch {
+      throw new AgentTurnError('internal', 'session effect identity could not be reserved', false);
+    }
+  }
+
   /**
    * Run a USER-invoked `!`-shell command (2.5.D, [ADR-0061](../decisions/0061-cli-input-layer-file-injection-and-shell-escape.md))
    * — the additive engine method that routes the shell escape through the ONE `run_command` boundary:
@@ -983,14 +1219,17 @@ export class AgentSession {
    * `gateApproved: false`), so the `!`-shell can never diverge from the audited command sandbox. The caller
    * pre-tokenizes the line into `command` + `args` (no shell metachar expansion). The classified result is a
    * discriminated union — the host renders the output (untrusted context), the actionable allowlist-deny hint, or
-   * a failure — so no raw error escapes. Callable only when the session is started + idle (a `!` never races a turn).
+   * a failure. Dispatch failures use that result; host controller initialization preserves its original
+   * throwable after releasing operation state. Callable only when started + idle (a `!` never races a turn).
    */
   async runUserCommand(command: string, args: readonly string[]): Promise<UserCommandOutcome> {
     this.#assertSendable(); // started + idle — a `!` never runs concurrently with a model turn
-    this.#status = 'running';
-    const abort = this.#deps.newAbortController();
-    this.#abort = abort; // so cancel()/abort() can interrupt a long-running command
-    this.#userCommandSeq += 1; // a fresh synthetic tool-call id per `!`-command
+    const abort = this.#armTurnController(); // so cancel()/abort() can interrupt a long-running command
+    if (this.#statusIs('cancelled')) {
+      this.#releaseTurnController();
+      return { kind: 'cancelled' };
+    }
+    this.#userCommandSeq += 1; // disjoint negative slots under the next model turn key
     const toolCall: ToolCallPart = {
       type: 'tool_call',
       id: `usercmd-${this.#userCommandSeq}`,
@@ -998,6 +1237,9 @@ export class AgentSession {
       args: { command, args: [...args] },
     };
     try {
+      const key = this.#reserveEffectTurnKey();
+      if (!Number.isSafeInteger(this.#userCommandSeq))
+        throw new AgentTurnError('internal', 'session command identity is exhausted', false);
       // The user-initiated `!` GRANTS `run_command` for THIS one-off dispatch (the user typed it — the grant is
       // implicit), regardless of whether the bound agent lists it in `tools`. This never reaches the model: it is a
       // direct dispatch, not a turn, so the model's granted/advertised set is untouched. The security gate stays the
@@ -1015,6 +1257,10 @@ export class AgentSession {
         // identity, and the second to arrive would be refused as a duplicate of an unrelated effect.
         // Negative ordinals cannot meet the model's non-negative ones, whatever either counter does.
         effectSlot: -this.#userCommandSeq,
+        effectAttempt: {
+          providerAttempt: 0,
+          toolCallId: `session-command:${String(key)}:${String(this.#userCommandSeq)}`,
+        },
         signal: abort.signal,
       });
       const result = outcome.output;
@@ -1031,6 +1277,7 @@ export class AgentSession {
         stderr: result.stderr,
       };
     } catch (err) {
+      if (err instanceof AgentTurnError) return { kind: 'failed', message: err.message };
       if (err instanceof ToolCancelledError) return { kind: 'cancelled' };
       // An allowlist MISS is a policy denial with `command_not_allowed` — the host shows the actionable
       // `[chat].allowed_commands` hint; any other `tool_denied` (an approval reject / protected path) is a plain
@@ -1070,95 +1317,42 @@ export class AgentSession {
 
   /** The messages for one request — the transcript with the summary projected in (ADR-0081 §3). */
   #turnMessages(): LlmMessage[] {
-    return buildTurnMessages(this.#compactionSummary, this.#messages);
+    return buildTurnMessages(this.#compactionSummary, this.#messages, {
+      ...(this.#memory === undefined ? {} : { memory: this.#memory }),
+      completedTurnSpans: this.#completedTurnSpans,
+      ...(this.#pendingUser === undefined ? {} : { pendingUser: this.#pendingUser }),
+    });
   }
 
-  /**
-   * **Compact the working context** (ADR-0062, `/compact` + the auto-threshold path) — summarise the earlier
-   * conversation into the {@link #compactionSummary} via the session's OWN bound model, keep the last complete
-   * `user`+`assistant` exchange verbatim, and emit `session:compacted`. Append-only at the durable layer: the
-   * host writes a boundary marker on the event; the engine mutates only in-memory state. Callable only when
-   * started + idle. Aborting mid-summary (`cancel`/`abort`) yields `cancelled` and leaves the context
-   * unchanged. The summarisation's cost is accounted via `cost:updated` (the session budget), but its
-   * `agent:token`/tool events are NOT forwarded — the summary is internal context, never a transcript reply.
-   */
+  /** Compact/trim keep a suffix; rebase only whole proven turns, preserving legacy gaps as gaps. */
+  #rebasedHistorySpans(keptMessageCount: number): CompletedTurnSpan[] {
+    const dropped = this.#messages.length - keptMessageCount;
+    return this.#completedTurnSpans
+      .filter((span) => span.start >= dropped)
+      .map((span) => ({ start: span.start - dropped, end: span.end - dropped }));
+  }
+
+  #replaceHistory(kept: readonly LlmMessage[]): void {
+    const spans = this.#rebasedHistorySpans(kept.length);
+    this.#messages.length = 0;
+    this.#messages.push(...kept);
+    this.#completedTurnSpans.length = 0;
+    this.#completedTurnSpans.push(...spans);
+  }
+
+  /** Idle manual/after-turn entry; active turn paths use the same bounded primitive and signal. */
   async compact(reason: 'manual' | 'auto-threshold' = 'manual'): Promise<CompactionResult> {
     this.#assertSendable();
-    const split = splitFoldable(this.#messages);
-    if (split === undefined) return { kind: 'nothing_to_compact' }; // ≤1 exchange — nothing to fold
+    const refusal = this.compactionRefusal;
+    if (refusal !== undefined) return refusal;
+    if (this.#splitFoldable() === undefined) return { kind: 'nothing_to_compact' };
     const plan = this.#resolvePlan();
+    if (this.#statusIs('cancelled')) return { kind: 'cancelled' };
+    this.#assertSendable();
     if (!plan.ok) return { kind: 'failed', message: plan.message };
-
-    this.#status = 'running';
-    const abort = this.#deps.newAbortController();
-    this.#abort = abort;
+    const abort = this.#armTurnController();
     try {
-      // Announce the compaction MOMENT (ADR-0062 §7) — emitted AFTER the nothing-to-fold / plan-resolution guards
-      // (so a no-op never flashes the indicator) so the host can drive a labeled "Summarizing…" indicator while the
-      // summariser LLM call runs, for both a manual `/compact` and an auto-threshold trigger. The terminal
-      // `session:compacted` (success) / `session:trimmed` auto-fallback (failure→trim) ends the moment; a manual
-      // failure emits no terminal, so the manual host clears the moment when `compact()` resolves. Inside the `try`
-      // (like the estimate below) so nothing escapes past the `finally` that resets `#status`.
-      this.#deps.emit({ type: 'session:compacting', reason });
-      // Inside the `try` so a provider whose optional `estimateTokens` throws cannot escape past the `finally`
-      // and leave `#status` wedged at 'running' (the seam method is provider-supplied).
-      const tokensBefore = this.#estimateContextTokens();
-      const result = await runAgentTurn({
-        system: authoredSystemPrompt({ kind: 'engine', prompt: 'compaction' }),
-        messages: [renderConversationToSummarise(this.#compactionSummary, split.foldable)],
-        planEntries: plan.entries,
-        chainCapabilities: this.#chainCapabilities(),
-        nodeId: this.#agentRef,
-        maxTokens: COMPACTION_MAX_SUMMARY_TOKENS, // bound the summary so compaction reliably reduces context
-        // Forward ONLY cost:updated (budget accounting, ADR-0028) — drop agent:token/tool events so the
-        // internal summary never streams into the chat transcript as a reply.
-        emit: (event) => {
-          if (event.type === 'cost:updated') this.#onTurnEmit(event);
-        },
-        // Compaction drops every streaming event except `cost:updated`, so this turn cannot flood a
-        // consumer — the await is wired anyway so the two turn sites cannot drift, and it costs one
-        // already-resolved microtask per chunk.
-        ...(this.#deps.whenReady === undefined ? {} : { whenReady: this.#deps.whenReady }),
-        signal: abort.signal,
-        registry: this.#deps.registry,
-        dispatchContext: this.#buildDispatchContext(new Set(), undefined),
-        limits: this.#limits,
-        ...(this.#deps.preEgress === undefined ? {} : { preEgress: this.#deps.preEgress }),
-        ...(this.#deps.resolvePrice === undefined ? {} : { resolvePrice: this.#deps.resolvePrice }),
-      });
-      const summary = result.text.trim();
-      if (summary.length === 0) {
-        // The model returned no summary text — treat as a failure (the caller degrades to /trim) rather than
-        // installing an empty preamble that would silently lose the folded context.
-        return { kind: 'failed', message: 'the summarisation produced no summary text' };
-      }
-      // **Marked here, at the moment it leaves the model.** Everything downstream — persistence, resume,
-      // reseat, the request projection — carries the brand, so a future call site cannot put it somewhere
-      // it does not belong without unwrapping it and saying so.
-      this.#compactionSummary = markUntrusted(summary);
-      this.#messages.length = 0;
-      this.#messages.push(...split.kept);
-      const tokensAfter = this.#estimateContextTokens();
-      this.#deps.emit({
-        type: 'session:compacted',
-        reason,
-        summary,
-        keptMessageCount: split.kept.length,
-        tokensBefore,
-        tokensAfter,
-        tokensUsed: { input: result.usage.input, output: result.usage.output },
-      });
-      return {
-        kind: 'compacted',
-        reason,
-        summary,
-        keptMessageCount: split.kept.length,
-        tokensBefore,
-        tokensAfter,
-        summaryTokens: { input: result.usage.input, output: result.usage.output },
-      };
-    } catch (err) {
-      return this.#classifyCompactionError(err); // may re-throw an unclassified error (surfaced loudly)
+      return await this.#compactInner(reason, abort.signal, false);
     } finally {
       this.#abort = undefined;
       this.#abortingTurn = false;
@@ -1166,24 +1360,282 @@ export class AgentSession {
     }
   }
 
-  /**
-   * Map a caught {@link compact} error to a {@link CompactionResult} (factored out to keep `compact` focused on
-   * the happy path, mirroring {@link #settleTurnError}). A cancel/abort (terminal `cancel()`, `ToolCancelledError`,
-   * an EA7 `Esc`, or a classified `cancelled`) ⇒ `cancelled`; a classified {@link AgentTurnError} or a pre-egress
-   * {@link BudgetPauseError} ⇒ `failed` (the caller degrades to `/trim`); a truly UNCLASSIFIED error is a bug and
-   * is RE-THROWN so it surfaces loudly (never silently masked as an ordinary `failed`).
-   */
-  #classifyCompactionError(err: unknown): CompactionResult {
-    if (this.#statusIs('cancelled') || err instanceof ToolCancelledError || this.#abortingTurn) {
-      return { kind: 'cancelled' };
+  /** Keep the latest proven completed exchange, following legacy context and the explicit pending user. */
+  #splitFoldable(): { foldable: LlmMessage[]; kept: LlmMessage[] } | undefined {
+    const pending =
+      this.#pendingUser === undefined
+        ? this.#messages.length
+        : this.#messages.indexOf(this.#pendingUser);
+    const last = this.#completedTurnSpans.filter((span) => span.end <= pending).at(-1);
+    let keptStart = last?.start;
+    if (keptStart === undefined) {
+      for (let index = pending - 1; index >= 0; index--) {
+        if (this.#messages[index]?.role === 'user') {
+          keptStart = index;
+          break;
+        }
+      }
     }
-    if (err instanceof AgentTurnError) {
-      return err.code === 'cancelled'
-        ? { kind: 'cancelled' }
-        : { kind: 'failed', message: err.message };
+    if (keptStart === undefined || keptStart <= 0) return undefined;
+    return { foldable: this.#messages.slice(0, keptStart), kept: this.#messages.slice(keptStart) };
+  }
+
+  /** Each admitted pass is billed; context is installed once, only after the entire fold succeeds. */
+  async #compactInner(
+    reason: SessionCompactionReason,
+    signal: AbortSignalLike,
+    active: boolean,
+  ): Promise<CompactionResult> {
+    const refusal = this.compactionRefusal;
+    if (refusal !== undefined) return refusal;
+    const split = this.#splitFoldable();
+    if (split === undefined) return { kind: 'nothing_to_compact' };
+    const plan = this.#resolvePlan();
+    if (!plan.ok) return { kind: 'failed', message: plan.message };
+    let opened = false,
+      closed = false;
+    let observerFailure: { readonly error: unknown; readonly original: unknown } | undefined;
+    const settleObserver = (original: unknown): CompactionResult => {
+      if (active) {
+        this.#failedTurnAccounting = {
+          engaged: this.#failedTurnAccounting?.engaged ?? false,
+          usage: this.#failedTurnAccounting?.usage ?? { input: 0, output: 0 },
+          observerFailure: { error: original },
+        };
+        throw original;
+      }
+      if (this.#hasReadableObserverDiagnostic(original))
+        return {
+          kind: 'failed',
+          message: 'the compaction failed with an unexpected observer error',
+        };
+      throw original;
+    };
+    const observe = async (callback: () => void | Promise<void>): Promise<void> => {
+      try {
+        await callback();
+      } catch (original) {
+        const error = new AgentTurnError('internal', 'the compaction notification failed', false);
+        observerFailure = { error, original };
+        throw error;
+      }
+    };
+    const checkCancelled = (): void => {
+      if (signal.aborted || this.#statusIs('cancelled'))
+        throw new AgentTurnError('cancelled', 'compaction cancelled', false);
+    };
+    const params: AgentTurnParams = {
+      system: authoredSystemPrompt({ kind: 'engine', prompt: 'compaction' }),
+      messages: [],
+      planEntries: plan.entries,
+      chainCapabilities: this.#chainCapabilities(),
+      nodeId: this.#agentRef,
+      maxTokens: COMPACTION_MAX_SUMMARY_TOKENS,
+      emit: (event) => {
+        if (event.type === 'cost:updated') this.#onTurnEmit(event);
+      },
+      ...(this.#deps.whenReady === undefined ? {} : { whenReady: this.#deps.whenReady }),
+      signal,
+      registry: this.#deps.registry,
+      dispatchContext: this.#buildDispatchContext(new Set(), undefined),
+      limits: this.#limits,
+      ...(this.#maxTokensEstimate === undefined
+        ? {}
+        : { maxTokensEstimate: this.#maxTokensEstimate }),
+      ...(this.#deps.resolvePrice === undefined ? {} : { resolvePrice: this.#deps.resolvePrice }),
+    };
+    try {
+      checkCancelled();
+      const prepare = (message: LlmMessage): PreparedAgentTurnRequest =>
+        prepareAgentTurnRequest({ ...params, messages: [message] });
+      const windows = compactionWindows(prepare(renderConversationToSummarise(undefined, [])));
+      checkCancelled();
+      if (reason !== 'manual' && windows.unknown) return { kind: 'nothing_to_compact' };
+      const fits = (prepared: PreparedAgentTurnRequest): boolean =>
+        compactionRequestFits(prepared, windows, this.#maxTokensEstimate);
+      const tokensBefore = this.#estimateContextTokens();
+      checkCancelled();
+      let running = this.#compactionSummary,
+        offset = 0;
+      const usage = { input: 0, output: 0 };
+      for (let pass = 0; pass < COMPACTION_MAX_PASSES && offset < split.foldable.length; pass++) {
+        const chunk = prepareCompactionChunk(split.foldable, offset, running, prepare, fits);
+        checkCancelled();
+        const outcome = await captureAgentTurnOutcome({
+          ...params,
+          preparedRequest: chunk.prepared.request,
+          preEgress: async (info) => {
+            const admission = await this.#deps.preEgress?.(info);
+            try {
+              checkCancelled();
+              if (!opened) {
+                await observe(() => {
+                  this.#deps.emit({
+                    type: 'session:compacting',
+                    reason,
+                    ...(windows.unknown ? { windowUnknown: true } : {}),
+                  });
+                  opened = true;
+                });
+                // The surface owns visible delivery; a failed acknowledgement admits no provider call.
+                await awaitCompactionDisclosure(signal, () =>
+                  observe(() =>
+                    this.#deps.onCompactionStart?.({
+                      reason,
+                      windowUnknown: windows.unknown,
+                      signal,
+                    }),
+                  ),
+                );
+              }
+              checkCancelled();
+              return admission;
+            } catch (error) {
+              admission?.release();
+              throw error;
+            }
+          },
+        });
+        if (outcome.kind === 'failed') {
+          if (outcome.failureOrigin === 'observer')
+            observerFailure = { error: outcome.error, original: outcome.error };
+          throw outcome.error;
+        }
+        usage.input += outcome.result.usage.input;
+        usage.output += outcome.result.usage.output;
+        checkCancelled();
+        const summary = outcome.result.text.trim();
+        if (summary.length === 0)
+          throw new AgentTurnError(
+            'provider_unavailable',
+            'the summarisation produced no summary text',
+            false,
+          );
+        running = markUntrusted(summary);
+        offset = chunk.end;
+      }
+      if (offset < split.foldable.length || running === undefined)
+        throw new AgentTurnError(
+          'validation',
+          'the conversation requires more than four summarisation passes',
+          false,
+        );
+      const summary = unwrapUntrusted(running);
+      const tokensAfter = this.#estimateTokens(
+        this.#systemPrompt(),
+        buildTurnMessages(running, split.kept, {
+          ...(this.#memory === undefined ? {} : { memory: this.#memory }),
+          completedTurnSpans: this.#rebasedHistorySpans(split.kept.length),
+          ...(this.#pendingUser === undefined ? {} : { pendingUser: this.#pendingUser }),
+        }),
+      );
+      checkCancelled();
+      const priorSummary = this.#compactionSummary;
+      const priorMessages = [...this.#messages];
+      const priorSpans = [...this.#completedTurnSpans];
+      this.#compactionSummary = running;
+      this.#replaceHistory(split.kept);
+      try {
+        await observe(() => {
+          this.#emitProjectionEvent({
+            type: 'session:compacted',
+            reason,
+            summary,
+            keptMessageCount: split.kept.length,
+            // Legacy retained exchange slots belong in the durable boundary; a pending user never does.
+            keptTurnCount: split.kept.filter(
+              (message) => message.role === 'user' && message !== this.#pendingUser,
+            ).length,
+            tokensBefore,
+            tokensAfter,
+            tokensUsed: usage,
+          });
+          closed = true;
+        });
+      } catch (error) {
+        // The synchronous sink must accept the boundary before the replacement is committed.
+        // Restore only the projection: reentrant cancellation and already-billed usage remain real.
+        this.#compactionSummary = priorSummary;
+        this.#messages.length = 0;
+        this.#messages.push(...priorMessages);
+        this.#completedTurnSpans.length = 0;
+        this.#completedTurnSpans.push(...priorSpans);
+        throw error;
+      }
+      return {
+        kind: 'compacted',
+        reason,
+        summary,
+        keptMessageCount: split.kept.length,
+        tokensBefore,
+        tokensAfter,
+        summaryTokens: usage,
+      };
+    } catch (error) {
+      const observer = observerFailure !== undefined && Object.is(observerFailure.error, error);
+      const cancelled = this.#statusIs('cancelled') || this.#abortingTurn || signal.aborted;
+      let classified: AgentTurnError | ToolCancelledError | BudgetPauseError | undefined;
+      if (!observer) {
+        try {
+          if (
+            error instanceof AgentTurnError ||
+            error instanceof ToolCancelledError ||
+            error instanceof BudgetPauseError
+          )
+            classified = error;
+        } catch {
+          /* Opaque reflection never replaces the original; close the moment before rethrow. */
+        }
+      }
+      const budget =
+        classified instanceof BudgetPauseError ||
+        (classified instanceof AgentTurnError && classified.code === 'budget_exceeded');
+      const failure = {
+        code:
+          cancelled || classified instanceof ToolCancelledError
+            ? 'cancelled'
+            : budget
+              ? 'budget_exceeded'
+              : observer
+                ? 'internal'
+                : classified instanceof AgentTurnError
+                  ? classified.code
+                  : 'internal',
+        message: cancelled
+          ? 'compaction cancelled'
+          : budget && classified instanceof BudgetPauseError
+            ? `the summarisation request would exceed the cap of ${classified.limitMicrocents} micro-cents (spent ${classified.spentMicrocents})`
+            : budget && classified instanceof AgentTurnError
+              ? classified.message
+              : observer
+                ? 'the compaction failed with an unexpected observer error'
+                : classified instanceof AgentTurnError
+                  ? classified.message
+                  : 'the compaction failed unexpectedly',
+        retryable: false,
+      } satisfies { code: ErrorCode; message: string; retryable: boolean };
+      if (opened && !closed && !this.#statusIs('cancelled')) {
+        closed = true;
+        try {
+          await observe(() =>
+            this.#deps.emit({ type: 'session:compaction_failed', reason, error: failure }),
+          );
+        } catch {
+          return settleObserver(observerFailure?.original);
+        }
+      }
+      if (observer) return settleObserver(observerFailure?.original);
+      if (
+        cancelled ||
+        classified instanceof ToolCancelledError ||
+        (classified instanceof AgentTurnError && classified.code === 'cancelled')
+      )
+        return { kind: 'cancelled' };
+      if (budget) return { kind: 'budget_refused', message: failure.message, momentOpened: opened };
+      if (classified instanceof AgentTurnError)
+        return { kind: 'failed', message: failure.message, error: failure };
+      throw error;
     }
-    if (err instanceof BudgetPauseError) return { kind: 'failed', message: err.message };
-    throw err;
   }
 
   /**
@@ -1195,79 +1647,104 @@ export class AgentSession {
    */
   trimHistory(maxMessages: number, reason: 'manual' | 'auto-fallback' = 'manual'): TrimResult {
     this.#assertSendable();
+    const refusal = this.trimRefusal;
+    if (refusal !== undefined) return refusal;
     const kept = tailFromUserBoundary(this.#messages, maxMessages);
     const dropped = this.#messages.length - kept.length;
     if (dropped <= 0) return { kind: 'nothing_to_trim', messageCount: this.#messages.length };
-    this.#messages.length = 0;
-    this.#messages.push(...kept);
-    this.#deps.emit({
+    this.#replaceHistory(kept);
+    this.#emitProjectionEvent({
       type: 'session:trimmed',
       reason, // `auto-fallback` when the auto-compaction summariser failed → the view surfaces it (never silent)
       keptMessageCount: kept.length,
+      keptTurnCount: kept.filter((message) => message.role === 'user').length,
       droppedMessageCount: dropped,
     });
     return { kind: 'trimmed', keptMessageCount: kept.length, droppedMessageCount: dropped };
   }
 
-  /**
-   * The after-turn auto-compaction gate (ADR-0062) — run from {@link sendMessage} AFTER a clean turn settles.
-   * Compacts when: auto-compaction is enabled; the SERVING model's context window is known; the turn's real
-   * input tokens exceed `threshold × window`; and there is more than one exchange to fold. Skips a provider
-   * that manages its own context. On a summarisation failure it degrades to a deterministic `/trim` to
-   * `maxMessages` (zero cost) rather than sending an ever-growing context. A no-op on every skip condition.
-   */
-  async #maybeAutoCompact(model: string, inputTokens: number): Promise<void> {
-    if (this.#deps.autoCompact === false) return;
-    if (this.#status !== 'idle') return; // a cancel/abort landed after the turn — do not compact
-    const plan = this.#resolvePlan();
-    if (!plan.ok) return;
-    // Consult the SERVING provider (the plan entry whose model actually produced this turn under fallback), not
-    // just the primary — so managesOwnContext / contextLimit reflect the model that would overflow NEXT. Both are
-    // OPTIONAL, provider-supplied seam methods; a throw from either must be a non-fatal SKIP (auto-compaction is
-    // best-effort) — never escape and reject `sendMessage` after the turn already completed (mirrors #estimateTokens).
-    let window: number | undefined;
+  /** The next exact construction drives after-turn compaction; billed/cache/tool-round usage does not. */
+  async #maybeAutoCompact(): Promise<void> {
+    if (
+      !this.automaticCompactionAllowed ||
+      this.#deps.afterTurnCompaction === false ||
+      this.#status !== 'idle'
+    )
+      return;
+    let trigger = false;
     try {
-      const serving =
-        plan.entries.find((entry) => entry.model === model)?.provider ?? plan.entries[0]?.provider;
-      if (serving?.managesOwnContext?.() === true) return; // the provider bounds context itself
-      window = serving?.contextLimit?.(model);
+      const controller = this.#deps.newAbortController();
+      const params = this.#turnParams(controller.signal, this.#turnPolicy, false);
+      const prepared = prepareAgentTurnRequest(params);
+      trigger = this.#compactionDecision(prepared, params) === 'compact';
     } catch {
-      return; // a throwing provider seam method → skip auto-compaction, don't crash the settled turn
-    }
-    if (window === undefined || window <= 0) return; // unrated/custom model — window unknown, skip auto-compaction
-    const budget = window * (this.#deps.compactThreshold ?? DEFAULT_COMPACT_THRESHOLD);
-    if (inputTokens <= budget) return; // under the trigger — nothing to do
-    const split = splitFoldable(this.#messages);
-    if (split === undefined) return; // ≤1 exchange — nothing earlier to fold (thrash guard a)
-    // ADR §5 thrash guard b: estimate the PROJECTED post-compaction floor — the BASE system prompt (NOT the
-    // current preamble, which the new summary REPLACES) + the kept exchange + the bounded summary the
-    // compaction will produce (`COMPACTION_MAX_SUMMARY_TOKENS`). If even that floor exceeds the budget,
-    // compaction cannot help (a single oversized turn / a huge system prompt) — skip and let the overflow
-    // surface via the error taxonomy, rather than paying a summariser call on every subsequent turn.
-    const projectedFloor =
-      this.#estimateTokens(this.#agent.system_prompt, split.kept) + COMPACTION_MAX_SUMMARY_TOKENS;
-    if (projectedFloor > budget) return;
-
+      return;
+    } // This whole preparation is best-effort after a committed turn, including request ownership and
+    // optional metadata. A later foreground send still validates its own request and refuses loudly;
+    // failure here cannot rewrite the completed turn or invent a compaction lifecycle moment.
+    if (!trigger || this.#status !== 'idle') return;
     let result: CompactionResult;
     try {
       result = await this.compact('auto-threshold');
     } catch {
-      // `compact()` RE-THROWS an UNCLASSIFIED error (a bug) rather than returning `{kind:'failed'}`. Auto-compaction
-      // is BEST-EFFORT and runs AFTER the turn already completed (session:turn_completed emitted), so such a throw
-      // must NOT reject an otherwise-successful `sendMessage` — mirror the seam-method guard above. Treat it as a
-      // failure so the deterministic /trim fallback below still bounds the next turn (ADR §5).
       result = { kind: 'failed', message: 'auto-compaction summariser threw' };
     }
-    // Degrade a non-success — a `failed` summariser OR an EA7-aborted `cancelled` — to a deterministic, zero-cost
-    // /trim so the next turn is bounded (never a silent overflowing resend, ADR §5). A terminal `cancel()` leaves
-    // status !== 'idle', so this guard skips a dead session; a `compacted`/`nothing_to_compact` needs no fallback.
-    if (
-      (result.kind === 'failed' || result.kind === 'cancelled') &&
-      this.#deps.maxMessages !== undefined &&
-      this.#status === 'idle'
-    ) {
-      this.trimHistory(this.#deps.maxMessages, 'auto-fallback');
+    if (result.kind === 'budget_refused') {
+      if (!result.momentOpened && this.#status === 'idle')
+        this.#deps.emit({
+          type: 'session:compaction_budget_refused',
+          reason: 'auto-threshold',
+          error: { code: 'budget_exceeded', message: result.message, retryable: false },
+        });
+      return;
     }
+    if (result.kind === 'failed' && this.#deps.maxMessages !== undefined && this.#status === 'idle')
+      this.trimHistory(this.#deps.maxMessages, 'auto-fallback');
+  }
+
+  /** Threshold triggers work; the irreducible floor is compared with the full window. */
+  #compactionDecision(
+    prepared: PreparedAgentTurnRequest,
+    params: AgentTurnParams,
+  ): 'none' | 'skip' | 'compact' {
+    if (!this.automaticCompactionAllowed) return 'none';
+    const first = prepared.firstEntry;
+    const window = authoritativeContextWindow(first);
+    if (first === undefined || window === undefined || managesOwnContext(first)) return 'none';
+    const input = assertMeasuredInput(prepared);
+    const output = preparedOutputReservation(prepared, first, this.#maxTokensEstimate);
+    if (
+      input <= window * (this.#deps.compactThreshold ?? DEFAULT_COMPACT_THRESHOLD) &&
+      input + output <= window
+    )
+      return 'none';
+    const split = this.#splitFoldable();
+    if (split === undefined) return 'skip';
+    // Construct the same untrusted-summary wrapper, kept exchange, tools and pending user that dispatch sees.
+    const floor = prepareAgentTurnRequest({
+      ...params,
+      ...(prepared.request.tools === undefined ? {} : { tools: prepared.request.tools }),
+      messages: buildTurnMessages(
+        markUntrusted('S'.repeat(COMPACTION_MAX_SUMMARY_TOKENS * 4)),
+        split.kept,
+        {
+          ...(this.#memory === undefined ? {} : { memory: this.#memory }),
+          completedTurnSpans: this.#rebasedHistorySpans(split.kept.length),
+          ...(this.#pendingUser === undefined ? {} : { pendingUser: this.#pendingUser }),
+        },
+      ),
+    });
+    return assertMeasuredInput(floor) +
+      preparedOutputReservation(floor, first, this.#maxTokensEstimate) <=
+      window
+      ? 'compact'
+      : 'skip';
+  }
+
+  #rollbackPendingUser(): void {
+    if (this.#pendingUser === undefined) return;
+    const index = this.#messages.indexOf(this.#pendingUser);
+    if (index >= 0) this.#messages.splice(index);
   }
 
   /** A rough token estimate of the current working context (system-with-preamble + messages) — for the
@@ -1282,24 +1759,27 @@ export class AgentSession {
    * Estimate the tokens of `system + messages` via the primary provider's optional seam estimator
    * (provider-agnostic in practice). Best-effort and **never throws** — a provider-supplied `estimateTokens`
    * that throws is swallowed to 0, so an estimate can never wedge `#status`, escape `compact()`'s `finally`,
-   * or crash the auto-compaction gate (the value only drives an observability delta / a thrash heuristic).
+   * or crash the auto-compaction gate (the value only drives the before/after observability delta).
    */
   #estimateTokens(system: string, messages: readonly LlmMessage[]): number {
     const plan = this.#resolvePlan();
     if (!plan.ok) return 0;
     try {
       // Call inline (not via an extracted method reference) so `estimateTokens` stays bound to its provider.
-      return plan.entries[0]?.provider.estimateTokens?.({ system, messages }) ?? 0;
+      const estimate = plan.entries[0]?.provider.estimateTokens?.({ system, messages });
+      return estimate !== undefined && Number.isSafeInteger(estimate) && estimate >= 0
+        ? estimate
+        : 0;
     } catch {
       return 0; // a best-effort estimate — never let a throwing seam estimator break compaction
     }
   }
 
-  /** Build (memoized) the fallback plan and drive one turn through the shared core. */
-  async #runTurn(
+  #turnParams(
     signal: AbortSignalLike,
     turnPolicy: SessionTurnPolicy | undefined,
-  ): Promise<AgentTurnResult> {
+    notifyEffort = true,
+  ): AgentTurnParams {
     const plan = this.#resolvePlan();
     if (!plan.ok) {
       // A host-wiring gap (a provider was not resolved) — a classified, non-retryable internal failure.
@@ -1309,7 +1789,12 @@ export class AgentSession {
     const dispatchContext = this.#buildDispatchContext(grantedToolIds, turnPolicy);
     // Advertise-filter (ADR-0057): narrow the model-visible tool set per the host's mode (best-effort; the
     // confirm floor stays authoritative). No policy / no filter ⇒ advertise every granted tool.
-    const llmTools = buildLlmTools(this.#deps.tools, grantedToolIds, turnPolicy?.advertise);
+    const llmTools = buildLlmTools(
+      this.#deps.tools,
+      grantedToolIds,
+      dispatchContext,
+      turnPolicy?.advertise,
+    );
     // ADR-0066/0071: resolve the effective reasoning-effort tier (session override → agent's authored tier) and
     // gate it on WHICH TIERS the bound model accepts. Read at turn start so a mid-session setReasoningEffort
     // applies to the NEXT turn — the no-reseat per-turn semantics (§5).
@@ -1325,14 +1810,15 @@ export class AgentSession {
     // the user set is dropped, the turn runs at the provider's default, and nothing anywhere admits it. `capped`
     // (a budget model whose tier the request's cap withholds, review M6) is voiced through the same channel.
     if (
-      effortGate.kind === 'rejected' ||
-      effortGate.kind === 'uncontrollable' ||
-      effortGate.kind === 'capped'
+      notifyEffort &&
+      (effortGate.kind === 'rejected' ||
+        effortGate.kind === 'uncontrollable' ||
+        effortGate.kind === 'capped')
     ) {
       this.#deps.onEffortWithheld?.(effortGate, this.#agent.model);
     }
     const reasoningEffort = effortToSend(effortGate);
-    return runAgentTurn({
+    return {
       system: this.#systemPrompt(),
       messages: this.#turnMessages(),
       ...(llmTools.length > 0 ? { tools: llmTools } : {}),
@@ -1351,10 +1837,88 @@ export class AgentSession {
       signal,
       registry: this.#deps.registry,
       dispatchContext,
+      sessionToolCallId: (slot) => createSessionToolCallId(this.#reserveEffectTurnKey(), slot),
       limits: this.#limits,
       ...(this.#deps.preEgress === undefined ? {} : { preEgress: this.#deps.preEgress }),
+      ...(this.#maxTokensEstimate === undefined
+        ? {}
+        : { maxTokensEstimate: this.#maxTokensEstimate }),
       ...(this.#deps.resolvePrice === undefined ? {} : { resolvePrice: this.#deps.resolvePrice }),
-    });
+    };
+  }
+
+  /** One user turn owns one prepared construction; only a successful compaction creates another. */
+  async #runTurn(
+    signal: AbortSignalLike,
+    turnPolicy: SessionTurnPolicy | undefined,
+  ): Promise<AgentTurnResult> {
+    const params = this.#turnParams(signal, turnPolicy);
+    let prepared = prepareAgentTurnRequest(params);
+    const compactionDecision = this.#compactionDecision(prepared, params);
+    let suppressRecovery = compactionDecision === 'skip';
+    const handleCompaction = (result: CompactionResult): void => {
+      if (result.kind === 'budget_refused')
+        throw new AgentTurnError('budget_exceeded', result.message, false);
+      if (result.kind === 'cancelled')
+        throw new AgentTurnError('cancelled', 'turn cancelled during compaction', false);
+    };
+    if (compactionDecision === 'compact') {
+      const compacted = await this.#compactInner('pre-send', signal, true);
+      handleCompaction(compacted);
+      if (compacted.kind === 'compacted')
+        prepared = prepareAgentTurnRequest({ ...params, messages: this.#turnMessages() });
+      else suppressRecovery = true;
+    }
+    const outcome = await captureAgentTurnOutcome({ ...params, preparedRequest: prepared.request });
+    if (outcome.kind === 'succeeded') return outcome.result;
+    this.#failedTurnAccounting = {
+      engaged: outcome.engaged,
+      usage: outcome.usage,
+      ...(outcome.failureOrigin === 'observer'
+        ? { observerFailure: { error: outcome.error } }
+        : {}),
+    };
+    const error = outcome.error;
+    if (
+      !suppressRecovery &&
+      this.automaticCompactionAllowed &&
+      outcome.failureOrigin !== 'observer' &&
+      outcome.overflowEntry !== undefined &&
+      authoritativeContextWindow(outcome.overflowEntry) !== undefined &&
+      !managesOwnContext(outcome.overflowEntry)
+    ) {
+      const compacted = await this.#compactInner('overflow-recovery', signal, true);
+      handleCompaction(compacted);
+      if (compacted.kind === 'compacted') {
+        prepared = prepareAgentTurnRequest({ ...params, messages: this.#turnMessages() });
+        const retry = await captureAgentTurnOutcome({
+          ...params,
+          preparedRequest: prepared.request,
+        });
+        const usage = {
+          input:
+            outcome.usage.input +
+            (retry.kind === 'succeeded' ? retry.result.usage.input : retry.usage.input),
+          output:
+            outcome.usage.output +
+            (retry.kind === 'succeeded' ? retry.result.usage.output : retry.usage.output),
+        };
+        if (retry.kind === 'failed') {
+          this.#failedTurnAccounting = {
+            engaged: outcome.engaged || retry.engaged,
+            usage,
+            ...(retry.failureOrigin === 'observer'
+              ? { observerFailure: { error: retry.error } }
+              : {}),
+          };
+          throw retry.error;
+        }
+        // Success owns both main attempts; a later durability/notification fault cannot count the first twice.
+        this.#failedTurnAccounting = undefined;
+        return { ...retry.result, usage };
+      }
+    }
+    throw error;
   }
 
   /**
@@ -1378,15 +1942,26 @@ export class AgentSession {
     this.#deps.emit(event);
   }
 
+  /** New producers always carry the whole-turn boundary; the public schema still accepts older events. */
+  #emitProjectionEvent(
+    event: Extract<SessionLifecycleEvent, { type: 'session:compacted' | 'session:trimmed' }> & {
+      readonly keptTurnCount: number;
+    },
+  ): void {
+    this.#deps.emit(event);
+  }
+
   #emitTurnCompleted(
     stopReason: SessionStopReason,
     tokensUsed: { input: number; output: number; model?: string },
     error?: { code: ErrorCode; message: string; retryable: boolean },
+    toolHistory?: readonly SessionToolHistoryEntry[],
   ): void {
     this.#deps.emit({
       type: 'session:turn_completed',
       stopReason,
       tokensUsed,
+      ...(toolHistory === undefined ? {} : { toolHistory: [...toolHistory] }),
       ...(error === undefined ? {} : { error }),
     });
   }
@@ -1449,69 +2024,6 @@ export class AgentSession {
 }
 
 /**
- * Split the working transcript (ADR-0062) into the earlier part to FOLD into the summary and the last COMPLETE
- * `user`+`assistant` exchange to KEEP verbatim. The kept slice starts at the last `user` that is FOLLOWED by an
- * `assistant` reply — so a trailing dangling `user` (a completed-but-empty-text turn leaves one; `sendMessage`
- * only appends the assistant when `result.text` is non-empty) is never kept as a protocol-breaking LONE user;
- * it rides along at the tail of a complete exchange. `undefined` when there is no earlier turn to fold before
- * the last complete exchange (≤1 exchange — the `nothing_to_compact` / thrash-guard case).
- */
-function splitFoldable(
-  messages: readonly LlmMessage[],
-): { readonly foldable: LlmMessage[]; readonly kept: LlmMessage[] } | undefined {
-  // O(N): the kept exchange starts at the last `user` that PRECEDES the last `assistant` (any such user has an
-  // assistant reply after it); a trailing dangling `user` rides along in the kept slice, never as a lone user.
-  let lastAssistant = -1;
-  for (let i = messages.length - 1; i >= 0; i -= 1) {
-    if (messages[i]?.role === 'assistant') {
-      lastAssistant = i;
-      break;
-    }
-  }
-  let keptStart = -1;
-  for (let i = lastAssistant - 1; i >= 0; i -= 1) {
-    if (messages[i]?.role === 'user') {
-      keptStart = i;
-      break;
-    }
-  }
-  if (keptStart <= 0) return undefined; // no earlier turn precedes the last complete exchange
-  return { foldable: messages.slice(0, keptStart), kept: messages.slice(keptStart) };
-}
-
-/** The concatenated text of a cross-turn message (the transcript is text-only; a non-text part is skipped). */
-function messageText(message: LlmMessage): string {
-  return message.content.map((part) => (part.type === 'text' ? part.text : '')).join('');
-}
-
-/**
- * Render the earlier conversation (an optional prior summary preamble + the foldable turns) as ONE `user`
- * message for the summariser (ADR-0062). Untrusted conversation data rides the USER role — never the authored
- * system prompt (the seam's system-is-authored rule). Including the prior preamble is what makes re-compaction
- * fold summary-of-summary (the disclosed, accepted degradation).
- */
-function renderConversationToSummarise(
-  priorSummary: Untrusted<string> | undefined,
-  foldable: readonly LlmMessage[],
-): LlmMessage {
-  const parts: string[] = [];
-  if (priorSummary !== undefined) {
-    // Unwrapped into a USER message — the summariser reads the prior summary as data, exactly as the live
-    // turn does. This is the second and last unwrap point, and it is a data position too.
-    parts.push(
-      `Summary of the conversation so far:\n${unwrapUntrusted(priorSummary)}`,
-      'The conversation then continued:',
-    );
-  }
-  for (const message of foldable) {
-    const text = messageText(message);
-    if (text.length === 0) continue;
-    parts.push(`${message.role === 'user' ? 'User' : 'Assistant'}: ${text}`);
-  }
-  return { role: 'user', content: [{ type: 'text', text: parts.join('\n\n') }] };
-}
-
-/**
  * The last `maxKeep` messages, snapped to start on a `user` message so the trimmed transcript stays
  * protocol-valid (an orphan leading `assistant` — from slicing mid-exchange — is dropped; ADR-0062). It never
  * returns an EMPTY slice when there was history to keep: `maxKeep = 1` on a transcript ending in `assistant`
@@ -1533,6 +2045,29 @@ function tailFromUserBoundary(messages: readonly LlmMessage[], maxKeep: number):
   return [];
 }
 
+/** Cancellation releases an unused admission without waiting for a blocked terminal write/flush.
+ * Promise.race observes the late acknowledgement too; its completion cannot resume provider entry. */
+async function awaitCompactionDisclosure(
+  signal: AbortSignalLike,
+  publish: () => Promise<void>,
+): Promise<void> {
+  let onAbort = (): void => undefined;
+  const cancelled = new Promise<never>((_resolve, reject) => {
+    onAbort = () => reject(new AgentTurnError('cancelled', 'compaction cancelled', false));
+    signal.addEventListener('abort', onAbort);
+  });
+  try {
+    const acknowledgement = Promise.resolve().then(() => {
+      if (signal.aborted) throw new AgentTurnError('cancelled', 'compaction cancelled', false);
+      return publish();
+    });
+    if (signal.aborted) onAbort();
+    await Promise.race([acknowledgement, cancelled]);
+  } finally {
+    signal.removeEventListener('abort', onAbort);
+  }
+}
+
 /**
  * The agent's granted tools as LLM-visible defs, validated through the seam schema (no unsafe cast).
  * `advertise` is the optional mode advertise-filter (ADR-0057): a granted tool it rejects is **not** offered
@@ -1542,11 +2077,16 @@ function tailFromUserBoundary(messages: readonly LlmMessage[], maxKeep: number):
 function buildLlmTools(
   defs: readonly ToolDef[],
   granted: ReadonlySet<string>,
+  delegates: ToolDelegates,
   advertise?: (toolId: string) => boolean,
 ): LlmToolDef[] {
   const out: LlmToolDef[] = [];
   for (const def of defs) {
     if (!granted.has(def.id)) continue;
+    // A tool whose dispatch DELEGATE is absent cannot succeed, so it is never offered (`CR-73`). Before the
+    // mode filter: this one is not best-effort and not mode-dependent — the delegate is either there or the
+    // call is guaranteed to answer `tool_unavailable`.
+    if (!delegateAvailable(def, delegates)) continue;
     if (advertise !== undefined && !advertise(def.id)) continue; // mode advertise-filter (ADR-0057)
     // The model-visible description carries a provenance line for a server-supplied tool (ADR-0088 §7.2).
     const description = modelVisibleDescription(def);

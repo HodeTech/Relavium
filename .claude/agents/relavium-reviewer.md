@@ -56,15 +56,20 @@ finding, and you list what you verified as clean.
    - Signal: inspect the `package.json` / `pnpm-lock.yaml` diff.
    - Source: [code-review.md](../../docs/standards/code-review.md)
 
-6. **Secrets never in plaintext, logs, or the frontend.** Keys live only in the OS keychain;
-   none in an IPC payload to the WebView, a Zustand store, a React prop, localStorage, a log,
-   an unencrypted DB column, or an error/`node:failed`/`run:failed` event. On the **CLI** — the
-   surface that actually ships today — a key is read from stdin, never argv; `history.db` and
-   `config.toml` stay `0600`; a tool-approval preview, a persisted run summary, and any `--json`
-   payload go through the secret-shaped redaction helper before they are written. On the
-   **desktop** (not yet built) the WebView adapter holds only a key *reference*; the raw key is
-   read and attached inside the Rust `llm_stream` command and never crosses into the WebView
-   (ADR-0018).
+6. **Provider-key custody and sensitive-content retention are distinct.** Locally persisted
+   provider keys belong in the OS keychain; never introduce a host-resolved provider key into config/history,
+   logs, an IPC return to the WebView, a Zustand store, a React prop or localStorage. On the
+   **CLI** — the surface that ships today — a key is read from stdin, never argv; `history.db`
+   and `config.toml` stay `0600`, inside a `0700` directory. Structured secret inputs are masked,
+   and displayed approval targets/diagnostics are redacted at their defined boundaries.
+   **This is not universal content redaction:** user/model text, workflow tool I/O and run-scoped
+   effect results may contain sensitive content in the CLI's unencrypted database. Session tool
+   results have a narrower structural/retention contract. Review every affected persistence and
+   display path against [the at-rest sitting](../../docs/standards/security-review.md#sitting-historydb-at-rest--cr-71-cr-97-2026-10-02)
+   and [ADR-0050](../../docs/decisions/0050-cli-history-db-at-rest-posture.md), without claiming
+   that key custody erases content. On the **desktop** (not yet built) the WebView adapter holds
+   a key *reference*; raw key resolution and attachment occur inside the Rust `llm_stream`
+   command (ADR-0018).
    - Signal: `grep -rni "apikey\|api_key\|secret\|process.env.*KEY" $changed_files` then trace each hit.
    - Source: [security-review.md](../../docs/standards/security-review.md), [ADR-0006](../../docs/decisions/0006-os-keychain-for-api-keys.md), [ADR-0018](../../docs/decisions/0018-desktop-execution-and-rust-egress.md)
 

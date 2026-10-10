@@ -4,6 +4,7 @@ import {
   createModelCatalogStore,
   createModelMetadataStore,
   createProviderStore,
+  type Db,
   type ProviderStore,
 } from '@relavium/db';
 import type { CatalogModel } from '@relavium/llm';
@@ -36,7 +37,13 @@ import { chatExportCommand, type ChatExportCommandArgs } from './chat-export.js'
 import { chatListCommand } from './chat-list.js';
 import { createCommand } from './create.js';
 import { exportCommand, type ExportCommandArgs } from './export.js';
-import { gateCommand, type GateCommandArgs } from './gate.js';
+import {
+  budgetCommand,
+  gateCommand,
+  type BudgetCommandArgs,
+  type GateCommandArgs,
+} from './gate.js';
+import { budgetDecisionFromFlags } from '../gate/budget.js';
 import { gateListCommand } from './gate-list.js';
 import { importCommand, type ImportCommandArgs } from './import.js';
 import { listCommand } from './list.js';
@@ -184,10 +191,27 @@ export function buildGateArgs(input: CommandInput): GateCommandArgs {
     approve: boolFlag(input.options['approve']),
     reject: boolFlag(input.options['reject']),
     secretStdin: boolFlag(input.options['secretStdin']),
+    allowMcpStdio: stringList(input.options['allowMcpStdio']),
     ...(comment === undefined ? {} : { comment }),
     ...(inputValue === undefined ? {} : { input: inputValue }),
     ...(gate === undefined ? {} : { gate }),
   };
+}
+
+/** Budget transport is checked before production resolver factories can touch local history. */
+export function buildBudgetArgs(input: CommandInput): BudgetCommandArgs {
+  const gate = optString(input.options['gate']);
+  const approveAmount = optString(input.options['approveAmount']);
+  const args: BudgetCommandArgs = {
+    runId: reqPositional(input, 0, 'runId'),
+    abort: boolFlag(input.options['abort']),
+    secretStdin: boolFlag(input.options['secretStdin']),
+    allowMcpStdio: stringList(input.options['allowMcpStdio']),
+    ...(gate === undefined ? {} : { gate }),
+    ...(approveAmount === undefined ? {} : { approveAmount }),
+  };
+  budgetDecisionFromFlags(args);
+  return args;
 }
 
 export function buildProviderListArgs(input: CommandInput): ProviderCommandArgs {
@@ -343,47 +367,50 @@ export function buildModelsPricingArgs(input: CommandInput): ModelsPricingComman
  * creation (`applyCustomEndpoints` reads `list()` once), so no db handle is held past this call — a self-contained
  * short-lived read that needs no lifecycle threaded into the command's own db/teardown ordering.
  *
- * The `run`/`chat`/`gate` commands then re-open the same `history.db` for their own stores — a deliberate, PURELY
+ * The `run`/`chat` commands then re-open the same `history.db` for their own stores — a deliberate, PURELY
  * SEQUENTIAL second open (the first handle is fully closed here first, so no WAL/lock race), accepted as the
  * low-risk alternative to threading the db handle through each command's careful teardown. The `models` /
- * `provider` paths avoid it entirely — they build the resolver from the db they already hold (`withModelsDeps` /
+ * `provider` paths and human/budget resume avoid it entirely — they build the resolver from the db they already hold (`withModelsDeps` /
  * `withProviderDeps`), and the long-lived Home builds it over its one open handle in the S7 port block.
  */
 function storeAwareResolver(
   ctx: DispatchContext,
   keychain: KeychainStore,
+  openedDb?: Db,
 ): ReturnType<typeof createProviderResolver> {
+  const fromDb = (db: Db): ReturnType<typeof createProviderResolver> => {
+    const providerStore = createProviderStore(db, {
+      uuid: () => randomUUID(),
+      now: () => Date.now(),
+    });
+    return createProviderResolver(ctx.io.env, keychain, { providerStore });
+  };
+  if (openedDb !== undefined) return fromDb(openedDb);
   const { homeDir } = loadResolvedConfig({
     cwd: ctx.global.cwd,
     configPath: ctx.global.configPath,
   });
   const { db, close } = openLocalDb(homeDir);
   try {
-    const providerStore = createProviderStore(db, {
-      uuid: () => randomUUID(),
-      now: () => Date.now(),
-    });
-    return createProviderResolver(ctx.io.env, keychain, { providerStore });
+    return fromDb(db);
   } finally {
     close();
   }
 }
 
 /** One native keychain accessor, shared by the key resolver (2.C) + the MCP named-secret resolver (2.R §6). */
-function keyResolvers(ctx: DispatchContext): {
+function keyResolvers(
+  ctx: DispatchContext,
+  openedDb?: Db,
+): {
   providers: ReturnType<typeof createProviderResolver>;
   mcpSecretResolver: ReturnType<typeof createMcpSecretResolver>;
 } {
   const keychain = createOsKeychainStore();
   return {
-    providers: storeAwareResolver(ctx, keychain),
+    providers: storeAwareResolver(ctx, keychain, openedDb),
     mcpSecretResolver: createMcpSecretResolver(ctx.io.env, keychain),
   };
-}
-
-/** The store-aware provider resolver alone (a command — like `gate` — that needs keys but not MCP secrets). */
-function providerResolver(ctx: DispatchContext): ReturnType<typeof createProviderResolver> {
-  return storeAwareResolver(ctx, createOsKeychainStore());
 }
 
 const executeRun: CommandExecutor = (input, ctx) =>
@@ -447,8 +474,14 @@ const executeGate: CommandExecutor = (input, ctx) =>
   gateCommand(buildGateArgs(input), {
     io: ctx.io,
     global: ctx.global,
-    // Production resolves a post-gate agent's key via the OS keychain → env var (2.C), like `run`.
-    providers: providerResolver(ctx),
+    resolveKeys: (db) => keyResolvers(ctx, db),
+  });
+
+const executeBudget: CommandExecutor = (input, ctx) =>
+  budgetCommand(buildBudgetArgs(input), {
+    io: ctx.io,
+    global: ctx.global,
+    resolveKeys: (db) => keyResolvers(ctx, db),
   });
 
 const executeGateList: CommandExecutor = (input, ctx) => {
@@ -590,7 +623,9 @@ const executeModelsRefresh: CommandExecutor = (input, ctx) =>
  * `--providers` / `--catalog` (ADR-0071 §4a) — which axis to refresh. Neither ⇒ BOTH, because "refresh what I know
  * about models" is one intent. Both flags together is the same as neither, and saying so beats a pedantic error.
  */
-function buildRefreshAxis(input: CommandInput): { axis?: 'providers' | 'catalog' } {
+function buildRefreshAxis(input: CommandInput): {
+  axis?: 'providers' | 'catalog';
+} {
   const providers = input.options['providers'] === true;
   const catalog = input.options['catalog'] === true;
   if (providers && !catalog) return { axis: 'providers' };
@@ -677,6 +712,7 @@ const COMMAND_EXECUTORS: ReadonlyMap<string, CommandExecutor> = new Map<string, 
   ['import', executeImport],
   ['agent.run', executeAgentRun],
   ['gate', executeGate],
+  ['budget.resume', executeBudget],
   ['gate.list', executeGateList],
   ['list', executeList],
   ['logs', executeLogs],

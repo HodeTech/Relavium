@@ -215,3 +215,147 @@ no arm, the four rejected alternatives, and the reason it lands after
 - **ADR-0076 §1 must be read together with this ADR**, since the corpus is append-only and that paragraph
   stays on the page. Mitigation: the title, the `Related` line and the "What ADR-0076 keeps" section above make
   the scope of the correction unambiguous — one paragraph, not a section.
+
+## Implementation correction — 2026-10-02, W7 step 6 sixth review
+
+An independent pending-sibling-write fixture now pins B1 before a turn's first admission,
+credential resolution and provider call, separately from B2/B3. The source comment claiming
+that no fixture could test B1 has been replaced with this concrete boundary. Six permanent
+[controls](../../packages/core/src/engine/agent-turn-money-admission.test.ts) cover write
+success, write rejection and cancellation with and without a budget hook; removing only B1
+fails all six.
+
+The parent found a cancellation gap while expanding that coverage: a budgetless turn aborted
+during B1 still resolved its credential after the write completed, because the no-hook return
+preceded the cancellation check. No provider call occurred. The existing settlement/cancellation
+checks now precede that return, preserving the budgeted path's order. Restoring the previous
+source reproduces only the budgetless cancellation failure; corrected source passes all six.
+This changes neither the durability protocol nor approval policy. Historical text is preserved.
+
+## Implementation correction — 2026-10-02, W7 step 6 seventh review
+
+Both money chains awaited a single captured promise tail. A sibling could append another
+write during that await, then releasing the earlier write allowed a candidate to reach
+credentials and provider egress while the later write remained pending. Independent review
+reproduced this through actual `AgentRunner`/`WorkflowEngine` nodes and, separately, installed
+SDK offline HTTP captures. The faulty methods predate W7; this corrects the existing
+wait-and-observe obligation rather than introducing a financial policy.
+
+The conservative barrier now follows its current tail until it remains unchanged after the
+await. The shared barrier also rechecks its realized tail after conservative flushing, because
+a realized append can occur during that second await. The stable point covers money already
+recorded; subsequent charges meet the next barrier. Failure ownership, once-only reporting,
+sticky broken flags and retained conservative capacity keep their existing semantics.
+
+[Permanent regressions](../../packages/core/src/engine/money-admission-freshness.test.ts)
+cover repeated appends, both cross-chain directions, write success/rejection/cancellation,
+budgeted/budgetless turns, stream/generate selection and real sibling runner-produced money
+rows. Restoring either old method separately breaks its controls; draining realized money only
+before the conservative flush still fails the cross-chain controls. Historical text is preserved.
+
+## Implementation correction — 2026-10-03, W7 step 10 second review
+
+A native approved media job retains its accepted estimate when pricing disappears, throws or
+produces an unsafe actual. The terminal sweep started that conservative write but did not join
+it before stamping the terminal; the terminal could win append order and lose the money row.
+Independent current and pre-Step-10 controls reproduced the gap. This repairs the existing
+barrier obligation; it does not turn an estimate into actual spend or change approval policy.
+
+The engine now drains and observes both money chains after terminal paid-job accounting,
+before terminal sequence/totals. Cleanup and immediate abort remain mandatory on pricing,
+write and fencing faults; an earlier effect failure or cancellation retains precedence.
+[Native regressions](../../packages/core/src/engine/budget-authorization-live.test.ts) cover
+known/unpriced/throwing/unsafe pricing, held/rejected commitment ACKs, takeover and synchronous
+pricing cancellation. A fenced writer claims no terminal and cannot release the successor.
+
+## Implementation correction — 2026-10-04, W7 systematic group 2a third review
+
+Independent review reproduced a settled actual charge whose transient cost observer threw after the
+host advanced its authoritative counter but before the mandatory realized write started. The
+counter/admission remained safe in memory, while the ledger row was absent. This violated the
+existing start-at-settlement obligation; neither the event contract nor the barrier decision changes.
+
+The turn starts recording in the cost emission's `finally`, strictly after the authoritative cumulative
+fold. Hosts must advance that counter before governor/external callbacks; both built-in hosts do so.
+An ordinary notification error preserves its exact identity. A synchronous record/snapshot failure
+takes precedence if both synchronous operations fail; a later durable write failure is still captured
+and surfaced at the shared join as `LedgerDurabilityError` with its original owner/cause. Recording
+does not invent a cumulative total or move admission settlement after notification. B1/B2/B3 and
+unknown-egress retention keep their existing order and responsibilities.
+
+[Real governor/ledger controls](../../packages/core/src/engine/agent-turn-money-admission.test.ts)
+cover notification, durable sink, snapshot and combined failures. An
+[actual WorkflowEngine control](../../packages/core/src/engine/budget-approved-failover.test.ts)
+throws its transient cost timestamp after the counter fold and verifies one durable realized row
+with the correct total. Historical text is preserved; fresh systematic acceptance remains required.
+
+## 2026-10-04 implementation correction — known quantities with unknown price
+
+W7 systematic review reproduces generated pricing failure with trustworthy token quantities but no
+trustworthy actual price. Forwarding those quantities without an explicit unpriced flag incorrectly
+creates a fully-priced zero realized row, while the governor correctly retains its reservation.
+Failed generated and streamed pricing records now state `priced: false`; no actual charge is
+invented and conservative commitment remains intact. Owned validated quantity snapshots are used for
+both successful and failed accounting, including direct CostTracker entry. This repairs the existing
+realised-price distinction and ordering; it does not introduce a new financial policy. The canonical
+producer contract is [the LLM
+seam](../reference/shared-core/llm-provider-seam.md#fallback-lives-outside-the-adapter).
+
+## 2026-10-04 implementation correction — typed realised-cost observer escape
+
+A successful paid generation followed by a typed cost observer failure previously entered provider
+retry classification, producing two truthful realised rows for two unintended paid calls. Core now
+records the observer's exact thrown value and preserves it outside generated provider classification.
+The existing cost-emission finally still starts mandatory realised recording; no row, usage or
+cumulative total is suppressed or invented. Real provider failure classification and B1/B2/B3 remain
+unchanged. An [actual workflow regression](../../packages/core/src/engine/observer-error-provenance.test.ts)
+verifies one paid call, one realised row and a fixed non-retryable internal terminal without the private
+observer diagnostic. This corrects existing provenance and privacy, without a new financial policy.
+
+## 2026-10-05 implementation correction — observer origin through the runner
+
+The previous generated observer bypass did not carry its origin through AgentRunner. A paid host
+clock failure shaped as a genuine retryable AgentTurnError caused two paid calls and doubled
+realised rows; a genuine BudgetPauseError from the same notification fabricated a budget gate.
+The internal turn outcome now distinguishes exact external observer origin from ordinary turn
+failures and internal admission settlement faults. AgentRunner gives such observer failures fixed
+non-retryable internal presentation. Actual commitment/ledger durability failures keep their
+original failure-writer ownership, while invalid actual-cost settlement keeps its existing raw
+refusal, conservative charge and released in-flight slot. Mandatory realised recording and
+B1/B2/B3 are unchanged. The [actual workflow tests](../../packages/core/src/engine/observer-error-provenance.test.ts)
+cover stream/generate and provider/turn/budget-shaped host failures; the existing
+[unsafe settlement controls](../../packages/core/src/engine/agent-runner-allowance-settlement.test.ts)
+remain unchanged. This repairs provenance without changing financial or approval policy.
+
+## 2026-10-05 implementation correction — admission cause and writer provenance
+
+The ninth independent W7 review verifies that a pricing/provider cause shaped as a turn or budget
+error can acquire retry/gate authority, and an external observer's money error can nominate a false
+ledger writer. Only the exact error retained at the current pre-attempt admission/money boundary
+may be unwrapped as that control flow. Observer-origin money classes receive the same fixed internal
+presentation as other observer failures. Genuine B1/B2/B3 failures retain their actual writer;
+invalid actual-cost settlement remains raw and conservatively charged.
+
+Generated result projection now completes inside the guarded post-response path before observer
+delivery. A projection fault retains an already folded actual price on one failed record; pricing
+failure instead retains trustworthy quantities with `priced: false`, never a known actual charge.
+The [actual workflow/session controls](../../packages/core/src/engine/accounting-cause-provenance.test.ts)
+and unchanged [unsafe settlement tests](../../packages/core/src/engine/agent-runner-allowance-settlement.test.ts)
+pin these distinctions. Canonical behaviour remains in [the LLM seam](../reference/shared-core/llm-provider-seam.md#fallback-lives-outside-the-adapter).
+No financial policy changes; historical text is preserved.
+
+## 2026-10-10 — ADR-0103 lifecycle integration
+
+Consumed or caught money-barrier failures remain sticky in final host health; graceful joining does not certify a missing receipt.
+See the [canonical engine lifecycle](../architecture/shared-core-engine.md#internal-departure-foundations-adr-0103)
+and [CLI exit/remedy contract](../reference/cli/commands.md#exit-codes). Consolidated independent
+acceptance is tracked in [current.md](../roadmap/current.md); Step 8 and final whole-wave
+validation remain open. The accepted body above is preserved.
+
+### W7 implementation landing — 2026-10-10
+
+The earlier W7 progress note is a historical snapshot. Step 8 and final Step 12 were subsequently
+accepted in the [W7 closing register](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w7-closing-register--2026-10-10).
+The later [post-closure systematic correction register](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#post-closure-systematic-review--2026-10-10)
+tracks reopened review findings and their scoped acceptance; it governs the current PR acceptance status.
+This additive note does not rewrite the original decision or claim that PR #90 has merged.

@@ -3,6 +3,7 @@ import {
   createElement,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -11,9 +12,16 @@ import {
 } from 'react';
 
 import type { SuspendPort } from '../suspend.js';
+import type { NoticeFlush } from '../../engine/effect-retention.js';
+import { useVisibleRenderFlush } from './render-acknowledgement.js';
+import {
+  createTranscriptAcknowledgement,
+  type TranscriptAcknowledgement,
+} from './transcript-acknowledgement.js';
 import {
   driveJson,
   drivePlain,
+  chatIsInteractive,
   type ChatDriveContext,
   type ChatDriveOutcome,
   type ChatDriver,
@@ -155,8 +163,17 @@ import type { SessionViewState, TranscriptEntry } from './session-view-model.js'
  * ChatApp handles Ctrl-C itself (→ `/cancel`). (Re-verify cancel on a real TTY when changing the input.)
  */
 
-function TranscriptLine(props: Readonly<{ entry: TranscriptEntry; color: boolean }>): ReactElement {
+function TranscriptLine(
+  props: Readonly<{
+    entry: TranscriptEntry;
+    color: boolean;
+    acknowledgement?: TranscriptAcknowledgement | undefined;
+  }>,
+): ReactElement {
   const { entry, color } = props;
+  useLayoutEffect(() => {
+    if (entry.role === 'notice') props.acknowledgement?.inlineNotice(entry);
+  }, [entry, props.acknowledgement]);
   if (entry.role === 'user') {
     return (
       <Text {...colorProps(color, 'cyan')}>
@@ -175,7 +192,11 @@ function TranscriptLine(props: Readonly<{ entry: TranscriptEntry; color: boolean
   // An actionable, secret-free recovery hint for a failed turn (2.5.H) — a yellow one-liner below the gray summary
   // that names the next step and makes explicit the session is still active. `undefined` (a success/aborted turn, or
   // a code with no guidance) renders nothing.
-  const hint = errorRecoveryHint(entry.summary.errorCode, entry.summary.errorMessage);
+  const hint = errorRecoveryHint(
+    entry.summary.errorCode,
+    entry.summary.errorMessage,
+    entry.summary,
+  );
   return (
     <Box flexDirection="column">
       <Text>{stripTerminalControls(entry.text)}</Text>
@@ -187,6 +208,8 @@ function TranscriptLine(props: Readonly<{ entry: TranscriptEntry; color: boolean
 
 interface ChatAppProps {
   readonly store: ChatStoreController;
+  /** Successful terminal setup and a flushed frame make this transcript eligible for disclosure. */
+  readonly onActivated?: (flushNotice: NoticeFlush) => void | Promise<void>;
   /** `true` ⇒ mounted on ink 7's alternate screen (2.6.F Step 4b, ADR-0068 §c) — the transcript renders through the
    *  scroll {@link TranscriptViewport} (constrained to the terminal size) instead of `<Static>`. Resolved by
    *  `driveInk` (`resolveRenderMode`); absent/false ⇒ the inline renderer. */
@@ -243,6 +266,7 @@ interface ChatAppProps {
 }
 
 interface ChatViewProps {
+  readonly acknowledgement?: TranscriptAcknowledgement | undefined;
   readonly state: SessionViewState;
   readonly tick: number;
   /** Wall-clock ms at render, for the live in-flight turn timer ("thinking…/working… {elapsed} · Esc to stop",
@@ -428,7 +452,14 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
           following at Step 4b-1), since the alt buffer has no scrollback for `<Static>`. */}
       {viewport === undefined || wrappedTranscript === undefined ? (
         <Static items={[...state.transcript]}>
-          {(entry, index) => <TranscriptLine key={index} entry={entry} color={color} />}
+          {(entry, index) => (
+            <TranscriptLine
+              key={index}
+              entry={entry}
+              color={color}
+              acknowledgement={props.acknowledgement}
+            />
+          )}
         </Static>
       ) : (
         <TranscriptViewport
@@ -437,6 +468,16 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
           scroll={viewport.scroll}
           selection={viewport.selection}
           onMeasure={viewport.onMeasure}
+          terminalRows={viewport.rows}
+          onDisplay={(firstRow, endRow, measuredWidth) =>
+            props.acknowledgement?.viewport(
+              state.transcript,
+              viewport.cols,
+              firstRow,
+              endRow,
+              measuredWidth,
+            )
+          }
         />
       )}
 
@@ -551,8 +592,12 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
 }
 
 export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
+  const storeRef = useRef(props.store);
+  storeRef.current = props.store;
+  const [acknowledgement] = useState(() => createTranscriptAcknowledgement(() => storeRef.current));
   const { state, tick, color, mode, reasoningEffort, reasoningVisible, approval } =
     useSyncExternalStore(props.store.subscribe, props.store.getSnapshot);
+  const activationReady = useRef(props.onActivated === undefined);
   const [editor, setEditor] = useState<EditorState>(emptyEditor());
   // A ref SHADOW of the editor is the SOURCE OF TRUTH for edits: in a coalesced stdin chunk ink dispatches every
   // event synchronously with no render flush, so React's queued-updater `prev` is stale for the 2nd+ event of the
@@ -1014,6 +1059,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   }, [app, suspendPort]);
 
   const submit = (message: string, display?: string): void => {
+    if (!activationReady.current && message !== '/cancel' && message !== '/exit') return;
     // A typed `/models` opens the reseat picker overlay (ADR-0059) instead of sending — interactive only (the port
     // is wired). Covers a directly-typed `/models` AND a chat-palette selection (both route through `submit`).
     if (props.modelPicker !== undefined && message.trim() === '/models') {
@@ -1062,6 +1108,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   // in flight, no keyboard-owning overlay/submode, and NO pending approval (read FRESH from the store). This also
   // closes the standalone-chat paste gap — it never enabled DECSET 2004 before; usePaste enables it natively now.
   usePaste((text) => {
+    if (!activationReady.current) return;
     const pasted = text.replace(/\r\n?/g, '\n');
     if (pasted.length === 0) return;
     const snap = props.store.getSnapshot();
@@ -1157,6 +1204,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       props.onSuspend?.();
       return;
     }
+    if (!activationReady.current && !(key.ctrl && char.toLowerCase() === 'c')) return;
     // Mouse reports (Step 5): the alt screen enables mouse reporting, so a wheel/click arrives in EVERY state —
     // including while an overlay owns the keyboard. CONSUME every report HERE, ahead of the overlay routing below,
     // so its raw bytes can never type into the prompt, the `/` palette filter, or the `[c]` reason capture. The wheel
@@ -1493,6 +1541,25 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   // back to 80×24 off a TTY (a harness), moot on a real TTY (the only place alt mounts, via the driveInk gate).
   const windowSize = useWindowSize();
 
+  const flushVisible = useVisibleRenderFlush(props.onError, props.suspendPort, acknowledgement);
+  useEffect(() => {
+    if (props.onActivated === undefined) return;
+    let mounted = true;
+    // Ink yields for passive raw-input setup. Its flush can also resolve after error-driven unmount,
+    // so component ownership AND the driver's observed Ink exit are required before/after activation.
+    void flushVisible()
+      .then(async () => {
+        if (!mounted) return;
+        await props.onActivated?.(flushVisible);
+        if (mounted) activationReady.current = true;
+      })
+      .catch(props.onError);
+    return () => {
+      mounted = false;
+      activationReady.current = false;
+    };
+  }, [flushVisible, props.onActivated, props.onError]);
+
   // A resize re-wraps the transcript, so every display-line index the live selection holds moves. Drop it rather than
   // highlight — and copy — the wrong text (2.6.F Step 6).
   useEffect(() => {
@@ -1520,6 +1587,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   return (
     <Box flexDirection="column" {...(viewport === undefined ? {} : { height: viewport.rows })}>
       <ChatView
+        acknowledgement={acknowledgement}
         state={state}
         tick={tick}
         nowMs={Date.now()}
@@ -1620,13 +1688,14 @@ export function emitIntro(
 
 export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
   // Resolved here, BEFORE the intro: where the intro goes depends on the renderer (see `emitIntro`).
+  const outputMode = detectOutputMode({
+    stdoutIsTty: ctx.io.stdoutIsTty,
+    json: ctx.global.json,
+    ci: isCiEnv(ctx.io.env),
+  });
   const alternateScreen =
     resolveRenderMode({
-      outputMode: detectOutputMode({
-        stdoutIsTty: ctx.io.stdoutIsTty,
-        json: ctx.global.json,
-        ci: isCiEnv(ctx.io.env),
-      }),
+      outputMode,
       noAltScreenFlag: ctx.global.noAltScreen === true,
       configAltScreen: ctx.altScreen,
     }) === 'alt';
@@ -1647,17 +1716,21 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
   });
   // Mirror the live stream into the view store the component projects.
   const unsubscribe = ctx.handle.subscribe((event) => ctx.store.apply(event));
-  // Open the session ONLY now — the store is subscribed, so the synchronous session:started (which carries
-  // the model for the footer) is observed, not raced.
-  ctx.startSession();
   const frame = setInterval(() => ctx.store.tick(), FRAME_MS);
   frame.unref();
 
   let resolveExit: () => void = () => undefined;
   let rejectExit: (err: unknown) => void = () => undefined;
+  let active = true;
   const exited = new Promise<void>((resolve, reject) => {
-    resolveExit = resolve;
-    rejectExit = reject;
+    resolveExit = () => {
+      active = false;
+      resolve();
+    };
+    rejectExit = (err) => {
+      active = false;
+      reject(err instanceof Error ? err : new Error('Chat driver failed.'));
+    };
   });
 
   // An EXTERNAL SIGINT (kill -INT / a parent's signal). A keyboard Ctrl-C is normally intercepted by useInput in raw
@@ -1681,6 +1754,23 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
   // hard `false` (Step 4b-3), so ink toggles NO DECSET-1049 per session — the hoisted `runReplLoop` owns the single
   // alt-buffer enter/exit, and the end-of-session summary rides on the outcome + prints after that exit (ADR-0068 §c).
   let cancelRequested = false;
+  let activated = false;
+  const isActive = (): boolean => active && !cancelRequested && !ctx.shouldStop();
+  const onActivated = async (flushNotice: NoticeFlush): Promise<void> => {
+    if (activated || !active) return;
+    if (!isActive()) {
+      resolveExit();
+      return;
+    }
+    activated = true;
+    try {
+      await ctx.onActivated?.(isActive, flushNotice);
+      if (!isActive()) resolveExit();
+    } catch (err) {
+      // React/Ink can swallow effect errors; propagate through the driver's owned exit promise instead.
+      rejectExit(err);
+    }
+  };
   const onSigint = (): void => {
     if (cancelRequested) {
       // A second SIGINT while the cooperative /cancel is still draining (e.g. a provider ignoring the abort):
@@ -1718,9 +1808,13 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
   process.on('SIGINT', onSigintGated);
 
   try {
+    // Opening a fresh session only emits its lifecycle event. Disclosure/retention waits for a committed mount.
+    // Keep setup under the same cleanup ownership as render(), including a throwing startSession hook.
+    ctx.startSession();
     instance = render(
       createElement(ChatApp, {
         store: ctx.store,
+        onActivated,
         // The COMPONENT prop `alternateScreen` (ADR-0068 §c) selects the transcript viewport (vs `<Static>`) — kept
         // as the resolved mode. It is INDEPENDENT of ink's render OPTION below (now hard `false`, Step 4b-3): ink
         // renders full-screen via log-update regardless, and the hoisted `runReplLoop` owns the alt-buffer toggle.
@@ -1756,17 +1850,24 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
         exitOnCtrlC: false,
         patchConsole: false,
         maxFps: Math.max(1, Math.round(1000 / FRAME_MS)),
+        // Ink's ambient CI predicate differs from ADR-0054. Own the selected mode so a flushed
+        // dynamic disclosure is written before its evidence is swept, including CI='' opt-out.
+        interactive: outputMode === 'tui',
         // ink render OPTION is HARD `false` (2.6.F Step 4b-3, ADR-0068 §c): ink must NOT toggle DECSET-1049 per
         // session — the hoisted `runReplLoop` enters the alt buffer ONCE above the loop and exits ONCE, so a `/clear`
         // / reseat re-drive no longer flips the terminal (the flicker). ink still full-screen-renders via log-update.
         alternateScreen: false,
       },
     );
+    // Ink owns passive input/render failures. Observe its terminal promise rather than leave the
+    // driver alive after an error boundary has unmounted the disclosure surface.
+    void instance.waitUntilExit().then(resolveExit, rejectExit);
 
     return finalizeInkExit(exited, {
       // Tear down + UNMOUNT (restores raw mode + cursor; with the option false it does NOT exit the alt buffer — the
       // hoisted runReplLoop owns that). A throw here must not mask the outcome nor skip the SIGINT-listener removal.
       teardown: () => {
+        active = false;
         clearInterval(frame);
         unsubscribe();
         try {
@@ -1787,6 +1888,7 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
   } catch (err) {
     // render() threw synchronously — clean up the interval, subscription, and SIGINT handler set up above so
     // none leaks past the throw (the finally above is never reached when render() throws).
+    active = false;
     clearInterval(frame);
     unsubscribe();
     process.removeListener('SIGINT', onSigintGated);
@@ -1796,9 +1898,9 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
 
 /**
  * Select the chat driver by surface (2.Q): `--json` ⇒ the headless NDJSON `SessionEvent` stream (machine
- * output wins over the TTY); else a real TTY ⇒ the ink REPL; else the plain non-TTY line loop.
+ * output wins over the TTY); else a real TTY outside CI ⇒ the ink REPL; else the plain line loop.
  */
 export const selectChatDriver: ChatDriver = (ctx) => {
   if (ctx.global.json) return driveJson(ctx); // machine output wins over the TTY
-  return ctx.io.stdoutIsTty ? driveInk(ctx) : drivePlain(ctx);
+  return chatIsInteractive(ctx.io, ctx.global) ? driveInk(ctx) : drivePlain(ctx);
 };

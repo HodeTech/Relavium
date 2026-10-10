@@ -34,6 +34,8 @@ export interface InkRendererOptions {
   readonly stdout?: NodeJS.WriteStream;
   /** Where the persistent final summary is written after unmount — defaults to `stdout`. Injectable for tests. */
   readonly writeSummary?: (text: string) => void;
+  /** Immediate fixed human outcome on stderr; independent of input and host-cleanup ACKs. */
+  readonly writeTerminalNotice?: (text: string) => void;
   /** Mounts the `ink` app — defaults to `ink`'s `render`. Injectable so finalize is tested without a real mount. */
   readonly mount?: (store: RunStore) => InkMountInstance;
 }
@@ -65,6 +67,7 @@ export function createInkRenderer(options: InkRendererOptions): RunRenderer {
   // re-mount re-projects the exact same state (2.E: ink is a thin projection of an ink-free store).
   let frame: ReturnType<typeof setInterval> | undefined;
   let instance: InkMountInstance | undefined;
+  let stopping: Promise<void> | undefined;
 
   const start = (): void => {
     // The frame loop drives the throttle (coalesced repaints) + the spinner animation. unref() so a pending
@@ -82,27 +85,73 @@ export function createInkRenderer(options: InkRendererOptions): RunRenderer {
     frame = f; // only after a successful mount, so a mount throw leaves no dangling timer
   };
 
-  const stop = async (): Promise<void> => {
+  const stop = (): Promise<void> => {
+    if (stopping !== undefined) return stopping;
     if (frame !== undefined) {
       clearInterval(frame);
       frame = undefined;
     }
-    if (instance !== undefined) {
-      const live = instance;
-      instance = undefined;
+    const live = instance;
+    if (live === undefined) return Promise.resolve();
+    // Retain the actual capability until BOTH native acknowledgements succeed.
+    const pending = Promise.resolve().then(async () => {
+      // Ink registers its beforeExit handler in waitUntilExit and removes it during unmount.
+      // Acquire the ACK first; acquiring it after unmount would leak one listener per mount.
+      const exiting = live.waitUntilExit();
+      void exiting.catch(() => undefined); // observe rejection even if unmount itself throws
       live.unmount();
-      await live.waitUntilExit();
-    }
+      await exiting;
+      if (instance === live) instance = undefined;
+    });
+    stopping = pending;
+    void pending.then(
+      () => {
+        if (stopping === pending) stopping = undefined;
+      },
+      () => {
+        if (stopping === pending) stopping = undefined;
+      },
+    );
+    return pending;
   };
 
   start(); // initial mount (a construction throw propagates, leaving no timer — see `start`)
 
   let finalized = false;
+  let finalizing: Promise<void> | undefined;
+  let terminalNoticed = false;
 
   return {
     onEvent: (event) => {
       store.apply(event);
+      if (
+        !terminalNoticed &&
+        (event.type === 'run:completed' ||
+          event.type === 'run:failed' ||
+          event.type === 'run:cancelled')
+      ) {
+        terminalNoticed = true;
+        // The live mount may already be gone, or its last frame may be throttled. State delivery is
+        // not visible output. This provisional notice carries no final receipt verdict or raw error.
+        const outcome =
+          event.type === 'run:completed'
+            ? 'completed'
+            : event.type === 'run:failed'
+              ? 'failed'
+              : 'cancelled';
+        try {
+          const write =
+            options.writeTerminalNotice ??
+            ((text: string): void => {
+              process.stderr.write(text);
+            });
+          write(`Run ${outcome}; run cleanup is pending.\n`);
+        } catch {
+          // A cosmetic sink fault cannot authorize teardown, change the outcome or print a final summary.
+        }
+      }
     },
+    releaseInput: stop,
     suspend: async () => {
       // Release the terminal so a `@clack/prompts` gate card (2.G) can render. Paint the latest live frame
       // first, then unmount WITHOUT writing the summary (that is finalize's job — the run is not over).
@@ -116,26 +165,32 @@ export function createInkRenderer(options: InkRendererOptions): RunRenderer {
         start();
       }
     },
-    finalize: async () => {
-      if (finalized) {
-        return;
-      }
-      finalized = true;
-      store.flush(); // paint the final live frame
-      // The persistent summary MUST be written even if stop() rejects (ink can reject waitUntilExit() on an
-      // internal React error during unmount) — otherwise the run's scrollback summary is silently lost and a
-      // second finalize() is a no-op. The `finally` guarantees the write survives a stop() rejection.
-      try {
+    finalize: () => {
+      if (finalized) return Promise.resolve();
+      if (finalizing !== undefined) return finalizing;
+      const pending = Promise.resolve().then(async () => {
+        store.flush();
         await stop();
-      } finally {
-        // The live frames are ephemeral; write the persistent plain-text summary into the scrollback.
+        finalized = true;
+        // Input and host-safe ACKs precede the irreversible summary. A cosmetic write fault
+        // cannot revoke those ACKs or authorize a second summary attempt.
         const write =
           options.writeSummary ??
           ((text: string): void => {
             stdout.write(text);
           });
         write(store.summaryText());
-      }
+      });
+      finalizing = pending;
+      void pending.then(
+        () => {
+          if (finalizing === pending) finalizing = undefined;
+        },
+        () => {
+          if (finalizing === pending) finalizing = undefined;
+        },
+      );
+      return pending;
     },
   };
 }

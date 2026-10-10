@@ -264,6 +264,53 @@ const ENTRIES: readonly CommandManifestEntry[] = [
         description:
           "read the run's secret inputs from stdin as name=value lines (never passed as arguments)",
       },
+      {
+        name: 'allowMcpStdio',
+        type: 'string',
+        description:
+          'authorize a stdio MCP server by its consent digest for this invocation (repeatable)',
+      },
+    ],
+    effect: 'write',
+  },
+  {
+    id: 'budget.resume',
+    label: 'Resolve budget gate',
+    description: 'Approve the exact frozen microcents or reject a budget gate.',
+    args: [
+      {
+        name: 'runId',
+        type: 'string',
+        required: true,
+        description: 'the budget-paused run',
+      },
+      {
+        name: 'approveAmount',
+        type: 'string',
+        description: 'approve exactly the recorded frozen amount (including zero)',
+      },
+      {
+        name: 'abort',
+        type: 'boolean',
+        description: 'reject the budget gate without provider or tool execution',
+      },
+      {
+        name: 'gate',
+        type: 'string',
+        description: 'which budget gate to resolve when multiple are pending',
+      },
+      {
+        name: 'secretStdin',
+        type: 'boolean',
+        description:
+          "read the run's secret inputs from stdin as name=value lines (never passed as arguments)",
+      },
+      {
+        name: 'allowMcpStdio',
+        type: 'string',
+        description:
+          'authorize a stdio MCP server by its consent digest for this invocation (repeatable)',
+      },
     ],
     effect: 'write',
   },

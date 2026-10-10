@@ -14,9 +14,21 @@
  */
 
 import type { LlmMessage } from '@relavium/llm';
-import type { AgentSessionRecord, DurableContentPart, SessionMessage } from '@relavium/shared';
+import {
+  completedSessionTurns,
+  resumableSessionMessages,
+  type AgentSessionRecord,
+  type SessionContentPart,
+  type SessionMessage,
+} from '@relavium/shared';
 
 import { markUntrusted, type Untrusted } from '../tools/untrusted.js';
+
+/** One proven completed turn in the text-only, unfolded transcript; end is exclusive. */
+export interface CompletedTurnSpan {
+  readonly start: number;
+  readonly end: number;
+}
 
 /**
  * The reconstructed in-memory state {@link AgentSession.resume} preloads — its `#messages` (in-flight
@@ -25,10 +37,12 @@ import { markUntrusted, type Untrusted } from '../tools/untrusted.js';
  * Build it via {@link reconstructSessionState}: `messages` must be the **text-only** `user`/`assistant`
  * projection (AgentSession's cross-turn invariant). `resume` preloads these verbatim, so a hand-built state
  * carrying `tool_call`/`tool_result`/`reasoning` parts would be replayed to the provider on the next turn —
- * risking an orphaned `tool_use` or a non-alternating request. Do not assemble one by hand.
+ * risking an orphaned `tool_use`. Do not assemble one by hand.
  */
 export interface SessionResumeState {
   readonly messages: readonly LlmMessage[];
+  /** Legacy text remains in messages without being invented into a completed turn. */
+  readonly completedTurnSpans: readonly CompletedTurnSpan[];
   readonly turnCount: number;
   readonly cumulativeCostMicrocents: number;
   /**
@@ -44,13 +58,6 @@ export interface SessionResumeState {
    */
   readonly conservativeCostMicrocents: number;
   /**
-   * The context-compaction **preamble** ([ADR-0062](../../../../docs/decisions/0062-context-compaction-and-cli-history-commands.md))
-   * to restore into the resumed session — the summary text of the **newest boundary marker that carries a
-   * summary** (a `/compact` marker; a summary-less `/trim` marker never provides one). Absent when the session
-   * has never been compacted. `AgentSession.resume` re-injects it into the per-turn system prompt, so a
-   * compacted session stays compacted across resume **and** a model reseat (which reuses this same path).
-   */
-  /**
    * The compaction summary carried across a resume or a reseat, **re-marked untrusted at this boundary**
    * ([ADR-0081](../../../../docs/decisions/0081-the-compaction-summary-is-untrusted-and-the-system-prompt-is-branded.md) §2).
    *
@@ -62,73 +69,21 @@ export interface SessionResumeState {
 }
 
 /** The concatenated `text` parts of a durable content array (non-text parts are dropped). */
-function textOf(content: readonly DurableContentPart[]): string {
+function textOf(content: readonly SessionContentPart[]): string {
   return content
-    .filter((part): part is Extract<DurableContentPart, { type: 'text' }> => part.type === 'text')
+    .filter((part): part is Extract<SessionContentPart, { type: 'text' }> => part.type === 'text')
     .map((part) => part.text)
     .join('\n\n');
 }
 
-/** The compaction/trim DROP BOUNDARY (ADR-0062): messages at/below the max `droppedThroughSequence` across all
- *  boundary markers are superseded (a later summary-less `/trim` advances it). `-1` ⇒ never compacted. */
-function dropBoundaryOf(ordered: readonly SessionMessage[]): number {
-  return ordered.reduce(
-    (max, m) =>
-      m.compaction === undefined ? max : Math.max(max, m.compaction.droppedThroughSequence),
-    -1,
-  );
-}
+export {
+  completedSessionTurns,
+  resumableMessageSequences,
+  resumableTurnBoundarySequences,
+} from '@relavium/shared';
+export type { CompletedSessionTurn } from '@relavium/shared';
 
-/**
- * Project the persisted transcript into the SURVIVING real `user`/`assistant` durable ROWS `AgentSession`
- * continues from — the ONE projection both the engine (→ `#messages`) and the host persister (→ the ADR-0062
- * boundary-mapping seed) derive from, so they can never drift (the step-3-review data-loss trap). It: sorts by
- * `sequenceNumber`; keeps only text-bearing `user`/`assistant` rows PAST the compaction boundary (`system`
- * markers + empty-text rows drop — the same `length > 0` guard the assistant-append uses); then rolls back a
- * trailing run of unanswered `user` rows (the process died mid-turn — the `sessionId+sequenceNumber` idempotency
- * analog of re-running the run-side incomplete node). Dropping empty rows BEFORE the trailing-user rollback is
- * load-bearing: an interrupted mid-tool-loop turn projects away its `tool`/text-less rows, re-exposing the
- * originating `user` so the rollback removes it (else the next `sendMessage` would emit two consecutive `user`s).
- */
-function projectResumableRows(messages: readonly SessionMessage[]): SessionMessage[] {
-  const ordered = [...messages].sort((a, b) => a.sequenceNumber - b.sequenceNumber);
-  const boundary = dropBoundaryOf(ordered);
-  const surviving = ordered.filter(
-    (m) =>
-      (m.role === 'user' || m.role === 'assistant') &&
-      m.sequenceNumber > boundary &&
-      textOf(m.content).length > 0,
-  );
-  while (surviving.at(-1)?.role === 'user') surviving.pop();
-  return surviving;
-}
-
-/**
- * The durable `sequenceNumber`s of the rows a resumed session continues from (ADR-0062) — the SAME projection
- * {@link reconstructSessionState} resumes from, exposed so the host persister seeds its compaction/trim
- * boundary-mapping from an identical view (mirroring the engine's trailing-unanswered-`user` rollback + empty-row
- * drop, not just a role filter — the step-3-review fix that prevents a silent kept-message loss on resume→compact).
- */
-export function resumableMessageSequences(messages: readonly SessionMessage[]): number[] {
-  return projectResumableRows(messages).map((m) => m.sequenceNumber);
-}
-
-/**
- * Reconstruct the {@link SessionResumeState} from a loaded session record + its transcript (any order). Sorts
- * by `sequenceNumber`, **projects first** (to the text-only in-flight transcript), then rolls back a trailing
- * unanswered turn, and re-seeds the turn count + the running cost (the record's total). Pure and
- * deterministic — the host passes the result to {@link AgentSession.resume}.
- *
- * Projecting BEFORE trimming is load-bearing: an interrupted mid-tool-loop turn leaves a `tool` / text-less
- * `assistant` tail in the durable record; the projection drops those, so the trailing-`user` rollback then
- * sees and removes the originating unanswered `user` — otherwise it would survive as a dangling turn and the
- * next `sendMessage` would emit two consecutive `user` messages (a non-alternating, provider-rejected request).
- *
- * NOTE: `turnCount` counts the **text-producing** assistant turns that survive projection — one per completed
- * logical exchange (a within-turn tool_call-only assistant row is not double-counted). A turn that engaged a
- * provider but produced no committed text leaves no exchange, so the resumed hard-cap counter is a lower bound
- * (the cap is a safety limit, not exact accounting; AgentSessionRecord carries no turn counter to make it exact).
- */
+/** Reconstruct only completed surviving turns; empty finals count, interrupted tool loops roll back. */
 export function reconstructSessionState(
   record: AgentSessionRecord,
   messages: readonly SessionMessage[],
@@ -151,14 +106,24 @@ export function reconstructSessionState(
     }
   }
   // The ONE projection the host persister also seeds from (`resumableMessageSequences`) — no drift.
-  const surviving = projectResumableRows(ordered);
+  const surviving = resumableSessionMessages(ordered);
+  const turns = completedSessionTurns(ordered);
+  const lengths = new Map(
+    turns.map((turn) => [turn.user, textOf(turn.terminal.content).length === 0 ? 1 : 2]),
+  );
+  const completedTurnSpans: CompletedTurnSpan[] = [];
+  for (const [index, message] of surviving.entries()) {
+    const length = lengths.get(message);
+    if (length !== undefined) completedTurnSpans.push({ start: index, end: index + length });
+  }
   const committed: LlmMessage[] = surviving.map((m) => ({
     role: m.role === 'assistant' ? 'assistant' : 'user',
     content: [{ type: 'text', text: textOf(m.content) }],
   }));
   return {
     messages: committed,
-    turnCount: committed.filter((message) => message.role === 'assistant').length,
+    completedTurnSpans,
+    turnCount: turns.length,
     cumulativeCostMicrocents: record.totalCostMicrocents,
     conservativeCostMicrocents: record.totalConservativeMicrocents,
     ...(compactionSummary === undefined ? {} : { compactionSummary }),

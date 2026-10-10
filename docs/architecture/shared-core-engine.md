@@ -128,6 +128,148 @@ nodes and joins them at aggregator/merge points. Each node type maps to a handle
 How a single run progresses node-by-node — including streaming and the human gate
 — is covered in [execution-model.md](execution-model.md).
 
+### Internal departure foundations (ADR-0103)
+
+[ADR-0103](../decisions/0103-a-paused-run-hands-off-its-local-producers-before-its-host-closes.md)
+separates a bounded run outcome from acknowledgement that its local host can close. The engine
+registers exact raw executor and prepared-executor promises, scheduler/resume continuations,
+timer callbacks, entered host operations and structured receipt children in a platform-free
+host-work registry. The consolidated integration implements public departure and final health;
+its independent acceptance is tracked in [current.md](../roadmap/current.md).
+
+`RunHandle.depart()` joins this execution's actual host use. Concurrent calls share one transaction.
+It returns `continue` when progress invalidates the candidate pause; the caller keeps consuming
+the same primary stream. A stable, fully delivered pause returns `detached` only after all
+registered work, receipts and exact lease release are acknowledged. A terminal or fenced execution
+returns `closed` after its independent host join. Both host-safe results carry final
+`moneyDurability` and `effectNeedsAttention`; neither changes or invents a terminal event.
+The primary reader must remain active while departure runs. Early iterator return, a passive
+subscription or terminal delivery alone supplies no host-close certificate.
+
+Departure stops fresh media polling provisionally, without resetting authored deadlines. It
+subscribes before observing idle and rechecks the pause episode, actual publication/delivery
+cursor, accepted actors and absolute run/node/gate/media deadlines after every asynchronous
+barrier, including exact lease release. A due action follows its existing outcome path. An
+in-flight gate timeout owns its asynchronous preparation once, across real-timer and direct
+departure entry; departure waits actual activity instead of restarting that same action. A changed
+episode returns `continue` and restores the original timers. The final synchronous local claim
+revokes callbacks and removes this execution without claiming that a successor remains paused.
+Successful receipt publications after the original pause do not invalidate that episode: the
+initial pause must have been consumed and the current cursor, including those receipts, must be
+fully drained. An unconsumed receipt still requires the existing reader to continue.
+
+Each run handle's existing primary queue privately counts actual publications before offering them
+to a waiting pull or buffer. Delivery advances synchronously only when a buffered pull or waiting
+handoff returns an event. Internal construction wiring supplies a read-only snapshot reader; passive
+subscribers, empty `next()` calls, closure and iterator return cannot acknowledge delivery. Queue
+refusal is a sticky gap, and early consumer return is a distinct sticky abandonment observation.
+Draining the remaining buffer clears neither condition. Counts cover only this execution's actual
+publications, including when durable sequence numbering starts above zero. This observation adds
+no replay, replacement spool or public acknowledgement, and does not repair the existing
+[never-pulled overflow defect](../decisions/0087-consumed-streams-size-bounds-and-run-retention.md).
+
+The internal `HostWorkRegistry` registers an invocation before calling its factory and observes the
+exact raw returned Promise, separately from any abort/grace race. Settlement or a synchronous throw
+ends that scope's future-entry authority when observed by the registry; already entered operations and independently registered
+children remain joined. An ended scope refuses entry or child transfer through the nondurable
+`EngineStateError` code `receipt_scope_ended`. The scope itself grants no host capabilities.
+Joining waits for actual completion notifications and rechecks quiescence; idle work resolves
+immediately, while a never-settling raw invocation or child intentionally keeps the join pending.
+Joining does not seal new root admission, certify persistence or delay terminal publication.
+
+Fresh run startup also registers its complete continuation before workflow-id lookup, initial
+ownership acquisition or context resolution. A terminal can remain visible while that work is
+pending; retirement keeps an already held exact fence and its heartbeat until the root finishes.
+An acquisition entered before cancellation still owes release of its returned exact fence.
+After each startup await, a stopped execution refuses fresh start publication, acquisition,
+context entry or scheduling. Synchronous initial clock and timer callbacks are also cancellation
+boundaries: startup rechecks before its next entry, and timeout setup disposes a disarm receipt
+returned after cancellation rather than installing a timer after the terminal sweep.
+A noncooperative context read can finish, but cancellation is
+checked before another filter or resolved-text delivery, including a second `read_file` in
+the same reference. Pre-handle resume and scheduler/timer continuations also retain their raw
+lifetimes; a public result cannot close their host while an admitted operation remains pending.
+If checkpoint activation is rejected before returning a handle, abandonment closes runtime-root
+admission, aborts the execution, disarms every installed timer (including partially restored node
+deadlines), and joins entered actors, receipt writes and delivery/parking continuations before
+the facade drops the execution and releases its exact fence. It preserves the original rejection
+and publishes no invented terminal. An already entered heartbeat cannot rearm during abandonment.
+
+The scheduler's node-boundary consumer readiness has a separately registered raw lifetime.
+Only its wait is raced against execution abort, so cancellation can progress while an
+uncooperative readiness Promise still retains host retirement. A claimed vertex that has
+not entered `node:started` returns to pending when the scheduler leaves that batch; it
+must not masquerade as an in-flight executor and force the run to wait for grace. A live
+readiness fault uses a fixed internal error; if creating that diagnostic faults, an
+in-memory backstop preserves failure and scheduler reevaluation. Method acquisition is followed by another
+stopped-state check before invocation; a live call preserves the handle as its receiver.
+Controlled public-port tests establish these readiness mechanics separately from
+complete actor and public departure acceptance.
+
+An entered `node:started` append, including a retry's, must recheck stopped state before
+entering fresh work. Initial dispatch checks before arming its node deadline; retry
+dispatch captures its entered attempt number before awaiting persistence so grace can
+settle that same attempt. Every new first start resets its basis to 1 before that append,
+including an approved redispatch after a prior retry. All shared failed-settlement callers
+select an explicit attempt. Readiness refusal and detached failure forward the latest
+entered attempt, falling back to 1 only before any start. An approved redispatch whose
+readiness fails before a fresh start still belongs to its previous entered retry.
+Cancellation settles the matching entered attempt through
+the diagnostic backstop, preserving an earlier failure; an already settled/grace-abandoned
+dispatch produces no second terminal. The shared refusal/diagnostic helper also preserves
+a vertex that is already completed, failed or skipped while its terminal append is pending.
+Current unstarted claims are tracked separately from entered starts. Grace excludes them
+regardless of authored-versus-ready iteration order; scheduler unwind releases their claims. Actual attempt
+entry also checks after synchronous host deadline setup, captures the executor method
+once, checks again after method acquisition and after context/effect factories, and invokes
+only a live method with its captured receiver. This covers synchronous cancellation at
+those ports without replacing the exact raw executor Promise. A first-start publication fault
+follows the same fixed failure/backstop path, preserving the entered attempt even when the clock
+faults before an append Promise exists. Unexpected dispatch failures use fixed
+content-free text without reading or coercing their cause. Readiness, pre-dispatch
+cancellation and detached failure share the diagnostic-publication backstop. Complete
+scheduler/dispatch/resume actor registration is joined by public departure; terminal delivery
+alone cannot authorize a surface to close its database.
+
+Settlement observation uses the captured native Promise intrinsic rather than a caller-overridden
+`then`. A constructor/species failure while attaching that observer is not settlement: the exact raw
+Promise and its slot/authority remain retained, with a sticky content-free `observationFailed`
+diagnosis. Without a trustworthy settlement observation, the registry cannot certify host release
+even if another observer later sees that Promise finish; graceful joining remains pending. An
+operation factory's synchronous throw still ends its scope through the ordinary rejection path.
+The boundary is observable native settlement, not synchronous introspection of Promise state:
+an earlier attached reaction may enter work before the registry's completion reaction, and that
+entered work remains joined. This cannot detect dishonest untransferred background intent.
+
+`WorkflowEngine` supplies `NodeExecContext.continueReceipt()` for each executor dispatch. The field
+is optional in the TypeScript interface for standalone context implementations and test doubles;
+an engine dispatch always supplies it. Register before invoking a child. Its `NodeReceiptContext`
+has only money record/join, effect settle/discard, quiet cost updates and further receipt-child
+registration. It grants no provider/key access, prepare, admission, media operation or ordinary
+event publication. Raw or child settlement ends that scope's future entry; already entered
+operations and independently transferred children remain joined. There is no implicit transfer
+for fire-and-forget work. Provider, iterator and media-poll invocation scopes retire fresh
+entry independently while keeping their admitted descendants joined; see the
+[provider contract](../reference/shared-core/llm-provider-seam.md#the-per-attempt-deadline).
+
+After a terminal acknowledgement, the execution retains its exact fence and heartbeat while
+registered raw/child work, entered host operations or receipt writes remain. Once these are quiet,
+retirement revokes future entry, disarms the heartbeat, joins exact lease release and notifies the
+engine's existing settled-retention policy. This does not wait for raw settlement before publishing
+the bounded terminal. Ordinary
+post-terminal publication stays refused; permitted late incurred ledger appends use the same
+ordered writer, whose acknowledgement rules live in [execution-model.md](execution-model.md#5-checkpoint-each-node-boundary).
+An ended scope cannot reacquire ownership lost to a successor, including after that successor
+releases its own lease. A native synchronous retention callback is observed synchronously;
+Promise-returning work stays joined to its real completion.
+
+Final health is evaluated only after those joins. Required money acknowledgement failure is
+sticky. Effect health retains admitted tier-3 identities, clears only a matching acknowledged
+commit/discard, and preserves typed attention or receipt failure even when a caller catches it
+or cancellation masks the public executor outcome. It stores no tool arguments, results or
+private causes. The CLI combines this health with the actual primary outcome under its
+[exit/remedy contract](../reference/cli/commands.md#exit-codes). Session lifecycle is unchanged.
+
 ## Inbound MCP connection lifecycle
 
 The engine consumes external MCP servers' tools, but it never owns the connection — the
@@ -149,6 +291,9 @@ The lifecycle, as shipped in 2.R:
 - **Teardown (at the terminal).** The host closes the connections after the session/run's
   sole terminal — idempotent, best-effort, and never allowed to mask the run outcome (the
   CLI's force-quit path also tears them down so a spawned stdio child is never orphaned).
+  The manager joins retained transport work and removes each PID only after positive native-close
+  acknowledgement; bounded caller rejection is separate from that join. Complete acknowledged
+  host departure remains an open ADR-0103 integration obligation.
 
 The full contract (the `McpServerRef` shape, the SSRF floor, named secrets, the transport
 vocabulary) lives in its canonical home,
@@ -207,8 +352,27 @@ running token/cost tallies. The exact field set is the `CheckpointState` interfa
 authoritative shape; this section does not restate it. The same derivation is what the Phase-2 cloud
 layer uses for durable execution — see [cloud-phase-2.md](cloud-phase-2.md).
 
-**Reconstruction is total and deterministic** (same events → same state — the basis of idempotent
-resume). A node that emitted `node:started` but no terminal event (it was running when the process
+**Reconstruction is deterministic and refuses contradictory authoritative state** (same valid events
+→ same state — the basis of idempotent resume). The derived checkpoint uses schema version 3; the
+engine refuses an unsupported derivation and releases its acquired lease. This is an in-process
+checkpoint contract, not a database migration or new log-version mechanism.
+
+The pure fold also derives parked-agent logical clock bases and pending budget-continuation
+credits. Retries and approved redispatches preserve the current logical life; a genuine running
+crash restart establishes a fresh life. Canonical budget authorization supplies one credit;
+legacy companions cannot duplicate it. A timed parked agent with missing, contradictory or
+unreadable evidence is refused before gate preparation, provider entry or polling. Reattachment
+uses the original absolute deadline rather than granting a new timeout.
+
+The checkpoint and both stores' interrupted-run discovery share one ordered suspension reducer.
+Budget authority restores a frozen pending gate independently of its companions; approval makes the
+agent pending without inventing an output or restoring an allowance, and a recorded rejection stays
+fatal when an eligible sibling or resolved-gate kick resumes the run. Ordinary human-gate output
+semantics remain unchanged. Identified historical duplicates cannot resolve a later gate or overwrite
+a real node result; contradictory/missing/ambiguous joins refuse. The exact durable protocol is in
+[sse-event-schema.md](../reference/contracts/sse-event-schema.md#durable-budget-authorization).
+
+A node that emitted `node:started` but no terminal event (it was running when the process
 died) is simply **absent** from `nodeStates`, so the rehydrating engine seeds it `pending` and re-runs
 it. The effect journal records every effectful dispatch and refuses to retry a node past one, and the resume gate refuses the RE-RUN when a prior attempt's effect is unresolved ([effect-journal.md](../reference/shared-core/effect-journal.md) §4). What is
 **not** in the checkpoint: the eager-once resolved `context` (`ctx.*`) is **re-resolved at run start**,
@@ -234,13 +398,28 @@ the caller's copies are verified against them rather than used, so a resume cann
 state its own start never recorded ([ADR-0083](../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md)
 §5). A `secret` input is the one thing the record cannot hold — it is persisted as a masked placeholder — so
 the caller re-supplies it by name or the resume is refused; §6 states exactly what that proves. Every one of
-these refusals releases the lease it acquired. **Idempotent re-delivery** never advances a run twice: re-delivering a decision to an
+these refusals attempts to release the exact lease it acquired; a cleanup fault retains its
+bounded TTL and preserves the primary safe refusal. **Idempotent re-delivery** never advances a run twice: re-delivering a decision to an
 already-terminal run is a no-op (a closed handle, nothing re-emitted or re-persisted); re-delivering an
 already-resolved gate on a still-running run drives the remaining work without re-applying the decision.
-This holds within a process, and across processes once the prior process's `human_gate:resumed` is
-persisted; the residual concurrent window (two processes loading the *same* still-pending gate before
-either persists) is closed by a Phase-2 store-level uniqueness constraint on `human_gate:resumed` per
-gate, not by the in-memory reference.
+This holds within a process and across processes once the durable decision is recorded. The engine
+acquires its cross-process lease **before** reading the checkpoint; a competing live owner is refused,
+and ordered writes carry that owner/generation fence ([ADR-0079](../decisions/0079-cross-process-run-ownership-lease-and-fencing-token.md)).
+An in-flight passive resume is also excluded from the same engine's reconciliation claims. This closes
+the concurrent read/claim window on the current substrate. After all passive context/effect/request
+awaits, the engine atomically renews the exact acquired fence before registration or activation,
+including a refused admission's settlement. If ownership changed or cannot be confirmed, it refuses
+with transient `run_owned_elsewhere`, abandons passive state and releases only its original claim.
+Aggregate gate pause waits until every sibling pause publication is acknowledged before lease
+handoff. A claimed gate retains ownership while its decision work is in flight; human-gate
+payload preparation remains visible to the scheduler until its vertex can complete. Completion also
+rechecks the run and vertex after asynchronous pinning; the ordinary decision's cutoff and media
+retention scope are defined in the [event contract](../reference/contracts/sse-event-schema.md#human-gate-suspendresume-across-the-stream).
+Run media references follow the append acknowledgement; a fenced write cannot recreate retention
+after a successor's terminal sweep. An owned terminal awaiting the outbox retains its media.
+Renewal confirms the store operation; an unbounded asynchronous ACK
+can outlive its TTL, so the existing liveness and append fences still govern later loss.
+The canonical resume contract is in [agent-runner.md](../reference/shared-core/agent-runner.md).
 
 ## Retry and fallback
 

@@ -4,9 +4,9 @@ import { finalizeInkExit, emitIntro } from './chat-ink.js';
 
 /**
  * `finalizeInkExit` unit tests (2.6.F Step 4a, refined at Step 4b-3, ADR-0068 §c) — the teardown-then-outcome
- * sequencing. `driveInk` itself renders through the real ink `render` (untestable without a TTY + a full
- * SessionHandle — the suite injects `deps.drive` to bypass it), so the sequencing is isolated here where plain spies
- * can pin it. At Step 4b-3 the end-of-session SUMMARY no longer writes here — the alt-buffer exit moved UP to the
+ * sequencing. Actual-driver setup failure and activation are covered offline in `chat-effect-activation.test.ts`;
+ * mounted component publication is covered in `chat-app.test.tsx`. These smaller tests isolate exit sequencing.
+ * At Step 4b-3 the end-of-session SUMMARY no longer writes here — the alt-buffer exit moved UP to the
  * hoisted `runReplLoop`, so the summary rides on the outcome (`summaryText`) and the loop prints it after the single
  * alt-exit. These pin that teardown runs before the outcome resolves, and is SKIPPED-of-outcome on a reject.
  */

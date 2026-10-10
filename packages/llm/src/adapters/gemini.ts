@@ -11,7 +11,13 @@ import type {
 
 import { assertStreamable, assertSupported } from '../capabilities.js';
 import { catalogModel, modelAccepts } from '../catalog/lookup.js';
-import { cappedMaxTokens } from '../output-cap.js';
+import {
+  InvalidOutputCapPlanError,
+  mutableOutputCapNativeOptions,
+  mutableOwnedRequest,
+  prepareOwnedRequest,
+  type PreparedOutputCapPlan,
+} from '../output-cap.js';
 import { LlmProviderError, kindFromHttpStatus, makeLlmError } from '../llm-error.js';
 import {
   GEMINI_WIRE,
@@ -22,7 +28,7 @@ import {
   toGeminiThinkingLevel,
 } from '../reasoning-wire.js';
 import { GeminiToolCallIds, normalizeToolCall, toWire } from '../tool-normalizer.js';
-import { UnsupportedCapabilityError } from '../errors.js';
+import { UnsupportedCapabilityError, UnsupportedRequestDataError } from '../errors.js';
 import type {
   CapabilityFlags,
   LlmError,
@@ -431,7 +437,16 @@ export function geminiErrorToLlmError(err: unknown): LlmError {
   if (isRecord(err) && typeof err['status'] === 'number') {
     const status = err['status'];
     const message = typeof err['message'] === 'string' ? err['message'] : 'gemini API error';
-    return makeLlmError({ provider: PROVIDER, kind: kindFromHttpStatus(status), message, status });
+    // ApiError.message retains the response JSON; the replay preserves the same body/message.
+    const overflow =
+      status === 400 &&
+      /The input token count exceeds the maximum number of tokens allowed \d+\./u.test(message);
+    return makeLlmError({
+      provider: PROVIDER,
+      kind: overflow ? 'context_overflow' : kindFromHttpStatus(status),
+      message,
+      status,
+    });
   }
   return makeLlmError({
     provider: PROVIDER,
@@ -679,6 +694,12 @@ function applyThinkingConfig(
 
 /** Lower a canonical request into the Gemini request shape (system → `systemInstruction`, etc.). */
 export function buildGeminiRequest(req: LlmRequest): GeminiRequest {
+  const owned = prepareOwnedRequest(req, PROVIDER, 'official');
+  return lowerGeminiRequest(mutableOwnedRequest(owned.request), owned.plan);
+}
+
+/** The plan belongs to the frozen source; the SDK may mutate only this fresh working graph. */
+function lowerGeminiRequest(req: LlmRequest, capPlan: PreparedOutputCapPlan): GeminiRequest {
   const config: Record<string, unknown> = {};
   if (req.system !== undefined) {
     config['systemInstruction'] = req.system;
@@ -701,11 +722,11 @@ export function buildGeminiRequest(req: LlmRequest): GeminiRequest {
   }
   // The output cap, held at or below the model's own ceiling (ADR-0071 §7) — down, never up: a cap BELOW the
   // ceiling is the author's deliberate budget, and raising it would spend their money for them.
-  const maxOutputTokens = cappedMaxTokens(req.maxTokens, req.model);
+  const maxOutputTokens = capPlan.mappedValue;
   if (maxOutputTokens !== undefined) {
     config['maxOutputTokens'] = maxOutputTokens;
   }
-  applyThinkingConfig(config, req, maxOutputTokens);
+  applyThinkingConfig(config, req, maxOutputTokens ?? capPlan.outputCeiling);
   if (req.outputModalities !== undefined && req.outputModalities.some((m) => m !== 'text')) {
     // Lower the node's non-text output_modalities to Gemini `responseModalities` (inline media-out,
     // 1.AG/ADR-0046). The per-modality capability gate (assertMediaCapabilities) has already rejected an
@@ -727,7 +748,7 @@ export function buildGeminiRequest(req: LlmRequest): GeminiRequest {
     req.providerOptions === undefined
       ? config
       : {
-          ...stripTransportKeys(req.providerOptions),
+          ...stripTransportKeys(mutableOutputCapNativeOptions(capPlan, req.providerOptions) ?? {}),
           ...config, // mapped fields win
         };
   return { model: req.model, contents: toGeminiContents(req.messages), config: merged };
@@ -740,7 +761,7 @@ export function buildGeminiRequest(req: LlmRequest): GeminiRequest {
 /**
  * **Gemini needs no `maxRetries: 0` (#276) — verified, not assumed.** `@google/genai`'s `ApiClient.apiCall`
  * issues a bare `fetch` unless `clientOptions.httpOptions.retryOptions` is supplied at construction, and this
- * adapter never supplies `httpOptions`. So `FallbackChain` is already the sole retry authority on every path
+ * adapter supplies only a pinned base URL, without retry options. So `FallbackChain` is the sole retry authority on every path
  * used here (`generateContent`, `generateContentStream`, `models.list`, `generateImages`, `generateVideos`,
  * `operations.getVideosOperation`).
  *
@@ -749,17 +770,25 @@ export function buildGeminiRequest(req: LlmRequest): GeminiRequest {
  * through a different, Stainless-style client that DOES default to `maxRetries: 2`; moving any call to those
  * surfaces silently reopens #276 and would need an explicit 0.
  */
+// Pin both route and backend; SDK environment/global defaults must not change official cap/refund evidence.
+const createSdkClient = (key: string): GoogleGenAI =>
+  new GoogleGenAI({
+    apiKey: key,
+    vertexai: false,
+    httpOptions: { baseUrl: 'https://generativelanguage.googleapis.com' },
+  });
+
 const sdkTransport: GeminiTransport = {
   async generate(request: GeminiRequest, key: string): Promise<GeminiResponse> {
-    const client = new GoogleGenAI({ apiKey: key });
-    return client.models.generateContent(request);
+    const client = createSdkClient(key);
+    return await client.models.generateContent(request);
   },
   async stream(request: GeminiRequest, key: string): Promise<AsyncIterable<GeminiResponse>> {
-    const client = new GoogleGenAI({ apiKey: key });
-    return client.models.generateContentStream(request);
+    const client = createSdkClient(key);
+    return await client.models.generateContentStream(request);
   },
   async listModels(key: string, signal?: AbortSignalLike): Promise<GeminiModelInfo[]> {
-    const client = new GoogleGenAI({ apiKey: key });
+    const client = createSdkClient(key);
     // models.list() returns an auto-paginating Pager<Model>; `for await` follows nextPageToken. Each row is
     // normalized to the vendor-type-free GeminiModelInfo here so no @google/genai Model type crosses the seam.
     const pager = await client.models.list({
@@ -778,11 +807,11 @@ const sdkTransport: GeminiTransport = {
     return rows;
   },
   async generateImages(request: GeminiImageRequest, key: string): Promise<GeminiImageResponse> {
-    const client = new GoogleGenAI({ apiKey: key });
-    return client.models.generateImages(request);
+    const client = createSdkClient(key);
+    return await client.models.generateImages(request);
   },
   async generateVideos(request: GeminiVideoRequest, key: string): Promise<GeminiVideoOperation> {
-    const client = new GoogleGenAI({ apiKey: key });
+    const client = createSdkClient(key);
     const op = await client.models.generateVideos(request);
     return { name: op.name };
   },
@@ -791,7 +820,7 @@ const sdkTransport: GeminiTransport = {
     key: string,
     signal?: AbortSignalLike,
   ): Promise<GeminiVideoPoll> {
-    const client = new GoogleGenAI({ apiKey: key });
+    const client = createSdkClient(key);
     // getVideosOperation reads ONLY operation.name (verified in the SDK), so a fresh operation carrying
     // just the persisted name re-attaches across a process restart with no in-memory handle (ADR-0045 §3).
     const operation = new GenerateVideosOperation();
@@ -1202,10 +1231,15 @@ export function createGeminiAdapter(deps: GeminiAdapterDeps = {}): LlmProvider {
     id: PROVIDER,
     supports: GEMINI_SUPPORTS,
     async generate(req: LlmRequest, key: string): Promise<LlmResult> {
+      const owned = prepareOwnedRequest(req, PROVIDER, 'official');
+      req = owned.request;
       assertSupported(PROVIDER, GEMINI_SUPPORTS, req); // fail fast on an unsupported feature
       assertMediaCapabilities(PROVIDER, GEMINI_SUPPORTS, req); // per-modality input/output gate (ADR-0031, 1.AE)
       try {
-        const response = await transport.generate(buildGeminiRequest(req), key);
+        const response = await transport.generate(
+          lowerGeminiRequest(mutableOwnedRequest(req), owned.plan),
+          key,
+        );
         const ids = new GeminiToolCallIds();
         const content = mapContent(response, ids);
         const hasToolCalls = content.some((part) => part.type === 'tool_call');
@@ -1226,11 +1260,32 @@ export function createGeminiAdapter(deps: GeminiAdapterDeps = {}): LlmProvider {
       }
     },
     stream(req: LlmRequest, key: string): AsyncIterable<StreamChunk> {
+      let owned: ReturnType<typeof prepareOwnedRequest>;
+      try {
+        owned = prepareOwnedRequest(req, PROVIDER, 'official');
+      } catch (error) {
+        return (async function* (): AsyncIterable<StreamChunk> {
+          await Promise.resolve();
+          yield {
+            type: 'error',
+            error: makeLlmError({
+              provider: PROVIDER,
+              kind: 'bad_request',
+              message:
+                error instanceof UnsupportedRequestDataError
+                  ? new UnsupportedRequestDataError().message
+                  : new InvalidOutputCapPlanError().message,
+              cause: error,
+            }),
+          };
+        })();
+      }
+      req = owned.request;
       assertSupported(PROVIDER, GEMINI_SUPPORTS, req); // fail fast on an unsupported feature
       assertStreamable(PROVIDER, GEMINI_SUPPORTS);
       assertMediaCapabilities(PROVIDER, GEMINI_SUPPORTS, req); // per-modality input/output gate (ADR-0031, 1.AE)
       assertNoStreamingMediaOutput(PROVIDER, req); // media-out is generate()-only; streaming triad deferred (ADR-0046 §4)
-      return streamChunks(transport, buildGeminiRequest(req), key);
+      return streamChunks(transport, lowerGeminiRequest(mutableOwnedRequest(req), owned.plan), key);
     },
     /**
      * Live model discovery (ADR-0064 §1) over the injected transport's `listModels` (default wraps
@@ -1309,7 +1364,7 @@ export function createGeminiAdapter(deps: GeminiAdapterDeps = {}): LlmProvider {
       return geminiPollVideo(transport, jobId, key, signal);
     },
     // ADR-0062 context-compaction seam — the shared defaults (Gemini's countTokens endpoint could specialize
-    // estimateTokens later; real usage is authoritative, so the heuristic is only a pre-first-turn fallback).
+    // estimateTokens later; current requests drive live context estimates, usage drives realized billing).
     ...CONTEXT_SEAM_DEFAULTS,
   };
 }

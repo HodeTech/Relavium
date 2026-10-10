@@ -1,3 +1,5 @@
+import { McpWorkScope } from './work-scope.js';
+import type { ToolHostCallOptions } from '@relavium/core';
 import { WebSocketClientTransport } from '@modelcontextprotocol/sdk/client/websocket.js';
 
 import type { AbortSignalLike } from '@relavium/shared';
@@ -6,6 +8,7 @@ import type { McpConnection } from './connection.js';
 import { MCP_DEADLINES } from './deadlines.js';
 import { McpConnectError, McpError } from './errors.js';
 import { connectSdkTransport } from './sdk-stdio.js';
+import { SdkTransportOwner } from './sdk-work.js';
 
 /**
  * The **WebSocket** (`websocket`) transport adapter — one of the SDK-fenced files
@@ -44,6 +47,7 @@ export async function openWebSocketConnection(
   serverId: string,
   spec: WebSocketServerSpec,
   signal?: AbortSignalLike,
+  options?: ToolHostCallOptions,
 ): Promise<McpConnection> {
   if (typeof globalThis.WebSocket !== 'function') {
     throw new McpError(
@@ -57,8 +61,22 @@ export async function openWebSocketConnection(
   } catch (err) {
     throw new McpConnectError(serverId, { cause: err });
   }
-  return connectSdkTransport(serverId, new WebSocketClientTransport(endpoint), {
-    timeoutMs: spec.connectTimeoutMs ?? MCP_DEADLINES.networkConnectMs,
-    ...(signal === undefined ? {} : { signal }),
-  });
+  const timeoutMs = spec.connectTimeoutMs ?? MCP_DEADLINES.networkConnectMs;
+  const work = new McpWorkScope(options);
+  try {
+    const transport = new WebSocketClientTransport(endpoint);
+    const owner = new SdkTransportOwner(transport, work, undefined, {});
+    return connectSdkTransport(
+      serverId,
+      transport,
+      {
+        timeoutMs,
+        ...(signal === undefined ? {} : { signal }),
+      },
+      owner,
+    );
+  } catch (error) {
+    work.seal();
+    throw error;
+  }
 }

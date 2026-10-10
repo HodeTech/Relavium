@@ -53,6 +53,7 @@ export type {
   // ADR-0064 — the live model-discovery entry returned by LlmProvider.listModels?.
   ModelListing,
   LlmProvider,
+  LlmInvocationOptions,
 } from './types.js';
 
 // The shared-owned seam substrate, re-exported so callers import it from the seam (single
@@ -105,7 +106,9 @@ export {
   UnknownModelError,
   ToolSchemaError,
   UnsupportedCapabilityError,
+  UnsupportedRequestDataError,
   InvalidBaseUrlError,
+  InvalidTokenEstimateError,
 } from './errors.js';
 export type { LlmConfigErrorCode } from './errors.js';
 
@@ -125,6 +128,7 @@ export {
   isRetryable,
   kindFromHttpStatus,
   makeLlmError,
+  snapshotLlmError,
   LlmProviderError,
   // The defense-in-depth secret backstop `makeLlmError` already applies to every adapter error. Exported so a
   // SURFACE can run it on arbitrary text it is about to print — a CLI failure path can carry a provider
@@ -149,8 +153,18 @@ export { collapseAliasDatedPinPairs, datedPinBase, mergeModelCatalog } from './m
 export type { ModelCatalogEntry, MergeModelCatalogInput, PricingSource } from './model-catalog.js';
 export { priceModel, cost, mediaCost, CostTracker } from './cost-tracker.js';
 export type { CostUpdate, MediaCost, PricingOverlay } from './cost-tracker.js';
-export { estimateMaxNextCost, estimateMediaCost } from './budget-estimator.js';
-export type { MediaUnitsEstimate } from './budget-estimator.js';
+export {
+  estimateMaxNextCost,
+  estimateResolvedNextCost,
+  estimateResolvedRequestCost,
+  estimateMediaCost,
+} from './budget-estimator.js';
+export type {
+  MediaUnitsEstimate,
+  MediaEstimateBasis,
+  RequestEstimateBasis,
+  ResolvedRequestEstimate,
+} from './budget-estimator.js';
 
 // FallbackChain runner — fallback policy outside the adapters (1.K).
 export { FallbackChain, withFallback, stripReasoningParts } from './fallback-chain.js';
@@ -161,6 +175,7 @@ export type {
   AttemptOutcome,
   BackoffStrategy,
   PreAttemptHook,
+  PreAttemptInfo,
 } from './fallback-chain.js';
 
 // ToolNormalizer (1.E).
@@ -222,11 +237,33 @@ export {
   wireValueFor,
   CANONICAL_ON_TIER,
 } from './reasoning-wire.js';
-// The output cap (ADR-0071 §7) — an authored `max_tokens` held at or below the model's real ceiling. Exported
-// because the PRE-EGRESS ESTIMATE must be computed from the same number the wire will carry: a governor that
-// pre-authorizes spend on tokens the model is physically incapable of producing kills runs over phantom money.
-export { cappedMaxTokens } from './output-cap.js';
-export type { EndpointKind } from './output-cap.js';
+// The shared captured wire-cap/reservation policy (ADR-0071/0101), including native escape-hatch evidence.
+export {
+  cappedMaxTokens,
+  DEFAULT_OUTPUT_TOKENS_ESTIMATE,
+  prepareOutputCapPlan,
+  outputTokensReservation,
+  outputCapPlanForRequest,
+  prepareOutputCapRequest,
+  assertOutputCapPlanMatches,
+  InvalidOutputCapPlanError,
+  ownLlmRequest,
+  selectOwnedRequest,
+  withOwnedRequestSignal,
+  withoutOwnedRequestTools,
+  ownedRequestSupportReason,
+  ownedRequestShape,
+  ownedRequestSource,
+} from './output-cap.js';
+export type {
+  EndpointKind,
+  OutputCapInputs,
+  OutputCapIdentity,
+  PreparedOutputCapPlan,
+  OwnedLlmRequest,
+  LlmRequestConstruction,
+  RequestCandidate,
+} from './output-cap.js';
 // The per-attempt provider deadline (ADR-0082 §5–§7) and the deadline vocabulary it reads from
 // `@relavium/shared` (ADR-0085 §9). §9 says this package "re-exports it" — `attempt-deadline.ts` did, but
 // nothing re-exported `attempt-deadline.ts` from the root, so no consumer of `@relavium/llm` could reach
@@ -241,3 +278,11 @@ export {
   type DeadlineScope,
   type SetDeadlineTimer,
 } from './attempt-deadline.js';
+
+export {
+  estimateRequestTokens,
+  MEDIA_INPUT_TOKENS,
+  UNSERIALIZABLE_INPUT_TOKENS,
+} from './request-estimator.js';
+
+export { ProviderInvocationWork } from './adapters/invocation-work.js';

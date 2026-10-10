@@ -1,6 +1,18 @@
-import { collectDurableMediaHandles, type RunEvent } from '@relavium/shared';
+import {
+  collectDurableMediaHandles,
+  type BudgetAllowanceState,
+  type RunEvent,
+} from '@relavium/shared';
 
 import type { CliIo } from '../process/io.js';
+import {
+  budgetAllowanceLabel,
+  budgetGateIdentity,
+  budgetIdentifier,
+  budgetPromptContext,
+  budgetPromptDetails,
+  budgetResumeHints,
+} from '../gate/budget.js';
 import { formatProducedMedia } from './tui/format.js';
 import { sanitizeInline, stringifyJsonLine } from './sanitize.js';
 
@@ -20,10 +32,14 @@ export interface RunRenderer {
   suspend?: () => Promise<void> | void;
   /** Re-mount the live view after a {@link suspend} (no-op once {@link finalize} has run). See `suspend`. */
   resume?: () => Promise<void> | void;
+  /** Positive input-release ACK, independent of final summary. Absent means no owned input. */
+  releaseInput?: () => Promise<void> | void;
   /**
    * Optional teardown, awaited by the run core after the event loop ends (even on a throw). The `ink` TUI
    * (2.E) uses it to unmount the live view — restoring the terminal — and write its persistent final
-   * summary; the line and NDJSON renderers need no teardown and omit it. Shared by 2.G / 2.M.
+   * summary. The driver first acknowledges releaseInput, joins host departure and drains the primary;
+   * it retains its event subscription and resources through those barriers before calling finalize.
+   * The line and NDJSON renderers need no teardown and omit it. Shared by 2.G / 2.M.
    */
   finalize?: () => Promise<void> | void;
 }
@@ -65,8 +81,52 @@ export function createJsonRenderer(io: CliIo): RunRenderer {
  * would forge extra rows in a CI log just as it would on a terminal.
  */
 export function createPlainRenderer(io: CliIo): RunRenderer {
+  const shownBudgetGates = new Map<string, { readonly runId: string; readonly nodeId: string }>();
   return {
     onEvent: (event) => {
+      if (event.type === 'budget:authorization' && event.authorization.state === 'decided')
+        shownBudgetGates.delete(budgetGateIdentity(event));
+      if (event.type === 'human_gate:resumed') {
+        if (event.gateId !== undefined)
+          shownBudgetGates.delete(budgetGateIdentity({ ...event, gateId: event.gateId }));
+        else
+          for (const [identity, gate] of shownBudgetGates)
+            if (gate.runId === event.runId && gate.nodeId === event.nodeId)
+              shownBudgetGates.delete(identity);
+      }
+      if (
+        event.type === 'run:completed' ||
+        event.type === 'run:failed' ||
+        event.type === 'run:cancelled'
+      )
+        for (const [identity, gate] of shownBudgetGates)
+          if (gate.runId === event.runId) shownBudgetGates.delete(identity);
+      if (
+        event.type === 'budget:paused' ||
+        (event.type === 'budget:authorization' && event.authorization.state === 'paused')
+      ) {
+        const identity = budgetGateIdentity(event);
+        if (shownBudgetGates.has(identity)) return;
+        shownBudgetGates.set(identity, { runId: event.runId, nodeId: event.nodeId });
+        let allowance: BudgetAllowanceState | undefined;
+        if (event.type === 'budget:authorization') allowance = event.authorization.allowance;
+        else if (event.allowanceQuote !== undefined)
+          allowance = { kind: 'frozen', quote: event.allowanceQuote };
+        io.writeOut(
+          `  pending budget gate ${budgetIdentifier(event.gateId)} at ${budgetIdentifier(event.nodeId)} — ${budgetAllowanceLabel(allowance)}\n`,
+        );
+        for (const detail of budgetPromptDetails(budgetPromptContext(allowance)))
+          io.writeOut(`    ${detail}\n`);
+        for (const hint of budgetResumeHints(
+          event.runId,
+          event.gateId,
+          budgetPromptContext(allowance),
+        ))
+          io.writeOut(`    ${hint}\n`);
+        return;
+      }
+      if (event.type === 'human_gate:paused' && shownBudgetGates.has(budgetGateIdentity(event)))
+        return;
       const line = describe(event);
       if (line !== undefined) {
         // `describe()` sanitizes each untrusted FIELD as it interpolates it (the `final-summary.ts` pattern), so

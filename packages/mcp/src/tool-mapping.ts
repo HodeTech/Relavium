@@ -436,7 +436,11 @@ function admitTool(
       if (mcp === undefined) {
         throw new McpHostUnavailableError(id);
       }
-      return mcp.call({ server: serverId, tool: originalName, args }, ctx.signal);
+      return mcp.call(
+        { server: serverId, tool: originalName, args },
+        ctx.signal,
+        ctx.hostCallOptions,
+      );
     },
   };
   return { kind: 'admit', def };

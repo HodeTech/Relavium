@@ -721,7 +721,7 @@ describe('AgentRunner resource governance end-to-end (ADR-0028, 1.AC)', () => {
     expect(events.some((e) => e.type === 'node:failed')).toBe(true);
   });
 
-  it('pauses, and on approve CONTINUES the deferred LLM call (H3 — not a {decision} short-circuit)', async () => {
+  it('pauses, and exact allowance approval continues the deferred LLM call with its real output', async () => {
     const engine = new WorkflowEngine({
       host: createInMemoryHost(),
       executor: agentExecutor(() => cheapProvider()),
@@ -734,19 +734,20 @@ describe('AgentRunner resource governance end-to-end (ADR-0028, 1.AC)', () => {
     for await (const event of handle.events) {
       events.push(event);
       if (event.type === 'budget:paused') {
+        const quote = event.allowanceQuote;
+        if (quote?.kind !== 'quoted' || quote.quote.amount.kind !== 'representable')
+          throw new Error('missing frozen safe allowance');
         await engine.resume(handle.runId, event.gateId, {
           decision: 'approved',
           decidedBy: 'user-1',
+          approvedAmountMicrocents: quote.quote.amount.microcents,
         });
       }
     }
     expect(events.at(-1)?.type).toBe('run:completed');
     expect(events.some((e) => e.type === 'budget:paused')).toBe(true);
-    // H3: approving a budget pause must CONTINUE the call — the agent node re-dispatches (a one-shot
-    // pre-egress bypass) and completes with the MODEL's output, never a `{decision:'approved'}`
-    // short-circuit. So 'n' starts twice (initial + post-approval re-dispatch) and its node:completed
-    // carries the streamed 'ok'. Before the fix the node was marked completed with the gate decision and
-    // the LLM call never issued.
+    // Approval grants a governed dispatch and never completes the node with a decision object.
+    // The initial paused attempt and the approved attempt each start; the real model supplies output.
     const nStarted = events.filter((e) => e.type === 'node:started' && e.nodeId === 'n');
     expect(nStarted.length).toBe(2);
     const nDone = events.find((e) => e.type === 'node:completed' && e.nodeId === 'n');
@@ -777,13 +778,11 @@ describe('AgentRunner resource governance end-to-end (ADR-0028, 1.AC)', () => {
     expect(terminal?.type === 'run:failed' && terminal.error.code).toBe('budget_exceeded');
   });
 
-  it('an approved over-budget node does NOT re-pause on an above-chain retry (H3 × ADR-0040)', async () => {
-    // Regression for the bypass-through-retry fix: the budget approval is consumed ONCE per dispatch and
-    // threaded through every node-retry attempt. With max_cost_microcents: 1 EVERY pre-egress check would
-    // trip, so a re-armed check on the retry would pause again. The approved node's first (post-approval)
-    // attempt fails retryably; the retry must run uncapped and complete — NOT trip a SECOND budget:paused.
-    // Before the fix the bypass was consumed on attempt 1 only, so the retry re-paused.
-    const scripted = scriptedProvider([
+  it('an approved node retains its consumed allowance on above-chain retry and fails without re-pausing', async () => {
+    // An uncertain overloaded response retains E. The authored node retry does not multiply A,
+    // so its next attempt must fail before a second provider call rather than minting credit or re-pausing.
+    let providerCalls = 0;
+    const base = scriptedProvider([
       [
         {
           type: 'error',
@@ -795,6 +794,13 @@ describe('AgentRunner resource governance end-to-end (ADR-0028, 1.AC)', () => {
         { type: 'stop', stopReason: 'stop', usage: { inputTokens: 1, outputTokens: 1 } },
       ],
     ]);
+    const scripted: LlmProvider = {
+      ...base,
+      stream: (request, key) => {
+        providerCalls += 1;
+        return base.stream(request, key);
+      },
+    };
     const wf = parseWorkflow(
       `schema_version: '1.0'
 workflow:
@@ -825,9 +831,13 @@ workflow:
     for await (const event of handle.events) {
       events.push(event);
       if (event.type === 'budget:paused') {
+        const quote = event.allowanceQuote;
+        if (quote?.kind !== 'quoted' || quote.quote.amount.kind !== 'representable')
+          throw new Error('missing frozen safe allowance');
         await engine.resume(handle.runId, event.gateId, {
           decision: 'approved',
           decidedBy: 'user-1',
+          approvedAmountMicrocents: quote.quote.amount.microcents,
         });
       }
       if (event.type === 'node:retrying') {
@@ -843,11 +853,15 @@ workflow:
     }
     // Exactly ONE budget:paused (the initial over-budget check) — the retry did NOT re-pause.
     expect(events.filter((e) => e.type === 'budget:paused')).toHaveLength(1);
-    // The retryable failure surfaced as exactly one node:retrying, then the node completed on attempt 2.
+    // Retry sees the same exhausted grant; it never reaches credentials/provider a second time.
     expect(events.filter((e) => e.type === 'node:retrying')).toHaveLength(1);
-    expect(events.at(-1)?.type).toBe('run:completed');
-    const done = events.find((e) => e.type === 'node:completed' && e.nodeId === 'n');
-    expect(done?.type === 'node:completed' ? done.output : undefined).toBe('ok');
+    expect(events.at(-1)).toMatchObject({ type: 'run:failed', error: { code: 'budget_exceeded' } });
+    expect(events.some((e) => e.type === 'node:completed' && e.nodeId === 'n')).toBe(false);
+    expect(providerCalls).toBe(1);
+    expect(host.armedCount()).toBe(0);
+    // Terminal delivery and joined actor retirement are separate; observe exact lease release.
+    await expect.poll(() => host.runLeases.read(handle.runId)).toBeUndefined();
+    expect(host.livenessCount()).toBe(0);
   });
 
   it('fails the run when timeout_ms elapses', async () => {

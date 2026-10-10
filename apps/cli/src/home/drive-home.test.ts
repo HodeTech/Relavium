@@ -1,11 +1,19 @@
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 
-import { createClient, createSessionStore, runMigrations, type DbClient } from '@relavium/db';
+import {
+  createClient,
+  createEffectJournalStore,
+  createSessionStore,
+  runMigrations,
+  type DbClient,
+} from '@relavium/db';
 import { REASONING_EFFORTS, type ReasoningEffort } from '@relavium/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { render as renderInk, type Instance } from 'ink';
+import { createElement, isValidElement } from 'react';
 
 import { buildChatSession, buildResumedChatSession } from '../chat/session-host.js';
 import { scriptedResolver, textTurn } from '../chat/test-support.js';
@@ -15,7 +23,8 @@ import type { ClackOnboardingDeps } from '../onboarding/wizard.js';
 import { EXIT_CODES } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
-import type { RootAppProps } from '../render/tui/home-app.js';
+import { RootApp, type RootAppProps } from '../render/tui/home-app.js';
+import { OwnedTtyInput, OwnedTtyOutput } from '../test-support.js';
 import { DISABLE_MOUSE, ENABLE_MOUSE, HIDE_CURSOR, SHOW_CURSOR } from '../render/alt-screen.js';
 import type { JobControlLifecycle, SuspendPort } from '../render/suspend.js';
 import { DISABLE_BRACKETED_PASTE } from '../render/tui/home-input.js';
@@ -26,6 +35,15 @@ import {
   type HomeDeps,
   type OnboardingTerminalLifecycle,
 } from './drive-home.js';
+import { shouldOpenHome } from './should-open-home.js';
+
+// Default production mounts are intercepted only to supply owned, handle-free TTY streams.
+// Preserve every production render option and observe real Ink writes before the journal sweep.
+const inkRenderer = vi.hoisted(() => ({ render: vi.fn<(typeof import('ink'))['render']>() }));
+vi.mock('ink', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('ink')>()),
+  render: inkRenderer.render,
+}));
 
 // Regression for the `provider_auth` bug: the Home built an ENV-ONLY key resolver, so a key stored in the OS
 // keychain (the normal `relavium provider add` path) was invisible while `relavium chat` (keychain-wired) worked.
@@ -96,6 +114,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
   const io: CliIo = {
     writeOut: () => undefined,
     writeErr: () => undefined,
+    writeErrAcknowledged: () => Promise.resolve(),
     env: {},
     stdoutIsTty: true,
     stdinIsTty: true,
@@ -103,6 +122,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
   };
 
   beforeEach(() => {
+    inkRenderer.render.mockReset();
     client = createClient(':memory:');
     runMigrations(client.db);
     closeSpy = vi.fn();
@@ -151,7 +171,14 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
       uuid: () => `id-${uuidN++}`, // unique per call (mirrors production randomUUID): the session id + message ids never collide
       render: (props) => {
         capture(props);
-        return { unmount };
+        props.onRendererReady?.(async (publish) => {
+          await publish?.();
+        });
+        return {
+          unmount,
+          waitUntilRenderFlush: () => Promise.resolve(),
+          waitUntilExit: () => new Promise(() => {}),
+        };
       },
       getSize: () => ({ cols: 120, rows: 40 }),
       subscribeResize: () => () => undefined,
@@ -200,6 +227,8 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
           unmount: () => {
             throw new Error('ink unmount failed');
           },
+          waitUntilRenderFlush: () => Promise.resolve(),
+          waitUntilExit: () => new Promise(() => {}),
         };
       },
     });
@@ -283,7 +312,11 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
         render: (p, opts) => {
           props = p;
           alt = opts.alternateScreen;
-          return { unmount: vi.fn() };
+          return {
+            unmount: vi.fn(),
+            waitUntilRenderFlush: () => Promise.resolve(),
+            waitUntilExit: () => new Promise(() => {}),
+          };
         },
         ...over,
       });
@@ -322,8 +355,16 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
   });
 
   it('startChat builds the default-agent session and persists its row; a clean return ends it', async () => {
+    mkdirSync(join(cwd, '.relavium'), { recursive: true });
+    writeFileSync(join(cwd, '.relavium', 'project.toml'), '[defaults]\nmax_tokens_estimate = 17\n');
+    const estimates: (number | undefined)[] = [];
     let captured: RootAppProps | undefined;
-    const { deps } = makeDeps((p) => (captured = p));
+    const { deps } = makeDeps((p) => (captured = p), {
+      buildSession: (options) => {
+        estimates.push(options.maxTokensEstimate);
+        return buildChatSession(options);
+      },
+    });
     const drivePromise = driveHome(deps);
     const props = captured;
     if (props === undefined) throw new Error('the injected render was never invoked');
@@ -335,6 +376,17 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
 
     const sessions = createSessionStore(client.db);
     expect(sessions.listSessions({ limit: 10 })).toHaveLength(1); // the chat persisted its row
+    await vi.waitFor(() => expect(props.controller.getSnapshot().submitBusy).toBe(false));
+
+    props.controller.handleKey('/', {});
+    type(props, 'clear');
+    // The filter also matches /cost's "clears held estimates" description; choose the Clear row.
+    props.controller.handleKey('', { downArrow: true });
+    props.controller.handleKey('', ENTER);
+    await vi.waitFor(() => expect(estimates).toEqual([17, 17]));
+    expect(props.controller.getSnapshot().mode).toBe('chat');
+    expect(estimates).toEqual([17, 17]);
+    expect(sessions.listSessions({ limit: 10 })).toHaveLength(2);
 
     props.controller.handleKey('c', CTRL_C); // chat Ctrl-C ⇒ /cancel ⇒ back to Home
     await flush();
@@ -451,11 +503,23 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
   });
 
   it('in-Home /models reseat: the REAL reseatChat resumes the session under the switched model, carrying the transcript (ADR-0059)', async () => {
+    mkdirSync(join(cwd, '.relavium'), { recursive: true });
+    writeFileSync(join(cwd, '.relavium', 'project.toml'), '[defaults]\nmax_tokens_estimate = 17\n');
+    const freshEstimates: (number | undefined)[] = [];
+    const resumedEstimates: (number | undefined)[] = [];
     // Exercises the REAL drive-home reseatChat builder (loadFull → swapAgentModel → buildResumedChatSession → seeded
     // store) end-to-end — not the mocked controller-level test — pinning the build-first swap over the same sessionId.
     let captured: RootAppProps | undefined;
     const { deps } = makeDeps((p) => (captured = p), {
       providers: scriptedResolver([textTurn('sonnet reply'), textTurn('opus reply')]),
+      buildSession: (options) => {
+        freshEstimates.push(options.maxTokensEstimate);
+        return buildChatSession(options);
+      },
+      buildResumedSession: (options) => {
+        resumedEstimates.push(options.maxTokensEstimate);
+        return buildResumedChatSession(options);
+      },
     });
     const drivePromise = driveHome(deps);
     const props = captured;
@@ -494,6 +558,8 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     expect(reseated?.sessionId).toBe(sessionId); // a reseat CONTINUES the same session (unlike /clear's new id)
     expect(reseated?.store.getSnapshot().state.model).toBe('claude-opus-4-8'); // rebound to the picked model
     expect(reseated?.store.getSnapshot().state.turnCount).toBe(1); // the prior turn carried
+    expect(freshEstimates).toEqual([17]);
+    expect(resumedEstimates).toEqual([17]);
 
     // F1 (2.6.C) — the RENDERED conversation carries too, which is what this test's name always claimed and never
     // checked. Before the fix the reseat seeded `transcript: []`, so on the full-screen renderer (whose viewport
@@ -525,6 +591,269 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     props.controller.handleKey('c', CTRL_C); // Home Ctrl-C ⇒ clean exit
     expect(await drivePromise).toBe(EXIT_CODES.success);
   });
+
+  it.each([
+    [false, {}, false, false],
+    [true, {}, false, false],
+    ['closed-before', {}, false, false],
+    ['closed-during', {}, false, false],
+    ['error-during', {}, false, false],
+    [true, { CI: '' }, true, false],
+    [true, { CI: '' }, true, true],
+    ['closed-before', { CI: '' }, true, false],
+    ['closed-during', { CI: '' }, true, false],
+    ['error-during', { CI: '' }, true, false],
+    [true, { CONTINUOUS_INTEGRATION: 'true' }, true, false],
+    [true, { CONTINUOUS_INTEGRATION: 'true' }, true, true],
+    [true, { CI: '' }, true, false, 1],
+    [true, { CI: '' }, true, false, 24],
+  ] as const)(
+    'the REAL Home reseat displays disclosure before sweeping (actual Ink: %s, env=%j, default mount=%s, no-alt=%s, resizeRows=%s)',
+    async (mode, env, defaultMount, noAltScreen, resizeRows?: number) => {
+      const actualInk = mode !== false;
+      let captured: RootAppProps | undefined;
+      let buildChecks = 0;
+      let size = { cols: 100, rows: 30 };
+      let fireResize: (() => void) | undefined;
+      const input = new OwnedTtyInput();
+      const stdout = new OwnedTtyOutput();
+      const stderr = new OwnedTtyOutput();
+      let instance: Instance | undefined;
+      let finishRenderer: () => void = () => undefined;
+      const syntheticExit = new Promise<void>((resolve) => {
+        finishRenderer = resolve;
+      });
+      let firstNoticeRows: number | undefined;
+      stdout.onFrame = (frame) => {
+        if (frame.includes('external effect') && firstNoticeRows === undefined) {
+          firstNoticeRows = client.sqlite.prepare('SELECT * FROM run_effects').all().length;
+          if (mode === 'closed-during') stdout.destroy();
+          if (mode === 'error-during') stdout.destroy(new Error('SECRET_OUTPUT_FAILURE'));
+        }
+      };
+      const realInk = await vi.importActual<typeof import('ink')>('ink');
+      inkRenderer.render.mockImplementation((node, options) => {
+        if (!isValidElement<RootAppProps>(node)) throw new Error('expected RootApp');
+        captured = node.props;
+        instance = realInk.render(node, { ...options, stdin: input, stdout, stderr, debug: false });
+        return instance;
+      });
+      const { deps } = makeDeps(
+        (props) => {
+          captured = props;
+        },
+        {
+          io: { ...io, env },
+          getSize: () => size,
+          subscribeResize: (callback) => {
+            fireResize = callback;
+            return () => {
+              fireResize = undefined;
+            };
+          },
+          global: { ...global, noAltScreen },
+          render: (props, options) => {
+            captured = props;
+            if (!actualInk) {
+              props.onRendererReady?.(async (publish) => {
+                await publish?.();
+              });
+              return {
+                unmount: finishRenderer,
+                waitUntilRenderFlush: () => Promise.resolve(),
+                waitUntilExit: () => syntheticExit,
+              };
+            }
+            instance = renderInk(createElement(RootApp, props), {
+              ...options,
+              stdin: input,
+              stdout,
+              stderr,
+              debug: false,
+              exitOnCtrlC: false,
+              patchConsole: false,
+              alternateScreen: false,
+            });
+            return instance;
+          },
+          providers: scriptedResolver([textTurn('first reply')]),
+          buildResumedSession: async (options) => {
+            const built = await buildResumedChatSession(options);
+            if (resizeRows !== undefined && buildChecks === 0) {
+              size = { cols: 100, rows: resizeRows };
+              stdout.rows = resizeRows;
+              fireResize?.();
+            }
+            if (mode === 'closed-before' && buildChecks === 0) stdout.destroy();
+            expect(client.sqlite.prepare('SELECT * FROM run_effects').all()).toHaveLength(
+              buildChecks === 0 || resizeRows === 1 ? 2 : 1,
+            );
+            buildChecks++;
+            return built;
+          },
+        },
+      );
+      let rendererError: unknown;
+      const { render: injectedMount, ...productionDeps } = deps;
+      expect(injectedMount).toBeDefined();
+      expect(
+        shouldOpenHome({
+          stdoutIsTty: deps.io.stdoutIsTty,
+          stdinIsTty: deps.io.stdinIsTty,
+          json: deps.global.json,
+          env: deps.io.env,
+        }),
+      ).toBe(true);
+      const running = driveHome(defaultMount ? productionDeps : deps);
+      const settled = running.catch((error: unknown) => {
+        rendererError = error;
+      });
+      try {
+        await instance?.waitUntilRenderFlush();
+        const props = captured;
+        if (props === undefined) throw new Error('render was not invoked');
+        type(props, 'first');
+        props.controller.handleKey('', ENTER);
+        await flush();
+        if (resizeRows !== undefined)
+          await vi.waitFor(() =>
+            expect(stdout.frames.some((frame) => frame.includes('first reply'))).toBe(true),
+          );
+        const sessionId = props.controller.getSnapshot().session?.sessionId;
+        if (sessionId === undefined) throw new Error('missing active session');
+        const turn = createSessionStore(client.db).reserveEffectTurnKey(sessionId);
+        let next = 0;
+        const journal = createEffectJournalStore(client.db, {
+          uuid: () => `home-effect-${String(++next)}`,
+          now: () => 0,
+        });
+        for (const [slot, state] of [
+          [0, 'committed'],
+          [1, 'ambiguous'],
+        ] as const) {
+          const identity = {
+            scope: `session:${encodeURIComponent(sessionId)}:${String(turn)}`,
+            slot,
+            toolId: 'run_command',
+          };
+          journal.prepare(
+            identity,
+            { kind: 'session', sessionId, turn },
+            { providerAttempt: 1, toolCallId: `session-tool:${String(turn)}:${String(slot)}` },
+            3,
+            'digest',
+          );
+          journal.settle(identity, state, 'synthetic private result');
+        }
+        const pick = async (model: string) => {
+          props.controller.handleKey('/', {});
+          type(props, 'models');
+          props.controller.handleKey('', ENTER);
+          await flush();
+          type(props, model);
+          props.controller.handleKey('', ENTER);
+          if (props.controller.getSnapshot().modelPicker?.phase === 'effort')
+            props.controller.handleKey('', ENTER);
+          if (typeof mode === 'string')
+            await vi.waitFor(() => expect(rendererError).toBeInstanceOf(Error));
+          else
+            await vi.waitFor(() => expect(props.controller.getSnapshot().submitBusy).toBe(false));
+          await instance?.waitUntilRenderFlush();
+        };
+        await pick('claude-opus-4-8');
+        if (typeof mode === 'string') {
+          await settled;
+          expect(client.sqlite.prepare('SELECT * FROM run_effects').all()).toHaveLength(2);
+          expect(firstNoticeRows).toBe(mode === 'closed-before' ? undefined : 2);
+          expect(String(rendererError)).toContain('terminal output closed');
+          expect(String(rendererError)).not.toContain('SECRET_OUTPUT_FAILURE');
+          expect(closeSpy).toHaveBeenCalledTimes(1);
+          return;
+        }
+        if (resizeRows === 1) {
+          // A flushed footer is not a displayed disclosure. Retain the committed evidence and keep exit usable.
+          expect(firstNoticeRows).toBeUndefined();
+          expect(client.sqlite.prepare('SELECT state FROM run_effects').all()).toEqual([
+            { state: 'committed' },
+            { state: 'ambiguous' },
+          ]);
+          expect(
+            props.controller
+              .getSnapshot()
+              .session?.store.getSnapshot()
+              .state.transcript.some(
+                (entry) =>
+                  entry.role === 'notice' && entry.text.includes('audit evidence was retained'),
+              ),
+          ).toBe(true);
+          size = { cols: 100, rows: 30 };
+          stdout.rows = 30;
+          fireResize?.();
+          await instance?.waitUntilRenderFlush();
+          expect(client.sqlite.prepare('SELECT * FROM run_effects').all()).toHaveLength(2);
+        } else
+          expect(client.sqlite.prepare('SELECT state FROM run_effects').all()).toEqual([
+            { state: 'ambiguous' },
+          ]);
+        const notices = () =>
+          props.controller
+            .getSnapshot()
+            .session?.store.getSnapshot()
+            .state.transcript.filter(
+              (entry) => entry.role === 'notice' && entry.text.includes('external effect'),
+            ) ?? [];
+        if (actualInk) {
+          if (resizeRows !== 1) expect(firstNoticeRows).toBe(2);
+          expect(inkRenderer.render.mock.calls[0]?.[1]).toMatchObject({
+            interactive: true,
+            ...(defaultMount ? { alternateScreen: !noAltScreen } : {}),
+          });
+        }
+        expect(notices()).toHaveLength(1);
+        expect(notices()[0]?.text).toContain('landed in a turn that did not complete');
+        const displayedNotices = () =>
+          stdout.frames.filter((frame) => frame.includes('external effect')).length;
+        const displayedReplies = () =>
+          stdout.frames.filter((frame) => frame.includes('first reply')).length;
+        if (actualInk && noAltScreen) {
+          expect(displayedNotices()).toBe(1);
+          expect(displayedReplies()).toBe(1);
+        }
+        await pick('claude-sonnet-4-6');
+        expect(client.sqlite.prepare('SELECT state FROM run_effects').all()).toEqual([
+          { state: 'ambiguous' },
+        ]);
+        expect(buildChecks).toBe(2);
+        // Inline scrollback already owns the previous notice; only the new store's notice is retained.
+        expect(notices()).toHaveLength(noAltScreen ? 1 : 2);
+        expect(notices().at(-1)?.text).toContain('ambiguous');
+        if (resizeRows === 1)
+          expect(notices().at(-1)?.text).toContain('landed in a turn that did not complete');
+        else expect(notices().at(-1)?.text).not.toContain('landed in a turn that did not complete');
+        if (actualInk && noAltScreen) {
+          expect(displayedNotices()).toBe(2);
+          expect(displayedReplies()).toBe(1); // reseat never reprints the earlier exchange
+        }
+        props.controller.handleKey('c', CTRL_C);
+        await flush();
+        props.controller.handleKey('c', CTRL_C);
+        expect(await running).toBe(0);
+      } finally {
+        instance?.unmount();
+        finishRenderer();
+        if (captured !== undefined) await captured.controller.teardownActive();
+        await settled;
+        instance?.cleanup();
+        await vi.waitFor(() => {
+          expect(stdout.listenerCount('close')).toBe(0);
+          expect(stdout.listenerCount('error')).toBe(0);
+        });
+        input.destroy();
+        stdout.destroy();
+        stderr.destroy();
+      }
+    },
+  );
 
   it('a reseat notice fired DURING the build is buffered and flushed into the transcript, not lost to stderr (review M5/bot)', async () => {
     // The store is seeded from the build (it needs `built.resumeState`), so it cannot exist yet when a governor/

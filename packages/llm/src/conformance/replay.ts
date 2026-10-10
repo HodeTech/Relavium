@@ -126,3 +126,10 @@ export function recordFetch(realFetch: FetchLike): {
   };
   return { fetch, recordings };
 }
+
+/** Replay the SDK's diagnostic body verbatim, so classification sees the captured provider message. */
+export function replayGeminiError(
+  recorded: RecordedResponse,
+): Error & { status: number; body: string } {
+  return Object.assign(new Error(recorded.body), { status: recorded.status, body: recorded.body });
+}

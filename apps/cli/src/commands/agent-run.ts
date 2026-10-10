@@ -27,6 +27,7 @@ import { makePlainPrinter } from './chat.js';
 import { sanitizeInline, sanitizeUntrustedInline, stringifyJsonLine } from '../render/sanitize.js';
 import { createEffectJournalPort, createEffectJournalStore } from '@relavium/db';
 import { openSessionStore } from '../history/session-open.js';
+import { sweepOneShotSessionEffects } from '../engine/effect-retention.js';
 
 /**
  * `relavium agent run <agent>` (2.Q) — invoke a single agent **one-shot** (non-interactive) on the same
@@ -132,6 +133,10 @@ export async function agentRunCommand(
   const built = await (async (): Promise<BuiltChatSession> => {
     const b = await (deps.buildSession ?? buildChatSession)({
       chat: config.chat,
+      afterTurnCompaction: false, // One-shot output has no next turn; retain active summary permission.
+      ...(config.maxTokensEstimate === undefined
+        ? {}
+        : { maxTokensEstimate: config.maxTokensEstimate }),
       // **Consent before any stdio MCP spawn** (ADR-0084 §1). A one-shot `agent run` opens an agent artifact
       // — often an imported one — which is exactly the case the gate exists for; `--fixture` replays offline
       // and declares no servers, so the gate never fires there.
@@ -207,7 +212,14 @@ export async function agentRunCommand(
     unguardMcp();
     throw cause;
   }
+  let handedOff = false;
+  let ownedEffectSessionId: string | undefined;
   try {
+    built.attachEffectTurnAllocator((id) => {
+      const key = journalStore.store.reserveOneShotEffectTurnKey(id, Date.now());
+      ownedEffectSessionId = id;
+      return key;
+    });
     built.attachEffectJournal((correlation) =>
       createEffectJournalPort(
         createEffectJournalStore(journalStore.db, { uuid: randomUUID, now: Date.now }),
@@ -216,12 +228,22 @@ export async function agentRunCommand(
       ),
     );
     // Render the live stream + run the single turn + tear down — a classified turn failure maps to exit 1.
+    handedOff = true;
     const turnErrorCode = await runOneShotTurn(built, message, deps);
     return turnErrorCode === undefined ? EXIT_CODES.success : EXIT_CODES.workflowFailed;
   } finally {
     // Removed first: from here `runOneShotTurn`'s own teardown owns the children on every unwinding path.
     unguardMcp();
-    journalStore.close();
+    try {
+      if (!handedOff) await built.closeMcp?.();
+    } finally {
+      try {
+        if (ownedEffectSessionId !== undefined)
+          sweepOneShotSessionEffects(deps.io, journalStore.db, ownedEffectSessionId);
+      } finally {
+        journalStore.close();
+      }
+    }
   }
 }
 

@@ -15,7 +15,8 @@
  * have silently skipped every unbudgeted run while passing any test written against a budgeted fixture.
  *
  * **One join, not two** (ADR-0077 §4). `join()` awaits the realized chain AND the conservative one, and
- * reports whichever failure it finds. There is deliberately no public way to await half the money.
+ * reports whichever failure it finds. `waitForWrites()` separately observes realized-write lifetime
+ * without consuming an error; it is not a money barrier or a durability certificate.
  */
 
 /** A realized-cost ledger write that did not reach the store. Carries the owning node for attribution. */
@@ -145,27 +146,41 @@ export class MoneyDurability {
     );
   }
 
+  /** Internal lifetime observation only: drain realized writes without consuming their retained error. */
+  async waitForWrites(): Promise<void> {
+    let observed: Promise<void>;
+    do {
+      observed = this.#inFlight;
+      await observed;
+    } while (observed !== this.#inFlight);
+  }
+
   /**
    * The barrier — ADR-0077's B1 / B2 / B3, all three of them this one call.
    *
    * Awaits the realized chain and the conservative one, then throws the first retained failure. Both halves
-   * matter: awaiting alone is NOT a barrier, because the engine's `#emitDurable` is total for store faults —
-   * it absorbs a `persistEvent` rejection into the run's failure state and RESOLVES — so a caller that only
-   * awaits proceeds on a run whose write did not land. The throw is how a caller in the turn core, which has
-   * no access to the engine's own failure state, observes it.
+   * matter: ordinary event delivery contains store faults, but the engine's required-money bridge rejects
+   * each refused or failed append acknowledgement. This chain retains that failure for the accounting
+   * barrier; a lifecycle-only tail wait does not consume or classify it. The throw is how a turn-core
+   * caller, which has no access to the engine's own failure state, observes missing durability.
    *
    * **ADR-0078's ordered append does not change this argument** — re-derived rather than left to age. Its
-   * compare-and-append refusal is one more NON-TERMINAL store rejection, absorbed by the same total catch,
-   * and both money events are non-terminal. So the observe half is still the only thing that turns an
-   * absorbed fault into a throw, and the barrier is still not merely an await.
+   * compare-and-append refusal is another missing money acknowledgement, and both money events are
+   * non-terminal. The required bridge and retained-error observation keep the barrier stronger than a
+   * lifetime wait even when an unrelated run failure already existed.
    */
   async join(): Promise<void> {
-    if (this.#pending > 0 || this.#failure !== undefined) {
-      await this.#inFlight;
-    }
-    // The conservative half is joined unconditionally when a governor exists — its own barrier is cheap when
-    // nothing is outstanding, and skipping it here is how "await the wrong one" would creep back in.
-    await this.#options.flushConservative?.();
+    let observedTail: Promise<void>;
+    do {
+      observedTail = this.#inFlight;
+      if (this.#pending > 0 || this.#failure !== undefined) {
+        await observedTail;
+      }
+      // The governor drains its current conservative tail. Recheck the realized tail AFTER that await too:
+      // a sibling can record another realized charge while either half is suspended. A single snapshot, or
+      // draining only before the conservative flush, would let the next attempt outrun that new write.
+      await this.#options.flushConservative?.();
+    } while (observedTail !== this.#inFlight);
     const failure = this.#failure;
     if (failure !== undefined) {
       this.#failure = undefined;

@@ -1,6 +1,6 @@
 # `relavium chat` — Agent Session REPL
 
-> Last updated: 2026-07-12
+> Last updated: 2026-10-10 — W7 compaction/recovery implemented; final wave review is tracked in the roadmap.
 
 - **Status**: Reference — the whole chat family is live: the interactive REPL + `--agent`, `/exit`/`/cancel`, exit code 4, durable persistence (**2.M**); `chat-resume` (**2.N**); `chat-list` (**2.O**); `chat-export` + the in-REPL `/export` (**2.P**); `chat --json` + `agent run` (+ `--fixture`) (**2.Q**); the chat modes + fail-closed per-tool approval (**2.5.E**); and the mid-chat **`/models` reseat** + per-message `modelId` attribution + the `/effort` control (**2.5.G**) — this page is the reseat's behaviour home
 - **Surface**: CLI (`relavium chat`)
@@ -21,6 +21,13 @@ relavium chat --agent code-reviewer            # resolved inside .relavium/
 ```
 
 `relavium chat` opens an `ink`-rendered interactive REPL when a TTY is attached. The session is **auto-persisted and resumable** from the moment it starts — there is no separate save step (see [agent-session-spec.md](../contracts/agent-session-spec.md#validation-and-persistence)). Resume a prior conversation with `relavium chat-resume <sessionId>` and list past sessions with `relavium chat-list` (see [commands.md](commands.md)).
+
+On resume or `/models` reseat, including Home reseat, a notice lists unresolved external effects and effects
+that landed in a turn that did not persist; legacy rows with no durable attribution are reported conservatively.
+Completed model turns and committed `!` commands are silent. Earlier effects are **never auto-retried**: check
+the target before sending the message again. TTY/Home notices appear in the active transcript; plain/JSON modes
+use stderr. A failed disclosure preserves the audit evidence for a later resume. The exact retention and
+privacy guarantees live in [effect-journal.md §8–§11](../shared-core/effect-journal.md#8-needs_attention).
 
 Since Step 4b-3 the REPL **defaults on a TTY to the full-screen alternate-screen** mode, with **inline** as the opt-out — **`--no-alt-screen`** (one invocation) or **`[preferences].alt_screen = false`** (durable) ([ADR-0068](../../decisions/0068-full-screen-tui-renderer-ink7-harness.md) §e; the resolution is shared verbatim with the [Home](home.md)). A non-TTY / `--json` path is always inline (byte-identical). The alt screen renders the transcript through a resize-tracked **viewport** with **scroll-back + auto-follow** — **PgUp/PgDn** page, **Ctrl+Home/Ctrl+End** jump to top/tail, an upward scroll pauses the tail-follow and reaching the bottom resumes it (gated behind any keyboard-owning overlay); a `/clear` or `/models` swap holds the alt buffer across sessions, so it no longer flickers (Step 4b-3). Mouse reporting captures click-drag, so the alt screen runs **its own selection** (ADR-0068 §e, Step 6): drag to select, release to copy over **OSC 52**; the highlight shows exactly what is copied, a brief **`✓ Copied` toast** above the footer confirms the copy was emitted (OSC 52 has no acknowledgement — see [accessibility.md](accessibility.md)), dragging at the viewport's top or bottom row auto-scrolls to extend it, a plain click clears it, `Esc` dismisses it while idle, and `[preferences].copy_on_select = false` keeps the highlight without touching the clipboard. Because the alt buffer also has no scrollback, three **copy-and-search hatches** (Step 5d, Step 6e) give the transcript back to the tools you already have: **`/scrollback`** dumps it into the terminal's native scrollback (scroll, search, select, copy — then press Enter to return), **`/edit`** opens it read-only in `$EDITOR` (edits are never read back), and **`/copy`** sends the whole unwrapped transcript to the system clipboard. The first two suspend the renderer and restore every terminal mode on exit; `/copy` suspends nothing. None is available before the first turn. The full-screen mode is inherently inaccessible to screen readers; [accessibility.md](accessibility.md) documents the trade-off + the inline-renderer escape hatch.
 
@@ -44,7 +51,7 @@ A session **binds one agent for its whole lifetime** — there is no mid-session
 
 A reseat is a **host-side** move — the engine is unchanged. It reconstructs the conversation and resumes a **new `AgentSession`** instance on the chosen model; the **session id and its `history.db` row continue unbroken** ([ADR-0059](../../decisions/0059-cli-mid-session-model-reseat.md)). Two different things are called "the transcript", and a reseat treats them differently:
 
-- the **engine-side** transcript is reconstructed and replayed into the new instance **text-only** — the new model sees the conversation's text, **not** prior tool calls or file contents. A one-line notice discloses this on every switch. (Full-fidelity tool-context is a Phase-3 persister + schema extension.)
+- the **model-facing** transcript is reconstructed from surviving persisted conversation text. Prior model-issued tool arguments/results, including file contents returned only through those tools, are excluded; content-free tool structure remains available for history/export/disclosure. User-injected `@` file content and `!` shell text remain user text, subject to the existing history boundaries and authored memory projection. A one-line notice discloses this on every switch. Carrying tool history into context remains deferred under [ADR-0095 §2](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) and [CR-70](../../roadmap/phases/phase-2.6.5-core-reliability-remediation.md), rather than waiting for a new persister/schema.
 - the **rendered (on-screen)** transcript **carries too** (2.6.C). The reseated view opens with the conversation you were having, and the switch **marker** — `⇄ model changed <old> → <new>` — lands *beneath* it, so the switch reads as an interruption of a conversation you can still see. This matters most on the **full-screen alt screen**, the TTY default ([ADR-0068](../../decisions/0068-full-screen-tui-renderer-ink7-harness.md) §e), where the viewport windows the store's in-memory transcript and the alt buffer has **no native scrollback** to fall back on: before 2.6.C the reseated view opened empty and the whole chat vanished from the screen. The **inline** renderer deliberately carries nothing — its lines were already printed by ink's `<Static>` and survive the swap in the terminal's own scrollback; re-seeding them would print the conversation **twice**. (`/clear` carries nothing on either renderer — a fresh start is its entire contract.)
 
 The **cumulative cost** carries forward from the session row. The **turn count** is *re-derived* from the surviving reconstructed transcript, so a reseat after a `/compact` or `/trim` — or after an errored turn, which persists no message — resumes at a **lower** count than the pre-switch session. The hard turn cap is measured against the reconstruction, not the session's lifetime total.
@@ -73,7 +80,7 @@ Each prompt you type is one user turn; the assistant turn that follows may inclu
 
 1. you type a message → it is appended as a `user` [`SessionMessage`](../contracts/agent-session-spec.md#session-messages);
 2. the `AgentRunner` streams the assistant turn (tokens, tool calls, tool results);
-3. the assistant + any tool messages are appended; the prompt returns for your next turn.
+3. the assistant's final **text** is appended — within-turn tool call/result pairs are not carried into later turns ([ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) §2); the prompt returns for your next turn.
 
 Messages are **append-only** and persisted per turn; the loop is the same code path a workflow `agent` node uses — the difference is the entry point and lifetime, not the execution.
 
@@ -90,8 +97,8 @@ A small, **alias-free**, curated set of slash commands drives the REPL itself (n
 | `/mode [name]` | Switch the chat **mode** — `ask` / `plan` / `accept-edits` / `auto` (**2.5.E**, below); bare `/mode` shows the current mode + explains each. `Shift+Tab` cycles them. Chat-only. |
 | `/thinking` | Show / hide the collapsible **reasoning ("thinking") panel** (**2.5.H**; also `Ctrl+T`). A pure UI-view toggle (no session/engine effect); the panel is only rendered while the model is actually streaming reasoning. Default collapsed. Chat-only. |
 | `/doctor` | Run a setup health check as a **notice** (**2.5.C S5**). Fast tier: OS keychain reachable · config valid · wired tool capabilities. `--deep` adds provider-key validation (a bounded, **redacted** live ping per configured key — the key never reaches the output) + the live session's MCP status (the bound agent's connected servers + any tools the manager dropped). The `--deep` MCP tier is **read-only** — it reports the already-connected session, never a fresh connect/spawn (a security-review decision). Available in **both** the chat and the bare Home (pre-chat diagnostics); the Home palette runs the fast tier, `--deep` is typed in a chat. |
-| `/compact` | **Model-summarise** the conversation so far to reclaim context — an LLM call ([ADR-0062](../../decisions/0062-context-compaction-and-cli-history-commands.md), **2.5.F**; see § Context compaction below). Reports the token deltas + spend + the summary as a **notice**. Effect `write` (spends tokens). Chat-only. |
-| `/trim [n]` | **Deterministically** drop older messages down to the last `n` (default `[chat].max_messages`), **no LLM call** (ADR-0062, 2.5.F). A bare `/trim` with no config bound prints an actionable notice; a bound larger than the history is a reported no-op. Chat-only. |
+| `/compact` | **Model-summarise** the conversation so far to reclaim context — an LLM call ([ADR-0062](../../decisions/0062-context-compaction-and-cli-history-commands.md), **2.5.F**; see § Context compaction below). Reports the token deltas + spend + the summary as a **notice**. Checks the bound agent's [memory policy](../contracts/agent-yaml-spec.md#conversational-memory) before showing progress; a policy refusal names why without starting a call. Effect `write` (spends tokens). Chat-only. |
+| `/trim [n]` | **Deterministically** drop older messages down to the last `n` (default `[chat].max_messages`), **no LLM call** (ADR-0062, 2.5.F); keep a user boundary even if that retains an extra message. Checks the [memory policy](../contracts/agent-yaml-spec.md#conversational-memory) before missing/invalid-bound notices. When permitted, a bare `/trim` with no config bound prints an actionable notice; a bound larger than the history is a reported no-op. Chat-only. |
 | `/models` | Open the live catalog **picker** ([ADR-0064](../../decisions/0064-live-model-catalog.md)) — **interactive-only**. In a **chat**, picking a *different* model **reseats** the live session onto it; re-picking the model you are already on only sets its effort tier (a per-turn override, **no reseat**). In the **bare Home** it writes the next session's defaults instead. Both paths — and what a reseat does and does not carry — are in § [Model reseat](#model-reseat-models) (**2.5.G**). Opening the picker changes nothing — the effect lands only on an explicit selection. Under `--json` / a plain non-TTY there is no overlay: nothing is reseated and an actionable hint is printed. |
 | `/effort [tier]` | Set the **reasoning-effort** tier — `off` / `low` / `medium` / `high` / `max` ([ADR-0066](../../decisions/0066-normalized-reasoning-effort-control.md)); bare `/effort` shows the current tier + the options. A **per-turn session override** on the live session — **no reseat** (unlike `/models`), and it does **not** survive one. Always available in a chat: on a model with no controllable reasoning tier the command says so and the tier is stored but **inert** (gated off at send) — it is the picker's effort sub-step and the footer indicator that are capability-gated, not this command. Chat-only. |
 | `/scrollback` | Dump the transcript into the terminal's **native scrollback** (to scroll, search, select, copy — Enter returns). One of the three copy-and-search **hatches** described under § [Entry](#entry) — the alt screen has no scrollback of its own. Not available before the first turn. Chat-only. |
@@ -118,7 +125,11 @@ The session's `ToolHost` is bound **full-capability** for its lifetime (fs read+
 
 A long conversation grows its transcript every turn until it approaches the model's context window. Three
 mechanisms bound it — all **append-only** (nothing is deleted; the full transcript always survives for
-`/export` and audit) and **resume/reseat-preserving**:
+`/export` and audit) and **resume/reseat-preserving**.
+
+The bound agent's [memory policy](../contracts/agent-yaml-spec.md#conversational-memory) controls
+request selection and permission for history operations. Its frozen value survives resume and
+model reseat. A policy refusal is shown before any progress indicator or `/trim` bound validation.
 
 - **`/compact`** — model-summarises the earlier conversation into a **session-level summary** and keeps the
   **last exchange verbatim**. An LLM call: it reports the
@@ -126,7 +137,8 @@ mechanisms bound it — all **append-only** (nothing is deleted; the full transc
   by the session's **own bound model** (no second binding — [ADR-0024](../../decisions/0024-agent-first-entry-point-agentsession.md)).
 - **Automatic compaction** — after a turn whose **real** input tokens exceed `[chat].compact_threshold`
   (default `0.8`) × the serving model's context window, the session auto-compacts **before the next turn**
-  (`[chat].auto_compact`, default on). Guarded so it never thrashes (skipped when compaction can't reduce
+  (permission follows the bound memory policy; `[chat].auto_compact` governs an omitted policy).
+  Guarded so it never thrashes (skipped when compaction can't reduce
   below the budget) and its cost is accounted + surfaced as an inline `⟳ Context auto-compacted …` notice —
   never a silent context swap. A model with no known window (a custom base-URL id) skips auto-compaction; a
   summarisation failure degrades to a deterministic `/trim`.
@@ -172,20 +184,26 @@ the working context — so a compacted session stays compacted across `chat-resu
 `COMPACTION_SYSTEM_PROMPT` in the engine — the conversation to summarise rides an untrusted user message, never
 the authored system prompt) MUST preserve: **open tasks and their state; decisions taken and why; concrete code
 identifiers / file paths / commands / values in play; and the user's stated preferences**. A summary that loses
-these fails the feature. Under `--json` each compaction rides the stream as a `session:compacting` (the moment
-START) then a terminal `session:compacted` / `session:trimmed` event — **except** a manual `/compact` that
-**fails**, which emits `session:compacting` with **no** terminal (the host clears the moment when `compact()`
-settles). A machine consumer must not assume every `session:compacting` is followed by a terminal.
+these fails the feature. Under `--json`, an admitted compaction opens `session:compacting` and ends with
+`session:compacted`, `session:compaction_failed`, or terminal session cancellation. First-admission
+budget refusal opens no moment: manual `/compact` reports the safe cap to its caller, while optional
+after-turn refusal emits `session:compaction_budget_refused`. Later refusal closes the existing
+moment with `budget_exceeded`, once. These events never create a second user-turn terminal.
 
-**The compaction moment.** The engine emits a `session:compacting` event at the start of every compaction
-(`/compact` or automatic). The interactive surface gates input and shows a **labeled** "⟳ Summarizing
-conversation… · Esc to cancel" spinner off it while the summariser runs (so a keystroke can never race the busy
-engine), and **`Esc` aborts it** (the session survives). The moment ends on the terminal `session:compacted` /
-`session:trimmed`; a manual `/compact` that fails clears it when the command settles (the busy-gated render never
-shows a stale label). A **context-fullness** indicator on the session footer (the LAST turn's input tokens ÷ the
-model's context window, e.g. `62% ctx`) makes an impending auto-compaction anticipated; it is omitted for a custom
-base-URL model whose window is unknown (the same models that skip auto-compaction) and until the first turn
-completes.
+**The compaction moment.** The interactive surface shows "⟳ Summarizing conversation… · Esc to
+cancel" after actual first admission. `Esc` aborts compaction and keeps the session alive; an
+admitted failure clears the indicator through its engine event. Plain progress/refusal notices go
+to stderr; JSON stdout remains schema-valid events. Manual unknown/mixed-window compaction first
+shows an acknowledged fixed warning that fit cannot be guaranteed. Each pass respects the soft
+input bound and every known candidate's actual output reservation/window. Automatic entry points
+never use a guessed window. The [engine contract](../contracts/agent-session-spec.md#measured-compaction-and-one-shot-recovery)
+owns measurement, four-pass atomic installation, one-shot recovery and idle/active budget outcomes.
+A budget refusal preserves history and recommends no automatic trim.
+
+The footer's fullness indicator remains last-turn input usage divided by the bound provider's
+authoritative window. It is observability, not the automatic trigger. The host clears its denominator
+for unknown/custom endpoints even when a model id matches the catalog, including resume and model
+reseat. No soft input bound is displayed as model capacity, and no fullness appears before a turn.
 
 ## Input ergonomics (2.5.D, [ADR-0061](../../decisions/0061-cli-input-layer-file-injection-and-shell-escape.md))
 
@@ -222,12 +240,12 @@ A **failed** turn is never a terminal (only `session:cancelled` ends a session),
 
 - `provider_rate_limit` (429) / `provider_unavailable` — Relavium already retried with backoff + fallback-chain failover; resend.
 - `provider_auth` — check the key or **unlock the OS keychain** if it locked mid-session, then resend.
-- **context-overflow** — surfaces as `validation` (a provider `bad_request`); a keyword heuristic on the (never-displayed) provider message distinguishes it from a shape error and suggests **`/compact` or `/trim`**. This is a *secondary* net — 2.5.F auto-compaction ([ADR-0062](../../decisions/0062-context-compaction-and-cli-history-commands.md)) pre-empts most overflows; it fires for a model with no known window or `auto_compact = false`.
+- **context overflow** — a classified `context_overflow` displays the fixed engine facts (attempted model/window and whether tools ran) with one policy-aware remedy in its summary, without a second static hint. The same remedy serves the legacy keyword heuristic on an unclassified/custom-endpoint `validation` message. Under [`memory`](../contracts/agent-yaml-spec.md#conversational-memory) `none`, it suggests a shorter message or larger model, never `/compact` or `/trim`; `window` permits `/trim` and a smaller `window_size` for a **new** session, never `/compact`; `summary` or omitted memory permits both history commands. If tools ran, it tells the user to check their effects before continuing because resending can repeat them.
 - `tool_failed` (incl. an **unreachable MCP server**) — the summary names the likely cause (a path / an unavailable target); fix it and resend (no blind retry — a side-effecting tool failure is fail-fast by design).
 - `tool_denied` — switch the `/mode` if that was intended; `tool_unavailable` — a host/config gap (the capability arm isn't wired for the session): rephrase to avoid the tool, or wire it and start a fresh session.
 - `budget_exceeded` / `turn_limit` / `content_filter` / `internal` — each renders its own actionable one-liner. (`cancelled` settles as `aborted` with no error, and `sandbox_error` / `run_timeout` are WorkflowEngine-only, so none is chat-reachable and none carries a hint.)
 
-The hint is **always a static host string** — the provider message is read only to pick the right hint (the context-overflow heuristic), **never echoed**, so no provider text or secret reaches the terminal. The hint renders on the interactive TUI (a yellow line under the summary) and the plain chat driver (`drivePlain`, under `[turn failed: <code>]`); a **one-shot `relavium agent run`** suppresses the hint (its session ends immediately after, so a session-continuity hint would be false), and `--json` stays the structured stream (the consumer branches on `error.code`).
+The remedy is **always host-authored** — the provider message is read only to pick the right hint (the context-overflow heuristic), **never echoed**, so no provider text or secret reaches the terminal. The classified overflow remedy renders once with the summary; other hints render on the interactive TUI (a yellow line under the summary) and the plain chat driver (`drivePlain`, under `[turn failed: <code>]`); a **one-shot `relavium agent run`** suppresses the hint (its session ends immediately after, so a session-continuity hint would be false), and `--json` stays the structured stream (the consumer branches on `error.code`).
 
 ## Tool availability
 
@@ -259,4 +277,4 @@ Provider keys are read from the **OS keychain** exactly as for `relavium run` �
 
 ## Export to workflow
 
-`/export` (interactive) and `relavium chat-export <sessionId>` drive the **one** export contract: the session's assistant turns become a linear chain of `agent` nodes and the full transcript is preserved as YAML metadata, for review before commit ([ADR-0026](../../decisions/0026-session-export-to-workflow.md)). The two differ only in their provenance side-effect: `relavium chat-export` additionally marks the session row `status: exported` and records the written path (a durable provenance mark surfaced by `chat-list`); the in-REPL `/export` writes the scaffold but does **not** mark the row, since a later turn's persist would clobber the marker. The mapping is owned by [agent-session-spec.md](../contracts/agent-session-spec.md#export-to-workflow); it **produces** the format owned by [../contracts/workflow-yaml-spec.md](../contracts/workflow-yaml-spec.md). Parallel / conditional / loop structure is not auto-inferred — the export is a **scaffold**.
+`/export` (interactive) and `relavium chat-export <sessionId>` drive the **one** export contract: the session's assistant turns become a linear chain of `agent` nodes and the persisted text and content-free structural tool history are preserved as YAML metadata, for review before commit ([ADR-0026](../../decisions/0026-session-export-to-workflow.md)). The two differ only in their provenance side-effect: `relavium chat-export` additionally marks the session row `status: exported` and records the written path (a durable provenance mark surfaced by `chat-list`); the in-REPL `/export` writes the scaffold but does **not** mark the row, since a later turn's persist would clobber the marker. The mapping is owned by [agent-session-spec.md](../contracts/agent-session-spec.md#export-to-workflow); it **produces** the format owned by [../contracts/workflow-yaml-spec.md](../contracts/workflow-yaml-spec.md). Parallel / conditional / loop structure is not auto-inferred — the export is a **scaffold**.

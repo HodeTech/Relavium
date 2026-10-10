@@ -2,9 +2,10 @@
 
 > Status: Living
 
-> Last updated: 2026-08-28 — the Phase-2.6 rewrite triaged every open item, the 2026-07-19 full-project
-> review added the deliberately-unscheduled block at the end, and Phase 2.6.5's `W1` and `W2` residual
-> sections were appended as those waves closed.
+> Last updated: 2026-09-18 — the Phase-2.6 rewrite triaged every open item, the 2026-07-19 full-project
+> review added the deliberately-unscheduled block at the end, Phase 2.6.5's `W1` and `W2` residual
+> sections were appended as those waves closed, and the `W7` document review added three deferrals, re-owned
+> the `memory` policy and the delegate fields, and moved `relavium budget resume` into `W7`.
 >
 > **Lifecycle states**, because this file mixes three: `- [ ]` = unscheduled and actionable ·
 > **Scheduled → 2.6.X / → 2.5.5.X** = owned by that workstream, still unchecked until the PR that lands it ·
@@ -217,10 +218,21 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 - [ ] **`read_media` session-scope population (D12 authz data, ADR-0044 §1)** — nothing writes
   `session`/`workspace` `media_references` rows (the only writer, `createMediaReferencePort`, writes `run`
   refs only), so `describe().allowedScopes` is always `[]` and every read denies. The input-transfer
-  scope-population at the node/session boundary is unimplemented. *(packages/core engine input-transfer + AgentSession; read_media D12 follow-up)*
-- [ ] **`ctx.mediaRead` / `ctx.requestingScope` not wired into the dispatch context** — the AgentRunner +
-  AgentSession build `ToolDispatchContext` without these, so `read_media` always throws
-  `ToolUnavailableError` in the engine path (fail-closed, no leak). *(packages/core/src/engine/{agent-runner,agent-session}.ts; read_media D12 follow-up)*
+  scope-population at the node/session boundary is unimplemented. **Acceptance when it lands (recorded 2026-09-18,
+  [ADR-0095](../decisions/0095-what-an-agent-session-remembers-across-turns.md) §1):** a session that ran
+  `read_media` resumes and exports with the attachment recorded on the TOOL row as structure and no `user` row
+  inside the turn — the synthesized media message is never persisted, or turn identity by structure breaks.
+  *(packages/core engine input-transfer + AgentSession; read_media D12 follow-up)*
+- [ ] **`ctx.mediaRead` / `ctx.requestingScope` — and `ctx.invokeAgent` — not wired into the dispatch context**
+  — the AgentRunner + AgentSession build `ToolDispatchContext` without them, so `read_media` and `invoke_agent`
+  would always throw `ToolUnavailableError` in the engine path (fail-closed, no leak). Since `CR-73`
+  (2026-09-06) neither tool is advertised while its delegate is absent, so nothing reaches that backstop.
+  **Ownership corrected 2026-09-18:** the phase-2.6.5 `CR-73` note said "adding that field is `W7`'s work", and
+  `W7`'s scope never included it. `ctx.mediaRead` belongs here, with the `CR-50` residual that argues wiring a
+  delegate with no producer is worse than its absence; `ctx.invokeAgent` belongs to
+  [2.6.N](phases/phase-2.6-conversational-authoring.md). **Trigger:** the first host that can actually supply
+  one — a media-reference producer for `read_media`, or 2.6.N's sub-agent delegate.
+  *(packages/core/src/engine/{agent-runner,agent-session}.ts; read_media D12 follow-up, `CR-73`, 2.6.N)*
 - [x] **`validateWorkflowWithCatalog` (D15) — wired by the CLI loader (✅ PR #52).** `run` and `gate` call it
   post-parse via `assertWorkflowCatalogValid` (the shared `drive.ts` helper) over the DB `model_catalog`, so an
   incapable / malformed-generative authored `output_modalities` fails fast at LOAD (exit 2) on a fresh run AND a
@@ -346,6 +358,132 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   throttles/queues subsequent egresses or only surfaces a one-time advisory event. Deferred until
   there is concrete surface demand or telemetry showing operators need an earlier signal.
   *(1.AC; ADR-0028; config-spec.md; workflow-yaml-spec.md)*
+
+## Phase 2.6.5 deferrals — `CR-93` and `CR-95` (long half), recorded 2026-09-06; `CR-70`, `CR-94` (remainder) and the in-turn overflow continuation, recorded 2026-09-14; the errored-or-aborted turn residual, the pre-upgrade free-page bytes and the estimator's calibration, recorded 2026-09-18
+
+> Written to satisfy [exit criterion 2](phases/phase-2.6.5-core-reliability-remediation.md): a deferral carries
+> its **severity**, its **trigger**, and — the part usually skipped — **the product claim it narrows**. The decisions are recorded in the phase register or, for the in-turn continuation, in ADR-0096 §5; only the WORK is deferred.
+>
+> **A third item, `CR-94`, was not deferred here, and is now decided (2026-09-13).** This note once said no
+> maintainer call had been made. One has since been made, in
+> [ADR-0097](../decisions/0097-a-budget-approval-is-an-allowance-not-an-exemption.md): the minimum correct allowance
+> is built in `W7`, and only the lease's model binding and expiry are deferred. That deferral is recorded below,
+> together with the other deferrals the `W7` ADRs made.
+
+- [ ] **Carrying tool history into the model's context (`CR-70`).** *High (product).* **Decided and deferred on
+      2026-09-13** by the maintainer, in
+      [ADR-0095](../decisions/0095-what-an-agent-session-remembers-across-turns.md) §2. `W7` implements a session that persists the *structure* of its tool history (ADR-0095 §1). It carries no prior turn's tool rounds into the next request, so a coding agent re-reads a file it read the turn before.
+      - **The claim it narrows.** [agent-session-spec.md](../reference/contracts/agent-session-spec.md) had implied
+        that the transcript carries tool messages across turns. It now says they are not carried.
+      - **Trigger.** [ADR-0096](../decisions/0096-a-request-is-measured-before-it-is-sent.md)'s measurement and
+        recovery have shipped and been observed in a release, and a surface needs carrying. The coding-assistant
+        surface is the named candidate.
+      - **Constraints the future design inherits** (ADR-0095 §2): in-process only; never across a reseat; a pure
+        request projection with a per-turn byte ceiling; no synthesized `read_media` message; engine notes behind
+        ADR-0081's role boundary; ids unique per session; validity proven by the live conformance suite; a
+        user-scoped `[preferences]` toggle.
+      *(high · packages/core/src/engine/agent-session.ts, turn-messages.ts; `CR-70`, ADR-0095)*
+
+- [ ] **Binding a budget allowance to its model, and giving it an expiry (`CR-94`, remainder).** *Medium.*
+      [ADR-0097](../decisions/0097-a-budget-approval-is-an-allowance-not-an-exemption.md) builds the minimum
+      correct allowance in `W7`: dispatch-owned, shown, and durable. The lease's two remaining properties are
+      deferred.
+      - **The claim it narrows.** An approved amount is quoted at one catalog price. **Restated 2026-09-18:** the
+        amount is frozen and never recomputed, so if the model's price rises between the quote and the re-run, the
+        approved step's first call can exceed it and the step **fails closed** — an approval that kills the step it
+        was meant to authorise. That is the failure mode, stated plainly rather than as "is honoured even if the
+        price changes".
+      - **Trigger.** The first surface on which an approval can be exercised after the quoted model or its price has
+        changed — for example an approval queue that outlives a catalog refresh. **`W7` builds the first such
+        surface** (`relavium budget resume`, moved here from 2.6.K), and mitigates it rather than inheriting it: the
+        command REFUSES a quote whose price no longer matches, telling the user to reject and re-run. Binding the
+        allowance to the model it was quoted for, and expiring it, stay deferred behind that refusal.
+      *(medium · packages/core/src/engine/budget-governor.ts; `CR-94`, ADR-0097 §3)*
+
+- [ ] **An errored or aborted turn persists nothing, including one whose tools already ran.** *Medium.* Recorded
+      2026-09-18, because [ADR-0095](../decisions/0095-what-an-agent-session-remembers-across-turns.md)'s Negative
+      section calls it "recorded as a residual" and no record existed. The engine rolls the user message back and
+      the persister writes no row, so a turn that dispatched a tool and then failed leaves no transcript trace at
+      all — only its effect row, which ADR-0098 discloses on the next resume.
+      - **The claim it narrows.** [agent-session-spec.md](../reference/contracts/agent-session-spec.md)'s durable
+        transcript is "completed exchanges only"; under `W7` it carries the STRUCTURE of every completed turn, and
+        still nothing of a turn that failed or was aborted.
+      - **Trigger.** The first surface that needs to show, or resume from, what a failed turn did — a coding
+        assistant replaying a half-finished edit, or an audit view over a session's tool use.
+      *(medium · apps/cli/src/chat/persister.ts, packages/core/src/engine/agent-session.ts; `CR-71`, ADR-0095)*
+
+- [ ] **Two at-rest residuals `secure_delete` does not cover: a blocked WAL checkpoint, and pages freed before the
+      upgrade.** *Low.* Recorded 2026-09-18 with the `secure_delete` decision, and sharpened the same day after a
+      maintainer probe on this tree found a planted token absent from `history.db` and present in `history.db-wal`.
+      `W7` opens the connection with `PRAGMA secure_delete = ON` and checkpoints the WAL with `TRUNCATE` after the
+      legacy clear and after each session-scope sweep, which is what makes the guarantee true — in WAL mode the
+      zeroing write is a new frame while the old page image waits in the `-wal` file for a checkpoint.
+      - **Residual 1: a checkpoint that cannot run.** A concurrent reader (another `relavium` process holding the
+        database open) makes `wal_checkpoint(TRUNCATE)` return a busy result, and old bytes can remain in the
+        main database and WAL until the next successful checkpoint. Logical clearing/deletion still commits;
+        physical erasure is deferred, not claimed complete. Every later open and session sweep retries the
+        checkpoint, including an empty sweep.
+      - **Residual 2: pages freed before the upgrade.** `secure_delete` is not retroactive, and `chat-resume` has
+        been sweeping committed session rows — which held `result_json` — since long before this change. Only a
+        `VACUUM` reclaims those pages, which decision 15 did not take: it needs an exclusive lock other processes
+        may contend for.
+      - **The claim it narrows.** [ADR-0098](../decisions/0098-a-session-effect-row-holds-no-result-and-never-replays.md)'s
+        "no tool result at rest" and [ADR-0050](../decisions/0050-cli-history-db-at-rest-posture.md)'s scoped note
+        hold **after a successful checkpoint**, for bytes freed from the upgrade onward — not for a database's
+        whole history, and not while a checkpoint is blocked.
+      - **Trigger.** A threat model where the file itself is the adversary's prize — a shared or backed-up
+        `history.db`, or a move off the single-user local posture ADR-0050 assumes.
+      *(low · packages/db/src/client.ts, apps/cli/src/db/open.ts, apps/cli/src/engine/effect-retention.ts;
+      ADR-0098, ADR-0050)*
+
+- [ ] **The token estimate is not calibrated against real usage.** *Low.* Decided 2026-09-18: `W7` ships the
+      heuristic alone. [ADR-0096](../decisions/0096-a-request-is-measured-before-it-is-sent.md) §2 invariant 4
+      binds any calibration that is added later — same-shape requests only, gross input including cached tokens,
+      reset on a model or provider change — and nothing is built now.
+      - **The claim it narrows.** None that ships: ADR-0096 §1 already states that the estimate is a heuristic and
+        does not bound the real token count. What it costs is precision — a cache-heavy or tool-heavy session can
+        compact slightly earlier or later than a calibrated estimate would.
+      - **Trigger.** Measured evidence that the heuristic's error is causing needless compaction or missed
+        overflows, which the classified `context_overflow` kind makes observable for the first time.
+      *(low · packages/llm/src/adapters/shared.ts, packages/core/src/engine/agent-session.ts; ADR-0096 §2)*
+
+- [ ] **Recovering a context overflow that arrives after a tool round (the in-turn continuation).** *High.*
+      [ADR-0096](../decisions/0096-a-request-is-measured-before-it-is-sent.md) §5 recovers an overflow only before
+      any tool round runs, because re-running the turn would fire its tools again. An overflow at round one or later
+      fails the turn, and says that tools had already run.
+      - **The claim it narrows.** Overflow recovery covers only a turn that has not yet dispatched a tool.
+      - **Trigger.** The first user whose tool-heavy turn dies at round one or later.
+      - **Shape.** Compact the prior history, keep this turn's tool pairs, and re-issue only the failed round's call.
+        That is the same durable-continuation family as `CR-95`'s long half, and it should be designed with it.
+      *(high · packages/core/src/engine/agent-session.ts, agent-turn.ts; ADR-0096 §5)*
+
+- [ ] **Process-global catalog and parameter-learning state is not tenant-safe (`CR-93`).** *Medium today,
+      High for cloud.* The model catalog and the learned-parameter state live in process-global mutable
+      structures. For one local user that is correct and cheap. For a multi-tenant process it means one
+      tenant's learning steers another tenant's requests, and one tenant's catalog refresh is visible to all.
+      **The claim it narrows:** nothing in a shipped Phase-1/2.6 document — the surfaces that exist today are
+      single-user by construction ([ADR-0008](../decisions/0008-local-first-phase-1-cloud-phase-2.md), and
+      [ADR-0050](../decisions/0050-cli-history-db-at-rest-posture.md) for the CLI's single-user at-rest posture), so no current
+      guarantee is wider than the code. What it narrows is a FUTURE claim: the cloud and managed execution
+      modes ([ADR-0012](../decisions/0012-managed-inference-dual-mode.md)–[ADR-0015](../decisions/0015-managed-mode-data-handling-and-compliance.md))
+      cannot be described as tenant-isolated while this stands. **Trigger:** the first multi-tenant surface —
+      `apps/api`, or any managed-mode gateway that serves more than one account from one process. It must be
+      scoped per run/session/tenant BEFORE that ships, not after.
+      *(medium · packages/llm/src/catalog/, packages/llm/src/model-catalog.ts; `CR-93`)*
+
+- [ ] **A mid-tool-loop budget pause replays the whole loop (`CR-95`, long half).** *High.* The
+      **short-term half is closed and shipped** ([ADR-0080](../decisions/0080-durable-effect-journal-and-the-tiered-effect-contract.md)
+      §10, 2026-08-18): `agent-turn.ts`'s `turnCommitted = toolTurn > 0` guard refuses a `BudgetPauseError`
+      once the turn has dispatched tools, so the replay cannot happen. What is deferred is making the pause
+      WORK: checkpointing the continuation — provider messages, tool call/result pairs, round index — so an
+      approved mid-loop pause resumes from where it stopped instead of re-running paid provider calls and
+      re-performing tool mutations. **The claim it narrows:** `pause_for_approval` in
+      [workflow-yaml-spec.md](../reference/contracts/workflow-yaml-spec.md) reads as a general "suspend and
+      continue" for any node; for a tool-using agent turn it is a **refusal**, not a suspension, and the
+      refusal is disruptive by design. **Trigger:** any surface that pauses a tool-using turn on budget and
+      expects it to continue — a desktop approval prompt mid-turn, or a cloud run that pauses for a quota
+      top-up. Until then the fail-closed refusal is the honest answer.
+      *(high · packages/core/src/engine/agent-turn.ts; `CR-95`, ADR-0080 §10)*
 
 ## Phase 2.6.5 `W5` residuals — `CR-55` ([ADR-0089](../decisions/0089-media-correctness-four-boundaries.md) §4, 2026-09-02)
 
@@ -509,8 +647,9 @@ here so the residue sits on a backlog rather than only inside an ADR's Negative 
 - [ ] **The scan is silent on more spellings than the documents say.** Every home describes the blind spot
   as "a computed key, an aliased binding, or a value flowing through a variable"; in fact the scan also
   abandons on any `/` it cannot classify as a comment (so any expression containing DIVISION is unscanned),
-  on a nested template literal, on an HTML-like comment, and on any `run` token not written as a member
-  access. Each is a deliberate bail toward silence — the alternative was a false refusal — but "computed or
+  on a nested template literal, on an HTML-like comment, on any `run` token not written as a member access,
+  and on any BACKSLASH in code position (an identifier escape — added 2026-09-04, and the list growing again
+  is itself the argument for the rewording below). Each is a deliberate bail toward silence — the alternative was a false refusal — but "computed or
   aliased" understates it. Either widen the coverage or make every home say *"a read the scan cannot
   confidently resolve"*. *(S · docs + packages/core/src/expression/literal-output-reads.ts)*
 - [ ] **A read of a node that is not in the workflow is reported by nothing, ever.** Not a hand-off to the
@@ -674,15 +813,27 @@ severity, the trigger and the product claim each narrows, per exit criterion 2.
   is true today for a stream nobody iterates. **Trigger:** any consumer that attaches after `capacity` events,
   which on the session path is every consumer. The fix is
   [ADR-0087](../decisions/0087-consumed-streams-size-bounds-and-run-retention.md) §1 — a handle declares
-  whether its stream is consumed — and that ADR is **Proposed, not Accepted**: it merged unapproved.
+  whether its stream is consumed. That ADR is **Accepted as of 2026-09-04**, with §1 recorded and still
+  **unimplemented**: no consumption mode exists anywhere in the tree. Its Correction 1 also names what §1 got
+  wrong and must be settled before it can be built: the two factories §1 names are not symmetric.
+  `createSessionHandle` is exported and `session-host.ts` calls it directly, so the session half is
+  implementable as written; `createRunHandle` is internal and only `WorkflowEngine.start()` /
+  `resumeFromCheckpoint()` produce a `RunHandle`, so the run half needs the mode plumbed onto an engine entry
+  point first. A `subscribe-only` handle must also not present a silently-empty iterable.
   *(packages/core/src/engine/event-stream.ts, run-handle.ts, session-handle.ts)*
 
-- [ ] **Media is measured as a handle but RETAINED as base64.** *Medium.* `state.output`, the completed state
-  and every downstream template hold the raw bytes while the durable event holds the handle. **The claim it
-  narrows:** [ADR-0042](../decisions/0042-engine-media-storage-substrate-mediastore-deinline-retention.md)'s
-  "the engine references media by handle", and CR-32's own memory bound — a 1 MiB image passes a 256 KiB
-  node-output limit and is then held in full. **Trigger:** any media-producing node. ADR-0087 §3 records the
-  fix (de-inline once, at the node boundary). *(packages/core/src/engine/size-bounds.ts, engine.ts)*
+- [x] **Media is measured as a handle but RETAINED as base64.** *Medium — CLOSED 2026-09-04, fixed in `W5`.*
+  `state.output`, the completed state and every downstream template held the raw bytes while the durable event
+  held the handle. **The claim it narrowed:**
+  [ADR-0042](../decisions/0042-engine-media-storage-substrate-mediastore-deinline-retention.md)'s "the engine
+  references media by handle", and CR-32's own memory bound — a 1 MiB image passed a 256 KiB node-output limit
+  and was then held in full. **Closed by `CR-54`**, not by a `W3` follow-up: `#pinMediaOutput` runs at the
+  dispatch boundary, `#settleCompleted` writes the pinned value into `#states`, the async media-job path
+  re-enters through the same pin, and `deInlineMedia` rewrites a `base64` source into a handle exactly as it
+  does a `url` — so ADR-0087 §3 is implemented. It stayed open here for two waves because it was fixed under a
+  different item number, and a stale comment in `size-bounds.ts` ("`state.output` keeps the raw form") kept
+  saying otherwise; a 2026-09-04 review read that comment and concluded §3 was unimplemented, which is the cost
+  of a comment outliving its code. *(packages/core/src/engine/engine.ts, size-bounds.ts)*
 
 - [ ] **`whenDrained()` does not atomically reserve the slot it grants.** *Medium.* Several producers each get
   a resolved promise for the same free slot; measured peak `capacity + N − 1` (11 against a ceiling of 4 with
@@ -691,7 +842,10 @@ severity, the trigger and the product claim each narrows, per exit criterion 2.
   was prototyped and measured to REINTRODUCE the freeze — `agent-turn.ts` awaits readiness before `foldChunk`,
   and `tool_call_*`, `reasoning_start/end`, `stop`, `media_*` and `tool_result` emit nothing, so every such
   chunk leaks a permit. The correct shape moves the await to the emit site, which revises CR-30's producer-await
-  and therefore wants an ADR. *(packages/core/src/engine/event-stream.ts)*
+  and therefore wants an ADR. **ADR-0087 is Accepted with this explicitly OUT of scope** (its Correction 2), so
+  its §1 "bounded per consumer" must not be read as a guarantee that holds today — the un-parked fast path of
+  `whenDrained()` grants a slot it does not reserve, while `#wakeDrainWaiters` reserves correctly for producers
+  already parked. *(packages/core/src/engine/event-stream.ts)*
 
 - [ ] **Dispatch headroom is computed but not reserved.** *Medium.* Retry timers can dispatch from the same
   headroom during a batch's durable `node:started` awaits, so a pre-selected batch still starts.
@@ -705,9 +859,13 @@ severity, the trigger and the product claim each narrows, per exit criterion 2.
   form the spec documents. *(packages/core/src/limits.ts)*
 
 - [ ] **A human-gate payload skips the CR-32 bounds.** *Medium.* `measureNodeOutput` is called and its breach
-  discarded, and no aggregate state check runs. **The claim it narrows:** the 256 KiB per-node and 4 MiB
+  discarded, and no aggregate state check runs there. **The claim it narrows:** the 256 KiB per-node and 4 MiB
   accumulated-state contracts. **Trigger:** a gate whose decision carries a payload — the one node output a
-  user supplies directly. *(packages/core/src/engine/engine.ts)*
+  user supplies directly. **Narrowed 2026-09-04:** the discard is deliberate and now documented (ADR-0087
+  Correction 5 + the canonical spec) — the gate is already resolved and its vertex already marked completed, so
+  refusing there would strand a resumed run with no terminal. What remains open is the residual that leaves: the
+  run-level total catches an abusive payload only *at the next node that adds to it*, so a gate that is the
+  run's LAST node is never checked at all. *(packages/core/src/engine/engine.ts)*
 
 - [ ] **`JSON.stringify` is used as a size measure and validates nothing.** *Medium.* Nested functions and
   symbols vanish, `Map`/`Set` become `{}`, array holes become `null`, and a custom `toJSON` changes the value —
@@ -719,6 +877,21 @@ severity, the trigger and the product claim each narrows, per exit criterion 2.
   proves an oversized non-terminal event is refused on the real `#emitDurable` path. **The claim it narrows:**
   the phase's own acceptance rule that a test fails when its production change is reverted.
   *(packages/core/src/engine/engine.test.ts)*
+
+- [ ] **A terminal event has no size bound in either direction.** *Low.* `measureDraft` returns before it
+  measures, so the "measured and never refused" wording in ADR-0087 §2, `size-bounds.ts` and the workflow spec
+  described an intention no code held; all three now say **exempt** (ADR-0087 Correction 4). The decision not to
+  refuse a terminal is correct and unchanged — what is open is that its `outputs`, `partialOutputs` and
+  `error.message` have no transitive cap of their own, so the ADR's "events are bounded by size" is narrower
+  than its title. **The claim it narrows:** that title. **Trigger:** a run whose final outputs are large.
+  Adding a cap would be a NEW bound and wants its own decision. *(packages/core/src/engine/size-bounds.ts)*
+
+- [ ] **`retainedSettledRuns` lives in `ADMISSION_CEILINGS`, which is the wrong home.** *Low.* Nothing about it
+  is checked at admission — it is a runtime retention limit (ADR-0087 §4), grouped with ceilings that refuse a
+  file before it runs. **The claim it narrows:** none directly; it misfiles a constant and quietly enrols it in
+  ADR-0086 §9.3's (also unimplemented) host-override promise. **Trigger:** a reader or a host looking for it.
+  Not moved here because removing a member from an exported const is a public-API change.
+  *(packages/core/src/limits.ts)*
 
 - [ ] **ADR-0086 §9.3's host override does not exist.** *Medium.* The ADR promises ceilings "resolve from named
   constants that a host may override" so an operator "does not fork the engine". There is no such seam.
@@ -1090,6 +1263,21 @@ so the remaining work is the projection and the inline decision.
 
 ## Cross-turn tool-call memory as a default-off toggle (2.6.C spin-off, 2026-07-12)
 
+> **Status, 2026-09-14: decided, and this entry is superseded by three records.**
+>
+> - **The three prerequisite defects** it names are decided in
+>   [ADR-0096](../decisions/0096-a-request-is-measured-before-it-is-sent.md) and scheduled into `W7`, tracked
+>   since 2026-09-18 as register item `CR-98`:
+>   - no measurement of a request before it is sent;
+>   - an overflow that kills the turn;
+>   - a budget estimate that ignores input.
+> - **Carrying itself is deferred** in
+>   [ADR-0095](../decisions/0095-what-an-agent-session-remembers-across-turns.md) §2. Its deferral record is in the
+>   Phase 2.6.5 deferrals above. The default-off toggle idea survives there as a user-scoped `[preferences]` key,
+>   not a `[chat]` key.
+> - **Some analysis below is out of date.** It was written before `W1`–`W6`, and its line numbers no longer match.
+>   It is kept as the record of the original analysis.
+
 > Raised while investigating a "`/models` reseat forgets tool calls" report (2.6.C / PR #75). The investigation's
 > findings are restated in full below — every claim carries its own `file:line`, so this entry stands alone.
 > Recorded here — deliberately **not actioned** — pending a maintainer call on sequencing and risk.
@@ -1204,7 +1392,10 @@ model/provider/cost. If it's deliberately left out, that should be a stated deci
 > cost-event persistence (below) — those are workstreams, tracked in
 > [phase-1-engine-and-llm.md](phases/phase-1-engine-and-llm.md), not deferred items.
 
-- [ ] **Faithful cross-turn transcript (tool + reasoning history) → 1.X/1.Z.** 1.V appends only the final
+- [x] **Structural transcript/export implemented in W7; carrying stays separately deferred (`CR-70`).** **Superseded 2026-09-14:** persistence and
+  export are decided by [ADR-0095](../decisions/0095-what-an-agent-session-remembers-across-turns.md) §1 and §3
+  (`CR-71`, implemented in `W7`), and carrying is deferred under the `CR-70` record in the Phase 2.6.5 deferrals section.
+  Reasoning is never carried (ADR-0030). The original note follows. 1.V appends only the final
   assistant **text** across turns: the turn core keeps the within-turn `tool_use`/`tool_result` pairs internal
   (so the transcript carries no orphaned `tool_use` and stays protocol-valid), and reasoning is dropped (a
   `signature` is a within-turn same-provider replay token — ADR-0030/0039 — that must not span turns). Carrying
@@ -1212,8 +1403,9 @@ model/provider/cost. If it's deliberately left out, that should be a stated deci
   (`runAgentTurn` copies its input and returns only final content) — revisit when 1.X persistence / 1.Z export
   needs faithful turns, once `agent-turn.ts` is settled. *(medium · packages/core/src/engine/agent-session.ts + agent-turn.ts; 1.X/1.Z)*
 - [ ] **Session budget pause/resume (1.V × 1.AC).** `AgentSession` threads the ADR-0028 `preEgress` hook as a
-  pass-through but does **not** handle a `BudgetPauseError`: a non-`AgentTurnError` throw rolls the user message
-  back and re-raises (a session has no pause/resume gate machinery in 1.V). The run path maps a budget pause to
+  pass-through but has no pause/resume gate machinery: a `BudgetPauseError` settles the turn LOUDLY as
+  `budget_exceeded` (`#settleTurnError`) and is not re-raised — corrected 2026-09-18; the earlier wording here
+  described a re-raise that no longer happens. The run path maps a budget pause to
   a `paused` node outcome via the human-gate seam; a budgeted session needs the analogous suspend/resume
   lifecycle. Wire it when sessions gain a budget (surface phases). **Scheduled → 2.6.K** (with the EA4-ride
   sibling below). *(medium · packages/core/src/engine/agent-session.ts; ADR-0028)*
@@ -1308,16 +1500,17 @@ model/provider/cost. If it's deliberately left out, that should be a stated deci
   abort + approval; the ADR-0028 session budget `pause_for_approval` can now ride the same machine (today a chat
   cost-cap trip settles the turn loudly as `budget_exceeded` — the REPL is the approval gate). See also the 1.V
   session-budget follow-up above. **Scheduled → 2.6.K.** *(medium · apps/cli/src/chat + agent-session.ts)*
-- [ ] **`relavium budget resume` CLI command (2.5-close Step 15 / Batch E — DEFERRED to a focused follow-up).** The
-  engine ALREADY supports resuming a budget-paused run (`engine.resume(runId, budgetGateId, decision)`,
-  budget-governor.ts / checkpoint.ts `isBudgetGate`), and `relavium gate` deliberately EXCLUDES budget gates
-  (`selectGate` filters `!isBudgetGate`), naming this the "`budget resume` surface." The remaining work is the
-  documented CLI command — a new manifest entry + dispatch handler + a command core that ~90% overlaps `gate.ts`'s
-  resume machinery (so the clean form extracts a shared resume core rather than duplicating). Low, dependency-free.
-  **Why deferred (maintainer call, 2026-07-08):** it modifies the security-sensitive `gate.ts` cross-process resume
-  path and is coupled to the secret-re-provide follow-up below (both refactor that path), so both are best landed
-  together with fresh context rather than at the tail of the 2.5-close session. **Scheduled → 2.6.K** (that
-  focused follow-up). *(low · apps/cli/src/commands/{gate,budget}.ts + manifest.ts + dispatch.ts; ADR-0028)*
+- [x] **`relavium budget resume` CLI command — accepted in W7 Step 11, 2026-10-04.**
+  The maintainer deferred this security-sensitive cross-process surface on 2026-07-08 and moved it to
+  W7 on 2026-09-18. It now shares the resume core in `commands/gate.ts`; the manifest and dispatch expose
+  `relavium budget resume <runId> [--gate <gateId>] --approve-amount <microcents> | --abort` without a
+  second command core. The amount must exactly match the recorded frozen allowance, and engine admission
+  remains authoritative. See the [canonical command](../reference/cli/commands.md#relavium-budget-resume),
+  [ADR-0097](../decisions/0097-a-budget-approval-is-an-allowance-not-an-exemption.md) and the
+  [W7 execution plan](phases/phase-2.6.5-core-reliability-remediation.md#w7-pre-implementation-review-and-proposed-execution-plan--2026-10-02).
+  [Step 11 round 3](../reviews/2026-10-04T01-17-23-w7-step-11-round-3-review.md) accepts the complete
+  path after the two corrective rounds; this closes the moved command follow-up, not the W7 register.
+  *(low · apps/cli/src/commands/gate.ts + manifest.ts + dispatch.ts; ADR-0028, ADR-0097)*
 - [ ] **`project`-tier `extraRoots` allowlist (carried from 2.5.A).** The `project` fs tier behaves as
   workspace-only until the path-allowlist lands (it can only NARROW the jail, never open a hole).
   **Scheduled → 2.6.M** (the `[chat].extra_roots` config key is the missing source). *(low · apps/cli/src/engine/tool-host/assemble.ts)*
@@ -1399,28 +1592,22 @@ model/provider/cost. If it's deliberately left out, that should be a stated deci
   media-egress work, ~2.S), a media-only park would be reported as "gate-paused" with no gate; at that point
   decide whether exit 3 (and the rendered message) should distinguish a gate park from a media park.
   **Scheduled → 2.6.K.** *(low · apps/cli/src/commands/run.ts; media host-wiring / 2.S)*
-- [ ] **`relavium budget resume <runId> [--approve | --abort]` is documented but has no numbered
-  workstream.** [commands.md](../reference/cli/commands.md) (canonical) specifies it as the non-interactive
-  operator path for a run suspended at a budget cap (`budget:paused`, `on_exceed: pause_for_approval` —
-  [ADR-0028](../decisions/0028-workflow-resource-governance.md)), but no Phase-2 workstream implements it. It
-  reuses **2.G's** cross-process resume substrate (a budget pause resolves through the same checkpoint reload
-  + resume path as a human gate, behind a budget-specific command + flags), so it is a small follow-up once
-  2.G lands — candidate home: alongside 2.I, or its own short workstream. **Deliberately out of 2.G** (a
-  distinct ADR-0028 surface, not in 2.G's acceptance). **Scheduled → 2.6.K** (single tracking point: the
-  Batch-E entry above). *(low · apps/cli/src/commands/; ADR-0028)*
-- [ ] **Re-provide `secret`-typed inputs on cross-process resume.** The durable `run:started.inputs` are
-  **masked** (a `secret` input is persisted as `{ secret: true, ref }`, never plaintext — ADR-0006/0036), so a
-  fresh-process `relavium gate` resume cannot restore the real value. 2.G **fails closed (exit 2)** when a
-  restored input is a `MaskedSecret` (`assertNoMaskedSecretInputs`, gate.ts) rather than resume with a broken
-  value. The proper fix lets the operator re-supply the secret on resume (e.g. `relavium gate <runId> --secret
-  token=…` read from stdin like `provider set-key`, or a keychain/env re-resolution keyed by the input
-  `ref`) so a secret-bearing run becomes resumable. Until then the fail-closed + the
-  [commands.md](../reference/cli/commands.md) note stand. **2.5-close Step 15 / Batch E status (maintainer call,
-  2026-07-08):** selected IN by D8 but DEFERRED to a focused follow-up — this RELAXES a fail-closed security
-  guarantee (allow-with-re-provisioning), demands the stdin-not-argv secret discipline (`provider set-key` pattern)
-  + a mandatory security-review pass, and is coupled to the `budget resume` command above (both refactor the
-  `gate.ts` resume path). Best landed together with fresh context, not at the tail of the 2.5-close session.
-  **Scheduled → 2.6.K** (that focused follow-up). *(medium · apps/cli/src/commands/gate.ts; ADR-0006)*
+- **`relavium budget resume` workstream — single tracking point.** The former unnumbered Phase-2
+  follow-up was moved to W7 on 2026-09-18 and is implemented under Step 11. Its acceptance state is tracked
+  only in the Batch-E entry above; the [canonical command](../reference/cli/commands.md#relavium-budget-resume)
+  describes the actual flags and frozen-allowance boundary. *(ADR-0028, ADR-0097)*
+- [x] **Re-provide `secret`-typed inputs on cross-process resume — shared path accepted, 2026-10-04.**
+  The 2026-07-08 deferral required stdin rather than argv and an independent security review. The ordinary
+  human-gate path already implements ADR-0083 §6: `--secret-stdin` reads `name=value` lines, requires every
+  masked slot and refuses unknown, missing or empty values without echoing secret values. Without the flag,
+  a secret-bearing resume still fails closed with exit `2`. W7 Step 11 reuses that implementation for budget
+  resume and verifies secret admission alongside frozen amount, ownership and MCP consent. Drained stdin
+  disables a later interactive gate prompt. See the [canonical stdin contract](../reference/cli/commands.md#relavium-gate)
+  and [ADR-0083](../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md).
+  [Step 11 round 3](../reviews/2026-10-04T01-17-23-w7-step-11-round-3-review.md) accepts the complete shared
+  path. The inherited secret-stdin interval before the connect/build signal guard remains qualified
+  in the canonical command; this does not introduce a whole-stdin signal-handling promise.
+  *(medium · apps/cli/src/commands/gate.ts; ADR-0006, ADR-0083)*
 
 ### 2.I read-command follow-ups (PR #48 multi-agent review, 2026-06-24)
 
@@ -1927,18 +2114,13 @@ future test cannot silently re-acquire it.
   (`packages/mcp`, `packages/core`, and the trigger schema all exist today) and simply has no home.
   *(medium · packages/mcp, packages/core, docs/reference/shared-core/mcp-integration.md; #141)*
 
-- [ ] **Agent memory policy (`memory: none|window|summary`) has no owner.**
-  [agent-yaml-spec.md](../reference/contracts/agent-yaml-spec.md) documents `memory.type`
-  (`none`/`window`/`summary`) as operational behavior, and `packages/shared/src/agent.ts`'s `MemorySchema`
-  validates it on `AgentSchema.memory`, so an authored `.agent.yaml` with
-  `memory: { type: window, window_size: 10 }` parses cleanly — but nothing in
-  `packages/core/src/engine` or `apps/cli/src` consumes the field anywhere; the unrelated
-  `[chat].max_messages` / ADR-0062 auto-compaction is a separate, session-level mechanism. A user configures
-  a windowing/summary policy and silently gets the full unbounded transcript every turn, with no warning. The
-  doc fix (mark the field reserved/inert, the `node-types.md` `loop`/`best_of_n` pattern) is scheduled →
-  2.5.5.F; wiring `agent.memory` into the turn core is unowned and needs **no** later-phase substrate.
-  *(medium · packages/core/src/engine, packages/shared/src/agent.ts,
-  docs/reference/contracts/agent-yaml-spec.md; #142)*
+- [x] **Agent memory policy (`memory: none|window|summary`) implemented in W7 (`CR-72`).**
+  The shared projection consumes frozen authored memory before folding, including empty completed turns
+  and restored summary exclusion. The same policy controls after-turn, pre-send and overflow recovery.
+  Workflow nodes have no cross-turn session memory. See the
+  [canonical memory contract](../reference/contracts/agent-session-spec.md#request-projection-and-history-operations)
+  and [W7 closing review](phases/phase-2.6.5-core-reliability-remediation.md#w7-closing-register--2026-10-10).
+  This closes the old ownership/implementation follow-up; tool-history carrying remains CR-70.
 
 ### Declined findings (closed — recorded for the record, never actionable)
 

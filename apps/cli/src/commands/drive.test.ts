@@ -295,15 +295,13 @@ describe('outcomeToExitCode — an unresolved external effect (ADR-0080 §2b, ef
     );
   });
 
-  it('does NOT mask an uncertain disposition — the record’s doubt outranks the effect’s', () => {
-    // Two independent uncertainties, and when both hold the one about the RECORD wins: a caller that
-    // cannot trust the terminal reached the log cannot act on what that terminal says the reason was.
-    // Reported as 5 (a terminal was produced) or 6 (fenced, none was) exactly as before.
+  it('effect attention outranks terminal uncertainty after ADR-0103', () => {
+    // An unresolved external effect forbids automatic retry even when the terminal record is uncertain.
     expect(outcomeToExitCode('failed', 'uncertain', 'effect_needs_attention')).toBe(
-      EXIT_CODES.durabilityUncertain,
+      EXIT_CODES.effectNeedsAttention,
     );
     expect(outcomeToExitCode(undefined, 'uncertain', 'effect_needs_attention')).toBe(
-      EXIT_CODES.runOwnedElsewhere,
+      EXIT_CODES.effectNeedsAttention,
     );
   });
 

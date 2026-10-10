@@ -27,7 +27,14 @@ import { defaultExclude, defineConfig } from 'vitest/config';
  * `apps/cli/src/worktrees/`, and `**\/worktrees\/**` would silently delete its tests from collection and its
  * sources from coverage.
  */
-export const REPO_LOCAL_CHECKOUTS = ['**/.claude/**', '**/.worktrees/**', 'worktrees/**'];
+// W7 preflight also found partial CR-94 prototypes here, with no nested workspace marker. They are private
+// analysis artifacts, not product tests/sources. Root-anchor this entry so package collection stays intact.
+export const REPO_LOCAL_CHECKOUTS = [
+  '**/.claude/**',
+  '**/.worktrees/**',
+  'worktrees/**',
+  'docs/analysis/private/**',
+];
 
 /**
  * Root, workspace-aware Vitest config. Per-package `test` scripts run `vitest run`

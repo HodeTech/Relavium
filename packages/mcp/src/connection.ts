@@ -1,4 +1,4 @@
-import type { JsonSchema } from '@relavium/core';
+import type { JsonSchema, ToolHostCallOptions } from '@relavium/core';
 import type { AbortSignalLike } from '@relavium/shared';
 
 /**
@@ -49,7 +49,12 @@ export interface McpConnection {
   /** List the server's tools (the `tools/list` round-trip), bounded and cancellable. */
   listTools(signal?: AbortSignalLike): Promise<readonly DiscoveredTool[]>;
   /** Invoke one tool by its ORIGINAL (server) name with already-validated arguments. */
-  callTool(name: string, args: unknown, signal?: AbortSignalLike): Promise<McpToolResult>;
+  callTool(
+    name: string,
+    args: unknown,
+    signal?: AbortSignalLike,
+    options?: ToolHostCallOptions,
+  ): Promise<McpToolResult>;
   /** Tear the connection down (terminate the stdio child / close the socket). Idempotent. */
   close(): Promise<void>;
   /**
@@ -59,7 +64,9 @@ export interface McpConnection {
    * is async, and an exit path that cannot await it — a second Ctrl-C forcing `process.exit`, an
    * `uncaughtException` net, a `process.exit` anywhere — would otherwise re-orphan the children
    * [ADR-0088](../../../docs/decisions/0088-the-mcp-boundary-is-hostile.md) §1.3 is about. A pid is a number,
-   * not an SDK type, so it crosses the seam cleanly.
+   * not an SDK type, so it crosses the seam cleanly. SDK-backed connections keep it latched while
+   * native close is owed and remove it on positive acknowledgement; hosts must read the current value
+   * at forced exit rather than cache an already-acknowledged PID.
    */
   readonly childPid?: number | undefined;
 }

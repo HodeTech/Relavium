@@ -377,3 +377,70 @@ Part of the change, not follow-ups:
   messages are better attributed.
 - **`generateMedia()` submission stays unbounded** until its own item lands. Named in §10 rather than papered
   over by a title that would imply otherwise.
+
+## 2026-10-05 implementation correction — held terminal ownership
+
+The confirming provider read can mutate the raw terminal already held by the grammar verifier.
+Independent W7 review reproduces revised token/cache/media quantities, stop reason and fatal
+diagnostic, including an unintended retry after a held auth error. The verifier now captures the
+stop root and validated usage or the error root and detached classified diagnostic before this
+read resumes provider code. Grammar ordering, duplicate-terminal refusal, cancellation and
+confirming-teardown handling keep their existing semantics; non-terminal chunks remain unchanged.
+Attempt diagnostics also stay frozen through commitment decoration/removal and observer delivery.
+This repairs the existing observed-terminal/retry obligation, with no request ownership policy.
+[Permanent controls](../../packages/core/src/engine/terminal-observer-boundary.test.ts) exercise
+actual Session, Governor, MoneyDurability and direct fallback consequences. Historical text is preserved.
+
+## 2026-10-05 implementation correction — generated projection before notification
+
+The ninth independent W7 review verifies that generated content/raw/stop-reason getters can fail
+after successful paid notification and enter node retry classification. The chain now reads those
+properties once into a plain result inside guarded post-response projection, before attempt observer
+delivery. A failure preserves already folded usage/price on one failed record and carries a fixed
+non-retryable diagnostic with private cause. Core admits budget/money cause authority only from the
+exact current pre-attempt boundary; provider, pricing and observer error classes cannot fabricate
+that origin. Stable provider failures and true pre-egress refusals retain their semantics.
+
+[Generated and later-round controls](../../packages/core/src/engine/agent-turn-origin-boundary.test.ts),
+[actual accounting-cause controls](../../packages/core/src/engine/accounting-cause-provenance.test.ts)
+and [held terminal controls](../../packages/llm/src/held-terminal-controls.test.ts) exercise this repair.
+The canonical [LLM seam](../reference/shared-core/llm-provider-seam.md#fallback-lives-outside-the-adapter)
+qualifies the result-surface ownership scope; deep whole-request ownership remains Proposed ADR-0102.
+Historical text is preserved.
+
+## 2026-10-05 implementation correction — typed generated content ownership
+
+The tenth independent W7 review reproduces nested generated-part getters and later provider-owned
+part mutation escaping the root result projection, causing duplicate paid workflow attempts, false
+budget diagnostics or false failure-writer attribution. The guarded projection now parses content
+through the existing shared schema and validates stop reason before observer delivery, detaching
+schema-defined fields while retaining the one accountable usage snapshot. A projection fault keeps
+already folded known price on its single failed record. Opaque tool payloads/raw response data and
+whole-request ownership remain outside this repair; Proposed ADR-0102 is not implemented.
+The canonical [LLM seam](../reference/shared-core/llm-provider-seam.md#fallback-lives-outside-the-adapter)
+records that bounded scope. Historical text is preserved.
+
+## 2026-10-05 implementation correction — deadline cleanup cannot bypass attempt accounting
+
+The eleventh independent W7 review reproduces custom timer/listener cleanup throwing before attempt
+settlement, losing valid known price and fabricating retry, budget or failure-writer authority.
+The chain owns generated quantities and typed content before custom cleanup, then contains the exact
+cleanup failure until truthful settlement: a prior provider or
+admission failure stays primary; a successful invocation retains known quantities and price on one
+failed attempt record with fixed non-retryable unknown presentation and an opaque private cause.
+All shared cleanup stages are attempted before rethrowing the first original failure. Existing
+best-effort iterator closure and genuine admission/money controls remain unchanged. First-party
+native cleanup was not reproduced as faulty; no new financial policy or Request ownership is
+introduced. See the [LLM seam](../reference/shared-core/llm-provider-seam.md#the-per-attempt-deadline).
+
+## 2026-10-06 implementation correction — generated projection precedes host pricing
+
+Retained twelfth-round controls reproduce host pricing rewriting generated text before the chain
+owns its typed output. Generated content, stop reason and raw response are now captured before host
+pricing, while accountable usage is already detached. A failed projection still permits known valid
+quantities to be priced and recorded exactly once; if pricing also fails, accounting remains primary.
+Fixed non-retryable presentation and opaque private causes preserve existing retry and settlement
+rules. This is bounded result ownership, not Proposed ADR-0102's whole-request compatibility policy.
+The canonical [LLM seam](../reference/shared-core/llm-provider-seam.md#fallback-lives-outside-the-adapter)
+states the order. The interrupted review remains qualified and requires a fresh complete round.
+Historical text is preserved.

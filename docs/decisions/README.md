@@ -12,7 +12,7 @@ Concrete specifications (workflow/agent YAML, the SSE event schema, the IPC cont
 
 ## Format
 
-Every ADR is a single file named `NNNN-short-kebab-slug.md`, where `NNNN` is a zero-padded four-digit sequence number. Each one opens with an H1 title and bold metadata lines, then four sections:
+Every ADR is a single file named `NNNN-short-kebab-slug.md`, where `NNNN` is a zero-padded four-digit sequence number. Each one opens with an H1 title and bold metadata lines, then three sections:
 
 - **Context** — the situation, the problem, the constraints that applied.
 - **Decision** — the option chosen, the alternatives considered, and the drivers that connected them.
@@ -130,7 +130,7 @@ flowchart TD
 | 0084 | [Consent before a local MCP spawn](0084-consent-before-a-local-mcp-spawn.md) | Accepted | 2026-08-20 |
 | 0085 | [The node executor owes liveness, the engine enforces it, and a late dispatch is fenced](0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md) | Accepted | 2026-08-25 |
 | 0086 | [Authored values get absolute admission ceilings, and an omitted concurrency cap is finite](0086-absolute-admission-ceilings-on-authored-values.md) | Accepted | 2026-08-28 |
-| 0087 | [A stream is bounded by whether anyone reads it; outputs and events are bounded by size; finished runs are bounded by count](0087-consumed-streams-size-bounds-and-run-retention.md) | Proposed | 2026-08-29 |
+| 0087 | [A stream is bounded by whether anyone reads it; outputs and events are bounded by size; finished runs are bounded by count](0087-consumed-streams-size-bounds-and-run-retention.md) | Accepted | 2026-09-04 |
 | 0088 | [The MCP boundary is hostile — a remote server is pinned and bounded, an unbounded one must be local and opted into](0088-the-mcp-boundary-is-hostile.md) | Accepted | 2026-08-30 |
 | 0089 | [Media correctness — the four boundaries `W5` had to choose](0089-media-correctness-four-boundaries.md) (amends 0031, 0039, 0042, 0043, 0044, 0070, 0071) | Accepted (§3 superseded by 0090) | 2026-09-02 |
 | 0090 | [A continuation token rides the part it belongs to](0090-a-continuation-token-rides-the-part-it-belongs-to.md) (supersedes 0089 §3; refines 0030, 0039, 0043) | Accepted | 2026-09-02 |
@@ -138,6 +138,15 @@ flowchart TD
 | 0092 | [`output_schema` is deep-validated by the JSON-Schema compiler we already own](0092-output-schema-is-validated-by-the-compiler-we-already-own.md) | Accepted | 2026-09-02 |
 | 0093 | [An expression sees only what it is ordered after](0093-an-expression-sees-only-what-it-is-ordered-after.md) | Accepted | 2026-09-02 |
 | 0094 | [A tool grant is checked when the plan is built](0094-a-tool-grant-is-checked-when-the-plan-is-built.md) | Accepted | 2026-09-02 |
+| 0095 | [What an agent session remembers across turns](0095-what-an-agent-session-remembers-across-turns.md) | Accepted | 2026-09-14 |
+| 0096 | [A request is measured before it is sent, and a context overflow is a classified failure](0096-a-request-is-measured-before-it-is-sent.md) | Accepted | 2026-09-14 |
+| 0097 | [A budget approval is an allowance, not an exemption](0097-a-budget-approval-is-an-allowance-not-an-exemption.md) | Accepted | 2026-09-14 |
+| 0098 | [A session's effect row holds no result, never replays, and discloses what did not complete](0098-a-session-effect-row-holds-no-result-and-never-replays.md) | Accepted | 2026-09-14 |
+| 0099 | [Compaction has an idle budget outcome and an unknown-window policy](0099-compaction-has-an-idle-budget-outcome-and-an-unknown-window-policy.md) | Accepted | 2026-10-02 |
+| 0100 | [Budget authorization is durable state with a replay barrier](0100-budget-authorization-is-durable-state-with-a-replay-barrier.md) | Accepted | 2026-10-02 |
+| 0101 | [Configured output estimates apply only when the wire is uncapped](0101-configured-output-estimates-apply-only-when-the-wire-is-uncapped.md) | Accepted | 2026-10-02 |
+| 0102 | [A measured request owns its inert data through egress](0102-a-measured-request-owns-its-inert-data-through-egress.md) | Accepted | 2026-10-04 |
+| 0103 | [A paused run hands off its local producers before its host closes](0103-a-paused-run-hands-off-its-local-producers-before-its-host-closes.md) | Accepted | 2026-10-07 |
 
 ## Creating a new ADR
 

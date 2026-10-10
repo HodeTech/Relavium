@@ -5,10 +5,12 @@ import {
   SafeEgressError,
   type EgressDeps,
   type EgressMethod,
+  type EgressWorkOptions,
   type HopResponse,
   type LocalEndpoint,
 } from '@relavium/db';
 import { INGRESS_BOUNDS } from '@relavium/mcp';
+import { EgressWorkScope, egressWorkEntryFailure } from './egress-work.js';
 
 /**
  * The validated `fetch` the `http` / `sse` MCP transports connect through
@@ -34,7 +36,15 @@ import { INGRESS_BOUNDS } from '@relavium/mcp';
  */
 
 /** The `fetch` shape the MCP transports take — structurally the SDK's `FetchLike`, in our own terms. */
-export type McpFetch = (url: string | URL, init?: RequestInit) => Promise<Response>;
+export interface McpFetchWorkOptions extends EgressWorkOptions {
+  readonly signal?: AbortSignal;
+}
+
+export type McpFetch = (
+  url: string | URL,
+  init?: RequestInit,
+  options?: McpFetchWorkOptions,
+) => Promise<Response>;
 
 /** Statuses that MUST carry a null body (a `Response` with a body and one of these throws). */
 const NULL_BODY_STATUS: ReadonlySet<number> = new Set([204, 205, 304]);
@@ -77,34 +87,60 @@ export interface McpFetchConfig {
 export function createMcpFetch(config: McpFetchConfig = {}): McpFetch {
   const deps = config.deps ?? nodeEgressDeps;
   const maxMessageBytes = config.maxMessageBytes ?? INGRESS_BOUNDS.transportMessageBytes;
-  return async (input, init) => {
-    const url = typeof input === 'string' ? input : input.href;
-    const method = normalizeMethod(init?.method);
-    const headers = headersToRecord(init?.headers);
-    const body = await bodyToString(init?.body);
-
-    const hop = await connectValidated(
-      url,
-      {
-        method,
-        ...(config.localEndpoint === undefined ? {} : { localEndpoint: config.localEndpoint }),
-        ...(headers === undefined ? {} : { headers }),
-        ...(body === undefined ? {} : { body }),
-      },
-      deps,
-      toAbortSignal(init?.signal),
-    );
-
-    if (isRedirectStatus(hop.status)) {
-      // Never read a redirect body, and never follow it. The author declared a url; a `3xx` says the server
-      // is somewhere else, which is a configuration answer rather than something to resolve at runtime.
-      hop.dispose();
-      throw new SafeEgressError(
-        'insecure_url',
-        'an MCP endpoint may not redirect — declare the final url',
-      );
+  return async (input, init, options) => {
+    let work: EgressWorkScope | undefined;
+    try {
+      const caller = toAbortSignal(init?.signal);
+      const signal =
+        options?.signal === undefined ? caller : AbortSignal.any([caller, options.signal]);
+      assertActive(signal);
+      work = new EgressWorkScope(options);
+      const scope = work;
+      const raw = scope.retainWork(async () => {
+        const url = typeof input === 'string' ? input : input.href;
+        const method = normalizeMethod(init?.method);
+        const headers = headersToRecord(init?.headers);
+        const body = await scope.retainWork(() => bodyToString(init?.body));
+        assertActive(signal);
+        const hop = await scope.retainWork(() =>
+          connectValidated(
+            url,
+            {
+              method,
+              ...(config.localEndpoint === undefined
+                ? {}
+                : { localEndpoint: config.localEndpoint }),
+              ...(headers === undefined ? {} : { headers }),
+              ...(body === undefined ? {} : { body }),
+            },
+            deps,
+            signal,
+            scope,
+          ),
+        );
+        if (signal.aborted) {
+          hop.dispose();
+          assertActive(signal);
+        }
+        if (isRedirectStatus(hop.status)) {
+          hop.dispose();
+          throw new SafeEgressError(
+            'insecure_url',
+            'an MCP endpoint may not redirect — declare the final url',
+          );
+        }
+        return toResponse(hop, maxMessageBytes, scope, signal);
+      });
+      return await raceCancellation(raw, signal);
+    } catch (error) {
+      const entry = egressWorkEntryFailure(error);
+      if (entry !== undefined) throw entry.error;
+      throw error instanceof SafeEgressError
+        ? error
+        : new SafeEgressError('network', 'MCP egress request failed');
+    } finally {
+      work?.seal();
     }
-    return toResponse(hop, maxMessageBytes);
   };
 }
 
@@ -160,46 +196,36 @@ async function bodyToString(body: RequestInit['body']): Promise<string | undefin
 }
 
 /** Map a validated hop to a `Response` with a backpressure-aware, byte-bounded streaming body. */
-function toResponse(hop: HopResponse, maxMessageBytes: number): Response {
+function toResponse(
+  hop: HopResponse,
+  maxMessageBytes: number,
+  work: EgressWorkScope,
+  signal: AbortSignal,
+): Response {
   if (hop.status < 200 || hop.status > 599) {
-    // `new Response(…, { status })` throws for a status outside [200, 599]; a hostile endpoint can emit one.
     hop.dispose();
     throw new SafeEgressError('network', 'egress returned an out-of-range HTTP status');
   }
-  const headers = hop.headers ?? {};
-  // **Both arms map through the same guard.** `new Response(…, { headers })` runs the `Headers` constructor,
-  // which throws a raw `TypeError` on a name or value it considers invalid — and these headers come from a
-  // hostile server, flattened out of Node's parser, which does not agree with `undici`'s validator in every
-  // case. The streaming arm already converted that into a typed `SafeEgressError`; the null-body arm did not,
-  // so a `204` with a malformed header name escaped this module as an untyped throw. The socket was never at
-  // risk (`dispose` runs first either way) — the error TYPE was, and every caller here classifies on it.
-  if (NULL_BODY_STATUS.has(hop.status)) {
-    hop.dispose();
-    return mapResponse(() => new Response(null, { status: hop.status, headers }));
-  }
-  return mapResponse(
-    () =>
-      new Response(hopBodyToStream(hop, maxMessageBytes, isEventStream(headers)), {
-        status: hop.status,
-        headers,
-      }),
-    hop,
-  );
-}
-
-/**
- * Build a `Response`, converting a constructor throw into a typed {@link SafeEgressError}.
- *
- * `hop` is passed only where the socket is still live: the null-body arm has already disposed, and disposing
- * twice would be harmless but would misstate who owns the teardown.
- */
-function mapResponse(build: () => Response, hop?: HopResponse): Response {
+  let prepared: ReturnType<typeof hopBodyToStream> | undefined;
   try {
-    return build();
-  } catch (err) {
-    hop?.dispose();
-    throw err instanceof SafeEgressError
-      ? err
+    const headers = new Headers(hop.headers ?? {});
+    if (NULL_BODY_STATUS.has(hop.status) || headers.get('content-length') === '0') {
+      hop.dispose();
+      return new Response(null, { status: hop.status, headers });
+    }
+    prepared = hopBodyToStream(
+      hop,
+      maxMessageBytes,
+      isEventStream(hop.headers ?? {}),
+      work,
+      signal,
+    );
+    return new Response(prepared.stream, { status: hop.status, headers });
+  } catch (error) {
+    prepared?.close();
+    hop.dispose();
+    throw error instanceof SafeEgressError
+      ? error
       : new SafeEgressError('network', 'egress response could not be mapped');
   }
 }
@@ -234,9 +260,22 @@ function hopBodyToStream(
   hop: HopResponse,
   maxMessageBytes: number,
   eventStream: boolean,
-): ReadableStream<Uint8Array> {
-  const iterator = hop.body[Symbol.asyncIterator]();
+  parent: EgressWorkScope,
+  signal: AbortSignal,
+): { readonly stream: ReadableStream<Uint8Array>; readonly close: () => void } {
+  const body = parent.fork();
+  let iterator: AsyncIterator<Uint8Array>;
+  try {
+    iterator = hop.body[Symbol.asyncIterator]();
+  } catch (error) {
+    body.seal();
+    hop.dispose();
+    throw error;
+  }
+  let closed = false;
   let disposed = false;
+  let returned = false;
+  let controller: ReadableStreamDefaultController<Uint8Array> | undefined;
   let messageBytes = 0;
   // Boundary state, carried ACROSS chunks: whether the previous byte ended a line, and whether it was a CR
   // whose LF is still to come. A server that writes one byte at a time is the reason both must survive.
@@ -292,43 +331,109 @@ function hopBodyToStream(
     }
     return true;
   };
-  return new ReadableStream<Uint8Array>({
-    async pull(controller) {
-      try {
-        const next = await iterator.next();
-        if (next.done === true) {
-          controller.close();
-          dispose();
-        } else if (!chargeAndReset(next.value)) {
-          // Refused mid-stream: the socket is reaped and the consumer sees a typed error rather than a
-          // truncated message, which for a JSON-RPC frame would be a parse failure with no explanation.
-          dispose();
-          controller.error(
-            new SafeEgressError(
-              'too_large',
-              `an MCP message exceeded the maximum of ${maxMessageBytes} bytes`,
-            ),
-          );
-        } else {
-          controller.enqueue(next.value);
-        }
-      } catch {
-        dispose();
-        controller.error(new SafeEgressError('network', 'egress response body read failed'));
+  const returnIterator = (): void => {
+    if (returned) return;
+    returned = true;
+    try {
+      const close = iterator.return?.bind(iterator);
+      if (close !== undefined) {
+        const raw = body.retainWork(() => close(undefined));
+        void raw.catch(() => {
+          // Cleanup is best effort; its actual settlement remains independently owed.
+        });
       }
-    },
-    cancel() {
+    } catch {
+      // A synchronous cleanup fault settles only the operation actually entered.
+    }
+  };
+  const finish = (): void => {
+    if (closed) return;
+    closed = true;
+    signal.removeEventListener('abort', onAbort);
+    try {
       dispose();
-      try {
-        const returned = iterator.return?.(undefined);
-        if (returned !== undefined) {
-          returned.catch(() => {
-            // best-effort cleanup; a cancel must never throw
-          });
+    } finally {
+      returnIterator();
+      body.seal();
+    }
+  };
+  const onAbort = (): void => {
+    try {
+      finish();
+    } catch {
+      // Report only a fixed body diagnosis, without replacing the native-close obligation.
+    }
+    controller?.error(new SafeEgressError('network', 'MCP egress request cancelled'));
+  };
+  try {
+    const stream = new ReadableStream<Uint8Array>({
+      start(value) {
+        controller = value;
+        signal.addEventListener('abort', onAbort, { once: true });
+        if (signal.aborted) onAbort();
+      },
+      async pull(value) {
+        if (closed) return;
+        let finishing = false;
+        try {
+          const next = await body.retainWork(() => iterator.next());
+          if (closed) return;
+          if (next.done === true) {
+            finishing = true;
+            finish();
+            value.close();
+          } else if (!chargeAndReset(next.value)) {
+            finishing = true;
+            finish();
+            value.error(
+              new SafeEgressError(
+                'too_large',
+                `an MCP message exceeded the maximum of ${maxMessageBytes} bytes`,
+              ),
+            );
+          } else {
+            value.enqueue(next.value);
+          }
+        } catch {
+          // A different path already ended the stream only when this pull did not
+          // start cleanup. A throwing disposer must still settle this reader.
+          if (closed && !finishing) return;
+          try {
+            finish();
+          } finally {
+            value.error(new SafeEgressError('network', 'egress response body read failed'));
+          }
         }
-      } catch {
-        // a synchronous return() throw is best-effort cleanup, never propagated
-      }
-    },
+      },
+      cancel() {
+        try {
+          finish();
+        } catch {
+          throw new SafeEgressError('network', 'egress response cleanup failed');
+        }
+      },
+    });
+    return { stream, close: finish };
+  } catch (error) {
+    finish();
+    throw error;
+  }
+}
+
+function assertActive(signal: AbortSignal): void {
+  if (signal.aborted) throw new SafeEgressError('network', 'MCP egress request cancelled');
+}
+
+async function raceCancellation<T>(raw: Promise<T>, signal: AbortSignal): Promise<T> {
+  let onAbort: () => void = () => {};
+  const cancelled = new Promise<never>((_resolve, reject) => {
+    onAbort = () => reject(new SafeEgressError('network', 'MCP egress request cancelled'));
+    signal.addEventListener('abort', onAbort, { once: true });
+    if (signal.aborted) onAbort();
   });
+  try {
+    return await Promise.race([raw, cancelled]);
+  } finally {
+    signal.removeEventListener('abort', onAbort);
+  }
 }

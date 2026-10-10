@@ -22,6 +22,84 @@ dry reference for the types and the normalization rules.
 > adapter implementation behind the seam is deliberately reversible; the seam is
 > not. Provider SDKs stay strictly inside the adapter package.
 
+## Request data ownership
+
+[ADR-0102](../../decisions/0102-a-measured-request-owns-its-inert-data-through-egress.md)
+defines the supported JavaScript data domain for controlled `LlmRequest` generate/stream calls.
+Before the first asynchronous handoff, the `ownLlmRequest` factory owns and freezes one
+canonical construction. Its mapped readonly `LlmRequestConstruction` input accepts original caller
+arrays without normalizing away their descriptors or cross-field aliases. Every current or future
+request field is traversed except the live
+`signal` and authentic `preparedOutputCaps`. This includes messages, tool arguments/results and
+schemas, response formats, tool choice, stop sequences, modalities, temperature, reasoning effort
+and non-cap provider options. Ownership does not expand the estimator's system/messages/tools/
+response-format subset or change pricing, wire cap precedence or allowance authority.
+
+Supported data comprises primitive strings, booleans, numbers, null and undefined; dense ordinary
+arrays; and ordinary or null-prototype records with own enumerable string-keyed data properties.
+Numbers, including non-finite values, and present undefined retain their values; native encoding
+and validation remain the lowerer's responsibility. Standard Map/Set objects become records of
+inert own properties; internal entries are ignored under their existing JSON semantics. Frozen
+inert caller containers are accepted. Repeated acyclic aliases are preserved across the entire
+payload/options graph through iterative memoized copying, without an added depth/size limit.
+
+Unsupported inputs include functions, symbols, BigInt, ancestor cycles, custom/boxed/Date instances,
+accessors, callable own/inherited `toJSON`, sparse arrays, additional array properties and unsupported
+non-enumerable/symbol metadata. An own string key exactly `__proto__` anywhere in the traversed non-cap
+graph is also refused, including Map/Set properties, schemas and tool arguments/results. Values
+previously serialized through Date/custom serializers, or ignored by a provider, are intentionally
+outside this narrowed domain. Convert them to inert supported data before calling the seam; use
+host tools for executable behavior. Noncallable enumerable `toJSON` remains data. Descriptor
+inspection avoids getters; reflection failures receive the same fixed, content-free
+`UnsupportedRequestDataError`. No caller property, value, path or inspection cause is exposed.
+This is ownership inside the trusted host process, not a sandbox for reflection traps or global
+built-in mutation. Standalone `estimateRequestTokens` retains its conservative fallback behavior.
+
+Owned records and their private mutable SDK working copies have null prototypes. Arrays retain
+trusted intrinsic behavior and shadow inherited `toJSON` with a helper-generated non-enumerable
+undefined property. Capture never freezes the caller. Each SDK attempt receives a fresh working
+graph with one memo across all fields; SDK schema mutation cannot change the caller, owned graph
+or another attempt. OpenAI learned-parameter retries create a fresh graph too. Gemini's existing
+converter observes shared declaration/response-schema aliases without splitting them.
+
+Native cap controls remain the separate exception governed solely by `output-cap.ts`: descriptor
+separation, captured real-key serialization, discarded outer-option serializer and exact candidate
+binding retain their existing rules. Matching prepared plans are validated before projection can
+mask original-control changes, and their captured values/ceiling survive catalog refresh. Candidate
+capture failure is surfaced only when the candidate is applicable; an unused candidate cannot stop
+a valid primary. Quote-relevant failure remains fail-closed rather than becoming a new exclusion.
+Mutable SDK native controls delegate the same cap reconciliation; they do not resolve a plan from
+an unauthenticated mutable working copy.
+
+A genuine factory association survives the trusted live-signal overlay and inline-media tool omission.
+`ownedRequestShape` exposes immutable tools/modalities for applicability and quote sizing without
+selecting a cap. `ownedRequestSource` exposes the frozen canonical construction when all candidates
+are inapplicable; it carries no selected cap authority. The chain may record its skips, but cap lookup,
+SDK working-copy construction and reasoning/media derivation require genuine candidate selection.
+A failed applicable cap remains refused. Legacy raw governor callers may supply their measured attempt
+plan to `ownLlmRequest`; the existing authority validates original controls and exact configured
+model/provider/endpoint binding before projection. Changed controls, wrong candidate identity and
+different existing authority are refused, without reserializing the measured plan or applying a
+refreshed ceiling.
+
+The fallback chain captures at method invocation. `stream()` synchronously captures and returns a
+private asynchronous iterator, so caller mutation before first `next()` cannot change transmission.
+A capture refusal yields one fatal `bad_request` terminal through that iterator, with no admission,
+credential resolution or provider invocation; generate rejects with the normalized provider error.
+Direct adapter generate retains typed configuration refusal; direct stream capture refusal likewise
+uses a terminal `bad_request`, while existing successful-capture capability checks retain their
+contract. Foreign providers called by the chain receive read-only owned canonical data and must
+make their own working copies. Independently called foreign implementations are outside this guarantee.
+The chain immediately copies resolved media discriminants/scalars before caching or another await;
+only existing typed media slots change and base64 data is never cached. Live cancellation remains
+observable. Separate-endpoint `MediaGenRequest`/generation/polling remains outside this ownership scope.
+
+**W7 integration boundary:** the controlled adapters and chain implement this ownership handoff.
+Core now captures its first round before measurement, reuses the factory request for quote/execution
+with only the live signal overlaid, and closes each pre-attempt check over that round before money waits.
+Real tool results create fresh owned rounds from owned static fields and working history. Core ownership and Step 8's owned summariser/pre-send/recovery integration have independent acceptance;
+accepted final wave evidence is tracked by the [closing register](../../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w7-closing-register--2026-10-10).
+
 ## The core interface
 
 The interface in `packages/llm/src/types.ts` is deliberately small: a
@@ -48,6 +126,7 @@ interface LlmRequest {
   outputModalities?: OutputModality[]; // request media output on the INLINE path (ADR-0031); default ['text']
   signal?: AbortSignalLike;      // cancellation — the structural, platform-free signal contract from @relavium/shared (a real AbortSignal satisfies it); host-injected transport (desktop aborts the Rust llm_stream egress, ADR-0018)
   providerOptions?: Record<string, unknown>; // typed escape hatch (caching, reasoning, etc.)
+  preparedOutputCaps?: PreparedOutputCapPlan[]; // ephemeral candidate-specific cap snapshots; factory-created, never serialized
 }
 
 // The output-modality vocabulary (OWNED by @relavium/shared constants.ts, ADR-0031). `document`
@@ -161,21 +240,26 @@ type StreamChunk =
   | { type: 'stop'; stopReason: StopReason; usage: Usage }
   | { type: 'error'; error: LlmError };
 
+interface LlmInvocationOptions {
+  readonly retainWork: <T>(factory: () => Promise<T>) => Promise<T>;
+}
+
 interface LlmProvider {
   readonly id: 'anthropic' | 'openai' | 'gemini' | 'deepseek';
-  generate(req: LlmRequest, key: string): Promise<LlmResult>;
-  stream(req: LlmRequest, key: string): AsyncIterable<StreamChunk>;
+  readonly customEndpoint?: boolean; // actual adapter-factory identity; absent means official
+  generate(req: LlmRequest, key: string, options?: LlmInvocationOptions): Promise<LlmResult>;
+  stream(req: LlmRequest, key: string, options?: LlmInvocationOptions): AsyncIterable<StreamChunk>;
   readonly supports: CapabilityFlags;  // { tools, streaming, parallelToolCalls, vision, promptCache, reasoning, media } — vision is the derived alias of media.input.image (ADR-0031)
   // ADR-0031 decision #6 — separate-endpoint media generation. The A5 ADR ([ADR-0045](../../decisions/0045-async-media-job-loop-poll-checkpoint-resume-cancel.md))
   // is landed and the SHAPE is final (the additive pollMediaJob `signal` param, 1.AG Section A); the BEHAVIOR
   // is WIRED — `generateMedia` SYNC de-inline (1.AG Section C) + the engine-owned async poll/checkpoint/
   // resume/cancel loop (1.AG Section D). The Sora/Veo/Imagen/TTS ADAPTER impls are 1.AH host-wiring.
-  generateMedia?(req: MediaGenRequest, key: string): Promise<MediaGenResult>;  // sync → { media }; async → { jobId } (Relavium-opaque — never a vendor operation name)
-  pollMediaJob?(jobId: string, key: string, signal?: AbortSignalLike): Promise<MediaJobStatus>; // pending(progress?) | done(media) | failed(LlmError); signal aborts the in-flight poll (1.AG/ADR-0045 §4)
+  generateMedia?(req: MediaGenRequest, key: string, options?: LlmInvocationOptions): Promise<MediaGenResult>;  // sync → { media }; async → { jobId } (Relavium-opaque — never a vendor operation name)
+  pollMediaJob?(jobId: string, key: string, signal?: AbortSignalLike, options?: LlmInvocationOptions): Promise<MediaJobStatus>; // pending(progress?) | done(media) | failed(LlmError); signal aborts the in-flight poll (1.AG/ADR-0045 §4)
   // ADR-0062 context-compaction: per-provider token/context vocabulary, in Relavium/Zod seam types only (no vendor type crosses).
   contextLimit?(model: string): number | undefined;      // the model's context window in tokens; undefined for an unrated/custom model (engine then skips auto-compaction)
   managesOwnContext?(): boolean;                          // provider bounds context itself ⇒ engine skips compaction; false for all current providers
-  estimateTokens?(input: EstimateTokensInput): number;   // { system, messages, tools? } → a per-provider estimate; a pre-first-turn FALLBACK only (real usage is authoritative)
+  estimateTokens?(input: EstimateTokensInput): number;   // { system, messages, tools?, responseFormat? } → a prospective request estimate; actual usage remains authoritative for realized billing
   // ADR-0064 live model catalog: return the models this `key` can reach, each mapped INSIDE the adapter to a
   // Relavium ModelListing (no vendor models.list() type crosses). OPTIONAL (a provider without a list endpoint
   // omits it → host degrades to static-only). Bounded + abortable + secret-free; one bad row is dropped, a
@@ -200,6 +284,119 @@ interface CapabilityFlags {
   };
 }
 ```
+
+### Current-request estimates and bound output caps
+
+[ADR-0096](../../decisions/0096-a-request-is-measured-before-it-is-sent.md)
+and [ADR-0101](../../decisions/0101-configured-output-estimates-apply-only-when-the-wire-is-uncapped.md)
+separate prospective request size from realized usage. `estimateRequestTokens` is pure and exported
+from `@relavium/llm`; adapter `estimateTokens` defaults delegate to it. It sums `ceil(system.length / 4)`,
+two tokens per message, and the complete serialized-length/4 floor of each text, reasoning, tool-call,
+tool-result body, tool definition and JSON `responseFormat` (including its output schema, name and strictness).
+An absent or plain-text response format adds nothing. Measurement uses the constructed pre-strip request;
+a dialect that drops a structured schema can therefore be overcounted, in the same conservative direction
+as stripped reasoning. Escaping, opaque args/results and continuation signatures count.
+Only actual media parts and the typed `tool_result.media` attachments use fixed per-part charges:
+media-looking objects nested inside opaque values remain ordinary serialized data.
+
+| Input part | Tokens per part | Basis, checked 2026-10-02 |
+|---|---:|---|
+| Image | 48,169 | Derived from GPT-4o mini's 2,833 base plus eight 5,667-token tiles under the documented high/auto resize rule: [OpenAI vision](https://developers.openai.com/api/docs/guides/images-vision#calculating-costs) |
+| Document | 80,000 | **Ten-page assumption**: round up ten times 3,000 typical text tokens plus 4,784 visual tokens. Sources: [Anthropic PDF](https://platform.claude.com/docs/en/build-with-claude/pdf-support#estimate-your-costs), [Anthropic vision](https://platform.claude.com/docs/en/build-with-claude/vision#resolution-and-token-cost) |
+| Audio | 20,000 | **Ten-minute assumption**: round up 600 seconds times 32 tokens/second; [Gemini media resolution](https://ai.google.dev/gemini-api/docs/generate-content/media-resolution) |
+| Video | 200,000 | **Ten-minute assumption with headroom** over approximately 300 tokens/second in static high-resolution mode; [Gemini video](https://ai.google.dev/gemini-api/docs/video-understanding#technical-details-about-videos) |
+
+Carrier kind and base64 length do not change these charges. They are conservative heuristics, **not
+physical upper bounds** on PDF pages, clip durations, custom services or provider tokenization; CJK and
+other inputs can be undercounted. Cycles, BigInt and throwing serialization/inspection receive a finite
+1,048,576-token fallback per affected unit (4 Mi serialized characters / 4); other units still count.
+Shared references that serialize normally retain their complete repeated floor. Synchronous JavaScript
+cannot interrupt a non-terminating getter or `toJSON`; this helper promises no such liveness guarantee.
+
+`prepareOutputCapPlan` in `output-cap.ts` owns field selection, captured official catalog clamping,
+mapped-field precedence and surviving native-cap evidence. All three adapter implementations use
+that same plan to lower both `generate` and `stream`. Official OpenAI maps authored caps to
+`max_completion_tokens`; official DeepSeek and custom OpenAI-compatible routes map to `max_tokens`;
+Gemini maps to `maxOutputTokens`; Anthropic's required absent-cap default is 4096, clamped to the
+captured official ceiling. A mapped cap wins its colliding native fields. With no mapped cap, valid
+finite positive integer native controls survive unchanged and reserve their greatest recognized value.
+Official OpenAI recognizes both keys, official DeepSeek only `max_tokens`, custom OpenAI-compatible
+routes both, and Gemini `maxOutputTokens`. Keeping two native OpenAI keys is a conservative accounting
+envelope for an upstream-invalid request, not a valid precedence rule. Invalid native values remain
+on the wire but supply no cap evidence. No estimate inserts a new wire limit.
+
+`outputTokensReservation(plan, configuredFallback)` uses the effective wire cap first. Only an uncapped
+request uses the configured estimate or the shared 4096 estimate default, clamped against a captured
+**official** ceiling. Custom and unknown-model requests do not borrow another service's ceiling.
+`estimateResolvedNextCost` then prices the resolved input and output independently at highest-tier
+non-cached input/output rates, with user overlays, and performs **no second catalog clamp**. Invalid
+non-finite/negative token estimates or unsafe cost arithmetic throw `InvalidTokenEstimateError`.
+Governor admission and frozen allowance quotes use the one `estimateResolvedRequestCost` kernel.
+It snapshots finite non-negative token/media quantities before reading one user/catalog price,
+uses the **highest finite context threshold** and full non-cached token rates, and rounds each
+token class and each media entry independently. Its immutable scalar basis records quantities,
+selected rates/tier and missing media rates. A safe total returns `priced`; unsafe finite arithmetic
+returns `unrepresentable` without an invented numeric amount. The number-returning token/media
+compatibility helpers throw `InvalidTokenEstimateError` for that marker. Malformed quantities
+remain typed refusals even for an unknown model; malformed selected token rates also refuse.
+Missing, negative and non-finite media rates follow
+the existing named-gap policy; a requested zero volume still exposes a gap, while an explicit zero
+rate is a real price. Realized tier selection retains its strict-threshold and first-equal-tier rules.
+
+Native separate-endpoint media completion also uses the rate-only kernel through `estimateMediaCost`
+to price its known authored volume. It does not fabricate a provider-reported `Usage` record:
+audio/video duration may be fractional, while image counts and canonical `Usage` quantities retain
+their integer guards. The rounded charge must be a non-negative safe integer before accounting;
+missing pricing remains an explicit gap under the existing settlement policy.
+
+The output-only `estimateMaxNextCost` remains a compatibility helper for canonical authored caps;
+native caps must never pass through it. Gemini's uncapped thinking control keeps its existing catalog
+fallback; a native output envelope is a reservation and cannot become an invented thinking budget.
+
+Plans are factory-created immutable cap projections, guarded at runtime and bound to model, actual
+provider/endpoint, canonical cap and the three native cap fields. `prepareOutputCapRequest` remains
+a cap-only compatibility staging helper. Controlled adapters and the chain instead use the
+[owned-request handoff](#request-data-ownership) before admission and credential awaits. Surviving object, function and BigInt cap values
+are JSON-lowered once under their original property key, then copied and deeply frozen with detached
+object/array prototypes, so an inherited `toJSON` cannot run again after admission. Array identity and
+own JSON data keys are preserved. Boxed numbers,
+object `toJSON` results and primitive `BigInt.prototype.toJSON` results are priced at the numeric value
+actually forwarded, and invalid JSON data retains its wire shape. Omitted values remain omitted.
+Discarded opaque/BigInt controls are never serialized, including OpenAI-only cap fields that Gemini's
+SDK omits from its HTTP config. DeepSeek's forwarded modern key still receives a JSON capture even
+though its official dialect does not recognise it as cap evidence. An unserializable surviving control
+refuses with the fixed typed cap-plan error before admission.
+Factory input inspection, native option copying, existing-plan binding/lookup and request staging
+share that content-free refusal boundary. A throwing getter, proxy trap or serializer becomes
+`InvalidOutputCapPlanError`; neither its original message nor its throwable/cause is retained.
+This protects these cap helpers and their adapter/attempt callers, rather than sandboxing arbitrary
+caller objects throughout every request transform.
+Original identities are retained privately only to bind a measured plan; caller-owned executable
+values are never re-read after admission. Reconciliation preserves current unrelated options,
+except a callable outer `providerOptions.toJSON`: it is executable body replacement and cannot
+override mapped fields. Noncallable data bearing that name is preserved.
+`LlmRequest.preparedOutputCaps` carries a measured candidate's plan through the chain and
+adapter unchanged, including after a catalog refresh; another candidate gets its own bound plan.
+The allowance quote consumer prepares heterogeneous candidates from original construction
+inputs or separately preserved candidate plans; a primary's filtered cap projection cannot recover
+opaque controls that its dialect discarded.
+A substituted plan or changed cap/routing binding throws `InvalidOutputCapPlanError`. Neither
+`providerOptions` nor prepared plans enter durable budget quotes or events.
+
+Every `PreAttemptInfo`, on both chain paths, requires `model`, `provider`, `endpoint`, `maxTokens`,
+`providerOptions` and `outputCapPlan`; the two optional values have required keys allowing `undefined`.
+Core's required text/generative-media hook and host configuration forwarding have their canonical
+home in the [agent-runner injection contract](agent-runner.md#pre-egress-injection-contract).
+Official factories explicitly pin SDK endpoint/backend settings, so ambient SDK environment or
+global defaults cannot redirect the request while retaining official cap/refund identity.
+
+**W7 step 6 implementation, 2026-10-02:** cap lowering, financial estimation, required forwarding and
+handoff foundations are implemented. Session measured pre-send/recovery and each summariser candidate's
+automatic handoff remain step 8; frozen allowance consumers remain step 9. This section does not claim
+those later entry points have shipped merely because the seam now supports them.
+Step 6 also leaves the existing [CR-82 usage-normalization defect](../../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#cr-82--missing-or-partial-usage-can-be-read-as-zero--high)
+open for W8: an adapter can turn missing usage into zero and reopen reserved headroom. Retaining
+an attempt with absent usage cannot detect an adapter-invented zero usage value.
 
 > **`CapabilityFlags` is per-PROVIDER; a second, per-MODEL axis sits beside it (`CR-51`,
 > [ADR-0071](../../decisions/0071-models-dev-as-the-model-metadata-source.md) amendment).** The catalog's
@@ -270,7 +467,8 @@ interface LlmError {
   provider: LlmProvider['id']; // which adapter produced it
   message: string;           // human-readable, already redacted of any secret material
   cause?: unknown;           // original error, for debugging/escape hatch only — never re-thrown across the seam
-  contentCommitted?: true;   // the attempt had already yielded a non-terminal chunk when it failed
+  contentCommitted?: true;   // chain-observed streamed content or a processed generated response
+  usage?: Usage;             // actual provider usage on a failed response, never a reserved estimate
 }
 
 type LlmErrorKind =
@@ -283,18 +481,61 @@ type LlmErrorKind =
   | 'protocol'               // the provider broke the STREAM GRAMMAR below (ADR-0082)
   | 'auth'                   // 401/403 — bad or missing key
   | 'bad_request'            // 400 — malformed request, unsupported model id, rejected tool schema
+  | 'context_overflow'       // fixture-pinned official context-window failure; never chain-retried
   | 'content_filter'         // content-policy refusal
   | 'cancelled'              // AbortSignal
   | 'unknown';               // unclassifiable — treated as fatal
 ```
 
 **`contentCommitted` is the CHAIN's field, never an adapter's.** It is set only when `FallbackChain`
-surfaces a failure past the first non-terminal chunk, and the chain strips it from any error a provider
-supplies — otherwise a pre-content failure claiming commitment would delete the node's whole retry budget
+surfaces a failure past the first non-terminal chunk, or observes actual usage on a rejected generated
+response. The chain strips it from any error a provider supplies — otherwise a pre-content failure claiming commitment would delete the node's whole retry budget
 through the fold above the chain. It exists because *whether to advance to another provider* and *whether to
 re-run the node* are different questions: `retryable` stays a pure function of `kind` (so a miswired adapter
 cannot produce an inconsistent pair), and commitment is carried as the separate fact it is
 ([ADR-0082](../../decisions/0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md) §4).
+
+### Classified context overflow
+
+[ADR-0096](../../decisions/0096-a-request-is-measured-before-it-is-sent.md) classification is pinned
+by the [unchanged live captures](../../../packages/llm/src/conformance/fixtures/overflow/README.md).
+Each HTTP rejection is exercised through the installed SDK on both generate and stream paths.
+Unmatched 400 responses remain `bad_request`; other statuses cannot gain overflow classification
+from these message patterns.
+
+| Dialect | Classification evidence |
+| --- | --- |
+| Anthropic | HTTP 400, `invalid_request_error`, and `prompt is too long: N tokens > N maximum` |
+| OpenAI | HTTP 400 and structured `context_length_exceeded` code |
+| DeepSeek | HTTP 400, `invalid_request_error`, and `This model's maximum context length is N tokens. However, you requested N tokens` |
+| Gemini | HTTP 400 and `The input token count exceeds the maximum number of tokens allowed N.` in the SDK message; transport replay preserves the recorded body/message |
+| Anthropic native stop | `model_context_window_exceeded` in the captured HTTP 200 message or streamed `message_delta`; a failed generation, never a clean `stop` |
+
+The native stop carries canonical actual `usage` on `LlmError`. The chain validates, owns and
+freezes nested quantities before observer/provider handoffs, applies accountable-usage checks,
+and folds them into the failed `AttemptRecord`, pricing and realised ledger exactly once. An
+invalid quantity preserves the conservative reservation; a pricing failure retains valid usage
+and marks the failed record unpriced. Cancellation, custom-endpoint downgrade and a grammar
+violation after the held terminal preserve already observed usage. Stream `contentReceived`
+is set only by chunks the chain observed; a failed generate carrying validated usage proves a
+processed response, even when its text is empty. A provider-supplied `contentCommitted` never
+owns that fact. No usage-bearing failure receives a proven-refusal refund.
+
+Anthropic hands off the first native streamed stop and its final usage immediately, then closes
+its SDK iterator; later vendor deltas, content or teardown errors cannot replace that observation.
+The grammar verifier retains valid terminal usage in attempt-local state before its confirming
+read. If cancellation or the attempt deadline wins that read, the existing grammar/deadline
+verdict still applies and the owned usage is settled once. An unconfirmed pre-content terminal
+can therefore time out and retry under ADR-0082, with each fresh response accounted separately;
+usage alone does not invent streamed content commitment. Iterator cleanup remains best effort
+under that deadline and does not certify host-safe resource release.
+
+`customEndpoint === true` downgrades `context_overflow` to fatal `bad_request` in the chain
+**before** recording or surfacing it, including an adapter spread that retains an official host
+or model ID. Classification never silently switches models. Usage-less official overflow
+releases its admission only with chain-owned `contentReceived: false`; post-content, custom
+and uncertain failures retain the reservation. The existing enumerated pre-content HTTP
+refusal rule remains independent of overflow classification.
 
 ### The stream grammar
 
@@ -360,6 +601,77 @@ awaited without bound, and a late chunk is discarded.
 **The guarantee is caller liveness, not resource termination.** An uncooperative provider's work may continue
 in the background; what is bounded is how long Relavium waits.
 
+When WorkflowEngine owns the call, the runner forwards an execution-local
+`FallbackChainOptions.retainWork(factory)` hook. It synchronously registers and returns the
+factory's exact Promise before invoking generation, each verifier `next()`, and each timeout or
+final iterator `return()`. The first registered read also constructs `stream()`; a host-entry
+refusal invokes no provider and records no egress, even for a synchronous stream factory.
+These lifetimes remain owed after a bounded attempt returns. The hook
+is optional for standalone chains and sessions without an engine owner; it is neither
+`LlmRequest` data nor a general platform capability, and grants no admission or new provider
+entry after its producing scope ends. The separate generative-media submission transfers its
+raw `generateMedia` Promise in the same way.
+
+**Invocation-local transitive work (ADR-0103).** The chain forwards a separate optional
+`LlmInvocationOptions` argument to `generate`/`stream`; the generative runner forwards it to
+`generateMedia`. This is an additive behavioural signature extension. It is never a field in
+`LlmRequest`, `MediaGenRequest`, providerOptions, SDK RequestInit, a budget quote or durable history.
+Existing implementations with fewer parameters remain assignable; ignoring this option does not
+certify a foreign implementation's hidden descendants as complete.
+
+The chain and separate generative/poll runners wrap each actual provider invocation in the shared
+pure `ProviderInvocationWork` helper, including custom implementations. A completed, timed-out,
+aborted or returned invocation retires its own future `retainWork` factories before fallback or
+public outcome delivery. Already admitted descendants remain owed independently, including when
+a stream's `next()` or `return()` is held. Each poll gets fresh authority; reusable providers and
+siblings never inherit another invocation's retainer. Standalone calls keep the optional seam. Typed generated output, successful usage and media result/status are copied before
+retirement can invoke caller listener removal or abort observers. Raw diagnostic `cause`/`raw`
+identities remain opaque. Retirement attempts abort and quiet acknowledgement even if caller
+listener removal throws; admitted descendants still hold their own completion. Partially failed
+setup retires its transferred aggregate without replacing the original entry error. An existing
+provider/cancellation diagnosis stays primary over cleanup; a standalone cleanup fault remains
+loud, without retry authority, and text attempts account known usage exactly once.
+Public iterator `return()` and `throw()` attempt the underlying generator exit even when
+immediate invocation retirement fails. A consumer throw remains primary over secondary
+retirement failure; a standalone retirement failure remains observable after cleanup entry.
+Neither path acknowledges held iterator work before its actual settlement (ADR-0103).
+
+
+The controlled OpenAI-compatible adapter transfers one aggregate lifetime before SDK construction
+or entry. It binds that invocation's work and retirement signal into its own client fetch closure,
+including custom-endpoint validated fetch. A lazy stream captures the retainer function and receiver
+at call time and transfers its lifetime only on first pull; ignoring the iterable enters no SDK.
+Return/throw retires fresh entry synchronously even behind a held next. Exact SDK reads/returns,
+request normalization, raw DNS, body next/return and actual native request/incoming-close children
+remain owed independently. An unobservable native Promise never supplies a completion ACK.
+
+SDK success, headers, EOF, dispose, abort and a bounded public result do not replace actual close.
+Retirement vetoes fresh fetch, learned-parameter retry/learning, post-DNS native entry and subsequent
+Sora download. One poll aggregate covers status and completed binary download; each actual transport
+keeps its own close lifetime. Different invocations on the same reusable adapter/fetch do not share
+retirement authority. Standalone calls without options keep their existing API behaviour.
+
+The engine owns each raw media poll, including credential resolution, separately from the old
+submission context. `NodeExecutor.pollMediaJob` receives its own optional third invocation argument;
+the runner forwards it as the provider's fourth argument after its existing post-key abort check.
+Admitted descendants transfer before the raw poll returns. A late poll after terminal cannot pin
+media, charge again or publish another event. The engine joins poll scheduling/accounting actors
+and final receipt health through its [local departure contract](../../architecture/shared-core-engine.md#internal-departure-foundations-adr-0103);
+independent acceptance of that consolidated integration is tracked in
+[current.md](../../roadmap/current.md).
+
+Registration failure retains its original process-local identity and host provenance, outside
+provider retry/failover classification. A synchronous provider throw retains provider
+classification. An established provider/deadline failure stays primary over best-effort
+iterator cleanup; a cleanup-only host-entry failure accounts known usage once before escaping,
+including an explicit public stream-iterator `return()`. Its handler runs in generator `finally`:
+consumer return bypasses subsequent statements, so those statements cannot observe the attempt
+or propagate the original refusal. The observer runs once, with already confirmed terminal usage.
+Identity recognition does not inspect an arbitrary throwable's prototype. Raw completion after
+a bounded failure adds no second attempt observation, late charge, refund or terminal. This
+boundary does not certify all transitive SDK/network/MCP work or safe host departure; those
+remaining obligations are recorded in [ADR-0103](../../decisions/0103-a-paused-run-hands-off-its-local-producers-before-its-host-closes.md).
+
 A deadline abort is `timeout`; a caller abort is `cancelled`, and **a caller abort wins a same-tick tie** —
 resolved at classification time so the answer is a contract rather than a listener ordering. Rule 7 governs
 both: a pre-content timeout may fail over, a content-committed one is surfaced.
@@ -367,6 +679,18 @@ both: a pre-content timeout may fail over, a content-committed one is surfaced.
 The window opens immediately before the seam call — after the pre-egress hook, after media
 re-materialization, after credential resolution. Those are Relavium's own work and must not consume the
 provider's budget.
+
+Disposal attempts timer disarm, caller-listener detach and waiter release even when a trusted host
+cleanup callback throws; the shared primitive rethrows the first original cleanup failure only
+after those stages. The chain owns generated quantities and typed content before custom cleanup, and contains a cleanup
+failure until attempt settlement. A prior provider or
+admission refusal keeps its original diagnosis and attempt record. After a successful invocation,
+valid known quantities and price still reach one failed attempt record; the cleanup fault receives
+fixed non-retryable `unknown` presentation with its original value kept as an opaque private cause.
+It cannot acquire retry, budget-gate or ledger-writer authority from its exception class. Stream
+iterator closure remains best-effort. These controls concern supported custom trusted callbacks;
+first-party native timer/listener cleanup has not been shown to throw, and resource termination
+remains outside the caller-liveness guarantee.
 
 **`protocol` is fatal but still fails over pre-content.** A provider that cannot keep the grammar will not
 keep it on the second call, so the node-retry budget must not re-dispatch — but a DIFFERENT provider may be
@@ -382,12 +706,18 @@ differently.
 > `b64_json` / `inlineData`), and vendor shapes inside it are invisible to the canonical-shape
 > backstop scans — stripping at the sink is the only guarantee.
 
-The `kind`/`retryable` split is the contract the fallback runner depends on: a
-`retryable` `LlmError` advances `withFallback` to the next provider (recording the
-failed attempt's usage so cost stays accurate across the failover); a fatal one is
-surfaced and stops the chain. The per-provider mapping (native status/code →
-`kind`) lives **inside each adapter** and is exercised by the per-provider
-conformance suite — the runner never inspects a provider code directly.
+The fallback runner reads both classification and commitment state: a retryable failure
+can advance to another provider only before content commits; a pre-content `protocol` failure
+can also fail over despite being fatal to node retry. Every attempt is reported. Available attempt usage is
+recorded independently of whether it can be fully priced. Unpriced records are marked
+`priced: false`: their amount may be an unknown-price placeholder or a token-only cost floor,
+rather than a complete charge. If an attempt holds a bounded reservation, missing usage or
+incomplete pricing retains it unless proven pre-content refusal permits release. A reservation
+is never invented actual usage or realised spend. See
+[the financial settlement contract](agent-runner.md) and
+[error handling](../../standards/error-handling.md#llmerror-classification--the-contract-the-fallback-chains-depend-on).
+Per-provider status/code → `kind` mapping stays **inside each adapter**, exercised by the
+conformance suite; the runner never inspects a provider code directly.
 
 ### Adding a provider id is an additive, backwards-compatible amendment
 
@@ -775,8 +1105,9 @@ Two streaming subtleties the adapters must handle:
 
 #### Stricter usage-capture rules in managed mode (Phase 2)
 
-In Phase 1 (BYOK) the worst case for a missing usage chunk is a slightly
-inaccurate local cost estimate. In **managed** mode (Phase 2,
+In Phase 1 (BYOK), missing usage affects the local cost ledger and budget capacity; the
+[current estimate contract](#current-request-estimates-and-bound-output-caps) records its
+known adapter-normalization limitation. In **managed** mode (Phase 2,
 [../../architecture/managed-inference.md](../../architecture/managed-inference.md))
 the same `Usage` shape becomes a **billing record**, so the gateway tightens the
 capture rules — without changing the seam types:
@@ -830,6 +1161,62 @@ followed by each authored `fallback_chain` entry:
   MODEL's, and a `tool_call` part is unconditionally replayed where a `reasoning`
   part is optional — but the **call itself survives**: it is the conversation the
   next model still needs, so only the token goes.
+- `AttemptRecord` carries chain-owned `providerInvoked`, `contentReceived` and `customEndpoint`
+  independently of `LlmError`. `providerInvoked` becomes true immediately before calling the
+  already-resolved and receiver-bound `generate` or `stream` method, after a final cancellation check
+  following method lookup and request setup. Local cap preparation, pre-attempt
+  hooks, credential resolution, cancellation before invocation, deadline setup and method lookup
+  failures keep it false. Core uses
+  this boundary with or without a budget governor; a failed record alone does not prove invocation.
+  An uninvoked attempt cannot report or price diagnostic usage: quantities attached to a typed
+  host-hook, credential or setup exception are removed before pricing, observation and surfacing.
+  They cannot establish generated-response processing or content commitment. Valid failed-response
+  usage after actual invocation remains accountable, including native stops and cancellation/deadline
+  races; this distinction does not alter the classified diagnosis or private cause identity.
+  Untyped preparation/provider exceptions use a fixed `unknown provider failure` diagnostic and
+  retain the original only as a non-public cause. Typed provider errors and engine control-flow
+  identities keep their existing handling. Any streamed content chunk, including an empty delta or
+  reasoning/tool start, counts; a resolved non-streaming response counts even when empty. After a provider is engaged, core releases
+  a failed usage-less reservation only with explicit no-content evidence on an official route and
+  either classified `context_overflow` or status **429, 400, 401, 402, 403, 404, 413 or 422**. Custom, missing or uncertain evidence, other
+  statuses, transport failures and timeouts retain conservative commitment. Existing proven
+  pre-provider failures still release. Accounting failures after a resolved generation use a fixed
+  non-retryable `unknown` error and preserve a detached schema-valid usage copy that also passes the
+  cost tracker's safe-integer checks, even if pricing fails. Required counts cannot be absent. One
+  owned, validated, frozen quantity snapshot feeds pricing, attempt records and the generated result;
+  the held streamed terminal owns stop reason and usage, or its detached error diagnostic, before
+  the grammar verifier resumes provider code to confirm EOF and before consumer callbacks.
+  Cache and media quantities are included. The direct `CostTracker` entry point owns its input before
+  consulting host pricing too. A pricing failure with trustworthy quantities explicitly marks its
+  record `priced: false`; its realized zero placeholder never claims a complete price, and the
+  governor retains its conservative reservation. A throwing usage accessor is recorded without
+  invented quantities; the response usage property is read once.
+  Typed provider diagnostics are detached and validated inside guarded normalization, including
+  nested fields. The original cause remains private. Hostile prototype inspection during pricing or
+  core cause classification cannot replace that cause; opaque causes follow normal turn mapping.
+  Every attempt diagnostic remains frozen before observer delivery and retry decisions, including
+  locally synthesized failures, cancellation and commitment decoration/removal; causes remain private
+  opaque identities. A consumer observer exception propagates once outside provider and accounting
+  guards. Core carries its exact external observer origin through generated-result handling and the
+  runner, including later tool rounds and host clock/backoff callbacks. Throwing a genuine provider,
+  turn, budget or money error class from that observer authorises neither a paid retry, a budget gate
+  nor a different ledger failure-writer owner. Core unwraps a private cause as admission/money control
+  flow only when it is the exact throwable retained at the current pre-attempt boundary; matching a
+  public error class alone is insufficient. Provider and pricing causes follow their guarded chain
+  diagnostic. Genuine pre-attempt failures retain their existing handling. Generated content,
+  stop reason and raw response properties are each read once into a plain result before host pricing
+  and observer delivery, inside the protected post-response projection. A projection fault still
+  prices already owned valid quantities before its single failed record; if pricing also fails,
+  that accounting failure stays primary. Known usage/price remain on the record with a fixed
+  non-retryable diagnostic. This
+  detaches the schema-defined content fields, including nested typed media shapes, and validates stop
+  reason before host pricing or observer delivery. A later mutation of provider-owned content cannot alter that typed
+  projection or install a downstream accessor with retry, budget or failure-writer authority. Opaque
+  returned tool arguments/results and raw response payloads retain their existing output contract.
+  Their later use as request data follows the [owned-request boundary](#request-data-ownership);
+  the output projection does not itself acquire that wider ownership. An admission
+  stays owned until its release or settlement succeeds, so a diagnostic failure reaches conservative
+  cleanup rather than losing the lease.
 - Surface **per-attempt usage** to the injected `CostTracker` (against that
   attempt's model) so cost stays accurate across a failover, and report each
   attempt (succeeded / failed / skipped) via an `onAttempt` observer so the
@@ -862,6 +1249,10 @@ modes. The full design — gateway, key vault and pools, metering — is in
 
 ## Dependency posture
 
+The maintainer-only [overflow capture procedure](../../runbooks/capture-provider-overflow.md)
+collects the live evidence required by ADR-0096. It is separate from the public provider seam
+and the product adapters; offline command probes do not substitute for live fixtures.
+
 The adapters prefer the official SDKs (`@anthropic-ai/sdk`, `openai`,
 `@google/genai`) for typed event parsing and wire/SSE handling. **Their own retry is deliberately disabled (`maxRetries: 0`) for the chain-governed calls — `FallbackChain` is the sole retry authority there (error-handling.md §6, per ADR-0011; #276). The two surfaces the chain does not sit above — live model discovery and the async media-job poll — run with `maxRetries: 0` **as well**. A small SDK retry there was tried and REVERTED: the SDK's sleep honours `retry-after` with no ceiling and no abort awareness, so a hostile `retry-after-ms` parks the call for days.** **DeepSeek reuses
 the `openai` SDK with a custom `baseURL` (`api.deepseek.com`)** — no separate
@@ -872,3 +1263,11 @@ third-party TS library behind the **same seam** — but only on a named trigger
 via a follow-up ADR, and **never the Vercel AI SDK**. See
 [ADR-0011](../../decisions/0011-internal-llm-abstraction.md) for the migration
 stance and the named triggers.
+
+### W7 implementation landing — 2026-10-10
+
+The earlier dated W7 status is historical. Measured request reuse, atomic multi-pass compaction,
+pre-send and single pre-content overflow recovery, finite frozen allowances and the CLI resume surface
+are implemented with scoped independent acceptance. The
+[closing register](../../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w7-closing-register--2026-10-10)
+tracks final whole-wave acceptance and approved limits; CR-82 and W8 remain open.

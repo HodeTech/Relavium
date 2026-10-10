@@ -151,9 +151,12 @@ describe('createInkRenderer', () => {
     clearSpy.mockRestore();
   });
 
-  it('writes the persistent summary even if stop() rejects (a waitUntilExit throw must not lose it)', async () => {
+  it('retains input ownership and withholds the summary until actual waitUntilExit acknowledgement', async () => {
     const unmount = vi.fn();
-    const waitUntilExit = vi.fn(() => Promise.reject(new Error('exit boom')));
+    const waitUntilExit = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('exit boom'))
+      .mockResolvedValue(undefined);
     const summaries: string[] = [];
     const renderer = createInkRenderer({
       color: false,
@@ -161,8 +164,12 @@ describe('createInkRenderer', () => {
       writeSummary: (text) => summaries.push(text),
     });
     renderer.onEvent({ type: 'run:cancelled', runId: RUN, timestamp: TS, sequenceNumber: 1 });
-    // The stop() rejection still propagates (driveRun's outer catch logs it), but the summary is written first.
     await expect(renderer.finalize?.()).rejects.toThrow('exit boom');
+    expect(summaries).toEqual([]);
+    expect(unmount).toHaveBeenCalledTimes(1);
+    await renderer.finalize?.();
+    expect(unmount).toHaveBeenCalledTimes(2);
+    expect(waitUntilExit).toHaveBeenCalledTimes(2);
     expect(summaries).toHaveLength(1);
     expect(summaries[0]).toContain('run cancelled');
   });

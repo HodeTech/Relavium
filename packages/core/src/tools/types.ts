@@ -14,6 +14,7 @@ import type {
   ContentPart,
   DurableMediaPart,
   EffectDispatchPort,
+  EffectAttemptId,
   EffectSlot,
   EffectTier,
   FsScopeTier,
@@ -173,6 +174,12 @@ export interface SpawnOpts {
   readonly timeoutMs?: number | undefined;
 }
 
+/** Call-local lifetime authority; never part of a request, tool argument or durable event. */
+export interface ToolHostCallOptions {
+  /** Synchronously admit/invoke the factory and retain its exact Promise; throwing refuses fresh I/O. */
+  readonly retainWork?: <T>(factory: () => Promise<T>) => Promise<T>;
+}
+
 export interface EgressCapability {
   /**
    * Perform an outbound HTTPS request the engine has ALREADY policy-checked (per egress kind). The
@@ -180,7 +187,11 @@ export interface EgressCapability {
    * CGNAT; DNS-resolve + connect-by-validated-IP + per-hop-redirect-revalidate — security-review.md)
    * and resolve any `credentialRef` host-side. Ships feature-flag-OFF until the primitive lands (1.AE).
    */
-  fetch(request: EgressRequest, signal?: AbortSignalLike): Promise<EgressResponse>;
+  fetch(
+    request: EgressRequest,
+    signal?: AbortSignalLike,
+    options?: ToolHostCallOptions,
+  ): Promise<EgressResponse>;
 }
 
 export interface OsCapability {
@@ -193,7 +204,11 @@ export interface NotifyInput {
 }
 
 export interface McpCapability {
-  call(input: McpCallInput, signal?: AbortSignalLike): Promise<unknown>;
+  call(
+    input: McpCallInput,
+    signal?: AbortSignalLike,
+    options?: ToolHostCallOptions,
+  ): Promise<unknown>;
 }
 export interface McpCallInput {
   readonly server: string;
@@ -357,6 +372,8 @@ export interface ToolApprovalContext {
 }
 
 export interface ToolDispatchContext {
+  /** Supplied at actual execution; preparation and model-controlled arguments grant none. */
+  readonly hostCallOptions?: ToolHostCallOptions | undefined;
   readonly nodeId: string;
   /** The node's narrowed grant (ADR-0029(b)); a dispatch outside it is refused (registered ≠ authorized). */
   readonly grantedToolIds: ReadonlySet<ToolId>;
@@ -402,6 +419,15 @@ export interface ToolDispatchContext {
    * apart; keying on the correlation alone would make the second legitimate effect collide with the first.
    */
   readonly effectSlot: EffectSlot;
+  /** Session-owned call identity and the provider attempt that actually dispatched it. */
+  readonly effectAttempt?: Pick<EffectAttemptId, 'providerAttempt' | 'toolCallId'>;
+  /**
+   * Trusted host admission, synchronously checked after approval and preparation, immediately before
+   * every actual dispatch (including unjournaled tools). A throw proves dispatch never started: any
+   * prepared claim is discarded, while settlement of effects already started remains available.
+   * Replayed results do not dispatch and do not invoke this hook. Must not perform asynchronous work.
+   */
+  readonly beforeDispatch?: (toolId: ToolId) => void;
   readonly signal?: AbortSignalLike;
 }
 
@@ -428,6 +454,14 @@ export function modelVisibleDescription(def: {
   return def.description.length > 0 ? `${provenance}\n\n${def.description}` : provenance;
 }
 
+/**
+ * The dispatch-context delegates a built-in can require — see {@link ToolDef.requiresDelegate}.
+ *
+ * A closed union rather than a `string`: the two members are the two optional delegate fields on
+ * {@link ToolDispatchContext}, and a typo in a free string would silently mean "requires nothing".
+ */
+export type ToolDelegateName = 'invokeAgent' | 'mediaRead';
+
 export interface ToolDef<Args = unknown, Result = unknown> {
   readonly id: ToolId;
   readonly source: ToolSource;
@@ -451,6 +485,20 @@ export interface ToolDef<Args = unknown, Result = unknown> {
    * the generic allowlist check is skipped. Omitted ⇒ no target (e.g. `os` / delegate tools).
    */
   readonly policyTarget?: (args: Args) => PolicyTarget;
+  /**
+   * The {@link ToolDispatchContext} **delegate** this tool dispatches through, when it has one (`CR-73`).
+   *
+   * A delegate is not a {@link ToolHost} capability arm: `invoke_agent` needs `ctx.invokeAgent` and
+   * `read_media` needs `ctx.mediaRead`, and neither is reachable from `host`. That made both tools invisible
+   * to a host-arm advertise-filter, so a surface wiring no delegate still offered them to the model — which
+   * then called one and got `tool_unavailable` for a tool the engine had just advertised. Declaring the
+   * requirement here lets a filter answer the question without a central id→delegate switch that drifts from
+   * the tool it describes (the same reason {@link policyTarget} and {@link effect} live on the def).
+   *
+   * The dispatch check stays authoritative: a tool whose delegate is absent still throws
+   * `ToolUnavailableError`. This field only lets a caller avoid ADVERTISING a call that cannot succeed.
+   */
+  readonly requiresDelegate?: ToolDelegateName;
   /**
    * Whether THIS call mutates state outside the process, and what the engine can honestly promise about it
    * ([ADR-0080](../../../../docs/decisions/0080-durable-effect-journal-and-the-tiered-effect-contract.md);

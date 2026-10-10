@@ -1,8 +1,11 @@
 import {
   AgentSessionSchema,
+  canonicalJson,
   SessionMessageSchema,
+  SessionMessageMetaSchema,
   type AgentSessionRecord,
   type SessionMessage,
+  type SessionToolCallPart,
 } from '@relavium/shared';
 import { and, asc, desc, eq, isNull, sql } from 'drizzle-orm';
 
@@ -18,6 +21,10 @@ import {
   sessionCosts,
 } from './schema.js';
 import { epochMsToIso, isoToEpochMs } from './time.js';
+import {
+  reserveSessionEffectTurnKey,
+  reserveOneShotSessionEffectTurnKey,
+} from './session-effect-turns.js';
 
 /**
  * Session persistence (workstream **1.X**) — the directly-stored, append-only transcript layer over the
@@ -27,13 +34,14 @@ import { epochMsToIso, isoToEpochMs } from './time.js';
  * The mappers are the single **domain ↔ row** translation point, and the single **validation boundary**:
  * every value is parsed against its `@relavium/shared` schema on the way in (write) and out (read), so a
  * malformed transcript can neither be persisted nor returned, and the reasoning `signature` / inline media
- * a {@link DurableContentPart} forbids stay structurally impossible end to end (ADR-0030/0031). Timestamps
+ * the session-only content union forbids stay structurally impossible end to end (ADR-0030/0031). Timestamps
  * are ISO-8601 in the domain and epoch-millisecond `INTEGER`s in storage — converted only here, at the edge.
  *
- * `SessionMessage.content` (a `DurableContentPart[]`) is the canonical body, stored as JSON in
+ * `SessionMessage.content` (a `SessionContentPart[]`) is the canonical body, stored as JSON in
  * `content_parts`; the other scalar columns (`content` text projection, `tool_calls`, `tool_call_id`,
- * `name`, `finish_reason`, token/cost counters) are **optional denormalized metadata** supplied via
- * {@link SessionMessageMeta} — NULL/0 when the durable parts array is the sole source of a row.
+ * `name`, `finish_reason`) are **optional denormalized metadata** supplied via
+ * {@link SessionMessageMeta} — NULL when the durable parts array is the sole source of a row. Every supplied metadata projection is
+ * validated and joined back to that canonical body on write AND read (ADR-0095).
  *
  * This package is host-facing (it uses `better-sqlite3`); the platform-free engine never imports it. The
  * desktop / CLI open `history.db` and wire this store — the desktop with SQLCipher (ADR-0005), the CLI
@@ -43,16 +51,68 @@ import { epochMsToIso, isoToEpochMs } from './time.js';
 
 /**
  * Optional denormalized metadata for a `session_messages` row that is **not** part of the canonical
- * {@link SessionMessage} transcript: a plain-text projection (display/search), the OpenAI-shape
- * `tool_calls`, the `tool_call_id` / `name` / `finish_reason` scalars, and the per-message token/cost
- * counters. All optional — the durable `content_parts` array is the source of truth for the body.
+ * {@link SessionMessage} transcript: a matching text projection (display/search), session-only structural
+ * tool_calls, the matching tool_call_id/name, and a fixed finish_reason. All optional — the durable `content_parts` array is the source of truth for the body.
  */
 export interface SessionMessageMeta {
   readonly content?: string;
-  readonly toolCalls?: unknown;
+  readonly toolCalls?: readonly SessionToolCallPart[];
   readonly toolCallId?: string;
   readonly name?: string;
   readonly finishReason?: string;
+}
+
+export class SessionMessageBoundaryError extends Error {
+  readonly code: 'message_invalid' | 'metadata_invalid';
+  constructor(code: 'message_invalid' | 'metadata_invalid') {
+    // Unknown property names and JSON syntax diagnostics can themselves contain tool content. Refusal
+    // therefore exposes a fixed code, never the untrusted value, its property names or a raw Zod cause.
+    super('session message refused at the persistence boundary');
+    this.name = 'SessionMessageBoundaryError';
+    this.code = code;
+  }
+}
+
+function validateSessionMessage(value: unknown): SessionMessage {
+  const parsed = SessionMessageSchema.safeParse(value);
+  if (!parsed.success) throw new SessionMessageBoundaryError('message_invalid');
+  return parsed.data;
+}
+
+function validateMessageMeta(message: SessionMessage, value: unknown): SessionMessageMeta {
+  const parsed = SessionMessageMetaSchema.safeParse(value);
+  if (!parsed.success) throw new SessionMessageBoundaryError('metadata_invalid');
+  const meta = parsed.data;
+  const calls = message.content.filter((part) => part.type === 'tool_call');
+  const results = message.content.filter((part) => part.type === 'tool_result');
+  const text = message.content
+    .filter((part) => part.type === 'text')
+    .map((part) => part.text)
+    .join('\n\n');
+  if (
+    (meta.content !== undefined && meta.content !== text) ||
+    (meta.toolCalls !== undefined && canonicalJson(meta.toolCalls) !== canonicalJson(calls)) ||
+    (meta.name !== undefined && (calls.length !== 1 || meta.name !== calls[0]?.name)) ||
+    (meta.toolCallId !== undefined &&
+      (results.length !== 1 || meta.toolCallId !== results[0]?.toolCallId)) ||
+    (meta.finishReason !== undefined && message.role !== 'assistant')
+  )
+    throw new SessionMessageBoundaryError('metadata_invalid');
+  return {
+    ...(meta.content === undefined ? {} : { content: meta.content }),
+    ...(meta.toolCalls === undefined ? {} : { toolCalls: meta.toolCalls }),
+    ...(meta.toolCallId === undefined ? {} : { toolCallId: meta.toolCallId }),
+    ...(meta.name === undefined ? {} : { name: meta.name }),
+    ...(meta.finishReason === undefined ? {} : { finishReason: meta.finishReason }),
+  };
+}
+
+function messageJson(text: string, code: 'message_invalid' | 'metadata_invalid'): unknown {
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    throw new SessionMessageBoundaryError(code);
+  }
 }
 
 /** Map a validated {@link AgentSessionRecord} to an `agent_sessions` insert row (validates on the way in). */
@@ -141,6 +201,8 @@ function mutableSessionColumns(record: AgentSessionRecord): Partial<NewAgentSess
   // from an in-memory record would clobber a concurrent commitment, which is precisely the race the realized
   // total's single-writer rule already defends against.
   delete mutable.totalConservativeMicrocents;
+  // ADR-0098: not part of AgentSessionRecord/toAgentSessionRow at all; only the allocator writes this mark.
+  delete mutable.effectTurnHighWater;
   return mutable;
 }
 
@@ -149,19 +211,21 @@ export function toSessionMessageRow(
   message: SessionMessage,
   meta: SessionMessageMeta = {},
 ): NewSessionMessageRow {
-  const m = SessionMessageSchema.parse(message);
+  const m = validateSessionMessage(message);
+  const validatedMeta = validateMessageMeta(m, meta);
   return {
     id: m.id,
     sessionId: m.sessionId,
     sequenceNumber: m.sequenceNumber,
     role: m.role,
-    content: meta.content ?? null,
+    content: validatedMeta.content ?? null,
     // The canonical durable body — the source of truth round-tripped by fromSessionMessageRow.
     contentParts: JSON.stringify(m.content),
-    toolCalls: meta.toolCalls === undefined ? null : JSON.stringify(meta.toolCalls),
-    toolCallId: meta.toolCallId ?? null,
-    name: meta.name ?? null,
-    finishReason: meta.finishReason ?? null,
+    toolCalls:
+      validatedMeta.toolCalls === undefined ? null : JSON.stringify(validatedMeta.toolCalls),
+    toolCallId: validatedMeta.toolCallId ?? null,
+    name: validatedMeta.name ?? null,
+    finishReason: validatedMeta.finishReason ?? null,
     modelId: m.modelId ?? null,
     // ADR-0062 boundary marker: NULL for every normal row; the durable boundary for a compaction/trim marker.
     compactionDroppedThroughSequence: m.compaction?.droppedThroughSequence ?? null,
@@ -172,8 +236,9 @@ export function toSessionMessageRow(
 /**
  * Reconstruct a {@link SessionMessage} from a row. The Zod parse validates **schema-level** integrity — and
  * is the read-side guarantee that a base64/inline-media or signature-bearing `content_parts` (one that
- * slipped past the write path) can never be RETURNED (ADR-0030/0031); a non-JSON byte-corruption surfaces
- * earlier as a thrown `SyntaxError` from `JSON.parse`, aborting the read.
+ * slipped past the write path) can never be returned (ADR-0030/0031/0095). Invalid content or metadata
+ * aborts the read with a fixed SessionMessageBoundaryError, including malformed JSON whose native parser
+ * diagnostic could otherwise contain sensitive content.
  */
 export function fromSessionMessageRow(row: SessionMessageRow): SessionMessage {
   const candidate = {
@@ -181,14 +246,24 @@ export function fromSessionMessageRow(row: SessionMessageRow): SessionMessage {
     sessionId: row.sessionId,
     sequenceNumber: row.sequenceNumber,
     role: row.role,
-    content: row.contentParts === null ? [] : (JSON.parse(row.contentParts) as unknown),
+    content: row.contentParts === null ? [] : messageJson(row.contentParts, 'message_invalid'),
     ...(row.modelId === null ? {} : { modelId: row.modelId }),
     ...(row.compactionDroppedThroughSequence === null
       ? {}
       : { compaction: { droppedThroughSequence: row.compactionDroppedThroughSequence } }),
     timestamp: epochMsToIso(row.createdAt),
   };
-  return SessionMessageSchema.parse(candidate);
+  const message = validateSessionMessage(candidate);
+  validateMessageMeta(message, {
+    ...(row.content === null ? {} : { content: row.content }),
+    ...(row.toolCalls === null
+      ? {}
+      : { toolCalls: messageJson(row.toolCalls, 'metadata_invalid') }),
+    ...(row.toolCallId === null ? {} : { toolCallId: row.toolCallId }),
+    ...(row.name === null ? {} : { name: row.name }),
+    ...(row.finishReason === null ? {} : { finishReason: row.finishReason }),
+  });
+  return message;
 }
 
 /**
@@ -290,6 +365,13 @@ export interface SessionTurnWrite {
 }
 
 export interface SessionStore {
+  /**
+   * Single-writer durable effect identity; independent of transcript projection and max_turns.
+   * Owns its outer commit and refuses transaction_active if called inside any open transaction.
+   */
+  reserveEffectTurnKey: (sessionId: string) => number;
+  /** Fresh, already-tombstoned bookkeeping only; no one-shot transcript is persisted. */
+  reserveOneShotEffectTurnKey: (sessionId: string, now: number) => number;
   /** Insert a new `agent_sessions` row. */
   createSession: (record: AgentSessionRecord) => void;
   /** Overwrite a session's mutable fields (status, totals, title, exportedWorkflowPath, …) by id. */
@@ -456,6 +538,9 @@ export function createSessionStore(db: Db): SessionStore {
       }));
 
   return {
+    reserveEffectTurnKey: (sessionId) => reserveSessionEffectTurnKey(db, sessionId),
+    reserveOneShotEffectTurnKey: (sessionId, now) =>
+      reserveOneShotSessionEffectTurnKey(db, sessionId, now),
     // The three single-statement session writers below go through `withBusyRetry` (#228). They are NOT wrapped
     // in a transaction — a lone INSERT/UPDATE already takes the write lock immediately, so `BEGIN IMMEDIATE`
     // would buy nothing, which is why `database-schema.md` exempts single-statement writes from it. The retry

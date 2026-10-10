@@ -20,6 +20,10 @@
 
 export * from './bytes.js';
 export * from './canonical.js';
+export * from './deep-equal.js';
+export * from './budget-authorization.js';
+export * from './run-suspension.js';
+export * from './run-history-errors.js';
 export * from './json-schema-compiler.js';
 export * from './ordering.js';
 export * from './terminal-safe.js';
@@ -34,5 +38,7 @@ export * from './edge.js';
 export * from './workflow.js';
 export * from './run-event.js';
 export * from './session.js';
+export * from './session-content.js';
+export * from './session-history.js';
 export * from './run.js';
 export * from './config.js';

@@ -143,8 +143,26 @@ YAML as `timeout_action`; see
 one-shot timer from the injected clock when the gate parks. The two timeout outcomes differ from a
 human decision: `approve` **auto-resolves** the gate as approved (`decidedBy: 'timeout'`, the run
 continues); `reject` **fails** the run with `run_timeout` (the `AwaitingGate → Failed` edge above) —
-this is what stops a forgotten gate from blocking a run forever. A decision that arrives first
-disarms the timer.
+this is what stops a forgotten gate from blocking a run forever. If an automatic approval is
+refused, including a stale or reject-only budget quote, that deadline also fails the run with
+`run_timeout`; it does not override the refusal or leave an unresolved gate without a timer.
+A decision that arrives first disarms the timer. A competing synchronous decision claim is
+preserved even while its pending row remains until durable acknowledgement; neither a queued
+timeout rejection nor a late refused auto-approval can replace it. A terminal outcome is also
+preserved.
+
+A new frozen **budget** gate has different semantics: approval requires its exact amount and leaves
+the agent pending for a governed dispatch; rejection fails `budget_exceeded`. A legacy approval
+grants no allowance and re-runs under current budget checks. Neither form completes
+the agent with a decision object or removes its pre-egress hook. The engine acknowledges durable
+authorization before companions or approved work, and an unresolved external effect still refuses
+resume. During restart admission, the supplied target decision precedes timer construction;
+surviving gates re-arm at their absolute remaining time. The authoritative protocol is in
+[sse-event-schema.md](../reference/contracts/sse-event-schema.md#durable-budget-authorization),
+and preparation/debit behaviour in [agent-runner.md](../reference/shared-core/agent-runner.md#preparing-and-resuming-a-budget-dispatch).
+The CLI offers exact-amount inline confirmation and the out-of-band
+[`budget resume` command](../reference/cli/commands.md#relavium-budget-resume), with strict authority-based
+discovery and the existing secret/MCP resume obligations.
 
 The gate event/decision shapes are part of the
 [SSE event schema](../reference/contracts/sse-event-schema.md) and the
@@ -177,15 +195,33 @@ fires for any reason, an executor that does not settle within it is abandoned, i
 `node:failed`, and the run reaches its terminal. That makes exactly-one-terminal a liveness property with
 respect to the EXECUTOR — §6 of that ADR states the half that stays conditional on the store.
 
+#### Per-append acknowledgement and late incurred receipts
+
+The ordered writer reports the actual result of each append internally: persisted, refused or
+failed. Required realized/conservative money bridges observe that append's acknowledgement;
+absence of a new run failure is insufficient evidence that their write landed. Expected-head
+selection and advancement happen inside the ordered writer after ownership admission. A
+successfully acknowledged terminal advances that head, so a permitted later incurred ledger
+receipt appends after the same terminal through the same writer without changing its outcome.
+
+A terminal whose persistence is uncertain latches refusal before any subsequent ownership check,
+head change or store entry. Later run-event receipts cannot displace its original terminal-outbox
+cause or ordering. A post-acknowledgement cosmetic callback cannot revoke persistence truth.
+The distinction between bounded terminal publication and retained receipt/fence lifetime lives in
+[shared-core-engine.md](shared-core-engine.md#internal-departure-foundations-adr-0103), which also
+defines the public `RunHandle.depart()` result and its independent host acknowledgement.
+
 ### 6. Finish
 
-On the last node the engine writes the final output and a cost record to SQLite,
-then emits `run:completed` (or `run:failed` if the run failed). Per-node token counts
-and per-run cost accumulate as `cost:updated` events during the run (payload
-`{ nodeId, model, inputTokens, outputTokens, costMicrocents, cumulativeCostMicrocents }`) and are
-persisted at the end — the source of the per-node cost waterfall in the UI. Cost
-accounting is computed in `packages/llm`; see
-[multi-llm-providers.md](multi-llm-providers.md).
+On the last node the engine writes the final output and its terminal record to SQLite
+before delivering `run:completed` (or `run:failed` if the run failed). Live `cost:updated`
+events report token counts and realized cost; realized charges are also persisted
+per attempt behind the durability barrier of
+[ADR-0076](../decisions/0076-durable-per-attempt-realized-cost-ledger.md) and
+[ADR-0077](../decisions/0077-realized-cost-ledger-uses-the-conservative-commitment-barrier.md),
+rather than waiting for the run to finish. The exact event and accounting contracts live
+in [sse-event-schema.md](../reference/contracts/sse-event-schema.md). Cost accounting
+is computed in `packages/llm`; see [multi-llm-providers.md](multi-llm-providers.md).
 
 ## Failure and recovery
 
@@ -193,14 +229,21 @@ accounting is computed in `packages/llm`; see
   optionally adjusting inputs). A required node is never silently skipped.
 - **Provider failure** — `packages/llm` walks the agent's fallback chain before
   the node is considered failed.
-- **Crash recovery** — on startup the host reconciles in-flight runs from their
-  last checkpoint rather than losing them.
-- **Retry-from-node** — a user can re-run from any node; the stable idempotency
-  key (`runId + nodeId + retryCount`) prevents double-applied side effects.
-  *Forward-compatibility:* Phase 1 is DAG-only, so a node executes at most once per
-  run. When loops land (a future ADR), a node may execute multiple times within one
-  run, so the key gains an `iterationIndex` to keep each iteration's side effects
-  distinct.
+- **Crash recovery** — the engine exposes reconciliation of interrupted, non-resumable runs;
+  this is an explicit host operation, not an automatic shipping CLI startup guarantee. Recorded
+  budget rejection retains `budget_exceeded`, while an ordinary interruption uses `internal`.
+  Interrupted-run discovery refuses corrupt suspension history as a whole. The derived metadata,
+  corruption and durable terminal rules live in the
+  [event contract](../reference/contracts/sse-event-schema.md#durable-budget-authorization).
+- **Retry and resume with effects** — the durable effect journal brackets an effectful
+  dispatch. The guarantee depends on the target
+  ([ADR-0080](../decisions/0080-durable-effect-journal-and-the-tiered-effect-contract.md));
+  the shipping tier-3 contract is at-most-once dispatch attempt, with retained-result
+  re-delivery where available and a preflight refusal when the earlier effect cannot be
+  resolved safely. A retry count is not a durable idempotency key and does not prevent
+  double effects. The identities, replay and refusal rules have one canonical home in
+  [effect-journal.md](../reference/shared-core/effect-journal.md). Future loop support
+  requires its own effect-identity decision before implementation.
 
 ## Local vs cloud execution
 

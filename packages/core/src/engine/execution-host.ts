@@ -19,11 +19,13 @@ import {
   type AbortControllerLike,
   type AbortSignalLike,
   AppendConflictError,
+  CorruptRunEventError,
   blocksResume,
   type DurableWriteContext,
   EffectConflictError,
   EffectTransitionError,
   type EffectCorrelation,
+  type EffectAttemptId,
   type EffectDispatchPort,
   type EffectResumePort,
   effectScope,
@@ -36,6 +38,7 @@ import {
   type MediaWritePort,
   nodeIdFromRunScope,
   type RunEvent,
+  RunSuspensionReducer,
   type RunLeaseInfo,
   type RunLeasePort,
   type TerminalOutbox,
@@ -116,6 +119,8 @@ export interface InterruptedRun {
   readonly workflowId: string;
   /** `true` when the run was suspended at a gate (resumable); `false` when it died mid-execution. */
   readonly resumable: boolean;
+  /** A recorded budget rejection survived without its run terminal; derived from ordered gate history. */
+  readonly budgetRejected?: boolean;
   /** The highest `sequenceNumber` already persisted for this run — the reconcile event continues from it. */
   readonly lastSequenceNumber: number;
 }
@@ -334,18 +339,6 @@ const TERMINAL_TYPES: ReadonlySet<RunEvent['type']> = new Set([
   'run:failed',
   'run:cancelled',
 ]);
-const RESUMABLE_LAST_TYPES: ReadonlySet<RunEvent['type']> = new Set([
-  'human_gate:paused',
-  'run:paused',
-  'budget:paused',
-  // An async media-job park (1.AG Section D, ADR-0045 §2-3): `media_job:submitted` is persisted in its own
-  // turn BEFORE the later `run:paused`, so a crash in that window leaves it as the durable last event. The
-  // run is re-attachable — the checkpoint fold derives a `pendingMediaJobs` slot from it and
-  // `resumeFromCheckpoint` re-polls the opaque jobId (never re-submits). Reconciling it to `run:failed` would
-  // orphan a paid, still-generating provider LRO, so it must be left for the resume path — like a gate park.
-  'media_job:submitted',
-]);
-
 /** Format a counter into a syntactically-valid (RFC-4122-shaped) UUID — deterministic for tests. */
 function counterUuid(n: number): string {
   const hex = n.toString(16).padStart(12, '0');
@@ -478,11 +471,19 @@ export class InMemoryRunStore implements RunStore {
       if (events.some((e) => TERMINAL_TYPES.has(e.type))) {
         continue; // already settled
       }
-      const last = events.at(-1);
+      const suspension = new RunSuspensionReducer();
+      for (const event of events) {
+        try {
+          suspension.apply(event);
+        } catch (cause) {
+          throw new CorruptRunEventError(runId, event.sequenceNumber, event.type, cause);
+        }
+      }
       interrupted.push({
         runId,
         workflowId: started.workflowId,
-        resumable: last !== undefined && RESUMABLE_LAST_TYPES.has(last.type),
+        resumable: suspension.isResumable(runId),
+        ...(suspension.budgetRejections(runId).length === 0 ? {} : { budgetRejected: true }),
         lastSequenceNumber: events.reduce((max, e) => Math.max(max, e.sequenceNumber), -1),
       });
     }
@@ -726,6 +727,7 @@ export function createInMemoryEffectJournalStore(): {
     toolId: string;
     tier: EffectTier;
     state: EffectState;
+    attempt?: Pick<EffectAttemptId, 'providerAttempt' | 'toolCallId'>;
     result?: unknown;
   }[];
 } {
@@ -735,6 +737,7 @@ export function createInMemoryEffectJournalStore(): {
     toolId: string;
     tier: EffectTier;
     state: EffectState;
+    attempt?: Pick<EffectAttemptId, 'providerAttempt' | 'toolCallId'>;
     /** A stand-in for the host's SHA-256: only EQUALITY matters, and core cannot hash (engine purity). */
     argsKey: string;
     /**
@@ -755,7 +758,7 @@ export function createInMemoryEffectJournalStore(): {
     for: (correlation) => {
       const scope = effectScope(correlation);
       return {
-        prepare: (slot, toolId, tier, redactedArgs) => {
+        prepare: (slot, toolId, tier, redactedArgs, _targetKey, callAttempt) => {
           const held = rows.get(key(scope, slot, toolId));
           const argsKey = JSON.stringify(redactedArgs) ?? 'undefined';
           if (held !== undefined) {
@@ -763,6 +766,7 @@ export function createInMemoryEffectJournalStore(): {
             // what SQLite refuses — or refused what it replays — would make every core test over the gate
             // vacuous; this repo has been bitten by exactly that divergence before.
             if (
+              correlation.kind === 'run' &&
               held.state === 'committed' &&
               held.argsKey === argsKey &&
               held.resultJson !== undefined
@@ -782,6 +786,7 @@ export function createInMemoryEffectJournalStore(): {
             toolId,
             tier,
             state: 'prepared',
+            ...(callAttempt === undefined ? {} : { attempt: { ...callAttempt } }),
             argsKey,
           });
           return Promise.resolve({ outcome: 'proceed' });
@@ -800,7 +805,10 @@ export function createInMemoryEffectJournalStore(): {
           }
           {
             // Serialized on the way in, as `resultJson: JSON.stringify(result)` does in the SQLite store.
-            const resultJson = result === undefined ? undefined : JSON.stringify(result);
+            const resultJson =
+              correlation.kind === 'session' || result === undefined
+                ? undefined
+                : JSON.stringify(result);
             rows.set(key(scope, slot, toolId), {
               ...row,
               state,
@@ -855,7 +863,10 @@ export function createInMemoryEffectJournalStore(): {
         toolId: row.toolId,
         tier: row.tier,
         state: row.state,
-        ...(row.resultJson === undefined ? {} : { result: JSON.parse(row.resultJson) as unknown }),
+        ...(row.attempt === undefined ? {} : { attempt: { ...row.attempt } }),
+        ...(row.scope.startsWith('session:') || row.resultJson === undefined
+          ? {}
+          : { result: JSON.parse(row.resultJson) as unknown }),
       })),
   };
 }
@@ -867,6 +878,7 @@ export function createInMemoryEffectJournal(correlation: EffectCorrelation): Eff
     toolId: string;
     tier: EffectTier;
     state: EffectState;
+    attempt?: Pick<EffectAttemptId, 'providerAttempt' | 'toolCallId'>;
     result?: unknown;
   }[];
 } {

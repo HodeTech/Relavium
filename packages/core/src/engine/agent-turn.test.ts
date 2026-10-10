@@ -1,4 +1,9 @@
-import { LlmProviderError, makeLlmError } from '@relavium/llm';
+import {
+  LlmProviderError,
+  makeLlmError,
+  estimateRequestTokens,
+  prepareOutputCapPlan,
+} from '@relavium/llm';
 import type {
   CapabilityFlags,
   LlmMessage,
@@ -15,6 +20,7 @@ import { ADMISSION_CEILINGS } from '../limits.js';
 import type { CommitmentOrigin } from './budget-governor.js';
 import {
   ToolCancelledError,
+  ToolDispatchError,
   ToolExecutionError,
   ToolPolicyError,
   ToolUnavailableError,
@@ -28,12 +34,16 @@ import type {
   ToolResultPart,
 } from '../tools/types.js';
 import { markUntrusted } from '../tools/untrusted.js';
+import { createToolRegistry } from '../tools/registry.js';
+import type { ToolDef as RegistryToolDef } from '../tools/types.js';
 import { BudgetExceededError, BudgetPauseError } from './budget-governor.js';
 import {
   AgentTurnError,
   DEFAULT_AGENT_TURN_LIMITS,
   runAgentTurn,
+  captureAgentTurnOutcome,
   type AgentTurnParams,
+  type PreEgressInfo,
   type ChainCapabilities,
   codeForLlmError,
   foldRetryable,
@@ -551,7 +561,7 @@ describe('runAgentTurn — inline media-out (1.AG/ADR-0046)', () => {
     expect(result.model).toBe('gpt-image-1'); // attributed to the succeeding (failed-over) model
   });
 
-  it('maps a generate() budget-exceeded cause to budget_exceeded (the throwMappedChainError cause unwrap)', async () => {
+  it('does not grant budget authority to a generated provider error cause', async () => {
     const provider: LlmProvider = {
       id: 'gemini',
       supports: MEDIA_CAPS,
@@ -574,8 +584,52 @@ describe('runAgentTurn — inline media-out (1.AG/ADR-0046)', () => {
       planEntries: [{ provider, model: 'gemini-2.5-flash', maxAttempts: 1 }],
       outputModalities: ['image'],
     });
-    await expect(runAgentTurn(params)).rejects.toMatchObject({ code: 'budget_exceeded' });
+    await expect(runAgentTurn(params)).rejects.toMatchObject({
+      code: 'internal',
+      retryable: false,
+    });
   });
+
+  it.each(['fail', 'pause'] as const)(
+    'preserves the real generated pre-egress %s decision without a provider call',
+    async (decision) => {
+      let calls = 0;
+      const provider = mediaGenerateProvider('gemini', {
+        content: [image],
+        stopReason: 'stop',
+        usage: { inputTokens: 1, outputTokens: 1 },
+      });
+      const marker =
+        decision === 'fail'
+          ? new BudgetExceededError(120, 50, 130)
+          : new BudgetPauseError(120, 50, 130);
+      const params = baseParams(
+        {
+          ...provider,
+          generate: (...args) => {
+            calls++;
+            return provider.generate(...args);
+          },
+        },
+        {
+          outputModalities: ['image'],
+          preEgress: () => {
+            throw marker;
+          },
+        },
+      );
+      if (decision === 'fail') {
+        await expect(runAgentTurn(params)).rejects.toMatchObject({
+          code: 'budget_exceeded',
+          retryable: false,
+          engaged: false,
+        });
+      } else {
+        await expect(runAgentTurn(params)).rejects.toBe(marker);
+      }
+      expect(calls).toBe(0);
+    },
+  );
 
   it('a pre-aborted signal on the media path fails cancelled with zero generate() egress', async () => {
     let called = false;
@@ -1086,13 +1140,78 @@ describe('runAgentTurn — tool loop', () => {
     ]);
     const params = baseParams(provider, {
       registry,
+      sessionToolCallId: (slot) => `session-tool:42:${String(slot)}`,
       limits: { ...DEFAULT_AGENT_TURN_LIMITS, recoverToolFailures: true },
     });
     const result = await runAgentTurn(params);
     expect(result.text).toBe('recovered'); // the turn continued past the scope denial
+    expect(result.toolHistory.map((entry) => entry.result.outcome)).toEqual(['denied', 'ok']);
     expect(
       eventsOf(params).find((e) => e.type === 'agent:tool_result' && !e.success),
     ).toBeDefined();
+  });
+
+  it.each(['array', 'object'] as const)(
+    'records deeply nested valid JSON %s arguments without blocking correction',
+    async (shape) => {
+      const depth = 15_000;
+      const nested =
+        shape === 'array'
+          ? `${'['.repeat(depth)}0${']'.repeat(depth)}`
+          : `${'{"x":'.repeat(depth)}0${'}'.repeat(depth)}`;
+      const args = `{"value":${nested}}`;
+      const registry = stubRegistry(() => {
+        throw new UnknownToolError('echo', ['echo']);
+      });
+      const provider = scriptedProvider('anthropic', [
+        [
+          { type: 'tool_call_start', id: 'provider-id', name: 'echo' },
+          { type: 'tool_call_delta', id: 'provider-id', argsJsonDelta: args },
+          { type: 'tool_call_end', id: 'provider-id' },
+          STOP('tool_use'),
+        ],
+        [{ type: 'text_delta', text: 'corrected' }, STOP()],
+      ]);
+      const result = await runAgentTurn(
+        baseParams(provider, { registry, sessionToolCallId: () => 'session-tool:42:0' }),
+      );
+      expect(result.text).toBe('corrected');
+      expect(result.toolHistory[0]?.call).toEqual({
+        type: 'tool_call',
+        id: 'session-tool:42:0',
+        name: 'unknown_tool',
+        argsBytes: args.length,
+      });
+      expect(JSON.stringify(result.toolHistory)).not.toContain('provider-id');
+    },
+    30_000, // Structural depth control, matching owned-graph stress; no five-second latency guarantee.
+  );
+
+  it('retains a registered call name when a recoverable host denial carries no tool id', async () => {
+    class ScopeDenial extends ToolDispatchError {
+      readonly code = 'tool_denied';
+      readonly runErrorCode = 'tool_denied';
+      readonly retryable = false;
+      constructor() {
+        super('out of scope', undefined, undefined, true);
+      }
+    }
+    const registry = stubRegistry(() => {
+      throw new ScopeDenial();
+    });
+    const provider = scriptedProvider('anthropic', [
+      toolUseTurn('c1'),
+      [{ type: 'text_delta', text: 'recovered' }, STOP()],
+    ]);
+    const result = await runAgentTurn(
+      baseParams(provider, {
+        registry,
+        sessionToolCallId: () => 'session-tool:42:0',
+        limits: { ...DEFAULT_AGENT_TURN_LIMITS, recoverToolFailures: true },
+      }),
+    );
+    expect(result.toolHistory[0]?.call.name).toBe('echo');
+    expect(result.toolHistory[0]?.result.outcome).toBe('denied');
   });
 
   it('does NOT recover a NON-scope tool_denied (a guardrail denial) even with recoverToolFailures (Step 14)', async () => {
@@ -1777,10 +1896,10 @@ describe('media attachments are delivered on a synthesized user message (`CR-50`
   }
 
   /** A registry whose one tool answers with a text descriptor plus a handle-only media attachment. */
-  function mediaRegistry(): ToolRegistry {
+  function mediaRegistry(attachment: DurableMediaPart = ATTACHMENT): ToolRegistry {
     return stubRegistry((call) => ({
       output: `image/png, 5 bytes, ${HANDLE} — attached below.`,
-      mediaAttachments: markUntrusted([ATTACHMENT]),
+      mediaAttachments: markUntrusted([attachment]),
       truncated: false,
       toolResult: markUntrusted({
         type: 'tool_result' as const,
@@ -1804,6 +1923,33 @@ describe('media attachments are delivered on a synthesized user message (`CR-50`
     { type: 'tool_call_end', id: 'c1' },
     STOP('tool_use'),
   ];
+
+  it('records only tool media handles and safe metadata, never synthesized user text or media hints', async () => {
+    const { provider } = capturingProvider([
+      toolTurn,
+      [{ type: 'text_delta', text: 'done' }, STOP()],
+    ]);
+    const result = await runAgentTurn(
+      baseParams(provider, {
+        registry: mediaRegistry({
+          ...ATTACHMENT,
+          name: 'private-name-sentinel',
+          transcript: 'private-transcript-sentinel',
+          byteLength: 5,
+        }),
+        sessionToolCallId: () => 'session-tool:42:0',
+      }),
+    );
+    expect(result.toolHistory[0]?.result.media).toEqual([{ ...ATTACHMENT, byteLength: 5 }]);
+    expect(result.toolHistory[0]?.call).toEqual({
+      type: 'tool_call',
+      id: 'session-tool:42:0',
+      name: 'read_media',
+      argsBytes: 2,
+    });
+    expect(JSON.stringify(result.toolHistory)).not.toContain('sentinel');
+    expect(JSON.stringify(result.toolHistory)).not.toContain('Relavium');
+  });
 
   it('appends the media on a `user` message AFTER the tool result, in that order', async () => {
     const { provider, sent } = capturingProvider([
@@ -1982,4 +2128,766 @@ describe('media attachments are delivered on a synthesized user message (`CR-50`
     // `user` turn. An extra blank message costs tokens on every tool call in every session.
     expect(continuation[toolAt + 1]).toBeUndefined();
   });
+});
+
+describe('failed-attempt reservations use chain-owned facts (ADR-0096)', () => {
+  const refundable = [429, 400, 401, 402, 403, 404, 413, 422];
+  const uncertain = [408, 409, 418, 499, 500, 502, 503, 529];
+  for (const custom of [false, true]) {
+    it.each([...refundable, ...uncertain])(
+      `pre-content HTTP %s, custom=${custom}`,
+      async (status) => {
+        let releases = 0;
+        let commitments = 0;
+        const error = makeLlmError({
+          provider: 'anthropic',
+          kind: 'bad_request',
+          message: 'refused',
+          status,
+        });
+        const provider = {
+          ...scriptedProvider('anthropic', [[{ type: 'error', error }]]),
+          customEndpoint: custom,
+        };
+        await expect(
+          runAgentTurn(
+            baseParams(provider, {
+              preEgress: () => ({
+                settle: () => {
+                  throw new Error('unexpected realized usage');
+                },
+                release: () => {
+                  releases++;
+                },
+                settleAtReservedEstimate: () => {
+                  commitments++;
+                },
+              }),
+            }),
+          ),
+        ).rejects.toBeInstanceOf(AgentTurnError);
+        expect(releases).toBe(!custom && refundable.includes(status) ? 1 : 0);
+        expect(commitments).toBe(custom || !refundable.includes(status) ? 1 : 0);
+      },
+    );
+  }
+
+  it.each([
+    { type: 'text_delta', text: '' },
+    { type: 'reasoning_start', id: 'r' },
+    { type: 'reasoning_delta', id: 'r', text: '' },
+    { type: 'tool_call_start', id: 't', name: 'echo' },
+  ] satisfies StreamChunk[])(
+    'even an empty $type prevents a status-based refund',
+    async (chunk) => {
+      let releases = 0;
+      let commitments = 0;
+      const error = makeLlmError({
+        provider: 'anthropic',
+        kind: 'rate_limit',
+        message: 'refused',
+        status: 429,
+      });
+      const provider = scriptedProvider('anthropic', [[chunk, { type: 'error', error }]]);
+      await expect(
+        runAgentTurn(
+          baseParams(provider, {
+            preEgress: () => ({
+              settle: () => undefined,
+              release: () => {
+                releases++;
+              },
+              settleAtReservedEstimate: () => {
+                commitments++;
+              },
+            }),
+          }),
+        ),
+      ).rejects.toBeInstanceOf(AgentTurnError);
+      expect(releases).toBe(0);
+      expect(commitments).toBe(1);
+    },
+  );
+
+  it.each(['timeout', 'transport', 'cancelled', 'unknown'] as const)(
+    'a %s without positive refusal evidence keeps the reservation',
+    async (kind) => {
+      let releases = 0;
+      let commitments = 0;
+      const provider = scriptedProvider('anthropic', [
+        [
+          {
+            type: 'error',
+            error: makeLlmError({ provider: 'anthropic', kind, message: 'failed' }),
+          },
+        ],
+      ]);
+      await expect(
+        runAgentTurn(
+          baseParams(provider, {
+            preEgress: () => ({
+              settle: () => undefined,
+              release: () => {
+                releases++;
+              },
+              settleAtReservedEstimate: () => {
+                commitments++;
+              },
+            }),
+          }),
+        ),
+      ).rejects.toBeInstanceOf(AgentTurnError);
+      expect(releases).toBe(0);
+      expect(commitments).toBe(1);
+    },
+  );
+});
+
+describe('pre-egress current-round request estimation (ADR-0096/0101)', () => {
+  it.each([false, true])(
+    'includes the constructed structured response format on the inline-media=%s path',
+    async (media) => {
+      const responseFormat = {
+        type: 'json' as const,
+        schema: { type: 'object' as const, description: 'x'.repeat(40_000) },
+      };
+      const source = media
+        ? mediaGenerateProvider('gemini', {
+            content: [
+              { type: 'text', text: '{}' },
+              { type: 'media', mimeType: 'image/png', source: { kind: 'base64', data: 'aW1n' } },
+            ],
+            stopReason: 'stop',
+            usage: { inputTokens: 3, outputTokens: 1 },
+          })
+        : scriptedProvider('gemini', [[{ type: 'text_delta', text: '{}' }, STOP()]]);
+      let request: LlmRequest | undefined;
+      const provider: LlmProvider = {
+        ...source,
+        generate: (req, key) => {
+          request = req;
+          return source.generate(req, key);
+        },
+        stream: (req, key) => {
+          request = req;
+          return source.stream(req, key);
+        },
+      };
+      const seen: PreEgressInfo[] = [];
+      await runAgentTurn(
+        baseParams(provider, {
+          planEntries: [{ provider, model: 'gemini-2.5-flash', maxAttempts: 1 }],
+          responseFormat,
+          ...(media ? { outputModalities: ['text', 'image'] } : {}),
+          preEgress: (info) => {
+            seen.push(info);
+          },
+        }),
+      );
+      expect(seen).toHaveLength(1);
+      expect(request?.responseFormat).toEqual(responseFormat);
+      expect(request?.responseFormat).not.toBe(responseFormat);
+      expect(Object.isFrozen(request?.responseFormat)).toBe(true);
+      expect(Object.isFrozen(responseFormat)).toBe(false);
+      responseFormat.schema.description = 'caller changed after completion';
+      expect(request?.responseFormat).toMatchObject({
+        schema: { description: 'x'.repeat(40_000) },
+      });
+      expect(seen[0]?.inputTokensEstimate).toBeGreaterThan(10_000);
+      if (request === undefined) throw new Error('missing constructed request');
+      expect(seen[0]?.inputTokensEstimate).toBe(
+        estimateRequestTokens({ ...request, system: request.system ?? '' }),
+      );
+    },
+  );
+
+  it('prices pre-strip input for every fallback and recomputes after the tool loop', async () => {
+    const original: LlmMessage[] = [
+      {
+        role: 'assistant',
+        content: [{ type: 'reasoning', text: 'r'.repeat(4000), signature: 'private-signature' }],
+      },
+      { role: 'user', content: [{ type: 'text', text: 'hi' }] },
+    ];
+    const primary = scriptedProvider('anthropic', [
+      [
+        {
+          type: 'error',
+          error: makeLlmError({ provider: 'anthropic', kind: 'overloaded', message: 'busy' }),
+        },
+      ],
+      [{ type: 'text_delta', text: 'done' }, STOP()],
+    ]);
+    const fallbackCalls: LlmRequest[] = [];
+    const fallbackBase = scriptedProvider('openai', [
+      [
+        { type: 'tool_call_start', id: 't', name: 'echo' },
+        { type: 'tool_call_delta', id: 't', argsJsonDelta: '{"v":1}' },
+        { type: 'tool_call_end', id: 't' },
+        STOP('tool_use'),
+      ],
+    ]);
+    const fallback = {
+      ...fallbackBase,
+      stream: (req: LlmRequest, key: string) => {
+        fallbackCalls.push(req);
+        return fallbackBase.stream(req, key);
+      },
+    };
+    const seen: PreEgressInfo[] = [];
+    await runAgentTurn(
+      baseParams(primary, {
+        messages: original,
+        planEntries: [
+          { provider: primary, model: 'claude-opus-4-8', maxAttempts: 1 },
+          { provider: fallback, model: 'gpt-5.4-mini', maxAttempts: 1 },
+        ],
+        maxTokensEstimate: 17,
+        preEgress: (info) => {
+          seen.push(info);
+        },
+      }),
+    );
+    const expected = estimateRequestTokens({ system: '', messages: original });
+    expect(seen.map((info) => info.provider)).toEqual(['anthropic', 'openai', 'anthropic']);
+    expect(seen[0]?.inputTokensEstimate).toBe(expected);
+    expect(seen[1]?.inputTokensEstimate).toBe(expected);
+    expect(seen[2]?.inputTokensEstimate).toBeGreaterThan(expected);
+    expect(seen.every((info) => info.route === 'text' && info.maxTokensEstimate === 17)).toBe(true);
+    expect(
+      fallbackCalls[0]?.messages
+        .flatMap((message) => message.content)
+        .some((part) => part.type === 'reasoning'),
+    ).toBe(false);
+  });
+});
+
+describe('local preparation and structural tool failures (PR 90)', () => {
+  function toolUseTurn(id: string): StreamChunk[] {
+    return [
+      { type: 'tool_call_start', id, name: 'echo' },
+      { type: 'tool_call_end', id },
+      STOP('tool_use'),
+    ];
+  }
+  it.each(['stream', 'generate'] as const)(
+    '%s keeps mismatched prepared caps as nonretryable validation before admission or credentials',
+    async (path) => {
+      const provider =
+        path === 'stream'
+          ? scriptedProvider('anthropic', [])
+          : mediaGenerateProvider('anthropic', {
+              content: [],
+              stopReason: 'stop',
+              usage: { inputTokens: 0, outputTokens: 0 },
+            });
+      const plan = prepareOutputCapPlan({
+        model: 'claude-opus-4-8',
+        provider: 'anthropic',
+        endpoint: 'custom',
+        maxTokens: 10,
+        providerOptions: undefined,
+      });
+      let admissions = 0;
+      let credentials = 0;
+      const params = baseParams(provider, {
+        maxTokens: 10,
+        preparedOutputCaps: [plan],
+        ...(path === 'generate' ? { outputModalities: ['image'] } : {}),
+        preEgress: () => {
+          admissions += 1;
+        },
+        chainCapabilities: {
+          ...CAPABILITIES,
+          keyFor: () => {
+            credentials += 1;
+            return 'test-key';
+          },
+        },
+      });
+      await expect(runAgentTurn(params)).rejects.toMatchObject({
+        code: 'validation',
+        retryable: false,
+      });
+      expect({ admissions, credentials }).toEqual({ admissions: 0, credentials: 0 });
+      expect(
+        eventsOf(params).some(
+          (event) => event.type === 'agent:token' || event.type === 'agent:tool_call',
+        ),
+      ).toBe(false);
+    },
+  );
+
+  const cycle: Record<string, unknown> = {};
+  cycle['self'] = cycle;
+  const badResults = [
+    { label: 'BigInt', value: 1n },
+    { label: 'cycle', value: cycle },
+    {
+      label: 'throwing serializer',
+      value: {
+        toJSON: (): never => {
+          throw new Error('private-tool-result');
+        },
+      },
+    },
+  ];
+  it.each(badResults)(
+    '$label from a real registry fails structural recording once without becoming a dispatch failure',
+    async ({ value }) => {
+      let dispatches = 0;
+      const tool: RegistryToolDef = {
+        id: 'echo',
+        source: 'builtin',
+        description: 'offline result',
+        parseArgs: (args) => args,
+        llmVisibleParams: { type: 'object' },
+        policy: { fsScoped: false, spawnsProcess: false, requiresGateApproval: false },
+        dispatch: () => {
+          dispatches += 1;
+          return Promise.resolve(value);
+        },
+      };
+      const registry = createToolRegistry({ tools: [tool], host: {} });
+      const provider = scriptedProvider('anthropic', [toolUseTurn('model-id')]);
+      const params = baseParams(provider, {
+        registry,
+        sessionToolCallId: () => 'session-tool:42:0',
+      });
+      await expect(runAgentTurn(params)).rejects.toMatchObject({
+        code: 'tool_failed',
+        retryable: false,
+        message: 'tool payload could not be represented as JSON',
+      });
+      expect(dispatches).toBe(1);
+      const events = eventsOf(params);
+      expect(events.filter((event) => event.type === 'agent:tool_call')).toHaveLength(1);
+      expect(events.some((event) => event.type === 'agent:tool_result')).toBe(false);
+      expect(JSON.stringify(events)).not.toContain('private-tool-result');
+    },
+  );
+  it.each([
+    { label: 'Map', value: new Map([['key', 1]]), bytes: 2 },
+    { label: 'Set', value: new Set([1]), bytes: 2 },
+    { label: 'undefined', value: undefined, bytes: 0 },
+  ])(
+    'retains native $label result accounting with a real registry and a successful continuation',
+    async ({ value, bytes }) => {
+      let dispatches = 0;
+      const tool: RegistryToolDef = {
+        id: 'echo',
+        source: 'builtin',
+        description: 'offline result',
+        parseArgs: (args) => args,
+        llmVisibleParams: { type: 'object' },
+        policy: { fsScoped: false, spawnsProcess: false, requiresGateApproval: false },
+        dispatch: () => {
+          dispatches += 1;
+          return Promise.resolve(value);
+        },
+      };
+      const registry = createToolRegistry({ tools: [tool], host: {} });
+      const provider = scriptedProvider('anthropic', [
+        toolUseTurn('model-id'),
+        [{ type: 'text_delta', text: 'done' }, STOP()],
+      ]);
+      const params = baseParams(provider, {
+        registry,
+        sessionToolCallId: () => 'session-tool:42:0',
+      });
+      const result = await runAgentTurn(params);
+      expect(result.text).toBe('done');
+      expect(result.toolHistory).toHaveLength(1);
+      expect(result.toolHistory[0]?.call).toMatchObject({ id: 'session-tool:42:0', name: 'echo' });
+      expect(result.toolHistory[0]?.result.resultBytes).toBe(bytes);
+      expect(dispatches).toBe(1);
+      expect(eventsOf(params).filter((event) => event.type === 'agent:tool_call')).toHaveLength(1);
+      expect(eventsOf(params).filter((event) => event.type === 'agent:tool_result')).toHaveLength(
+        1,
+      );
+    },
+  );
+});
+
+describe('public turn error identity survives immutable and accessor metadata', () => {
+  it.each(['frozen', 'accessor'] as const)(
+    '%s classified callback preserves the exact error and no retries',
+    async (kind) => {
+      const marker = new AgentTurnError('internal', 'fixed classified failure', false);
+      if (kind === 'frozen') Object.freeze(marker);
+      else
+        Object.defineProperty(marker, 'engaged', {
+          get: () => {
+            throw new Error('metadata must not be read');
+          },
+        });
+      const provider = scriptedProvider('anthropic', [
+        [{ type: 'text_delta', text: 'observed' }, STOP()],
+      ]);
+      const params = baseParams(provider, {
+        emit: () => {
+          throw marker;
+        },
+      });
+      await expect(runAgentTurn(params)).rejects.toBe(marker);
+    },
+  );
+});
+
+describe('generated accounting retains validated quantities independently of prices', () => {
+  for (const zero of [false, true])
+    it(`known generated usage survives pricing failure (zero=${zero})`, async () => {
+      const usage = { inputTokens: zero ? 0 : 5, outputTokens: zero ? 0 : 6 };
+      const provider = mediaGenerateProvider('anthropic', {
+        content: [{ type: 'text', text: 'paid response' }],
+        stopReason: 'stop',
+        usage,
+      });
+      const prices = new Map<string, import('@relavium/llm').ModelPricing>();
+      prices.get = () => {
+        throw new Error('private pricing fault');
+      };
+      const outcome = await captureAgentTurnOutcome(
+        baseParams(provider, { outputModalities: ['image'], resolvePrice: prices }),
+      );
+      expect(outcome.kind).toBe('failed');
+      if (outcome.kind === 'failed') {
+        expect(outcome.engaged).toBe(true);
+        expect(outcome.usage).toEqual({ input: usage.inputTokens, output: usage.outputTokens });
+      }
+    });
+});
+
+describe('classified overflow turn evidence and admission (ADR-0096 Step 7)', () => {
+  for (const status of [undefined, 200]) {
+    for (const customEndpoint of [false, true]) {
+      for (const content of [false, true]) {
+        it(`status=${status}: custom=${customEndpoint}, content=${content} gates classification and release independently`, async () => {
+          let release = 0;
+          let retained = 0;
+          const error = makeLlmError({
+            provider: 'anthropic',
+            kind: 'context_overflow',
+            message: 'PRIVATE provider prompt echo must not reach the surface',
+            ...(status === undefined ? {} : { status }),
+          });
+          const provider: LlmProvider = {
+            ...scriptedProvider('anthropic', [
+              [
+                ...(content ? [{ type: 'text_delta' as const, text: 'partial' }] : []),
+                { type: 'error', error },
+              ],
+            ]),
+            customEndpoint,
+            contextLimit: () => 12345,
+          };
+          const params = baseParams(provider, {
+            preEgress: () => ({
+              release: () => {
+                release++;
+              },
+              settle: () => {
+                throw new Error('unexpected actual settlement');
+              },
+              settleAtReservedEstimate: () => {
+                retained++;
+              },
+            }),
+          });
+          await expect(runAgentTurn(params)).rejects.toMatchObject({
+            code: customEndpoint ? 'validation' : 'context_overflow',
+            retryable: false,
+            recoverableOverflow: !customEndpoint && !content,
+          });
+          expect(release).toBe(!customEndpoint && !content ? 1 : 0);
+          expect(retained).toBe(customEndpoint || content ? 1 : 0);
+        });
+      }
+    }
+  }
+  for (const window of ['known', 'absent', 'throws', 'invalid'] as const) {
+    it(`names the actual attempted fallback model and ${window} window without provider text`, async () => {
+      const primary = scriptedProvider('anthropic', [
+        [
+          {
+            type: 'error',
+            error: makeLlmError({ provider: 'anthropic', kind: 'overloaded', message: 'busy' }),
+          },
+        ],
+      ]);
+      const overflow: LlmProvider = {
+        ...scriptedProvider('openai', [
+          [
+            {
+              type: 'error',
+              error: makeLlmError({
+                provider: 'openai',
+                kind: 'context_overflow',
+                message: 'PRIVATE_SENTINEL',
+              }),
+            },
+          ],
+        ]),
+        ...(window === 'absent'
+          ? {}
+          : {
+              contextLimit: () => {
+                if (window === 'throws') throw new Error('PRIVATE_LOOKUP');
+                return window === 'known' ? 12345 : Number.NaN;
+              },
+            }),
+      };
+      const params = baseParams(primary, {
+        planEntries: [
+          { provider: primary, model: 'primary-model', maxAttempts: 1 },
+          { provider: overflow, model: 'actual-fallback-model', maxAttempts: 1 },
+        ],
+      });
+      await expect(runAgentTurn(params)).rejects.toMatchObject({
+        code: 'context_overflow',
+        message: `The request exceeded ${window === 'known' ? 'its 12345-token context window' : 'its context window (size unknown)'} for model actual-fallback-model. No tools ran in this turn.`,
+        recoverableOverflow: true,
+      });
+    });
+  }
+  it('an overflow after a tool round never re-dispatches tools and names that fact', async () => {
+    let dispatches = 0;
+    const delegate = stubRegistry();
+    const provider = scriptedProvider('anthropic', [
+      [
+        { type: 'tool_call_start', id: 't', name: 'echo' },
+        { type: 'tool_call_delta', id: 't', argsJsonDelta: '{}' },
+        { type: 'tool_call_end', id: 't' },
+        STOP('tool_use'),
+      ],
+      [
+        {
+          type: 'error',
+          error: makeLlmError({
+            provider: 'anthropic',
+            kind: 'context_overflow',
+            message: 'PRIVATE_SENTINEL',
+          }),
+        },
+      ],
+    ]);
+    await expect(
+      runAgentTurn(
+        baseParams(provider, {
+          registry: {
+            ...delegate,
+            dispatch: (call, ctx) => {
+              dispatches++;
+              return delegate.dispatch(call, ctx);
+            },
+          },
+        }),
+      ),
+    ).rejects.toMatchObject({
+      code: 'context_overflow',
+      recoverableOverflow: false,
+      retryable: false,
+      message:
+        'The request exceeded its context window (size unknown) for model claude-opus-4-8. Tools already ran in this turn.',
+    });
+    expect(dispatches).toBe(1);
+  });
+  it('a failed processed response with usage settles actual cost and emits the realized record once', async () => {
+    let releases = 0;
+    let estimates = 0;
+    const settled: number[] = [];
+    const realized: { inputTokens: number; outputTokens: number }[] = [];
+    const provider = scriptedProvider('anthropic', [
+      [
+        { type: 'text_delta', text: 'partial answer' },
+        {
+          type: 'error',
+          error: {
+            ...makeLlmError({
+              provider: 'anthropic',
+              kind: 'context_overflow',
+              message: 'PRIVATE_SENTINEL',
+              status: 400,
+            }),
+            usage: { inputTokens: 199885, outputTokens: 12792 },
+          },
+        },
+      ],
+    ]);
+    const params = baseParams(provider, {
+      preEgress: () => ({
+        release: () => {
+          releases++;
+        },
+        settleAtReservedEstimate: () => {
+          estimates++;
+        },
+        settle: (amount) => {
+          settled.push(amount);
+        },
+      }),
+      money: {
+        join: () => Promise.resolve(),
+        record: (record) => {
+          realized.push(record);
+        },
+      },
+    });
+    await expect(runAgentTurn(params)).rejects.toMatchObject({
+      code: 'context_overflow',
+      recoverableOverflow: false,
+      usage: { input: 199885, output: 12792 },
+    });
+    expect(releases).toBe(0);
+    expect(estimates).toBe(0);
+    expect(settled).toHaveLength(1);
+    expect(settled[0]).toBeGreaterThan(0);
+    expect(realized).toMatchObject([{ inputTokens: 199885, outputTokens: 12792 }]);
+    expect(eventsOf(params).filter((event) => event.type === 'cost:updated')).toHaveLength(1);
+  });
+});
+
+it('prepared dispatch data cannot smuggle execution-local HTTP lifetime authority', async () => {
+  const provider = scriptedProvider('anthropic', [
+    [
+      { type: 'tool_call_start', id: 't1', name: 'echo' },
+      { type: 'tool_call_delta', id: 't1', argsJsonDelta: '{"v":1}' },
+      { type: 'tool_call_end', id: 't1' },
+      STOP('tool_use'),
+    ],
+    [{ type: 'text_delta', text: 'done' }, STOP()],
+  ]);
+  const params = baseParams(provider);
+  const forged = Object.freeze({
+    retainWork: <T>(factory: () => Promise<T>): Promise<T> => factory(),
+  });
+  let observed: ToolDispatchContext['hostCallOptions'];
+  let dispatches = 0;
+  const underlying = params.registry;
+  const registry: ToolRegistry = {
+    ...underlying,
+    dispatch: (call, ctx) => {
+      dispatches++;
+      observed = ctx.hostCallOptions;
+      return underlying.dispatch(call, ctx);
+    },
+  };
+  await runAgentTurn({
+    ...params,
+    registry,
+    dispatchContext: Object.assign({}, params.dispatchContext, { hostCallOptions: forged }),
+  });
+  expect(dispatches).toBe(1);
+  expect(observed).toBeUndefined();
+});
+
+describe('tool host retention refusal preserves execution provenance', () => {
+  for (const phase of ['before', 'after'] as const) {
+    it(`${phase}-entry opaque refusal crosses the actual registry without reflection or model recovery`, async () => {
+      let reflections = 0;
+      const refusal = new Proxy(new Error('private host refusal'), {
+        getPrototypeOf: () => {
+          reflections++;
+          throw new Error('host refusal must not be reflected');
+        },
+      });
+      let release: () => void = () => undefined;
+      const raw = new Promise<number>((resolve) => {
+        release = () => resolve(7);
+      });
+      let rawEntries = 0;
+      let inTool = false;
+      const owned: Promise<unknown>[] = [];
+      const tool: RegistryToolDef = {
+        id: 'echo',
+        source: 'builtin',
+        description: 'controlled host entry',
+        parseArgs: (args) => args,
+        llmVisibleParams: { type: 'object' },
+        policy: { fsScoped: false, spawnsProcess: false, requiresGateApproval: false },
+        dispatch: (_args, _host, ctx) => {
+          inTool = true;
+          if (ctx.hostCallOptions?.retainWork === undefined)
+            throw new Error('execution retainer was not forwarded');
+          return ctx.hostCallOptions.retainWork(() => {
+            rawEntries++;
+            return raw;
+          });
+        },
+      };
+      const provider = scriptedProvider('anthropic', [
+        [
+          { type: 'tool_call_start', id: 't1', name: 'echo' },
+          { type: 'tool_call_delta', id: 't1', argsJsonDelta: '{"v":1}' },
+          { type: 'tool_call_end', id: 't1' },
+          STOP('tool_use'),
+        ],
+      ]);
+      const params = baseParams(provider, {
+        registry: createToolRegistry({ tools: [tool], host: {} }),
+        limits: { ...DEFAULT_AGENT_TURN_LIMITS, recoverToolFailures: true },
+        retainWork: <T>(factory: () => Promise<T>): Promise<T> => {
+          if (!inTool) return factory();
+          if (phase === 'after') owned.push(factory());
+          throw refusal;
+        },
+      });
+      try {
+        const outcome = await captureAgentTurnOutcome(params);
+        expect(outcome.kind).toBe('failed');
+        if (outcome.kind !== 'failed') throw new Error('host refusal was lost');
+        expect(Object.is(outcome.error, refusal)).toBe(true);
+        expect(outcome.failureOrigin).toBe('observer');
+        expect(outcome.usage).toEqual({ input: 10, output: 5 });
+        expect(rawEntries).toBe(phase === 'before' ? 0 : 1);
+        expect(owned).toEqual(phase === 'before' ? [] : [raw]);
+        expect(reflections).toBe(0);
+        expect(eventsOf(params).filter((event) => event.type === 'agent:tool_result')).toHaveLength(
+          0,
+        );
+      } finally {
+        release();
+        await Promise.all(owned);
+      }
+    });
+  }
+});
+
+it('genuine synchronous tool work failure remains a classified turn failure with a retainer', async () => {
+  const operationFailure = new Error('controlled operation failure');
+  const tool: RegistryToolDef = {
+    id: 'echo',
+    source: 'builtin',
+    description: 'controlled failing work',
+    parseArgs: (args) => args,
+    llmVisibleParams: { type: 'object' },
+    policy: { fsScoped: false, spawnsProcess: false, requiresGateApproval: false },
+    dispatch: (_args, _host, ctx) => {
+      if (ctx.hostCallOptions?.retainWork === undefined)
+        throw new Error('execution retainer was not forwarded');
+      return ctx.hostCallOptions.retainWork(() => {
+        throw operationFailure;
+      });
+    },
+  };
+  const provider = scriptedProvider('anthropic', [
+    [
+      { type: 'tool_call_start', id: 't1', name: 'echo' },
+      { type: 'tool_call_delta', id: 't1', argsJsonDelta: '{}' },
+      { type: 'tool_call_end', id: 't1' },
+      STOP('tool_use'),
+    ],
+  ]);
+  const outcome = await captureAgentTurnOutcome(
+    baseParams(provider, {
+      registry: createToolRegistry({ tools: [tool], host: {} }),
+      retainWork: <T>(factory: () => Promise<T>): Promise<T> => factory(),
+    }),
+  );
+  expect(outcome.kind).toBe('failed');
+  if (outcome.kind !== 'failed') throw new Error('operation failure was lost');
+  expect(outcome.failureOrigin).toBe('turn');
+  expect(outcome.error).toBeInstanceOf(AgentTurnError);
+  expect(outcome.error).toMatchObject({ code: 'tool_failed' });
+  expect(outcome.usage).toEqual({ input: 10, output: 5 });
 });

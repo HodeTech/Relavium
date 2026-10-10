@@ -5,7 +5,14 @@ import type { AbortSignalLike, ContentPart, StopReason } from '@relavium/shared'
 
 import { assertStreamable, assertSupported } from '../capabilities.js';
 import { catalogModel, modelAccepts } from '../catalog/lookup.js';
-import { cappedMaxTokens } from '../output-cap.js';
+import { UnsupportedRequestDataError } from '../errors.js';
+import {
+  mutableOutputCapNativeOptions,
+  mutableOwnedRequest,
+  prepareOwnedRequest,
+  InvalidOutputCapPlanError,
+  type PreparedOutputCapPlan,
+} from '../output-cap.js';
 import { LlmProviderError, kindFromHttpStatus, makeLlmError } from '../llm-error.js';
 import {
   ANTHROPIC_WIRE,
@@ -53,7 +60,6 @@ import {
 
 const PROVIDER = 'anthropic';
 /** Anthropic requires `max_tokens`; default it when the request omits one. */
-const DEFAULT_MAX_TOKENS = 4096;
 /** Anthropic's API caps `temperature` at 1 (the shared contract's envelope is the wider [0, 2]). */
 const MAX_TEMPERATURE = 1;
 // The tier → wire map moved to `reasoning-wire.ts` (ADR-0071 §6): `acceptedTiers` must compose it with the
@@ -226,8 +232,12 @@ function mapAnthropicApiError(err: {
   // Prefer the provider's own error `type` (set even on a mid-stream `error` event that carries no
   // HTTP status), then fall back to the status, then `unknown`.
   const kind =
-    (code === undefined ? undefined : kindFromErrorType(code)) ??
-    (status === undefined ? 'unknown' : kindFromHttpStatus(status));
+    status === 400 &&
+    code === 'invalid_request_error' &&
+    /prompt is too long: \d+ tokens > \d+ maximum/u.test(err.message)
+      ? 'context_overflow'
+      : ((code === undefined ? undefined : kindFromErrorType(code)) ??
+        (status === undefined ? 'unknown' : kindFromHttpStatus(status)));
   // #279: carry the provider's OWN requested wait when it sent one. A mid-stream `error` event has no
   // headers, so this is genuinely optional — absent means "no instruction", never "wait zero".
   const retryAfterMs = readRetryAfter(err.headers);
@@ -541,6 +551,7 @@ function applyAnthropicReasoning(
 /** The shared request body (everything except the `stream` discriminant each method sets). */
 function buildCommonBody(
   req: LlmRequest,
+  capPlan: PreparedOutputCapPlan,
 ): Omit<Anthropic.MessageCreateParamsNonStreaming, 'stream'> {
   // The output cap, held at or below the model's own ceiling (ADR-0071 §7). Anthropic REQUIRES `max_tokens`, so an
   // absent one defaults — and the default is clamped too, in case a model's ceiling is ever below it.
@@ -548,8 +559,9 @@ function buildCommonBody(
   // This value is also the ceiling the thinking budget is derived from, a few lines down. Clamping here and not
   // there would put `budget_tokens` above the `max_tokens` we actually send, which Anthropic rejects outright —
   // so it is computed ONCE and both uses read it.
-  const maxTokens =
-    cappedMaxTokens(req.maxTokens ?? DEFAULT_MAX_TOKENS, req.model) ?? DEFAULT_MAX_TOKENS;
+  // Anthropic always has its required mapped default in the shared plan.
+  const maxTokens = capPlan.mappedValue;
+  if (maxTokens === undefined) throw new InvalidOutputCapPlanError();
   const body: Omit<Anthropic.MessageCreateParamsNonStreaming, 'stream'> = {
     model: req.model,
     max_tokens: maxTokens,
@@ -612,7 +624,7 @@ function buildCommonBody(
   // `metadata`) the common path doesn't model. `body` is spread LAST so the mapped common-path
   // fields (model / messages / max_tokens / tools / …) always win — providerOptions can only ADD,
   // never override or smuggle past the canonical request.
-  return { ...req.providerOptions, ...body };
+  return { ...mutableOutputCapNativeOptions(capPlan, req.providerOptions), ...body };
 }
 
 /** Bridge the host's `AbortSignalLike` (a real `AbortSignal` at runtime) to the SDK's signal option. */
@@ -790,8 +802,30 @@ function contentBlockToChunk(
   return handleContentBlockStop(event, toolIdByIndex, reasoningByIndex);
 }
 
+// The live API has added this value ahead of the pinned SDK's closed StopReason union.
+function isNativeContextOverflow(reason: string | null): boolean {
+  return reason === 'model_context_window_exceeded';
+}
+
+/** The live-captured native stop is a failed generation with real, billable usage (ADR-0096). */
+function nativeContextOverflow(usage: Usage): LlmError {
+  return {
+    ...makeLlmError({
+      provider: PROVIDER,
+      kind: 'context_overflow',
+      code: 'model_context_window_exceeded',
+      message: 'generation exceeded the model context window',
+    }),
+    usage,
+  };
+}
+
 /** Fold the Anthropic SSE event stream into the canonical `StreamChunk` sequence. */
-async function* streamChunks(client: Anthropic, req: LlmRequest): AsyncIterable<StreamChunk> {
+async function* streamChunks(
+  client: Anthropic,
+  req: LlmRequest,
+  capPlan: PreparedOutputCapPlan,
+): AsyncIterable<StreamChunk> {
   const toolIdByIndex = new Map<number, string>();
   const reasoningByIndex = new Map<number, ReasoningBlock>();
   let usage: Usage = { inputTokens: 0, outputTokens: 0 };
@@ -799,11 +833,13 @@ async function* streamChunks(client: Anthropic, req: LlmRequest): AsyncIterable<
   // The message_delta event carries the authoritative stop_reason + final usage; a stream that ends
   // without it was truncated and must not be reported as a successful stop.
   let sawStop = false;
+  let emittedNativeOverflow = false;
   let sdkStream: AsyncIterable<Anthropic.RawMessageStreamEvent>;
   try {
+    const working = mutableOwnedRequest(req);
     sdkStream = await client.messages.create(
-      { ...buildCommonBody(req), stream: true },
-      buildRequestOptions(req),
+      { ...buildCommonBody(working, capPlan), stream: true },
+      buildRequestOptions(working),
     );
   } catch (err) {
     // A pre-egress guard (e.g. temperature > Anthropic max) already carries a classified LlmError —
@@ -819,8 +855,17 @@ async function* streamChunks(client: Anthropic, req: LlmRequest): AsyncIterable<
       if (event.type === 'message_start') {
         usage = mapUsage(event.message.usage);
       } else if (event.type === 'message_delta') {
-        stopReason = mapStopReason(event.delta.stop_reason);
         usage = mergeDeltaUsage(usage, event.usage);
+        if (isNativeContextOverflow(event.delta.stop_reason)) {
+          // Native overflow is already a processed, paid failure. Hand its first final usage to
+          // the seam before another SDK read: later deltas, errors or a body that stays open have
+          // no authority to turn it into success or replace its quantities. Early return joins
+          // the SDK iterator's existing cleanup; the chain still confirms canonical grammar.
+          emittedNativeOverflow = true;
+          yield { type: 'error', error: nativeContextOverflow(usage) };
+          return;
+        }
+        stopReason = mapStopReason(event.delta.stop_reason);
         sawStop = true;
       } else if (
         event.type === 'content_block_start' ||
@@ -835,6 +880,9 @@ async function* streamChunks(client: Anthropic, req: LlmRequest): AsyncIterable<
       // message_stop (and any other event) emits nothing.
     }
   } catch (err) {
+    // A cleanup throw after the authoritative failure is secondary. Emitting again would
+    // manufacture a second canonical terminal and allow protocol failover before content.
+    if (emittedNativeOverflow) return;
     yield { type: 'error', error: anthropicErrorToLlmError(err) };
     return;
   }
@@ -869,6 +917,8 @@ export function createAnthropicAdapter(deps: AnthropicAdapterDeps = {}): LlmProv
   const createClient = (key: string, maxRetries = deps.maxRetries ?? 0): Anthropic =>
     new Anthropic({
       apiKey: key,
+      // Keep the official factory route independent of ANTHROPIC_BASE_URL.
+      baseURL: 'https://api.anthropic.com',
       ...(deps.fetch === undefined ? {} : { fetch: deps.fetch }),
       // ALWAYS passed, never conditionally: an absent option means the SDK's own default (2), which is
       // exactly the pre-emption #276 is about. Explicit beats implicit. Floored, because a negative value
@@ -883,18 +933,25 @@ export function createAnthropicAdapter(deps: AnthropicAdapterDeps = {}): LlmProv
     id: PROVIDER,
     supports: SUPPORTS,
     async generate(req: LlmRequest, key: string): Promise<LlmResult> {
+      const owned = prepareOwnedRequest(req, PROVIDER, 'official');
+      req = owned.request;
       assertSupported(PROVIDER, SUPPORTS, req); // fail fast, never silently drop an unsupported feature
       assertMediaCapabilities(PROVIDER, SUPPORTS, req); // per-modality input/output gate (ADR-0031, 1.AE)
       const client = createClient(key);
       let message: Anthropic.Message;
       try {
+        const working = mutableOwnedRequest(req);
         message = await client.messages.create(
-          { ...buildCommonBody(req), stream: false },
-          buildRequestOptions(req),
+          { ...buildCommonBody(working, owned.plan), stream: false },
+          buildRequestOptions(working),
         );
       } catch (err) {
         if (err instanceof LlmProviderError) throw err; // a pre-egress guard error — keep its classification
         throw new LlmProviderError(anthropicErrorToLlmError(err));
+      }
+      if (isNativeContextOverflow(message.stop_reason)) {
+        // HTTP 200 is a processed, billed response even if its text happens to be empty.
+        throw new LlmProviderError(nativeContextOverflow(mapUsage(message.usage)));
       }
       return {
         content: mapContent(message.content),
@@ -904,10 +961,31 @@ export function createAnthropicAdapter(deps: AnthropicAdapterDeps = {}): LlmProv
       };
     },
     stream(req: LlmRequest, key: string): AsyncIterable<StreamChunk> {
+      let owned: ReturnType<typeof prepareOwnedRequest>;
+      try {
+        owned = prepareOwnedRequest(req, PROVIDER, 'official');
+      } catch (error) {
+        return (async function* (): AsyncIterable<StreamChunk> {
+          await Promise.resolve();
+          yield {
+            type: 'error',
+            error: makeLlmError({
+              provider: PROVIDER,
+              kind: 'bad_request',
+              message:
+                error instanceof UnsupportedRequestDataError
+                  ? new UnsupportedRequestDataError().message
+                  : new InvalidOutputCapPlanError().message,
+              cause: error,
+            }),
+          };
+        })();
+      }
+      req = owned.request;
       assertSupported(PROVIDER, SUPPORTS, req); // fail fast on an unsupported feature or no streaming
       assertStreamable(PROVIDER, SUPPORTS);
       assertMediaCapabilities(PROVIDER, SUPPORTS, req); // per-modality input/output gate (ADR-0031, 1.AE)
-      return streamChunks(createClient(key), req);
+      return streamChunks(createClient(key), req, owned.plan);
     },
     /**
      * Live model discovery (ADR-0064 §1) over the SDK's `models.list()` — a rich, auto-paginating
@@ -951,7 +1029,7 @@ export function createAnthropicAdapter(deps: AnthropicAdapterDeps = {}): LlmProv
       });
     },
     // ADR-0062 context-compaction seam — the shared defaults (a native token-count endpoint could specialize
-    // estimateTokens later; real usage is authoritative, so the heuristic is only a pre-first-turn fallback).
+    // estimateTokens later; current requests drive live context estimates, usage drives realized billing).
     ...CONTEXT_SEAM_DEFAULTS,
   };
 }

@@ -772,7 +772,14 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
   });
 
   it('a turn that ends the session (/exit·/cancel) returns to a freshly-read Home', async () => {
-    const made = makeSession({ stop: () => true }); // shouldStop ⇒ the turn ended the session
+    let stopped = false;
+    const made = makeSession({
+      stop: () => stopped,
+      onProcess: () => {
+        stopped = true;
+        return Promise.resolve();
+      },
+    }); // shouldStop ⇒ the turn ended the session
     const startChat = vi.fn(() => Promise.resolve(made.session));
     const c = createHomeController({
       doctorProbes: STUB_DOCTOR_PROBES,
@@ -869,7 +876,14 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
   });
 
   it('BOUNDS the endChat teardown — a never-resolving (hung MCP) close still returns to Home', async () => {
-    const made = makeSession({ stop: () => true }); // the first turn ends the session ⇒ endChat fires
+    let stopped = false;
+    const made = makeSession({
+      stop: () => stopped,
+      onProcess: () => {
+        stopped = true;
+        return Promise.resolve();
+      },
+    }); // the first turn ends the session ⇒ endChat fires
     made.teardown.mockImplementation(() => new Promise<void>(() => undefined)); // a graceful close that never settles
     const c = createHomeController({
       doctorProbes: STUB_DOCTOR_PROBES,
@@ -918,7 +932,16 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     // The first session's turn ends with stopReason 'clear' ⇒ clearChat builds a fresh session and STAYS in chat
     // (distinct from endChat, which returns to the bare Home). A build-first swap: the old is torn down only after
     // the fresh one is ready.
-    const old = makeSession({ stop: () => true, stopReason: () => 'clear', sessionId: 'old-1' });
+    let stopped = false;
+    const old = makeSession({
+      stop: () => stopped,
+      onProcess: () => {
+        stopped = true;
+        return Promise.resolve();
+      },
+      stopReason: () => 'clear',
+      sessionId: 'old-1',
+    });
     const fresh = makeSession({ sessionId: 'fresh-2' });
     let built = 0;
     const startChat = vi.fn(() => Promise.resolve(built++ === 0 ? old.session : fresh.session));
@@ -945,7 +968,16 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
   });
 
   it('/clear keeps the OLD session live when the fresh build fails (build-first, no dead screen)', async () => {
-    const old = makeSession({ stop: () => true, stopReason: () => 'clear', sessionId: 'old-1' });
+    let stopped = false;
+    const old = makeSession({
+      stop: () => stopped,
+      onProcess: () => {
+        stopped = true;
+        return Promise.resolve();
+      },
+      stopReason: () => 'clear',
+      sessionId: 'old-1',
+    });
     let built = 0;
     // First startChat builds the original; the /clear rebuild REJECTS (e.g. a transient provider fault).
     const startChat = vi.fn(() =>
@@ -974,7 +1006,16 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
   it('teardownActive during a /clear swap reaps BOTH the old session AND the in-flight fresh build (ADR-0062 §7)', async () => {
     // The widened teardownActive (no early return) must reap the "both live" window a /clear swap creates:
     // state.session === old AND buildInFlight === the fresh build. Hold the fresh build UNRESOLVED to sit in it.
-    const old = makeSession({ stop: () => true, stopReason: () => 'clear', sessionId: 'old-1' });
+    let stopped = false;
+    const old = makeSession({
+      stop: () => stopped,
+      onProcess: () => {
+        stopped = true;
+        return Promise.resolve();
+      },
+      stopReason: () => 'clear',
+      sessionId: 'old-1',
+    });
     const fresh = makeSession({ sessionId: 'fresh-2' });
     let releaseFresh: (s: HomeChatSession) => void = () => undefined;
     let built = 0;

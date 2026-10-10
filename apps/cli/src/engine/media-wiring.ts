@@ -35,6 +35,7 @@ export interface MediaEngineWiring {
   readonly workflowModelCatalog: WorkflowModelCatalog;
   /** The `[defaults].media_cost_estimate` the command spreads into `BuildEngineOptions` (`undefined` ⇒ omit). */
   readonly mediaCostEstimate: MediaCostEstimate | undefined;
+  readonly maxTokensEstimate?: number;
 }
 
 /**
@@ -114,5 +115,8 @@ export function buildMediaEngineWiring(
     resolveMediaSurface: catalog.resolveMediaSurface,
     workflowModelCatalog: createWorkflowModelCatalog(catalog, warn),
     mediaCostEstimate: config.mediaCostEstimate,
+    ...(config.maxTokensEstimate === undefined
+      ? {}
+      : { maxTokensEstimate: config.maxTokensEstimate }),
   };
 }

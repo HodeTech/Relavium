@@ -1,14 +1,87 @@
+import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import type { McpCapability } from '@relavium/core';
-import { createClient, runMigrations } from '@relavium/db';
+import {
+  createInMemoryHost,
+  parseWorkflow,
+  type McpCapability,
+  type RunHandle,
+} from '@relavium/core';
+import { estimateResolvedNextCost, type LlmRequest } from '@relavium/llm';
+import type { RunEvent } from '@relavium/shared';
+import {
+  createClient,
+  createRunHistoryStore,
+  createRunLeasePort,
+  runMigrations,
+} from '@relavium/db';
 import { buildServerToolDefs } from '@relavium/mcp';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { buildEngine } from './build-engine.js';
 import { createCliHost } from './host.js';
+import { createHistoryCheckpointer } from './checkpointer.js';
+import { scriptedResolver, textTurn } from '../chat/test-support.js';
+
+describe('buildEngine configured output fallback (ADR-0101)', () => {
+  it.each([undefined, 17])(
+    'binds the fallback into real workflow admission without inventing a wire cap (%s)',
+    async (maxTokensEstimate) => {
+      const model = 'gpt-5.4-mini';
+      const low = estimateResolvedNextCost(model, 100, 17);
+      const high = estimateResolvedNextCost(model, 100, 4096);
+      const cap = Math.round((low + high) / 2);
+      const requests: LlmRequest[] = [];
+      const resolver = scriptedResolver([textTurn('done')], 'openai');
+      const p = resolver.resolveProvider('openai');
+      if (p === undefined) throw new Error('missing provider');
+      const engine = await buildEngine({
+        host: createInMemoryHost(),
+        ...(maxTokensEstimate === undefined ? {} : { maxTokensEstimate }),
+        providers: {
+          ...resolver,
+          resolveProvider: (id) =>
+            id === 'openai'
+              ? {
+                  ...p,
+                  stream: (request, key) => {
+                    requests.push(request);
+                    return p.stream(request, key);
+                  },
+                }
+              : undefined,
+        },
+      });
+      const workflow = parseWorkflow(`schema_version: '1.0'
+workflow:
+  id: configured-admission
+  budget: { max_cost_microcents: ${cap}, on_exceed: fail }
+  agents:
+    - { id: worker, model: ${model}, provider: openai, system_prompt: inspect }
+  nodes:
+    - { id: start, type: input }
+    - { id: work, type: agent, agent_ref: worker, prompt_template: go }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: work }
+    - { from: work, to: out }
+`);
+      const handle = engine.start({ workflow });
+      const events: RunEvent[] = [];
+      for await (const event of handle.events) events.push(event);
+      expect(requests).toHaveLength(maxTokensEstimate === undefined ? 0 : 1);
+      expect(events.some((event) => event.type === 'run:completed')).toBe(
+        maxTokensEstimate !== undefined,
+      );
+      expect(events.some((event) => event.type === 'run:failed')).toBe(
+        maxTokensEstimate === undefined,
+      );
+      if (maxTokensEstimate !== undefined) expect(requests[0]?.maxTokens).toBeUndefined();
+    },
+  );
+});
 
 /**
  * Wiring-level coverage for the 2.S media deps `buildEngine` threads into `AgentRunnerDeps`
@@ -98,4 +171,127 @@ describe('buildEngine MCP wiring (2.R)', () => {
       buildEngine({ toolEnv, mcp: { toolDefs: [...defs, ...defs], capability } }),
     ).rejects.toThrow(/duplicate tool id/);
   });
+});
+
+describe('native SQLite parallel gate handoff', () => {
+  it.each([false, true])(
+    'a fresh owner can immediately reject a parked parallel budget gate (ordinary=%s)',
+    async (ordinary) => {
+      const client = createClient(':memory:');
+      runMigrations(client.db);
+      const model = 'gpt-5.4-mini';
+      const workflow = parseWorkflow(`schema_version: '1.0'
+workflow:
+  id: parallel-pause-ownership
+  budget: {max_cost_microcents: 1, on_exceed: pause_for_approval, strict_cost_cap: true}
+  agents:
+    - {id: worker, model: ${model}, provider: openai, system_prompt: inspect}
+  nodes:
+    - {id: first, type: agent, agent_ref: worker, prompt_template: hello, max_tokens: 64}
+    - {id: second, type: agent, agent_ref: worker, prompt_template: hello, max_tokens: 64}
+${ordinary ? '    - {id: ordinary, type: human_gate, gate_type: approval}\n' : ''}    - {id: out, type: output}
+  edges:
+    - {from: first, to: out}
+    - {from: second, to: out}
+${ordinary ? '    - {from: ordinary, to: out}\n' : ''}`);
+      const store = createRunHistoryStore(client.db, {
+        uuid: randomUUID,
+        now: Date.now,
+        workflow: {
+          slug: workflow.workflow.id,
+          name: workflow.workflow.id,
+          definitionJson: JSON.stringify(workflow),
+        },
+      });
+      const leases = createRunLeasePort(store);
+      let keys = 0;
+      let calls = 0;
+      const resolver = scriptedResolver([textTurn('unused')], 'openai');
+      const provider = resolver.resolveProvider('openai');
+      if (provider === undefined) throw new Error('missing provider');
+      const providers = {
+        ...resolver,
+        keyFor: () => {
+          keys++;
+          return 'offline-key';
+        },
+        resolveProvider: () => ({
+          ...provider,
+          stream: (...args: Parameters<typeof provider.stream>) => {
+            calls++;
+            return provider.stream(...args);
+          },
+        }),
+      };
+      const original = await buildEngine({
+        host: createCliHost(store, { runLeases: leases }),
+        providers,
+      });
+      const handle = original.start({ workflow });
+      let resumed: RunHandle | undefined;
+      let gateId: string | undefined;
+      let companions = 0;
+      let reachedPause = () => {};
+      const paused = new Promise<void>((resolve) => {
+        reachedPause = resolve;
+      });
+      const drained = (async () => {
+        for await (const event of handle.events) {
+          if (
+            event.type === 'budget:authorization' &&
+            event.authorization.state === 'paused' &&
+            gateId === undefined
+          )
+            gateId = event.gateId;
+          if (event.type === 'human_gate:paused') companions++;
+          if (event.type === 'run:paused') reachedPause();
+        }
+      })();
+      try {
+        await paused;
+        expect(companions).toBe(ordinary ? 3 : 2);
+        if (gateId === undefined) throw new Error('missing actual frozen gate');
+        expect(await handle.depart()).toEqual({
+          kind: 'detached',
+          moneyDurability: 'durable',
+          effectNeedsAttention: false,
+        });
+        await drained;
+        expect(await leases.read(handle.runId)).toBeUndefined();
+        const fresh = await buildEngine({
+          host: createCliHost(store, {
+            runLeases: leases,
+            checkpointer: createHistoryCheckpointer(store),
+          }),
+          providers,
+        });
+        resumed = await fresh.resumeFromCheckpoint({
+          runId: handle.runId,
+          workflow,
+          gateId,
+          decision: { decision: 'rejected', decidedBy: 'offline' },
+        });
+        const events: RunEvent[] = [];
+        for await (const event of resumed.events) events.push(event);
+        expect((await resumed.depart()).kind).toBe('closed');
+        expect(events.at(-1)).toMatchObject({
+          type: 'run:failed',
+          error: { code: 'budget_exceeded' },
+        });
+        expect(resumed.durability()).toBe('durable');
+        expect(keys).toBe(0);
+        expect(calls).toBe(0);
+        expect(await leases.read(handle.runId)).toBeUndefined();
+      } finally {
+        handle.cancel();
+        await drained;
+        await handle.depart();
+        if (resumed !== undefined) {
+          resumed.cancel();
+          await resumed.depart();
+        }
+        client.sqlite.close();
+      }
+    },
+  );
 });

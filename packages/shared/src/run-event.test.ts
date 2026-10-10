@@ -166,6 +166,18 @@ const valid: Record<string, Record<string, unknown>> = {
     limitMicrocents: 1000,
     gateId: 'budget-gate-1',
   },
+  'budget:authorization': {
+    type: 'budget:authorization',
+    ...env,
+    nodeId: 'n',
+    gateId: 'budget-gate-1',
+    authorization: {
+      state: 'paused',
+      allowance: { kind: 'legacy_no_allowance' },
+      spentMicrocents: 1000,
+      limitMicrocents: 1000,
+    },
+  },
   'budget:estimate_committed': {
     type: 'budget:estimate_committed',
     ...env,
@@ -637,6 +649,24 @@ const reject: Record<string, Record<string, unknown>> = {
   'budget:paused (missing nodeId)': { ...valid['budget:paused'], nodeId: undefined },
   'budget:paused (empty nodeId)': { ...valid['budget:paused'], nodeId: '' },
   'budget:paused (missing gateId)': { ...valid['budget:paused'], gateId: undefined },
+  'budget:authorization (missing gateId)': {
+    ...valid['budget:authorization'],
+    gateId: undefined,
+  },
+  'budget:authorization (unknown state)': {
+    ...valid['budget:authorization'],
+    authorization: { state: 'approved' },
+  },
+  'budget:authorization (private payload)': {
+    ...valid['budget:authorization'],
+    authorization: {
+      state: 'paused',
+      allowance: { kind: 'legacy_no_allowance' },
+      spentMicrocents: 1000,
+      limitMicrocents: 1000,
+      payload: 'private',
+    },
+  },
 };
 
 describe('RunEvent union — every variant', () => {
@@ -702,7 +732,7 @@ describe('RunEvent union — every variant', () => {
     }
   });
 
-  it('covers exactly the 25 canonical colon-namespaced names, pinned to a literal list', () => {
+  it('covers exactly the 26 canonical colon-namespaced names, pinned to a literal list', () => {
     // A hardcoded contract list — independent of RUN_EVENT_TYPES — so the union and the
     // constant cannot silently drift together.
     const CONTRACT_NAMES = [
@@ -729,6 +759,7 @@ describe('RunEvent union — every variant', () => {
       'run:timeout',
       'budget:warning',
       'budget:paused',
+      'budget:authorization',
       'budget:estimate_committed', // ADR-0074 §2 — a durable conservative commitment; an ESTIMATE, not spend
       'cost:attempt_settled', // ADR-0076 — the realized twin of the line above; the only DURABLE cost: event
     ];
@@ -738,7 +769,7 @@ describe('RunEvent union — every variant', () => {
     // RunEventSchema wraps the union in the correlation-key refinement; reach the raw union.
     expect(RunEventSchema.innerType().options).toHaveLength(CONTRACT_NAMES.length);
     expect(new Set(RUN_EVENT_TYPES)).toEqual(new Set(CONTRACT_NAMES));
-    expect(Object.keys(valid)).toEqual(CONTRACT_NAMES); // the matrix covers all 25
+    expect(Object.keys(valid)).toEqual(CONTRACT_NAMES); // the matrix covers all 26
     // STRUCTURAL, not a comment: the §5 forward-compat fixtures stand in for "a type a newer binary wrote" using
     // the `test:` prefix. Step B first used `budget:estimate_committed` for that and ADR-0074 §2 then made it
     // real, silently inverting three fixtures. A `test:`-prefixed name must never become a canonical event.
@@ -853,6 +884,18 @@ const validSession: Record<string, Record<string, unknown>> = {
   'session:cancelled': { type: 'session:cancelled', ...senv },
   'session:exported': { type: 'session:exported', ...senv, workflowPath: '/w/x.relavium.yaml' },
   'session:compacting': { type: 'session:compacting', ...senv, reason: 'manual' },
+  'session:compaction_failed': {
+    type: 'session:compaction_failed',
+    ...senv,
+    reason: 'pre-send',
+    error: { code: 'validation', message: 'Compaction did not complete.', retryable: false },
+  },
+  'session:compaction_budget_refused': {
+    type: 'session:compaction_budget_refused',
+    ...senv,
+    reason: 'auto-threshold',
+    error: { code: 'budget_exceeded', message: 'Compaction budget refused.', retryable: false },
+  },
   'session:compacted': {
     type: 'session:compacted',
     ...senv,
@@ -877,7 +920,7 @@ describe('SessionEvent union — the agent-first namespace', () => {
     expect(SessionEventSchema.safeParse(validSession[name]).success).toBe(true);
   });
 
-  it('covers exactly the eight session:* names, pinned to a literal list', () => {
+  it('covers exactly the ten session:* names, pinned to a literal list', () => {
     const CONTRACT_NAMES = [
       'session:started',
       'session:turn_started',
@@ -885,6 +928,8 @@ describe('SessionEvent union — the agent-first namespace', () => {
       'session:cancelled',
       'session:exported',
       'session:compacting', // ADR-0062 — the "Summarizing…" moment START
+      'session:compaction_failed', // ADR-0096/0099
+      'session:compaction_budget_refused', // ADR-0099
       'session:compacted', // ADR-0062
       'session:trimmed', // ADR-0062
     ];
@@ -893,18 +938,22 @@ describe('SessionEvent union — the agent-first namespace', () => {
     expect(Object.keys(validSession)).toEqual(CONTRACT_NAMES);
   });
 
-  it('binds session:compacting.reason to the two-value enum (ADR-0062 — the moment START)', () => {
+  it('binds session:compacting.reason to the four entry points (ADR-0062 — the moment START)', () => {
     const ok = validSession['session:compacting'];
     expect(SessionEventSchema.safeParse(ok).success).toBe(true);
-    // Symmetric with session:compacted.reason — manual / auto-threshold (NOT auto-fallback, which is a trim).
+    // Every admitted entry opens the same balanced moment; auto-fallback remains a trim.
     expect(SessionEventSchema.safeParse({ ...ok, reason: 'auto-threshold' }).success).toBe(true);
+    expect(SessionEventSchema.safeParse({ ...ok, reason: 'pre-send' }).success).toBe(true);
+    expect(SessionEventSchema.safeParse({ ...ok, reason: 'overflow-recovery' }).success).toBe(true);
     expect(SessionEventSchema.safeParse({ ...ok, reason: 'auto-fallback' }).success).toBe(false);
     expect(SessionEventSchema.safeParse({ ...ok, reason: 'nope' }).success).toBe(false);
   });
 
-  it('binds session:compacted.reason to the two-value enum and requires a non-empty summary (ADR-0062)', () => {
+  it('binds session:compacted.reason to the four entry points and requires a non-empty summary (ADR-0062)', () => {
     const ok = validSession['session:compacted'];
     expect(SessionEventSchema.safeParse({ ...ok, reason: 'auto-threshold' }).success).toBe(true);
+    expect(SessionEventSchema.safeParse({ ...ok, reason: 'pre-send' }).success).toBe(true);
+    expect(SessionEventSchema.safeParse({ ...ok, reason: 'overflow-recovery' }).success).toBe(true);
     expect(SessionEventSchema.safeParse({ ...ok, reason: 'nope' }).success).toBe(false);
     // A compaction always carries summary text (it is what becomes the preamble) + its real spend.
     expect(SessionEventSchema.safeParse({ ...ok, summary: '' }).success).toBe(false);
@@ -918,6 +967,29 @@ describe('SessionEvent union — the agent-first namespace', () => {
         keptMessageCount: 2,
         tokensBefore: 1,
         tokensAfter: 1,
+      }).success,
+    ).toBe(false);
+  });
+
+  it('keeps first-admission after-turn budget refusal distinct from an admitted failure', () => {
+    const budget = validSession['session:compaction_budget_refused'];
+    expect(SessionEventSchema.safeParse({ ...budget, reason: 'manual' }).success).toBe(false);
+    expect(
+      SessionEventSchema.safeParse({
+        ...budget,
+        error: { code: 'internal', message: 'fixed', retryable: false },
+      }).success,
+    ).toBe(false);
+    expect(
+      SessionEventSchema.safeParse({
+        ...validSession['session:compaction_failed'],
+        reason: 'overflow-recovery',
+      }).success,
+    ).toBe(true);
+    expect(
+      SessionEventSchema.safeParse({
+        ...validSession['session:compaction_failed'],
+        reason: 'auto-fallback',
       }).success,
     ).toBe(false);
   });

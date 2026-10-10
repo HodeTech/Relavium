@@ -20,6 +20,7 @@ import { mkdtempSync, rmSync, existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
+import { assertBudgetResumeBinary } from './budget-check.mjs';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const BUNDLE = join(repoRoot, 'apps/cli/dist/index.js');
@@ -75,8 +76,9 @@ try {
   }
   // Awaited: the `finally` below removes `sandboxHome`, and this check runs a real process out of it.
   await assertNoMcpOrphanOnSignal(sandboxHome);
+  await assertBudgetResumeBinary(repoRoot, sandboxHome);
   console.log(
-    '✓ compiled CLI smoke passed (boots, renders help, runs a workflow against an isolated DB, reaps its MCP child on a signal).',
+    '✓ compiled CLI smoke passed (boots, renders help, runs a workflow against an isolated DB, reaps its MCP child on a signal, validates offline budget resume/refusal/status/abort).',
   );
 } finally {
   rmSync(sandboxHome, { recursive: true, force: true });

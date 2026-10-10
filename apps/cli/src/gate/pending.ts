@@ -1,5 +1,6 @@
-import { reconstructCheckpointState } from '@relavium/core';
+import { reconstructCheckpointState, type CheckpointState } from '@relavium/core';
 import type { HumanGatePausedEvent, RunEvent } from '@relavium/shared';
+import { budgetPromptContext, type BudgetPromptContext } from './budget.js';
 
 /** A pending human gate on a paused run — the discovery row `relavium gate list` / `status` surface (2.I). */
 export interface PendingGate {
@@ -19,10 +20,40 @@ export interface PendingGate {
  * `message`, `expiresAt`) comes from its own `human_gate:paused` event, so an operator sees what to resolve.
  */
 export function pendingHumanGates(events: readonly RunEvent[]): PendingGate[] {
+  return pendingGateDisplays(events).pendingGates;
+}
+
+export interface PendingBudgetGate {
+  readonly gateId: string;
+  readonly nodeId: string;
+  readonly allowance: BudgetPromptContext;
+  readonly expiresAt?: string;
+}
+
+/** A read-only scalar projection, including authority-only crash prefixes; it cannot authorize a resume. */
+export function pendingGateDisplays(events: readonly RunEvent[]): {
+  pendingGates: PendingGate[];
+  pendingBudgetGates: PendingBudgetGate[];
+} {
   const checkpoint = reconstructCheckpointState(events);
-  if (checkpoint === undefined) {
-    return [];
-  }
+  if (checkpoint === undefined) return { pendingGates: [], pendingBudgetGates: [] };
+  return {
+    pendingGates: humanGateDisplays(events, checkpoint),
+    pendingBudgetGates: checkpoint.pendingGates
+      .filter((gate) => gate.isBudgetGate)
+      .map((gate) => ({
+        gateId: gate.gateId,
+        nodeId: gate.nodeId,
+        allowance: budgetPromptContext(gate.allowance),
+        ...(gate.expiresAt === undefined ? {} : { expiresAt: gate.expiresAt }),
+      })),
+  };
+}
+
+function humanGateDisplays(
+  events: readonly RunEvent[],
+  checkpoint: CheckpointState,
+): PendingGate[] {
   const pending = checkpoint.pendingGates.filter((gate) => !gate.isBudgetGate);
   if (pending.length === 0) {
     return [];

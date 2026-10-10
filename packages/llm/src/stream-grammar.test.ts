@@ -152,3 +152,77 @@ describe('the classification table (ADR-0082 §2)', () => {
     expect(out.map((c) => c.type)).toEqual(['text_delta', 'stop']);
   });
 });
+
+describe('failed native terminal usage is owned before the confirming read', () => {
+  it('retains observed usage when an extra chunk changes an overflow into protocol', async () => {
+    const usage = { inputTokens: 19, outputTokens: 7 };
+    const out = await verified([
+      TEXT,
+      {
+        type: 'error',
+        error: {
+          kind: 'context_overflow',
+          retryable: false,
+          provider: 'anthropic',
+          message: 'native overflow',
+          usage,
+        },
+      },
+      TEXT,
+    ]);
+    expect(failureOf(out)).toMatchObject({ kind: 'protocol', usage });
+    expect(out.filter((chunk) => chunk.type === 'error')).toHaveLength(1);
+    expect(out.some((chunk) => chunk.type === 'stop')).toBe(false);
+  });
+  it('retains held stop usage when a second terminal changes success into protocol', async () => {
+    const usage = { inputTokens: 19, outputTokens: 7 };
+    const out = await verified([
+      TEXT,
+      { type: 'stop', stopReason: 'stop', usage },
+      {
+        type: 'error',
+        error: { provider: 'anthropic', kind: 'transport', message: 'tail', retryable: true },
+      },
+    ]);
+    expect(failureOf(out)).toMatchObject({ kind: 'protocol', usage });
+    expect(out.filter((chunk) => chunk.type === 'error')).toHaveLength(1);
+    expect(out.some((chunk) => chunk.type === 'stop')).toBe(false);
+  });
+  it('owns nested error usage before provider code resumes and mutates the original', async () => {
+    const usage = {
+      inputTokens: 19,
+      outputTokens: 7,
+      mediaUnits: [
+        {
+          modality: 'image' as const,
+          direction: 'output' as const,
+          unit: 'count' as const,
+          units: 1,
+        },
+      ],
+    };
+    async function* source(): AsyncGenerator<StreamChunk> {
+      await Promise.resolve();
+      yield {
+        type: 'error',
+        error: {
+          kind: 'context_overflow',
+          retryable: false,
+          provider: 'anthropic',
+          message: 'native overflow',
+          usage,
+        },
+      };
+      usage.inputTokens = 999;
+      const unit = usage.mediaUnits[0];
+      if (unit !== undefined) unit.units = 999;
+    }
+    const out: StreamChunk[] = [];
+    for await (const chunk of verifyStreamGrammar(source(), 'anthropic')) out.push(chunk);
+    const captured = failureOf(out)?.usage;
+    expect(captured?.inputTokens).toBe(19);
+    expect(captured?.mediaUnits?.[0]?.units).toBe(1);
+    expect(Object.isFrozen(captured)).toBe(true);
+    expect(Object.isFrozen(captured?.mediaUnits?.[0])).toBe(true);
+  });
+});

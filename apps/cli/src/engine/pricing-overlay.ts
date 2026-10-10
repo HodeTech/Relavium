@@ -1,10 +1,15 @@
 import { randomUUID } from 'node:crypto';
 
-import { createModelCatalogStore, createProviderStore, type Db } from '@relavium/db';
+import {
+  createModelCatalogStore,
+  createModelMetadataStore,
+  createProviderStore,
+  type Db,
+} from '@relavium/db';
 import type { PricingOverlay } from '@relavium/llm';
 
 import { openLocalDb } from '../db/open.js';
-import { syncCatalogFromDb } from './catalog-metadata.js';
+import { installCatalogFromDb, syncCatalogFromDb } from './catalog-metadata.js';
 import { buildUserPricing } from './model-catalog-view.js';
 
 /**
@@ -56,6 +61,22 @@ export function readUserPricingOverlay(db: Db): PricingOverlay {
   // long-tail overlay from the DB, superseding the boot file-cache overlay. Best-effort: a DB fault leaves the
   // snapshot floor answering. `--help`/`--version` never reach here, so they never open the DB for the catalog.
   syncCatalogFromDb(db, readStoreDeps.now);
+  return readPricingRows(db);
+}
+
+/** Read current quote prices before approval preparation, without seeding or writing durable rows. */
+export function readBudgetPricingOverlay(db: Db): PricingOverlay {
+  try {
+    // Install existing refreshed prices in memory, using the same admission policy as the final read.
+    // Shipped rows are unnecessary here: the immutable catalog already supplies their prices.
+    installCatalogFromDb(createModelMetadataStore(db, readStoreDeps));
+  } catch {
+    // Keep the existing catalog floor, exactly as the later best-effort synchronization does.
+  }
+  return readPricingRows(db);
+}
+
+function readPricingRows(db: Db): PricingOverlay {
   try {
     return buildUserPricingOverlay(db);
   } catch {

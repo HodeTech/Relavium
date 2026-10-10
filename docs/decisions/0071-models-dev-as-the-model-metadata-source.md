@@ -13,6 +13,15 @@
 
 > **Amended 2026-09-02 by [ADR-0089](0089-media-correctness-four-boundaries.md) — §K7's SCOPE, not its rule.** A refinement, not a reversal: `strict_cost_cap` now refuses an unpriced **modality** on a priced model as well as an unpriced **model**, on §K7's own stated rationale — a cap cannot bound a charge that cannot be estimated. Before this the token path refused under a strict cap and the media path could not, so a paid image/audio/video generation passed a cap that read as enforced; the extension removes that asymmetry rather than adding strictness. **§5's pricing precedence is unchanged** — `user` > `catalog snapshot`, with the live tier never a pricing authority ([ADR-0064](0064-live-model-catalog.md) §6) — and ADR-0089 §4(c) applies exactly that order to the new per-modality media rates.
 
+> Amended 2026-10-02 — [ADR-0101](0101-configured-output-estimates-apply-only-when-the-wire-is-uncapped.md),
+> accepted by the maintainer, extracts mapped output-field selection, catalog clamping and native
+> reconciliation into one vendor-free cap plan consumed by adapters and reservation. Its endpoint
+> identity is the factory's actual classification, including a directly constructed custom adapter
+> and an explicitly spelled official host. Section 10a's mapped-cap precedence and surviving native
+> escape hatch remain intact. A native cap is not catalog-clamped where lowering never clamped it;
+> reservation is distinct from mapped wire/thinking inputs, so existing thinking controls do not
+> change. Implementation is staged in W7. The historical body remains unchanged.
+
 ## Context
 
 Relavium's model metadata — price, context window, max output, and reasoning capability — lives in

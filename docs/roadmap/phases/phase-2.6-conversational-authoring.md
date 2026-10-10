@@ -696,7 +696,7 @@ The first-run wizard gains the product's future shape without pulling Phase 5 fo
 regression-proven unchanged; the forward-design ADR is Accepted with Phase-5 ownership explicit.
 **Required ADR:** onboarding auth paths + Relavium-account forward design.
 
-### 2.6.K — Run-ops: the resume-path follow-up (budget resume, secret re-provide, gate lifecycle)
+### 2.6.K — Run-ops: the resume-path follow-up (secret re-provide, gate lifecycle; budget resume moved to 2.6.5 `W7`)
 
 The focused follow-up the 2.5 close deliberately deferred — both headline items refactor the
 security-sensitive `gate.ts` cross-process resume path, so they land together with fresh context.
@@ -714,8 +714,13 @@ security-sensitive `gate.ts` cross-process resume path, so they land together wi
   no error. Add `assertDecisionMatchesGateType` in `gate/decision.ts`, with `WorkflowEngine#resume` gaining
   the same check as defense-in-depth, as part of the shared resume core this task extracts.
   *(M · `apps/cli/src/gate/decision.ts`, `packages/core/src/engine/engine.ts` (`resume`); #0)*
-- **`relavium budget resume <runId> [--approve|--abort]`** *(deferred pull-in)*: the documented command
-  over the engine's existing budget-gate resume; plus the Home affordance on budget-paused rows.
+- **`relavium budget resume`** — **MOVED to Phase 2.6.5 `W7` on 2026-09-18.**
+  [ADR-0097](../../decisions/0097-a-budget-approval-is-an-allowance-not-an-exemption.md) makes an approval a
+  shown, frozen allowance, and the inline `run` prompter is the only way to approve a budget gate today — so
+  without this command the ADR's shown-amount and cross-process guarantees have no surface a script or a
+  non-TTY run can reach. It lands with the rendering code `W7` writes anyway, as
+  `relavium budget resume <runId> --approve-amount <microcents> | --abort`. What stays here: the **Home
+  affordance** on budget-paused rows, which reuses the same amount rendering.
 - **Secret re-provide on resume** *(deferred pull-in, security)*: let the operator re-supply a
   `secret`-typed input on a cross-process resume (stdin-only, `provider set-key` discipline; or keychain
   re-resolution keyed by the input `ref` (its stable identifier in the workflow YAML)),
@@ -1254,7 +1259,7 @@ workstreams — each stays checked off **only** in the PR that lands it:
 | Content-level workflow-identity guard on resume | 2.6.H |
 | Run-submission idempotency / double-submit dedup | 2.6.H |
 | MCP tool-list cache · network header auth (§6) · mid-call abort | 2.6.I |
-| `relavium budget resume` command (documented, unimplemented) | 2.6.K |
+| `relavium budget resume` command (documented, unimplemented) | Phase 2.6.5 `W7` (moved from 2.6.K, 2026-09-18) |
 | Re-provide `secret`-typed inputs on cross-process resume | 2.6.K |
 | Re-arm a still-pending gate's timeout on rehydration | ~~2.6.K~~ → 2.6.5 (closed in 2.6.5 `CR-22`, 2026-08-27) |
 | `run:paused` gate-park vs media-park exit distinction | 2.6.K |
@@ -1368,7 +1373,7 @@ Eight independent streams (2.6.Q joins as Day-1 independent — it does not need
 | **Substrate** | 2.6.F | Day 1 | Full-screen Home, Node 22 floor, TUI harness |
 | **Data** | 2.6.H | Day 1 | Attributed run history, tool traces, gate uniqueness |
 | **Authoring core** | 2.6.A | Day 1 | `@relavium/authoring` package |
-| **Run-ops** | 2.6.K | Day 1 | Shared resume core, budget resume, secret re-provide |
+| **Run-ops** | 2.6.K | Day 1 | Shared resume core, secret re-provide (budget resume moved to 2.6.5 `W7`) |
 | **Ctx** | 2.6.D | Day 1 | `{{ctx.*}}` interpolation, `agent run --input` |
 | **Toolbelt engine** | 2.6.M (tools only) | Day 1 | `edit_file`, `search_files`, `find_files`, `todo`, `ask_user`, `web_search` |
 | **Catalog enrichment** | 2.6.Q | Day 1 | models.dev capability matrix + pricing long-tail; cost-cap safety; effort/`max_tokens` clamp |

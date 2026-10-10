@@ -1,5 +1,6 @@
 import {
   resumableMessageSequences,
+  resumableTurnBoundarySequences,
   type AgentDefinition,
   type SessionHandle,
   type SessionStreamHandleEvent,
@@ -10,6 +11,7 @@ import type {
   SessionContext,
   SessionMessage,
   SessionStatus,
+  SessionToolHistoryEntry,
 } from '@relavium/shared';
 
 import type { GovernorWiring } from './session-host.js';
@@ -41,14 +43,11 @@ export function makeCatalogIdResolver(
  * {@link SessionHandle} stream for the assistant's reply and totals, and the REPL feeds the user's text via
  * {@link SessionPersister.beginUserTurn} (the user message is the one thing the event stream does not carry).
  *
- * Persistence mirrors `AgentSession`'s own `#messages` exactly so a reconstructed transcript is faithful:
- * each **completed** turn persists the user message + the **text-only** assistant reply (the final
- * `result.text`, captured by accumulating `agent:token` and resetting on each `agent:tool_call` so a
- * pre-tool preamble is dropped, never the mid-turn `tool_use`/`tool_result` pairs); an **error** turn AND a
- * mid-turn **aborted** turn (EA7, `stopReason:'aborted'`, ADR-0057) persist **no messages** (the engine rolls
- * the user message back, keeping the transcript to completed exchanges) — though the real session COST is
- * still flushed for both. No secret value ever reaches a row (keys ride the keychain; `secret`-typed args
- * are never interpolated).
+ * Each completed exchange stores user text, ordered content-free tool pairs from the terminal event,
+ * and an explicit final assistant text part (even empty), in one transaction with the session row.
+ * The engine's next-turn projection remains text-only. Error/abort turns persist no exchange,
+ * while their billed cost remains real. Held application keys are not injected into these rows;
+ * user-authored text, including explicit file/shell injection, can still contain sensitive data.
  */
 
 export interface SessionPersisterDeps {
@@ -66,7 +65,8 @@ export interface SessionPersisterDeps {
    */
   readonly governor: GovernorWiring | undefined;
   /** Late-bind this persister as the session's durability probe (#W15-4) — see `SessionPersister.durabilityFailure`. */
-  readonly attachDurabilityProbe?: (probe: () => Error | undefined) => void;
+  readonly attachDurabilityProbe: (probe: () => Error | undefined) => void;
+  readonly attachEffectTurnAllocator: (allocator: (sessionId: string) => number) => void;
   readonly handle: SessionHandle;
   readonly sessionId: string;
   /** The bound agent — frozen into `agent_snapshot` for reproducible resume/export; its `id` is the slug. */
@@ -160,6 +160,9 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
   // boundary. It EXCLUDES `system` boundary-marker rows (a naive "last N durable rows" would miscount once a
   // prior marker is interleaved — the step-1-review trap). Seeded from the durable transcript on resume.
   const realMessageSeqs: number[] = [];
+  // One boundary slot per retained user exchange, including legacy bare-user context.
+  // Legacy slots preserve old compaction/trim behavior; they do not change the hard turn cap.
+  const turnBoundarySeqs: number[] = [];
 
   /** BUILD a REAL transcript row at `seq` — pure, no write and no in-memory mutation. `modelCatalogId`
    *  (assistant rows only) is the already-resolved `model_catalog.id` FK target attributing the row to the model
@@ -189,9 +192,15 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
    * ROLE-FILTERED real-message sequences (never the raw row count). Returns `false` when there is nothing to
    * drop (fewer real rows than kept — no marker written). The marker's own seq is NOT a real-message seq.
    */
-  const stageMarker = (summary: string, keptMessageCount: number): SessionMessage | undefined => {
-    if (keptMessageCount >= realMessageSeqs.length) return undefined; // nothing older to supersede
-    const droppedThroughSequence = realMessageSeqs[realMessageSeqs.length - keptMessageCount - 1];
+  const stageMarker = (
+    summary: string,
+    keptMessageCount: number,
+    keptTurnCount?: number,
+  ): SessionMessage | undefined => {
+    const sequences = keptTurnCount === undefined ? realMessageSeqs : turnBoundarySeqs;
+    const keptCount = keptTurnCount ?? keptMessageCount;
+    if (keptCount >= sequences.length) return undefined;
+    const droppedThroughSequence = sequences[sequences.length - keptCount - 1];
     if (droppedThroughSequence === undefined) return undefined;
     return {
       id: deps.uuid(),
@@ -202,6 +211,15 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
       compaction: { droppedThroughSequence },
       timestamp: iso(),
     };
+  };
+  const adoptMarker = (marker: SessionMessage | undefined): void => {
+    if (marker?.compaction === undefined) return;
+    sequenceNumber += 1;
+    const boundary = marker.compaction.droppedThroughSequence;
+    for (const sequences of [realMessageSeqs, turnBoundarySeqs]) {
+      const keptStart = sequences.findIndex((sequence) => sequence > boundary);
+      sequences.splice(0, keptStart < 0 ? sequences.length : keptStart);
+    }
   };
   // Derived from the FIRST user message so the Home list shows a readable label (2.5.B). Set once; a resumed
   // session hydrates the existing title in start() so a later message never overwrites it.
@@ -240,17 +258,36 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
    * so that arm reads as one decision (persist or just flush) rather than carrying the whole staging protocol
    * inline; the ordering inside it is load-bearing and is documented where it happens.
    */
-  const commitTurn = (userText: string, tokensUsed: { input: number; output: number }): void => {
+  const commitTurn = (
+    userText: string,
+    tokensUsed: { input: number; output: number },
+    toolHistory: readonly SessionToolHistoryEntry[],
+  ): void => {
     const nextTitle = title ?? deriveSessionTitle(userText);
     // STAGE the whole turn against provisional sequence numbers, then write it in ONE transaction (#228).
     // Nothing in-memory moves until that write succeeds, so a failure leaves neither a half-written turn
     // in the transcript nor a phantom sequence in this process.
-    const staged: SessionMessage[] = [stageText(sequenceNumber, 'user', userText)];
-    // The assistant row carries the (resolved) catalog id of the model that produced it (ADR-0059):
-    // `turnModelCatalogId` from this turn's last `cost:updated`, or `undefined` (NULL) when uncataloged.
-    if (assistantText.length > 0) {
-      staged.push(stageText(sequenceNumber + 1, 'assistant', assistantText, turnModelCatalogId));
+    const user = stageText(sequenceNumber, 'user', userText);
+    const staged: SessionMessage[] = [user];
+    for (const entry of toolHistory) {
+      for (const [role, content] of [
+        ['assistant', [entry.call]],
+        ['tool', [entry.result]],
+      ] as const) {
+        staged.push({
+          id: deps.uuid(),
+          sessionId: deps.sessionId,
+          sequenceNumber: sequenceNumber + staged.length,
+          role,
+          content: [...content],
+          timestamp: iso(),
+        });
+      }
     }
+    // An explicit terminal, even for empty text, distinguishes completion from an interrupted tool loop.
+    staged.push(
+      stageText(sequenceNumber + staged.length, 'assistant', assistantText, turnModelCatalogId),
+    );
     const nextInput = totalInputTokens + tokensUsed.input;
     const nextOutput = totalOutputTokens + tokensUsed.output;
     deps.store.writeTurn({
@@ -264,7 +301,12 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
     // turn's row — the session then claimed two turns' tokens for one visible exchange.
     title = nextTitle;
     sequenceNumber += staged.length;
-    realMessageSeqs.push(...staged.map((m) => m.sequenceNumber));
+    realMessageSeqs.push(user.sequenceNumber);
+    const terminal = staged.at(-1);
+    if (terminal !== undefined) {
+      turnBoundarySeqs.push(terminal.sequenceNumber);
+      if (assistantText.length > 0) realMessageSeqs.push(terminal.sequenceNumber);
+    }
     totalInputTokens = nextInput;
     totalOutputTokens = nextOutput;
   };
@@ -312,8 +354,8 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
         // the natural home and is the wrong one: it wraps the MESSAGE and TOKEN writes, while the session COST is
         // real even for a failed or aborted turn (the engine never decrements it). A cost write behind that gate
         // would silently break the invariant on every errored turn. Writing per event also closes a live hole: a
-        // manual `/compact` whose summariser BILLED and then FAILED emits no compaction/turn terminal at all, so its
-        // real spend would otherwise sit unflushed forever.
+        // manual `/compact` can bill and then fail without a user-turn terminal. Its failed-compaction
+        // event closes the visible moment, while this per-attempt write preserves the actual spend.
         persistDurably(() => {
           deps.store.recordSessionCost({
             id: deps.uuid(),
@@ -364,7 +406,7 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
           // than re-asserting one (CLAUDE.md rule 1 — no unsafe `as`).
           const userText = pendingUserText;
           persistDurably(() => {
-            commitTurn(userText, event.tokensUsed);
+            commitTurn(userText, event.tokensUsed, event.toolHistory ?? []);
           });
         } else {
           // An errored or aborted turn persists no messages and accumulates no TOKENS, but the row is still
@@ -382,7 +424,7 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
         // add the summariser's REAL token usage to the totals (the cost microcents already flowed via
         // cost:updated → totalCostMicrocents; flush the row to persist both). Nothing durable is deleted.
         {
-          const marker = stageMarker(event.summary, event.keptMessageCount);
+          const marker = stageMarker(event.summary, event.keptMessageCount, event.keptTurnCount);
           const nextInput = totalInputTokens + event.tokensUsed.input;
           const nextOutput = totalOutputTokens + event.tokensUsed.output;
           persistDurably(() => {
@@ -391,7 +433,7 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
               session: record('active', { input: nextInput, output: nextOutput }),
             });
           });
-          if (marker !== undefined) sequenceNumber += 1; // the marker's seq is NOT a real-message seq
+          adoptMarker(marker);
           totalInputTokens = nextInput;
           totalOutputTokens = nextOutput;
         }
@@ -399,14 +441,14 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
       case 'session:trimmed':
         // A deterministic /trim — a summary-less boundary marker, no cost. Flush the row (updatedAt) after.
         {
-          const marker = stageMarker('', event.keptMessageCount);
+          const marker = stageMarker('', event.keptMessageCount, event.keptTurnCount);
           persistDurably(() => {
             deps.store.writeTurn({
               messages: marker === undefined ? [] : [{ message: marker }],
               session: record('active'),
             });
           });
-          if (marker !== undefined) sequenceNumber += 1;
+          adoptMarker(marker);
         }
         return;
       case 'session:cancelled':
@@ -458,11 +500,13 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
         totalCostMicrocents = existing.totalCostMicrocents;
         title = existing.title; // a resumed session keeps its original title — never re-derived from a new message
         // ADR-0062: seed the real-message sequences from the SAME projection the engine resumes from
-        // (`resumableMessageSequences` — past the compaction boundary, empty-row-dropped, trailing-unanswered-
+        // (`resumableMessageSequences` — past the compaction boundary, completed-turn projected, trailing-unanswered-
         // `user` rolled back), NOT a bare role filter. A role-only seed would include a rolled-back trailing
         // `user` the engine dropped, making the next compaction's boundary off-by-one → a silent kept-message
         // loss (the step-3 review data-loss trap). One shared projection ⇒ the host + engine can never drift.
-        realMessageSeqs.push(...resumableMessageSequences(deps.store.loadMessages(deps.sessionId)));
+        const messages = deps.store.loadMessages(deps.sessionId);
+        realMessageSeqs.push(...resumableMessageSequences(messages));
+        turnBoundarySeqs.push(...resumableTurnBoundarySequences(messages));
       }
       unsubscribe = deps.handle.subscribe(onEvent);
     },
@@ -522,7 +566,12 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
   // promise and marking their session durability-broken on the first usage-less response.
   // #W15-4: the host's `preEgress` gate reads THIS persister's latched failure, so a session whose record is
   // already lost stops spending instead of carrying on above a transcript that fell behind.
-  deps.attachDurabilityProbe?.(() => persister.durabilityFailure);
+  deps.attachDurabilityProbe(() => persister.durabilityFailure);
+  deps.attachEffectTurnAllocator((sessionId) => {
+    if (sessionId !== deps.sessionId || !started || durabilityFailure !== undefined)
+      throw new Error('session persistence is unavailable');
+    return deps.store.reserveEffectTurnKey(sessionId);
+  });
   deps.governor?.attachConservativeWriter((commitment) =>
     persister.recordConservativeCommitment(commitment),
   );

@@ -49,15 +49,82 @@ const msg = (
 });
 
 describe('sessionToWorkflow (1.Z) — linear-chain scaffold', () => {
+  it('preserves legacy bare-user prefixes in the next completed export prompt', () => {
+    const messages = [
+      msg(0, 'user', [{ type: 'text', text: 'legacy {{secrets.example}} context' }]),
+      msg(1, 'user', [{ type: 'text', text: 'next question' }]),
+      msg(2, 'assistant', [{ type: 'text', text: 'answer' }]),
+    ];
+    const exported = sessionToWorkflow(session(), messages);
+    expect(exported.workflow.nodes).toHaveLength(3);
+    const node = exported.workflow.nodes[1];
+    expect(node?.type === 'agent' && node.prompt_template).toContain('legacy');
+    expect(node?.type === 'agent' && node.prompt_template).toContain('next question');
+    expect(node?.type === 'agent' && node.prompt_template).not.toContain('{{secrets.example}}');
+    expect(parseWorkflow(serializeWorkflow(exported))).toMatchObject({
+      workflow: { nodes: exported.workflow.nodes },
+    });
+    expect(exported.workflow.metadata).toMatchObject({ relaviumExport: { messages } });
+  });
+
+  it('keeps legacy prompt context while excluding an interrupted structural exchange and its grants', () => {
+    const exported = sessionToWorkflow(session(), [
+      msg(0, 'user', [{ type: 'text', text: 'legacy context' }]),
+      msg(1, 'user', [{ type: 'text', text: 'interrupted' }]),
+      msg(2, 'assistant', [
+        { type: 'tool_call', id: 'session-tool:2:0', name: 'read_file', argsBytes: 2 },
+      ]),
+      msg(3, 'user', [{ type: 'text', text: 'continued' }]),
+      msg(4, 'assistant', [{ type: 'text', text: '' }]),
+    ]);
+    expect(exported.workflow.nodes).toHaveLength(3);
+    expect(exported.workflow.nodes[1]).toMatchObject({
+      prompt_template: 'legacy context\n\ncontinued',
+    });
+    expect(exported.workflow.nodes[1]).not.toHaveProperty('tools');
+  });
+
+  it('exports completed empty finals and old compacted tool history, omitting the unresolved marker from grants', () => {
+    const def = sessionToWorkflow(session(), [
+      msg(0, 'user', [{ type: 'text', text: 'old' }]),
+      msg(1, 'assistant', [
+        { type: 'tool_call', id: 'session-tool:1:0', name: 'mcp_fs_read', argsBytes: 2 },
+      ]),
+      msg(2, 'tool', [
+        { type: 'tool_result', toolCallId: 'session-tool:1:0', resultBytes: 4, outcome: 'ok' },
+      ]),
+      msg(3, 'assistant', [{ type: 'text', text: '' }]),
+      { ...msg(4, 'system', []), compaction: { droppedThroughSequence: 3 } },
+      msg(5, 'user', [{ type: 'text', text: 'current' }]),
+      msg(6, 'assistant', [
+        { type: 'tool_call', id: 'session-tool:2:0', name: 'unknown_tool', argsBytes: 2 },
+      ]),
+      msg(7, 'tool', [
+        { type: 'tool_result', toolCallId: 'session-tool:2:0', resultBytes: 4, outcome: 'error' },
+      ]),
+      msg(8, 'assistant', [{ type: 'text', text: '' }]),
+    ]);
+    expect(def.workflow.nodes.map((node) => node.id)).toEqual([
+      'input',
+      'turn-1',
+      'turn-2',
+      'output',
+    ]);
+    expect(def.workflow.nodes[1]).toMatchObject({ tools: ['mcp_fs_read'] });
+    expect(def.workflow.nodes[2]).not.toHaveProperty('tools');
+  });
   it('maps assistant turns to a linear agent-node chain (input → turn-n → output) with edges', () => {
     const def = sessionToWorkflow(session(), [
       msg(0, 'user', [{ type: 'text', text: 'hello' }]),
       msg(1, 'assistant', [{ type: 'text', text: 'hi there' }]),
       msg(2, 'user', [{ type: 'text', text: 'use a tool' }]),
       msg(3, 'assistant', [
-        { type: 'tool_call', id: 'c1', name: 'read_file', args: { path: 'x' } },
-        { type: 'text', text: 'done' },
+        { type: 'tool_call', id: 'session-tool:1:0', name: 'read_file', argsBytes: 12 },
       ]),
+      msg(4, 'tool', [
+        { type: 'tool_result', toolCallId: 'session-tool:1:0', resultBytes: 4, outcome: 'ok' },
+      ]),
+      msg(5, 'assistant', [{ type: 'text', text: 'done' }]),
     ]);
     const { nodes, edges } = def.workflow;
     expect(nodes.map((n) => n.id)).toEqual(['input', 'turn-1', 'turn-2', 'output']);
@@ -117,10 +184,10 @@ describe('sessionToWorkflow (1.Z) — linear-chain scaffold', () => {
     const def = sessionToWorkflow(session(), [
       msg(0, 'user', [{ type: 'text', text: 'read the file' }]),
       msg(1, 'assistant', [
-        { type: 'tool_call', id: 'c1', name: 'read_file', args: { path: 'x' } },
+        { type: 'tool_call', id: 'session-tool:1:0', name: 'read_file', argsBytes: 12 },
       ]),
       msg(2, 'tool', [
-        { type: 'tool_result', toolCallId: 'c1', result: 'contents', isError: false },
+        { type: 'tool_result', toolCallId: 'session-tool:1:0', resultBytes: 10, outcome: 'ok' },
       ]),
       msg(3, 'assistant', [{ type: 'text', text: 'here is what it says' }]),
     ]);
@@ -134,8 +201,8 @@ describe('sessionToWorkflow (1.Z) — linear-chain scaffold', () => {
     const def = sessionToWorkflow(session(), [
       msg(0, 'user', [{ type: 'text', text: 'read two files' }]),
       msg(1, 'assistant', [
-        { type: 'tool_call', id: 'c1', name: 'read_file', args: { path: 'a' } },
-        { type: 'tool_call', id: 'c2', name: 'read_file', args: { path: 'b' } },
+        { type: 'tool_call', id: 'session-tool:1:0', name: 'read_file', argsBytes: 12 },
+        { type: 'tool_call', id: 'session-tool:1:1', name: 'read_file', argsBytes: 12 },
       ]),
       msg(2, 'assistant', [{ type: 'text', text: 'done' }]),
     ]);
@@ -155,8 +222,12 @@ describe('sessionToWorkflow (1.Z) — linear-chain scaffold', () => {
       msg(0, 'user', [{ type: 'text', text: 'q1' }]),
       msg(1, 'assistant', [{ type: 'text', text: 'a1' }]), // a completed exchange
       msg(2, 'user', [{ type: 'text', text: 'q2 use a tool' }]), // interrupted — no final assistant text
-      msg(3, 'assistant', [{ type: 'tool_call', id: 'c1', name: 'read_file', args: {} }]),
-      msg(4, 'tool', [{ type: 'tool_result', toolCallId: 'c1', result: 'ok', isError: false }]),
+      msg(3, 'assistant', [
+        { type: 'tool_call', id: 'session-tool:1:0', name: 'read_file', argsBytes: 2 },
+      ]),
+      msg(4, 'tool', [
+        { type: 'tool_result', toolCallId: 'session-tool:1:0', resultBytes: 4, outcome: 'ok' },
+      ]),
     ]);
     // only the completed turn becomes a node (consistent with reconstructSessionState's rollback)…
     expect(def.workflow.nodes.map((n) => n.id)).toEqual(['input', 'turn-1', 'output']);

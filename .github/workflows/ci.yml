@@ -63,6 +63,8 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           persist-credentials: false
+          # The offline replay check independently verifies frozen blobs against its actual predecessor commit.
+          fetch-depth: 0
 
       - name: Set up pnpm
         # pnpm version comes from the root package.json `packageManager`.
@@ -73,6 +75,20 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: pnpm
+
+      # A squash/main-based checkout need not contain development's immutable predecessor object.
+      # Fetch only this canonical pin during CI setup; the acceptance harness itself stays offline.
+      - name: Ensure immutable replay predecessor is available
+        shell: bash
+        run: |
+          BASELINE=$(node --input-type=module -e "import { baselineCommit } from './tools/budget-replay-compat/baseline-provenance.mjs'; process.stdout.write(baselineCommit)")
+          if ! git --no-replace-objects cat-file -e "$BASELINE^{commit}"; then
+            if ! git fetch --no-tags origin "$BASELINE"; then
+              echo "::error::Immutable replay predecessor $BASELINE is unavailable from origin; restore that exact object before running the offline gate."
+              exit 1
+            fi
+          fi
+          git --no-replace-objects cat-file -e "$BASELINE^{commit}"
 
       - name: Install (frozen lockfile)
         run: pnpm install --frozen-lockfile
@@ -156,6 +172,16 @@ jobs:
       # missing `drizzle/`, crashing on first DB touch with nothing red anywhere.
       - name: Smoke the compiled binary
         run: pnpm smoke:cli
+
+      # The maintainer capture command handles real credentials and paid egress. Exercise its stdin/file/
+      # cancellation boundary offline, through the same script as the local required gate.
+      - name: Smoke the overflow capture command (offline)
+        run: pnpm smoke:overflow-capture
+
+      # Durable budget authorization must remain unreadable by the actual pre-W7 predecessor.
+      # Keep the required GitHub gate aligned with the offline smoke in pnpm run ci (ADR-0100).
+      - name: Smoke the budget replay compatibility harness (offline)
+        run: pnpm smoke:budget-replay
 
   # Supported-floor gate (ADR-0067). TWO floors, deliberately different:
   #   * the PUBLISHED floor is `apps/cli` `engines.node` = `>=22` — the max constraint in the CLI's RUNTIME

@@ -27,7 +27,7 @@ import type {
   ToolPolicy,
 } from '@relavium/shared';
 
-import type { MediaJobStatus } from '@relavium/llm';
+import type { LlmInvocationOptions, MediaJobStatus } from '@relavium/llm';
 
 import type { RunEventDraft } from './event-bus.js';
 import type { PlanVertex } from '../run-plan.js';
@@ -101,6 +101,8 @@ export interface GateRequest {
    * `budget_exceeded` failure rather than completing the gate vertex.
    */
   readonly isBudgetGate?: boolean;
+  /** Safe frozen quote; authoritative persistence and activation are the Step 10 protocol. */
+  readonly allowanceQuote?: import('./budget-allowance.js').AllowanceQuoteResult;
 }
 
 /**
@@ -148,8 +150,25 @@ export type NodeOutcome =
   | { readonly kind: 'paused'; readonly gate: GateRequest }
   | { readonly kind: 'media_job'; readonly job: MediaJobSubmission };
 
+/** A registered receipt scope has accounting/settlement authority only (ADR-0103). */
+export interface NodeReceiptContext {
+  readonly money: import('./money-durability.js').TurnMoneyPort;
+  readonly effects?: Pick<import('@relavium/shared').EffectDispatchPort, 'settle' | 'discard'>;
+  readonly updateCost: (event: Extract<NodeStreamEvent, { type: 'cost:updated' }>) => void;
+  readonly continueReceipt: <T>(
+    operation: (receipt: NodeReceiptContext) => Promise<T>,
+  ) => Promise<T>;
+}
+
 /** The context handed to a node executor for one dispatch of one vertex. */
 export interface NodeExecContext {
+  /**
+   * Register a child before invoking it. Raw execute settlement ends this context's future receipt entry;
+   * transferred children keep their own authority. Supplied by WorkflowEngine; absent on context doubles.
+   */
+  readonly continueReceipt?: <T>(
+    operation: (receipt: NodeReceiptContext) => Promise<T>,
+  ) => Promise<T>;
   /** The vertex being executed — its engine type, config block, and un-evaluated input templates. */
   readonly vertex: PlanVertex;
   /** Settled upstream outputs by vertex id — the data the node resolves its `{{ run.outputs }}` against. */
@@ -202,13 +221,14 @@ export interface NodeExecContext {
    * attempt is gated before egress.
    */
   readonly preEgress?: import('./agent-turn.js').PreEgressHook;
+  readonly maxTokensEstimate?: number;
   /**
    * The run's money-durability port (ADR-0076 / ADR-0077) — the realized-cost ledger's START hook and the
    * single barrier the turn core joins at.
    *
    * Optional on this seam so a stub executor and the session path stay unchanged, but the run loop supplies it
-   * UNCONDITIONALLY — unlike {@link preEgress}, which is budget-scoped and is deliberately dropped for an
-   * approved re-dispatch. A run with no `budget` still spends real money.
+   * UNCONDITIONALLY. {@link preEgress} is budget-scoped and remains installed after approval;
+   * a run with no `budget` still spends real money.
    */
   readonly money?: import('./money-durability.js').TurnMoneyPort;
   /**
@@ -222,6 +242,32 @@ export interface NodeExecContext {
    */
   readonly effects?: import('@relavium/shared').EffectDispatchPort;
 }
+
+/** No execution, accounting or effect capability is available while preparing an approval. */
+export type NodePreparationContext = Pick<
+  NodeExecContext,
+  | 'vertex'
+  | 'runOutputs'
+  | 'inputs'
+  | 'ctx'
+  | 'secretInputNames'
+  | 'toolPolicy'
+  | 'signal'
+  | 'maxTokensEstimate'
+>;
+
+/** Process-local first-request preparation. Neither callback nor request data is durable. */
+export interface BudgetDispatchPreparation {
+  quote(context: {
+    readonly strictCostCap: boolean;
+    readonly resolvePrice?: import('@relavium/llm').PricingOverlay;
+  }): import('@relavium/shared').AllowanceQuoteResult;
+  execute(ctx: NodeExecContext): Promise<NodeOutcome>;
+}
+
+export type BudgetDispatchPreparationResult =
+  | { readonly kind: 'prepared'; readonly preparation: BudgetDispatchPreparation }
+  | Extract<NodeOutcome, { kind: 'failed' }>;
 
 /** The injected per-vertex executor. 1.O (`AgentRunner`) and 1.P (node handlers) implement it. */
 export interface NodeExecutor {
@@ -238,14 +284,16 @@ export interface NodeExecutor {
    * [ADR-0082](../../../../docs/decisions/0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md)
    * §5 races a provider call, because "an `AbortSignal` is a request, not a guarantee" is as true of an
    * executor as of a provider. An implementation that ignores the signal and never settles is abandoned:
-   * its vertex is closed `node:failed`, the run reaches its terminal, and the work is left running with
-   * nobody waiting on it. Returning a failure promptly is strictly better than being abandoned — the
-   * abandoned path cannot report WHY.
+   * its vertex is closed `node:failed`, and the run reaches its bounded terminal. Registered raw/child
+   * work still retains its separate host-retirement lifetime until actual settlement. Returning a
+   * failure promptly is strictly better than being abandoned — the abandoned path cannot report WHY.
    *
    * A vertex carrying an authored `agent.timeout_ms` is additionally bounded by that value, absolute across
    * every attempt and re-dispatch of the node (§2).
    */
   execute(ctx: NodeExecContext): Promise<NodeOutcome>;
+  /** Resolve and lower the same first request, without credentials, tools, notices or provider calls. */
+  prepareBudgetDispatch?(ctx: NodePreparationContext): Promise<BudgetDispatchPreparationResult>;
   /**
    * Poll an async media job the executor previously submitted (1.AG Section D, ADR-0045 §3). The ENGINE owns
    * the poll/checkpoint/resume/cancel loop, but provider + credential resolution lives in the executor (the
@@ -254,5 +302,9 @@ export interface NodeExecutor {
    * `signal` aborts the in-flight poll on a run cancel. Optional — an executor with no generative providers
    * (or before Section D is wired) omits it; the engine treats its absence as a host-wiring gap (`internal`).
    */
-  pollMediaJob?(job: MediaJobSubmission, signal: AbortSignalLike): Promise<MediaJobStatus>;
+  pollMediaJob?(
+    job: MediaJobSubmission,
+    signal: AbortSignalLike,
+    options?: LlmInvocationOptions,
+  ): Promise<MediaJobStatus>;
 }

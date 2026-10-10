@@ -80,7 +80,9 @@ instance on a new model and rebuilds the chain for it ([ADR-0059](../decisions/0
    `AgentRunner`.
 2. The runner streams tokens and drives the tool-call loop against the `ToolRegistry`,
    walking the fallback chain on provider failure — identical to a workflow node.
-3. The user, assistant, and tool messages are appended to the transcript and persisted.
+3. The completed exchange is persisted atomically with its content-free tool structure and an explicit
+   terminal assistant text row (including empty text); see [the session contract](../reference/contracts/agent-session-spec.md). Within-turn
+   tool call/result pairs are not carried into later turns ([ADR-0095](../decisions/0095-what-an-agent-session-remembers-across-turns.md) §2).
 
 The difference between a session and a workflow node is the **entry point and lifetime**,
 not the execution: a session is long-lived and conversational, a node is a single
@@ -93,8 +95,8 @@ the `SessionContext`, and the `SessionMessage` shape are canonical in
 A session is **auto-persisted and resumable** — there is no separate "save" step and no
 `sessions.db`. Sessions and their transcripts live in the existing local `history.db` in two new tables
 (its at-rest posture is surface-specific per [ADR-0050](../decisions/0050-cli-history-db-at-rest-posture.md):
-the **CLI** store is unencrypted, guarded by `0700`/`0600` owner-only permissions (no credentials at rest —
-API keys live in the OS keychain); only the **desktop** surface uses a SQLCipher-encrypted store):
+the **CLI** store is unencrypted, guarded by `0700`/`0600` owner-only permissions (Relavium-managed provider keys live in the OS keychain;
+user content and retained tool-derived data can still be sensitive); only the **desktop** surface uses a SQLCipher-encrypted store):
 
 - **`agent_sessions`** — one row per session: the bound `agentRef`/model, the
   `SessionContext`, and lifecycle timestamps.
@@ -141,8 +143,9 @@ form of the chat-to-workflow continuum, and it is honest about its fidelity: it 
 **human-reviewed scaffold**, not an auto-inferred optimal graph.
 
 - The session's assistant turns become a **linear chain of `agent` nodes**, in order,
-  carrying the agent binding, the resolved prompts, and the tools that were used.
-- The **full transcript is preserved in the workflow's durable `metadata` field** (a schema
+  carrying the agent binding, resolved prompts and the persisted resolved tool union. Empty-final turns
+  count; superseded working-context turns remain in the full export.
+- The **transcript, including content-free tool structure, is preserved in the workflow's durable `metadata` field** (a schema
   field that survives parse → serialize — **not** fragile YAML comments, which [ADR-0026](../decisions/0026-session-export-to-workflow.md)
   rejects) so the file is self-documenting. The no-interpolation rule above keeps **resolved
   secret-tainted `{{ … }}` references** out of the transcript — but it does **not** sanitize a secret a
@@ -235,8 +238,8 @@ reserved:
   finished work.
 - **Length, not content, on the wire.** The `agent:directive_injected` event carries
   **`directiveLength`, never the directive text** (and a `mode: 'non_blocking' | 'blocking'`
-  flag), so no user content, secret, or PII enters the event stream — the same secret-free
-  discipline every other event payload follows.
+  flag), so this event does not retain the directive text. Other event payloads can
+  retain sensitive content; see [the event security boundary](../reference/contracts/sse-event-schema.md#security-credential-boundaries-and-sensitive-content).
 
 Phase 1 reserves the events and pins the envelope so that when steering is implemented it
 cannot widen the trust boundary by accident. The desktop steering affordance over a

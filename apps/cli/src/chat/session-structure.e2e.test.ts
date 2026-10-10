@@ -1,0 +1,712 @@
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import {
+  parseWorkflow,
+  buildRunPlan,
+  reconstructSessionState,
+  completedSessionTurns,
+  serializeWorkflow,
+  sessionToWorkflow,
+} from '@relavium/core';
+import {
+  createClient,
+  createEffectJournalPort,
+  createEffectJournalStore,
+  createSessionStore,
+  runMigrations,
+} from '@relavium/db';
+import { startMcpClient, type McpConnection } from '@relavium/mcp';
+import type { LlmRequest, StreamChunk } from '@relavium/llm';
+import type { SessionMessage } from '@relavium/shared';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import type { ResolvedChatConfig } from '../config/resolve.js';
+import { createSessionPersister } from './persister.js';
+import {
+  buildChatSession,
+  buildResumedChatSession,
+  swapAgentModel,
+  type BuildChatSessionOptions,
+  type BuiltChatSession,
+} from './session-host.js';
+import { scriptedResolver, textTurn, stop } from './test-support.js';
+import type { ProviderResolver } from '../engine/providers.js';
+
+function capturingResolver(scripts: StreamChunk[][], requests: LlmRequest[]): ProviderResolver {
+  const resolver = scriptedResolver(scripts);
+  const provider = resolver.resolveProvider('anthropic');
+  if (provider === undefined) throw new Error('missing scripted provider');
+  return {
+    ...resolver,
+    resolveProvider: (id) =>
+      id === 'anthropic'
+        ? {
+            ...provider,
+            stream: (request, options) => {
+              requests.push(request);
+              return provider.stream(request, options);
+            },
+          }
+        : undefined,
+  };
+}
+
+const chat: ResolvedChatConfig = {
+  defaultModel: undefined,
+  defaultProvider: undefined,
+  fsScope: undefined,
+  maxTurns: undefined,
+  maxMessages: undefined,
+  autoCompact: false,
+  compactThreshold: undefined,
+  maxCostMicrocents: undefined,
+  onExceed: undefined,
+  strictCostCap: false,
+  allowedCommands: undefined,
+  allowedCommandGlobs: undefined,
+  reasoningEffort: undefined,
+};
+const call = (id: string, name = 'mcp_fs_read'): StreamChunk[] => [
+  { type: 'tool_call_start', id, name },
+  { type: 'tool_call_delta', id, argsJsonDelta: '{"value":"argument-sentinel-ş"}' },
+  { type: 'tool_call_end', id },
+  stop('tool_use'),
+];
+
+describe('session structure through the real CLI host and SQLite', () => {
+  let root: string;
+  let client: ReturnType<typeof createClient>;
+  let store: ReturnType<typeof createSessionStore>;
+  let id = 0;
+  const builtHosts: BuiltChatSession[] = [];
+  const persisters: ReturnType<typeof createSessionPersister>[] = [];
+  const now = () => 1_790_900_000_000;
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'relavium-w7-structure-'));
+    client = createClient(join(root, 'history.db'));
+    runMigrations(client.db);
+    store = createSessionStore(client.db);
+    id = 0;
+    writeFileSync(
+      join(root, 'mcp.agent.yaml'),
+      'id: reader\nprovider: anthropic\nmodel: claude-sonnet-4-6\nsystem_prompt: Read things.\nmcp_servers:\n  - id: fs\n    transport: stdio\n    command: node\n',
+    );
+  });
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    for (const persister of persisters.splice(0)) persister.close();
+    for (const built of builtHosts.splice(0)) {
+      built.session.cancel();
+      await built.closeMcp?.();
+    }
+    client.sqlite.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+  const connection: McpConnection = {
+    listTools: () => Promise.resolve([{ name: 'read', inputSchema: { type: 'object' } }]),
+    callTool: () =>
+      Promise.resolve({ content: [{ type: 'text', text: 'result-sentinel' }], isError: false }),
+    close: () => Promise.resolve(),
+  };
+  const connect = () => startMcpClient([{ id: 'fs', open: () => Promise.resolve(connection) }]);
+  function attach(built: BuiltChatSession, initialSequenceNumber?: number) {
+    builtHosts.push(built);
+    const journal = createEffectJournalStore(client.db, { now, uuid: () => `effect-${++id}` });
+    built.attachEffectJournal((correlation) =>
+      createEffectJournalPort(journal, correlation, {
+        providerAttempt: 0,
+        toolCallId: 'wiring-sentinel',
+      }),
+    );
+    const persister = createSessionPersister({
+      store,
+      governor: built.governor,
+      attachDurabilityProbe: built.attachDurabilityProbe,
+      attachEffectTurnAllocator: built.attachEffectTurnAllocator,
+      handle: built.handle,
+      sessionId: built.sessionId,
+      agent: built.agent,
+      context: built.context,
+      now,
+      uuid: () => `message-${++id}`,
+      ...(initialSequenceNumber === undefined ? {} : { initialSequenceNumber }),
+    });
+    persisters.push(persister);
+    persister.start();
+    if (initialSequenceNumber === undefined) built.session.start();
+    return persister;
+  }
+  const fresh = (scripts: StreamChunk[][], overrides: Partial<BuildChatSessionOptions> = {}) =>
+    buildChatSession({
+      chat,
+      agentRef: join(root, 'mcp.agent.yaml'),
+      cwd: root,
+      projectConfigDir: undefined,
+      now,
+      uuid: () => 'session',
+      providers: scriptedResolver(scripts),
+      onListenerError: () => undefined,
+      startMcpClient: connect,
+      consentGate: () => Promise.resolve(new Map()),
+      ...overrides,
+    });
+
+  it.each([
+    { memory: 'none', reseat: false },
+    { memory: 'none', reseat: true },
+    { memory: 'window', reseat: false },
+    { memory: 'window', reseat: true },
+  ] as const)(
+    'applies $memory after real SQLite resume (reseat=$reseat), counting empty finals and preserving the archive',
+    async ({ memory, reseat }) => {
+      const agentPath = join(root, 'mcp.agent.yaml');
+      writeFileSync(
+        agentPath,
+        `id: reader\nprovider: anthropic\nmodel: claude-sonnet-4-6\nsystem_prompt: Read things.\nmemory:\n  type: ${memory}\n${memory === 'window' ? '  window_size: 2\n' : ''}mcp_servers:\n  - id: fs\n    transport: stdio\n    command: node\n`,
+      );
+      const original = await fresh([textTurn('a1'), call('empty-final'), [stop()], textTurn('a3')]);
+      const originalPersister = attach(original);
+      for (const text of ['q1', 'q2', 'q3']) {
+        originalPersister.beginUserTurn(text);
+        await original.session.sendMessage(text);
+      }
+      originalPersister.close();
+      original.session.cancel();
+      let full = store.loadFull('session');
+      if (full === undefined) throw new Error('missing memory session');
+      const archive = full.messages;
+      store.appendMessage({
+        id: 'restored-summary',
+        sessionId: 'session',
+        sequenceNumber: archive.length,
+        role: 'system',
+        content: [{ type: 'text', text: 'UNTRUSTED_RESTORED_SUMMARY' }],
+        timestamp: new Date(now()).toISOString(),
+        compaction: { droppedThroughSequence: 1 },
+      });
+      full = store.loadFull('session');
+      if (full === undefined) throw new Error('missing memory session after marker');
+      const snapshot = full.session.agentSnapshot;
+      if (snapshot === undefined) throw new Error('missing frozen agent snapshot');
+      const requests: LlmRequest[] = [];
+      const resumed = await buildResumedChatSession({
+        chat,
+        record: reseat
+          ? {
+              ...full.session,
+              agentSnapshot: swapAgentModel(snapshot, 'claude-opus-4-8', 'anthropic'),
+            }
+          : full.session,
+        messages: full.messages,
+        now,
+        providers: capturingResolver([textTurn('a4'), textTurn('a5')], requests),
+        onListenerError: () => undefined,
+        startMcpClient: connect,
+        consentGate: () => Promise.resolve(new Map()),
+      });
+      const resumedPersister = attach(resumed, resumed.nextSequenceNumber);
+      expect(resumed.resumeState.completedTurnSpans).toEqual([
+        { start: 0, end: 1 },
+        { start: 1, end: 3 },
+      ]);
+      for (const text of ['q4', 'q5']) {
+        resumedPersister.beginUserTurn(text);
+        await resumed.session.sendMessage(text);
+      }
+      const wire = requests.map((request) =>
+        request.messages.map((message) => ({
+          role: message.role,
+          text: message.content
+            .filter((part) => part.type === 'text')
+            .map((part) => part.text)
+            .join(''),
+        })),
+      );
+      expect(wire).toEqual(
+        memory === 'none'
+          ? [[{ role: 'user', text: 'q4' }], [{ role: 'user', text: 'q5' }]]
+          : [
+              [
+                { role: 'user', text: 'q2\n\nq3' },
+                { role: 'assistant', text: 'a3' },
+                { role: 'user', text: 'q4' },
+              ],
+              [
+                { role: 'user', text: 'q3' },
+                { role: 'assistant', text: 'a3' },
+                { role: 'user', text: 'q4' },
+                { role: 'assistant', text: 'a4' },
+                { role: 'user', text: 'q5' },
+              ],
+            ],
+      );
+      const model = reseat ? 'claude-opus-4-8' : 'claude-sonnet-4-6';
+      expect(requests.map((request) => request.model)).toEqual([model, model]);
+      const continued = store.loadFull('session');
+      if (continued === undefined) throw new Error('missing continued memory session');
+      expect(continued.messages.slice(0, archive.length)).toEqual(archive);
+      expect(completedSessionTurns(continued.messages, false)).toHaveLength(5);
+      expect(sessionToWorkflow(continued.session, continued.messages).workflow.nodes).toHaveLength(
+        7,
+      );
+    },
+  );
+
+  it.each(['errored', 'aborted'] as const)(
+    'discloses a committed real MCP effect from an %s turn, then completes under a greater key',
+    async (mode) => {
+      const error: StreamChunk = {
+        type: 'error',
+        error: {
+          kind: 'auth',
+          retryable: false,
+          provider: 'anthropic',
+          message: 'synthetic refusal',
+        },
+      };
+      const built = await fresh(
+        [call('first-provider-id'), mode === 'errored' ? [error] : [stop()]],
+        {
+          startMcpClient: () =>
+            startMcpClient([
+              {
+                id: 'fs',
+                open: () =>
+                  Promise.resolve({
+                    ...connection,
+                    callTool: () => {
+                      return Promise.resolve({
+                        content: [{ type: 'text', text: 'SYNTHETIC_PRIVATE_TOOL_RESULT' }],
+                        isError: false,
+                      });
+                    },
+                  }),
+              },
+            ]),
+        },
+      );
+      const persister = attach(built);
+      const unsubscribe = built.handle.subscribe((event) => {
+        if (mode === 'aborted' && event.type === 'agent:tool_result') built.session.abort();
+      });
+      persister.beginUserTurn('first');
+      await built.session.sendMessage('first');
+      unsubscribe();
+      expect(store.loadMessages('session')).toEqual([]);
+      const journal = createEffectJournalStore(client.db, { uuid: () => 'unused', now });
+      const first = journal.readSessionDisclosureSnapshot('session');
+      expect(first.disclosures).toEqual([
+        { toolId: 'mcp_fs_read', state: 'committed', reason: 'turn_incomplete' },
+      ]);
+      expect(journal.sweepCommittedForSession('session', first.committed).deleted).toBe(1);
+      expect(journal.readSessionDisclosureSnapshot('session').disclosures).toEqual([]);
+      // The aborted stream need not consume its next provider response; use a fresh resumed host instead.
+      persister.close();
+      built.session.cancel();
+      const full = store.loadFull('session');
+      if (full === undefined) throw new Error('missing session');
+      const resumed = await buildResumedChatSession({
+        record: full.session,
+        messages: full.messages,
+        chat,
+        now,
+        providers: scriptedResolver([call('new-provider-id'), [stop()]]),
+        startMcpClient: connect,
+        consentGate: () => Promise.resolve(new Map()),
+      });
+      const next = attach(resumed, 0);
+      next.beginUserTurn('second');
+      await resumed.session.sendMessage('second');
+      expect(journal.readSessionDisclosureSnapshot('session').disclosures).toEqual([]);
+      expect(client.sqlite.prepare('SELECT scope, result_json FROM run_effects').all()).toEqual([
+        { scope: 'session:session:2', result_json: null },
+      ]);
+    },
+  );
+
+  it('persists resolved MCP structure with exact per-call attempt joins and no raw strings', async () => {
+    const built = await fresh([call('provider-sentinel-1'), call('provider-sentinel-2'), [stop()]]);
+    const persister = attach(built);
+    persister.beginUserTurn('read');
+    await built.session.sendMessage('read');
+    const full = store.loadFull('session');
+    if (full === undefined) throw new Error('missing session');
+    expect(full.messages.map((message) => message.role)).toEqual([
+      'user',
+      'assistant',
+      'tool',
+      'assistant',
+      'tool',
+      'assistant',
+    ]);
+    const structures = full.messages
+      .flatMap((message) => message.content)
+      .filter((part) => part.type === 'tool_call' || part.type === 'tool_result');
+    expect(structures[0]).toEqual({
+      type: 'tool_call',
+      id: 'session-tool:1:0',
+      name: 'mcp_fs_read',
+      argsBytes: Buffer.byteLength('{"value":"argument-sentinel-ş"}'),
+    });
+    const rows = client.sqlite
+      .prepare('SELECT scope, attempt_json AS attemptJson FROM run_effects ORDER BY slot')
+      .all();
+    expect(
+      rows.map((row) => {
+        if (
+          typeof row !== 'object' ||
+          row === null ||
+          !('attemptJson' in row) ||
+          typeof row.attemptJson !== 'string'
+        )
+          throw new Error('missing attempt');
+        return JSON.parse(row.attemptJson) as unknown;
+      }),
+    ).toEqual([
+      { providerAttempt: 1, toolCallId: 'session-tool:1:0' },
+      { providerAttempt: 2, toolCallId: 'session-tool:1:1' },
+    ]);
+    expect(
+      rows.map((row) => {
+        if (typeof row !== 'object' || row === null || !('scope' in row))
+          throw new Error('missing scope');
+        return row.scope;
+      }),
+    ).toEqual(['session:session:1', 'session:session:1']);
+    expect(
+      client.sqlite
+        .prepare('SELECT COUNT(*) AS retained FROM run_effects WHERE result_json IS NOT NULL')
+        .get(),
+    ).toEqual({ retained: 0 });
+    expect(
+      createEffectJournalStore(client.db, {
+        uuid: () => 'unused',
+        now,
+      }).readSessionDisclosureSnapshot('session').disclosures,
+    ).toEqual([]);
+    const exported = sessionToWorkflow(full.session, full.messages);
+    expect(exported.workflow.nodes[1]).toMatchObject({ tools: ['mcp_fs_read'] });
+    expect(parseWorkflow(serializeWorkflow(exported)).workflow.nodes).toEqual(
+      exported.workflow.nodes,
+    );
+    const parsed = parseWorkflow(serializeWorkflow(exported));
+    expect(() => buildRunPlan(parsed, { toolGrantsFinal: true })).toThrow();
+    const rediscovered = await connect();
+    try {
+      const discoveredIds = rediscovered.toolDefs.map((tool) => tool.id);
+      const plan = buildRunPlan(
+        {
+          ...parsed,
+          workflow: {
+            ...parsed.workflow,
+            agents:
+              parsed.workflow.agents?.map((agent) =>
+                '$ref' in agent
+                  ? agent
+                  : { ...agent, tools: [...(agent.tools ?? []), ...discoveredIds] },
+              ) ?? [],
+          },
+        },
+        { toolGrantsFinal: true },
+      );
+      expect(plan.vertices.size).toBe(3);
+    } finally {
+      await rediscovered.close();
+    }
+    for (const sentinel of [
+      'provider-sentinel',
+      'argument-sentinel',
+      'result-sentinel',
+      'wiring-sentinel',
+    ]) {
+      expect(JSON.stringify(full.messages)).not.toContain(sentinel);
+      expect(serializeWorkflow(exported)).not.toContain(sentinel);
+    }
+    expect(reconstructSessionState(full.session, full.messages)).toMatchObject({
+      turnCount: 1,
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'read' }] }],
+    });
+  });
+
+  it.each(['compact', 'trim'] as const)(
+    'preserves legacy bare-user context on real reseat and maps %s without resurrecting dropped text',
+    async (action) => {
+      const original = await fresh([]);
+      const originalPersister = attach(original);
+      originalPersister.close();
+      const rows = [
+        { role: 'user', text: 'legacy context' },
+        { role: 'user', text: 'next question' },
+        { role: 'assistant', text: 'answer' },
+      ] as const;
+      for (const [sequenceNumber, row] of rows.entries()) {
+        const message: SessionMessage = {
+          id: `legacy-${sequenceNumber}`,
+          sessionId: 'session',
+          sequenceNumber,
+          role: row.role,
+          content: [{ type: 'text', text: row.text }],
+          timestamp: new Date(now()).toISOString(),
+        };
+        store.appendMessage(message);
+      }
+      let full = store.loadFull('session');
+      if (full === undefined) throw new Error('missing legacy session');
+      const resumed = await buildResumedChatSession({
+        chat,
+        record: full.session,
+        messages: full.messages,
+        now,
+        providers: scriptedResolver([textTurn('summary')]),
+        onListenerError: () => undefined,
+        startMcpClient: connect,
+        consentGate: () => Promise.resolve(new Map()),
+      });
+      attach(resumed, resumed.nextSequenceNumber);
+      expect(
+        reconstructSessionState(full.session, full.messages).messages.map(
+          (message) => message.role,
+        ),
+      ).toEqual(['user', 'user', 'assistant']);
+      expect(reconstructSessionState(full.session, full.messages).turnCount).toBe(1);
+      if (action === 'compact') {
+        expect((await resumed.session.compact()).kind).toBe('compacted');
+      } else {
+        expect(resumed.session.trimHistory(2).kind).toBe('trimmed');
+      }
+      full = store.loadFull('session');
+      if (full === undefined) throw new Error('missing trimmed legacy session');
+      expect(full.messages.at(-1)?.compaction).toEqual({ droppedThroughSequence: 0 });
+      expect(reconstructSessionState(full.session, full.messages).messages).toEqual([
+        { role: 'user', content: [{ type: 'text', text: 'next question' }] },
+        { role: 'assistant', content: [{ type: 'text', text: 'answer' }] },
+      ]);
+      const exported = sessionToWorkflow(full.session, full.messages);
+      expect(exported.workflow.nodes[1]).toMatchObject({
+        prompt_template: 'legacy context\n\nnext question',
+      });
+      expect(full.messages.filter((message) => message.role === 'assistant')).toHaveLength(1);
+    },
+  );
+
+  it('persists a fixed unknown marker after a hostile unresolved name, never granting that name on export', async () => {
+    const built = await fresh([call('provider-sentinel', 'unresolved-name-sentinel'), [stop()]]);
+    const persister = attach(built);
+    persister.beginUserTurn('go');
+    await built.session.sendMessage('go');
+    const full = store.loadFull('session');
+    if (full === undefined) throw new Error('missing session');
+    expect(full.messages[1]?.content[0]).toMatchObject({ type: 'tool_call', name: 'unknown_tool' });
+    expect(full.messages[2]?.content[0]).toMatchObject({ type: 'tool_result', outcome: 'error' });
+    const exported = sessionToWorkflow(full.session, full.messages);
+    expect(exported.workflow.nodes[1]).not.toHaveProperty('tools');
+    for (const sentinel of ['unresolved-name-sentinel', 'provider-sentinel', 'argument-sentinel'])
+      expect(serializeWorkflow(exported)).not.toContain(sentinel);
+  });
+
+  it('maps compact and trim boundaries by complete turn, including empty finals, across resume/reseat', async () => {
+    const built = await fresh([textTurn('first'), call('provider'), [stop()], textTurn('summary')]);
+    const persister = attach(built);
+    for (const text of ['one', 'two']) {
+      persister.beginUserTurn(text);
+      await built.session.sendMessage(text);
+    }
+    expect((await built.session.compact()).kind).toBe('compacted');
+    let full = store.loadFull('session');
+    if (full === undefined) throw new Error('missing session');
+    expect(full.messages.at(-1)?.compaction).toEqual({ droppedThroughSequence: 1 });
+    expect(reconstructSessionState(full.session, full.messages).messages).toEqual([
+      { role: 'user', content: [{ type: 'text', text: 'two' }] },
+    ]);
+    persister.close();
+    const resumed = await buildResumedChatSession({
+      chat,
+      record: full.session,
+      messages: full.messages,
+      now,
+      providers: scriptedResolver([textTurn('continued')]),
+      onListenerError: () => undefined,
+      startMcpClient: connect,
+      consentGate: () => Promise.resolve(new Map()),
+    });
+    const resumedPersister = attach(resumed, resumed.nextSequenceNumber);
+    resumedPersister.beginUserTurn('three');
+    await resumed.session.sendMessage('three');
+    resumed.session.trimHistory(1);
+    full = store.loadFull('session');
+    if (full === undefined) throw new Error('missing resumed session');
+    expect(full.messages.at(-1)?.compaction).toEqual({ droppedThroughSequence: 5 });
+    expect(
+      reconstructSessionState(full.session, full.messages).messages.map((message) => message.role),
+    ).toEqual(['user', 'assistant']);
+    expect(sessionToWorkflow(full.session, full.messages).workflow.nodes).toHaveLength(5); // all three historical turns
+  });
+
+  it('rolls back all split rows on a late store failure, then refuses new model and command egress', async () => {
+    const built = await fresh([call('provider'), textTurn('answer'), textTurn('never')]);
+    const persister = attach(built);
+    const original = store.writeTurn;
+    vi.spyOn(store, 'writeTurn').mockImplementation((turn) =>
+      original({
+        ...turn,
+        messages: turn.messages.map((write, index) =>
+          index === turn.messages.length - 1
+            ? { ...write, meta: { content: 'mismatched' } }
+            : write,
+        ),
+      }),
+    );
+    persister.beginUserTurn('one');
+    await built.session.sendMessage('one');
+    expect(store.loadMessages('session')).toEqual([]);
+    expect(persister.durabilityFailure).toBeDefined();
+    vi.restoreAllMocks();
+    persister.beginUserTurn('two');
+    await built.session.sendMessage('two');
+    expect(await built.session.runUserCommand('ls', [])).toEqual({
+      kind: 'failed',
+      message: 'session effect identity could not be reserved',
+    });
+    expect(store.loadMessages('session')).toEqual([]);
+    expect(
+      client.sqlite
+        .prepare('SELECT scope, attempt_json AS attemptJson FROM run_effects ORDER BY slot')
+        .all(),
+    ).toHaveLength(1);
+  });
+
+  it('refuses another idle command after a failed trim even with a cached command key', async () => {
+    const spawn = vi.fn(() =>
+      Promise.resolve({ exitCode: 0, stdout: 'ok', stderr: '', durationMs: 1 }),
+    );
+    const built = await fresh([textTurn('first'), textTurn('second')], {
+      chat: { ...chat, allowedCommands: ['ls'] },
+      toolHost: { process: { spawn } },
+    });
+    const persister = attach(built);
+    for (const text of ['first', 'second']) {
+      persister.beginUserTurn(text);
+      await built.session.sendMessage(text);
+    }
+    expect((await built.session.runUserCommand('ls', [])).kind).toBe('ran');
+    const fail = vi.spyOn(store, 'writeTurn').mockImplementation(() => {
+      throw new Error('synthetic-private-store-token');
+    });
+    built.session.trimHistory(2);
+    expect(persister.durabilityFailure).toBeDefined();
+    fail.mockRestore();
+    const outcome = await built.session.runUserCommand('ls', []);
+    expect(outcome.kind).toBe('failed');
+    expect(JSON.stringify(outcome)).not.toContain('synthetic-private-store-token');
+    expect(spawn).toHaveBeenCalledTimes(1);
+    expect(client.sqlite.prepare('SELECT scope, slot FROM run_effects').all()).toEqual([
+      { scope: 'session:session:3', slot: -1 },
+    ]);
+    expect(
+      client.sqlite
+        .prepare('SELECT effect_turn_high_water AS highWater FROM agent_sessions WHERE id = ?')
+        .get('session'),
+    ).toEqual({ highWater: 3 });
+  });
+
+  it('refuses a model effect when its attempt cost write has just latched a durability failure', async () => {
+    const providers = scriptedResolver([call('provider'), textTurn('never')]);
+    const provider = providers.resolveProvider('anthropic');
+    if (provider === undefined) throw new Error('missing scripted provider');
+    const egress = vi.spyOn(provider, 'stream');
+    const built = await fresh([], { providers });
+    const persister = attach(built);
+    const dispatch = vi.spyOn(connection, 'callTool');
+    vi.spyOn(store, 'recordSessionCost').mockImplementation(() => {
+      throw new Error('synthetic-private-store-token');
+    });
+    persister.beginUserTurn('read');
+    await built.session.sendMessage('read');
+    expect(persister.durabilityFailure).toBeDefined();
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(egress).toHaveBeenCalledTimes(1);
+    expect(client.sqlite.prepare('SELECT id FROM run_effects').all()).toEqual([]);
+    expect(store.loadMessages('session')).toEqual([]);
+  });
+
+  it('refuses an unjournaled overwrite after attempt cost persistence fails', async () => {
+    const agentRef = join(root, 'write.agent.yaml');
+    writeFileSync(
+      agentRef,
+      'id: writer\nprovider: anthropic\nmodel: claude-sonnet-4-6\nsystem_prompt: Write things.\ntools: [write_file]\n',
+    );
+    const providers = scriptedResolver([
+      [
+        { type: 'tool_call_start', id: 'provider', name: 'write_file' },
+        {
+          type: 'tool_call_delta',
+          id: 'provider',
+          argsJsonDelta: '{"path":"out.txt","content":"private-output"}',
+        },
+        { type: 'tool_call_end', id: 'provider' },
+        stop('tool_use'),
+      ],
+      textTurn('never'),
+    ]);
+    const provider = providers.resolveProvider('anthropic');
+    if (provider === undefined) throw new Error('missing scripted provider');
+    const egress = vi.spyOn(provider, 'stream');
+    const built = await fresh([], { providers, agentRef });
+    const persister = attach(built);
+    vi.spyOn(store, 'recordSessionCost').mockImplementation(() => {
+      throw new Error('synthetic-private-store-token');
+    });
+    persister.beginUserTurn('write');
+    await built.session.sendMessage('write');
+    expect(persister.durabilityFailure).toBeDefined();
+    expect(existsSync(join(root, 'out.txt'))).toBe(false);
+    expect(egress).toHaveBeenCalledTimes(1);
+    expect(client.sqlite.prepare('SELECT id FROM run_effects').all()).toEqual([]);
+    expect(store.loadMessages('session')).toEqual([]);
+  });
+
+  it('persists the resolved tool name after a real recoverable filesystem scope denial', async () => {
+    const workspace = join(root, 'workspace');
+    mkdirSync(workspace);
+    writeFileSync(join(root, 'outside.txt'), 'private-host-content');
+    const agentRef = join(root, 'read.agent.yaml');
+    writeFileSync(
+      agentRef,
+      'id: reader\nprovider: anthropic\nmodel: claude-sonnet-4-6\nsystem_prompt: Read things.\ntools: [read_file]\n',
+    );
+    const built = await fresh(
+      [
+        [
+          { type: 'tool_call_start', id: 'provider-private-id', name: 'read_file' },
+          {
+            type: 'tool_call_delta',
+            id: 'provider-private-id',
+            argsJsonDelta: '{"path":"../outside.txt"}',
+          },
+          { type: 'tool_call_end', id: 'provider-private-id' },
+          stop('tool_use'),
+        ],
+        textTurn('recovered'),
+      ],
+      { agentRef, cwd: workspace },
+    );
+    const persister = attach(built);
+    persister.beginUserTurn('read');
+    await built.session.sendMessage('read');
+    const full = store.loadFull('session');
+    if (full === undefined) throw new Error('missing persisted session');
+    const parts = full.messages.flatMap((message) => message.content);
+    expect(parts.find((part) => part.type === 'tool_call')).toMatchObject({ name: 'read_file' });
+    expect(parts.find((part) => part.type === 'tool_result')).toMatchObject({ outcome: 'denied' });
+    const exported = sessionToWorkflow(full.session, full.messages);
+    expect(exported.workflow.nodes.find((node) => node.type === 'agent')).toMatchObject({
+      tools: ['read_file'],
+    });
+    for (const sentinel of ['provider-private-id', '../outside.txt', 'private-host-content']) {
+      expect(JSON.stringify(full.messages)).not.toContain(sentinel);
+      expect(serializeWorkflow(exported)).not.toContain(sentinel);
+    }
+  });
+});

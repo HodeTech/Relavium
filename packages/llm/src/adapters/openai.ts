@@ -15,12 +15,30 @@ import {
   type StopReason,
 } from '@relavium/shared';
 
+import {
+  ProviderInvocationWork,
+  retiringStream,
+  isProviderInvocationCancelled,
+  captureInvocationOptions,
+  type ProviderFetch,
+} from './invocation-work.js';
 import { assertStreamable, assertSupported } from '../capabilities.js';
-import { InvalidBaseUrlError, UnsupportedCapabilityError } from '../errors.js';
+import {
+  InvalidBaseUrlError,
+  UnsupportedCapabilityError,
+  UnsupportedRequestDataError,
+} from '../errors.js';
 import { LlmProviderError, kindFromHttpStatus, makeLlmError } from '../llm-error.js';
 import { catalogModel, catalogModelIds, modelAccepts } from '../catalog/lookup.js';
 import { isNonChatModelId } from '../model-kind.js';
-import { cappedMaxTokens, type EndpointKind } from '../output-cap.js';
+import {
+  InvalidOutputCapPlanError,
+  mutableOutputCapNativeOptions,
+  mutableOwnedRequest,
+  prepareOwnedRequest,
+  type EndpointKind,
+  type PreparedOutputCapPlan,
+} from '../output-cap.js';
 import { DEEPSEEK_WIRE, acceptedTiers, openAiWireValue } from '../reasoning-wire.js';
 import { normalizeToolCall, toWire } from '../tool-normalizer.js';
 import type {
@@ -29,6 +47,7 @@ import type {
   LlmErrorKind,
   LlmMessage,
   LlmProvider,
+  LlmInvocationOptions,
   LlmRequest,
   LlmResult,
   MediaGenRequest,
@@ -389,6 +408,16 @@ function mapOpenAiApiError(
   let kind: LlmErrorKind;
   if (isContentPolicyCode(code)) {
     kind = 'content_filter';
+  } else if (
+    status === 400 &&
+    ((provider === 'openai' && code === 'context_length_exceeded') ||
+      (provider === 'deepseek' &&
+        code === 'invalid_request_error' &&
+        /This model's maximum context length is \d+ tokens\. However, you requested \d+ tokens/u.test(
+          err.message,
+        )))
+  ) {
+    kind = 'context_overflow';
   } else if (status === undefined) {
     kind = 'unknown';
   } else {
@@ -441,6 +470,9 @@ function classifyOpenAiError(err: unknown, provider: ProviderId): LlmError {
  * `history.db` / `--json` / the TUI (CLAUDE.md #6). This mirrors `boundedListModels`'s exact-redaction for `listModels`.
  */
 export function openaiErrorToLlmError(err: unknown, provider: ProviderId, key?: string): LlmError {
+  if (isProviderInvocationCancelled(err)) {
+    return makeLlmError({ provider, kind: 'cancelled', message: 'provider invocation cancelled' });
+  }
   const base = classifyOpenAiError(err, provider);
   if (key === undefined || key.length === 0) return base;
   return makeLlmError({
@@ -575,6 +607,7 @@ async function createWithParamFallback<T>(
   provider: ProviderId,
   scope: string,
   model: string,
+  assertActive?: () => void,
 ): Promise<T> {
   // Params THIS invocation has already stripped — deliberately SEPARATE from the module-wide learned set. Gating the
   // retry on the global set would hard-fail a CONCURRENT request that merely lost the race: another in-flight call
@@ -582,9 +615,11 @@ async function createWithParamFallback<T>(
   // per-invocation set is also the honest loop bound — one retry per droppable param, per request.
   const strippedHere = new Set<string>();
   for (;;) {
+    assertActive?.();
     try {
       return await createOnce();
     } catch (err) {
+      assertActive?.();
       const param = rejectedDroppableParam(err);
       if (
         param === undefined ||
@@ -860,7 +895,7 @@ type OpenAiCompatibleBody = Omit<OpenAI.ChatCompletionCreateParamsNonStreaming, 
 function buildCommonBody(
   req: LlmRequest,
   provider: ProviderId,
-  endpoint: EndpointKind,
+  capPlan: PreparedOutputCapPlan,
   scope: string,
 ): OpenAiCompatibleBody {
   const messages: OpenAI.ChatCompletionMessageParam[] = [];
@@ -893,7 +928,11 @@ function buildCommonBody(
   ) {
     body.temperature = req.temperature;
   }
-  const maxTokens = applyOutputCap(body, req, provider, endpoint);
+  if (capPlan.mappedValue !== undefined) {
+    if (capPlan.mappedField === 'max_completion_tokens')
+      body.max_completion_tokens = capPlan.mappedValue;
+    else body.max_tokens = capPlan.mappedValue;
+  }
   applyReasoningControl(body, req, provider, scope);
   if (req.stopSequences !== undefined) {
     body.stop = req.stopSequences;
@@ -917,11 +956,7 @@ function buildCommonBody(
   // So the two cap keys are reconciled explicitly. Whichever field we mapped wins outright; the other is dropped.
   // If the caller mapped NO cap and reached for a cap through `providerOptions`, theirs stands untouched — that is
   // the §10a escape hatch, and the way an exotic gateway asks for the field its server actually implements.
-  const escape = { ...req.providerOptions };
-  if (maxTokens !== undefined) {
-    delete escape['max_tokens'];
-    delete escape['max_completion_tokens'];
-  }
+  const escape = { ...mutableOutputCapNativeOptions(capPlan, req.providerOptions) };
   // A param the live API has PROVABLY rejected for this (endpoint, model) is dropped from the escape hatch too.
   // The escape hatch is spread BEFORE the mapped body, so withholding the mapped field is not enough on its own:
   // with `body` omitting the key there is nothing left to shadow an override of that SAME key, and it sails through
@@ -932,35 +967,6 @@ function buildCommonBody(
     if (hasLearnedRejection(provider, scope, req.model, param)) delete escape[param];
   }
   return { ...escape, ...body };
-}
-
-/**
- * THE OUTPUT CAP — the field NAME is a dialect, and the VALUE is clamped (ADR-0071 §7/§10a). Sets it on `body`
- * and RETURNS the capped value, because the escape-hatch reconciliation in {@link buildCommonBody} must know
- * whether a cap was mapped in order to drop a caller's competing cap key.
- *
- * Name: OpenAI's official Chat Completions deprecated `max_tokens` in favour of `max_completion_tokens`, and its
- * reasoning models REJECT the old field outright — the second half of the maintainer's "max tokens errors". But
- * this same adapter serves every custom OpenAI-compatible `base_url` (LM Studio, Ollama, vLLM, LiteLLM, an
- * enterprise gateway) and DeepSeek, most of which implement only the legacy field. Switching globally would
- * trade one broken population for another, so the rule is by ENDPOINT, not by provider: OpenAI's own API gets
- * the modern field, everything else keeps `max_tokens`.
- *
- * Value: capped at the model's published output ceiling, DOWN and never up — an authored `max_tokens: 200000` on
- * a model whose limit is 64 000 is a 400 on every single turn, not an ambitious request.
- */
-function applyOutputCap(
-  body: OpenAiCompatibleBody,
-  req: LlmRequest,
-  provider: ProviderId,
-  endpoint: EndpointKind,
-): number | undefined {
-  const capField = outputCapField(provider, endpoint);
-  const maxTokens = cappedMaxTokens(req.maxTokens, req.model, endpoint);
-  if (maxTokens !== undefined) {
-    body[capField] = maxTokens;
-  }
-  return maxTokens;
 }
 
 /**
@@ -1019,17 +1025,6 @@ function applyReasoningControl(
     // they agree by construction rather than by two people remembering the same rule.
     body.thinking = DEEPSEEK_THINKING[req.reasoningEffort];
   }
-}
-
-/** The output-cap field this endpoint takes (ADR-0071 §10a). ONE place decides it, so no caller can send both. */
-function outputCapField(
-  provider: ProviderId,
-  endpoint: EndpointKind,
-): 'max_tokens' | 'max_completion_tokens' {
-  // OpenAI's own Chat Completions deprecated `max_tokens`, and its reasoning models reject it outright. Every other
-  // OpenAI-compatible server — DeepSeek's API, LM Studio, Ollama, vLLM, LiteLLM, an enterprise gateway — implements
-  // the legacy field, and most implement only that.
-  return provider === 'openai' && endpoint === 'official' ? 'max_completion_tokens' : 'max_tokens';
 }
 
 /** Lower a canonical `responseFormat: json` to OpenAI's `response_format`: DeepSeek supports only
@@ -1251,10 +1246,11 @@ async function* streamChunks(
   client: OpenAI,
   req: LlmRequest,
   provider: ProviderId,
-  endpoint: EndpointKind,
+  capPlan: PreparedOutputCapPlan,
   scope: string,
   key: string,
-): AsyncIterable<StreamChunk> {
+  work?: ProviderInvocationWork,
+): AsyncGenerator<StreamChunk, void, unknown> {
   const state: OpenAiStreamState = {
     reasoningOpen: false,
     stopReason: 'stop',
@@ -1265,26 +1261,32 @@ async function* streamChunks(
   let usage: Usage = ZERO_USAGE;
   let sdkStream: AsyncIterable<OpenAI.ChatCompletionChunk>;
   try {
-    sdkStream = await createWithParamFallback(
-      () =>
-        client.chat.completions.create(
-          {
-            ...buildCommonBody(req, provider, endpoint, scope),
-            stream: true,
-            stream_options: { include_usage: true },
-          },
-          buildRequestOptions(req),
-        ),
-      provider,
-      scope,
-      req.model,
-    );
+    const open = () =>
+      createWithParamFallback(
+        () => {
+          // A learned-parameter retry must never reuse an SDK-mutated envelope.
+          const working = mutableOwnedRequest(req);
+          return client.chat.completions.create(
+            {
+              ...buildCommonBody(working, provider, capPlan, scope),
+              stream: true,
+              stream_options: { include_usage: true },
+            },
+            buildRequestOptions(working),
+          );
+        },
+        provider,
+        scope,
+        req.model,
+        work?.assertActive.bind(work),
+      );
+    sdkStream = await (work === undefined ? open() : work.retainWork(open));
   } catch (err) {
     yield { type: 'error', error: openaiErrorToLlmError(err, provider, key) };
     return;
   }
   try {
-    for await (const chunk of sdkStream) {
+    for await (const chunk of work === undefined ? sdkStream : work.ownIterator(sdkStream)) {
       if (chunk.usage) {
         usage = mapUsage(chunk.usage); // the include_usage chunk arrives last, with empty choices
       }
@@ -1324,7 +1326,7 @@ export interface OpenAiAdapterDeps {
   /** Override the API base URL (DeepSeek defaults to `api.deepseek.com`). Validated HTTPS-only. */
   readonly baseURL?: string;
   /** Inject a `fetch` (the replayer/recorder) in place of the network. */
-  readonly fetch?: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
+  readonly fetch?: ProviderFetch;
   /**
    * Override the SDK's own retry count. **Defaults to `0`** — the vendor SDK's built-in retry is deliberately
    * OFF in production, because `FallbackChain` owns the retry/fallback policy (ADR-0011: "the runner — not the
@@ -1335,7 +1337,7 @@ export interface OpenAiAdapterDeps {
    *
    * This governs the **chain-governed** calls (`generate` / `stream`) only. The surfaces `FallbackChain` does
    * NOT sit above — live model discovery and the async media-job poll — run with `maxRetries: 0` as well. A
-   * small SDK retry there was tried and REVERTED: the SDK'''s sleep honours `retry-after` with no ceiling and no
+   * small SDK retry there was tried and REVERTED: the SDK's sleep honours `retry-after` with no ceiling and no
    * abort awareness, so a hostile `retry-after-ms` parks the call for days. See the note below.
    */
   readonly maxRetries?: number;
@@ -1355,7 +1357,9 @@ export interface OpenAiAdapterDeps {
 export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
   const providerId: OpenAiProviderId = deps.providerId ?? 'openai';
   const supports = providerId === 'deepseek' ? DEEPSEEK_SUPPORTS : OPENAI_SUPPORTS;
-  const baseURL = deps.baseURL ?? (providerId === 'deepseek' ? DEEPSEEK_BASE_URL : undefined);
+  // Pin the classified route: the SDK otherwise accepts an unvalidated OPENAI_BASE_URL at call time.
+  const baseURL =
+    deps.baseURL ?? (providerId === 'deepseek' ? DEEPSEEK_BASE_URL : 'https://api.openai.com/v1');
   // Validate caller-supplied base URLs at construction time: HTTPS-only, no internal addresses.
   if (deps.baseURL !== undefined) {
     assertHttpsBaseUrl(deps.baseURL);
@@ -1373,11 +1377,16 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
   const endpoint: EndpointKind = endpointKindFor(providerId, deps.baseURL);
   // Host-qualified so two custom gateways never share learned param rejections (see `endpointScope`).
   const rejectionScope = endpointScope(endpoint, deps.baseURL);
-  const createClient = (key: string, maxRetries = deps.maxRetries ?? 0): OpenAI =>
-    new OpenAI({
+  const createClient = (
+    key: string,
+    maxRetries = deps.maxRetries ?? 0,
+    work?: ProviderInvocationWork,
+  ): OpenAI => {
+    const sdkFetch = work?.bindFetch(deps.fetch ?? globalThis.fetch) ?? deps.fetch;
+    return new OpenAI({
       apiKey: key,
-      ...(baseURL === undefined ? {} : { baseURL }),
-      ...(deps.fetch === undefined ? {} : { fetch: deps.fetch }),
+      baseURL,
+      ...(sdkFetch === undefined ? {} : { fetch: sdkFetch }),
       // ALWAYS passed, never conditionally: an absent option means the SDK's own default (2), which is
       // exactly the pre-emption #276 is about. Explicit beats implicit. Floored, because a negative value
       // makes the SDK's retry loop unbounded (`retriesRemaining - 1` stays truthy at -1).
@@ -1386,25 +1395,43 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
       // documented default (the runner owns retry policy — ADR-0011).
       maxRetries: Number.isFinite(maxRetries) ? Math.max(0, Math.trunc(maxRetries)) : 0,
     });
+  };
 
   return {
     id: providerId,
+    customEndpoint: endpoint === 'custom',
     supports,
-    async generate(req: LlmRequest, key: string): Promise<LlmResult> {
+    async generate(
+      req: LlmRequest,
+      key: string,
+      options?: LlmInvocationOptions,
+    ): Promise<LlmResult> {
+      const owned = prepareOwnedRequest(req, providerId, endpoint);
+      req = owned.request;
       assertSupported(providerId, supports, req); // fail fast, never silently drop an unsupported feature
       assertMediaCapabilities(providerId, supports, req); // per-modality input/output gate (ADR-0031, 1.AE)
-      const client = createClient(key);
+      const work =
+        options === undefined ? undefined : new ProviderInvocationWork(options, req.signal);
       try {
-        const completion = await createWithParamFallback(
-          () =>
-            client.chat.completions.create(
-              { ...buildCommonBody(req, providerId, endpoint, rejectionScope), stream: false },
-              buildRequestOptions(req),
-            ),
-          providerId,
-          rejectionScope,
-          req.model,
-        );
+        const client = createClient(key, undefined, work);
+        const invoke = () =>
+          createWithParamFallback(
+            () => {
+              const working = mutableOwnedRequest(req);
+              return client.chat.completions.create(
+                {
+                  ...buildCommonBody(working, providerId, owned.plan, rejectionScope),
+                  stream: false,
+                },
+                buildRequestOptions(working),
+              );
+            },
+            providerId,
+            rejectionScope,
+            req.model,
+            work?.assertActive.bind(work),
+          );
+        const completion = await (work === undefined ? invoke() : work.retainWork(invoke));
         const choice = completion.choices[0];
         // A non-null refusal is a safety decline — normalize to content_filter, not a clean stop.
         const refused =
@@ -1423,14 +1450,62 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
         };
       } catch (err) {
         throw new LlmProviderError(openaiErrorToLlmError(err, providerId, key));
+      } finally {
+        work?.retire();
       }
     },
-    stream(req: LlmRequest, key: string): AsyncIterable<StreamChunk> {
+    stream(
+      req: LlmRequest,
+      key: string,
+      options?: LlmInvocationOptions,
+    ): AsyncIterable<StreamChunk> {
+      options = captureInvocationOptions(options);
+      let owned: ReturnType<typeof prepareOwnedRequest>;
+      try {
+        // Capture at invocation, before the caller can defer the first iterator pull.
+        owned = prepareOwnedRequest(req, providerId, endpoint);
+      } catch (error) {
+        return (async function* (): AsyncIterable<StreamChunk> {
+          await Promise.resolve();
+          yield {
+            type: 'error',
+            error: makeLlmError({
+              provider: providerId,
+              kind: 'bad_request',
+              message:
+                error instanceof UnsupportedRequestDataError
+                  ? new UnsupportedRequestDataError().message
+                  : new InvalidOutputCapPlanError().message,
+              cause: error,
+            }),
+          };
+        })();
+      }
+      req = owned.request;
       assertSupported(providerId, supports, req); // fail fast on an unsupported feature or no streaming
       assertStreamable(providerId, supports);
       assertMediaCapabilities(providerId, supports, req); // per-modality input/output gate (ADR-0031, 1.AE)
       assertNoStreamingMediaOutput(providerId, req); // media-out is generate()-only; streaming triad deferred (ADR-0046 §4)
-      return streamChunks(createClient(key), req, providerId, endpoint, rejectionScope, key);
+      if (options === undefined) {
+        return streamChunks(createClient(key), req, providerId, owned.plan, rejectionScope, key);
+      }
+      return retiringStream(async function* (setWork) {
+        const work = new ProviderInvocationWork(options, req.signal);
+        setWork(work);
+        try {
+          yield* streamChunks(
+            createClient(key, undefined, work),
+            req,
+            providerId,
+            owned.plan,
+            rejectionScope,
+            key,
+            work,
+          );
+        } finally {
+          work.retire();
+        }
+      });
     },
     /**
      * Live model discovery (ADR-0064 §1) over the SDK's `models.list()`. The OpenAI/DeepSeek list is
@@ -1488,7 +1563,11 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
      * typed capability error, never a silent drop. DeepSeek generates no media. No vendor type crosses the seam:
      * the result is a normalized `MediaGenResult` whose `raw` is strip-discarded by sinks.
      */
-    async generateMedia(req: MediaGenRequest, key: string): Promise<MediaGenResult> {
+    async generateMedia(
+      req: MediaGenRequest,
+      key: string,
+      options?: LlmInvocationOptions,
+    ): Promise<MediaGenResult> {
       // DeepSeek (the same adapter pointed at a different baseURL) generates no media.
       if (providerId !== 'openai') {
         throw new UnsupportedCapabilityError(
@@ -1497,28 +1576,37 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
           `${providerId} generates no media (only OpenAI generateMedia is wired)`,
         );
       }
-      const client = createClient(key);
-      // Separate-endpoint generation, dispatched by modality (1.AG/1.AH, ADR-0045 §1): image → gpt-image-1
-      // (images.generate, SYNC); audio → TTS (audio.speech, SYNC); video → Sora (videos.create, ASYNC LRO —
-      // returns an opaque jobId the engine polls via pollMediaJob below).
-      if (req.modality === 'image') {
-        return openAiGenerateImage(client, req, providerId, key);
+      const work =
+        options === undefined ? undefined : new ProviderInvocationWork(options, req.signal);
+      const invoke = async (): Promise<MediaGenResult> => {
+        const client = createClient(key, undefined, work);
+        // Separate-endpoint generation, dispatched by modality (1.AG/1.AH, ADR-0045 §1): image → gpt-image-1
+        // (images.generate, SYNC); audio → TTS (audio.speech, SYNC); video → Sora (videos.create, ASYNC LRO —
+        // returns an opaque jobId the engine polls via pollMediaJob below).
+        if (req.modality === 'image') {
+          return openAiGenerateImage(client, req, providerId, key);
+        }
+        if (req.modality === 'audio') {
+          return openAiGenerateSpeech(client, req, providerId, key, work);
+        }
+        if (req.modality === 'video') {
+          return openAiGenerateVideo(client, req, providerId, key);
+        }
+        // Exhaustiveness: MEDIA_BILLED_MODALITIES is image|audio|video, so `modality` is `never` here. A new
+        // member makes this assignment a COMPILE error — a future modality fails at build, never silently at
+        // runtime; the throw is the runtime backstop.
+        const unhandled: never = req.modality;
+        throw new UnsupportedCapabilityError(
+          providerId,
+          'media',
+          `OpenAI generateMedia has no surface for modality '${String(unhandled)}'`,
+        );
+      };
+      try {
+        return await (work === undefined ? invoke() : work.retainWork(invoke));
+      } finally {
+        work?.retire();
       }
-      if (req.modality === 'audio') {
-        return openAiGenerateSpeech(client, req, providerId, key);
-      }
-      if (req.modality === 'video') {
-        return openAiGenerateVideo(client, req, providerId, key);
-      }
-      // Exhaustiveness: MEDIA_BILLED_MODALITIES is image|audio|video, so `modality` is `never` here. A new
-      // member makes this assignment a COMPILE error — a future modality fails at build, never silently at
-      // runtime; the throw is the runtime backstop.
-      const unhandled: never = req.modality;
-      throw new UnsupportedCapabilityError(
-        providerId,
-        'media',
-        `OpenAI generateMedia has no surface for modality '${String(unhandled)}'`,
-      );
     },
     /**
      * Poll one async media job (Sora video LRO, 1.AH A3, [ADR-0045](../../../../docs/decisions/0045-async-media-job-loop-poll-checkpoint-resume-cancel.md)).
@@ -1531,6 +1619,7 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
       jobId: string,
       key: string,
       signal?: AbortSignalLike,
+      options?: LlmInvocationOptions,
     ): Promise<MediaJobStatus> {
       if (providerId !== 'openai') {
         // DeepSeek (same adapter, different baseURL) has no async media jobs.
@@ -1551,10 +1640,17 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
       // ignoring the user's cancel and holding a run slot and an event-loop timer. Resilience here has to be a
       // retry WE own — abort-aware and ceiling-bounded — which is the follow-up; an unbounded one is worse
       // than none.
-      return pollMediaJobSora(createClient(key), jobId, providerId, signal, key);
+      const work = options === undefined ? undefined : new ProviderInvocationWork(options, signal);
+      const invoke = () =>
+        pollMediaJobSora(createClient(key, undefined, work), jobId, providerId, signal, key, work);
+      try {
+        return await (work === undefined ? invoke() : work.retainWork(invoke));
+      } finally {
+        work?.retire();
+      }
     },
     // ADR-0062 context-compaction seam — the shared defaults (covers both OpenAI and DeepSeek via this one
-    // factory; real usage is authoritative, so the estimate is only a pre-first-turn fallback).
+    // factory; current requests drive live context estimates, usage drives realized billing).
     ...CONTEXT_SEAM_DEFAULTS,
   };
 }
@@ -1627,6 +1723,7 @@ async function openAiGenerateSpeech(
   req: MediaGenRequest,
   providerId: ProviderId,
   key: string, // threaded solely to exact-redact it from an error (a custom endpoint's opaque key, 2.5.G S9)
+  work?: ProviderInvocationWork,
 ): Promise<MediaGenResult> {
   // `count` (images-per-call) is a no-op for TTS — `audio.speech` is billed per input character and yields a
   // single audio stream, so there is no bill-N-deliver-1 hazard (unlike the image path's loud count>1 reject).
@@ -1645,6 +1742,7 @@ async function openAiGenerateSpeech(
     // The BINARY body download happens HERE (audio.speech is a __binaryResponse — create() returns the raw
     // Response unconsumed), so the read MUST be inside the try: a mid-download socket reset / abort would
     // otherwise escape unclassified and flatten to an opaque `internal` instead of a classified LlmError.
+    work?.assertActive();
     bytes = new Uint8Array(await response.arrayBuffer());
   } catch (err) {
     throw new LlmProviderError(openaiErrorToLlmError(err, providerId, key));
@@ -1783,6 +1881,7 @@ async function pollMediaJobSora(
   providerId: ProviderId,
   signal: AbortSignalLike | undefined,
   key: string, // threaded solely to exact-redact it from an error (a custom endpoint's opaque key, 2.5.G S9)
+  work?: ProviderInvocationWork,
 ): Promise<MediaJobStatus> {
   const vendorId = decodeMediaJobId(jobId);
   if (vendorId === undefined) {
@@ -1799,6 +1898,7 @@ async function pollMediaJobSora(
   let bytes: Uint8Array | undefined;
   try {
     video = await client.videos.retrieve(vendorId, isAbortSignal(signal) ? { signal } : {});
+    work?.assertActive();
     if (video.status === 'completed') {
       // downloadContent is a __binaryResponse (raw Response) — the body read happens HERE, so it must be
       // inside this try or a mid-download abort/reset would escape unclassified.
@@ -1807,6 +1907,7 @@ async function pollMediaJobSora(
         undefined,
         isAbortSignal(signal) ? { signal } : {},
       );
+      work?.assertActive();
       bytes = new Uint8Array(await response.arrayBuffer());
     }
   } catch (err) {

@@ -640,6 +640,31 @@ const durableReasoningPartSchema = z.object({
   redacted: z.boolean().optional(),
 });
 
+// ADR-0095: session persistence refuses extra fields rather than silently stripping raw tool values or
+// continuation tokens. Reuse the existing media shape/refinement; run/event/IPC durable parts stay intact.
+const sessionMediaPartObjectSchema = durableMediaPartObjectSchema
+  .extend({
+    source: z.discriminatedUnion('kind', [handleSourceSchema.strict()]),
+    byteLength: nonNegativeInt.max(Number.MAX_SAFE_INTEGER).optional(),
+    durationMs: positiveInt.max(Number.MAX_SAFE_INTEGER).optional(),
+  })
+  .strict();
+
+export const SessionNonToolContentPartSchema = z
+  .discriminatedUnion('type', [
+    textPartSchema.strict(),
+    durableReasoningPartSchema.strict(),
+    sessionMediaPartObjectSchema,
+  ])
+  .superRefine((part, ctx) => {
+    if (part.type === 'media') refineDurableMediaPart(part, ctx);
+  });
+
+/** A tool attachment records only validated handle metadata, never a result's filename or transcript. */
+export const SessionToolMediaPartSchema = sessionMediaPartObjectSchema
+  .omit({ name: true, transcript: true })
+  .superRefine(refineDurableMediaPart);
+
 /**
  * The **durable** content-part union — what a persisted / event / IPC / exported position
  * references instead of `ContentPart` (ADR-0031 decision #1). `deInlineMedia` is the typed

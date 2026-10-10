@@ -1,6 +1,6 @@
 # Phase 2.6.5 — Core reliability remediation (interlude)
 
-- **Status**: in progress — **`W0`–`W2` merged clean; `W3` merged 2026-08-30 (PR #86) with a live blocker; `W4` merged 2026-09-01 (PR #87) after a systematic review found five merge blockers in it — all reproduced and fixed before the merge.** `W5` merged 2026-09-02 (PR #88) behind ADR-0089 + ADR-0090 — a systematic maintainer review of the branch returned **six merge blockers**, all reproduced and fixed before it merged. **`W6` (authoring correctness) is complete on `development` and awaiting review** — `CR-60`–`CR-64` behind [ADR-0091](../../decisions/0091-first-means-first-declared-not-first-to-finish.md)–[ADR-0094](../../decisions/0094-a-tool-grant-is-checked-when-the-plan-is-built.md), 27 W6 work commits, seven review rounds. **The pattern of the wave is that most of what the rounds found were defects in the FIXES, not in the code they repaired** — the branch-order search was wrong three times, the expression scan's central soundness claim was false in seven ways, and one stand-down gate silently removed the check it was added to protect. Every one is recorded as a dated correction in its ADR rather than tidied away (43 of 48 items — `CR-21` closed with `CR-14`, `CR-21c` added 2026-08-25, `CR-95`'s non-deferrable short-term half closed with the spine on 2026-08-18 and found still marked open on 2026-08-28)
+- **Status**: in progress — **`W0`–`W2` merged clean; `W3` merged 2026-08-30 (PR #86) with a live blocker; `W4` merged 2026-09-01 (PR #87) after a systematic review found five merge blockers in it — all reproduced and fixed before the merge.** `W5` merged 2026-09-02 (PR #88) behind ADR-0089 + ADR-0090 — a systematic maintainer review of the branch returned **six merge blockers**, all reproduced and fixed before it merged. **`W6` — authoring correctness — MERGED 2026-09-04 (PR #89)** — `CR-60`–`CR-64` behind [ADR-0091](../../decisions/0091-first-means-first-declared-not-first-to-finish.md)–[ADR-0094](../../decisions/0094-a-tool-grant-is-checked-when-the-plan-is-built.md), 32 commits — 27 of work across seven internal review rounds, then five folding four maintainer rounds on PR #89. **The maintainer review returned two merge blockers**, both of which broke a headline claim of the wave: deep validation did not enforce `required` when the property's schema constrained nothing (so `{ properties: { status: {} }, required: ['status'] }` accepted `{}`), and the expression scanner's regex was quadratic and synchronous (514 ms at 32 K of whitespace, on a parser that accepts 2 MiB, with no deadline able to interrupt it). Both reproduced and fixed before the merge, along with eight further High findings. **The pattern of the wave is that most of what the rounds found were defects in the FIXES, not in the code they repaired** — the branch-order search was wrong three times, the expression scan's central soundness claim was false in EIGHT ways, and one stand-down gate silently removed the check it was added to protect. Every one is recorded as a dated correction in its ADR rather than tidied away (39 of 48 items **at W6's merge** — the live count is further on in this line — and it said 39 and not 43 because W5's six items were counted TWICE: incrementally as they landed (28→32) and then wholesale when the wave closed (32→38), so the figure carried a +4 error into W6. `CR-95` is counted on its non-deferrable short-term half; its long-term half keeps the item on the board. `CR-21` closed with `CR-14`, `CR-21c` added 2026-08-25, `CR-95`'s non-deferrable short-term half closed with the spine on 2026-08-18 and found still marked open on 2026-08-28). **`CR-73` and `CR-80` closed 2026-09-06.** `invoke_agent` is no longer advertised without a delegate (and `read_media` rides along), and a rejected custom base URL refuses instead of falling back to the official API. **On 2026-09-14 the register grew to 50 items, and to 51 on 2026-09-18**: `CR-96` and `CR-97` on 2026-09-14, two shipping defects found while reviewing W7's ADRs, and `CR-98` on 2026-09-18 — ADR-0096's three prerequisites, which had been in `W7`'s scope since 2026-09-14 with no item of their own. `CR-96` and `CR-97` are non-deferrable and now close with W7 on `development` (2026-10-10), restoring exit criterion 1. **47 of 51** are closed: 46 checked item headings plus `CR-95`'s non-deferrable short-term half. Four remain open: decided/deferred `CR-70` and `CR-93`, and `CR-81`/`CR-82` in `W8`. ADR-0087 §1's existing W3 blocker is assigned to W8 and is not an extra item in the 51-heading denominator. **W7 is complete and independently accepted on `development`; PR #90 remains draft/unmerged.** The [closing register](#w7-closing-register--2026-10-10) joins every step, per-item causal controls, systematic findings and approved limits. W8 and the phase remain open.
 - **Opened**: 2026-08-09 · **Plan corrected**: 2026-08-10 · **First batch merged**: 2026-08-11 (PR #82) ·
   **`W1` merged**: 2026-08-24 (PR #83)
 - **Predecessor**: Wave 1 of the 2.5.5 remediation (complete — PR #81), then the `#W15-1` realized-cost
@@ -197,11 +197,14 @@ below exists because its absence produced a real defect during Wave 1.
 6. **Never assert on model behaviour.** A prompt-security test proves a *structural* property — which role a
    byte can reach, which type the builder accepts — never "the model did not comply". A test that depends on a
    model's judgement is a hollow test under clause 3.
-7. **Security review is booked by threat class, not per PR.** Four sittings cover this phase:
+7. **Security review is booked by threat class, not per PR.** Five sittings cover this phase:
    **prompt/trust provenance** (`CR-13`), **hostile MCP** (`CR-16`, `CR-40`–`CR-42`), **media bytes**
-   (`CR-50`, `CR-53`, `CR-54`), **provider/config trust** (`CR-80`). Each sitting produces a recorded
+   (`CR-50`, `CR-53`, `CR-54`), **provider/config trust** (`CR-80`), and — added 2026-09-18 — **`history.db` at
+   rest** (`CR-71`'s no-tool-content-at-rest invariant and `CR-97`). Each sitting produces a recorded
    [security-review](../../standards/security-review.md) checklist entry with a direct adversarial test — not a
-   reviewer's assurance.
+   reviewer's assurance. The fifth is a new threat class by this clause's own rule: `W7` narrows
+   [ADR-0050](../../decisions/0050-cli-history-db-at-rest-posture.md)'s premise about what the database holds,
+   which is the kind of claim the other four exist to certify.
 8. **The gate is `pnpm run ci` AND `pnpm coverage`, both exit 0, checked by exit code.** `pnpm run ci` does not
    include coverage; `coverage` is a separate required check. CI's coverage job enforces the floor for
    `@relavium/llm` and `@relavium/mcp` only — `packages/core` is measured but not blocking, a dated carve-out
@@ -228,7 +231,7 @@ flowchart TD
     SPINE["Durability spine<br/>CR-10 → CR-11 → CR-92 → CR-12"]
     IND["Independent P0 lines<br/>CR-13 · CR-14+CR-21 · CR-15+CR-17"]
     MCP["Hostile MCP<br/>CR-16 · CR-40 · CR-41 · CR-42"]
-    CLAIM["False-claim blockers<br/>CR-50 · CR-55 · CR-73 · CR-80 · CR-94 · CR-95"]
+    CLAIM["False-claim blockers<br/>CR-50 · CR-55 · CR-73 · CR-80 · CR-94 · CR-95 · CR-96 · CR-97"]
     REST["Remaining P1 themes<br/>W2 · W3 · W5 · W6 · W7 · W8 · W9 residual"]
     EXIT["Exit certification"]
     PRE --> ORACLE --> HALVES --> SPINE --> CLAIM --> REST --> EXIT
@@ -291,9 +294,9 @@ to correct.
 | `CR-62` | ✅ **shipped 2026-09-03** — scope narrowed to the transitive closure, a literal non-ancestor read refused at parse, `edges[].condition` refused. The scan's no-false-refusal claim was false in **seven** ways and now has a sandbox-paired test | [ADR-0093](../../decisions/0093-an-expression-sees-only-what-it-is-ordered-after.md) | no | — |
 | `CR-63` | ✅ **closed 2026-09-03** — verified: nothing reads an agent `input_schema`, so the spec's claim is true and no change was needed. The check found three fabricated `human_in_the_loop_config` fields | — | no | — |
 | `CR-64` | ✅ **shipped 2026-09-02** — a widened tool grant is refused when the plan is built | [ADR-0094](../../decisions/0094-a-tool-grant-is-checked-when-the-plan-is-built.md) | no | — |
-| `CR-70` | **open** — persist bounded tool pairs, or narrow the spec | — | no | — |
-| `CR-71` | with `CR-70` | with `CR-70`'s | no | — |
-| `CR-72` | **open** — implement, or reject at parse | — | no | — |
+| `CR-70` | made 2026-09-13 (carrying deferred; tool history persisted as structure, never content) | [ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) §2 | no | — |
+| `CR-71` | made 2026-09-13 (structural persistence; the export fills `tools` and carries no tool content) | [ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) §1, §3 | no | `history.db` at rest (its invariant 1 half) |
+| `CR-72` | made 2026-09-13 (implement; an authored `memory` decides compaction at every entry point) | [ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) §4 | no | — |
 | `CR-73` | made (wire it, or stop advertising it) | — | yes | — |
 | `CR-80` | made (fail closed) | — | yes | provider/config |
 | `CR-81` | made (match the canonical request) | — | no | — |
@@ -302,8 +305,11 @@ to correct.
 | `CR-91` | made (build the durable-truth oracle) | — | no | — |
 | `CR-92` | made (durable outbox, distinct typed result) | with `CR-10`'s | yes | — |
 | `CR-93` | made (scope per run/session/tenant; may defer the work, not the decision) | — | no | — |
-| `CR-94` | made (numeric approval lease) | — | no | — |
+| `CR-94` | made 2026-09-13 (a dispatch-owned allowance, shown and durable; model binding and expiry deferred) | [ADR-0097](../../decisions/0097-a-budget-approval-is-an-allowance-not-an-exemption.md) | no | — |
 | `CR-95` | made (short term: fail closed) | — | yes (short term) | — |
+| `CR-96` | made 2026-09-14 (a decided budget gate never folds into an invented output) | [ADR-0097](../../decisions/0097-a-budget-approval-is-an-allowance-not-an-exemption.md) §4 | yes | — |
+| `CR-97` | made 2026-09-14 (a session effect row holds no result, never replays, and discloses what did not complete) | [ADR-0098](../../decisions/0098-a-session-effect-row-holds-no-result-and-never-replays.md) | yes | `history.db` at rest |
+| `CR-98` | made 2026-09-14, opened as an item 2026-09-18 (measure the next request before it is sent; classify and recover a context overflow once; price input at every attempt) | [ADR-0096](../../decisions/0096-a-request-is-measured-before-it-is-sent.md) | no | — |
 
 ---
 
@@ -1298,8 +1304,19 @@ exit criterion 7 exists to catch — the register recording a state the code doe
 > It is the third defect in one chain, each the cure for the last: the producer-await deadlocked every CLI
 > session; letting an un-pulled stream through cured that and reopened the unbounded buffer; bounding the
 > buffer cured that and started dropping. [ADR-0087](../../decisions/0087-consumed-streams-size-bounds-and-run-retention.md)
-> §1 records the real fix — a handle declares whether its stream is consumed — and is **Proposed, not
-> Accepted**: it merged unapproved and §1 and §3 are unimplemented.
+> §1 records the real fix — a handle declares whether its stream is consumed.
+>
+> **Status as of 2026-09-04: the ADR is Accepted, the blocker is not closed.** ADR-0087 merged unapproved on
+> 2026-08-29 and a review refused acceptance until nine dated corrections existed; those corrections are now in
+> the ADR and it is Accepted. Two of them change what this entry claimed. **§3 is implemented** — it shipped in
+> `W5` as `CR-54` (the pin runs at the dispatch boundary and the settle writes the pinned value into the run
+> scope), and this register described it as unimplemented for two waves because it landed under a different
+> item number. **§1 is still unimplemented**, and Correction 1 says why it cannot simply be built as written:
+> the mode is put on `createRunHandle` / `createSessionHandle` as though the two were symmetric. A host calls
+> `createSessionHandle` directly, so the session half is buildable as written; a `RunHandle` is only ever
+> produced inside `WorkflowEngine.start()` / `resumeFromCheckpoint()`, so the run half needs the mode plumbed
+> onto an engine entry point first. And a `subscribe-only` handle must not present a silently-empty iterable,
+> which is the same quiet shape §1 rejects everywhere else. **The blocker stands.**
 
 
 All four items closed. Three things this wave established that outlived their own items:
@@ -1744,7 +1761,28 @@ an outage, not a cap. Break-verify by restoring the zero fallback.
 
 ---
 
-## W6 — Authoring correctness
+## W6 — Authoring correctness · ✅ MERGED 2026-09-04 (PR #89, [ADR-0091](../../decisions/0091-first-means-first-declared-not-first-to-finish.md)–[ADR-0094](../../decisions/0094-a-tool-grant-is-checked-when-the-plan-is-built.md))
+
+> **Merged after four maintainer review rounds on the assembled PR**, the first a REQUEST CHANGES carrying
+> two blockers, the third a further blocker. All reproduced and fixed before the merge.
+>
+> | round | what it returned |
+> | --- | --- |
+> | 1 | 2 blockers + 6 High — `required` unenforced when a property's schema constrains nothing; the expression scanner's regex quadratic and synchronous |
+> | 2 | 1 real bug (a source label built from `process.cwd()` instead of the caller's) + the complexity/ternary set |
+> | 3 | 1 blocker — `format` + `minLength`/`maxLength` crashed the compiler, via an `as unknown as` cast CLAUDE.md rule 1 forbids |
+> | 4 | the widening diagnostic capped its output but not its work; a canonical row that lumped two different lenient behaviours together |
+>
+> **The pattern of the wave, and the reason each ADR carries dated corrections rather than a rewrite: most
+> of what the rounds found were defects in the FIXES, not in the code they repaired.** The branch-order
+> search was wrong three times, each in the mirror of the previous error. The expression scan's
+> no-false-refusal claim — the entire justification for a regex over a parser — was asserted in three
+> documents and false in **eight** distinct ways. A stand-down gate added to prevent a false refusal
+> silently removed the whole check it was protecting.
+>
+> **Closing registers written 2026-09-06** (exit criterion 7), for `W5` and `W6` alike — after the merges
+> rather than with them, which is itself the delay the criterion exists to catch and is recorded as such.
+
 
 ### CR-60 — `merge_strategy: first` is not implemented as specified · High · ✅ **closed 2026-09-03**
 The canonical table said the first *resolved* branch wins. The engine waits for every branch to settle and the
@@ -1810,11 +1848,11 @@ is refused at parse. Narrowing alone fixes nothing — marshaling is JSON-only a
 absent id still compares silently false; it draws the boundary the scan enforces. `edges[].condition` — accepted
 by the schema, read by nothing, described by three descriptions across two documents as gating its edge — is
 refused at parse, and its pinning test is rewritten rather than deleted.
-**The scan's soundness claim was asserted in three places and false in seven ways.** ADR-0093 §2 justifies a
+**The scan's soundness claim was asserted in three places and false in EIGHT ways.** ADR-0093 §2 justifies a
 regex scan over a parser on one property: it never produces a FALSE REFUSAL. Two rounds found seven shapes that
 did — a `run` property on another object, the same separated by whitespace or a comment, a shadowing binding, a
 nested template literal, an odd-quoted regex shifting string parity, an HTML-like comment, and a Unicode
-identifier ending in `run`. Each is closed by ABANDONING the scan rather than lexing harder, and the claim now
+identifier ending in `run`, and — found after the wave was declared complete — a Unicode identifier ESCAPE, where `r\u0075n` is `run` to JavaScript and was not to the scanner. Each is closed by ABANDONING the scan rather than lexing harder, and the claim now
 has a test that can fail: every "says nothing" case is paired with an evaluation in the REAL sandbox proving the
 read is absent, because a false refusal is a disagreement between scanner and sandbox, not a property of either.
 **One stand-down gate removed the check it was protecting** — standing down for any unresolved `agent_ref` was
@@ -1824,7 +1862,7 @@ workflow built clean and silently lost all of CR-62's coverage. Per-node now.
 silent `false`) is written into [deferred-tasks.md](../deferred-tasks.md) rather than left inside an ADR's
 Negative section.
 
-### CR-63 — Agent `input_schema` runtime enforcement: verify the docs, do not implement · Low *(plan review)*
+### CR-63 — Agent `input_schema` runtime enforcement: verify the docs, do not implement · Low · ✅ **closed 2026-09-03**
 Split out of `CR-61` because it is a different contract with a different answer.
 [agent-yaml-spec.md](../../reference/contracts/agent-yaml-spec.md) states that `input_schema` is *"purely
 additive metadata — it drives type-safe node chaining and editor (VS Code) completion; it does not change
@@ -1869,42 +1907,638 @@ length bound and would ride an event and a log. The `$ref` half is inert until a
 
 ---
 
+### W5 closing register
+
+Exit criterion 7, for this wave: **per item, the code that closes it** — verified by reading the code, not by
+trusting the mark. Two rows close one HALF of a two-part obligation and say which half in the row itself,
+rather than in a footnote a reader can skip.
+
+| Item | Closed by | The test that fails if it is reverted |
+|------|-----------|----------------------------------------|
+| `CR-50` (**delivery half**) | `read_media` returns a short TEXT descriptor and the bytes ride an ATTACHMENT — a handle-only media part the turn loop delivers on a marked, fenced, engine-synthesized `user` message; the tool's range parameters are removed and its args schema is `.strict()`, so a model sending `start` gets a typed `invalid_args` | `read-media-delivery.test.ts` (Anthropic, OpenAI, Gemini — all three redden when the fixture stops delivering media); `agent-turn.test.ts` for the one-message-per-turn shape, break-verified against three mutations; `builtins.test.ts` — "never delivers bytes itself — the attachment is a HANDLE, and `readRange` is never called" |
+| `CR-51` | capability is gated on the MODEL, not the provider-wide flag: `modelAccepts` degrades an un-catalogued model to ACCEPTED, and the chain pre-skips a model the catalog says rejects tools instead of paying for a 400 | `capabilities.test.ts` — "per-MODEL capability gating (CR-51)", including "the premise: the catalog really records these models as incapable" (the control that stops the group passing vacuously); `fallback-chain.test.ts` — "skips a MODEL the catalog says rejects tools, for free, even on a tool-capable provider"; `anthropic.test.ts` — "WITHHOLDS temperature for a model whose catalog rejects it" |
+| `CR-52` | the thought signature is captured off the `functionCall` part it belongs to and replayed on that same part | `gemini.test.ts` — "CAPTURES the signature off a functionCall part", "REPLAYS a signed reasoning part as a thought part (the second half of the CR-52 defect)", and the two negative controls "omits the field when the part carries no signature" / "sends NO thoughtSignature key when the part carries none" |
+| `CR-53` (**ingest half**) | a media body streams from the network into the store under a size ceiling, an idle deadline and the run signal (`MediaUrlStream` → `MediaStore.putStream?`); `put` is reserved for sub-ceiling bodies and a url with no streaming hook is refused loudly rather than buffered | `media-store.test.ts` — "putStream content-addresses a chunked body to the SAME handle put would"; `media-egress.test.ts` — "ABANDONS a stalled body" and "ABORTS mid-flight when the ceiling is crossed". **No test measures peak MEMORY** — the shipped tests count what the source produced; that gap is stated in the item, not implied |
+| `CR-54` | a `url` output is pinned to a content-addressed handle at first resolution, at the dispatch boundary, and the pinned value is what `#settleCompleted` writes into the run scope; the async media-job path and the human-gate payload re-enter through the same pin | `engine.test.ts` — "the scope and the durable record carry the SAME handle — one fetch, one answer" and "a `save_to` output writes the SAME bytes the durable record names", both against a host that returns DIFFERENT bytes on a second fetch; "pins an ASYNC media-job result too — the LRO path does not pass through the dispatch pin" |
+| `CR-55` | a missing media rate is UNPRICED, never a price of zero, on both producing paths; under `strict_cost_cap` an unpriced media generation is refused pre-egress, and the rate path that makes the refusal actionable lands with it | `cost-tracker.test.ts` — "does not fold an unpriced modality into the running total as a fabricated number", plus the three boundary controls "treats a NEGATIVE rate as unpriced, never as a discount", "treats a non-finite rate as unpriced too" and — the one that stops the fix overshooting — "still prices a stated ZERO — free is a price, and distinct from unpriced"; `fallback-chain.test.ts` — "records an unpriced MODALITY as priced:false too, on a model that IS priced" |
+
+**What this register does NOT cover.** `CR-50`'s producer half and `CR-53`'s delivery + adapter halves are
+open, and every residual behind them is written out in [deferred-tasks.md](../deferred-tasks.md) rather than
+left inside a checked box. The `read_media` delegate in particular is wired **nowhere** in the tree, and that
+is deliberate: wiring it today would hand the model a tool that answers `unknown media handle` to every call,
+which is worse than the fail-closed absence. Since `CR-73` (2026-09-06) the advertise-filter also stops
+OFFERING it, so the absence is no longer visible to the model as a broken tool.
+
+### W6 closing register
+
+Exit criterion 7, for this wave. Written after the merge rather than with it — that delay is itself the thing
+the criterion guards against, and it is recorded rather than smoothed over.
+
+| Item | Closed by | The test that fails if it is reverted |
+|------|-----------|----------------------------------------|
+| `CR-60` | `merge_strategy: first` means first DECLARED, and the plan field no longer claims otherwise (`joinStrategy` → `requestedJoinStrategy`); a merge's branch set is exactly its **value-producing** predecessors, so a `condition` or `parallel` reaching a merge is no longer a phantom branch that `first` could return; the paired-parallel search ranks candidates by coverage | `dag.test.ts` — "buildRunPlan — a merge branch set is exactly its value-producing predecessors" (the whole group), plus "falls back to authored branch order for a merge with no paired parallel" and "derives requestedJoinStrategy wait_first for merge_strategy first" |
+| `CR-61` | an authored `output_schema` is compiled at parse in an allowlist-**strict** mode and enforced at run time, by the JSON-Schema→Zod compiler that already existed in `packages/mcp` and moved to `packages/shared` — **no new dependency** | `json-schema-compiler.test.ts` — "strict mode — what it now genuinely ENFORCES", "strict enforces a constraint that has no `type` beside it" (the blocker a review found: `required` was not enforced when a property's schema constrained nothing), "uniqueItems walks MODEL OUTPUT, so the walk is bounded", and "lenient mode is unchanged — the MCP boundary keeps its contract" (the control that the move did not alter the other caller) |
+| `CR-62` | an expression sees only its transitive dependency closure, and a literal out-of-closure `run.outputs` read is refused at parse; `edges[].condition` — which nothing ever read — is refused rather than silently ignored | `dag.test.ts` — "buildRunPlan — a literal out-of-closure `run.outputs` read is refused at parse"; `literal-output-reads.test.ts` — "what it SEES", "where it deliberately says NOTHING" (the eight false-refusal shapes the original soundness claim missed), and "the match is linear, not quadratic" (the second review blocker: 514 ms at 32 K on a parser that accepts 2 MiB) |
+| `CR-63` | **nothing** — and that is the finding. A repo-wide grep established that the spec's claim, that `input_schema` is additive metadata the engine never reads, is TRUE, so the absence of runtime enforcement is correct. The same check found a canonical `node-types.md` row that could not be authored at all (`prompt_template`/`on_timeout`/`input_schema` against a `.strict()` schema whose real fields are `message_template`/`timeout_action`, with the required `gate_type` and `assignee` omitted); the row was corrected | No runtime test, because there is no runtime change. The claim is pinned by the corrected canonical row and by `HumanGateNodeSchema` being `.strict()` — an author following the old row hit a parse rejection, which is what made the drift detectable |
+| `CR-64` | a widened tool grant is refused when the plan is BUILT rather than mid-run, for an INLINE agent; the runtime `resolveGrant` check stays as the last line of defence rather than the first | `dag.test.ts` — "node `tools:` narrows and never widens, at PLAN BUILD (CR-64, ADR-0094)", including "accepts a genuine narrowing, and a node that declares no tools at all" and "an agent with NO `tools:` has granted NOTHING — any node `tools` widens it" |
+
+**What this register does NOT cover**, stated rather than left to be discovered: the `$ref` half of `CR-64` is
+inert until a surface populates `planOptions.agents`, and none does — it is a residual, not a shipped
+guarantee. `CR-63` closed by verifying a claim rather than by changing behaviour, and a row whose "closed by"
+is *nothing* is exactly the row a future reader will suspect; the grep that established it is named above so
+the suspicion can be settled by repeating it.
+
+**The pattern this wave established, which outlived its own items.** Across seven internal rounds and four
+maintainer rounds, **most defects were in the FIXES rather than in the code they repaired** — the branch-order
+search was wrong three times, each in the mirror of the previous error; the expression scan's
+no-false-refusal claim was asserted in three documents and false in eight distinct ways; and a stand-down gate
+added to prevent a false refusal silently removed the whole check it was protecting. Every one is a dated
+correction inside its own ADR rather than a rewrite, so the wrong reasoning stays legible next to the right one.
+
 ## W7 — Agent product correctness
 
-### CR-70 — Cross-turn tool-call memory does not exist · High (product) · **decision open**
+> **Decisions made; `W7` is unblocked (2026-09-14).** The maintainer settled `CR-70`–`CR-72` and `CR-94` on
+> 2026-09-12 and 2026-09-13. Four ADRs, all **Accepted** 2026-09-14 with their implementation staged here, record
+> the decisions:
+>
+> - [ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) — `CR-70`–`CR-72`;
+> - [ADR-0096](../../decisions/0096-a-request-is-measured-before-it-is-sent.md) — the three prerequisites carrying
+>   depends on;
+> - [ADR-0097](../../decisions/0097-a-budget-approval-is-an-allowance-not-an-exemption.md) — `CR-94` and `CR-96`;
+> - [ADR-0098](../../decisions/0098-a-session-effect-row-holds-no-result-and-never-replays.md) — `CR-97`.
+>
+> **`W7`'s scope is therefore:** `CR-71`, `CR-72`, `CR-98` (ADR-0096's three prerequisites, opened as an item
+> 2026-09-18 so the count and the closing register can see them), `CR-94`, `CR-96` and `CR-97`. `CR-70`'s carrying
+> is deferred. `W7` also builds `relavium budget resume`, which ADR-0097 needs in order to have any non-TTY
+> approval surface at all; it moves here from 2.6.K. It does **not** include the run-path `dispatchContext`
+> delegate fields (see `CR-73`'s dated correction) and it does **not** include ADR-0087 §1, the `W3` live blocker,
+> which is scheduled into `W8` (2026-09-18).
+>
+> Six review rounds shaped those ADRs: the maintainer's review of the first drafts, four adversarial workflow rounds, and a short sixth round after the maintainer had them restated as decisions, invariants and acceptance tests. From the second round on, most defects were in the previous round's fixes. Two of the
+> round's findings were defects already shipping, and they are opened below as `CR-96` and `CR-97`.
+>
+> **A seventh round, on 2026-09-18, reviewed the four ADRs against the tree before any code was written** — eight
+> dimensions, each finding verified by an independent adversarial pass. It returned 113 verified findings and
+> seventeen decisions the maintainer settled the same day. Three defects in the documents mattered most: ADR-0098's
+> only stated mechanism for joining a persisted turn to its effect rows **does not exist** (the journal's attempt
+> id is a wiring constant, not the tool-call id); ADR-0098's monotonic turn key **cannot be derived** from the
+> journal, because the sweep deletes the rows it would be read from; and ADR-0096 §1's per-part floor would have
+> charged an inline image megabytes of tokens, contradicting the media ceiling in the same section. Each ADR
+> carries a dated note of 2026-09-18 with its corrections, and the landing checklist below collects every canonical
+> document `W7` must update in one place.
+
+### W7 pre-implementation review and proposed execution plan — 2026-10-02
+
+**Status: the maintainer-approved implementation and Steps 1–11 have scoped independent acceptance. All five live records, request ownership and consolidated host lifetimes are complete. Final Step 12 is accepted after two fresh complete cross-surface rounds; all six W7 items are closed on `development`. See the [closing register](#w7-closing-register--2026-10-10). The following pre-implementation plan and dated checkpoints retain their historical context.**
+The four Accepted ADRs retain their decisions. Three verified gaps were explicitly resolved before code:
+manual compaction with an unknown window and the budget outcome of idle compaction
+([ADR-0099](../../decisions/0099-compaction-has-an-idle-budget-outcome-and-an-unknown-window-policy.md)),
+and an older binary stripping an authorization's optional fields and replaying the old uncapped/invented-output
+semantics ([ADR-0100](../../decisions/0100-budget-authorization-is-durable-state-with-a-replay-barrier.md)).
+The maintainer authorised implementation on `development`. Their pre-approval review and evidence are recorded in
+[the preflight review](../../reviews/2026-10-02T01-14-15-w7-preflight-review.md).
+
+All work stays on `development`. The existing six-item scope and `budget resume` pull-in above stand; no item
+closes merely because its supporting type or schema lands. Each step updates its canonical contracts with the
+behaviour it actually implements; the final pass reconciles the complete wave and its register.
+
+| Step | Deliverable and main ownership | Acceptance focus / dependency |
+|---|---|---|
+| 1 | Repair the root test/coverage collection of private analysis prototypes; build and review the maintainer-run overflow capture tool (`vitest.config.ts`, `tools/test-isolation`, capture tooling under `packages/llm`) | Root and package-scoped collection both retain every real suite; private artifacts are neither run nor counted and are never deleted. Capture is finite, fixed-endpoint, synthetic-input-only and secret-free. The maintainer captures all four dialects before step 7's classification commit; no invented fixture substitutes |
+| 2 | Shared session-specific structural parts, strict store/metadata boundary, durable effect-turn high-water allocation and engine-assigned id contract (`shared`, `db`, core host ports) | Raw values in every `SessionMessageMeta` field, including `content`, are refused or derived from canonical text; one session key never repeats; safe exhaustion; legacy high-water initialization before cleanup; store updates cannot clobber the mark |
+| 3 | Completed-turn tool structure through turn/session events, atomic persister, resume/reseat/compaction boundary mapping, export and per-call effect-attempt joining (`core`, `cli`, `db`) | Empty final text, all historical rows in the join, resolved MCP ids, no unresolved names/content, atomic failure latch, turn-identified markers; IDs from step 2 reach both stored transcript and effect preparation |
+| 4 | Session effect privacy, no replay, legacy clear, secure deletion/WAL checkpoint, disclosure and retention across chat/Home/one-shot (`db`, `core` reference store, `cli`) | No result in session rows or post-checkpoint bytes; run replay unchanged; read failure prevents sweep; disclose then sweep once; errored/aborted/crashed turns; negative `!` slots; `agent run` teardown; history.db security sitting; depends on steps 2–3 |
+| 5 | One request projection for omitted/none/window/summary memory; same-role folding; policy refusals in engine and CLI (`core`, `cli`) | Current message plus N completed turns, empty finals counted, restored summary excluded under none/window, `/trim` message units preserved, frozen snapshots, workflow-node no-op documented; later automatic entry points consume the same policy |
+| 6 | Shared request estimator and output reservation; per-round input pricing, required hook forwarding, attempt evidence and proven pre-content HTTP refusal release (`llm`, `core`, `cli`) | Media encoding does not inflate tokens, conservative serialization fallback, sourced media constants, highest-tier non-cached input/user overlays, every forwarding site, generative input estimate 0, growing tool-round input, 4xx versus uncertain 5xx/timeout, cap and custom-endpoint identity. Configured-estimate/native-cap precedence and transport/pricing follow [Accepted ADR-0101](../../decisions/0101-configured-output-estimates-apply-only-when-the-wire-is-uncapped.md), approved 2026-10-02; runtime acceptance remains required |
+| 7 | Fixture-pinned overflow normalization per dialect, chain custom-endpoint downgrade, recoverability evidence, engine code and policy-aware CLI remedy (`llm`, `shared`, `core`, `cli`) | Five live-captured forms across four dialects, including Anthropic HTTP refusal and native context stop; Gemini replay body/message, no failover on overflow, content/tool-round flags, no provider text in engine messages, release conditions and stored-code upgrade behaviour; captured fixtures are required |
+| 8 | Capped atomic multi-pass compaction primitive, terminal balance, pre-send measurement and single overflow recovery (`core`, `cli`) | All ADR-0096 and approved ADR-0099 paths: differing fallback windows, four-pass exhaustion, pending versus completed empty-final user row, budget refusal with an after-turn first-pass notice, failure/skip, abort/cancel, turn cap, one-shot no after-turn call; depends on steps 5–7 |
+| 9 | Pure frozen allowance/provenance computation and synchronous dispatch-owned governor debit/reconciliation (`core`, `llm`) | calls × attempts × E at paused input size, lowered tool list, generative route, exclusions, zero/unrepresentable amounts, under-cap debit, refund/overrun, strict refusal and sibling/straggler isolation; depends on input pricing |
+| 10 | Durable authorization protocol, checkpoint correction and live/cross-process budget resume (`shared`, `core`, `db`/CLI checkpointer) | Approved amount never uncaps, exhaustion never re-pauses/retries, pre-claim refusal/timer intact, no ownership leak, legacy/no-allowance reset, companion-write crashes, identified/legacy joins and stale-gate duplicates, absolute deadlines, absorbed-fault acknowledgement, frozen-predecessor downgrade replay refusal, sibling human-gate crash matrix, effect preflight precedence; depends on step 9 and approved ADR-0100 |
+| 11 | `relavium budget resume`, inline frozen-amount confirmation and safe discovery/rendering (`cli`) | `--gate`, exact `--approve-amount` or `--abort`, multiple gates, stale price refusal, non-TTY/JSON behaviour, reject-only unrepresentable gate, inherited secret re-provide and MCP consent handling; engine behaviour from step 10 is the one authority |
+| 12 | Whole-wave cross-surface review, canonical checklist, dated ADR landing notes, per-item closing register, roadmap/guide status and PR preparation | All six items break-verified; privacy sitting recorded; every canonical document describes shipped behaviour; `pnpm run ci` and `pnpm coverage` each exit 0; no W7 residual introduced without a demonstrated necessity and maintainer decision |
+
+**Every step has the same gate:** implement with meaningful tests and adjacent canonical docs → required checks →
+implementation commit → fresh independent Codex reviewers → independently reproduce/verify findings → fix, check
+and commit → a second round with fresh independent Codex reviewers → verify/fix/check/commit. Each reviewer receives
+the complete step diff, its accepted contracts and prior findings; round 2 also reviews the fixes. The parent
+validates findings and owns all edits. Another corrective round is required if a material issue survives round 2.
+The next step starts automatically once the current step closes. The parent selects Codex models and effort
+for each scope: durability, privacy, budgeting and compaction use `gpt-6-astra` at xhigh or max plus an independent
+`gpt-6.1-sol` at xhigh; routine capture/collection work may use high effort. Each round uses fresh agents. A clean report is evidence of its stated coverage, never a guarantee that defects are impossible.
+
+At the baseline `1b3f8d70`, `pnpm run ci` exited 0. `pnpm coverage` exited 1 because it collected two ignored
+private CR-94 prototype suites with missing imports; 284 real suites and 6,263 tests passed. This is a collection
+failure, not a green coverage result, and step 1 fixes the gate before implementation proceeds. The existing
+cwd-tolerant root config also governs package tests, so simply anchoring every include to `packages/*/src` would
+silently stop package-scoped tests and is not an acceptable fix.
+
+**Step 1 implementation checkpoint, 2026-10-02:** private prototypes are excluded from both tests and
+coverage, with a marker-free guard probe; every source-adjacent suite is checked in root and package mode.
+Removing the private exclusion, removing the coverage exclusion and switching to a root-only include each
+breaks the guard. `pnpm run ci` and `pnpm coverage` both exit 0. The
+[capture tool procedure](../../runbooks/capture-provider-overflow.md) is available; its tests and offline
+command smoke do not constitute live provider evidence. [Round 1](../../reviews/2026-10-02T03-04-05-w7-step-1-round-1-review.md)
+verified seven findings. [Round 2](../../reviews/2026-10-02T03-22-32-w7-step-1-round-2-review.md) verified a
+concurrent cleanup race in the fix. [Round 3](../../reviews/2026-10-02T03-35-41-w7-step-1-round-3-review.md)
+verified a remaining passing/starting race; cleanup now retains shared parents and deletes only owned
+probes. The new regression fails the reviewed commit and passes the correction; CI and coverage exit 0
+(285 suites, 6,315 passing tests, 11 skipped). [Round 4](../../reviews/2026-10-02T03-43-31-w7-step-1-round-4-review.md)
+cleared probe ownership and verified a capture pathname-cleanup race. The runner now closes its
+descriptor without deleting a failed destination; the runbook documents possible empty/partial
+or complete files. [Round 5](../../reviews/2026-10-02T03-50-35-w7-step-1-round-5-review.md)
+cleared the complete step and final corrections. **Step 1 is closed; step 2 proceeds automatically.**
+The maintainer has been asked for the live capture artifact paths; independent steps 2–6 proceed
+while that evidence is pending.
+
+**Step 2 implementation checkpoint, 2026-10-02:** the strict session-only structural content union,
+whole metadata boundary and durable high-water allocator are implemented; the engine dispatch/event/
+persister connections remain step 3. Migration 0017 adds one column without rebuilding a table.
+The 0016 upgrade, historical empty-final/compaction floor, post-sweep/reopen identity, stale flush,
+exhaustion, corrupt mark and exact session-scope tests pass. Two real processes issue 200 unique keys.
+Required lint/typecheck/test, build/format, seam/purity/dependency/tools/smoke checks pass; root coverage
+exits 0 (289 suites, 6,367 passing tests, 11 skipped). Full CI exited 0 at `1927daa1`.
+[Round 1](../../reviews/2026-10-02T04-29-12-w7-step-2-round-1-review.md) verified that an outer
+transaction rollback could erase an issued key, and that session media admitted unsafe integers.
+Allocation now refuses an open transaction; session-only media metadata has safe-integer ceilings.
+Required checks and coverage pass after correction (289 suites, 6,374 passing tests, 11 skipped).
+Full CI also exits 0 at `c96eb9b5`.
+[Round 2](../../reviews/2026-10-02T04-41-54-w7-step-2-round-2-review.md) cleared the entire step
+and both fixes, including real lock contention and process-crash probes. **Step 2 is closed;
+step 3 proceeds automatically.** All six W7 items remain open.
+
+**Step 3 implementation checkpoint, 2026-10-02:** completed turns now carry content-free
+structural call/result pairs through the terminal event and one atomic transcript/session write,
+including an explicit empty final. Resume, export and live/reseeded compaction mapping use the
+same completed-turn projection; markers carry whole-turn retention counts while `/trim` retains
+message units. Required host allocator/probe attachment covers chat, clear/reseat, resume and
+Home. One-shot runs atomically retain only an already-tombstoned effect-identity record. Engine
+call ids reach per-call journal attempts, including disjoint negative shell slots. Real CLI/SQLite
+MCP, late-write rollback, hidden one-shot identity, resume/trim/empty-final and rediscovered-export
+plan tests pass. Required lint/typecheck/test/build/format checks pass; root coverage exits 0
+(290 suites, 6,394 passing tests, 11 skipped). Full CI exits 0 at `f6c61b79`.
+[Round 1](../../reviews/2026-10-02T05-34-44-w7-step-3-round-1-review.md) verified that recursive
+JSON size metadata could abort a valid correction and that recovered policy denials lost their
+`denied` outcome. Both are corrected with regressions that failed before the fixes. Required checks
+pass and root coverage exits 0 (291 suites, 6,406 passing tests, 11 skipped); full CI exits 0
+at `4045272c`. [Round 2](../../reviews/2026-10-02T05-48-54-w7-step-3-round-2-review.md) verified
+a cached-command durability bypass and loss of the resolved tool name on a recovered filesystem
+denial. A live effect-prepare guard and registry-verified name fallback correct both, with regressions
+that failed before correction. Required checks and coverage pass (291 suites, 6,410 passing tests,
+11 skipped); full CI exits 0 at `e95a6010`.
+[Round 3](../../reviews/2026-10-02T06-10-38-w7-step-3-round-3-review.md) independently verified
+that unjournaled tools bypassed the durability guard and the canonical export introduction was stale.
+Every actual dispatch now checks the live latch after asynchronous approval and preparation;
+a refusal releases its prepared claim because dispatch provably never started. An already-started
+effect can still settle. The real jailed-filesystem regression failed before correction. Required
+checks and coverage pass (291 suites, 6,415 passing tests, 11 skipped).
+Full CI exits 0 at `dd50738c`.
+[Round 4](../../reviews/2026-10-02T06-34-39-w7-step-3-round-4-review.md) cleared the admission
+correction and verified that a nontrailing pre-W7 empty-final user row lost its text from resumed
+context and the executable export prompt. The actual old-writer SQLite probe and initial regressions
+reproduced it. One shared compatibility projection now preserves legacy text and its boundary slots,
+without inventing terminals or completed counts; interrupted structural exchanges stay excluded.
+Real reseat/compact/trim tests pin the correct marker and full-history export. Required checks and
+coverage pass (291 suites, 6,422 passing tests, 11 skipped).
+Full CI exits 0 at `6d5b3f0b`.
+[Round 5](../../reviews/2026-10-02T06-48-45-w7-step-3-round-5-review.md) cleared the complete
+step and all corrections. Independent checks covered 45,056 mixed-history/boundary projections,
+133 export round-trips, 648 real SQLite/persister operations and additional durability/crash probes.
+**Step 3 is closed; step 4 proceeds automatically.** Its detailed sequence is result suppression
+and no replay in both stores; secure clearing after high-water initialisation; one owned read
+snapshot joining all structural history; disclosure through the accepted active surface before
+paired identity/ID committed-row deletion and checkpoint; and owned one-shot teardown. Outer
+transactions are refused at snapshot/maintenance boundaries, Home revalidates reentrant activation,
+and busy checkpoints preserve the Accepted deferred-erasure residual. No new ADR decision is needed.
+The session journal's result privacy and disclosure/sweep remain step 4. All six W7 items remain open.
+
+**Step 4 implementation checkpoint — 2026-10-02.** Session effects retain no result in SQLite or the core
+reference journal and never replay. The Node client enables secure deletion, seeds the high-water mark before
+legacy clearing, and checkpoints after the clear and every session sweep, including an empty one. Disclosure
+uses an owned all-history snapshot, then active-surface delivery, then an atomic sweep of captured physical-id/
+effect-address pairs. Chat resume/reseat, Home activation and owned one-shot unwind use that contract. Failed
+reads/sinks, discarded or reentrant Home activation, newer commits, changed states and id replacement preserve
+evidence. Run replay is unchanged. The accepted busy-checkpoint and pre-upgrade freed-page residuals remain;
+no new ADR decision is required. The [history.db sitting](../../standards/security-review.md#sitting-historydb-at-rest--cr-71-cr-97-2026-10-02)
+records its controls. The first full coverage run passes **296 suites, 6,467 tests, 11 skipped**, with all root
+thresholds met. Five controlled mutations independently fail secure-delete, WAL-checkpoint, captured-address,
+consistent-snapshot and malformed-attribution assertions. Fresh independent acceptance rounds follow the
+implementation commit; step 4 is not closed and all six W7 register items remain open.
+
+**Step 4, review round 1 — 2026-10-02.** Two fresh independent reviewers reproduced premature deletion
+before the actual standalone Ink renderer mounted, on initial resume and reseat. The parent's permanent
+actual-command/driver/SQLite regression failed before the correction. Disclosure now uses a separate
+once-only committed-mount activation hook with a live driver activity predicate, rechecked after delivery.
+Failed mounts, stale callbacks and synchronous exit retain evidence; plain/JSON sinks activate before input
+and terminate without waiting for input after a synchronous stop. Seven focused suites pass 199 tests.
+The [round 1 record](../../reviews/2026-10-02T08-05-02-w7-step-4-round-1-review.md) records the finding and
+correction; full checks and fresh independent corrective acceptance precede closure. All six items remain open.
+
+**Step 4, review round 2 — 2026-10-02.** Both fresh reviewers reproduced deletion before passive Ink
+input setup succeeded and before the disclosure frame was displayed. All three actual-command regressions
+failed against the previous production sources. Activation now awaits usable terminal setup and the notice
+render flush, observes renderer exit/error and revalidates ownership before sweeping. Standalone and Home
+input stay gated; a queued Home message cannot dispatch before acknowledgement or after exit. Plain/JSON
+create their line iterator before awaited activation so piped input remains buffered. Actual Ink and Home
+frames retain the captured rows until displayed. Seven focused suites pass 295 tests; required checks and
+coverage pass (297 suites, 6,487 tests, 11 skipped). The [round 2 record](../../reviews/2026-10-02T08-48-12-w7-step-4-round-2-review.md) records the
+correction. A third fresh independent round and full CI are required before closure; all six items stay open.
+
+**Step 4, review round 3 — 2026-10-02.** Fresh reviewers verified two High findings: incomplete/orphan/abandoned
+structural calls suppressed disclosure, and Ink acknowledged closed stdout before/during notice rendering.
+Both were independently reproduced by the parent. Attribution now uses the shared structural projector over
+all history, preserving the core facade and raw duplicate/name anomaly checks. A context-bound render hook
+checks actual stdout before/after flush, observes close/error, disarms activation and safely releases output
+listeners after pending Node destruction events. Home consumes the actual RootApp's checked acknowledgement
+and disarms its controller immediately on renderer failure/exit. Three permanent attribution tests and four
+permanent output controls failed before their corrections; seven focused suites now pass 157 tests. Required
+checks, build and coverage pass (297 suites, 6,497 tests, 11 skipped). The
+[round 3 record](../../reviews/2026-10-02T09-24-27-w7-step-4-round-3-review.md) records evidence and limits. Full checks, CI and a fourth fresh independent round precede closure; all six items stay open.
+
+**Step 4, review round 4 — 2026-10-02.** Fresh reviewers verified native headless stderr writes acknowledged
+before delivery and an inline notice consumed during Ctrl-Z suspension with no disclosure frame. The parent
+independently reproduced both. Stderr now has a required acknowledged-write port; native completion/state and
+error/close ownership guard deletion. Terminal ownership serialises notice insertion/flush with suspension,
+and detachment wakes pending operations. Reconciliation refuses omitted publication and discarded delivery
+failures. Nine focused suites pass 217 tests, including actual delayed native command delivery; independent
+owned-worker real STOP/CONT controls pass. The [round 4 record](../../reviews/2026-10-02T10-04-04-w7-step-4-round-4-review.md)
+records evidence and limits. Workspace checks, build and coverage pass (298 suites, 6,514 tests, 11 skipped).
+Full CI passed at `b9d52d76`; a fifth fresh independent round returned two further corrections.
+
+**Step 4, review round 5 — 2026-10-02.** Both reviewers independently reproduced headless SIGINT held
+behind native stderr backpressure; lifecycle additionally reproduced a late Home acknowledgement deleting
+evidence while a canceled session remained mounted during MCP close. The parent independently verified
+native pipe/FIFO and actual Home before/after controls. Headless activation races an owned interrupt with
+permanently disarmed ownership; Home activation requires a running session outside teardown. Four actual
+command and two controller regressions failed before correction; late callbacks cannot touch a closed
+database. Eight focused suites pass 310 tests. The [round 5 record](../../reviews/2026-10-02T10-36-22-w7-step-4-round-5-review.md)
+records evidence and limits. Workspace checks, build and coverage pass (298 suites, 6,520 tests, 11 skipped).
+Full CI passed at `e753beb7`; a sixth fresh round then accepted the complete step.
+
+**Step 4, review round 6 — 2026-10-02.** Two fresh reviewers accepted the entire step and every earlier
+correction with no new verified material finding. Privacy passed 17 suites/386 tests and eight independent
+probes; lifecycle passed 16 suites/438 tests. The parent independently reran native blocked-pipe/real-SIGINT/
+actual-DB-close late-settlement controls and structural/byte/atomicity probes. Compiled-entry controls also
+proved that queued native stdio can delay natural process exit after command teardown on both this head
+and the exact pre-step baseline; the canonical contract now states that inherited qualification explicitly.
+The [round 6 record](../../reviews/2026-10-02T10-57-58-w7-step-4-round-6-review.md) records evidence and limits.
+**Step 4 is closed; step 5 proceeds automatically.** All six W7 register items remain open.
+
+**Step 5 implementation checkpoint, 2026-10-02:** one pure request projection selects authored
+memory before summary placement and same-role folding. Completed-turn spans count empty finals,
+exclude unproven legacy text from a window and survive trim, resume and model reseat without changing
+the durable archive. The instance copies/freezes its policy; engine history operations return typed
+policy refusals, and the CLI checks them before progress or bound validation. The existing after-turn
+trigger consumes the resolved permission; measured pre-send/recovery and revised compaction outcomes
+remain later steps. Actual workflow-node requests retain their one-turn behaviour.
+
+Core request/state/purity tests and actual CLI/SQLite resume/reseat tests verify these paths,
+including restored-summary exclusion, empty finals, completion-sink rollback, manual refusal and a
+high-usage summary-policy one-shot with no after-turn summariser. Required workspace checks pass
+(23 tasks), build passes (6 tasks), and coverage exits 0 (299 suites, 6,567 passing tests, 11 skipped;
+all configured thresholds met). Canonical memory, session API, config and chat contracts and dated
+ADR-0095/ADR-0062 landing notes are updated.
+[Round 1](../../reviews/2026-10-02T12-00-17-w7-step-5-round-1-review.md) accepted the implementation
+with no material finding; an adjacent lifecycle-row ambiguity was clarified. Both reviewers passed
+347 focused tests; the parent reproduced 390 state/history cases, 86 actual CLI/SQLite cases and
+matched source-head/pre-step operational controls. **Fresh round 2 is pending; step 5 and all six
+W7 register items remain open.**
+
+**Step 5, review round 2 — 2026-10-02.** Two fresh reviewers accepted the complete step and prior
+clarification without a verified finding. Both independently passed 347 focused tests. The parent
+reproduced 1,536 state/history cases with two sends each and their exact-source pre-step control
+(1,408 expected failures, 128 common-behaviour passes), plus 86 actual CLI/Home/SQLite cases.
+Six exact-source operational controls passed this head and failed the pre-step source as expected;
+final probes use owned temporary caches without an HMR listener. The
+[round 2 record](../../reviews/2026-10-02T12-21-33-w7-step-5-round-2-review.md) states evidence and limits.
+**Step 5 is closed; all six W7 register items remain open.**
+
+**Step 6 preflight — 2026-10-02.** The existing configuration promise permits a configured estimate
+to replace a known native output cap; the shared resolver's precedence was not settled by Accepted
+ADR-0028/ADR-0096. Independently reviewed
+[Proposed ADR-0101](../../decisions/0101-configured-output-estimates-apply-only-when-the-wire-is-uncapped.md)
+preserves wire behaviour, reserves known caps or recognised native envelopes, and uses the configured
+estimate only for uncapped requests. Its compatibility consequence and dialect/price-path acceptance
+cases are explicit. The maintainer has been asked for approval; no dependent step 6 implementation
+has begun. Live-captured fixtures remain separately required before step 7's classification commit.
+
+**Step 6 proposal revision, round 1 — 2026-10-02.** The maintainer's ADR-0101 review verified that
+native options do not reach existing admission signatures and resolved output is clamped again by
+the legacy price helper. The corrected Proposed decision specifies required cap transport, a shared
+adapter/reservation plan, rate-only resolved-token pricing, source endpoint identity, candidate-specific
+allowance computation and all related ADR landing notes. Two fresh source/draft reviewers found those
+gaps resolved; one verified a construction-to-attempt metadata-refresh gap. The parent corrected
+measured-plan handoff/rechecking without changing main-turn skip/failure or compaction outcomes.
+The [round 1 record](../../reviews/2026-10-02T15-09-58-w7-adr-0101-revision-round-1-review.md) states the evidence
+and limits. Fresh draft round 2 is pending; ADR-0101 remains Proposed and no dependent implementation
+has begun. Steps 1–5 stay closed; all six W7 register items remain open.
+
+**Step 6 proposal revision, round 2 — 2026-10-02.** Two fresh reviewers accepted the complete corrected
+proposal and round 1's handoff correction with no actionable finding. They checked the actual hook,
+adapter, governor, host and mutable-catalog paths against all six related ADRs. Required workspace
+checks pass 23 tasks and clean-tree full CI passes at `2b628e1a`. The
+[round 2 record](../../reviews/2026-10-02T15-18-01-w7-adr-0101-revision-round-2-review.md) distinguishes static
+proposal acceptance from future implementation verification. The revised ADR-0101 has been presented
+for maintainer approval; it remains Proposed, with no dependent implementation begun. Steps 1–5
+remain closed and all six W7 register items remain open.
+
+**Step 6 proposal approval — 2026-10-02.** The maintainer approved the complete revised ADR-0101
+after both fresh draft review rounds. Its status and index are Accepted, and the six related ADRs
+carry targeted dated qualifications with historical bodies preserved. Step 6 implementation proceeds
+on `development` under the approved commit/review cycle. Proposal acceptance does not close runtime
+acceptance; steps 1–5 remain closed and all six W7 register items remain open.
+
+### CR-70 — Cross-turn tool-call memory does not exist · High (product) · **decided 2026-09-13: carrying DEFERRED** ([ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) §2)
 Only the final assistant text enters the cross-turn transcript; within-turn tool call/result pairs are dropped. A
 coding agent cannot remember a file it read in the previous turn and calls the tool again.
 **Open decision.** Persist the tool pairs (bounded), or narrow the canonical session spec. The bound is part of
 the decision.
 
-### CR-71 — Session transcript and export lose tool history · High
+**Decided 2026-09-13.** The maintainer first chose to implement carrying, then deferred it. The deferral came once a
+review established two things. Tool content must never reach disk, and a reseat rebuilds a session from disk, so
+carried content could survive only within one process and one model binding. Carrying was also the largest single
+source of open findings. The canonical spec is narrowed to say a session does not carry prior turns' tool rounds.
+Work reopens when ADR-0096 has shipped and been observed in a release and a surface needs carrying. ADR-0095 §2
+records the constraints the future design inherits. The deferral record is in
+[deferred-tasks.md](../deferred-tasks.md).
+
+### CR-71 — Session transcript and export lose tool history · High · **decided 2026-09-13** ([ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) §1, §3) · ✅ **closed 2026-10-10**
+
+**Closing evidence:** [W7 closing register](#w7-closing-register--2026-10-10). The original defect and approved design below are historical.
+
 The persister stores the same text-only model, so the exporter — written to derive tool names from assistant
 tool-call parts — has nothing to read. The canonical session spec promises a full transcript with a tool union.
 **Fix + acceptance for CR-70/71.** One decision, one PR. A graduated workflow must represent the flow that
 actually happened, or the spec must stop promising it.
 
-### CR-72 — Authored agent `memory` policy is inert · Medium · **decision open**
+*(Qualified 2026-09-18: the decision was one, the PR is not. `CR-70`'s carrying was deferred on 2026-09-13, so
+`CR-71` ships alone in `W7` and the deferral record carries what a future carrying design inherits.)*
+
+**Decided 2026-09-13.** A session's tool history is persisted as **structure, never content**. Its rows record which
+tools ran, in what order, how large their arguments and results were, and whether each errored. *(Narrowed
+2026-09-18: they carry no model-chosen string and no UNRESOLVED server string — a registry-resolved
+`mcp_<server>_<tool>` id is admitted and persists as itself, because its server segment passed admission's charset
+and length check and the author's own `mcp_servers` granted it.)*
+The export fills its `tools` union from that structure and carries no tool content, because a `.relavium.yaml` is
+committable. ADR-0095's invariants and acceptance tests are this item's acceptance.
+
+### CR-72 — Authored agent `memory` policy is inert · Medium · **decided 2026-09-13: IMPLEMENT** ([ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) §4) · ✅ **closed 2026-10-10**
+
+**Closing evidence:** [W7 closing register](#w7-closing-register--2026-10-10). The original defect and approved design below are historical.
+
 `none | window | summary` is accepted by the schema and consumed by nothing.
 **Fix + acceptance.** Implement it or reject it at parse time with a typed error. A schema that accepts a field
 nothing reads is a claim the code does not keep.
 
-### CR-73 — `invoke_agent` has no production delegate · High (2.6 go/no-go)
+**Decided 2026-09-13: implement.** An omitted `memory` means what ships today. `none` and `window` shape the request
+only. `summary` always permits automatic compaction, whatever `[chat].auto_compact` says. An authored `memory` decides compaction at all three entry points: after a turn,
+before sending, and in overflow recovery. The canonical row's wrong default (`none`) is corrected.
+
+### CR-73 — `invoke_agent` has no production delegate · High (2.6 go/no-go) · ✅ **closed 2026-09-06**
 The builtin exists in the catalog and errors with tool-unavailable when no delegate is wired; nothing wires one
 in production, and the availability filter keeps the delegate-backed tool in the catalog.
 **Fix + acceptance.** Wire the delegate, or stop advertising the tool to the model when no delegate exists. The
 cheap option is always available, which is why this is non-deferrable.
 
+**Closed by the cheap option — the tool is no longer advertised, on any of the three paths that advertise.**
+`ToolDef` gains an optional `requiresDelegate`, declared by the tool rather than looked up in a central
+id→delegate switch (the same reason `policyTarget` and `effect` live on the def: a central predicate drifts
+from the tool it describes). One predicate, `delegateAvailable` in `packages/core/src/tools/delegates.ts`,
+answers it, and all three callers use it:
+
+1. the CLI advertise-filter (`wiredToolIds`), whose new `delegates` option **defaults to none** — that default
+   is the fix rather than a detail, since every in-tree caller omits it and the opposite default would have
+   re-created this item for the next caller who forgot;
+2. `AgentSession`'s `buildLlmTools` (the chat turn); and
+3. `agent-runner.ts`'s `buildLlmTools` (the workflow run turn).
+
+**The first fix covered only path 1, and that was found by asking where else a tool is advertised.** The CLI
+filter runs on the chat path alone, so an authored workflow granting `invoke_agent` still had it lowered into
+the request. The two engine call sites are near-duplicates in two files that have drifted before, which is why
+the predicate has one home instead of being copied into both.
+
+**A sharper statement of the defect than this item had.** On the run path the delegate was not merely unwired —
+`agent-runner.ts`'s `dispatchContext` literal has **no `invokeAgent` and no `mediaRead` field at all**, so no
+host could have supplied one. The tool was advertised there and *structurally* guaranteed to answer
+`tool_unavailable`. Adding that field is `W7`'s work; the predicate's negative control already says what must
+become true when it lands, so the filter cannot be "fixed" later by blacklisting the two ids forever.
+
+**Corrected 2026-09-18: that field is not `W7`'s work, and saying so left a promise nothing kept.** `W7`'s scope
+is `CR-71`, `CR-72`, `CR-98`, `CR-94`, `CR-96` and `CR-97`, and none of its four ADRs touches the delegate seam.
+The work has two existing homes: `ctx.mediaRead` is tracked as a `read_media` D12 follow-up in
+[deferred-tasks.md](../deferred-tasks.md), whose `CR-50` residual argues that wiring a delegate with no producer
+is worse than its absence, and the `invokeAgent` delegate belongs to
+[2.6.N](phase-2.6-conversational-authoring.md). Until one of those lands, `delegateAvailable` keeps filtering both
+tools on both paths, which is the behaviour this item shipped. The comment in `agent-runner.test.ts` that repeats
+"`W7` adds the field" is corrected in `W7`'s first commit.
+
+**What the old comment got wrong.** `requiredArmPresent` deliberately exempted delegate-backed tools, defending
+it as "best-effort, not a substitute" for the dispatch backstop. For an `os` tool that is true — `host.os` is
+absent only on a profile that chose not to wire it, and the tool works wherever it IS wired. For these two the
+delegate is wired **nowhere in the tree**, so the fall-through was not best-effort, it was a permanently false
+advertisement, and a backstop that fires after the model has committed a turn to the call is not a substitute
+for never offering it. The distinction the comment missed is whether an absent capability is a profile choice
+or a missing implementation.
+
+**`read_media` rides along, and that is intended.** It is the other delegate-backed tool and `ctx.mediaRead` is
+equally unwired — which `CR-50`'s residuals already state, including that wiring it today would hand the model
+a tool answering `unknown media handle` to every call. It is now not offered either. `CR-50` stays closed on
+its delivery half; this changes what the model is told, not what the tool does.
+
+**The tests that fail if it is reverted** (each break-verified against a mutation removing the check it
+covers, per path):
+- `assemble.test.ts` — "`CR-73`: drops delegate-backed tools (invoke_agent/read_media) when the caller wires no
+  delegate"; its negative control "keeps a delegate-backed tool when the caller declares that delegate — and
+  only that one", without which the first would also pass if the filter simply blacklisted both ids forever;
+  and "the two delegate-backed built-ins actually DECLARE their delegate", asserted against the real catalog so
+  a future delegate-backed tool fails here until it declares one.
+- `agent-runner.test.ts` — "drops `invoke_agent` from the lowered tool list, and leaves an ordinary granted
+  tool alone" (`read_file` is the control that this drops by reason rather than thinning the list), plus the
+  predicate's own both-branch control.
+- `agent-session.test.ts` — "`CR-73`: a delegate-backed tool is never advertised while its delegate is absent".
+  Added because the first round of engine mutations reddened the run path and **nothing on the session path** —
+  a check present in one of two near-identical lists and missing from the other is the exact shape of this
+  defect, so both are pinned.
+
+### CR-98 — A request is not measured before it is sent, an overflow kills the turn, and the budget estimate ignores input · High · **opened 2026-09-18** · ✅ **closed 2026-10-10**
+
+**Closing evidence:** [W7 closing register](#w7-closing-register--2026-10-10). The original defect and approved design below are historical.
+
+Three live defects, decided together on 2026-09-14 by
+[ADR-0096](../../decisions/0096-a-request-is-measured-before-it-is-sent.md) and named in `W7`'s scope from that
+day. They had no item of their own until now, so the count could not see them and exit criterion 7 had nothing to
+close them against — the bookkeeping failure this register has already made twice.
+- **Nothing checks a request against the window before it is sent.** `#maybeAutoCompact` runs after the request
+  has gone out.
+- **An overflow kills the turn with no recovery.** It arrives as `bad_request`, which is fatal and not
+  classifiable by a surface.
+- **The budget estimate ignores input.** `estimateMaxNextCost` prices output only, so a growing history is free
+  to the cap — which makes "before each LLM call the engine checks the cap" narrower than it reads.
+
+**Deferrable**: each of the three has an honest state today (the turn fails loudly rather than silently overspending), so
+this is not a security or correctness boundary in exit criterion 1's sense — but it is scheduled, not deferred.
+**Fix + acceptance.** ADR-0096's invariants and acceptance tests, as amended by its dated note of 2026-09-18, are
+this item's acceptance.
+
+**The forwarding sites §6 invariant 2 requires a test at**, enumerated here because the invariant says "each" and
+names none: `agent-turn.ts`'s `preAttempt` wrapper · `engine.ts`'s `#makePreEgressHook` call · the CLI session
+host's governor adapter and its durability wrapper · `agent-runner.ts` (`ctx.preEgress ?? deps.preEgress`) and its
+generative media gate · `AgentSession`'s two pass-throughs (the turn and the summariser) · `NodeExecContext`'s
+`preEgress` field. Making the field required is what turns a dropped argument into a compile error; the tests are
+what pin that each site forwards the value it computed. The three maintainer decisions it carries are: no calibration in `W7`; a shared output
+reservation of 4096 clamped to the catalog ceiling when the adapter sends no cap; and live-captured overflow
+fixtures per dialect, from a capture script the maintainer runs once with their own keys.
+
+### CR-96 — A crash after a budget decision resumes the agent as complete, with an invented output · High · **opened 2026-09-14** · ✅ **closed 2026-10-10**
+
+**Closing evidence:** [W7 closing register](#w7-closing-register--2026-10-10). The original defect and approved design below are historical.
+
+The checkpoint fold marks the node of every resolved gate `completed`, with the output `{ decision }`
+(`checkpoint.ts:458-461`), without checking whether the gate was a budget gate. On a budget gate that node is the
+agent vertex itself. A crash between the decision and the agent's own terminal therefore resumes the agent as
+complete, with an invented output and no pending gate. Downstream nodes read `{ decision: 'approved' }` as its
+answer, and the run can end `run:completed` on data that was never produced. **Reproduced** on 2026-09-13 with a
+probe over the real fold: `writer state = {"status":"completed","output":{"decision":"approved"}}`, and no pending
+gates.
+**Non-deferrable**, because a run can complete silently on invented data, and the fail-closed option is cheap.
+**Fix + acceptance.** [ADR-0097](../../decisions/0097-a-budget-approval-is-an-allowance-not-an-exemption.md) §4:
+- an approved gate re-runs the agent;
+- a rejected gate fails the resumed run with `budget_exceeded`;
+- `input_provided` is refused on a live budget gate;
+- ADR-0097's crash acceptance tests pass, resumed through a sibling human gate (the double-crash case needs two
+  pending sibling gates, one per resume — a run that is not parked cannot be resumed at all).
+
+**Implementation constraints recorded 2026-09-18**, from the review of ADR-0097 against the tree:
+- a refusal must land BEFORE `resume()`'s synchronous `#resolvedGates.add` claim and before `beginResume` disarms
+  the gate's timer, or the gate is marked resolved and every later decision is a silent no-op;
+- the cross-process path must leave no lease and no registered run behind when it refuses;
+- the CLI's inline prompter must not offer Approve or input on a gate marked unrepresentable, because `drive.ts`
+  rethrows a typed `EngineStateError` as a bug;
+- `W7` writes the general decision-kind-versus-gate-type check inside `WorkflowEngine#resume`, so 2.6.K's planned
+  `assertDecisionMatchesGateType` extends it rather than adding a second one.
+
+### CR-97 — A session's effect rows keep tool output at rest, and a resumed session can replay a stale result · High · **opened 2026-09-14** · ✅ **closed 2026-10-10**
+
+**Closing evidence:** [W7 closing register](#w7-closing-register--2026-10-10). The original defect and approved design below are historical.
+
+Three shipping defects in session-scoped `run_effects` rows, found and reproduced from code during the ADR-0095
+review:
+- **Tool output at rest.** A committed tier-3 effect stores the bounded tool result in `result_json`
+  (`registry.ts:240`) on `chat`, `chat-resume`, `agent run` and the Home, and a session that is never resumed keeps
+  it indefinitely. That falsifies ADR-0050's premise.
+- **Stale replay.** Resume re-seeds the turn counter from rows past the compaction boundary
+  (`session-resume.ts:161`, `agent-session.ts:577`). After `/compact` and a resume, a same-args tool call can
+  therefore replay an earlier turn's stored result.
+- **Protection by accident.** An effect that landed in a turn that did not complete is shielded only by the same
+  replay.
+**Non-deferrable**: a security boundary (tool output at rest) and a correctness boundary (stale replay), both with
+cheap fail-closed options. Security-relevant, so its closing change goes through the security-review skill.
+**Fix + acceptance.**
+[ADR-0098](../../decisions/0098-a-session-effect-row-holds-no-result-and-never-replays.md)'s invariants and
+acceptance tests, including the upgrade clearing of rows written before it, as amended by its dated note of
+2026-09-18.
+
+**What that note changed, and what `W7` must therefore build:**
+- a per-call, **engine-assigned** tool-call id threaded through `EffectDispatchPort.prepare` into the attempt, in
+  the SQLite store and the core reference store alike — the join ADR-0098 described does not exist today, because
+  every session surface writes a wiring constant;
+- a **durable high-water mark** for the turn key on `agent_sessions` (one integer column), because the sweep
+  deletes the rows the maximum would otherwise be read from;
+- the disclosure sweep runs only after a SUCCESSFUL disclosure read, and a disclosed row is swept by the first
+  sweep after it — on the Home resume path too, which discloses and never sweeps today;
+- `PRAGMA secure_delete = ON` on the `history.db` connection plus one `wal_checkpoint(TRUNCATE)` after the legacy
+  clear, so "no tool result at rest" is true of the file's bytes and not only of the row;
+- `agent run` sweeps its own committed session rows at teardown; nothing can resume or disclose them;
+- the false comment at `agent-session.ts` claiming `#turnCount` is "the session's own durable counter, restored on
+  resume" is replaced, and `effect-journal.md` §14's `!`-command false-duplicate limitation is retired with the
+  monotonic key.
+
+**Landing order.** `CR-71`'s engine-assigned ids land before, or in the same commit as, this item's disclosure
+predicate: the predicate joins effect rows to ids that must already be persisted.
+
+Its closing change goes through the security-review skill **and** the `history.db` at-rest sitting (clause 7),
+together with `CR-71`'s no-tool-content-at-rest invariant.
+
+### `W7`'s canonical-document checklist (recorded 2026-09-18)
+
+Exit criterion 4 is per-document, and the 2026-09-18 review found canonical homes that state behaviour `W7`
+changes — some named by an ADR's landing obligations, several by none. Every one is listed here, so the wave closes
+against ONE list rather than five. These repeat the ADRs' obligations and add the rest; the ADRs' own lists still
+stand.
+
+| Document | What changes | Landing verification |
+|---|---|---|
+| [config-spec.md](../../reference/contracts/config-spec.md) | `[chat].auto_compact` / `compact_threshold`: the trigger measures the PROJECTED next request against the first attemptable entry's window, it covers all three automatic entry points, and an authored `memory` overrides it (ADR-0095 §4) | Implemented; accepted final wave review tracked in [closing register](#w7-closing-register--2026-10-10) |
+| [workflow-yaml-spec.md](../../reference/contracts/workflow-yaml-spec.md) | the cost-cap formula `cumulative + worstCaseNextEstimate(maxTokens)` prices input too (ADR-0096 §6); an approved step runs under an allowance, not uncapped (ADR-0097) | Implemented; accepted final wave review tracked in [closing register](#w7-closing-register--2026-10-10) |
+| [agent-runner.md](../../reference/shared-core/agent-runner.md) | the `context_overflow` row in the error map, and `PreEgressHook.inputTokensEstimate` — this is the hook's canonical home, not llm-provider-seam.md | Implemented; accepted final wave review tracked in [closing register](#w7-closing-register--2026-10-10) |
+| [database-schema.md](../../reference/shared-core/database-schema.md) | the structural tool rows (ADR-0095 §1); `run_effects.result_json` always NULL for a session scope; negative `!`-command slots; the corrected retention sentence; the new session-row turn-key column ·  its two at-rest security paragraphs — "the file holds no credentials" and "the engine masks secrets at the bus" — **narrowed 2026-09-18**, ahead of the code, because [ADR-0050](../../decisions/0050-cli-history-db-at-rest-posture.md)'s 2026-09-14 note had already falsified both | Implemented; accepted final wave review tracked in [closing register](#w7-closing-register--2026-10-10) |
+| [keychain-and-secrets.md](../../reference/desktop/keychain-and-secrets.md) | the same two claims in its CLI at-rest paragraph — the security reference a reader reaches first — **narrowed 2026-09-18**; when `W7` lands, the session-effect sentence drops its "until ADR-0098 lands" qualifier | Implemented; accepted final wave review tracked in [closing register](#w7-closing-register--2026-10-10) |
+| [ADR-0029](../../decisions/0029-tool-policy-hardening.md) | rule (c)'s at-rest premise: its 2026-07-07 note fixed the ENCRYPTION half only, so a dated note of **2026-09-18** carries the ADR-0050 correction. Nothing further is owed at landing | Corrected 2026-09-18; nothing further owed |
+| [effect-journal.md](../../reference/shared-core/effect-journal.md) | §2 (the attempt id's new role), §4 (a `replay` verdict is run-scope only), §8–§9 (the disclosure predicate, the sweep bound, `agent run`'s rows), §11 (what a session row may hold), §12 (the new crash cases), §14 (the `!`-command limitation, retired) | Implemented; accepted final wave review tracked in [closing register](#w7-closing-register--2026-10-10) |
+| [llm-provider-seam.md](../../reference/shared-core/llm-provider-seam.md) | `context_overflow` and the attempt record; the "pre-first-turn FALLBACK only" framing of `estimateTokens`; the per-modality media ceilings with their sources; what each dialect's classification keys on | Implemented; accepted final wave review tracked in [closing register](#w7-closing-register--2026-10-10) |
+| [error-handling.md](../../standards/error-handling.md) | `context_overflow` in the `ErrorCode` list, and the false claim that the chain "records the failed attempt's usage" (the same sentence sits in `llm-error.ts`) | Implemented; accepted final wave review tracked in [closing register](#w7-closing-register--2026-10-10) |
+| [sse-event-schema.md](../../reference/contracts/sse-event-schema.md) | the structural field and the turn-identified boundary; the `reason` values `pre-send` and `overflow-recovery`; the additive `session:compaction_failed` terminal and the "no terminal for a failed manual `/compact`" sentence it retires; the budget pause/approval fields; that a new `ErrorCode` member is NOT additive for stored rows; the persistence sentence that still says tool messages are stored | Implemented; accepted final wave review tracked in [closing register](#w7-closing-register--2026-10-10) |
+| [chat-session.md](../../reference/cli/chat-session.md) | what a turn appends and what the export carries; the `/compact` and `/trim` rows and the compaction section (linking to the `memory` row), including the "`session:compacting` may have no terminal" sentence that `session:compaction_failed` retires and what a multi-pass fold bills; the overflow hint, which becomes code-based with a policy-dependent remedy; the context-fullness indicator as an approximation; the reseat paragraph's text-only replay and its "Phase-3 persister" attribution, which ADR-0095 §2 and `CR-70`'s deferral now own; the resume effect-disclosure sentence, which no user-facing document carries today | Implemented; accepted final wave review tracked in [closing register](#w7-closing-register--2026-10-10) |
+| [commands.md](../../reference/cli/commands.md) | the inline budget gate card shows the frozen allowance and takes no input; `relavium budget resume` documents `--gate` and `--approve-amount`, and says how a run with two pending budget gates is addressed — `gate` and `gate list` still filter budget gates out | Implemented; accepted final wave review tracked in [closing register](#w7-closing-register--2026-10-10) |
+| [agent-session-spec.md](../../reference/contracts/agent-session-spec.md) · [agent-yaml-spec.md](../../reference/contracts/agent-yaml-spec.md) · [agent-sessions.md](../../architecture/agent-sessions.md) | as ADR-0095 and ADR-0096 already list, plus §"Session messages" (the persisted content type and the `LlmMessage` projection), the `memory` row's workflow-node sentence, and step 1's claim that a turn projects the persisted rows | Implemented; accepted final wave review tracked in [closing register](#w7-closing-register--2026-10-10) |
+| [execution-model.md](../../architecture/execution-model.md) | blanket retry-key idempotency and end-of-run-only cost persistence were corrected in the 2026-10-02 preflight under ADR-0080 and ADR-0076/0077; keep these descriptions consistent with the budget crash/resume work | Implemented; accepted final wave review tracked in [closing register](#w7-closing-register--2026-10-10) |
 ---
 
 ## W8 — Provider and conformance
 
-### CR-80 — An invalid custom base URL fails OPEN to the official endpoint · High (security/compliance)
+### CR-80 — An invalid custom base URL fails OPEN to the official endpoint · High (security/compliance) · ✅ **closed 2026-09-06**
 When the custom provider factory rejects a private, malformed or credential-bearing URL, the error is caught and
 the default adapter is left standing — and a test pins that fail-open as correct. A user expecting an internal
 gateway silently sends prompts and keys to the official API after a config drift.
 **Fix + acceptance.** Fail closed with an explicit message. The error must name the rejected URL's *shape*
 without echoing an embedded credential — asserted directly. Rewrite the test that pins the old behaviour,
 keeping a note with the reasoning it replaces.
+
+**Closed with a refusing adapter, not a throw.** Resolver construction runs for EVERY command, so throwing
+would make `relavium provider list` — the command you would use to FIND the bad row — unusable. The rejected
+provider becomes one whose every call fails, which is the earliest point the failure is both loud and
+survivable. The provider is also recorded as a custom endpoint, so nothing prices a refusing adapter as the
+official one.
+
+**Each arm fails the way its own signature promises**, which the first version got wrong by giving both the
+same `(): never` thrower: `generate` is declared to return a `Promise`, so a caller may legitimately write
+`.catch()` with no `try`, and a synchronous throw escapes that and crashes the process — a refusal that breaks
+the contract it is enforcing. It rejects instead. `stream` returns an `AsyncIterable` whose `next()` rejects,
+so the failure arrives at the first pull, where a real adapter's would.
+
+**The message names the shape and the remedy.** `InvalidBaseUrlError` gains a `reason` field (mirroring
+`ToolSchemaError.reason`, per error-handling.md's structured-context rule) so the refusal can be composed
+around the original without nesting the "invalid base URL '…'" prefix inside itself. The URL is summarised to
+scheme+host, so an embedded `user:pass@` cannot survive into the message, and the message says which provider
+was refused, that it did **not** fall back to the official endpoint, and how to fix the row.
+
+**The old test was the reason this survived.** It asserted only
+`expect(resolver.resolveProvider('openai')).toBeDefined()` — which a REFUSING adapter satisfies exactly as well
+as a fail-open one, so it could not distinguish the defect from the fix and passed either way. The replacement
+stubs GLOBAL `fetch`, not the injected one: the default adapter builds its own, so with only the injected
+recorder watched, a fallback to the official endpoint would leave the array empty too and the test would pass
+for the wrong reason a second time. Under a mutation restoring the fail-open, the credential test takes ~470 ms
+because it genuinely reaches out to `api.openai.com` — the defect, demonstrated.
+
+**The tests that fail if it is reverted** (both break-verified against the restored fail-open):
+`providers.test.ts` — "`CR-80`: a bad (private) custom base_url FAILS CLOSED", asserting the call throws **and**
+that global `fetch` recorded zero requests; and "`CR-80`: the refusal names the URL SHAPE and the remedy",
+asserting the username and password of `https://alice:hunter2@10.0.0.5/v1` are both absent from the message.
+The wave's **provider/config-trust security sitting** is recorded in
+[security-review.md](../../standards/security-review.md#sitting-provider-and-config-trust--cr-80-2026-09-06).
+
+### ADR-0087 §1 — the `W3` live blocker · Blocker · **scheduled into `W8` 2026-09-18** · tracked as an ADR obligation, not a counted `CR` item
+An un-pulled event stream drops the terminal event, which breaches
+[ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)'s gap-free contract.
+[ADR-0087](../../decisions/0087-consumed-streams-size-bounds-and-run-retention.md) §1 is the accepted fix — a
+handle DECLARES whether its primary stream will be consumed, and an unconsumed one buffers nothing — and it was
+Accepted on 2026-09-04 with §1 unimplemented. It belonged to no wave until now, which is why exit criterion 4 has
+been open with no owner. It lands here, in both halves: `createSessionHandle` can be built as ADR-0087 Correction
+1 describes, and the run half needs the mode threaded through an engine entry point. It is scheduled into `W8`
+rather than `W7` so that `W7`'s PR stays about its own four ADRs; the phase cannot close until it ships.
+**Fix + acceptance.** ADR-0087 §1, and the residual's own test: an un-pulled stream still delivers its terminal
+event, and a `subscribe-only` handle buffers nothing while every subscriber still sees every event. It carries no
+`CR` number and sits outside the 41-of-51 count deliberately: it is an accepted ADR's unimplemented section, and it
+closes against exit criteria 2 and 4 and `W8`'s closing register rather than against a register row.
 
 ### CR-81 — Conformance cassettes do not verify the request wire contract · High
 A recorded response carries status, content type and body only; replay checks that the request body is parseable
@@ -2061,12 +2695,35 @@ Process-global mutable state is fine for a single local user and wrong for the m
 recorded in this phase even if the work is deferred** — a deferral here moves to
 [deferred-tasks.md](../deferred-tasks.md) with its trigger (the first multi-tenant surface) named.
 
-### CR-94 — One budget approval opens every redispatch without a numeric limit · High
+### CR-94 — One budget approval opens every redispatch without a numeric limit · High · **decided 2026-09-13** ([ADR-0097](../../decisions/0097-a-budget-approval-is-an-allowance-not-an-exemption.md)) · ✅ **closed 2026-10-10**
+
+**Closing evidence:** [W7 closing register](#w7-closing-register--2026-10-10). The original defect and approved design below are historical.
+
 An approved vertex skips pre-egress admission on redispatch, and one agent turn can make many tool rounds plus a
 final generation. The user approves a projection they saw, but the approval means "this vertex is exempt", not
 "up to this amount".
 **Fix + acceptance.** Make the approval an immutable numeric lease bound to money/token/attempt scope, model and
 expiry, consumed atomically by each egress. An approved node that exceeds its lease pauses again.
+
+**Decided 2026-09-13: the minimum correct form now; model binding and expiry deferred.** An approval grants a
+dispatch-owned allowance that only its dispatch debits. It is sized from the paused attempt's own inputs, shown
+before approval from a field no workflow can forge, and frozen durably. Model binding and expiry are deferred in
+[deferred-tasks.md](../deferred-tasks.md).
+
+**Recorded 2026-09-18.** The lease's scope is **money**: the amount is micro-cents, attempts and the ADR-0096
+input-token estimate only SIZE it, and "attempt scope" is met by dispatch ownership. No separate token or attempt
+bound is enforced, and none is deferred — a second approval unit the user never sees is not one they could reason
+about. `W7` also builds `relavium budget resume --approve-amount`, so the approval has a non-TTY surface and the
+deferred model binding cannot silently kill an approved step: a quote whose price no longer matches is refused
+rather than approved.
+
+*(This item is grouped under `W9` for historical reasons and is EXECUTED in `W7`, which its scope line names.
+Recorded 2026-09-18 so a reader of the `W7` section does not have to find it here by accident.)*
+
+**One clause of the acceptance above is deliberately reversed.** An approved node that exhausts its allowance
+**fails closed**; it does not pause again. Three successive drafts let it pause again, and each draft found a
+different path back into the 1.AC loop: the run-global ledger, the unpriced input term, and failover under a
+one-call allowance. A dispatch that cannot pause cannot loop.
 
 ### CR-95 — A mid-tool-loop budget pause replays the whole loop · High · ⚠️ SHORT-TERM HALF CLOSED 2026-08-18 ([ADR-0080](../../decisions/0080-durable-effect-journal-and-the-tiered-effect-contract.md) §10)
 A budget pause becomes a paused outcome; on approval the node is reset to pending and dispatched from the start.
@@ -2098,8 +2755,8 @@ disruptive by design.
 This phase is done when **all** of the following hold:
 
 1. **Every non-deferrable item is closed with a break-verified test.** Non-deferrable means the register above
-   says so: `CR-01`–`CR-03`, `CR-10`–`CR-17`, `CR-50`, `CR-55`, `CR-73`, `CR-80`, `CR-92`, and `CR-95`'s
-   short-term fail-closed fix. **None of these may be deferred**, for one reason: each is either a security or
+   says so: `CR-01`–`CR-03`, `CR-10`–`CR-17`, `CR-50`, `CR-55`, `CR-73`, `CR-80`, `CR-92`, `CR-95`'s
+   short-term fail-closed fix, and — added 2026-09-14 — `CR-96` and `CR-97`. **None of these may be deferred**, for one reason: each is either a security or
    correctness boundary, or a shipped claim the code does not keep — and every one of them has a cheap
    fail-closed option (refuse, remove, narrow the claim) available when the full fix is too large. "Too big to
    fix now" is an argument for the cheap option, never for deferral.
@@ -2113,12 +2770,24 @@ This phase is done when **all** of the following hold:
    the claims about crash-safe resume, duplicate-free effects, bounded streams, first-branch-wins,
    schema-validated input/output, and session-to-workflow graduation. This explicitly includes
    [architectural-principles.md](../../standards/architectural-principles.md) §11's idempotency sentence.
-5. **Four security-review sittings are recorded**, each with a checklist entry and its adversarial test:
-   prompt/trust provenance, hostile MCP, media bytes, provider/config trust.
+5. **Five security-review sittings are recorded**, each with a checklist entry and its adversarial test:
+   prompt/trust provenance, hostile MCP, media bytes, provider/config trust and `history.db` at rest.
 6. **`pnpm run ci` exits 0 and `pnpm coverage` exits 0**, both checked by exit code. `pnpm run ci` alone is not
    the merge gate — `coverage` is a separate required check, and this phase edits `packages/core` heavily.
 7. **A closing register in this file states, per item, the code that closes it** — verified by reading the code,
    not by trusting the mark. Wave 1's completion claim was wrong twice before this discipline was adopted.
+
+**Where the criteria stand — 2026-10-10, W7 accepted on `development` but unmerged.** Scored honestly, including phase-level obligations still open.
+
+| # | Criterion | Status |
+|---|---|---|
+| 1 | every non-deferrable item closed, break-verified | ✅ met on `development` — CR-96/97 close with W7; per-item causal controls and the accepted closing register are below |
+| 2 | every other item closed, or deferred with severity + trigger + the claim it narrows | ⬜ open for W8 — CR-81/82 and ADR-0087 §1; approved CR-70/93 and other scoped residuals retain severity, trigger and narrowed claim in deferred-tasks.md |
+| 3 | each `W1` item has an accepted ADR, landing in dependency order | ✅ met — ADR-0078–ADR-0084 |
+| 4 | every canonical document says what the code now does | ⬜ phase open for W8 — ADR-0087 gap-free stream obligation remains; W7's complete per-document checklist is reconciled and independently reviewed |
+| 5 | five security-review sittings recorded, each with its adversarial test | ✅ **five recorded by 2026-10-02** — the fifth is [`history.db` at rest](../../standards/security-review.md#sitting-historydb-at-rest--cr-71-cr-97-2026-10-02) (`CR-71`'s invariant 1 and `CR-97`), with adversarial controls and qualified W7 acceptance records. The four earlier sittings are — [prompt/trust provenance](../../standards/security-review.md#sitting-prompt-and-trust-provenance--cr-01cr-03-cr-10cr-17-2026-09-06), [hostile MCP](../../standards/security-review.md#sitting-the-hostile-mcp-boundary--cr-40cr-42-2026-09-06), [media bytes](../../standards/security-review.md#sitting-media-bytes--cr-50-cr-53-cr-54-2026-09-02), [provider/config trust](../../standards/security-review.md#sitting-provider-and-config-trust--cr-80-2026-09-06). Three were written after their wave merged, which is late and is said so in each |
+| 6 | `pnpm run ci` **and** `pnpm coverage` both exit 0, checked by exit code | ✅ W7 source gates verified by exit code; exact source/check heads and final harness results are recorded below and in the final review |
+| 7 | a closing register per item, per wave | ✅ W1–W7 recorded; W7 closes with this PR rather than after merge; W8 remains open |
 
 ## What a later architecture review contributed — and what it did not
 
@@ -2160,3 +2829,2101 @@ across the remaining database stores. It is listed here only so nobody schedules
 
 The realized-cost ledger is **no longer scoped out** — it is this phase's [prerequisite](#prerequisite), for the
 file-overlap reason recorded there.
+
+
+**Step 6 implementation checkpoint — 2026-10-02.** One pure estimator accounts for complete serialized
+non-media units, fixed sourced media assumptions and conservative per-unit serialization failure. Every
+text tool round forwards current pre-strip input and frozen configured output fallback. All adapters and
+admission consume the same factory-bound cap plan; native above-ceiling controls retain their full rate-only
+price and uncapped estimates insert no wire limit. Chain-owned content/route evidence permits only exact
+proven official pre-content HTTP refunds; a processed empty generation still counts as received.
+The canonical [seam contract](../../reference/shared-core/llm-provider-seam.md#current-request-estimates-and-bound-output-caps)
+states the figures, limitations, migrated API and the later step 8/9 consumers that remain staged.
+
+Parent break verification removed seven individual guarantees: known-cap precedence, final governor
+no-reclamp, current-round input, custom-route conservative settlement, native option forwarding,
+configured fallback forwarding and generated-response evidence. Every targeted negative control failed
+with its intended assertion; every restored source control passed. Required workspace lint/typecheck/test
+and build pass; coverage passes 301 suites/6,710 tests, 11 skipped. A pre-existing expression timing test
+failed once under concurrent checks and passed isolated and the final workspace run. **Implementation
+review rounds are pending; step 6 and all six W7 register items remain open.**
+
+**Step 6 first review checkpoint — 2026-10-02.** Two independent reviewers found five runtime
+defects, missing canonical hook/budget landing and incomplete permanent boundary coverage. Parent
+reproduction confirmed each finding. Cap JSON values are now captured once for pricing and wire,
+outer executable body replacement is filtered, official SDK routes/backend are pinned, observer
+faults cannot become provider retries and rate-only pricing matches realized per-class rounding.
+The required core hook now lives in its [runner contract](../../reference/shared-core/agent-runner.md#pre-egress-injection-contract).
+All CLI/session/runner forwarding paths and the actual native/thinking matrix have permanent controls.
+Twenty-four individual causal negatives fail as intended; complete restored CI passes 302 suites,
+6,771 tests and 11 pre-existing skips. The
+[review record](../../reviews/2026-10-02T17-16-04-w7-step-6-round-1-review.md)
+records evidence and limits. **Fresh round 2 is required; step 6 remains open.**
+
+**Step 6 second review checkpoint — 2026-10-02.** Fresh reviewers verified three High findings:
+primitive BigInt serializers bypassed cap capture, Gemini discarded native names were unnecessarily
+serialized/refused and authored output schemas escaped the current input price. Parent replayed each
+before correction. Native BigInt now uses the one key-correct JSON capture; Gemini-discarded controls
+remain inert; the constructed pre-strip request and shared estimator include its structured response
+format. Actual SDK HTTP and parsed-workflow admission tests fail before the fix and pass after it.
+Four separate causal negatives fail as intended; restored full CI and coverage pass 303 suites,
+6,824 tests and 11 pre-existing skips. The
+[second-round record](../../reviews/2026-10-02T17-54-28-w7-step-6-round-2-review.md)
+records the corrections and limitations. **Fresh round 3 is required; step 6 remains open.**
+
+**Step 6 third review checkpoint — 2026-10-02.** Both fresh reviewers independently reproduced
+one High defect: deeply frozen JSON cap objects and arrays retained inherited serializers that
+could change the admitted shape during a credential await. The parent replayed the actual-SDK
+matrix and financial evidence before correction. Captured containers now have detached prototypes;
+array identity, own data and wire JSON shape remain intact. The 72-case SDK matrix and 244 focused
+permanent tests pass; removing isolation reproduces all 50 permanent failures. An adjacent,
+intermittent growth test now uses interleaved median samples with unchanged input sizes and
+threshold; the original quadratic regex still fails its causal control. Complete restored CI and
+coverage pass 304 suites, 6,898 tests and 11 pre-existing skips. The
+[third-round record](../../reviews/2026-10-02T18-23-45-w7-step-6-round-3-review.md)
+records evidence and limits. **Fresh round 4 is required; step 6 remains open.**
+
+**Step 6 fourth review checkpoint — 2026-10-02.** Fresh wire review reproduced one High
+refusal/security defect: native option staging and genuine plan binding inspected getters outside
+safe normalization, exposing their private error message before adapter redaction. Parent replay
+confirmed the 15 failing independent cases and 39 passing financial controls. Factory construction,
+native copying, binding/lookup and staging now share a fixed typed, content-free refusal boundary.
+All 46 permanent regressions and all 20 independent wire cases pass; removing each of five guards
+separately breaks its intended regression. Full restored CI and coverage pass 306 suites,
+6,944 tests and 11 pre-existing skips. The
+[fourth-round record](../../reviews/2026-10-02T19-42-38-w7-step-6-round-4-review.md)
+records scope and evidence limits. **Fresh round 5 is required; step 6 remains open.**
+
+**Step 6 fifth review checkpoint — 2026-10-02.** A separate approved-step-9 mechanism preflight
+found a pre-existing global-admission window; the parent and financial reviewer independently
+reproduced synchronous partial-pricing notice reentry admitting 600 + 600 under a 1,000 cap.
+Allow/warn reservations now enter the ledger before host callbacks; refused calls retain their
+notice, and warning-write failures release both reentrant admissions. Seven permanent controls
+have five intended failures before correction and all pass afterwards; restoring the old ordering
+reproduces those failures. The 116 wire and 44 financial probes still pass, with the latter's
+known CR-82 observation explicitly separated from acceptance. CR-82 remains assigned to W8;
+the living usage contract now states the adapter-normalization limitation. Full restored CI and
+coverage pass 307 suites, 6,951 tests and 11 pre-existing skips. The
+[fifth-round record](../../reviews/2026-10-02T20-36-23-w7-step-6-round-5-review.md)
+records evidence and scope. **Fresh round 6 is required; step 6 remains open.**
+
+**Step 6 sixth review checkpoint — 2026-10-02.** Fresh independent matrices passed 191 wire
+and 44 financial controls. Financial review recommended permanent coverage of B1 and correction
+of its inherited untestable-coverage comment. The parent's six-case expansion found that a
+budgetless cancellation during a pending sibling ledger write still resolved one credential;
+no provider call occurred. Existing settlement/cancellation checks now precede the no-hook return.
+All six controls pass; removing only B1 fails all six, and restoring the exact previous turn source
+fails only budgetless cancellation. The independent 191/44 controls still pass. Full CI and coverage
+pass 308 suites, 6,957 tests and 11 pre-existing skips. The
+[sixth-round record](../../reviews/2026-10-02T21-16-26-w7-step-6-round-6-review.md)
+preserves attribution and evidence limits. **Fresh round 7 is required; step 6 remains open.**
+
+**Step 6 seventh review checkpoint — 2026-10-02.** Both fresh reviewers independently confirmed
+one High inherited defect: a money barrier awaited a stale promise tail, allowing credential and
+provider egress while another sibling write appended during the wait remained pending. The parent
+replayed helper, actual-SDK and real AgentRunner/WorkflowEngine evidence. Both barriers now follow
+current tails; the shared join also rechecks realized writes after conservative flushing. Thirty-six
+permanent controls have 30 intended failures before correction and all pass afterwards. Restoring
+either old method, or omitting the cross-chain recheck, breaks its regressions. All 109 independent
+financial cases and six SDK freshness cases pass after correction. Full CI and coverage pass
+309 suites, 6,993 tests and 11 existing skips. The
+[seventh-round record](../../reviews/2026-10-02T22-01-46-w7-step-6-round-7-review.md)
+preserves provenance and evidence limits. **Fresh round 8 is required; step 6 remains open.**
+
+**Step 6 eighth review checkpoint — 2026-10-02.** Both fresh reviewers accepted the complete
+step and all seven corrections with no verified new finding. Financial review passed 54 fresh
+controls and 967 unique permanent tests; contract review passed 120 fresh controls and 1,451
+permanent tests, including 82 actual installed-SDK offline fetch-boundary observations. Permanent
+scopes overlap. The parent read and verified the sealed reports/manifests, replayed all 120/54
+fresh controls and confirmed all 1,017 tracked hashes unchanged. A missing-HOME final-proof
+Git-ignore mismatch is preserved as a corrected harness error. The
+[eighth-round record](../../reviews/2026-10-02T22-44-01-w7-step-6-round-8-review.md)
+records the exact scope and evidence limits. **Steps 1–6 are closed.** Maintainer live captures
+remain required for Step 7 and therefore Step 8; Step 9 proceeds independently from accepted
+input pricing. All six W7 register items remain open.
+
+**Step 9 implementation checkpoint — 2026-10-02.** The combined rate-only kernel freezes finite
+token/media price evidence from one lookup. Quotes use original candidate-specific construction
+caps, actual lowered tools, current input and effective chain attempts; native caps remain
+unclamped through E/A. Full basis comparison includes excluded candidates and zero-volume gaps.
+Opaque dispatch ownership debits under-cap calls, reconciles refunds/conservative retention/overrun,
+holds one in-flight slot through host callbacks and refuses stale owners or exhausted allowances.
+The [preflight record](../../reviews/2026-10-02T23-40-16-w7-step-9-foundation-preflight-review.md) separates external-candidate findings and parent
+verification from committed-step acceptance. Ten causal negatives fail as expected; restored
+focused checks pass 279 tests. Full `pnpm run ci` and sequential `pnpm coverage` exit 0
+(312 suites, 7,074 passing tests, 11 existing skips; line/branch/function coverage
+95.87%/92.75%/96.57%). Fresh independent committed-step rounds precede closure. The legacy H3 boolean does not activate this foundation: authoritative durable
+authorization, checkpoint/replay and live/cross-process wiring remain Step 10; safe approval is
+Step 11. Maintainer live captures for Steps 7–8 remain pending. All six register items remain open.
+
+
+**Step 9 round 1 correction — 2026-10-03.** [Fresh committed-step review](../../reviews/2026-10-03T00-25-08-w7-step-9-round-1-review.md)
+verified an orphaned text admission after unsafe actual settlement and refunded media admissions
+after post-provider pricing loss/failure. Callers now retain safe E and finish their owned slot
+before propagating accounting faults; unpriced media keeps its explicit gap rather than settling
+as free. Eighteen permanent tests distinguish those paths from known zero/underspend,
+pre-egress refund, event-sink failure after actual settlement and async ownership transfer. Three
+causal negatives fail with the expected assertions; restored focused checks pass 297 tests.
+The existing literal-scan growth guard now samples equal process-CPU batches without changing
+its sizes/threshold; restoring the original quadratic regex still fails that assertion. Full
+`pnpm run ci` and sequential `pnpm coverage` exit 0 (313 suites, 7,092 passing tests, 11 existing
+skips; line/branch/function coverage 95.88%/92.82%/96.57%). Fresh round 2 precedes Step 9 closure;
+Steps 7–8, 10–11 and all six
+register items remain pending. No new residual was deferred.
+
+**Step 9 round 2 correction — 2026-10-03.** [Fresh full-step review](../../reviews/2026-10-03T01-10-45-w7-step-9-round-2-review.md)
+verified the transferred async admission was refunded after pricing loss or orphaned on
+accounting faults; cancellation could additionally stop before terminal cleanup. The engine
+now conserves safe E before fault handling, distinguishes unpriced zero from genuine free
+usage, retains its reentry guard and accounts for each terminal job independently. Fifty-one
+permanent done/failed/deadline/cancel, reentry/delivery and sibling-job regressions pass.
+Three actual-source negatives fail as expected; restored adjacent checks pass 406 tests.
+Full `pnpm run ci` and sequential `pnpm coverage` exit 0 (314 suites, 7,143 passing tests,
+11 existing skips; line/branch/function coverage 95.88%/92.85%/96.57%). Fresh round 3
+precedes Step 9 closure. Steps 7–8, 10–11 and all six register items remain pending; no residual
+was deferred.
+
+
+**Step 9 round 3 correction — 2026-10-03.** [Fresh complete-step review](../../reviews/2026-10-03T01-57-14-w7-step-9-round-3-review.md)
+verified three High mechanisms: admission loss before parking, admission loss before poll
+accounting, and a stale terminal total during pricing cancellation. The engine now captures
+before fallible host work, conserves unsettled E before removing a faulted job, and joins
+active accounting before terminal totals while retaining immediate abort and exactly-once
+settlement. Parent controls also repair park/timer callback cancellation registrations.
+Sixty permanent host/settlement regressions include actual durable terminal assertions.
+Five actual-source causal negatives fail only their expected controls, with byte-for-byte
+restoration; seven restored focused files pass 321 tests. Full `pnpm run ci` and sequential
+`pnpm coverage` exit 0 (315 suites, 7,152 passing tests, 11 existing skips; line/branch/function
+coverage 95.88%/92.85%/96.57%).
+Fresh round 4 precedes closure; Steps 7–8, 10–11 and all six register items remain pending.
+No residual was deferred.
+
+**Step 9 round 4 acceptance — 2026-10-03.** [Fresh full-step review](../../reviews/2026-10-03T02-40-53-w7-step-9-round-4-review.md)
+accepts the complete foundation and three correction rounds with no new finding. Financial
+and contract reviewers independently pass 467 and 317 distinct cases respectively; their
+overlapping totals are not summed. The parent reruns all 70 fresh cases with strict compilation
+and independently verifies 21 raw persisted two-job terminal artifacts. Removing the accounting
+join in an external source copy yields exactly two expected stale-total failures (21 rather
+than 47). Both complete sealed inventories and all 1,030 tracked source hash/byte pairs are
+verified; reviewers and parent leave zero owned workers. The prior Vite bundle-loader transient
+write outside an owned root is explicitly recorded; final acceptance runs use corrected owned
+dependency directories and native config loading. No tracked implementation changed after the
+green full CI/coverage at `8fb51f42`. **Step 9 is closed; Step 10 proceeds automatically.**
+Live Steps 7–8, Steps 10–11 and all six register items remain pending; no residual was deferred.
+
+**Step 10 implementation checkpoint — 2026-10-03.** Shared strict authorization schemas and one
+ordered suspension reducer now govern checkpoint reconstruction and both interrupted-run discovery
+stores. The workflow acknowledges authoritative pauses/decisions and identified companions before
+approved dispatch, retains its pre-egress hook and owns one ephemeral allowance across retries.
+Request preparation freezes the actual first request; whole-quote and binary-amount refusals precede
+gate claim. Restart admission remains passive through context/effect preflight, acquires ownership
+before strict replay, applies the target decision before timers and preserves sibling deadlines.
+Legacy approval restores no allowance; durable approval invents no node output, and recorded rejection
+remains fatal on an eligible resume.
+
+Sixty actual-runner cases cover acknowledgement/store-fault/cancel/fence boundaries, pre-claim
+refusals, parallel budget/ordinary human gates, every actual pause/decision crash prefix, tool-loop
+exhaustion, zero/unrepresentable quotes, asynchronous effect preflight and funded async media. The
+[permanent offline downgrade check](../../../tools/budget-replay-compat/README.md) runs the immutable
+actual predecessor against twelve current-engine prefixes, proving strict replay refusal before
+registration/dispatch/egress and exact lease release, with two legacy positive controls. Its source
+and portable dependency bytes are pinned; no live credentials or network call is used. The parent
+also independently verified and replayed the supplemental predecessor acceptance evidence.
+
+Full CI exits 0 (23 lint/typecheck/test and 7 build/format tasks, including downgrade smoke), and
+coverage exits 0 (320 suites, 7,308 passing tests, 11 existing skips; line/branch/function coverage
+95.79%/92.51%/96.67%). Adjacent canonical event, runner, checkpoint and execution contracts are updated.
+**Implementation commits and fresh formal review rounds precede Step 10 closure.** The safe CLI
+surface remains Step 11; live captures still block only Steps 7–8. All six register items remain open.
+
+**Step 10, review round 1 — 2026-10-03.** Both fresh reviewers covered the complete 54-file
+committed step at `309a93ab`. The parent independently reproduced and corrected two High findings:
+passive admission could exceed the lease TTL before media activation, and the predecessor check
+pinned package bytes without binding actual CJS/peer/optional edges. Resume now renews the exact
+acquired fence after all passive awaits, including refusal settlement. The predecessor uses an
+owned copied graph with exact installed/reconstructed edges and runtime file hashes; its original
+source remains immutable. The [round 1 record](../../reviews/2026-10-03T08-35-49-w7-step-10-round-1-review.md)
+preserves independent scope, sealed inventories, setup faults and parent causal proof.
+
+Ten new native cases bring the actual-runner suite to 70; removing the renewal barrier fails nine
+new oracles while 61 controls pass. Seven permanent graph/runtime controls refuse edge/optional/file
+drift; removing the CJS fence makes its marker execute and its oracle fail. The actual predecessor
+still refuses twelve prefixes and passes two legacy controls. Corrected full CI and sequential
+coverage pass (320 suites, 7,318 passing tests, 11 existing skips; line/branch/function coverage
+95.79%/92.53%/96.67%). **Fresh full-step round 2 precedes Step 10 closure.** No residual is deferred;
+Step 11 follows that closure, and live captures remain the separate prerequisite for Steps 7–8.
+
+**Step 10, review round 2 — 2026-10-03.** Both fresh reviewers covered the complete 61-file
+committed step at `e6d4e8de`. The parent independently reproduced and corrected two High and
+two Medium findings: the terminal media sweep could outrun its conservative money write;
+a legal historical budget input decision aborted aggregate discovery; a late authority did
+not compare companion amounts; and runtime edges could redirect between already-pinned roots.
+Settlement now joins money before terminal sequencing, stops heartbeat and releases the exact
+lease after persistence before delivery. The one reducer normalizes only historical input as
+fatal rejection and compares companions symmetrically. The predecessor runtime rechecks exact
+issuer/root-import edges alongside unchanged file-byte pins. The immutable old producer supplies
+an actual six-row input prefix, accepted unchanged as rejection by all four current consumers
+with zero egress counters. The [round 2 record](../../reviews/2026-10-03T11-47-48-w7-step-10-round-2-review.md)
+preserves complete scope, parent reproductions, sealed evidence and setup failures.
+
+The permanent native suite passes 78 cases; removing only the money join fails seven intended
+oracles. Restoring the reviewed reducer fails seven historical/companion controls. Thirteen
+permanent graph/runtime controls pass; removing only edge enforcement executes wrong pinned
+code and fails its oracle. Final actual predecessor checks retain twelve refusals and two legacy
+controls. Corrected full CI and sequential coverage pass (320 suites, 7,340 passing tests,
+11 existing skips; line/branch/function coverage 95.83%/92.53%/96.67%). **Fresh complete-Step-10
+round 3 precedes closure.** Step 11 follows that closure; live Steps 7–8 and all six register
+items remain open. No residual is deferred.
+
+
+**Step 10, review round 3 — 2026-10-03.** Three fresh reviewers covered the complete 63-file
+step and both corrective rounds. One Medium finding was independently reproduced and corrected:
+companions with absent versus exact A each matched decided authority, but their duplicate comparison
+still refused both orders and hid unrelated interrupted work. Decided authority now witnesses only
+that compatibility; present money, actor, decision and payload remain strictly checked, and no
+historical amount is invented. Eighteen permanent regressions preserve real outputs and ordinary/
+unrelated gates across checkpoint, reference and SQLite, plus negative conflict and no-witness
+controls. Eight acceptance definitions fail before the repair; 300 selected native definitions pass
+after it. Removing only authoritative amount validation fails seven strict money controls; exact
+restoration passes. The stale draft comment is removed and the e2e test directly checks lease release
+before terminal delivery. The [round 3 record](../../reviews/2026-10-03T12-39-00-w7-step-10-round-3-review.md)
+records complete sealed provenance, setup corrections and limits. Full CI and sequential coverage
+pass (320 suites, 7,358 tests, 11 existing skips; line/branch/function 95.83%/92.54%/96.67%).
+**Fresh full-Step-10 round 4 precedes closure.** Step 11 follows that closure; live Steps 7–8 and all six register items stay open.
+
+
+**Step 10, review round 4 — 2026-10-03.** Both fresh reviewers covered the complete 64-file
+step. One Medium finding group was independently reproduced and corrected: rejecting direct
+lease cleanup replaced the new schema refusal and five inherited primary outcomes. All six
+now use the existing exact-fence best-effort helper; cleanup faults retain the bounded TTL
+without replacing a typed refusal/no-op or releasing a successor. Eighteen permanent native
+regressions cover success, rejection and takeover for every guard. The parent's original
+96-definition run fails twelve fault cases; its owned correction passes all 96 and exact
+restoration returns the twelve failures. The [round 4 record](../../reviews/2026-10-03T13-33-00-w7-step-10-round-4-review.md)
+records full sealed provenance, independent counts, setup corrections and limits. Full CI
+and sequential coverage pass (320 suites, 7,376 tests, 11 existing skips; line/branch/function
+95.85%/92.55%/96.72%). **Fresh full-Step-10 round 5 precedes closure.** Step 11 follows that
+closure; live Steps 7–8 and all six register items stay open. No residual is deferred.
+
+
+**Step 10, review round 5 — 2026-10-03.** Both fresh reviewers covered the complete 65-file
+step. One High inherited race was independently reproduced with actual SQLite and corrected:
+aggregate pause released the lease before all sibling companions were acknowledged; the later
+append reclaimed a waiting-only lease whose heartbeat refused a fresh owner. All pause
+publications now finish before aggregate handoff. A claimed ordinary gate stays visible through
+payload pinning, covering the immediate-decision scheduler race exposed by the tighter barrier.
+Ten permanent regressions cover six held publication phases, two SQLite fresh-owner controls
+and two media pin outcomes. Original and separately removed guards produce the intended causal
+failures. The [round 5 record](../../reviews/2026-10-03T14-31-39-w7-step-10-round-5-review.md) records both full sealed inventories,
+independent counts, explicit setup corrections and the inherited unbounded async ACK freshness
+limit; no new lease policy is chosen. Full CI and sequential coverage pass (320 suites,
+7,386 tests, 11 existing skips; line/branch/function 95.87%/92.56%/96.72%). **Fresh full-Step-10
+round 6 precedes closure.** Step 11 follows that closure; live Steps 7–8 and all six register
+items remain open. No verified handoff defect is deferred.
+
+
+**Step 10, review round 6 — 2026-10-03.** Both fresh reviewers covered the complete 67-file
+step with sealed source/dependency provenance and separate ledgers. One High inherited failure
+was independently reproduced with the actual engine, CAS and native SQLite media-reference port:
+a held ordinary decision pin could complete after cancel/run-timeout/node-timeout/fenced closure,
+publish a late success to persistent subscribers and reinsert a run media reference. The durable
+log correctly refused its late row. The continuation now checks the run and vertex after the pin,
+before completion or publication. Six Core and six actual SQLite/CAS regressions cover four cutoffs,
+success and late rejection; removing the guard restores eight failures and exact restoration passes
+163 native leaves. Eight additional finite parent publication controls pass. The
+[round 6 record](../../reviews/2026-10-03T15-42-00-w7-step-10-round-6-review.md) separates actual DB retention from
+reference run leases, inherited-source proof from current installed dependency bytes, setup mistakes
+from product failures, and unreferenced CAS completion from retained run authority. Full CI and
+sequential coverage pass (321 suites, 7,398 tests, 11 existing skips; line/branch/function
+95.87%/92.58%/96.72%). **Fresh full-Step-10 round 7 precedes closure.** Step 11 follows that
+closure; live Steps 7–8 and all six register items remain open. No verified late-completion defect
+is deferred, and no new deadline, clock or lease policy is chosen.
+
+
+**Step 10, review round 7 — 2026-10-03.** Both fresh reviewers covered the complete 70-file
+step with explicit depth ledgers and sealed evidence verified entry by entry. One Medium inherited
+retention race was reproduced independently: a late ordinary-gate CAS completion recorded media
+references before SQLite refused its old event fence, after a distinct successor had completed.
+A later other-run GC pass recovers these references; no read-authority bypass, extra spend or
+successor terminal corruption was demonstrated. Produced handles now follow append acknowledgement;
+an owned terminal refused for another store fault retains its media before outbox handoff.
+Seven permanent controls cover two file-backed native SQLite clients/real CAS and separate
+acknowledged, uncertain-outbox and typed fenced-terminal retention paths. Causal/exact-restoration
+and uncertain-terminal branch-removal controls distinguish the repair. No clock, TTL, host port,
+financial acknowledgement or publication policy changed; no residual is deferred.
+[Full review record](../../reviews/2026-10-03T16-54-28-w7-step-10-round-7-review.md). Full CI and sequential coverage exit 0
+(323 files, 7,405 tests, 11 existing skips; line/branch/function coverage
+95.88%/92.58%/96.72%). **Fresh full-Step-10 round 8 precedes closure.** Step 11 follows that
+closure; its external process prototype is not permanent acceptance. Live Steps 7–8 and all
+six register items remain open.
+
+
+**Step 10, review round 8 — 2026-10-03.** Both fresh reviewers accept the complete 74-file
+step and all seven corrections with no new verified finding. Each independently passes 857
+permanent native tests across 18 files, plus five contracts or six runtime/financial probes;
+overlapping counts are nonadditive. Strict semantic TypeScript, purity/seam/dependency checks,
+causal removal/exact restoration and actual CAS/native-SQLite retention controls pass. Contracts
+independently executes the production predecessor's twelve strict refusals, two legacy controls,
+six historical-input rows and thirteen graph controls; runtime verifies its archive statically.
+Historical sources use current pinned dependency bytes, not a preserved historical installation.
+The parent reads both complete reports and verifies every sealed file, mode, directory and literal
+symlink after explicit zero-worker/session/SQLite access release; neither root is executed or mutated.
+[Full review record](../../reviews/2026-10-03T17-50-23-w7-step-10-round-8-review.md) preserves all failed setups,
+source/worker observations, capture provenance and limits. Implementation CI/coverage at `27a30f63`
+remain green (323 files, 7,405 tests, 11 existing skips; 95.88%/92.58%/96.72%);
+round 8 does not claim another full toolchain run. **Step 10 is closed; approved Step 11 proceeds
+automatically.** Its CLI implementation receives permanent compiled-process coverage and fresh
+independent review rounds. Live Steps 7–8, Step 12 and all six register items remain open.
+No verified residual is deferred and no new lease, clock or acknowledgement policy is selected.
+
+
+**Step 11 implementation checkpoint — 2026-10-03.** The shared CLI command table and Commander
+surface implement `budget resume` with exact decimal-safe `--approve-amount` or `--abort`, explicit
+multi-gate selection and early typed refusals. Native SQLite/Core tests cover zero allowance, current
+price revalidation, ordinary siblings, secret re-provision with the selected gate, frozen MCP tools
+and original workspace, rejection without credentials/client construction, idempotence and cleanup.
+The inline prompter receives only scalar amount/legacy/reject-only context; invalid live decisions
+leave a pending gate instead of cancelling it as an internal failure. Strict discovery distinguishes
+authority-only crash prefixes from unreadable logs and exposes separate human/budget arrays.
+
+Plain/TUI notices join raw run/node/gate identities rather than redacted text. Ten initial semantic
+regressions produce six failures/four passes before repair; all fourteen final identity/lifecycle
+cases pass. Active TUI identities survive warning-tail eviction and are released on decision/terminal.
+Copyable hints refuse shell-active, option-shaped or redacted identifiers. Pre-claim MCP interruption
+returns exit 1, writes no decision, reaps its actual child and restores signal subscriptions.
+Removing only its guard path fails both native interruption controls; exact restoration passes.
+
+Permanent post-build smoke uses public compiled packages and native SQLite to seed actual frozen
+pauses, then executes the compiled CLI for help, invalid amounts, scalar status, abort/idempotence,
+strict corrupt-authority refusal and MCP consent/interruption. Owned homes and offline preloads keep
+keys/network out of these checks; approved provider calls are injected in the native CLI tests,
+not represented as real SDK or paid provider proof. The CLI reference owns flags and lifecycle;
+architecture/event pages link it. A dated ADR-0097 checkpoint preserves the historical body.
+
+**`pnpm run ci` exits 0, followed sequentially by `pnpm coverage` exiting 0**: 327 files, 7,506 tests,
+11 existing skips; global line/branch/function coverage 95.88%/92.58%/96.72%. All source-adjacent tests,
+strict semantic types, seam/purity/dependency/bundle gates, seven build tasks and compiled CLI/capture/
+actual predecessor smokes pass. Parent logs and exact-source controls remain under the owned Step 11
+prototype/evidence root. Earlier prototype checks are nonadditive. Invalid lifecycle-fixture setup
+and the mechanical-cleanup tool's initially inadequate comparison are retained separately from
+semantic product failures; full semantic AST verification precedes the final formatting cleanup.
+**Implementation commit and two fresh independent complete-Step-11 review rounds precede closure.**
+Steps 7–8, Step 12 and all six register items remain open; no verified residual is deferred.
+
+
+**Step 11, review round 1 — 2026-10-03.** Both fresh reviewers examine all 38 implementation files.
+Native SQLite approval-write retries swallowed Ctrl-C, and no-MCP preparation had no command signal
+guard. Cancellation now reaches the known passive resume, active engine and returned handle;
+quote/context preparation uses the same signal. Passive cancellation neither schedules nor arms a
+grace timer. Exact-fence confirmation still precedes cancellation settlement, so a successor is
+neither written over nor released. A late acknowledged approval remains durable without later egress.
+Identified old companions no longer clear a new gate's full raw display identity; historical no-id
+projection remains node-scoped. Current price validation is documented before the gate claim, after
+run ownership. No policy, dependency or wire field changes.
+
+The parent fully reads both reports and verifies every sealed inventory entry after complete releases.
+The record distinguishes corrected-isolation review runs, setup faults and nonadditive test counts.
+Eight owned native probes and 177 permanent cases pass; actual shipping-timeout SQLite SIGINT,
+bounded original/candidate/restored OS no-MCP controls and narrow causal removals are qualified in
+[the review record](../../reviews/2026-10-03T19-39-26-w7-step-11-round-1-review.md).
+Thirteen new permanent regressions include engine-first passive cancellation and successor fencing.
+Full CI and sequential coverage exit 0: 327 files, 7,519 tests, 11 existing skips; global
+line/branch/function coverage 95.88%/92.63%/96.73%.
+**Fresh full-Step-11 round 2 precedes closure.** Live Steps 7–8, Step 12 and all six register items
+remain open; no verified residual is deferred.
+
+
+**Step 11, review round 2 — 2026-10-03.** Both fresh reviewers cover the complete 43-file step.
+A successful native SQLite busy wait can conceal an already-sent OS SIGINT until after approved
+provider entry. The CLI host now yields two check phases across a poll turn before exposing a
+successful decision acknowledgement to Core; the durable approval is not rolled back. Terminal
+write uncertainty now retains the existing outbox/exit-5 path, while nonterminal ownership loss
+still refuses. A real native successor remains fenced, and the diagnostic no longer falsely
+claims an earlier approval is absent. No policy, dependency, clock or wire field changes.
+
+The parent reads both complete reports and verifies all 2,234 contracts and 2,607 runtime sealed
+entries after full access releases. Independent fresh parent child/writer controls reproduce both
+findings. Seven permanent regressions cover native terminal faults, successor fencing and actual
+OS contention; restored selection passes 101 tests. One-immediate fixture success, standalone
+reviewer failure, POSIX/platform limits and excluded setup runs are qualified in
+[the round 2 record](../../reviews/2026-10-03T21-01-16-w7-step-11-round-2-review.md).
+Full CI and sequential coverage exit 0: 327 files, 7,526 passing tests, 11 existing skips;
+global line/branch/function coverage 95.88%/92.63%/96.73%.
+**Fresh complete-Step-11 round 3 precedes closure.** Live Steps 7–8, Step 12 and all six register
+items remain open; no verified implementation finding is deferred.
+
+**Step 11, fresh review round 3 — 2026-10-04.** Both restarted independent reviewers examine every
+hunk in all 46 files of `28ba80db..53cce9e3` and report no new verified finding. Each passes 452
+permanent tests in 14 files without skips; their separate fresh native, passive, class-private
+and compiled-process controls are nonadditive. The parent fully reads both reports, verifies all
+2,028 contracts and 2,755 runtime inventory entries, and checks every original tracked byte/hash/mode
+after both full releases. Earlier interrupted round-3 runs are excluded. The previous green full
+CI/coverage describes unchanged source; this review does not claim a new whole-toolchain run.
+[The complete record](../../reviews/2026-10-04T01-17-23-w7-step-11-round-3-review.md) preserves timing,
+platform, guard and read-depth limits. **Step 11 is closed; no verified code finding is deferred.**
+
+**Independent Step 12 document maintenance — 2026-10-04.** The frozen 15-overlay static preflight
+finds two Medium prose defects: supplied usage was incorrectly conditional on pricing, and a
+pass-through DB fixture was credited with upstream masking coverage. Both are parent-verified
+and corrected. An existing universal event-secret claim and a connected failed-usage commit
+example are narrowed; the fixture names its actual scope, uses the current SELF ref and checks
+ref preservation. Guides, canonical security/usage contracts and the two implemented CLI
+follow-ups are reconciled. The parent verifies every static review entry, and its separate
+fixture passes 81 DB tests and strict types. [The preflight record](../../reviews/2026-10-04T01-04-15-w7-step-12-document-preflight-review.md)
+does not replace required repository checks or fresh committed-maintenance reviews.
+**Steps 7–8, whole Step 12 and all six W7 register items remain open.** Their live provider
+evidence cannot be replaced by offline fixtures; no PR, push or wave-closure claim is made.
+
+**Independent Step 12 maintenance, round 1 — 2026-10-04.** Two fresh reviewers cover every
+committed maintenance path and agree on one Medium financial-contract qualification and one
+Low inherited event-table claim. An admission may own an unknown-price lifecycle without a
+numeric reservation; three retention statements now require an existing bounded reservation.
+The tool-input table links its qualified credential/content protection instead of claiming
+arbitrary content is secret-free. The parent independently traces the source, reads both
+complete reports and verifies all 1,200 static and 1,487 runtime sealed entries plus the
+unchanged original pins. The runtime reviewer passes 81 DB tests, strict types and a genuine
+writer-reference corruption/restoration control; these do not replace the parent checks.
+[The complete record](../../reviews/2026-10-04T07-00-17-w7-step-12-maintenance-round-1-review.md)
+preserves the scope, setup/read failures and guard/process limits. Fresh complete committed
+maintenance round 2 follows. **Whole Step 12, Steps 7–8 and all six W7 items remain open.**
+
+**Independent Step 12 maintenance, round 2 — 2026-10-04.** Both fresh whole-maintenance reviews
+are clean across all 26 paths and 37 hunks, including the first-round corrections and dated record.
+The parent fully reads both reports, verifies all 1,202 static and 1,372 runtime sealed entries,
+and checks all 1,079 unchanged original pins after both releases. Fresh runtime evidence includes
+81 DB tests, strict types and a real writer-reference corruption/exact-restoration control;
+static proof remains source/document consistency, with explicit read/guard/link limits.
+[The complete record](../../reviews/2026-10-04T07-25-20-w7-step-12-maintenance-round-2-review.md)
+accepts the independent maintenance subset. The latest parent full CI/sequential coverage remains
+green on unchanged production/test source; only scoped review/status/index metadata follows.
+**The maintenance subset is closed; whole Step 12, Steps 7–8 and all six W7 items remain open.**
+The real provider captures are the remaining Step 7 prerequisite. No verified finding is deferred,
+no live fixture is invented and no PR/push or wave closure is claimed.
+
+**Post-PR rendering correction and live capture checkpoint — 2026-10-04.**
+[Draft PR #90](https://github.com/HodeTech/Relavium/pull/90) is open from `development` to `main`.
+Required Linux CI at `95137c34` exposes four actual-Ink tests with inconsistent injected/ambient
+interactivity. A separate production-path reproduction verifies undisplayed disclosure consumed
+under `CI=''` and `CONTINUOUS_INTEGRATION=true`; wider parent controls also verify Home's inline
+reseat retaining the old Static cursor. Composition roots now explicitly forward the existing CLI
+output decision to Ink. A new view-store owner resets its transcript cursor, keeping the root input
+owner and already-printed scrollback. All prior disclosure/input/close/error assertions remain.
+The parent passes 104 selected controls separately under all three environments; removing the
+interactivity or transcript-owner key breaks the matching regressions. Required full checks and
+fresh independent post-commit rounds govern acceptance of this correction.
+
+Actual official-provider Anthropic, OpenAI and DeepSeek overflow artifacts are copied byte-for-byte
+after complete parent privacy/semantic review and indexed in the
+[live fixture directory](../../../packages/llm/src/conformance/fixtures/overflow/README.md).
+Gemini returns an input-quota 429 before its context boundary. The first Anthropic stop probe ends
+normally and its second is an input overflow; neither proves `model_context_window_exceeded`.
+No diagnostic response substitutes for the missing evidence, and no classifier is changed here.
+**Steps 7–8, whole Step 12 and all six W7 register items remain open.**
+
+**PR 90 systematic review follow-up — 2026-10-04.** Two maintainer reports against `95137c34`
+are reconciled into 35 findings. [Targeted independent triage](../../reviews/2026-10-04T10-35-00-w7-systematic-review-intake-review.md)
+reproduces actual SDK payload mutation after budget admission and two narrower failure-path defects,
+confirms the combined approved-failover test gap, and records a separate brittle JSON recursion test.
+Normal/fenced budget-map cleanup already exists; that submitted claim is refuted rather than patched.
+All ten required/advisory GitHub CI checks pass at `578c14a5`; SonarCloud annotations remain individually
+under examination. Neither newer CI nor targeted passing controls accepts the whole PR.
+
+[Rendering round 1](../../reviews/2026-10-04T10-32-37-w7-rendering-round-1-review.md) independently
+reproduces cleanup after a supported chat resizes to an invisible viewport and CI route/ownership drift.
+The parent correction confirms the exact displayed notice, retains evidence when clipped, and aligns
+chat selection/ownership with the existing output predicate. Fresh complete round 2 follows commitment.
+The remaining correction groups cover measured-request ownership, budget-gate lifecycle, corrupt-history
+isolation, replay/toolchain guarantees and canonical docs. No finding is deferred at intake; no fail-closed
+or wire-compatibility decision is silently weakened. **Step 6 and adjacent affected obligations require
+fresh acceptance; Steps 7–8, whole Step 12 and all six W7 register items remain open.**
+
+**Post-PR rendering corrective round 2 — 2026-10-04.** Two fresh independent reviewers accept
+all 24 follow-up paths through `d4e4fa9c`, including the published-notice viewport proof and shared
+CI route/publication predicate. [The round 2 record](../../reviews/2026-10-04T12-00-00-w7-rendering-round-2-review.md)
+documents actual-Ink/native-SQLite controls, causal removals, exact restoration, complete sealed-tree
+verification and limits. All ten GitHub workflow checks are green at that head; SonarCloud is assessed
+separately. **The rendering corrective group is closed. Measured-request ownership and remaining
+systematic findings still require correction and fresh acceptance; Steps 7–8, whole Step 12 and
+all six W7 register items remain open.**
+
+**Request-ownership decision preflight — 2026-10-04.** The systematic SDK mutation HIGH requires
+one owned construction through context measurement, quotation, admission and dispatch. Static SDK
+mechanism review identifies the explicit compatibility fork: arbitrary opaque values require a larger
+SDK integration decision; [Proposed ADR-0102](../../decisions/0102-a-measured-request-owns-its-inert-data-through-egress.md)
+instead selects inert non-cap data with the existing native-cap exception, unchanged provider methods
+and an explicit candidate binding/stream/media handoff. It requires maintainer approval after fresh
+draft reviews. **No dependent ownership implementation is authorized; other correction groups proceed.**
+
+**ADR-0102 proposal round 1 — 2026-10-04.** Both fresh static reviewers find that independent copies
+of shared inert references can change Gemini's actual converter body. The revision requires iterative
+memoized capture and graph-preserving mutable working copies. It also makes incoming measured-plan
+validation precede projection replacement, retaining captured serializer/ceiling authority.
+[The complete round 1 record](../../reviews/2026-10-04T12-21-41-w7-adr-0102-round-1-review.md)
+qualifies parent-only offline SDK evidence and verifies every released sealed entry. **Fresh complete
+draft round 2 and maintainer approval remain required; the actual ownership HIGH stays open.**
+
+**ADR-0102 proposal round 2 — 2026-10-04.** [Two fresh complete static reviews](../../reviews/2026-10-04T13-02-54-w7-adr-0102-round-2-review.md)
+report no new material proposal findings. Both revised mechanisms are satisfactory for the maintainer's
+decision. The parent reads the complete reports and verifies every sealed entry and source/dependency
+pin before ending Original source freeze. **ADR-0102 remains Proposed; maintainer approval precedes
+dependent implementation.** Actual SDK generate/stream acceptance and the ownership HIGH remain open;
+independent corrective groups continue.
+
+**Systematic group 2a, round 1 — 2026-10-04.** [Two fresh complete reviews](../../reviews/2026-10-04T13-47-56-w7-systematic-group-2a-round-1-review.md)
+verify typed cap refusals, structural result failures, native-JSON portability and approved
+default failover, but independently reproduce a new High: successful-tool observer errors
+lose real session usage/engagement and bypass its hard turn cap. `13d3c0fe` preserves the narrow
+dispatch boundary and carries those errors through EA2; `7839647f` corrects the normalizer comment.
+Six actual-session controls and forced root checks/build pass. Both complete final reports and
+every sealed entry/pin are verified before Original resumes. **Fresh complete round 2 is required;
+this group, ownership, remaining systematic corrections and whole W7 remain open.**
+
+**Systematic group 2a, round 2 — 2026-10-04.** [Two complete independent reviews](../../reviews/2026-10-04T14-41-03-w7-systematic-group-2a-round-2-review.md)
+verify the prior correction but reproduce inherited failed-tool observer errors losing engaged
+usage and bypassing the hard turn cap. `41a3ef9a` applies the same classified observer boundary
+to both failure notifications, retaining EA2/EA7 and genuine model correction. Eight new actual-session
+regressions fail before repair; root lint/typecheck/test passes 23 tasks, 330 files and 7,579 tests
+with 12 skips; forced build passes six tasks. Both full reports and every sealed entry/pin are
+verified before Original resumes. **Fresh complete round 3 is required; group 2a, ownership,
+remaining corrections and whole W7 remain open.**
+
+**Systematic group 2a, round 3 — 2026-10-04.** [Both fresh reviewers](../../reviews/2026-10-04T15-44-35-w7-systematic-group-2a-round-3-review.md)
+verify the four repaired tool notifications, then reproduce inherited post-engagement raw callback
+failures returning hard-cap slots/losing known usage and cost notifications skipping realized writes.
+`e7973031` preserves raw/pause/money error identity with an internal canonical outcome and starts the
+realized write after the authoritative fold despite delivery failure. Original baseline has 40 failures
+and 13 controls; corrected root passes 7,625 tests/12 skips across 331 files, all 23 forced tasks,
+six forced builds and test isolation. Complete reports and every sealed entry/pin are independently
+verified before Original resumes. **Fresh complete round 4 is required; group 2a, ownership,
+remaining groups, Steps 7–8/12, Sonar and PR acceptance remain open.**
+
+**Systematic group 2a, round 4 — 2026-10-04.** [Both fresh complete reviews](../../reviews/2026-10-04T16-34-57-w7-systematic-group-2a-round-4-review.md)
+reproduce frozen classified errors defeating the carrier, proven pre-provider refusals consuming
+slots without a governor, and classified success-flush errors losing usage or counting twice.
+`ecf0b209` separates canonical accounting from throwable mutation/classification and records
+actual chain-owned provider invocation; untyped chain diagnostics are fixed. Original baseline:
+34 failing/243 passing; corrected focused run: 451 passing. Forced root checks pass all 23 tasks,
+332 files, 7,665 tests/12 skips, six builds and test isolation. Both full reports and every one of
+3,524 sealed entries/pins are independently verified before Original resumes. **Fresh complete
+round 5 is required; group 2a, ownership, remaining groups, Steps 7–8/12, Sonar and PR remain open.**
+
+**Systematic group 2a, round 5 — 2026-10-04.** [Both fresh complete reviews](../../reviews/2026-10-04T20-43-04-w7-systematic-group-2a-round-5-review.md)
+reproduce hostile error presentation replacing the original throwable/suppressing its terminal,
+method lookup counted as invocation, and valid generated usage lost on pricing failure.
+`902737eb` guards presentation, resolves receiver-bound methods before invocation and retains
+safe-integer validated usage without inventing a cost. Original baseline: 19 failing/287 passing;
+corrected focused run: 417 passing. Final forced root checks pass 23 tasks, 332 files,
+7,694 tests/12 skips, six builds and test isolation. Both complete reports and every one of
+3,589 sealed entries/pins are independently verified before Original resumes. **Fresh complete
+round 6 is required; group 2a, ownership, remaining groups, Steps 7–8/12, Sonar and PR remain open.**
+
+**Systematic group 2a, round 6 — 2026-10-04.** [Both fresh complete reviews](../../reviews/2026-10-04T21-48-21-w7-systematic-group-2a-round-6-review.md)
+verify existing protections and reproduce six overlapping price/quantity/invocation/diagnostic families.
+`b4134e99` owns validated returned usage, marks unknown prices unpriced, guards nested/cause inspection,
+keeps admission ownership through discharge and rechecks lookup cancellation. Exact-head baseline:
+25 failing/19 passing; corrected focus: 461 passing. Final forced root passes 23 tasks, 333 files,
+7,738 tests/12 skips, six builds, formatting and test isolation. Both complete reports and all
+3,922 sealed entries/source/link/bootstrap pins are independently verified before Original resumes.
+**Fresh complete round 7 is required; group 2a, ownership, remaining groups, Steps 7–8/12, Sonar and PR remain open.**
+
+**Systematic group 2a, round 7 — 2026-10-04.** [The complete contracts review and incomplete runtime observations](../../reviews/2026-10-04T23-06-22-w7-systematic-group-2a-round-7-review.md)
+reproduce generated observer errors causing paid retries/private public diagnostics and second tool-round
+reflection replacing callback failures. `dd9d5a7d` retains exact attempt-observer provenance and guards
+budget inspection. Original permanent baseline: 7 failing/24 passing; corrected focus: 200 passing.
+Final forced root passes 23 tasks, 335 files, 7,769 tests/12 skips, six builds and test isolation.
+Both entire reports and all 4,140 sealed entries/source/link/bootstrap pins are independently verified
+before Original resumes. Runtime's platform-interrupted review is explicitly incomplete, with no
+restored runtime certification. **Fresh complete round 8 is required; group 2a, ADR-0102 approval,
+remaining groups, Steps 7–8/12, Sonar and PR remain open.**
+
+**Systematic group 2a, round 8 — 2026-10-05.** [Both complete independent reviews](../../reviews/2026-10-05T00-56-00-w7-systematic-group-2a-round-8-review.md)
+verify held terminal mutation before confirming EOF, mutable attempt diagnostics and typed paid
+observer failures granting unintended workflow retry/budget authority. Corrections own the held
+terminal, freeze diagnostic copies and carry exact external observer origin separately from internal
+admission faults. Session classified delivery and actual money failure ownership remain intact.
+The 51 new terminal controls reproduce 31 failures before repair; final forced Original checks pass
+23 tasks, 336 files, 7,831 tests / 12 existing skips, six builds and test isolation. Both complete
+reports and all 4,175 physical entries/pins/links are verified before Original resumes, with prior
+outer-launcher gaps qualified. **Fresh complete round 9 is required; group 2a, ADR-0102 approval,
+remaining systematic groups, Steps 7–8/12, current Sonar and PR remain open.**
+
+**Systematic group 2a, round 9 — 2026-10-05.** [Both complete independent reviews](../../reviews/2026-10-05T01-57-06-w7-systematic-group-2a-round-9-review.md)
+verify unsafe cause authority, generated result access after paid observation, compaction/later-tool
+callback origin and false money-writer attribution. Verified corrections `1b23ff82` / `22d9df14` and
+119 additional permanent controls pass forced full lint/typecheck/test (23 tasks, 339 files,
+7,950 tests / 12 existing skips), forced build and isolation. Both complete reports and all 3,784
+physical entries/source/link/bootstrap pins verify before Original resumes; actual-price/unpriced
+and early startup limits remain explicit. **Fresh complete round 10 is required; group 2a,
+ADR-0102 approval, remaining groups, Steps 7–8/12, Sonar, W7 and PR #90 remain open.**
+
+**Systematic group 2a, round 10 — 2026-10-05.** [Both complete independent reviews](../../reviews/2026-10-05T02-56-00-w7-systematic-group-2a-round-10-review.md)
+verify lifecycle setup/provenance and nested generated-content authority gaps. Corrections
+`639d1ace` / `c6749597` add 94 controls and pass forced full lint/typecheck/test (23 tasks,
+343 files, 8,044 tests / 12 existing skips), six builds and isolation. Both complete reports and
+all 3,741 actual physical entries/source/link/bootstrap pins are audited; Contracts' three post-audit
+cache files and one directory discrepancy explicitly qualify its seal claim. **Fresh complete
+round 11 is required; group 2a, ADR-0102 approval, remaining groups, Steps 7–8/12, Sonar, W7 and
+PR #90 remain open.**
+
+**Systematic group 2a, round 11 — 2026-10-05.** [Both complete independent reviews](../../reviews/2026-10-05T07-03-00-w7-systematic-group-2a-round-11-review.md)
+verify terminal cancellation after successful durability, custom controller reentrancy and deadline
+cleanup losing known price or acquiring control authority. Scoped repairs preserve canonical usage,
+EA7 late abort and genuine money controls; 101 new core controls plus three shared disposal controls
+pass. Forced Original checks pass 23 tasks, 351 files, 8,148 tests / 12 existing skips, build six and
+isolation. Both exact final seals are independently audited; early evidence gaps remain qualified.
+**Fresh complete round 12 is required; group 2a, ADR-0102 approval, remaining groups, Steps 7–8/12,
+Sonar, W7 and draft PR #90 remain open. No additional paid generation is authorised.**
+
+**Systematic group 2a, round 12 — 2026-10-06.** [Qualified recovery and corrections](../../reviews/2026-10-06T16-02-49-w7-systematic-group-2a-round-12-review.md)
+record two interrupted reviews without full-scope acceptance. Cold reconstructed compaction preserves
+terminal cancellation; generated typed output is owned before host pricing while known quantities
+remain chargeable on projection failure. Thirty-one controls pass; forced Original lint/typecheck/test
+passes 23 tasks, 355 files, 8,179 tests / 12 existing skips, six builds and isolation. Both complete
+recovery reports and all 3,534 physical entries are audited. **Fresh complete round 13 is required;
+group 2a, remaining groups, Steps 7–8/12, Sonar, W7 and draft PR #90 remain open.**
+
+**ADR-0102 maintainer clarifications — 2026-10-06.** [Two fresh qualified static reviews](../../reviews/2026-10-06T16-02-49-w7-adr-0102-maintainer-clarifications-review.md)
+verify all six submitted clarifications at `1f7c353e`; no new material draft finding. SDK HTTP acceptance
+is still required during implementation. **ADR-0102 stays Proposed, pending maintainer approval.
+No dependent ownership implementation or additional paid generation is authorized.**
+
+**Systematic group 2a, round 13 — 2026-10-06.** [Both complete independent reviews](../../reviews/2026-10-06T16-53-54-w7-systematic-group-2a-round-13-review.md)
+reproduce a cold provider resolver starting a real nested turn, after which compaction overwrites
+its controller. `9f35173a` rechecks existing idle ownership before arming compaction; cold cancel,
+idle abort and warm memoization remain intact. The Original regression fails before correction;
+final forced lint/typecheck/test passes 23 tasks, 357 files, 8,195 tests / 12 existing skips,
+six build tasks and isolation. Both reports, the complete Runtime static supplement and all
+3,526 physical entries are audited, with early launch/read/preparation gaps retained.
+**Fresh complete round 14 is required; group 2a, Proposed ADR-0102 approval/implementation,
+remaining groups, live-fixture-gated Steps 7–8, final Step 12, Sonar, W7 and draft PR #90 remain open.**
+
+**Systematic group 2a, round 14 — 2026-10-06.** [Both complete independent qualified reviews](../../reviews/2026-10-06T17-49-28-w7-systematic-group-2a-round-14-review.md)
+accept the 66-path scope at `207b2716`: cold operation ownership, generated projection/pricing
+precedence and actual money durability joins retain their guarantees. Contracts passes 955 tests;
+Runtime passes 934, with fresh builds and strict fixtures. Both reports, the stopped static supplement,
+all 3,553 actual physical entries and 153 external artifact tuples are independently audited before
+Original resumes; initial launch/read/preparation gaps stay qualified. **Group 2a is accepted within
+this scope. Proposed ADR-0102 approval/implementation, remaining Groups 3–6, live-fixture-gated
+Steps 7–8, final Step 12, current Sonar, whole W7 and draft PR #90 remain open.**
+
+**Systematic group 3, round 1 — 2026-10-06.** [Both complete independent reviews](../../reviews/2026-10-06T18-43-01-w7-systematic-group-3-round-1-review.md)
+verify two High acknowledgement races: late timeout refusal overrides a claimed budget decision;
+invalid inline approval closes native SQLite before the aggregate pause append is acknowledged.
+`a78f859a` preserves the synchronous decision claim, and `7ceae889` drains the actual durable pause
+or terminal before resource release. Nineteen independent regressions are promoted; the old-code
+baseline has seven expected failures among 24 cases, and the correction passes all 24. Forced
+Original checks pass 23 tasks, 362 files, 8,239 tests and 12 existing skips, plus six builds and
+isolation. Both complete reports, all 3,802 actual entries and 362 external artifact tuples are
+independently audited with timestamp, inherited-read and exercised-guard qualifications retained.
+**Fresh complete round 2 is required; Group 3, Proposed ADR-0102, remaining Groups 4–6, Steps 7–8/12,
+current Sonar, W7 and draft PR #90 remain open.**
+
+**Systematic group 3, round 2 — 2026-10-06.** [Both complete fresh reviews](../../reviews/2026-10-06T19-25-33-w7-systematic-group-3-round-2-review.md)
+verify one High: after an invalid inline approval, SIGINT during a held native pause append loses
+cancellation to the paused exit. `350f7152` retains cancellation through the acknowledged terminal;
+eleven permanent native controls include held cancellation writes and actual authorization claims.
+The independent 25-case baseline has three expected failures; its one-guard correction and all
+prepared controls pass. Original checks pass 23 forced tasks, 364 files, 8,250 tests and 12 existing
+skips, with six forced builds, isolation and format. Both complete reports, all 3,635 actual entries
+and 862 external artifact tuples are audited with inherited-read, environment and exercised-guard
+qualifications retained. **Fresh complete round 3 is required; Group 3, Proposed ADR-0102,
+remaining Groups 4–6, Steps 7–8/12, current Sonar, W7 and draft PR #90 remain open.**
+
+**Systematic group 3, round 3 — 2026-10-06.** [Both complete fresh reviews](../../reviews/2026-10-06T20-13-20-w7-systematic-group-3-round-3-review.md)
+verify two Highs: cancellation re-enters queued cards, and cancellation during paused renderer
+finalization loses its subscription, native terminal write and truthful Ink summary. `94948cd4`
+latches cancellation, suppresses later cards and retains the iterator through a summary settlement
+barrier and fallback resource drain. Eleven promoted regressions have seven causal old-code
+failures; the corrected independent combined 61-case focus passes. Original passes 23 forced
+tasks, 366 files, 8,261 tests / 12 existing skips, six builds, isolation and format. All 3,797
+actual sealed entries and 3,349 external artifact tuples are independently audited with complete
+reports, changed-case reads and preparation/guard/platform qualifications retained. **Fresh
+complete round 4 is required; Group 3, Proposed ADR-0102, Groups 4–6, Steps 7–8/12, current Sonar,
+W7 and draft PR #90 remain open.**
+
+**Systematic group 3, round 4 — 2026-10-06.** [Both complete fresh reviews](../../reviews/2026-10-06T20-57-47-w7-systematic-group-3-round-4-review.md)
+verify two High UI-lifetime defects: genuine budget rejection opens a surplus queued card;
+cancellation or acknowledged terminal during suspension or an open card retains stale input.
+`9a62d665` follows emitted rejection/terminal authority, aborts scoped Clack input and preserves
+the primary terminal/durability stream. A losing idempotent rejection leaves genuine later gates
+usable; ordinary rejection still continues. Twenty-five permanent controls have 16 causal
+old-code failures, then all pass; the corrected combined 135-case focus passes. Original passes
+23 forced tasks, 369 files, 8,286 tests / 12 existing skips, six builds, isolation and format.
+Both complete reports and all 3,745 actual sealed entries / 3,260 external regular tuples are
+independently audited, with helper-guard, timer-seam, SDK/platform and preparation qualifications
+retained. **Fresh complete round 5 is required; Group 3, Proposed ADR-0102, Groups 4–6,
+Steps 7–8/12, current Sonar, W7 and draft PR #90 remain open.**
+
+**Systematic group 3, round 5 — 2026-10-06.** [Both complete fresh reviews](../../reviews/2026-10-06T21-43-24-w7-systematic-group-3-round-5-review.md)
+retain one verified High: authored gate timeout/autoapproval during voluntary paused finalization
+can misreport the terminal, and an unpublished node/terminal append can outlive SQLite closure.
+Parent independently reproduces four failures among five real native controls; a stable pause
+passes. ADR-0103 is being drafted/reviewed and no dependent lifecycle implementation is approved.
+`fa884a92` separately corrects the CI completion-phase oracle and the safe status JSON contract;
+26 lifecycle/Clack and 22 JSON/status cases pass in independent parent preparation. Original passes
+23 forced tasks, 369 files, 8,292 tests / 12 existing skips, isolation, format and diff checks.
+Both complete reports/child supplements and all 3,565 sealed entries / 3,077 regular tuples are
+independently audited before Original resumes. **Group 3 remains changes requested. Fresh narrow
+correction reviews and the High's approved implementation are required; ADR-0102, Groups 4–6,
+Steps 7–8/12, current Sonar, W7 and draft PR #90 remain open.** Independent Groups 4–6 may advance
+through their own checks and review while the new lifecycle decision is pending.
+
+### W7 group 3 round-5 correction accepted in narrow scope — 2026-10-06
+
+Two fresh independent static/runtime rounds accept the nine-path test/documentation correction
+through `8e241377`. Runtime focuses pass 98 and 96 cases, with fresh ordered builds, strict inclusion
+and causal cleanup/JSON controls. Parent independently audits every recorded actual artifact field
+and all 1,154 source/Original receipts before releasing both freezes. The [qualified review record](../../reviews/2026-10-06T22-16-35-w7-systematic-group-3-round-5-correction-review.md)
+retains all preparation/read/guard/platform bounds. Full Group 3 remains changes requested: the
+voluntary paused-departure High is open, ADR-0103 remains an unapproved draft and ADR-0102 remains
+Proposed. Independent Groups 4–6 may proceed under the existing plan; no W7/merge acceptance is granted.
+
+### W7 systematic group 4, round 1 — 2026-10-07
+
+Both [complete independent reviews](../../reviews/2026-10-07T06-17-17-w7-systematic-group-4-round-1-review.md)
+verify one High: acknowledged activation can delete isolated corrupt identity evidence, then reissue
+an old effect-turn key. The correction preserves the canonical legacy floor inside the same deletion
+transaction, or refuses deletion and allocation with evidence intact. Parent focus passes 585 tests;
+removing only the preservation call fails seven controls, and exact restoration passes all 51 cases.
+Original passes 23 forced tasks, 371 files, 8,316 tests / 12 existing skips and six forced builds.
+Both reports and all 3,067 actual sealed entries / 2,704 regular artifacts are independently audited
+before Original resumes, with preparation, register and native-helper qualifications retained.
+**Group 4 remains changes requested; fresh complete round 2 is required. Group 3's High,
+Proposed ADR-0102, unapproved ADR-0103, Groups 5–6, Steps 7–8/12, current CI/Sonar, W7 and draft
+PR #90 remain open. No additional paid generation is authorised.**
+
+### W7 systematic group 4, round 2 — 2026-10-07
+
+Both [complete independent reviews](../../reviews/2026-10-07T07-00-05-w7-systematic-group-4-round-2-review.md) verify a High: a known SQLite suspension column
+with an unknown payload discriminator could be skipped, letting reconciliation invent an interruption
+terminal. The correction checks raw type equality before tolerant parsing and refuses without leases,
+terminal writes or changes to either run. Thirteen new native regressions pass; removing only the guard
+fails eight required-refusal controls while five genuine/matching-unknown controls pass. Original passes
+23 forced tasks, 373 files, 8,329 tests / 12 existing skips, six forced builds and isolation. Parent audits
+all 3,082 actual sealed entries / 2,719 regular artifacts and actual native-child proof closure before
+Original resumes, preserving read/preparation/checkJs limits. **Group 4 remains changes requested;
+fresh complete round 3 is required. Group 3, Proposed ADR-0102, unapproved ADR-0103, Groups 5–6,
+Steps 7–8/12, final CI/coverage/Sonar, W7 and draft PR #90 remain open.**
+
+### W7 systematic group 4, round 3 — 2026-10-07
+
+Both [independent reports](../../reviews/2026-10-07T07-43-01-w7-systematic-group-4-round-3-review.md) verify a High: discovery and the state reader could trust a
+streaming SQL label before validating a genuine suspension payload. Actual native reconciliation then
+invented an internal failure terminal. The correction validates every stored row through the existing
+parser before excluding genuine streaming events from the returned fold; persisted-history validation
+includes their parsing cost. The two permanent native files pass 81 cases; with existing run-history
+tests, 164 pass. Separate causal removals fail 19 discovery and 11 state-read controls; exact restoration
+passes. Original passes 23 forced tasks, 373 files, 8,397 tests / 12 existing skips, six forced builds and isolation. Parent audits all 3,126 sealed physical entries / 2,763 regular artifacts,
+full actual self bindings, registers and child provenance before Original resumes. The runtime report
+is interrupted and its wrong store/reader API attempt is not counted as state-refusal evidence; the
+complete static report and independent Parent actual-reader regressions establish that surface.
+**Group 4 remains changes requested; fresh complete round 4 is required. Group 3, Proposed ADR-0102,
+unapproved ADR-0103, Groups 5–6, Steps 7–8/12, final CI/coverage/Sonar, W7 and draft PR #90 remain open.**
+
+### W7 systematic group 4, round 4 — 2026-10-07
+
+[Both fresh reviews](../../reviews/2026-10-07T09-10-29-w7-systematic-group-4-round-4-review.md) cover all 33 corrected paths / 61 hunks and ten complete test files / 5,108 lines.
+No new material implementation finding remains. Three literal newline escapes in the preceding
+review prose are corrected without changing its historical result. Independent runtime passes
+29 files / 753 tests, five fresh builds and strict fixture/setup/config inclusion. Discovery-only
+and state-only removals fail 43 and 31 controls; exact restoration passes. Parent audits both
+complete reports, all 3,145 physical entries / 2,781 regular files, source receipts, self bindings,
+registers and eight actual native-child proof closures before Original resumes. Read ordering,
+18 historical Own-evidence revisions, capture/format repairs and increased parsing cost remain
+explicit qualifications. **Group 4 is accepted within scope. Group 3's High, Proposed ADR-0102,
+unapproved ADR-0103, Groups 5–6, Steps 7–8/12, final CI/coverage/Sonar, W7 and draft PR #90 remain
+open. No additional paid capture or ADR-dependent implementation is authorised.**
+
+### W7 systematic group 5, implementation — 2026-10-07
+
+The [budget replay harness](../../../tools/budget-replay-compat/README.md) now runs in the mandatory GitHub CI job. Its predecessor
+portable bytes are shipped independently of live installed dependencies, and all 143 source files
+are checked against the actual pinned Git baseline. Native SQLite remains the documented,
+invocation-hashed ABI exception. Completed evidence is bounded to three invocations; active,
+interrupted, foreign and redirected evidence is preserved. Seven provenance, 17 closure and eight
+retention controls pass, with seven additional finalization cases in three result groups. The
+isolation probe uses explicit file-marker readiness raced against child closure instead of elapsed-time assumptions. Turbo is pinned
+exactly to the cooled 2.11.4 release, with its installed local schema and unchanged task definitions.
+
+Forced Original `pnpm run ci` passes: 23 lint/typecheck/test tasks, 373 test files, 8,397 passing
+cases / 12 existing skips, six builds, formatting, migration sync, fences and all three offline
+smokes. Initial tool-lint and formatting failures are retained; neither is presented as a passing
+CI run. `typecheck:tools` covers its configured TypeScript programme, not every MJS helper.
+**Group 5 is implemented and awaits fresh independent reviews; it is not accepted. Group 3's
+High, Proposed ADR-0102, unapproved ADR-0103, Group 6, Steps 7–8/12, final coverage/Sonar, W7
+and draft PR #90 remain open. No additional paid capture or ADR-dependent implementation is
+authorised.**
+
+### W7 Group 5 — review corrections implemented, fresh acceptance pending — 2026-10-08
+
+The [first independent systematic Group 5 review](../../reviews/2026-10-08T04-58-12-w7-systematic-group-5-round-1-review.md) corroborates
+secondary-evidence failure masking, asynchronous closed-stderr errors, native failed-spawn
+completion before close, a same-user stale retirement pathname, and two IPC wording mistakes.
+Actual callers now preserve failure precedence, join real close and write fixed diagnostics
+synchronously. Retirement claims and validates physical identity plus exact records, preserving
+unexpected claims for inspection. Fourteen permanent caller controls and five causal removals
+pass their intended positive/negative outcomes. Forced full CI passes 23 tasks, 373 files /
+8,397 passing tests / 12 skips and six builds after an initial retained DB-timeout failure and a
+clean isolated 522-test DB run. This is an implementation correction; fresh Group 5 round 2,
+Group 6, ADR approvals, provider captures and final whole-wave acceptance remain open.
+
+### W7 systematic group 5, round 2 — 2026-10-08
+
+[Two fresh complete reviews](../../reviews/2026-10-08T11-44-55-w7-systematic-group-5-round-2-review.md) and independent Parent audits accept all 22 Group 5 paths / 47 textual hunks and the immutable archive at `ab8c5138`. The actual harness closes all three workers and passes twelve predecessor refusals / two positive controls; fourteen caller controls, five grouped causal removals with exact restoration, 33 independent writer cases, six preparation cases and the real 45-second watchdog pass. Both full reports, physical inventories, source/Git pins and command/read/native evidence are verified before the Root freeze is released. Retirement compares directory identity and complete parsed records by semantic equality; it does not attest exact raw record bytes or record inodes. Application-isolation, transport/read-capture, historical release-date and initial CI-failure qualifications remain in the review record. **Group 5 is accepted within scope. Group 6, Group 3's High, Proposed ADR-0102, unapproved ADR-0103, provider captures, Steps 7–8/12, final CI/coverage/Sonar, W7 and draft PR #90 remain open.**
+
+### W7 Proposed ADR-0103 published for maintainer review — 2026-10-08
+
+[ADR-0103](../../decisions/0103-a-paused-run-hands-off-its-local-producers-before-its-host-closes.md) is published with the exact eighth reviewed candidate bytes, after [two complete static reviews and qualified Parent audits](../../reviews/2026-10-08T11-44-55-w7-adr-0103-eighth-proposal-review.md). It proposes engine-owned safe paused-host departure, narrow late-receipt authority, truthful money/effect disposition and CLI exit 8. **It remains Proposed; no dependent implementation is authorised before maintainer approval. ADR-0102 also remains Proposed.** Independent Group 6 work continues; the lifecycle High, provider captures, Steps 7–8/12 and final W7/PR acceptance remain open.
+
+### W7 systematic group 6, narrow corrections implemented — 2026-10-08
+
+The remaining review-document discrepancies are corrected: 51-item diagram, five recorded security sittings, MCP consent flags, expression anchor, disclosure-reader docblock and review EOF whitespace. Behaviour-preserving leaf changes make streaming membership a Set after full persisted-row validation, flatten the replay capture-cut selector, preserve exact generated loader bytes with raw literals, spell the bounded overflow close observation inside the loop, extract the budget detail label and retain primitive-only cold-request assertion formatting. The native signal fixture also receives its explicit string parameter annotation.
+
+Forced full Root `pnpm run ci` passes **373 files / 8,397 tests / 12 skips**, 23 initial tasks including build dependencies, six package build targets, seven build/format tasks and all offline smokes. Explicit strict/checkJs inclusion of the changed native fixture passes separately. Sixty-three synthetic loader cases generate identical bytes and parse; 32 event/state cases keep the exact capture cuts. **These are implementation checks, not independent Group 6 acceptance. Fresh independent rounds and individual adjudication of the current 180 Sonar labels remain required. ADR-0102/0103, provider captures, Steps 7–8/12 and final W7/PR acceptance remain open. No additional paid call or ADR-dependent implementation occurred.**
+
+### W7 systematic Group 6, round 1 — 2026-10-08
+
+Two complete independent reviews of `c6c55b3b..bbe01091` verify one new MCP-consent documentation discrepancy and two pre-existing overflow-smoke error/close-join failures. After both full Parent physical and semantic audits, the narrow correction observes native errors immediately, joins close on every failure and limits the documented no-MCP guarantee to `budget abort`. Actual offline overflow smoke, tools lint and configured tools typecheck pass. Review/capture/guard qualifications and the historical 180/current 170 Sonar boundary remain explicit in the [round-1 record](../../reviews/2026-10-08T13-20-40-w7-systematic-group-6-round-1-review.md). Fresh round 2 is required; Group 6, both Proposed decisions, live captures, Steps 7–8/12 and final W7 acceptance remain open.
+
+### W7 systematic Group 6, recovered round 2 — 2026-10-08
+
+[Two fresh independent reviews and complete qualified Parent audits](../../reviews/2026-10-08T14-50-57-w7-systematic-group-6-round-2-review.md) verify missing permanent native failure regressions and the unregistered `budget abort` spelling. The actual smoke now shares its private runner with five native failure controls; separately reverting error observation or final close joining fails the mandatory smoke, and exact restoration passes. The canonical command is corrected to `budget resume <runId> --abort`. Interrupted prior evidence is not counted as a completed round. Tools lint, configured typecheck and offline smoke pass; required CI at `7c29c462` passes separately. **Fresh round 3 is required. Group 6, Proposed ADR-0102/0103 approval and dependent implementation, Group 3's High, provider evidence, Steps 7–8/12, Sonar and final W7/PR acceptance remain open.**
+
+### W7 systematic Group 6, round 3 — 2026-10-08
+
+[Two complete cumulative reviews and a fresh current Sonar adjudication](../../reviews/2026-10-08T15-45-57-w7-systematic-group-6-round-3-review.md) cover all 17 paths / 27 hunks through `82acfcac` and all 175 current keys. Parent verifies all three complete reports, physical self bindings and source/native evidence before releasing the freeze. The actual mandatory smoke passes at head/restoration and under `CI=true`; separate error-observation and close-join removals fail its permanent controls. Generated loader/body bytes are unchanged. Root full CI passes 373 files / 8,398 tests / eleven skips; exact-head GitHub required CI and coverage pass separately. No new material implementation finding remains. **Group 6 is accepted within scope. Sonar remains failed pending three caller-scoped security dispositions; the complete keyed registry and proposed texts are linked from the review. Proposed ADR-0102/0103 approval and dependent implementation, Group 3's lifecycle High, Gemini/Anthropic missing provider evidence, Steps 7–8/12 and final W7/PR acceptance remain open. No additional paid call or ADR-dependent implementation occurred.**
+
+### W7 ADR-0102/0103 maintainer follow-up — 2026-10-08
+
+[Round 1](../../reviews/2026-10-08T18-21-45-w7-adr-0102-0103-maintainer-round-1-review.md) checks the eight maintainer items and verifies a reachable Gemini SDK prototype-key merge conflict. The corrected Proposed ADR-0102 explicitly narrows non-cap data to refuse own `__proto__` keys while retaining cap authority and the unchanged measurement subset. Proposed ADR-0103 specifies actual primary-delivery observation, gap/abandonment refusal and the local terminal-invariant qualification. [Two fresh complete round-2 reviews](../../reviews/2026-10-08T18-25-00-w7-adr-0102-0103-maintainer-round-2-review.md) find no new material decision-level issue. **Both proposals still require maintainer approval before dependent implementation.** The review records the supplied Gemini Free Tier quota without claiming a new capture or authorising billing/spend. Runtime ownership/lifecycle acceptance, missing provider artifacts, Steps 7–8/12, Sonar and final W7/PR acceptance remain open.
+
+
+### W7 latest decisions approved and completion sequence — 2026-10-08
+
+The maintainer approves the latest [ADR-0102](../../decisions/0102-a-measured-request-owns-its-inert-data-through-egress.md)
+and [ADR-0103](../../decisions/0103-a-paused-run-hands-off-its-local-producers-before-its-host-closes.md),
+including their 2026-10-08 clarifications. Both are Accepted. Dependent implementation is
+authorised on `development`; earlier approval restrictions remain historical records.
+
+Complete the remaining work in these reviewable increments:
+
+1. Own request data and candidate cap projections at invocation; prove actual SDK generate/stream
+   parity and typed refusals, then reuse the measured construction through core/media handoffs.
+2. Implement engine departure, primary delivery observation, structured receipt authority and
+   retained exact-fence writer lifetimes; preserve bounded terminal publication.
+3. Derive parked-node deadlines and integrate acknowledged CLI input/host departure, final
+   receipt disposition, exit 8 and the canonical diagnostic contract.
+4. Obtain the two missing genuine provider records, complete Step 7 classification and Step 8
+   compaction/recovery, and close Step 12 through whole-wave acceptance and document updates.
+
+Each increment receives an implementation commit, fresh independent review, confirmed fixes
+and another fresh review before acceptance. These are implementation subdivisions of the
+approved work, not replacement W7 step numbers. The maintainer authorises paid Gemini access
+and necessary new provider work with a 2 USD test-call limit. Billing setup requiring a separate
+legal agreement or a larger minimum prepayment remains an explicit account-setup action; no
+new provider request has been made under this authorisation yet. Implementation, provider
+evidence, final CI/coverage/Sonar and all six remaining W7 register items remain open until
+their actual acceptance evidence lands.
+
+
+### W7 authorised provider evidence and internal ownership foundation — 2026-10-08
+
+The maintainer completed Gemini billing; the selected Gemini 3.5 Flash-Lite model has paid
+Tier 1 access and a 4M input-TPM quota. The existing OS-keychain account was used through stdin,
+without exposing its key. One authorised Gemini request returned the genuine HTTP 400
+`INVALID_ARGUMENT` input-overflow body; its exact v1 artifact is preserved in the
+[fixture index](../../../packages/llm/src/conformance/fixtures/overflow/README.md). **Four of five genuine records now exist. Only Anthropic's native
+`model_context_window_exceeded` response is missing.** The earlier approval sequence's
+no-new-call/two-missing statements describe its publication checkpoint, not the present state.
+
+One free Anthropic token-count request calibrated 199,762 input tokens. One accepted Haiku 4.5
+probe ended with `end_turn`, so it is retained privately and does not establish native overflow.
+Its reported 199,762 input / 1,505 output tokens imply 0.207287 USD at the published rates; this
+is usage-priced evidence, not an invoice. The Gemini overflow was an unsuccessful 400 request;
+no successful token usage or invoice was returned. The bounded next Anthropic probe, available
+only through explicit capture purpose selection, remains subject to the maintainer's 2 USD
+limit and independent capture-tool review. No automated paid retry is authorised or introduced.
+
+[Fresh ownership foundation round 2](../../reviews/2026-10-08T19-29-00-w7-inert-graph-round-2-review.md)
+accepts only the internal inert-graph helper after descriptor/native-brand fixes and separate
+mutable-alias controls. Full request/cap associations, actual SDK handoffs and core measured-round
+reuse are not implemented or accepted by that record. ADR-0102/0103 implementation, the remaining
+provider record, Steps 7–8/12, final CI/coverage/Sonar and all six W7 register items remain open.
+
+### W7 live provider evidence complete — 2026-10-08
+
+After both fresh [v4 capture-tool review rounds](../../reviews/2026-10-08T20-23-20-w7-capture-v4-round-2-review.md),
+one explicitly selected Haiku 4.5 request completed at `2026-10-08T20:25:27.454Z` with HTTP 200
+and `model_context_window_exceeded`. The complete artifact was inspected, then copied
+byte-for-byte into the [five-record index](../../../packages/llm/src/conformance/fixtures/overflow/README.md).
+Its SHA-256 is `0f8ed2eb3b5b1f6dc6419e16e25d97ea5ce42b05d06e9f75ef85426a21dabc9e`.
+Only sequential synthetic integer text, provider identifiers, usage and null diagnostic fields
+are present; no key, authentication header or request body is retained.
+
+The response reports 199,885 input / 12,792 output tokens, implying 0.263845 USD at Haiku's
+published rates. Successful Anthropic usage under the renewed authorisation totals 0.671881 USD;
+including the earlier client timeout's full 0.281920 USD reservation yields 0.953801 USD.
+Provider-side HTTP 400 failures are uncharged under the published [Google](https://ai.google.dev/gemini-api/docs/billing#am-i-charged-for-failed-requests)
+and [Anthropic](https://support.claude.com/en/articles/8977456-how-do-i-pay-for-my-claude-api-usage) billing policies;
+this is usage/policy-based accounting, not an independently verified invoice. No automatic
+retry occurred. The 2 USD limit is respected and no further provider call is required for
+the evidence gate. The earlier four-record and missing-response statements above are historical.
+
+Step 7 classification may now proceed against all five unchanged records. Step 8, ADR-0102/0103
+production integration, Step 12, final CI/coverage/Sonar and the six W7 register items remain open.
+
+### W7 internal request factory accepted — 2026-10-08
+
+[Round 1](../../reviews/2026-10-08T20-28-00-w7-request-factory-round-1-review.md) and
+[two fresh round-2 reviews](../../reviews/2026-10-08T20-36-55-w7-request-factory-round-2-review.md)
+accept the four-path internal factory at `44da68dc`. Exact candidate views, original/native
+controls, exceptional cap slots, full ordinary aliases, signals and trusted derivations retain
+their boundaries. Both fresh reviewers pass 110 focused tests; sixty authority case groups,
+620 graph assertions and seven separate in-memory causal removals pass their stated controls.
+Parent repository lint/typecheck/test and build also pass before the separate Step 7 work.
+
+This increment is not yet consumed by production adapters, chain or core. Its acceptance does
+not establish full SDK compatibility, measured-round reuse, call-time stream ownership or closure
+of the ownership High. Those integrations and ADR-0103, Steps 7–8/12, final CI/coverage/Sonar and
+all six W7 register items remain open. Step 7 now proceeds using all five genuine live records;
+no further paid call is required.
+
+### W7 Step 7 accepted within scope — 2026-10-08
+
+Both fresh [round-4 complete reviews](../../reviews/2026-10-08T22-30-10-w7-step-7-round-4-review.md)
+accept all 46 cumulative paths at `68cf2a68`, including original classification, every runtime
+correction, cold-package test placement and uninvoked-usage provenance. Their independent scoped
+selections pass 1,243 and 1,329 tests respectively, with one existing Gemini live skip each;
+selections overlap and are not added together. Separate causal removals fail the expected usage,
+commitment, first-terminal, fractional-media and custom-authority controls. Exact restoration,
+cold DB/CLI graph checks, seam/purity and changed-source checks pass.
+
+Parent full CI passes 383 suites / 8,714 tests / 12 skips. Exact-head required PR/push CI,
+coverage, Node 22 floor, Windows, strict peers and Sonar all pass. Step 7 is accepted within its
+scope. These results do not establish forced final whole-wave validation, invoice correctness,
+live SSE capture or termination of hostile raw provider work.
+
+The next increment integrates the already accepted ADR-0102 factory into adapters, chain/media
+handoffs and exact core measured rounds. Approved ADR-0103 host departure, Step 8 atomic
+compaction/recovery and Step 12 remain open; all six W7 register items retain their open status.
+No new ADR approval, credential or paid provider call is required for these approved increments.
+
+### W7 owned adapter/chain increment accepted — 2026-10-08
+
+[Two complete fresh round-3 reviews](../../reviews/2026-10-08T23-47-31-w7-owned-adapter-chain-round-3-review.md) accept all 24 cumulative paths/78 hunks through `0c3c185b`. Parent reads both entire reports, independently matches all path/hunk/evidence seals and verifies all 1,224 tracked bytes in both exact archives and shared Git before releasing the freeze. Authority passes 4,311 permanent tests plus 15 independent controls; lifecycle passes 8,839 permanent tests plus 16 controls. Selections overlap and causal guard survival is explicit. Exact-head PR/push required CI, coverage, Node 22, Windows, peers and Sonar pass; earlier stress/fixture failures remain dated history.
+
+This accepts controlled adapter/chain handoff only. Core exact measured-round reuse now proceeds, then approved ADR-0103 host departure and Step 8 compaction/recovery. The production ownership/lifecycle Highs, Step 12 and all six W7 register items remain open; 41/51 is unchanged. No new paid call, credential or ADR approval is required.
+
+### W7 core owned-round integration, first review complete — 2026-10-09
+
+The exact first measured/quoted request now reaches admission and dispatch at `99e78e55`;
+genuine later tool rounds own their new content before money waits. Authentic legacy cap plans
+retain their measured authority, and all-inapplicable candidate sources remain unselected.
+[Both complete independent round-1 reviews](../../reviews/2026-10-09T00-16-47-w7-owned-core-round-1-review.md)
+find no new verified scoped issue across all 13 paths/47 hunks. Parent reads both entire reports,
+verifies all 61/75 evidence seals and exact tracked restoration, and confirms exact-head local CI
+(388 files / 8,894 passing / 12 existing skips) and successful required PR/push CI, coverage,
+Node 22, Windows, peers and Sonar. Independent test selections overlap and are not added.
+
+The next stage is two fresh cumulative Core round-2 reviews; this first round does not accept
+the increment or close the production ownership High. Approved ADR-0103 host departure,
+Step 8 atomic compaction/recovery, final whole-wave Step 12 and all six W7 register items remain
+open. Draft PR #90 is unmerged; no new paid call, credential or ADR approval is required.
+
+### W7 core owned-round increment accepted — 2026-10-09
+
+[Two fresh cumulative round-2 reviews](../../reviews/2026-10-09T01-00-00-w7-owned-core-round-2-review.md)
+accept all 19 paths/53 hunks through `f1281214`, after the first complete independent round.
+Parent reads both entire final reports, verifies all 1,645/2,679 evidence artifacts, all
+1,229 tracked shared/private originals and exact causal restoration before releasing the freeze.
+Authority's final baseline passes 5,184 tests including thirteen private cases; lifecycle's
+permanent baseline passes 5,171 with nineteen controls separately. Selections overlap and are
+not added. Survived/repeated interventions, fixture errors and the lifecycle Corepack download
+exception remain explicit in the review record. Exact-head required PR/push CI, coverage floor,
+Node 22, Windows, peers and Sonar pass; this is not forced final whole-wave verification.
+
+Approved ADR-0103 append/receipt integration now proceeds to its own commit and fresh review
+rounds, followed by complete host departure and Step 8 atomic compaction/recovery. Production
+ownership/lifecycle Highs, Step 12 and all six W7 register items remain open; 41/51 is unchanged.
+Draft PR #90 remains unmerged. No further paid call, credential or ADR approval is required.
+
+
+### W7 append/receipt round 1 complete — 2026-10-09
+
+[Two independent complete reviews](../../reviews/2026-10-09T01-27-00-w7-append-receipt-round-1-review.md) find no new verified product issue
+in all 17 paths/57 hunks through `a35739a4`. Parent reads both entire reports, verifies all
+2,771 authority and 2,796 lifecycle regular evidence artifacts, exact 1,233 tracked originals,
+source/export restoration and all causal receipts before releasing the source freeze.
+Initial generated/cache custody gaps, fixture corrections and the first causal survivor remain
+explicit; no missing baseline is invented. Both affected baselines independently pass 7,959
+cases with 12 existing skips; controls/reruns overlap and are not added to shipping counts.
+
+Actual local CI passes 391 files / 8,922 cases / 12 existing skips with declared cache reuse;
+exact-head required PR/push CI, coverage floor, Node 22, Windows, peers and Sonar pass.
+Two NEW cumulative reviewers are required before scoped acceptance. Raw producer/transitive
+work, all actor retirement, final money/effects, parked clocks, public departure and CLI input
+ACK remain open, followed by Step 8 and Step 12. All six W7 register items and systematic
+ownership/lifecycle Highs remain open; 41/51 is unchanged. No new paid call or approval is needed.
+
+
+### W7 append/receipt round 2 accepted — 2026-10-09
+
+[Two NEW cumulative reviewers](../../reviews/2026-10-09T02-00-00-w7-append-receipt-round-2-review.md) clear all 23 paths/63 hunks through
+`01115050`. Parent reads both complete reports and verifies all 3,189 authority and 2,075
+lifecycle owned entries, actual originals/exports/runtime resolution and causal restoration.
+The true initial/final entire shared scan confirms 645,439 unchanged entries with Git metadata
+excluded. Missing initial mode/export/log receipts and an older external setup binding damaged
+by a failed reused-root setup remain explicit; historical records are not silently rewritten.
+
+Both independent disjoint baselines pass 7,959 cases with 12 existing skips; overlapping controls
+and reruns are not added to shipping counts. Exact-head required PR/push CI, coverage floor,
+Node 22, Windows, peers and Sonar pass. This accepts append acknowledgements and receipt
+lifetimes only. Shipping provider/native integration proceeds to its own commit and fresh
+review rounds; transitive work, actor retirement, final money/effects, parked clocks, public
+departure, CLI input ACK, Step 8 and Step 12 remain open. All six W7 register items and
+systematic ownership/lifecycle Highs remain open; 41/51 is unchanged. No further paid call or approval is needed.
+
+
+### W7 raw provider/native lifetime implemented — 2026-10-09
+
+Approved ADR-0103 now forwards execution-local work retention to exact raw generation, first
+stream construction/iterator next and independent timeout/final returns, plus separate-endpoint
+media submission. Registration precedes provider entry and bounded races; a refused first stream
+entry constructs no provider stream and records no invocation. Host observer provenance preserves
+original identity without reflecting arbitrary throwable prototypes. Native process abort is
+checked after awaited executable/cwd resolution immediately before spawn. Once a child exists,
+error remains a sticky diagnosis while completion waits for actual native close/stdio acknowledgement.
+
+There are 26 distinct new permanent cases (15 LLM, five Core, six CLI). Parent's final isolated
+combined cold-build checks pass 341 affected files / 7,463 cases / 12 existing skips and strict,
+lint, seam/purity and formatting. Eight final provider/forwarding removals plus two native
+guard/close removals fail unchanged assertions, then exact source restoration/rebuild passes.
+The newly added stream-entry regression fails before its correction. Earlier setup/fixture
+faults, a broad reflection regression corrected before integration, superseded aggregate log
+receipts and injected native child errors retain their qualifications; installed SDK HTTP
+fixtures are offline, and injected running-child errors are not OS kill-fault reproductions.
+
+Actual cache-qualified `CI=true pnpm run ci` passes 395 files / 8,948 cases /
+12 existing skips, strict/lint/purity/seam, DB sync, dependency and bundle fences,
+and all three offline smokes. This is not forced final whole-wave validation.
+This increment awaits two NEW complete independent review rounds and exact-head remote checks.
+It does not close transitive SDK/HTTP/MCP work, raw poll/media accounting, all engine actors,
+sticky final money/effects, original parked clocks, public cursor/departure or CLI input/exit
+ACK. Step 8 and final Step 12, all six W7 register items and systematic ownership/lifecycle
+Highs remain open; 41/51 is unchanged. No further paid call or ADR approval is needed.
+
+
+### W7 raw provider/native round 1 correction — 2026-10-09
+
+[Both complete reviews](../../reviews/2026-10-09T02-36-10-w7-raw-producer-round-1-review.md) independently verify the same public iterator
+return defect: abrupt generator completion skips the post-finally host-refusal handler and known
+usage observation. Parent reads both complete reports and verifies all 5,015 authority / 2,207
+lifecycle sealed entries, source/export restoration and the true unchanged 645,495-entry shared
+snapshot before releasing the freeze. Missing or superseded historical receipts remain qualified.
+
+The correction handles this refusal inside finally and adds two identity/accounting regressions,
+for 28 permanent cases. A compiled handler-removal makes both unchanged tests fail; exact restore,
+rebuild and rerun pass. Private strict/lint/format and 341-file affected checks pass 7,465 cases
+with 12 existing skips. Four independently adjudicated Sonar false positives are separately
+applied and read back; the original-head required CI and advisory checks are successful.
+
+This is a confirmed correction, not increment acceptance. A NEW complete cumulative round 2
+follows this commit. Transitive work, actor retirement, final money/effects, parked clocks, public
+departure, acknowledged CLI input, Step 8 and final Step 12 remain open. All six W7 register items
+and systematic ownership/lifecycle Highs remain open; 41/51 is unchanged. No further paid call,
+keychain input or approval is needed.
+
+## W7 raw provider/native lifetime round-2 acceptance — 2026-10-09
+
+[Two NEW complete cumulative reviews](../../reviews/2026-10-09T03-25-00-w7-raw-producer-round-2-review.md) accept all
+20 paths / 41 hunks through `1172d247`, including the corrected explicit public-return
+refusal and 28 permanent cases. Parent reads both entire sealed reports and audits all
+7,475 authority and 7,853 lifecycle entries, actual source/export restoration and its own
+645,548-entry whole shared freeze before release. Both return zero new verified scoped
+product findings. Reviewer nested Corepack invocations violate the direct-tool rule and
+receive no DB-sync proof credit; original seals and explicit corrections remain intact.
+
+Exact-head required/advisory PR and push CI plus Sonar pass; root CI is cache-qualified,
+not final forced whole-wave validation. HTTP/MCP/custom-provider descendants, raw poll/media,
+all actors/generations, final money/effects, parked clocks, public departure and acknowledged
+CLI teardown remain open. Step 8 and Step 12, all six W7 register items and systematic
+ownership/lifecycle obligations remain open; 41/51 is unchanged and PR #90 stays draft.
+The separately prepared HTTP increment proceeds next with its own commit and fresh review rounds.
+
+### W7 HTTP descendant lifetime implemented — 2026-10-09
+
+The approved ADR-0103 HTTP increment carries execution-local work retention outside authored
+request data, through actual agent dispatch, HTTP/search builtins, CLI egress and validated
+DB transport. DNS, credential resolution, native connection and body work remain owned after
+bounded cancellation. Native completion requires actual request and incoming-message close;
+headers, an error, destroy/dispose invocation and timeout do not acknowledge that completion.
+A tool-local marker preserves host-entry refusal identity before registry classification,
+while an ordinary tool-factory fault retains its existing typed tool failure.
+
+There are 23 distinct new permanent cases. The final exact-current private check passes
+320 affected files / 6,438 cases / one existing skip, strict/lint and five cold-built
+libraries. Sixteen compiled mechanism removals fail their corresponding unchanged controls
+and pass after exact source/test/export restoration. An early incorrectly wired test fixture
+and a later mutant rejected by TypeScript receive no causal credit; their original receipts
+remain separate from the corrected controls. The private CLI bundle was not built.
+
+Actual main-root `CI=true pnpm run ci` passes 398 files / 8,973 cases / 12 existing skips,
+strict/lint/purity/seam, DB sync, dependency/bundle fences and all three offline smokes.
+Its first task group uses eight cache hits and the build/format group five; this is not
+forced final whole-wave validation. Two NEW complete independent review rounds and exact-head
+remote checks remain required before accepting this increment. MCP/custom-provider descendants,
+raw poll/media accounting, all actors/generations, sticky final money/effects, original parked
+clocks, public departure and acknowledged CLI teardown remain open. Step 8 and Step 12, all
+six W7 register items and systematic ownership/lifecycle obligations remain open; 41/51
+is unchanged and PR #90 stays draft. No further paid call or maintainer approval is needed.
+
+### W7 HTTP descendant round 1 reviewed — 2026-10-09
+
+[Both complete independent reviews](../../reviews/2026-10-09T04-16-24-w7-http-descendants-round-1-review.md)
+clear all 22 cumulative paths / 38 hunks through `db02b83c` without a verified product finding.
+Parent reads both full reports and independently verifies physical evidence, source/test
+restoration, actual five-library/CLI outputs, direct commands, declared links and the complete
+645,604-entry shared freeze. The record preserves failed fixtures, two original survivors,
+nonadditive causal counts and command/environment limitations. A second fresh complete round
+is required before scoped acceptance. Transitive MCP/custom-provider, host departure, Step 8,
+Step 12 and all six W7 register items remain open; PR #90 remains draft and unmerged.
+
+### W7 HTTP descendant round 2 accepted — 2026-10-09
+
+[Two NEW complete cumulative reviews](../../reviews/2026-10-09T04-55-00-w7-http-descendants-round-2-review.md)
+accept all 24 paths / 40 hunks through `6e620556` without a verified product finding.
+Parent reads both full reports, actual controls and source, then independently verifies
+all 4,821 authority and 13,103 lifecycle evidence entries, 427 command/log receipts, 1,248
+Git-bound files per archive, actual source/test/library/CLI restoration and the entire
+645,606-entry true-before shared freeze with zero differences. Fourteen authority and
+eighteen lifecycle strictly built semantic causal mechanisms pass after restoration;
+overlapping selections and supplemental repeats are nonadditive. Historical missing fixture
+bytes, failed native fixture latches, procedural HOME override and helper receipt limits
+remain explicit and earn no unsupported credit.
+
+Exact-head PR/push required checks, coverage jobs, Node 22 floor, Windows, peers, Sonar and
+CodeRabbit pass. This is scoped HTTP acceptance, not forced final whole-wave validation.
+Transitive MCP/custom-provider/media polling, all actors/generations, sticky final health,
+parked clocks, public departure and acknowledged CLI teardown remain open. Step 8 and Step 12,
+all six W7 register items and systematic ownership/lifecycle obligations remain open;
+41/51 is unchanged and PR #90 stays draft. Work proceeds with provider/poll lifetime integration.
+
+### W7 invocation-local provider and raw-poll lifetime implemented — 2026-10-09
+
+The controlled OpenAI-compatible SDK now receives a separate invocation-local work capability
+before SDK construction. Its fetch closure, lazy stream, image/speech/video submission and
+Sora status/download retain admitted raw operations and actual transport completion independently
+of bounded public outcomes. The engine separately owns each raw media poll, including credential
+resolution and its own descendants. The [provider seam](../../reference/shared-core/llm-provider-seam.md#the-per-attempt-deadline)
+is the canonical behavioural signature; dated ADR-0102/0103 notes qualify the additive extension.
+
+The private candidate adds 53 permanent cases. Strict seam/purity/type checks, affected-package
+lint, actual library and CLI builds pass; 374 affected test files report 8,063 passing cases and
+12 existing skips. Ten distinct, strictly rebuilt one-mechanism removals fail semantic assertions
+and pass after exact source/test/generated-output restoration. Preserved earlier fixture,
+automation and historical source-custody failures receive no causal or final-baseline credit.
+Actual loopback controls hold only the safe-egress callbacks after native close emission; they
+do not claim that the operating-system resource stayed open after that emission.
+
+Repository `pnpm run ci` passes: 404 files / 9,026 passing cases / 12 existing skips, including
+compiled CLI and offline overflow/replay smoke checks. Eight of 23 lint/type/test tasks and
+five of seven build/format tasks are cached; this is not forced whole-wave validation. Two NEW
+complete independent review rounds still precede scoped acceptance. Official Gemini transport,
+MCP, all actors/generations, sticky final
+health, parked clocks, public departure and acknowledged CLI teardown remain open. Step 8,
+Step 12 and all six W7 register items remain open; 41/51 is unchanged and PR #90 stays draft.
+
+### W7 invocation-local provider round 1 corrected — 2026-10-09
+
+[Both complete independent reviews](../../reviews/2026-10-09T05-43-00-w7-provider-invocation-round-1-review.md)
+cover all 23 paths / 62 hunks through `da10cd12`. Parent finds and authority independently
+reproduces one Medium method-receiver defect in validated fetch; preserving the receiver and
+adding a permanent raw-descendant case correct it. Separate Sonar triage identifies a genuine
+weak detached-Promise test, now asserting exact identity, pending retention and actual settlement.
+Two strictly rebuilt semantic removals verify its assertions. Root required CI passes 404 files /
+9,027 cases / 12 existing skips, with eight of 23 lint/type/test and five of seven build/format
+tasks cached. The increment now adds 54 permanent cases.
+
+Parent verifies the complete authority/lifecycle artifacts and its own 645,668-entry zero-difference
+shared freeze before releasing it. The interrupted authority report stays unchanged; a separately
+sealed late custody completion binds its preserved runtime evidence and explicitly qualifies its
+missing original seal, placeholders and late reconstructed earlier fixture. A historical overwritten
+lifecycle lint log receives no proof credit. [Six individually audited Sonar source labels](../../reviews/2026-10-09T05-43-10-w7-provider-invocation-sonar-disposition-review.md)
+are read back as false positives; the genuine weak-test label awaits corrected-code analysis.
+
+A NEW complete cumulative round 2 follows these corrections. MCP, hidden official Gemini/
+foreign-stream producers, remaining actors/generations, sticky final health, parked clocks,
+public departure, acknowledged CLI teardown, Step 8 and final Step 12 remain open. All six W7
+register items stay OPEN (41/51 closed), and PR #90 stays draft and unmerged. No further paid
+call, credential or maintainer approval is needed.
+
+
+### W7 invocation-local provider round 2 corrected — 2026-10-09
+
+[Both NEW complete cumulative reviews](../../reviews/2026-10-09T06-33-00-w7-provider-invocation-round-2-review.md)
+cover all 27 paths / 66 hunks through `4fb99b0e` and independently confirm one Medium:
+a trusted lifetime getter was acquired outside its refusal guard. The correction moves
+acquisition inside the existing guard while preserving the method receiver. Three new
+permanent cases verify opaque refusal, one selection with receiver/raw-descendant custody,
+and ordinary entered resolver faults. The final fixture fails against original source and
+passes after correction; strict, lint and all 40 selected CLI cases pass.
+
+Parent independently audits all 5,449 authority and 4,673 lifecycle artifacts, 447 receipts,
+source/test/generated-output restoration and the unchanged 645,721-entry whole shared freeze.
+Four early hash-only authority fixtures and Lifecycle's preparatory reconstruction/failed
+strict-run limits remain explicit and receive no unsupported proof credit. Final fixtures
+and credited causal variants retain original bytes; both seals remain unchanged.
+
+Actual root CI passes 404 files / 9,030 cases / 12 existing skips, all required checks,
+actual CLI build and three offline smokes. Twenty of 23 lint/type/test and five of seven
+build/format tasks are cached; this is not forced whole-wave validation. The increment adds
+57 permanent cases. A NEW complete cumulative third round is required before scoped acceptance.
+MCP, hidden Gemini/foreign-stream producers, remaining actors/generations, sticky final health,
+parked clocks, public departure, acknowledged CLI teardown, Step 8 and final Step 12 remain open.
+All six W7 register items stay OPEN (41/51 closed), and PR #90 stays draft and unmerged.
+No further paid call, credential or maintainer approval is needed.
+
+### W7 invocation-local provider round 3 accepted — 2026-10-09
+
+[Both NEW complete cumulative reviews](../../reviews/2026-10-09T07-06-28-w7-provider-invocation-round-3-review.md)
+cover all 28 paths / 67 hunks through `f9a8ff37`, with no new confirmed finding. Parent reads the
+full reports, maps, source/controls and runners, verifies all 6,630 physical entries, 213 qualified
+receipts and 30 archives, and confirms exact 1,623/1,618-file goldens. Its true-before/final
+645,743-entry shared comparison has zero differences before freeze release. Twelve/thirteen
+fresh controls and five/eight strictly built semantic removals are nonadditive; fixture timing,
+failed helper, compact archive-receipt, private-XDG and native-close qualifications remain explicit.
+Exact-head required GitHub CI, coverage and Sonar pass separately.
+
+**This provider/raw-poll increment is accepted within scope.** MCP transport/handler descendants,
+remaining actor/generation retirement, sticky final effect/money disposition, original parked
+clocks, public departure and acknowledged CLI teardown remain open. Step 8 and final Step 12,
+all six W7 register items and whole-wave acceptance remain open (41/51); PR #90 stays draft
+and unmerged. All five live records are complete; no further paid call, credential or ADR approval
+is needed.
+
+### W7 MCP transport and protocol descendants implemented — 2026-10-09
+
+Accepted ADR-0103's trusted tool-host lifetime rail now reaches both discovered tools and
+`mcp_call`, the lifecycle manager, and installed SDK transports. Request-local HTTP lanes reuse
+one initialized session; legacy SSE POSTs use root SDK envelope identities. Independently owned
+cancellation, queued peer handlers/replies, raw body work and native close remain owed after
+bounded caller rejection. Reentrant close publishes its join before callbacks, partial lane
+failure retains cleanup, and positively acknowledged PIDs leave current reap views independently.
+The detailed contract has one home in [MCP integration](../../reference/shared-core/mcp-integration.md#invocation-and-transport-lifetimes).
+
+Forty-eight new permanent cases cover installed SDK boundaries and twelve public workflow
+combinations across reference/native SQLite stores, discovered/built-in tools and held DNS/body/
+native-close descendants. Private focused validation passes 239 cases; broad validation passes
+410 files / 9,078 cases / 12 existing skips. Seven distinct one-mechanism removals pass strict
+checks and actual affected builds before semantic failure, then restore exact source/test/generated
+goldens and pass again. Earlier fixture and tooling failures remain preserved and receive no
+unsupported proof credit. The private causal golden precedes the final package-local test-import
+correction; fresh committed-head reviews must validate the final fixture bytes independently.
+
+Actual root `CI=true pnpm run ci` now passes all required checks, actual CLI build and three offline
+smokes: 410 files / 9,078 cases / 12 existing skips. Thirteen of 23 lint/type/test and five of seven
+build/format tasks are cached; this is not forced whole-wave validation. Its first attempt exposed
+three package-local tests importing stale self-package `dist` before the package's own build.
+They now import the source export entry; the public CLI controls still exercise the compiled MCP
+dependency. The failed attempt and original inputs remain preserved; no preparatory self-build
+or task-order change conceals that failure.
+
+Two NEW complete cumulative independent review rounds precede scoped acceptance. Complete manager
+startup/all-actor retirement, sticky final effect/money disposition, original parked clocks, public
+departure and acknowledged CLI teardown remain open, followed by Step 8 compaction/recovery and
+final Step 12. All six W7 register items remain OPEN (41/51); PR #90 remains draft and unmerged.
+
+### 2026-10-09 — MCP lifetime round-1 corrections
+
+[Both fresh complete first-round static reviews and Parent runtime/artifact/freeze audits](../../reviews/2026-10-09T08-33-00-w7-mcp-lifetime-round-1-review.md)
+cover all 27 paths/55 hunks through `d2c888f9`. SDK task/schema bypass plus cancelled/closed
+queued replies retained an unused reservation forever; a synchronous abort/entry throw left
+the deadline guard unobserved; an injected body-disposal refusal left its reader pending.
+These verified defects are corrected, including stale same-ID callback refusal. Actual entered
+handlers/sends/native cleanup remain owed. Two genuine Sonar maintainability findings receive
+source corrections, independently of runtime defects or analyzer dispositions.
+
+Nineteen additional cases bring this increment to 67 new permanent cases. Original and
+guard-removal controls fail semantically after strict checking/actual builds; fixed controls
+pass. Private enforced coverage passes 411 files / 9,097 cases / 12 existing skips, with MCP
+96.17% lines and 90.22% branches under the unchanged 90% floor. The record preserves failed
+environment setup and unavailable earlier scratch artifacts without granting them fresh proof
+credit. A NEW complete cumulative second round remains required. Complete host obligations,
+Step 8, final Step 12 and all six W7 register items stay open; no paid call or user approval is pending.
+
+
+### W7 MCP transport/handler lifetimes — complete round 2 correction, 2026-10-09
+
+[Both independent complete cumulative reviews](../../reviews/2026-10-09T09-07-17-w7-mcp-lifetime-round-2-review.md)
+cover all 33 paths/61 textual hunks at `e296ea4d`. They verify one new High: a pre-aborted
+public stdio connection never attaches its SDK transport, so client-only cleanup leaves
+its unused PID sampler/registration retained. `e901141f` independently closes the idempotent
+native owner, preserving bounded caller refusal and actual native-close obligations.
+
+One new permanent no-start/no-sampler regression brings this increment to 68 cases. Root
+CI passes; fresh private enforced coverage passes 411 files / 9,098 cases / 12 existing skips,
+MCP lines 96.17% / branches 90.42%, with unchanged thresholds. Parent reads both complete
+reports/maps, physically audits all 19,076 and 26,831 inventory entries and every reviewed
+head/hunk, then verifies 646,589 shared-tree entries unchanged before explicit freeze release.
+Source-transformed and compiled MCP controls are distinguished in the record.
+
+A NEW complete cumulative round 3 remains required before scoped acceptance. Complete
+MCP startup/all-actor retirement, custom-provider descendants, final receipt health, parked
+clocks, public departure, acknowledged CLI teardown, Step 8 and final Step 12 remain open.
+
+### W7 MCP transport/handler lifetimes — complete round 3 correction, 2026-10-09
+
+[Both independent complete cumulative reviews](../../reviews/2026-10-09T10-51-01-w7-mcp-lifetime-round-3-review.md)
+cover all 35 paths/67 textual hunks through `4f119cab`. Lifecycle identifies one High,
+independently verified by Parent: a duplicate live peer-ID refusal escapes the incoming
+base/lane callback. Installed native callback/read-loop source confirms differing WebSocket
+and legacy SSE consequences; no native duplicate-message crash/leak experiment ran.
+`23310428` reports the content-free typed refusal through the normal error channel and
+suppresses only the refused delivery without replacing its existing live reservation.
+
+Two new local callback controls bring this increment to 70 permanent cases; the installed
+in-memory held-response control is strengthened. Original code fails semantically after
+strict checking/lint. Fixed focused checks, actual MCP build and root CI pass; fresh enforced
+private coverage passes 411 files / 9,100 cases / 12 existing skips, MCP lines 96.42% / branches
+90.41%, with unchanged thresholds. Coverage precedes one additional preservation assertion;
+final focused checks and root CI cover that assertion. CI is cache-qualified, not final forced
+whole-wave proof. Parent reads both final complete reports/maps, audits 52,184/13,978 physical
+inventory entries plus two separately sealed map corrections, and verifies every head/hunk.
+The 646,647-entry shared-tree freeze has zero changes before explicit release. Interrupted
+preliminary work, superseded draft attributions and tooling/setup failures receive no proof credit.
+
+A NEW complete cumulative round 4 remains required before scoped acceptance. Complete MCP
+startup/all-actor retirement, custom-provider descendants, sticky final receipt health, parked
+clocks, public departure, acknowledged CLI teardown, Step 8 and final Step 12 remain open.
+All six W7 register items remain OPEN (41/51 closed); PR #90 remains draft and unmerged.
+No further paid call, credential or new ADR approval is needed.
+
+### W7 MCP transport/handler lifetimes — complete round 4 correction, 2026-10-09
+
+[Both complete cumulative reviews and Parent audits](../../reviews/2026-10-09T12-58-01-w7-mcp-lifetime-round-4-review.md) cover all
+36 paths/68 textual hunks through `2a4a0069`. Authority finds one Medium, independently
+confirmed by Parent and source-verified by Lifecycle after cross-review: completed HTTP
+control/reply lanes remain retained while their enclosing request stays live. `37220a95`
+releases only the exact lane whose full work has completed. Pending raw/body/native-close
+descendants remain owned; no heap/native leak experiment is claimed.
+
+Seven new permanent local controls bring this increment to 77 cases. All seven fail without
+the repair; prematurely releasing on send settlement fails the two pending-descendant cases.
+Fixed focused checks/build/strict/lint/format and actual root CI pass. Fresh enforced private
+coverage passes 412 files / 9,107 cases / 12 existing skips, MCP lines 96.43% / branches 90.68%,
+with unchanged thresholds. Parent reads complete reports/maps, physically checks all evidence,
+records a separately sealed metadata-only correction of Authority's initially unsupported
+read-only claim, and verifies all 646,710 shared entries unchanged before explicit release.
+
+A NEW complete cumulative round 5 is required before scoped acceptance. Complete manager
+startup/all-actor retirement, custom-provider descendants, final receipt health, parked clocks,
+public departure, acknowledged CLI teardown, Step 8 and final Step 12 remain open. All six W7
+register items remain OPEN (41/51); PR #90 remains draft and unmerged. No paid call or user
+approval is pending.
+
+### W7 MCP transport/handler lifetimes — scoped round 5 acceptance, 2026-10-09
+
+[Two fresh complete cumulative reviews and Parent audits](../../reviews/2026-10-09T13-37-00-w7-mcp-lifetime-round-5-review.md)
+accept all 38 paths/70 literal hunks through `99c46bbd`. Both cold-build the private libraries,
+pass strict MCP/CLI checks and scoped lint, and independently pass all 18 files/268 cases.
+The increment contains 77 added permanent cases; no new confirmed finding remains. CLI proof
+is source Vitest, not compiled CLI. Earlier mutations/root CI/coverage remain separately
+attributed evidence. Parent verifies both full reports/maps, original inputs/outputs, exact
+Git head/hunk bytes, all physical inventories and a separately sealed attribution correction.
+
+The 646,773-entry shared-tree comparison has zero regular-file or symlink changes. One `.git`
+directory mtime change remains qualified; both snapshots are preserved without a false
+identical-tree claim. Explicit freeze release precedes further development-source edits.
+Current required CI/coverage pass; Sonar and final whole-wave gates remain open.
+
+Next implement complete engine actor/pre-handle and MCP startup ownership, then final receipt
+health and parked clocks, public departure/primary ACK and acknowledged CLI teardown. Each
+increment retains its own causal checks, commit and fresh independent review rounds. Step 8
+atomic compaction/recovery follows; final Step 12 and all six W7 register items remain OPEN
+(41/51 closed). PR #90 remains draft/unmerged. No paid call, credential or user approval is pending.
+
+### W7 fresh-start lifetime — implementation staged, 2026-10-09
+
+The first remaining engine-actor increment registers fresh startup before workflow-id lookup,
+initial claim and context resolution. Bounded terminal publication retains already entered
+host work; late startup results cannot start another claim/context/dispatch. Interpolation
+checks cancellation between filters and before returning resolved reference text. An already
+entered fresh acquisition still releases its exact returned fence. The canonical mechanics
+are in [shared-core-engine.md](../../architecture/shared-core-engine.md#internal-departure-foundations-adr-0103).
+
+Eleven new permanent cases cover initial clock/timer faults, held context fulfilment/rejection,
+actual retirement joins
+for workflow-id/claim waits, exact-fence cleanup, cancellation through synchronous/asynchronous
+and chained readers, and the live sequential-read control. These are reference-host/source
+Vitest controls, not native SQLite, real timers, live providers or compiled CLI evidence.
+Early terminal-cache/fence assertions and a non-UUID lookup fixture were corrected before
+the final causal controls; superseded controls receive no corresponding proof credit. Original command inputs/logs remain outside the repository.
+
+Two fresh complete independent review rounds are required before scoped acceptance. Remaining
+scheduler/dispatch/timer/resume and pre-handle actors, MCP startup, custom-provider descendants,
+final receipt health, parked clocks, public departure/CLI teardown, Step 8 and final Step 12
+remain open. All six W7 register items remain OPEN (41/51); PR #90 stays draft and unmerged.
+No paid call, credential or new ADR approval is needed.
+
+### W7 fresh-start lifetime — round-1 correction, 2026-10-09
+
+[Both complete cumulative reviews](../../reviews/2026-10-09T14-28-09-w7-startup-lifetime-round-1-review.md)
+cover seven paths / eleven literal hunks through `15ea6021`; each passes 108 core files /
+2,847 cases and all prescribed cold-build/strict/purity/lint checks. Authority independently
+finds reentrant clock/timer cancellation, corroborated by Parent's exact-head private
+runtime controls. Lifecycle reports no additional finding. Parent's complete physical and
+Git/source audits preserve all original inputs/logs and capture qualifications; the whole
+646,973-entry shared-tree comparison has zero differences before explicit freeze release.
+
+The correction stops fresh lookup/timer entry after synchronous cancellation and disarms
+a timer receipt returned after the terminal sweep. Three new permanent cases bring this
+scoped increment to fourteen additions. Parent's two focused files pass 51 cases; final
+before-fix production fails three, and isolated elapsed-clock/late-receipt/post-arm removals
+fail one/one/two respectively before exact restoration passes. These are controlled reference
+host/source tests, not real timer-process, native SQLite, compiled CLI or provider evidence.
+The first counterfactual driver's wrong expected failure count is preserved and qualified.
+
+A NEW complete cumulative round 2 is required before fresh-start scoped acceptance. All
+other engine/pre-handle/MCP startup roots, custom-provider descendants, final semantic receipt
+health, parked clocks, public departure/primary ACK/CLI teardown, Step 8 and final Step 12
+remain open. Permanently unavailable clocks are not covered by the one-shot initial-fault
+fixtures. All six W7 items remain OPEN (41/51 closed); draft PR #90 is unmerged.
+No additional paid call, credential, user decision or ADR approval is pending.
+
+### W7 fresh-start lifetime — round-2 acceptance, 2026-10-09
+
+[Two NEW complete cumulative reviews](../../reviews/2026-10-09T14-55-12-w7-startup-lifetime-round-2-review.md)
+accept all ten paths / sixteen literal hunks from `e397afcb` through `5d44b13b`, with
+zero new confirmed findings. Each independently passes cold shared/LLM/core builds,
+strict core, purity, scoped lint and 108 core files / 2,850 cases / no skips. Fourteen
+cumulative additions remain supported by the qualified Parent before/fixed/removal
+controls; those controls and root CI are attributed, not rerun as reviewer evidence.
+
+Parent reads both complete reports/maps and verifies exact Git/head/hunk/archive,
+all 34 original captures / 42,364 eligible input copies, private source bytes,
+individual dependencies/workspace remaps, physical artifacts and original temporary
+outputs. Permission protection and separate inventory-control bindings are verified
+without following dependency targets. Both administrative read-path failures and
+direct helper/cwd/readback qualifications remain visible in the record. The complete
+647,041-entry shared-tree comparison has zero differences before explicit freeze
+release and these acceptance edits. The next scheduler prototype remains private and
+unaccepted; its integration failures are outside this frozen review scope.
+
+Only fresh startup/interpolation is accepted here. All remaining engine/pre-handle/
+MCP startup roots, custom-provider descendants, final receipt health, parked clocks,
+public departure/primary ACK/CLI teardown, Step 8 and final Step 12 remain open.
+All six W7 items remain OPEN (41/51 closed); draft PR #90 is unmerged. No additional
+paid call, credential, user decision or ADR approval is pending.
+
+### W7 scheduler readiness — staged implementation, 2026-10-09
+
+The next scoped increment registers the exact node-boundary readiness Promise before
+invoking its public port, races only the scheduler wait against abort, and returns
+never-started claims to pending when leaving a batch. Cancellation can then reach its
+terminal without waiting on a reader, while an uncooperative raw readiness operation
+still retains the exact host claim until completion. A live readiness throw/rejection
+becomes a fixed internal failure. This implements existing ADR-0103 mechanics; no new
+dependency, provider seam or public API is introduced.
+
+Eight new permanent reference-host cases cover held fulfilment/rejection across
+terminal publication, live dispatch, synchronous/asynchronous faults, and reentrant
+cancellation with one/three/64 claimed vertices. Before-fix production fails seven
+and reports two unhandled readiness rejections. Isolated raw-owner/abort-race/claim-unwind
+removals fail two/two/five cases, then exact restoration passes eight. The private full
+core suite passes 109 files / 2,858 cases; strict core, purity and scoped lint pass.
+These controls replace the public readiness port at the real scheduler boundary;
+they do not prove actual bounded-stream or native-process teardown behavior.
+
+Parent initially prototyped complete scheduler/detached-dispatch roots together.
+Its retained original full-core captures fail 143 cases, then 142 after claim unwind;
+an isolation run establishes the independent readiness/claim defect. The larger
+prototype stays private and unaccepted while retirement/park consumers and budget/
+resume outcomes are investigated. Complete actor roots remain required within W7.
+Only the independently validated readiness slice is staged here, with two fresh
+complete independent review rounds still required. All six W7 register items remain
+OPEN (41/51 closed); public departure, Step 8 and final Step 12 remain open.
+
+### W7 scheduler readiness — pre-review getter correction, 2026-10-09
+
+Parent's additional private control finds that a readiness getter can cancel during
+method acquisition yet its returned function is still called by `f4e4b980`. The
+boundary now rechecks stopped state after method acquisition and preserves the handle
+receiver on live invocation. A cancelled-getter case and a live getter/receiver case
+bring the readiness scope to ten permanent additions. The private complete core suite
+passes 109 files / 2,860 cases. Expanded baseline fails eight cases with two unhandled
+readiness errors; separate raw-owner/abort-race/claim-unwind/getter-guard/receiver
+removals fail two/two/six/one/two before exact restoration passes ten.
+
+The initial receiver fixture violates the lint rule against aliasing `this`; Parent
+replaces that alias with an assertion inside the callback and repeats the complete
+causal matrix. The original failed lint and earlier fixture/control summaries remain
+preserved. Initial review preparation at `f4e4b980` is superseded before any reviewer
+starts; its archive/before snapshot remain evidence, without an invented after audit
+or review verdict. Two fresh complete independent rounds will review the entire
+corrected cumulative readiness increment. Other actor/host obligations, Step 8, Step 12
+and all six W7 register items remain open; no additional maintainer action is pending.
+
+### W7 scheduler readiness round 1 and diagnostic correction — 2026-10-09
+
+[Both complete first-round reviews](../../reviews/2026-10-09T15-44-15-w7-scheduler-readiness-round-1-review.md)
+cover all six paths / seven literal hunks through `a20f43a4` and verify one High:
+a secondary ID/event-clock fault during readiness-failure publication rejects the
+scheduler and strands its rerun. Parent corroborates both fault ports against the exact
+reviewed source. A nested publication backstop now retains the fixed internal failure
+and returns control to scheduler reevaluation without depending on grace.
+
+Two new permanent cases join the existing ten. The exact-before and removed-fallback
+controls each fail those two cases and produce two original unhandled rejections;
+fixed/restored twelve-case runs pass. Strict core, engine purity, scoped lint and the
+full private suite pass: 110 files / 2,862 cases. These one-shot reference-host controls
+do not prove a permanently unavailable clock, native departure or every backstop
+statement independently. Reviewers still assess the frozen ten-case source, not this
+later Parent correction; round 1 remains changes required.
+
+Parent reads both complete reports/maps, physically audits and seals 57 original captures
+and 71,136 copied eligible inputs, and checks exact Git/archive/head/hunk identity.
+The 647,179-entry shared-tree comparison has zero file/link changes and one qualified
+`.git` directory mtime change; HEAD and clean status stay unchanged. Explicit freeze
+release precedes the correction. A NEW complete cumulative round 2 is required.
+Complete scheduler/dispatch/timer/resume/pre-handle roots, MCP startup, custom-provider
+descendants, final sticky health, parked clocks, public departure/CLI teardown, Step 8
+and final Step 12 remain required and open; all six W7 register items stay OPEN (41/51).
+
+### W7 scheduler readiness — cumulative round 2 acceptance, 2026-10-09
+
+[Two NEW complete cumulative round-2 reviews and Parent audits](../../reviews/2026-10-09T16-14-29-w7-scheduler-readiness-round-2-review.md)
+accept all nine paths/ten hunks through `95f3923a`, with zero new scoped findings.
+Both independently pass seven prescribed checks and 2,862 core cases. Parent reads
+both complete reports/maps, verifies original source/artifact identities and observes
+an unchanged 647,245-entry shared tree before explicit freeze release. The first-round
+finding and finite/reference-host proof qualifications remain in their dated records.
+
+Two pre-existing dispatch Highs discovered during separate Parent preparation remain
+required: cancellation after an entered start append must refuse and settle fresh
+node work, and detached dispatch failures must avoid raw cause inspection/coercion.
+Both reviewers source-corroborate those defects without accepting the private proposed
+corrections. Complete actor integration, final health/clocks/departure, Step 8 and
+whole-wave Step 12 remain open. The accepted decision is unchanged.
+
+### W7 inherited dispatch corrections — staged, 2026-10-09
+
+Two inherited dispatch Highs recorded in the
+[readiness round-2 review](../../reviews/2026-10-09T16-14-29-w7-scheduler-readiness-round-2-review.md)
+are corrected. Cancellation after an entered start append refuses fresh deadline/executor
+entry and immediately settles that matching node. Unexpected detached dispatch failures
+use fixed content-free text; no raw cause property or coercion is evaluated. Readiness,
+pre-dispatch cancellation and detached failure share the existing diagnostic backstop.
+The [canonical engine architecture](../../architecture/shared-core-engine.md#internal-departure-foundations-adr-0103)
+describes the mechanics. No public API, dependency or accepted decision changes.
+
+Six permanent cases cover cancelled/live held start appends at widths one/three and
+private Error/non-Error coercion faults. Parent's eighteen-case private causal matrix
+fails four cases with one unhandled rejection on exact old production and passes the
+complete correction. Removing the post-append guard, matching settlement, safe dispatch
+handling or diagnostic backstop fails two cases each; restoration passes eighteen.
+That matrix includes a broader private actor prototype and is not exact proof of the
+narrower final main source: final-source checks/controls must be retained separately.
+The hostile non-Error fixture has one explained local lint exception; production has none.
+Affected existing cancellation fixtures now witness actual executor/deadline entry.
+
+The broader actor prototype passes private core checks (112 files / 2,868 cases), but
+its original actual root CI fails 38 CLI cases across thirteen files. Registering complete
+scheduler/dispatch/resume roots exposes host closure and lease handoff before actual
+retirement. No red implementation is accepted and no CLI closure assertion is weakened.
+Only Parent-owned uncommitted root/retirement-fixture edits are removed from the main
+candidate; the complete prototype and original failing CI inputs/logs remain preserved.
+Full root ownership must be integrated with shipping host departure within W7.
+
+Actual root CI and two NEW complete independent review rounds are required for the
+scoped dispatch corrections. Other actors, MCP startup/custom-provider descendants,
+final receipt/writer/money health, parked clocks, public departure/CLI teardown, Step 8
+and whole-wave Step 12 remain required; none is deferred by this ordering correction.
+
+### W7 inherited dispatch corrections — round-1 acceptance, 2026-10-09
+
+[Both complete independent round-1 reviews and Parent audits](../../reviews/2026-10-09T17-28-06-w7-dispatch-corrections-round-1-review.md)
+accept the complete eight-path/seventeen-hunk correction through `1918690d`, with zero
+confirmed findings. Each passes seven prescribed original checks, including 112 core
+files / 2,868 cases / no skips. Parent verifies all 17,542 reviewer input copies, exact
+source/hunk identities and protected inventories. The 647,355-entry shared-tree
+comparison has zero changes before explicit release. A proposed adjacent grace-fixture
+vacuity is not confirmed by Parent's exact-final catch-removal control; stronger entry/
+identity witnesses remain clarity hardening, with runtime attribution preserved.
+
+A NEW complete cumulative second round follows this committed record. The broader actor
+prototype and its original 38 CLI failures remain unaccepted: complete registration must
+integrate with shipping host departure within W7. Remaining actors, MCP startup/custom
+provider descendants, sticky final health, parked clocks, public departure/CLI teardown,
+Step 8 and final Step 12 stay required. All six W7 register items remain OPEN (41/51);
+draft PR #90 is unmerged. No further paid call or maintainer approval is pending.
+
+### W7 dispatch round 2 and actual-entry correction — 2026-10-09
+
+[Both NEW complete cumulative round-2 reviews](../../reviews/2026-10-09T17-58-41-w7-dispatch-corrections-round-2-review.md)
+cover ten paths/nineteen hunks through `53cccc38` and independently verify one High:
+an entered retry-start append can resume into fresh executor work after cancellation,
+sibling abort or grace. The first-start guard does not cover this inherited continuation.
+Both reviewers pass seven prescribed checks and 2,868 core cases; those green frozen-head
+results do not accept the subsequent correction.
+
+Parent corrects retry refusal and matching attempt settlement, including grace correlation
+before the awaited append. After both reports, Parent additionally confirms synchronous
+cancellation at actual attempt-entry ports and corrects method/context acquisition ordering
+while preserving the receiver and raw Promise. That later discovery is not attributed to
+the reviewers. The [canonical engine architecture](../../architecture/shared-core-engine.md#internal-departure-foundations-adr-0103)
+owns the mechanics; the accepted decision and public API are unchanged.
+
+Ten permanent live/stopped cases pass exact-final controls: old production fails six;
+fixed/restored pass ten; independent guard/receiver/correlation/settlement removals
+reproduce the relevant failures. Two matching-settlement removals actually time out.
+Parent verifies all 13,805 final causal input copies and reads the complete logs; strict
+core and scoped lint pass. Earlier fixture/summary/receiver-diagnostic qualifications
+remain explicit in the review record. This is controlled reference-host evidence, not
+native/public-departure or whole-wave acceptance.
+
+Parent reads all reports/maps and physically verifies fourteen reviewer originals /
+17,556 input copies, exact Git/archive/patch identities and protected inventories. The
+647,374-entry shared tree is unchanged before explicit release at
+`2026-10-09T17:58:41.957529+00:00`; only then are main-source corrections applied.
+NEW complete cumulative reviews are required. Complete actor roots must integrate with
+shipping departure; the broader prototype's 38 original CLI failures remain unaccepted.
+MCP startup/custom-provider descendants, sticky final health, parked clocks, primary/input/
+host ACK and CLI teardown, Step 8 and final Step 12 remain required. All six W7 items stay
+OPEN (41/51), PR #90 stays draft/unmerged, and no further maintainer action or paid call
+is pending. No work is deferred by this correction.
+
+### 2026-10-09 — Retry/deadline terminal idempotence
+
+[Complete cumulative round-3 reviews](../../reviews/2026-10-09T18-37-30-w7-dispatch-corrections-round-3-review.md) verify one High:
+a retry refusal can publish a second node terminal behind an already pending timeout
+terminal. Lifecycle discovers it independently; Authority corroborates after disclosure.
+Parent confirms the frozen source and corrects the shared terminal-status guard, with
+one new permanent case and passing original/removal/fixed/restored causal controls.
+The accepted decision is unchanged. Fresh cumulative review is required before scoped
+closure; full actors/departure, final health/clocks/ACKs, Step 8 and Step 12 remain required.
+All six W7 items stay OPEN (41/51), and PR #90 remains draft/unmerged.
+
+### 2026-10-09 — Explicit dispatch attempt correlation
+
+[Complete cumulative round-4 reviews](../../reviews/2026-10-09T19-10-39-w7-dispatch-corrections-round-4-review.md)
+verify one High with two schedules: later-retry detached failure defaults to attempt 1,
+and an approved fresh first start can retain the previous retry basis through grace.
+Lifecycle discovers both independently; Authority corroborates after disclosure; Parent
+owns exact-source runtime confirmation, correction and causal removal controls.
+
+All four failed-helper callers now select an explicit attempt. Detached failure uses the
+latest entered attempt; a new first start resets 1 synchronously before its append.
+The [canonical engine architecture](../../architecture/shared-core-engine.md#internal-departure-foundations-adr-0103)
+owns these mechanics. Five permanent cases join the cumulative controls. Final sixteen-case
+original/fixed/two-removal/restored results are 3/13, 0/16, 2/14, 1/15 and 0/16 fail/pass;
+Parent verifies all 6,290 physical inputs and complete logs, plus private strict/lint/full
+core (117 files / 2,884 cases). Fresh complete cumulative review is required.
+
+Both frozen-head reviewers pass seven originals and 2,879 core cases. Parent verifies
+reports/maps/originals, 17,626 physical input copies and protected inventories. A pre-seal
+historical map attribution error is corrected without changing source or original captures.
+The 647,505-entry shared tree is identical before explicit release at
+`2026-10-09T19:10:39.474325+00:00`. This note leaves the accepted decision unchanged.
+Full actors/public departure/CLI, final health, parked clocks, Step 8 and Step 12 remain
+required. The broader prototype's 38 original CLI failures are unaccepted. All six W7
+items stay OPEN (41/51); PR #90 remains draft/unmerged. No W7 work is deferred.
+
+### 2026-10-09 — Approved redispatch readiness preserves the entered retry
+
+[Complete cumulative round-5 reviews](../../reviews/2026-10-09T19-41-03-w7-dispatch-corrections-round-5-review.md)
+verify one High: after an entered retry 2 budget-pauses and is approved, readiness may
+reject before a new first start. Literal failure attempt 1 then misattributes the terminal.
+Authority independently discovers it; Lifecycle corroborates after disclosure; Parent
+owns exact-source runtime and correction. Readiness now forwards the latest entered
+attempt; the first-start reset remains at actual start entry. Two permanent paired cases
+and identical-fixture original/fixed/removal/restored controls pin that boundary.
+
+The twenty-case matrix gives 1/19, 0/20, 1/19 and 0/20 fail/pass; Parent verifies all
+5,036 physical input copies and complete logs. Corrected strict/lint/core pass at
+118 files / 2,886 cases. Both frozen-head reviewers pass seven originals and 2,884 cases;
+Parent audits exact metadata/artifacts and the shared tree before explicit release.
+NEW complete cumulative review is required; no private correction is accepted by this
+rejected round. Accepted ADR policy is unchanged. Full actors/public departure/CLI,
+final health, parked clocks, Step 8 and Step 12 remain required. All six W7 items stay
+OPEN (41/51); PR #90 remains draft/unmerged. No W7 work is deferred.
+
+### 2026-10-09 — Grace distinguishes claims from entered starts
+
+[Complete cumulative round 6](../../reviews/2026-10-09T20-08-19-w7-dispatch-corrections-round-6-review.md) finds no new confirmed issue on the twenty-path/
+thirty-four-hunk frozen candidate. [The NEW complete round 7](../../reviews/2026-10-09T20-29-02-w7-dispatch-corrections-round-7-review.md) rejects the same
+candidate for one High: grace walks authored order while scheduler claims follow ready
+plan order, allowing a never-started sibling to receive a node failure. Lifecycle
+independently discovers it, Authority corroborates after disclosure, and Parent owns
+exact-source runtime confirmation and correction. The earlier flat-width hypothesis
+remains correctly disproved; the differing-order schedule is materially distinct.
+
+Explicit current unstarted claims now remain excluded from grace until actual first-start
+entry, independently of historical attempt numbers or iteration order. Three permanent
+live/cancel/grace cases pass fixed/restored controls; original and guard removal each
+fail only grace. Parent verifies 5,044 physical inputs and full logs. The canonical
+engine architecture owns the mechanics; accepted ADR policy is unchanged. Both reviewer
+artifact/Git/shared-tree audits precede correction. NEW complete cumulative reviews are
+required; round 7 does not accept the later fix. Complete actors/public departure/CLI,
+final health, parked clocks, Step 8 and Step 12 remain required. All six W7 items stay
+OPEN (41/51), and PR #90 remains draft/unmerged. No W7 work is deferred.
+
+### W7 consolidated host departure — implemented, review pending, 2026-10-10
+
+[Dispatch round 8](../../reviews/2026-10-09T21-05-01-w7-dispatch-corrections-round-8-review.md)
+was the first clean cumulative round after round 7; [round 9](../../reviews/2026-10-09T21-43-39-w7-dispatch-corrections-round-9-review.md)
+then verified a first-start publication High. The six-case correction lands with complete
+MCP startup/custom-provider and run-actor ownership, final money/effect health, parked clocks,
+public local departure and CLI primary/input/host acknowledgements. Canonical mechanics live in
+[shared-core-engine.md](../../architecture/shared-core-engine.md#internal-departure-foundations-adr-0103),
+with output/remedies in [commands.md](../../reference/cli/commands.md#exit-codes).
+
+The consolidated increment requires two fresh complete independent review rounds. Earlier
+scoped reviews do not accept these new bytes or their composition. Step 8 and final Step 12
+remain open; all six W7 register items stay OPEN (41/51). No required work is deferred and
+no paid call, credential or further ADR approval is pending.
+
+### W7 host closure — round 1 corrections, 2026-10-10
+
+[Complete round 1](../../reviews/2026-10-09T23-05-00-w7-host-closure-round-1-review.md)
+rejects the frozen composition for three Parent-confirmed lifecycle High findings and a
+shipping ToolRegistry acceptance gap. The correction retains the current drained cursor after
+post-pause money receipts, joins rejected activation's entered heartbeat/timers before returning,
+and keeps Ink's actual terminal visible independently of input/host ACKs. Eighteen permanent
+additions include native quiet settlement/discard and mapping/bounding final-health controls;
+existing native input/receipt controls now assert visible output. Fresh complete review of the
+corrected composition remains required. Step 8 and Step 12 remain open; no required work is
+deferred and no provider call or further approval is pending.
+
+### W7 host closure — round 2 corrections, 2026-10-10
+
+[Complete round 2](../../reviews/2026-10-09T23-34-00-w7-host-closure-round-2-review.md)
+confirms two High findings: an already-due budget autoapproval repeatedly enters asynchronous
+preparation without yielding, and invocation-ownership transfer can synchronously cancel yet
+still allow provider entry. Parent confirms and corrects both, adding nineteen permanent
+paired cases and repairing adjacent canonical-documentation drift. Accepted ADR-0103 policy
+is unchanged; fresh complete review is required. Step 8 and final Step 12 remain open, all six
+W7 items remain open (41/51 closed), and PR #90 remains draft/unmerged. No provider capture,
+paid call or user approval is pending.
+
+### W7 host closure — round 3 corrections, 2026-10-10
+
+[Complete round 3](../../reviews/2026-10-09T23-56-41-w7-host-closure-round-3-review.md) confirms two Highs at
+invocation retirement: synchronous cleanup can mutate a returned response before ownership,
+and throwing listener removal can suppress accounting and permanently strand acknowledgement.
+Parent reproduces the original six-case source probe and corrects text/media/poll ownership,
+all-path retirement and primary-failure preservation, with thirty-two permanent additions.
+Fresh complete independent review remains required. Step 8 and final Step 12 remain open;
+all six W7 items remain open (41/51 closed), PR #90 remains draft/unmerged, and no paid call,
+credential or approval is pending.
+
+
+### W7 consolidated host closure — complete round 4 correction (2026-10-10)
+
+[Complete round 4](../../reviews/2026-10-10T00-22-00-w7-host-closure-round-4-review.md) confirms public stream return/throw skips underlying
+cleanup when invocation retirement throws. Parent guarantees exit forwarding, retains actual
+cleanup acknowledgement and preserves the established consumer throw. Twelve permanent paired
+cases cover quiet/held cleanup and normal/faulting detach. Two fresh complete clean rounds,
+Step 8 and final Step 12 remain required; no provider capture or maintainer decision is pending.
+
+### W7 consolidated host closure — first clean cumulative round (2026-10-10)
+
+[Complete round 5](../../reviews/2026-10-10T00-38-24-w7-host-closure-round-5-review.md) independently
+accepts all 126 paths / 364 hunks with zero confirmed actionable findings. Parent audits both
+complete reports and maps and verifies the frozen tracked tree, HEAD and index. This is one
+clean round; a second fresh complete clean round remains required. Step 8 and final Step 12
+remain open, all six W7 items remain open (41/51 closed), and PR #90 remains draft/unmerged.
+No provider capture, credential, billing setup or maintainer decision is pending.
+
+### W7 consolidated host closure — accepted within scope (2026-10-10)
+
+[Complete round 6](../../reviews/2026-10-10T00-51-34-w7-host-closure-round-6-review.md) and the preceding clean round independently
+accept the entire consolidated ADR-0103 increment. Parent audits both full reports, corrected maps
+and frozen tracked source/HEAD/index. Startup/MCP/custom-provider descendants, all actors, final
+receipt health, original clocks, departure and shipping CLI teardown are accepted within scope.
+Step 8 compaction/recovery and final whole-wave Step 12 remain open; the six W7 register items
+remain OPEN (41/51 closed), PR #90 remains draft/unmerged, with no user/provider blocker.
+
+
+### W7 Step 8 — implemented, independent acceptance pending, 2026-10-10
+
+Measured pre-send and one-shot overflow recovery now use the exact owned request and actual
+attemptable entry metadata. One bounded primitive serves manual, after-turn, pre-send and recovery
+paths: every candidate window/output reservation constrains each pass; four passes install one
+summary atomically. Pending users never count as retained durable turns. Unknown-window manual
+work waits for the surface's visible acknowledgement and remains bounded best effort.
+
+Budget refusal and cancellation preserve history without fallback trim. The idle first-pass refusal
+has its own notice; an admitted moment has one success/failure terminal. Genuine pre-content,
+pre-tool overflow can recover once; skips and ordinary pre-send failure suppress another attempt.
+One-shot agents explicitly disable after-turn work without changing authored permission. The
+[session contract](../../reference/contracts/agent-session-spec.md#measured-compaction-and-one-shot-recovery)
+and [event contract](../../reference/contracts/sse-event-schema.md#session-event-namespace) own
+these mechanics. Native SQLite tests verify the boundary across legacy bare users, empty finals,
+pending users and resume. Historical tests now measure actual next requests and require atomic
+late cancellation; billed usage and optional estimator observations do not authorise compaction.
+
+Implementation checks and two fresh complete independent review rounds precede acceptance.
+All six W7 register items remain open (41/51); final Step 12 remains required. PR #90 stays draft
+and unmerged. No provider call, credential, billing setup or user decision is pending.
+
+### W7 Step 8 — accepted, 2026-10-10
+
+[Round 4](../../reviews/2026-10-10T02-10-00-w7-step-8-round-4-review.md) records the second fresh clean complete
+cumulative round after the current-attempt correction, following clean round 3. Each NEW reviewer
+covers all 45 paths / 140 hunks independently; Parent reads every report and coverage row and
+verifies the scoped freeze before acceptance. Step 8 measured atomic compaction/recovery is
+accepted. Final Step 12 and all six W7 register items remain open (41/51); PR #90 stays draft.
+
+## W7 closing register — 2026-10-10
+
+**Accepted on `development`, 2026-10-10**, after [final round 1](../../reviews/2026-10-10T02-30-00-w7-step-12-round-1-review.md) and
+[final round 2](../../reviews/2026-10-10T02-46-19-w7-step-12-round-2-review.md). All twelve steps and the systematic corrections are accepted;
+the six W7 items close here. The phase count is 47/51: 46 checked headings plus CR-95's short-term
+half. CR-70, CR-81, CR-82 and CR-93 remain open. PR #90 stays draft/unmerged. Existing approved
+residuals are unchanged; W8 and the phase remain open.
+
+### Per-item code and acceptance
+
+| Item | Closing code and permanent regression | Causal evidence and independent acceptance |
+|---|---|---|
+| CR-71 | `apps/cli/src/chat/persister.ts` stages a completed exchange atomically, including engine-assigned content-free tool rows and an explicit empty assistant terminal. `packages/core/src/export/serializer.ts` derives grants from completed structural turns. `serializer.test.ts` covers interrupted exchanges, empty finals, split tool loops and export grants; `compaction-persistence.test.ts` checks native SQLite pending/legacy/empty-final boundaries. | [Step 3 round 5](../../reviews/2026-10-02T06-48-45-w7-step-3-round-5-review.md) and [Step 4 round 6](../../reviews/2026-10-02T10-57-58-w7-step-4-round-6-review.md), supplemented by final Step 8. Earlier defect controls fail before their corrections; final native persistence asserts the stored sequence boundary, not just UI counts. |
+| CR-72 | `packages/core/src/engine/turn-messages.ts` applies frozen authored memory before folding; `agent-session.ts` uses the same permission at after-turn, pre-send and recovery. `turn-messages.test.ts`, policy cases in `agent-session.test.ts`, and `session-compaction-reliability.test.ts` cover empty finals, restored summary exclusion, completed windows and all entry points. | [Step 5 round 2](../../reviews/2026-10-02T12-21-33-w7-step-5-round-2-review.md) binds exact pre-step policy failures to current positive controls. Step 8's causal removals discriminate measured trigger, first eligible window, floor, cancellation and one-shot after-turn disable. |
+| CR-98 | `packages/llm/src/request-estimator.ts` and `output-cap.ts` measure owned actual requests and resolve native/configured caps; core `agent-turn.ts` forwards per-attempt input and owns the same round through dispatch. Adapter overflow normalization is fixture-pinned; `agent-session.ts` compacts atomically and recovers once before content/tools. `request-owned-round.test.ts`, `overflow.conformance.test.ts` and compaction reliability tests exercise these boundaries. | [Step 6 round 8](../../reviews/2026-10-02T22-44-01-w7-step-6-round-8-review.md), [Step 7 round 4](../../reviews/2026-10-08T22-30-10-w7-step-7-round-4-review.md), [owned core round 2](../../reviews/2026-10-09T01-00-00-w7-owned-core-round-2-review.md), and final Step 8. Five immutable actual provider records are complete. Removal of ownership or recovery guards fails corresponding SDK/core controls; errors from admission cannot mint provider evidence. |
+| CR-94 | `budget-allowance.ts`, `dispatch-allowance.ts`, `budget-governor.ts` and `engine.ts` freeze/show an amount and provenance, synchronously debit only its dispatch and reconcile actual/refunded/conservative costs. CLI `budget resume` requires that exact amount and rejects stale quotes. `budget-allowance.test.ts`, `budget-authorization-live.test.ts` and actual CLI gate cases cover exclusions, primary retry/fallback, exhaustion and parallel ownership. | [Step 9 round 4](../../reviews/2026-10-03T02-40-53-w7-step-9-round-4-review.md), [Step 10 round 8](../../reviews/2026-10-03T17-50-23-w7-step-10-round-8-review.md), [Step 11 round 3](../../reviews/2026-10-04T01-17-23-w7-step-11-round-3-review.md) and [Group 2a round 14](../../reviews/2026-10-06T17-49-28-w7-systematic-group-2a-round-14-review.md). Accounting-join removal changes durable 47 to 21; combined approved retry/fallback executes without a second pause. |
+| CR-96 | `packages/core/src/engine/checkpoint.ts` restores approved budget agents as pending without invented output or restored remainder; rejection retains `budget_exceeded`. Shared suspension reduction/strict durable authorization joins reject conflicting companions and downgrade replay. `budget-authorization-replay.test.ts` checks legacy approval/rejection and ordinary sibling decisions; required `smoke:budget-replay` runs the immutable predecessor. | [Step 10 round 8](../../reviews/2026-10-03T17-50-23-w7-step-10-round-8-review.md), [portable harness acceptance](../../reviews/2026-10-08T11-44-55-w7-systematic-group-5-round-2-review.md) and [consolidated host round 6](../../reviews/2026-10-10T00-51-34-w7-host-closure-round-6-review.md). Companion-comparison removal fails; twelve predecessor refusal prefixes and two genuine legacy controls discriminate the barrier. |
+| CR-97 | `packages/db/src/effect-journal-store.ts` retains/replays results only for run scope; `session-effect-turns.ts` allocates durable monotonic identities. `client.ts` clears legacy session results with secure deletion and qualified WAL checkpoint. CLI disclosure uses a full-history snapshot and acknowledged visible delivery before sweep. `session-effect-privacy.test.ts` checks actual planted main/WAL bytes, busy readers and 0016 upgrades; native disclosure/signal/turn-key suites cover crash and two-process paths. | [Step 4 round 6](../../reviews/2026-10-02T10-57-58-w7-step-4-round-6-review.md), [Group 4 round 4](../../reviews/2026-10-07T09-10-29-w7-systematic-group-4-round-4-review.md) and [host round 6](../../reviews/2026-10-10T00-51-34-w7-host-closure-round-6-review.md). Negative privacy/disclosure controls fail without their guards; successful checkpoint byte scans retain run results as a positive control. The [at-rest sitting](../../standards/security-review.md#sitting-historydb-at-rest--cr-71-cr-97-2026-10-02) states physical limits. |
+
+### Systematic PR review disposition
+
+The following 35 rows reconstruct every submitted reference from both maintainer reports,
+including the trailing-whitespace observation. The duplicate replay-smoke and count findings
+are joined explicitly. This is a published submission-to-resolution map, not an assertion that
+an unavailable private 35-key register was independently audited. The separately found portable
+JSON recursion fixture is included after the table. Historical review verdicts retain their
+original dates; the later scoped acceptance named here closes the earlier obligation.
+
+| # | Submitted reference | Resolution and operative acceptance |
+|---|---|---|
+| 1 | First report 1: admitted request differs from dispatch | ADR-0102 owns every text request field except signal/prepared caps; actual SDK generate/stream payloads consume that same construction. [Owned core round 2](../../reviews/2026-10-09T01-00-00-w7-owned-core-round-2-review.md) plus final Step 8 close session/summarizer integration. |
+| 2 | First report 2: notice invisible before sweep | Explicit Ink route, active controller/viewport ownership and checked published acknowledgement precede deletion. [Rendering round 2](../../reviews/2026-10-04T12-00-00-w7-rendering-round-2-review.md) and later [host round 6](../../reviews/2026-10-10T00-51-34-w7-host-closure-round-6-review.md). |
+| 3 | First report 3: Turbo cooling period | Exact cooled 2.11.4 pin, lockfile and required harness accepted in [Group 5 round 2](../../reviews/2026-10-08T11-44-55-w7-systematic-group-5-round-2-review.md). No exception is invented. |
+| 4 | First report 4: CI-mode failures | Interactive route/Ink mode tests align; full required CI and coverage are checked at final source. Rendering acceptance above and final gates apply. |
+| 5 | First report 5 / second H1: replay smoke absent | Required GitHub CI runs `pnpm smoke:budget-replay`; immutable portable predecessor archive/provenance and actual worker closure are accepted by Group 5. |
+| 6 | First report 6: MCP flag docs | `commands.md` documents gate/budget resume consent and `--allow-mcp-stdio`; [Group 6 round 3](../../reviews/2026-10-08T15-45-57-w7-systematic-group-6-round-3-review.md). |
+| 7 | First report 7 / second L17: 50 vs 51 | Diagram/register agree on 51; closure changes the closed count to 47, not the denominator. Group 6 and final document review. |
+| 8 | First report 8: hook privacy wording | Canonical runner distinguishes in-process request access from body-free durable quotes; Group 6 and final owned-request/session contracts. |
+| 9 | First report trailing blank line | Changed review whitespace corrected; final full-wave `git diff --check` verifies it. Historical substantive conclusions remain intact. |
+| 10 | M1: malformed legacy scope bricks open | Startup quarantines malformed identity evidence and preserves trusted floors; allocation/cleanup refuse unsafe reuse. [Group 4 round 4](../../reviews/2026-10-07T09-10-29-w7-systematic-group-4-round-4-review.md). |
+| 11 | M2: exclusions never rendered | Budget discovery/cards show redacted, quoted, escaped and truncated exclusion notices; typed amounts remain authoritative. Group 3 and consolidated host acceptance. |
+| 12 | M3: predecessor uses live dependency tree | Immutable portable bytes and pinned edges replace reliance on current installed versions; Group 5. |
+| 13 | M4: self-asserted Git provenance | Manifest blobs independently verified against the baseline; Group 5's 143 actual predecessor files and tamper controls. |
+| 14 | M5: one corrupt run hides all discovery | Validate relevant rows, retain damaged run with unavailable gate detail, refuse strict replay, share reference/SQLite corruption errors. Group 4; no unsafe skip-and-replay policy adopted. |
+| 15 | M6: four vs five security sittings | Exit criterion and recorded fifth at-rest sitting reconciled; Group 6 and final checklist. |
+| 16 | L1: duplicate DB opens | Dispatch/resolver/gate construction order and shared ownership corrected; consolidated host acceptance includes actual CLI teardown. |
+| 17 | L2: invalid JSON tool result duplicate calls | One classified nonretryable tool failure, no duplicate call or raw durable name. Map/Set controls stay valid. [Group 2a round 14](../../reviews/2026-10-06T17-49-28-w7-systematic-group-2a-round-14-review.md); alleged durable raw-ID leak was not reproduced. |
+| 18 | L3: stale quote timeout disarms forever | Gate/deadline refusal retains coherent pending authority and original clocks; consolidated host rounds 5–6 are the operative acceptance after Group 3's narrow repair remained insufficient. |
+| 19 | L4: invalid cap becomes internal | Typed local construction refusal maps through existing fatal validation taxonomy before key/provider entry; Group 2a, subsequently accepted ADR-0102 integration. |
+| 20 | L5: budget resume accepts resolved human gate | Type/identity validation precedes idempotent success; ordinary-gate mismatch is refused. Group 3 and consolidated host integration. |
+| 21 | L6: stale quote checked after startup | Early refusal precedes credential/MCP construction; complete quote is rechecked at engine authority boundary. Consolidated host acceptance includes all startup actors. |
+| 22 | L7: shown-gate set never prunes | Resolution retires presentation bookkeeping; Group 3, with final lifecycle acceptance. |
+| 23 | L8: strict read rejects legacy metadata | Legacy-compatible reads plus strict current writes preserve structural privacy; Group 4 native controls. |
+| 24 | L9: zero high-water scans repeat | Bounded initializer batches and durable trusted/quarantined floors; Group 4. Total history work is explicitly not claimed constant. |
+| 25 | L10: obsolete effect docblock | Snapshot disclosure ownership documented at its actual reader; Group 6. |
+| 26 | L11: rejected authorization projection untested | Rejected durable decision keeps correct fatal budget state; Group 4 projection/reconciliation tests. |
+| 27 | L12: optional retained-turn producer | Current producers require `keptTurnCount`; persisted legacy events remain readable. Group 4; Step 8 verifies exact native boundary. |
+| 28 | L13: combined approved failover missing | Permanent actual-engine primary retry then fallback success under one finite approval; Group 2a. This was a coverage gap, not a reproduced loop bug. |
+| 29 | L14: terminal approvals retained | Refuted by current normal/fenced settlement cleanup; [intake](../../reviews/2026-10-04T10-35-00-w7-systematic-review-intake-review.md). No unnecessary patch. |
+| 30 | L15: stale inline decision parks forever | Invalid decision stops prompts, preserves pending gate, joins all local actors/writes and returns resumable status; final consolidated ADR-0103 host acceptance closes the Group 3 High. |
+| 31 | L16: rejected gate reconciles as internal | Genuine rejected budget authorization reconciles as `budget_exceeded`; ordinary decisions remain distinct. Group 4. |
+| 32 | L18: fifth sitting described as future | Dated actual sitting recorded, status corrected; Group 6 and final landing. |
+| 33 | L19: broken sandbox anchor | Correct direct-negative-case anchor; Group 6 and final relative target/fragment checks. |
+| 34 | L20: wall-clock isolation probes | Explicit ownership/lifecycle synchronization and qualified watchdog replace unsupported timing proof; actual guard controls accepted in Group 5. No deterministic scheduler guarantee is invented. |
+| 35 | L21: replay evidence retained without bound | Owned diagnostic retention/retirement preserves unknown objects, closes actual children, and reports cleanup failures; Group 5. No broad deletion of unrelated evidence. |
+
+Supplemental intake JSON portability: valid deeply nested JSON is not rejected solely because a
+worker has a different recursion limit; the fixture distinguishes actual serializer behavior.
+Group 2a accepts the classified tool-result correction and its positive Map/Set controls.
+
+### Fresh per-item causal controls
+
+At source `b68188fe`, six separate external projections remove only the corresponding
+mechanism and fail actual permanent assertions: CR-71 export grants (4), CR-72 window selection (1),
+CR-98 input measurement (11), CR-94 debit (7), CR-96 pending replay (1), and CR-97 session-result
+noninspection (1). Restoring all six passes 59 cases in six suites. These are targeted mechanism
+removals, not historical full-source builds. The first diagnostic projection lacked a resolvable
+`yaml` alias and is excluded; only the corrected runs with real assertion failures are credited.
+Only twelve named files are projected; imports point to projected peers or current repository
+sources. Recorded original and projected hashes distinguish that import redirection. The repository
+source tree is never modified by this diagnostic.
+
+### Approved limits and next phase
+
+No new W7 work is deferred at closure. Existing decisions remain visible in
+[deferred-tasks.md](../deferred-tasks.md): CR-70 carrying needs measurement/recovery observed in a
+release plus a consuming surface; failed/aborted transcripts stay completed-exchange-only;
+post-tool/content overflow continuation and estimator calibration remain deferred. CR-94 model
+binding/expiry remain behind complete stale-quote refusal. Session physical erasure requires a
+successful WAL checkpoint and excludes pre-upgrade freed pages; run tool I/O/user content can
+still be sensitive at rest. CR-95's long continuation and CR-93 tenant scoping remain separate.
+
+CR-81, CR-82 and ADR-0087 §1 belong to W8. Its existing un-pulled-stream gap-free blocker remains
+open; completing W7 does not claim the full Phase 2.6.5 exit criteria or merge/release readiness.
+
+
+### Twelve-step acceptance map
+
+Earlier scoped acceptances are joined with subsequent systematic corrections above. Step 8 and
+consolidated host acceptance supersede their earlier open integration boundaries.
+
+| Step | Operative scoped review |
+|---|---|
+| 1 | [Final scoped review](../../reviews/2026-10-02T03-50-35-w7-step-1-round-5-review.md) |
+| 2 | [Final scoped review](../../reviews/2026-10-02T04-41-54-w7-step-2-round-2-review.md) |
+| 3 | [Final scoped review](../../reviews/2026-10-02T06-48-45-w7-step-3-round-5-review.md) |
+| 4 | [Final scoped review](../../reviews/2026-10-02T10-57-58-w7-step-4-round-6-review.md) |
+| 5 | [Final scoped review](../../reviews/2026-10-02T12-21-33-w7-step-5-round-2-review.md) |
+| 6 | [Final scoped review](../../reviews/2026-10-02T22-44-01-w7-step-6-round-8-review.md) |
+| 7 | [Final scoped review](../../reviews/2026-10-08T22-30-10-w7-step-7-round-4-review.md) |
+| 8 | [Final scoped review](../../reviews/2026-10-10T02-10-00-w7-step-8-round-4-review.md) |
+| 9 | [Final scoped review](../../reviews/2026-10-03T02-40-53-w7-step-9-round-4-review.md) |
+| 10 | [Final scoped review](../../reviews/2026-10-03T17-50-23-w7-step-10-round-8-review.md) |
+| 11 | [Final scoped review](../../reviews/2026-10-04T01-17-23-w7-step-11-round-3-review.md) |
+| 12 | [Final round 1](../../reviews/2026-10-10T02-30-00-w7-step-12-round-1-review.md) and [final round 2](../../reviews/2026-10-10T02-46-19-w7-step-12-round-2-review.md) |
+
+### Canonical-document landing check
+
+Every row of [W7's checklist](#w7s-canonical-document-checklist-recorded-2026-09-18) is reconciled:
+configuration, workflow/agent/session contracts, runner, schema, effect journal, LLM seam, error handling,
+events, chat/commands and architecture describe implemented behaviour. ADR-0029 already carried the
+required security correction; no additional edit is owed. Dated notes in ADR-0026/0028/0050/0062/0074/0080
+and ADR-0095–0103 link this landing without rewriting earlier decisions. The later post-closure
+landing also appends notes to ADR-0036/0042/0045/0049/0076/0077/0078/0079/0085, preserving
+their earlier progress snapshots. Existing CR-82 usage and
+ADR-0087 gap-free-stream limits remain W8 obligations; no blanket at-rest secrecy is claimed.
+
+### Final source gates
+
+At `b68188fe`, `pnpm run ci` exits 0 and `pnpm coverage` exits 0: 446 files, 9,462 passed,
+11 existing skips; global line/statement coverage 96.05%, branch 92.68%, function 96.44%.
+Required remote CI, coverage and SonarCloud pass at that source. One push Windows advisory hit
+two default-5-second native fixture timeouts while the same-source PR Windows run passed.
+The final harness correction and final documentation checks are recorded by Step 12; the failed
+run is not erased or represented as a pass. Offline smokes make no new paid request.
+
+### Final Step 12 — first independent round, 2026-10-10
+
+[Round 1](../../reviews/2026-10-10T02-30-00-w7-step-12-round-1-review.md) independently joins all six CRs, thirty-five submitted
+review references and the full canonical checklist. No new scoped material finding is established.
+The baseline MCP fragment is corrected after freeze release. The same-head required PR CI
+stress/RPC failure and bounded unchanged-source rerun remain explicitly qualified; final gate
+resolution and the second fresh complete review are required before closing the six items.
+
+### Final Step 12 — second independent round and acceptance, 2026-10-10
+
+[Round 2](../../reviews/2026-10-10T02-46-19-w7-step-12-round-2-review.md) independently covers all 32 cumulative closing paths / 43 hunks,
+all six CRs, 35 submitted-reference dispositions, fourteen canonical rows/sixteen documents and
+the complete twelve-step map. Authority passes 334 cases in twelve suites; Lifecycle's retained
+clean summary shows 336 in fourteen suites, without a captured numeric shell exit. Counts overlap.
+Parent reads both complete reports and every coverage row; scoped hashes, exact patch, logical
+index, HEAD and clean content match after both explicit releases. No new material finding is
+confirmed; round 1's baseline Low link is corrected and included in this round.
+
+The unchanged-source required PR rerun at `13f62059` succeeds, including actual deep stress tests;
+the original watchdog/RPC failures remain recorded. Assertions, stress sizes, watchdogs and
+configuration were unchanged for that rerun. Source CI, coverage, causal controls and their cache,
+platform and physical limits are qualified in the final review. Final published acceptance-head
+checks are verified separately in PR #90.
+
+**W7 is independently accepted on `development`: all twelve steps and CR-71/72/94/96/97/98 are closed.**
+The phase is 47/51; CR-70/81/82/93 and W8 remain open. No new W7 deferral is introduced. All five genuine
+provider records are complete, with no further paid operation required. PR #90 remains draft/unmerged
+for maintainer review; no implementation, user decision, credential, billing or capture is pending for W7.
+
+### Post-closure systematic review — 2026-10-10
+
+A new maintainer report at `b7fe32d8` reopens bounded compaction, scheduler, media-cleanup,
+checkpoint-notice and replay-inventory corrections. The [intake dispositions and three-increment plan](../../reviews/2026-10-10T11-30-00-w7-post-closure-intake-review.md)
+distinguish confirmed defects from intentional security/compatibility guarantees. Previous
+acceptances remain dated evidence; current closure requires the new corrections, two NEW independent
+review rounds per increment and new source gates. No capture, billing, key or maintainer decision is
+pending for these existing-contract fixes. PR #90 remains draft and unmerged.
+
+The [first core-increment review](../../reviews/2026-10-10T11-51-35-w7-post-closure-step-1-round-1-review.md)
+independently reproduced two adjacent failure schedules. `11453744` corrects returned poll-refusal
+precedence and bounded unstamped terminal preparation, with fourteen additional permanent cases.
+Current root CI and 321 focused cases pass; two fresh clean complete cumulative reviews remain required.
+
+The [second core-increment review](../../reviews/2026-10-10T12-08-30-w7-post-closure-step-1-round-2-review.md)
+finds no new material issue across all fifteen paths/thirty-one hunks. Both independent 321-case
+runs and additional held-writer/paid-accounting probes pass. Parent verifies the complete artifacts
+and exact clean freeze after both releases. One further NEW complete clean round remains required.
+
+The [third core-increment review](../../reviews/2026-10-10T12-18-00-w7-post-closure-step-1-round-3-review.md)
+accepts the complete core correction after two NEW clean rounds. Both independent source runs pass
+321 cases; Parent audits reports, artifacts and the exact frozen sixteen-path composition after
+release. CLI/DB and tooling/document corrections remain open; no paid operation or user decision is pending.
+
+The [CLI/DB author verification](../../reviews/2026-10-10T12-25-00-w7-post-closure-step-2-author-review.md) records deferred-opening notices,
+metadata-only session audits and bounded surface corrections with nine new permanent cases.
+Two NEW complete independent review rounds remain required for this increment; tooling/docs
+and final new whole-tree gates remain open.
+
+The [CLI/DB cumulative round 1](../../reviews/2026-10-10T12-34-48-w7-post-closure-step-2-round-1-review.md) records first NEW clean complete cumulative round; another NEW round remains required.
+Tooling/document corrections and final new gates remain open; PR #90 stays draft and unmerged.
+
+The [CLI/DB cumulative round 2](../../reviews/2026-10-10T12-45-56-w7-post-closure-step-2-round-2-review.md) records second NEW clean complete cumulative round accepts the CLI/DB increment.
+Tooling/document corrections and final new gates remain open; PR #90 remains unmerged; GitHub reports ready-for-review rather than draft as of 2026-10-10. No merge action is authorized by this scoped acceptance.
+
+The [tooling/docs author verification](../../reviews/2026-10-10T12-50-13-w7-post-closure-step-3-author-review.md) records all remaining confirmed
+intake actions, fifteen new permanent cases, 141 focused passes and green root CI. Two NEW
+complete cumulative review rounds and final new gates remain required; no provider/user blocker exists.
+
+The [tooling/docs cumulative round 1](../../reviews/2026-10-10T13-00-49-w7-post-closure-step-3-round-1-review.md) records first NEW clean complete cumulative round; a second NEW complete clean round remains required.
+
+The [tooling/docs cumulative round 2](../../reviews/2026-10-10T13-11-06-w7-post-closure-step-3-round-2-review.md) records second NEW clean complete cumulative round accepts the final correction increment.
+
+#### Post-closure correction acceptance — 2026-10-10
+
+The [final correction register](../../reviews/2026-10-10T13-11-06-w7-post-closure-acceptance-review.md) closes every new report reference through its
+intake disposition and three accepted increments: [core](../../reviews/2026-10-10T12-18-00-w7-post-closure-step-1-round-3-review.md),
+[CLI/DB](../../reviews/2026-10-10T12-45-56-w7-post-closure-step-2-round-2-review.md) and [tooling/docs](../../reviews/2026-10-10T13-11-06-w7-post-closure-step-3-round-2-review.md). Each has two NEW complete clean
+cumulative independent rounds. Nine additive ADR landings reconcile the historical open progress
+notes; no earlier substantive record or published commit history is rewritten.
+
+Fresh unchanged-production coverage passes 447 files / 9,512 cases / eleven existing capability/key-gated
+LLM skips. Fifty new permanent cases and bounded causal controls pin the confirmed corrections. The
+final all-document-tree root CI and exact published-head checks are reported in PR #90. The earlier
+source, platform/cache, dependency-origin and physical-erasure limitations remain explicit.
+
+**W7, including Step 8 and final Step 12, is independently accepted on `development`.** No new W7
+work is deferred; Phase 2.6.5 remains 47/51, with W8 and existing approved residuals open. No
+implementation, user decision, credential, capture or billing prerequisite remains. PR #90 is ready
+for maintainer review and unmerged; historical draft/progress wording above describes earlier checkpoints.
+
+#### Publication quality-gate follow-up — 2026-10-10
+
+At published `a733bdba`, both five-job GitHub CI runs pass; SonarCloud returns four new labels.
+The [author correction record](../../reviews/2026-10-10T13-22-20-w7-publication-sonar-author-review.md) traces every key, preserves explicit lexical
+set ordering and replaces two PATH-based Git calls with the existing canonical OS resolver.
+No shipping production/test, dependency, archive or threshold changes. Root CI and bounded controls
+pass, including a PATH-trap negative intervention. Two NEW complete clean cumulative rounds and
+exact new published-head gates are required before this supplemental increment is accepted.
+
+The [publication correction cumulative round 1](../../reviews/2026-10-10T13-29-08-w7-publication-sonar-round-1-review.md) records first NEW clean complete cumulative round; another NEW round and published-head gates remain required.
+
+The [publication correction cumulative round 2](../../reviews/2026-10-10T13-35-14-w7-publication-sonar-round-2-review.md) records second NEW clean complete cumulative round accepts the publication correction; exact published-head gates remain required.
+
+#### Publication correction acceptance — 2026-10-10
+
+[Round 2](../../reviews/2026-10-10T13-35-14-w7-publication-sonar-round-2-review.md) accepts the complete supplemental tool increment after two NEW
+complete clean cumulative rounds, each with two independent agents and Parent artifact/freeze audits.
+Every one of the four exact Sonar keys has a source-level disposition; no issue is bulk waived. The
+explicit comparison preserves UTF-16 ordering. The actual diagnostic bypasses inherited Git lookup;
+separate external removal enters the PATH trap and fails. Six causal interventions/restored 59 cases,
+all eleven replay guards and reordered positives independently pass. Shipping production/tests and
+fresh 447-file / 9,512-pass / eleven-existing-skip coverage remain unchanged; tools are separately tested.
+
+The failed `a733bdba` Sonar analysis remains evidence, alongside its two successful five-job CI runs.
+Final local CI and exact next published-head checks are recorded in PR #90, never inferred from an old
+head. W7 and all correction increments are accepted on `development`; no new W7 task is deferred.
+PR #90 is ready for maintainer review and unmerged. No provider/key/billing operation is needed.

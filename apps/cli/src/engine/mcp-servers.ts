@@ -1,4 +1,4 @@
-import type { WorkflowDefinition } from '@relavium/core';
+import type { WorkflowDefinition, ToolHostCallOptions } from '@relavium/core';
 import {
   MCP_DEADLINES,
   McpAbortedError,
@@ -37,6 +37,7 @@ import {
   type McpServerRegistration,
 } from '@relavium/shared';
 
+import { EgressWorkScope } from './egress-work.js';
 import { CliError } from '../process/errors.js';
 import { createMcpFetch, type McpFetch, type McpFetchConfig } from './mcp-fetch.js';
 import type { ResolvedStdioSpawn } from './mcp-consent.js';
@@ -67,6 +68,7 @@ export interface ConnectAgentMcpOptions {
   readonly startMcpClient?: (
     servers: readonly McpServerConfig[],
     signal?: AbortSignalLike,
+    options?: ToolHostCallOptions,
   ) => Promise<McpClient>;
   /**
    * Cancels the connect and the discovery walk (ADR-0088 §1.1).
@@ -76,6 +78,8 @@ export interface ConnectAgentMcpOptions {
    * children that already existed, leaving the highest-probability window uncovered.
    */
   readonly connectSignal?: AbortSignalLike;
+  /** Transfer startup/connection descendants before entry, including bounded failed opens. */
+  readonly work?: ToolHostCallOptions;
   /**
    * Resolve a `{{secrets.<name>}}` placeholder in a server `env` value (2.R Step 4, ADR-0052 §6). When absent,
    * any `{{…}}` in an `env` value is rejected loud (a placeholder is never passed to the child as a literal).
@@ -119,7 +123,9 @@ export type StdioConsentGate = (
  * `McpServerRefSchema` is `.strict()`, so the registration name has no field to live in — and this shape is
  * host-internal and deliberately never re-parsed, which is what makes an extra property safe here.
  */
-export type ResolvedServerRef = McpServerRef & { readonly registrationName?: string };
+export type ResolvedServerRef = McpServerRef & {
+  readonly registrationName?: string;
+};
 
 /**
  * Sanitize a registration `name` into a namespace-safe server segment for `mcp_{server}_{tool}` (ADR-0052 §4/§5
@@ -191,6 +197,7 @@ export type OpenStdioConnection = (
   serverId: string,
   spec: StdioServerSpec,
   signal?: AbortSignalLike,
+  options?: ToolHostCallOptions,
 ) => Promise<McpConnection>;
 
 /**
@@ -214,16 +221,19 @@ export interface ServerOpeners {
     serverId: string,
     spec: HttpServerSpec,
     signal?: AbortSignalLike,
+    options?: ToolHostCallOptions,
   ) => Promise<McpConnection>;
   readonly sse?: (
     serverId: string,
     spec: SseServerSpec,
     signal?: AbortSignalLike,
+    options?: ToolHostCallOptions,
   ) => Promise<McpConnection>;
   readonly websocket?: (
     serverId: string,
     spec: WebSocketServerSpec,
     signal?: AbortSignalLike,
+    options?: ToolHostCallOptions,
   ) => Promise<McpConnection>;
 }
 
@@ -241,16 +251,19 @@ type NetworkOpeners = {
     serverId: string,
     spec: HttpServerSpec,
     signal?: AbortSignalLike,
+    options?: ToolHostCallOptions,
   ) => Promise<McpConnection>;
   readonly sse: (
     serverId: string,
     spec: SseServerSpec,
     signal?: AbortSignalLike,
+    options?: ToolHostCallOptions,
   ) => Promise<McpConnection>;
   readonly websocket: (
     serverId: string,
     spec: WebSocketServerSpec,
     signal?: AbortSignalLike,
+    options?: ToolHostCallOptions,
   ) => Promise<McpConnection>;
 };
 
@@ -353,7 +366,7 @@ function buildStdioConfig(
     // `McpServerConfig.open` doc records one layer down, and it was still true HERE until a review found it:
     // a Ctrl-C during a cold `npx` reached this point and stopped nothing, orphaning the child — because
     // `client.childPids` stays empty until a connect fully succeeds, so neither reaper had a pid either.
-    open: (signal) =>
+    open: (signal, work) =>
       openStdio(
         serverId,
         {
@@ -366,6 +379,7 @@ function buildStdioConfig(
             : { connectTimeoutMs: ref.connect_timeout_ms }),
         },
         signal,
+        work,
       ),
   };
 }
@@ -425,42 +439,47 @@ function buildNetworkConfig(
     id: serverId,
     ...toolsAllowlistFields(ref),
     // A parameter, not a capture — see the stdio sibling for what a zero-argument closure silently costs.
-    open: async (signal) => {
-      // **Run INSIDE `open`, not eagerly at config-build time**, and a review found both reasons. Started
-      // eagerly it was a hot promise nobody had to await: a later ref throwing synchronously discarded the
-      // whole config array and the abandoned lookup surfaced as an unhandled rejection. And it ran before
-      // any deadline or signal existed, so a hung `.local` resolver — the exact case §2.3 is about — hung
-      // the whole connect with Ctrl-C doing nothing.
-      // **ONE window across the preflight AND the connect** (ADR-0088 §1.1). The preflight used to open its
-      // own fixed 30 s window and the adapter then opened a second one, so the total connect budget was
-      // `preflight + authored` — and an author who RAISED `connect_timeout_ms` did not raise the DNS half at
-      // all. Opened here, the remaining time is what the adapter is given.
-      const window = openWindow(connectTimeoutMs ?? MCP_DEADLINES.networkConnectMs);
-      if (needsPreflight) {
-        await assertResolvesLocal(serverId, url, resolveHost, window, signal);
+    open: async (signal, parent) => {
+      const work = new EgressWorkScope(parent);
+      try {
+        // **Run INSIDE `open`, not eagerly at config-build time**, and a review found both reasons. Started
+        // eagerly it was a hot promise nobody had to await: a later ref throwing synchronously discarded the
+        // whole config array and the abandoned lookup surfaced as an unhandled rejection. And it ran before
+        // any deadline or signal existed, so a hung `.local` resolver — the exact case §2.3 is about — hung
+        // the whole connect with Ctrl-C doing nothing.
+        // **ONE window across the preflight AND the connect** (ADR-0088 §1.1). The preflight used to open its
+        // own fixed 30 s window and the adapter then opened a second one, so the total connect budget was
+        // `preflight + authored` — and an author who RAISED `connect_timeout_ms` did not raise the DNS half at
+        // all. Opened here, the remaining time is what the adapter is given.
+        const window = openWindow(connectTimeoutMs ?? MCP_DEADLINES.networkConnectMs);
+        if (needsPreflight) {
+          await assertResolvesLocal(serverId, url, resolveHost, window, work, signal);
+        }
+        // **Dispatched per transport so the COMPILER carries the §2.1 obligation**, rather than spreading one
+        // union-typed spec that let an absent `fetch` type-check. `HttpServerSpec.fetch` is required now; a
+        // single `open(serverId, {...})` against the union hid that from exactly the site that must satisfy it.
+        // What is LEFT of the window, so the preflight's cost comes out of the same budget rather than being
+        // added to it. `remainingMs` floors at 1, so an already-spent window still reaches the adapter's own
+        // deadline check rather than silently becoming "no bound".
+        const timeout = { connectTimeoutMs: remainingMs(window) };
+        if (transport === 'websocket') {
+          return await openers.websocket(serverId, { url, ...timeout }, signal, work);
+        }
+        if (validatedFetch === undefined) {
+          // Unreachable: `validatedFetch` is absent only for `websocket`, returned above. Fail closed rather
+          // than reach the SDK's unpinned global `fetch` if that ever stops being true.
+          throw new CliError(
+            'invalid_invocation',
+            `MCP server '${serverId}': no validated dialer for a ${transport} transport`,
+          );
+        }
+        const spec: HttpServerSpec = { url, fetch: validatedFetch, ...timeout };
+        return await (transport === 'http'
+          ? openers.http(serverId, spec, signal, work)
+          : openers.sse(serverId, spec, signal, work));
+      } finally {
+        work.seal();
       }
-      // **Dispatched per transport so the COMPILER carries the §2.1 obligation**, rather than spreading one
-      // union-typed spec that let an absent `fetch` type-check. `HttpServerSpec.fetch` is required now; a
-      // single `open(serverId, {...})` against the union hid that from exactly the site that must satisfy it.
-      // What is LEFT of the window, so the preflight's cost comes out of the same budget rather than being
-      // added to it. `remainingMs` floors at 1, so an already-spent window still reaches the adapter's own
-      // deadline check rather than silently becoming "no bound".
-      const timeout = { connectTimeoutMs: remainingMs(window) };
-      if (transport === 'websocket') {
-        return openers.websocket(serverId, { url, ...timeout }, signal);
-      }
-      if (validatedFetch === undefined) {
-        // Unreachable: `validatedFetch` is absent only for `websocket`, returned above. Fail closed rather
-        // than reach the SDK's unpinned global `fetch` if that ever stops being true.
-        throw new CliError(
-          'invalid_invocation',
-          `MCP server '${serverId}': no validated dialer for a ${transport} transport`,
-        );
-      }
-      const spec: HttpServerSpec = { url, fetch: validatedFetch, ...timeout };
-      return transport === 'http'
-        ? openers.http(serverId, spec, signal)
-        : openers.sse(serverId, spec, signal);
     },
   };
 }
@@ -484,6 +503,7 @@ async function assertResolvesLocal(
   url: string,
   resolveHost: (hostname: string) => Promise<readonly string[]>,
   window: DeadlineWindow,
+  work: EgressWorkScope,
   signal?: AbortSignalLike,
 ): Promise<void> {
   const parsed = extractEgressAuthority(url);
@@ -495,7 +515,7 @@ async function assertResolvesLocal(
       serverId,
       'connect',
       window,
-      () => resolveHost(parsed.host),
+      () => work.retainWork(() => resolveHost(parsed.host)),
       signal,
     );
   } catch (err) {
@@ -655,7 +675,7 @@ export async function connectAgentMcp(
   const consented = await opts.consentGate?.(inline, opts.cwd, opts.artifact);
   const configs = resolveServerConfigs(inline, opts.cwd, opts.resolveSecret, {}, consented);
   if (configs.length === 0) return undefined;
-  return startMcpClientFailLoud(configs, opts.startMcpClient, opts.connectSignal);
+  return startMcpClientFailLoud(configs, opts.startMcpClient, opts.connectSignal, opts.work);
 }
 
 /**
@@ -669,11 +689,16 @@ async function startMcpClientFailLoud(
   configs: readonly McpServerConfig[],
   custom: ConnectAgentMcpOptions['startMcpClient'],
   connectSignal?: AbortSignalLike,
+  work?: ToolHostCallOptions,
 ): Promise<McpClient> {
   const start = custom ?? defaultStartMcpClient;
+  const owned = work === undefined ? new EgressWorkScope() : undefined;
   try {
-    return await start(configs, connectSignal);
+    return await start(configs, connectSignal, work ?? owned);
   } catch (err) {
+    // A session builder without an external pre-handle owner must self-clean before propagating.
+    owned?.seal();
+    await owned?.done;
     if (err instanceof McpError) {
       throw new CliError(
         'invalid_invocation',
@@ -681,6 +706,8 @@ async function startMcpClientFailLoud(
       );
     }
     throw err;
+  } finally {
+    owned?.seal();
   }
 }
 
@@ -750,22 +777,27 @@ export function buildChildEnv(
   return env;
 }
 
-/** A live MCP client plus the workflow rewritten so each inline agent's grant includes its servers' tool ids. */
+/** A live MCP client plus its granted workflow; resume retains an exactly matched frozen grant. */
 export interface WorkflowMcpRuntime {
   readonly client: McpClient;
-  /** The input workflow with each MCP-declaring inline agent's `tools` unioned with its discovered tool ids. */
+  /** Fresh workflows union discovered ids; a frozen resume verifies its existing grant without rewriting it. */
   readonly workflow: WorkflowDefinition;
 }
 
 /** Options for {@link connectWorkflowMcp} — the run cwd + an injectable client starter (tests). */
 export interface ConnectWorkflowMcpOptions {
+  /** Resume compares the current discovered set with the frozen grant, without widening or reordering it. */
+  readonly preserveFrozenGrants?: boolean;
   readonly cwd: string;
   readonly startMcpClient?: (
     servers: readonly McpServerConfig[],
     signal?: AbortSignalLike,
+    options?: ToolHostCallOptions,
   ) => Promise<McpClient>;
   /** Cancels the connect and the discovery walk (ADR-0088 §1.1) — see {@link ConnectAgentMcpOptions.connectSignal}. */
   readonly connectSignal?: AbortSignalLike;
+  /** Transfer startup/connection descendants before entry, including bounded failed opens. */
+  readonly work?: ToolHostCallOptions;
   /** Resolve `{{secrets.<name>}}` in a server `env` value (2.R Step 4, ADR-0052 §6); see {@link ConnectAgentMcpOptions}. */
   readonly resolveSecret?: McpSecretResolver;
   /** The merged config `[[mcp_servers]]` registrations (Step 4b) — resolves a by-name `ref` entry; see {@link ConnectAgentMcpOptions}. */
@@ -847,12 +879,19 @@ export async function connectWorkflowMcp(
     {},
     consented,
   );
-  const client = await startMcpClientFailLoud(configs, opts.startMcpClient, opts.connectSignal);
+  const client = await startMcpClientFailLoud(
+    configs,
+    opts.startMcpClient,
+    opts.connectSignal,
+    opts.work,
+  );
 
   try {
     // Augment each inline agent's grant with ONLY its own servers' discovered ids (a `$ref` entry passes through).
     const agents = (def.workflow.agents ?? []).map((entry) =>
-      isInlineAgent(entry) ? withWorkflowMcpGrant(entry, client.toolIdsByServer) : entry,
+      isInlineAgent(entry)
+        ? withWorkflowMcpGrant(entry, client.toolIdsByServer, opts.preserveFrozenGrants === true)
+        : entry,
     );
     const workflow: WorkflowDefinition = {
       ...def,
@@ -860,11 +899,8 @@ export async function connectWorkflowMcp(
     };
     return { client, workflow };
   } catch (err) {
-    // DEFENSIVE: the augmentation above is pure today (map + spreads + a regex `sanitizeServerSegment`) and
-    // cannot throw — the genuinely-throwing assembly (resolveServerConfigs / the dedup) ran BEFORE the client
-    // was opened. This guard exists so that if a future throwing transform is added here, the live connection is
-    // torn down rather than leaked (uniform all-or-nothing with the self-cleaning chat builders), not because the
-    // current body throws. Do not assume `withWorkflowMcpGrant` can fail.
+    // A resumed workflow's frozen-grant check can refuse after discovery. Tear down the live
+    // connection before forwarding that refusal, just as the chat builders do on assembly failure.
     // Best-effort: a teardown rejection must NOT replace the original augmentation error (preserve the primary).
     await client.close().catch(() => undefined);
     throw err;
@@ -880,6 +916,7 @@ function isInlineAgent(entry: Agent | AgentRef): entry is Agent {
 function withWorkflowMcpGrant(
   agent: Agent,
   toolIdsByServer: ReadonlyMap<string, readonly string[]>,
+  preserveFrozen = false,
 ): Agent {
   // The grant key is the entry's server id — its `ref` registration name (Step 4b) or inline `id` — which is the
   // same id `resolveMcpServerRef` assigned the connection, so `toolIdsByServer` is keyed by it.
@@ -887,6 +924,22 @@ function withWorkflowMcpGrant(
     const serverId = entryServerId(server);
     return serverId === undefined ? [] : (toolIdsByServer.get(serverId) ?? []);
   });
+  if (preserveFrozen && (agent.mcp_servers?.length ?? 0) > 0) {
+    // Namespace classification only: dispatch still uses the manager's captured origin closures.
+    // mcp_call is the existing builtin; it is not a discovered namespaced tool.
+    const frozen = new Set(
+      (agent.tools ?? []).filter((id) => id.startsWith('mcp_') && id !== 'mcp_call'),
+    );
+    const current = new Set(ids);
+    if (frozen.size !== current.size || [...frozen].some((id) => !current.has(id))) {
+      throw new CliError(
+        'invalid_invocation',
+        'the current MCP tool set differs from the frozen run; its gates remain pending. ' +
+          'Restore the original tools or reject the budget gate and start a new run.',
+      );
+    }
+    return agent; // retain exact stored ordering and all non-MCP grants
+  }
   if (ids.length === 0) return agent;
   return { ...agent, tools: [...new Set([...(agent.tools ?? []), ...ids])] };
 }

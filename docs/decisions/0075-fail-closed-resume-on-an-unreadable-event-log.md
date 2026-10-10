@@ -4,6 +4,21 @@
 - **Date**: 2026-08-09
 - **Related**: [ADR-0074](0074-durable-conservative-budget-commitments.md) §5 (the tolerant read this amends), [ADR-0050](0050-cli-history-db-at-rest-posture.md) (durability-first posture), [ADR-0036](0036-run-loop-substrate-event-bus-and-execution-host.md) (durable run events), [ADR-0045](0045-async-media-job-loop-poll-checkpoint-resume-cancel.md) (async media re-attach), and [sse-event-schema.md](../reference/contracts/sse-event-schema.md) (the canonical event contract, incl. §Forward-compatibility).
 
+> Amended 2026-10-02 — [ADR-0100](0100-budget-authorization-is-durable-state-with-a-replay-barrier.md),
+> accepted by the maintainer, applies this existing replay policy to W7 budget authorization. The new
+> state-bearing `budget:authorization` cannot be stripped as optional fields of a known legacy event.
+> A predecessor refuses replay before execution registration/scheduling/dispatch/egress; any lease
+> acquired for the authoritative read is released under ADR-0079. Tolerant read-only inspection remains.
+> No general log-version system or attempt-level durable barrier is introduced. Implementation is staged
+> in `W7`; this ADR's decision and historical bodies are unchanged.
+
+> Implementation checkpoint 2026-10-03 — W7 Step 10 implements the ADR-0100 application above.
+> The [offline compatibility check](../../tools/budget-replay-compat/README.md) runs the immutable
+> actual predecessor's parser, SQLite replay read, CLI checkpointer and engine entry against current
+> engine logs. Twelve prefixes refuse before registration or egress and release the acquired lease;
+> tolerant display and two legacy positive controls pass. Full CI includes this check. Independent
+> committed-step reviews remain pending; this is not whole-W7 acceptance.
+
 ## Context
 
 [ADR-0074](0074-durable-conservative-budget-commitments.md) §5 made the stored-event read boundary **tolerant**: an unknown event `type` is dropped, a known type with an invalid body still fails loud. That decision was right, and it fixed a real doc↔code contradiction — `sse-event-schema.md` had always promised that adding a new event type is not a breaking change "provided consumers ignore unknown `type`s", while all three schema unions actually threw.
@@ -64,3 +79,31 @@ out.
 - **A newer binary's purely observational event blocks an older binary's resume.** A `run:started` written by a future Relavium with an added `agent:thought` row is refused even though nothing state-bearing was lost. This is deliberate — see the rejected classification alternative — and the cost is bounded by the remedy being an upgrade rather than data recovery. Mitigation: the message says which rows, so a user can see it is a version gap and not corruption.
 - **A user who cannot upgrade cannot resume that run.** The run is not lost — every read-only surface still shows it, and its outputs and costs remain readable. Mitigation: that asymmetry is the point, and the message states it, so the user is not left guessing whether the data is gone.
 - **Two read entry points where there was one**, and a future caller could pick the tolerant one for a replay — the type system cannot prevent it, since both return readable events. Mitigation: the strict entry point is the one named for replay, both docblocks carry the constraint, and `checkpointer.test.ts` pins that the resume path refuses a log with a skipped row. That pins today's caller, not tomorrow's; a reviewer, not a compiler, is what catches a new one.
+
+## Implementation correction — 2026-10-07, mandatory compatibility CI
+
+The W7 downgrade smoke now runs in the mandatory GitHub CI job as well as the root CI script.
+Portable predecessor dependencies come from the fixed shipped byte archive, and the source manifest
+is verified against the actual recorded Git baseline. The canonical
+[harness description](../../tools/budget-replay-compat/README.md) records the separately hashed native
+ABI exception and bounded completed-evidence retention. This closes the implementation gaps in the
+2026-10-03 full-CI claim above without changing tolerant display or fail-closed replay policy.
+
+## 2026-10-08 — Group 5 review correction: joined workers and claimed retirement
+
+The initial Group 5 tooling pass left secondary per-stage/retention evidence writes capable of
+masking a real worker/readiness failure, asynchronous stderr errors outside the synchronous
+warning guard, and a failed-spawn error path that published completion before observing close.
+The production callers now join actual close, record a missing PID honestly, retain the first
+failure while attempting each evidence writer, and contain fixed diagnostics through synchronous
+descriptor writes. Permanent actual-caller controls exercise these paths, including a real closed
+pipe and primitive thrown values.
+
+The retention scan also previously deleted a pathname after its ownership check had gone stale.
+It now atomically claims retirement in a fresh private directory outside the completed namespace
+and verifies the claimed directory identity and exact owner/completion records. An unexpected
+claim is preserved for inspection and finalization fails. Such a claim may move a changed
+namespace object; it never deletes it or restores over a successor. This is a same-user namespace
+mutation check, not a kernel boundary against a process that can mutate the private claim too.
+See the [harness contract](../../tools/budget-replay-compat/README.md). These are implementation
+corrections; independent corrective review and whole-W7 acceptance remain required.

@@ -29,6 +29,7 @@ import {
   type PolicyTarget,
   type ProcessCapability,
   type ToolDef,
+  type ToolDelegateName,
   type ToolDispatchContext,
   type ToolHost,
   type ToolId,
@@ -53,6 +54,8 @@ interface BuiltinSpec<A> {
   readonly effect?: (args: A) => EffectTier | undefined;
   /** Duplicates of this tool's effect are harmless — first-party built-ins only; see `ToolDef`. */
   readonly duplicationBenign?: boolean;
+  /** The dispatch-context delegate this tool needs, so a filter can stop advertising it — see `ToolDef`. */
+  readonly requiresDelegate?: ToolDelegateName;
   readonly dispatch: (args: A, host: ToolHost, ctx: ToolDispatchContext) => Promise<unknown>;
 }
 
@@ -70,6 +73,7 @@ function defineBuiltin<A>(spec: BuiltinSpec<A>): ToolDef<A> {
     ...(spec.policyTarget === undefined ? {} : { policyTarget: spec.policyTarget }),
     ...(spec.effect === undefined ? {} : { effect: spec.effect }),
     ...(spec.duplicationBenign === undefined ? {} : { duplicationBenign: spec.duplicationBenign }),
+    ...(spec.requiresDelegate === undefined ? {} : { requiresDelegate: spec.requiresDelegate }),
     dispatch: spec.dispatch,
   };
   return def;
@@ -406,6 +410,7 @@ const httpRequestTool = defineBuiltin({
     requireEgress(host, 'http_request').fetch(
       { method: args.method ?? 'GET', url: args.url, headers: args.headers, body: args.body },
       ctx.signal,
+      ctx.hostCallOptions,
     ),
 });
 
@@ -441,6 +446,7 @@ const webSearchTool = defineBuiltin({
     return requireEgress(host, 'web_search').fetch(
       { method: 'GET', url, credentialRef: args.credentialRef },
       ctx.signal,
+      ctx.hostCallOptions,
     );
   },
 });
@@ -467,6 +473,7 @@ const mcpCallTool = defineBuiltin({
     requireMcp(host, 'mcp_call').call(
       { server: args.server, tool: args.tool, args: args.args },
       ctx.signal,
+      ctx.hostCallOptions,
     ),
 });
 
@@ -528,6 +535,8 @@ const readMediaTool = defineBuiltin({
     additionalProperties: false,
   },
   policy: MEDIA_POLICY,
+  // `ctx.mediaRead` is a DELEGATE, not a host arm, so an arm-only advertise-filter could not see it (`CR-73`).
+  requiresDelegate: 'mediaRead',
   // Engine-pure authorization gate (ADR-0044 §1): scope-set membership, then a metadata lookup. The
   // MediaStore + media_references access is the injected `ctx.mediaRead` delegate (NOT a ToolHost arm).
   //
@@ -620,6 +629,11 @@ const invokeAgentTool = defineBuiltin({
   },
   // A delegate-backed orchestration tool (NOT an os action) — the non-governed delegate policy, not OS_POLICY.
   policy: MEDIA_POLICY,
+  // **`CR-73`.** Nothing in the tree sets `ctx.invokeAgent`, so before this the tool was advertised to every
+  // model that was granted it and answered `tool_unavailable` to every call. The dispatch guard below was the
+  // only gate, and a backstop that fires after the model has already committed a turn to the call is not a
+  // substitute for never offering it.
+  requiresDelegate: 'invokeAgent',
   dispatch: (args, _host, ctx) => {
     if (ctx.invokeAgent === undefined) {
       // Not a ToolHost I/O capability — an engine delegate. Absent ⇒ the same typed unavailable error.

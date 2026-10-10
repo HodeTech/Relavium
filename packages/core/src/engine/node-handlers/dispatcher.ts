@@ -42,6 +42,9 @@ export function createDispatchingNodeExecutor(handlers: NodeExecutorMap): NodeEx
       return handler.execute(ctx);
     },
     ...(agent?.pollMediaJob === undefined ? {} : { pollMediaJob: agent.pollMediaJob.bind(agent) }),
+    ...(agent?.prepareBudgetDispatch === undefined
+      ? {}
+      : { prepareBudgetDispatch: agent.prepareBudgetDispatch.bind(agent) }),
   };
 }
 

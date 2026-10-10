@@ -240,6 +240,147 @@ describe('McpCapability.call — cancellation reaches the connection (ADR-0088 �
 });
 
 describe('a teardown fault reaches the caller who asked to hear it (#207)', () => {
+  it('concurrent close joins the original raw close and refuses new calls immediately', async () => {
+    let acknowledge: () => void = () => {};
+    const pending = new Promise<void>((resolve) => {
+      acknowledge = resolve;
+    });
+    let closes = 0;
+    let calls = 0;
+    const client = await startMcpClient([
+      {
+        id: 'joining',
+        open: () =>
+          Promise.resolve({
+            listTools: () => Promise.resolve([]),
+            callTool: () => {
+              calls += 1;
+              return Promise.resolve({ content: [], isError: false });
+            },
+            close: () => {
+              closes += 1;
+              return pending;
+            },
+          }),
+      },
+    ]);
+    const first = client.close();
+    let complete = false;
+    const second = client.close().then(() => {
+      complete = true;
+    });
+    try {
+      await expect(
+        client.capability.call({ server: 'joining', tool: 'echo', args: {} }),
+      ).rejects.toMatchObject({ name: 'McpNoConnectionError' });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(closes).toBe(1);
+      expect(calls).toBe(0);
+      expect(complete).toBe(false);
+      acknowledge();
+      await Promise.all([first, second]);
+      expect(complete).toBe(true);
+    } finally {
+      acknowledge();
+      await Promise.all([first, second]);
+    }
+  });
+
+  it('removes each acknowledged child PID while another exact cleanup is still pending', async () => {
+    let firstAck: () => void = () => {};
+    let secondAck: () => void = () => {};
+    const firstClose = new Promise<void>((resolve) => {
+      firstAck = resolve;
+    });
+    const secondClose = new Promise<void>((resolve) => {
+      secondAck = resolve;
+    });
+    const entries = [
+      { id: 'first', pid: 111, raw: firstClose },
+      { id: 'second', pid: 222, raw: secondClose },
+    ];
+    const calls: string[] = [];
+    const client = await startMcpClient(
+      entries.map((entry) => ({
+        id: entry.id,
+        open: () =>
+          Promise.resolve({
+            childPid: entry.pid,
+            listTools: () => Promise.resolve([]),
+            callTool: () => Promise.resolve({ content: [], isError: false }),
+            close: () => {
+              calls.push(entry.id);
+              return entry.raw;
+            },
+          }),
+      })),
+    );
+    let quiet = false;
+    const closing = client.close().then(() => {
+      quiet = true;
+    });
+    try {
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve);
+      });
+      expect(client.childPids).toEqual([111, 222]);
+      expect(calls).toEqual(['first', 'second']);
+      firstAck();
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve);
+      });
+      expect(client.childPids).toEqual([222]);
+      expect(quiet).toBe(false);
+      secondAck();
+      await closing;
+      expect(quiet).toBe(true);
+      expect(client.childPids).toEqual([]);
+      await client.close();
+      expect(calls).toEqual(['first', 'second']);
+    } finally {
+      firstAck();
+      secondAck();
+      await closing;
+    }
+  });
+
+  it.each(['throw', 'reject'])(
+    'retains a %s cleanup fault for later reporters without double-closing',
+    async (mode) => {
+      const fault = new Error('cleanup refused');
+      let closes = 0;
+      const client = await startMcpClient([
+        {
+          id: 'fault',
+          open: () =>
+            Promise.resolve({
+              childPid: 123,
+              listTools: () => Promise.resolve([]),
+              callTool: () => Promise.resolve({ content: [], isError: false }),
+              close: () => {
+                closes += 1;
+                if (mode === 'throw') throw fault;
+                return Promise.reject(fault);
+              },
+            }),
+        },
+      ]);
+      await client.close();
+      const seen: { server: string; fault: unknown }[] = [];
+      const reporter = (server: string, cause: unknown): void => {
+        seen.push({ server, fault: cause });
+      };
+      await client.close(reporter);
+      await client.close(reporter);
+      expect(closes).toBe(1);
+      expect(seen).toEqual([{ server: 'fault', fault }]);
+      expect(client.childPids).toEqual([123]);
+      await expect(
+        client.capability.call({ server: 'fault', tool: 'echo', args: {} }),
+      ).rejects.toMatchObject({ name: 'McpNoConnectionError' });
+    },
+  );
+
   it('reports a rejecting close through onCloseError', async () => {
     // **The callback existed and was unreachable.** `SdkConnection.close()` routed through `safeClose`, which
     // swallows — so no REAL adapter could ever trigger the reporter the manager offered and the host could

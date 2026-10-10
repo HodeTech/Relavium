@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { isAppendConflictError, type RunEvent } from '@relavium/shared';
+import {
+  isAppendConflictError,
+  isCorruptRunEventError,
+  RunEventSchema,
+  type RunEvent,
+} from '@relavium/shared';
 
 import {
   createAbortController,
@@ -41,6 +46,124 @@ describe('createAbortController — platform-free abort', () => {
 });
 
 describe('InMemoryRunStore', () => {
+  it('historical budget input rejects its node without aborting another interrupted run discovery', async () => {
+    const store = new InMemoryRunStore();
+    const base = { runId: 'legacy', timestamp: '2026-10-03T00:00:00.000Z' };
+    const rows = [
+      {
+        type: 'run:started',
+        sequenceNumber: 0,
+        workflowId: '00000000-0000-4000-8000-000000000001',
+        inputs: {},
+        executionMode: 'local',
+      },
+      {
+        type: 'budget:paused',
+        sequenceNumber: 1,
+        nodeId: 'agent',
+        gateId: 'old-budget',
+        spentMicrocents: 2,
+        limitMicrocents: 1,
+      },
+      {
+        type: 'human_gate:resumed',
+        sequenceNumber: 2,
+        nodeId: 'agent',
+        decision: 'input_provided',
+        decidedBy: 'historical-user',
+        payload: { historical: 'answer' },
+      },
+    ].map((fields) => RunEventSchema.parse({ ...base, ...fields }));
+    for (const row of rows) await store.persistEvent(row);
+    await store.persistEvent(
+      RunEventSchema.parse({
+        ...base,
+        runId: 'ordinary',
+        type: 'run:started',
+        sequenceNumber: 0,
+        workflowId: '00000000-0000-4000-8000-000000000002',
+        inputs: {},
+        executionMode: 'local',
+      }),
+    );
+    await store.persistEvent(
+      RunEventSchema.parse({
+        ...base,
+        runId: 'ordinary',
+        type: 'human_gate:paused',
+        sequenceNumber: 1,
+        nodeId: 'human',
+        gateId: 'ordinary-gate',
+        gateType: 'input',
+        message: 'ordinary input',
+      }),
+    );
+    const interrupted = new Map((await store.listInterruptedRuns()).map((run) => [run.runId, run]));
+    expect(interrupted.size).toBe(2);
+    expect(interrupted.get('legacy')?.resumable).toBe(false);
+    expect(interrupted.get('ordinary')?.resumable).toBe(true);
+    expect(store.eventsFor('legacy')).toEqual(rows);
+  });
+  it('refuses aggregate discovery with typed row context and preserves healthy and corrupt evidence', async () => {
+    const store = new InMemoryRunStore();
+    const event = (
+      runId: string,
+      sequenceNumber: number,
+      fields: Record<string, unknown>,
+    ): RunEvent =>
+      RunEventSchema.parse({
+        runId,
+        sequenceNumber,
+        timestamp: '2026-10-04T00:00:00.000Z',
+        ...fields,
+      });
+    for (const runId of ['healthy', 'damaged']) {
+      await store.persistEvent(
+        event(runId, 0, {
+          type: 'run:started',
+          workflowId: '00000000-0000-4000-8000-000000000001',
+          inputs: {},
+          executionMode: 'local',
+        }),
+      );
+      await store.persistEvent(
+        event(runId, 1, {
+          type: 'human_gate:paused',
+          nodeId: 'human',
+          gateId: 'gate',
+          gateType: 'approval',
+          message: 'approve',
+        }),
+      );
+    }
+    await store.persistEvent(
+      event('damaged', 2, {
+        type: 'human_gate:paused',
+        nodeId: 'conflicting',
+        gateId: 'gate',
+        gateType: 'approval',
+        message: 'approve',
+      }),
+    );
+    const healthy = [...store.eventsFor('healthy')];
+    const damaged = [...store.eventsFor('damaged')];
+    let error: unknown;
+    try {
+      await store.listInterruptedRuns();
+    } catch (cause) {
+      error = cause;
+    }
+    expect(isCorruptRunEventError(error)).toBe(true);
+    expect(error).toMatchObject({
+      code: 'corrupt_run_event',
+      runId: 'damaged',
+      sequenceNumber: 2,
+      eventType: 'human_gate:paused',
+    });
+    expect(store.eventsFor('healthy')).toEqual(healthy);
+    expect(store.eventsFor('damaged')).toEqual(damaged);
+  });
+
   it('mints a stable UUID per slug and reuses it', async () => {
     const store = new InMemoryRunStore();
     const first = await store.resolveWorkflowId('my-flow');
@@ -117,8 +240,7 @@ describe('InMemoryRunStore', () => {
   });
 
   it('reports a run parked at a suspension event as interrupted (resumable: true)', async () => {
-    // Pin every RESUMABLE_LAST_TYPES member directly against the store — incl. run:paused / budget:paused
-    // that the engine path does not seed in these tests.
+    // An aggregate pause follows an individual gate record; it cannot create a gate identity itself.
     const at = '2026-06-13T00:00:00.000Z';
     const lastEvents: RunEvent[] = [
       {
@@ -177,13 +299,82 @@ describe('InMemoryRunStore', () => {
         inputs: {},
         executionMode: 'local',
       });
-      await store.persistEvent(last);
+      if (last.type === 'run:paused') {
+        const individual = lastEvents[0];
+        if (individual === undefined) throw new Error('missing individual gate fixture');
+        await store.persistEvent(individual);
+      }
+      await store.persistEvent({ ...last, sequenceNumber: last.type === 'run:paused' ? 2 : 1 });
       const interrupted = await store.listInterruptedRuns();
       expect(interrupted, last.type).toHaveLength(1);
       expect(interrupted[0]?.resumable, last.type).toBe(true);
-      expect(interrupted[0]?.lastSequenceNumber, last.type).toBe(1);
+      expect(interrupted[0]?.lastSequenceNumber, last.type).toBe(
+        last.type === 'run:paused' ? 2 : 1,
+      );
     }
   });
+});
+
+describe('interruption discovery from ordered gate history', () => {
+  const envelope = { runId: 'r-history', timestamp: '2026-10-03T00:00:00.000Z' };
+  const event = (sequenceNumber: number, fields: Record<string, unknown>): RunEvent =>
+    RunEventSchema.parse({ ...envelope, sequenceNumber, ...fields });
+  const start = event(0, {
+    type: 'run:started',
+    workflowId: '00000000-0000-4000-8000-000000000001',
+    inputs: {},
+    executionMode: 'local',
+  });
+  const pause = event(1, {
+    type: 'budget:authorization',
+    nodeId: 'agent',
+    gateId: 'bg',
+    authorization: {
+      state: 'paused',
+      allowance: { kind: 'legacy_no_allowance' },
+      spentMicrocents: 2,
+      limitMicrocents: 1,
+    },
+  });
+  const human = event(2, {
+    type: 'human_gate:paused',
+    nodeId: 'human',
+    gateId: 'hg',
+    gateType: 'approval',
+    message: 'offline',
+  });
+  const decision = event(3, {
+    type: 'budget:authorization',
+    nodeId: 'agent',
+    gateId: 'bg',
+    authorization: {
+      state: 'decided',
+      allowance: { kind: 'legacy_no_allowance' },
+      decision: 'approved',
+      decidedBy: 'offline',
+    },
+  });
+  const companion = event(4, {
+    type: 'human_gate:resumed',
+    nodeId: 'agent',
+    gateId: 'bg',
+    decision: 'approved',
+    decidedBy: 'offline',
+  });
+  for (const [name, history, expected] of [
+    ['authority pause without companions', [start, pause], true],
+    ['authority decision without companions', [start, pause, decision], false],
+    ['ordinary sibling after authority decision', [start, pause, human, decision], true],
+    ['ordinary sibling after decision companion', [start, pause, human, decision, companion], true],
+  ] as const)
+    it(name, async () => {
+      const store = new InMemoryRunStore();
+      for (const row of history) await store.persistEvent(row);
+      const interrupted = await store.listInterruptedRuns();
+      expect(interrupted).toHaveLength(1);
+      expect(interrupted[0]?.resumable).toBe(expected);
+      expect(interrupted[0]?.lastSequenceNumber).toBe(history.at(-1)?.sequenceNumber);
+    });
 });
 
 describe('createInMemoryHost', () => {

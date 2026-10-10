@@ -28,6 +28,7 @@ import {
   createInMemoryHost,
   formatAppendAudit,
   parseWorkflow,
+  type RunDeparture,
   type WorkflowDefinition,
 } from '@relavium/core';
 import {
@@ -332,8 +333,23 @@ workflow:
     runId: string;
     cancel: () => void;
     drained: Promise<void>;
+    depart: () => Promise<RunDeparture>;
   }> {
-    const host = createInMemoryHost({ store, runLeases: createRunLeasePort(store) });
+    const leases = createRunLeasePort(store);
+    let acknowledgeRelease = () => {};
+    const released = new Promise<void>((resolve) => {
+      acknowledgeRelease = resolve;
+    });
+    const host = createInMemoryHost({
+      store,
+      runLeases: {
+        ...leases,
+        release: async (...args) => {
+          await leases.release(...args);
+          acknowledgeRelease();
+        },
+      },
+    });
     // NOT `passthroughExecutor` — it completes every vertex, gate included, so the run would finish without
     // ever pausing and nothing here would be about ownership.
     const engine = new WorkflowEngine({
@@ -356,7 +372,15 @@ workflow:
       for await (const event of handle.events) if (event.type === 'run:paused') parked();
     })();
     await reachedPause;
-    return { runId: handle.runId, cancel: () => engine.cancel(handle.runId), drained };
+    // Preserve the attached primary and cancellation capability. A consumed pause alone does not
+    // acknowledge the asynchronous lease release; observe the actual native port's completion.
+    await released;
+    return {
+      runId: handle.runId,
+      cancel: () => engine.cancel(handle.runId),
+      drained,
+      depart: () => handle.depart(),
+    };
   }
 
   it('a cancel on a parked run whose lease ANOTHER process took writes NO second terminal', async () => {
@@ -365,18 +389,15 @@ workflow:
     // an ABSENT fence is a pass rather than a refusal. So the parked process could write `run:cancelled`
     // into a run another process was finishing, putting TWO terminals in one log.
     const store = gatedStore();
-    const { runId, cancel, drained } = await parkedRun(store);
+    const { runId, cancel, drained, depart } = await parkedRun(store);
     expect(store.leases.read(runId)).toBeUndefined(); // §4: the park really did give ownership up
 
     // A second process takes the run over — the ordinary `relavium gate` resume.
     expect(store.leases.acquire(runId, 'another-process', 60_000)).toBeDefined();
 
     cancel(); // …and the FIRST process is Ctrl-C'd, as a user dismissing a stale prompt would.
-    // Bounded rather than `await drained`: this test's claim is about what is WRITTEN, and a fenced loser
-    // deliberately writes no terminal, so its stream close is a separate property proven in
-    // `packages/core/src/engine/run-lease.test.ts` against the engine source. Waiting unbounded here would
-    // couple this assertion to that one.
-    await Promise.race([drained, new Promise((resolve) => setTimeout(resolve, 1_000))]);
+    await drained;
+    expect((await depart()).kind).toBe('closed');
 
     const terminals = store
       .loadRunEvents(runId)
@@ -389,9 +410,10 @@ workflow:
     // user cancelling their OWN parked run, and that must still be recorded. A fix that only fenced would
     // silently drop it.
     const store = gatedStore();
-    const { runId, cancel, drained } = await parkedRun(store);
+    const { runId, cancel, drained, depart } = await parkedRun(store);
     cancel();
     await drained;
+    expect((await depart()).kind).toBe('closed');
 
     const terminals = store
       .loadRunEvents(runId)

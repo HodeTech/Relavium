@@ -11,6 +11,7 @@
 import type { ErrorCode } from '@relavium/shared';
 
 import type { ToolId } from './types.js';
+import { markEffectAttentionError } from './effect-attention-marker.js';
 
 /** Stable discriminant for a tool-dispatch failure — callers narrow on `code`, never on `message`. */
 export type ToolErrorCode =
@@ -191,6 +192,7 @@ export class ToolEffectConflictError extends ToolDispatchError {
       false,
     );
     this.name = 'ToolEffectConflictError';
+    markEffectAttentionError(this);
   }
 }
 
@@ -220,6 +222,7 @@ export class ToolEffectNeedsAttentionError extends ToolDispatchError {
       false,
     );
     this.name = 'ToolEffectNeedsAttentionError';
+    markEffectAttentionError(this);
   }
 }
 

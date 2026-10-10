@@ -1,5 +1,6 @@
 import type { SessionStreamHandleEvent, ToolApprovalRequest } from '@relavium/core';
-import { cleanup, render } from 'ink-testing-library';
+import { cleanup, render as renderCapture } from 'ink-testing-library';
+import { useStdout } from 'ink';
 import type { ReactElement } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -39,13 +40,27 @@ import { bracketed, settleFrames, waitFor } from './harness-util.js';
  * {@link waitFor} (never a fixed single yield) because React 19's commit can be deferred under load.
  */
 
+// ink-testing-library supplies an EventEmitter capture, not a native Writable. Declare its working
+// output capability explicitly; production output failures are tested with real owned Writable ports.
+function WritableCapture(props: { readonly children: ReactElement }): ReactElement {
+  const { stdout } = useStdout();
+  Object.defineProperty(stdout, 'writable', { value: true });
+  return props.children;
+}
+function render(tree: ReactElement): ReturnType<typeof renderCapture> {
+  return renderCapture(<WritableCapture>{tree}</WritableCapture>);
+}
+
 afterEach(cleanup);
 
 /** Mount `ChatApp` with the minimal REQUIRED props (no optional ports) — the surface under test is the ink
  *  lifecycle + the raw-mode input/paste handlers, so the driver callbacks are inert stubs. */
 function mountChat(
   store: ChatStoreController,
-  opts: { onSuspend?: () => void } = {},
+  opts: {
+    onSuspend?: () => void;
+    onActivated?: (flushNotice: () => Promise<void>) => void | Promise<void>;
+  } = {},
 ): ReturnType<typeof render> {
   // Self-policing fixture (2.6.C): this helper mounts INLINE, so its store must carry the INLINE bound — the pairing
   // production builds. A divergent fixture would otherwise pass on a DEAD TREE: the tripwire throws inside the
@@ -60,6 +75,7 @@ function mountChat(
       onError={() => {}}
       onModeChange={() => {}}
       {...(opts.onSuspend === undefined ? {} : { onSuspend: opts.onSuspend })}
+      {...(opts.onActivated === undefined ? {} : { onActivated: opts.onActivated })}
     />,
   );
 }
@@ -78,10 +94,36 @@ const turnStarted = (timestamp: string): SessionStreamHandleEvent => ({
   timestamp,
 });
 
+describe('ChatApp mounted disclosure surface (ADR-0098)', () => {
+  it('activates after commit and displays a notice delivered by the activation hook', async () => {
+    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
+    const onActivated = vi.fn(() => store.notice('External effect needs attention.'));
+    const h = render(
+      <ChatApp
+        store={store}
+        onActivated={onActivated}
+        onSubmit={async () => {}}
+        shouldStop={() => false}
+        onExit={() => {}}
+        onError={() => {}}
+        onModeChange={() => {}}
+      />,
+    );
+    await waitFor(() => (h.lastFrame() ?? '').includes('External effect needs attention.'));
+    expect(onActivated).toHaveBeenCalledTimes(1);
+    store.tick();
+    await settleFrames();
+    expect(onActivated).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('ChatApp — raw Ctrl-Z job-control routing (G0)', () => {
-  it('routes the raw control byte to onSuspend exactly once and never submits prompt text', async () => {
+  it.each([false, true])('routes raw Ctrl-Z while activation is pending (%s)', async (pending) => {
     const onSuspend = vi.fn();
-    const h = mountChat(createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND), { onSuspend });
+    const h = mountChat(createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND), {
+      onSuspend,
+      ...(pending ? { onActivated: () => new Promise<void>(() => {}) } : {}),
+    });
     await waitFor(() => (h.lastFrame() ?? '').length > 0);
 
     h.stdin.write('\x1a');

@@ -1,4 +1,4 @@
-import type { RunEvent } from '@relavium/shared';
+import { AllowanceQuoteResultSchema, RunEventSchema, type RunEvent } from '@relavium/shared';
 import { describe, expect, it } from 'vitest';
 
 import { reconstructCheckpointState } from './checkpoint.js';
@@ -352,7 +352,9 @@ describe('reconstructCheckpointState', () => {
     ]);
     expect(state?.runStatus).toBe('paused');
     expect(state?.nodeStates.get('n')).toEqual({ status: 'paused' });
-    expect(state?.pendingGates).toEqual([{ gateId: 'g1', nodeId: 'n', isBudgetGate: true }]);
+    expect(state?.pendingGates).toEqual([
+      { gateId: 'g1', nodeId: 'n', isBudgetGate: true, allowance: { kind: 'legacy_no_allowance' } },
+    ]);
     // H2: the durable budget:paused.spentMicrocents restores the running cost (cost:updated is streamed,
     // not persisted), so the re-seeded governor blocks correctly after resume.
     expect(state?.cumulativeCostMicrocents).toBe(900);
@@ -388,6 +390,7 @@ describe('reconstructCheckpointState', () => {
         gateId: 'g1',
         nodeId: 'n',
         isBudgetGate: true,
+        allowance: { kind: 'legacy_no_allowance' },
         expiresAt: '2026-01-01T00:00:01.000Z',
         timeoutAction: 'reject',
         timeoutMs: 1000,
@@ -912,4 +915,126 @@ describe('the fold carries what the run was ADMITTED with (ADR-0083 §5)', () =>
     // engine masks at emit: `resume-identity.test.ts` seeds a real value through `resumeFromCheckpoint` and
     // asserts the persisted log does not contain it.
   });
+});
+
+describe('authority-witnessed optional-amount companions', () => {
+  const quoted = AllowanceQuoteResultSchema.parse({
+    kind: 'quoted',
+    quote: {
+      amount: { kind: 'representable', microcents: 10 },
+      provenance: {
+        version: 1,
+        route: 'text',
+        calls: 1,
+        attempts: 2,
+        entries: [
+          {
+            index: 0,
+            model: 'offline',
+            provider: 'openai',
+            endpoint: 'custom',
+            attempts: 2,
+            estimate: {
+              kind: 'priced',
+              microcents: 5,
+              basis: {
+                inputTokensEstimate: 2,
+                outputTokensReservation: 3,
+                inputRateKind: 'non_cached',
+                inputPerMtokMicrocents: 1000000,
+                outputPerMtokMicrocents: 1000000,
+                media: [],
+              },
+              unpricedModalities: [],
+            },
+          },
+        ],
+      },
+      excludedEntries: [],
+    },
+  });
+  function history(amountFirst: boolean): RunEvent[] {
+    const rows: RunEvent[] = [];
+    const append = (fields: Readonly<Record<string, unknown>>): void => {
+      rows.push(RunEventSchema.parse({ ...base(rows.length), ...fields }));
+    };
+    append(started);
+    const allowance = { kind: 'frozen', quote: quoted };
+    append({
+      type: 'budget:authorization',
+      nodeId: 'agent',
+      gateId: 'bg',
+      authorization: {
+        state: 'paused',
+        allowance,
+        spentMicrocents: 2,
+        limitMicrocents: 1,
+      },
+    });
+    append({
+      type: 'human_gate:paused',
+      nodeId: 'human',
+      gateId: 'hg',
+      gateType: 'approval',
+      message: 'ordinary',
+    });
+    append({
+      type: 'budget:authorization',
+      nodeId: 'agent',
+      gateId: 'bg',
+      authorization: {
+        state: 'decided',
+        allowance,
+        decision: 'approved',
+        decidedBy: 'offline',
+        approvedAmountMicrocents: 10,
+      },
+    });
+    for (const withAmount of [amountFirst, !amountFirst]) {
+      append({
+        type: 'human_gate:resumed',
+        nodeId: 'agent',
+        gateId: 'bg',
+        decision: 'approved',
+        decidedBy: 'offline',
+        ...(withAmount ? { approvedAmountMicrocents: 10 } : {}),
+      });
+      if (rows.length === 5) append(completed(rows.length, 'agent', { real: 'artifact' }));
+    }
+    return rows;
+  }
+  for (const amountFirst of [false, true]) {
+    it(`checkpoint retains real output and ordinary sibling (amountFirst=${amountFirst})`, () => {
+      const state = reconstructCheckpointState(history(amountFirst));
+      expect(state?.nodeStates.get('agent')).toMatchObject({
+        status: 'completed',
+        output: { real: 'artifact' },
+      });
+      expect(state?.resolvedGateIds).toContain('bg');
+      expect(state?.pendingGates).toMatchObject([{ gateId: 'hg', isBudgetGate: false }]);
+    });
+    it(`reference discovery preserves unrelated pending work (amountFirst=${amountFirst})`, async () => {
+      const store = new InMemoryRunStore();
+      const rows = history(amountFirst);
+      for (const event of rows) await store.persistEvent(event);
+      await store.persistEvent({ ...started, runId: 'unrelated' });
+      await store.persistEvent(
+        RunEventSchema.parse({
+          ...base(1),
+          runId: 'unrelated',
+          type: 'human_gate:paused',
+          nodeId: 'other-human',
+          gateId: 'other-gate',
+          gateType: 'input',
+          message: 'other',
+        }),
+      );
+      const discovered = new Map(
+        (await store.listInterruptedRuns()).map((run) => [run.runId, run]),
+      );
+      expect(discovered.size).toBe(2);
+      expect(discovered.get('r1')).toMatchObject({ resumable: true, lastSequenceNumber: 6 });
+      expect(discovered.get('unrelated')).toMatchObject({ resumable: true, lastSequenceNumber: 1 });
+    });
+  }
 });

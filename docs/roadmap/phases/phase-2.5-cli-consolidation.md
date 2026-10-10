@@ -571,7 +571,8 @@ backward-compatibility exit criterion.
 
 **Tasks:** correct the surface-blind "encrypted history" wording (`docs/uvp.md`, `docs/vision.md`,
 `docs/tutorials/cli/start-a-chat-session.md`) to the accurate CLI posture — **unencrypted**, protected
-by `0700`/`0600` + keychain (no credentials at rest), per
+by `0700`/`0600`, with Relavium-managed provider keys in the OS keychain and potentially sensitive
+user/tool content retained, per
 [ADR-0050](../../decisions/0050-cli-history-db-at-rest-posture.md) (the canonical references are already
 correct); reconcile the roadmap status surfaces (`docs/roadmap/current.md`,
 [phase-2-cli.md](phase-2-cli.md), [CLAUDE.md](../../../CLAUDE.md)) now that **2.R and 2.J have both

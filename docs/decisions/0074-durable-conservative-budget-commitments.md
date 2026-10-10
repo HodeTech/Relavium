@@ -4,6 +4,26 @@
 - **Date**: 2026-07-29
 - **Related**: [ADR-0028](0028-workflow-resource-governance.md) (the pre-egress cap), [ADR-0036](0036-run-loop-substrate-event-bus-and-execution-host.md) (durable run events), [ADR-0045](0045-async-media-job-loop-poll-checkpoint-resume-cancel.md) (async media re-attach), [ADR-0070](0070-durable-per-model-session-cost-attribution.md) (session-cost accounting), [ADR-0071](0071-models-dev-as-the-model-metadata-source.md) (the strict-cost-cap posture), and [sse-event-schema.md](../reference/contracts/sse-event-schema.md) (the canonical event contract).
 
+> **Amended 2026-09-14 by [ADR-0096](0096-a-request-is-measured-before-it-is-sent.md) and [ADR-0097](0097-a-budget-approval-is-an-allowance-not-an-exemption.md) — refinements, not reversals.**
+>
+> - **§1: a classified pre-content context overflow is released, not committed** (ADR-0096 §5). All three conditions
+>   must hold: the attempt record says `context_overflow`, it says `contentReceived: false`, and the endpoint is not
+>   custom. In every other case this ADR's conservative commitment stands.
+> - **§3: an approved media submission records `acceptedCostMicrocents`** from the admission it holds (ADR-0097),
+>   rather than skipping it under the approved bypass.
+>
+> Both ADRs are **Accepted** as of 2026-09-14 with their implementation staged for `W7`.
+
+> **Amended further 2026-09-18 — §1 also releases a pre-content HTTP 4xx.** (Maintainer, 2026-09-18.) Once
+> ADR-0096 §6 prices input, every usage-less engaged failure would commit a window-sized estimate rather than the
+> output-sized one it commits today: a short rate-limit burst could exhaust a session's cap on calls the provider
+> never billed. An upstream **4xx** (429, 400, 401, 402, 403, 404, 413, 422) with `contentReceived: false` on a
+> non-custom endpoint is the same positive evidence §1 already accepts for a classified context overflow — the
+> provider refused the request before inference. Its admission is released. **The list is exactly those eight
+> codes**; any other status keeps this ADR's conservative commitment — a 5xx, a timeout (which is where
+> `kindFromHttpStatus` already routes a 408), a transport failure, and any failure on a custom endpoint — because
+> billing there is genuinely uncertain. The user's explicit release (`/cost --release`) remains the escape for those.
+
 ## Context
 
 The pre-egress governor must make two deliberately different statements about money:
@@ -154,3 +174,52 @@ ignore-unknown promise unfulfilled anyway.
 - **Keep the commitment process-local until node/session completion.** Rejected: a crash before that boundary reopens the cap.
 - **Reprice an async job on resume.** Rejected: current catalog/workflow state is not evidence of the price or volume accepted by a prior provider submission.
 - **Fix workflows but leave resumed chat unprotected.** Rejected: both surfaces share the governor; a safety guarantee that disappears after `chat-resume` is not a first-class cost cap.
+
+## W7 step 9 caller settlement correction — 2026-10-03
+
+Independent review reproduced two caller gaps around the safe actual-settlement guard and
+existing synchronous media accounting. A rejected actual text settlement now retains its
+admission's safe estimate, with the recorded node/attempt attribution, before propagating the
+accounting failure. Generative completion carries its priced flag into settlement: missing model
+or modality pricing retains the estimate rather than treating an unpriced zero as a free call.
+Any still-owned post-egress admission is conservatively finished on cleanup; only proven
+pre-egress failure refunds it. Already settled or transferred admissions remain idempotent.
+This implements the existing conservative commitment policy; it does not invent a realized
+charge or make unsafe actual arithmetic authoritative. See the
+[runner contract](../reference/shared-core/agent-runner.md#dispatch-allowance-foundation).
+
+## W7 step 9 parked-job settlement correction — 2026-10-03
+
+Fresh review reproduced the same conservative-accounting gap in the engine's transferred
+async media admission. Done, failed, deadline and terminal-abandonment paths now retain safe
+E when current pricing is missing or accounting rejects the actual. The job's exactly-once
+marker remains before pricing callbacks, and its captured admission finishes before a fault
+escapes. Terminal accounting handles each job independently so an exception cannot strand
+other paid jobs, timers, ownership or the event stream. Cancellation and an earlier failure
+keep their precedence. Known zero/under-spend/overrun still reconcile actual cost; an already
+settled delivery fault cannot manufacture a second commitment. Conservative E remains separate
+from actual spend. This completes the adjacent caller correction without changing authorization.
+
+## W7 step 9 handover and terminal-total correction — 2026-10-03
+
+A third independent review found two earlier host-fault gaps: parking read the clock before
+consuming the transferred admission, and the poll backstop cleared a job before conserving
+its held reservation. The engine now owns the exact submission before fallible host work,
+retains safe E if transfer fails, and finishes any unsettled admission before deleting a
+faulted poll job. Once the map owns the admission, ordinary reconciliation remains its only
+consumer. Park-time cancellation cannot register a job after terminal cleanup, and timer
+installation disposes a handle whose job was cleared during its callback.
+
+The same review found cancellation during pricing could snapshot a terminal before the
+already-running actual-cost fold completed. Immediate cancellation and the early exactly-once
+marker remain; terminal accounting joins that explicit completion before taking its total.
+Known actual stays actual and retained E stays conservative. These repair the existing
+consumer obligations without changing authorization or claiming recovery from permanently
+broken hosts. See the [runner contract](../reference/shared-core/agent-runner.md#dispatch-allowance-foundation).
+
+### W7 implementation landing — 2026-10-10
+
+The approved W7 implementation and scoped independent reviews are complete. Final whole-wave
+acceptance, per-item causal evidence, canonical landing checks and approved residuals are joined in
+the [W7 closing register](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w7-closing-register--2026-10-10).
+This dated note preserves the earlier decision and status history; W8 and the phase remain open.

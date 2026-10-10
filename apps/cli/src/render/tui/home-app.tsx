@@ -4,6 +4,11 @@ import { useEffect, useRef, useState, useSyncExternalStore, type ReactElement } 
 import { CHAT_PALETTE_COMMANDS, HOME_PALETTE_COMMANDS } from '../../commands/repl-commands.js';
 import type { PendingAttachment } from './attachments.js';
 import { ChatView, useCopiedToast } from './chat-ink.js';
+import { useVisibleRenderFlush } from './render-acknowledgement.js';
+import {
+  createTranscriptAcknowledgement,
+  type TranscriptAcknowledgement,
+} from './transcript-acknowledgement.js';
 import type { EditorState } from './chat-input.js';
 import { liveScrollGeometry, sanitizeInline, wrapTranscript } from './chat-projection.js';
 import type { ChatStoreController } from './chat-store.js';
@@ -51,8 +56,12 @@ export type { HomeChatSession } from './home-controller.js';
 
 import type { ClipboardOutcome } from '../clipboard.js';
 import type { SuspendPort } from '../suspend.js';
+import type { NoticeFlush } from '../../engine/effect-retention.js';
 
 export interface RootAppProps {
+  /** Publishes a mounted render acknowledgement bound to this Ink tree and its exact output stream. */
+  readonly onRendererReady?: (flushVisible: NoticeFlush) => void;
+  readonly onRendererError?: (error: Error) => void;
   readonly controller: HomeController;
   readonly nowMs: () => number;
   readonly color: boolean;
@@ -91,6 +100,7 @@ export interface RootAppProps {
 function ChatRegion(
   props: Readonly<{
     store: ChatStoreController;
+    acknowledgement: TranscriptAcknowledgement;
     editor: EditorState;
     palette: PaletteState | undefined;
     search: ReverseSearchState | undefined;
@@ -128,6 +138,13 @@ function ChatRegion(
     copied: boolean;
   }>,
 ): ReactElement {
+  // A reseat replaces the view store while preserving sessionId and RootApp. Reset Static's
+  // printed-item cursor for that new transcript owner; inline stores contain only new entries.
+  // Keep the root input/terminal owner mounted and the terminal's existing scrollback intact.
+  const [transcriptOwner, setTranscriptOwner] = useState({ store: props.store, generation: 0 });
+  if (transcriptOwner.store !== props.store) {
+    setTranscriptOwner({ store: props.store, generation: transcriptOwner.generation + 1 });
+  }
   const { state, tick, color, mode, reasoningEffort, reasoningVisible, approval } =
     useSyncExternalStore(props.store.subscribe, props.store.getSnapshot);
   // Read the clock in THIS per-frame component (see the `now` prop doc) so the elapsed advances live.
@@ -138,6 +155,8 @@ function ChatRegion(
     // height to fill below any keyboard-owning overlay (palette / search / model-picker / …); inline ⇒ unbounded.
     <Box flexDirection="column" {...(viewport === undefined ? {} : { height: viewport.rows })}>
       <ChatView
+        acknowledgement={props.acknowledgement}
+        key={transcriptOwner.generation}
         state={state}
         tick={tick}
         nowMs={nowMs}
@@ -192,6 +211,13 @@ function ChatRegion(
 export function RootApp(props: Readonly<RootAppProps>): ReactElement {
   const { controller, getSize, subscribeResize, color } = props;
   const state = useSyncExternalStore(controller.subscribe, controller.getSnapshot);
+  const [acknowledgement] = useState(() =>
+    createTranscriptAcknowledgement(() => controller.getSnapshot().session?.store),
+  );
+  useEffect(() => {
+    // Home remains mounted after chat ends; do not retain the departed viewport's transcript.
+    if (state.mode !== 'chat') acknowledgement.clearViewport();
+  }, [state.mode, acknowledgement]);
   // Attach ink's `suspendTerminal` to the ADR-0068 §e port while this tree is mounted (2.6.F Step 5d). `useApp()` is
   // the only place it exists, and the in-Home chat's slash dispatch runs outside React — so the port is the bridge.
   // Invoked as a METHOD (`app.suspendTerminal(cb)`), never as a bare destructured reference: ink 7 hands it out
@@ -414,10 +440,19 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
   // one `text` event, so a multi-line block appends verbatim and a pasted approval token never reaches the key
   // reducers (ADR-0068). The controller gates it (drops behind an overlay / pending approval / mid-turn).
   usePaste((text) => controller.handlePaste(text));
+  const flushVisible = useVisibleRenderFlush(
+    props.onRendererError,
+    props.suspendPort,
+    acknowledgement,
+  );
+  useEffect(() => {
+    props.onRendererReady?.(flushVisible);
+  }, [flushVisible, props.onRendererReady]);
 
   if (state.mode === 'chat' && state.session !== undefined) {
     return (
       <ChatRegion
+        acknowledgement={acknowledgement}
         store={state.session.store}
         editor={state.input}
         palette={state.palette}

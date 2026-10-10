@@ -9,18 +9,20 @@
  * gateway. A rule enforced only inside implementations we happen to own is a coincidence, not an obligation.
  * This is the trust boundary; the adapters are defence in depth.
  *
- * **Scope: ORDER, not shape.** Every chunk is assumed to satisfy `StreamChunkSchema` — that is a separate
+ * **Scope: ordering and terminal ownership.** Every chunk is assumed to satisfy `StreamChunkSchema` — that is a separate
  * seam obligation the conformance suite enforces. Parsing every chunk of every token stream through Zod is a
  * real per-chunk cost, and unlike the ordering check it is not a branch. A malformed chunk SHAPE is a bug
  * the conformance suite finds; well-shaped chunks in an impossible order are what silently become a wrong
- * answer, and that is what this is for.
+ * answer, and that is what this is for. The one held terminal additionally captures accountable usage or
+ * classified diagnostic fields before the confirming read resumes provider code; no per-token parse is added.
  */
 
-import { makeLlmError } from './llm-error.js';
-import type { LlmError, ProviderId, StreamChunk } from './types.js';
+import { snapshotAccountableUsage } from './cost-tracker.js';
+import { makeLlmError, snapshotLlmError } from './llm-error.js';
+import type { LlmError, ProviderId, StreamChunk, Usage } from './types.js';
 
 /** `stop` and `error` are the two terminal arms; everything else commits the stream (ADR-0082 §1). */
-function isTerminal(chunk: StreamChunk): boolean {
+function isTerminal(chunk: StreamChunk): chunk is Extract<StreamChunk, { type: 'stop' | 'error' }> {
   return chunk.type === 'stop' || chunk.type === 'error';
 }
 
@@ -35,7 +37,7 @@ function truncated(provider: ProviderId, message: string): LlmError {
 /**
  * Wrap a provider's stream so the caller sees a grammar-checked one.
  *
- * Yields the source's chunks unchanged while they are well-formed. On a violation it yields a classified
+ * Yields non-terminal chunks unchanged and owns the held terminal's semantic fields. On a violation it yields a classified
  * `error` chunk **instead of** whatever the source was doing, and stops — so a downstream consumer that
  * already knows how to handle an `error` terminal needs no new branch.
  *
@@ -72,6 +74,9 @@ function truncated(provider: ProviderId, message: string): LlmError {
 export async function* verifyStreamGrammar(
   source: AsyncIterable<StreamChunk>,
   provider: ProviderId,
+  model: string = provider,
+  /** Assignment-only internal observation; retaining usage does not confirm a clean terminal or settle it. */
+  onTerminalUsage?: (usage: Usage) => void,
 ): AsyncGenerator<StreamChunk, void> {
   let held: StreamChunk | undefined;
   let sawAnyChunk = false;
@@ -99,18 +104,40 @@ export async function* verifyStreamGrammar(
         // which one it was because a provider author needs to know.
         yield {
           type: 'error',
-          error: violation(
-            provider,
-            isTerminal(chunk)
-              ? `the provider emitted a second terminal (\`${chunk.type}\` after \`${held.type}\`) — a stream carries exactly one`
-              : `the provider emitted a \`${chunk.type}\` chunk after the terminal \`${held.type}\` — the terminal must be last`,
-          ),
+          error: {
+            ...violation(
+              provider,
+              isTerminal(chunk)
+                ? `the provider emitted a second terminal (\`${chunk.type}\` after \`${held.type}\`) — a stream carries exactly one`
+                : `the provider emitted a \`${chunk.type}\` chunk after the terminal \`${held.type}\` — the terminal must be last`,
+            ),
+            // A malformed tail changes the diagnosis, never usage already owned at the terminal.
+            ...(held.type === 'stop'
+              ? { usage: held.usage }
+              : held.type === 'error' && held.error.usage !== undefined
+                ? { usage: held.error.usage }
+                : {}),
+          },
         };
         return;
       }
       sawAnyChunk = true;
       if (isTerminal(chunk)) {
-        held = chunk; // …not yielded yet: one more read has to confirm it was last
+        // The confirming read resumes provider code, which can still mutate its original quantities.
+        // Own the stop before that handoff; later pricing and consumers receive this same observation.
+        held =
+          chunk.type === 'stop'
+            ? Object.freeze({
+                type: 'stop',
+                stopReason: chunk.stopReason,
+                usage: snapshotAccountableUsage(model, chunk.usage),
+              })
+            : Object.freeze({ type: 'error', error: snapshotLlmError(chunk.error) });
+        const usage = held.type === 'stop' ? held.usage : held.error.usage;
+        // The chain's deadline can win the next read while this generator is suspended. Pass only
+        // already validated, owned quantities to its call-local state before resuming provider code.
+        // Accounting and the terminal verdict remain the caller's existing single settlement path.
+        if (usage !== undefined) onTerminalUsage?.(usage);
         continue;
       }
       yield chunk;

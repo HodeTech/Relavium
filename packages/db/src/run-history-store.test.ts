@@ -1,4 +1,5 @@
 import {
+  AllowanceQuoteResultSchema,
   isAppendConflictError,
   isLeaseFencedError,
   RunEventSchema,
@@ -780,6 +781,278 @@ describe('createRunHistoryStore', () => {
     expect(byId.get('run-m')?.resumable).toBe(false);
   });
 
+  it.each(['gate_conflict', 'invalid_json'] as const)(
+    'refuses aggregate interruption discovery on %s without hiding or changing stored evidence',
+    async (damage) => {
+      await startRun();
+      await store.persistEvent(
+        ev('human_gate:paused', 1, {
+          nodeId: 'human',
+          gateId: 'gate',
+          gateType: 'approval',
+          message: 'approve',
+        }),
+      );
+      await store.persistEvent(
+        ev('human_gate:paused', 2, {
+          nodeId: damage === 'gate_conflict' ? 'conflicting' : 'human',
+          gateId: damage === 'gate_conflict' ? 'gate' : 'second-gate',
+          gateType: 'approval',
+          message: 'approve',
+        }),
+      );
+      const workflowId = await store.resolveWorkflowId('healthy');
+      for (const event of [
+        {
+          ...ev('run:started', 0, { workflowId, inputs: {}, executionMode: 'local' }),
+          runId: 'healthy',
+        },
+        {
+          ...ev('human_gate:paused', 1, {
+            nodeId: 'human',
+            gateId: 'healthy-gate',
+            gateType: 'approval',
+            message: 'approve',
+          }),
+          runId: 'healthy',
+        },
+      ])
+        await store.persistEvent(event);
+      if (damage === 'invalid_json')
+        client.db
+          .update(runEvents)
+          .set({ payloadJson: '{invalid' })
+          .where(and(eq(runEvents.runId, 'run-1'), eq(runEvents.seq, 2)))
+          .run();
+      const before = client.db.select().from(runEvents).all();
+      let error: unknown;
+      try {
+        await store.listInterruptedRuns();
+      } catch (cause) {
+        error = cause;
+      }
+      expect(isCorruptRunEventError(error)).toBe(true);
+      expect(error).toMatchObject({
+        code: 'corrupt_run_event',
+        runId: 'run-1',
+        sequenceNumber: 2,
+        eventType: 'human_gate:paused',
+      });
+      expect(client.db.select().from(runEvents).all()).toEqual(before);
+      expect(store.loadRunEventLogForReplay('healthy')).toHaveLength(2);
+      expect(store.loadRunEventLogForReplay('healthy').at(-1)?.type).toBe('human_gate:paused');
+    },
+  );
+
+  it('historical budget input remains readable and cannot abort aggregate interrupted discovery', async () => {
+    await startRun();
+    await store.persistEvent(
+      ev('budget:paused', 1, {
+        nodeId: 'agent',
+        gateId: 'old-budget',
+        spentMicrocents: 2,
+        limitMicrocents: 1,
+      }),
+    );
+    const input = ev('human_gate:resumed', 2, {
+      nodeId: 'agent',
+      decision: 'input_provided',
+      decidedBy: 'historical-user',
+      payload: { historical: 'answer' },
+    });
+    await store.persistEvent(input);
+    const workflowId = await store.resolveWorkflowId('ordinary');
+    await store.persistEvent({
+      ...ev('run:started', 0, { workflowId, inputs: {}, executionMode: 'local' }),
+      runId: 'ordinary-run',
+    });
+    await store.persistEvent({
+      ...ev('human_gate:paused', 1, {
+        nodeId: 'human',
+        gateId: 'ordinary-gate',
+        gateType: 'input',
+        message: 'ordinary input',
+      }),
+      runId: 'ordinary-run',
+    });
+    const interrupted = new Map((await store.listInterruptedRuns()).map((run) => [run.runId, run]));
+    expect(interrupted.size).toBe(2);
+    expect(interrupted.get('run-1')?.resumable).toBe(false);
+    expect(interrupted.get('ordinary-run')?.resumable).toBe(true);
+    expect(store.loadRunEventLogForReplay('run-1').at(-1)).toEqual(input);
+  });
+
+  for (const sibling of [false, true]) {
+    for (const withCompanion of [false, true]) {
+      it(`discovers outstanding gates after budget authority (sibling=${sibling}, companion=${withCompanion})`, async () => {
+        await startRun();
+        await store.persistEvent(
+          ev('budget:authorization', 1, {
+            nodeId: 'agent',
+            gateId: 'bg',
+            authorization: {
+              state: 'paused',
+              allowance: { kind: 'legacy_no_allowance' },
+              spentMicrocents: 2,
+              limitMicrocents: 1,
+            },
+          }),
+        );
+        expect((await store.listInterruptedRuns())[0]?.resumable).toBe(true);
+        if (sibling)
+          await store.persistEvent(
+            ev('human_gate:paused', 2, {
+              nodeId: 'human',
+              gateId: 'hg',
+              gateType: 'approval',
+              message: 'offline',
+            }),
+          );
+        await store.persistEvent(
+          ev('budget:authorization', 3, {
+            nodeId: 'agent',
+            gateId: 'bg',
+            authorization: {
+              state: 'decided',
+              allowance: { kind: 'legacy_no_allowance' },
+              decision: 'approved',
+              decidedBy: 'offline',
+            },
+          }),
+        );
+        if (withCompanion)
+          await store.persistEvent(
+            ev('human_gate:resumed', 4, {
+              nodeId: 'agent',
+              gateId: 'bg',
+              decision: 'approved',
+              decidedBy: 'offline',
+            }),
+          );
+        const interrupted = await store.listInterruptedRuns();
+        expect(interrupted).toHaveLength(1);
+        expect(interrupted[0]?.resumable).toBe(sibling);
+        expect(interrupted[0]?.lastSequenceNumber).toBe(withCompanion ? 4 : 3);
+      });
+    }
+  }
+
+  for (const amountFirst of [false, true]) {
+    it(`SQLite discovery preserves authority-witnessed optional amounts and unrelated work (amountFirst=${amountFirst})`, async () => {
+      const quoted = AllowanceQuoteResultSchema.parse({
+        kind: 'quoted',
+        quote: {
+          amount: { kind: 'representable', microcents: 10 },
+          provenance: {
+            version: 1,
+            route: 'text',
+            calls: 1,
+            attempts: 2,
+            entries: [
+              {
+                index: 0,
+                model: 'offline',
+                provider: 'openai',
+                endpoint: 'custom',
+                attempts: 2,
+                estimate: {
+                  kind: 'priced',
+                  microcents: 5,
+                  basis: {
+                    inputTokensEstimate: 2,
+                    outputTokensReservation: 3,
+                    inputRateKind: 'non_cached',
+                    inputPerMtokMicrocents: 1000000,
+                    outputPerMtokMicrocents: 1000000,
+                    media: [],
+                  },
+                  unpricedModalities: [],
+                },
+              },
+            ],
+          },
+          excludedEntries: [],
+        },
+      });
+      const workflowId = await startRun();
+      const allowance = { kind: 'frozen', quote: quoted } as const;
+      const rows: RunEvent[] = [
+        ev('budget:authorization', 1, {
+          nodeId: 'agent',
+          gateId: 'bg',
+          authorization: {
+            state: 'paused',
+            allowance,
+            spentMicrocents: 2,
+            limitMicrocents: 1,
+          },
+        }),
+        ev('human_gate:paused', 2, {
+          nodeId: 'human',
+          gateId: 'hg',
+          gateType: 'approval',
+          message: 'ordinary',
+        }),
+        ev('budget:authorization', 3, {
+          nodeId: 'agent',
+          gateId: 'bg',
+          authorization: {
+            state: 'decided',
+            allowance,
+            decision: 'approved',
+            decidedBy: 'offline',
+            approvedAmountMicrocents: 10,
+          },
+        }),
+      ];
+      for (const withAmount of [amountFirst, !amountFirst]) {
+        rows.push(
+          ev('human_gate:resumed', rows.length + 1, {
+            nodeId: 'agent',
+            gateId: 'bg',
+            decision: 'approved',
+            decidedBy: 'offline',
+            ...(withAmount ? { approvedAmountMicrocents: 10 } : {}),
+          }),
+        );
+        if (rows.length === 4)
+          rows.push(
+            ev('node:completed', 5, {
+              nodeId: 'agent',
+              output: { real: 'artifact' },
+              tokensUsed: { input: 0, output: 0 },
+              durationMs: 1,
+            }),
+          );
+      }
+      for (const event of rows) await store.persistEvent(event);
+      await store.persistEvent({
+        ...ev('run:started', 0, { workflowId, inputs: {}, executionMode: 'local' }),
+        runId: 'unrelated',
+      });
+      await store.persistEvent({
+        ...ev('human_gate:paused', 1, {
+          nodeId: 'other-human',
+          gateId: 'other-gate',
+          gateType: 'input',
+          message: 'other',
+        }),
+        runId: 'unrelated',
+      });
+      const rawBefore = client.db.select().from(runEvents).all();
+      const replay = store.loadRunEventLogForReplay('run-1');
+      expect(replay.slice(1)).toEqual(rows);
+      const discovered = new Map(
+        (await store.listInterruptedRuns()).map((run) => [run.runId, run]),
+      );
+      expect(discovered.size).toBe(2);
+      expect(discovered.get('run-1')).toMatchObject({ resumable: true, lastSequenceNumber: 6 });
+      expect(discovered.get('unrelated')).toMatchObject({ resumable: true, lastSequenceNumber: 1 });
+      expect(client.db.select().from(runEvents).all()).toEqual(rawBefore);
+      expect(store.loadRunEventLogForReplay('run-1')).toEqual(replay);
+    });
+  }
+
   it('marks a retried attempt failed so no step row lingers in `running`', async () => {
     await startRun();
     await store.persistEvent(ev('node:started', 1, { nodeId: 'flaky', nodeType: 'agent' }));
@@ -810,13 +1083,13 @@ describe('createRunHistoryStore', () => {
     ]);
   });
 
-  // Security fixture — the engine masks a secret-typed value at the bus as { secret: true, ref }; the store is
-  // pass-through. Assert the masked placeholder lands and the RAW value never appears in ANY unsafe column
-  // (database-schema.md §"Secrets at the write boundary"): run_events.payload_json, runs.input_json,
-  // runs.workflow_definition_snapshot, and the step_executions input/output/error JSON. Defense in depth, ADR-0050.
-  it('never persists a raw secret — the masked placeholder only, across every unsafe column', async () => {
+  // Pass-through fixture: already-masked input/output slots remain placeholders in history columns.
+  // RAW is never submitted here; this does not exercise upstream input masking, tool-event scrubbing or
+  // general content redaction. The ref names the supplied input slot, not a credential resolver.
+  // See database-schema.md §"Secrets at the write boundary" and ADR-0050's at-rest correction.
+  it('preserves supplied masked input and output placeholders in history columns', async () => {
     const RAW = ['sk', 'live', 'DEADBEEF'].join('-'); // a fake key, built so no contiguous literal exists
-    const masked = { secret: true, ref: 'keychain://relavium/anthropic' } as const;
+    const masked = { secret: true, ref: 'inputs.api_key' } as const;
     const workflowId = await store.resolveWorkflowId('secret-wf');
     await store.persistEvent({
       ...ev('run:started', 0, { workflowId, inputs: { api_key: masked }, executionMode: 'local' }),
@@ -846,10 +1119,12 @@ describe('createRunHistoryStore', () => {
     const eventRows = client.db.select().from(runEvents).where(eq(runEvents.runId, 'run-s')).all();
 
     expect(runRow?.inputJson).toContain('"secret":true');
+    expect(runRow?.inputJson).toContain('"ref":"inputs.api_key"');
     expect(stepRow?.outputJson).toContain('"secret":true');
-    // No unsafe column contains the raw value. `stepRow.inputJson` is always '{}' (node:started carries no
-    // runtime input payload by design — the store never writes it), so its check is vacuous-but-complete:
-    // it documents that the column is covered and stays empty, not that node inputs are captured here.
+    expect(stepRow?.outputJson).toContain('"ref":"inputs.api_key"');
+    // RAW was never supplied; these absence checks do not establish upstream redaction.
+    // `stepRow.inputJson` is always '{}' (node:started carries no runtime input payload by design),
+    // so that empty-column check does not exercise masking of a node's runtime inputs.
     for (const value of [
       runRow?.inputJson,
       runRow?.workflowDefinitionSnapshot,

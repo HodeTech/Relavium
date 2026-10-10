@@ -18,8 +18,9 @@ export type SchemaVersion = typeof SCHEMA_VERSION;
  * and the per-event ordinal is always `sequenceNumber`, never `seqNo`. Order mirrors the
  * `RunEvent` union in the spec: `agent:reasoning` sits immediately after `agent:token` (the reasoning
  * host-emit, EA6/2.5.H amending [ADR-0036]); `agent:approval_requested` + `agent:file_patch_proposed`
- * sit after `agent:tool_result`, then the five governance events: `run:paused`, `run:timeout`,
- * `budget:warning`, `budget:paused` (ADR-0028) and `budget:estimate_committed` ([ADR-0074], dual-envelope).
+ * sit after `agent:tool_result`, then the governance events: `run:paused`, `run:timeout`,
+ * `budget:warning`, `budget:paused` (ADR-0028), `budget:authorization` (ADR-0100) and
+ * `budget:estimate_committed` ([ADR-0074], dual-envelope).
  * `cost:attempt_settled` ([ADR-0076]) closes the list — the realized twin of that last one, and the only
  * durable member of the `cost:` namespace (`cost:updated` is streamed).
  */
@@ -53,6 +54,8 @@ export const RUN_EVENT_TYPES = [
   'run:timeout',
   'budget:warning',
   'budget:paused',
+  // Run-only durable authorization. Old replay readers refuse the unknown discriminant (ADR-0100).
+  'budget:authorization',
   // A conservative budget commitment made durable (ADR-0074 §2) — a bounded ESTIMATE retained when a provider
   // may already have billed a call but supplied no trustworthy usage. Dual-envelope, like 'cost:updated': it
   // rides 'runId' on a run and 'sessionId' on a session, so it is listed here (with the run types) and reused
@@ -67,7 +70,7 @@ export const RUN_EVENT_TYPES = [
 export type RunEventType = (typeof RUN_EVENT_TYPES)[number];
 
 /**
- * The five **`session:*`** lifecycle event names for an agent session
+ * The ten **`session:*`** lifecycle event names for an agent session
  * (sse-event-schema.md §"Session event namespace", [ADR-0024]). Disjoint from
  * `RUN_EVENT_TYPES`; within a turn a session also reuses `agent:token` /
  * `agent:tool_call` / `agent:tool_result` / `cost:updated` carried on the session
@@ -80,6 +83,8 @@ export const SESSION_EVENT_TYPES = [
   'session:cancelled',
   'session:exported',
   'session:compacting', // ADR-0062 — context compaction STARTED (the "Summarizing…" moment; paired with the below)
+  'session:compaction_failed', // ADR-0096/0099 — closes an admitted compaction without replacing history
+  'session:compaction_budget_refused', // ADR-0099 — first-admission after-turn refusal; no moment opened
   'session:compacted', // ADR-0062 — model-summarised context compaction applied
   'session:trimmed', // ADR-0062 — deterministic history trim applied (no LLM call)
 ] as const;
@@ -98,6 +103,8 @@ export type SessionEventType = (typeof SESSION_EVENT_TYPES)[number];
  */
 export const ERROR_CODES = [
   'validation',
+  // ADR-0096: a classified context-window refusal is fatal; only a session may recover explicitly.
+  'context_overflow',
   // A provider content-policy rejection (text or media-generation) — a FATAL cause distinct from
   // `validation` (an authoring/shape error), so a surface shows the right reason/remediation. The
   // `content_filter` LlmErrorKind maps here (1.AG/ADR-0045 §6); not in RETRYABLE_ERROR_CODES.

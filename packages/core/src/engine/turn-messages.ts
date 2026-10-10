@@ -9,11 +9,9 @@
  * turn instead.
  *
  * **A text part inside the leading user message, or its own leading user message when there is none.** That
- * answers the surviving half of ADR-0062 §1's objection directly, and STRUCTURALLY: the returned array is
- * user-first for every input, so no leading `assistant` (which Anthropic rejects) is reachable, and no
- * second consecutive `user` message is created. (The other half of that
- * objection — adjacent user messages — had already been closed at the seam by `mergeAdjacentSameRole` three
- * weeks before ADR-0062 was written.)
+ * answers the surviving half of ADR-0062 §1's objection structurally: when a summary is present, the
+ * returned array is user-first. With or without a summary, adjacent user/assistant messages are folded
+ * after policy selection, so empty final answers cannot introduce same-role adjacency on the wire.
  *
  * **The separator is in-band and explicit.** The OpenAI adapter joins content parts on the wire
  * (`parts.map(...).join('')`), so a part boundary is invisible there; the guarantee available on every
@@ -22,8 +20,17 @@
  */
 
 import type { LlmMessage } from '@relavium/llm';
+import type { Memory } from '@relavium/shared';
 
 import { unwrapUntrusted, type Untrusted } from '../tools/untrusted.js';
+import type { CompletedTurnSpan } from './session-resume.js';
+
+export interface SessionRequestProjection {
+  readonly memory?: Readonly<Memory>;
+  readonly completedTurnSpans: readonly CompletedTurnSpan[];
+  /** Explicitly pending, never inferred from a trailing user-role message. */
+  readonly pendingUser?: LlmMessage;
+}
 
 /**
  * The prose that opens the summary block and the prose that closes it.
@@ -49,11 +56,44 @@ const SUMMARY_CLOSING = 'End of the generated summary. The user’s message foll
 export function buildTurnMessages(
   summary: Untrusted<string> | undefined,
   messages: readonly LlmMessage[],
+  projection?: SessionRequestProjection,
 ): LlmMessage[] {
-  if (summary === undefined) return [...messages];
+  const memory = projection?.memory;
+  let selected: readonly LlmMessage[] = messages;
+  if (memory?.type === 'none')
+    selected = projection?.pendingUser === undefined ? [] : [projection.pendingUser];
+  else if (memory?.type === 'window')
+    selected = [
+      ...(projection?.completedTurnSpans ?? [])
+        .slice(-memory.window_size)
+        .flatMap((span) => messages.slice(span.start, span.end)),
+      ...(projection?.pendingUser === undefined ? [] : [projection.pendingUser]),
+    ];
+  const allowedSummary = memory?.type === 'none' || memory?.type === 'window' ? undefined : summary;
+  return foldAdjacent(placeSummary(allowedSummary, selected));
+}
+
+/** The request owns its message/content arrays; the archive and its parts remain untouched. */
+function foldAdjacent(messages: readonly LlmMessage[]): LlmMessage[] {
+  const folded: LlmMessage[] = [];
+  for (const message of messages) {
+    const owned = { ...message, content: message.content.map((part) => ({ ...part })) };
+    const previous = folded.at(-1);
+    if (previous !== undefined && previous.role === owned.role && owned.role !== 'tool') {
+      previous.content.push({ type: 'text', text: '\n\n' }, ...owned.content);
+    } else folded.push(owned);
+  }
+  return folded;
+}
+
+function placeSummary(
+  summary: Untrusted<string> | undefined,
+  messages: readonly LlmMessage[],
+): readonly LlmMessage[] {
+  if (summary === undefined) return messages;
   const block = {
     type: 'text' as const,
-    text: `${SUMMARY_OPENING}\n\n${unwrapUntrusted(summary)}\n\n${SUMMARY_CLOSING}`,
+    text: `${SUMMARY_OPENING}\n\n${unwrapUntrusted(summary)}\n\n${SUMMARY_CLOSING}\n\n`,
   };
   // **Joined only when the first message IS the user's**, and otherwise prepended.
   //

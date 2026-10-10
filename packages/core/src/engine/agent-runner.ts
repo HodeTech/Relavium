@@ -35,18 +35,22 @@ import {
 } from '@relavium/shared';
 import {
   LlmConfigError,
+  ProviderInvocationWork,
   LlmProviderError,
+  MediaGenResultSchema,
+  MediaJobStatusSchema,
   ResponseFormatSchema,
   ToolDefSchema,
-  cost,
+  estimateMediaCost,
   makeLlmError,
+  snapshotLlmError,
   type FallbackPlanEntry,
   type LlmMessage,
+  type LlmInvocationOptions,
   type LlmProvider,
   type MediaGenRequest,
   type MediaGenResult,
   type MediaJobStatus,
-  type MediaUnitsEntry,
   type MediaUnitsEstimate,
   type PricingOverlay,
   type ProviderId,
@@ -63,17 +67,21 @@ import type { AgentPlanConfig } from '../run-plan.js';
 import { authoredSystemPrompt, type AuthoredSystemPrompt } from './authored-system-prompt.js';
 import { modelVisibleDescription } from '../tools/types.js';
 import type { ToolDef, ToolDispatchContext, ToolRegistry } from '../tools/types.js';
+import { delegateAvailable, type ToolDelegates } from '../tools/delegates.js';
 import {
   AgentTurnError,
   DEFAULT_AGENT_TURN_LIMITS,
   codeForLlmError,
-  runAgentTurn,
+  contextOverflowMessage,
+  captureAgentTurnOutcome,
+  prepareAgentTurnRequest,
   type AgentTurnLimits,
   type AgentTurnResult,
   type ChainCapabilities,
   type PreEgressHook,
 } from './agent-turn.js';
 import { BudgetExceededError, BudgetPauseError, type BudgetAdmission } from './budget-governor.js';
+import { quoteBudgetAllowance } from './budget-allowance.js';
 import { effortToSend, gateReasoningEffort } from './reasoning-effort.js';
 import type {
   EffortGateResult,
@@ -85,6 +93,8 @@ import type {
   NodeExecContext,
   NodeExecutor,
   NodeOutcome,
+  NodePreparationContext,
+  BudgetDispatchPreparationResult,
 } from './node-executor.js';
 
 type AgentNode = AgentPlanConfig['node'];
@@ -192,6 +202,7 @@ export interface AgentRunnerDeps {
   readonly limits?: AgentTurnLimits;
   /** Pre-egress budget hook (default no-op; 1.AC fills it). */
   readonly preEgress?: PreEgressHook;
+  readonly maxTokensEstimate?: number;
   /** The user-pricing overlay (2.5.G S10, ADR-0065 §2) — host-injected into the turn's realized cost tracker so a
    *  workflow run's user-priced model is folded into cost governance. Absent ⇒ static-only. */
   readonly resolvePrice?: PricingOverlay;
@@ -255,9 +266,18 @@ function isBilledModality(modality: OutputModality): modality is MediaBilledModa
 export function createAgentNodeExecutor(deps: AgentRunnerDeps): NodeExecutor {
   return {
     execute: (ctx) => executeNode(ctx, deps),
+    prepareBudgetDispatch: (ctx) => {
+      const config = ctx.vertex.config;
+      if (ctx.vertex.type !== 'agent' || config.kind !== 'agent') {
+        return Promise.resolve(
+          failed('validation', 'budget preparation requires an agent vertex', false),
+        );
+      }
+      return prepareAgentDispatch(ctx, config, deps);
+    },
     // The engine owns the async media-job poll loop (1.AG Section D), but provider + credential resolution
     // lives here (the AgentRunnerDeps), so the engine delegates the actual poll back through the executor.
-    pollMediaJob: (job, signal) => pollMediaJobThroughDeps(deps, job, signal),
+    pollMediaJob: (job, signal, options) => pollMediaJobThroughDeps(deps, job, signal, options),
   };
 }
 
@@ -274,9 +294,11 @@ async function pollMediaJobThroughDeps(
   deps: AgentRunnerDeps,
   job: MediaJobSubmission,
   signal: AbortSignalLike,
+  options?: LlmInvocationOptions,
 ): Promise<MediaJobStatus> {
   const provider = deps.resolveProvider(job.provider);
-  if (provider === undefined || provider.pollMediaJob === undefined) {
+  const poll = provider?.pollMediaJob?.bind(provider);
+  if (provider === undefined || poll === undefined) {
     return {
       state: 'failed',
       error: makeLlmError({
@@ -312,12 +334,91 @@ async function pollMediaJobThroughDeps(
       }),
     };
   }
-  return provider.pollMediaJob(job.jobId, key, signal);
+  const work = options === undefined ? undefined : new ProviderInvocationWork(options, signal);
+  let status: MediaJobStatus;
+  let primaryFailure = false;
+  try {
+    // Aggregate transfer can synchronously cancel; the captured provider has not been entered yet.
+    if (signal.aborted) {
+      primaryFailure = true;
+      return {
+        state: 'failed',
+        error: makeLlmError({
+          provider: job.provider,
+          kind: 'cancelled',
+          message: `media job poll cancelled for provider ${job.provider}`,
+        }),
+      };
+    }
+    const captured = MediaJobStatusSchema.safeParse(
+      await (work === undefined
+        ? poll(job.jobId, key, signal)
+        : poll(job.jobId, key, signal, work)),
+    );
+    if (!captured.success)
+      throw new AgentTurnError(
+        'internal',
+        'media poll returned an unrecognized job state or invalid payload',
+        false,
+      );
+    status = captured.data;
+    primaryFailure = status.state === 'failed';
+  } catch (error) {
+    primaryFailure = true;
+    throw captureProviderFailure(error);
+  } finally {
+    retireProviderInvocation(work, primaryFailure);
+  }
+  if (
+    status.state === 'failed' &&
+    status.error.kind === 'context_overflow' &&
+    provider.customEndpoint === true
+  ) {
+    return {
+      state: 'failed',
+      error: {
+        ...status.error,
+        kind: 'bad_request',
+        retryable: false,
+        message: contextOverflowMessage(job.model, provider),
+      },
+    };
+  }
+  return status;
+}
+
+/** Detach typed diagnostics before caller cleanup; opaque host failures retain their exact identity. */
+function captureProviderFailure(error: unknown): unknown {
+  try {
+    return error instanceof LlmProviderError
+      ? new LlmProviderError(snapshotLlmError(error.llmError))
+      : error;
+  } catch {
+    // Reflection cannot replace the original unclassified failure.
+    return error;
+  }
+}
+
+function retireProviderInvocation(
+  work: ProviderInvocationWork | undefined,
+  primaryFailure: boolean,
+): void {
+  try {
+    work?.retire();
+  } catch (error) {
+    // Retirement has still aborted and positively joined quiet work. An established provider/
+    // cancellation diagnosis stays primary; a standalone cleanup fault remains loud and internal.
+    if (!primaryFailure) throw error;
+  }
 }
 
 // The agent arm's local `failed` factory — the parallel of the canonical one in
 // node-handlers/scope.ts; keep the two in lockstep if the NodeFailure shape ever changes.
-function failed(code: ErrorCode, message: string, retryable: boolean): NodeOutcome {
+function failed(
+  code: ErrorCode,
+  message: string,
+  retryable: boolean,
+): Extract<NodeOutcome, { kind: 'failed' }> {
   return { kind: 'failed', error: { code, message, retryable } };
 }
 
@@ -353,6 +454,16 @@ async function executeAgent(
   config: AgentPlanConfig,
   deps: AgentRunnerDeps,
 ): Promise<NodeOutcome> {
+  const result = await prepareAgentDispatch(ctx, config, deps);
+  return result.kind === 'failed' ? result : result.preparation.execute(ctx);
+}
+
+/** Shared by ordinary execution and approval: one lowering path, with no egress capability invoked. */
+async function prepareAgentDispatch(
+  ctx: NodePreparationContext,
+  config: AgentPlanConfig,
+  deps: AgentRunnerDeps,
+): Promise<BudgetDispatchPreparationResult> {
   const node = config.node;
   const agent = config.resolvedAgent;
   if (agent === undefined) {
@@ -391,74 +502,149 @@ async function executeAgent(
     primary !== undefined &&
     (deps.resolveMediaSurface?.(primary.model) ?? 'chat') === 'generative'
   ) {
-    return executeGenerativeMedia(ctx, node, primary, prompt.text, deps);
+    const modality = singleBilledModality(node.output_modalities, node.id);
+    if (!modality.ok) return failed('validation', modality.message, false);
+    if (prompt.text.length === 0)
+      return failed(
+        'validation',
+        `agent node '${node.id}': a media_surface 'generative' model requires a non-empty prompt`,
+        false,
+      );
+    if (primary.provider.generateMedia === undefined)
+      return failed(
+        'internal',
+        `agent node '${node.id}': model '${primary.model}' is media_surface 'generative' but provider '${primary.provider.id}' implements no generateMedia (host-wiring gap)`,
+        false,
+      );
+    const frozenNode = { ...node };
+    const units = generativeUnits(modality.modality, frozenNode);
+    return {
+      kind: 'prepared',
+      preparation: {
+        quote: (context) =>
+          quoteBudgetAllowance({
+            route: 'generative',
+            entries: [primary],
+            mediaUnitsEstimate: [{ modality: modality.modality, units }],
+            strictCostCap: context.strictCostCap,
+            ...(context.resolvePrice === undefined ? {} : { overlay: context.resolvePrice }),
+          }),
+        execute: (execution) =>
+          executeGenerativeMedia(execution, frozenNode, primary, prompt.text, deps),
+      },
+    };
   }
 
   const messages = assembleMessages(agent, node, prompt.text);
-  const llmTools = buildLlmTools(deps.tools, grantedToolIds);
   const outputSchema = node.output_schema ?? agent.output_schema;
   const responseFormat = lowerOutputSchema(outputSchema);
 
-  const dispatchContext: Omit<ToolDispatchContext, 'signal'> = {
-    // The journal, and the run-path correlation only the run loop can supply — the same reasoning that puts
-    // the money ledger here (ADR-0076): `ctx.attemptNumber` is the NODE-RETRY attempt (ADR-0040), which the
-    // turn has never carried and which the correlation needs for its audit arm.
+  const previewDispatch = makeAgentDispatchContext(ctx, node.id, grantedToolIds, deps);
+  const llmTools = buildLlmTools(deps.tools, grantedToolIds, previewDispatch);
+  const generation = prepareGenKnobs(agent, node, deps);
+  const maxTokensEstimate = ctx.maxTokensEstimate ?? deps.maxTokensEstimate;
+  const limits = deps.limits ?? DEFAULT_AGENT_TURN_LIMITS;
+  const mediaUnitsEstimate =
+    node.output_modalities === undefined
+      ? undefined
+      : buildMediaUnitsEstimate(node.output_modalities, deps.mediaCostEstimate);
+  const fields = {
+    system: messages.system,
+    messages: messages.messages,
+    ...(llmTools.length === 0 ? {} : { tools: llmTools }),
+    planEntries: plan.entries,
+    ...(responseFormat === undefined ? {} : { responseFormat }),
+    ...generation.fields,
+    ...(maxTokensEstimate === undefined ? {} : { maxTokensEstimate }),
+    ...(node.output_modalities === undefined ? {} : { outputModalities: node.output_modalities }),
+    ...(mediaUnitsEstimate === undefined ? {} : { mediaUnitsEstimate }),
+  };
+  let first: ReturnType<typeof prepareAgentTurnRequest>;
+  try {
+    first = prepareAgentTurnRequest({ ...fields, signal: ctx.signal });
+  } catch (error) {
+    if (error instanceof AgentTurnError) return failed(error.code, error.message, error.retryable);
+    throw error;
+  }
+  return {
+    kind: 'prepared',
+    preparation: {
+      quote: (context) =>
+        quoteBudgetAllowance({
+          route: 'text',
+          entries: plan.entries,
+          request: first.request,
+          inputTokensEstimate: first.inputTokensEstimate,
+          maxTokensEstimate,
+          maxToolTurns: limits.maxToolTurns,
+          ...(mediaUnitsEstimate === undefined ? {} : { mediaUnitsEstimate }),
+          strictCostCap: context.strictCostCap,
+          ...(context.resolvePrice === undefined ? {} : { overlay: context.resolvePrice }),
+        }),
+      execute: async (execution) => {
+        const preEgress = execution.preEgress ?? deps.preEgress;
+        const retainWork = executionRetainer(execution);
+        generation.notify();
+        const outcome = await captureAgentTurnOutcome({
+          ...fields,
+          preparedRequest: first.request,
+          chainCapabilities: chainCapabilities(deps),
+          ...(retainWork === undefined ? {} : { retainWork }),
+          nodeId: node.id,
+          emit: execution.emit,
+          signal: execution.signal,
+          registry: deps.registry,
+          dispatchContext: makeAgentDispatchContext(execution, node.id, grantedToolIds, deps),
+          limits,
+          ...(execution.whenReady === undefined ? {} : { whenReady: execution.whenReady }),
+          ...(preEgress === undefined ? {} : { preEgress }),
+          ...(execution.money === undefined ? {} : { money: execution.money }),
+          ...(deps.resolvePrice === undefined ? {} : { resolvePrice: deps.resolvePrice }),
+        });
+        if (outcome.kind === 'failed') {
+          // A consumer may throw a genuine core error class after a paid attempt. Its origin,
+          // rather than its prototype, keeps it outside retry and budget-gate authority.
+          if (outcome.failureOrigin === 'observer') {
+            return failed(
+              'internal',
+              'the agent turn failed with an unexpected observer error',
+              false,
+            );
+          }
+          return turnOutcomeForError(outcome.error);
+        }
+        return buildChatTurnOutcome(node, outcome.result, outputSchema);
+      },
+    },
+  };
+}
+
+/** Execution-local transfer only; preparation and standalone/session callers acquire no host authority. */
+function executionRetainer(
+  ctx: NodeExecContext,
+): import('@relavium/llm').FallbackChainOptions['retainWork'] {
+  const continueReceipt = ctx.continueReceipt;
+  if (continueReceipt === undefined) return;
+  return <T>(factory: () => Promise<T>): Promise<T> => continueReceipt(() => factory());
+}
+
+/** The same delegate visibility for preparation and dispatch; preparation cannot prepare an effect. */
+function makeAgentDispatchContext(
+  ctx: NodePreparationContext & Partial<Pick<NodeExecContext, 'effects'>>,
+  nodeId: string,
+  grantedToolIds: ReadonlySet<string>,
+  deps: AgentRunnerDeps,
+): Omit<ToolDispatchContext, 'signal'> {
+  return {
     effects: ctx.effects ?? unwiredEffectJournal(),
-    effectSlot: 0, // per-CALL; `dispatchToolCalls` overrides it with the tool call's ordinal
-    nodeId: node.id,
+    effectSlot: 0,
+    nodeId,
     grantedToolIds,
-    config: {}, // an agent-invoked tool carries no per-tool config block in v1.0
+    config: {},
     toolPolicy: ctx.toolPolicy,
     fsScope: deps.fsScope ?? 'sandboxed',
-    gateApproved: false, // an agent loop provides no human gate — git_commit stays denied
+    gateApproved: false,
   };
-
-  // The per-dispatch `ctx.preEgress` (the engine's budget governor, 1.AC) takes precedence; `deps.preEgress`
-  // is the fallback for a host that wires a runner directly. Reading ctx here lets the dispatcher build the
-  // runner ONCE (no per-call rebuild) and keeps the engine's H3 one-shot bypass (ctx.preEgress=undefined) working.
-  const preEgress = ctx.preEgress ?? deps.preEgress;
-  let result: AgentTurnResult;
-  try {
-    result = await runAgentTurn({
-      system: messages.system,
-      messages: messages.messages,
-      ...(llmTools.length > 0 ? { tools: llmTools } : {}),
-      planEntries: plan.entries,
-      chainCapabilities: chainCapabilities(deps),
-      ...(responseFormat === undefined ? {} : { responseFormat }),
-      ...resolveGenKnobs(agent, node, deps),
-      nodeId: node.id,
-      emit: ctx.emit,
-      // ADR-0036's producer-await, forwarded verbatim (`CR-30`) — the turn's chunk loop is what awaits it.
-      ...(ctx.whenReady === undefined ? {} : { whenReady: ctx.whenReady }),
-      signal: ctx.signal,
-      registry: deps.registry,
-      dispatchContext,
-      limits: deps.limits ?? DEFAULT_AGENT_TURN_LIMITS,
-      ...(preEgress === undefined ? {} : { preEgress }),
-      // Straight from the ctx, with no `deps` fallback — the ledger belongs to a RUN and only the run loop can
-      // supply it. A host wiring a runner directly gets no ledger, which is correct: there is no run to
-      // record against (ADR-0076 / ADR-0077).
-      ...(ctx.money === undefined ? {} : { money: ctx.money }),
-      ...(deps.resolvePrice === undefined ? {} : { resolvePrice: deps.resolvePrice }), // user-pricing overlay (S10)
-      // Media cost governance (1.AF/D17): forward the node's requested output modalities + a per-modality
-      // unit estimate so the budget governor prices a media-output turn pre-egress. Both omitted for a
-      // text-only node (no `output_modalities`), so a text turn pays no media-estimate work.
-      ...(node.output_modalities === undefined
-        ? {}
-        : {
-            outputModalities: node.output_modalities,
-            mediaUnitsEstimate: buildMediaUnitsEstimate(
-              node.output_modalities,
-              deps.mediaCostEstimate,
-            ),
-          }),
-    });
-  } catch (err) {
-    return turnOutcomeForError(err);
-  }
-
-  return buildChatTurnOutcome(node, result, outputSchema);
 }
 
 /**
@@ -529,7 +715,14 @@ function buildChatTurnOutcome(
  */
 async function acquireGenerativeAdmission(
   preEgress: NodeExecContext['preEgress'],
-  req: { readonly model: string; readonly modality: MediaBilledModality; readonly units: number },
+  req: {
+    readonly model: string;
+    readonly provider: ProviderId;
+    readonly endpoint: import('@relavium/llm').EndpointKind;
+    readonly modality: MediaBilledModality;
+    readonly units: number;
+    readonly entry: FallbackPlanEntry;
+  },
 ): Promise<
   | { kind: 'admitted'; admission: BudgetAdmission | undefined }
   | { kind: 'refused'; outcome: NodeOutcome }
@@ -542,10 +735,20 @@ async function acquireGenerativeAdmission(
     // caller has one shape to reason about.
     const admission =
       (await preEgress({
+        route: 'generative-media',
         model: req.model,
+        provider: req.provider,
+        endpoint: req.endpoint,
         maxTokens: 0,
+        inputTokensEstimate: 0,
+        outputTokensEstimate: 0,
         outputModalities: [req.modality],
         mediaUnitsEstimate: [{ modality: req.modality, units: req.units }],
+        allowanceQuoteContext: {
+          route: 'generative',
+          entries: [req.entry],
+          mediaUnitsEstimate: [{ modality: req.modality, units: req.units }],
+        },
       })) ?? undefined;
     return { kind: 'admitted', admission };
   } catch (err) {
@@ -612,8 +815,11 @@ async function executeGenerativeMedia(
   // single modality (singleBilledModality), so the budget governor's media addend resolves the same rate.
   const gated = await acquireGenerativeAdmission(ctx.preEgress ?? deps.preEgress, {
     model: primary.model,
+    provider: primary.provider.id,
+    endpoint: primary.provider.customEndpoint === true ? 'custom' : 'official',
     modality: modality.modality,
     units,
+    entry: primary,
   });
   if (gated.kind === 'refused') {
     return gated.outcome;
@@ -682,23 +888,43 @@ async function executeGenerativeMedia(
     // surface to let the engine bound a media call — and would couple two budgets answering different
     // questions. Equal today, independent by construction; the reasoning lives with the constant.
     const deadline = openGenerativeDeadline(deps, ctx.signal);
+    let cleanupFailure: { readonly error: unknown } | undefined;
     try {
       // From this call onward the provider may have accepted/billed the generation even if its SDK throws or omits
       // a terminal payload. Preserve the bounded reservation in those uncertain paths; only credential resolution
       // above is proven pre-egress and may release it.
-      egressStarted = true;
-      const submitted = await submitGenerativeMedia(provider, req, key, deadline, node.id);
+      const submitted = await submitGenerativeMedia(
+        provider,
+        req,
+        key,
+        deadline,
+        node.id,
+        executionRetainer(ctx),
+        () => {
+          egressStarted = true;
+        },
+      );
       if (submitted.kind === 'refused') {
-        admission?.settleAtReservedEstimate({ nodeId: node.id });
+        if (egressStarted) admission?.settleAtReservedEstimate({ nodeId: node.id });
         return submitted.outcome;
       }
       result = submitted.result;
     } catch (err) {
+      const retentionFailure = mediaRetentionFailure(err);
+      if (retentionFailure !== undefined) throw retentionFailure.error;
+      if (!egressStarted) throw err;
       admission?.settleAtReservedEstimate({ nodeId: node.id });
-      return mapGenerateMediaError(err);
+      return mapGenerateMediaError(err, primary);
     } finally {
-      deadline?.dispose();
+      try {
+        deadline?.dispose();
+      } catch (error) {
+        cleanupFailure = { error };
+      }
     }
+    // Primary throws/refusal returns above retain precedence. A cleanup-only fault still uses the
+    // existing host-failure path and conservative reservation, outside the finally block.
+    if (cleanupFailure !== undefined) throw cleanupFailure.error;
 
     // A cancel that landed WHILE generateMedia was in-flight (a non-cooperative adapter that ignored the signal,
     // or one that resolved just as the run cancelled) must win: skip BOTH the async park / sync media outcome AND
@@ -715,7 +941,10 @@ async function executeGenerativeMedia(
 
     const outcome = buildGenerativeOutcome(ctx, node, primary, modality.modality, units, result, {
       resolvePrice: deps.resolvePrice,
-      onRealizedCost: (realizedMicrocents: number) => admission?.settle(realizedMicrocents),
+      onRealizedCost: (realized) => {
+        if (realized.priced) admission?.settle(realized.costMicrocents);
+        else admission?.settleAtReservedEstimate({ nodeId: node.id });
+      },
     });
     if (outcome.kind === 'media_job') {
       retainMediaJobAdmission(outcome.job, admission);
@@ -728,9 +957,11 @@ async function executeGenerativeMedia(
     }
     return outcome;
   } finally {
-    // A synchronous completion settles actual cost before its event; a known pre-egress credential/cancel failure
-    // releases. Async ownership was transferred above. All ambiguous post-egress paths settled conservatively.
-    admission?.release();
+    // Pricing/outcome construction can throw after the provider accepted the request. Retain E unless actual
+    // settlement already consumed the lease; idempotence also prevents a throwing event sink from double billing.
+    // Only proven pre-egress failures refund. An async job's admission was transferred and cleared above.
+    if (egressStarted) admission?.settleAtReservedEstimate({ nodeId: node.id });
+    else admission?.release();
   }
 }
 
@@ -740,8 +971,15 @@ async function executeGenerativeMedia(
  * `UnsupportedCapabilityError` for a non-image modality / DeepSeek) → `validation` with its secret-free
  * message (never let the engine catch-all flatten it to opaque `internal`); anything else → `turnOutcomeForError`.
  */
-function mapGenerateMediaError(err: unknown): NodeOutcome {
+function mapGenerateMediaError(err: unknown, primary: FallbackPlanEntry): NodeOutcome {
   if (err instanceof LlmProviderError) {
+    if (err.llmError.kind === 'context_overflow') {
+      return failed(
+        primary.provider.customEndpoint === true ? 'validation' : 'context_overflow',
+        contextOverflowMessage(primary.model, primary.provider),
+        false,
+      );
+    }
     return failed(codeForLlmError(err.llmError), err.llmError.message, err.llmError.retryable);
   }
   if (err instanceof LlmConfigError) {
@@ -752,9 +990,9 @@ function mapGenerateMediaError(err: unknown): NodeOutcome {
 
 /**
  * Validate a resolved `generateMedia` result against the seam contract and build the node outcome. The
- * adapter result is NOT re-parsed at this boundary, so the `MediaGenResult` exactly-one-of refine is enforced
- * explicitly: BOTH present would let the async `jobId` branch silently DISCARD `media`, NEITHER would leave no
- * output — both are a misbehaving/hand-built adapter result (internal), not an authoring error. An async
+ * submission captures the schema-validated result before retirement; these guards also enforce the
+ * `MediaGenResult` exactly-one-of invariant: BOTH present would let the async `jobId` branch silently
+ * DISCARD `media`, NEITHER would leave no output — both are a misbehaving/hand-built adapter result (internal), not an authoring error. An async
  * `jobId` → the engine's media-job handoff (Section D); a sync `media` part → the de-inlined `{ text:'', media }`
  * output plus the lone realized `cost:updated` (ADR-0045 §5).
  */
@@ -768,7 +1006,7 @@ function buildGenerativeOutcome(
   /** The money seam, grouped: the user-pricing overlay and the realized-cost sink always travel together. */
   costing: {
     readonly resolvePrice: PricingOverlay | undefined;
-    readonly onRealizedCost: (costMicrocents: number) => void;
+    readonly onRealizedCost: (realized: ReturnType<typeof realizedMediaCost>) => void;
   },
 ): NodeOutcome {
   const { resolvePrice, onRealizedCost } = costing;
@@ -816,7 +1054,7 @@ function buildGenerativeOutcome(
   const realized = realizedMediaCost(primary.model, modality, units, resolvePrice);
   // Settle before emitting to the engine: if a synchronous event sink faults after provider success, the admission
   // cannot be released as though the charged generation never happened.
-  onRealizedCost(realized.costMicrocents);
+  onRealizedCost(realized);
   ctx.emit({
     type: 'cost:updated',
     nodeId: node.id,
@@ -887,15 +1125,16 @@ export function generativeUnits(modality: MediaBilledModality, node: AgentNode):
 
 /**
  * Best-effort realized media cost for a generative call (ADR-0045 §5): the request volume × the per-model
- * media rate, via the shared `cost()` fold (token counts are 0).
+ * media rate, via the shared rate-only pricing kernel. Native request volume is not provider-reported
+ * `Usage`: audio/video duration may be fractional while the `Usage` quantities remain integers.
  *
  * **It reports whether it could price the call, and that is the point**
  * ([ADR-0089](../../../../docs/decisions/0089-media-correctness-four-boundaries.md) §4). This path does NOT
  * go through a `FallbackChain` attempt record, so the `priced: false` signal the chain emits for an unpriced
  * model never reaches it — and a media generation is the call class most likely to be unpriced, which made
- * the one path `CR-55` is about the one path unable to say so. It still degrades to 0 rather than failing (H4
- * — a successful, already-paid generation must never become a failed node); what is new is that the caller is
- * told the 0 is a gap, not a charge.
+ * the one path `CR-55` is about the one path unable to say so. An unknown model still degrades to 0 rather
+ * than failing the already-paid generation; the caller is told that 0 is a gap, not a charge. Other accounting
+ * faults remain loud under the narrow catch below.
  */
 export function realizedMediaCost(
   model: string,
@@ -903,11 +1142,13 @@ export function realizedMediaCost(
   units: number,
   resolvePrice?: PricingOverlay,
 ): { readonly costMicrocents: number; readonly priced: boolean } {
-  const mediaUnits: MediaUnitsEntry[] = [
-    { modality, direction: 'output', units, unit: modality === 'image' ? 'count' : 'second' },
-  ];
+  // Preserve the count guard formerly supplied by `UsageSchema`; only durations permit fractions. The
+  // rate-only kernel validates finite non-negative volumes and safe integer costs before any cost fold.
+  if (modality === 'image' && (!Number.isSafeInteger(units) || units < 0)) {
+    throw new TypeError('native media accounting expected a non-negative safe image count');
+  }
   try {
-    const priced = cost(model, { inputTokens: 0, outputTokens: 0, mediaUnits }, resolvePrice);
+    const priced = estimateMediaCost(model, [{ modality, units }], resolvePrice);
     return {
       costMicrocents: priced.microcents,
       priced: priced.unpricedModalities.length === 0,
@@ -1045,10 +1286,17 @@ function lowerOutputSchema(schema: unknown): ResponseFormat | undefined {
 }
 
 /** The granted tools as LLM-visible defs, validated through the seam schema (no unsafe cast). */
-function buildLlmTools(defs: readonly ToolDef[], granted: ReadonlySet<string>): LlmToolDef[] {
+function buildLlmTools(
+  defs: readonly ToolDef[],
+  granted: ReadonlySet<string>,
+  delegates: ToolDelegates,
+): LlmToolDef[] {
   const out: LlmToolDef[] = [];
   for (const def of defs) {
     if (!granted.has(def.id)) continue;
+    // A tool whose dispatch DELEGATE is absent is never offered (`CR-73`) — the run path owes this as much as
+    // the session path does, and the CLI advertise-filter cannot cover it (it only runs on the chat path).
+    if (!delegateAvailable(def, delegates)) continue;
     // The model-visible description carries a provenance line for a server-supplied tool (ADR-0088 §7.2).
     const description = modelVisibleDescription(def);
     const parsed = ToolDefSchema.safeParse({
@@ -1071,11 +1319,14 @@ function buildLlmTools(defs: readonly ToolDef[], granted: ReadonlySet<string>): 
 }
 
 /** Node-over-agent generation knobs (the node override wins; ADR-0038). */
-function resolveGenKnobs(
+function prepareGenKnobs(
   agent: Agent,
   node: AgentNode,
   deps: AgentRunnerDeps,
-): { temperature?: number; maxTokens?: number; reasoningEffort?: ReasoningEffort } {
+): {
+  readonly fields: { temperature?: number; maxTokens?: number; reasoningEffort?: ReasoningEffort };
+  readonly notify: () => void;
+} {
   const temperature = node.temperature ?? agent.temperature;
   const maxTokens = node.max_tokens ?? agent.max_tokens;
   // ADR-0066/0071: send the tier ONLY when the model is on record as ACCEPTING it — not merely as reasoning.
@@ -1095,15 +1346,36 @@ function resolveGenKnobs(
   // knob the author deliberately set is the worse of the two: the run succeeds, the field is gone, and the bill
   // lands at the provider's default tier with nothing in the output to explain why. `capped` — a budget model whose
   // tier this node's `max_tokens` withholds (review M6) — is the same silent no-op and rides the same channel.
-  if (gate.kind === 'rejected' || gate.kind === 'uncontrollable' || gate.kind === 'capped') {
-    deps.onEffortWithheld?.(gate, agent.model);
-  }
+  const notify = (): void => {
+    if (gate.kind === 'rejected' || gate.kind === 'uncontrollable' || gate.kind === 'capped') {
+      deps.onEffortWithheld?.(gate, agent.model);
+    }
+  };
   const reasoningEffort = effortToSend(gate);
   return {
-    ...(temperature === undefined ? {} : { temperature }),
-    ...(maxTokens === undefined ? {} : { maxTokens }),
-    ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
+    fields: {
+      ...(temperature === undefined ? {} : { temperature }),
+      ...(maxTokens === undefined ? {} : { maxTokens }),
+      ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
+    },
+    notify,
   };
+}
+
+const mediaRetentionFailures = new WeakMap<object, { readonly error: unknown }>();
+
+function mediaRetentionFailure(error: unknown): { readonly error: unknown } | undefined {
+  return (typeof error === 'object' && error !== null) || typeof error === 'function'
+    ? mediaRetentionFailures.get(error)
+    : undefined;
+}
+
+class MediaRetentionEntryError extends Error {
+  constructor(original: unknown) {
+    super('host work registration failed');
+    this.name = 'MediaRetentionEntryError';
+    mediaRetentionFailures.set(this, { error: original });
+  }
 }
 
 /**
@@ -1120,38 +1392,106 @@ async function submitGenerativeMedia(
   key: string,
   deadline: DeadlineScope | undefined,
   nodeId: string,
+  retainWork: import('@relavium/llm').FallbackChainOptions['retainWork'],
+  onInvoke: () => void,
 ): Promise<{ kind: 'ok'; result: MediaGenResult } | { kind: 'refused'; outcome: NodeOutcome }> {
   if (provider.generateMedia === undefined) {
     throw new Error('generateMedia is absent — the caller checks this before reaching here');
   }
-  const call = provider.generateMedia(
-    deadline === undefined ? req : { ...req, signal: deadline.signal },
-    key,
-  );
-  if (deadline === undefined) {
-    return { kind: 'ok', result: await call };
-  }
-  const raced = await deadline.race(call);
-  if (raced.outcome !== 'deadline') {
-    return { kind: 'ok', result: raced.value };
-  }
-  // `classify()` owns the label: a caller cancel that beat the timer stays `cancelled`, the same cancel-wins
-  // precedence ADR-0036 gives the run and ADR-0082 §7 gives an attempt.
-  return {
-    kind: 'refused',
-    outcome:
-      deadline.classify() === 'caller'
-        ? failed(
-            'cancelled',
-            `agent node '${nodeId}': run cancelled during media generation`,
-            false,
-          )
-        : failed(
-            'provider_unavailable',
-            `agent node '${nodeId}': the provider did not respond within the ${String(MEDIA_GEN_SUBMIT_TIMEOUT_MS)}ms media-submission deadline`,
-            true,
-          ),
+  const generateMedia = provider.generateMedia.bind(provider);
+  const retain = <T>(factory: () => Promise<T>): Promise<T> => {
+    if (retainWork === undefined) return factory();
+    let factoryFailure: { readonly error: unknown } | undefined;
+    try {
+      return retainWork(() => {
+        try {
+          return factory();
+        } catch (error) {
+          factoryFailure = { error };
+          throw error;
+        }
+      });
+    } catch (error) {
+      if (factoryFailure !== undefined && Object.is(factoryFailure.error, error)) throw error;
+      throw new MediaRetentionEntryError(error);
+    }
   };
+  let invocation: ProviderInvocationWork | undefined;
+  let primaryFailure = false;
+  let stopped: { readonly error: Error; readonly outcome: NodeOutcome } | undefined;
+  const invoke = (): Promise<MediaGenResult> => {
+    invocation =
+      retainWork === undefined
+        ? undefined
+        : new ProviderInvocationWork({ retainWork: retain }, deadline?.signal ?? req.signal);
+    const request = deadline === undefined ? req : { ...req, signal: deadline.signal };
+    if (request.signal?.aborted === true) {
+      stopped = {
+        error: new Error('media submission stopped before provider entry'),
+        outcome:
+          req.signal?.aborted === true || deadline?.classify() === 'caller'
+            ? failed(
+                'cancelled',
+                `agent node '${nodeId}': run cancelled before media generation`,
+                false,
+              )
+            : failed(
+                'provider_unavailable',
+                `agent node '${nodeId}': the provider did not respond within the ${String(MEDIA_GEN_SUBMIT_TIMEOUT_MS)}ms media-submission deadline`,
+                true,
+              ),
+      };
+      throw stopped.error;
+    }
+    onInvoke();
+    return invocation === undefined
+      ? generateMedia(request, key)
+      : generateMedia(request, key, invocation);
+  };
+  const captureResult = (
+    result: MediaGenResult,
+  ): { kind: 'ok'; result: MediaGenResult } | { kind: 'refused'; outcome: NodeOutcome } => {
+    const captured = MediaGenResultSchema.safeParse(result);
+    if (captured.success) return { kind: 'ok', result: captured.data };
+    primaryFailure = true;
+    return {
+      kind: 'refused',
+      outcome: failed('internal', 'generateMedia returned an invalid media/job result', false),
+    };
+  };
+  try {
+    const call = retain(invoke);
+    if (deadline === undefined) return captureResult(await call);
+    const raced = await deadline.race(call);
+    if (raced.outcome !== 'deadline') {
+      return captureResult(raced.value);
+    }
+    // `classify()` owns the label: a caller cancel that beat the timer stays `cancelled`, the same cancel-wins
+    // precedence ADR-0036 gives the run and ADR-0082 §7 gives an attempt.
+    primaryFailure = true;
+    return {
+      kind: 'refused',
+      outcome:
+        deadline.classify() === 'caller'
+          ? failed(
+              'cancelled',
+              `agent node '${nodeId}': run cancelled during media generation`,
+              false,
+            )
+          : failed(
+              'provider_unavailable',
+              `agent node '${nodeId}': the provider did not respond within the ${String(MEDIA_GEN_SUBMIT_TIMEOUT_MS)}ms media-submission deadline`,
+              true,
+            ),
+    };
+  } catch (error) {
+    primaryFailure = true;
+    if (stopped !== undefined && Object.is(error, stopped.error))
+      return { kind: 'refused', outcome: stopped.outcome };
+    throw captureProviderFailure(error);
+  } finally {
+    retireProviderInvocation(invocation, primaryFailure);
+  }
 }
 
 /**
@@ -1199,7 +1539,7 @@ function chainCapabilities(deps: AgentRunnerDeps): ChainCapabilities {
 
 async function resolvePrompt(
   template: string,
-  ctx: NodeExecContext,
+  ctx: Pick<NodeExecContext, 'inputs' | 'ctx' | 'runOutputs'>,
   deps: AgentRunnerDeps,
 ): Promise<{ ok: true; text: string } | { ok: false; message: string }> {
   // The resolved prompt may draw on untrusted run.outputs / read_file — it lands in a USER message

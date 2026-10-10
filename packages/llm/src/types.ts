@@ -18,6 +18,7 @@ import {
   StopReasonSchema,
 } from '@relavium/shared';
 import type { AbortSignalLike, LlmProviderId } from '@relavium/shared';
+import { isPreparedOutputCapPlan, type PreparedOutputCapPlan } from './output-cap.js';
 
 /**
  * The **`LLMProvider` seam** — the provider-agnostic boundary every multi-LLM call in Relavium
@@ -248,6 +249,7 @@ export const LlmErrorKindSchema = z.enum([
   'protocol',
   'auth',
   'bad_request',
+  'context_overflow',
   'content_filter',
   'cancelled',
   'unknown',
@@ -276,7 +278,7 @@ export const LlmErrorSchema = z.object({
   // `cause` first (the run-event error shape `{ code, message, retryable }` already excludes it).
   cause: z.unknown().optional(), // original error for debugging — never re-thrown across the seam
   /**
-   * The attempt had already yielded a non-terminal chunk when it failed
+   * The attempt had already yielded a non-terminal chunk, or a rejected generation carried actual usage
    * ([ADR-0082](../../../docs/decisions/0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md)
    * §4). Set by `FallbackChain` when it SURFACES a failure past that point; absent otherwise.
    *
@@ -291,6 +293,9 @@ export const LlmErrorSchema = z.object({
    * for a call the user already saw output from.
    */
   contentCommitted: z.literal(true).optional(),
+  /** Actual canonical usage supplied with a failed response (e.g. a native context-window stop).
+   * Never inferred from a reservation; consumers account it even when the diagnostic changes. */
+  usage: UsageSchema.optional(),
 });
 export type LlmError = z.infer<typeof LlmErrorSchema>;
 
@@ -339,6 +344,8 @@ export const LlmRequestSchema = z.object({
   stopSequences: z.array(z.string()).optional(),
   signal: abortSignalLikeSchema.optional(),
   providerOptions: z.record(z.string(), z.unknown()).optional(), // typed escape hatch
+  // Ephemeral, Relavium-owned measured candidate plans, never forwarded as vendor options.
+  preparedOutputCaps: z.array(z.custom<PreparedOutputCapPlan>(isPreparedOutputCapPlan)).optional(),
 });
 export type LlmRequest = z.infer<typeof LlmRequestSchema>;
 
@@ -534,14 +541,21 @@ export type ModelListing = z.infer<typeof ModelListingSchema>;
 
 /**
  * Input to {@link LlmProvider.estimateTokens} (ADR-0062) — a prospective request the engine has NOT yet
- * sent. Expressed in seam types only (no vendor type crosses — CLAUDE.md #4). Used only as a pre-first-turn
- * FALLBACK: once a turn has completed, the engine prefers the real provider `usage` as the authoritative
- * context-size signal, so this estimate's imprecision never drives a live decision.
+ * sent. Expressed in seam types only (no vendor type crosses — CLAUDE.md #4). The constructed request,
+ * rather than a previous response's usage, is the input to live context decisions (ADR-0096).
+ * Realized usage remains authoritative for billing, never a substitute for prospective request size.
  */
 export interface EstimateTokensInput {
   readonly system: string;
   readonly messages: readonly LlmMessage[];
-  readonly tools?: readonly ToolDef[];
+  readonly tools?: readonly ToolDef[] | undefined;
+  /** Authored structured-output schema sent as model input, measured before dialect-specific lowering. */
+  readonly responseFormat?: ResponseFormat | undefined;
+}
+
+/** Trusted, process-local lifetime authority, separate from request data and durable records. */
+export interface LlmInvocationOptions {
+  readonly retainWork: <T>(factory: () => Promise<T>) => Promise<T>;
 }
 
 /**
@@ -566,8 +580,8 @@ export interface LlmProvider {
    * must never withhold a capability a model actually has.
    */
   readonly customEndpoint?: boolean;
-  generate(req: LlmRequest, key: string): Promise<LlmResult>;
-  stream(req: LlmRequest, key: string): AsyncIterable<StreamChunk>;
+  generate(req: LlmRequest, key: string, options?: LlmInvocationOptions): Promise<LlmResult>;
+  stream(req: LlmRequest, key: string, options?: LlmInvocationOptions): AsyncIterable<StreamChunk>;
   readonly supports: CapabilityFlags;
   /**
    * The model's context window in tokens, or `undefined` for an unrated / custom-base-URL model (ADR-0062) —
@@ -581,10 +595,9 @@ export interface LlmProvider {
    */
   managesOwnContext?(): boolean;
   /**
-   * A per-provider token estimate for a prospective request (ADR-0062) — a FALLBACK the engine uses only
-   * before any turn has reported real `usage`. An adapter MAY specialize with a native tokenizer; the real
-   * adapters share a character-based heuristic today (real usage is authoritative, so precision here is
-   * secondary).
+   * A per-provider heuristic for a prospective request (ADR-0096). Current constructed requests,
+   * rather than previous response usage, drive context decisions. A missing/invalid estimator is
+   * handled by the session's entry-point policy; realized billing always uses actual usage.
    */
   estimateTokens?(input: EstimateTokensInput): number;
   /**
@@ -594,14 +607,23 @@ export interface LlmProvider {
    * implements SYNC image generation (Section C) and the engine owns the async poll/checkpoint/resume/
    * cancel loop (Section D, A5). The Sora/Veo/Imagen/TTS adapters are 1.AH host-wiring.
    */
-  generateMedia?(req: MediaGenRequest, key: string): Promise<MediaGenResult>;
+  generateMedia?(
+    req: MediaGenRequest,
+    key: string,
+    options?: LlmInvocationOptions,
+  ): Promise<MediaGenResult>;
   /**
    * Poll an async media job by its Relavium-opaque id (A5, [ADR-0045](../../../docs/decisions/0045-async-media-job-loop-poll-checkpoint-resume-cancel.md)).
    * `signal` aborts the IN-FLIGHT poll so a run cancel reaches the open provider request, not just the
    * next schedule. The engine drives this loop (1.AG Section D); the OpenAI/Sora adapter implements it at
    * 1.AH A3 (`pollMediaJobSora`), the Gemini/Veo adapter at 1.AH A4.
    */
-  pollMediaJob?(jobId: string, key: string, signal?: AbortSignalLike): Promise<MediaJobStatus>;
+  pollMediaJob?(
+    jobId: string,
+    key: string,
+    signal?: AbortSignalLike,
+    options?: LlmInvocationOptions,
+  ): Promise<MediaJobStatus>;
   /**
    * **Live model discovery** (ADR-0064 §1) — return the models this `key` can currently reach, each mapped
    * to the Relavium {@link ModelListing} INSIDE the adapter (the vendor `models.list()` row is normalized

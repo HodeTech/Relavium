@@ -168,6 +168,10 @@ function buildSession(
     resolveProvider: () => provider,
     registry: echoRegistry,
     tools: [echoToolDef],
+    reserveEffectTurnKey: (() => {
+      let key = 0;
+      return () => ++key;
+    })(),
     keyFor: () => 'key',
     sleep: () => Promise.resolve(),
     newAbortController: createAbortController,
@@ -299,17 +303,32 @@ describe('1.AA — chat harness (1.m5 agent-first sub-spine)', () => {
         sessionId: 'sess-aa-1',
         sequenceNumber: 1,
         role: 'assistant',
-        content: [
-          { type: 'tool_call', id: 'c1', name: 'echo', args: {} },
-          { type: 'text', text: 'echo received' },
-        ],
+        content: [{ type: 'tool_call', id: 'session-tool:1:0', name: 'echo', argsBytes: 2 }],
         modelId: 'claude-opus-4-8',
+        timestamp: TS,
+      },
+      {
+        id: 'm-result',
+        sessionId: 'sess-aa-1',
+        sequenceNumber: 2,
+        role: 'tool',
+        content: [
+          { type: 'tool_result', toolCallId: 'session-tool:1:0', resultBytes: 4, outcome: 'ok' },
+        ],
+        timestamp: TS,
+      },
+      {
+        id: 'm-final',
+        sessionId: 'sess-aa-1',
+        sequenceNumber: 3,
+        role: 'assistant',
+        content: [{ type: 'text', text: 'echo received' }],
         timestamp: TS,
       },
       {
         id: 'm-2',
         sessionId: 'sess-aa-1',
-        sequenceNumber: 2,
+        sequenceNumber: 4,
         role: 'user',
         content: [{ type: 'text', text: 'anything else?' }],
         timestamp: TS,
@@ -317,7 +336,7 @@ describe('1.AA — chat harness (1.m5 agent-first sub-spine)', () => {
       {
         id: 'm-3',
         sessionId: 'sess-aa-1',
-        sequenceNumber: 3,
+        sequenceNumber: 5,
         role: 'assistant',
         content: [{ type: 'text', text: 'plain answer' }],
         modelId: 'claude-opus-4-8',
@@ -379,6 +398,10 @@ describe('1.AA — chat harness (1.m5 agent-first sub-spine)', () => {
       resolveProvider: () => capturingProvider,
       registry: echoRegistry,
       tools: [echoToolDef],
+      reserveEffectTurnKey: (() => {
+        let key = 0;
+        return () => ++key;
+      })(),
       keyFor: () => 'key',
       sleep: () => Promise.resolve(),
       newAbortController: createAbortController,

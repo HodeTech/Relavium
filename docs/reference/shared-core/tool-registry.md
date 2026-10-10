@@ -130,6 +130,14 @@ interface ProcessCapability {
         opts: SpawnOpts, signal?: AbortSignalLike): Promise<ProcessResult>;
 }
 
+interface ToolHostCallOptions {
+  readonly retainWork?: <T>(factory: () => Promise<T>) => Promise<T>;
+}
+
+interface McpCapability {
+  call(input: McpCallInput, signal?: AbortSignalLike, options?: ToolHostCallOptions): Promise<unknown>;
+}
+
 interface EgressCapability {
   /**
    * Perform an outbound HTTPS request the engine has ALREADY policy-checked (per egress kind, below).
@@ -142,7 +150,7 @@ interface EgressCapability {
    * `EgressResponse.body`; a future `maxBytes` on `EgressRequest` (with 1.AE) enables source-side truncation.
    * Ships feature-flag-OFF until the shared primitive lands at 1.AE.
    */
-  fetch(request: EgressRequest, signal?: AbortSignalLike): Promise<EgressResponse>;
+  fetch(request: EgressRequest, signal?: AbortSignalLike, options?: ToolHostCallOptions): Promise<EgressResponse>;
   // EgressRequest = { method, url, headers, body?, credentialRef?: string }
 }
 
@@ -156,6 +164,69 @@ interface ToolOutputStore {
 ```
 
 > **Sibling seams, one host.** `ToolHost` is a distinct seam from [ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)'s `ExecutionHost` (persistence / clock / transport) and from 1.L2's `ResolverCapabilities` (the `read_file` filter). The host wires all of them; in Phase-2 cloud the relocated `ExecutionHost` provides the `ToolHost`. None is folded into another — each stays minimal and auditable.
+
+Both discovered MCP tools and `mcp_call` forward `ctx.hostCallOptions` separately from their
+validated arguments. The trusted optional capability registers transitive transport work before
+entry; it is never authored or serialized. The [MCP lifetime contract](mcp-integration.md#invocation-and-transport-lifetimes)
+owns SDK request/handler custody and native-close acknowledgement.
+
+### Native process completion
+
+The CLI process host rechecks cancellation at actual native spawn, after executable/cwd
+resolution and argument/environment copying. Cancellation during those asynchronous steps
+refuses entry; attaching a listener afterwards cannot observe an abort that already happened.
+The existing command allowlist, jailed cwd, minimal environment and `shell: false` remain the
+normal admission requirements.
+
+For a child that was created, the host Promise settles only after the actual native `close`
+event acknowledges the child and its stdio lifetime, including failed spawn. An `error` records
+its fixed failure reason and starts process-group cleanup once; it does not certify closure or
+remove timeout/abort listeners early. A repeated kill error cannot recursively start cleanup.
+Cancellation retains precedence when an error also arrives. This follows the installed
+[Node child-process contract](https://github.com/nodejs/node/blob/v22.23.1/doc/api/child_process.md#event-close)
+and [ADR-0103](../../decisions/0103-a-paused-run-hands-off-its-local-producers-before-its-host-closes.md).
+It establishes this host's local child lifetime, not complete workflow host departure or
+termination of remote work.
+
+### HTTP producer completion
+
+At actual agent execution, the runner supplies transient `hostCallOptions` from its local
+receipt-lifetime registration. The prepared dispatch context cannot supply this authority; actual dispatch explicitly
+clears any runtime field when execution supplied no retainer.
+`http_request` and `web_search` forward it as the separate third `fetch` parameter; it never
+enters `EgressRequest`, tool arguments, provider request data or a durable event. The hook
+owns raw work and does not authorize a new effect, money operation or fresh I/O after a
+refusal. Standalone hosts may omit it.
+
+A tool-local host retention refusal crosses registry error classification only as a fixed,
+private marker. The original opaque value remains in private identity storage and is restored
+before conversational tool recovery or diagnostic events. Pre-entry refusal invokes no raw
+factory; post-entry refusal keeps already-entered work owned. Genuine synchronous factory
+faults retain ordinary tool classification. The captured turn reports host-origin provenance
+and known usage without reflecting, serializing or treating that cause as a model-correctable
+failure.
+
+The CLI text-egress host registers the complete credential/request operation before entry.
+The shared DB mechanism separately registers the raw DNS/connection/body operation before
+racing its bounded timeout. Already-aborted work does not enter, and a DNS answer arriving
+after cancellation cannot open a native connection. An entered operation remains owed until
+its actual Promise settles even when the caller has already received a timeout or terminal.
+Existing URL, IP, port, header and redirect policies remain the admission authority.
+
+The native Node opener also registers its created request independently of the header
+Promise. Headers, errors and `destroy()` do not acknowledge completion: both the native
+`ClientRequest` and its owned `IncomingMessage` must emit `close`. A reusable pooled socket
+is host infrastructure; this contract covers the request and its response, rather than
+claiming that every pooled socket has physically closed. A trusted retention refusal keeps
+its exact opaque identity without throwable reflection. If it happens after native entry,
+the abandoned header Promise is still observed while the already-entered close lifetime
+remains owned. Ordinary I/O faults retain their fixed, secret-free diagnostics.
+
+These HTTP controls cover shipped agent/registry dispatch with both reference and SQLite
+host fences. They do not yet certify MCP's transitive sends/readers, media polling, all engine
+actors, final receipt health, public departure or acknowledged CLI teardown; those remain
+[ADR-0103](../../decisions/0103-a-paused-run-hands-off-its-local-producers-before-its-host-closes.md)
+implementation obligations.
 
 ## Resolution & the dispatch lifecycle
 
@@ -184,10 +255,20 @@ host is touched once, in the middle.
 7. **Bound the model-facing result** (§Result bounding and spill-to-file) from the result via `ctx.limits` + the host `outputStore` — over the ceiling the model gets a preview + a spill handle, the full result still flows to `output_mapping`.
 8. **Mark the result untrusted** (§Untrusted-data taint) and hand the structured `tool_call` / `tool_result` data + its taint/secret markers to the bus's single translation point ([ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)) for `agent:tool_call` / `agent:tool_result` emission.
 
+The durable [effect bracket](effect-journal.md) prepares a tiered call after approval and settles it
+after model-facing bounding. Immediately before step 5, after any asynchronous approval and preparation,
+the registry invokes the optional trusted `ctx.beforeDispatch(toolId)` synchronously for **every actual
+dispatch**, including unjournaled tools. No asynchronous work may occur in that hook. It uses the resolved
+registry id and does not run for a retained-result replay. A refusal proves no dispatch started: a prepared
+claim is discarded, with a failed discard conservatively retaining the unresolved claim. This admission
+check does not guard settlement of an effect that already started. Session hosts use it to enforce their
+live durability latch independently of journal tier or cached effect identity.
+
 > **Loop-correctable vs terminal.** `UnknownToolError` and `ToolArgsInvalidError` are **thrown** by the registry; the agent loop (1.O) **catches** them and synthesizes a correctable `isError` `tool_result` (from the secret-free `error.message`) so the model can fix its call, within a **bounded correction budget** it owns — escalating to a node `ErrorCode` only when that budget is spent. A `ToolPolicyError` — and, identically, a `ToolDeniedByUserError` (the per-tool approval denial, ADR-0057) — is structurally fatal (`tool_denied`) and **never** fed back as a correctable result (re-asking a denied tool just burns budget), with **one Step-14 exception**: a `recoverable` SCOPE denial (`media_scope_denied` / the fs pure scope-tier escape — refused before any side effect) IS fed back on the `recoverToolFailures` surfaces (chat / Home / one-shot `agent run`) so the model can adapt to an in-bounds path (see the `recoverable` note under the error taxonomy). See [agent-runner.md §the failure ladder](agent-runner.md). A `ToolCancelledError` maps to `cancelled` ahead of all other classifications (cancel wins).
 
 ```ts
 interface ToolDispatchContext {
+  readonly hostCallOptions?: ToolHostCallOptions | undefined; // trusted execution-only lifetime authority, never tool arguments
   readonly nodeId: string;
   readonly grantedToolIds: ReadonlySet<ToolId>;  // the node's narrowed grant (0029(b)); dispatch refused outside it
   readonly config: ToolNodeConfig;        // resolved tool_config/agent_config block: configOnly VALUES + input/output_mapping (node-types.md)
@@ -205,6 +286,7 @@ interface ToolDispatchContext {
   readonly secretArgKeys?: ReadonlySet<string>;
   readonly invokeAgent?: (nodeId: string, input: unknown) => Promise<unknown>; // engine delegate (invoke_agent); absent ⇒ ToolUnavailableError
   readonly limits?: ToolResultLimits;      // the result-bounding ceilings; absent ⇒ DEFAULT_TOOL_RESULT_LIMITS
+  readonly beforeDispatch?: (toolId: ToolId) => void; // synchronous trusted admission immediately before actual dispatch
   readonly signal?: AbortSignalLike;
 }
 ```

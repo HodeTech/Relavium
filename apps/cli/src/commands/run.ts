@@ -1,3 +1,4 @@
+import { EgressWorkScope } from '../engine/egress-work.js';
 import { randomUUID } from 'node:crypto';
 
 import {
@@ -9,7 +10,6 @@ import {
 } from '@relavium/core';
 import { liveMcpChildPids } from '@relavium/mcp';
 import type { MediaBilledModality } from '@relavium/shared';
-import type { McpClient, McpServerConfig } from '@relavium/mcp';
 
 import { loadResolvedConfig } from '../config/load.js';
 import {
@@ -118,7 +118,7 @@ export interface RunCommandDeps {
    * Injectable MCP connect-all (2.R Step 3b) — tests pass a fake that never spawns a child; production uses the
    * real `@relavium/mcp` `startMcpClient`. Threads through to {@link connectWorkflowMcp}.
    */
-  readonly startMcpClient?: (servers: readonly McpServerConfig[]) => Promise<McpClient>;
+  readonly startMcpClient?: typeof import('@relavium/mcp').startMcpClient;
   /** Injectable consent gate (ADR-0084 §1) — a fixture supplies one that never prompts. */
   readonly consentGate?: StdioConsentGate;
   /** The MCP named-secret resolver (2.R Step 4) — production injects the keychain-backed one; default env-only. */
@@ -182,6 +182,7 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
   // the store cannot be opened until the definition it must freeze is known.
   let opened: OpenedHistory | undefined;
   let mcpRuntime: WorkflowMcpRuntime | undefined;
+  const mcpWork = new EgressWorkScope();
   /**
    * The signal guard, armed BEFORE the connect (ADR-0088 §1.3).
    *
@@ -221,6 +222,7 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
     mcpRuntime = await connectWorkflowMcp(def, {
       cwd: deps.global.cwd,
       connectSignal: mcpConnectCancel.signal,
+      work: mcpWork,
       resolveSecret: deps.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env),
       registrations: config.mcpServers,
       // The file that declared them, for the prompt — the imported-artifact case naming its own file (§7).
@@ -368,6 +370,9 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
           runLeases: createRunLeasePort(history.store),
         }),
         resolveMediaSurface: wiring.resolveMediaSurface,
+        ...(wiring.maxTokensEstimate === undefined
+          ? {}
+          : { maxTokensEstimate: wiring.maxTokensEstimate }),
         ...(wiring.mediaCostEstimate === undefined
           ? {}
           : { mediaCostEstimate: wiring.mediaCostEstimate }),
@@ -404,9 +409,21 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
       engine,
       handle,
       makeRenderer: () => (deps.selectRenderer ?? selectRenderer)(deps.io, deps.global),
-      gatePrompter: (deps.selectGatePrompter ?? selectGatePrompter)(deps.io, deps.global),
+      makeGatePrompter: () => (deps.selectGatePrompter ?? selectGatePrompter)(deps.io, deps.global),
       io: deps.io,
+      json: deps.global.json,
     });
+
+    const departure = await handle.depart();
+    if (departure.kind === 'continue')
+      throw new CliError('internal', 'run departure was not acknowledged');
+    const exitCode = outcomeToExitCode(
+      outcome,
+      handle.durability(),
+      handle.terminalError(),
+      departure,
+      false,
+    );
 
     // Host media GC (2.S/D-GC, ADR-0042 §4) — best-effort, keyed on a TERMINAL outcome: the clean-terminal reclaim
     // retry + the grace-window byte reclaim + the CAS-orphan sweep, over the same durable `history.db`. Skipped on
@@ -433,7 +450,6 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
     // durable write did not land must not exit 0, or a script is told the run is recorded when it is not.
     // Off the HANDLE, not a `subscribe()` — see the note in `gate.ts`. `start()`'s ordering happens to be
     // safe for a subscriber, but the two surfaces must not answer this differently.
-    const exitCode = outcomeToExitCode(outcome, handle.durability(), handle.terminalError());
     // **Say what happened.** A fenced run writes no terminal by design (ADR-0079 §5), so the renderer's
     // final summary falls through to a bare "run ended" and the user is left with an exit code and no
     // explanation of why their run stopped. `relavium gate` already explains this case; `relavium run`
@@ -450,9 +466,11 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
     // outcome (closeAll swallows per-connection; the db close is best-effort here too).
     try {
       try {
-        opened?.close();
-      } finally {
         await mcpRuntime?.client.close();
+      } finally {
+        mcpWork.seal();
+        await mcpWork.done;
+        opened?.close();
       }
     } finally {
       // **Released LAST, after the MCP close has finished** — and it was released first, which left the one

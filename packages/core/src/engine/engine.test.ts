@@ -1,4 +1,4 @@
-import type { MediaJobStatus } from '@relavium/llm';
+import { prepareOutputCapPlan, type MediaJobStatus } from '@relavium/llm';
 import { describe, expect, it } from 'vitest';
 
 import { collectDurableMediaHandles } from '@relavium/shared';
@@ -11,6 +11,7 @@ import { SIZE_BOUNDS } from './size-bounds.js';
 import { EngineStateError } from './errors.js';
 import {
   createInMemoryHost,
+  createInMemoryRunLeases,
   InMemoryRunStore,
   type ExecutionHost,
   type RunStore,
@@ -1447,9 +1448,14 @@ describe('WorkflowEngine — output-node save_to (1.AF/D16, ADR-0044 §2)', () =
 describe('WorkflowEngine — cancellation', () => {
   it('cancels mid-stream, aborts the in-flight node cooperatively, and ends in exactly one run:cancelled', async () => {
     let abortObserved = false;
+    let entered!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
     const engine = engineWith({
       slow: (ctx) =>
         new Promise<NodeOutcome>((resolve) => {
+          entered();
           // The correct executor pattern (what 1.O/1.P do): honour an abort that already fired, then
           // subscribe — a listener registered after the signal aborted never fires (as with a native
           // AbortSignal), so checking `aborted` first avoids hanging on a fast cancel.
@@ -1479,6 +1485,7 @@ describe('WorkflowEngine — cancellation', () => {
     for await (const event of handle.events) {
       events.push(event);
       if (event.type === 'node:started' && event.nodeId === 'slow') {
+        await ready; // Observe actual executor entry before testing its cooperative abort.
         engine.cancel(handle.runId);
       }
     }
@@ -1492,9 +1499,14 @@ describe('WorkflowEngine — cancellation', () => {
   });
 
   it('cancel wins a racing node failure: a node that fails while cancelling ends in run:cancelled', async () => {
+    let entered!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
     const engine = engineWith({
       slow: (ctx) =>
         new Promise<NodeOutcome>((resolve) => {
+          entered();
           const onAbort = (): void =>
             resolve({
               kind: 'failed',
@@ -1521,6 +1533,7 @@ describe('WorkflowEngine — cancellation', () => {
     for await (const event of handle.events) {
       events.push(event);
       if (event.type === 'node:started' && event.nodeId === 'slow') {
+        await ready; // Observe actual executor entry before testing its cooperative abort.
         engine.cancel(handle.runId); // abort fires; the in-flight node then settles as `failed`
       }
     }
@@ -1982,6 +1995,71 @@ describe('WorkflowEngine — human gate suspend/resume', () => {
     expect(JSON.stringify(runStore.eventsFor(handle.runId))).not.toContain('aGVsbG8=');
     expect(terminalsIn(events)[0]?.type).toBe('run:completed');
   });
+
+  it.each([false, true])(
+    'keeps a human gate visible while an immediate decision pins media (pin fails=%s)',
+    async (failPin) => {
+      let release = () => {};
+      let entered = () => {};
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const pinEntered = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const original = stubMediaStore().store;
+      const mediaStore: MediaStore = {
+        ...original,
+        put: async (bytes, mimeType) => {
+          entered();
+          await held;
+          if (failPin) throw new Error('offline media pin fault');
+          return original.put(bytes, mimeType);
+        },
+      };
+      const host = createInMemoryHost({ mediaStore });
+      const engine = engineWith(
+        { g: () => ({ kind: 'paused', gate: { gateType: 'approval', message: 'approve?' } }) },
+        host,
+      );
+      const handle = engine.start({ workflow: workflow(GATED) });
+      const events: RunEvent[] = [];
+      let resume: Promise<void> | undefined;
+      const drained = (async () => {
+        for await (const event of handle.events) {
+          events.push(event);
+          if (event.type === 'human_gate:paused') {
+            resume = engine.resume(handle.runId, event.gateId, {
+              decision: 'approved',
+              decidedBy: 'tester',
+              payload: { image: MEDIA_PART },
+            });
+          }
+        }
+      })();
+      try {
+        await pinEntered;
+        // Let the native scheduler finish the gate publication while the actual media pin stays held.
+        for (let turn = 0; turn < 100; turn += 1) await Promise.resolve();
+        expect(events.some((event) => event.type === 'run:paused')).toBe(false);
+        expect(await host.runLeases.read(handle.runId)).toBeDefined();
+        expect(terminalsIn(events)).toEqual([]);
+        release();
+        await resume;
+        await drained;
+        expect(terminalsIn(events)).toHaveLength(1);
+        expect(terminalsIn(events)[0]?.type).toBe(failPin ? 'run:failed' : 'run:completed');
+        expect(handle.durability()).toBe('durable');
+        expect(JSON.stringify(events)).not.toContain('aGVsbG8=');
+        expect(events.some((event) => event.type === 'human_gate:resumed')).toBe(!failPin);
+      } finally {
+        release();
+        handle.cancel();
+        await resume;
+        await drained;
+      }
+    },
+  );
 
   it('fails the run (no leak, no hang) when a gate decision.payload carries media but no MediaStore', async () => {
     // No store ⇒ resume()'s de-inline of the media payload throws; resume()'s catch fails the run AND always
@@ -2647,7 +2725,7 @@ ${chain
   // timer at all, so their deadlines stopped existing until the next restart. The data needed was already
   // durable on `human_gate:paused` (its schema says it rides there for exactly this); only the checkpoint
   // fold and the rehydration loop were missing. See ADR-0028 and `CR-22`.
-  it('re-arms a rehydrated gate at its REMAINING time, not its full `timeout_ms`', async () => {
+  it('does not arm a rehydrated target gate when its decision has already arrived', async () => {
     const store = new InMemoryRunStore();
     const engineA = engineWith(
       {
@@ -2697,17 +2775,12 @@ ${chain
     });
     await drain(handleB);
 
-    // The load-bearing assertion: 250, not 1000. Arming the full `timeout_ms` would renew the deadline on
-    // every resume — a gate crashed and resumed ten times would get ten times its authored patience, which
-    // is the defect `CR-22` names.
-    //
-    // `toEqual` on the whole array, not `toContain`. A first version used `toContain(250)` plus
-    // `not.toContain(1000)` and justified it by saying "the resume also arms unrelated work timers" — which
-    // is measurably false: this resume arms exactly one. With a single-element array the negative assertion
-    // was implied by the positive one and no mutation could make it the failing line, and the superseded
-    // test's EXACT count (`toBe(0)`) had also proved "no other work timer is armed anywhere". `toEqual`
-    // restores that second guarantee at zero cost.
-    expect(armedWork).toEqual([250]);
+    // ADR-0100 admission is passive: a supplied target decision precedes timer construction.
+    // Surviving gates still retain their remaining deadlines (the multi-gate control below).
+    expect(armedWork).toEqual([]);
+    expect(
+      store.eventsFor(handleA.runId).find((e) => e.type === 'human_gate:resumed'),
+    ).toMatchObject({ decision: 'approved', decidedBy: 'h' });
   });
 
   it('a resuming clock running BEHIND cannot grant more patience than the author wrote', async () => {
@@ -3279,6 +3352,7 @@ ${line
     const calls: string[] = [];
     const livePrepare: { slot: number; toolId: string }[] = [];
     let captured: NodeExecContext['effects'];
+    let prepared = false;
     const host = createInMemoryHost();
     const engine = new WorkflowEngine({
       host,
@@ -3288,6 +3362,7 @@ ${line
           // A LIVE prepare, while the dispatch is unquestionably current — the pass-through this wrapper
           // must not break.
           await ctx.effects?.prepare(7, 'run_command', 3, {});
+          prepared = true;
           return new Promise<NodeOutcome>(() => undefined); // never settles — so it gets abandoned
         },
       },
@@ -3316,6 +3391,8 @@ ${line
     })();
     for (let i = 0; i < 200 && captured === undefined; i += 1) await Promise.resolve();
     expect(captured).toBeDefined();
+    for (let i = 0; i < 200 && !prepared; i += 1) await Promise.resolve();
+    expect(prepared).toBe(true);
 
     engine.cancel(handle.runId);
     for (let i = 0; i < 200 && host.deadlineCount() === 0; i += 1) await Promise.resolve();
@@ -3512,18 +3589,24 @@ ${line
       gen: (ctx) => {
         dispatches += 1;
         if (dispatches === 1) {
-          // Keep dispatch N's closure alive past its own pause.
-          staleEmit = () => {
-            ctx.emit({
-              type: 'cost:updated',
-              nodeId: 'gen',
-              model: 'm',
-              inputTokens: 0,
-              outputTokens: 0,
-              costMicrocents: 999_999,
-              cumulativeCostMicrocents: 0,
-            });
-          };
+          // Transfer the incurred-cost receipt before dispatch N's producer settles at its pause.
+          void ctx.continueReceipt?.(
+            (receipt) =>
+              new Promise<void>((resolve) => {
+                staleEmit = () => {
+                  receipt.updateCost({
+                    type: 'cost:updated',
+                    nodeId: 'gen',
+                    model: 'm',
+                    inputTokens: 0,
+                    outputTokens: 0,
+                    costMicrocents: 999_999,
+                    cumulativeCostMicrocents: 0,
+                  });
+                  resolve();
+                };
+              }),
+          );
           return {
             kind: 'paused',
             gate: {
@@ -3728,6 +3811,9 @@ ${line
       ) {
         await Promise.resolve();
       }
+      // The test faults an already-entered deadline, not a fresh arm after cancellation.
+      for (let i = 0; i < 400 && !nodeDeadlineArmed; i += 1) await Promise.resolve();
+      expect(nodeDeadlineArmed).toBe(true);
       engine.cancel(handle.runId);
       for (let i = 0; i < 400 && host.deadlineCount() < 2; i += 1) await Promise.resolve();
       expect(nodeDeadlineArmed).toBe(true); // the node bound is armed, with the throwing disarm attached
@@ -3794,9 +3880,10 @@ ${line
       const events = await drain(engine.start({ workflow: workflow(FAULTY) }));
       const terminal = events.at(-1);
       expect(terminal?.type).toBe('run:failed');
-      expect(terminal?.type === 'run:failed' && terminal.error.message).toContain(
-        'host clock unavailable',
+      expect(terminal?.type === 'run:failed' && terminal.error.message).toBe(
+        'node dispatch failed unexpectedly',
       );
+      expect(JSON.stringify(events)).not.toContain('host clock unavailable');
       expect(
         events.filter((e) => e.type === 'run:failed' || e.type === 'run:completed'),
       ).toHaveLength(1);
@@ -3907,7 +3994,16 @@ ${line
 
     const observe = async (wf: string): Promise<{ settledBeforeGrace: boolean }> => {
       const host = createInMemoryHost();
-      const engine = engineWith({ work: () => new Promise<NodeOutcome>(() => undefined) }, host);
+      let entered = false;
+      const engine = engineWith(
+        {
+          work: () => {
+            entered = true;
+            return new Promise<NodeOutcome>(() => undefined);
+          },
+        },
+        host,
+      );
       const handle = engine.start({ workflow: workflow(wf) });
       let settled = false;
       let started = false;
@@ -3920,8 +4016,9 @@ ${line
       // Wait for the node to be genuinely in flight — a cancel before it starts settles the run at once and
       // neither shape reaches the path under test. `deadlineCount()` cannot be the trigger here: the bounded
       // shape has already armed its own node deadline, which is the same kind.
-      for (let i = 0; i < 300 && !started; i += 1) await Promise.resolve();
+      for (let i = 0; i < 300 && !entered; i += 1) await Promise.resolve();
       expect(started).toBe(true);
+      expect(entered).toBe(true); // node:started alone precedes actual executor entry.
       engine.cancel(handle.runId);
       // Pump generously WITHOUT firing any backstop.
       for (let i = 0; i < 300; i += 1) await Promise.resolve();
@@ -4098,16 +4195,18 @@ ${line
     expect(armedWork.every((ms) => ms >= 0)).toBe(true);
   });
 
-  it('a SURVIVING gate keeps its deadline across the resume — the case the item exists for', async () => {
-    // **The motivating case, and it had no test.** The sibling tests all resume a run's ONLY gate — which
-    // `resume()` disarms two lines later, i.e. precisely the "target gate" case the old deferral was right
-    // to say did not matter. What `CR-22` actually fixes is a gate that survives the resume: a multi-gate
-    // run, or a crash while parked, rehydrated its remaining gates with NO timer, so their deadlines
-    // stopped existing until the next restart.
-    //
-    // Two gates, resume one, assert the OTHER still holds a deadline — at its remaining time, and still
-    // armed after the resume has settled into its next park.
-    const MULTIGATE = `  id: multigate
+  it.each([4000, -60_000])(
+    'a SURVIVING gate keeps its deadline across resume with %i ms remaining on the target',
+    async (remaining) => {
+      // **The motivating case, and it had no test.** The sibling tests all resume a run's ONLY gate — which
+      // `resume()` disarms two lines later, i.e. precisely the "target gate" case the old deferral was right
+      // to say did not matter. What `CR-22` actually fixes is a gate that survives the resume: a multi-gate
+      // run, or a crash while parked, rehydrated its remaining gates with NO timer, so their deadlines
+      // stopped existing until the next restart.
+      //
+      // Two gates, resume one, assert the OTHER still holds a deadline — at its remaining time, and still
+      // armed after the resume has settled into its next park.
+      const MULTIGATE = `  id: multigate
   nodes:
     - { id: start, type: input }
     - { id: g1, type: human_gate, gate_type: approval }
@@ -4118,70 +4217,71 @@ ${line
     - { from: start, to: g2 }
     - { from: g1, to: out }
     - { from: g2, to: out }`;
-    const store = new InMemoryRunStore();
-    const gate = (message: string) => ({
-      kind: 'paused' as const,
-      gate: {
-        gateType: 'approval' as const,
-        message,
-        timeoutMs: 5000,
-        timeoutAction: 'reject' as const,
-      },
-    });
-    const engineA = engineWith(
-      { g1: () => gate('first?'), g2: () => gate('second?') },
-      createInMemoryHost({ store }),
-    );
-    const handleA = engineA.start({ workflow: workflow(MULTIGATE) });
-    const gateIds: string[] = [];
-    const expiries: string[] = [];
-    for await (const event of handleA.events) {
-      if (event.type === 'human_gate:paused') {
-        gateIds.push(event.gateId);
-        expiries.push(event.expiresAt ?? '');
+      const store = new InMemoryRunStore();
+      const gate = (message: string) => ({
+        kind: 'paused' as const,
+        gate: {
+          gateType: 'approval' as const,
+          message,
+          timeoutMs: 5000,
+          timeoutAction: 'reject' as const,
+        },
+      });
+      const engineA = engineWith(
+        { g1: () => gate('first?'), g2: () => gate('second?') },
+        createInMemoryHost({ store }),
+      );
+      const handleA = engineA.start({ workflow: workflow(MULTIGATE) });
+      const gateIds: string[] = [];
+      const expiries: string[] = [];
+      for await (const event of handleA.events) {
+        if (event.type === 'human_gate:paused') {
+          gateIds.push(event.gateId);
+          expiries.push(event.expiresAt ?? '');
+        }
+        if (event.type === 'run:paused' && gateIds.length === 2) break;
       }
-      if (event.type === 'run:paused' && gateIds.length === 2) break;
-    }
-    expect(gateIds).toHaveLength(2);
+      expect(gateIds).toHaveLength(2);
 
-    // The two gates park a few clock ticks apart (the in-memory clock advances per read), so they expire at
-    // slightly different instants. Pin `now` off the first and compute BOTH expected remainings exactly —
-    // a band assertion would hide an off-by-one in the arithmetic this test exists to check.
-    const nowB = new Date(Date.parse(expiries[0] ?? '') - 4000).toISOString();
-    const expectedRemaining = expiries.map((e) => Date.parse(e) - Date.parse(nowB));
-    const baseHostB = createInMemoryHost({ store });
-    const armedWork: number[] = [];
-    const hostB: typeof baseHostB = {
-      ...baseHostB,
-      clock: { now: () => nowB },
-      setTimer: (ms, onFire, kind = 'work') => {
-        if (kind === 'work') armedWork.push(ms);
-        return baseHostB.setTimer(ms, onFire, kind);
-      },
-    };
-    const engineB = engineWith({ g2: () => gate('second?') }, hostB);
-    const handleB = await engineB.resumeFromCheckpoint({
-      runId: handleA.runId,
-      workflow: workflow(MULTIGATE),
-      gateId: gateIds[0] ?? '',
-      decision: { decision: 'approved', decidedBy: 'h' },
-    });
-    for await (const event of handleB.events) {
-      if (event.type === 'run:paused') break; // re-parked on the surviving gate
-    }
+      // The two gates park a few clock ticks apart (the in-memory clock advances per read), so they expire at
+      // slightly different instants. Pin `now` off the first and compute BOTH expected remainings exactly —
+      // a band assertion would hide an off-by-one in the arithmetic this test exists to check.
+      const nowB = new Date(Date.parse(expiries[0] ?? '') - remaining).toISOString();
+      const expectedRemaining = expiries.map((e) => Math.max(0, Date.parse(e) - Date.parse(nowB)));
+      const baseHostB = createInMemoryHost({ store });
+      const armedWork: number[] = [];
+      const hostB: typeof baseHostB = {
+        ...baseHostB,
+        clock: { now: () => nowB },
+        setTimer: (ms, onFire, kind = 'work') => {
+          if (kind === 'work') armedWork.push(ms);
+          return baseHostB.setTimer(ms, onFire, kind);
+        },
+      };
+      const engineB = engineWith({ g2: () => gate('second?') }, hostB);
+      const handleB = await engineB.resumeFromCheckpoint({
+        runId: handleA.runId,
+        workflow: workflow(MULTIGATE),
+        gateId: gateIds[0] ?? '',
+        decision: { decision: 'approved', decidedBy: 'h' },
+      });
+      for await (const event of handleB.events) {
+        if (event.type === 'run:paused') break; // re-parked on the surviving gate
+      }
 
-    // BOTH gates were re-armed at their own remaining time — the surviving one is the point. Before the fix
-    // this array was empty, because rehydration armed nothing at all.
-    expect(expectedRemaining[0]).toBe(4000); // …and the arithmetic is what it claims
-    for (const ms of expectedRemaining) expect(armedWork).toContain(ms);
-    // …and the survivor's timer is still live after the resume settled: the decision disarmed only its own.
-    expect(baseHostB.armedCount()).toBeGreaterThan(0);
-  });
+      // Only the survivor is armed, at its exact remaining time. An expired survivor travels
+      // the timer path at zero; admission does not resolve it inline or renew its patience.
+      expect(expectedRemaining[0]).toBe(Math.max(0, remaining));
+      expect(armedWork).toEqual([expectedRemaining[1]]);
+      expect(
+        store.eventsFor(handleA.runId).filter((e) => e.type === 'human_gate:resumed'),
+      ).toMatchObject([{ decision: 'approved', decidedBy: 'h' }]);
+      // …and the survivor's timer is still live after the resume settled: the decision disarmed only its own.
+      expect(baseHostB.armedCount()).toBeGreaterThan(0);
+    },
+  );
 
-  it('a gate whose deadline ALREADY passed re-arms at zero rather than resolving inline', async () => {
-    // The past-deadline case has to travel the same `#onGateTimeout` path as a live expiry, or a
-    // past-deadline resume and an expiring live run would produce two differently-shaped exits for one
-    // condition. Arming at zero is what keeps it to one: the timer fires on the next tick.
+  it('does not arm an expired target gate over a decision already supplied at admission', async () => {
     const store = new InMemoryRunStore();
     const engineA = engineWith(
       {
@@ -4223,10 +4323,10 @@ ${line
     });
     await drain(handleB);
 
-    // Clamped at zero — never a negative duration handed to a host timer. Exact, for the same reason as
-    // its siblings: with a one-element array `every(ms => ms >= 0)` was implied by the value assertion and
-    // could never be the failing line.
-    expect(armedWork).toEqual([0]);
+    expect(armedWork).toEqual([]);
+    expect(
+      store.eventsFor(handleA.runId).find((e) => e.type === 'human_gate:resumed'),
+    ).toMatchObject({ decision: 'approved', decidedBy: 'h' });
   });
 });
 
@@ -5487,6 +5587,53 @@ describe('WorkflowEngine — crash reconciliation', () => {
     expect(await engine.reconcile()).toHaveLength(0);
   });
 
+  for (const method of ['reconcile', 'drainTerminalOutbox'] as const) {
+    for (const rejected of [false, true]) {
+      it(`${method} joins a held asynchronous reference reclaim (reject=${rejected})`, async () => {
+        const store = new InMemoryRunStore();
+        await seedStarted(store, 'maintenance-held');
+        let release: () => void = () => {};
+        const held = new Promise<void>((resolve, reject) => {
+          release = () => (rejected ? reject(new Error('private retention fault')) : resolve());
+        });
+        let entered = false;
+        const host = createInMemoryHost({
+          store,
+          mediaReferences: {
+            recordRunMedia: () => undefined,
+            reclaimRun: () => {
+              entered = true;
+              return held;
+            },
+          },
+        });
+        if (method === 'drainTerminalOutbox') {
+          await host.terminalOutbox.put({
+            type: 'run:cancelled',
+            runId: 'maintenance-held',
+            timestamp: host.clock.now(),
+            sequenceNumber: 1,
+          });
+        }
+        const engine = engineWith(undefined, host);
+        let settled = false;
+        const draining = engine[method]().then((events) => {
+          settled = true;
+          return events;
+        });
+        try {
+          await expect.poll(() => entered).toBe(true);
+          expect(settled).toBe(false);
+          expect(await host.runLeases.read('maintenance-held')).toBeDefined();
+        } finally {
+          release();
+        }
+        expect(await draining).toHaveLength(1);
+        expect(await host.runLeases.read('maintenance-held')).toBeUndefined();
+      });
+    }
+  }
+
   it('reclaims a crashed run’s media references at reconciliation (1.AF/D11 — no orphaned partial media)', async () => {
     // A crashed non-resumable run never ran its in-process terminal sweep; reconcile() must reclaim its
     // `run`-kind refs, else the partial media stays refcount>0 forever and is never GC-eligible (ADR-0042 §4).
@@ -5915,8 +6062,8 @@ describe('WorkflowEngine — internal failures and handle-side controls', () => 
  * A `media_job` outcome from a stub handler — the engine parks the node and emits `media_job:submitted`.
  *
  * No budget admission is attached, and cannot be: `retainMediaJobAdmission` is module-private to
- * `agent-runner`. That is not a limitation here — it is exactly the shape the approved-bypass case has
- * anyway, since an approved re-dispatch runs with `preEgress: undefined` and therefore holds no admission.
+ * `agent-runner`. This injected executor therefore tests the honest unknown-basis zero. The actual runner's
+ * governed approval and nonzero reservation are pinned by `budget-authorization-live.test.ts`.
  * `units` is FRACTIONAL on purpose: `duration_seconds` is fractional by contract (ADR-0074 §3), and an
  * integer bound here once made a 12.5-second job unwritable after the provider had accepted it.
  */
@@ -5949,8 +6096,8 @@ async function untilMediaJobSubmitted(handle: RunHandle): Promise<RunEvent[]> {
 }
 
 // A REAL `budget:` block, so a governor exists and `#makePreEgressHook()` returns a hook. Without it
-// `ctx.preEgress` is `undefined` on every dispatch and the bypass assertion below would be vacuous — it would
-// pass on a build where `budgetApproved` never gated anything. The cap is large enough that nothing here
+// `ctx.preEgress` is `undefined` on every dispatch and the governance assertion below would be vacuous.
+// The cap is large enough that nothing here
 // legitimately trips it.
 const MEDIA_GATED = `  id: media-gate
   nodes:
@@ -5963,18 +6110,10 @@ const MEDIA_GATED = `  id: media-gate
     on_exceed: pause_for_approval`;
 
 describe('WorkflowEngine — media_job:submitted freezes its money basis (ADR-0074 §3)', () => {
-  it('OMITS acceptedCostMicrocents under the H3 approved bypass (#W15-20)', async () => {
-    // `0` means "the gate RAN and reserved nothing" — an unpriced model's allow-degrade path. Under H3's
-    // approved bypass NO hook runs at all (`#runAttempt` passes `preEgress: undefined`), so there is no
-    // priced basis to freeze and emitting `0` would claim one.
-    //
-    // Not cosmetic: on resume the frozen branch would call `reserveAcceptedCost(model, 0)`, reserve NOTHING,
-    // and skip `registerLegacyMediaJob` — so a job deliberately submitted OVER the cap comes back holding no
-    // reservation and no hold, letting a sibling spend headroom that is still owed. Omitting it routes the
-    // resume through the legacy branch, which re-prices AND fails closed.
-    // Captured, never asserted INSIDE the handler: `#runAttempt`'s catch-all turns any handler throw into a
-    // generic `internal` node failure, so a failing in-handler `expect` would surface as a confusing
-    // `run:failed` rather than as itself.
+  it('retains governance after a legacy approval and records honest zero for an executor without admission', async () => {
+    // This injected executor supplies no admission. Legacy approval grants no allowance,
+    // and every re-dispatch still receives the governor hook. The real runner's priced
+    // reservation is covered by the media admission integration suites.
     const hookPresent: boolean[] = [];
     let dispatches = 0;
     const engine = engineWith({
@@ -6013,18 +6152,16 @@ describe('WorkflowEngine — media_job:submitted freezes its money basis (ADR-00
     }
 
     expect(dispatches).toBe(2); // the approval RE-DISPATCHED the node rather than completing it
-    // The bypass, observed rather than assumed: the hook is there on the first dispatch and GONE on the
-    // approved one. That contrast is what makes the omission below attributable to `budgetApproved`.
-    expect(hookPresent).toEqual([true, false]);
+    expect(hookPresent).toEqual([true, true]);
     const submitted = events.find((e) => e.type === 'media_job:submitted');
     expect(submitted?.type).toBe('media_job:submitted');
     if (submitted?.type !== 'media_job:submitted') return;
-    expect(submitted).not.toHaveProperty('acceptedCostMicrocents');
-    // …while the BASIS is still frozen. `units` alone is the legitimate half-populated row (#W15-7).
+    expect(submitted.acceptedCostMicrocents).toBe(0);
+    // The authored volume remains frozen alongside that honest zero.
     expect(submitted.units).toBe(12.5);
   });
 
-  it('carries acceptedCostMicrocents when the bypass did NOT fire', async () => {
+  it('carries explicit acceptedCostMicrocents even when an injected executor has no admission', async () => {
     // Without this row the assertion above would also pass on a build that never emitted the field at all.
     //
     // What it pins is PRESENCE, not the amount. `retainMediaJobAdmission` is module-private to `agent-runner`,
@@ -6085,6 +6222,18 @@ describe('WorkflowEngine — an abort always breaks the legacy media-job hold (A
             model: 'claude-haiku-4-5',
             maxTokens: 100,
             provider: 'anthropic',
+            endpoint: 'official',
+            providerOptions: undefined,
+            route: 'text',
+            inputTokensEstimate: 0,
+            maxTokensEstimate: ctx.maxTokensEstimate,
+            outputCapPlan: prepareOutputCapPlan({
+              model: 'claude-haiku-4-5',
+              maxTokens: 100,
+              provider: 'anthropic',
+              endpoint: 'official',
+              providerOptions: undefined,
+            }),
           });
           released = true;
           return { kind: 'completed', output: 'sib' };
@@ -6123,4 +6272,229 @@ describe('WorkflowEngine — an abort always breaks the legacy media-job hold (A
     expect(released).toBe(true); // the abort is what let the suspended sibling through
     expect(events.some((e) => e.type === 'run:cancelled')).toBe(true);
   });
+});
+
+it('forwards the frozen configured output fallback into actual node execution (ADR-0101)', async () => {
+  const seen: Array<number | undefined> = [];
+  const engine = engineWith(
+    {
+      work: (ctx) => {
+        seen.push(ctx.maxTokensEstimate);
+        return { kind: 'completed', output: 'done' };
+      },
+    },
+    undefined,
+    { maxTokensEstimate: 17 },
+  );
+  await drain(engine.start({ workflow: workflow(SEQUENTIAL) }));
+  expect(seen).toEqual([17]);
+});
+
+describe('ordinary gate media lifecycle cutoff (ADR-0085)', () => {
+  type Ending =
+    | 'positive'
+    | 'cancel'
+    | 'run-deadline'
+    | 'node-deadline'
+    | 'successor'
+    | 'late-pin-rejection';
+  for (const ending of [
+    'positive',
+    'cancel',
+    'run-deadline',
+    'node-deadline',
+    'successor',
+    'late-pin-rejection',
+  ] satisfies readonly Ending[]) {
+    it(`ordinary gate media pin after cutoff ${ending}`, async () => {
+      let release = () => {};
+      let entered = () => {};
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const pinEntered = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const cas = stubMediaStore().store;
+      const mediaStore: MediaStore = {
+        ...cas,
+        put: async (bytes, mimeType) => {
+          entered();
+          await held;
+          if (ending === 'late-pin-rejection') throw new Error('synthetic private pin failure');
+          return cas.put(bytes, mimeType);
+        },
+      };
+      const activeRefs = new Set<string>();
+      const referenceActions: string[] = [];
+      const mediaReferences: MediaReferencePort = {
+        recordRunMedia: (meta) => {
+          activeRefs.add(meta.handle);
+          referenceActions.push('record');
+        },
+        reclaimRun: () => {
+          activeRefs.clear();
+          referenceActions.push('reclaim');
+        },
+      };
+      let leaseClock = 0;
+      const leases = createInMemoryRunLeases(() => leaseClock);
+      const store = new InMemoryRunStore();
+      const host = createInMemoryHost({ store, mediaStore, mediaReferences, runLeases: leases });
+      const engine = new WorkflowEngine({
+        host,
+        executor: {
+          execute: (ctx) =>
+            Promise.resolve(
+              ctx.vertex.id === 'g'
+                ? { kind: 'paused', gate: { gateType: 'approval', message: 'Synthetic gate' } }
+                : { kind: 'completed', output: 'done' },
+            ),
+        },
+      });
+      const definition = parseWorkflow(
+        `schema_version: '1.0'\nworkflow:\n  id: parent-held-pin\n${ending === 'run-deadline' ? '  timeout_ms: 3000\n' : ''}${ending === 'node-deadline' ? '  agents: [{ id: worker, model: synthetic-model, provider: openai, system_prompt: go }]\n' : ''}  nodes:\n    - { id: start, type: input }\n    - ${ending === 'node-deadline' ? '{ id: g, type: agent, agent_ref: worker, prompt_template: go, timeout_ms: 3000 }' : '{ id: g, type: human_gate, gate_type: approval }'}\n    - { id: out, type: output }\n  edges:\n    - { from: start, to: g }\n    - { from: g, to: out }`,
+      );
+      const handle = engine.start({ workflow: definition });
+      const subscribers: RunEvent[] = [];
+      const unsubscribe = handle.subscribe((event) => subscribers.push(event));
+      const stream: RunEvent[] = [];
+      let resume: Promise<void> | undefined;
+      const drained = (async () => {
+        for await (const event of handle.events) {
+          stream.push(event);
+          if (event.type === 'human_gate:paused')
+            resume = engine.resume(handle.runId, event.gateId, {
+              decision: 'approved',
+              decidedBy: 'parent',
+              payload: {
+                image: {
+                  type: 'media',
+                  mimeType: 'image/png',
+                  source: { kind: 'base64', data: 'aGVsbG8=' },
+                },
+              },
+            });
+        }
+      })();
+      try {
+        await pinEntered;
+        for (let turn = 0; turn < 100; turn++) await Promise.resolve();
+        expect(stream.some((event) => event.type === 'run:paused')).toBe(false);
+        if (ending === 'cancel' || ending === 'late-pin-rejection') handle.cancel();
+        if (ending === 'run-deadline') host.fireTimers();
+        if (ending === 'node-deadline') host.fireDeadlines();
+        if (ending === 'successor') {
+          leaseClock = 80_000;
+          expect(
+            await leases.acquire(handle.runId, 'distinct-parent-successor', 60_000),
+          ).toBeDefined();
+          host.fireLiveness();
+        }
+        if (ending !== 'positive') await drained;
+        const before = {
+          subscriber: subscribers.length,
+          rows: store.eventsFor(handle.runId).length,
+          reference: referenceActions.length,
+        };
+        release();
+        await resume;
+        await drained;
+        const rows = store.eventsFor(handle.runId);
+        if (ending === 'positive') {
+          expect(rows.at(-1)?.type).toBe('run:completed');
+          expect(subscribers.filter((event) => event.type === 'human_gate:resumed')).toHaveLength(
+            1,
+          );
+          expect(referenceActions).toContain('record');
+          expect(referenceActions.at(-1)).toBe('reclaim');
+        } else {
+          expect({
+            lateSubscriberEvents: subscribers.slice(before.subscriber).map((event) => event.type),
+            lateDurableRows: rows.slice(before.rows).map((event) => event.type),
+            lateReferenceActions: referenceActions.slice(before.reference),
+            activeReferenceCount: activeRefs.size,
+          }).toEqual({
+            lateSubscriberEvents: [],
+            lateDurableRows: [],
+            lateReferenceActions: [],
+            activeReferenceCount: 0,
+          });
+          if (ending === 'successor')
+            expect((await leases.read(handle.runId))?.ownerId).toBe('distinct-parent-successor');
+          else
+            expect(rows.at(-1)?.type).toBe(
+              ending.includes('deadline') ? 'run:failed' : 'run:cancelled',
+            );
+        }
+        expect(host.deadlineCount()).toBe(0);
+        await expect.poll(() => host.livenessCount()).toBe(0);
+        expect(JSON.stringify(subscribers)).not.toContain('aGVsbG8=');
+      } finally {
+        release();
+        handle.cancel();
+        await resume;
+        await drained;
+        unsubscribe();
+      }
+    });
+  }
+});
+
+it('a media poll overflow emits fixed model facts without provider text', async () => {
+  const host = createInMemoryHost();
+  const engine = engineWith(
+    { gen: () => mediaJobOutcome({ units: 12 }) },
+    host,
+    {
+      resolvePrice: new Map([
+        [
+          'sora-2',
+          {
+            provider: 'openai',
+            nativeId: 'sora-2',
+            displayName: 'synthetic poll',
+            contextWindowTokens: 100,
+            maxOutputTokens: 10,
+            inputPerMtokMicrocents: 0,
+            outputPerMtokMicrocents: 0,
+            cachedInputPerMtokMicrocents: 0,
+            mediaOutputRates: { video: 2 },
+          },
+        ],
+      ]),
+    },
+    () =>
+      Promise.resolve({
+        state: 'failed',
+        error: {
+          provider: 'openai',
+          kind: 'context_overflow',
+          retryable: false,
+          message: 'PRIVATE_PROVIDER_TEXT',
+        },
+      }),
+  );
+  const handle = engine.start({
+    workflow: workflow(`  id: overflow-poll
+  nodes:
+    - { id: gen, type: transform, transform: 'g' }
+    - { id: out, type: output }
+  edges:
+    - { from: gen, to: out }`),
+  });
+  const events: RunEvent[] = [];
+  for await (const event of handle.events) {
+    events.push(event);
+    if (event.type === 'run:paused') host.fireTimers();
+  }
+  const failure = events.find((event) => event.type === 'node:failed');
+  expect(failure).toMatchObject({
+    error: {
+      code: 'context_overflow',
+      message:
+        'The request exceeded its context window (size unknown) for model sora-2. No tools ran in this turn.',
+    },
+  });
+  expect(JSON.stringify(events)).not.toContain('PRIVATE_PROVIDER_TEXT');
 });

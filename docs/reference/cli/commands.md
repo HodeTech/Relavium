@@ -1,6 +1,6 @@
 # CLI Command Reference (`relavium`)
 
-> Last updated: 2026-06-29
+> Last updated: 2026-10-03
 
 - **Status**: Reference (partial — surface defined, exact flags to be finalized as the CLI is built)
 - **Surface**: CLI (`relavium`)
@@ -30,7 +30,7 @@ The CLI auto-detects its environment and switches presentation accordingly:
 |------|------|----------|
 | **Interactive TUI** | TTY attached, no `--json` | `ink`-rendered live view: animated per-node status, streaming token output for the active node, final cost/duration summary |
 | **Plain** | No TTY or `CI=true` (and no `--json`) | The TUI is disabled; a terse line-per-lifecycle-event human renderer writes to stdout |
-| **NDJSON** | `--json` (anywhere on the command line) | The machine contract: stdout is a pure NDJSON stream — [RunEvent](../contracts/sse-event-schema.md)s for `run` / `gate`, or [SessionEvent](../contracts/sse-event-schema.md#session-event-namespace)s for `chat` / `agent run` — and all diagnostics go to stderr. See [The `--json` machine-output contract](#the---json-machine-output-contract) |
+| **NDJSON** | `--json` (anywhere on the command line) | The machine contract: stdout is a pure NDJSON stream — [RunEvent](../contracts/sse-event-schema.md)s for `run` / `gate` / `budget resume`, or [SessionEvent](../contracts/sse-event-schema.md#session-event-namespace)s for `chat` / `agent run` — and all diagnostics go to stderr. See [The `--json` machine-output contract](#the---json-machine-output-contract) |
 
 NDJSON is engaged **only** by `--json` (the explicit machine opt-in); a non-TTY or `CI=true`
 environment disables the interactive TUI but does not by itself switch stdout to NDJSON
@@ -56,7 +56,7 @@ a strip — but what reaches a terminal differs: `JSON.stringify` escapes `ESC` 
 (including `U+009B`, a working escape-sequence introducer) and the Trojan-Source bidi family RAW in content
 the model, a tool, or an imported artifact controls. Enforced by lint rather than review; the reasoning and
 the one allowlisted exception live in
-[security-review.md](../../standards/security-review.md#cli-terminal-render-safety--interactive-approval).
+[security-review.md](../../standards/security-review.md#cli-terminal-render-safety--interactive-approval-25e--25-close-step-14).
 
 Under `relavium run --json`, the CLI emits a stable machine contract a CI job can pipe and assert
 on ([ADR-0049](../../decisions/0049-cli-machine-output-contract.md)). The contract covers a workflow
@@ -114,7 +114,7 @@ before parsing the subcommand).
 
 ## Commands
 
-The command set below is the confirmed surface. Commands ship **per workstream**: `run` (2.D), `gate` + `gate list` (2.G/2.I), `provider` (2.C), the read commands `list` / `logs` / `status` (2.I), the whole agent-first chat family — **`chat`** (2.M), **`chat-resume`** (2.N), **`chat-list`** (2.O), **`chat-export`** (2.P), and **`chat --json` + `agent run`** (2.Q) — and the YAML-lifecycle authoring commands **`create`** / **`import`** / **`export`** (2.J) are all **live**; `budget resume` is a [tracked follow-up](../../roadmap/deferred-tasks.md). Invoking a not-yet-shipped command exits with a clean "not available yet (lands in …)" message. Subcommands marked _(planned)_ are intended but not yet locked.
+The command set below is the confirmed surface. Commands ship **per workstream**: `run` (2.D), `gate` + `gate list` (2.G/2.I), `provider` (2.C), the read commands `list` / `logs` / `status` (2.I), the whole agent-first chat family — **`chat`** (2.M), **`chat-resume`** (2.N), **`chat-list`** (2.O), **`chat-export`** (2.P), and **`chat --json` + `agent run`** (2.Q) — and the YAML-lifecycle authoring commands **`create`** / **`import`** / **`export`** (2.J) are all **live**; `budget resume` is live under W7 ([ADR-0097](../../decisions/0097-a-budget-approval-is-an-allowance-not-an-exemption.md)). Invoking a not-yet-shipped command exits with a clean "not available yet (lands in …)" message. Subcommands marked _(planned)_ are intended but not yet locked.
 
 | Command | Purpose |
 |---------|---------|
@@ -132,7 +132,7 @@ The command set below is the confirmed surface. Commands ship **per workstream**
 | `relavium status` | Show active runs and their per-node status. |
 | `relavium gate <runId>` | Resolve a pending human gate (approve / reject / provide input). |
 | `relavium gate list [<runId>]` | List pending human gates (all active runs, or one run) — the multi-gate subcommand for resolving one of several concurrently-pending gates. |
-| `relavium budget resume <runId> [--approve\|--abort]` | Resume a run suspended at a budget cap (`budget:paused`, `on_exceed: pause_for_approval`) — approve to continue or abort. The non-interactive operator path for [ADR-0028](../../decisions/0028-workflow-resource-governance.md). |
+| `relavium budget resume <runId> [--gate <gateId>] --approve-amount <microcents> \| --abort` | Resolve a recorded budget gate with its exact frozen amount, or reject it. See [`budget resume`](#relavium-budget-resume). |
 | `relavium init` _(planned)_ | Initialize a `.relavium/` directory in the current project. |
 | `relavium agent <subcommand>` _(planned)_ | Manage agents (list / create / test). |
 | `relavium models` | List the cached model catalog (refreshes on first run if the cache is empty). See [`relavium models`](#relavium-models). |
@@ -227,7 +227,7 @@ Two rows the replay may not be able to read, and it says which is which ([ADR-00
 
 ### `relavium status`
 
-Shows the currently active/paused runs (from `runs` + `step_executions`) and each one's per-node status. Useful while a long workflow runs in another terminal or was launched detached. For any run paused at a human gate it also prints the **pending `gateId`(s)** (with gate type and node id), so a CI author can pass the right one to `relavium gate <runId> --gate <gateId>` — required when a run has more than one gate pending at once. It takes **no argument** (it lists every active run; a terminal run is not shown — inspect one with `relavium logs <runId>`). A run whose event log is damaged is still listed, without its gate detail, rather than aborting the listing ([ADR-0074](../../decisions/0074-durable-conservative-budget-commitments.md) §5). A run whose TERMINAL is held in the terminal outbox is named as such — it reads `running` in the derived projection because its terminal never became durable, so without the marker it is indistinguishable from a run still working ([exit code `5`](#exit-codes)). The listing READS the outbox and never drains it: draining claims a run lease, and a status read must not take ownership of a run another process may be finishing. Under `--json` each active run is one NDJSON record — `{ runId, workflowId, status, terminalHeld, startedAt, steps, pendingGates }`, where each `steps` entry is `{ nodeId, nodeType, status, attemptNumber, startedAt, completedAt, durationMs, costMicrocents }` and each `pendingGates` entry is `{ gateId, nodeId, gateType, message, expiresAt? }` (the same pending-gate shape [`gate list`](#relavium-gate-list) emits).
+Shows the currently active/paused runs (from `runs` + `step_executions`) and each one's per-node status. Pending human and budget gates are reconstructed from the strict ordered event log even when only the authoritative budget pause survived a crash; discovery never claims ownership or supplies a decision. Useful while a long workflow runs in another terminal or was launched detached. For any run paused at a human gate it also prints the **pending `gateId`(s)** (with gate type and node id), so a CI author can pass the right one to `relavium gate <runId> --gate <gateId>` — required when a run has more than one gate pending at once. It takes **no argument** (it lists every active run; a terminal run is not shown — inspect one with `relavium logs <runId>`). A run whose event log is damaged is still listed, without its gate detail, rather than aborting the listing ([ADR-0074](../../decisions/0074-durable-conservative-budget-commitments.md) §5). A run whose TERMINAL is held in the terminal outbox is named as such — it reads `running` in the derived projection because its terminal never became durable, so without the marker it is indistinguishable from a run still working ([exit code `5`](#exit-codes)). The listing READS the outbox and never drains it: draining claims a run lease, and a status read must not take ownership of a run another process may be finishing. Under `--json` each active run is one NDJSON record — `{ runId, workflowId, status, terminalHeld, startedAt, steps, pendingGates, pendingBudgetGates }`, where each `steps` entry is `{ nodeId, nodeType, status, attemptNumber, startedAt, completedAt, durationMs, costMicrocents }` and each `pendingGates` entry is `{ gateId, nodeId, gateType, message, expiresAt? }` (the same pending-gate shape [`gate list`](#relavium-gate-list) emits). Each `pendingBudgetGates` entry is `{ gateId, nodeId, allowance, expiresAt? }`: `allowance` is `{ kind: "amount", microcents }`, `{ kind: "legacy" }`, `{ kind: "reject_only", reason: "unpriced" }` or `{ kind: "reject_only", reason: "unrepresentable" }`. Each allowance variant may also carry `excludedEntries?: string[]`: recorded excluded-candidate notices with redacted, quoted, truncated and escaped model identifiers and fixed exclusion reasons. These display strings grant no allowance. The JSON projection exposes no full quote, priced-model identity, endpoint or price provenance. Plain output adds the exact approval/abort commands for an amount-bearing gate. Terminal controls and secret-shaped identifiers are redacted and bounded in the budget display; a modified or shell-active identifier gets generic instructions rather than an executable hint. A damaged log emits empty gate arrays plus `gatesUnavailable: true` and `gatesUnavailableReason: "corrupt_event_log"`, so absence of readable authority is distinguishable from no pending gate.
 
 ### `relavium models`
 
@@ -285,18 +285,115 @@ printf 'api_key=%s\n' "$API_KEY" | relavium gate <runId> --approve --secret-stdi
   - What this proves is the **slot**, not the credential: the engine verifies that the same named `secret` input was re-supplied and cannot tell whether the value is the same key or a rotated one. ADR-0083 §6 states that limit rather than implying more.
 - **Idempotent.** A doubled decision — the run already finished, or the named gate was already resolved — is a clean exit-`0` no-op, never a double-advance (it leans on the engine's checkpoint/gate-state idempotency). An unknown `runId` is exit `2`. Idempotency is **per gate**, though: on a *sequential* multi-gate workflow a blind repeat *without* `--gate` (after the first decision advanced the run and it re-paused at the **next** gate) auto-fills and resolves *that* gate — so an automated retry-until-exit-`0` loop should **pin `--gate <gateId>`** to avoid resolving later gates unattended.
 
-> **Implementation status (2.G).** `relavium gate` runs in a **fresh process** from the original `run`: it reloads the run's frozen `WorkflowDefinition` + inputs from the durable history snapshot (2.H), reconstructs the paused checkpoint from the persisted event log, and calls `engine.resumeFromCheckpoint` over the same store — then drives the resumed run to its terminal (exit `0` complete / `1` failed / `3` paused again at a later gate). The recorded `decidedBy` is the constant `cli` (a deterministic, non-PII marker; the desktop/portal supply a real user id). Budget-cap pauses (`budget:paused`, [ADR-0028](../../decisions/0028-workflow-resource-governance.md)) are **not** resolved here — that is the separate `relavium budget resume` surface ([deferred-tasks](../../roadmap/deferred-tasks.md)). A run that declares a **`secret`-typed input** is resumed by re-supplying it on stdin with `--secret-stdin` (above); without the flag `relavium gate` still **fails closed (exit `2`)**, because secrets are never persisted in plaintext (only a masked placeholder is, ADR-0006/0036) and there is nothing to restore. The engine enforces the same rule independently — it refuses a resume whose masked slot was not filled, and refuses the placeholder itself as a value. The [`relavium gate list`](#relavium-gate-list) multi-gate listing is live (2.I).
+> **Implementation status (2.G).** `relavium gate` runs in a **fresh process** from the original `run`: it reloads the run's frozen `WorkflowDefinition` + inputs from the durable history snapshot (2.H), reconstructs the paused checkpoint from the persisted event log, and calls `engine.resumeFromCheckpoint` over the same store — then drives the resumed run to its terminal (exit `0` complete / `1` failed / `3` paused again at a later gate). The recorded `decidedBy` is the constant `cli` (a deterministic, non-PII marker; the desktop/portal supply a real user id). Budget-cap pauses (`budget:paused`, [ADR-0028](../../decisions/0028-workflow-resource-governance.md)) are **not** resolved here — that is the separate [`relavium budget resume`](#relavium-budget-resume) surface. A run that declares a **`secret`-typed input** is resumed by re-supplying it on stdin with `--secret-stdin` (above); without the flag `relavium gate` still **fails closed (exit `2`)**, because secrets are never persisted in plaintext (only a masked placeholder is, ADR-0006/0036) and there is nothing to restore. The engine enforces the same rule independently — it refuses a resume whose masked slot was not filled, and refuses the placeholder itself as a value. The [`relavium gate list`](#relavium-gate-list) multi-gate listing is live (2.I).
+
+### `relavium budget resume`
+
+Resolve a budget gate from another process or a non-interactive shell. The engine validates and
+activates the recorded allowance; the CLI transports the decision without recomputing the quote.
+
+```text
+relavium budget resume <runId> [--gate <gateId>] --approve-amount <microcents>
+relavium budget resume <runId> [--gate <gateId>] --abort
+```
+
+- Exactly one decision flag is required. `--approve-amount` accepts decimal digits representing a
+  non-negative safe integer in **microcents**, including `0`; signs, fractions, exponents and overflow
+  are invalid invocations (exit `2`). It must equal the frozen amount exactly. A wrong amount is refused
+  before secret input, key resolver construction, MCP connection, engine construction or ownership.
+- With one pending budget gate, `--gate` is filled automatically. With multiple budget gates it is
+  required; ordinary human gates are separate. Pin the gate id in an automated retry so a later gate is
+  never selected accidentally. Human `relavium status` and ambiguous resume discovery report budget
+  ids, scalar allowance amounts and the recorded excluded candidates. Candidate model identifiers
+  are redacted, quoted, truncated and escaped; they cannot supply an approval amount. Priced
+  model/rate provenance stays out of this display. `relavium gate list` and `relavium gate`
+  continue to cover ordinary gates only.
+- A legacy gate with no frozen allowance, an unpriced quote or an unrepresentable amount offers
+  **`--abort` only** on this surface. There is no input payload, comment or generic `--approve` flag.
+- Approval preserves the governor and its dispatch-owned allowance. It does not lift the workflow cap.
+  The CLI first checks recorded priced quantities against current prices without seeding database
+  rows, before secret input, credential-resolver construction or MCP connection. That check grants
+  no approval. The engine independently prepares the actual request and rechecks the complete
+  current quote before claiming the gate; a stale quote remains pending and is refused (exit `2`).
+  Human and budget resume build their provider resolvers over the command's existing database
+  connection. See
+  [the preparation/resume contract](../shared-core/agent-runner.md#preparing-and-resuming-a-budget-dispatch).
+- `--abort` rejects the selected budget gate, dispatches no agent and fails the run with
+  `budget_exceeded` (exit `1`). It calls no credential factory and creates no MCP client. A doubled resolved
+  budget gate or terminal-run decision is a clean exit-`0` no-op before resource construction.
+  For a nonterminal run, naming a resolved ordinary human gate is an invalid invocation
+  (exit `2`), not a budget no-op.
+- `--secret-stdin` follows [the human-resume stdin contract](#relavium-gate). A secret-bearing frozen
+  run still needs its masked slots re-supplied, including on abort. The advice preserves the selected
+  run, gate and decision; values stay out of argv. Drained stdin disables any later interactive prompt.
+- `--allow-mcp-stdio <digest>` follows the existing declaration consent gate. Both human and budget
+  resume reconnect against the **original recorded workspace**, with the frozen tool grant: removed,
+  replaced or newly discovered MCP ids refuse rather than changing the authorized request. A budget
+  rejection does not connect MCP. Signal teardown is armed before connect and removed after cleanup.
+  Ctrl-C during connect/build returns exit `1`, leaves the decision unrecorded and the gate pending,
+  and reaps any connected child. The interruption guard also covers resumes without MCP. Once
+  engine resume starts, cancellation reaches both passive preparation and the active execution.
+  A decision append may already be in flight: its successful acknowledgement stays durable,
+  while cancellation prevents later dispatch and follows the engine's cancelled outcome; it never
+  rolls back a durable approval. Signal subscriptions remain armed through database/client cleanup.
+- A successful native decision write yields to queued OS signal handling before its acknowledgement
+  admits the approved dispatch. Terminal persistence uncertainty returns exit `5` with the delivered
+  terminal retained in the outbox. Nonterminal ownership uncertainty refuses with exit `6`; its
+  diagnostic does not claim that an earlier durable approval is absent. See [the exit codes](#exit-codes).
+- Under `--json`, stdout remains a pure run-event stream, with diagnostics and no-op/interruption
+  notices on stderr. There is no prompt under JSON, CI or no TTY. On a TTY the inline budget card shows
+  the frozen scalar amount and requires that exact amount or rejection; unpriced/unrepresentable
+  gates offer rejection only. A legacy inline card may explicitly continue **without an allowance**
+  under current budget checks; the amount-bearing shell command cannot invent an amount for it.
+  The card also shows the safely projected excluded candidates. An engine-refused stale or invalid
+  inline budget approval stops further prompts and drains the actual ordered event stream until
+  the aggregate `run:paused` is durably acknowledged, retaining the command's database and cancel
+  handler through that barrier. It then returns exit `3` with the gate pending. Once cooperative
+  cancellation is requested, an already queued pause cannot trigger that exit: the command retains
+  its resources through the acknowledged `run:cancelled` terminal and returns exit `1`. Other
+  competing terminals retain their own outcomes while the primary stream is being consumed.
+  Cancellation from a dismissed card also stops all
+  queued inline prompts. The primary subscription stays open through renderer teardown: cancellation
+  accepted during Ink unmount is durably acknowledged before SQLite closes and before the single
+  persistent summary is printed. A custom renderer that omits the summary barrier still cannot
+  release the command resources before the cancellation terminal. Voluntary paused finalization
+  releases input without printing an irreversible summary, then joins engine-owned local departure.
+  The one primary reader remains active through both acknowledgements: a gate deadline or decision
+  that advances the run keeps its real outcome. A stable pause returns exit `3` only after local
+  detachment; it makes no claim about subsequent progress by another host. Terminal and fenced
+  outcomes also join admitted work before SQLite or MCP resources close. See the
+  [canonical engine lifecycle](../../architecture/shared-core-engine.md#internal-departure-foundations-adr-0103).
+  A join pending for 250 ms emits a fixed `cleanup_pending` diagnostic to stderr and continues
+  waiting. A failed cleanup acknowledgement emits `cleanup_failed` and retains the owner rather
+  than treating failure as completion. JSON diagnostics are nondurable objects with `type`, `code`
+  and `message`; stdout remains the run-event stream. SIGINT stays owned through input and engine
+  acknowledgement. On receiving an actual terminal, Ink immediately writes a fixed provisional
+  human outcome to stderr (`Run completed/failed/cancelled; run cleanup is pending.`), even if its
+  input mount has already exited or its last frame is throttled. This notice carries no final
+  receipt verdict or provider error text. Ink prints one persistent summary for the actual final local outcome;
+  plain/NDJSON add no synthetic terminal or summary.
+  The operator can inspect or reject the pending gate through
+  `budget resume`. Ordinary human-gate prompts retain
+  their existing decisions.
+- An emitted budget rejection stops later queued cards and drains its real failed terminal. A
+  cancellation or terminal arriving during live-view suspension suppresses the stale card; one
+  arriving while a card is open dismisses it without requiring another answer. Late answers cannot
+  replace the winning decision or terminal. A losing idempotent rejection does not stop subsequent
+  genuine gates, and ordinary human-gate rejection retains its existing continue behaviour.
+- Authority and matching companions produce one budget notice per `(runId, nodeId, gateId)` in plain
+  and TUI views. They never fall through to an ordinary human approval prompt. The durable protocol is
+  [defined once in the event contract](../contracts/sse-event-schema.md#durable-budget-authorization).
 
 ### `relavium gate list`
 
 Lists the pending human gates so an operator can pick the `gateId` to resolve — the multi-gate discovery surface the [`gate`](#relavium-gate) command's `--gate` requirement points at.
 
 ```bash
-relavium gate list             # every paused run's pending human gates
+relavium gate list             # every active run's pending human gates
 relavium gate list <runId>     # just one run's
 ```
 
-- With no argument it scans **every paused run**; with a `<runId>` it lists just that run's pending gates (an unknown `runId` exits `2`). Budget-cap pauses (`budget:paused`) are **excluded** — those are the separate `relavium budget resume` surface ([ADR-0028](../../decisions/0028-workflow-resource-governance.md)).
+- With no argument it scans **every active run**; with a `<runId>` it lists just that run's pending gates (an unknown `runId` exits `2`). Budget-cap pauses (`budget:paused`) are **excluded** — those are the separate `relavium budget resume` surface ([ADR-0028](../../decisions/0028-workflow-resource-governance.md)).
 - It rests on the **same** persisted-event reconstruction the [`gate`](#relavium-gate) resume path uses, so the listing and the resume can never disagree on what is pending.
 - Human output is one line per gate (`<runId>  <gateId>  <gateType>  node=<nodeId>  "<message>"`); under `--json` each pending gate is one NDJSON record — `{ runId, gateId, nodeId, gateType, message, expiresAt? }` (see [Read-command `--json` output](#read-command---json-output)).
 
@@ -309,6 +406,10 @@ Lists past [agent sessions](../contracts/agent-session-spec.md) from durable `hi
 Exports a persisted session to a `.relavium.yaml` **scaffold** for review before commit ([ADR-0026](../../decisions/0026-session-export-to-workflow.md)) — the same contract the in-REPL `/export` drives. Writes `<sessionId>.relavium.yaml` in cwd by default (the file name is keyed on the unique session id, so two sessions never collide); `--out <path>` overrides, `--force` overwrites an existing target. The session row is marked `exported` with the written path. Under `--json` it emits a single `session:exported` event (`{ type, sessionId, timestamp, sequenceNumber, workflowPath }`). An unknown sessionId or an existing target without `--force` exits `2`; success is exit `0`.
 
 ### `relavium agent run`
+
+Committed effect metadata is swept at one-shot teardown; unresolved effects remain audit evidence.
+No transcript is persisted and no earlier invocation is replayed. A failed one-shot identity reservation
+cannot clean another session's rows; see [effect-journal.md §9](../shared-core/effect-journal.md#9-retention).
 
 Runs a single agent **one-shot** (non-interactive) on the same `AgentSession` infra as `relavium chat` — a session with one turn, then exit. The agent-first headline as a scriptable, CI-friendly primitive.
 
@@ -324,16 +425,19 @@ echo "review it" | relavium agent run code-reviewer --fixture ./fixtures/review.
 - `--fixture <path>` replays a recorded LLM **cassette** so the run is deterministic and fully offline (no key, no network, no keychain) — the format is documented in [agent-run-fixture.md](agent-run-fixture.md). A malformed cassette exits `2`.
 - `--json` emits the [`SessionEvent`](../contracts/sse-event-schema.md#session-event-namespace) NDJSON stream on stdout (the same shape `chat --json` produces); otherwise the assistant reply streams in human form.
 - `--allow-mcp-stdio <digest>` (repeatable) authorizes a **local MCP program** for this invocation only. `agent run` is the one-shot, pipeline-facing member of the chat family — its stdin carries the prompt, so it can never prompt for consent, and an agent declaring an unapproved `stdio` MCP server exits `2` before anything spawns. See [Local MCP servers need consent](#local-mcp-servers-need-consent).
-- **The transcript is not persisted** — a stateless invoke (no session/message row), unlike the REPL. It does still **open `history.db`** to attach the effect journal ([effect-journal.md](../shared-core/effect-journal.md)): an external effect is carried forward by the target, not by the run, so an unattached journal would refuse every effectful tool on this surface. The rows it writes are never read back. A `history.db` that cannot be opened fails the invocation.
+- **The transcript is not persisted** — a stateless invoke (no transcript or resumable session; only an already-tombstoned durable effect-identity bookkeeping row), unlike the REPL. It does still **open `history.db`** to attach the effect journal ([effect-journal.md](../shared-core/effect-journal.md)): an external effect is carried forward by the target, not by the run, so an unattached journal would refuse every effectful tool on this surface. Its effect metadata is read at teardown for the owned committed-row sweep, never for replay. A `history.db` that cannot be opened fails the invocation.
 - The exit code is the **turn's outcome**: `0` on success, `1` on a turn error; an invocation fault is `2`. It is **never** `4` (that is the interactive REPL's session-ended code). A termination **signal** exits `128+signo` (`130` on Ctrl-C) after tearing any MCP servers down — this surface has no cooperative-cancel contract to preserve, unlike `run` ([ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md) §1.3).
 - **Ctrl-C leaves no orphan.** Any `stdio` MCP server this invocation spawned is reaped before the process exits, including on a `kill`, a closed terminal window, or a second impatient Ctrl-C.
 
 ### `relavium provider`
 
 Registers LLM providers and manages their API keys in the **OS keychain** (workstream 2.C; `@napi-rs/keyring`,
-[ADR-0019](../../decisions/0019-cli-node-keychain-library.md)). The **key value never leaves the keychain**:
-the `llm_providers` row stores only the keychain `account` ref, display shows only a hint (last 4 chars), and a
-key is read solely at LLM-call time. Known providers: `anthropic`, `openai`, `gemini`, `deepseek`.
+[ADR-0019](../../decisions/0019-cli-node-keychain-library.md)). The `llm_providers` row stores
+only the keychain `account` ref; provider displays expose a hint, not the key value. The host resolves
+the credential into process memory for provider requests, including verification/model discovery;
+key custody does not mean the adapter can call a provider without reading its credential. See
+[the keychain/secret contract](../desktop/keychain-and-secrets.md).
+Known providers: `anthropic`, `openai`, `gemini`, `deepseek`.
 
 ```bash
 relavium provider list                                  # registered providers + whether a key is set
@@ -362,7 +466,7 @@ relavium provider list --verify                         # + a live key-verificat
 ### Local MCP servers need consent
 
 Every command that can open an **MCP-bearing artifact** — `relavium run`, `relavium chat`,
-`relavium chat-resume`, `relavium agent run`, and the bare-invocation Home — passes through the same gate
+`relavium chat-resume`, `relavium agent run`, `relavium gate`, `relavium budget resume`, and the bare-invocation Home — passes through the same gate
 before any local program starts ([ADR-0084](../../decisions/0084-consent-before-a-local-mcp-spawn.md)). An
 agent or workflow with a `stdio` MCP server declares a **program on your machine**; the artifact chooses it,
 so the decision is yours. Network transports (`http`, `sse`, `websocket`) need no consent — there is no local
@@ -394,8 +498,11 @@ relavium run pipeline.relavium.yaml --allow-mcp-stdio v1:9f2c… --allow-mcp-std
 ```
 
 `--allow-mcp-stdio` is repeatable, authorizes **only that invocation**, and **writes no grant** — a CI runner
-does not accumulate standing trust. It exists on `relavium run` and `relavium agent run`, the two commands a
-pipeline invokes; the interactive chat family answers at the prompt instead.
+does not accumulate standing trust. It exists on `relavium run`, `relavium agent run`, `relavium gate`
+and `relavium budget resume`, including their non-interactive execution-resume paths.
+`relavium budget resume <runId> --abort` does not start MCP servers. Human-gate decisions resume
+workflow execution and use the same MCP consent rules; the interactive chat family answers at the
+prompt instead.
 
 ## Exit codes
 
@@ -413,14 +520,18 @@ not one of them: its Ctrl-C is a cooperative cancel that exits `1`.
 | `3` | Run paused at a human gate (CI/non-interactive mode) — resume with `relavium gate` |
 | `4` | A chat session ended — via `/exit`, `/cancel` (or Ctrl-C in TTY mode), or an input-stream EOF — a user-initiated end of a `relavium chat` REPL — see [chat-session.md](chat-session.md) |
 | `5` | The run **produced** a terminal, but whether it reached the durable log is **not known** ([ADR-0078](../../decisions/0078-ordered-durable-append-and-the-terminal-outbox.md) §5). The terminal is held in the outbox and retried on the next start |
-| `6` | The run is owned by **another process** — either refused before starting, or fenced out mid-flight and stopped without claiming an outcome ([ADR-0079](../../decisions/0079-cross-process-run-ownership-lease-and-fencing-token.md) §5, §7). The only **transient** code: retry shortly |
-| `7` | An external **effect** from a prior attempt of this run is unresolved, so the run stopped for a human ([ADR-0080](../../decisions/0080-durable-effect-journal-and-the-tiered-effect-contract.md) §2b; [effect-journal.md](../shared-core/effect-journal.md) §4, §8). The only code whose remedy is **do not retry** — check the target, then clear the row (the resolving command is a named follow-up; today the row is cleared out of band); resuming re-enters the same gate |
+| `6` | Ownership was refused before starting, or this host was fenced out and stopped without claiming an outcome ([ADR-0079](../../decisions/0079-cross-process-run-ownership-lease-and-fencing-token.md) §5, §7). Inspect current history; the successor may already have finished |
+| `7` | An external **effect** needs attention, including a prior unresolved attempt or an admitted effect whose final receipt remained unresolved after host joining ([effect-journal.md](../shared-core/effect-journal.md) §4, §8). **Do not retry**: inspect the target, then resolve the row out of band |
+| `8` | Required money receipts were not durably acknowledged. **Do not repeat paid work**: inspect `relavium logs <runId>` and the ledger before recovery. This is separate from terminal-outbox uncertainty |
 
-> Codes `5` and `6` are both "the run's record is not what you might assume", and they differ in what to do next: `5` means a terminal exists and the CLI will retry writing it for you, so re-check after the next invocation; `6` means another process owns the run and is recording it, so there is nothing local to retry — read `relavium logs <runId>` for the truth (`relavium status` takes no argument and lists only ACTIVE runs, so it will not show a run another process has already finished). A run that produced no terminal at all is always `6`, never `5`.
+> Final required-money uncertainty takes priority (`8`), then effect attention (`7`), then the actual terminal/ownership disposition (`5`/`6`) and ordinary outcome. A combined `8` warning also directs the operator to inspect the effect target and resolve its row. Final health never replaces the actual terminal, its error code or durable history; it selects the command's disposition after joining admitted work.
+> The fixed final-health stderr diagnostic has `type: diagnostic`, `code`, `message`, `terminalDurability` (`durable`, `uncertain` or `none`) and `effectNeedsAttention`. It reports one highest-priority warning; a combined money/effect case includes both remedies. These fields are nondurable and never added to stdout RunEvents.
 >
-> Exit code `7` is the one code a retry can make WORSE. Every other non-zero code either fails identically forever (`2`), resolves on its own (`6`), or describes a run that can be re-run (`1`). A `7` means an external effect — a filed ticket, a sent webhook, a started payment — may already have landed and nothing recorded what the target did. Retrying it is how one effect becomes two. An automation loop must surface a `7` to a person, never re-invoke on it.
+> Codes `5` and `6` have different remedies: `5` means a terminal exists and the CLI will retry writing it, so re-check after the next invocation; `6` means this invocation cannot claim an outcome — read `relavium logs <runId>` for current truth. A terminal-free fenced close uses `6` when neither final-money nor effect attention takes priority; it never promises an outbox retry.
 >
-> Exit code `6` is the one refusal worth retrying unchanged. Every other invocation fault (`2`) is a mistake in the call and fails identically forever, while `6` means another `relavium` process holds a live lease on the run and resolves on its own when that process finishes or its lease expires. An automation loop should back off and retry on `6`, and never on `2`.
+> Exit codes `7` and `8` must be surfaced to a person, never automatically re-invoked. An external effect or paid call may already have happened without its required receipt. Repeating it can duplicate the effect or charge.
+>
+> A pre-start live-ownership refusal (`6`) can be retried after backoff. A fenced host's `6` instead requires inspecting current history before resuming: local departure does not certify a successor's present status. An invalid invocation (`2`) requires correcting the call.
 >
 > Exit code `3` lets CI distinguish a pause-for-approval (a `run:paused` event — the run's aggregate suspension, a human/approval/budget gate — in non-interactive mode) from a hard failure. This is the canonical home for the gate-paused code; other docs reference it as `3`.
 >
@@ -428,7 +539,7 @@ not one of them: its Ctrl-C is a cooperative cancel that exits `1`.
 >
 > Exit code `4` is the canonical **chat-session-ended** code: it marks a deliberate `/exit` (or its `--json` equivalent, a final `session:cancelled`/end event) from the `relavium chat` REPL, kept distinct from a successful workflow run (`0`) and a hard failure (`1`) so a wrapper script can tell "the user quit the chat" apart from either. Other docs reference it as `4`.
 >
-> Exit code `5` is **durability-uncertain**, and it is deliberately neither `0` nor `1`. The run may well have COMPLETED — the outputs are in the delivered terminal — and only its durable record is missing, so reporting success would be as wrong as reporting failure. The terminal is held in the host's terminal outbox (`~/.relavium/terminal-outbox.ndjson`, beside `history.db` and deliberately not inside it) and retried by the next **`relavium run`** or **`relavium gate`** — those two and no others, because the drain is a `WorkflowEngine` method and they are the only commands that construct one. `chat`, `agent run` and the bare-invocation Home run on `AgentSession` and have no engine to drain with. A script seeing `5` should treat the run as done-but-unrecorded; `relavium status` NAMES such a run (`terminalHeld` in `--json`) so the state is visible, but it does not itself drain — draining claims a run lease, and a status read must not take ownership of a run another process may be finishing. Other docs reference it as `5`.
+> Exit code `5` is **durability-uncertain**, and it is deliberately neither `0` nor `1`. The run may well have COMPLETED — the outputs are in the delivered terminal — and only its durable record is missing, so reporting success would be as wrong as reporting failure. The terminal is held in the host's terminal outbox (`~/.relavium/terminal-outbox.ndjson`, beside `history.db` and deliberately not inside it) and retried by the next **`relavium run`**, **`relavium gate`** or **`relavium budget resume`** — these three commands construct a `WorkflowEngine` for their run/resume path. `chat`, `agent run` and the bare-invocation Home run on `AgentSession` and have no engine to drain with. A script seeing `5` should treat the run as done-but-unrecorded; `relavium status` NAMES such a run (`terminalHeld` in `--json`) so the state is visible, but it does not itself drain — draining claims a run lease, and a status read must not take ownership of a run another process may be finishing. Other docs reference it as `5`.
 >
 > The bare-invocation **interactive Home** (2.5.B, [home.md](home.md)) is a long-lived mode whose **clean exit is `0`** (Ctrl-C / Ctrl-D on an empty prompt). A chat launched from inside the Home has its own exit code `4`, which the **Home loop consumes** — a chat ending returns to the Home, never leaked. An external signal to the Home runs teardown then exits the conventional `128+signo` (**`130`** SIGINT / **`143`** SIGTERM) so a pipeline still detects the interruption.
 

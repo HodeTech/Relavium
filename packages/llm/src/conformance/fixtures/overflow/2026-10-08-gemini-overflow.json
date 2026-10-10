@@ -1,0 +1,14 @@
+{
+  "captureTool": "w7-overflow-capture-v1",
+  "capturedAt": "2026-10-08T19:15:50.272Z",
+  "provider": "gemini",
+  "model": "gemini-3.5-flash-lite",
+  "purpose": "overflow",
+  "syntheticInputCharacters": 3145728,
+  "maxOutputTokens": 64,
+  "response": {
+    "status": 400,
+    "contentType": "application/json",
+    "body": "{\n  \"error\": {\n    \"code\": 400,\n    \"message\": \"The input token count exceeds the maximum number of tokens allowed 1048576.\",\n    \"status\": \"INVALID_ARGUMENT\"\n  }\n}\n"
+  }
+}

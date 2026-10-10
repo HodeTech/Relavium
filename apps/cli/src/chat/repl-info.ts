@@ -148,18 +148,27 @@ export function compactionNotice(result: CompactionResult): string {
     }
     case 'nothing_to_compact':
       return 'Nothing to compact — the conversation is already short.';
+    case 'budget_refused':
+      return `Compaction budget refused: ${sanitizeInline(result.message)}. The conversation is unchanged.`;
     case 'failed':
       return `Compaction failed: ${sanitizeInline(result.message)}. Try /trim for a deterministic bound.`;
     case 'cancelled':
       return 'Compaction cancelled — the conversation is unchanged.';
+    case 'policy_refused':
+      return `Compaction refused: ${sanitizeInline(result.message)}`;
   }
 }
 
 /** The `/trim` result notice (ADR-0062) — a deterministic drop, no LLM call. */
 export function trimNotice(result: TrimResult): string {
-  return result.kind === 'trimmed'
-    ? `✂ Trimmed ${result.droppedMessageCount} older message(s) — keeping the last ${result.keptMessageCount}.`
-    : `Nothing to trim — ${result.messageCount} message(s), already within the bound.`;
+  switch (result.kind) {
+    case 'trimmed':
+      return `✂ Trimmed ${result.droppedMessageCount} older message(s) — keeping the last ${result.keptMessageCount}.`;
+    case 'nothing_to_trim':
+      return `Nothing to trim — ${result.messageCount} message(s), already within the bound.`;
+    case 'policy_refused':
+      return `Trim refused: ${sanitizeInline(result.message)}`;
+  }
 }
 
 /**
@@ -206,3 +215,7 @@ export function modelSwitchNotice(oldModel: string, newModel: string): string {
     `sent — @-attached file contents included — is.`
   );
 }
+
+/** Fixed pre-egress disclosure; never a model id, guessed window or request body. */
+export const COMPACTION_UNKNOWN_WINDOW_NOTICE =
+  'The model context window is unknown. Manual compaction is bounded best effort; request fit cannot be guaranteed.';

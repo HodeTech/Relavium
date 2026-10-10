@@ -1,15 +1,17 @@
 import {
   AppendConflictError,
+  CorruptRunEventError,
   LeaseFencedError,
   parseStoredRunEvent,
   RunEventSchema,
+  RunSuspensionReducer,
   type DurableWriteContext,
   type ExecutionMode,
   type RunEvent,
   type RunLeasePort,
   type RunStatus,
 } from '@relavium/shared';
-import { and, asc, desc, eq, getTableColumns, inArray, isNull, notInArray, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, getTableColumns, inArray, isNull, sql } from 'drizzle-orm';
 
 import type { Db, TxDb } from './client.js';
 import { withBusyRetry, withBusyRetryAsync } from './retry.js';
@@ -102,6 +104,8 @@ export interface InterruptedRunInfo {
   readonly workflowId: string;
   /** `true` when the run was suspended at a gate (resumable); `false` when it died mid-execution. */
   readonly resumable: boolean;
+  /** A recorded budget rejection survived without its run terminal; derived from ordered gate history. */
+  readonly budgetRejected?: boolean;
   /** The highest `sequenceNumber` already persisted for this run. */
   readonly lastSequenceNumber: number;
 }
@@ -183,50 +187,7 @@ export interface RunEventLog {
   readonly skipped: readonly SkippedRunEvent[];
 }
 
-/**
- * A stored `run_events` row that is damaged — not merely written by a newer binary.
- *
- * Both failure shapes land here: unreadable JSON in `payload_json`, and a `type` this binary DOES know whose body
- * does not parse. ADR-0050's durability-first posture says neither may be swallowed, and
- * [error-handling.md](../../../docs/standards/error-handling.md) says the error that surfaces must be typed and
- * carry structured context. Without this, a single bad row out of thousands reached the user as
- * `An unexpected internal error occurred.` — no run, no row, no next step.
- */
-export class CorruptRunEventError extends Error {
-  override readonly name = 'CorruptRunEventError';
-  readonly code = 'corrupt_run_event' as const;
-
-  constructor(
-    readonly runId: string,
-    readonly sequenceNumber: number,
-    /**
-     * The row's `event_type` column. Our own writes put a union literal here, but the column carries no CHECK
-     * (`schema.ts`), so a hand-edited DB could hold arbitrary text — hence the length bound in the message below.
-     * Terminal/bidi control bytes are stripped one layer up, where every user-facing error passes through
-     * `sanitizeInline` (`apps/cli/src/process/render-error.ts`); this field is not a second sanitization seam.
-     */
-    readonly eventType: string,
-    cause: unknown,
-  ) {
-    const shownType = eventType.length > 64 ? `${eventType.slice(0, 64)}…` : eventType;
-    super(
-      `run ${runId} has a damaged event row at seq ${sequenceNumber} (type ${shownType})`,
-      // Preserved so `--verbose` can still show the underlying ZodError/SyntaxError detail.
-      { cause },
-    );
-  }
-}
-
-/**
- * Narrow an unknown thrown value to {@link CorruptRunEventError} by its `code`, not by `instanceof`.
- *
- * The CLI bundles `@relavium/db` into one file while its tests import the package directly, so two realizations of
- * the class can coexist and `instanceof` would silently answer `false` at exactly the boundary that has to catch it.
- * Cast-free narrowing (the same shape `content.ts` uses).
- */
-export function isCorruptRunEventError(value: unknown): value is CorruptRunEventError {
-  return value instanceof Error && 'code' in value && value.code === 'corrupt_run_event';
-}
+export { CorruptRunEventError, isCorruptRunEventError } from '@relavium/shared';
 
 /**
  * A run whose event log cannot be fully read by THIS binary, refused because the caller is a REPLAY
@@ -328,8 +289,8 @@ export interface RunHistoryReader {
   loadRunEventLogForReplay: (runId: string) => RunEvent[];
   /** A run's STATE-BEARING events in `seq` order — the full log MINUS the per-token/tool streaming firehose
    *  (`agent:token` / `agent:tool_call` / `agent:tool_result`), which neither checkpoint reconstruction nor gate
-   *  detection consults. For a bounded gate/checkpoint fold over a long run (the Home strip) that must NOT pay to
-   *  parse the whole firehose. NOT for `logs`/resume, which need every event. */
+   *  detection consults. Every stored row is validated before genuine streaming events are excluded from
+   *  the returned gate/checkpoint fold. NOT for `logs`/resume, which need every event. */
   loadRunStateEvents: (runId: string) => RunEvent[];
   /** Non-terminal runs (pending/running/paused), newest first — `relavium status` + `gate list` (all-runs). */
   listActiveRuns: () => RunRecord[];
@@ -414,16 +375,17 @@ export interface RunLeaseState extends RunLease {
 const NON_TERMINAL_STATUSES = ['pending', 'running', 'paused'] as const;
 
 /** The per-token/tool streaming firehose — the highest-volume events, which checkpoint reconstruction and gate
- *  detection ignore. {@link RunHistoryReader.loadRunStateEvents} excludes these so a bounded fold over a long run
- *  does not pay to parse them. (Matches `runEvents.eventType`, which stores `event.type`.) `agent:reasoning`
+ *  detection ignore. {@link RunHistoryReader.loadRunStateEvents} validates every stored row first, then excludes
+ *  these from its returned fold so a corrupted discriminator cannot hide a durable suspension.
+ *  (Matches `runEvents.eventType`, which stores `event.type`.) `agent:reasoning`
  *  (EA6, 2.5.H) is a streamed firehose event of the same class; it is never persisted (streamed `agent:*` events
  *  go through the bus, not `persistEvent`), so it is listed here for defensive consistency, not effect. */
-const STREAMING_EVENT_TYPES = [
+const STREAMING_EVENT_TYPES = new Set([
   'agent:token',
   'agent:reasoning',
   'agent:tool_call',
   'agent:tool_result',
-];
+]);
 
 /**
  * The `run_costs.node_id` used for a RUN-level cost addend — the residual a `run:failed` / `run:cancelled`
@@ -467,36 +429,100 @@ function readEventLog(
       payloadJson: runEvents.payloadJson,
     })
     .from(runEvents)
-    // Excluding the per-token/tool streaming firehose at the DB level keeps a gate/checkpoint fold over a long run
-    // from paying to JSON.parse + Zod-validate thousands of `agent:token` rows the reconstruction ignores.
-    .where(
-      opts.streamingIncluded
-        ? eq(runEvents.runId, runId)
-        : and(eq(runEvents.runId, runId), notInArray(runEvents.eventType, STREAMING_EVENT_TYPES)),
-    )
+    // Validate every stored projection before excluding streaming events from the fold.
+    // Filtering by the SQL discriminator first could hide a corrupted durable suspension.
+    .where(eq(runEvents.runId, runId))
     .orderBy(asc(runEvents.seq))
     .all();
 
   const events: RunEvent[] = [];
   const skipped: SkippedRunEvent[] = [];
   for (const row of rows) {
-    let event: RunEvent | undefined;
-    try {
-      event = parseStoredRunEvent(JSON.parse(row.payloadJson));
-    } catch (cause) {
-      throw new CorruptRunEventError(runId, row.seq, row.eventType, cause);
-    }
+    const event = readStoredEventRow(runId, row);
     if (event === undefined) {
       skipped.push({ sequenceNumber: row.seq, type: row.eventType });
       continue;
     }
-    const mismatch = projectionMismatch(event, runId, row);
-    if (mismatch !== undefined) {
-      throw new CorruptRunEventError(runId, row.seq, row.eventType, new Error(mismatch));
-    }
+    if (!opts.streamingIncluded && STREAMING_EVENT_TYPES.has(event.type)) continue;
     events.push(event);
   }
   return { events, skipped };
+}
+
+/** The shared row parser for ordinary log reads and ordered interruption discovery. */
+function readStoredEventRow(
+  runId: string,
+  row: { readonly seq: number; readonly eventType: string; readonly payloadJson: string },
+): RunEvent | undefined {
+  try {
+    const candidate: unknown = JSON.parse(row.payloadJson);
+    // Forward compatibility is only a matching unknown type, never a damaged column projection.
+    // Check before the tolerant parser can skip the payload and conceal a known state-bearing row.
+    if (
+      typeof candidate !== 'object' ||
+      candidate === null ||
+      !('type' in candidate) ||
+      candidate.type !== row.eventType
+    )
+      throw new Error('stored run event type does not match its column');
+    const event = parseStoredRunEvent(candidate);
+    if (event === undefined) return undefined;
+    const mismatch = projectionMismatch(event, runId, row);
+    if (mismatch !== undefined) throw new Error(mismatch);
+    return event;
+  } catch (cause) {
+    throw new CorruptRunEventError(runId, row.seq, row.eventType, cause);
+  }
+}
+
+/**
+ * One ordered join over active runs, without an N+1 read or an inArray(ids) parameter limit.
+ * All stored rows are validated before any streaming exclusion and contribute to the high-water mark;
+ * unknown newer events retain the same tolerant discovery policy as the display reader.
+ * Strict replay still refuses every skipped row before execution.
+ */
+function readInterruptedRuns(db: Db): InterruptedRunInfo[] {
+  const rows = db
+    .select({
+      id: runs.id,
+      workflowId: runs.workflowId,
+      seq: runEvents.seq,
+      eventType: runEvents.eventType,
+      payloadJson: runEvents.payloadJson,
+    })
+    .from(runs)
+    .leftJoin(runEvents, eq(runEvents.runId, runs.id))
+    .where(and(inArray(runs.status, [...NON_TERMINAL_STATUSES]), isNull(runs.deletedAt)))
+    .orderBy(asc(runs.id), asc(runEvents.seq))
+    .all();
+  const interrupted = new Map<string, InterruptedRunInfo>();
+  const suspension = new RunSuspensionReducer();
+  for (const row of rows) {
+    const prior = interrupted.get(row.id);
+    interrupted.set(row.id, {
+      runId: row.id,
+      workflowId: row.workflowId,
+      resumable: false,
+      lastSequenceNumber: Math.max(prior?.lastSequenceNumber ?? 0, row.seq ?? 0),
+    });
+    if (row.seq === null || row.eventType === null || row.payloadJson === null) continue;
+    const event = readStoredEventRow(row.id, {
+      seq: row.seq,
+      eventType: row.eventType,
+      payloadJson: row.payloadJson,
+    });
+    if (event === undefined || STREAMING_EVENT_TYPES.has(event.type)) continue;
+    try {
+      suspension.apply(event);
+    } catch (cause) {
+      throw new CorruptRunEventError(row.id, row.seq, row.eventType, cause);
+    }
+  }
+  return [...interrupted.values()].map((row) => ({
+    ...row,
+    resumable: suspension.isResumable(row.runId),
+    ...(suspension.budgetRejections(row.runId).length === 0 ? {} : { budgetRejected: true }),
+  }));
 }
 
 /**
@@ -832,6 +858,11 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
         tx.update(runs).set({ status: 'paused', updatedAt: ts }).where(eq(runs.id, runId)).run();
         return;
       }
+      case 'budget:authorization': {
+        const status = event.authorization.state === 'paused' ? 'paused' : 'running';
+        tx.update(runs).set({ status, updatedAt: ts }).where(eq(runs.id, runId)).run();
+        return;
+      }
       case 'human_gate:resumed': {
         tx.update(runs).set({ status: 'running', updatedAt: ts }).where(eq(runs.id, runId)).run();
         return;
@@ -1163,33 +1194,7 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
     readWorkflowSnapshot: (runId: string) =>
       Promise.resolve(loadRunSnapshot(db, runId)?.workflowDefinitionSnapshot),
 
-    listInterruptedRuns: () => {
-      // One pass: a LEFT JOIN + coalesce(max(seq),0), grouped by the run PK. No second round-trip and no
-      // `inArray(ids)` (which would hit SQLite's host-parameter limit when many runs are interrupted) — this
-      // is a RunStore port method the desktop/cloud surfaces also implement, so it must scale.
-      const rows = db
-        .select({
-          id: runs.id,
-          workflowId: runs.workflowId,
-          status: runs.status,
-          lastSeq: sql<number>`coalesce(max(${runEvents.seq}), 0)`,
-        })
-        .from(runs)
-        .leftJoin(runEvents, eq(runEvents.runId, runs.id))
-        .where(and(inArray(runs.status, [...NON_TERMINAL_STATUSES]), isNull(runs.deletedAt)))
-        .groupBy(runs.id)
-        .all();
-      return Promise.resolve(
-        rows.map(
-          (row): InterruptedRunInfo => ({
-            runId: row.id,
-            workflowId: row.workflowId,
-            resumable: row.status === 'paused',
-            lastSequenceNumber: row.lastSeq,
-          }),
-        ),
-      );
-    },
+    listInterruptedRuns: () => Promise.resolve(readInterruptedRuns(db)),
 
     listRuns: reader.listRuns,
     loadRun: reader.loadRun,

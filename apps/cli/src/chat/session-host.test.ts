@@ -1,3 +1,5 @@
+import { prepareOutputCapPlan } from '@relavium/llm';
+import type { PreEgressInfo } from '@relavium/core';
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -12,7 +14,7 @@ import {
   type McpConnection,
 } from '@relavium/mcp';
 import type { AgentSessionRecord, SessionMessage } from '@relavium/shared';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type { ResolvedChatConfig } from '../config/resolve.js';
 import { createMcpSecretResolver } from '../secrets/mcp-secret.js';
@@ -26,9 +28,9 @@ import { INLINE_TRANSCRIPT_BOUND } from '../render/tui/session-view-model.js';
 import { applyChatMode, makeChatModeEnv } from './chat-mode-host.js';
 import { buildDefaultChatAgent } from './default-agent.js';
 import {
-  buildChatSession,
+  buildChatSession as buildFreshSession,
   buildGovernorWiring,
-  buildResumedChatSession,
+  buildResumedChatSession as buildRestoredSession,
   swapAgentModel,
   type ChatBudgetWarning,
 } from './session-host.js';
@@ -41,6 +43,20 @@ import {
   unresolvedResolver,
 } from './test-support.js';
 import { createInMemoryEffectJournal } from '@relavium/core';
+
+// Unit hosts use an explicit reference allocator. Persistence integration tests use the real SQLite port.
+async function buildChatSession(opts: Parameters<typeof buildFreshSession>[0]) {
+  const built = await buildFreshSession(opts);
+  let key = 0;
+  built.attachEffectTurnAllocator(() => ++key);
+  return built;
+}
+async function buildResumedChatSession(opts: Parameters<typeof buildRestoredSession>[0]) {
+  const built = await buildRestoredSession(opts);
+  let key = 0;
+  built.attachEffectTurnAllocator(() => ++key);
+  return built;
+}
 
 /** A tool-call turn that carries JSON args (the `toolUseTurn` helper sends none) — for read_file/write_file. */
 const callWithArgs = (id: string, name: string, args: unknown): StreamChunk[] => [
@@ -127,6 +143,35 @@ async function build(overrides: Partial<Parameters<typeof buildChatSession>[0]> 
 }
 
 describe('buildChatSession', () => {
+  it('forwards the same configured fallback into the fresh session and its governor', async () => {
+    const built = await build({
+      chat: { ...EMPTY_CHAT, maxCostMicrocents: 100_000_000, onExceed: 'fail' },
+      maxTokensEstimate: 17,
+    });
+    const governor = built.governor;
+    if (governor === undefined) throw new Error('missing governor');
+    const original = governor.preEgress;
+    const seen: PreEgressInfo[] = [];
+    const spy = vi.spyOn(governor, 'preEgress').mockImplementation((info) => {
+      seen.push(info);
+      return original(info);
+    });
+    try {
+      built.session.start();
+      await built.session.sendMessage('hello');
+      built.session.cancel();
+      const events = await drainHandle(built.handle.events);
+      expect(seen).toHaveLength(1);
+      expect(seen[0]).toMatchObject({ route: 'text', maxTokensEstimate: 17 });
+      expect(
+        events.some(
+          (event) => event.type === 'session:turn_completed' && event.error !== undefined,
+        ),
+      ).toBe(false);
+    } finally {
+      spy.mockRestore();
+    }
+  });
   it('mints the session over the default agent + a handle scoped to the same id', async () => {
     const built = await build({ chat: { ...EMPTY_CHAT, defaultModel: 'claude-sonnet-4-6' } });
     expect(built.sessionId).toBe('sess-test-1');
@@ -642,6 +687,39 @@ describe('buildResumedChatSession (2.N)', () => {
     expect(built.nextSequenceNumber).toBe(2);
   });
 
+  it('forwards the same configured fallback into the resumed session and its governor', async () => {
+    const built = await buildResumedChatSession({
+      chat: { ...EMPTY_CHAT, maxCostMicrocents: 100_000_000, onExceed: 'fail' },
+      maxTokensEstimate: 17,
+      record: record(),
+      messages: [],
+      providers: scriptedResolver([textTurn('continued')]),
+      now: () => Date.parse(ISO),
+    });
+    const governor = built.governor;
+    if (governor === undefined) throw new Error('missing governor');
+    const original = governor.preEgress;
+    const seen: PreEgressInfo[] = [];
+    const spy = vi.spyOn(governor, 'preEgress').mockImplementation((info) => {
+      seen.push(info);
+      return original(info);
+    });
+    try {
+      await built.session.sendMessage('hello again');
+      built.session.cancel();
+      const events = await drainHandle(built.handle.events);
+      expect(seen).toHaveLength(1);
+      expect(seen[0]).toMatchObject({ route: 'text', maxTokensEstimate: 17 });
+      expect(
+        events.some(
+          (event) => event.type === 'session:turn_completed' && event.error !== undefined,
+        ),
+      ).toBe(false);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it('forwards mcpConnectSignal on the RESUMED path, not only the fresh one (ADR-0088 §1.3)', async () => {
     // **The field that was wired and dead, now bound.** The resumed path built its `connectAgentMcp` options
     // inline instead of going through `mcpOptionsFor`, so `mcpConnectSignal` — added for the connect-cancel —
@@ -1024,7 +1102,7 @@ describe('swapAgentModel (ADR-0059 model-switch rule)', () => {
 describe('buildGovernorWiring', () => {
   // Seed the governor's cumulative directly via updateCost so the pre-egress projection trips the cap
   // regardless of model pricing — exercising the real fail/pause/warn behavior, not just the wiring shape.
-  const OVER_CAP = { model: 'claude-sonnet-4-6', maxTokens: 1000 } as const;
+  const OVER_CAP = requestInfo({ model: 'claude-sonnet-4-6', maxTokens: 1000 });
 
   it('is unbounded (no governor) when the cost cap is absent or 0', () => {
     expect(buildGovernorWiring(EMPTY_CHAT)).toBeUndefined();
@@ -1043,10 +1121,12 @@ describe('buildGovernorWiring', () => {
         return Promise.resolve();
       });
 
-      const admission = await wiring?.preEgress({ model: 'claude-haiku-4-5', maxTokens: 1000 });
+      const admission = await wiring?.preEgress(
+        requestInfo({ model: 'claude-haiku-4-5', maxTokens: 1000 }),
+      );
       admission?.settleAtReservedEstimate();
       // The barrier is what forces the write to have completed — the next pre-egress check awaits it.
-      await wiring?.preEgress({ model: 'claude-haiku-4-5', maxTokens: 1000 });
+      await wiring?.preEgress(requestInfo({ model: 'claude-haiku-4-5', maxTokens: 1000 }));
 
       expect(written).toHaveLength(1);
       expect(written[0]?.model).toBe('claude-haiku-4-5');
@@ -1069,11 +1149,13 @@ describe('buildGovernorWiring', () => {
       // `settleAtReservedEstimate()` on `undefined` is a silent no-op. And the typed `toBeInstanceOf` matters
       // because a bare `.toThrow()` would also pass on a tripped cap.
       const wiring = wiringWithCap();
-      const admission = await wiring?.preEgress({ model: 'claude-haiku-4-5', maxTokens: 1000 });
+      const admission = await wiring?.preEgress(
+        requestInfo({ model: 'claude-haiku-4-5', maxTokens: 1000 }),
+      );
       expect(admission).toBeDefined(); // pins that the emit path is reachable AT ALL
       admission?.settleAtReservedEstimate();
       await expect(
-        wiring?.preEgress({ model: 'claude-haiku-4-5', maxTokens: 1000 }),
+        wiring?.preEgress(requestInfo({ model: 'claude-haiku-4-5', maxTokens: 1000 })),
       ).rejects.toBeInstanceOf(CommitmentDurabilityError);
       expect(wiring?.conservativeState().durabilityBroken).toBe(true);
       // …and the debit is NOT rolled back: the provider may already have billed it.
@@ -1085,9 +1167,11 @@ describe('buildGovernorWiring', () => {
       // long-lived chat's cap with no way out". Shipping the persistence without the release would BE that.
       const wiring = wiringWithCap();
       wiring?.attachConservativeWriter(() => Promise.resolve());
-      const admission = await wiring?.preEgress({ model: 'claude-haiku-4-5', maxTokens: 1000 });
+      const admission = await wiring?.preEgress(
+        requestInfo({ model: 'claude-haiku-4-5', maxTokens: 1000 }),
+      );
       admission?.settleAtReservedEstimate();
-      await wiring?.preEgress({ model: 'claude-haiku-4-5', maxTokens: 1000 });
+      await wiring?.preEgress(requestInfo({ model: 'claude-haiku-4-5', maxTokens: 1000 }));
 
       const held = wiring?.conservativeState().microcents ?? 0;
       expect(held).toBeGreaterThan(0);
@@ -1119,10 +1203,10 @@ describe('buildGovernorWiring', () => {
     // A model neither the catalog nor a user prices — the pre-egress estimate throws, and the governor degrades to
     // allow. It must not reject (an unpriced self-hosted model is not a failure) but it must SAY so, once.
     await expect(
-      wiring?.preEgress({ model: 'my-self-hosted-model', maxTokens: 1000 }),
+      wiring?.preEgress(requestInfo({ model: 'my-self-hosted-model', maxTokens: 1000 })),
     ).resolves.toBeUndefined();
     await expect(
-      wiring?.preEgress({ model: 'my-self-hosted-model', maxTokens: 1000 }),
+      wiring?.preEgress(requestInfo({ model: 'my-self-hosted-model', maxTokens: 1000 })),
     ).resolves.toBeUndefined();
     expect(notes).toHaveLength(1); // deduped per model
     expect(notes[0]).toContain('my-self-hosted-model');
@@ -1137,7 +1221,7 @@ describe('buildGovernorWiring', () => {
       strictCostCap: true,
     });
     await expect(
-      wiring?.preEgress({ model: 'my-self-hosted-model', maxTokens: 1000 }),
+      wiring?.preEgress(requestInfo({ model: 'my-self-hosted-model', maxTokens: 1000 })),
     ).rejects.toBeInstanceOf(BudgetExceededError);
   });
 
@@ -1486,3 +1570,20 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
     expect(built.agent.tools).toEqual(['read_file', 'http_request']); // the ORIGINAL keeps the author's grant
   });
 });
+
+/** These ledger fixtures deliberately isolate output reservations from prompt input. */
+function requestInfo(input: { model: string; maxTokens: number }): PreEgressInfo {
+  const identity = {
+    ...input,
+    provider: 'anthropic' as const,
+    endpoint: 'official' as const,
+    providerOptions: undefined,
+  };
+  return {
+    ...identity,
+    route: 'text',
+    inputTokensEstimate: 0,
+    maxTokensEstimate: undefined,
+    outputCapPlan: prepareOutputCapPlan(identity),
+  };
+}

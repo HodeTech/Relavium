@@ -8,6 +8,8 @@
 
 > **Amended 2026-09-02 by [ADR-0089](0089-media-correctness-four-boundaries.md).** A refinement, not a reversal: §1's `MediaStore` port gains an optional **`putStream?(bytes: AsyncIterable<Uint8Array>, mimeType: string): Promise<string>`** so a streamed download is never materialized whole before storage, with a partial write cleaned up and the content-addressed handle published only once the object is durable. `put` is unchanged, but is scoped to bodies already known to be under `INLINE_MEDIA_CEILING` rather than left as a general fallback — on the large-media path a host with no `putStream?` is refused loudly, because an optional guarantee with a buffering fallback is not a guarantee. The injection point, the de-inline ordering and the retention model are untouched.
 
+> **Amended 2026-09-04 by [ADR-0087](0087-consumed-streams-size-bounds-and-run-retention.md) §3 — a re-placement, not a reversal.** §2 here pins `deInlineMedia` at `#emitDurable` as the sole emit-time transform. For a node's OUTPUT that is now earlier: the pin runs at the dispatch boundary and `#settleCompleted` writes the pinned value into the run scope, so the in-memory state, every downstream template and the durable event hold the same handle. Emitting was the only transform point while state kept the raw base64, and that split meant a downstream node read bytes the record did not have — and a 1 MiB image passed a 256 KiB node-output bound and was then retained in full. This ADR's invariant is untouched and is what the move serves: a persisted event carries handles, never bytes. The refcount model, the grace window and the retention semantics are unchanged, and the emit-time pass stays as the choke point for every carrier that does not come from a node output. Implemented in `W5` as `CR-54`.
+
 ## Context
 
 Workstream **1.AF** (Engine media plumbing — Phase C of the 1.m6 multimodal sub-spine) wires *behavior* onto the seam *shape* that [ADR-0031](0031-llm-seam-shape-amendment-multimodal-io.md) froze at 1.AD and the media-input adapters that landed at 1.AE. Three of the seam shapes were landed **reserved, implementation-deferred to 1.AF**: the `MediaStore` contract (`put`/`get`/`resolveForEgress`, `Uint8Array`-shaped, [`content.ts`](../../packages/shared/src/content.ts) ~631–664), the `deInlineMedia` overloads (the in-flight→durable transform), and the `media_objects` retention/GC table. ADR-0031 recorded the latter two only as a **default in its "Open implementation details"** ("per-distinct-reference refcount + `last_referenced_at` + a grace window … the `media_objects` table lands in Phase C (1.AF)") — a default, not a decision. 1.AF must now make three genuinely-undecided choices that no ADR covers, each of which a wrong guess forces a re-plumb every surface re-implements:
@@ -71,3 +73,19 @@ A run reaching `run:completed | failed | cancelled` triggers a **deterministic t
 ### Neutral
 
 - Per ADR-0009's append-only rule, ADR-0036 is unchanged in history; this ADR is the authoritative record for the `ExecutionHost.mediaStore` slot and the async-de-inline ordering. Future run-loop readers should read ADR-0036 **and** this.
+
+## 2026-10-10 — ADR-0103 lifecycle integration
+
+Terminal media reclaim in reconciliation/outbox drain is awaited through its actual acknowledgement before exact ownership release; retention faults remain best effort.
+See the [canonical engine lifecycle](../architecture/shared-core-engine.md#internal-departure-foundations-adr-0103)
+and [CLI exit/remedy contract](../reference/cli/commands.md#exit-codes). Consolidated independent
+acceptance is tracked in [current.md](../roadmap/current.md); Step 8 and final whole-wave
+validation remain open. The accepted body above is preserved.
+
+### W7 implementation landing — 2026-10-10
+
+The earlier W7 progress note is a historical snapshot. Step 8 and final Step 12 were subsequently
+accepted in the [W7 closing register](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w7-closing-register--2026-10-10).
+The later [post-closure systematic correction register](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#post-closure-systematic-review--2026-10-10)
+tracks reopened review findings and their scoped acceptance; it governs the current PR acceptance status.
+This additive note does not rewrite the original decision or claim that PR #90 has merged.

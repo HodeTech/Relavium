@@ -155,3 +155,122 @@ The CLI maps a lease loss to **exit code 6**, distinct from the blanket `EngineS
 - **A fenced loser reports `uncertain` and writes nothing**, so a user watching that process sees the run stop with no terminal of its own. That is honest — the run's real outcome is in the durable log the new owner is writing — but it is a new thing for a surface to explain, and the CLI's exit code 6 is what makes it actionable rather than merely puzzling.
 - **The two-process race cannot be proven in one Node process.** `better-sqlite3` is synchronous, so in-process concurrency is serialized by construction. The regression follows `migrate-lock.e2e.test.ts`: spawn real children, and be **visibly skipped** rather than silently passing when the build output is absent.
 - **The observer handle is deferred**, with its trigger named in §4. Until then a loser is refused rather than able to watch.
+
+## Implementation correction — 2026-10-03
+
+W7 Step 10 moved checkpoint construction and context/effect admission ahead of heartbeat
+activation. An independent review and parent causal replay found that this passive wait
+could exceed the TTL: an old media-only resume or resolved-gate kick then read a credential
+and polled once after a successor acquired the run. Its later durable append was fenced,
+but the authenticated work had already occurred. The pre-Step-10 control renewed during
+preflight and did not expose this window.
+
+Resume now renews the exact acquired owner/generation through the existing lease port
+after all passive awaits and before registration, adoption or checkpoint activation.
+The refused-admission settlement path takes the same barrier. Renewal of an expired,
+untaken claim retains its generation; takeover or an unconfirmable claim produces a safe,
+transient `run_owned_elsewhere` refusal. Cleanup releases only that fence; a cleanup I/O
+fault leaves the bounded TTL and cannot replace the safe refusal with private host text.
+Ten actual-runner controls cover both kicks, takeover, expiry without takeover, explicit
+renewal, slow failed-effect admission and heartbeat/release faults. Fresh corrective review
+and whole-Step-10 acceptance remain required. This repairs §4/§5's implementation; it adds
+no observer, owner type, lease clock, dependency or schema migration.
+
+## Terminal cleanup correction — 2026-10-03, W7 step 10 second review
+
+Joining terminal money exposed cleanup that had depended on microtask timing: a closed event
+stream could still show an armed heartbeat or an unreleased lease. Settlement now stops the
+heartbeat immediately; terminal reclaim obtains its exact fence without arming a settled
+execution. The ordered writer releases ownership after terminal persistence/outbox handling
+and before terminal delivery closes the stream. A fenced terminal still emits nothing and
+cannot release the successor; a release-store fault retains the existing bounded TTL fallback.
+This makes the existing terminal cleanup/ownership ordering deterministic, without changing
+lease acquisition, fencing generations or the money policy.
+
+## Refusal cleanup correction — 2026-10-03, W7 step 10 fourth review
+
+The fourth review reproduced a rejecting release replacing the new unsupported-checkpoint
+schema refusal with private host text. The same direct-release pattern existed in five
+pre-W7 resume branches: unknown run, workflow identity, already-terminal no-op, frozen
+content and recorded-input identity. All six now use the existing best-effort exact-fence
+release helper, preserving the primary typed refusal or closed terminal handle if cleanup
+rejects. This completes the implementation correction above; it changes no acquisition,
+timeout or fencing policy. A release fault leaves the existing bounded TTL fallback.
+
+Eighteen native regressions cover all six branches with successful release, rejecting
+release and a successor takeover during rejecting cleanup. They retain the primary outcome,
+write no events, read no credentials, execute no provider/tool/media call, arm no timer and
+leave the successor's fence intact. The parent first reproduced twelve failures across
+these branches, passed all eighteen with the owned correction, and restored the original
+bytes to recover the failures before changing repository source.
+
+## Parallel gate handoff correction — 2026-10-03, W7 step 10 fifth review
+
+Actual SQLite and native engine controls reproduced an inherited handoff race: two parallel
+budget gates, with or without an ordinary sibling, could publish aggregate pause before the
+last companion acknowledgement. That later write reacquired generation 2, while duplicate
+pause suppression left its heartbeat renewing a run waiting only on people. A distinct owner
+could not resume until the original process stopped renewing and the normal TTL expired.
+
+Aggregate pause now waits for every in-flight gate pause publication, including its authority
+and companions, before handing ownership back. A claimed ordinary human gate also stays
+visible while its decision payload is pinned; otherwise the tighter pause ordering exposed
+an idle scheduler treating that unfinished decision as a stalled run. Actual native delayed
+acknowledgement, immediate decision, media success/failure and SQLite fresh-owner controls
+cover the correction. Media-only polling retains its existing ownership. This repairs §4's
+existing handoff invariant without changing lease clocks, TTL, generations or host ports.
+
+The same review distinguished an inherited asynchronous host limitation from that SQLite
+race. A successful final renewal whose acknowledgement is held beyond TTL can be stale when
+it reaches the engine: a successor may acquire before activation. Current and actual
+pre-Step-10 controls expose the equivalent last-await window, shifted from acquire to renew.
+The observed extra operation is one authenticated status poll for an already submitted media
+job, not another paid submission; later writes remain fenced and cannot release the successor.
+The shipping SQLite port performs the lease operation synchronously. This correction adds
+no universal freshness claim for an unbounded asynchronous acknowledgement, timeout policy
+or second engine clock. The final renewal remains an exact-fence admission check at its
+store operation, followed by the existing liveness and write fences.
+
+## Fenced media-reference correction — 2026-10-03, W7 step 10 seventh review
+
+A delayed ordinary-gate CAS completion can return before the original heartbeat discovers that a
+distinct successor has already completed the run. Native SQLite rejected all old event rows, but
+reference recording happened before that rejection and recreated terminal run retention. Two
+file-backed native SQLite connections and distinct engines independently reproduce the inherited
+race. Normal completion, cancellation and heartbeat-observed takeover remain controls.
+
+The existing ordered writer now records produced-media references after append acknowledgement,
+with the separate owned-terminal outbox retention path described in
+[ADR-0078's correction](0078-ordered-durable-append-and-the-terminal-outbox.md#media-retention-acknowledgement-correction--2026-10-03-w7-step-10-seventh-review).
+A refused fence creates no new run reference and cannot reclaim the successor's references. This
+adds no elapsed-acknowledgement freshness guarantee, clock, TTL or acquisition policy.
+
+## Retained ownership for registered receipts — 2026-10-09
+
+The approved ADR-0103 scoped receipt integration retains the same exact fence and heartbeat
+while registered raw/child/entered work owes receipts after bounded terminal publication.
+Quiet retirement joins exact release; ownership loss never authorises an old scope to reacquire
+a successor-held or subsequently vacant lease. Before-terminal loss remains terminal-free,
+while loss after an acknowledged terminal preserves that outcome. The canonical lifecycle
+qualification is in [shared-core-engine.md](../architecture/shared-core-engine.md#internal-departure-foundations-adr-0103).
+Complete actor integration and public departure remain unimplemented.
+
+## 2026-10-10 — ADR-0103 lifecycle integration
+
+Exact-fence release is joined and cannot clear a successor claim. Local detached/closed results do not assert a successor's current global run status.
+See the [canonical engine lifecycle](../architecture/shared-core-engine.md#internal-departure-foundations-adr-0103)
+and [CLI exit/remedy contract](../reference/cli/commands.md#exit-codes). Consolidated independent
+acceptance is tracked in [current.md](../roadmap/current.md); Step 8 and final whole-wave
+validation remain open. The accepted body above is preserved.
+
+### W7 implementation landing — 2026-10-10
+
+The earlier W7 progress note is a historical snapshot. Step 8 and final Step 12 were subsequently
+accepted in the [W7 closing register](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w7-closing-register--2026-10-10).
+The later [post-closure systematic correction register](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#post-closure-systematic-review--2026-10-10)
+tracks reopened review findings and their scoped acceptance; it governs the current PR acceptance status.
+This additive note does not rewrite the original decision or claim that PR #90 has merged.
+
+Under ADR-0103, the exact fence remains held until registered actors, writers and receipts are
+quiescent. Publication alone does not authorize early release; inline decisions and successor
+claims must respect that acknowledged retirement boundary.

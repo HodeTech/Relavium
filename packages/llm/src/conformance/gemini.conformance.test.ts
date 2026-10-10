@@ -9,7 +9,7 @@ import {
   type GeminiTransport,
 } from '../adapters/gemini.js';
 import { GEMINI_FIXTURES } from './fixtures/gemini.js';
-import type { RecordedResponse } from './replay.js';
+import { replayGeminiError, type RecordedResponse } from './replay.js';
 import { defineConformanceSuite, type MakeReplayAdapter } from './spec.js';
 
 async function* toAsyncIterable(items: readonly GeminiResponse[]): AsyncIterable<GeminiResponse> {
@@ -62,12 +62,12 @@ const makeReplayAdapter: MakeReplayAdapter = (recorded) => {
     }
     return next;
   };
-  const rejection = (status: number): Promise<never> =>
-    Promise.reject(Object.assign(new Error('replayed gemini error'), { status }));
+  const rejection = (recorded: RecordedResponse): Promise<never> =>
+    Promise.reject(replayGeminiError(recorded));
   const transport: GeminiTransport = {
     generate: () => {
       const current = nextRecording();
-      if (current.status >= 400) return rejection(current.status);
+      if (current.status >= 400) return rejection(current);
       const parsed: unknown = JSON.parse(current.body);
       return isGeminiResponse(parsed)
         ? Promise.resolve(parsed)
@@ -75,7 +75,7 @@ const makeReplayAdapter: MakeReplayAdapter = (recorded) => {
     },
     stream: () => {
       const current = nextRecording();
-      if (current.status >= 400) return rejection(current.status);
+      if (current.status >= 400) return rejection(current);
       const parsed: unknown = JSON.parse(current.body);
       return isGeminiResponseArray(parsed)
         ? Promise.resolve(toAsyncIterable(parsed))
@@ -83,7 +83,7 @@ const makeReplayAdapter: MakeReplayAdapter = (recorded) => {
     },
     generateImages: () => {
       const current = nextRecording();
-      if (current.status >= 400) return rejection(current.status);
+      if (current.status >= 400) return rejection(current);
       const parsed: unknown = JSON.parse(current.body);
       return isGeminiImageResponse(parsed)
         ? Promise.resolve(parsed)
@@ -96,7 +96,7 @@ const makeReplayAdapter: MakeReplayAdapter = (recorded) => {
     pollVideo: () => Promise.reject(new Error('veo not exercised by the chat conformance replay')),
     listModels: () => {
       const current = nextRecording();
-      if (current.status >= 400) return rejection(current.status);
+      if (current.status >= 400) return rejection(current);
       const parsed: unknown = JSON.parse(current.body);
       return isGeminiModelInfoArray(parsed)
         ? Promise.resolve(parsed)

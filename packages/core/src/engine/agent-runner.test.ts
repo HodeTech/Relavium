@@ -9,11 +9,14 @@ import type {
   MediaGenResult,
   MediaJobStatus,
   ProviderId,
+  PricingOverlay,
   StreamChunk,
 } from '@relavium/llm';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type { AgentPlanConfig, PlanVertex } from '../run-plan.js';
+import { BUILTIN_TOOLS } from '../tools/builtins.js';
+import { delegateAvailable } from '../tools/delegates.js';
 import type { ToolCallPart, ToolRegistry, ToolResultPart } from '../tools/types.js';
 import { markUntrusted } from '../tools/untrusted.js';
 import {
@@ -23,8 +26,14 @@ import {
   generativeUnits,
   type AgentRunnerDeps,
 } from './agent-runner.js';
-import { BudgetExceededError, BudgetPauseError } from './budget-governor.js';
-import type { NodeExecContext, NodeStreamEvent } from './node-executor.js';
+import { BudgetExceededError, BudgetPauseError, BudgetGovernor } from './budget-governor.js';
+import type { NodeExecContext, NodeStreamEvent, NodePreparationContext } from './node-executor.js';
+import { createDispatchingNodeExecutor } from './node-handlers/dispatcher.js';
+import type { PreEgressInfo } from './agent-turn.js';
+import { parseWorkflow } from '../parser.js';
+import { createInMemoryHost } from './execution-host.js';
+import { WorkflowEngine } from './engine.js';
+import type { RunEvent } from '@relavium/shared';
 
 const CAPS: CapabilityFlags = {
   tools: true,
@@ -67,6 +76,99 @@ const AGENT: Agent = {
   provider: 'anthropic',
   system_prompt: 'You summarize.',
 };
+
+describe('authored output-schema current-request admission (ADR-0096)', () => {
+  it.each([
+    { descriptionChars: 0, cap: 1000, allowed: true },
+    { descriptionChars: 40_000, cap: 100_000, allowed: true },
+    { descriptionChars: 40_000, cap: 1000, allowed: false },
+  ])('prices schema input before egress ($descriptionChars chars, cap $cap)', async (testCase) => {
+    const schema = {
+      type: 'object',
+      description: 'x'.repeat(testCase.descriptionChars),
+      properties: {},
+      additionalProperties: false,
+      required: [],
+    };
+    const workflow = parseWorkflow(
+      JSON.stringify({
+        schema_version: '1.0',
+        workflow: {
+          id: 'schema-admission',
+          budget: { max_cost_microcents: testCase.cap, on_exceed: 'fail' },
+          agents: [{ ...AGENT, system_prompt: 's' }],
+          nodes: [
+            {
+              id: 'work',
+              type: 'agent',
+              agent_ref: AGENT.id,
+              prompt_template: 'hi',
+              max_tokens: 1,
+              output_schema: schema,
+            },
+          ],
+          edges: [],
+        },
+      }),
+    );
+    const resolvePrice: PricingOverlay = new Map([
+      [
+        AGENT.model,
+        {
+          provider: 'anthropic',
+          nativeId: AGENT.model,
+          displayName: AGENT.model,
+          contextWindowTokens: 1_000_000,
+          maxOutputTokens: 128_000,
+          inputPerMtokMicrocents: 1_000_000,
+          outputPerMtokMicrocents: 1_000_000,
+          cachedInputPerMtokMicrocents: 1_000_000,
+        },
+      ],
+    ]);
+    const requests: LlmRequest[] = [];
+    const source = provider([{ type: 'text_delta', text: '{}' }, STOP]);
+    const p: LlmProvider = {
+      ...source,
+      stream: (req, key) => {
+        requests.push(req);
+        return source.stream(req, key);
+      },
+    };
+    const runner = createAgentNodeExecutor(deps(p, { resolvePrice }));
+    const infos: PreEgressInfo[] = [];
+    const engine = new WorkflowEngine({
+      host: createInMemoryHost(),
+      resolvePrice,
+      executor: {
+        execute: (ctx) => {
+          const preEgress = ctx.preEgress;
+          return runner.execute({
+            ...ctx,
+            preEgress: (info) => {
+              infos.push(info);
+              return preEgress?.(info);
+            },
+          });
+        },
+      },
+    });
+    const events: RunEvent[] = [];
+    for await (const event of engine.start({ workflow }).events) events.push(event);
+    expect(infos).toHaveLength(1);
+    expect(infos[0]?.inputTokensEstimate).toBeGreaterThanOrEqual(
+      Math.ceil(JSON.stringify(schema).length / 4),
+    );
+    expect(requests).toHaveLength(testCase.allowed ? 1 : 0);
+    expect(events.at(-1)?.type).toBe(testCase.allowed ? 'run:completed' : 'run:failed');
+    if (testCase.allowed) {
+      expect(requests[0]?.responseFormat).toMatchObject({ type: 'json', schema });
+    } else {
+      const terminal = events.at(-1);
+      expect(terminal?.type === 'run:failed' && terminal.error.code).toBe('budget_exceeded');
+    }
+  });
+});
 
 function stubRegistry(): ToolRegistry {
   return {
@@ -205,6 +307,30 @@ function capsWithOutput(combinations: readonly (readonly OutputModality[])[]): C
 }
 
 describe('createAgentNodeExecutor — dispatch', () => {
+  it.each(['none', 'window', 'summary'] as const)(
+    'authored memory has no effect on a workflow agent node (%s)',
+    async (type) => {
+      const captured = reqCapturingProvider();
+      const exec = createAgentNodeExecutor(deps(captured.provider));
+      const { ctx } = ctxFor(
+        vertexFor({
+          kind: 'agent',
+          node: agentNode(),
+          resolvedAgent: {
+            ...AGENT,
+            memory: type === 'window' ? { type, window_size: 1 } : { type },
+          },
+        }),
+      );
+      const outcome = await exec.execute(ctx);
+      expect(outcome.kind).toBe('completed');
+      expect(captured.req()?.system).toBe(AGENT.system_prompt);
+      expect(captured.req()?.messages).toEqual([
+        { role: 'user', content: [{ type: 'text', text: 'Summarize: hi' }] },
+      ]);
+    },
+  );
+
   it('runs an agent vertex and completes with the assistant text + tokensUsed', async () => {
     const exec = createAgentNodeExecutor(
       deps(provider([{ type: 'text_delta', text: 'sum' }, STOP])),
@@ -217,6 +343,42 @@ describe('createAgentNodeExecutor — dispatch', () => {
       expect(outcome.tokensUsed).toEqual({ input: 3, output: 2, model: 'claude-opus-4-8' });
     }
   });
+
+  it.each([undefined, 17])(
+    'forwards the direct runner fallback and context precedence (context=%s)',
+    async (contextEstimate) => {
+      const seen: PreEgressInfo[] = [];
+      const requests: LlmRequest[] = [];
+      const base = provider([{ type: 'text_delta', text: 'sum' }, STOP]);
+      const p: LlmProvider = {
+        ...base,
+        stream: (request, key) => {
+          requests.push(request);
+          return base.stream(request, key);
+        },
+      };
+      const exec = createAgentNodeExecutor(
+        deps(p, {
+          maxTokensEstimate: contextEstimate === undefined ? 17 : 1,
+          preEgress: (info) => {
+            seen.push(info);
+          },
+        }),
+      );
+      const { ctx } = ctxFor(agentVertex());
+      expect(
+        (
+          await exec.execute({
+            ...ctx,
+            ...(contextEstimate === undefined ? {} : { maxTokensEstimate: contextEstimate }),
+          })
+        ).kind,
+      ).toBe('completed');
+      expect(seen).toHaveLength(1);
+      expect(seen[0]).toMatchObject({ route: 'text', maxTokensEstimate: 17 });
+      expect(requests[0]?.maxTokens).toBeUndefined();
+    },
+  );
 
   it('surfaces inline media-out as { text, media } so the engine can de-inline it (1.AG/ADR-0046)', async () => {
     const image: ContentPart = {
@@ -699,6 +861,140 @@ describe('createAgentNodeExecutor — output_schema + grant', () => {
   });
 });
 
+describe('createAgentNodeExecutor — a delegate-backed tool is not OFFERED without its delegate (CR-73)', () => {
+  // **The run path owes this as much as the chat path does.** The CLI advertise-filter only runs on the chat
+  // path (`session-host.ts`), so an authored workflow granting `invoke_agent` still had it lowered into the
+  // request — and `ctx.invokeAgent` is wired nowhere in the tree, so every such call answers `tool_unavailable`
+  // for a tool the engine itself put in front of the model.
+  function recordingProvider(): { provider: LlmProvider; toolNames: () => string[] } {
+    let seen: readonly { readonly name: string }[] = [];
+    return {
+      provider: {
+        id: 'anthropic',
+        supports: CAPS,
+        generate: () => {
+          throw new Error('unused');
+        },
+        stream: (req) => {
+          seen = req.tools ?? [];
+          return streamOf([{ type: 'text_delta', text: 'ok' }, STOP]);
+        },
+      },
+      toolNames: () => seen.map((t) => t.name),
+    };
+  }
+
+  const INVOKE_AGENT = BUILTIN_TOOLS.find((d) => d.id === 'invoke_agent');
+  if (INVOKE_AGENT === undefined) throw new Error('the invoke_agent built-in is missing');
+  const READ_FILE = BUILTIN_TOOLS.find((d) => d.id === 'read_file');
+  if (READ_FILE === undefined) throw new Error('the read_file built-in is missing');
+
+  for (const ordinaryTool of [false, true])
+    for (const nodeRetry of [false, true]) {
+      it(`quotes actual lowered tools and chain attempts, ordinary=${ordinaryTool}, retry=${nodeRetry}`, async () => {
+        const { provider: p } = recordingProvider();
+        let keys = 0;
+        let input: number | undefined;
+        let names: string[] | undefined;
+        const resolvePrice: PricingOverlay = new Map([
+          [
+            AGENT.model,
+            {
+              provider: 'anthropic',
+              nativeId: AGENT.model,
+              displayName: 'quote fixture',
+              contextWindowTokens: 1000000,
+              maxOutputTokens: 1000000,
+              inputPerMtokMicrocents: 1000000,
+              outputPerMtokMicrocents: 1000000,
+              cachedInputPerMtokMicrocents: 0,
+            },
+          ],
+        ]);
+        const gov = new BudgetGovernor({
+          budget: { max_cost_microcents: 1, on_exceed: 'pause_for_approval' },
+          resolvePrice,
+          emit: () => Promise.resolve(),
+        });
+        const exec = createAgentNodeExecutor(
+          deps(p, {
+            tools: [INVOKE_AGENT, READ_FILE],
+            resolvePrice,
+            keyFor: () => {
+              keys += 1;
+              return 'synthetic';
+            },
+            preEgress: (info) => {
+              input = info.inputTokensEstimate;
+              const context = info.allowanceQuoteContext;
+              if (context?.route === 'text')
+                names = context.request.tools?.map((tool) => tool.name) ?? [];
+              return gov.checkPreEgress(info);
+            },
+          }),
+        );
+        const { ctx } = ctxFor(
+          vertexFor({
+            kind: 'agent',
+            node: agentNode({
+              max_tokens: 1,
+              ...(nodeRetry ? { retry: { max: 3, backoff: 'linear' } } : {}),
+            }),
+            resolvedAgent: {
+              ...AGENT,
+              tools: ordinaryTool ? ['invoke_agent', 'read_file'] : ['invoke_agent'],
+            },
+          }),
+        );
+        const outcome = await exec.execute(ctx);
+        expect(outcome.kind).toBe('paused');
+        if (outcome.kind !== 'paused') throw new Error('expected quote pause');
+        const result = outcome.gate.allowanceQuote;
+        if (result?.kind !== 'quoted' || input === undefined)
+          throw new Error('missing construction quote');
+        const calls = ordinaryTool ? 17 : 1;
+        const attempts = nodeRetry ? 1 : 2;
+        expect(names).toEqual(ordinaryTool ? ['read_file'] : []);
+        expect(result.quote.provenance).toMatchObject({ calls, attempts });
+        expect(result.quote.amount).toEqual({
+          kind: 'representable',
+          microcents: calls * attempts * (input + 1),
+        });
+        expect(keys).toBe(0);
+      });
+    }
+
+  it('drops `invoke_agent` from the lowered tool list, and leaves an ordinary granted tool alone', async () => {
+    const { provider: p, toolNames } = recordingProvider();
+    const exec = createAgentNodeExecutor(deps(p, { tools: [INVOKE_AGENT, READ_FILE] }));
+    const { ctx } = ctxFor(
+      vertexFor({
+        kind: 'agent',
+        node: agentNode({}),
+        resolvedAgent: { ...AGENT, tools: ['invoke_agent', 'read_file'] },
+      }),
+    );
+    expect((await exec.execute(ctx)).kind).toBe('completed');
+    // `read_file` is the control: this must drop the tool whose DELEGATE is missing, not thin the list.
+    expect(toolNames()).toEqual(['read_file']);
+  });
+
+  it('the predicate offers it again once a delegate IS present — the drop is by reason, not by id', () => {
+    // The negative control, at the predicate rather than through the executor, because **the run path has no
+    // seam to supply the delegate through**: `agent-runner.ts`'s `dispatchContext` literal has no
+    // `invokeAgent` and no `mediaRead` field at all, so no host can populate one today. That is a sharper
+    // statement of `CR-73` than "nothing wires it" — on this path the tool was advertised and *structurally*
+    // guaranteed to fail. Delegate wiring is a separate tracked follow-up, outside W7's scope. This
+    // predicate control fails if the filter is "fixed" by blacklisting the two ids forever.
+    expect(delegateAvailable(INVOKE_AGENT, {})).toBe(false);
+    expect(delegateAvailable(INVOKE_AGENT, { invokeAgent: () => Promise.resolve('done') })).toBe(
+      true,
+    );
+    // An ordinary tool declares no delegate and is unaffected either way.
+    expect(delegateAvailable(READ_FILE, {})).toBe(true);
+  });
+});
+
 describe('buildMediaUnitsEstimate (1.AF/D17 — media-cost unit estimate)', () => {
   it('returns [] for a text-only node (no output_modalities)', () => {
     expect(buildMediaUnitsEstimate(undefined, undefined)).toEqual([]);
@@ -756,6 +1052,101 @@ describe('createAgentNodeExecutor — generative media (1.AG Section C, generate
       node: agentNode({ output_modalities: ['image'], ...over }),
       resolvedAgent: AGENT,
     });
+
+  for (const providerFailure of [false, true])
+    it(`preserves a media provider refusal over secondary deadline cleanup (${providerFailure})`, async () => {
+      let disarms = 0;
+      const p = generativeProvider(
+        providerFailure
+          ? {
+              throws: new LlmProviderError(
+                makeLlmError({
+                  provider: 'openai',
+                  kind: 'auth',
+                  message: 'synthetic media authentication refusal',
+                }),
+              ),
+            }
+          : undefined,
+      );
+      const executor = createAgentNodeExecutor(
+        genDeps(p, {
+          newAbortController: createInMemoryHost().newAbortController,
+          setTimer: () => () => {
+            disarms++;
+            throw new Error('PRIVATE-DISARM-FAULT');
+          },
+        }),
+      );
+      const pending = executor.execute(ctxFor(genVertex()).ctx);
+      if (providerFailure) {
+        const outcome = await pending;
+        expect(outcome).toMatchObject({ kind: 'failed', error: { code: 'provider_auth' } });
+        expect(JSON.stringify(outcome)).not.toContain('PRIVATE-DISARM-FAULT');
+      } else {
+        // The executor retains the original host diagnostic for its engine boundary to classify.
+        await expect(pending).rejects.toThrow('PRIVATE-DISARM-FAULT');
+      }
+      expect(disarms).toBe(1);
+    });
+
+  it('carries a primary-only generative quote with token zeros and one attempt before credentials', async () => {
+    let keys = 0;
+    const p = generativeProvider();
+    const resolvePrice: PricingOverlay = new Map([
+      [
+        AGENT.model,
+        {
+          provider: 'anthropic',
+          nativeId: AGENT.model,
+          displayName: 'quote fixture',
+          contextWindowTokens: 1000000,
+          maxOutputTokens: 1000000,
+          inputPerMtokMicrocents: 1000000,
+          outputPerMtokMicrocents: 1000000,
+          cachedInputPerMtokMicrocents: 0,
+          mediaOutputRates: { image: 1000 },
+        },
+      ],
+    ]);
+    const gov = new BudgetGovernor({
+      budget: { max_cost_microcents: 1, on_exceed: 'pause_for_approval' },
+      resolvePrice,
+      emit: () => Promise.resolve(),
+    });
+    const exec = createAgentNodeExecutor(
+      genDeps(p, {
+        resolvePrice,
+        keyFor: () => {
+          keys += 1;
+          return 'synthetic';
+        },
+        preEgress: (info) => gov.checkPreEgress(info),
+      }),
+    );
+    const vertex = vertexFor({
+      kind: 'agent',
+      node: agentNode({ output_modalities: ['image'], count: 2 }),
+      resolvedAgent: {
+        ...AGENT,
+        fallback_chain: [{ provider: 'anthropic', model: 'unused-fallback', max_attempts: 7 }],
+      },
+    });
+    const outcome = await exec.execute(ctxFor(vertex).ctx);
+    expect(outcome.kind).toBe('paused');
+    if (outcome.kind !== 'paused') throw new Error('expected generative pause');
+    const result = outcome.gate.allowanceQuote;
+    if (result?.kind !== 'quoted') throw new Error('missing generative quote');
+    expect(result.quote.amount).toEqual({ kind: 'representable', microcents: 2000 });
+    expect(result.quote.provenance).toMatchObject({ route: 'generative', calls: 1, attempts: 1 });
+    expect(result.quote.provenance.entries).toHaveLength(1);
+    expect(result.quote.provenance.entries[0]?.estimate.basis).toMatchObject({
+      inputTokensEstimate: 0,
+      outputTokensReservation: 0,
+      media: [{ modality: 'image', units: 2, rateMicrocents: 1000 }],
+    });
+    expect(keys).toBe(0);
+  });
 
   it('routes a generative model to generateMedia and outputs { text:"", media:[part] } + one token-free cost:updated', async () => {
     const exec = createAgentNodeExecutor(genDeps(generativeProvider()));
@@ -880,7 +1271,7 @@ describe('createAgentNodeExecutor — generative media (1.AG Section C, generate
 
   it('gates pre-egress with maxTokens:0 + the media estimate → budget_exceeded (no generateMedia egress)', async () => {
     let called = false;
-    let info: { maxTokens?: number; mediaUnitsEstimate?: unknown } | undefined;
+    let info: import('./agent-turn.js').PreEgressInfo | undefined;
     const provider = generativeProvider();
     const wrapped: LlmProvider = {
       ...provider,
@@ -902,6 +1293,9 @@ describe('createAgentNodeExecutor — generative media (1.AG Section C, generate
     expect(called).toBe(false); // gate fails before any provider egress
     // The gate pins the TOKEN estimate to 0 (a generative call emits none) + carries the authored media volume.
     expect(info?.maxTokens).toBe(0);
+    expect(info?.inputTokensEstimate).toBe(0);
+    expect(info?.route).toBe('generative-media');
+    if (info?.route === 'generative-media') expect(info.outputTokensEstimate).toBe(0);
     expect(info?.mediaUnitsEstimate).toEqual([{ modality: 'image', units: 2 }]);
   });
 
@@ -928,11 +1322,38 @@ describe('createAgentNodeExecutor — generative media (1.AG Section C, generate
     const exec = createAgentNodeExecutor(
       genDeps(generativeProvider(), {
         preEgress: () => admission,
+        resolvePrice: new Map([
+          [
+            AGENT.model,
+            {
+              provider: AGENT.provider,
+              nativeId: AGENT.model,
+              displayName: 'known media settlement',
+              contextWindowTokens: 10000,
+              maxOutputTokens: 1000,
+              inputPerMtokMicrocents: 0,
+              outputPerMtokMicrocents: 0,
+              cachedInputPerMtokMicrocents: 0,
+              mediaOutputRates: { image: 7 },
+            },
+          ],
+        ]),
       }),
     );
 
-    expect((await exec.execute(ctxFor(genVertex()).ctx)).kind).toBe('completed');
-    expect(settlements).toHaveLength(1);
+    const ctx = ctxFor(genVertex()).ctx;
+    expect(
+      (
+        await exec.execute({
+          ...ctx,
+          emit: (event) => {
+            if (event.type === 'cost:updated') expect(settlements).toEqual([7]);
+            ctx.emit(event);
+          },
+        })
+      ).kind,
+    ).toBe('completed');
+    expect(settlements).toEqual([7]);
     expect(releases).toBe(0);
   });
 
@@ -949,6 +1370,34 @@ describe('createAgentNodeExecutor — generative media (1.AG Section C, generate
     const outcome = await exec.execute(ctxFor(genVertex()).ctx);
     expect(outcome).toMatchObject({ kind: 'failed', error: { code: 'content_filter' } });
   });
+
+  for (const customEndpoint of [false, true]) {
+    it(`generative overflow keeps content-free facts and endpoint authority, custom=${customEndpoint}`, async () => {
+      const provider: LlmProvider = {
+        ...generativeProvider({
+          throws: new LlmProviderError(
+            makeLlmError({
+              provider: 'openai',
+              kind: 'context_overflow',
+              message: 'PRIVATE_PROVIDER_TEXT',
+            }),
+          ),
+        }),
+        customEndpoint,
+        contextLimit: () => 12345,
+      };
+      const outcome = await createAgentNodeExecutor(genDeps(provider)).execute(
+        ctxFor(genVertex()).ctx,
+      );
+      expect(outcome).toMatchObject({
+        kind: 'failed',
+        error: { code: customEndpoint ? 'validation' : 'context_overflow', retryable: false },
+      });
+      if (outcome.kind !== 'failed') throw new Error('expected media failure');
+      expect(outcome.error.message).not.toContain('PRIVATE_PROVIDER_TEXT');
+      expect(outcome.error.message).toContain(customEndpoint ? 'size unknown' : '12345-token');
+    });
+  }
 
   it('fails validation for an empty resolved prompt (the seam nonEmptyString contract) — no provider egress', async () => {
     let called = false;
@@ -1042,8 +1491,8 @@ describe('createAgentNodeExecutor — generative media (1.AG Section C, generate
   });
 
   it('fails internal on a BOTH-media-and-jobId result — the XOR is enforced, media is never silently discarded', async () => {
-    // The seam refine (MediaGenResultSchema) forbids both, but the adapter result is not re-parsed at the
-    // executor boundary; a hand-built result with both must fail loud (the async jobId branch would otherwise
+    // The seam refine (MediaGenResultSchema) forbids both, and capture at the
+    // executor boundary enforces it; a hand-built result with both must fail loud (the async jobId branch would otherwise
     // win and silently DROP the media), not produce a handle-less media_job nor a discarded image.
     const exec = createAgentNodeExecutor(
       genDeps(generativeProvider({ result: { media: image, jobId: 'job-x', raw: {} } })),
@@ -1082,6 +1531,39 @@ describe('createAgentNodeExecutor — generative media (1.AG Section C, generate
       expect(outcome.error.message).not.toContain('SECRET-BEARING-KEY-RESOLUTION-DETAIL');
     }
   });
+
+  for (const customEndpoint of [false, true]) {
+    it(`media poll overflow honours custom endpoint authority, custom=${customEndpoint}`, async () => {
+      const provider: LlmProvider = {
+        ...generativeProvider(),
+        customEndpoint,
+        contextLimit: () => 12345,
+        pollMediaJob: () =>
+          Promise.resolve({
+            state: 'failed',
+            error: makeLlmError({
+              provider: 'openai',
+              kind: 'context_overflow',
+              message: 'PRIVATE_PROVIDER_TEXT',
+            }),
+          }),
+      };
+      const exec = createAgentNodeExecutor(genDeps(provider, { resolveProvider: () => provider }));
+      const status = await exec.pollMediaJob?.(
+        { jobId: 'j1', provider: 'openai', model: 'actual-model', modality: 'image', units: 1 },
+        new AbortController().signal,
+      );
+      expect(status).toMatchObject({
+        state: 'failed',
+        error: { kind: customEndpoint ? 'bad_request' : 'context_overflow', retryable: false },
+      });
+      if (customEndpoint && status?.state === 'failed') {
+        expect(status.error.message).toBe(
+          'The request exceeded its context window (size unknown) for model actual-model. No tools ran in this turn.',
+        );
+      }
+    });
+  }
 
   it('pollMediaJob (the engine delegate): missing pollMediaJob → failed(unknown); a keyFor throw → secret-free failed(auth)', async () => {
     const job = {
@@ -1430,5 +1912,81 @@ describe('createAgentNodeExecutor — reasoning-effort gate (ADR-0066, the workf
       AGENT,
     );
     expect(req?.reasoningEffort).toBeUndefined();
+  });
+});
+
+describe('approval preparation through the actual dispatcher', () => {
+  it('prepares without keys, notices, tools or egress and executes the retained first request', async () => {
+    const requests: LlmRequest[] = [];
+    const underlying = provider([{ type: 'text_delta', text: 'ANSWER' }, STOP]);
+    const stream = vi.fn((request: LlmRequest, key: string) => {
+      requests.push(request);
+      return underlying.stream(request, key);
+    });
+    const keyFor = vi.fn(() => 'offline-key');
+    const notice = vi.fn();
+    const runner = createAgentNodeExecutor(
+      deps(
+        { ...underlying, stream },
+        {
+          keyFor,
+          onEffortWithheld: notice,
+          resolveEffortTiers: () => undefined,
+        },
+      ),
+    );
+    const executor = createDispatchingNodeExecutor({ agent: runner });
+    const config: AgentPlanConfig = {
+      kind: 'agent',
+      node: agentNode({ max_tokens: 1 }),
+      resolvedAgent: { ...AGENT, reasoning_effort: 'high' },
+    };
+    const inputs = { text: 'original' };
+    const { ctx, events } = ctxFor(vertexFor(config), inputs);
+    const preparationContext: NodePreparationContext = {
+      vertex: ctx.vertex,
+      runOutputs: ctx.runOutputs,
+      inputs: ctx.inputs,
+      ctx: ctx.ctx,
+      secretInputNames: ctx.secretInputNames,
+      toolPolicy: ctx.toolPolicy,
+      signal: ctx.signal,
+    };
+    const prepare = executor.prepareBudgetDispatch?.bind(executor);
+    expect(prepare).toBeTypeOf('function');
+    if (prepare === undefined) throw new Error('dispatcher dropped preparation capability');
+    const prepared = await prepare(preparationContext);
+    expect(prepared.kind).toBe('prepared');
+    if (prepared.kind !== 'prepared') throw new Error('preparation failed');
+    const resolvePrice: PricingOverlay = new Map([
+      [
+        AGENT.model,
+        {
+          provider: 'anthropic',
+          nativeId: AGENT.model,
+          displayName: AGENT.model,
+          contextWindowTokens: 1000000,
+          maxOutputTokens: 128000,
+          inputPerMtokMicrocents: 1000000,
+          outputPerMtokMicrocents: 1000000,
+          cachedInputPerMtokMicrocents: 1000000,
+        },
+      ],
+    ]);
+    const quote = prepared.preparation.quote({ strictCostCap: true, resolvePrice });
+    expect(quote.kind).toBe('quoted');
+    expect(keyFor).not.toHaveBeenCalled();
+    expect(stream).not.toHaveBeenCalled();
+    expect(notice).not.toHaveBeenCalled();
+    expect(events).toEqual([]);
+    inputs.text = 'changed after preparation';
+    expect(await prepared.preparation.execute(ctx)).toMatchObject({
+      kind: 'completed',
+      output: 'ANSWER',
+    });
+    expect(keyFor).toHaveBeenCalledTimes(1);
+    expect(stream).toHaveBeenCalledTimes(1);
+    expect(notice).toHaveBeenCalledTimes(1);
+    expect(requests[0]?.messages).toMatchObject([{ content: [{ text: 'Summarize: original' }] }]);
   });
 });

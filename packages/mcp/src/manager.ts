@@ -1,6 +1,7 @@
-import type { McpCapability, ToolDef } from '@relavium/core';
+import type { McpCapability, ToolDef, ToolHostCallOptions } from '@relavium/core';
 import type { AbortSignalLike } from '@relavium/shared';
 
+import { McpWorkScope } from './work-scope.js';
 import type { McpConnection } from './connection.js';
 import {
   McpConnectError,
@@ -36,7 +37,7 @@ export interface McpServerConfig {
    * the signal into every adapter and then never passed one here, which made the whole cancel path dead
    * surface: it type-checked and could not fire.
    */
-  open(signal?: AbortSignalLike): Promise<McpConnection>;
+  open(signal?: AbortSignalLike, options?: ToolHostCallOptions): Promise<McpConnection>;
 }
 
 /** A tool dropped at discovery, tagged with its server (allowlist / unsupported schema / collision / unsafe id). */
@@ -63,15 +64,18 @@ export interface McpClient {
   /**
    * Tear down every connection (idempotent).
    *
-   * `onCloseError` is optional (`#207`): a teardown fault is swallowed by default, because "the child is
-   * exiting" is true almost always — but a caller that has somewhere to report can hear about the times it
-   * is not, which is when an orphaned-process report would otherwise have no trace to start from.
+   * Every concurrent/repeated close joins the same cleanup. Teardown faults are retained and
+   * reported once to each supplied `onCloseError` callback; successful connections are removed
+   * only after their exact close completes. The default remains best-effort reporting, not
+   * a semantic receipt or proof that a failed transport acknowledged native resource closure.
    */
   close(onCloseError?: (serverId: string, cause: unknown) => void): Promise<void>;
   /**
    * The pids of the spawned `stdio` children, for a host's **synchronous** last-resort reap on
    * `process.on('exit')` ([ADR-0088](../../../docs/decisions/0088-the-mcp-boundary-is-hostile.md) §1.3).
    * {@link close} is async and an exit path that cannot await it would otherwise re-orphan them.
+   * Read this current view at forced exit: positively acknowledged children disappear independently
+   * while another connection's cleanup may still be pending.
    */
   readonly childPids: readonly number[];
 }
@@ -80,8 +84,22 @@ export async function startMcpClient(
   servers: readonly McpServerConfig[],
   /** Cancels the connect AND the discovery walk — see {@link McpServerConfig.open}. */
   signal?: AbortSignalLike,
+  options?: ToolHostCallOptions,
 ): Promise<McpClient> {
   const connections = new Map<string, McpConnection>();
+  const closeFailures = new Map<string, unknown>();
+  const reported = new WeakSet<(serverId: string, cause: unknown) => void>();
+  let closing: Promise<void> | undefined;
+  const close = (onCloseError?: (serverId: string, cause: unknown) => void): Promise<void> => {
+    // Assign the shared join before entering a custom close factory; reentrant close/call
+    // observes retirement immediately rather than starting a second cleanup.
+    closing ??= Promise.resolve().then(() => closeAll(connections, closeFailures));
+    return closing.then(() => {
+      if (onCloseError === undefined || reported.has(onCloseError)) return;
+      reported.add(onCloseError);
+      for (const [serverId, cause] of closeFailures) onCloseError(serverId, cause);
+    });
+  };
   const toolDefs: ToolDef[] = [];
   const toolIdsByServer = new Map<string, readonly string[]>();
   const skipped: ManagerSkippedTool[] = [];
@@ -102,22 +120,26 @@ export async function startMcpClient(
   // — total startup is now bounded by the SLOWEST single server, not their sum. Each task registers its
   // connection as soon as `open()` resolves, so a later `listTools()` failure still has it in `connections` for
   // the fail-loud teardown; and each wraps its own failure into a typed, secret-free error carrying the server id.
+  const startup = new McpWorkScope(options);
   const settled = await Promise.allSettled(
     servers.map(async (server) => {
+      const work = startup.fork();
       try {
-        const connection = await server.open(signal);
+        const connection = await server.open(signal, work);
         connections.set(server.id, connection);
         const tools = await connection.listTools(signal);
         return { server, tools };
       } catch (err) {
         throw err instanceof McpError ? err : new McpConnectError(server.id, { cause: err });
+      } finally {
+        work.seal();
       }
     }),
-  );
+  ).finally(() => startup.seal());
   const failure = settled.find((r): r is PromiseRejectedResult => r.status === 'rejected');
   if (failure !== undefined) {
     // Fail-loud: tear down everything opened, then surface the (already typed + secret-free) first failure.
-    await closeAll(connections);
+    await close();
     throw failure.reason;
   }
   // Assemble the tool defs in DECLARATION order (not connect-completion order) so the cross-server namespacing +
@@ -147,49 +169,52 @@ export async function startMcpClient(
      * invalidates every other call to that server for the rest of the session. The adapter bridges the
      * platform-free signal to the SDK's `AbortSignal` at the fence.
      */
-    call: (input, signal) => {
+    call: (input, signal, options) => {
+      if (closing !== undefined) return Promise.reject(new McpNoConnectionError(input.server));
       const connection = connections.get(input.server);
       if (connection === undefined) {
         return Promise.reject(new McpNoConnectionError(input.server));
       }
-      return connection.callTool(input.tool, input.args, signal);
+      return options === undefined
+        ? connection.callTool(input.tool, input.args, signal)
+        : connection.callTool(input.tool, input.args, signal, options);
     },
   };
-
-  // Read ONCE, here, while every connection is still registered: `closeAll` clears the map, so a later read
-  // would return an empty list exactly when the reaper needs it most.
-  const childPids = [...connections.values()]
-    .map((connection) => connection.childPid)
-    .filter((pid): pid is number => pid !== undefined);
 
   return {
     capability,
     toolDefs,
     toolIdsByServer,
     skipped,
-    childPids,
-    close: (onCloseError) => closeAll(connections, onCloseError),
+    // Keep pending/failed handles visible, but never retain an acknowledged stale PID.
+    get childPids() {
+      return [...connections.values()]
+        .map((connection) => connection.childPid)
+        .filter((pid): pid is number => pid !== undefined);
+    },
+    close: async (onCloseError) => {
+      await close(onCloseError);
+      await startup.done;
+    },
   };
 }
 
-/** Close every connection, swallowing teardown errors (the children are exiting); clears the map (idempotent). */
+/** Join all exact close operations; retain failed handles/faults for the manager's reporters. */
 async function closeAll(
   connections: Map<string, McpConnection>,
-  onCloseError?: (serverId: string, cause: unknown) => void,
+  failures: Map<string, unknown>,
 ): Promise<void> {
   const all = [...connections.entries()];
-  connections.clear();
   await Promise.all(
-    all.map(([serverId, connection]) =>
-      connection.close().catch((cause: unknown) => {
-        // **Reported when a caller asked to hear it, swallowed otherwise** (`#207`). The unconditional
-        // discard was defensible — "the child is exiting" is true almost always — but "almost always" is
-        // exactly the case where a genuinely misbehaving transport produces an orphaned-process report with
-        // no trace to diagnose it from. The callback is optional so the pervasive `.catch(() => undefined)`
-        // convention at every existing call site keeps working unchanged; a caller that HAS somewhere to
-        // report can now opt in, which is what the finding asked for and what makes the change complete.
-        onCloseError?.(serverId, cause);
-      }),
-    ),
+    all.map(async ([serverId, connection]) => {
+      try {
+        await connection.close();
+        if (connections.get(serverId) === connection) connections.delete(serverId);
+      } catch (cause) {
+        // Preserve the opaque fault before any caller can catch/ignore its reporting result.
+        // Native acknowledgement, where available, belongs to the connection's own raw scope.
+        failures.set(serverId, cause);
+      }
+    }),
   );
 }

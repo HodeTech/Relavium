@@ -460,6 +460,8 @@ export const agentSessions = sqliteTable(
     // `SUM(session_costs.cost_microcents) == total_cost_microcents`. It consumes cap capacity on resume without
     // ever inflating a reported cost. Single-writer, like its realized sibling.
     totalConservativeMicrocents: microcents('total_conservative_microcents'),
+    // ADR-0098: advanced only by the effect-turn allocator; transcript/session flushes never SET it.
+    effectTurnHighWater: integer('effect_turn_high_water').notNull().default(0),
     exportedWorkflowPath: text('exported_workflow_path'),
     deletedAt: epochMs('deleted_at'),
     createdAt: epochMs('created_at').notNull(),
@@ -824,7 +826,7 @@ export const runEffects = sqliteTable(
     argsDigest: text('args_digest').notNull(),
     /** Tier 1 only: what was handed to the target, so a retry reuses it verbatim rather than minting a new one. */
     targetIdempotencyKey: text('target_idempotency_key'),
-    /** The tool's result, retained only when re-delivery is possible — its absence is what forces a refusal. */
+    /** RUN replay result only. SESSION scopes always write NULL and never replay (ADR-0098). */
     resultJson: text('result_json'),
     /** The audit occurrence: node attempt, provider attempt, tool-call id, owning fence. Never used for dedup. */
     attemptJson: text('attempt_json').notNull(),

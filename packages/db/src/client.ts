@@ -9,6 +9,12 @@ import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { withMigrationLock } from './migrate-lock.js';
 import * as schema from './schema.js';
 import { withBusyRetry } from './retry.js';
+import { initializeSessionEffectTurnKeys } from './session-effect-turns.js';
+import {
+  clearLegacySessionEffectResults,
+  requireSessionEffectTransactionOwnership,
+  type SessionEffectCheckpoint,
+} from './session-effect-privacy.js';
 
 /**
  * The local SQLite client for `@relavium/db`, wired over `better-sqlite3`
@@ -20,8 +26,10 @@ import { withBusyRetry } from './retry.js';
  * encryption-at-rest (ADR-0005) is applied by the desktop's Rust setup hook, not here.
  */
 
-/** A Drizzle handle bound to the full Relavium schema. */
-export type Db = BetterSQLite3Database<typeof schema>;
+/** A schema-bound Drizzle handle, including its public native-client transaction-state port. */
+export type Db = BetterSQLite3Database<typeof schema> & {
+  readonly $client: Database.Database;
+};
 
 /**
  * The handle a `db.transaction(...)` callback receives — the one a transaction body must issue its statements
@@ -82,7 +90,7 @@ export class DbOpenError extends Error {
  * private in-memory database; pass a filesystem path for a persistent local store.
  * Throws a typed {@link DbOpenError} on a rejected or failed open.
  *
- * Applies **all four** project PRAGMAs — the canonical home for what they are for is
+ * Applies the project PRAGMAs — the canonical home for what they are for is
  * [database-schema.md §Concurrency & transaction behavior](../../../docs/reference/shared-core/database-schema.md#concurrency--transaction-behavior):
  *
  * - `journal_mode = WAL` — readers never block the single writer, and vice-versa (a no-op for in-memory).
@@ -92,6 +100,7 @@ export class DbOpenError extends Error {
  *   returning `SQLITE_BUSY`. Load-bearing for the concurrent-process write path, and the term that dominates
  *   `withBusyRetry`'s worst case ([retry.ts](./retry.ts)).
  * - `synchronous = NORMAL` — the recommended durability/throughput trade-off under WAL.
+ * - `secure_delete = ON` — overwrite deleted session-effect payload bytes; WAL erasure also needs a checkpoint.
  */
 export function createClient(path = ':memory:'): DbClient {
   // SQLite URI filenames (`file:…`) are NOT supported: better-sqlite3 needs `{ uri: true }` to
@@ -136,6 +145,7 @@ export function createClient(path = ':memory:'): DbClient {
     opened.pragma('foreign_keys = ON'); // SQLite does not enforce FKs per connection by default
     opened.pragma('busy_timeout = 5000'); // wait up to 5s for a writer lock instead of erroring
     opened.pragma('synchronous = NORMAL'); // the recommended durability/throughput trade-off with WAL
+    opened.pragma('secure_delete = ON');
     const db = drizzle(opened, { schema });
     return { db, sqlite: opened, path };
   } catch (err) {
@@ -182,8 +192,11 @@ export interface RunMigrationsOptions {
  * what to apply in a `SELECT` OUTSIDE its own transaction, two processes racing a fresh file would otherwise
  * both apply the full set and one would die on `CREATE TABLE` (finding #99).
  */
-export function runMigrations(db: Db, options: RunMigrationsOptions = {}): void {
-  withMigrationLock(options.dbPath, () => {
+export function runMigrations(db: Db, options: RunMigrationsOptions = {}): SessionEffectCheckpoint {
+  requireSessionEffectTransactionOwnership(db);
+  return withMigrationLock(options.dbPath, () => {
     migrate(db, { migrationsFolder: MIGRATIONS_DIR });
+    initializeSessionEffectTurnKeys(db);
+    return clearLegacySessionEffectResults(db);
   });
 }

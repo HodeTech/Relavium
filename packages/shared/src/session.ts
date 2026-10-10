@@ -2,8 +2,13 @@ import { z } from 'zod';
 
 import { AgentSchema } from './agent.js';
 import { kebabIdSchema, nonEmptyString, nonNegativeInt } from './common.js';
-import { DurableContentPartSchema } from './content.js';
-import { SessionContextSchema } from './run-event.js';
+import { SessionContextSchema, StopReasonSchema } from './run-event.js';
+import {
+  SessionContentPartSchema,
+  SessionToolCallPartSchema,
+  SessionToolCallIdSchema,
+  SessionToolNameSchema,
+} from './session-content.js';
 
 /**
  * The **durable session-persistence contracts** (agent-session-spec.md §"Session messages" /
@@ -12,10 +17,10 @@ import { SessionContextSchema } from './run-event.js';
  * (`agent_sessions` + `session_messages`) — a directly-stored, append-only record, **not** an
  * event-sourced projection (ADR-0003 governs *runs*, not sessions).
  *
- * Both types are the persisted/transcript shape: a `SessionMessage` carries the **durable**
- * {@link DurableContentPart} union ([ADR-0030](../../decisions/0030-llm-seam-shape-amendment-reasoning-response-format-provider-executed.md)/[ADR-0031](../../decisions/0031-llm-seam-shape-amendment-multimodal-io.md)),
+ * Both types are the persisted/transcript shape: a `SessionMessage` carries the session-only
+ * structural content union (ADR-0095), distinct from the generic durable run/event union (ADR-0030/0031),
  * so reasoning `signature` continuity tokens and inline media bytes are **structurally impossible**
- * here (the durable union has no `signature` field and only handle-only media). The in-flight
+ * here (the session union refuses unknown fields and has only handle-only media). The in-flight
  * `ContentPart` form `LlmMessage` carries is **distinct by design** — the `AgentRunner` projects a
  * persisted message into `LlmMessage` at call time, never the reverse. Timestamps are ISO-8601 (the
  * host stores them as epoch-millisecond `INTEGER`s — the `@relavium/db` mapper converts at the edge).
@@ -39,32 +44,71 @@ const isoTimestamp = z.string().datetime({ offset: true });
 
 /**
  * One **append-only** transcript message (agent-session-spec.md §"Session messages"). `content` is the
- * **durable** content union — handle-only media, signature-less reasoning. Never edited or deleted; only
- * appended at the next `sequenceNumber` (monotonic per session). Lenient (not `.strict()`) so an additive
- * field stays forward-compatible — mirrors {@link SessionContextSchema} and the run-event family.
+ * session-only content union — structural tools, handle-only media, signature-less reasoning. Never edited
+ * or deleted; only appended at the next sequenceNumber. Strict at the whole persistence boundary: an
+ * unknown argument/result field is refused, never silently stripped (ADR-0095).
  */
-export const SessionMessageSchema = z.object({
-  id: nonEmptyString,
-  sessionId: nonEmptyString,
-  sequenceNumber: nonNegativeInt,
-  role: SessionMessageRoleSchema,
-  content: z.array(DurableContentPartSchema),
-  /** The model that produced an assistant turn (fallback-aware) — a `model_catalog` id reference the host
-   *  resolves, NOT a raw model string (mirrors the `session_messages.model_id` FK). */
-  modelId: nonEmptyString.optional(),
-  /**
-   * Present ONLY on a compaction/trim **boundary marker** row (`role: 'system'`, [ADR-0062](../../decisions/0062-context-compaction-and-cli-history-commands.md)).
-   * Records the durable `sequenceNumber` **through which** older messages are superseded: on resume, messages
-   * at/below `droppedThroughSequence` are dropped from the working context, and — when this marker carries
-   * summary text (a `/compact` marker; a `/trim` marker's content is empty) — that text becomes the context
-   * preamble. Absent on every normal transcript row. Additive + optional so the lenient schema stays
-   * forward-compatible; the `@relavium/db` mapper round-trips it via the `compaction_dropped_through_sequence`
-   * column (an older reader that lacks the column reads the marker as an inert `system` row).
-   */
-  compaction: z.object({ droppedThroughSequence: nonNegativeInt }).optional(),
-  timestamp: isoTimestamp,
-});
+export const SessionMessageSchema = z
+  .object({
+    id: nonEmptyString,
+    sessionId: nonEmptyString,
+    sequenceNumber: nonNegativeInt,
+    role: SessionMessageRoleSchema,
+    content: z.array(SessionContentPartSchema),
+    /** The model that produced an assistant turn (fallback-aware) — a `model_catalog` id reference the host
+     *  resolves, NOT a raw model string (mirrors the `session_messages.model_id` FK). */
+    modelId: nonEmptyString.optional(),
+    /**
+     * Present ONLY on a compaction/trim **boundary marker** row (`role: 'system'`, [ADR-0062](../../decisions/0062-context-compaction-and-cli-history-commands.md)).
+     * Records the durable `sequenceNumber` **through which** older messages are superseded: on resume, messages
+     * at/below `droppedThroughSequence` are dropped from the working context, and — when this marker carries
+     * summary text (a `/compact` marker; a `/trim` marker's content is empty) — that text becomes the context
+     * preamble. Absent on every normal transcript row. The mapper round-trips it via
+     * the compaction_dropped_through_sequence
+     * column (an older reader that lacks the column reads the marker as an inert `system` row).
+     */
+    compaction: z.object({ droppedThroughSequence: nonNegativeInt }).strict().optional(),
+    timestamp: isoTimestamp,
+  })
+  .strict()
+  .superRefine((message, ctx) => {
+    if (message.compaction !== undefined && message.role !== 'system') {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'a boundary marker belongs to a system row',
+      });
+    }
+    if (message.role === 'tool' && message.content.some((part) => part.type !== 'tool_result')) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'a tool row contains only structural results',
+      });
+    }
+    if (message.role !== 'tool' && message.content.some((part) => part.type === 'tool_result')) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'structural results belong to a tool row',
+      });
+    }
+    if (message.role !== 'assistant' && message.content.some((part) => part.type === 'tool_call')) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'structural calls belong to an assistant row',
+      });
+    }
+  });
 export type SessionMessage = z.infer<typeof SessionMessageSchema>;
+
+/** The store validates this complete denormalized input and joins every supplied projection to content. */
+export const SessionMessageMetaSchema = z
+  .object({
+    content: z.string().optional(),
+    toolCalls: z.array(SessionToolCallPartSchema).optional(),
+    toolCallId: SessionToolCallIdSchema.optional(),
+    name: SessionToolNameSchema.optional(),
+    finishReason: StopReasonSchema.optional(),
+  })
+  .strict();
 
 /**
  * The **durable session record** — the domain shape of an `agent_sessions` row (agent-session-spec.md

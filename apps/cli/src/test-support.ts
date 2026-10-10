@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { Socket } from 'node:net';
 import { Readable } from 'node:stream';
 
 import { createRunHistoryStore, type Db } from '@relavium/db';
@@ -64,6 +65,10 @@ export function captureIo(env: Readonly<Record<string, string | undefined>> = {}
     },
     writeErr: (text) => {
       errChunks.push(text);
+    },
+    writeErrAcknowledged: (text) => {
+      errChunks.push(text);
+      return Promise.resolve();
     },
     env,
     stdoutIsTty: false,
@@ -265,5 +270,58 @@ async function emitPausedState(
       gateType: gate.gateType,
       message: gate.message ?? 'ok?',
     });
+  }
+}
+
+/** Handle-free sockets satisfy Ink's TTY ports without opening a descriptor, network or real terminal. */
+export class OwnedTtyInput extends Socket implements NodeJS.ReadStream {
+  isTTY = true;
+  isRaw = false;
+  failRaw = false;
+  setRawMode(mode: boolean): this {
+    if (mode && this.failRaw) throw new Error('owned synthetic raw-mode failure');
+    this.isRaw = mode;
+    return this;
+  }
+  override _read(): void {}
+}
+
+export class OwnedTtyOutput extends Socket implements NodeJS.WriteStream {
+  isTTY = true;
+  columns = 100;
+  rows = 24;
+  readonly frames: string[] = [];
+  onFrame: ((frame: string) => void) | undefined;
+  override _write(
+    chunk: unknown,
+    _encoding: BufferEncoding,
+    callback: (error?: Error | null) => void,
+  ): void {
+    const frame =
+      typeof chunk === 'string' ? chunk : Buffer.isBuffer(chunk) ? chunk.toString('utf8') : '';
+    this.frames.push(frame);
+    this.onFrame?.(frame);
+    callback();
+  }
+  clearLine(): boolean {
+    return true;
+  }
+  clearScreenDown(): boolean {
+    return true;
+  }
+  cursorTo(): boolean {
+    return true;
+  }
+  moveCursor(): boolean {
+    return true;
+  }
+  getColorDepth(): number {
+    return 1;
+  }
+  hasColors(): boolean {
+    return false;
+  }
+  getWindowSize(): [number, number] {
+    return [this.columns, this.rows];
   }
 }

@@ -1,3 +1,4 @@
+import { COMPACTION_UNKNOWN_WINDOW_NOTICE } from '../chat/repl-info.js';
 import { randomUUID } from 'node:crypto';
 import { Buffer } from 'node:buffer';
 
@@ -28,7 +29,7 @@ import {
 } from '../chat/session-host.js';
 import { assembleDoctorProbes } from '../chat/doctor-host.js';
 import { onceEffortNotice } from '../chat/effort-notice.js';
-import { unresolvedEffectNotice } from '../engine/effect-retention.js';
+import { reconcileResumedSessionEffects, type NoticeFlush } from '../engine/effect-retention.js';
 import { sanitizeInline } from '../render/sanitize.js';
 import type { DoctorProbes } from '../chat/doctor.js';
 import {
@@ -118,12 +119,12 @@ export interface HomeDeps {
   readonly now?: () => number;
   readonly uuid?: () => string;
   /** Injectable ink mount + the terminal-size seam (tests drive `RootApp` props without a real TTY). `opts` carries
-   *  the resolved alt-screen decision (2.6.F, ADR-0068 §e) so a test can observe the mode driveHome resolved; the
-   *  production default passes it through as ink's `alternateScreen` render option. */
+   *  the resolved rendering decisions (2.6.F, ADR-0068 §e) so an injected mount shares the production
+   *  ownership of Ink's `alternateScreen` and `interactive` options. */
   readonly render?: (
     props: RootAppProps,
-    opts: { readonly alternateScreen: boolean },
-  ) => { unmount: () => void };
+    opts: { readonly alternateScreen: boolean; readonly interactive: boolean },
+  ) => Pick<ReturnType<typeof render>, 'unmount' | 'waitUntilRenderFlush' | 'waitUntilExit'>;
   readonly getSize?: () => { cols: number; rows: number };
   readonly subscribeResize?: (onResize: () => void) => () => void;
   /** Subscribe to SIGINT(2)/SIGTERM(15)/SIGHUP(1)/SIGQUIT(3); returns an unsubscribe. Default registers on `process`. */
@@ -211,7 +212,11 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
   // The cleanup scope opens as soon as the db handle is held, so an init fault AFTER this point (a failed
   // homeStore wire, a control write, a signal registration) still closes the shared db ONCE and restores the
   // terminal state (DISABLE bracketed paste + unmount) rather than leaking the handle / leaving the mode on.
-  let instance: { unmount: () => void } | undefined;
+  let instance:
+    | Pick<ReturnType<typeof render>, 'unmount' | 'waitUntilRenderFlush' | 'waitUntilExit'>
+    | undefined;
+  let rendererActive = true;
+  let flushVisible: NoticeFlush | undefined;
   let controller: HomeController | undefined;
   let unsubscribeSignals: (() => void) | undefined;
   let unsubscribeProcessExit: (() => void) | undefined;
@@ -506,6 +511,8 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
       try {
         persister = createSessionPersister({
           governor: built.governor,
+          attachDurabilityProbe: built.attachDurabilityProbe,
+          attachEffectTurnAllocator: built.attachEffectTurnAllocator,
           store: opened.store,
           handle: built.handle,
           sessionId: built.sessionId,
@@ -553,22 +560,6 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         // throw and re-emitting session:started would double a terminal-less lifecycle event.
         if (opts.open) {
           built.session.start();
-        } else {
-          // A RESUMED session: §8's disclosure, and §9's retention for the turns it can no longer resume.
-          // Into the TRANSCRIPT, never raw stderr — the alt buffer would swallow a stderr line after one
-          // frame, which is the same reasoning `onBudgetWarning` and `onEffortWithheld` already follow.
-          const effectNotice = unresolvedEffectNotice(
-            opened.db,
-            built.session.sessionId,
-            sanitizeInline,
-          );
-          if (effectNotice !== undefined) store.notice(effectNotice);
-          // §9's retention is deliberately NOT run here. The sweep needs the resumed turn count as its
-          // exclusive bound, and this builder does not carry `resumeState` — the reseat path two hundred
-          // lines below does. Sweeping without a bound would delete the live turn's committed rows, which
-          // is the one thing §9 forbids, so the Home defers to `chat-resume`'s sweep over the same
-          // `history.db`. The rows are session-scoped and the sweep is idempotent, so nothing is lost —
-          // only deferred until the next `chat-resume` of that session.
         }
         // The `@`-mention completion reader (2.5.D, ADR-0061): a READ-ONLY fs jail at the session's fs-scope tier.
         const mentionFs = assembleToolEnv({
@@ -603,6 +594,24 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
           stopReason,
           sessionId: built.sessionId,
           teardown,
+          ...(opts.open
+            ? {}
+            : {
+                onActivated: (isActive: () => boolean) =>
+                  reconcileResumedSessionEffects({
+                    io: deps.io,
+                    db: opened.db,
+                    sessionId: built.sessionId,
+                    sanitize: sanitizeInline,
+                    deliverNotice: (text) => store.notice(text),
+                    isActive: () => rendererActive && isActive(),
+                    flushNotice: async (publish) => {
+                      if (flushVisible === undefined)
+                        throw new Error('Home renderer is not ready.');
+                      await flushVisible(publish);
+                    },
+                  }),
+              }),
           onAbort,
           onModeChange,
           // ADR-0066 §5: the in-Home `/models` effort sub-step + `/effort` push the SESSION override (no reseat).
@@ -665,6 +674,9 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
           defaultProvider,
           reasoningEffort: effectiveChat?.reasoningEffort ?? config.chat.reasoningEffort,
         },
+        ...(config.maxTokensEstimate === undefined
+          ? {}
+          : { maxTokensEstimate: config.maxTokensEstimate }),
         agentRef: undefined, // the built-in default agent (zero-config first run)
         cwd: deps.global.cwd,
         projectConfigDir,
@@ -678,6 +690,19 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         // exactly this reason (Step-4b-3 Sonnet fix): a raw write lands on the alt buffer, where ink's next frame
         // overwrites it — the user is warned about their spend on a line that survives a single frame.
         onBudgetWarning: (warning) => store.notice(budgetWarningText(warning)),
+        onCompactionStart: async ({ windowUnknown, signal }) => {
+          if (!windowUnknown || signal.aborted) return;
+          if (!rendererActive || flushVisible === undefined)
+            throw new Error('Home renderer is not ready.');
+          await flushVisible(() => {
+            if (signal.aborted) return;
+            const visibleStore = store;
+            if (!rendererActive || visibleStore === undefined)
+              throw new Error('Home renderer is not ready.');
+            visibleStore.notice(COMPACTION_UNKNOWN_WINDOW_NOTICE);
+          });
+          if (!signal.aborted && !rendererActive) throw new Error('Home renderer is not ready.');
+        },
         // Same channel, same reason (ADR-0071 §6): a tier the bound model will not take is withheld at send, and
         // saying so on raw stderr would land on the alt buffer for one frame. `onceEffortNotice` keeps a standing
         // condition — a stale `off` on a model that cannot disable thinking — from repeating every single turn.
@@ -729,6 +754,9 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         noteToStore(budgetWarningText(warning));
       const built = await (deps.buildResumedSession ?? buildResumedChatSession)({
         chat: config.chat,
+        ...(config.maxTokensEstimate === undefined
+          ? {}
+          : { maxTokensEstimate: config.maxTokensEstimate }),
         consentGate: createConsentGate({
           io: deps.io,
           global: deps.global,
@@ -743,6 +771,19 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         mcpRegistrations: config.mcpServers,
         ...(resolvePrice.size === 0 ? {} : { resolvePrice }),
         onBudgetWarning: noteBudget,
+        onCompactionStart: async ({ windowUnknown, signal }) => {
+          if (!windowUnknown || signal.aborted) return;
+          if (!rendererActive || flushVisible === undefined)
+            throw new Error('Home renderer is not ready.');
+          await flushVisible(() => {
+            if (signal.aborted) return;
+            const visibleStore = storeRef.current;
+            if (!rendererActive || visibleStore === undefined)
+              throw new Error('Home renderer is not ready.');
+            visibleStore.notice(COMPACTION_UNKNOWN_WINDOW_NOTICE);
+          });
+          if (!signal.aborted && !rendererActive) throw new Error('Home renderer is not ready.');
+        },
         // A RESEAT binds a different model — precisely when a tier that was fine a moment ago stops being accepted.
         // Through `noteToStore`, like every sink here, so none can TDZ on the store declared below.
         onEffortWithheld: onceEffortNotice(noteToStore),
@@ -917,13 +958,14 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
     // inline defensively, then applies `--no-alt-screen` → `[preferences].alt_screen` → phase default (opt-in until
     // the viewport lands at Step 4b). `alt` mounts ink 7's native alternate screen (DECSET 1049 enter on mount /
     // exit on unmount — the finally's `instance.unmount()` restores the primary buffer before the terminal-state
-    // cleanup below). An injected `deps.render` (tests) ignores the option — no real TTY to switch buffers on.
+    // cleanup below). An injected `deps.render` receives both decisions and owns its supplied terminal streams.
+    const outputMode = detectOutputMode({
+      stdoutIsTty: deps.io.stdoutIsTty,
+      json: deps.global.json,
+      ci: isCiEnv(deps.io.env),
+    });
     const renderMode = resolveRenderMode({
-      outputMode: detectOutputMode({
-        stdoutIsTty: deps.io.stdoutIsTty,
-        json: deps.global.json,
-        ci: isCiEnv(deps.io.env),
-      }),
+      outputMode,
       noAltScreenFlag: deps.global.noAltScreen === true,
       configAltScreen: config.altScreen,
     });
@@ -935,10 +977,17 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         homeStore,
         doctorProbes,
         models,
-        onExit: () => resolve(EXIT_CODES.success), // a clean Home exit is exit 0
-        onError: (err) => reject(err instanceof Error ? err : new Error(String(err))),
+        onExit: () => {
+          rendererActive = false;
+          resolve(EXIT_CODES.success);
+        }, // a clean Home exit is exit 0
+        onError: (err) => {
+          rendererActive = false;
+          reject(err instanceof Error ? err : new Error(String(err)));
+        },
       });
       const alternateScreen = renderMode === 'alt';
+      const interactive = outputMode === 'tui';
       altScreenActive = alternateScreen; // the hatch ports read this lazily (see `terminal()` above)
       // Mouse reporting (Step 5e, ADR-0068 §e) — resolved from the SAME render mode, so the two cannot disagree.
       mouseActive = resolveMouseMode({
@@ -953,6 +1002,14 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         configCopyOnSelect: config.copyOnSelect,
       });
       const props: RootAppProps = {
+        onRendererReady: (flush) => {
+          flushVisible = flush;
+        },
+        onRendererError: (error) => {
+          rendererActive = false;
+          if (controller !== undefined) void controller.teardownActive().catch(() => undefined);
+          reject(error);
+        },
         controller,
         nowMs: now,
         color: deps.global.color,
@@ -988,17 +1045,34 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
               exitOnCtrlC: false, // the controller drives Ctrl-C, not ink's process.exit
               patchConsole: false,
               maxFps: Math.max(1, Math.round(1000 / FRAME_MS)),
+              // Share Relavium's output policy rather than Ink's different ambient CI predicate.
+              // Noninteractive Ink buffers dynamic notices until unmount, too late for disclosure.
+              interactive,
               // ADR-0068 §e: mount the alternate screen only when resolved to 'alt' (TTY + opt-in). ink 7 handles the
               // DECSET-1049 enter/exit; `false` is a no-op (the inline default), so machine/opt-out paths are untouched.
               alternateScreen,
             })
-          : deps.render(props, { alternateScreen });
+          : deps.render(props, { alternateScreen, interactive });
+      void instance.waitUntilExit().then(
+        () => {
+          rendererActive = false;
+          if (controller !== undefined) void controller.teardownActive().catch(() => undefined);
+          resolve(EXIT_CODES.success);
+        },
+        (err: unknown) => {
+          rendererActive = false;
+          if (controller !== undefined) void controller.teardownActive().catch(() => undefined);
+          reject(err instanceof Error ? err : new Error('Home renderer failed.'));
+        },
+      );
       // Mouse reporting is armed by `RootApp` as the in-Home CHAT takes the screen (`setMouseCapture`), not here:
       // capturing it for the whole Home stripped the landing of the emulator's native selection and gave nothing back
       // (2.6.F Step 6g). Disabled on EVERY teardown path below — the `DISABLE_MOUSE` writes are unconditional there
       // (a no-op when it was never enabled, like DISABLE_BRACKETED_PASTE).
     });
   } finally {
+    rendererActive = false;
+    flushVisible = undefined;
     // The clean-exit / error / INIT-FAULT path (NOT the signal path, which exits the process directly): undo the
     // terminal state, reclaim a live session, and close the shared db ONCE. The terminal restore swallows its own
     // throw, so it neither turns a clean exit into a failure nor skips the teardown + close below — a faulty

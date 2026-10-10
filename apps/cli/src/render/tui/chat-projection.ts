@@ -1,5 +1,5 @@
 import type { ToolApprovalRequest } from '@relavium/core';
-import type { ReasoningEffort } from '@relavium/shared';
+import type { Memory, ReasoningEffort } from '@relavium/shared';
 
 import { MODE_LABEL, type ChatMode } from '../../chat/chat-mode.js';
 import { effortRowLabel } from '../../chat/effort-notice.js';
@@ -61,7 +61,11 @@ export function sanitizeApprovalReason(text: string): string | undefined {
  * A new denial subclass becomes chat-visible automatically once its code is one of these — which is safe
  * precisely because the reason-only contract binds it too (the message is still terminal-sanitized regardless).
  */
-const SAFE_MESSAGE_CODES: ReadonlySet<string> = new Set(['tool_denied', 'tool_unavailable']);
+const SAFE_MESSAGE_CODES: ReadonlySet<string> = new Set([
+  'tool_denied',
+  'tool_unavailable',
+  'context_overflow',
+]);
 
 /**
  * Error codes whose `errorMessage` is a PROVIDER-authored, already-redacted status line safe to render in-chat —
@@ -120,6 +124,9 @@ export function formatTurnSummary(summary: TurnSummary): string {
   } else {
     head = `error: ${summary.errorCode}`;
   }
+  if (summary.errorCode === 'context_overflow') {
+    head += ` ${contextOverflowRemedy(summary.memoryPolicy, summary.toolsRan ?? true)}`;
+  }
   const parts = [
     head,
     // The producing model (2.5.H) — present ONLY on a within-turn failover (the view-model omits it when it equals
@@ -158,6 +165,23 @@ function looksLikeContextOverflow(message: string | undefined): boolean {
   return CONTEXT_OVERFLOW_MARKERS.some((marker) => lower.includes(marker));
 }
 
+/** One policy-aware remedy for classified overflows and the legacy endpoint-message heuristic. */
+export function contextOverflowRemedy(
+  memory: Readonly<Memory> | undefined,
+  toolsRan: boolean,
+): string {
+  const history =
+    memory?.type === 'none'
+      ? 'Use a shorter message or choose a model with a larger context window.'
+      : memory?.type === 'window'
+        ? 'Use `/trim`, shorten the message, or choose a model with a larger context window; a smaller `window_size` applies to a new session.'
+        : 'Run `/compact` or `/trim`, shorten the message, or choose a model with a larger context window.';
+  const continuation = toolsRan
+    ? 'Check the effects of tools that already ran before asking to continue; resending can repeat them.'
+    : 'Then send the revised request.';
+  return `${history} ${continuation} The session is still active.`;
+}
+
 /**
  * An **actionable, secret-free recovery hint** for a failed turn's `ErrorCode` (2.5.H) — a one-line next step that
  * makes explicit **the session survives** (a failed turn settles `session:turn_completed`, never a terminal, so the
@@ -168,7 +192,12 @@ function looksLikeContextOverflow(message: string | undefined): boolean {
  * the session path classifies as `provider_unavailable`). The returned string is ALWAYS a static host label — it
  * never interpolates the provider `message` (only the context-overflow heuristic READS it, to pick the right hint).
  */
-export function errorRecoveryHint(code: string | undefined, message?: string): string | undefined {
+
+export function errorRecoveryHint(
+  code: string | undefined,
+  message?: string,
+  context?: Pick<TurnSummary, 'memoryPolicy' | 'toolsRan'>,
+): string | undefined {
   switch (code) {
     case 'provider_rate_limit':
       return 'Rate-limited by the provider — Relavium already retried with backoff + failover. The session is still active; resend if the turn did not finish.';
@@ -178,10 +207,12 @@ export function errorRecoveryHint(code: string | undefined, message?: string): s
       return 'Provider authentication failed — check the API key, or unlock the OS keychain if it locked mid-session. The session is still active; fix the key (`relavium provider …`) and resend.';
     case 'content_filter':
       return 'The provider blocked the content by its policy. The session is still active; rephrase and resend.';
+    case 'context_overflow':
+      return undefined; // The visible engine fact and the same policy-aware remedy are in the summary.
     case 'validation':
       // Only the context-overflow shape gets an actionable hint — a generic validation error has no chat-side remedy.
       return looksLikeContextOverflow(message)
-        ? 'The request exceeded the model context window — run `/compact` or `/trim` to reclaim room, then resend. The session is still active.'
+        ? `The request exceeded the model context window. ${contextOverflowRemedy(context?.memoryPolicy, context?.toolsRan ?? true)}`
         : undefined;
     case 'tool_failed':
       // A tool_failed reaching a completed turn is a NON-recoverable failure (a side-effecting or budget-exhausted
@@ -241,7 +272,11 @@ export function entryLines(entry: TranscriptEntry): DisplayLine[] {
     { text: stripTerminalControls(entry.text), style: 'assistant' },
     { text: ` ${formatTurnSummary(entry.summary)}`, style: 'summary' },
   ];
-  const hint = errorRecoveryHint(entry.summary.errorCode, entry.summary.errorMessage);
+  const hint = errorRecoveryHint(
+    entry.summary.errorCode,
+    entry.summary.errorMessage,
+    entry.summary,
+  );
   if (hint !== undefined) lines.push({ text: ` → ${hint}`, style: 'hint' });
   return lines;
 }

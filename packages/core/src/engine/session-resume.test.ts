@@ -14,6 +14,7 @@ import { createAbortController } from './execution-host.js';
 import {
   reconstructSessionState,
   resumableMessageSequences,
+  resumableTurnBoundarySequences,
   type SessionResumeState,
 } from './session-resume.js';
 import type { ToolRegistry } from '../tools/types.js';
@@ -55,6 +56,107 @@ const msg = (
 });
 
 describe('reconstructSessionState (1.Y)', () => {
+  it('preserves nontrailing legacy bare-user context without inventing completed turns', () => {
+    const rows = [
+      msg(0, 'user', [{ type: 'text', text: 'legacy empty-final context' }]),
+      msg(1, 'user', [{ type: 'text', text: 'next question' }]),
+      msg(2, 'assistant', [{ type: 'text', text: 'answer' }]),
+    ];
+    expect(reconstructSessionState(record(), rows)).toMatchObject({
+      turnCount: 1,
+      messages: [
+        { role: 'user', content: [{ type: 'text', text: 'legacy empty-final context' }] },
+        { role: 'user', content: [{ type: 'text', text: 'next question' }] },
+        { role: 'assistant', content: [{ type: 'text', text: 'answer' }] },
+      ],
+    });
+    expect(resumableMessageSequences(rows)).toEqual([0, 1, 2]);
+    expect(resumableTurnBoundarySequences(rows)).toEqual([0, 2]);
+    const trimmed = [
+      ...rows,
+      { ...msg(3, 'system', []), compaction: { droppedThroughSequence: 0 } },
+    ];
+    expect(resumableMessageSequences(trimmed)).toEqual([1, 2]);
+    expect(resumableTurnBoundarySequences(trimmed)).toEqual([2]);
+    expect(rows).toHaveLength(3);
+  });
+
+  it('keeps earlier legacy bare users when the final bare user still rolls back', () => {
+    const rows = [
+      msg(0, 'user', [{ type: 'text', text: 'first legacy context' }]),
+      msg(1, 'user', [{ type: 'text', text: 'trailing legacy context' }]),
+    ];
+    expect(reconstructSessionState(record(), rows)).toMatchObject({
+      turnCount: 0,
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'first legacy context' }] }],
+    });
+    expect(resumableMessageSequences(rows)).toEqual([0]);
+    expect(resumableTurnBoundarySequences(rows)).toEqual([0]);
+    expect(reconstructSessionState(record(), rows.slice(0, 1)).messages).toEqual([]);
+  });
+
+  it('retains legacy context across an interrupted structural exchange without carrying that exchange', () => {
+    const rows = [
+      msg(0, 'user', [{ type: 'text', text: 'legacy context' }]),
+      msg(1, 'user', [{ type: 'text', text: 'interrupted tool turn' }]),
+      msg(2, 'assistant', [
+        { type: 'tool_call', id: 'session-tool:2:0', name: 'read_file', argsBytes: 2 },
+      ]),
+      msg(3, 'tool', [
+        { type: 'tool_result', toolCallId: 'session-tool:2:0', resultBytes: 4, outcome: 'ok' },
+      ]),
+    ];
+    expect(reconstructSessionState(record(), rows)).toMatchObject({
+      turnCount: 0,
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'legacy context' }] }],
+    });
+    const continued = [
+      ...rows,
+      msg(4, 'user', [{ type: 'text', text: 'continued' }]),
+      msg(5, 'assistant', [{ type: 'text', text: '' }]),
+    ];
+    expect(reconstructSessionState(record(), continued)).toMatchObject({
+      turnCount: 1,
+      messages: [
+        { role: 'user', content: [{ type: 'text', text: 'legacy context' }] },
+        { role: 'user', content: [{ type: 'text', text: 'continued' }] },
+      ],
+    });
+    expect(resumableMessageSequences(continued)).toEqual([0, 4]);
+    expect(resumableTurnBoundarySequences(continued)).toEqual([0, 5]);
+  });
+
+  it('counts and retains empty-final turns while dropping an interrupted text-bearing tool preamble', () => {
+    const state = reconstructSessionState(record(), [
+      msg(0, 'user', [{ type: 'text', text: '' }]),
+      msg(1, 'assistant', [{ type: 'text', text: '' }]),
+      msg(2, 'user', [{ type: 'text', text: 'interrupted' }]),
+      msg(3, 'assistant', [
+        { type: 'text', text: 'preamble' },
+        { type: 'tool_call', id: 'session-tool:2:0', name: 'read_file', argsBytes: 2 },
+      ]),
+    ]);
+    expect(state.turnCount).toBe(1);
+    expect(state.messages).toEqual([{ role: 'user', content: [{ type: 'text', text: '' }] }]);
+  });
+
+  it('never resumes a partial turn whose user is before a boundary but terminal is after it', () => {
+    const messages = [
+      msg(0, 'user', [{ type: 'text', text: 'old' }]),
+      msg(1, 'assistant', [
+        { type: 'tool_call', id: 'session-tool:1:0', name: 'read_file', argsBytes: 2 },
+      ]),
+      msg(2, 'tool', [
+        { type: 'tool_result', toolCallId: 'session-tool:1:0', resultBytes: 4, outcome: 'ok' },
+      ]),
+      msg(3, 'assistant', [{ type: 'text', text: 'old answer' }]),
+      { ...msg(4, 'system', []), compaction: { droppedThroughSequence: 1 } },
+      msg(5, 'user', [{ type: 'text', text: 'kept' }]),
+      msg(6, 'assistant', [{ type: 'text', text: '' }]),
+    ];
+    expect(resumableMessageSequences(messages)).toEqual([5]);
+    expect(reconstructSessionState(record(), messages).turnCount).toBe(1);
+  });
   it('projects user/assistant text turns and re-seeds turnCount + cost', () => {
     const state = reconstructSessionState(record({ totalCostMicrocents: 4200 }), [
       msg(0, 'user', [{ type: 'text', text: 'hi' }]),
@@ -114,9 +216,11 @@ describe('reconstructSessionState (1.Y)', () => {
       msg(1, 'assistant', [{ type: 'text', text: 'a1' }]), // a completed exchange
       msg(2, 'user', [{ type: 'text', text: 'q2 — use a tool' }]), // the interrupted turn begins
       msg(3, 'assistant', [
-        { type: 'tool_call', id: 'c1', name: 'read_file', args: { path: 'x' } },
+        { type: 'tool_call', id: 'session-tool:1:0', name: 'read_file', argsBytes: 12 },
       ]),
-      msg(4, 'tool', [{ type: 'tool_result', toolCallId: 'c1', result: 'ok', isError: false }]), // died here
+      msg(4, 'tool', [
+        { type: 'tool_result', toolCallId: 'session-tool:1:0', resultBytes: 4, outcome: 'ok' },
+      ]), // died here
     ]);
     // the entire interrupted turn (user + tool_call + tool) is rolled back — the projection drops the
     // tool/text-less-assistant rows and the trailing-user rollback removes the originating q2.
@@ -130,7 +234,9 @@ describe('reconstructSessionState (1.Y)', () => {
   it('rolls back a turn whose assistant produced only a tool_call (no committed text)', () => {
     const state = reconstructSessionState(record(), [
       msg(0, 'user', [{ type: 'text', text: 'q' }]),
-      msg(1, 'assistant', [{ type: 'tool_call', id: 'c1', name: 'read_file', args: {} }]),
+      msg(1, 'assistant', [
+        { type: 'tool_call', id: 'session-tool:1:0', name: 'read_file', argsBytes: 2 },
+      ]),
     ]);
     expect(state.messages).toEqual([]); // no completed exchange survives
     expect(state.turnCount).toBe(0);
@@ -139,8 +245,12 @@ describe('reconstructSessionState (1.Y)', () => {
   it('counts a completed tool-loop turn once (assistant tool_call → tool → assistant text)', () => {
     const state = reconstructSessionState(record(), [
       msg(0, 'user', [{ type: 'text', text: 'q' }]),
-      msg(1, 'assistant', [{ type: 'tool_call', id: 'c1', name: 'read_file', args: {} }]), // within-turn
-      msg(2, 'tool', [{ type: 'tool_result', toolCallId: 'c1', result: 'ok', isError: false }]),
+      msg(1, 'assistant', [
+        { type: 'tool_call', id: 'session-tool:1:0', name: 'read_file', argsBytes: 2 },
+      ]), // within-turn
+      msg(2, 'tool', [
+        { type: 'tool_result', toolCallId: 'session-tool:1:0', resultBytes: 4, outcome: 'ok' },
+      ]),
       msg(3, 'assistant', [{ type: 'text', text: 'final answer' }]), // the completing text
     ]);
     expect(state.messages).toEqual([
@@ -206,6 +316,10 @@ function depsFor(
     resolveProvider: () => provider,
     registry: noToolRegistry,
     tools: [],
+    reserveEffectTurnKey: (() => {
+      let key = 0;
+      return () => ++key;
+    })(),
     keyFor: () => 'key',
     sleep: () => Promise.resolve(),
     newAbortController: createAbortController,
@@ -225,6 +339,97 @@ const params = (deps: SessionDeps) => ({
 });
 
 describe('AgentSession.resume (1.Y)', () => {
+  it('window excludes unproven legacy prefix, gaps and tail while preserving the resume archive', async () => {
+    const rows = [
+      msg(0, 'user', [{ type: 'text', text: 'legacy prefix' }]),
+      msg(1, 'user', [{ type: 'text', text: 'first' }]),
+      msg(2, 'assistant', [{ type: 'text', text: 'answer' }]),
+      msg(3, 'user', [{ type: 'text', text: 'legacy gap' }]),
+      msg(4, 'user', [{ type: 'text', text: 'empty-final' }]),
+      msg(5, 'assistant', [{ type: 'text', text: '' }]),
+      msg(6, 'user', [{ type: 'text', text: 'legacy tail' }]),
+      msg(7, 'user', [{ type: 'text', text: 'rolled back' }]),
+    ];
+    const state = reconstructSessionState(record(), rows);
+    expect(state.completedTurnSpans).toEqual([
+      { start: 1, end: 3 },
+      { start: 4, end: 5 },
+    ]);
+    const archive = JSON.stringify(state.messages);
+    const seen: LlmMessage[][] = [];
+    const agent = AgentSchema.parse({ ...AGENT, memory: { type: 'window', window_size: 2 } });
+    const s = AgentSession.resume(
+      { ...params(depsFor(capturingProvider(seen), [])), agent },
+      state,
+    );
+    await s.sendMessage('current');
+    expect(
+      seen[0]?.map((message) =>
+        message.content.map((part) => (part.type === 'text' ? part.text : '')).join(''),
+      ),
+    ).toEqual(['first', 'answer', 'empty-final\n\ncurrent']);
+    expect(JSON.stringify(state.messages)).toBe(archive);
+  });
+
+  it.each([
+    { spans: [{ start: -1, end: 1 }] },
+    { spans: [{ start: 0, end: 3 }] },
+    { spans: [{ start: 1, end: 2 }] },
+    { spans: [{ start: 0, end: Number.NaN }] },
+    { spans: [{ start: 0, end: Number.MAX_SAFE_INTEGER + 1 }] },
+    {
+      spans: [
+        { start: 0, end: 2 },
+        { start: 0, end: 2 },
+      ],
+    },
+  ])('refuses invalid completed-turn spans before any host budget callback (%o)', ({ spans }) => {
+    const costs: number[] = [];
+    const p = params({
+      ...depsFor(capturingProvider([]), []),
+      updateCost: (cost) => costs.push(cost),
+    });
+    expect(() =>
+      AgentSession.resume(p, {
+        messages: [
+          { role: 'user', content: [{ type: 'text', text: 'q' }] },
+          { role: 'assistant', content: [{ type: 'text', text: 'a' }] },
+        ],
+        completedTurnSpans: spans,
+        turnCount: 3,
+        cumulativeCostMicrocents: 0,
+        conservativeCostMicrocents: 0,
+      }),
+    ).toThrow('resumed completed-turn metadata is invalid');
+    expect(costs).toEqual([]);
+  });
+
+  it('copies resumed messages and turn metadata before a caller can mutate them', async () => {
+    const state = reconstructSessionState(record(), [
+      msg(0, 'user', [{ type: 'text', text: 'past' }]),
+      msg(1, 'assistant', [{ type: 'text', text: 'answer' }]),
+    ]);
+    const spans = [{ start: 0, end: 2 }];
+    const seen: LlmMessage[][] = [];
+    const agent = AgentSchema.parse({ ...AGENT, memory: { type: 'window', window_size: 1 } });
+    const s = AgentSession.resume(
+      { ...params(depsFor(capturingProvider(seen), [])), agent },
+      { ...state, completedTurnSpans: spans },
+    );
+    const firstSpan = spans[0];
+    if (firstSpan === undefined) throw new Error('expected span');
+    firstSpan.end = 99;
+    const part = state.messages[0]?.content[0];
+    if (part?.type !== 'text') throw new Error('expected text');
+    part.text = 'mutated';
+    await s.sendMessage('current');
+    expect(seen[0]?.map((message) => message.content)).toEqual([
+      [{ type: 'text', text: 'past' }],
+      [{ type: 'text', text: 'answer' }],
+      [{ type: 'text', text: 'current' }],
+    ]);
+  });
+
   it('resumes without re-emitting session:started, and the next turn sees the prior transcript', async () => {
     const seen: LlmMessage[][] = [];
     const events: SessionStreamEvent[] = [];
@@ -259,6 +464,7 @@ describe('AgentSession.resume (1.Y)', () => {
         { role: 'user', content: [{ type: 'text', text: 'hi' }] },
         { role: 'assistant', content: [{ type: 'text', text: 'hello' }] },
       ],
+      completedTurnSpans: [{ start: 0, end: 2 }],
       turnCount: 1,
       cumulativeCostMicrocents: 0,
       conservativeCostMicrocents: 0,
@@ -337,6 +543,7 @@ describe('AgentSession.resume (1.Y)', () => {
     };
     AgentSession.resume(params(deps), {
       messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+      completedTurnSpans: [{ start: 0, end: 1 }],
       turnCount: 1,
       cumulativeCostMicrocents: 4200,
       conservativeCostMicrocents: 900,
@@ -358,6 +565,7 @@ describe('AgentSession.resume (1.Y)', () => {
     };
     AgentSession.resume(params(deps), {
       messages: [],
+      completedTurnSpans: [],
       turnCount: 0,
       cumulativeCostMicrocents: 0,
       conservativeCostMicrocents: 0,
@@ -376,6 +584,7 @@ describe('AgentSession.resume (1.Y)', () => {
     };
     AgentSession.resume(params(deps), {
       messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+      completedTurnSpans: [{ start: 0, end: 1 }],
       turnCount: 1,
       cumulativeCostMicrocents: 4200,
       conservativeCostMicrocents: 0,

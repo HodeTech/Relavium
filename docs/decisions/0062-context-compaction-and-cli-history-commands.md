@@ -12,6 +12,69 @@
 > *preamble prepended to the system prompt*, read ADR-0081 §2-§3 for where it actually goes; the durable
 > half they describe is untouched. **This ADR stays Accepted** — only §1's placement decision was reversed.
 
+> **Amended 2026-09-14 by [ADR-0095](0095-what-an-agent-session-remembers-across-turns.md) and [ADR-0096](0096-a-request-is-measured-before-it-is-sent.md) — refinements, and one correction of reasoning.**
+>
+> - **§6's reasoning is corrected.** Cross-turn tool accumulation was declined because "the architecture already
+>   prevents" the problem. Discarding the pairs is itself a defect (`CR-70`), not a problem the design avoids. The decision itself stands: carrying tool
+>   history into the model's context is deferred (ADR-0095 §2), not built.
+> - **A compaction or trim boundary is identified by turn, not by message count** (ADR-0095 §1), because durable rows
+>   gain structural tool parts that the text-only in-memory transcript does not have.
+> - **ADR-0096 refines §1, §4 and §5.**
+>   - The summariser's input is bounded.
+>   - The token estimate becomes a live input. §4 framed it, as the seam's doc comments still do, as a pre-first-turn
+>     fallback that never drives a live decision; that framing no longer holds.
+>   - The after-turn trigger measures the next request against the window of the first entry the chain will attempt.
+>   - A pre-send compaction is added, and a failed pre-send summariser sends the request rather than trimming. §5's
+>     trim-on-failure remains the after-turn behaviour.
+>
+> Both ADRs are **Accepted** as of 2026-09-14 with their implementation staged for `W7`, so the behaviour described
+> below is what ships until it lands.
+
+> **Amended further 2026-09-18 — what ADR-0095 §4 changes here, and what ADR-0096 adds.** The note above recorded
+> ADR-0095's boundary rule and ADR-0096's refinements, and left three places in this ADR that stop being true.
+>
+> - **§5's config gate is no longer the only gate.** An authored agent `memory` overrides `[chat].auto_compact` in
+>   both directions and decides all three automatic entry points: this ADR's after-turn trigger, ADR-0096's
+>   pre-send compaction, and its overflow recovery. `summary` permits automatic compaction whatever the config
+>   says; `none` and `window` never compact.
+> - **§7's commands can be refused.** `/compact` and `/trim` are refused under `none`, and `/compact` under
+>   `window`, each naming why — the engine refuses, so every surface inherits it.
+> - **The Negative consequence's "always … switchable off (`auto_compact = false`)" holds only for an omitted
+>   policy.** Under `memory: summary` the off-switch does not apply. A one-shot `relavium agent run` still makes no
+>   after-turn summariser call, because nothing would read its result.
+> - **A failed automatic compaction is never silent, and now always has a terminal.** (Maintainer, 2026-09-18.)
+>   ADR-0096 replaces this ADR's
+>   trim-on-failure for the PRE-SEND path (the request is sent instead), and adds an additive
+>   `session:compaction_failed` event so every `session:compacting` has a terminal — including the manual `/compact`
+>   failure this ADR left without one. A pre-egress BUDGET refusal of the summariser is not a compaction failure at
+>   all: it ends the turn `budget_exceeded` and the history is not trimmed.
+> - **The disclosed summary-of-a-summary degradation gets deeper.** (Maintainer, 2026-09-18.) A compaction whose
+>   foldable history exceeds the summariser's window now runs up to FOUR chained passes, each folding a running
+>   summary, so the nesting this ADR's Negative section discloses across successive compactions can now happen
+>   inside ONE. The mitigations named there are unchanged: nothing durable is deleted, and the last complete
+>   exchange is kept verbatim.
+> - **§7's accepted imprecision now covers one more divergence.** The CLI's context-fullness indicator shows the
+>   last turn's billed input, which is net of cache and summed across tool rounds, against the bound model's
+>   window. ADR-0096's trigger measures the projected next request instead, so the two can disagree in both
+>   directions; the indicator stays an approximation and says so.
+
+> Amended 2026-10-02 — [ADR-0099](0099-compaction-has-an-idle-budget-outcome-and-an-unknown-window-policy.md),
+> accepted by the maintainer, distinguishes active-turn summariser budget refusal from idle compaction.
+> Pre-send/recovery settle the active turn `budget_exceeded`; after-turn refusal preserves its successful
+> terminal and history, with a separate visible notice; manual refusal returns a typed budget outcome.
+> Neither idle path invents a turn terminal or trims on budget refusal. Unknown-window manual compaction
+> remains available under ADR-0099's disclosed soft input bound and atomic four-pass limit. These decisions
+> are staged in `W7`; the historical text below is unchanged.
+
+> **Landing note 2026-10-02 — W7 step 5.** The authored memory override and typed engine refusals
+> described in the September 18 note are implemented on `development`, including CLI refusal before
+> progress/bound checks. Message-unit trimming and append-only marker boundaries are preserved.
+> A fresh summary-policy `agent run` above the threshold still makes exactly its one main request;
+> there is no foldable earlier exchange and no after-turn summariser call. The revised measured triggers,
+> multi-pass primitive and idle budget outcomes remain later W7 steps. Current contracts live in
+> [agent-yaml-spec.md](../reference/contracts/agent-yaml-spec.md#conversational-memory) and
+> [agent-session-spec.md](../reference/contracts/agent-session-spec.md#request-projection-and-history-operations).
+
 ## Context
 
 A long `relavium chat` / Home session grows its transcript every turn. `AgentSession`
@@ -415,3 +478,20 @@ The last 2.5.F items — `/clear` and the two compaction-moment UX polishes — 
   still defers `/compact` to Phase 3 and forbids a stub; this ADR reverses that. The roadmap
   and its go/no-go (2.5.F acceptance; the 2.5.H "context-overflow → suggest `/trim`" hint, which
   auto-compaction now largely pre-empts) are updated in the implementing PR.
+
+## W7 Step 8 implementation — 2026-10-10
+
+The approved measured compaction/recovery and idle budget policies are implemented on
+`development`, pending independent implementation acceptance and final whole-wave validation.
+The [session contract](../reference/contracts/agent-session-spec.md#measured-compaction-and-one-shot-recovery)
+and [event contract](../reference/contracts/sse-event-schema.md#session-event-namespace) own the
+current mechanics and shapes: all-candidate measured bounds, four-pass atomic installation,
+acknowledged unknown-window disclosure, balanced moments and distinct idle/active budget outcomes.
+No accepted policy is superseded; this dated landing note leaves the historical body intact.
+
+### W7 implementation landing — 2026-10-10
+
+The approved W7 implementation and scoped independent reviews are complete. Final whole-wave
+acceptance, per-item causal evidence, canonical landing checks and approved residuals are joined in
+the [W7 closing register](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w7-closing-register--2026-10-10).
+This dated note preserves the earlier decision and status history; W8 and the phase remain open.

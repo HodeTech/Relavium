@@ -1,7 +1,21 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
 import { CATALOG_SNAPSHOT } from './catalog/snapshot.js';
-import { cappedMaxTokens } from './output-cap.js';
+import {
+  cappedMaxTokens,
+  prepareOutputCapPlan,
+  prepareOutputCapRequest,
+  outputTokensReservation,
+  outputCapNativeOptions,
+  assertOutputCapPlanMatches,
+  isPreparedOutputCapPlan,
+  InvalidOutputCapPlanError,
+  type OutputCapIdentity,
+  type EndpointKind,
+} from './output-cap.js';
+import { clearCatalogRefresh, installCatalogRefresh } from './catalog/lookup.js';
+import { catalogModelFixture } from './conformance/fixtures/catalog.js';
+import type { ProviderId, LlmRequest } from './types.js';
 
 /**
  * The output cap (ADR-0071 §7) — the other half of the maintainer's "max tokens errors".
@@ -50,6 +64,286 @@ describe('cappedMaxTokens — down to the model ceiling, never up', () => {
     // restatement of `Math.min` — it checks the CATALOG, which is generated and can regress upstream.
     for (const [id, model] of Object.entries(CATALOG_SNAPSHOT)) {
       expect(model.maxOutputTokens, `${id} has no output ceiling`).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe('effective wire-cap plans (ADR-0101)', () => {
+  afterEach(clearCatalogRefresh);
+  const model = 'gpt-5.4-pro';
+  const identity = (
+    provider: ProviderId,
+    endpoint: EndpointKind = 'official',
+    maxTokens?: number,
+    providerOptions?: Record<string, unknown>,
+  ): OutputCapIdentity => ({ model, provider, endpoint, maxTokens, providerOptions });
+
+  it.each(['openai', 'deepseek', 'gemini', 'anthropic'] as const)(
+    'authored %s caps win configured estimates and native fields',
+    (provider) => {
+      const info = identity(provider, 'official', 200_000, {
+        max_tokens: 300_000,
+        max_completion_tokens: 400_000,
+        maxOutputTokens: 500_000,
+      });
+      const plan = prepareOutputCapPlan(info);
+      expect(outputTokensReservation(plan, 1)).toBe(128_000);
+      expect(outputTokensReservation(plan, 1_000_000)).toBe(128_000);
+      expect(plan.mappedValue).toBe(128_000);
+      expect(outputCapNativeOptions(plan, info.providerOptions)).not.toHaveProperty(
+        plan.mappedField,
+      );
+    },
+  );
+
+  it('required Anthropic default wins both its native escape hatch and any configured estimate', () => {
+    const plan = prepareOutputCapPlan(
+      identity('anthropic', 'official', undefined, { max_tokens: 200_000 }),
+    );
+    expect(plan.mappedValue).toBe(4096);
+    expect(outputTokensReservation(plan, 1)).toBe(4096);
+    expect(outputTokensReservation(plan, 1_000_000)).toBe(4096);
+  });
+
+  it.each([
+    ['openai', 'official', { max_tokens: 200_000, max_completion_tokens: 300_000 }, 300_000],
+    ['openai', 'custom', { max_tokens: 200_000, max_completion_tokens: 300_000 }, 300_000],
+    ['deepseek', 'official', { max_tokens: 200_000, max_completion_tokens: 300_000 }, 200_000],
+    ['deepseek', 'custom', { max_tokens: 200_000, max_completion_tokens: 300_000 }, 300_000],
+    ['gemini', 'official', { maxOutputTokens: 300_000 }, 300_000],
+  ] satisfies [ProviderId, EndpointKind, Record<string, unknown>, number][])(
+    'surviving native %s/%s caps remain unclamped',
+    (provider, endpoint, providerOptions, expected) => {
+      const plan = prepareOutputCapPlan(identity(provider, endpoint, undefined, providerOptions));
+      expect(outputTokensReservation(plan, 1)).toBe(expected);
+      expect(plan.mappedValue).toBeUndefined();
+      expect(outputCapNativeOptions(plan, providerOptions)).toEqual(providerOptions);
+    },
+  );
+
+  it.each([0, -1, 1.5, NaN, Infinity, '200000', null])(
+    'ignores invalid native cap %s for estimates while preserving wire data',
+    (value) => {
+      const options = { max_completion_tokens: value };
+      const plan = prepareOutputCapPlan(identity('openai', 'official', undefined, options));
+      expect(outputTokensReservation(plan, 17)).toBe(17);
+      expect(outputCapNativeOptions(plan, options)).toEqual(options);
+    },
+  );
+
+  it('uncapped requests use the frozen official ceiling; custom/unknown routes preserve the fallback', () => {
+    const info = identity('openai');
+    const plan = prepareOutputCapPlan(info);
+    expect(outputTokensReservation(plan, undefined)).toBe(4096);
+    expect(outputTokensReservation(plan, 200_000)).toBe(128_000);
+    expect(plan.mappedValue).toBeUndefined();
+    expect(
+      outputTokensReservation(prepareOutputCapPlan(identity('openai', 'custom')), 200_000),
+    ).toBe(200_000);
+    expect(
+      outputTokensReservation(prepareOutputCapPlan({ ...info, model: 'unknown' }), 200_000),
+    ).toBe(200_000);
+  });
+
+  it('hands off the measured ceiling across refreshes and preserves current unrelated options', () => {
+    const id = 'w7-cap-fixture';
+    installCatalogRefresh({ [id]: catalogModelFixture({ modelId: id, maxOutputTokens: 1024 }) });
+    const info = {
+      ...identity('openai', 'official', 4096, { max_tokens: 9000, temperature: 0.1 }),
+      model: id,
+    };
+    const plan = prepareOutputCapPlan(info);
+    installCatalogRefresh({ [id]: catalogModelFixture({ modelId: id, maxOutputTokens: 4096 }) });
+    const request: LlmRequest = {
+      model: id,
+      messages: [],
+      maxTokens: 4096,
+      providerOptions: { max_tokens: 9000, temperature: 0.9 },
+      preparedOutputCaps: [plan],
+    };
+    const staged = prepareOutputCapRequest(request, 'openai', 'official');
+    expect(staged.plan).toBe(plan);
+    expect(staged.plan.mappedValue).toBe(1024);
+    expect(outputCapNativeOptions(plan, staged.request.providerOptions)).toEqual({
+      temperature: 0.9,
+    });
+    expect(prepareOutputCapPlan(info).mappedValue).toBe(4096);
+  });
+
+  it('copies cap values before awaits and refuses substituted cap/routing plans', () => {
+    const options = { max_tokens: 200_000 };
+    const request: LlmRequest = { model, messages: [], providerOptions: options };
+    const staged = prepareOutputCapRequest(request, 'openai', 'official');
+    options.max_tokens = 1;
+    expect(outputTokensReservation(staged.plan, undefined)).toBe(200_000);
+    expect(staged.request.providerOptions?.['max_tokens']).toBe(200_000);
+    expect(() =>
+      assertOutputCapPlanMatches(staged.plan, identity('openai', 'official', undefined, options)),
+    ).toThrow(InvalidOutputCapPlanError);
+    expect(() =>
+      assertOutputCapPlanMatches(
+        staged.plan,
+        identity('openai', 'custom', undefined, { max_tokens: 200_000 }),
+      ),
+    ).toThrow(InvalidOutputCapPlanError);
+    expect(isPreparedOutputCapPlan({ ...staged.plan })).toBe(false);
+  });
+
+  it('captures native JSON semantics once, with the original key, through a measured-plan handoff', () => {
+    let amount = 200_000;
+    const keys: string[] = [];
+    const cap = {
+      toJSON: (key: string) => {
+        keys.push(key);
+        return amount;
+      },
+    };
+    const options = { max_completion_tokens: cap };
+    const plan = prepareOutputCapPlan(identity('openai', 'official', undefined, options));
+    amount = 1;
+    const staged = prepareOutputCapRequest(
+      { model, messages: [], providerOptions: options, preparedOutputCaps: [plan] },
+      'openai',
+      'official',
+    );
+    expect(staged.plan).toBe(plan);
+    expect(staged.request.providerOptions?.['max_completion_tokens']).toBe(200_000);
+    expect(outputTokensReservation(plan, 17)).toBe(200_000);
+    expect(keys).toEqual(['max_completion_tokens']);
+    expect(() =>
+      assertOutputCapPlanMatches(plan, {
+        ...identity('openai'),
+        providerOptions: { max_completion_tokens: {} },
+      }),
+    ).toThrow(InvalidOutputCapPlanError);
+    expect(
+      prepareOutputCapPlan(
+        identity('openai', 'official', undefined, { max_tokens: Object(200_000) }),
+      ).effectiveCap,
+    ).toBe(200_000);
+  });
+
+  it('deep-copies invalid native JSON data and preserves omission without retaining executable values', () => {
+    const cap = { nested: [1, { value: 2 }] };
+    const options = { max_tokens: cap, max_completion_tokens: () => 200_000 };
+    const staged = prepareOutputCapRequest(
+      { model, messages: [], providerOptions: options },
+      'openai',
+      'official',
+    );
+    cap.nested.push(3);
+    const captured = staged.plan.providerOptions?.['max_tokens'];
+    expect(captured).toEqual({ nested: [1, { value: 2 }] });
+    expect(Object.isFrozen(captured)).toBe(true);
+    if (typeof captured !== 'object' || captured === null || !('nested' in captured))
+      throw new Error('missing cap snapshot');
+    expect(Object.isFrozen(captured.nested)).toBe(true);
+    expect(staged.plan.providerOptions?.['max_completion_tokens']).toBeUndefined();
+    expect(outputTokensReservation(staged.plan, 17)).toBe(17);
+    expect(JSON.parse(JSON.stringify(outputCapNativeOptions(staged.plan, options)))).toEqual({
+      max_tokens: { nested: [1, { value: 2 }] },
+    });
+  });
+
+  it('isolates every captured JSON container from inherited serialization without changing own data', () => {
+    const value: unknown = JSON.parse(
+      '{"nested":[{"__proto__":{"limit":2},"toJSON":"ordinary data"}],"limit":1}',
+    );
+    const plan = prepareOutputCapPlan(
+      identity('openai', 'official', undefined, { max_tokens: value }),
+    );
+    const captured = plan.providerOptions?.['max_tokens'];
+    expect(JSON.stringify(captured)).toBe(JSON.stringify(value));
+    const pending: unknown[] = [captured];
+    let containers = 0;
+    while (pending.length > 0) {
+      const item = pending.pop();
+      if (typeof item !== 'object' || item === null) continue;
+      containers++;
+      expect(Object.getPrototypeOf(item)).toBeNull();
+      expect(Object.isFrozen(item)).toBe(true);
+      for (const child of Object.values(item)) pending.push(child);
+    }
+    expect(containers).toBe(4);
+    expect(outputTokensReservation(plan, 17)).toBe(17);
+  });
+
+  it('keeps arrays identifiable and independent of a caller-supplied array prototype', () => {
+    const value = [1, { nested: [2] }];
+    const plan = prepareOutputCapPlan(
+      identity('openai', 'official', undefined, { max_completion_tokens: value }),
+    );
+    const captured = plan.providerOptions?.['max_completion_tokens'];
+    expect(Array.isArray(captured)).toBe(true);
+    expect(JSON.stringify(captured)).toBe('[1,{"nested":[2]}]');
+    expect(Object.getPrototypeOf(captured)).toBeNull();
+    expect(Object.getPrototypeOf(value)).toBe(Array.prototype);
+    expect(Object.isFrozen(value)).toBe(false);
+    expect(outputTokensReservation(plan, 17)).toBe(17);
+  });
+
+  it('refuses unserializable surviving controls without serializing shadowed controls', () => {
+    const cycle: Record<string, unknown> = {};
+    cycle['self'] = cycle;
+    expect(() =>
+      prepareOutputCapPlan(identity('openai', 'official', undefined, { max_tokens: cycle })),
+    ).toThrow(InvalidOutputCapPlanError);
+    const plan = prepareOutputCapPlan(identity('openai', 'official', 17, { max_tokens: cycle }));
+    expect(outputCapNativeOptions(plan, { max_tokens: cycle })).toEqual({});
+    expect(plan.effectiveCap).toBe(17);
+  });
+
+  it('captures primitive BigInt serializers once under the native field key', () => {
+    const descriptor = Object.getOwnPropertyDescriptor(BigInt.prototype, 'toJSON');
+    let amount = 200_000;
+    const keys: string[] = [];
+    try {
+      Object.defineProperty(BigInt.prototype, 'toJSON', {
+        configurable: true,
+        value: (key: string) => {
+          keys.push(key);
+          return amount;
+        },
+      });
+      const options = { max_completion_tokens: 1n };
+      const plan = prepareOutputCapPlan(identity('openai', 'official', undefined, options));
+      expect(outputTokensReservation(plan, 17)).toBe(200_000);
+      amount = 1;
+      const staged = prepareOutputCapRequest(
+        { model, messages: [], providerOptions: options, preparedOutputCaps: [plan] },
+        'openai',
+        'official',
+      );
+      expect(staged.plan).toBe(plan);
+      expect(staged.request.providerOptions?.['max_completion_tokens']).toBe(200_000);
+      expect(JSON.parse(JSON.stringify(outputCapNativeOptions(plan, options)))).toEqual({
+        max_completion_tokens: 200_000,
+      });
+      expect(keys).toEqual(['max_completion_tokens']);
+    } finally {
+      if (descriptor === undefined) Reflect.deleteProperty(BigInt.prototype, 'toJSON');
+      else Object.defineProperty(BigInt.prototype, 'toJSON', descriptor);
+    }
+  });
+
+  it('refuses plain surviving BigInt but never serializes discarded BigInt or Gemini foreign controls', () => {
+    const descriptor = Object.getOwnPropertyDescriptor(BigInt.prototype, 'toJSON');
+    try {
+      Reflect.deleteProperty(BigInt.prototype, 'toJSON');
+      expect(() =>
+        prepareOutputCapPlan(identity('openai', 'official', undefined, { max_tokens: 1n })),
+      ).toThrow(InvalidOutputCapPlanError);
+      const shadowed = prepareOutputCapPlan(identity('openai', 'official', 17, { max_tokens: 1n }));
+      expect(outputCapNativeOptions(shadowed, { max_tokens: 1n })).toEqual({});
+      const cycle: Record<string, unknown> = {};
+      cycle['self'] = cycle;
+      const options = { max_tokens: cycle, max_completion_tokens: 1n };
+      const gemini = prepareOutputCapPlan(identity('gemini', 'official', 17, options));
+      expect(gemini.effectiveCap).toBe(17);
+      expect(outputCapNativeOptions(gemini, options)).toEqual({});
+    } finally {
+      if (descriptor === undefined) Reflect.deleteProperty(BigInt.prototype, 'toJSON');
+      else Object.defineProperty(BigInt.prototype, 'toJSON', descriptor);
     }
   });
 });

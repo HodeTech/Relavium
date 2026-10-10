@@ -21,6 +21,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { AbortSignalLike } from './content.js';
 import {
+  armLongTimer,
   clampTimerDelayMs,
   MAX_TIMER_DELAY_MS,
   openDeadline,
@@ -71,6 +72,47 @@ function manualTimer(): {
 
 /** A promise that never settles — an uncooperative provider, which is the case that matters. */
 const NEVER = new Promise<string>(() => undefined);
+for (const fault of ['disarm', 'listener', 'both'] as const) {
+  it(`deadline disposal ${fault} fault still releases an already waiting race and attempts all cleanup`, async () => {
+    const primary = new Error('synthetic disarm failure');
+    const secondary = new Error('synthetic listener failure');
+    const calls = { disarm: 0, remove: 0 };
+    const caller: AbortSignalLike = {
+      aborted: false,
+      addEventListener: () => undefined,
+      removeEventListener: () => {
+        calls.remove++;
+        if (fault !== 'disarm') throw secondary;
+      },
+    };
+    const scope = openDeadline(
+      120000,
+      controller,
+      () => () => {
+        calls.disarm++;
+        if (fault !== 'listener') throw primary;
+      },
+      caller,
+    );
+    let released = false;
+    void scope.race(NEVER).then(() => {
+      released = true;
+    });
+    let observed: unknown;
+    try {
+      scope.dispose();
+    } catch (error) {
+      observed = error;
+    }
+    expect(Object.is(observed, fault === 'listener' ? secondary : primary)).toBe(true);
+    expect(calls).toEqual({ disarm: 1, remove: 1 });
+    // Drain the promise-only wake path; no host clock or wall-time threshold is involved.
+    for (let index = 0; index < 4; index++) await Promise.resolve();
+    expect(released).toBe(true);
+    scope.dispose();
+    expect(calls).toEqual({ disarm: 1, remove: 1 });
+  });
+}
 describe('openDeadline (ADR-0082 §5-§7, ADR-0085 §9)', () => {
   it('CHAINS a delay above 2^31-1, because Node inverts it into an immediate fire', async () => {
     // **A governance control turning into its own bypass.** `positiveInt` has no upper bound, so an author
@@ -342,3 +384,35 @@ describe('openDeadline (ADR-0082 §5-§7, ADR-0085 §9)', () => {
   // `finally { waiters.delete(wake); }` body with a no-op and assert `waiters.size` is 0 after a settled
   // race — which requires that accessor. Recorded rather than asserted, per this phase's discipline rule 3.
 });
+
+for (const ms of [NaN, Infinity, -Infinity])
+  it(`refuses nonfinite timer delay ${ms} before any host timer is armed`, () => {
+    let armed = 0;
+    const setTimer = () => {
+      armed++;
+      return () => undefined;
+    };
+    for (const call of [
+      () => clampTimerDelayMs(ms),
+      () => armLongTimer(ms, () => undefined, setTimer),
+      () => openDeadline(ms, controller, setTimer),
+    ])
+      expect(call).toThrow('Timer delay must be finite.');
+    expect(armed).toBe(0);
+  });
+
+for (const ms of [-42, 0])
+  it(`retains immediate semantics for finite delay ${ms}`, () => {
+    let actual: number | undefined;
+    const disarm = armLongTimer(
+      ms,
+      () => undefined,
+      (value) => {
+        actual = value;
+        return () => undefined;
+      },
+    );
+    expect(actual).toBe(0);
+    expect(clampTimerDelayMs(ms)).toBe(0);
+    disarm();
+  });

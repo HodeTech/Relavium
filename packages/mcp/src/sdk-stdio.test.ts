@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { McpAbortedError } from './deadlines.js';
 
 import {
   collectAllTools,
@@ -43,6 +45,33 @@ describe('collectAllTools (tools/list pagination)', () => {
 });
 
 describe('the pid latch stops looking when its registration is released (ADR-0088 §1.3)', () => {
+  it('releases an unused PID sampler when connect is already aborted before SDK entry', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    const start = vi.spyOn(StdioClientTransport.prototype, 'start');
+    const close = vi.spyOn(StdioClientTransport.prototype, 'close');
+    const controller = new AbortController();
+    controller.abort();
+    const before = vi.getTimerCount();
+    try {
+      await expect(
+        openStdioConnection(
+          'pre-aborted',
+          { command: process.execPath, env: {} },
+          controller.signal,
+        ),
+      ).rejects.toBeInstanceOf(McpAbortedError);
+      // A bounded refusal must also release the empty native owner, without spawning.
+      expect(start).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(before);
+      expect(close).toHaveBeenCalledTimes(1);
+    } finally {
+      start.mockRestore();
+      close.mockRestore();
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
   /**
    * **The poll had no owner, and unref'd is what hid it.** `latchPid` clears its own interval once a pid
    * appears — but a spawn that FAILS never produces one, and `ENOENT` on a typo'd `command` is the ordinary
@@ -60,7 +89,7 @@ describe('the pid latch stops looking when its registration is released (ADR-008
         command: '/nonexistent/relavium-latch-probe',
         env: {},
       }).catch(() => undefined);
-      // Past `releaseAfterTeardown`'s window, so the registration — and with it the poll — is released.
+      // Allow the actual failed-spawn close callback to release registration and its poll.
       await vi.advanceTimersByTimeAsync(10_000);
       const before = vi.getTimerCount();
       await vi.advanceTimersByTimeAsync(1_000);

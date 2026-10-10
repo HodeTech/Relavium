@@ -73,10 +73,13 @@ export {
   fromAgentSessionRow,
   toSessionMessageRow,
   fromSessionMessageRow,
+  SessionMessageBoundaryError,
   type SessionStore,
   type SessionMessageMeta,
   LEGACY_COST_SENTINEL,
 } from './session-store.js';
+
+export { SessionEffectTurnError } from './session-effect-turns.js';
 
 // Run history (2.H) — the SQLite-backed RunStore the CLI host injects (durable persist-before-deliver,
 // ADR-0036) plus the list/logs/status read API (2.I) and the cross-process resume substrate (2.G). The
@@ -110,7 +113,18 @@ export {
   createEffectJournalPort,
   createEffectResumePort,
 } from './effect-journal-store.js';
-export type { EffectJournalStore, EffectJournalStoreDeps } from './effect-journal-store.js';
+export type {
+  EffectJournalStore,
+  EffectJournalStoreDeps,
+  CapturedSessionEffect,
+  SessionEffectDisclosure,
+  SessionEffectDisclosureSnapshot,
+  SessionEffectSweepResult,
+} from './effect-journal-store.js';
+export {
+  SessionEffectPrivacyError,
+  type SessionEffectCheckpoint,
+} from './session-effect-privacy.js';
 
 // Provider registry (2.C) — CRUD over the non-secret `llm_providers` catalog the CLI's `relavium provider`
 // commands manage. The key VALUE never lives here — only the OS-keychain `account` ref (ADR-0006/0019).
@@ -154,6 +168,7 @@ export {
   SAFE_EGRESS_ERROR_CODES,
   type SafeEgressErrorCode,
   type EgressDeps,
+  type EgressWorkOptions,
   type EgressMethod,
   // `HopRequest`/`HopResponse` are part of THIS mechanism's public surface (the CLI egress arm + its test
   // consume them from `@relavium/db`); export them directly here rather than only via the media-egress alias.

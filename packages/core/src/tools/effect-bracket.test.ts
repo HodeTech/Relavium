@@ -81,6 +81,101 @@ const POST = {
 };
 
 describe('the effect journal brackets a dispatch (ADR-0080 §7)', () => {
+  it.each(['approval', 'prepare'] as const)(
+    'rechecks dispatch admission after asynchronous %s and releases a proven non-dispatch',
+    async (failurePoint) => {
+      const journal = recordingJournal();
+      let failed = false;
+      let dispatched = false;
+      const registry = createToolRegistry({
+        tools: TOOLS,
+        host: hostWith(() => {
+          dispatched = true;
+          return Promise.resolve({ status: 200, headers: {}, body: 'ok', truncated: false });
+        }),
+      });
+      const refusal = new ToolExecutionError('http_request', 'session cannot be saved', undefined, {
+        retryable: false,
+      });
+      const ctx: ToolDispatchContext = {
+        ...ctxWith(journal),
+        approval: {
+          confirm: async () => {
+            await Promise.resolve();
+            if (failurePoint === 'approval') failed = true;
+            return { outcome: 'approve' };
+          },
+        },
+        effects: {
+          ...journal.port,
+          prepare: async (...args) => {
+            const verdict = await journal.port.prepare(...args);
+            if (failurePoint === 'prepare') failed = true;
+            return verdict;
+          },
+        },
+        beforeDispatch: (toolId) => {
+          expect(toolId).toBe('http_request');
+          if (failed) throw refusal;
+        },
+      };
+      await expect(registry.dispatch(POST, ctx)).rejects.toBe(refusal);
+      expect(dispatched).toBe(false);
+      expect(journal.order).toEqual(['prepare', 'discard']);
+      expect(journal.rows()).toEqual([]);
+    },
+  );
+
+  it('checks admission for unjournaled reads without preparing a claim', async () => {
+    const journal = recordingJournal();
+    let dispatched = false;
+    const registry = createToolRegistry({
+      tools: TOOLS,
+      host: hostWith(() => {
+        dispatched = true;
+        return Promise.resolve({ status: 200, headers: {}, body: 'ok', truncated: false });
+      }),
+    });
+    const refusal = new ToolExecutionError('http_request', 'session cannot be saved', undefined, {
+      retryable: false,
+    });
+    await expect(
+      registry.dispatch(
+        { ...POST, args: { url: 'https://api.example/x', method: 'GET' } },
+        {
+          ...ctxWith(journal),
+          beforeDispatch: () => {
+            throw refusal;
+          },
+        },
+      ),
+    ).rejects.toBe(refusal);
+    expect(dispatched).toBe(false);
+    expect(journal.order).toEqual([]);
+    expect(journal.rows()).toEqual([]);
+  });
+
+  it('still settles an effect whose host admission fails only after dispatch starts', async () => {
+    const journal = recordingJournal();
+    let failed = false;
+    const registry = createToolRegistry({
+      tools: TOOLS,
+      host: hostWith(() => {
+        failed = true;
+        return Promise.resolve({ status: 200, headers: {}, body: 'ok', truncated: false });
+      }),
+    });
+    await registry.dispatch(POST, {
+      ...ctxWith(journal),
+      beforeDispatch: () => {
+        if (failed) throw new ToolExecutionError('http_request', 'session cannot be saved');
+      },
+    });
+    expect(failed).toBe(true);
+    expect(journal.order).toEqual(['prepare', 'settle:committed']);
+    expect(journal.rows()[0]?.state).toBe('committed');
+  });
+
   it('prepares BEFORE the call and settles committed after it — in that order', async () => {
     const journal = recordingJournal();
     const host = hostWith(() =>
@@ -476,6 +571,9 @@ describe('the effect journal brackets a dispatch (ADR-0080 §7)', () => {
     const second = await registry.dispatch(POST, {
       ...ctx,
       effects: store.for({ ...correlation, attempt: 2 }),
+      beforeDispatch: () => {
+        throw new ToolExecutionError('http_request', 'no further host dispatch is admitted');
+      },
     });
 
     expect(dispatched).toBe(1); // …the target was hit exactly once

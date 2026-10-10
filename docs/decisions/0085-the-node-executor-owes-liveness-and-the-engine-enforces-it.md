@@ -558,3 +558,47 @@ These land with the implementation, not after it:
 - **The fence adds a check to five hot-path sites and a per-vertex map to the run.** The cost is a
   comparison and one small map; the alternative is four unguarded mutation points, one of which writes to
   the user's filesystem.
+
+
+## Implementation correction — 2026-10-03, ordinary gate media completion
+
+W7 Step 10 review confirms that §5's abandoned-work completion fences also apply to an ordinary
+human decision's asynchronous payload pin. Previously a held CAS write could finish after cancellation,
+run/node timeout or fenced closure, then mark the gate complete, publish a late decision to persistent
+subscribers and insert a run media reference after its terminal sweep. The durable event store correctly
+refused the late row, so local lifecycle and retention still disagreed with durable truth.
+
+The ordinary resume continuation now checks settlement, cancellation, the run abort signal and the
+vertex's paused state immediately after the pin, before mutating output or publishing its event.
+Normal completion and late pin rejection keep their existing outcomes. Native Core controls and
+actual SQLite media-reference/CAS controls cover all four cutoffs; the reference host supplies run
+logs and leases in the latter, rather than a new SQLite lease proof. The uncancellable CAS write can
+still finish with an unreferenced object. No new deadline, clock, lease policy or store-port contract
+is introduced. The canonical details remain in the [event contract](../reference/contracts/sse-event-schema.md#human-gate-suspendresume-across-the-stream).
+
+## 2026-10-05 implementation correction — shared deadline cleanup releases pending waiters
+
+The eleventh independent W7 review shows a throwing custom disarm or listener-removal callback
+skipping remaining cleanup and leaving an already racing promise pending after disposal became
+idempotent. The shared primitive now attempts both callbacks, releases and clears every waiter,
+then rethrows the first original failure; repeated disposal remains inert. The per-attempt chain
+contains that cleanup fault through truthful accounting as recorded in the dated correction to
+[ADR-0082](0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md).
+This restores the existing liveness contract without changing deadlines, grace windows or the
+resource-termination guarantee.
+
+## 2026-10-10 — ADR-0103 lifecycle integration
+
+Bounded executor/terminal liveness remains separate from raw actor/child/host acknowledgement. Parked timed-agent restoration preserves its derived logical-life deadline and refuses ambiguous evidence before preparation.
+See the [canonical engine lifecycle](../architecture/shared-core-engine.md#internal-departure-foundations-adr-0103)
+and [CLI exit/remedy contract](../reference/cli/commands.md#exit-codes). Consolidated independent
+acceptance is tracked in [current.md](../roadmap/current.md); Step 8 and final whole-wave
+validation remain open. The accepted body above is preserved.
+
+### W7 implementation landing — 2026-10-10
+
+The earlier W7 progress note is a historical snapshot. Step 8 and final Step 12 were subsequently
+accepted in the [W7 closing register](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w7-closing-register--2026-10-10).
+The later [post-closure systematic correction register](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#post-closure-systematic-review--2026-10-10)
+tracks reopened review findings and their scoped acceptance; it governs the current PR acceptance status.
+This additive note does not rewrite the original decision or claim that PR #90 has merged.

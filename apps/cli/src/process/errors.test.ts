@@ -27,6 +27,8 @@ describe('EXIT_CODES', () => {
       // ADR-0080 §2b / effect-journal.md §4, §8 — an external effect from a prior attempt is unresolved.
       // The only code whose remedy is "do NOT retry": go look at the target, then resolve the row.
       effectNeedsAttention: 7,
+      // ADR-0103 — required money receipts are not confirmed, independently of terminal durability.
+      moneyDurabilityUncertain: 8,
     });
   });
 });

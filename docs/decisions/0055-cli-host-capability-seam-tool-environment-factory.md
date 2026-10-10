@@ -98,3 +98,165 @@ the safety complement, not a substitute for wiring the capability).
   hook **denies** — so even if the advertise-filter is bypassed, `ask` mode cannot write. (Crucially,
   `enforcePolicy` alone is **inert** for `write_file` — its `FS_POLICY` triggers none of `enforcePolicy`'s
   arms — so the floor is `confirmAction`, not `enforcePolicy`.) Protected paths apply in every mode.
+
+## Implementation correction — 2026-10-04, W7 systematic group 2a third review
+
+EA2's realized failed-turn usage guarantee was carried only by `AgentTurnError`. Independent review
+reproduced trusted cost/token/reasoning/readiness/sleep/clock callback failures after actual provider
+engagement that preserved a raw error but lost known usage and returned the hard-cap slot. This
+predates the W7 repair. The correction retains the original public error identity and carries canonical
+usage/engagement in a package-internal outcome consumed by `AgentSession`; classified errors keep
+their existing metadata. A non-error provider chunk establishes engagement before readiness, and
+valid observed stop usage is consumed once by the attempt record or retained on interrupted failure.
+Pre-egress refusal alone establishes neither provider engagement nor invented usage.
+
+[Actual-session regressions](../../packages/core/src/engine/session-callback-accounting.test.ts)
+cover billed/zero-use engagement, original raw identity, EA7 abort, first-content/first-stop failure,
+terminal cancellation and successful once-only accounting. This repairs EA2 and the existing hard-cap
+contract without changing capability/approval policy. Historical text is preserved; the full systematic
+review gate remains open until a fresh complete round accepts the correction.
+
+
+### Immutable exceptions and proven pre-provider refusal — 2026-10-04
+
+A fresh review found canonical accounting still depending on mutation of a thrown
+`AgentTurnError`. A frozen instance replaced the original failure with a `TypeError` and lost
+usage and the hard-cap slot. The internal outcome carrier now never inspects or mutates the
+exception. The public turn API retains best-effort metadata on mutable data properties and
+always rethrows the original value. Sessions settle from canonical failed/successful accounting
+before exception classification; typed flush failures cannot substitute stale quantities or count
+a successful turn twice, and a later pause retains earlier engagement and usage.
+
+A non-skipped fallback record also counted pre-provider key/local preparation failures only when
+no governor was present. The chain now records actual provider-method invocation explicitly;
+core uses the same evidence with and without a governor. Untyped chain exceptions have a fixed
+public diagnostic rather than forwarding a host exception's arbitrary message. These are
+corrections to EA2's existing truthful-usage and provider-engagement rules, not new counting or
+financial policy. The canonical contracts are
+[agent-session-spec.md](../reference/contracts/agent-session-spec.md) and
+[llm-provider-seam.md](../reference/shared-core/llm-provider-seam.md).
+
+
+### Throwable presentation, method lookup and generated usage — 2026-10-04
+
+Fresh complete review reproduces three remaining EA2 implementation gaps. Hostile prototype
+reflection during session error presentation suppresses the terminal and replaces the original
+throwable; provider-method getters fail before invocation but are counted as invoked; a valid
+non-streaming usage record disappears when host pricing fails. The engaged slot in the reflection
+case already remains consumed; this correction does not claim it was refunded.
+
+Session presentation now guards prototype and diagnostic inspection after canonical accounting,
+then emits a fixed raw terminal and rethrows the original value if classification cannot complete.
+The chain resolves and binds the provider method before stamping invocation, preserving its receiver.
+Generated usage is read once and a detached schema-valid copy passes the existing safe-integer
+arithmetic guard before being retained on pricing failure; no cost or invalid quantities are invented.
+Exception reflection in chain normalization cannot replace the original non-public cause or suppress
+its attempt record. Consumer observers remain outside provider/accounting guards.
+
+These repair existing usage, engagement and diagnostic guarantees without changing capability,
+approval or financial policy. The canonical contracts remain
+[agent-session-spec.md](../reference/contracts/agent-session-spec.md) and
+[llm-provider-seam.md](../reference/shared-core/llm-provider-seam.md). Complete fresh corrective
+review is required before the group is accepted.
+
+## 2026-10-04 implementation correction — guarded nested diagnostics
+
+A further independent W7 review verifies that nested typed diagnostics and downstream cause
+classifiers also need guarded ownership. The implementation now captures nested diagnostics before
+record delivery, preserves private original accounting causes under hostile reflection, and keeps
+admission ownership until its lease action succeeds. Method lookup/setup cancellation is rechecked
+before invocation. These repair the existing engagement and error contracts; canonical behaviour
+remains in [the LLM
+seam](../reference/shared-core/llm-provider-seam.md#fallback-lives-outside-the-adapter) and [session
+contract](../reference/contracts/agent-session-spec.md). Whole-request ownership under Proposed
+ADR-0102 remains a separate approval gate.
+
+## 2026-10-04 implementation correction — observer provenance after generation
+
+A complete independent W7 contracts review reproduces a typed attempt observer failure being
+misclassified as a provider timeout after a successful generated response. The actual workflow
+retries a paid call and exposes the private observer diagnostic. Core now retains the exact escape
+from its attempt observer before generated provider classification. Genuine provider failures still
+map normally. Budget reflection after completed tools is guarded so a callback's prototype or
+diagnostic trap cannot replace the original failure. This repairs existing observer/privacy
+guarantees; canonical behaviour remains in [the session contract](../reference/contracts/agent-session-spec.md)
+and [LLM seam](../reference/shared-core/llm-provider-seam.md#fallback-lives-outside-the-adapter).
+The [round-7 record](../reviews/2026-10-04T23-06-22-w7-systematic-group-2a-round-7-review.md)
+qualifies the incomplete runtime review and requires a fresh complete corrective round.
+
+## 2026-10-05 implementation correction — typed observer delivery
+
+W7 review verifies that the class of a paid host observer exception can incorrectly acquire
+provider retry or budget-gate authority after the shared turn returns. Exact call-local observer
+origin now travels in the internal outcome, independent of the original throwable's prototype.
+Workflow presentation is fixed, internal and non-retryable; genuine turn and money control flow
+remains distinct. Session keeps its established classified-error delivery and raw-error rejection
+contract, with canonical usage/engagement and fixed private-safe observer presentation. Hostile
+reflection still rethrows the original value after the fixed terminal. No host dependency or
+whole measured-request ownership decision changes. The canonical producer contract remains
+[the session spec](../reference/contracts/agent-session-spec.md). Historical text is preserved.
+
+## 2026-10-05 implementation correction — complete callback provenance
+
+The ninth independent W7 review reproduces later tool-round readiness/token observers losing their
+origin and compaction publishing a classified callback's private message or replacing an opaque
+throwable. The same captured outcome now reaches compaction; its lifecycle observers are tracked
+locally. Classified delivery versus raw rejection, original opaque identity and state cleanup remain
+intact, with fixed private-safe presentation. Clock/backoff callback failures also retain exact
+external origin. Error classes grant no provider, budget or money-writer authority on that path.
+The canonical [session contract](../reference/contracts/agent-session-spec.md) describes the
+mechanism. This repairs the existing callback boundary, without a new host capability or whole-request
+ownership policy. Historical text is preserved.
+
+## 2026-10-05 implementation correction — lifecycle setup and completion boundaries
+
+The tenth independent W7 review reproduces controller/start-notification failures leaving a session
+running and post-success completion/flush callbacks acquiring public diagnostics from their classes.
+Controller initialization now releases operation state and rethrows the original value; start-event
+failure does likewise before egress. Exact local observer provenance extends through completion and
+flush, with successful canonical usage and hard-cap consumption unchanged. The same controller
+cleanup covers user-command initialization. No new host capability or financial policy is introduced.
+The canonical [session contract](../reference/contracts/agent-session-spec.md) states delivery and
+throwing-sink limits; historical text is preserved.
+
+## 2026-10-05 implementation correction — session cancellation at fallible host handoffs
+
+The eleventh independent W7 review reproduces completion after terminal cancellation during an
+acknowledged commitment flush and lost interrupt intent raised inside a custom controller factory.
+The shared initializer carries recorded intent onto the returned signal; send, compact and command
+refuse further work after terminal cancellation. Successful flush rechecks terminal ownership.
+Compaction measures prospective state before installing it and rechecks estimator cancellation.
+Known paid quantities and turn consumption remain intact, as does EA7's post-success late-abort
+no-op. First-party controller factories are pure; factory reentrancy is a supported custom-host
+boundary. These are implementation repairs to the existing cancellation contract, with no new
+capability or policy. See the [session contract](../reference/contracts/agent-session-spec.md).
+
+## 2026-10-06 implementation correction — cold compaction planning preserves terminal cancellation
+
+Retained twelfth-round controls reproduce cancellation inside the provider resolver of a reconstructed
+session, before a compaction controller exists. Compaction now rechecks terminal state immediately
+after plan resolution, before controller setup can overwrite it. No key resolution, provider call,
+controller or later compaction notification follows that cancellation; idle abort remains a no-op,
+and a warm memoized plan retains its existing behaviour. This repairs the existing cancellation
+contract without a new host capability or policy. The interrupted review is qualified in the review
+record; a fresh complete independent round is still required. Historical text is preserved.
+
+## 2026-10-06 implementation correction — cold planning retains operation ownership
+
+The thirteenth independent W7 review reproduces a supported custom provider resolver starting a real
+send while cold compaction resolves its plan. The outer compaction then installs a second controller,
+so abort reaches only compaction and the nested send completes. After preserving terminal
+cancellation, compaction now rechecks its existing idle precondition before controller setup. A
+running nested operation keeps its controller; the outer compaction receives the existing lifecycle
+refusal. This is a repair to the existing operation and cancellation contract, with no new error code,
+host capability or financial policy. The canonical [session contract](../reference/contracts/agent-session-spec.md)
+states the handoff; historical text is preserved. Fresh corrective review remains required.
+
+## Native process lifetime refinement — 2026-10-09
+
+Approved [ADR-0103](0103-a-paused-run-hands-off-its-local-producers-before-its-host-closes.md)
+requires actual local producer completion before host closure. The CLI process implementation
+checks cancellation immediately before spawn and awaits native child/stdio `close` even after
+`error`; ordinary cancellation and fixed error taxonomy remain. The canonical host contract is
+[tool-registry.md](../reference/shared-core/tool-registry.md#native-process-completion).
+This scoped implementation does not complete all engine actors, departure or CLI input release.

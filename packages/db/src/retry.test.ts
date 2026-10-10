@@ -332,6 +332,7 @@ describe('withBusyRetry — real SQLITE_BUSY contention (2.5.I)', () => {
     }
   });
 
+  // Native on-disk setup/teardown can exceed 5s on Windows; semantic assertions stay unchanged.
   it('fails loud when the lock is never released (exhausts the budget, rethrows SQLITE_BUSY)', () => {
     const dir = mkdtempSync(join(tmpdir(), 'relavium-retry-'));
     const holder = createClient(join(dir, 'c.db'));
@@ -367,5 +368,5 @@ describe('withBusyRetry — real SQLITE_BUSY contention (2.5.I)', () => {
         }
       }
     }
-  });
+  }, 30_000);
 });

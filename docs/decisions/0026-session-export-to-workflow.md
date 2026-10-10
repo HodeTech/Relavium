@@ -4,6 +4,23 @@
 - **Date**: 2026-06-05
 - **Related**: [0024-agent-first-entry-point-agentsession.md](0024-agent-first-entry-point-agentsession.md), [0008-local-first-phase-1-cloud-phase-2.md](0008-local-first-phase-1-cloud-phase-2.md), [0009-git-native-workflow-yaml.md](0009-git-native-workflow-yaml.md), [../reference/contracts/agent-session-spec.md](../reference/contracts/agent-session-spec.md), [../reference/contracts/workflow-yaml-spec.md](../reference/contracts/workflow-yaml-spec.md)
 
+> **Amended 2026-09-14 by [ADR-0095](0095-what-an-agent-session-remembers-across-turns.md) §3 — a refinement, not a reversal.**
+> The export now reflects the flow that happened, and still carries no tool content:
+>
+> - the `tools` union is filled from the persisted, resolved tool names;
+> - `metadata.relaviumExport.messages` carries structural tool rows — names, engine-assigned ids and sizes — with no
+>   argument and no result;
+> - a completed turn with empty final text is exported.
+>
+> ADR-0095 is **Accepted** as of 2026-09-14 with its implementation staged for `W7`.
+
+> **Corrected 2026-09-18 (the `W7` pre-implementation review).** The list above omits one field the structural rows
+> carry: **whether each tool call errored**. It is part of what ADR-0095 §1 records, and the export copies the rows
+> as stored. The exact shape — the fields, the size unit, the outcome vocabulary and the engine id form — is defined
+> in [database-schema.md](../reference/shared-core/database-schema.md) and
+> [sse-event-schema.md](../reference/contracts/sse-event-schema.md) when `W7` lands, because the export makes it a
+> committed-file contract.
+
 ## Context
 
 The agent-first pivot ([ADR-0024](0024-agent-first-entry-point-agentsession.md)) makes a chat
@@ -59,3 +76,10 @@ workflow, and the whole flow stays local-first ([ADR-0008](0008-local-first-phas
 - The transcript-as-metadata must obey the secret rules — a `secret`-typed value must never be
   serialized into the exported file ([ADR-0029](0029-tool-policy-hardening.md) forbids secret
   interpolation into agent text in the first place).
+
+### W7 implementation landing — 2026-10-10
+
+The approved W7 implementation and scoped independent reviews are complete. Final whole-wave
+acceptance, per-item causal evidence, canonical landing checks and approved residuals are joined in
+the [W7 closing register](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w7-closing-register--2026-10-10).
+This dated note preserves the earlier decision and status history; W8 and the phase remain open.

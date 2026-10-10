@@ -95,6 +95,8 @@ import { FORCE_TEARDOWN_MS } from './tui-constants.js';
 
 /** The chat session the Home builds + drives on a submit — the imperative pieces `driveHome` wires + tears down. */
 export interface HomeChatSession {
+  /** Called once AFTER active publication; discarded builds must never consume disclosure evidence. */
+  readonly onActivated?: (isActive: () => boolean) => void | Promise<void>;
   /** The chat view store the chat region projects (already subscribed to the live stream by `driveHome`). */
   readonly store: ChatStoreController;
   /** Handle one line (a slash command or a message) — the shared `createChatLineHandler` semantics. */
@@ -297,6 +299,44 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   let tearingDown: HomeChatSession | undefined;
   let activeTeardown: Promise<void> | undefined; // the in-flight teardown of `tearingDown`, so a signal can await it
   let buildInFlight: Promise<HomeChatSession> | undefined; // a `loading`-state build, so a signal can reap it
+  const activatedSessions = new WeakSet<HomeChatSession>();
+  const activationPending = new WeakMap<HomeChatSession, Promise<void>>();
+  const activateSession = (session: HomeChatSession, ready: () => void): void => {
+    const isActive = (): boolean =>
+      !exiting &&
+      state.session === session &&
+      state.mode === 'chat' &&
+      tearingDown !== session &&
+      !session.shouldStop();
+    const finish = (): void => {
+      if (isActive()) ready();
+    };
+    const failed = (): void => {
+      if (isActive()) {
+        try {
+          session.store.notice('warning: session effect disclosure could not be completed.');
+        } catch {
+          // A failed notice sink must not create an unhandled build-resolution rejection.
+        }
+      }
+      finish();
+    };
+    // Publishing state synchronously notifies subscribers; one may exit or supersede this session.
+    if (!isActive()) return;
+    if (!activatedSessions.has(session)) {
+      activatedSessions.add(session);
+      try {
+        const pending = session.onActivated?.(isActive);
+        if (pending !== undefined) activationPending.set(session, Promise.resolve(pending));
+      } catch {
+        failed();
+        return;
+      }
+    }
+    const pending = activationPending.get(session);
+    if (pending === undefined) finish();
+    else void pending.then(finish, failed);
+  };
   // A monotonic token: a `/doctor` run captures it at start and lands its report only if it is still current —
   // any prompt edit / submit (which bumps it) invalidates a stale in-flight run so an old report can't reappear.
   let doctorRunId = 0;
@@ -455,10 +495,11 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           effortPicker: undefined,
           reasonDraft: undefined,
           shellBusy: false,
-          submitBusy: false, // the swap is done — un-gate the fresh chat
+          submitBusy: true, // keep input gated until disclosure rendering is acknowledged
           shellCommand: undefined,
           attachments: [], // pending `@`/`!` attachments must not leak into the fresh conversation
         });
+        activateSession(fresh, () => set({ submitBusy: false }));
       },
       () => {
         if (buildInFlight === build) buildInFlight = undefined;
@@ -532,10 +573,11 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           effortPicker: undefined,
           reasonDraft: undefined,
           shellBusy: false,
-          submitBusy: false, // the swap is done — un-gate the reseated chat
+          submitBusy: true, // keep input gated until disclosure rendering is acknowledged
           shellCommand: undefined,
           attachments: [], // pending `@`/`!` attachments must not leak into the reseated conversation
         });
+        activateSession(next, () => set({ submitBusy: false }));
       },
       () => {
         if (buildInFlight === build) buildInFlight = undefined;
@@ -557,6 +599,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     // inside processLine AFTER session:turn_completed flipped the view idle. Without this a message typed then
     // would reach sendMessage → SessionStateError → crash (the same hazard `shellBusy` fixes for `!`-shell).
     set({ submitBusy: true });
+    if (exiting || state.session !== active || state.mode !== 'chat') return;
     void active.processLine(line, display).then(
       () => {
         if (state.session === active) set({ submitBusy: false });
@@ -617,8 +660,8 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           void built.teardown().catch(() => undefined); // exited mid-build ⇒ reclaim the just-built session
           return;
         }
-        set({ session: built, mode: 'chat' });
-        sendChatLine(built, trimmed); // the first turn streams in the chat region
+        set({ session: built, mode: 'chat', submitBusy: true });
+        activateSession(built, () => sendChatLine(built, trimmed));
       },
       (err: unknown) => {
         if (buildInFlight === build) buildInFlight = undefined;

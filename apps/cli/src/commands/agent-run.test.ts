@@ -3,12 +3,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createEffectJournalStore } from '@relavium/db';
 
 import type { StreamChunk } from '@relavium/llm';
 import { startMcpClient as realStartMcpClient, type McpConnection } from '@relavium/mcp';
 
 import { buildChatSession } from '../chat/session-host.js';
+import { openSessionStore } from '../history/session-open.js';
 import { scriptedResolver, textTurn, unresolvedResolver } from '../chat/test-support.js';
 import type { ProviderResolver } from '../engine/providers.js';
 import { isCliError } from '../process/errors.js';
@@ -42,6 +44,166 @@ function globalOptions(cwd: string, json = false): GlobalOptions {
 }
 
 describe('agentRunCommand (2.Q)', () => {
+  it('keeps only a hidden durable identity and refuses reuse before provider egress', async () => {
+    const first = deps('private-prompt-sentinel', {
+      json: true,
+      providers: scriptedResolver([textTurn('done')]),
+    });
+    const buildSession: typeof buildChatSession = (options) =>
+      buildChatSession({ ...options, uuid: () => 'fixed-one-shot' });
+    expect(
+      await agentRunCommand(
+        { agent: join(cwd, 'coder.agent.yaml'), input: [], allowMcpStdio: [] },
+        { ...first.d, buildSession },
+      ),
+    ).toBe(0);
+    const opened = openSessionStore(home);
+    try {
+      expect(opened.store.listSessions()).toEqual([]);
+      expect(opened.store.loadFull('fixed-one-shot')).toBeUndefined();
+      expect(opened.store.loadMessages('fixed-one-shot')).toEqual([]);
+      expect(
+        opened.db.$client
+          .prepare(
+            'SELECT effect_turn_high_water, deleted_at, agent_snapshot, context_json FROM agent_sessions',
+          )
+          .get(),
+      ).toMatchObject({
+        effect_turn_high_water: 1,
+        agent_snapshot: null,
+        context_json: '{}',
+      });
+      expect(
+        JSON.stringify(opened.db.$client.prepare('SELECT * FROM agent_sessions').all()),
+      ).not.toContain('private-prompt-sentinel');
+      const journal = createEffectJournalStore(opened.db, {
+        uuid: () => 'existing-effect',
+        now: () => 0,
+      });
+      const identity = { scope: 'session:fixed-one-shot:1', slot: 0, toolId: 'run_command' };
+      journal.prepare(
+        identity,
+        { kind: 'session', sessionId: 'fixed-one-shot', turn: 1 },
+        { providerAttempt: 1, toolCallId: 'session-tool:1:0' },
+        3,
+        'digest',
+      );
+      journal.settle(identity, 'committed');
+    } finally {
+      opened.close();
+    }
+    const second = deps('again', {
+      json: true,
+      providers: scriptedResolver([textTurn('provider-must-not-run')]),
+    });
+    expect(
+      await agentRunCommand(
+        { agent: join(cwd, 'coder.agent.yaml'), input: [], allowMcpStdio: [] },
+        { ...second.d, buildSession },
+      ),
+    ).toBe(1);
+    expect(second.out()).not.toContain('provider-must-not-run');
+    expect(second.out()).toContain('session effect identity could not be reserved');
+    const after = openSessionStore(home);
+    try {
+      expect(after.db.$client.prepare('SELECT * FROM run_effects').all()).toHaveLength(1);
+    } finally {
+      after.close();
+    }
+  });
+
+  it.each(['success', 'failure', 'abort', 'teardown', 'setup-unwind'] as const)(
+    'sweeps only owned committed one-shot effects on %s, retaining unresolved evidence',
+    async (mode) => {
+      const { d, out } = deps('synthetic prompt', {
+        json: true,
+        providers: mode === 'failure' ? unresolvedResolver() : scriptedResolver([textTurn('done')]),
+        onBuilt: (built) => {
+          const attach = built.attachEffectTurnAllocator;
+          let reserveOwned: ((id: string) => number) | undefined;
+          vi.spyOn(built, 'attachEffectTurnAllocator').mockImplementation((allocator) => {
+            reserveOwned = (id) => {
+              const key = allocator(id); // The shipping callback proves ownership BEFORE these rows exist.
+              const opened = openSessionStore(home);
+              try {
+                let row = 0;
+                const journal = createEffectJournalStore(opened.db, {
+                  uuid: () => `owned-${String(++row)}`,
+                  now: () => 0,
+                });
+                const correlation = { kind: 'session' as const, sessionId: id, turn: key };
+                for (const [slot, state] of [
+                  [0, 'committed'],
+                  [1, 'ambiguous'],
+                  [2, 'prepared'],
+                ] as const) {
+                  const identity = {
+                    scope: `session:${encodeURIComponent(id)}:${String(key)}`,
+                    slot,
+                    toolId: 'run_command',
+                  };
+                  journal.prepare(
+                    identity,
+                    correlation,
+                    {
+                      providerAttempt: 1,
+                      toolCallId: `session-tool:${String(key)}:${String(slot)}`,
+                    },
+                    3,
+                    'digest',
+                  );
+                  if (state !== 'prepared')
+                    journal.settle(identity, state, 'synthetic private result');
+                }
+              } finally {
+                opened.close();
+              }
+              if (mode === 'abort') built.session.abort();
+              return key;
+            };
+            attach(reserveOwned);
+          });
+          if (mode === 'setup-unwind')
+            vi.spyOn(built, 'attachEffectJournal').mockImplementation(() => {
+              if (reserveOwned === undefined) throw new Error('missing allocator fixture');
+              reserveOwned(built.sessionId);
+              throw new Error('synthetic setup refusal');
+            });
+        },
+      });
+      const original = d.buildSession ?? buildChatSession;
+      const buildSession: typeof buildChatSession = async (options) => {
+        const built = await original(options);
+        return mode === 'teardown'
+          ? {
+              ...built,
+              closeMcp: () => Promise.reject(new Error('synthetic teardown refusal')),
+            }
+          : built;
+      };
+      const action = agentRunCommand(
+        { agent: agentPath(), input: [], allowMcpStdio: [] },
+        { ...d, buildSession },
+      );
+      if (mode === 'setup-unwind') await expect(action).rejects.toThrow('synthetic setup refusal');
+      else expect(await action).toBe(mode === 'failure' ? 1 : 0);
+      if (mode === 'abort') expect(out()).toContain('"stopReason":"aborted"');
+      const opened = openSessionStore(home);
+      try {
+        expect(
+          opened.db.$client
+            .prepare('SELECT state, result_json FROM run_effects ORDER BY slot')
+            .all(),
+        ).toEqual([
+          { state: 'ambiguous', result_json: null },
+          { state: 'prepared', result_json: null },
+        ]);
+      } finally {
+        opened.close();
+        vi.restoreAllMocks();
+      }
+    },
+  );
   let cwd: string;
   let home: string;
   const savedHome = new Map<string, string | undefined>();
@@ -100,13 +262,61 @@ describe('agentRunCommand (2.Q)', () => {
   const agentPath = (): string => join(cwd, 'coder.agent.yaml');
 
   it('runs one turn from a stdin prompt and prints the reply (exit 0)', async () => {
+    mkdirSync(join(cwd, '.relavium'), { recursive: true });
+    writeFileSync(join(cwd, '.relavium', 'project.toml'), '[defaults]\nmax_tokens_estimate = 17\n');
+    const estimates: (number | undefined)[] = [];
     const { d, out } = deps('summarize this', {
       providers: scriptedResolver([textTurn('the summary')]),
+    });
+    expect(
+      await agentRunCommand(
+        { agent: agentPath(), input: [], allowMcpStdio: [] },
+        {
+          ...d,
+          buildSession: (options) => {
+            estimates.push(options.maxTokensEstimate);
+            return buildChatSession(options);
+          },
+        },
+      ),
+    ).toBe(EXIT_CODES.success);
+    expect(out()).toContain('the summary');
+    expect(estimates).toEqual([17]);
+  });
+
+  it('does not run an after-turn summariser for a summary-policy one-shot above the automatic threshold', async () => {
+    writeFileSync(agentPath(), `${AGENT_YAML}\nmemory:\n  type: summary\n`);
+    const resolver = scriptedResolver([
+      [
+        { type: 'text_delta', text: 'one reply' },
+        { type: 'stop', stopReason: 'stop', usage: { inputTokens: 9001, outputTokens: 5 } },
+      ],
+    ]);
+    const provider = resolver.resolveProvider('anthropic');
+    if (provider === undefined) throw new Error('missing scripted provider');
+    let calls = 0;
+    const { d, out } = deps('one prompt', {
+      providers: {
+        ...resolver,
+        resolveProvider: (id) =>
+          id === 'anthropic'
+            ? {
+                ...provider,
+                contextLimit: () => 10_000,
+                stream: (request, options) => {
+                  calls += 1;
+                  return provider.stream(request, options);
+                },
+              }
+            : undefined,
+      },
+      onBuilt: (built) => expect(built.session.automaticCompactionAllowed).toBe(true),
     });
     expect(await agentRunCommand({ agent: agentPath(), input: [], allowMcpStdio: [] }, d)).toBe(
       EXIT_CODES.success,
     );
-    expect(out()).toContain('the summary');
+    expect(calls).toBe(1);
+    expect(out()).toContain('one reply');
   });
 
   it('DENIES a governed dispatch in the non-interactive one-shot — no user to approve (ADR-0057)', async () => {

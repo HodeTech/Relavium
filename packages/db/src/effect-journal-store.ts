@@ -15,10 +15,11 @@
 
 import { createHash } from 'node:crypto';
 
-import { and, asc, eq, gte, inArray, lt } from 'drizzle-orm';
+import { and, asc, eq, gte, lt, or, sql } from 'drizzle-orm';
 
 import {
   canonicalJson,
+  completedSessionTurns,
   EffectTransitionError,
   EFFECT_STATES,
   EFFECT_TIERS,
@@ -36,11 +37,41 @@ import {
   nodeIdFromRunScope,
   type EffectState,
   type EffectTier,
+  parseSessionToolCallId,
 } from '@relavium/shared';
 
 import type { Db } from './client.js';
 import { withBusyRetry } from './retry.js';
-import { runEffects, type NewRunEffectRow } from './schema.js';
+import { runEffects, sessionMessages, type NewRunEffectRow } from './schema.js';
+import { fromSessionMessageRow } from './session-store.js';
+import {
+  checkpointSessionEffectPrivacy,
+  requireSessionEffectTransactionOwnership,
+  type SessionEffectCheckpoint,
+} from './session-effect-privacy.js';
+import { preserveSessionEffectTurnKeyBeforeSweep } from './session-effect-turns.js';
+
+/** Pair the physical id with its immutable effect address: an id alone is vulnerable to delete/reinsert. */
+export interface CapturedSessionEffect {
+  readonly id: string;
+  readonly identity: EffectIdentity;
+}
+
+export interface SessionEffectDisclosure {
+  readonly toolId: string;
+  readonly state: EffectState;
+  readonly reason: 'unresolved' | 'turn_incomplete' | 'unattributable';
+}
+
+export interface SessionEffectDisclosureSnapshot {
+  readonly committed: readonly CapturedSessionEffect[];
+  readonly disclosures: readonly SessionEffectDisclosure[];
+}
+
+export interface SessionEffectSweepResult {
+  readonly deleted: number;
+  readonly checkpoint: SessionEffectCheckpoint;
+}
 
 /** The clock + id source the journal needs, injected exactly as the run-history store's are. */
 export interface EffectJournalStoreDeps {
@@ -51,8 +82,8 @@ export interface EffectJournalStoreDeps {
 /**
  * The synchronous store; `createEffectJournalPort` adapts its WRITE half to the engine's Promise-typed
  * dispatch seam, and `createEffectResumePort` adapts its READ half to the engine's resume gate (ADR-0080
- * §2b, effect-journal.md §4) — `recordsFor` feeds that gate and `unresolvedForSession` feeds `chat-resume`'s
- * disclosure. `flagForAttention` has no caller yet: it is the primitive the operator-resolution command will
+ * §2b, effect-journal.md §4) — `recordsFor` feeds that gate. Session disclosure instead reads the
+ * full-history `readSessionDisclosureSnapshot` (ADR-0098), including captured committed evidence. `flagForAttention` has no caller yet: it is the primitive the operator-resolution command will
  * use, which effect-journal.md §8 names as a follow-up.
  */
 export interface EffectJournalStore {
@@ -81,15 +112,15 @@ export interface EffectJournalStore {
    */
   sweepCommittedForRun: (runId: string) => number;
   /**
-   * Sweep the `committed` rows of a SESSION's past turns. `beforeTurn` is exclusive, so the live turn's
-   * rows are never touched.
-   *
-   * The session half of §9, and it was missing: `sweepCommittedForRun` matches only `run:` scopes, so every
-   * row written by `chat`, `chat-resume`, `agent run` and the bare-`relavium` Home was permanent. Combined
-   * with the durable digest that is an ever-growing offline equality oracle on unencrypted disk, for rows
-   * whose correlation — a past conversational turn — can never be resumed.
+   * Delete only still-committed rows captured by the successful disclosure read. No turn-count bound;
+   * newly committed or replaced rows survive. Checkpoint after the owned write transaction commits.
    */
-  sweepCommittedForSession: (sessionId: string, beforeTurn: number) => number;
+  sweepCommittedForSession: (
+    sessionId: string,
+    captured: readonly CapturedSessionEffect[],
+  ) => SessionEffectSweepResult;
+  /** One owned read transaction over effect metadata and ALL strictly decoded historical messages. */
+  readSessionDisclosureSnapshot: (sessionId: string) => SessionEffectDisclosureSnapshot;
   /**
    * Every unresolved effect across ALL turns of one session
    * ([effect-journal.md](../../../docs/reference/shared-core/effect-journal.md) §8).
@@ -122,6 +153,19 @@ function scopeRange(prefix: string): { readonly from: string; readonly toExclusi
   return { from: prefix, toExclusive: `${prefix.slice(0, -1)};` };
 }
 
+/** Session audit reads never select legacy result bytes; runs retain their replay evidence. */
+function auditFields(session: boolean) {
+  return {
+    scope: runEffects.scope,
+    slot: runEffects.slot,
+    toolId: runEffects.toolId,
+    state: runEffects.state,
+    tier: runEffects.tier,
+    targetIdempotencyKey: runEffects.targetIdempotencyKey,
+    resultJson: session ? sql<null>`NULL` : runEffects.resultJson,
+  };
+}
+
 export function createEffectJournalStore(db: Db, deps: EffectJournalStoreDeps): EffectJournalStore {
   const whereIdentity = (identity: EffectIdentity) =>
     and(
@@ -131,10 +175,10 @@ export function createEffectJournalStore(db: Db, deps: EffectJournalStoreDeps): 
     );
 
   /** Every BLOCKING record under one scope prefix — the shared body of both unresolved-* reads. */
-  const unresolvedInScope = (prefix: string): readonly EffectRecord[] => {
+  const unresolvedInScope = (prefix: string, session = false): readonly EffectRecord[] => {
     const range = scopeRange(prefix);
     return db
-      .select()
+      .select(auditFields(session))
       .from(runEffects)
       .where(and(gte(runEffects.scope, range.from), lt(runEffects.scope, range.toExclusive)))
       .orderBy(asc(runEffects.createdAt))
@@ -143,12 +187,12 @@ export function createEffectJournalStore(db: Db, deps: EffectJournalStoreDeps): 
         identity: { scope: row.scope, slot: row.slot, toolId: row.toolId },
         state: coerceEffectState(row.state),
         tier: coerceEffectTier(row.tier),
-        ...retainedResult(row.resultJson),
+        ...retainedResult(row.scope, row.resultJson),
         ...(row.targetIdempotencyKey === null
           ? {}
           : { targetIdempotencyKey: row.targetIdempotencyKey }),
       }))
-      .filter((record) => blocksResume(record));
+      .filter((record) => (session ? record.state !== 'committed' : blocksResume(record)));
   };
 
   return {
@@ -161,12 +205,13 @@ export function createEffectJournalStore(db: Db, deps: EffectJournalStoreDeps): 
             // read is what turns a driver constraint error into the typed refusal callers narrow on.
             const held = tx.select().from(runEffects).where(whereIdentity(identity)).get();
             if (held !== undefined) {
-              // §4's replay row, decided HERE because only the host can compute the digest the comparison
+              // §4's RUN replay row, decided HERE because only the host can compute the digest the comparison
               // needs. Same identity + same args digest + a retained result means this exact effect already
               // committed, so the stored result stands in for the call rather than the call happening twice.
               // Everything else — a different digest at the same slot, an unresolved row, a committed row we
               // cannot re-deliver — is the refusal, and a human has to look at it.
               if (
+                !identity.scope.startsWith('session:') &&
                 held.state === 'committed' &&
                 held.argsDigest === argsDigest &&
                 held.resultJson !== null
@@ -214,9 +259,12 @@ export function createEffectJournalStore(db: Db, deps: EffectJournalStoreDeps): 
               .update(runEffects)
               .set({
                 state,
-                // Retained ONLY when the caller had one to give. Its absence is load-bearing: the resume gate
-                // refuses a `committed` row it cannot re-deliver, rather than waving the node through.
-                ...(result === undefined ? {} : { resultJson: JSON.stringify(result) }),
+                // A session result is never inspected or serialized. RUN results retain §4's replay contract.
+                ...(identity.scope.startsWith('session:')
+                  ? { resultJson: null }
+                  : result === undefined
+                    ? {}
+                    : { resultJson: JSON.stringify(result) }),
                 updatedAt: deps.now(),
               })
               // …and ONLY out of `prepared`. Without the state predicate the machine admitted
@@ -276,7 +324,7 @@ export function createEffectJournalStore(db: Db, deps: EffectJournalStoreDeps): 
     recordsFor: (correlation) => {
       const scope = effectScope(correlation);
       return db
-        .select()
+        .select(auditFields(correlation.kind === 'session'))
         .from(runEffects)
         .where(eq(runEffects.scope, scope))
         .orderBy(asc(runEffects.slot))
@@ -286,7 +334,7 @@ export function createEffectJournalStore(db: Db, deps: EffectJournalStoreDeps): 
             identity: { scope: row.scope, slot: row.slot, toolId: row.toolId },
             state: coerceEffectState(row.state),
             tier: coerceEffectTier(row.tier),
-            ...retainedResult(row.resultJson),
+            ...retainedResult(row.scope, row.resultJson),
             ...(row.targetIdempotencyKey === null
               ? {}
               : { targetIdempotencyKey: row.targetIdempotencyKey }),
@@ -297,40 +345,123 @@ export function createEffectJournalStore(db: Db, deps: EffectJournalStoreDeps): 
     // Encoded to match `effectScope` byte for byte — the query and the writer must agree, and the trailing
     // `:` lives inside the prefix so `s1` can never reach `s10`'s rows.
     unresolvedForSession: (sessionId) =>
-      unresolvedInScope(`session:${encodeURIComponent(sessionId)}:`),
+      unresolvedInScope(`session:${encodeURIComponent(sessionId)}:`, true),
 
     unresolvedForRun: (runId) => unresolvedInScope(`run:${encodeURIComponent(runId)}:`),
 
-    sweepCommittedForSession: (sessionId, beforeTurn) => {
-      // Row-scoped rather than range-scoped, because the turn is the LAST scope component and the bound is
-      // numeric: a byte range over `session:<id>:` cannot express "turn < N" (`:9` sorts after `:10`).
-      // Reading the ids first and deleting by id keeps the comparison in TypeScript, where it is correct.
+    readSessionDisclosureSnapshot: (sessionId) => {
+      requireSessionEffectTransactionOwnership(db);
       const prefix = `session:${encodeURIComponent(sessionId)}:`;
       const range = scopeRange(prefix);
-      const doomed = db
-        .select({ id: runEffects.id, scope: runEffects.scope })
-        .from(runEffects)
-        .where(
-          and(
-            gte(runEffects.scope, range.from),
-            lt(runEffects.scope, range.toExclusive),
-            eq(runEffects.state, 'committed'),
+      return db.transaction((tx) => {
+        // Do not even SELECT result_json. A legacy payload is outside this reader's projection.
+        const rows = tx
+          .select({
+            id: runEffects.id,
+            scope: runEffects.scope,
+            slot: runEffects.slot,
+            toolId: runEffects.toolId,
+            state: runEffects.state,
+            attemptJson: runEffects.attemptJson,
+          })
+          .from(runEffects)
+          .where(and(gte(runEffects.scope, range.from), lt(runEffects.scope, range.toExclusive)))
+          .orderBy(asc(runEffects.createdAt), asc(runEffects.id))
+          .all();
+        const calls = new Map<string, string>();
+        const duplicates = new Set<string>();
+        const history = tx
+          .select()
+          .from(sessionMessages)
+          .where(eq(sessionMessages.sessionId, sessionId))
+          .orderBy(asc(sessionMessages.sequenceNumber))
+          .all()
+          .map(fromSessionMessageRow);
+        for (const message of history) {
+          for (const part of message.content) {
+            if (part.type !== 'tool_call') continue;
+            if (calls.has(part.id)) duplicates.add(part.id);
+            calls.set(part.id, part.name);
+          }
+        }
+        // Schema-valid rows can still be unfinished, orphaned or abandoned. Only the shared
+        // structural projector proves completion; working compaction/trim boundaries never filter it.
+        const completedCalls = new Set(
+          completedSessionTurns(history, false).flatMap((turn) =>
+            turn.messages.flatMap((message) =>
+              message.content.flatMap((part) => (part.type === 'tool_call' ? [part.id] : [])),
+            ),
           ),
-        )
-        .all()
-        .filter((row) => {
-          const turn = Number.parseInt(row.scope.slice(prefix.length), 10);
-          return Number.isInteger(turn) && turn < beforeTurn;
-        })
-        .map((row) => row.id);
-      // ONE statement, not N standalone write transactions on a `chat`/`chat-resume` startup path. Chunked
-      // because SQLite caps bound parameters per statement (999 on the conservative default build).
-      for (let i = 0; i < doomed.length; i += 500) {
-        db.delete(runEffects)
-          .where(inArray(runEffects.id, doomed.slice(i, i + 500)))
-          .run();
-      }
-      return doomed.length;
+        );
+        const committed: CapturedSessionEffect[] = [];
+        const disclosures: SessionEffectDisclosure[] = [];
+        for (const row of rows) {
+          const state = coerceEffectState(row.state);
+          if (state !== 'committed') {
+            disclosures.push({ toolId: row.toolId, state, reason: 'unresolved' });
+            continue;
+          }
+          committed.push({
+            id: row.id,
+            identity: { scope: row.scope, slot: row.slot, toolId: row.toolId },
+          });
+          // A committed user command is not a model turn, including legacy negative-slot commands.
+          if (row.slot < 0) continue;
+          const id = sessionAttemptToolCallId(row.attemptJson);
+          const parsed = id === undefined ? undefined : parseSessionToolCallId(id);
+          if (
+            parsed === undefined ||
+            row.scope !== `${prefix}${String(parsed.turnKey)}` ||
+            row.slot !== parsed.slot ||
+            (id !== undefined && duplicates.has(id))
+          ) {
+            disclosures.push({ toolId: row.toolId, state, reason: 'unattributable' });
+          } else if (id !== undefined && calls.has(id) && calls.get(id) !== row.toolId) {
+            disclosures.push({ toolId: row.toolId, state, reason: 'unattributable' });
+          } else if (id !== undefined && calls.has(id) && !completedCalls.has(id)) {
+            disclosures.push({ toolId: row.toolId, state, reason: 'unattributable' });
+          } else if (id === undefined || !calls.has(id)) {
+            disclosures.push({ toolId: row.toolId, state, reason: 'turn_incomplete' });
+          }
+        }
+        return { committed, disclosures };
+      });
+    },
+
+    sweepCommittedForSession: (sessionId, captured) => {
+      requireSessionEffectTransactionOwnership(db);
+      const range = scopeRange(`session:${encodeURIComponent(sessionId)}:`);
+      const deleted = withBusyRetry(() =>
+        db.transaction(
+          (tx) => {
+            // Opening may isolate corrupt legacy history without a trustworthy high-water mark.
+            // Preserve the evidence or its durable floor before consuming any captured row.
+            if (captured.length > 0) preserveSessionEffectTurnKeyBeforeSweep(tx, sessionId);
+            let changes = 0;
+            // Four bindings per captured address plus the range/state predicates, below 999 per statement.
+            // All chunks share ONE transaction: failure cannot consume only part of the disclosed snapshot.
+            for (let i = 0; i < captured.length; i += 100) {
+              const addresses = captured
+                .slice(i, i + 100)
+                .map((row) => and(eq(runEffects.id, row.id), whereIdentity(row.identity)));
+              changes += tx
+                .delete(runEffects)
+                .where(
+                  and(
+                    gte(runEffects.scope, range.from),
+                    lt(runEffects.scope, range.toExclusive),
+                    eq(runEffects.state, 'committed'),
+                    or(...addresses),
+                  ),
+                )
+                .run().changes;
+            }
+            return changes;
+          },
+          { behavior: 'immediate' },
+        ),
+      );
+      return { deleted, checkpoint: checkpointSessionEffectPrivacy(db) };
     },
 
     sweepCommittedForRun: (runId) => {
@@ -371,11 +502,8 @@ export function createEffectJournalPort(
   store: EffectJournalStore,
   correlation: EffectCorrelation,
   /**
-   * The audit occurrence. **A known gap, recorded rather than hidden**: the provider failover attempt and
-   * the provider's `toolCallId` are not threaded to the dispatch today, so what is stored is what is
-   * reachable at wiring time. Nothing load-bearing depends on it — the dedup key is the identity and the
-   * resume gate reads the scope; this field is the audit trail, and it is currently coarser than
-   * `EffectAttemptId` describes.
+   * Run wiring supplies node/fence audit fields. Session dispatch forwards the actual
+   * provider attempt and engine-owned tool-call id per call, replacing these defaults.
    */
   attempt: EffectAttemptId,
 ): EffectDispatchPort {
@@ -385,13 +513,13 @@ export function createEffectJournalPort(
     toolId,
   });
   return {
-    prepare: (slot, toolId, tier, redactedArgs, targetIdempotencyKey) => {
+    prepare: (slot, toolId, tier, redactedArgs, targetIdempotencyKey, callAttempt) => {
       try {
         return Promise.resolve(
           store.prepare(
             identityFor(slot, toolId),
             correlation,
-            attempt,
+            callAttempt === undefined ? attempt : { ...attempt, ...callAttempt },
             tier,
             digestOf(redactedArgs),
             targetIdempotencyKey,
@@ -461,13 +589,29 @@ export function createEffectResumePort(store: EffectJournalStore): EffectResumeP
  * does. Throwing here instead would take out the whole gate read, and the gate's own catch would report a
  * JSON syntax error as the reason a run cannot continue.
  */
-function retainedResult(resultJson: string | null): { result?: unknown } {
-  if (resultJson === null) return {};
+function retainedResult(scope: string, resultJson: string | null): { result?: unknown } {
+  if (scope.startsWith('session:') || resultJson === null) return {};
   try {
     return { result: JSON.parse(resultJson) as unknown };
   } catch {
     return {};
   }
+}
+
+/** Attempt metadata is audit input, never a user-facing JSON/parser diagnostic. */
+function sessionAttemptToolCallId(json: string): string | undefined {
+  let attempt: unknown;
+  try {
+    attempt = JSON.parse(json);
+  } catch {
+    return undefined;
+  }
+  return attempt !== null &&
+    typeof attempt === 'object' &&
+    'toolCallId' in attempt &&
+    typeof attempt.toolCallId === 'string'
+    ? attempt.toolCallId
+    : undefined;
 }
 
 /**

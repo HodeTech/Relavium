@@ -1,6 +1,6 @@
 # Database Schema (Local SQLite)
 
-> Last updated: 2026-07-14
+> Last updated: 2026-10-02
 
 - **Status**: Reference
 - **Surface**: Shared — Desktop (Tauri v2, `tauri-plugin-sql`/SQLCipher), CLI (`better-sqlite3`, [ADR-0021](../../decisions/0021-node-sqlite-driver-better-sqlite3.md)/[ADR-0050](../../decisions/0050-cli-history-db-at-rest-posture.md)), and VS Code (a wasm SQLite build). One schema, three drivers — see [Concurrency & transaction behavior](#concurrency--transaction-behavior) and [Encryption at rest](#encryption-at-rest) for the per-surface divergences.
@@ -34,6 +34,12 @@ Two SQLite databases exist:
 | Project history | `{projectRoot}/.relavium/runs.db` | None | Run **metadata only** (no event payloads) so teammates see historical run summaries after a `git pull` | Committed |
 
 The database is opened with `PRAGMA journal_mode = WAL` (readers never block the writer and vice-versa — but SQLite still allows **only one writer at a time**, so engine authors must funnel `run_events` and other hot-path writes through a single serialized writer, never concurrent writers) and `PRAGMA foreign_keys = ON` per connection (SQLite does **not** enforce foreign keys by default). Run events in `history.db` are pruned after 90 days by a background job that runs on app launch.
+
+The Node client also uses `secure_delete = ON`. After migration and session-effect high-water initialization,
+it clears all legacy session effect results in an owned transaction, then checkpoints WAL with `TRUNCATE`;
+every session effect sweep repeats that after-commit checkpoint, including an empty sweep. Logical suppression
+is immediate; physical erasure requires a successful checkpoint. A busy reader and pages freed before the
+upgrade remain accepted residuals. See [effect-journal.md §11](effect-journal.md#11-secrets-what-a-row-may-hold).
 
 > Workflows and agents are **not** the database's source of truth. The git-committable YAML files (`.relavium.yaml` / `.agent.yaml`) are authoritative; see [../contracts/workflow-yaml-spec.md](../contracts/workflow-yaml-spec.md) and [../contracts/agent-yaml-spec.md](../contracts/agent-yaml-spec.md). The catalog tables below cache and snapshot them for fast querying, run reproducibility, and offline browsing.
 
@@ -136,6 +142,7 @@ erDiagram
     }
     agent_sessions {
         uuid id PK
+        int effect_turn_high_water
         uuid agent_id FK
         uuid model_id FK
         text status
@@ -486,6 +493,17 @@ CREATE INDEX idx_messages_run  ON messages (run_id, created_at ASC);
 
 The append-only event log for a run — the persistent record of the [SSE/RunEvent stream](../contracts/sse-event-schema.md). This is what the run-detail log drawer replays and what powers reconnect/resync. `seq` is monotonic per run and is used for gap detection.
 
+The SQLite reader validates every stored row before applying tolerant unknown-event parsing or
+excluding genuine streaming events from a state/discovery fold. The raw JSON `type` must agree with
+`event_type`; a known event must also parse and agree with its run-id and sequence projections. A
+mismatch is the existing `CorruptRunEventError` on display, state reads, interrupted-run discovery
+and strict replay; a damaged SQL streaming discriminator cannot hide a known suspension and permit
+reconciliation to append a terminal. Genuine streaming events remain excluded from the returned
+state fold, but validating persisted history includes their JSON/schema cost. A matching unknown
+type retains read-only display/discovery tolerance, while strict replay refuses the unreadable log.
+Discovery remains aggregate fail-closed, with corrupt evidence retained and no partially trusted
+result; see the [event contract](../contracts/sse-event-schema.md#durable-budget-authorization).
+
 | Column | Type | Constraints |
 |--------|------|-------------|
 | `id` | TEXT | PRIMARY KEY (UUID) |
@@ -574,7 +592,7 @@ OCCURRENCE, written by a `prepare` **before** an effectful tool dispatch leaves 
 | `state` | TEXT | NOT NULL — `prepared` \| `dispatched` \| `committed` \| `ambiguous` \| `needs_attention` |
 | `args_digest` | TEXT | NOT NULL — SHA-256 over canonical JSON of the effective args with every secret-tainted key **removed before hashing** |
 | `target_idempotency_key` | TEXT | NULL — tier 1 only; what a safe retry reuses verbatim |
-| `result_json` | TEXT | NULL — the BOUNDED tool result, retained only when re-delivery is possible |
+| `result_json` | TEXT | Always NULL for `session:` scopes, including legacy rows after open-time clearing; RUN scopes retain the bounded result when re-delivery is possible |
 | `attempt_json` | TEXT | NOT NULL — the audit occurrence (node attempt, provider attempt, tool-call id, owning fence) |
 | `created_at` | INTEGER | NOT NULL |
 | `updated_at` | INTEGER | NOT NULL |
@@ -590,8 +608,10 @@ CREATE INDEX idx_run_effects_scope ON run_effects (scope);  -- the resume gate r
 a `run_id` column for the same reason it drops the attempt: a SESSION effect has no run at all, and the
 node-retry attempt resets to 1 on both a crash-resume and a budget approval, so a key containing it would miss
 the row the gate looks for. Retention is stated in [effect-journal.md](effect-journal.md) §9 and is **partly implemented, by design**:
-the `committed` sweeps SHIP — a run's rows go when it reaches a terminal, and a session's when a turn can no
-longer be resumed — while **unresolved rows (`prepared` / `dispatched` / `ambiguous` / `needs_attention`) are
+the `committed` sweeps SHIP — a run's rows go when it reaches a terminal; a resumed session's captured rows go
+only after a successful all-history disclosure read and active notice delivery, while a never-resumed one-shot
+sweeps its owned rows at teardown. There is no completed-turn-count bound. **Unresolved rows (`prepared` /
+`dispatched` / `ambiguous` / `needs_attention`) are
 never swept by age**. That asymmetry is the contract, not a gap: an unresolved row is the record an operator
 needs, and it outlives its run deliberately, which is the same reason the table carries no foreign key to
 `runs`. (This paragraph previously said no sweep touches the table at all, which contradicted both the
@@ -630,6 +650,7 @@ session variables); `agent_snapshot` freezes the agent config the session ran ag
 | `total_output_tokens` | INTEGER | NOT NULL DEFAULT 0 |
 | `total_cost_microcents` | INTEGER | NOT NULL DEFAULT 0 |
 | `total_conservative_microcents` | INTEGER | NOT NULL DEFAULT 0 — the session's **conservative** total ([ADR-0074](../../decisions/0074-durable-conservative-budget-commitments.md) §1/§4): money a provider MAY already have billed for an attempt that returned no trustworthy usage. An **ESTIMATE**, deliberately apart from `total_cost_microcents` — it consumes cap capacity across a resume without ever inflating a reported cost. Single-writer (`recordSessionConservativeCommitment`), like its realized sibling |
+| `effect_turn_high_water` | INTEGER | NOT NULL DEFAULT 0 (migration 0017) — durable effect identity, written only by the session effect-key allocation operations; never SET by session updates/turn flushes or exposed as the reconstructed `max_turns` count |
 | `exported_workflow_path` | TEXT | NULL — set when the session is exported to a `.relavium.yaml` |
 | `deleted_at` | INTEGER | NULL |
 | `created_at` | INTEGER | NOT NULL |
@@ -735,22 +756,73 @@ CREATE INDEX        idx_session_costs_session       ON session_costs (session_id
 >
 > **Secret-free by construction** — no free-text or JSON column.
 
-> **Mapping the durable `SessionMessage` to a row (1.X).** `@relavium/shared`'s `SessionMessage`
-> (agent-session-spec.md §"Session messages") carries the transcript body as a single
-> `content: DurableContentPart[]` array. That array is the **canonical** body and is stored as JSON in
-> **`content_parts`** — the source of truth the `@relavium/db` mapper round-trips. The remaining scalar
-> columns (`content`, `tool_calls`, `tool_call_id`, `name`, `finish_reason`, `model_id`) are **optional denormalized
-> metadata** (a plain-text projection for display/search, plus the "which model wrote this reply" label) the
-> persistence layer MAY populate; they are NULL when the durable parts array is the sole source of a row. They keep
-> `session_messages` in the run [`messages`](#messages) shape family without forcing a session to decompose its parts.
-> The per-message **cost/token counters are gone** — `input_tokens`, `output_tokens` and `cost_microcents` were
-> dropped in migration 0009 (see the note above); durable money attribution lives in [`session_costs`](#session_costs),
-> which is the only table that can express a turn whose tool loop billed two models. A provider continuation `signature` — on a `reasoning` part
-> or, since [ADR-0090](../../decisions/0090-a-continuation-token-rides-the-part-it-belongs-to.md), on a
-> `tool_call` part — and inline media bytes are **structurally impossible** in `content_parts`:
-> `DurableContentPart` forks a signature-less arm for BOTH, so the persisted type has no field for either
-> and only handle-only media ([ADR-0030](../../decisions/0030-llm-seam-shape-amendment-reasoning-response-format-provider-executed.md)/[ADR-0031](../../decisions/0031-llm-seam-shape-amendment-multimodal-io.md)),
-> enforced at the mapper's parse boundary on both write and read.
+#### Session content parts
+
+`SessionMessage.content: SessionContentPart[]` is the canonical body in `content_parts`.
+This strict session-only union retains text, signature-less reasoning and handle-only user media,
+and replaces raw tool values with the following structural parts:
+
+| Part | Required fields | Meaning |
+|---|---|---|
+| `tool_call` (assistant row) | `type`, `id`, `name`, `argsBytes` | Registry-resolved tool id, or fixed `unknown_tool`; UTF-8 bytes of the JSON arguments issued by the model. No arguments, signatures, provider ids or digests |
+| `tool_result` (tool row) | `type`, `toolCallId`, `resultBytes`, `outcome` | Matching engine id; UTF-8 bytes of the bounded model-facing JSON result (0 when the result is absent), rather than the full host result or event summary; `ok` / `error` / `denied` / `cancelled` |
+
+An optional result `media` array contains strict handle-only media metadata (`type`, `mimeType`,
+`source`, optional `byteLength` / `durationMs`). It has no filename or transcript field. Sizes are
+non-negative safe integers. Names have the admitted tool charset `[a-zA-Z0-9_-]`, at most 128
+characters; the registry outcome, not syntax alone, establishes resolution. The completed-turn
+producer derives these fields from actual registry outcomes. A recovered host error without its
+own tool id retains the exact call name only after verifying registry membership; unresolved names
+still use the fixed marker. A recovered policy denial remains
+`denied`, while another recovered dispatch failure is `error`. An unrecovered failure has no
+completed-turn transcript. Byte measurement preserves native JSON encoding, including string/key
+escaping, and counts deeply nested plain JSON iteratively when native serialization exceeds the
+call stack; structural metadata does not prevent correction of valid model JSON. Generic durable
+run/event/IPC tool parts retain their existing shape.
+
+The engine id is `session-tool:<effect-turn-key>:<slot>`, with canonical decimal safe integers,
+a positive turn key and a non-negative whole-turn slot. No provider- or model-chosen string is part
+of it. The key is separate from the reconstructed hard-turn-cap counter. The host allocates it in
+one `BEGIN IMMEDIATE` transaction, advancing `effect_turn_high_water` before dispatch; errors,
+aborts, crashes and missing transcript writes do not return a key. Exhaustion or an invalid persisted
+mark fails closed. Reservation must own its outer commit: an already-open transaction is refused
+with `transaction_active`, because a savepoint release cannot prevent an outer rollback from erasing
+an issued key. Open-time initialization, under the migration lock, seeds legacy rows from all
+historical terminal assistant rows (empty text counts; tool preambles do not), ignoring compaction,
+and from the greatest retained session effect scope key before any cleanup. Subsequent journal
+sweeps cannot lower it. Open-time discovery batches uninitialized sessions and inspects only those
+with historical assistant or matching effect evidence; empty idle sessions remain zero without
+per-session history reads or writes. An invalid legacy scope or historical assistant payload leaves
+only its affected session uninitialized, with the original evidence intact. Opening the database and
+initializing healthy sessions still succeeds; reserving an effect key for the affected session continues
+to refuse with `history_invalid`. No inferred floor, deleted evidence or reused identity repairs that
+corruption. Before deleting captured committed rows for an existing session, the sweep repeats the
+same initialization **inside its deletion transaction**. Invalid history refuses the sweep and preserves
+all rows; a trustworthy floor commits atomically with all deletion chunks. Rollback cannot consume
+evidence without retaining its floor. Row-less orphan privacy erasure remains available because those
+scopes cannot be resumed or allocated. Other initialization faults still fail the operation. Allocation
+repeats initialization for a new session whose mark is still zero.
+The required engine host allocator is late-bound by each interactive persister. The engine caches
+one key for idle `!` commands and the next model turn, consuming it on every model-turn exit.
+Commands use disjoint negative slots and engine ids `session-command:<key>:<ordinal>`; model
+calls use non-negative slots across all tool rounds. Per-call ids reach `run_effects.attempt_json`
+and the structural transcript unchanged; provider ids remain within the live protocol.
+
+The fresh-only `reserveOneShotEffectTurnKey` owns an outer `BEGIN IMMEDIATE` and commits
+an already-tombstoned, minimal identity row with high-water 1 for `agent run`. It stores no
+snapshot, context content, prompt or transcript. Existing live/tombstoned ids and row-less effect
+scope collisions are refused. The tombstone stays absent from listing, resume and export and is
+retained after teardown; normal allocation still refuses missing/deleted sessions.
+
+All supplied scalar metadata is validated on write and read: `content` equals the canonical text
+parts joined with two newlines; `tool_calls` equals the canonical structural call array; `name`
+matches a single call; `tool_call_id` matches a single result; `finish_reason` belongs to the fixed
+stop-reason vocabulary on an assistant row. Absent projections are NULL. Unknown metadata/part
+fields, raw tool values and malformed JSON are refused, never stripped. Boundary errors carry fixed
+codes rather than raw JSON/parser/unknown-property diagnostics. Consistent legacy scalar metadata
+remains readable without rewriting it; a mismatch refuses the affected session rather than relaxing
+the structural boundary. Money attribution remains solely
+in [`session_costs`](#session_costs).
 
 > A `secret`-typed value is never persisted into `session_messages` — per
 > [ADR-0029](../../decisions/0029-tool-policy-hardening.md) secrets are rejected from prompt/tool text
@@ -853,13 +925,26 @@ This realizes the concurrent-process write requirement recorded in the [ADR-0064
 At-rest encryption of `history.db` is **per-surface**:
 
 - **Desktop:** opened with SQLCipher. The passphrase is derived from a stable machine secret (combined with the OS keychain entry) so the database opens on restart without prompting the user; see [keychain-and-secrets.md](../desktop/keychain-and-secrets.md).
-- **CLI (Phase 2):** opened with `better-sqlite3` **unencrypted**, guarded by owner-only OS file permissions — `~/.relavium/` at `0700` and `history.db` (with its `-wal`/`-shm` sidecars) at `0600`, set with an explicit `chmod` (umask-independent, applied even to a pre-existing directory). On Windows, POSIX mode bits do not apply (`chmod` is a no-op); protection falls to the per-user `%USERPROFILE%` NTFS ACL. The file holds **no credentials** — keys stay in the OS keychain ([ADR-0006](../../decisions/0006-os-keychain-for-api-keys.md)) and the engine masks secrets at the bus before persistence ([ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)) — so the unencrypted-at-rest content is run data (prompts, outputs, costs), not secrets. Rationale and the cross-surface Phase-3 follow-on: [ADR-0050](../../decisions/0050-cli-history-db-at-rest-posture.md).
+- **CLI (Phase 2):** opened with `better-sqlite3` **unencrypted**, guarded by owner-only OS file permissions — `~/.relavium/` at `0700` and `history.db` (with its `-wal`/`-shm` sidecars) at `0600`, set with an explicit `chmod` (umask-independent, applied even to a pre-existing directory). On Windows, POSIX mode bits do not apply (`chmod` is a no-op); protection falls to the per-user `%USERPROFILE%` NTFS ACL. Relavium-managed provider keys stay in the OS keychain ([ADR-0006](../../decisions/0006-os-keychain-for-api-keys.md)) and a `secret`-typed input persists only as its `{ secret: true, ref }` placeholder ([ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)). This custody guarantee does not imply that the file contains no credentials or sensitive content. The retained-content limits follow [ADR-0050](../../decisions/0050-cli-history-db-at-rest-posture.md)'s note of 2026-09-14: tool-I/O redaction is shape-based and applied upstream to event copies, not by the bus; and user-injected content plus a committed tier-3 effect's bounded result are genuinely at rest (a run's until that run's terminal sweep). On `development`, accepted W7 Step 4 implements [ADR-0098](../../decisions/0098-a-session-effect-row-holds-no-result-and-never-replays.md): session effect results are SQL NULL, legacy result values are cleared, and sessions never replay them. Rationale and the cross-surface Phase-3 follow-on: [ADR-0050](../../decisions/0050-cli-history-db-at-rest-posture.md).
 
 The per-project `runs.db` is **not** encrypted on any surface because it is intentionally git-committed and contains only non-sensitive run metadata (no prompts, completions, or tokens).
 
 ### Secrets at the write boundary
 
-The history writer is **pass-through** for secrets — it never re-masks (the engine already masked secret-typed inputs and tool I/O at the `RunEventBus`, [ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)) and adds **no** runtime secret-detection (infeasible on opaque JSON). The no-raw-secret invariant on the unsafe columns — `run_events.payload_json`, the `step_executions` `input_json` / `output_json` / `error_json`, `run_costs`, and `runs.workflow_definition_snapshot` — is therefore the **upstream masking guarantee**, regression-guarded by the package's **secrets fixture** (`run-history-store.test.ts`): a raw API key, `Authorization` header, or `secret`-typed value must never appear in these columns; a `secret`-typed value persists only as its `{ secret: true, ref }` placeholder. (A future desktop/cloud history writer inherits the same contract — masking is upstream, verification is by fixture; it must not be expected to implement a runtime secret scan.)
+The history writer is **pass-through**: it does not re-mask opaque JSON or implement a runtime
+content-secret detector. Protected input slots are already `{ secret: true, ref }` placeholders,
+and tool event copies receive the upstream shape-based scrub. The package's secrets fixture
+(`run-history-store.test.ts`) checks preservation of already-masked placeholders supplied to
+the writer. It does not exercise upstream input masking or tool-event sanitization, or prove
+that arbitrary user, model, tool or completed-output text contains no sensitive data.
+
+The retained `run_events.payload_json`, step input/output/error JSON and workflow snapshots must
+therefore be read with [the event security boundary](../contracts/sse-event-schema.md#security-credential-boundaries-and-sensitive-content)
+and [ADR-0050's at-rest correction](../../decisions/0050-cli-history-db-at-rest-posture.md).
+Raw provider credentials are not a history field, and declared secret inputs are recorded only
+as masked slots; arbitrary retained content can nevertheless contain credentials or other
+sensitive material. A future desktop/cloud writer inherits these upstream field protections,
+not a promise that a pass-through writer performs universal content redaction.
 
 ## Phase 2 (PostgreSQL) divergences
 

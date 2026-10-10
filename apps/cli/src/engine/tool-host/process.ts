@@ -149,6 +149,9 @@ interface RunChildOptions {
 function runChild(opts: RunChildOptions): Promise<ProcessResult> {
   const start = Date.now();
   return new Promise<ProcessResult>((resolvePromise, reject) => {
+    // Check cancellation after executable/cwd resolution and argument copying, at native entry.
+    // An already-aborted signal never fires a newly attached listener: refuse before spawning.
+    throwIfAborted(opts.signal);
     let child: ChildProcess;
     try {
       child = spawn(opts.executable, opts.args, {
@@ -171,6 +174,7 @@ function runChild(opts: RunChildOptions): Promise<ProcessResult> {
     let settled = false;
     let timedOut = false;
     let aborted = false;
+    let failed = false;
 
     const timer = setTimeout(() => {
       timedOut = true;
@@ -196,10 +200,13 @@ function runChild(opts: RunChildOptions): Promise<ProcessResult> {
 
     child.stdout?.on('data', (chunk: Buffer) => stdout.push(chunk));
     child.stderr?.on('data', (chunk: Buffer) => stderr.push(chunk));
-    // A spawn-time failure (e.g. ENOENT if the executable vanished after resolution) arrives as 'error'.
-    child.on('error', () =>
-      finish(() => reject(new ProcessCapabilityError('the command failed to run'))),
-    );
+    // 'error' diagnoses failure, not resource closure. Keep timers/listeners until the native
+    // 'close' ACK and reap a running child; a repeated kill fault must not recursively kill again.
+    child.on('error', () => {
+      if (failed) return;
+      failed = true;
+      killTree(child);
+    });
     child.on('close', (code) => {
       finish(() => {
         // `code === null` ⇒ the process was signal-killed. A timeout/abort kill lands here with null code; a
@@ -208,6 +215,8 @@ function runChild(opts: RunChildOptions): Promise<ProcessResult> {
         // spurious timeout.
         if (aborted) {
           reject(new ProcessCapabilityError('the command was aborted'));
+        } else if (failed) {
+          reject(new ProcessCapabilityError('the command failed to run'));
         } else if (timedOut && code === null) {
           reject(new ProcessCapabilityError(`the command timed out after ${opts.timeoutMs}ms`));
         } else {

@@ -1,8 +1,9 @@
 import { confirm, isCancel, note, text } from '@clack/prompts';
 import type { HumanGatePausedEvent } from '@relavium/shared';
 
-import { approvalDecision, inputDecision, rejectionDecision } from './decision.js';
+import { approvalDecision, inputDecision, rejectionDecision, DECIDED_BY_CLI } from './decision.js';
 import type { GatePrompter } from './prompter.js';
+import { budgetIdentifier, budgetPromptDetails, type BudgetPromptContext } from './budget.js';
 import { sanitizeInline, stripTerminalControls } from '../render/sanitize.js';
 
 /**
@@ -20,8 +21,13 @@ export interface ClackPromptDeps {
     message: string;
     active: string;
     inactive: string;
+    signal?: AbortSignal;
   }) => Promise<boolean | symbol>;
-  readonly text: (opts: { message: string; placeholder?: string }) => Promise<string | symbol>;
+  readonly text: (opts: {
+    message: string;
+    placeholder?: string;
+    signal?: AbortSignal;
+  }) => Promise<string | symbol>;
   /** Clack's cancel sentinel guard (Ctrl-C / ESC) — a real type guard so a non-cancel value narrows. */
   readonly isCancel: (value: unknown) => value is symbol;
 }
@@ -56,7 +62,9 @@ function cardBody(event: HumanGatePausedEvent): string {
 
 export function createClackGatePrompter(deps: ClackPromptDeps = defaultDeps): GatePrompter {
   return {
-    prompt: async (event) => {
+    prompt: async (event, budget, signal) => {
+      if (signal?.aborted) return null;
+      if (budget !== undefined) return promptBudget(deps, event, budget, signal);
       deps.note(
         cardBody(event),
         `⏸ ${GATE_TITLE[event.gateType]} · ${sanitizeInline(event.nodeId)}`,
@@ -67,16 +75,21 @@ export function createClackGatePrompter(deps: ClackPromptDeps = defaultDeps): Ga
         // scripted `relavium gate --input <json>` flag (see decision.ts `parseGateInput`). The prompt label is
         // a generic 'Enter value' — the gate's message is already shown in the card above, so repeating it on
         // the prompt line would just echo the same text twice.
-        const value = await deps.text({ message: 'Enter value', placeholder: '' });
-        return deps.isCancel(value) ? null : inputDecision(value);
+        const value = await deps.text({
+          message: 'Enter value',
+          placeholder: '',
+          ...(signal === undefined ? {} : { signal }),
+        });
+        return signal?.aborted || deps.isCancel(value) ? null : inputDecision(value);
       }
 
       const approved = await deps.confirm({
         message: 'Approve?',
         active: 'Approve',
         inactive: 'Reject',
+        ...(signal === undefined ? {} : { signal }),
       });
-      if (deps.isCancel(approved)) {
+      if (signal?.aborted || deps.isCancel(approved)) {
         return null;
       }
       if (approved) {
@@ -85,8 +98,62 @@ export function createClackGatePrompter(deps: ClackPromptDeps = defaultDeps): Ga
       const comment = await deps.text({
         message: 'Reason for rejection (optional)',
         placeholder: '',
+        ...(signal === undefined ? {} : { signal }),
       });
-      return deps.isCancel(comment) ? null : rejectionDecision(comment);
+      return signal?.aborted || deps.isCancel(comment) ? null : rejectionDecision(comment);
     },
   };
+}
+
+/** Render each recorded budget state without deriving or recalculating its authority. */
+function budgetPromptBody(budget: BudgetPromptContext): string {
+  if (budget.kind === 'amount')
+    return `Frozen allowance: ${budget.microcents} microcents. Approval funds this agent execution only.`;
+  if (budget.kind === 'legacy')
+    return 'Legacy budget gate: no frozen allowance. Continuing grants no allowance; current budget checks still apply.';
+  if (budget.reason === 'unpriced') return 'Reject only: this execution has no priced allowance.';
+  return 'Reject only: this execution allowance cannot be represented safely.';
+}
+
+/** Budget confirmation is binary and bound to the recorded scalar A, including explicit zero. */
+async function promptBudget(
+  deps: ClackPromptDeps,
+  event: HumanGatePausedEvent,
+  budget: BudgetPromptContext,
+  signal?: AbortSignal,
+): Promise<Awaited<ReturnType<GatePrompter['prompt']>>> {
+  const body = budgetPromptBody(budget);
+  const lines = [body, ...budgetPromptDetails(budget)];
+  if (event.expiresAt !== undefined) lines.push(`Expires at ${budgetIdentifier(event.expiresAt)}`);
+  deps.note(
+    lines.join('\n'),
+    `⏸ Budget gate · ${budgetIdentifier(event.gateId)} · ${budgetIdentifier(event.nodeId)}`,
+  );
+  if (budget.kind === 'reject_only') {
+    const rejected = await deps.confirm({
+      message: 'Reject this budget gate?',
+      active: 'Reject',
+      inactive: 'Cancel run',
+      ...(signal === undefined ? {} : { signal }),
+    });
+    return signal?.aborted || deps.isCancel(rejected) || !rejected ? null : rejectionDecision();
+  }
+  const approved = await deps.confirm({
+    message:
+      budget.kind === 'amount'
+        ? `Approve exactly ${budget.microcents} microcents?`
+        : 'Continue without a budget allowance?',
+    active: budget.kind === 'amount' ? 'Approve exact amount' : 'Continue',
+    inactive: 'Reject',
+    ...(signal === undefined ? {} : { signal }),
+  });
+  if (signal?.aborted || deps.isCancel(approved)) return null;
+  if (!approved) return rejectionDecision();
+  return budget.kind === 'amount'
+    ? {
+        decision: 'approved',
+        decidedBy: DECIDED_BY_CLI,
+        approvedAmountMicrocents: budget.microcents,
+      }
+    : approvalDecision();
 }

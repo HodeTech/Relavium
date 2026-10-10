@@ -35,28 +35,53 @@ import type {
   OutputModality,
   ReasoningEffort,
   StopReason,
+  SessionToolHistoryEntry,
 } from '@relavium/shared';
 import {
   CostTracker,
   FallbackChain,
   LlmProviderError,
+  estimateRequestTokens,
+  ownLlmRequest,
+  selectOwnedRequest,
+  withOwnedRequestSignal,
+  withoutOwnedRequestTools,
+  ownedRequestSupportReason,
+  ownedRequestShape,
+  ownedRequestSource,
+  InvalidOutputCapPlanError,
+  UnsupportedRequestDataError,
   type AttemptRecord,
   type FallbackChainOptions,
   type FallbackPlanEntry,
   type LlmError,
   type LlmMessage,
+  type LlmProvider,
   type LlmRequest,
+  type LlmRequestConstruction,
   type MediaUnitsEstimate,
   type PricingOverlay,
+  type PreAttemptInfo,
+  type PreparedOutputCapPlan,
+  type EndpointKind,
   type ProviderId,
   type ResponseFormat,
+  type RequestCandidate,
   type StreamChunk,
   type ToolDef as LlmToolDef,
 } from '@relavium/llm';
 
+import { SessionToolHistoryEntrySchema } from '@relavium/shared';
+
 import { ADMISSION_CEILINGS } from '../limits.js';
 import { ToolDispatchError } from '../tools/errors.js';
-import type { ToolCallPart, ToolDispatchContext, ToolRegistry } from '../tools/types.js';
+import type {
+  ToolCallPart,
+  ToolDispatchContext,
+  ToolDispatchOutcome,
+  ToolRegistry,
+  ToolResultPart,
+} from '../tools/types.js';
 import { type Untrusted, unwrapUntrusted } from '../tools/untrusted.js';
 import {
   BudgetExceededError,
@@ -67,6 +92,7 @@ import {
 import { LedgerDurabilityError, type TurnMoneyPort } from './money-durability.js';
 import type { AuthoredSystemPrompt } from './authored-system-prompt.js';
 import type { NodeStreamEvent } from './node-executor.js';
+import { sessionJsonBytes } from './session-json-bytes.js';
 
 /**
  * Loop bounds for one agent turn. The authored hard cap + the `turn_limit` surfacing is the 1.V knob.
@@ -117,16 +143,36 @@ export const DEFAULT_AGENT_TURN_LIMITS: AgentTurnLimits = {
  * or releases it only when no egress can be attributed. The hook runs at FallbackChain's real attempt boundary;
  * there is deliberately no speculative loop-top reservation.
  */
-export type PreEgressHook = (info: {
-  readonly model: string;
-  readonly maxTokens?: number;
-  /** The routing provider for this call — forwarded to the budget governor's endpoint estimate so it keys on the
-   *  ACTUAL provider (custom base_url ⇒ `custom`, no clamp), not the model's catalog provider (review M2). Optional:
-   *  a media-only gate (`maxTokens: 0`) omits it harmlessly, since the token estimate is 0 regardless of endpoint. */
-  readonly provider?: ProviderId;
+export interface TextPreEgressInfo extends PreAttemptInfo {
+  readonly route: 'text';
+  readonly inputTokensEstimate: number;
+  readonly maxTokensEstimate: number | undefined;
   readonly outputModalities?: readonly OutputModality[];
   readonly mediaUnitsEstimate?: readonly MediaUnitsEstimate[];
-}) => void | BudgetAdmission | Promise<void | BudgetAdmission>;
+  /** Owned construction remains process-local so each allowance candidate selects its own captured cap. */
+  readonly allowanceQuoteContext?: import('./budget-allowance.js').AllowanceQuoteContext;
+}
+
+export interface GenerativePreEgressInfo {
+  readonly route: 'generative-media';
+  readonly model: string;
+  readonly provider: ProviderId;
+  readonly endpoint: EndpointKind;
+  readonly inputTokensEstimate: 0;
+  readonly maxTokens: 0;
+  readonly outputTokensEstimate: 0;
+  readonly outputModalities?: readonly OutputModality[];
+  readonly mediaUnitsEstimate?: readonly MediaUnitsEstimate[];
+  readonly allowanceQuoteContext?: import('./budget-allowance.js').AllowanceQuoteContext;
+}
+
+// Exactly the accepted upstream refusal list; 408, other 4xx and uncertain failures stay committed.
+const PRE_CONTENT_REFUSAL_STATUSES = new Set([429, 400, 401, 402, 403, 404, 413, 422]);
+
+export type PreEgressInfo = TextPreEgressInfo | GenerativePreEgressInfo;
+export type PreEgressHook = (
+  info: PreEgressInfo,
+) => void | BudgetAdmission | Promise<void | BudgetAdmission>;
 
 /**
  * The chain capabilities the host supplies (the platform-level subset of {@link FallbackChainOptions}).
@@ -167,17 +213,29 @@ export interface AgentTurnParams {
   readonly planEntries: readonly FallbackPlanEntry[];
   /** The host-supplied chain capabilities; the core adds its own `costTracker` + `onAttempt`. */
   readonly chainCapabilities: ChainCapabilities;
+  /** Execution-local producer lifetime; absent on standalone/session calls without an engine owner. */
+  readonly retainWork?: FallbackChainOptions['retainWork'];
   /** Lowered from the node's `output_schema` (request-side hint; validation is node-side, in the adapter). */
   readonly responseFormat?: ResponseFormat;
   /** Per-turn generation knobs (node-over-agent precedence is resolved by the caller). */
   readonly temperature?: number;
   readonly maxTokens?: number;
+  /** Same frozen uncapped fallback supplied to context measurement and the governor. */
+  readonly maxTokensEstimate?: number;
+  /** Exact request returned by prepareAgentTurnRequest, reused with only the live signal overlaid. */
+  readonly preparedRequest?: LlmRequest;
+  /** Measured candidate plans for the first constructed request, never a vendor option. */
+  readonly preparedOutputCaps?: readonly PreparedOutputCapPlan[];
   /** Normalized reasoning-effort tier (ADR-0066) — passed onto every chain attempt's `LlmRequest.reasoningEffort`;
    *  each adapter maps it to the provider's native control. Gated to a reasoning-capable primary model by the caller. */
   readonly reasoningEffort?: ReasoningEffort;
   /** The id stamped on emitted events (a workflow vertex id on the run path; a synthetic id on a session). */
   readonly nodeId: string;
-  /** Emit an envelope-less streaming event; the engine/bus attaches the correlation key + sequence. */
+  /**
+   * Emit an envelope-less event. For cost:updated the host MUST advance its authoritative cumulative
+   * counter before governor/external callbacks; money.record snapshots that counter even if delivery
+   * throws. WorkflowEngine and AgentSession implement this ordering.
+   */
   readonly emit: (event: NodeStreamEvent) => void;
   /**
    * The producer-await half of ADR-0036's **no-drop, bounded-per-consumer** buffering (`CR-30`): resolves
@@ -200,7 +258,9 @@ export interface AgentTurnParams {
   readonly signal: AbortSignalLike;
   /** The shared tool registry (1.T) and the dispatch context for this node (the core adds `signal`). */
   readonly registry: ToolRegistry;
-  readonly dispatchContext: Omit<ToolDispatchContext, 'signal'>;
+  readonly dispatchContext: Omit<ToolDispatchContext, 'signal' | 'hostCallOptions'>;
+  /** Session-only identity allocator; provider ids remain within the live protocol. */
+  readonly sessionToolCallId?: (slot: number) => string;
   /** Loop bounds (default {@link DEFAULT_AGENT_TURN_LIMITS}). */
   readonly limits: AgentTurnLimits;
   /** Pre-egress budget hook (default no-op; 1.AC fills it). */
@@ -235,6 +295,7 @@ export interface AgentTurnParams {
 
 /** What one settled agent turn produced. */
 export interface AgentTurnResult {
+  readonly toolHistory: readonly SessionToolHistoryEntry[];
   /** The final assistant content parts (text + any reasoning), in order. */
   readonly content: readonly ContentPart[];
   /** The concatenated assistant text — the node's primary output when there is no `output_schema`. */
@@ -265,14 +326,17 @@ export class AgentTurnError extends Error {
   // the real throw-site stack is preserved) when a provider had engaged. The nested counts stay immutable.
   usage?: { readonly input: number; readonly output: number };
   /**
-   * Whether a provider actually **engaged** this turn — i.e. at least one non-skipped fallback attempt ran
-   * (set the instant {@link runAgentTurn}'s attempt tracker fires, even for an attempt that then errored at
+   * Whether a provider actually **engaged** this turn — at least one provider method was invoked or a
+   * non-error chunk was observed (including an invoked attempt that then errored at
    * zero usage, which the `usage > 0` proxy would miss). `AgentSession` counts ONLY engaged turns against
    * `max_turns`, so a failure BEFORE any egress (no plan entries, a pre-egress budget refusal, a pre-flight
-   * cancel) does not burn a turn the model never got to take. Set IN PLACE by {@link runAgentTurn}; left
-   * `undefined` only for an error that never passed through that wrapper.
+   * cancel) does not burn a turn the model never got to take. The public wrapper attaches metadata only
+   * to mutable data properties; immutable host exceptions retain their exact identity. Sessions use the
+   * internal canonical outcome independently of these compatibility fields.
    */
   engaged?: boolean;
+  /** Engine-internal evidence for ADR-0096 session recovery; never a public event field. */
+  recoverableOverflow = false;
   constructor(
     readonly code: ErrorCode,
     message: string,
@@ -310,6 +374,8 @@ export function codeForLlmError(error: LlmError): ErrorCode {
       return 'content_filter'; // a provider content-policy block — its own fatal cause (1.AG/ADR-0045 §6), not `validation`
     case 'bad_request':
       return 'validation';
+    case 'context_overflow':
+      return 'context_overflow';
     case 'unknown':
       return 'internal';
   }
@@ -434,31 +500,133 @@ function throwIfAborted(signal: AbortSignalLike): void {
 }
 
 /** Build the per-iteration `LlmRequest` from the current message list + the turn's static fields. */
-function buildRequest(messages: readonly LlmMessage[], params: AgentTurnParams): LlmRequest {
+type AgentTurnRequestParams = Pick<
+  AgentTurnParams,
+  | 'system'
+  | 'messages'
+  | 'tools'
+  | 'planEntries'
+  | 'responseFormat'
+  | 'temperature'
+  | 'maxTokens'
+  | 'reasoningEffort'
+  | 'outputModalities'
+  | 'signal'
+  | 'preparedOutputCaps'
+>;
+
+function buildRequest(
+  messages: readonly LlmMessage[],
+  params: AgentTurnRequestParams,
+): LlmRequestConstruction {
   return {
     model: params.planEntries[0]?.model ?? '',
     ...(params.system === undefined ? {} : { system: params.system }),
-    messages: [...messages],
-    // A media-output turn is single-shot/terminal (1.AG/ADR-0046): it runs one `generate()` with no tool
-    // loop, so offering tools is meaningless and would invite an unrunnable `tool_use` stop. Omit them — a
-    // text turn (the only other `buildRequest` caller, via `streamOneTurn`) keeps its tool grant.
-    ...(params.tools === undefined || requestsMediaOutput(params)
-      ? {}
-      : { tools: [...params.tools] }),
+    messages,
+    // Preserve the original graph until ownership validates descriptors and captures its aliases.
+    // Inline-media tools are omitted from the owned construction before candidate applicability.
+    ...(params.tools === undefined ? {} : { tools: params.tools }),
     ...(params.responseFormat === undefined ? {} : { responseFormat: params.responseFormat }),
     ...(params.temperature === undefined ? {} : { temperature: params.temperature }),
     ...(params.maxTokens === undefined ? {} : { maxTokens: params.maxTokens }),
+    ...(params.preparedOutputCaps === undefined
+      ? {}
+      : { preparedOutputCaps: params.preparedOutputCaps }),
     // ADR-0066: the normalized reasoning-effort tier onto every attempt's request (the adapter maps it natively).
     ...(params.reasoningEffort === undefined ? {} : { reasoningEffort: params.reasoningEffort }),
     // Lower the node's requested non-text output onto the request (1.AF/D15) so the FallbackChain
     // per-attempt capability pre-skip (requestSupportReason → outputCombinationReason) can skip a model
     // that cannot emit the combination — the runtime backstop the load-check defers to (ADR-0044 §2). Without
     // this the request carries no outputModalities and an incapable model would silently return text.
-    ...(params.outputModalities === undefined
-      ? {}
-      : { outputModalities: [...params.outputModalities] }),
+    ...(params.outputModalities === undefined ? {} : { outputModalities: params.outputModalities }),
     signal: params.signal,
   };
+}
+
+export interface PreparedAgentTurnRequest {
+  readonly request: LlmRequest;
+  readonly inputTokensEstimate: number;
+  readonly firstEntry?: FallbackPlanEntry;
+  readonly attemptableEntries: readonly FallbackPlanEntry[];
+}
+
+// Measurement metadata is local to the core factory; LLM ownership stays in @relavium/llm.
+const preparedRounds = new WeakMap<LlmRequest, PreparedAgentTurnRequest>();
+
+function requestCandidate(entry: FallbackPlanEntry): RequestCandidate {
+  return {
+    model: entry.model,
+    provider: entry.provider.id,
+    endpoint: entry.provider.customEndpoint === true ? 'custom' : 'official',
+  };
+}
+
+/** Normalize only local preparation failures; observer/money failures keep their exact identities. */
+function prepareRequest<T>(prepare: () => T): T {
+  try {
+    return prepare();
+  } catch (error) {
+    if (error instanceof UnsupportedRequestDataError)
+      throw new AgentTurnError('validation', new UnsupportedRequestDataError().message, false);
+    if (error instanceof InvalidOutputCapPlanError)
+      throw new AgentTurnError('validation', new InvalidOutputCapPlanError().message, false);
+    throw error;
+  }
+}
+
+function measureOwnedRequest(
+  request: LlmRequest,
+  attemptableEntries: readonly FallbackPlanEntry[],
+): PreparedAgentTurnRequest {
+  return Object.freeze({
+    request,
+    attemptableEntries: Object.freeze([...attemptableEntries]),
+    ...(attemptableEntries[0] === undefined ? {} : { firstEntry: attemptableEntries[0] }),
+    // Ownership is wider than this existing input-price subset (ADR-0102 clarification).
+    inputTokensEstimate: estimateRequestTokens({
+      system: request.system ?? '',
+      messages: request.messages,
+      ...(request.tools === undefined ? {} : { tools: request.tools }),
+      ...(request.responseFormat === undefined ? {} : { responseFormat: request.responseFormat }),
+    }),
+  });
+}
+
+function ownRoundRequest(
+  request: LlmRequestConstruction,
+  entries: readonly FallbackPlanEntry[],
+): PreparedAgentTurnRequest {
+  return prepareRequest(() => {
+    let owned = ownLlmRequest(request, entries.map(requestCandidate));
+    const inline =
+      ownedRequestShape(owned).outputModalities?.some((modality) => modality !== 'text') === true;
+    // A media-output turn is single-shot/terminal (ADR-0046), with no callable tool loop.
+    if (inline) owned = withoutOwnedRequestTools(owned);
+    // A fresh chain has no cooldown. Select its first capability-applicable entry without
+    // selecting failed caps belonging only to skipped candidates. The chain still owns skips.
+    const attemptable = entries.filter(
+      (entry) =>
+        (inline || entry.provider.supports.streaming) &&
+        ownedRequestSupportReason(owned, requestCandidate(entry), entry.provider.supports) === null,
+    );
+    const first = attemptable[0];
+    if (entries.length === 0)
+      throw new AgentTurnError('internal', 'agent turn has no fallback-plan entries', false);
+    // With no applicable candidate, preserve construction ownership without selecting an unused
+    // failed cap. The chain still owns skip records and the final unsupported diagnostic.
+    const measured =
+      first === undefined
+        ? ownedRequestSource(owned)
+        : selectOwnedRequest(owned, requestCandidate(first)).request;
+    return measureOwnedRequest(measured, attemptable);
+  });
+}
+
+/** Own the real construction, including inline-tool removal, before measurement or any await. */
+export function prepareAgentTurnRequest(params: AgentTurnRequestParams): PreparedAgentTurnRequest {
+  const prepared = ownRoundRequest(buildRequest(params.messages, params), params.planEntries);
+  preparedRounds.set(prepared.request, prepared);
+  return prepared;
 }
 
 /**
@@ -468,9 +636,10 @@ function buildRequest(messages: readonly LlmMessage[], params: AgentTurnParams):
  */
 async function streamOneTurn(
   chain: FallbackChain,
-  messages: readonly LlmMessage[],
+  request: LlmRequest,
   params: AgentTurnParams,
   getModel: () => string,
+  usage: TurnUsageAccumulator,
   /**
    * Has an EARLIER round of this turn already produced content? (ADR-0082 §4.)
    *
@@ -483,7 +652,23 @@ async function streamOneTurn(
 ): Promise<{ content: ContentPart[]; stopReason: StopReason }> {
   const acc = newAccumulator();
   let stopReason: StopReason = 'stop';
-  for await (const chunk of chain.stream(buildRequest(messages, params))) {
+  for await (const chunk of chain.stream(request)) {
+    // An error alone may be a local pre-egress refusal. Every other actual provider chunk proves
+    // engagement before a host readiness/sink fault can prevent the chain's AttemptRecord.
+    if (chunk.type !== 'error') usage.engaged = true;
+    if (
+      chunk.type === 'stop' &&
+      chunk.usage !== undefined &&
+      Number.isSafeInteger(chunk.usage.inputTokens) &&
+      chunk.usage.inputTokens >= 0 &&
+      Number.isSafeInteger(chunk.usage.outputTokens) &&
+      chunk.usage.outputTokens >= 0
+    ) {
+      usage.observedStopUsage = {
+        input: chunk.usage.inputTokens,
+        output: chunk.usage.outputTokens,
+      };
+    }
     // **ADR-0036's producer-await, at the only place a streaming turn can honour it (`CR-30`).**
     // `foldChunk` emits `agent:token` / `agent:reasoning` per chunk through a synchronous `emit`, so
     // without this the buffer grows for as long as the model talks and the "bounded per consumer" the ADR
@@ -496,7 +681,7 @@ async function streamOneTurn(
     await params.whenReady?.();
     foldChunk(chunk, acc, params, getModel);
     if (chunk.type === 'error') {
-      throwMappedChainError(chunk.error, turnCommitted);
+      throwMappedChainError(chunk.error, turnCommitted, usage, params, getModel());
     }
     if (chunk.type === 'stop') stopReason = chunk.stopReason;
   }
@@ -514,54 +699,119 @@ async function streamOneTurn(
  */
 async function generateOneTurn(
   chain: FallbackChain,
-  messages: readonly LlmMessage[],
+  request: LlmRequest,
   params: AgentTurnParams,
+  wasObserverFailure: (error: unknown) => boolean,
+  usage: TurnUsageAccumulator,
+  getModel: () => string,
 ): Promise<{ content: ContentPart[]; stopReason: StopReason }> {
   try {
-    const result = await chain.generate(buildRequest(messages, params));
+    const result = await chain.generate(request);
     return { content: result.content, stopReason: result.stopReason };
   } catch (err) {
-    if (err instanceof LlmProviderError) {
-      throwMappedChainError(err.llmError);
+    // A successful provider call can be followed by a host/money observer throwing this same class.
+    // Only provider-origin failures enter the provider taxonomy; the observer's exact escape stays raw.
+    if (wasObserverFailure(err)) throw err;
+    let diagnostic: LlmError | undefined;
+    try {
+      if (err instanceof LlmProviderError) diagnostic = err.llmError;
+    } catch {
+      throw err;
     }
+    if (diagnostic !== undefined)
+      throwMappedChainError(diagnostic, false, usage, params, getModel());
     throw err;
   }
 }
 
 /** Map a chain failure — a streamed `error` chunk or a thrown `generate()` error — into the turn taxonomy. */
-function throwMappedChainError(error: LlmError, turnCommitted = false): never {
-  // A pre-egress budget hook may throw its own AgentTurnError or Budget*Error; preserve it rather than
-  // remapping the wrapped LlmError to a generic internal code.
-  if (error.cause instanceof AgentTurnError) {
-    throw error.cause;
+function throwMappedChainError(
+  error: LlmError,
+  turnCommitted: boolean,
+  usage: TurnUsageAccumulator,
+  params: AgentTurnParams,
+  model: string,
+): never {
+  // Preserve host/money identities without letting hostile prototype or diagnostic access replace them.
+  // Shared commitment/realised barriers retain the failing writer's node, rather than this observer's node.
+  const cause = error.cause;
+  const preAttemptFailure = usage.preAttemptFailure;
+  let mapped:
+    | { readonly kind: 'original' }
+    | { readonly kind: 'budget'; readonly message: string }
+    | undefined;
+  try {
+    // Only the actual pre-attempt boundary may supply budget/money authority through a cause.
+    // A provider result or a pricing callback can throw those same public classes after egress.
+    if (preAttemptFailure !== undefined && Object.is(preAttemptFailure.error, cause)) {
+      if (
+        cause instanceof AgentTurnError ||
+        cause instanceof BudgetPauseError ||
+        cause instanceof CommitmentDurabilityError ||
+        cause instanceof LedgerDurabilityError
+      ) {
+        mapped = { kind: 'original' };
+      } else if (cause instanceof BudgetExceededError) {
+        mapped = { kind: 'budget', message: cause.message };
+      }
+    }
+  } catch {
+    // An opaque cause remains on the chain diagnostic; map it through the normal turn taxonomy.
   }
-  if (error.cause instanceof BudgetExceededError) {
-    throw new AgentTurnError('budget_exceeded', error.cause.message, false);
-  }
-  if (error.cause instanceof BudgetPauseError) {
-    throw error.cause;
-  }
-  // ADR-0074 §2. `checkPreEgress` awaits the commitment barrier BEFORE admitting, so it can throw a
-  // `CommitmentDurabilityError` from inside `preAttempt` — and the chain wraps that into a generic
-  // `LlmError{kind:'unknown'}`. Remapping it would discard the `nodeId` the class exists to carry (under a
-  // `fan_out` both branches await the same chain link, so the observer is not necessarily the owner) and would
-  // report a money-durability failure as an ordinary provider fault. Rethrown intact, like `BudgetPauseError`.
-  if (error.cause instanceof CommitmentDurabilityError) {
-    throw error.cause;
-  }
-  // ADR-0076/ADR-0077's realized twin, for the SAME two reasons — barrier B1 joins the money chain inside
-  // `preAttempt`, so a ledger failure arrives here wrapped exactly like a commitment failure. Without this
-  // arm the class is flattened away: `isLedgerDurabilityError` stops narrowing at the engine's B3 catch, and
-  // the `nodeId` identifying WHOSE write broke is replaced by whichever node's turn happened to observe the
-  // barrier — the fan-out misattribution `CommitmentDurabilityError` got this arm to prevent.
-  if (error.cause instanceof LedgerDurabilityError) {
-    throw error.cause;
+  if (mapped?.kind === 'original') throw cause;
+  if (mapped?.kind === 'budget') throw new AgentTurnError('budget_exceeded', mapped.message, false);
+  if (error.kind === 'context_overflow') {
+    const attempted = usage.overflowAttempt;
+    // Diagnosis alone is not provider evidence: admission may rethrow a genuine older wrapper.
+    // Join the exact failed diagnostic to this chain's current invoked, official, pre-content attempt.
+    const currentAttempt = attempted !== undefined && Object.is(attempted.error, error);
+    const matches = params.planEntries.filter(
+      (candidate) =>
+        currentAttempt &&
+        candidate.model === attempted.model &&
+        candidate.provider.id === attempted.provider,
+    );
+    // A duplicate binding with different metadata is not evidence of which window was attempted.
+    const entry = matches.length === 1 ? matches[0] : undefined;
+    const mapped = new AgentTurnError(
+      'context_overflow',
+      contextOverflowMessage(model, entry?.provider, turnCommitted),
+      false,
+    );
+    mapped.recoverableOverflow =
+      currentAttempt && !turnCommitted && error.contentCommitted !== true;
+    if (entry !== undefined && mapped.recoverableOverflow)
+      usage.overflow = { error: mapped, entry };
+    throw mapped;
   }
   throw new AgentTurnError(
     codeForLlmError(error),
     error.message,
     foldRetryable(error, turnCommitted),
   );
+}
+
+/** Fixed surface-neutral overflow facts. Only the attempted binding may supply a window; never provider text. */
+export function contextOverflowMessage(
+  model: string,
+  provider?: LlmProvider,
+  toolsRan = false,
+): string {
+  let window: number | undefined;
+  try {
+    if (provider?.customEndpoint !== true) {
+      const candidate = provider?.contextLimit?.(model);
+      if (candidate !== undefined && Number.isSafeInteger(candidate) && candidate > 0)
+        window = candidate;
+    }
+  } catch {
+    // Unavailable metadata cannot turn an overflow into an invented window.
+  }
+  const windowLabel =
+    window === undefined
+      ? 'its context window (size unknown)'
+      : `its ${window}-token context window`;
+  return `The request exceeded ${windowLabel} for model ${model}. ${toolsRan ? 'Tools already ran in this turn.' : 'No tools ran in this turn.'}`;
 }
 
 /**
@@ -583,20 +833,6 @@ function throwMappedChainError(error: LlmError, turnCommitted = false): never {
  */
 export function foldRetryable(error: LlmError, turnCommitted = false): boolean {
   return error.retryable && error.contentCommitted !== true && !turnCommitted;
-}
-
-/**
- * True when the node authored a non-text output modality — the inline media-out routing signal (1.AG).
- *
- * ADR-0046 §1's full condition is `media_surface: 'chat'` **and** a non-text `output_modalities`. The
- * `'chat'` conjunct is satisfied STRUCTURALLY, not here: the AgentRunner forks a `'generative'` model to
- * `generateMedia` (Section C, ADR-0045 §1) BEFORE it ever calls `runAgentTurn`, so this turn-core predicate
- * only ever runs for a `'chat'` model — a `'generative'` model never reaches the inline `generate()` path.
- * (The turn core is correlation-agnostic and holds no `CapabilityFlags`, so the surface check rightly lives
- * at the routing layer that resolves the provider, not in this predicate.)
- */
-function requestsMediaOutput(params: AgentTurnParams): boolean {
-  return params.outputModalities?.some((m) => m !== 'text') ?? false;
 }
 
 /** Fold a single stream chunk into the accumulator, emitting `agent:token` for visible text deltas. */
@@ -780,12 +1016,53 @@ function synthesizedMediaMessage(pending: readonly PendingAttachment[]): LlmMess
   };
 }
 
+/** Count only JSON the model issued/receives; neither its value nor a digest leaves the turn. */
+function jsonBytes(value: unknown): number {
+  const bytes = sessionJsonBytes(value);
+  if (bytes === undefined) {
+    throw new AgentTurnError('tool_failed', 'tool payload could not be represented as JSON', false);
+  }
+  return bytes;
+}
+
+function sessionToolHistoryEntry(
+  id: string,
+  resolvedName: string,
+  call: ToolCallPart,
+  result: ToolResultPart,
+  media: readonly DurableMediaPart[] = [],
+  outcome: SessionToolHistoryEntry['result']['outcome'] = result.isError === true ? 'error' : 'ok',
+): SessionToolHistoryEntry {
+  const parsed = SessionToolHistoryEntrySchema.safeParse({
+    call: { type: 'tool_call', id, name: resolvedName, argsBytes: jsonBytes(call.args) },
+    result: {
+      type: 'tool_result',
+      toolCallId: id,
+      resultBytes: jsonBytes(result.result),
+      outcome,
+      ...(media.length === 0
+        ? {}
+        : {
+            media: media.map((part) => {
+              const projected = { ...part };
+              delete projected.name;
+              delete projected.transcript;
+              return projected;
+            }),
+          }),
+    },
+  });
+  if (!parsed.success)
+    throw new AgentTurnError('internal', 'session tool structure could not be recorded', false);
+  return parsed.data;
+}
+
 /**
  * The failure half of one tool dispatch: announce the attempted call with a REDACTED input, then either
  * return the model-correctable `isError` result or throw a classified {@link AgentTurnError}.
  *
- * Extracted from `dispatchToolCalls`'s loop, whose `catch` carried this whole ladder inline. Behaviour is
- * unchanged — the `continue` became a return, and the throw is still a throw.
+ * Both notifications use the same classified observer boundary as successful tool outcomes. A sink
+ * failure must retain the provider engagement and usage already accumulated before this dispatch.
  */
 function toolFailureMessage(
   err: unknown,
@@ -796,7 +1073,7 @@ function toolFailureMessage(
 ): LlmMessage {
   // No registry outcome ⇒ no sanitized payload (resolve / grant / policy / args rejected before dispatch).
   // Announce the attempted call with a REDACTED (empty) input — never the raw model args — then classify.
-  params.emit({
+  emitToolOutcome(params, {
     type: 'agent:tool_call',
     nodeId: params.nodeId,
     model,
@@ -805,7 +1082,7 @@ function toolFailureMessage(
     attemptNumber,
   });
   if (err instanceof ToolDispatchError && isRecoverableToolError(err, params.limits)) {
-    params.emit({
+    emitToolOutcome(params, {
       type: 'agent:tool_result',
       nodeId: params.nodeId,
       toolId: call.name,
@@ -848,6 +1125,54 @@ function assertAttachmentBudget(pending: readonly PendingAttachment[]): void {
   }
 }
 
+/** Keep a tool observer failure classified so EA2 retains engagement and billed usage. */
+function emitToolOutcome(
+  params: AgentTurnParams,
+  event: Extract<NodeStreamEvent, { type: 'agent:tool_call' | 'agent:tool_result' }>,
+): void {
+  try {
+    params.emit(event);
+  } catch {
+    throwIfAborted(params.signal);
+    throw new AgentTurnError('internal', 'the tool outcome could not be delivered', false);
+  }
+}
+
+const toolHostEntryFailures = new WeakMap<object, { readonly error: unknown }>();
+
+/** Keep a host throwable inert while the tool registry classifies its own safe wrapper. */
+function retainToolHostWork(
+  supplied: NonNullable<AgentTurnParams['retainWork']>,
+): NonNullable<AgentTurnParams['retainWork']> {
+  return <T>(factory: () => Promise<T>): Promise<T> => {
+    let factoryFailure: { readonly error: unknown } | undefined;
+    try {
+      return supplied(() => {
+        try {
+          return factory();
+        } catch (error) {
+          factoryFailure = { error };
+          throw error;
+        }
+      });
+    } catch (error) {
+      if (factoryFailure !== undefined && Object.is(factoryFailure.error, error)) throw error;
+      const marker = new Error('tool host work entry refused');
+      toolHostEntryFailures.set(marker, { error });
+      throw marker;
+    }
+  };
+}
+
+function toolHostEntryFailure(error: unknown): { readonly error: unknown } | undefined {
+  if (typeof error !== 'object' || error === null) return undefined;
+  const direct = toolHostEntryFailures.get(error);
+  if (direct !== undefined) return direct;
+  if (!(error instanceof ToolDispatchError)) return undefined;
+  const cause: unknown = error.cause;
+  return typeof cause === 'object' && cause !== null ? toolHostEntryFailures.get(cause) : undefined;
+}
+
 /**
  * Dispatch each tool call of a tool-use turn through the registry, emitting `agent:tool_call` /
  * `agent:tool_result` and returning the `role:'tool'` result messages. A model-correctable throw
@@ -862,6 +1187,7 @@ async function dispatchToolCalls(
   attemptNumber: number,
   /** The running effect-slot ordinal for the TURN — see `dispatchToolUseTurn`'s `slotBase`. */
   slotBase: number,
+  history: SessionToolHistoryEntry[],
 ): Promise<{ messages: LlmMessage[]; correctable: boolean }> {
   // **ADR-0086 §2's tool-call ceiling, checked BEFORE the first dispatch.** It is the one ceiling whose
   // subject is a provider RESPONSE rather than an authored file, so it cannot live at admission — the model
@@ -888,44 +1214,87 @@ async function dispatchToolCalls(
   // collide with the first on the journal's UNIQUE identity. The provider's return order is the ordinal.
   for (const [slot, call] of toolCalls.entries()) {
     throwIfAborted(params.signal);
+    const id = params.sessionToolCallId?.(slotBase + slot);
+    let outcome: ToolDispatchOutcome;
     try {
-      const outcome = await params.registry.dispatch(call, {
+      outcome = await params.registry.dispatch(call, {
         ...params.dispatchContext,
+        // Prepared/standalone context data cannot grant execution-local lifetime authority.
+        hostCallOptions:
+          params.retainWork === undefined
+            ? undefined
+            : { retainWork: retainToolHostWork(params.retainWork) },
         effectSlot: slotBase + slot,
+        ...(id === undefined
+          ? {}
+          : { effectAttempt: { providerAttempt: attemptNumber, toolCallId: id } }),
         signal: params.signal,
       });
-      // Emit AFTER dispatch: the registry's `events.call.toolInput` is the SANITIZED payload
-      // (config-only + secret-tainted keys stripped — registry `sanitizeInput`), never the raw model
-      // args, so the event contract that `agent:tool_call.toolInput` carries no secrets holds.
-      params.emit({
-        type: 'agent:tool_call',
-        nodeId: params.nodeId,
-        model: getModel(),
-        toolId: outcome.events.call.toolId,
-        toolInput: outcome.events.call.toolInput,
-        attemptNumber,
-      });
-      const part = unwrapUntrusted(outcome.toolResult);
-      results.push({ role: 'tool', content: [part] });
-      // The bytes a media-answering tool owes the model ride the media-INPUT rail (`CR-50`, ADR-0089 §1) —
-      // `tool_result.media` is handle-only and nothing lowers it. HELD until every call in this response has
-      // been dispatched, so the tool results stay contiguous; see `synthesizedMediaMessage`.
-      if (unwrapUntrusted(outcome.mediaAttachments).length > 0) {
-        pending.push({ toolName: call.name, media: outcome.mediaAttachments });
-      }
-      params.emit({
-        type: 'agent:tool_result',
-        nodeId: params.nodeId,
-        toolId: outcome.events.result.toolId,
-        success: outcome.events.result.success,
-        outputSummary: outcome.events.result.outputSummary,
-        attemptNumber,
-      });
     } catch (err) {
+      const hostFailure = toolHostEntryFailure(err);
+      if (hostFailure !== undefined) throw hostFailure.error;
       // Either a model-correctable result to feed back, or a classified throw — see `toolFailureMessage`.
-      results.push(toolFailureMessage(err, call, params, getModel(), attemptNumber));
+      const failure = toolFailureMessage(err, call, params, getModel(), attemptNumber);
+      const part = failure.content.find((entry) => entry.type === 'tool_result');
+      if (id !== undefined && part?.type === 'tool_result') {
+        const name =
+          err instanceof ToolDispatchError &&
+          err.code !== 'unknown_tool' &&
+          params.registry.has(err.toolId ?? call.name)
+            ? (err.toolId ?? call.name)
+            : 'unknown_tool';
+        history.push(
+          sessionToolHistoryEntry(
+            id,
+            name,
+            call,
+            part,
+            [],
+            err instanceof ToolDispatchError && err.code === 'tool_denied' ? 'denied' : 'error',
+          ),
+        );
+      }
+      results.push(failure);
       correctable = true;
+      continue;
     }
+    // Emit AFTER dispatch: the registry's `events.call.toolInput` is the SANITIZED payload
+    // (config-only + secret-tainted keys stripped — registry `sanitizeInput`), never the raw model
+    // args, so the event contract that `agent:tool_call.toolInput` carries no secrets holds.
+    emitToolOutcome(params, {
+      type: 'agent:tool_call',
+      nodeId: params.nodeId,
+      model: getModel(),
+      toolId: outcome.events.call.toolId,
+      toolInput: outcome.events.call.toolInput,
+      attemptNumber,
+    });
+    const part = unwrapUntrusted(outcome.toolResult);
+    if (id !== undefined)
+      history.push(
+        sessionToolHistoryEntry(
+          id,
+          outcome.events.call.toolId,
+          call,
+          part,
+          unwrapUntrusted(outcome.mediaAttachments),
+        ),
+      );
+    results.push({ role: 'tool', content: [part] });
+    // The bytes a media-answering tool owes the model ride the media-INPUT rail (`CR-50`, ADR-0089 §1) —
+    // `tool_result.media` is handle-only and nothing lowers it. HELD until every call in this response has
+    // been dispatched, so the tool results stay contiguous; see `synthesizedMediaMessage`.
+    if (unwrapUntrusted(outcome.mediaAttachments).length > 0) {
+      pending.push({ toolName: call.name, media: outcome.mediaAttachments });
+    }
+    emitToolOutcome(params, {
+      type: 'agent:tool_result',
+      nodeId: params.nodeId,
+      toolId: outcome.events.result.toolId,
+      success: outcome.events.result.success,
+      outputSummary: outcome.events.result.outputSummary,
+      attemptNumber,
+    });
   }
   // ONE synthesized message for the whole response, after every tool result — never interleaved between
   // them. A turn that threw above never reaches here, so a failed dispatch delivers no media either.
@@ -958,6 +1327,7 @@ async function dispatchToolUseTurn(
    * with its own earlier attempt on the journal's UNIQUE identity and refusing a legitimate second call.
    */
   slotBase: number,
+  history: SessionToolHistoryEntry[],
 ): Promise<{ corrections: number; slotBase: number }> {
   // Append the assistant turn (incl. reasoning — carried for the same-provider replay, ADR-0039).
   messages.push({ role: 'assistant', content: turnContent });
@@ -985,6 +1355,7 @@ async function dispatchToolUseTurn(
     activeModel,
     nonSkippedAttempts,
     slotBase,
+    history,
   );
   let next = corrections;
   if (dispatched.correctable) {
@@ -1002,47 +1373,206 @@ async function dispatchToolUseTurn(
   return { corrections: next, slotBase: slotBase + toolCalls.length };
 }
 
+/** Internal outcome carrier; the public turn API still rethrows the exact original failure. */
+export type CapturedAgentTurnOutcome =
+  | { readonly kind: 'succeeded'; readonly result: AgentTurnResult }
+  | {
+      readonly kind: 'failed';
+      readonly error: unknown;
+      readonly failureOrigin: 'observer' | 'turn';
+      readonly overflowEntry?: FallbackPlanEntry;
+      readonly engaged: boolean;
+      readonly usage: { readonly input: number; readonly output: number };
+    };
+
 /**
- * Drive one agent turn end to end. Resolves with the settled {@link AgentTurnResult}, or throws an
- * {@link AgentTurnError} classified to the closed `ErrorCode` taxonomy (the caller maps it to a node
- * failure). Never throws a raw error for a classified condition.
- *
- * EA2 (ADR-0055): this thin wrapper attaches the turn's accumulated token usage to a thrown
- * {@link AgentTurnError} when a provider had already engaged, so a failed turn reports real — not zeroed —
- * usage. The inner {@link driveAgentTurn} mutates the shared `usage` accumulator as attempts settle (the
- * turn-core tracker); this wrapper reads it on the failure path.
+ * Capture canonical accounting independently of an exception's type. A trusted callback can throw any
+ * value after a provider engaged; replacing that value would break money/pause/host error contracts.
+ * This package-internal entry point lets the session settle truthfully before rethrowing it.
  */
-export async function runAgentTurn(params: AgentTurnParams): Promise<AgentTurnResult> {
+export async function captureAgentTurnOutcome(
+  params: AgentTurnParams,
+): Promise<CapturedAgentTurnOutcome> {
   const acc: TurnUsageAccumulator = { input: 0, output: 0, engaged: false };
-  try {
-    return await driveAgentTurn(params, acc);
-  } catch (err) {
-    if (err instanceof AgentTurnError) {
-      // Record whether a provider engaged this turn (a non-skipped attempt ran) so the session's turn-cap can
-      // count ONLY engaged turns — set IN PLACE to keep the real throw-site stack. This is an explicit signal,
-      // not the `usage > 0` proxy: an attempt that connected and then errored at zero usage still "engaged".
-      err.engaged = acc.engaged;
-      // Attach the real accumulated usage too, but ONLY when the driver did not already set it AND a provider
-      // actually ran. `acc` still `{0,0}` ⇒ no egress (a no-plan-entries / pre-egress failure), so leave
-      // `AgentTurnError.usage` undefined and let the caller report a truthful zero rather than a fabricated count.
-      if (err.usage === undefined && (acc.input > 0 || acc.output > 0)) {
-        err.usage = { input: acc.input, output: acc.output };
+  const supplied = Object.freeze({ ...params });
+  const suppliedCapabilities = Object.freeze({ ...supplied.chainCapabilities });
+  const suppliedClock = suppliedCapabilities.now;
+  const suppliedRetainer = supplied.retainWork;
+  const noteObserverFailure = (error: unknown): never => {
+    acc.observerFailure = { error };
+    throw error;
+  };
+  const observed: AgentTurnParams = {
+    ...supplied,
+    chainCapabilities: {
+      ...suppliedCapabilities,
+      sleep: async (...args) => {
+        try {
+          await suppliedCapabilities.sleep(...args);
+        } catch (error) {
+          noteObserverFailure(error);
+        }
+      },
+      ...(suppliedClock === undefined
+        ? {}
+        : {
+            now: () => {
+              try {
+                return suppliedClock();
+              } catch (error) {
+                return noteObserverFailure(error);
+              }
+            },
+          }),
+    },
+    ...(suppliedRetainer === undefined
+      ? {}
+      : {
+          retainWork: <T>(factory: () => Promise<T>): Promise<T> => {
+            let factoryFailure: { readonly error: unknown } | undefined;
+            try {
+              // The decorator is synchronous and returns the exact registered factory Promise.
+              return suppliedRetainer(() => {
+                try {
+                  return factory();
+                } catch (error) {
+                  factoryFailure = { error };
+                  throw error;
+                }
+              });
+            } catch (error) {
+              if (factoryFailure !== undefined && Object.is(factoryFailure.error, error))
+                throw error;
+              return noteObserverFailure(error);
+            }
+          },
+        }),
+    ...(supplied.money === undefined
+      ? {}
+      : {
+          money: {
+            join: () => supplied.money?.join() ?? Promise.resolve(),
+            record: (draft) => {
+              try {
+                supplied.money?.record(draft);
+              } catch (error) {
+                noteObserverFailure(error);
+              }
+            },
+          },
+        }),
+    emit: (event) => {
+      try {
+        supplied.emit(event);
+      } catch (error) {
+        noteObserverFailure(error);
       }
-      throw err;
-    }
-    // A non-AgentTurnError escaping here is either a `BudgetPauseError` (a pre-egress `pause_for_approval` —
-    // the session/runner handles it in its own catch branch; it engaged no provider) or an unexpected engine
-    // bug (the driver classifies every other reachable failure into an AgentTurnError). Both re-throw bare and
-    // report a truthful `{0,0}` — the pause did no egress, and an unclassified bug has no usage to attach.
-    throw err;
+    },
+    ...(supplied.whenReady === undefined
+      ? {}
+      : {
+          whenReady: async () => {
+            try {
+              await supplied.whenReady?.();
+            } catch (error) {
+              noteObserverFailure(error);
+            }
+          },
+        }),
+  };
+  params = Object.freeze(observed);
+  try {
+    return { kind: 'succeeded', result: await driveAgentTurn(params, acc) };
+  } catch (error) {
+    const knownUsage = {
+      input: acc.input + (acc.observedStopUsage?.input ?? 0),
+      output: acc.output + (acc.observedStopUsage?.output ?? 0),
+    };
+    // An error returned by an earlier call may be rethrown by a current host hook. Only this
+    // capture's private mapping can authorise recovery; public class/identity metadata cannot.
+    const overflowEntry =
+      acc.overflow !== undefined && Object.is(acc.overflow.error, error)
+        ? acc.overflow.entry
+        : undefined;
+    return {
+      kind: 'failed',
+      error,
+      ...(overflowEntry === undefined ? {} : { overflowEntry }),
+      failureOrigin:
+        acc.observerFailure !== undefined && Object.is(acc.observerFailure.error, error)
+          ? 'observer'
+          : 'turn',
+      engaged: acc.engaged,
+      usage: knownUsage,
+    };
   }
 }
 
-/** The per-turn accumulator shared with {@link driveAgentTurn}: summed usage plus whether a provider engaged. */
+/** Drive one turn; classified failures and raw host/money failures retain their original identities. */
+export async function runAgentTurn(params: AgentTurnParams): Promise<AgentTurnResult> {
+  const outcome = await captureAgentTurnOutcome(params);
+  if (outcome.kind === 'failed') {
+    attachPublicTurnAccounting(outcome);
+    throw outcome.error;
+  }
+  return outcome.result;
+}
+
+/** Best-effort compatibility metadata; reflection or immutable host errors cannot replace the failure. */
+function attachPublicTurnAccounting(
+  outcome: Extract<CapturedAgentTurnOutcome, { kind: 'failed' }>,
+): void {
+  try {
+    const error = outcome.error;
+    if (!(error instanceof AgentTurnError)) return;
+    const engaged = Object.getOwnPropertyDescriptor(error, 'engaged');
+    if (engaged === undefined || ('value' in engaged && engaged.writable === true))
+      Object.defineProperty(
+        error,
+        'engaged',
+        engaged === undefined
+          ? { value: outcome.engaged, writable: true, enumerable: true, configurable: true }
+          : { value: outcome.engaged },
+      );
+    const usage = Object.getOwnPropertyDescriptor(error, 'usage');
+    if (
+      (usage === undefined ||
+        ('value' in usage && usage.value === undefined && usage.writable === true)) &&
+      (outcome.usage.input > 0 || outcome.usage.output > 0)
+    )
+      Object.defineProperty(
+        error,
+        'usage',
+        usage === undefined
+          ? { value: outcome.usage, writable: true, enumerable: true, configurable: true }
+          : { value: outcome.usage },
+      );
+  } catch {
+    // The outcome already owns canonical accounting. Public callers retain the exact original error.
+  }
+}
+
+/** The one canonical per-turn accounting accumulator, independent of failure classification. */
 interface TurnUsageAccumulator {
   input: number;
   output: number;
   engaged: boolean;
+  /** Exact, call-local consumer provenance; an error class alone cannot authorise retries or a gate. */
+  observerFailure?: { readonly error: unknown };
+  /** A core attempt callback may also fail during internal admission settlement. */
+  attemptFailure?: { readonly error: unknown };
+  /** Exact escape from this turn's current pre-attempt budget/money boundary. */
+  preAttemptFailure?: { readonly error: unknown };
+  /** Exact failed official provider attempt, independent of earlier engagement in this turn. */
+  overflowAttempt?: {
+    readonly error: LlmError;
+    readonly model: string;
+    readonly provider: ProviderId;
+  };
+  /** Provider-origin overflow mapped during this exact capture, never shared across invocations. */
+  overflow?: { readonly error: AgentTurnError; readonly entry: FallbackPlanEntry };
+  /** A terminal usage chunk observed before readiness/folding, not yet consumed by onAttempt. */
+  observedStopUsage?: { readonly input: number; readonly output: number };
 }
 
 /**
@@ -1059,6 +1589,23 @@ async function driveAgentTurn(
     throw new AgentTurnError('internal', 'agent turn has no fallback-plan entries', false);
   }
 
+  throwIfAborted(params.signal);
+  // Capture before chain callbacks, money joins, or admission can suspend execution. A supplied
+  // measured request must be an exact factory projection: a spread cannot borrow its authority.
+  const preparedRequest = params.preparedRequest;
+  let round =
+    preparedRequest === undefined
+      ? prepareAgentTurnRequest(params)
+      : prepareRequest(() => {
+          const prepared = preparedRounds.get(preparedRequest);
+          if (prepared === undefined) throw new InvalidOutputCapPlanError();
+          const request = withOwnedRequestSignal(prepared.request, params.signal);
+          // Validate every resolved identity without reselecting or remeasuring the first projection.
+          ownLlmRequest(request, params.planEntries.map(requestCandidate));
+          return Object.freeze({ ...prepared, request });
+        });
+  const firstRequest = round.request;
+
   // The cost path is the core's, not the host's: one tracker per turn, one cost:updated per
   // non-skipped attempt (attemptNumber counts non-skipped records, not the positional index). The user-pricing
   // overlay (2.5.G S10) lets the tracker price a user-priced model the static registry lacks.
@@ -1071,18 +1618,7 @@ async function driveAgentTurn(
   // from which a global queue could infer which reservation to release.
   let attemptAdmission: BudgetAdmission | undefined;
   let admissionPending = false;
-  // A chain record can be emitted for a materialization failure or a rejected pre-attempt hook, both of which are
-  // before provider egress. Only a hook that returned successfully arms this flag, so a budget refusal/cancel does
-  // not falsely count as an engaged provider turn or settle a nonexistent bill.
-  let attemptReady = preEgress === undefined;
-  // `FallbackChain` resolves credentials after its pre-attempt hook. The hook can therefore reserve capacity before
-  // a host key lookup rejects, but a failed lookup is PROVEN pre-provider and must release that reservation rather
-  // than becoming a permanent conservative debit. The wrapped `keyFor` below flips this only after it resolved and
-  // a post-resolution cancellation check still permits the seam call.
-  let credentialResolvedForAttempt = preEgress === undefined;
   const settleUnreportedAttemptAdmission = (): void => {
-    attemptReady = preEgress === undefined;
-    credentialResolvedForAttempt = preEgress === undefined;
     if (!admissionPending) return;
     admissionPending = false;
     const active = attemptAdmission;
@@ -1103,46 +1639,72 @@ async function driveAgentTurn(
     // mutation-killed there — releasing instead of retaining, and passing the un-incremented counter.
     active?.settleAtReservedEstimate({ nodeId: params.nodeId });
   };
-  const takeAttemptAdmission = (): BudgetAdmission | undefined => {
-    if (!admissionPending) return undefined;
+  const dischargeAttemptAdmission = (
+    discharge: (active: BudgetAdmission | undefined) => void,
+  ): void => {
+    const active = admissionPending ? attemptAdmission : undefined;
+    // Keep the slot owned until the lease action succeeds. A diagnostic/callback failure then reaches
+    // the outer conservative cleanup with its original admission still available.
+    discharge(active);
     admissionPending = false;
-    const active = attemptAdmission;
     attemptAdmission = undefined;
-    return active;
   };
 
   const onAttempt = (record: AttemptRecord): void => {
     // A SKIPPED entry (cooldown / capability) was not invoked — it must not become `activeModel`, or
     // the next entry's streamed tokens would be mis-attributed to a provider that never ran.
     if (record.outcome === 'skipped') return;
-    const providerMayHaveEngaged = attemptReady && credentialResolvedForAttempt;
-    // With no governor hook, preserve the established FallbackChain contract: every non-skipped record represents
-    // the chain's best available attempt trace. With a governor hook, only its successful true-boundary callback
-    // proves the provider could have been reached.
-    if (preEgress !== undefined) {
-      attemptReady = false;
-      credentialResolvedForAttempt = false;
+    delete usage.overflowAttempt;
+    if (
+      record.outcome === 'failed' &&
+      record.providerInvoked &&
+      !record.customEndpoint &&
+      !record.contentReceived &&
+      record.error?.kind === 'context_overflow'
+    ) {
+      usage.overflowAttempt = {
+        error: record.error,
+        model: record.model,
+        provider: record.provider,
+      };
     }
-    const admission = takeAttemptAdmission();
+    // The chain owns the actual seam-invocation boundary, independent of governor presence.
+    const providerMayHaveEngaged = record.providerInvoked;
     if (!providerMayHaveEngaged) {
       // A successful pre-attempt check followed by a credential failure/cancellation never reached a provider.
-      // This is the one path where the held admission is conclusively safe to release after the hook returned.
-      admission?.release();
+      // Proven pre-provider failure: the held admission is safe to release after the hook returned.
+      dischargeAttemptAdmission((active) => active?.release());
       return;
     }
     activeModel = record.model;
     nonSkippedAttempts += 1;
-    usage.engaged = true; // a non-skipped attempt RAN — mark engaged even if it then errored at zero usage
+    usage.engaged = true; // the provider method was invoked, even if it errored at zero usage
     if (record.usage === undefined) {
+      const status = record.error?.status;
+      if (
+        record.outcome === 'failed' &&
+        record.contentReceived === false &&
+        record.customEndpoint === false &&
+        (record.error?.kind === 'context_overflow' ||
+          (status !== undefined && PRE_CONTENT_REFUSAL_STATUSES.has(status)))
+      ) {
+        dischargeAttemptAdmission((active) => active?.release());
+        return;
+      }
       // A clean EOF and a partial-stream failure can both omit terminal usage AFTER provider egress. Dropping the
       // reservation would silently reopen cap capacity for money that may already be owed, so fail closed at the
       // bounded estimate. A credential/materialization failure before the true attempt boundary never reaches here.
-      admission?.settleAtReservedEstimate({
-        nodeId: params.nodeId,
-        attemptNumber: nonSkippedAttempts,
-      });
+      dischargeAttemptAdmission((active) =>
+        active?.settleAtReservedEstimate({
+          nodeId: params.nodeId,
+          attemptNumber: nonSkippedAttempts,
+        }),
+      );
       return;
     }
+    // This AttemptRecord consumes the stop chunk's quantities exactly once. A host failure before
+    // the record retains the observed quantities separately, without inventing an attempt or price.
+    delete usage.observedStopUsage;
     usage.input += record.usage.inputTokens;
     usage.output += record.usage.outputTokens;
     // The chain already folded this attempt's usage into our `costTracker` and put the per-attempt
@@ -1165,78 +1727,89 @@ async function driveAgentTurn(
     // implication holds today, but it is an invariant of a type in another package, and the compiler cannot see
     // it — leaning on it here would be a narrowing that a future chain change could silently invalidate.
     if (record.priced === false || record.cost === undefined) {
-      admission?.settleAtReservedEstimate({
-        nodeId: params.nodeId,
-        attemptNumber: nonSkippedAttempts,
-      });
+      dischargeAttemptAdmission((active) =>
+        active?.settleAtReservedEstimate({
+          nodeId: params.nodeId,
+          attemptNumber: nonSkippedAttempts,
+        }),
+      );
     } else {
-      admission?.settle(record.cost.costMicrocents);
+      try {
+        const actualCost = record.cost.costMicrocents;
+        dischargeAttemptAdmission((active) => active?.settle(actualCost));
+      } catch (error) {
+        // Settlement rejects an unsafe actual before consuming the lease. Retain E with this recorded
+        // attempt number before propagating the fault. The slot stays owned if this action also fails.
+        // A lease already settled before another callback fault makes this conservative fallback a no-op.
+        dischargeAttemptAdmission((active) =>
+          active?.settleAtReservedEstimate({
+            nodeId: params.nodeId,
+            attemptNumber: nonSkippedAttempts,
+          }),
+        );
+        throw error;
+      }
     }
-    params.emit({
-      type: 'cost:updated',
-      nodeId: params.nodeId,
-      model: record.model,
-      inputTokens: record.usage.inputTokens,
-      outputTokens: record.usage.outputTokens,
-      costMicrocents: record.cost?.costMicrocents ?? 0,
-      // Placeholder — the engine owns the run-wide running total and overwrites this authoritatively.
-      cumulativeCostMicrocents: 0,
-      attemptNumber: nonSkippedAttempts,
-      // ADR-0070 §6. Without this flag, `costMicrocents: 0` with real tokens is ambiguous between "unpriced" and
-      // "genuinely free" — and a free-LOOKING row in the /cost breakdown would be a lie.
+    try {
+      params.emit({
+        type: 'cost:updated',
+        nodeId: params.nodeId,
+        model: record.model,
+        inputTokens: record.usage.inputTokens,
+        outputTokens: record.usage.outputTokens,
+        costMicrocents: record.cost?.costMicrocents ?? 0,
+        // Placeholder — the engine owns the run-wide running total and overwrites this authoritatively.
+        cumulativeCostMicrocents: 0,
+        attemptNumber: nonSkippedAttempts,
+        // ADR-0070 §6. Without this flag, `costMicrocents: 0` with real tokens is ambiguous between "unpriced" and
+        // "genuinely free" — and a free-LOOKING row in the /cost breakdown would be a lie.
+        //
+        // Read from the RECORD, never re-derived from `record.cost !== undefined`
+        // ([ADR-0089](../../../../docs/decisions/0089-media-correctness-four-boundaries.md) §4). The two agree
+        // for an unpriced MODEL — the chain swallows `UnknownModelError` and leaves `cost` absent — and they
+        // disagree for the case that ADR exists for: an unpriced MODALITY on a priced model, where `cost` IS
+        // present and its `costMicrocents` is a FLOOR that omits the media charge. Re-deriving here published
+        // `priced: true` for exactly the calls `CR-55` is about, on the path the ADR names as producer #1.
+        priced: record.priced !== false,
+      });
+    } finally {
+      // The host must aggregate the cost before calling its external sink. A sink throw must not
+      // erase the mandatory realized row. A record/snapshot failure remains the primary money fault.
+      // ADR-0076's durable ledger row, STARTED here and joined at the next barrier (ADR-0077) — this callback
+      // cannot await, which is the whole reason the mechanism is a chain plus barriers rather than an inline
+      // await.
       //
-      // Read from the RECORD, never re-derived from `record.cost !== undefined`
-      // ([ADR-0089](../../../../docs/decisions/0089-media-correctness-four-boundaries.md) §4). The two agree
-      // for an unpriced MODEL — the chain swallows `UnknownModelError` and leaves `cost` absent — and they
-      // disagree for the case that ADR exists for: an unpriced MODALITY on a priced model, where `cost` IS
-      // present and its `costMicrocents` is a FLOOR that omits the media charge. Re-deriving here published
-      // `priced: true` for exactly the calls `CR-55` is about, on the path the ADR names as producer #1.
-      priced: record.priced !== false,
-    });
-    // ADR-0076's durable ledger row, STARTED here and joined at the next barrier (ADR-0077) — this callback
-    // cannot await, which is the whole reason the mechanism is a chain plus barriers rather than an inline
-    // await.
-    //
-    // **Strictly AFTER `params.emit` above, and the order is load-bearing.** The engine advances its run-wide
-    // `#cumulativeCostMicrocents` inside `#nodeEmit`'s `cost:updated` arm, and stamps that counter onto this
-    // draft. Recording FIRST would stamp a stale total, which `refineCostAttemptSettled` rejects at the
-    // producer gate — and that gate runs in `#bus.next`, OUTSIDE `#emitDurable`'s try, so the wrong order does
-    // not degrade quietly: it makes `#emitDurable` REJECT in the one place the design assumes it cannot.
-    params.money?.record({
-      nodeId: params.nodeId,
-      model: record.model,
-      attemptNumber: nonSkippedAttempts,
-      inputTokens: record.usage.inputTokens,
-      outputTokens: record.usage.outputTokens,
-      costMicrocents: record.cost?.costMicrocents ?? 0,
-      // Same rule as the event above, and the same reason: this feeds the DURABLE `unpriced_calls` counter, so
-      // a re-derivation here would persist "fully priced" for a call whose media charge was never accounted.
-      priced: record.priced !== false,
-    });
+      // **Strictly AFTER the authoritative cost emission attempt; the order is load-bearing.** The engine advances its run-wide
+      // `#cumulativeCostMicrocents` inside `#nodeEmit`'s `cost:updated` arm, and stamps that counter onto this
+      // draft. Recording FIRST would stamp a stale total, which `refineCostAttemptSettled` rejects at the
+      // producer gate — and that gate runs in `#bus.next`, OUTSIDE `#emitDurable`'s try, so the wrong order does
+      // not degrade quietly: it makes `#emitDurable` REJECT in the one place the design assumes it cannot.
+      params.money?.record({
+        nodeId: params.nodeId,
+        model: record.model,
+        attemptNumber: nonSkippedAttempts,
+        inputTokens: record.usage.inputTokens,
+        outputTokens: record.usage.outputTokens,
+        costMicrocents: record.cost?.costMicrocents ?? 0,
+        // Same rule as the event above, and the same reason: this feeds the DURABLE `unpriced_calls` counter, so
+        // a re-derivation here would persist "fully priced" for a call whose media charge was never accounted.
+        priced: record.priced !== false,
+      });
+    }
   };
 
-  const chainCapabilities: ChainCapabilities =
-    preEgress === undefined
-      ? params.chainCapabilities
-      : {
-          ...params.chainCapabilities,
-          keyFor: async (provider) => {
-            const key = await params.chainCapabilities.keyFor(provider);
-            // FallbackChain performs no abort poll between resolving a key and entering the adapter. Keep the
-            // admission in the known-pre-egress state when cancellation lands in that narrow await window; its
-            // ensuing attempt record releases the lease in `onAttempt` above.
-            if (params.signal.aborted) {
-              throw new Error('request aborted before provider egress');
-            }
-            credentialResolvedForAttempt = true;
-            return key;
-          },
-        };
-
   const chain = new FallbackChain([...params.planEntries], {
-    ...chainCapabilities,
+    ...params.chainCapabilities,
+    ...(params.retainWork === undefined ? {} : { retainWork: params.retainWork }),
     costTracker,
-    onAttempt,
+    onAttempt: (record) => {
+      try {
+        onAttempt(record);
+      } catch (error) {
+        usage.attemptFailure = { error };
+        throw error;
+      }
+    },
     // The pre-egress budget hook runs before EVERY provider attempt, not just the first turn, so a failover
     // to a more expensive model is also gated (1.AC). The chain's PreAttemptHook supplies `{ model, provider,
     // maxTokens }` — `provider` is THIS attempt's routing provider (review M2) — so wrap the hook to also carry
@@ -1249,55 +1822,67 @@ async function driveAgentTurn(
     ...(preEgress === undefined && params.money === undefined
       ? {}
       : {
-          preAttempt: async (info: {
-            readonly model: string;
-            readonly provider: ProviderId;
-            readonly maxTokens?: number;
-          }) => {
-            // **Barrier B1 (ADR-0077)** — before the next egress admission, and before the governor call, so a
-            // run whose ledger write did not land admits nothing further. It awaits AND observes: `join()`
-            // throws the retained failure rather than returning, which is the only way a caller here can see
-            // it (`#emitDurable` absorbs a store fault and resolves).
-            //
-            // **UNTESTED, and the reason is worth knowing rather than guessing.** Deleting this line leaves
-            // the entire core suite green, and no fixture reddens it because on today's engine every path
-            // that reaches a SECOND egress after a settled attempt passes through B2 or B3 first: within one
-            // chain, a settled attempt ends it (a post-content failure surfaces rather than failing over), so
-            // a second egress means either another tool round (B2) or another node dispatch (B3). B1 is
-            // therefore defence in depth against a future path that reaches egress without crossing either —
-            // a chain that continues past a settled attempt, or a turn core that stops routing tools through
-            // `dispatchToolUseTurn`. Kept deliberately; if a later reader finds it genuinely unreachable, the
-            // honest move is to delete it and say so, not to leave an untestable line with a hopeful comment.
-            await params.money?.join();
-            if (preEgress === undefined) return;
-            // This is the only admitting boundary. Check cancellation on BOTH sides of the awaited governor call:
-            // a cancellation landing while warning durability/admission is pending must not reach key resolution
-            // or provider egress, and any just-acquired lease is released before the cancellation propagates.
-            settleUnreportedAttemptAdmission();
-            throwIfAborted(params.signal);
-            const nextAdmission = await preEgress({
-              ...info,
-              ...(params.outputModalities === undefined
-                ? {}
-                : { outputModalities: params.outputModalities }),
-              ...(params.mediaUnitsEstimate === undefined
-                ? {}
-                : { mediaUnitsEstimate: params.mediaUnitsEstimate }),
-            });
-            if (params.signal.aborted) {
-              nextAdmission?.release();
+          preAttempt: async (info: PreAttemptInfo) => {
+            delete usage.preAttemptFailure;
+            const currentRound = round;
+            try {
+              // **Barrier B1 (ADR-0077)** — before the next egress admission, and before the governor call, so a
+              // run whose ledger write did not land admits nothing further. It awaits AND observes: `join()`
+              // throws the retained failure rather than returning, which is the only way a caller here can see
+              // it (`#emitDurable` absorbs a store fault and resolves).
+              //
+              // A concurrent sibling can leave this run's realized write pending before THIS turn's first
+              // call. Pending-write success/failure/cancellation controls pin B1 independently of B2/B3 in
+              // agent-turn-money-admission.test.ts, including turns with no budget hook.
+              await params.money?.join();
+              settleUnreportedAttemptAdmission();
+              // The money join can suspend a budgetless turn too. Observe cancellation before returning from
+              // that branch, so an aborted wait reaches neither credential resolution nor provider egress.
               throwIfAborted(params.signal);
+              if (preEgress === undefined) return;
+              // This is the only admitting boundary. Re-check after the governor await and release any newly
+              // acquired lease before propagating a cancellation during warning durability/admission.
+              const { request, inputTokensEstimate } = currentRound;
+              const nextAdmission = await preEgress({
+                ...info,
+                route: 'text',
+                maxTokensEstimate: params.maxTokensEstimate,
+                inputTokensEstimate,
+                allowanceQuoteContext: {
+                  route: 'text',
+                  entries: params.planEntries,
+                  request,
+                  inputTokensEstimate,
+                  maxTokensEstimate: params.maxTokensEstimate,
+                  maxToolTurns: params.limits.maxToolTurns,
+                  ...(params.mediaUnitsEstimate === undefined
+                    ? {}
+                    : { mediaUnitsEstimate: params.mediaUnitsEstimate }),
+                },
+                ...(request.outputModalities === undefined
+                  ? {}
+                  : { outputModalities: request.outputModalities }),
+                ...(params.mediaUnitsEstimate === undefined
+                  ? {}
+                  : { mediaUnitsEstimate: params.mediaUnitsEstimate }),
+              });
+              if (params.signal.aborted) {
+                nextAdmission?.release();
+                throwIfAborted(params.signal);
+              }
+              if (nextAdmission !== undefined) {
+                attemptAdmission = nextAdmission;
+                admissionPending = true;
+              }
+            } catch (error) {
+              usage.preAttemptFailure = { error };
+              throw error;
             }
-            if (nextAdmission !== undefined) {
-              attemptAdmission = nextAdmission;
-              admissionPending = true;
-            }
-            attemptReady = true;
           },
         }),
   });
 
-  const messages: LlmMessage[] = params.messages.map((m) => ({
+  const messages: LlmMessage[] = firstRequest.messages.map((m) => ({
     role: m.role,
     content: [...m.content],
   }));
@@ -1307,9 +1892,18 @@ async function driveAgentTurn(
     // `generate()` (the chain's existing non-streaming path) — terminal, NO tool loop (a media turn is the
     // agent's final artifact and `generate()` is one round-trip). Its sole budget gate is the chain's true
     // per-attempt `preAttempt`, which retains the admission through the matching attempt record.
-    if (requestsMediaOutput(params)) {
+    if (firstRequest.outputModalities?.some((modality) => modality !== 'text') === true) {
       throwIfAborted(params.signal);
-      const turn = await generateOneTurn(chain, messages, params);
+      const turn = await generateOneTurn(
+        chain,
+        round.request,
+        params,
+        (error) =>
+          (usage.attemptFailure !== undefined && Object.is(usage.attemptFailure.error, error)) ||
+          (usage.observerFailure !== undefined && Object.is(usage.observerFailure.error, error)),
+        usage,
+        () => activeModel,
+      );
       throwIfAborted(params.signal); // cancel-wins independent of adapter cooperation (mirrors the stream path)
       if (turn.stopReason === 'tool_use') {
         // A media-output turn is single-shot/terminal (ADR-0046): generate() is one round-trip with no tool
@@ -1328,12 +1922,14 @@ async function driveAgentTurn(
         usage: { input: usage.input, output: usage.output },
         model: activeModel,
         stopReason: turn.stopReason,
+        toolHistory: [],
       };
     }
 
     let corrections = 0;
     // Runs across the WHOLE turn, not per model response — see `dispatchToolUseTurn`'s `slotBase`.
     let slotBase = 0;
+    const toolHistory: SessionToolHistoryEntry[] = [];
 
     for (let toolTurn = 0; ; toolTurn += 1) {
       throwIfAborted(params.signal);
@@ -1343,6 +1939,13 @@ async function driveAgentTurn(
           `agent exceeded the ${params.limits.maxToolTurns}-turn tool-call limit`,
           false,
         );
+      }
+      if (toolTurn > 0) {
+        // Only real tool results create a new round. The static fields and earlier messages
+        // belong to the first owned construction, never to mutable caller containers.
+        const nextRequest = { ...firstRequest, messages };
+        delete nextRequest.preparedOutputCaps;
+        round = ownRoundRequest(nextRequest, params.planEntries);
       }
       // The FallbackChain hook is the sole true provider-attempt gate (including each failover). It performs its
       // own post-await cancellation re-check before credential resolution, so there is no speculative loop-top
@@ -1365,23 +1968,39 @@ async function driveAgentTurn(
       // round both reached the user — so a failure here is content-committed even though this `stream()`
       // call may have produced nothing yet (ADR-0082 §4).
       const turnCommitted = toolTurn > 0;
+      const request = round.request;
       const turn = await (toolTurn === 0
-        ? streamOneTurn(chain, messages, params, () => activeModel)
-        : streamOneTurn(chain, messages, params, () => activeModel, turnCommitted).catch(
+        ? streamOneTurn(chain, request, params, () => activeModel, usage)
+        : streamOneTurn(chain, request, params, () => activeModel, usage, turnCommitted).catch(
             (error: unknown) => {
-              if (error instanceof BudgetPauseError) {
-                // NOT `error.message` — it ends "run paused for approval", which is exactly what does not
-                // happen here. Reported verbatim on `relavium run` and both `--json` surfaces it told the
-                // operator to go approve a pause that will never arrive, for a run that had already failed.
-                throw new AgentTurnError(
-                  'budget_exceeded',
-                  `pre-egress budget check would exceed the cap of ${error.limitMicrocents} micro-cents ` +
-                    `(spent ${error.spentMicrocents}); the node had already run tools this turn, so it failed ` +
-                    `instead of pausing — approving and resuming would re-fire them (ADR-0080 §7). Raise the ` +
-                    `budget cap and start a new run.`,
-                  false,
-                );
+              if (
+                (usage.attemptFailure !== undefined &&
+                  Object.is(usage.attemptFailure.error, error)) ||
+                (usage.observerFailure !== undefined &&
+                  Object.is(usage.observerFailure.error, error))
+              )
+                throw error;
+              let budgetFailure: AgentTurnError | undefined;
+              try {
+                if (error instanceof BudgetPauseError) {
+                  // NOT `error.message` — it ends "run paused for approval", which is exactly what does not
+                  // happen here. Reported verbatim on `relavium run` and both `--json` surfaces it told the
+                  // operator to go approve a pause that will never arrive, for a run that had already failed.
+                  budgetFailure = new AgentTurnError(
+                    'budget_exceeded',
+                    `pre-egress budget check would exceed the cap of ${error.limitMicrocents} micro-cents ` +
+                      `(spent ${error.spentMicrocents}); the node had already run tools this turn, so it failed ` +
+                      `instead of pausing — approving and resuming would re-fire them (ADR-0080 §7). Raise the ` +
+                      `budget cap and start a new run.`,
+                    false,
+                  );
+                }
+              } catch {
+                // A host exception can reject prototype/diagnostic reflection. Preserve that exact
+                // failure rather than replacing it with an exception thrown while classifying it.
+                throw error;
               }
+              if (budgetFailure !== undefined) throw budgetFailure;
               throw error;
             },
           ));
@@ -1397,6 +2016,7 @@ async function driveAgentTurn(
           usage: { input: usage.input, output: usage.output },
           model: activeModel,
           stopReason: turn.stopReason,
+          toolHistory,
         };
       }
 
@@ -1411,6 +2031,7 @@ async function driveAgentTurn(
         nonSkippedAttempts,
         corrections,
         slotBase,
+        toolHistory,
       ));
     }
   } finally {

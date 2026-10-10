@@ -111,7 +111,7 @@ export type {
   SessionEventDraft,
   BusEventDraft,
 } from './engine/event-bus.js';
-export type { RunHandle } from './engine/run-handle.js';
+export type { RunHandle, RunDeparture } from './engine/run-handle.js';
 export {
   InMemoryRunStore,
   createInMemoryHost,
@@ -170,6 +170,10 @@ export type {
 export type {
   NodeExecutor,
   NodeExecContext,
+  NodeReceiptContext,
+  NodePreparationContext,
+  BudgetDispatchPreparation,
+  BudgetDispatchPreparationResult,
   NodeOutcome,
   NodeFailure,
   NodeStreamEvent,
@@ -225,7 +229,13 @@ export type {
   ResolveEffortTiers,
 } from './engine/reasoning-effort.js';
 export { DEFAULT_AGENT_TURN_LIMITS } from './engine/agent-turn.js';
-export type { AgentTurnLimits, PreEgressHook } from './engine/agent-turn.js';
+export type {
+  AgentTurnLimits,
+  PreEgressHook,
+  PreEgressInfo,
+  TextPreEgressInfo,
+  GenerativePreEgressInfo,
+} from './engine/agent-turn.js';
 
 // Budget governor (1.AC) — the pre-egress cost gate a surface wires behind the `PreEgressHook` seam and
 // whose typed cap errors the run/session loops classify (ADR-0028). Exported so a surface can construct the
@@ -243,6 +253,23 @@ export {
   isBudgetPauseError,
   DEFAULT_MAX_TOKENS_ESTIMATE,
 } from './engine/budget-governor.js';
+export {
+  budgetAllowancePricesMatch,
+  quoteBudgetAllowance,
+  sameBudgetAllowanceQuote,
+} from './engine/budget-allowance.js';
+export type {
+  AllowanceQuote,
+  AllowanceQuoteResult,
+  AllowanceQuoteInput,
+  AllowanceQuoteContext,
+  AllowanceAmount,
+  AllowanceProvenance,
+  AllowanceEntryIdentity,
+  AllowancePricedEntry,
+  AllowanceExcludedEntry,
+} from './engine/budget-allowance.js';
+export type { DispatchAllowanceToken } from './engine/dispatch-allowance.js';
 export type {
   BudgetCheckResult,
   CommitmentOrigin,
@@ -276,13 +303,23 @@ export type {
   UserCommandOutcome,
   // The classified results of context compaction / trim (ADR-0062) — the host renders each case (2.5.F).
   CompactionResult,
+  MemoryPolicyRefusal,
   TrimResult,
 } from './engine/agent-session.js';
 // Session checkpoint/resume (1.Y) — reconstruct the in-flight state from a persisted transcript (1.X) so a
 // session continues after a restart; the host loads via the @relavium/db SessionStore and hands the result
 // to AgentSession.resume. Directly-stored, not event-sourced (ADR-0003); reuses the 1.R idempotency principle.
-export { reconstructSessionState, resumableMessageSequences } from './engine/session-resume.js';
-export type { SessionResumeState } from './engine/session-resume.js';
+export {
+  reconstructSessionState,
+  resumableMessageSequences,
+  resumableTurnBoundarySequences,
+  completedSessionTurns,
+} from './engine/session-resume.js';
+export type {
+  SessionResumeState,
+  CompletedSessionTurn,
+  CompletedTurnSpan,
+} from './engine/session-resume.js';
 // 1.W — the session:* namespace on the shared bus: the SessionEventSink→RunEventBus adapter (attaches the
 // sessionId; the bus stamps the per-session sequenceNumber) and the SessionHandle (mirrors RunHandle,
 // scoped to sessionId, terminal on session:cancelled). See sse-event-schema.md §"The session stream".
@@ -345,6 +382,7 @@ export type {
   ToolRegistry,
   CreateToolRegistryOptions,
   ToolDef,
+  ToolDelegateName,
   ToolId,
   ToolSource,
   JsonSchema,
@@ -360,6 +398,7 @@ export type {
   FsCapability,
   ProcessCapability,
   EgressCapability,
+  ToolHostCallOptions,
   OsCapability,
   McpCapability,
   ToolOutputStore,

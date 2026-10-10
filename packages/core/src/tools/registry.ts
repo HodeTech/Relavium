@@ -338,19 +338,15 @@ async function prepareEffect(
   ctx: ToolDispatchContext,
 ): Promise<EffectPrepareVerdict> {
   try {
-    return await ctx.effects.prepare(
+    const args = [
       ctx.effectSlot,
       def.id,
       tier,
-      // **The SAME projection the event stream gets, and for the same reason.** Redacted here because only
-      // the engine knows which args are secret-bearing; hashed in the port because only the host can (core
-      // is platform-free). `sanitizeInput` is used rather than a key-name filter because a key-name filter
-      // misses exactly what §11 names as the threat: a model-placed credential in an arbitrary position — an
-      // `Authorization` header value, a token in a URL query — which `redactSecretShapedValue` scrubs BY
-      // SHAPE. A digest is a permanent equality oracle, and a low-entropy secret is recoverable from one on
-      // a `history.db` that may be unencrypted at rest.
       sanitizeInput(def, effective, ctx.secretArgKeys),
-    );
+    ] as const;
+    return await (ctx.effectAttempt === undefined
+      ? ctx.effects.prepare(...args)
+      : ctx.effects.prepare(...args, undefined, ctx.effectAttempt));
   } catch (cause) {
     // A CONFLICT is a refusal, not a fault: another attempt already holds this identity, so the effect must
     // not be dispatched — and must not be retried either, because a retry re-collides, burns the whole node
@@ -485,6 +481,17 @@ async function dispatch(
         // It still flows through mapping and bounding below: those are pure projections, and a replayed
         // result must reach the model in the same shape the original would have.
         replayed = asReplayEnvelope(verdict.result);
+      }
+    }
+    // 4d. Admission belongs at the actual dispatch boundary, independent of effect tier. Approval and
+    // prepare can both yield while the host's durable state fails. A refusal here proves the call never
+    // started, so release its prepared claim rather than recording a possibly-landed effect.
+    if (replayed === NOT_REPLAYED) {
+      try {
+        ctx.beforeDispatch?.(def.id);
+      } catch (cause) {
+        if (tier !== undefined) await discardQuietly(ctx, def.id);
+        throw cause;
       }
     }
     let output: unknown;
@@ -1039,8 +1046,9 @@ function readPath(value: unknown, path: string): unknown {
 }
 
 /* ------------------------------------------------------------------------------------------------ *
- * Step 8 — event-input sanitization (config-only + secret-tainted keys removed). The bus does final
- * generic masking (ADR-0036); this strips the tool-aware sensitive fields only the registry knows.
+ * Step 8 — event-input sanitization (config-only + secret-tainted keys removed, then a shape scrub).
+ * This protects event copies here; the bus does not perform generic content-secret masking.
+ * Arbitrary user/model/tool content can still be sensitive (ADR-0050's at-rest correction).
  * ------------------------------------------------------------------------------------------------ */
 
 function sanitizeInput(

@@ -1,4 +1,9 @@
 import { z } from 'zod';
+import {
+  BudgetAuthorizationStateSchema,
+  AllowanceQuoteResultSchema,
+  BudgetMicrocentsSchema,
+} from './budget-authorization.js';
 
 import { nonEmptyString, nonNegativeInt, positiveInt, preservingUnknownRecord } from './common.js';
 import {
@@ -12,6 +17,7 @@ import {
   STOP_REASONS,
   TOOL_ACTION_CLASSES,
 } from './constants.js';
+import { SessionToolHistorySchema } from './session-content.js';
 import { GateTypeSchema, TimeoutActionSchema } from './node.js';
 
 /**
@@ -448,6 +454,7 @@ export const HumanGatePausedEventSchema = z.object({
   // engine derives no separate gate record — execution-model.md). Absent ⇒ no timeout configured.
   timeoutAction: TimeoutActionSchema.optional(),
   expiresAt: z.string().datetime({ offset: true }).optional(),
+  allowanceQuote: AllowanceQuoteResultSchema.optional(),
 });
 export type HumanGatePausedEvent = z.infer<typeof HumanGatePausedEventSchema>;
 
@@ -458,6 +465,9 @@ export const HumanGateResumedEventSchema = z.object({
   decision: GateDecisionValueSchema,
   decidedBy: nonEmptyString, // user id, or 'timeout' when a gate auto-resolves on timeout
   payload: z.unknown().optional(),
+  allowanceQuote: AllowanceQuoteResultSchema.optional(),
+  gateId: nonEmptyString.optional(),
+  approvedAmountMicrocents: BudgetMicrocentsSchema.optional(),
 });
 export type HumanGateResumedEvent = z.infer<typeof HumanGateResumedEventSchema>;
 
@@ -526,6 +536,15 @@ export const BudgetWarningEventSchema = z.object({
   thresholdPct: z.number().int().min(0).max(100), // a whole-percent figure (e.g. 90), clamped to [0, 100]
 });
 
+export const BudgetAuthorizationEventSchema = z.object({
+  type: z.literal('budget:authorization'),
+  ...runBase,
+  nodeId: nonEmptyString,
+  gateId: nonEmptyString,
+  authorization: BudgetAuthorizationStateSchema,
+});
+export type BudgetAuthorizationEvent = z.infer<typeof BudgetAuthorizationEventSchema>;
+
 export const BudgetPausedEventSchema = z.object({
   type: z.literal('budget:paused'),
   ...runBase,
@@ -533,6 +552,7 @@ export const BudgetPausedEventSchema = z.object({
   spentMicrocents: nonNegativeInt,
   limitMicrocents: nonNegativeInt,
   gateId: nonEmptyString, // stable id of the budget gate; required by engine.resume(runId, gateId, decision)
+  allowanceQuote: AllowanceQuoteResultSchema.optional(),
 });
 
 /**
@@ -732,6 +752,7 @@ const RunEventUnionSchema = z.discriminatedUnion('type', [
   RunTimeoutEventSchema,
   BudgetWarningEventSchema,
   BudgetPausedEventSchema,
+  BudgetAuthorizationEventSchema,
   BudgetEstimateCommittedEventSchema,
   CostAttemptSettledEventSchema,
 ]);
@@ -967,6 +988,7 @@ export const SessionTurnCompletedEventSchema = z.object({
   // not a failure); a failed turn uses `stopReason: 'error'` + the `error` field.
   stopReason: SessionStopReasonSchema,
   tokensUsed: TokensUsedSchema,
+  toolHistory: SessionToolHistorySchema.optional(),
   // A failed turn (provider error, rate limit, cancellation) still completes — with an error.
   error: z.object(eventErrorFields).optional(),
 });
@@ -982,20 +1004,22 @@ export const SessionExportedEventSchema = z.object({
   workflowPath: nonEmptyString,
 });
 
-/**
- * Context compaction STARTED ([ADR-0062](../../decisions/0062-context-compaction-and-cli-history-commands.md) §7,
- * amending [ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)) — the engine began
- * summarising the working context (a `/compact` or an auto-threshold trigger) and the summariser LLM call is now in
- * flight. Emitted at the START of `compact()` (after the nothing-to-fold / plan-resolution guards), and paired with
- * a terminal `session:compacted` (success) / `session:trimmed` `auto-fallback` (summariser failed) / a silent
- * settle (a manual `/compact` that failed — the host clears the moment when `compact()` resolves). The host drives a
- * labeled "Summarizing…" moment off it so a paid, multi-second operation is never an apparently-frozen pause. It
- * carries no counts — the token deltas ride the terminal `session:compacted`; it is purely the moment's START.
- */
+/** One compaction lifecycle across idle, pre-send and one-shot overflow recovery (ADR-0096/0099). */
+export const SessionCompactionReasonSchema = z.enum([
+  'manual',
+  'auto-threshold',
+  'pre-send',
+  'overflow-recovery',
+]);
+export type SessionCompactionReason = z.infer<typeof SessionCompactionReasonSchema>;
+
+/** Opens only after the first summariser admission; each opened moment has exactly one terminal. */
 export const SessionCompactingEventSchema = z.object({
   type: z.literal('session:compacting'),
   ...sessionBase,
-  reason: z.enum(['manual', 'auto-threshold']),
+  reason: SessionCompactionReasonSchema,
+  /** Manual unknown-window operation; the surface discloses best-effort fit before egress. */
+  windowUnknown: z.boolean().optional(),
 });
 
 /**
@@ -1014,12 +1038,30 @@ export const SessionCompactingEventSchema = z.object({
 export const SessionCompactedEventSchema = z.object({
   type: z.literal('session:compacted'),
   ...sessionBase,
-  reason: z.enum(['manual', 'auto-threshold']),
+  reason: SessionCompactionReasonSchema,
   summary: nonEmptyString,
   keptMessageCount: nonNegativeInt,
+  /** Whole completed turns retained; optional only for pre-W7 event compatibility. */
+  keptTurnCount: nonNegativeInt.optional(),
   tokensBefore: nonNegativeInt,
   tokensAfter: nonNegativeInt,
   tokensUsed: TokensUsedSchema,
+});
+
+/** Failed opened compaction; history and summary are unchanged, admitted spend remains accounted. */
+export const SessionCompactionFailedEventSchema = z.object({
+  type: z.literal('session:compaction_failed'),
+  ...sessionBase,
+  reason: SessionCompactionReasonSchema,
+  error: z.object(eventErrorFields),
+});
+
+/** First-pass idle budget refusal opens no moment and never changes a successful user terminal. */
+export const SessionCompactionBudgetRefusedEventSchema = z.object({
+  type: z.literal('session:compaction_budget_refused'),
+  ...sessionBase,
+  reason: z.literal('auto-threshold'),
+  error: z.object({ ...eventErrorFields, code: z.literal('budget_exceeded') }),
 });
 
 /**
@@ -1036,6 +1078,8 @@ export const SessionTrimmedEventSchema = z.object({
   // fallback is never silent (ADR-0062 §5). Symmetric with `session:compacted.reason`.
   reason: z.enum(['manual', 'auto-fallback']),
   keptMessageCount: nonNegativeInt,
+  /** Whole completed turns retained; optional only for pre-W7 event compatibility. */
+  keptTurnCount: nonNegativeInt.optional(),
   droppedMessageCount: nonNegativeInt,
 });
 
@@ -1055,11 +1099,17 @@ export const SessionEventSchema = z.discriminatedUnion('type', [
   SessionExportedEventSchema,
   SessionCompactingEventSchema,
   SessionCompactedEventSchema,
+  SessionCompactionFailedEventSchema,
+  SessionCompactionBudgetRefusedEventSchema,
   SessionTrimmedEventSchema,
 ]);
 export type SessionEvent = z.infer<typeof SessionEventSchema>;
 export type SessionCompactingEvent = z.infer<typeof SessionCompactingEventSchema>;
 export type SessionCompactedEvent = z.infer<typeof SessionCompactedEventSchema>;
+export type SessionCompactionFailedEvent = z.infer<typeof SessionCompactionFailedEventSchema>;
+export type SessionCompactionBudgetRefusedEvent = z.infer<
+  typeof SessionCompactionBudgetRefusedEventSchema
+>;
 export type SessionTrimmedEvent = z.infer<typeof SessionTrimmedEventSchema>;
 
 /**
@@ -1103,6 +1153,7 @@ export type SessionExportedEvent = z.infer<typeof SessionExportedEventSchema>;
 
 /** The decision applied to resume a human gate (`engine.resume(runId, gateId, decision)`). */
 export const GateDecisionSchema = z.object({
+  approvedAmountMicrocents: BudgetMicrocentsSchema.optional(),
   decision: GateDecisionValueSchema,
   decidedBy: nonEmptyString, // user id, or 'timeout' when a gate auto-resolves on timeout
   payload: z.unknown().optional(),

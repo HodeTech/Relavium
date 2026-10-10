@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
+import { setImmediate as yieldImmediate } from 'node:timers/promises';
 
 import {
   InMemoryRunStore,
@@ -157,7 +158,24 @@ export function createCliHost(
   return {
     clock: { now: () => new Date().toISOString() },
     ids: { newId: () => randomUUID() },
-    store,
+    store: {
+      resolveWorkflowId: (slug) => store.resolveWorkflowId(slug),
+      listInterruptedRuns: () => store.listInterruptedRuns(),
+      readWorkflowSnapshot: (runId) => store.readWorkflowSnapshot(runId),
+      persistEvent: async (event, context) => {
+        await store.persistEvent(event, context);
+        if (
+          (event.type === 'budget:authorization' && event.authorization.state === 'decided') ||
+          event.type === 'human_gate:resumed'
+        ) {
+          // A successful native SQLite busy wait can leave an OS signal queued while the Promise
+          // continuation runs. Two check phases cross a poll turn before Core observes the ACK;
+          // one immediate alone can precede the queued signal. The committed row is not undone.
+          await yieldImmediate();
+          await yieldImmediate();
+        }
+      },
+    },
     checkpointer: options?.checkpointer ?? createInMemoryCheckpointer(store),
     terminalOutbox:
       options?.terminalOutboxPath === undefined

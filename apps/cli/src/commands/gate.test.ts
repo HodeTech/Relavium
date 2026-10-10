@@ -1,10 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
   EngineStateError,
+  CHECKPOINT_SCHEMA_VERSION,
   parseWorkflow,
   type CheckpointState,
   type RunHandle,
@@ -66,6 +67,8 @@ function emptyHandle(runId: string): RunHandle {
     events: (async function* (): AsyncGenerator<RunEvent> {})(),
     subscribe: () => () => {},
     cancel: () => {},
+    depart: () =>
+      Promise.resolve({ kind: 'closed', moneyDurability: 'durable', effectNeedsAttention: false }),
     whenConsumersReady: () => Promise.resolve(),
     // A closed stream buffers nothing and throttles nobody (mirrors `createClosedRunHandle`).
     highWaterMark: 256,
@@ -291,7 +294,10 @@ describe('gateCommand', () => {
       const { io } = captureIo();
       const code = await gateCommand(
         { runId, approve: true, secretStdin: true },
-        { ...deps(io), readSecretInput: () => Promise.resolve(`api_key=${SECRET}\n`) },
+        {
+          ...deps(io),
+          readSecretInput: () => Promise.resolve(`api_key=${SECRET}\n`),
+        },
       );
       expect(code).toBe(EXIT_CODES.success);
       // The run continued past the gate — `double` ran on the RECORDED `n`, not on anything re-supplied.
@@ -350,14 +356,14 @@ describe('gateCommand', () => {
       //
       // Driven through the TTY guard rather than through the stream: flipping `isTTY` makes the reader
       // refuse immediately, which exercises the real function and its message without touching stdin.
-      const { runId } = await seedSecretRun();
+      const { runId, gateIds } = await seedSecretRun();
       const { io } = captureIo();
       const original = process.stdin.isTTY;
       try {
         Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true });
         await expect(
           gateCommand({ runId, approve: true, secretStdin: true }, deps(io)),
-        ).rejects.toThrow(new RegExp(`relavium gate ${runId} --approve --secret-stdin`));
+        ).rejects.toThrow(`relavium gate ${runId} --gate ${gateIds[0]} --approve --secret-stdin`);
       } finally {
         Object.defineProperty(process.stdin, 'isTTY', { value: original, configurable: true });
       }
@@ -376,7 +382,10 @@ describe('gateCommand', () => {
       const { io } = captureIo();
       const code = await gateCommand(
         { runId, approve: true, secretStdin: true },
-        { ...deps(io), readSecretInput: () => Promise.resolve(`__proto__=${SECRET}\n`) },
+        {
+          ...deps(io),
+          readSecretInput: () => Promise.resolve(`__proto__=${SECRET}\n`),
+        },
       );
       expect(code).toBe(EXIT_CODES.success);
       expect(({} as Record<string, unknown>)[SECRET]).toBeUndefined();
@@ -418,6 +427,11 @@ describe('gateCommand', () => {
   });
 
   it('wires the same media host + catalog resolveMediaSurface on a gate-resumed run (2.S)', async () => {
+    mkdirSync(join(root, '.relavium'), { recursive: true });
+    writeFileSync(
+      join(root, '.relavium', 'project.toml'),
+      '[defaults]\nmax_tokens_estimate = 17\n',
+    );
     // Seed a generative model into the SHARED db so the gate-path catalog (over opened.db) resolves it.
     const dbDeps = { uuid: () => randomUUID(), now: () => Date.now() };
     const providerId = createProviderStore(db, dbDeps).upsert({
@@ -459,6 +473,7 @@ describe('gateCommand', () => {
     // A gate-resumed run gets the same three media ports + the catalog routing as a fresh `run` — never
     // silently text-only.
     expect(captured?.host?.mediaStore).toBeDefined();
+    expect(captured?.maxTokensEstimate).toBe(17);
     expect(captured?.host?.mediaReferences).toBeDefined();
     expect(captured?.host?.mediaWrite).toBeDefined();
     expect(captured?.resolveMediaSurface?.('gpt-image-1')).toBe('generative');
@@ -888,7 +903,9 @@ workflow:
 
 describe('selectGate', () => {
   const checkpoint = (over: Partial<CheckpointState> = {}): CheckpointState => ({
-    schemaVersion: 1,
+    schemaVersion: CHECKPOINT_SCHEMA_VERSION,
+    nodeLifeClocks: new Map(),
+    pendingBudgetContinuationNodeIds: [],
     runStatus: 'paused',
     workflowId: 'wf',
     startedAtMs: 0,
@@ -898,6 +915,7 @@ describe('selectGate', () => {
     nodeStates: new Map(),
     completedNodeIds: [],
     pendingGates: [],
+    budgetRejections: [],
     pendingMediaJobs: [],
     resolvedGateIds: [],
     lastSequenceNumber: 0,

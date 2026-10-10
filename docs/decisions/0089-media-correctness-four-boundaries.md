@@ -316,3 +316,38 @@ Two further clauses of `CR-53`'s acceptance are open and named there for the sam
 returns whole base64 for generated media (`packages/llm` is untouched, so only the `url` carrier streams), and
 **delivery** (`resolveForEgress` / `readRange`) still materializes a whole object. §2's decision — carrier
 decides, and a `url` with no streaming hook is refused — landed in full; its reach is one direction, not both.
+
+## W7 step 9 generative settlement correction — 2026-10-03
+
+Review found that synchronous generative output's realized-cost callback discarded the priced
+flag before settling its admission. A missing model or output rate consequently refunded the
+reservation through a zero that was explicitly unpriced. The callback now carries the complete
+realized result: a known price, including genuine zero, reconciles actual cost; a gap retains
+the admission estimate. Post-provider pricing/outcome exceptions also retain any unsettled
+admission before propagating. An event-sink fault after known settlement cannot duplicate the
+conservative charge, and async jobs retain their transferred admission. These are caller
+corrections to the existing gap and conservative-accounting policies, not a new fallback price.
+See the [runner contract](../reference/shared-core/agent-runner.md#dispatch-allowance-foundation).
+
+## W7 step 9 async consumer correction — 2026-10-03
+
+The synchronous correction did not cover the actual parked-job consumer: it still settled an
+explicit unpriced zero as free, and pricing/unsafe-actual faults lost its admission. The engine
+now carries the same priced-versus-gap distinction through done, failed, deadline and cancel.
+A gap retains safe E and preserves the explicit unpriced result; a fault retains E before the
+existing poll backstop classifies it. Terminal cleanup continues across every paid job even
+when one accounting path faults, preserving cancellation and earlier-failure precedence.
+Known actual, callback reentry and delivery faults remain exactly-once. No estimate becomes
+an actual media price. See the [runner contract](../reference/shared-core/agent-runner.md#dispatch-allowance-foundation).
+
+## W7 step 9 host-fault and reentrant terminal correction — 2026-10-03
+
+Fresh review reproduced admission loss before parking and before the poll accounting helper.
+The transferred admission is now captured before the host clock/date work and conservatively
+finished until its parked record takes ownership; the poll backstop retains any unsettled
+safe estimate before removing that record. Park-time and timer-installation cancellation
+controls prevent registrations after their cleanup. A pricing callback that cancels while
+known actual is being folded now joins that accounting completion before the durable terminal
+total is captured, preserving immediate abort and exactly-once settlement. Missing evidence
+remains conservative, never an invented actual price. These are consumer corrections to the
+existing policy; durable allowance activation remains Step 10.

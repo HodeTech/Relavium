@@ -1,6 +1,6 @@
 import { parseWorkflow, type WorkflowDefinition } from '@relavium/core';
 import type { ProviderRecord } from '@relavium/db';
-import { LlmProviderError, type LlmProvider } from '@relavium/llm';
+import { InvalidBaseUrlError, LlmProviderError, type LlmProvider } from '@relavium/llm';
 import { LLM_PROVIDERS } from '@relavium/shared';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -339,13 +339,73 @@ describe('createProviderResolver custom endpoints (2.5.G S9 / ADR-0065 §3–4)'
     expect(urls.every((url) => !url.startsWith('https://api.openai.com'))).toBe(true); // NOT the default endpoint
   });
 
-  it('SKIPS a bad (private) custom base_url — the resolver still builds, keeping the default adapter (no crash)', () => {
-    const { fetch } = recordingFetch();
+  it('CR-80: a bad (private) custom base_url FAILS CLOSED — the provider refuses instead of using the official API', async () => {
+    // **This test replaces one that pinned the opposite behaviour.** It asserted only
+    // `expect(resolver.resolveProvider('openai')).toBeDefined()`, with a trailing comment claiming the default
+    // adapter stood — an assertion a REFUSING adapter also satisfies, so it could not tell the two apart and
+    // never measured the thing it was named for. The old behaviour it pinned was the defect: the rejected
+    // custom endpoint fell back to `api.openai.com`, so a drifted config sent prompts and the API key to the
+    // official API with no signal. The reasoning it replaces is kept here rather than deleted with it.
+    //
+    // The default adapter builds its own fetch, so proving "no egress" needs GLOBAL fetch stubbed, not the
+    // injected one — with only the injected fetch watched, a fallback to the official endpoint would leave the
+    // recorded array empty too, and the test would pass for the wrong reason.
+    const calls: string[] = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (input: string | URL | Request): Promise<Response> => {
+      calls.push(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
+      return Promise.resolve(new Response('{}', { status: 200 }));
+    };
+    try {
+      const { fetch } = recordingFetch();
+      const resolver = createProviderResolver({}, undefined, {
+        providerStore: { list: () => [row('openai', 'https://127.0.0.1/v1')] }, // fails the HTTPS+private gate
+        validatedFetch: fetch,
+      });
+      const openai = resolver.resolveProvider('openai');
+      expect(openai).toBeDefined(); // still resolvable — `relavium provider list` must not crash on a bad row
+      // `generate` REJECTS (its signature promises a Promise — a sync throw would escape a bare `.catch()`),
+      // and `stream` surfaces at the first pull, exactly where a real adapter's failure would.
+      await expect(
+        openai?.generate({ model: 'gpt-5.4-mini', messages: [] }, 'sk-test'),
+      ).rejects.toThrow(InvalidBaseUrlError);
+      const pull = async (): Promise<number> => {
+        let chunks = 0;
+        for await (const chunk of openai?.stream(
+          { model: 'gpt-5.4-mini', messages: [] },
+          'sk-test',
+        ) ?? []) {
+          void chunk;
+          chunks += 1;
+        }
+        return chunks;
+      };
+      await expect(pull()).rejects.toThrow(InvalidBaseUrlError);
+      // The point of the item: NOTHING left the process, and in particular nothing reached the official API.
+      expect(calls).toEqual([]);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it('CR-80: the refusal names the URL SHAPE and the remedy, and never echoes an embedded credential', async () => {
     const resolver = createProviderResolver({}, undefined, {
-      providerStore: { list: () => [row('openai', 'https://127.0.0.1/v1')] }, // fails the adapter's HTTPS+private gate
-      validatedFetch: fetch,
+      // A credential-bearing URL — the exact shape whose secret must not survive into a message or a log.
+      providerStore: { list: () => [row('openai', 'https://alice:hunter2@10.0.0.5/v1')] },
     });
-    expect(resolver.resolveProvider('openai')).toBeDefined(); // InvalidBaseUrlError caught; default adapter stands
+    // A bare `.catch()` with no `try` — the shape a synchronous throw would escape.
+    const err = await resolver
+      .resolveProvider('openai')
+      ?.generate({ model: 'gpt-5.4-mini', messages: [] }, 'sk-test')
+      .then(() => undefined)
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(InvalidBaseUrlError);
+    const message = err instanceof Error ? err.message : '';
+    expect(message).not.toContain('hunter2'); // the password never reaches the message
+    expect(message).not.toContain('alice'); // nor the username
+    expect(message).toContain('refusing'); // it says it refused...
+    expect(message).toContain('rather than falling back to the official endpoint'); // ...and what it did NOT do
+    expect(message).toContain('relavium provider add openai --base-url'); // and how to fix the row
   });
 
   it('SKIPS a custom base_url on anthropic/gemini (openai-compatible only this round) — no crash', () => {

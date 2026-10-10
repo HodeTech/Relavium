@@ -3,7 +3,13 @@ import type { RunEvent } from '@relavium/shared';
 import type { Db, RunHistoryReader, RunRecord, StepRecord } from '@relavium/db';
 
 import { loadResolvedConfig } from '../config/load.js';
-import { pendingHumanGates, type PendingGate } from '../gate/pending.js';
+import { pendingGateDisplays, type PendingGate, type PendingBudgetGate } from '../gate/pending.js';
+import {
+  budgetIdentifier,
+  budgetPromptDetails,
+  budgetPromptLabel,
+  budgetResumeHints,
+} from '../gate/budget.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
@@ -50,6 +56,7 @@ interface ActiveRunStatus {
   readonly terminalHeld: boolean;
   readonly steps: readonly StepRecord[];
   readonly pendingGates: readonly PendingGate[];
+  readonly pendingBudgetGates: readonly PendingBudgetGate[];
   /** `true` when this run's event log could not be read, so `pendingGates` is a stand-in (#W15-15). */
   readonly gatesUnavailable: boolean;
 }
@@ -84,9 +91,7 @@ export async function statusCommand(deps: StatusCommandDeps): Promise<ExitCode> 
       run,
       terminalHeld: held.has(run.id),
       steps: reader.loadStepExecutions(run.id),
-      // Only a `paused` run can hold a pending human gate: persisting a `human_gate:paused` event folds the
-      // run's status to `paused` (run-history-store applyDerived), so reconstruct the log only for those — a
-      // `running` run has no pending gate.
+      // Native authority and companion crash prefixes can leave either active status with pending gates.
       // Per-run isolation (`readPerRunOrDegrade`): one damaged row in one run must not blank the whole list.
       // The degradation travels WITH the value (#W15-15) — an empty `pendingGates` on a damaged run would
       // otherwise read as "this run has no gates" when the truth is "its gates could not be read".
@@ -111,22 +116,20 @@ export async function statusCommand(deps: StatusCommandDeps): Promise<ExitCode> 
   }
 }
 
-/**
- * A paused run's pending gates, plus whether they could be read at all (#W15-15). Only a `paused` run can hold
- * one — persisting `human_gate:paused` folds the run's status to `paused` (run-history-store `applyDerived`) —
- * so a `running` run is answered without touching its log, and is never "unavailable".
- */
+/** Reconstruct once per active run: a companion crash may leave a running projection with pending gates. */
 function gatesOf(
   reader: RunHistoryReader,
   run: RunRecord,
-): { pendingGates: readonly PendingGate[]; gatesUnavailable: boolean } {
-  if (run.status !== 'paused') {
-    return { pendingGates: [], gatesUnavailable: false };
-  }
-  const read = readPerRunOrDegrade<readonly PendingGate[]>([], () =>
-    pendingHumanGates(reader.loadRunEvents(run.id)),
+): {
+  pendingGates: readonly PendingGate[];
+  pendingBudgetGates: readonly PendingBudgetGate[];
+  gatesUnavailable: boolean;
+} {
+  const read = readPerRunOrDegrade<ReturnType<typeof pendingGateDisplays>>(
+    { pendingGates: [], pendingBudgetGates: [] },
+    () => pendingGateDisplays(reader.loadRunEvents(run.id)),
   );
-  return { pendingGates: read.value, gatesUnavailable: read.degraded };
+  return { ...read.value, gatesUnavailable: read.degraded };
 }
 
 /** One active run as a machine record: identity + status + per-node steps + any pending human gates. */
@@ -149,11 +152,17 @@ function toJson(status: ActiveRunStatus): unknown {
       durationMs: step.durationMs ?? null,
       costMicrocents: step.costMicrocents,
     })),
-    // Present ONLY when the log could not be read, so an existing consumer's records are unchanged and a
+    // Present ONLY when the log could not be read, so a
     // careful one can tell a damaged run from a run with nothing pending (#W15-15).
     ...(status.gatesUnavailable
       ? { gatesUnavailable: true, gatesUnavailableReason: 'corrupt_event_log' }
       : {}),
+    pendingBudgetGates: status.pendingBudgetGates.map((gate) => ({
+      gateId: budgetIdentifier(gate.gateId),
+      nodeId: budgetIdentifier(gate.nodeId),
+      allowance: gate.allowance,
+      ...(gate.expiresAt === undefined ? {} : { expiresAt: gate.expiresAt }),
+    })),
     pendingGates: status.pendingGates.map((gate) => ({
       gateId: gate.gateId,
       nodeId: gate.nodeId,
@@ -179,7 +188,7 @@ function renderRun(io: CliIo, status: ActiveRunStatus): void {
     // instruction ("re-check `relavium status`") has nothing to show the user on the re-check.
     io.writeOut(
       '  ⚠ this run has FINISHED — its terminal is held in the outbox and is not durable yet.\n' +
-        '    Recovery is attempted by `relavium run` and `relavium gate`; the next one retries it.\n',
+        '    Recovery is attempted by `relavium run`, `relavium gate` and `relavium budget resume`; the next one retries it.\n',
     );
   }
   if (status.gatesUnavailable) {
@@ -187,6 +196,15 @@ function renderRun(io: CliIo, status: ActiveRunStatus): void {
     // rendered identically to a paused run with nothing pending — the reader's own listing being the place
     // they would come to find out which run is broken.
     io.writeOut("  ⚠ pending gates unavailable — this run's event log could not be read\n");
+  }
+  for (const gate of status.pendingBudgetGates) {
+    const gateId = budgetIdentifier(gate.gateId);
+    io.writeOut(
+      `  ⏸ pending budget gate ${gateId} at ${budgetIdentifier(gate.nodeId)} — ${budgetPromptLabel(gate.allowance)}\n`,
+    );
+    for (const detail of budgetPromptDetails(gate.allowance)) io.writeOut(`    ${detail}\n`);
+    for (const hint of budgetResumeHints(status.run.id, gate.gateId, gate.allowance))
+      io.writeOut(`    ${hint}\n`);
   }
   for (const gate of status.pendingGates) {
     // The SAME `human_gate:paused.message` the interactive prompt sanitizes (`clack-prompter.ts`), and it is

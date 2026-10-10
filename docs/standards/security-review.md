@@ -35,11 +35,13 @@ surface is covered in [Managed mode (Phase 2)](#managed-mode-phase-2) below.
   Tauri IPC payload to the WebView, no key in a Zustand store, no key in a React prop, no
   key in localStorage, no key returned from an IPC command. The frontend learns *that* a
   provider is configured, never its secret.
-- **No plaintext at rest.** No key in a config file, `.env` committed to git,
+- **Relavium-managed provider keys are never stored as plaintext.** No such key in a config file, `.env` committed to git,
   `.relavium.yaml`, a log, or a DB column (the **desktop's** local DB is SQLCipher-encrypted;
   the **CLI's** `history.db` is unencrypted, guarded by `0600`/`0700` OS permissions per
   [ADR-0050](../decisions/0050-cli-history-db-at-rest-posture.md) — either way, secrets
-  belong in the keychain, never a DB column).
+  belong in the keychain, never a DB column). This is a key-custody control, not a claim that user content,
+  event copies or retained run tool results contain no credentials or sensitive data; see
+  [the history.db sitting](#sitting-historydb-at-rest--cr-71-cr-97-2026-10-02).
 - Keys are never interpolated into error messages, the normalized `LlmError` (`.message` / `.code`), or
   the `node:failed` / `run:failed` events (see [error-handling.md](error-handling.md)). **This is a
   positive, *tested* obligation, not only a prohibition:** the `@relavium/llm` **per-adapter adapter tests**
@@ -277,6 +279,67 @@ upload surface must confirm:
 workstreams, 1.AF/1.AH. The `save_to` host write port + its jail land in 1.AF (`@relavium/db`'s
 `createFilesystemMediaWrite`); the surface rendering is 1.AH.)*
 
+### Sitting: prompt and trust provenance — `CR-01`–`CR-03`, `CR-10`–`CR-17` (2026-09-06)
+
+The phase-2.6.5 prompt/trust-provenance sitting
+([phase clause 7](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md)). The threat is **text that
+arrives as data and is read as instruction**: a tool result, a model-written compaction summary, an MCP
+server's tool description, another node's output. The `system` role is the boundary — everything with
+authority is on one side of it, and everything a model or a server produced is on the other.
+
+| Control | Adversarial test |
+|---|---|
+| `system` is constructible ONLY from authored sources — the type system, not a convention | `authored-system-prompt.test.ts` — "the agent arm reads the agent's prompt and the node's append, and nothing else", "the engine arm takes a prompt IDENTITY, never text", and "a dynamic string is not assignable to the brand — the type-level half" |
+| A hostile compaction summary — text the MODEL wrote — lands in a user part and never in `system` | `authored-system-prompt.test.ts` — "places the summary at the head of the FIRST user message", "the system prompt has ZERO occurrences of the summary", "the block announces itself as data, in-band"; and the edge case that would otherwise drop it silently, "with no user-role message it makes one, rather than leaving the summary out" |
+| The same holds across a RESUME, where the summary arrives from storage rather than from the turn | `agent-session.test.ts` — "after a RESTORE the bytes are in a user part and ZERO times in `system`", plus "the granted tool set is byte-identical however the summary is mutated" (a summary cannot widen what the model may do) |
+| An untrusted `run.outputs` reference cannot resolve into the system role | `agent-runner.test.ts` — "never resolves an untrusted run.outputs reference into the system role (ADR-0038)" |
+| An engine-authored preamble never presents as the user | `agent-turn.test.ts` — "carries an engine-authored preamble that never presents as the user (the `CR-13` trust rule)" |
+| A tool result is MARKED untrusted at the boundary, and a bare value is rejected rather than assumed safe | `untrusted.test.ts` — "detects a wrapped value and rejects a bare one"; `registry.test.ts` — "dispatches read_file and returns mapped output + untrusted result + sanitized events" |
+| Untrusted data cannot reach the prototype chain of the expression scope | `sandbox.test.ts` — "a __proto__ key in untrusted scope data cannot pollute the prototype chain" and its deep variant |
+| A refusal names a POSITION, never the authored value — an authored string has no charset or length bound and would ride an event and a log | `dag.test.ts` — "locates the offence POSITIONALLY and never echoes the authored tool value" |
+| A durable-append gap fails the engine's next ask CLOSED rather than continuing on a log it cannot trust | `m2-e2e-harness.e2e.test.ts` — "append audit: a LOST non-terminal write makes the engine's next ask fail closed (CR-10 acceptance)", with "an ordinary SEQUENTIAL run already overlaps nothing (CR-10 baseline)" as the control |
+
+**What the sitting produced.** No new finding — and that is a claim this sitting can make only because the
+controls above are each pinned by a test that fails when the control is removed, several of them written
+BECAUSE the original claim was false: `CR-13`'s preamble presented as the user until the test above existed,
+and `CR-10`'s fan-out assertion had to flip (`m2-e2e-harness.e2e.test.ts` — "the assertion that flipped").
+The one weakness recorded rather than closed: the brand is a compile-time guarantee, and
+[ADR-0081](../decisions/0081-the-compaction-summary-is-untrusted-and-the-system-prompt-is-branded.md) §1 names
+**two residual forging forms the lint fence does not catch**. `tools/lint-fixtures/assert-fence.mjs` says so on
+every run rather than reporting the fence airtight, and it fails if the fence starts catching one of them —
+so the ADR's stated bound cannot drift out of date silently in either direction.
+
+### Sitting: the hostile MCP boundary — `CR-40`–`CR-42` (2026-09-06)
+
+The phase-2.6.5 hostile-MCP sitting
+([phase clause 7](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md)), covering `W4`. The threat
+model is [ADR-0088](../decisions/0088-the-mcp-boundary-is-hostile.md): an MCP server is not a library, it is a
+remote party that chose its own name, its own tool names, its own schemas and its own descriptions, and it can
+change all of them between two calls. Recorded after the wave merged (2026-09-01) rather than with it.
+
+| Control | Adversarial test |
+|---|---|
+| A DNS answer that rebinds between validation and connect cannot land — the dial carries the validated address | `mcp-fetch.test.ts` (rebind); `mcp-servers.test.ts` — the dialer is handed over and one window covers preflight + connect |
+| A redirect is refused rather than followed, including to a sibling port | `mcp-fetch.test.ts` (redirect, sibling port) |
+| A local opt-in cannot be aimed at a cloud metadata endpoint | `content.test.ts` — AWS IMDS v6, Alibaba |
+| A remote `websocket` server is refused at admission, not mid-session | `mcp-servers.test.ts` — "REFUSES a remote websocket outright, naming the transport that carries it safely", with two controls that stop the refusal being a blanket ban: "still permits a LOCAL opted-in websocket" and "RESOLVES a local websocket and refuses a name that answers PUBLIC". The remedy is stated in the `W4` register rather than left for a user to discover |
+| A server's ingress is bounded at two levels, and PAGING STOPS at the bound instead of looping | `ingress-bounds.test.ts` — the measured 50 000-tool catalogue, refused; the paging-stops group; the allowlist-behind-decoys case |
+| A tool DEFINITION is untrusted presentation: control/bidi bytes are sanitized at discovery, INCLUDING inside the schema, and semantic fields fail closed | `tool-mapping.test.ts` |
+| The model is TOLD a tool description came from a server, so a description cannot impersonate the operator | `agent-session.test.ts` — "prefixes an MCP tool's description with a provenance line" and "states the provenance even when the server supplied NO description" |
+| A cross-layer or same-layer tool-name collision is refused rather than resolved silently | `resolve.test.ts` |
+| A connect that never settles is bounded, and the cancellation reaches the server | `deadlines.test.ts` — a transport whose `start()` never settles; `network-adapters.test.ts` — a real `McpServer` observing its own cancellation |
+| A spawned local server cannot outlive the CLI that spawned it | `mcp-orphan.e2e.test.ts` **and** `tools/cli-smoke/check.mjs` — a real signalled `agent run` subprocess asserted against the process table |
+
+**What the sitting produced**, recorded because a sitting that finds nothing is usually a sitting that did not
+look: the wave's own review found **five merge blockers** in `W4`, all reproduced and fixed before it merged,
+and one register row named a test file that contained no such test (`#208`'s client-version row pointed at
+`errors.test.ts`, which has no version test — nothing covered it until the PR #87 review said so). Three
+weaknesses stay open and are in [deferred-tasks.md](../roadmap/deferred-tasks.md) rather than implied here:
+the admission and the dialer canonicalize a url differently (fails closed, so it costs usability not safety);
+the MCP hop does not go through `withEgressTimeout`; and `allow_local_endpoint` may still name a host whose
+resolution a LAN-adjacent attacker steers — narrowed by the dialer's refusal of a public or metadata answer,
+not eliminated.
+
 ### Sitting: media bytes — `CR-50`, `CR-53`, `CR-54` (2026-09-02)
 
 The phase-2.6.5 media-bytes security sitting
@@ -300,6 +363,93 @@ was only tested against refusals decided BEFORE a connection opens, so the redir
 an attacker actually reaches for — was untested on the newer path; and this document claimed a user-supplied
 `url` media source stayed feature-flag-OFF, which had not been true since 1.AE (see the SSRF section above).
 Both are the same failure: a control believed rather than measured.
+
+### Sitting: provider and config trust — `CR-80` (2026-09-06)
+
+The phase-2.6.5 provider/config-trust sitting
+([phase clause 7](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md)). The threat is a **stored
+row the user no longer remembers writing**: a custom `base_url` is persisted once and then read on every
+invocation, so a value that was safe when it was typed decides where prompts and API keys go forever after.
+Each line names the control and **the adversarial test that exercises it**.
+
+| Control | Adversarial test |
+|---|---|
+| A rejected custom endpoint NEVER falls back to the official API — the provider refuses instead | `providers.test.ts` — "`CR-80`: a bad (private) custom base_url FAILS CLOSED": asserts the call throws **and** that a stubbed GLOBAL `fetch` recorded zero requests |
+| The refusal names the URL's shape and the remedy, and never echoes an embedded credential | `providers.test.ts` — "`CR-80`: the refusal names the URL SHAPE and the remedy": asserts the username and password of `https://alice:hunter2@10.0.0.5/v1` are both absent from the message |
+| An `InvalidBaseUrlError` cannot carry `user:pass` even when constructed directly | `openai.test.ts` — "redacts embedded credentials from InvalidBaseUrlError — never leaks user:pass into the error" |
+| A bad `--base-url` is refused at the door, before it can ever be stored | `provider.test.ts` — "rejects a non-HTTPS or malformed --base-url (exit 2)" and "rejects a private/loopback or credential-bearing --base-url (fail-fast SSRF, exit 2)" |
+| A URL carrying control/bidi characters is neither stored nor echoed back | `provider.test.ts` — "add --base-url REJECTS a control/bidi-bearing URL at the door (never stored or echoed)" |
+| A custom endpoint cannot be attached to a provider whose dialect is not OpenAI-compatible | `provider.test.ts` — "refuses a custom --base-url on a NON-OpenAI-compatible provider (anthropic/gemini, exit 2)"; `providers.test.ts` — "SKIPS a custom base_url on anthropic/gemini" |
+| A custom endpoint's egress rides the SSRF-validated fetch, not a raw one | `providers.test.ts` — "routes a CUSTOM openai-compatible base_url through the injected validated fetch": asserts the custom host IS dialled and `api.openai.com` is NOT |
+| A caller-supplied transport option cannot re-point a provider's base URL or key | `gemini.test.ts` — "strips httpOptions from providerOptions to prevent SSRF via baseUrl redirect" and "strips a caller-supplied httpOptions from the Imagen config" |
+| A provider key never reaches an error message, and no nested field carries it either | `providers.test.ts` — "REDACTS the key from a failing-ping message (never the full key, keeps the last-4 hint)" and "does not attach the error as a cause (no nested field a --verbose render could leak)" |
+| A key is never read from an interactive terminal, where it would land in shell history | `provider.test.ts` — "refuses to read a typed key from an interactive TTY (errors with a pipe hint, exit 2)" |
+
+**What the sitting produced.** `CR-80` itself was a fail-open **defended by a comment**: the `catch` said
+"refuse the custom endpoint, keep the default adapter", which reads as a refusal and is a fallback to
+`api.openai.com`. The finding under it is the test. The case was pinned by
+`expect(resolver.resolveProvider('openai')).toBeDefined()` — an assertion a REFUSING adapter satisfies just as
+well as a fail-open one, so the test could not distinguish the defect from the fix and passed either way. **An
+assertion that both the vulnerable and the corrected implementation satisfy is not coverage of that control**,
+and it is the same failure the media-bytes sitting recorded in different words: a control believed rather than
+measured. The rewritten test stubs GLOBAL `fetch` — not the injected one — because a fallback to the official
+endpoint would leave an injected recorder empty too, and the test would have passed for the wrong reason a
+second time.
+
+A sweep of the rest of the provider/config path for the same shape found **no second instance**: the key
+resolver returns `undefined` for genuine absence and re-raises a non-`KeychainUnavailableError` binding fault
+rather than reporting "no key", the `--pricing-url` and `--base-url` parsers throw rather than defaulting, and
+`validated-fetch.ts` normalises every escaping error to one reason-only `SafeEgressError` rather than
+continuing. Those are recorded here as checked, not assumed.
+
+### Sitting: `history.db` at rest — `CR-71`, `CR-97` (2026-10-02)
+
+W7 step 4's implementation sitting covers model-issued session tool results, durable effect evidence and
+its disclosure/retention boundary. Independent acceptance review rounds are recorded at step closure. The
+threat is sensitive output recoverable from an unencrypted local database, plus an undisclosed external effect
+whose only durable evidence disappears during resume. Keychain custody alone addresses neither threat.
+
+| Control | Adversarial evidence |
+|---|---|
+| A session result is never serialized, retained, decoded or replayed; run replay is unchanged | `session-effect-journal.test.ts`, `effect-journal-store.test.ts` and `session-effect-privacy.test.ts`: throwing serializers, planted malformed legacy results, exact matching prepare refusal, run replay and committed-NULL refusal controls |
+| Legacy clearing preserves state/digest/attempt and follows high-water initialization | `session-effect-privacy.test.ts`: real 0016 upgrade, orphan/unresolved/hidden one-shot rows, unchanged run result and next durable key after sweep |
+| Secure deletion AND an after-commit TRUNCATE checkpoint protect post-upgrade freed bytes | Real-file main/WAL scans while the connection remains open; live reader defers erasure, then an empty sweep completes it. Mutations turning secure deletion off or skipping checkpoint both fail the byte assertions |
+| Disclosure reads all history and effect metadata in one owned transaction | `session-effect-disclosure.test.ts`: completed empty final behind compaction, concurrent completion on another SQLite connection, corrupt transcript refusal, schema-valid missing/orphan/abandoned terminals, shared completed-turn proof and native/Drizzle outer-transaction refusal. Removing the owned read transaction fails the snapshot assertion |
+| Usable input setup and displayed disclosure precede deletion of exactly captured committed evidence | `effect-retention.test.ts`, actual `chat-effect-activation.test.ts`/`drive-home.test.ts` resume/reseat drivers, mounted `chat-app.test.tsx` and `home-effect-activation.test.ts`: actual normal Ink non-TTY/raw-mode failures, first disclosure frames and output close/error before/during acknowledgement; pending/failed render acknowledgement, native stderr callback/state/error/close and delayed-delivery controls, raw Ctrl-Z ownership on inline/full-screen Ink, omitted publication, discarded delivery failures, stale callbacks, native pipe/FIFO backpressure with Ctrl-C, late delivery success/error after actual database close, mounted Home cancellation during pending MCP teardown, discarded builds, exit during publication/delivery/acknowledgement and later commits retain evidence |
+| Captured identity and current-state predicates prevent destructive sweep races | Native SQLite post-read commit, state change, foreign session and same-id replacement controls; all chunks roll back on a late refusal. Removing the captured effect-address predicate deletes the replacement and fails the assertion |
+| Errored, aborted and crashed turns do not silently lose committed effects | Real MCP + session/persister errored/aborted turns, a real SIGKILL after durable settlement before transcript persistence, disclosure once, then a greater durable key and silent completed-turn control |
+| One-shot cleanup requires proven ownership and preserves unresolved effects | Actual `agent-run.test.ts` allocator/host success, failure, abort, teardown rejection and owned setup unwind; a refused collision reservation leaves the prior owner's committed row intact |
+| Diagnostics and stored output do not escape into disclosure text | Fixed warnings on DB/read/sink failure, strict content-free snapshot and raw-result suppression; malformed attempt/name metadata is conservative rather than falsely reported as a completed or incomplete turn |
+
+The byte claim starts with the upgrade and requires a successful checkpoint. A busy reader can leave old
+bytes in the main file and WAL; pages freed before the upgrade are not retroactively erased. No `VACUUM`,
+encryption or session-ownership decision was added. User text, `@` content, `!` output and run tool results
+remain sensitive data at rest. The canonical scope is [effect-journal.md §11](../reference/shared-core/effect-journal.md#11-secrets-what-a-row-may-hold),
+with the two accepted residuals in [deferred-tasks.md](../roadmap/deferred-tasks.md).
+
+[Step 4 round 1](../reviews/2026-10-02T08-05-02-w7-step-4-round-1-review.md) independently reproduced
+premature deletion before the standalone Ink mount. The correction separates session opening from mounted
+activation and propagates driver activity into reconciliation.
+[Round 2](../reviews/2026-10-02T08-48-12-w7-step-4-round-2-review.md) independently reproduced activation before passive input
+setup and before the notice was drawn. Usable setup, render acknowledgement and observed renderer lifetime
+now guard deletion; actual Ink and Home frame tests verify the boundary.
+[Round 3](../reviews/2026-10-02T09-24-27-w7-step-4-round-3-review.md) then verified schema-valid incomplete-call
+attribution and unwritable-output acknowledgement. Completion now uses the shared structural projector;
+render acknowledgement observes the exact Ink output and its lifetime. Pending Node error delivery retains
+its owned sink through safe listener release.
+[Round 4](../reviews/2026-10-02T10-04-04-w7-step-4-round-4-review.md) verified headless native stderr delivery failures and an inline
+notice consumed during Ctrl-Z suspension without any disclosure frame. Native stderr acknowledgement now
+precedes deletion; terminal ownership covers notice insertion and render acknowledgement across suspension.
+Real owned-worker STOP/CONT controls pass.
+[Round 5](../reviews/2026-10-02T10-36-22-w7-step-4-round-5-review.md) independently verified blocked native stderr
+preventing headless Ctrl-C teardown and late Home acknowledgement deleting evidence during canceled-session
+MCP teardown. Headless activation now races an owned interrupt with permanently disarmed ownership; Home
+requires a running session outside teardown. Native pipe/FIFO before/after controls and late callback
+regressions pass.
+[Round 6](../reviews/2026-10-02T10-57-58-w7-step-4-round-6-review.md) accepted the complete step and every correction.
+Independent native late-settlement/actual-database-close, byte-erasure, high-water, structural attribution and
+atomic-sweep probes pass. Command teardown is guaranteed independently of the inherited native stdio drain
+that can delay natural bin exit. Step 4 is closed; whole-wave closure remains pending.
 
 ## Sandbox and tool policy (`run_command`, node tools, secret inputs)
 

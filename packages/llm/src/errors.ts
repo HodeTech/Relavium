@@ -14,11 +14,24 @@ export type LlmConfigErrorCode =
   | 'unknown_model'
   | 'unsupported_tool_schema'
   | 'unsupported_capability'
+  | 'invalid_output_cap_plan'
+  | 'unsupported_request_data'
+  | 'invalid_token_estimate'
   | 'invalid_base_url';
 
 /** Base for the seam's thrown config errors — narrow on `code`, never on `message`. */
 export abstract class LlmConfigError extends Error {
   abstract readonly code: LlmConfigErrorCode;
+}
+
+/** Unsupported executable/opaque request data never exposes caller values or inspection causes. */
+export class UnsupportedRequestDataError extends LlmConfigError {
+  readonly code = 'unsupported_request_data';
+
+  constructor() {
+    super('request data must contain only supported inert values');
+    this.name = 'UnsupportedRequestDataError';
+  }
 }
 
 /**
@@ -82,12 +95,21 @@ export class InvalidBaseUrlError extends LlmConfigError {
   readonly code = 'invalid_base_url';
   /** Credential-free scheme+host summary of the offending base URL (never the raw, creds-bearing URL). */
   readonly url: string;
+  /**
+   * WHY the URL was refused — the shape, never the value ("must use HTTPS", "resolves to a private,
+   * loopback, or link-local address"). A field as well as part of the message, per
+   * error-handling.md's structured-context rule and mirroring {@link ToolSchemaError.reason}: a caller
+   * that composes a wider refusal around this one (`CR-80`) must not have to re-parse the prose, and
+   * re-wrapping the whole message would nest the "invalid base URL '…'" prefix inside itself.
+   */
+  readonly reason: string;
 
   constructor(url: string, reason: string) {
     const safe = summarizeBaseUrl(url);
     super(`invalid base URL '${safe}': ${reason}`);
     this.name = 'InvalidBaseUrlError';
     this.url = safe;
+    this.reason = reason;
   }
 }
 
@@ -124,5 +146,14 @@ export class UnsupportedCapabilityError extends LlmConfigError {
     this.capability = capability;
     this.detail = detail;
     this.modelId = modelId;
+  }
+}
+
+/** Invalid finite token/cost arithmetic is refused before it can authorize paid egress. */
+export class InvalidTokenEstimateError extends LlmConfigError {
+  readonly code = 'invalid_token_estimate';
+  constructor(readonly reason: 'invalid_estimate' | 'unrepresentable_cost' = 'invalid_estimate') {
+    super('token estimates must be finite and non-negative, with a safe integer cost');
+    this.name = 'InvalidTokenEstimateError';
   }
 }

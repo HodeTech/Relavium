@@ -1,0 +1,14 @@
+{
+  "captureTool": "w7-overflow-capture-v1",
+  "capturedAt": "2026-10-04T08:50:56.273Z",
+  "provider": "deepseek",
+  "model": "deepseek-flash",
+  "purpose": "overflow",
+  "syntheticInputCharacters": 8388608,
+  "maxOutputTokens": 64,
+  "response": {
+    "status": 400,
+    "contentType": "application/json",
+    "body": "{\"error\":{\"message\":\"This model's maximum context length is 1048576 tokens. However, you requested 3752897 tokens (3752833 in the messages, 64 in the completion). Please reduce the length of the messages or completion. (request_id: 97d8c037-acad-4a80-b325-633146f5872c)\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":\"invalid_request_error\"}}"
+  }
+}

@@ -33,6 +33,10 @@
 import {
   DEFAULT_MAX_MEDIA_DOWNLOAD_BYTES,
   GateDecisionSchema,
+  BudgetAllowanceStateSchema,
+  BudgetAuthorizationStateSchema,
+  type BudgetAllowanceState,
+  type AbortSignalLike,
   MEDIA_JOB_POLL_DEFAULTS,
   RETRYABLE_ERROR_CODES,
   RunEventSchema,
@@ -83,6 +87,9 @@ import type { WorkflowDefinition } from '../parser.js';
 import { resolveAndValidateWorkflowInputs } from './input-admission.js';
 import { verifyFrozenWorkflowContent, verifyResumeIdentity } from './resume-identity.js';
 import { EngineStateError } from './errors.js';
+import { AgentTurnError } from './agent-turn.js';
+import { HostWorkRegistry, type HostWorkScope } from './host-work-registry.js';
+import { EffectReceiptHealth } from './effect-receipt-health.js';
 import { RunEventBus, type RunEventDraft } from './event-bus.js';
 import { RunLoopInvariantError } from './invariant-error.js';
 import {
@@ -96,30 +103,38 @@ import type {
   CheckpointPendingMediaJob,
   CheckpointState,
 } from './checkpoint.js';
-import {
-  LedgerDurabilityError,
-  MoneyDurability,
-  isLedgerDurabilityError,
-} from './money-durability.js';
+import { CHECKPOINT_SCHEMA_VERSION } from './checkpoint.js';
+import { MoneyDurability, isLedgerDurabilityError } from './money-durability.js';
 import type { AbortControllerLike, ExecutionHost, InterruptedRun } from './execution-host.js';
 import type {
   GateRequest,
   MediaJobSubmission,
   NodeExecContext,
+  NodeReceiptContext,
   NodeExecutor,
   NodeFailure,
   NodeOutcome,
   NodeStreamEvent,
+  BudgetDispatchPreparation,
+  NodePreparationContext,
 } from './node-executor.js';
+import { sameBudgetAllowanceQuote } from './budget-allowance.js';
+import type { DispatchAllowanceToken } from './dispatch-allowance.js';
 import { NodeMediaPinError } from './media-pin-error.js';
-import { codeForLlmError } from './agent-turn.js';
+import { codeForLlmError, contextOverflowMessage } from './agent-turn.js';
 import {
   DEFAULT_MEDIA_UNIT_ESTIMATE,
   generativeUnits,
   realizedMediaCost,
   takeMediaJobAdmission,
 } from './agent-runner.js';
-import { createClosedRunHandle, createRunHandle, type RunHandle } from './run-handle.js';
+import {
+  createClosedRunHandle,
+  createRunHandle,
+  type RunDeparture,
+  type RunHandle,
+} from './run-handle.js';
+import type { EventStreamDeliveryState } from './event-stream.js';
 
 /** A vertex's live status in one run. `paused` (at a gate) and `running` are not yet *settled*. */
 type VertexStatus = 'pending' | 'running' | 'completed' | 'failed' | 'skipped' | 'paused';
@@ -251,8 +266,8 @@ export interface ResumeFromCheckpointInput {
    * The gate to resolve + the decision to apply, when the run was suspended at a HUMAN GATE. **Both omitted**
    * for a run suspended ONLY on an async media job (1.AG Section D, ADR-0045 §3) — that resume re-attaches +
    * re-polls the persisted job(s) with no external decision. When a run is parked on BOTH a gate and a media
-   * job (AG-A-FC-3), pass the gate's `gateId`/`decision`: the gate decision advances while `#seedFromCheckpoint`
-   * independently re-attaches the parked media job(s).
+   * job (AG-A-FC-3), pass the gate's `gateId`/`decision`: passive admission validates that decision
+   * before activating the checkpoint's parked media job(s).
    */
   readonly gateId?: string;
   readonly decision?: GateDecision;
@@ -278,6 +293,39 @@ function assertValidResumeInput(input: ResumeFromCheckpointInput): void {
       ...(input.gateId === undefined ? {} : { gateId: input.gateId }),
     });
   }
+}
+
+/** Validate parked-agent evidence before gate preparation, retaining only inert relative bases. */
+function restoredNodeClockBases(
+  runId: string,
+  plan: RunPlan,
+  checkpoint: CheckpointState,
+): ReadonlyMap<string, number> {
+  const parked = new Set([
+    ...checkpoint.pendingGates.filter((gate) => gate.isBudgetGate).map((gate) => gate.nodeId),
+    ...checkpoint.pendingMediaJobs.map((job) => job.nodeId),
+    ...checkpoint.pendingBudgetContinuationNodeIds,
+  ]);
+  const result = new Map<string, number>();
+  for (const nodeId of parked) {
+    const vertex = plan.vertices.get(nodeId);
+    if (vertex?.config.kind !== 'agent' || vertex.config.node.timeout_ms === undefined) continue;
+    const life = checkpoint.nodeLifeClocks.get(nodeId);
+    if (
+      life?.kind !== 'valid' ||
+      !Number.isFinite(life.startedAtMs) ||
+      !Number.isFinite(checkpoint.startedAtMs) ||
+      life.startedAtMs < checkpoint.startedAtMs
+    ) {
+      throw new EngineStateError(
+        'admission_record_unreadable',
+        'the parked agent node clock cannot be reconstructed from durable history',
+        { runId },
+      );
+    }
+    result.set(nodeId, life.startedAtMs - checkpoint.startedAtMs);
+  }
+  return result;
 }
 
 /** Construction dependencies for the engine — the injected host and node-executor seams. */
@@ -311,8 +359,8 @@ export interface WorkflowEngineDeps {
    */
   readonly resolverCapabilities?: ResolverCapabilities;
   /**
-   * Per-call output-token default the pre-egress budget governor uses when a node/session omits
-   * `maxTokens` (ADR-0028). Not the model's absolute max, which would over-block.
+   * Estimate-only output fallback for a final uncapped wire request (ADR-0101).
+   * Captured once and forwarded to node execution and the governor; never a generation control.
    */
   readonly maxTokensEstimate?: number;
   /**
@@ -325,10 +373,8 @@ export interface WorkflowEngineDeps {
    */
   readonly resolvePrice?: PricingOverlay;
   /**
-   * Is a model's provider on its own API, or behind a custom `base_url` (ADR-0071 §7)? Forwarded to the pre-egress
-   * {@link BudgetGovernor}: the adapter clamps an authored `max_tokens` to the model's ceiling only on an official
-   * endpoint, and an estimate that assumes otherwise stops describing the request the wire will carry. Absent ⇒
-   * official (the adapter's own default).
+   * @deprecated Retained for host API compatibility only. Actual adapter-factory endpoint identity
+   * is required on each bound pre-egress info object (ADR-0101); this resolver has no pricing authority.
    */
   readonly resolveEndpoint?: (provider: ProviderId) => EndpointKind;
   /**
@@ -402,6 +448,94 @@ function maskInputs(
  */
 type RunOwnership = 'unclaimed' | 'held' | 'parked' | 'lost' | 'done';
 
+/** Private append truth; ordinary event delivery is not a persistence acknowledgement (ADR-0103). */
+type DurableAppendAcknowledgement =
+  | { readonly kind: 'persisted' }
+  | { readonly kind: 'refused'; readonly cause?: unknown }
+  | { readonly kind: 'failed'; readonly cause: unknown };
+
+/** Fixed, content-free money-bridge failure; an original store cause remains private. */
+class DurableAppendNotPersistedError extends Error {
+  readonly code = 'durable_append_not_persisted';
+
+  constructor(acknowledgement: Exclude<DurableAppendAcknowledgement, { kind: 'persisted' }>) {
+    super('a required money write was not acknowledged persisted', {
+      cause: acknowledgement.cause,
+    });
+    this.name = 'DurableAppendNotPersistedError';
+  }
+}
+
+interface PendingGate {
+  readonly vertexId: string;
+  readonly isBudgetGate: boolean;
+  acknowledged: boolean;
+  readonly allowance?: BudgetAllowanceState;
+  readonly timeoutMs?: number;
+  readonly timeoutAction?: 'approve' | 'reject';
+  readonly expiresAt?: string;
+}
+
+/** Amount/kind validation is shared by passive checkpoint admission and live gate claims. */
+function budgetApprovalAmount(
+  gate: PendingGate,
+  decision: GateDecision,
+  runId: string,
+  gateId: string,
+): number | undefined {
+  const refuse = (): never => {
+    throw new EngineStateError(
+      'invalid_decision',
+      'budget approval requires the exact frozen amount; this gate remains rejectable',
+      { runId, gateId },
+    );
+  };
+  if (decision.decision === 'input_provided' || decision.payload !== undefined) refuse();
+  if (decision.decision === 'rejected') {
+    if (decision.approvedAmountMicrocents !== undefined) refuse();
+    return undefined;
+  }
+  const allowance = gate.allowance;
+  if (allowance === undefined || allowance.kind === 'legacy_no_allowance') {
+    if (decision.approvedAmountMicrocents !== undefined) refuse();
+    return undefined;
+  }
+  const result = allowance.quote;
+  if (result.kind !== 'quoted') return refuse();
+  if (result.quote.amount.kind !== 'representable') return refuse();
+  // Explicit zero is distinct from an omitted acknowledgement.
+  if (decision.approvedAmountMicrocents !== result.quote.amount.microcents) refuse();
+  return result.quote.amount.microcents;
+}
+
+function assertBudgetQuoteCurrent(
+  gate: PendingGate,
+  preparation: BudgetDispatchPreparation,
+  gateId: string,
+  runId: string,
+  strictCostCap: boolean,
+  resolvePrice: PricingOverlay | undefined,
+): void {
+  const allowance = gate.allowance;
+  if (allowance?.kind !== 'frozen') return;
+  let matches = false;
+  try {
+    const current = preparation.quote({
+      strictCostCap: strictCostCap,
+      ...(resolvePrice === undefined ? {} : { resolvePrice: resolvePrice }),
+    });
+    matches = sameBudgetAllowanceQuote(allowance.quote, current);
+  } catch {
+    /* Host inspection errors never leak private request content. */
+  }
+  if (!matches)
+    throw new EngineStateError(
+      'invalid_decision',
+      'the frozen budget quote no longer matches current pricing or request eligibility; reject this gate and start a new run',
+      { runId: runId, gateId },
+    );
+}
+
 class RunExecution {
   readonly runId: string;
   readonly handle: RunHandle;
@@ -417,24 +551,33 @@ class RunExecution {
   readonly #executor: NodeExecutor;
   readonly #bus: RunEventBus;
   readonly #onSettled: (runId: string) => void;
+  readonly #onDetached: (runId: string) => void;
   readonly #resolverCapabilities: ResolverCapabilities;
   readonly #maxTokensEstimate: number;
   readonly #resolvePrice: PricingOverlay | undefined;
+  #checkpoint: CheckpointState | undefined;
+  #resumePreparation:
+    | { readonly gateId: string; readonly preparation: BudgetDispatchPreparation }
+    | undefined;
+  #resumeAdmitted = false;
   /** The resolved workflow `context:` (`ctx.*`), folded once at run start (or re-resolved on resume). */
   #resolvedContext: Readonly<Record<string, string>> = {};
 
   readonly #abort: AbortControllerLike;
   readonly #states = new Map<string, VertexState>();
-  readonly #pendingGates = new Map<
-    string,
-    { readonly vertexId: string; readonly isBudgetGate: boolean }
-  >();
+  readonly #pendingGates = new Map<string, PendingGate>();
+  /** A due decision owns its asynchronous preparation until completion, across timer/departure entry. */
+  readonly #timingOutGates = new Set<string>();
   /** Gate ids whose decision was already applied — a re-delivery is an idempotent no-op (1.R). */
   readonly #resolvedGates = new Set<string>();
   /** Disarm callbacks for armed gate-timeout timers, by gateId — disarmed on resume / settle (1.Q). */
   readonly #gateTimers = new Map<string, () => void>();
   /** Parked async media jobs by nodeId (1.AG Section D) — the engine-owned poll/checkpoint/resume/cancel loop. */
   readonly #pendingMediaJobs = new Map<string, ParkedMediaJob>();
+  /** An accounting callback can cancel synchronously; completion must precede the terminal total. */
+  #mediaAccountingDepth = 0;
+  #mediaAccountingDone: Promise<void> | undefined;
+  #finishMediaAccounting: (() => void) | undefined;
   /** Disarm callbacks for armed media-job poll timers, by nodeId — disarmed on settle/cancel (ADR-0045 §4). */
   readonly #mediaJobTimers = new Map<string, () => void>();
   /** The run-level wall-clock timeout timer, when a `timeout_ms` is configured (ADR-0028). */
@@ -445,6 +588,8 @@ class RunExecution {
   #noNewDispatch = false;
   /** ADR-0085 §5's fence: the dispatch id currently authoritative for each vertex. */
   readonly #activeDispatchByVertex = new Map<string, number>();
+  /** Scheduler claims whose first start has not entered; authored and ready orders can differ. */
+  readonly #unstartedClaims = new Set<string>();
   /** Media parts this run has re-hosted — the run-scope half of `CR-54`'s ceiling (ADR-0086 §4). */
   #pinnedMediaParts = 0;
 
@@ -467,10 +612,26 @@ class RunExecution {
   readonly #budgetGovernor: BudgetGovernor | undefined;
   /** The money-durability barrier for BOTH chains — always present, cap or no cap (ADR-0077 §5). */
   readonly #money: MoneyDurability;
-  /** Vertices whose budget gate was APPROVED — their next re-dispatch (and all its node-retry attempts) skips
-   *  the pre-egress check so the deferred LLM call actually issues (H3). Consumed once per dispatch in
-   *  `#dispatch` and cleared on `#settle`. */
-  readonly #budgetApprovedVertices = new Set<string>();
+  readonly #hostWork: HostWorkRegistry;
+  readonly #effectHealth = new EffectReceiptHealth();
+  #hostRetirement: Promise<void> | undefined;
+  #retiringHost = false;
+  #quiescing = false;
+  #pauseGeneration = 0;
+  #pausePublication = 0;
+  #readPrimary: (() => EventStreamDeliveryState) | undefined;
+  #parkingWork: Promise<void> | undefined;
+  readonly #departureWaiters = new Set<() => void>();
+  readonly #quiescingMediaDeadlines = new Map<string, () => void>();
+  /** A confirmed approval is consumed once by its next dispatch, never restored from a checkpoint. */
+  readonly #budgetApprovals = new Map<
+    string,
+    {
+      readonly amountMicrocents: number;
+      readonly preparation: BudgetDispatchPreparation;
+    }
+  >();
+  readonly #dispatchAllowances = new Map<number, DispatchAllowanceToken>();
 
   #workflowId = '';
   #settled = false;
@@ -479,6 +640,9 @@ class RunExecution {
   #scheduling = false;
   #rerun = false;
   #pauseEpisode = false;
+  // A paused vertex frees a dispatch slot before its authority/companions finish writing.
+  // Aggregate pause must keep the writer's lease until every such publication is acknowledged.
+  #publishingPauses = 0;
   /**
    * Serializes the run's durable APPEND, its write and its DELIVERY, in that order (ADR-0078 §1).
    *
@@ -490,7 +654,9 @@ class RunExecution {
   /**
    * The sequence number last ASKED of the store for this run, or `-1` before the first append.
    *
-   * Advanced for a guarded (non-terminal) event whether or not its write lands — see
+   * Read and advanced inside the ordered writer, after ownership admission. A successfully acknowledged
+   * terminal advances it too, before any later guarded ask. Advanced for a guarded event whether or not
+   * its write lands — see
    * `DurableWriteContext.expectedLastSequenceNumber` for why "asked" rather than "committed" is the value
    * that makes the next append fail closed after a lost write.
    */
@@ -502,6 +668,8 @@ class RunExecution {
    * be told the run completed.
    */
   #terminalDurability: RunDurability = 'pending';
+  /** A terminal without a store ACK permanently refuses later asks, preserving its original outbox order. */
+  #terminalAppendFailure: { readonly cause: unknown } | undefined;
   /**
    * This run's ownership claim (ADR-0079). Carried on every durable write, so the store refuses one from a
    * process that has been taken over.
@@ -573,6 +741,7 @@ class RunExecution {
     bus: RunEventBus;
     capacity: number;
     onSettled: (runId: string) => void;
+    onDetached: (runId: string) => void;
     /** The owning engine's lease identity (ADR-0079 §1). */
     ownerId: string;
     /** Builds a per-node effect journal from a run correlation (ADR-0080); absent ⇒ effects are refused. */
@@ -592,8 +761,15 @@ class RunExecution {
     onLegacyMediaJobHold?: (nodeIds: readonly string[]) => void;
     /** When present, the run is REHYDRATED from this checkpoint (resume) rather than started fresh (1.R). */
     checkpoint?: CheckpointState;
+    restoredNodeDeadlineStarts?: ReadonlyMap<string, number>;
+    resumePreparation?: {
+      readonly gateId: string;
+      readonly preparation: BudgetDispatchPreparation;
+      readonly context: Readonly<Record<string, string>>;
+    };
   }) {
     this.runId = params.runId;
+    this.#hostWork = new HostWorkRegistry(params.runId, () => this.#wakeDeparture());
     this.#plan = params.plan;
     this.#workflow = params.workflow;
     this.#inputs = params.inputs;
@@ -603,6 +779,7 @@ class RunExecution {
     this.#resolverCapabilities = params.resolverCapabilities;
     this.#bus = params.bus;
     this.#onSettled = params.onSettled;
+    this.#onDetached = params.onDetached;
     this.#ownerId = params.ownerId;
     this.#effectJournal = params.effectJournal;
     this.#effectResume = params.effectResume;
@@ -617,42 +794,36 @@ class RunExecution {
     this.#maskedInputs = maskInputs(params.inputs, secretNames);
     this.#maxTokensEstimate = params.maxTokensEstimate ?? DEFAULT_MAX_TOKENS_ESTIMATE;
     this.#resolvePrice = params.resolvePrice;
+    if (params.resumePreparation !== undefined) {
+      this.#resumePreparation = params.resumePreparation;
+      this.#resolvedContext = params.resumePreparation.context;
+    }
     // UNCONDITIONAL, unlike the governor below (ADR-0077 §5). The conservative half is inherently
     // budget-scoped — no cap, nothing to reserve — but a run without a budget still spends real money, so a
     // ledger that only existed alongside a governor would silently skip every unbudgeted run. It fronts the
     // join for BOTH chains, so `flushConservative` is wired to the governor once that exists.
     this.#money = new MoneyDurability({
       emit: async (draft, cumulativeCostMicrocents) => {
-        // **The observe half, and it has to be here rather than in `MoneyDurability`.** `#emitDurable` is
-        // TOTAL for store faults: it absorbs a `persistEvent` rejection into `#failure` and RESOLVES. So the
-        // ledger's own `.catch` never fires for the failure mode it exists to catch, and a barrier that only
-        // awaited would sail straight past a run whose money write did not land — exactly the trap ADR-0076
-        // §1 named and ADR-0077 kept. Comparing `#failure` across the await is what turns the absorbed fault
-        // back into something the barrier can throw. It can over-trigger when a SIBLING fails in the same
-        // window; that direction is fail-closed and correct at a money barrier.
-        const failureBefore = this.#failure;
-        await this.#emitDurable({
-          ...draft,
-          type: 'cost:attempt_settled',
-          runId: this.runId,
-          // The total CAPTURED AT `record()` TIME, passed in — deliberately not a fresh read of
-          // `#cumulativeCostMicrocents` here. `#nodeEmit`'s `cost:updated` arm folds the charge into the
-          // counter and the turn core records strictly after that, so the captured value satisfies
-          // `refineCostAttemptSettled`'s "cumulative already includes this charge" by construction. Reading it
-          // HERE would not: this callback is chained behind the previous write's `persistEvent`, so under a
-          // `fan_out` — concurrent nodes sharing one chain — it can run after several more attempts have
-          // settled and report their money as this attempt's running total.
-          cumulativeCostMicrocents,
-        });
-        if (this.#failure !== failureBefore) {
-          // Typed, not a bare `Error` (error-handling.md). `#emitDurable` discards the store error in its own
-          // catch, so there is no `cause` left to preserve — the run's `#failure` carries the user-facing
-          // reason instead, and this class exists to keep the node attribution that would otherwise be lost
-          // when the chain flattens a `preAttempt` throw.
-          throw new LedgerDurabilityError(
-            new Error('the run failed while this realized charge was being made durable'),
-            draft.nodeId,
-          );
+        // Each required money append observes its own store ACK, independently of earlier failures,
+        // cancellation and ownership refusal. A total ordinary writer is not a money durability ACK.
+        const acknowledgement = await this.#emitDurable(
+          {
+            ...draft,
+            type: 'cost:attempt_settled',
+            runId: this.runId,
+            // The total CAPTURED AT `record()` TIME, passed in — deliberately not a fresh read of
+            // `#cumulativeCostMicrocents` here. `#nodeEmit`'s `cost:updated` arm folds the charge into the
+            // counter and the turn core records strictly after that, so the captured value satisfies
+            // `refineCostAttemptSettled`'s "cumulative already includes this charge" by construction. Reading it
+            // HERE would not: this callback is chained behind the previous write's `persistEvent`, so under a
+            // `fan_out` — concurrent nodes sharing one chain — it can run after several more attempts have
+            // settled and report their money as this attempt's running total.
+            cumulativeCostMicrocents,
+          },
+          { receipt: true },
+        );
+        if (acknowledgement.kind !== 'persisted') {
+          throw new DurableAppendNotPersistedError(acknowledgement);
         }
       },
       ...(params.plan.budget === undefined
@@ -663,7 +834,13 @@ class RunExecution {
       this.#budgetGovernor = new BudgetGovernor({
         budget: params.plan.budget,
         defaultMaxTokensEstimate: this.#maxTokensEstimate,
-        emit: (draft) => this.#emitDurable({ ...draft, runId: this.runId }),
+        emit: async (draft) => {
+          const acknowledgement = await this.#emitDurable({ ...draft, runId: this.runId });
+          // Warning delivery remains best-effort; a required conservative commitment does not.
+          if (draft.type === 'budget:estimate_committed' && acknowledgement.kind !== 'persisted') {
+            throw new DurableAppendNotPersistedError(acknowledgement);
+          }
+        },
         ...(params.resolvePrice === undefined ? {} : { resolvePrice: params.resolvePrice }),
         ...(params.resolveEndpoint === undefined
           ? {}
@@ -712,7 +889,10 @@ class RunExecution {
         this.#states.set(id, { status: 'pending' });
       }
     } else {
+      this.#checkpoint = params.checkpoint;
       this.#seedFromCheckpoint(params.plan, params.checkpoint, params.bus, params.runId);
+      for (const [nodeId, started] of params.restoredNodeDeadlineStarts ?? [])
+        this.#nodeDeadlineStartMs.set(nodeId, started);
     }
     this.handle = createRunHandle(
       params.bus,
@@ -734,6 +914,10 @@ class RunExecution {
       (close) => {
         this.#closeStream = close;
       },
+      (read) => {
+        this.#readPrimary = read;
+      },
+      () => this.#depart(),
     );
   }
 
@@ -809,11 +993,20 @@ class RunExecution {
 
   // --- lifecycle ------------------------------------------------------------------------------
 
-  async begin(): Promise<void> {
-    this.#startEpochMs = Date.parse(this.#host.clock.now());
-    this.#armRunTimeout();
+  begin(): Promise<void> {
+    // A terminal may be published while workflow-id/context/claim work is still pending. Own the
+    // complete continuation before entering any host port; retirement joins it outside this root.
+    return this.#hostWork.invoke(() => this.#begin());
+  }
+
+  async #begin(): Promise<void> {
     try {
+      this.#startEpochMs = Date.parse(this.#host.clock.now());
+      if (this.#settled || this.#abort.signal.aborted) return;
+      this.#armRunTimeout();
+      if (this.#settled || this.#abort.signal.aborted) return;
       this.#workflowId = await this.#host.store.resolveWorkflowId(this.#workflow.workflow.id);
+      if (this.#settled || this.#abort.signal.aborted) return;
       await this.#emitDurable({
         type: 'run:started',
         runId: this.runId,
@@ -821,6 +1014,7 @@ class RunExecution {
         inputs: this.#maskedInputs,
         executionMode: this.#executionMode,
       });
+      if (this.#settled || this.#abort.signal.aborted) return;
       // **Ownership is taken right AFTER `run:started`, not before it — a deviation from ADR-0079 §3 that
       // the FK forced, recorded rather than quietly absorbed.** §3 said the lease row is created inside the
       // same transaction as the fold; `run_leases.run_id` references `runs.id`, and that row only exists
@@ -848,6 +1042,9 @@ class RunExecution {
         await this.#settle('run:failed');
         return;
       }
+      // An acquisition already entered before cancellation still owes exact-fence cleanup. Keep
+      // that returned claim for retirement, but do not enter context or dispatch after it resolves.
+      if (this.#settled || this.#abort.signal.aborted) return;
     } catch (error) {
       // Could not even start the run (e.g. the store rejected) — close with the single terminal event
       // rather than leaving a started-but-never-finished run. Never swallowed: it becomes run:failed.
@@ -869,6 +1066,7 @@ class RunExecution {
       await this.#settle(this.#cancelling ? 'run:cancelled' : 'run:failed');
       return;
     }
+    if (this.#settled || this.#abort.signal.aborted) return;
     this.#schedule();
   }
 
@@ -878,6 +1076,7 @@ class RunExecution {
    */
   #armRunTimeout(): void {
     this.#disarmRunTimeout();
+    if (this.#settled || this.#abort.signal.aborted) return;
     const timeoutMs = this.#plan.timeoutMs;
     if (timeoutMs === undefined) {
       return;
@@ -902,13 +1101,21 @@ class RunExecution {
     // half had this clamp from the Step 3 review and the run half twenty-five lines away did not; same
     // exposure, same one-line fix, simply not carried across.
     const remainingMs = Math.max(0, Math.min(timeoutMs, timeoutMs - this.#elapsedMs()));
-    this.#runTimeoutDisarm = armLongTimer(
+    if (this.#settled || this.#abort.signal.aborted) return;
+    const disarm = armLongTimer(
       remainingMs,
       () => {
-        void this.#onRunTimeout(timeoutMs);
+        this.#runTimerActor(() => this.#onRunTimeout(timeoutMs));
       },
       (ms, fire) => this.#host.setTimer(ms, fire, 'work'),
     );
+    // A host timer factory can reenter cancellation before returning its cleanup receipt. The
+    // terminal sweep cannot see that receipt yet, so dispose it here instead of installing it late.
+    if (this.#settled || this.#abort.signal.aborted) {
+      disarm();
+      return;
+    }
+    this.#runTimeoutDisarm = disarm;
   }
 
   /**
@@ -916,7 +1123,8 @@ class RunExecution {
    * called from several sites and a re-entrant arm would double-count the window.
    */
   #armGraceWindow(): void {
-    if (this.#graceDisarm !== undefined || this.#settled) {
+    // A seeded checkpoint is still passive: no node or poll needs a grace backstop yet.
+    if (this.#graceDisarm !== undefined || this.#settled || this.#checkpoint !== undefined) {
       return;
     }
     this.#graceDisarm = this.#host.setTimer(
@@ -927,18 +1135,20 @@ class RunExecution {
         // so it must not itself become the reason there is none: an unhandled rejection here is fatal under
         // Node's default `--unhandled-rejections=throw`, and it would kill the process mid-run rather than
         // settle it.
-        void this.#onGraceElapsed().catch(() => {
-          if (!this.#settled && this.#failure === undefined && !this.#cancelling) {
-            this.#failure = {
-              error: {
-                code: 'internal',
-                message: 'the grace-window backstop failed while abandoning the run',
-                retryable: false,
-              },
-            };
-          }
-          this.#schedule();
-        });
+        this.#runTimerActor(() =>
+          this.#onGraceElapsed().catch(() => {
+            if (!this.#settled && this.#failure === undefined && !this.#cancelling) {
+              this.#failure = {
+                error: {
+                  code: 'internal',
+                  message: 'the grace-window backstop failed while abandoning the run',
+                  retryable: false,
+                },
+              };
+            }
+            this.#schedule();
+          }),
+        );
       },
       // A backstop over work already in flight, not something the run is parked ON — the same role
       // `CR-21b`/`CR-21c` gave the media bounds, and the reason `TimerKind` has a third member at all.
@@ -979,7 +1189,7 @@ class RunExecution {
     const disarm = armLongTimer(
       remainingMs,
       () => {
-        void this.#onGateTimeout(gate.gateId, gate.nodeId, action);
+        this.#runTimerActor(() => this.#onGateTimeout(gate.gateId, gate.nodeId, action));
       },
       (ms, fire) => this.#host.setTimer(ms, fire, 'work'),
     );
@@ -996,7 +1206,7 @@ class RunExecution {
   /**
    * The grace window elapsed and the run has still not settled — stop waiting for the executor.
    *
-   * Every vertex still `running` is settled `node:failed` FIRST, so the durable log has no `node:started`
+   * Every entered start still `running` is settled `node:failed` FIRST, so the durable log has no `node:started`
    * without a partner (ADR-0085 §4) and `step_executions` stays consistent. The message is fixed text
    * rather than free prose because `cancelled` alone would read as "the user cancelled this node", when
    * what happened is that the engine stopped waiting.
@@ -1019,7 +1229,7 @@ class RunExecution {
     // the late arrival instead of leaking a timer past the terminal.
     for (const vertexId of this.#nodeDeadlineDisarm.keys()) this.#disarmNodeDeadline(vertexId);
     for (const [vertexId, state] of this.#states) {
-      if (state.status !== 'running') continue;
+      if (state.status !== 'running' || this.#unstartedClaims.has(vertexId)) continue;
       const vertex = this.#plan.vertices.get(vertexId);
       if (vertex === undefined) continue;
       // Through `#settleFailed`, not a hand-rolled draft. A first version wrote the event inline and it
@@ -1152,6 +1362,7 @@ class RunExecution {
    * conservative and names the tier, so the follow-up is visible rather than silently assumed.
    */
   async #effectResumeGateOrFail(): Promise<boolean> {
+    if (this.#failure !== undefined || this.#cancelling || this.#abort.signal.aborted) return false;
     if (this.#effectResume === undefined) return true;
     let blocking: readonly UnresolvedEffect[];
     try {
@@ -1159,20 +1370,26 @@ class RunExecution {
       // path, and it is also more correct: a node RENAMED between the crash and the resume leaves rows
       // under an id a per-node loop would never think to ask about, and an orphaned row should block.
       blocking = await this.#effectResume.unresolvedForRun(this.runId);
-    } catch (error) {
+      if (this.#failure !== undefined || this.#cancelling || this.#abort.signal.aborted)
+        return false;
+    } catch {
+      if (this.#failure !== undefined || this.#cancelling || this.#abort.signal.aborted)
+        return false;
       // A read that FAILS is not "nothing is blocking" — the same answer ADR-0075 gives for an unreadable
       // event log. Refusing on an unreadable journal is the only honest option: the alternative is resuming
       // a run whose external effects are unknown.
+      this.#effectHealth.requireAttention();
       this.#failure = {
         error: {
           code: 'effect_needs_attention',
-          message: `the effect journal could not be read, so this run cannot be resumed safely: ${error instanceof Error ? error.message : String(error)}`,
+          message: 'the effect journal could not be read, so this run cannot be resumed safely',
           retryable: false,
         },
       };
       return false;
     }
     if (blocking.length === 0) return true;
+    this.#effectHealth.requireAttention();
     this.#failure = {
       error: {
         code: 'effect_needs_attention',
@@ -1193,7 +1410,12 @@ class RunExecution {
    * Rehydrate ONE parked media job (ADR-0045 §2-3, ADR-0074 §3) — extracted from `#seedFromCheckpoint` so that
    * method stays inside its complexity budget. The whole of §3's frozen-vs-legacy branch lives here.
    */
-  #restoreParkedMediaJob(plan: RunPlan, cp: CheckpointState, job: CheckpointPendingMediaJob): void {
+  #restoreParkedMediaJob(
+    plan: RunPlan,
+    cp: CheckpointState,
+    job: CheckpointPendingMediaJob,
+    poll = true,
+  ): void {
     const vertex = plan.vertices.get(job.nodeId);
     // The agent branch is the only one ever taken in practice — a media job is ALWAYS sourced from an agent
     // vertex (executeGenerativeMedia), so `generativeUnits` (which honors the authored count/duration_seconds,
@@ -1219,12 +1441,16 @@ class RunExecution {
     // fail-closed rather than trusted.
     let admission: BudgetAdmission | undefined;
     if (job.acceptedCostMicrocents === undefined) {
-      admission = this.#budgetGovernor?.reserveCommittedEgress(
-        job.model,
-        0,
-        [{ modality: job.modality, units }],
-        job.provider,
-      );
+      admission = this.#budgetGovernor?.reserveCommittedEgress({
+        route: 'generative-media',
+        model: job.model,
+        provider: job.provider,
+        endpoint: 'official',
+        inputTokensEstimate: 0,
+        maxTokens: 0,
+        outputTokensEstimate: 0,
+        mediaUnitsEstimate: [{ modality: job.modality, units }],
+      });
       // The reservation above is a re-price from TODAY's catalog, so it may be lower than what the provider
       // will actually bill. Register the node as an unknown basis: with a cap configured the governor then
       // refuses NEW egress until this job settles, rather than admitting spend against headroom that may not
@@ -1247,7 +1473,7 @@ class RunExecution {
       backoffMs: MEDIA_JOB_POLL_DEFAULTS.pollInitialMs,
       ...(admission === undefined ? {} : { admission }),
     });
-    this.#armMediaPoll(job.nodeId);
+    if (poll) this.#armMediaPoll(job.nodeId);
   }
 
   /** Seed `#states` / `#pendingGates` / tallies / the bus sequence from a checkpoint (rehydration, 1.R). */
@@ -1288,8 +1514,12 @@ class RunExecution {
       this.#pendingGates.set(gate.gateId, {
         vertexId: gate.nodeId,
         isBudgetGate: gate.isBudgetGate,
+        acknowledged: true,
+        ...(gate.allowance === undefined ? {} : { allowance: gate.allowance }),
+        ...(gate.timeoutMs === undefined ? {} : { timeoutMs: gate.timeoutMs }),
+        ...(gate.timeoutAction === undefined ? {} : { timeoutAction: gate.timeoutAction }),
+        ...(gate.expiresAt === undefined ? {} : { expiresAt: gate.expiresAt }),
       });
-      this.#reArmGateDeadline(gate);
     }
     // Re-seed totals BEFORE restoring submitted-job reservations: a committed job must reserve alongside the
     // checkpoint's known spend, and its reservation must exist before the first re-armed poll/schedule can run.
@@ -1306,18 +1536,8 @@ class RunExecution {
     // precede the `reserveCommittedEgress` loop below, whose admissions project against this total.
     this.#budgetGovernor?.restoreConservativeCost(cp.conservativeCostMicrocents);
 
-    // Re-attach each parked async media job (MJ-1, ADR-0045 §3): re-register it + RE-ARM a poll of the
-    // persisted opaque jobId. NEVER re-call generateMedia — the node is `'paused'` (applyMediaJobEvent set it),
-    // not absent, so it is not re-run via the `'pending'` path; this overrides the checkpoint
-    // running-at-crash-re-runs default for the async-media node specifically. `units` IS persisted on the event
-    // since ADR-0074 §3; the node-config recompute (count/duration_seconds) below survives only as the LEGACY
-    // fallback for rows written before it.
-    // Unlike a gate (whose decision arrives externally), a media job has no external trigger — only the
-    // engine's own re-poll advances it, so the re-arm is unconditional here. A past-deadline job is
-    // short-circuited to a timeout by the first `#pollMediaJob` (which checks `now > deadlineAt`).
-    for (const job of cp.pendingMediaJobs) {
-      this.#restoreParkedMediaJob(plan, cp, job);
-    }
+    // Constructor seeding is passive: no gate timer, media poll, reservation or host notice.
+    // Admission activates the checkpoint only after its validation and effect preflight.
     // Suppress a DUPLICATE `run:paused` on resume ONLY when the prior process actually announced one — i.e. the
     // checkpoint's runStatus is already `'paused'` (L2). In the CRASH-IN-WINDOW case (`media_job:submitted`
     // persisted but `run:paused` not — RUN_STATUS_BY_EVENT has no entry for `media_job:submitted`, so runStatus
@@ -1326,6 +1546,7 @@ class RunExecution {
     // in `resume()`; `#clearMediaJob` resets it when a job settles — so a genuinely later pause still emits.
     if (cp.pendingMediaJobs.length > 0 && cp.runStatus === 'paused') {
       this.#pauseEpisode = true;
+      this.#pauseGeneration = 1;
     }
     for (const gateId of cp.resolvedGateIds) {
       this.#resolvedGates.add(gateId);
@@ -1342,6 +1563,33 @@ class RunExecution {
     this.#startEpochMs = cp.startedAtMs;
   }
 
+  #activateCheckpoint(excludedGateId?: string): void {
+    const cp = this.#checkpoint;
+    if (cp === undefined) return;
+    this.#armRestoredNodeDeadlines();
+    this.#checkpoint = undefined;
+    const rejected = cp.budgetRejections[0];
+    if (rejected !== undefined && this.#failure === undefined && !this.#cancelling) {
+      this.#failure = {
+        nodeId: rejected.nodeId,
+        error: {
+          code: 'budget_exceeded',
+          message: 'the recorded budget gate was rejected',
+          retryable: false,
+        },
+      };
+      this.#abort.abort();
+    }
+    const admitted =
+      this.#failure === undefined && !this.#cancelling && !this.#abort.signal.aborted;
+    for (const gate of cp.pendingGates) {
+      if (admitted && gate.gateId !== excludedGateId) this.#reArmGateDeadline(gate);
+    }
+    for (const job of cp.pendingMediaJobs)
+      this.#restoreParkedMediaJob(this.#plan, cp, job, admitted);
+    if (admitted) this.#armRunTimeout();
+  }
+
   /**
    * Drive a rehydrated run (resume entry, 1.R). Order matters:
    * 1. Validate the gate FIRST (non-kick path) — an invalid resume request (`unknown_gate` /
@@ -1355,8 +1603,32 @@ class RunExecution {
    *    apply the decision via {@link resume}. The terminal-checkpoint case never reaches here (closed handle).
    */
   /** Adopt the fence the engine acquired on the resume path, and start heartbeating it (ADR-0079 §4). */
-  adoptLease(fence: RunFence): void {
-    void this.#acquireLease(fence);
+  adoptLease(fence: RunFence, heartbeat = true): void {
+    this.#fence = fence;
+    this.#ownership = 'held';
+    if (heartbeat) this.#startHeartbeat();
+  }
+
+  /** Passive context/effect admission: no execution registration, timer, reservation or egress. */
+  async prepareResumeAdmission(): Promise<boolean> {
+    if (this.#resumePreparation === undefined && !(await this.#resolveContextOrFail()))
+      return false;
+    if (!(await this.#effectResumeGateOrFail())) return false;
+    const cached = this.#resumePreparation;
+    if (cached !== undefined)
+      this.#assertCurrentBudgetQuote(
+        this.#assertGatePending(cached.gateId),
+        cached.preparation,
+        cached.gateId,
+      );
+    this.#resumeAdmitted = true;
+    return true;
+  }
+
+  /** The sole ordered writer still owns a refused resume's terminal and paid-job accounting. */
+  async refuseResume(): Promise<void> {
+    this.#activateCheckpoint();
+    await this.#settle(this.#cancelling ? 'run:cancelled' : 'run:failed');
   }
 
   async beginResume(
@@ -1364,37 +1636,33 @@ class RunExecution {
     decision: GateDecision,
     gateAlreadyResolved: boolean,
   ): Promise<void> {
-    // #startEpochMs was seeded from the checkpoint in #seedFromCheckpoint (preserves total durationMs).
-    this.#armRunTimeout();
-    if (!gateAlreadyResolved) {
-      this.#assertGatePending(gateId); // fail fast on a bad gateId, before any context side effect
-    }
-    // **Disarm THIS gate's timer synchronously, before any await — the decision has already arrived.**
-    // `CR-22` re-arms a deadline for every rehydrated gate, and that is its point: a run resumed ten times
-    // must not renew the patience its author granted. But the gate this resume TARGETS is different — its
-    // decision was handed to `resumeFromCheckpoint` before the timer existed, which is exactly the case
-    // `execution-model.md` covers with "a decision that arrives first disarms the timer".
-    //
-    // Without this line the two race, and a past-deadline gate arms at zero so the timer is already due.
-    // The window is the two awaits below (`#resolveContextOrFail`, `#effectResumeGateOrFail`), which run
-    // before `resume()` claims the gate, while `#onGateTimeout` still sees it pending. Measured: with a
-    // macrotask inside that window and `timeout_action: approve`, a caller's explicit `rejected` was
-    // recorded as `human_gate:resumed{decision:'approved', decidedBy:'timeout'}` — a human's refusal
-    // rewritten as an approval attributed to a timer. Unreachable on today's synchronous better-sqlite3
-    // CLI, where both awaits settle in microtasks; live the moment any of these `Promise`-typed seams does
-    // real I/O, which is what Phase-2's Postgres `EffectResumePort` is.
-    //
-    // Idempotent, so the `gateAlreadyResolved` kick path takes it harmlessly. Every OTHER pending gate
-    // keeps its re-armed deadline, which is what `CR-22` exists to restore.
-    this.#disarmTimer(gateId);
-    if (!(await this.#resolveContextOrFail())) {
+    if (!gateAlreadyResolved) this.#assertGatePending(gateId);
+    if (!this.#resumeAdmitted && !(await this.#resolveContextOrFail())) {
       await this.#settle(this.#cancelling ? 'run:cancelled' : 'run:failed');
       return;
     }
     // AFTER context resolution and BEFORE the gate decision is applied. Applying a decision first would let
     // an approval spend money on a run the next line refuses anyway; refusing first would report a journal
     // problem for a run whose inputs do not even resolve.
-    if (!(await this.#effectResumeGateOrFail())) {
+    if (!this.#resumeAdmitted && !(await this.#effectResumeGateOrFail())) {
+      await this.#settle('run:failed');
+      return;
+    }
+    this.#armRestoredNodeDeadlines();
+    if (this.#failure !== undefined) {
+      this.#activateCheckpoint(gateId);
+      await this.#settle('run:failed');
+      return;
+    }
+    const budget = !gateAlreadyResolved && this.#assertGatePending(gateId).isBudgetGate;
+    if (budget && this.#checkpoint?.budgetRejections.length === 0) {
+      await this.resume(gateId, decision, true);
+      this.#activateCheckpoint(gateId);
+      this.#schedule();
+      return;
+    }
+    this.#activateCheckpoint(gateId);
+    if (this.#failure !== undefined) {
       await this.#settle('run:failed');
       return;
     }
@@ -1407,13 +1675,12 @@ class RunExecution {
 
   /**
    * Resume a run suspended ONLY on async media job(s) (1.AG Section D, ADR-0045 §3) — no gate decision. The
-   * media jobs were already re-attached + re-armed by `#seedFromCheckpoint` (MJ-1); this just re-resolves the
-   * workflow context (not checkpointed) and kicks the loop, which the armed poll timers then advance. A run
+   * checkpoint is seeded passively; admitted context/effect preflight precedes re-attachment,
+   * polling and the scheduler. A run
    * with no pending media job AND no pending gate is a misuse (`run_not_paused`).
    */
   async beginResumeMediaJobs(): Promise<void> {
-    this.#armRunTimeout();
-    if (this.#pendingMediaJobs.size === 0) {
+    if ((this.#checkpoint?.pendingMediaJobs.length ?? this.#pendingMediaJobs.size) === 0) {
       // A media-only resume REQUIRES a parked media job. A run parked ONLY on a human gate must be resumed via
       // the gate form (gateId + decision) — resuming it here would silently re-park it forever (no decision).
       throw new EngineStateError(
@@ -1427,50 +1694,44 @@ class RunExecution {
       // decision (the media-only resume form). Re-attaching the media job alone would leave the gate
       // unresolved: after the job settles the run would silently re-park on the gate with no caller signal.
       // Reject the misuse eagerly — the caller must pass the gate's gateId + decision (which advances the gate
-      // while `#seedFromCheckpoint` independently re-attaches the media job).
+      // before checkpoint activation independently re-attaches the media job).
       throw new EngineStateError(
         'pending_gate_requires_decision',
         "the run is also parked on a human gate — resume with that gate's gateId + decision (a media-only resume cannot resolve it)",
         { runId: this.runId },
       );
     }
-    if (!(await this.#resolveContextOrFail())) {
+    if (!this.#resumeAdmitted && !(await this.#resolveContextOrFail())) {
       await this.#settle(this.#cancelling ? 'run:cancelled' : 'run:failed');
       return;
     }
     // The media-only resume takes the SAME gate. A run parked on a media job can still have a crashed
     // effectful node elsewhere in the graph, and this path used to be the untested twin that skipped
     // every guard the gate form got.
-    if (!(await this.#effectResumeGateOrFail())) {
+    if (!this.#resumeAdmitted && !(await this.#effectResumeGateOrFail())) {
       await this.#settle('run:failed');
       return;
     }
+    this.#activateCheckpoint();
     this.#schedule();
   }
 
   /**
    * Tear down a half-initialized execution that is being REJECTED before it ever ran for the caller — an
-   * invalid `resumeFromCheckpoint` form whose validation guard threw AFTER the constructor's
-   * `#seedFromCheckpoint` armed the parked jobs' media-poll timers (and after `beginResume*` armed the
-   * run-timeout). Disarm every armed timer + abort so NO orphaned poll later hits the provider for a run the
-   * caller saw rejected (which would also let a natural retry double-attach the same opaque jobId). Emits
+   * invalid `resumeFromCheckpoint` form or a later activation fault. Constructor seeding is passive;
+   * any work installed during activation is disarmed and its signal aborted. Entered host work is joined
+   * before the facade can release its fence or let the caller close the host. Emits
    * NOTHING and runs no terminal — it is an abandon, not a settle; the façade drops the execution from `#runs`.
    */
-  abandon(): void {
-    if (this.#settled) {
-      return; // already torn down (a real settle ran) — idempotent
-    }
+  async abandon(): Promise<void> {
     this.#settled = true; // any straggler timer callback now short-circuits on the #settled guard
+    // An entered heartbeat checks retirement after its raw ACK. `settled` alone deliberately permits
+    // ordinary terminal heartbeats until receipts finish, so abandonment must close that admission too.
+    this.#retiringHost = true;
+    this.#disarmPausedTimers(); // includes partially restored node deadlines and quiescing media timers
     this.#abort.abort();
-    this.#stopHeartbeat();
-    for (const disarm of this.#gateTimers.values()) {
-      disarm();
-    }
-    this.#gateTimers.clear();
-    for (const disarm of this.#mediaJobTimers.values()) {
-      disarm();
-    }
-    this.#mediaJobTimers.clear();
+    this.#checkpoint = undefined;
+    this.#clearBudgetDispatchState();
     // ADR-0074 §3: release every unknown-basis HOLD before dropping the jobs. A `checkPreEgress` awaiting a job
     // that will now never settle would hang forever — worse than either failing or admitting. This is the reason
     // the bulk paths cannot simply drop the map.
@@ -1478,11 +1739,25 @@ class RunExecution {
       this.#budgetGovernor?.clearLegacyMediaJob(nodeId);
     }
     this.#pendingMediaJobs.clear();
-    this.#disarmRunTimeout();
+    // No new runtime root can enter, but existing raw actors may still transfer children/receipts.
+    // Observe actual quiescence rather than mistaking abort or the failed activation for their ACK.
+    do {
+      await this.#hostWork.join();
+      await this.#money.waitForWrites();
+      await this.#deliveryTail;
+      await this.#parkingWork;
+    } while (!this.#hostWork.isIdle);
+    await this.#hostRetirement;
+  }
+
+  /** Latch cancellation during passive admission, without scheduling before an owned execution exists. */
+  cancelResumePreparation(): void {
+    this.#cancelling = true;
+    this.#abort.abort();
   }
 
   requestCancel(): void {
-    if (this.#settled) {
+    if (this.#settled || this.#retiringHost) {
       throw new EngineStateError('run_already_terminal', 'the run has already terminated', {
         runId: this.runId,
       });
@@ -1496,10 +1771,7 @@ class RunExecution {
   }
 
   /** The pending gate for `gateId`, or throw the typed misuse (`run_not_paused` / `unknown_gate`). */
-  #assertGatePending(gateId: string): {
-    readonly vertexId: string;
-    readonly isBudgetGate: boolean;
-  } {
+  #assertGatePending(gateId: string): PendingGate {
     if (this.#pendingGates.size === 0) {
       throw new EngineStateError('run_not_paused', 'the run has no pending gate to resume', {
         runId: this.runId,
@@ -1516,7 +1788,11 @@ class RunExecution {
     return gate;
   }
 
-  async resume(
+  resume(gateId: string, decision: GateDecision, alreadyGated = false): Promise<void> {
+    return this.#hostWork.invoke(() => this.#resume(gateId, decision, alreadyGated));
+  }
+
+  async #resume(
     gateId: string,
     decision: GateDecision,
     /** Set by `beginResume`, which already ran the effect gate — see the note at the claim below. */
@@ -1528,7 +1804,7 @@ class RunExecution {
       // completed is a no-op, not a `run_already_terminal` error.
       return;
     }
-    if (this.#settled) {
+    if (this.#settled || this.#retiringHost) {
       throw new EngineStateError('run_already_terminal', 'the run has already terminated', {
         runId: this.runId,
         gateId,
@@ -1542,6 +1818,10 @@ class RunExecution {
     // `EngineStateError('run_not_paused')` instead. A review reproduced it with two concurrent `resume()`
     // calls and no journal wired at all: the mere fact that the gate check is `async` was enough.
     const gate = this.#assertGatePending(gateId);
+    if (gate.isBudgetGate) {
+      await this.#resumeBudgetGate(gateId, gate, decision, alreadyGated);
+      return;
+    }
     this.#resolvedGates.add(gateId);
     // …and only now, holding the claim, the effect gate. **`#pendingGates.delete` stays BELOW this await**,
     // and that ordering is load-bearing in the other direction: with the gate already removed, the idle
@@ -1562,7 +1842,6 @@ class RunExecution {
       await this.#settle('run:failed');
       return;
     }
-    this.#pendingGates.delete(gateId);
     this.#disarmTimer(gateId); // a decision arrived before the timeout — cancel the armed timer (1.Q)
     this.#pauseEpisode = false; // a later idle-with-gates re-emits run:paused for the remaining gates
     // Re-take ownership **only if the pause actually released it** (§4), because a parked run is not being
@@ -1579,25 +1858,17 @@ class RunExecution {
     // kept because `resume()` mutates gate state before its first write.
     if (this.#ownership === 'parked' && !(await this.#reclaim())) return;
 
-    // A budget gate's two decisions (reject ⇒ a run-level budget failure; approve ⇒ continue the deferred
-    // pre-egress call) resolve in #resolveBudgetGate; a `true` return means it owned this gate — then only
-    // #schedule(). Kept out of line so resume()'s cognitive complexity stays in budget (sonar S3776).
-    if (await this.#resolveBudgetGate(gate, decision)) {
-      this.#schedule();
-      return;
-    }
-
-    // Mark the gate vertex completed SYNCHRONOUSLY before the await — mirroring #settleCompleted — so a
-    // concurrent #step (e.g. a sibling gate's timeout firing during this persist) never sees this gate as
-    // still `paused` while it is already out of #pendingGates, which would mis-read the run as stalled.
+    // Keep the claimed gate pending through media preparation, then remove it and mark its vertex
+    // completed synchronously before the decision append. A concurrent idle pass must never see a
+    // paused vertex with no pending gate while the pin awaits.
     // PIN the payload's media before it enters the scope (`CR-54`). A gate payload is a first resolution
     // like any node output — a human uploads a file, a surface attaches one — and it took the one route
     // into `#states` that `#settleCompleted` does not cover, so without this the durable event said
     // "handle" while the running run held a url, and the two could resolve to different bytes.
     //
     // Before the status write, because the pin awaits and that write must stay on one tick with the emit
-    // below. A throw here is fatal for the run but must still `#schedule()`: the gate is already out of
-    // `#pendingGates` and its timer disarmed, so returning early would strand the run with no terminal.
+    // below. A throw here is fatal for the run but must still `#schedule()`: the decision is claimed
+    // and its timer disarmed, so returning early would strand the run with no terminal.
     let gateOutput: unknown;
     try {
       gateOutput = await this.#pinMediaValue(
@@ -1612,6 +1883,17 @@ class RunExecution {
       this.#schedule();
       return;
     }
+    // Host pinning may finish after cancellation, a deadline or ownership loss closed the run.
+    // The claimed decision must not revive its vertex, retain media or publish a late success.
+    if (
+      this.#settled ||
+      this.#cancelling ||
+      this.#abort.signal.aborted ||
+      this.#states.get(gate.vertexId)?.status !== 'paused'
+    ) {
+      return;
+    }
+    this.#pendingGates.delete(gateId);
     const state = this.#states.get(gate.vertexId);
     if (state !== undefined) {
       state.status = 'completed';
@@ -1677,71 +1959,207 @@ class RunExecution {
     }
   }
 
-  /**
-   * Apply a decision to a BUDGET gate (the pre-egress governor's pause). Returns `true` when `gate` was a
-   * budget gate AND the decision was handled here (the caller then only {@link resume}-schedules); `false`
-   * to fall through to the general completed-gate path. Both arms only persist — the schedule()/return is
-   * the caller's. Split out of resume() to keep its cognitive complexity in budget (sonar S3776).
-   */
-  async #resolveBudgetGate(
-    gate: { readonly vertexId: string; readonly isBudgetGate: boolean },
+  #canAuthorizeBudget(): boolean {
+    return (
+      !this.#settled &&
+      !this.#cancelling &&
+      this.#failure === undefined &&
+      !this.#noNewDispatch &&
+      !this.#abort.signal.aborted &&
+      this.#ownership === 'held'
+    );
+  }
+
+  #clearBudgetDispatchState(): void {
+    this.#resumePreparation = undefined;
+    this.#budgetApprovals.clear();
+    for (const token of this.#dispatchAllowances.values())
+      this.#budgetGovernor?.closeDispatchAllowance(token);
+    this.#dispatchAllowances.clear();
+  }
+
+  async #resumeBudgetGate(
+    gateId: string,
+    gate: PendingGate,
     decision: GateDecision,
-  ): Promise<boolean> {
-    if (!gate.isBudgetGate) {
-      return false;
-    }
-    const state = this.#states.get(gate.vertexId);
-    // A rejected budget gate is a run-level budget failure, not a completed gate vertex.
-    if (decision.decision === 'rejected') {
-      if (state !== undefined) {
-        state.status = 'failed';
+    alreadyGated: boolean,
+  ): Promise<void> {
+    if (!gate.acknowledged)
+      throw new EngineStateError('invalid_decision', 'budget authorization is not yet durable', {
+        runId: this.runId,
+        gateId,
+      });
+    const amountMicrocents = budgetApprovalAmount(gate, decision, this.runId, gateId);
+    let preparation: BudgetDispatchPreparation | undefined;
+    if (decision.decision === 'approved' && amountMicrocents !== undefined) {
+      const prepare = this.#executor.prepareBudgetDispatch?.bind(this.#executor);
+      if (prepare === undefined || this.#budgetGovernor === undefined) {
+        throw new EngineStateError(
+          'invalid_decision',
+          'this executor cannot prepare the quoted budget dispatch; reject remains available',
+          { runId: this.runId, gateId },
+        );
       }
-      this.#disarmNodeDeadline(gate.vertexId);
-      if (this.#failure === undefined && !this.#cancelling) {
-        this.#failure = {
+      const cached = this.#resumePreparation;
+      if (cached?.gateId === gateId) {
+        preparation = cached.preparation;
+      } else {
+        let result: import('./node-executor.js').BudgetDispatchPreparationResult;
+        try {
+          result = await prepare.call(this.#executor, this.#budgetPreparationContext(gate));
+        } catch {
+          throw new EngineStateError(
+            'invalid_decision',
+            'the quoted budget dispatch could not be prepared; reject remains available',
+            { runId: this.runId, gateId },
+          );
+        }
+        if (this.#resolvedGates.has(gateId)) return;
+        if (result.kind !== 'prepared')
+          throw new EngineStateError(
+            'invalid_decision',
+            'the quoted budget dispatch could not be prepared; reject remains available',
+            { runId: this.runId, gateId },
+          );
+        preparation = result.preparation;
+      }
+    }
+    if (!alreadyGated && !(await this.#effectResumeGateOrFail())) {
+      this.#pendingGates.delete(gateId);
+      this.#resolvedGates.add(gateId);
+      this.#disarmTimer(gateId);
+      await this.#settle('run:failed');
+      return;
+    }
+    if (this.#resolvedGates.has(gateId)) return;
+    if (this.#assertGatePending(gateId) !== gate)
+      throw new EngineStateError(
+        'unknown_gate',
+        'the budget gate changed while preparing approval',
+        { runId: this.runId, gateId },
+      );
+    if (
+      this.#settled ||
+      this.#cancelling ||
+      this.#failure !== undefined ||
+      this.#abort.signal.aborted ||
+      this.#noNewDispatch
+    )
+      return;
+    // No await between the whole current quote check and the claim. A host price callback can re-enter.
+    if (preparation !== undefined) this.#assertCurrentBudgetQuote(gate, preparation, gateId);
+    if (
+      this.#resolvedGates.has(gateId) ||
+      this.#settled ||
+      this.#cancelling ||
+      this.#failure !== undefined ||
+      this.#abort.signal.aborted
+    )
+      return;
+    this.#resolvedGates.add(gateId);
+    this.#resumePreparation = undefined;
+    this.#disarmTimer(gateId);
+    try {
+      if (this.#ownership === 'parked' && !(await this.#reclaim())) return;
+      const authorization = BudgetAuthorizationStateSchema.parse({
+        state: 'decided',
+        allowance: gate.allowance ?? { kind: 'legacy_no_allowance' },
+        decision: decision.decision,
+        decidedBy: decision.decidedBy,
+        ...(amountMicrocents === undefined ? {} : { approvedAmountMicrocents: amountMicrocents }),
+        ...this.#gateDeadline(gate),
+      });
+      if (
+        !(await this.#emitBudgetAcknowledged({
+          type: 'budget:authorization',
+          runId: this.runId,
           nodeId: gate.vertexId,
-          error: {
-            code: 'budget_exceeded',
-            message: 'the budget gate was rejected',
-            retryable: false,
-          },
-        };
-        this.#abort.abort();
+          gateId,
+          authorization,
+        }))
+      )
+        return;
+      if (
+        !(await this.#emitBudgetAcknowledged({
+          type: 'human_gate:resumed',
+          runId: this.runId,
+          nodeId: gate.vertexId,
+          gateId,
+          decision: decision.decision,
+          decidedBy: decision.decidedBy,
+          ...(gate.allowance?.kind === 'frozen' ? { allowanceQuote: gate.allowance.quote } : {}),
+          ...(amountMicrocents === undefined ? {} : { approvedAmountMicrocents: amountMicrocents }),
+        }))
+      )
+        return;
+      if (decision.decision === 'rejected') {
+        this.#failGateResume(gate.vertexId, {
+          code: 'budget_exceeded',
+          message: 'the budget gate was rejected',
+          retryable: false,
+        });
+        this.#disarmNodeDeadline(gate.vertexId);
+      } else {
+        if (amountMicrocents !== undefined && preparation !== undefined)
+          this.#budgetApprovals.set(gate.vertexId, { amountMicrocents, preparation });
+        const state = this.#states.get(gate.vertexId);
+        if (state !== undefined) state.status = 'pending';
       }
-      await this.#emitDurable({
-        type: 'human_gate:resumed',
-        runId: this.runId,
-        nodeId: gate.vertexId,
-        decision: 'rejected',
-        decidedBy: decision.decidedBy,
-      });
-      return true;
+    } finally {
+      this.#pendingGates.delete(gateId);
+      this.#pauseEpisode = false;
+      this.#schedule();
     }
-    // An APPROVED budget gate must CONTINUE the deferred call (H3): the agent vertex paused pre-egress and
-    // produced no output, so completing it with the decision payload would short-circuit the call. Instead
-    // arm a one-shot pre-egress bypass for the vertex and re-dispatch it (reset to `pending` → `#claimReady`
-    // re-claims it). The first dispatch did no egress, so re-running is idempotent. Per the maintainer
-    // decision (continue the call, one-shot per RE-RUN — never per-LLM-call, which would re-pause and, since
-    // re-dispatch re-runs the turn from scratch, loop forever): `#runAttempt` consumes the one-shot so this
-    // ONE re-dispatched step runs to completion uncapped, then the cap re-arms for the next step. (A budget
-    // pause raised MID-tool-loop still re-runs the earlier in-turn calls on resume — the same limitation as
-    // "checkpoint/resume of a mid-tool-loop turn", deferred; the common first-call pause is exact.)
-    if (decision.decision === 'approved') {
-      this.#budgetApprovedVertices.add(gate.vertexId);
-      if (state !== undefined) {
-        state.status = 'pending';
-      }
-      await this.#emitDurable({
-        type: 'human_gate:resumed',
+  }
+
+  #gateDeadline(
+    gate: PendingGate,
+  ): Pick<CheckpointPendingGate, 'timeoutMs' | 'timeoutAction' | 'expiresAt'> {
+    return {
+      ...(gate.timeoutMs === undefined ? {} : { timeoutMs: gate.timeoutMs }),
+      ...(gate.timeoutAction === undefined ? {} : { timeoutAction: gate.timeoutAction }),
+      ...(gate.expiresAt === undefined ? {} : { expiresAt: gate.expiresAt }),
+    };
+  }
+
+  /** Await AND observe the actual append, then recheck the still-admitted owner after delivery. */
+  async #emitBudgetAcknowledged(draft: RunEventDraft): Promise<boolean> {
+    if (!this.#canAuthorizeBudget()) return false;
+    const acknowledgement = await this.#emitDurable(draft);
+    return acknowledgement.kind === 'persisted' && this.#canAuthorizeBudget();
+  }
+
+  #budgetPreparationContext(gate: PendingGate): NodePreparationContext {
+    const vertex = this.#plan.vertices.get(gate.vertexId);
+    if (vertex === undefined)
+      throw new EngineStateError('unknown_gate', 'budget gate has no vertex', {
         runId: this.runId,
-        nodeId: gate.vertexId,
-        decision: 'approved',
-        decidedBy: decision.decidedBy,
       });
-      return true;
-    }
-    // An 'input_provided' decision on a budget gate is not expected — fall through to the general path.
-    return false;
+    return {
+      vertex,
+      runOutputs: this.#completedOutputs(),
+      inputs: this.#inputs,
+      ctx: this.#resolvedContext,
+      secretInputNames: this.#secretInputNames,
+      toolPolicy: this.#workflow.workflow.tools ?? {},
+      signal: this.#abort.signal,
+      maxTokensEstimate: this.#maxTokensEstimate,
+    };
+  }
+
+  #assertCurrentBudgetQuote(
+    gate: PendingGate,
+    preparation: BudgetDispatchPreparation,
+    gateId: string,
+  ): void {
+    assertBudgetQuoteCurrent(
+      gate,
+      preparation,
+      gateId,
+      this.runId,
+      this.#plan.budget?.strict_cost_cap === true,
+      this.#resolvePrice,
+    );
   }
 
   // --- the scheduler --------------------------------------------------------------------------
@@ -1755,22 +2173,37 @@ class RunExecution {
   // invariant and skip-propagation robust against the interleaving of concurrent branch settlements.
 
   #schedule(): void {
+    if (this.#settled || this.#retiringHost) return;
     if (this.#scheduling) {
       this.#rerun = true; // a settlement landed while a step was in flight — re-evaluate after it
       return;
     }
     this.#scheduling = true;
-    void this.#loop();
+    void this.#hostWork.invoke(() => this.#loop());
   }
 
   async #loop(): Promise<void> {
+    let failed = false;
     try {
       do {
         this.#rerun = false;
         await this.#step();
       } while (this.#rerun && !this.#settled);
+    } catch {
+      // Lifetime observation handles the raw rejection, but does not supply its semantic outcome.
+      // A failed skip/publication must re-enter settlement without external cancel or a grace tick.
+      this.#failure ??= {
+        error: {
+          code: 'internal',
+          message: 'the run scheduler failed unexpectedly',
+          retryable: false,
+        },
+      };
+      failed = true;
+      this.#abort.abort();
     } finally {
       this.#scheduling = false;
+      if (failed) this.#schedule();
     }
   }
 
@@ -1778,6 +2211,8 @@ class RunExecution {
     if (this.#settled) {
       return;
     }
+    // A checkpoint approval can await its durable intent while sibling paid reservations stay passive.
+    if (this.#checkpoint !== undefined && this.#failure === undefined && !this.#cancelling) return;
     // Emit a durable `node:skipped` for each vertex the loop just dimmed — BEFORE any terminal settle —
     // so the event log is a complete, replayable record (1.R reconstructs a skipped vertex from this).
     for (const { id, reason } of this.#propagateSkips()) {
@@ -1843,46 +2278,135 @@ class RunExecution {
     }
     // The vertices are already marked `running` (claimed synchronously above), so these awaits cannot
     // make a later step see a transient "nothing running" view.
-    for (const vertex of ready) {
-      await this.handle.whenConsumersReady(); // coarse backpressure (no-drop)
-      this.#nodeDispatches += 1;
-      await this.#emitDurable({
-        type: 'node:started',
-        runId: this.runId,
-        nodeId: vertex.id,
-        nodeType: vertex.type,
-      });
-      // Re-read the latch AFTER the durable `node:started` write above: the grace window may have elapsed
-      // while it was pending, and a dispatch started past the cutoff is exactly what the latch forbids.
-      if (this.#noNewDispatch || this.#settled) {
-        return;
-      }
-      // **A dispatch may never float its rejection (Medium 9).** `#dispatch` is `async`, so even a
-      // SYNCHRONOUS fault before its `try` — a host whose `setTimer` throws, which `#armNodeDeadline` calls
-      // outside it — surfaces as a rejected promise here. Un-caught that is an `unhandledRejection` AND a
-      // terminal-less run: the node stays `running`, `#handleIdle` sees work in flight forever, and nothing
-      // ever publishes `run:failed`. Route it to the same settle every other node failure takes.
-      void this.#dispatch(vertex, 1).catch(async (cause: unknown) => {
-        const message = `dispatch failed unexpectedly: ${cause instanceof Error ? cause.message : String(cause)}`;
+    const unstarted = new Set(ready.map((vertex) => vertex.id));
+    try {
+      for (const vertex of ready) {
         try {
-          // The FULL settle, not just the in-memory flag: `#failNodeInternal` marks the state and aborts but
-          // emits no `node:failed`, so the graph never publishes this node's terminal. Measured — with the
-          // flag alone the run still hung.
-          await this.#settleFailed(vertex, { code: 'internal', message, retryable: false });
+          if (!(await this.#waitForConsumer())) return;
         } catch {
-          // The settle itself faulted (the same broken host can fault the abort path's own timer arm).
-          // Fall back to the in-memory backstop — an aborted run still beats a hung one.
-          this.#failNodeInternal(vertex, message);
+          if (this.#settled || this.#abort.signal.aborted) return;
+          await this.#settleFailedOrBackstop(
+            vertex,
+            {
+              code: 'internal',
+              message: 'the event consumer readiness check failed',
+              retryable: false,
+            },
+            this.#lastAttemptByVertex.get(vertex.id) ?? 1,
+          );
+          return;
         }
-        this.#schedule();
-      });
+        if (this.#noNewDispatch || this.#settled || this.#abort.signal.aborted) return;
+        unstarted.delete(vertex.id);
+        this.#unstartedClaims.delete(vertex.id);
+        this.#nodeDispatches += 1;
+        // An approved redispatch opens attempt 1 before its start append can yield to grace.
+        this.#lastAttemptByVertex.set(vertex.id, 1);
+        try {
+          await this.#emitDurable({
+            type: 'node:started',
+            runId: this.runId,
+            nodeId: vertex.id,
+            nodeType: vertex.type,
+          });
+        } catch {
+          // Stamping/host faults precede the ordered writer's own store-fault handler.
+          // This start is entered, so preserve its attempt-1 basis even without a stamped event.
+          await this.#settleFailedOrBackstop(
+            vertex,
+            {
+              code: 'internal',
+              message: 'the node start could not be published',
+              retryable: false,
+            },
+            1,
+          );
+          return;
+        }
+        // Re-read the latch AFTER the durable `node:started` write above: the grace window may have elapsed
+        // while it was pending. Cancellation must also refuse a fresh dispatch/deadline before grace.
+        if (this.#noNewDispatch || this.#settled) return;
+        if (this.#abort.signal.aborted) {
+          // node:started is already entered, but no executor/deadline exists to await through grace.
+          await this.#settleFailedOrBackstop(
+            vertex,
+            {
+              code: 'cancelled',
+              message: 'node execution was cancelled before dispatch',
+              retryable: false,
+            },
+            1,
+          );
+          return;
+        }
+        // Own the complete detached dispatch, including its failure continuation. Unexpected host
+        // causes stay private: even string conversion may run caller code and throw while reporting.
+        void this.#hostWork.invoke(async () => {
+          try {
+            await this.#dispatch(vertex, 1);
+          } catch {
+            await this.#settleFailedOrBackstop(
+              vertex,
+              {
+                code: 'internal',
+                message: 'node dispatch failed unexpectedly',
+                retryable: false,
+              },
+              this.#lastAttemptByVertex.get(vertex.id) ?? 1,
+            );
+          }
+        });
+      }
+    } finally {
+      // Claims without a node:started entry are still pending work, not abandoned executors.
+      // Releasing them prevents an abort while waiting for the reader from inventing running work.
+      for (const vertexId of unstarted) {
+        this.#unstartedClaims.delete(vertexId);
+        const state = this.#states.get(vertexId);
+        if (state?.status === 'running') state.status = 'pending';
+      }
+      if (unstarted.size > 0 && this.#abort.signal.aborted) this.#schedule();
+    }
+  }
+
+  /** Keep raw readiness joined even when abort releases the serialized scheduler's wait. */
+  async #waitForConsumer(): Promise<boolean> {
+    const signal = this.#abort.signal;
+    if (this.#settled || this.#retiringHost || signal.aborted) return false;
+    const raw = this.#hostWork.invoke(() => {
+      const ready = this.handle.whenConsumersReady;
+      if (this.#settled || this.#retiringHost || signal.aborted) return Promise.resolve();
+      return Reflect.apply(ready, this.handle, []);
+    });
+    let onAbort!: () => void;
+    const cancelled = new Promise<false>((resolve) => {
+      onAbort = () => resolve(false);
+    });
+    signal.addEventListener('abort', onAbort);
+    if (signal.aborted) onAbort();
+    try {
+      const ready = await Promise.race([
+        (async () => {
+          await raw;
+          return true;
+        })(),
+        cancelled,
+      ]);
+      return ready && !signal.aborted && !this.#settled && !this.#retiringHost;
+    } finally {
+      signal.removeEventListener('abort', onAbort);
     }
   }
 
   /** Nothing was ready this step: while idle, pause if a gate pends, else stall loudly (invariant). */
   async #handleIdle(running: number): Promise<void> {
-    if (running > 0) {
-      return; // still executing — wait for the next settlement to re-evaluate
+    if (running > 0 || this.#publishingPauses > 0) {
+      return; // executor or pause publisher is active — its settlement schedules another pass
+    }
+    // A claimed gate still has decision work in flight (effect admission, media pin or authority
+    // append). Keep its lease until the pending entry becomes a completed/failed/pending vertex.
+    for (const gateId of this.#pendingGates.keys()) {
+      if (this.#resolvedGates.has(gateId)) return;
     }
     if (this.#pendingGates.size > 0 || this.#pendingMediaJobs.size > 0) {
       // Parked on a human gate AND/OR an async media job (1.AG Section D, MJ-1) — the run is PAUSED, not
@@ -1924,6 +2448,7 @@ class RunExecution {
         continue;
       }
       state.status = 'running';
+      this.#unstartedClaims.add(vertexId);
       claimed.push(vertex);
       running += 1;
     }
@@ -1953,10 +2478,26 @@ class RunExecution {
     // budget-approval park are all non-terminal outcomes. A node authored `timeout_ms: 1000` that parked on
     // a media job then ran under ADR-0045's thirty-minute job deadline instead, and its eventual failure
     // classified `provider_unavailable`/retryable rather than `run_timeout`/fatal.
-    this.#armNodeDeadline(vertex);
+    const approval = this.#budgetApprovals.get(vertex.id);
+    this.#budgetApprovals.delete(vertex.id);
     try {
-      await this.#dispatchLoop(vertex, firstAttempt);
+      this.#armNodeDeadline(vertex);
+      if (approval !== undefined && this.#budgetGovernor !== undefined) {
+        this.#dispatchAllowances.set(
+          dispatchId,
+          this.#budgetGovernor.activateDispatchAllowance({
+            nodeId: vertex.id,
+            dispatchId,
+            amountMicrocents: approval.amountMicrocents,
+            isLive: () => this.#canAuthorizeBudget() && this.#isLive(vertex.id, dispatchId),
+          }),
+        );
+      }
+      await this.#dispatchLoop(vertex, firstAttempt, approval?.preparation);
     } finally {
+      const token = this.#dispatchAllowances.get(dispatchId);
+      if (token !== undefined) this.#budgetGovernor?.closeDispatchAllowance(token);
+      this.#dispatchAllowances.delete(dispatchId);
       // **Release the slot only if this dispatch is really finished with it.**
       //
       // Not released while the node is still non-terminal: after a cancel the grace window governs and
@@ -1994,18 +2535,34 @@ class RunExecution {
     const nowMs = this.#elapsedMs();
     const startedAtMs = this.#nodeDeadlineStartMs.get(vertex.id) ?? nowMs;
     this.#nodeDeadlineStartMs.set(vertex.id, startedAtMs);
-    const remainingMs = Math.max(0, timeoutMs - (nowMs - startedAtMs));
+    const remainingMs = Math.min(timeoutMs, Math.max(0, timeoutMs - (nowMs - startedAtMs)));
     this.#nodeDeadlineDisarm.set(
       vertex.id,
       armLongTimer(
         remainingMs,
         () => {
-          void this.#onNodeDeadline(vertex, timeoutMs);
+          this.#runTimerActor(() => this.#onNodeDeadline(vertex, timeoutMs));
         },
         // A backstop over work already in flight — never something the run is parked ON.
         (ms, fire) => this.#host.setTimer(ms, fire, 'deadline'),
       ),
     );
+  }
+
+  /** A due reconstructed clock refuses paid entry synchronously, without waiting for a host timer. */
+  #armRestoredNodeDeadlines(): void {
+    if (this.#checkpoint === undefined || this.#failure !== undefined || this.#cancelling) return;
+    for (const [nodeId, started] of this.#nodeDeadlineStartMs) {
+      const vertex = this.#plan.vertices.get(nodeId);
+      const timeoutMs = vertex?.config.kind === 'agent' ? vertex.config.node.timeout_ms : undefined;
+      if (vertex === undefined || timeoutMs === undefined) continue;
+      if (this.#elapsedMs() >= started + timeoutMs) {
+        this.#disarmNodeDeadline(nodeId);
+        this.#runTimerActor(() => this.#onNodeDeadline(vertex, timeoutMs));
+        return;
+      }
+      this.#armNodeDeadline(vertex);
+    }
   }
 
   /**
@@ -2016,7 +2573,11 @@ class RunExecution {
    * dispatch N+1 — which is exactly what a budget-approved re-dispatch produces.
    */
   #isLive(vertexId: string, dispatchId: number): boolean {
-    return !this.#settled && this.#activeDispatchByVertex.get(vertexId) === dispatchId;
+    return (
+      !this.#settled &&
+      !this.#retiringHost &&
+      this.#activeDispatchByVertex.get(vertexId) === dispatchId
+    );
   }
 
   #disarmNodeDeadline(vertexId: string): void {
@@ -2082,15 +2643,21 @@ class RunExecution {
    * The refusal rejects rather than resolves, so a caller that ignores it cannot mistake a refusal for a
    * durable claim and dispatch anyway.
    */
-  #fenceEffects(port: EffectDispatchPort, vertexId: string): EffectDispatchPort {
+  #fenceEffects(
+    port: EffectDispatchPort,
+    vertexId: string,
+    scope: HostWorkScope,
+  ): EffectDispatchPort {
     const dispatchId = this.#dispatchIdForVertex.get(vertexId) ?? -1;
     // Delegated method-by-method rather than spread. `{...port}` copies OWN properties only, so a host that
     // implements `EffectDispatchPort` as a CLASS would arrive here with `settle` and `discard` undefined —
     // TypeScript's spread-type inference hides it, and both shipping implementations happen to be object
     // literals, so it would have been latent until the first class-based one.
     return {
-      settle: (...args: Parameters<EffectDispatchPort['settle']>) => port.settle(...args),
-      discard: (...args: Parameters<EffectDispatchPort['discard']>) => port.discard(...args),
+      settle: (...args: Parameters<EffectDispatchPort['settle']>) =>
+        scope.enter(() => port.settle(...args)),
+      discard: (...args: Parameters<EffectDispatchPort['discard']>) =>
+        scope.enter(() => port.discard(...args)),
       prepare: async (...args: Parameters<EffectDispatchPort['prepare']>) => {
         const refuse = (): never => {
           throw new EngineStateError(
@@ -2099,8 +2666,9 @@ class RunExecution {
             { runId: this.runId },
           );
         };
+        scope.assertActive();
         if (!this.#isLive(vertexId, dispatchId)) refuse();
-        const verdict = await port.prepare(...args);
+        const verdict = await scope.enter(() => port.prepare(...args));
         // **Re-checked AFTER the await, and that is the whole point.** The journal write is I/O: the grace
         // window can elapse and the run can reach its terminal while it is in flight. A verdict computed
         // before the cutoff and returned after it would hand the caller a `proceed` for a run that has
@@ -2110,6 +2678,45 @@ class RunExecution {
         return verdict;
       },
     };
+  }
+
+  #receiptContext(
+    scope: HostWorkScope,
+    vertexId: string,
+    port?: EffectDispatchPort,
+  ): NodeReceiptContext {
+    return Object.freeze({
+      money: {
+        record: (draft) => {
+          scope.assertActive();
+          this.#money.record({ ...draft, nodeId: vertexId }, this.#cumulativeCostMicrocents);
+          // Lifetime ACK only. The main money join owns its consume-once failure; this observation
+          // cannot turn a refused write into persistence or consume the error before its caller.
+          void scope.enter(() => this.#money.waitForWrites());
+        },
+        join: () => scope.enter(() => this.#money.join()),
+      },
+      updateCost: (event) => {
+        scope.assertActive();
+        this.#nodeEmit({ ...event, nodeId: vertexId }, false);
+      },
+      ...(port === undefined
+        ? {}
+        : {
+            effects: {
+              settle: (...args: Parameters<EffectDispatchPort['settle']>) =>
+                scope.enter(() => port.settle(...args)),
+              discard: (...args: Parameters<EffectDispatchPort['discard']>) =>
+                scope.enter(() => port.discard(...args)),
+            },
+          }),
+      continueReceipt: <T>(operation: (receipt: NodeReceiptContext) => Promise<T>): Promise<T> =>
+        scope.continue((child) =>
+          this.#effectHealth.invocation(() =>
+            operation(this.#receiptContext(child, vertexId, port)),
+          ),
+        ),
+    } satisfies NodeReceiptContext);
   }
 
   /**
@@ -2124,19 +2731,21 @@ class RunExecution {
    * under a tight cap a long `backoff_ms` can serialize otherwise-ready sibling branches (ADR-0040 A.3 — keep
    * `backoff_ms` modest under a tight cap). Freeing the slot mid-backoff would re-introduce the idle race.
    */
-  async #dispatchLoop(vertex: PlanVertex, firstAttempt: number): Promise<void> {
+  async #dispatchLoop(
+    vertex: PlanVertex,
+    firstAttempt: number,
+    preparation?: BudgetDispatchPreparation,
+  ): Promise<void> {
     const retry = this.#retryConfig(vertex);
     let attempt = firstAttempt;
     // The node holds its slot from the FIRST attempt's node:started; the terminal durationMs measures the
     // whole node (all attempts + backoffs), not just the final attempt — consistent with that first start.
     const startedAtMs = this.#elapsedMs();
-    // Consume the budget-approval ONCE per node dispatch (H3): an approved over-budget re-dispatch AND all
-    // its above-chain node-retry attempts (ADR-0040) share the one-shot bypass, so a transient failure on the
-    // approved call does not re-pause the (still-over-budget) node on its very next retry.
-    const budgetApproved = this.#budgetApprovedVertices.delete(vertex.id);
     for (;;) {
       this.#lastAttemptByVertex.set(vertex.id, attempt);
-      const outcome = await this.#runAttempt(vertex, attempt, budgetApproved);
+      const firstPreparation = preparation;
+      preparation = undefined;
+      const outcome = await this.#runAttempt(vertex, attempt, firstPreparation);
       // ADR-0074 §2's other barrier: "the enclosing turn completion waits for the commitment's durability
       // acknowledgement." A commitment made inside this attempt must be durable before the node reaches ANY
       // boundary — its terminal, or a `node:retrying` that will dispatch again. The governor's own barrier covers
@@ -2155,7 +2764,7 @@ class RunExecution {
         !this.#abort.signal.aborted &&
         this.#shouldRetry(retry, outcome.error, attempt);
       if (!willRetry || outcome.kind !== 'failed') {
-        await this.#onOutcome(vertex, outcome, startedAtMs, attempt, budgetApproved);
+        await this.#onOutcome(vertex, outcome, startedAtMs, attempt);
         return;
       }
       // **The cap is checked BEFORE the promise and before the wait.** A run with no dispatch headroom cannot
@@ -2212,6 +2821,8 @@ class RunExecution {
         return;
       }
       attempt += 1;
+      // Capture the entered retry before its append can yield to grace abandonment.
+      this.#lastAttemptByVertex.set(vertex.id, attempt);
       // The retry loop's own dispatch, counted by the same rule as a fresh one (ADR-0086 §4): one
       // `node:started`, one dispatch. The headroom was checked above, before anything was promised.
       this.#nodeDispatches += 1;
@@ -2222,6 +2833,21 @@ class RunExecution {
         nodeType: vertex.type,
         attemptNumber: attempt,
       });
+      // A retry's durable start has the same suspension window as the first start. Recheck before
+      // entering a fresh executor; an already-entered start still requires its matching terminal.
+      if (this.#noNewDispatch || this.#settled) return;
+      if (this.#abort.signal.aborted) {
+        await this.#settleFailedOrBackstop(
+          vertex,
+          {
+            code: 'cancelled',
+            message: 'node execution was cancelled before dispatch',
+            retryable: false,
+          },
+          attempt,
+        );
+        return;
+      }
     }
   }
 
@@ -2230,7 +2856,7 @@ class RunExecution {
    * it sees the run's current cumulative cost and may emit a re-armable `budget:warning` or throw
    * `BudgetExceededError` / `BudgetPauseError` for `fail` / `pause_for_approval`.
    */
-  #makePreEgressHook(): import('./agent-turn.js').PreEgressHook | undefined {
+  #makePreEgressHook(dispatchId: number): import('./agent-turn.js').PreEgressHook | undefined {
     if (this.#budgetGovernor === undefined) {
       return undefined;
     }
@@ -2238,15 +2864,28 @@ class RunExecution {
     // Pass the media-unit estimate (1.AF/D17) so the governor folds a per-modality media addend into the
     // projection; `outputModalities` rides the hook info for request-lowering/observability but the cost
     // calc needs only the units.
-    return (info) =>
-      governor.checkPreEgress(info.model, info.maxTokens, info.mediaUnitsEstimate, info.provider);
+    const token = this.#dispatchAllowances.get(dispatchId);
+    return (info) => governor.checkPreEgress(info, token);
+  }
+
+  /** Refuse fresh attempt factories after synchronous host/method acquisition reentrancy. */
+  #stoppedAttemptOutcome(vertexId: string, dispatchId: number): NodeOutcome | undefined {
+    if (this.#isLive(vertexId, dispatchId) && !this.#abort.signal.aborted) return undefined;
+    return {
+      kind: 'failed',
+      error: {
+        code: 'cancelled',
+        message: 'node execution was cancelled before dispatch',
+        retryable: false,
+      },
+    };
   }
 
   /** Run one attempt of a vertex; returns its outcome (an uncaught handler throw → a single `internal`). */
   async #runAttempt(
     vertex: PlanVertex,
     attemptNumber: number,
-    budgetApproved: boolean,
+    preparation: BudgetDispatchPreparation | undefined,
   ): Promise<NodeOutcome> {
     // **CAPTURED, not re-read — ADR-0085 §5.** A first version had both fence points call
     // `#dispatchIdForVertex.get(vertex.id)` at write time, which compares a value against itself: `#dispatch`
@@ -2257,68 +2896,93 @@ class RunExecution {
     // DELIVERED while N+1 was in flight. `#fenceEffects` had it right; these two did not.
     const dispatchId = this.#dispatchIdForVertex.get(vertex.id) ?? -1;
     try {
-      // A just-approved budget gate skips the pre-egress check for the WHOLE approved re-dispatch — every
-      // above-chain node-retry attempt of it (H3 × ADR-0040). `budgetApproved` is consumed ONCE per dispatch
-      // in `#dispatch`, so the approved agent step (and its retries) run to completion uncapped; the next,
-      // separate step re-arms the cap. Per-re-dispatch (not per-LLM-call) by design — a per-call bypass would
-      // re-pause and, since re-dispatch re-runs the turn, loop forever (see the resume() approve branch).
-      const preEgress = budgetApproved ? undefined : this.#makePreEgressHook();
-      const ctx: NodeExecContext = {
-        vertex,
-        runOutputs: this.#completedOutputs(),
-        inputs: this.#inputs,
-        ctx: this.#resolvedContext,
-        secretInputNames: this.#secretInputNames,
-        toolPolicy: this.#workflow.workflow.tools ?? {},
-        emit: (event) => {
-          // **Fence point 2 (ADR-0085 §5): the cost DELIVERY, not the fold.** A straggler from an abandoned
-          // dispatch must not push a `cost:updated` at subscribers after the terminal has already reported
-          // the run total.
-          //
-          // **But the fold must still happen, and getting that wrong lost real money.** The counter is what
-          // `TurnMoneyPort.record` stamps as `cumulativeCostMicrocents`, and
-          // `refineCostAttemptSettled` rejects a row whose cumulative is below its own `costMicrocents`.
-          // Refusing the fold left the counter behind, so a genuinely billed attempt produced
-          // `cumulative 0 < cost 77` — rejected at the producer gate, which runs in `#bus.next` OUTSIDE
-          // `#emitDurable`'s try, so it threw in the one place the design assumes it cannot and the durable
-          // ledger row was lost entirely. ADR-0045 §5's local-only-cancel position and §5's own money table
-          // both say a charge already incurred is recorded either way; the fold is how that stays true.
-          const live = this.#isLive(vertex.id, dispatchId);
-          if (!live && event.type !== 'cost:updated') {
-            return;
-          }
-          this.#nodeEmit(event, live);
-        },
-        // **ADR-0036's producer-await, handed to the executor (`CR-30`).** The run's own consumer ceiling,
-        // so an executor that streams thousands of token deltas between node boundaries throttles instead
-        // of growing the buffer. `#step` still awaits it once per node — that call bounds the run loop
-        // itself; this one bounds a single node's stream, which is the unbounded case.
-        whenReady: () => this.handle.whenConsumersReady(),
-        signal: this.#abort.signal,
-        attemptNumber,
-        ...(preEgress === undefined ? {} : { preEgress }),
-        // Unconditional, unlike `preEgress` above — which `budgetApproved` deliberately drops for an approved
-        // re-dispatch. The ledger must not be dropped with it: an approved node is the one the user just
-        // authorised MORE money on, so it is the last place to stop recording what that money was.
-        money: this.#money.turnPort(() => this.#cumulativeCostMicrocents),
-        // The durable effect journal (ADR-0080), with the RUN correlation closed over. Only the run loop
-        // knows the `runId` and the node-retry attempt — exactly the reasoning that puts the ledger here.
-        // Absent when no host wired a journal, in which case the dispatch gets `unwiredEffectJournal()` and
-        // an effect is REFUSED rather than silently unrecorded.
-        ...(this.#effectJournal === undefined
-          ? {}
-          : {
-              effects: this.#fenceEffects(
-                this.#effectJournal({
-                  kind: 'run',
-                  runId: this.runId,
-                  nodeId: vertex.id,
-                  attempt: attemptNumber,
-                }),
-                vertex.id,
-              ),
-            }),
-      };
+      // Every attempt retains governance. The captured token identifies this dispatch across retries.
+      const preEgress = this.#makePreEgressHook(dispatchId);
+      const raw = this.#hostWork.invoke((scope) => {
+        const stoppedBeforeAcquisition = this.#stoppedAttemptOutcome(vertex.id, dispatchId);
+        if (stoppedBeforeAcquisition !== undefined)
+          return Promise.resolve(stoppedBeforeAcquisition);
+        const receiver = preparation ?? this.#executor;
+        const execute = receiver.execute;
+        const stoppedAfterAcquisition = this.#stoppedAttemptOutcome(vertex.id, dispatchId);
+        if (stoppedAfterAcquisition !== undefined) return Promise.resolve(stoppedAfterAcquisition);
+        const correlation: EffectCorrelation = {
+          kind: 'run',
+          runId: this.runId,
+          nodeId: vertex.id,
+          attempt: attemptNumber,
+        };
+        const rawEffects = this.#effectJournal?.(correlation);
+        const effects =
+          rawEffects === undefined ? undefined : this.#effectHealth.bind(rawEffects, correlation);
+        const receipts = this.#receiptContext(scope, vertex.id, effects);
+        const ctx: NodeExecContext = {
+          continueReceipt: receipts.continueReceipt,
+          vertex,
+          runOutputs: this.#completedOutputs(),
+          inputs: this.#inputs,
+          ctx: this.#resolvedContext,
+          secretInputNames: this.#secretInputNames,
+          toolPolicy: this.#workflow.workflow.tools ?? {},
+          emit: (event) => {
+            if (event.type === 'cost:updated') scope.assertActive();
+            // **Fence point 2 (ADR-0085 §5): the cost DELIVERY, not the fold.** A straggler from an abandoned
+            // dispatch must not push a `cost:updated` at subscribers after the terminal has already reported
+            // the run total.
+            //
+            // **But the fold must still happen, and getting that wrong lost real money.** The counter is what
+            // `TurnMoneyPort.record` stamps as `cumulativeCostMicrocents`, and
+            // `refineCostAttemptSettled` rejects a row whose cumulative is below its own `costMicrocents`.
+            // Refusing the fold left the counter behind, so a genuinely billed attempt produced
+            // `cumulative 0 < cost 77` — rejected at the producer gate, which runs in `#bus.next` OUTSIDE
+            // `#emitDurable`'s try, so it threw in the one place the design assumes it cannot and the durable
+            // ledger row was lost entirely. ADR-0045 §5's local-only-cancel position and §5's own money table
+            // both say a charge already incurred is recorded either way; the fold is how that stays true.
+            const live = this.#isLive(vertex.id, dispatchId);
+            if (!live && event.type !== 'cost:updated') {
+              return;
+            }
+            this.#nodeEmit(event, live);
+          },
+          // **ADR-0036's producer-await, handed to the executor (`CR-30`).** The run's own consumer ceiling,
+          // so an executor that streams thousands of token deltas between node boundaries throttles instead
+          // of growing the buffer. `#step` still awaits it once per node — that call bounds the run loop
+          // itself; this one bounds a single node's stream, which is the unbounded case.
+          whenReady: () => this.handle.whenConsumersReady(),
+          signal: this.#abort.signal,
+          attemptNumber,
+          maxTokensEstimate: this.#maxTokensEstimate,
+          ...(preEgress === undefined
+            ? {}
+            : {
+                preEgress: (info: import('./agent-turn.js').PreEgressInfo) => {
+                  scope.assertActive();
+                  if (!this.#isLive(vertex.id, dispatchId))
+                    throw new EngineStateError(
+                      'run_already_terminal',
+                      'the run stopped waiting on this dispatch; no new admission is allowed',
+                      { runId: this.runId },
+                    );
+                  return preEgress(info);
+                },
+              }),
+          money: receipts.money,
+          // The durable effect journal (ADR-0080), with the RUN correlation closed over. Only the run loop
+          // knows the `runId` and the node-retry attempt — exactly the reasoning that puts the ledger here.
+          // Absent when no host wired a journal, in which case the dispatch gets `unwiredEffectJournal()` and
+          // an effect is REFUSED rather than silently unrecorded.
+          ...(effects === undefined
+            ? {}
+            : { effects: this.#fenceEffects(effects, vertex.id, scope) }),
+        };
+        // Context factories may synchronously cancel too. Preserve method/receiver and exact raw Promise.
+        const stoppedBeforeExecute = this.#stoppedAttemptOutcome(vertex.id, dispatchId);
+        if (stoppedBeforeExecute !== undefined) return Promise.resolve(stoppedBeforeExecute);
+        return this.#effectHealth.invocation(
+          () => Reflect.apply(execute, receiver, [ctx]),
+          (outcome) => this.#effectHealth.observeOutcome(outcome),
+        );
+      });
       // PIN the produced output ONCE, here, before anything reads it (`CR-54`,
       // [ADR-0043](../../../../docs/decisions/0043-media-egress-failover-rematerialization-ssrf.md) §3).
       //
@@ -2336,11 +3000,16 @@ class RunExecution {
       //
       // It is also the only place the pin can await safely: a throw is classified by this method's own
       // catch, and the settle path stays synchronous from its size checks through its status write.
-      const produced = await this.#pinMediaOutput(await this.#executor.execute(ctx), vertex.id);
-      // After the executor completes, an `output` node with `save_to` writes its produced media to the
-      // host (1.AF/D16). A write failure FAILS the node (→ run:failed) — save_to is a real deliverable.
-      return await this.#applySaveTo(vertex, produced, dispatchId);
+      const outcome = await raw;
+      // Terminal publication retires new host work; only already entered pins/receipts remain joined.
+      if (!this.#isLive(vertex.id, dispatchId))
+        return { kind: 'failed', error: this.#saveToAbandoned() };
+      return await this.#hostWork.invoke(async () => {
+        const produced = await this.#pinMediaOutput(outcome, vertex.id);
+        return this.#applySaveTo(vertex, produced, dispatchId);
+      });
     } catch (error) {
+      this.#effectHealth.observeFailure(error);
       // A money-durability failure is NOT an anonymous handler throw. Barriers B1 and B2 (ADR-0077) both sit
       // INSIDE the turn, and `throwMappedChainError` has two arms whose only job is to keep the class and its
       // owning `nodeId` intact on the way out — under a `fan_out` the broken write may be a sibling's, and
@@ -2456,8 +3125,6 @@ class RunExecution {
     outcome: NodeOutcome,
     startedAtMs: number,
     attemptNumber = 1,
-    /** H3's one-shot cap bypass was active for this dispatch — so NO pre-egress hook ran (ADR-0074 §3). */
-    budgetApproved = false,
   ): Promise<void> {
     if (this.#settled) {
       return; // terminal already emitted — ignore a late settle (e.g. an aborted straggler)
@@ -2505,7 +3172,7 @@ class RunExecution {
           await this.#settlePaused(vertex, outcome.gate);
           break;
         case 'media_job':
-          await this.#settleMediaJobParked(vertex, outcome.job, budgetApproved);
+          await this.#settleMediaJobParked(vertex, outcome.job);
           break;
       }
     } catch {
@@ -2514,7 +3181,7 @@ class RunExecution {
       // un-re-hosted url, a non-canonical byte carrier, a missing/erroring MediaStore). Both map to a single
       // run:failed here. (A durable PERSIST rejection still never reaches here: #emitDurable absorbs persist
       // faults and self-schedules; only the de-inline transform re-throws, and only for non-terminal events.)
-      this.#failNodeInternal(vertex, 'the engine failed while settling a node');
+      this.#failNodeInternal(vertex.id, 'the engine failed while settling a node');
     }
     this.#schedule();
   }
@@ -2587,6 +3254,27 @@ class RunExecution {
     });
   }
 
+  /** Host diagnostics cannot strand scheduler reevaluation when ID/clock/timer publication faults. */
+  async #settleFailedOrBackstop(
+    vertex: PlanVertex,
+    error: NodeFailure,
+    attemptNumber: number,
+  ): Promise<void> {
+    // A deadline/outcome may already own this node's terminal while its append is still pending.
+    // Refusal/backstop callers must preserve that terminal just like #onOutcome does.
+    const status = this.#states.get(vertex.id)?.status;
+    if (status !== undefined && SETTLED.has(status)) {
+      this.#schedule();
+      return;
+    }
+    try {
+      await this.#settleFailed(vertex, error, attemptNumber);
+    } catch {
+      this.#failNodeInternal(vertex.id, error.message);
+    }
+    this.#schedule();
+  }
+
   /** A `failed` outcome (terminal — the node-retry budget is exhausted or the failure is fatal): record the
    *  root cause (cancel wins), then emit the single terminal `node:failed`. */
   async #settleFailed(vertex: PlanVertex, error: NodeFailure, attemptNumber = 1): Promise<void> {
@@ -2614,22 +3302,19 @@ class RunExecution {
     });
   }
 
-  /** A `paused` outcome: park the gate, arm its timeout timer (1.Q), and emit `human_gate:paused`. */
+  /** Keep all pause publications inside one aggregate handoff barrier. */
   async #settlePaused(vertex: PlanVertex, gate: GateRequest): Promise<void> {
+    this.#publishingPauses += 1;
+    try {
+      await this.#publishPause(vertex, gate);
+    } finally {
+      this.#publishingPauses -= 1;
+    }
+  }
+
+  async #publishPause(vertex: PlanVertex, gate: GateRequest): Promise<void> {
     const gateId = gate.gateId ?? this.#host.ids.newId();
     const isBudgetGate = gate.isBudgetGate === true;
-    const state = this.#states.get(vertex.id);
-    if (state !== undefined) {
-      state.status = 'paused';
-    }
-    this.#pendingGates.set(gateId, { vertexId: vertex.id, isBudgetGate });
-    // Compute the wall-clock deadline from the host clock (the handler has none) and arm a one-shot timer
-    // (1.Q). On fire, an `approve` action auto-resolves the gate; a `reject` (the safe default) fails the
-    // run with run_timeout. The timer is disarmed on resume / terminal settle so it never fires twice.
-    // The EFFECTIVE on-timeout policy (default the safe `reject`) — used for BOTH the armed timer and the
-    // emitted event, so the persisted `human_gate:paused` always carries the exact policy the engine acts
-    // on (even when a handler set timeoutMs but left timeoutAction implicit). A Phase-2 crash-resume reads
-    // it back to re-arm. `undefined` only when no timeout is configured.
     const effectiveAction =
       gate.timeoutMs === undefined ? undefined : (gate.timeoutAction ?? 'reject');
     const expiresAt =
@@ -2637,38 +3322,84 @@ class RunExecution {
       (gate.timeoutMs === undefined
         ? undefined
         : new Date(Date.parse(this.#host.clock.now()) + gate.timeoutMs).toISOString());
-    if (gate.timeoutMs !== undefined && effectiveAction !== undefined) {
-      const disarm = armLongTimer(
-        gate.timeoutMs,
-        () => {
-          void this.#onGateTimeout(gateId, vertex.id, effectiveAction);
-        },
-        (ms, fire) => this.#host.setTimer(ms, fire, 'work'),
-      );
-      this.#gateTimers.set(gateId, disarm);
+    const allowance = isBudgetGate
+      ? BudgetAllowanceStateSchema.parse(
+          gate.allowanceQuote === undefined
+            ? { kind: 'legacy_no_allowance' }
+            : { kind: 'frozen', quote: gate.allowanceQuote },
+        )
+      : undefined;
+    const pending: PendingGate = {
+      vertexId: vertex.id,
+      isBudgetGate,
+      acknowledged: !isBudgetGate,
+      ...(allowance === undefined ? {} : { allowance }),
+      ...(gate.timeoutMs === undefined ? {} : { timeoutMs: gate.timeoutMs }),
+      ...(effectiveAction === undefined ? {} : { timeoutAction: effectiveAction }),
+      ...(expiresAt === undefined ? {} : { expiresAt }),
+    };
+    const state = this.#states.get(vertex.id);
+    if (state !== undefined) state.status = 'paused';
+    this.#pendingGates.set(gateId, pending);
+    const deadline = this.#gateDeadline(pending);
+    if (isBudgetGate) {
+      const authorization = BudgetAuthorizationStateSchema.parse({
+        state: 'paused',
+        allowance,
+        spentMicrocents: gate.spentMicrocents ?? this.#cumulativeCostMicrocents,
+        limitMicrocents: gate.limitMicrocents ?? this.#plan.budget?.max_cost_microcents ?? 0,
+        ...deadline,
+      });
+      if (
+        !(await this.#emitBudgetAcknowledged({
+          type: 'budget:authorization',
+          runId: this.runId,
+          nodeId: vertex.id,
+          gateId,
+          authorization,
+        }))
+      )
+        return;
+      pending.acknowledged = true;
     }
     if (gate.spentMicrocents !== undefined && gate.limitMicrocents !== undefined) {
-      await this.#emitDurable({
-        type: 'budget:paused',
+      const companion = {
+        type: 'budget:paused' as const,
         runId: this.runId,
         nodeId: vertex.id,
         gateId,
         spentMicrocents: gate.spentMicrocents,
         limitMicrocents: gate.limitMicrocents,
-      });
+        ...(allowance?.kind === 'frozen' ? { allowanceQuote: allowance.quote } : {}),
+      };
+      if (isBudgetGate) {
+        if (!(await this.#emitBudgetAcknowledged(companion))) return;
+      } else await this.#emitDurable(companion);
     }
-    await this.#emitDurable({
-      type: 'human_gate:paused',
+    const companion = {
+      type: 'human_gate:paused' as const,
       runId: this.runId,
       nodeId: vertex.id,
       gateId,
       gateType: gate.gateType,
       message: gate.message,
       ...(gate.assignee === undefined ? {} : { assignee: gate.assignee }),
-      ...(gate.timeoutMs === undefined ? {} : { timeoutMs: gate.timeoutMs }),
-      ...(effectiveAction === undefined ? {} : { timeoutAction: effectiveAction }),
-      ...(expiresAt === undefined ? {} : { expiresAt }),
-    });
+      ...deadline,
+      ...(allowance?.kind === 'frozen' ? { allowanceQuote: allowance.quote } : {}),
+    };
+    if (isBudgetGate) {
+      if (!(await this.#emitBudgetAcknowledged(companion))) return;
+    } else await this.#emitDurable(companion);
+    // Arm against elapsed absolute time only after acknowledgement, and only if no decision won.
+    if (
+      this.#pendingGates.get(gateId) === pending &&
+      !this.#resolvedGates.has(gateId) &&
+      !this.#settled &&
+      !this.#cancelling &&
+      this.#failure === undefined
+    ) {
+      this.#reArmGateDeadline({ nodeId: vertex.id, gateId, isBudgetGate, ...deadline });
+    }
   }
 
   /** Disarm and forget a gate's timeout timer (idempotent — safe if absent or already fired). */
@@ -2688,74 +3419,85 @@ class RunExecution {
    * record the job, emit the durable `media_job:submitted`, and arm the first poll. The realized cost is
    * emitted by the poll loop at `done`, NEVER here (§5).
    */
-  async #settleMediaJobParked(
-    vertex: PlanVertex,
-    job: MediaJobSubmission,
-    budgetApproved = false,
-  ): Promise<void> {
+  async #settleMediaJobParked(vertex: PlanVertex, job: MediaJobSubmission): Promise<void> {
     const state = this.#states.get(vertex.id);
     if (state !== undefined) {
       state.status = 'paused';
     }
-    const startedAt = this.#host.clock.now();
-    const deadlineAt = new Date(
-      Date.parse(startedAt) + (job.deadlineMs ?? MEDIA_JOB_POLL_DEFAULTS.deadlineMs),
-    ).toISOString();
-    // Consume the exact submission object before the first await. The runner's WeakMap never crosses persistence;
-    // after this point the parked-job record owns the lease through poll, cancel, failure and completion.
+    // Capture before any host callback or date conversion can fail. Until the map accepts this exact
+    // submission, this local scope owns its already-paid admission and must conservatively finish it.
     const admission = takeMediaJobAdmission(job);
-    this.#pendingMediaJobs.set(vertex.id, {
-      jobId: job.jobId,
-      provider: job.provider,
-      model: job.model,
-      modality: job.modality,
-      units: job.units,
-      deadlineAt,
-      // Derive from the SAME `startedAt` that is persisted on `media_job:submitted`, so the resume-side
-      // recompute (from the checkpoint slot) yields an identical value (M2).
-      submittedAtMs: Date.parse(startedAt) - this.#startEpochMs,
-      backoffMs: MEDIA_JOB_POLL_DEFAULTS.pollInitialMs,
-      ...(admission === undefined ? {} : { admission }),
-    });
-    await this.#emitDurable({
-      type: 'media_job:submitted',
-      runId: this.runId,
-      nodeId: vertex.id,
-      jobId: job.jobId,
-      provider: job.provider,
-      model: job.model,
-      modality: job.modality,
-      startedAt,
-      deadlineAt,
-      // ADR-0074 §3 — freeze the money basis at submit time. `units` is the authored volume this submission was
-      // priced on, and `acceptedCostMicrocents` is what the admission actually reserved (0 when the model was
-      // unpriced and the allow-degrade path held no admission). Resume restores from these instead of
-      // re-deriving, so neither a workflow edit nor a price change can move an accepted commitment.
-      units: job.units,
-      // ADR-0074 §3. `0` means "the gate RAN and reserved nothing" — an unpriced model's allow-degrade path.
-      // Under H3's approved bypass NO hook runs at all (`#runAttempt` passes `preEgress: undefined`), so there
-      // is no priced basis to freeze, and emitting `0` would claim one. That is not a cosmetic difference: on
-      // resume the frozen branch would call `reserveAcceptedCost(model, 0)`, reserve NOTHING, and skip
-      // `registerLegacyMediaJob` — so a job deliberately submitted OVER the cap would come back holding no
-      // reservation and no hold, letting a sibling spend headroom that is still owed. Omitting it routes the
-      // resume through the legacy branch, which re-prices AND fails closed — the conservative answer, and the
-      // one the pre-§3 code already gave.
-      ...(budgetApproved ? {} : { acceptedCostMicrocents: admission?.reservedMicrocents ?? 0 }),
-    });
-    this.#armMediaPoll(vertex.id);
+    let transferred = false;
+    try {
+      const startedAt = this.#host.clock.now();
+      const deadlineAt = new Date(
+        Date.parse(startedAt) + (job.deadlineMs ?? MEDIA_JOB_POLL_DEFAULTS.deadlineMs),
+      ).toISOString();
+      // The clock can re-enter cancellation. Do not register a job after terminal cleanup has run.
+      // An abort with cleanup still pending must transfer normally so that sweep can reconcile known actual.
+      if (this.#settled) return;
+      this.#pendingMediaJobs.set(vertex.id, {
+        jobId: job.jobId,
+        provider: job.provider,
+        model: job.model,
+        modality: job.modality,
+        units: job.units,
+        deadlineAt,
+        // Derive from the SAME `startedAt` that is persisted on `media_job:submitted`, so the resume-side
+        // recompute (from the checkpoint slot) yields an identical value (M2).
+        submittedAtMs: Date.parse(startedAt) - this.#startEpochMs,
+        backoffMs: MEDIA_JOB_POLL_DEFAULTS.pollInitialMs,
+        ...(admission === undefined ? {} : { admission }),
+      });
+      transferred = true;
+      await this.#emitDurable({
+        type: 'media_job:submitted',
+        runId: this.runId,
+        nodeId: vertex.id,
+        jobId: job.jobId,
+        provider: job.provider,
+        model: job.model,
+        modality: job.modality,
+        startedAt,
+        deadlineAt,
+        // ADR-0074 §3 — freeze the money basis at submit time. `units` is the authored volume this submission was
+        // priced on, and `acceptedCostMicrocents` is what the admission actually reserved (0 when the model was
+        // unpriced and the allow-degrade path held no admission). Resume restores from these instead of
+        // re-deriving, so neither a workflow edit nor a price change can move an accepted commitment.
+        units: job.units,
+        acceptedCostMicrocents: admission?.reservedMicrocents ?? 0,
+      });
+      this.#armMediaPoll(vertex.id);
+    } finally {
+      // After transfer the normal job/terminal consumer owns reconciliation; retaining here too would
+      // turn a later timer or delivery fault into a second charge.
+      if (!transferred) admission?.settleAtReservedEstimate({ nodeId: vertex.id });
+    }
   }
 
   /** Arm (or re-arm) the one-shot poll timer for a parked media job via the INJECTED host timer (never an
    *  ambient `setTimeout` — engine purity). Disarm-then-arm so a re-arm never leaks a prior timer. */
   #armMediaPoll(nodeId: string): void {
+    if (this.#retiringHost) return;
+    if (this.#quiescing) {
+      const job = this.#pendingMediaJobs.get(nodeId);
+      if (job !== undefined) this.#armQuiescingMediaDeadline(nodeId, job);
+      return;
+    }
     const job = this.#pendingMediaJobs.get(nodeId);
     if (job === undefined) {
       return;
     }
     this.#disarmMediaTimer(nodeId);
     const disarm = this.#host.setTimer(job.backoffMs, () => {
-      void this.#pollMediaJob(nodeId);
+      if (!this.#quiescing) this.#runTimerActor(() => this.#pollMediaJob(nodeId));
     });
+    // Timer installation can synchronously re-enter cancellation or clear this job. Its handle did not
+    // exist during that cleanup, so dispose it here rather than storing a post-terminal timer.
+    if (this.#settled || this.#pendingMediaJobs.get(nodeId) !== job) {
+      disarm();
+      return;
+    }
     this.#mediaJobTimers.set(nodeId, disarm);
   }
 
@@ -2795,26 +3537,50 @@ class RunExecution {
     // Mark before the first side effect. A terminal/error path may re-enter while a sink is unwinding; the provider
     // has only one submitted job, so the engine must never manufacture a second billed addend for it.
     job.costAccounted = true;
-    const realized = realizedMediaCost(job.model, job.modality, job.units, this.#resolvePrice);
-    // Reconcile the lease BEFORE publishing the engine cost event. If event delivery faults after a provider-paid
-    // job, the reservation cannot be released as though the submission were free. Clear the process-local handle
-    // after its idempotent settle so every terminal sweep remains exactly-once from the governor's perspective.
-    job.admission?.settle(realized.costMicrocents);
+    this.#mediaAccountingDepth += 1;
+    if (this.#mediaAccountingDepth === 1) {
+      this.#mediaAccountingDone = new Promise<void>((resolve) => {
+        this.#finishMediaAccounting = resolve;
+      });
+    }
+    // Capture and clear before pricing can re-enter terminal cleanup. This job already crossed egress:
+    // missing pricing retains its accepted estimate; a pricing/unsafe-actual fault must also finish that
+    // hold before the poll backstop or terminal sweep handles the error.
+    const admission = job.admission;
     delete job.admission;
-    this.#nodeEmit({
-      type: 'cost:updated',
-      nodeId,
-      model: job.model,
-      inputTokens: 0,
-      outputTokens: 0,
-      costMicrocents: realized.costMicrocents,
-      cumulativeCostMicrocents: 0, // #nodeEmit overwrites with the authoritative run-wide total
-      // The async-job half of ADR-0089 §4. A minute-scale video generation is the single most expensive thing
-      // this engine emits a cost for, so a `0` here that cannot be told from "free" is the worst version of
-      // `CR-55` — and this settle runs on EVERY terminal (success, fail, deadline, cancel), because the
-      // provider bills regardless. `false` only; absence is the ordinary, fully-priced case.
-      ...(realized.priced ? {} : { priced: false }),
-    });
+    try {
+      const realized = realizedMediaCost(job.model, job.modality, job.units, this.#resolvePrice);
+      // Settle before event delivery. A later sink fault cannot undo an already known actual or bill twice.
+      if (realized.priced) admission?.settle(realized.costMicrocents);
+      else admission?.settleAtReservedEstimate({ nodeId });
+      this.#nodeEmit({
+        type: 'cost:updated',
+        nodeId,
+        model: job.model,
+        inputTokens: 0,
+        outputTokens: 0,
+        costMicrocents: realized.costMicrocents,
+        cumulativeCostMicrocents: 0, // #nodeEmit overwrites with the authoritative run-wide total
+        // The async-job half of ADR-0089 §4. A minute-scale video generation is the single most expensive thing
+        // this engine emits a cost for, so a `0` here that cannot be told from "free" is the worst version of
+        // `CR-55` — and this settle runs on EVERY terminal (success, fail, deadline, cancel), because the
+        // provider bills regardless. `false` only; absence is the ordinary, fully-priced case.
+        ...(realized.priced ? {} : { priced: false }),
+      });
+    } catch (error) {
+      // Idempotent after a known actual, conservative while its reservation is still unsettled. Keep the
+      // original fault loud; no fabricated zero or unsafe actual may substitute for the accepted estimate.
+      admission?.settleAtReservedEstimate({ nodeId });
+      throw error;
+    } finally {
+      this.#mediaAccountingDepth -= 1;
+      if (this.#mediaAccountingDepth === 0) {
+        const finish = this.#finishMediaAccounting;
+        this.#finishMediaAccounting = undefined;
+        this.#mediaAccountingDone = undefined;
+        finish?.();
+      }
+    }
   }
 
   /**
@@ -2830,22 +3596,21 @@ class RunExecution {
       return; // run terminal, or the job was already cleared (nothing to clean up)
     }
     const vertex = this.#plan.vertices.get(nodeId);
-    if (vertex === undefined) {
-      // The parked node no longer exists in the plan — only reachable via same-slug workflow CONTENT drift on
-      // resume (the identity guard checks the surrogate workflow id, not content). A silent return would strand
-      // the run paused forever on a job that can never re-attach. The provider billed the submitted job
-      // regardless of the drift, so emit its lone realized cost addend BEFORE clearing (ADR-0045 §5: exactly
-      // one addend on EVERY terminal path — there is no vertex to settle node:failed against, but the cost is
-      // still owed). Then clear + drive the loop so the now-jobless idle settles the run instead of hanging.
-      this.#emitMediaJobCost(nodeId, job);
-      this.#clearMediaJob(nodeId);
-      this.#schedule();
-      return;
-    }
     // The whole settle path is wrapped: a synchronous bus/Zod throw (or a #nodeEmit fault) must NOT escape the
     // fire-and-forget `void #pollMediaJob` as an unhandled rejection — route it to a single run:failed instead
     // (mirroring the #onOutcome backstop), keeping the run total for faults.
     try {
+      if (vertex === undefined) {
+        // Defensive checkpoint edge: a parked job has no vertex in the admitted plan. A silent return would
+        // strand the run paused forever on a job that cannot re-attach. The provider billed the submitted job
+        // regardless, so emit its lone realized cost addend BEFORE clearing (ADR-0045 §5: exactly
+        // one addend on EVERY terminal path — there is no vertex to settle node:failed against, but the cost is
+        // still owed). Then clear + drive the loop so the now-jobless idle settles the run instead of hanging.
+        this.#emitMediaJobCost(nodeId, job);
+        this.#clearMediaJob(nodeId);
+        this.#schedule();
+        return;
+      }
       if (Date.parse(this.#host.clock.now()) > Date.parse(job.deadlineAt)) {
         await this.#settleMediaJobFailed(vertex, job, {
           code: 'provider_unavailable',
@@ -2886,7 +3651,7 @@ class RunExecution {
       const pollDeadline = this.#openPollDeadline(job);
       try {
         status = await this.#racePoll(pollDeadline, submission);
-      } catch {
+      } catch (error) {
         // A cancel (the abort surfaced as a throw) / terminal / cleared job → return silently; the #settle
         // path emits run:cancelled. Only a genuine poll fault on a live job settles node:failed.
         if (this.#settled || this.#abort.signal.aborted || !this.#pendingMediaJobs.has(nodeId)) {
@@ -2894,6 +3659,17 @@ class RunExecution {
           // (ADR-0074 §3). The abort listener above is the primary guarantee; this covers the
           // job-already-cleared case, where no abort fires at all.
           this.#budgetGovernor?.clearLegacyMediaJob(nodeId);
+          return;
+        }
+        // A schema-invalid provider reply is a programmer/protocol failure, as the closed-state
+        // switch below already specifies. Capturing it before invocation retirement cannot turn it
+        // into a retryable transport fault or expose a schema diagnostic containing response data.
+        if (error instanceof AgentTurnError && error.code === 'internal') {
+          await this.#settleMediaJobFailed(vertex, job, {
+            code: 'internal',
+            message: 'media poll returned an unrecognized job state or invalid payload',
+            retryable: false,
+          });
           return;
         }
         // A raw throw escaping the executor poll on a LIVE job (the missing-adapter + credential cases are
@@ -2914,8 +3690,14 @@ class RunExecution {
       await this.#applyMediaJobStatus(vertex, job, status);
     } catch {
       if (!this.#settled) {
+        // A pre-accounting clock/timer fault must conserve the paid reservation before dropping the job.
+        // Mark and detach before the lifetime callback can re-enter terminal cleanup.
+        job.costAccounted = true;
+        const admission = job.admission;
+        delete job.admission;
+        admission?.settleAtReservedEstimate({ nodeId });
         this.#clearMediaJob(nodeId);
-        this.#failNodeInternal(vertex, 'the media job poll loop failed while settling the node');
+        this.#failNodeInternal(nodeId, 'the media job poll loop failed while settling the node');
         // Drive the loop so `#step` observes `#failure` and settles `run:failed`. Unlike `#onOutcome` (whose
         // backstop is followed by an unconditional `#schedule()`), this poll is fired out-of-band from a timer
         // — nothing else re-enters the loop, so without this the run would hang at `run:paused` forever (M1).
@@ -2963,21 +3745,35 @@ class RunExecution {
     deadline: DeadlineScope,
     submission: MediaJobSubmission,
   ): Promise<MediaJobStatus> {
+    let cleanupFailure: { readonly error: unknown } | undefined;
+    let status: MediaJobStatus;
     try {
-      const poll = this.#executor.pollMediaJob?.(submission, deadline.signal);
-      if (poll === undefined) {
-        throw new Error('the executor implements no pollMediaJob');
-      }
+      const pollMediaJob = this.#executor.pollMediaJob?.bind(this.#executor);
+      if (pollMediaJob === undefined) throw new Error('the executor implements no pollMediaJob');
+      // Credential resolution, the actual raw poll and each transferred transport child belong
+      // to this poll invocation, independently of the already-settled submission executor.
+      const poll = this.#hostWork.invoke((scope) =>
+        pollMediaJob(submission, deadline.signal, {
+          retainWork: <T>(factory: () => Promise<T>) => scope.continue(() => factory()),
+        }),
+      );
       const raced = await deadline.race(poll);
       if (raced.outcome === 'deadline') {
         throw new Error(
           `the media-job poll did not respond within its ${String(MEDIA_JOB_POLL_DEFAULTS.pollCallTimeoutMs)}ms bound`,
         );
       }
-      return raced.value;
+      status = raced.value;
     } finally {
-      deadline.dispose();
+      try {
+        deadline.dispose();
+      } catch (error) {
+        cleanupFailure = { error };
+      }
     }
+    // A throw skips this arm; a fulfilled failed status is also an established primary refusal.
+    if (cleanupFailure !== undefined && status.state !== 'failed') throw cleanupFailure.error;
+    return status;
   }
 
   /** Route one `MediaJobStatus` to: re-arm (pending) / complete (done) / fail (failed). */
@@ -3011,7 +3807,10 @@ class RunExecution {
       case 'failed':
         await this.#settleMediaJobFailed(vertex, job, {
           code: codeForLlmError(status.error),
-          message: status.error.message,
+          message:
+            status.error.kind === 'context_overflow'
+              ? contextOverflowMessage(job.model)
+              : status.error.message,
           retryable: status.error.retryable,
         });
         return;
@@ -3100,19 +3899,50 @@ class RunExecution {
     vertexId: string,
     action: 'approve' | 'reject',
   ): Promise<void> {
-    this.#disarmTimer(gateId);
-    if (this.#settled || !this.#pendingGates.has(gateId)) {
+    if (
+      this.#settled ||
+      this.#retiringHost ||
+      this.#resolvedGates.has(gateId) ||
+      !this.#pendingGates.has(gateId) ||
+      this.#timingOutGates.has(gateId)
+    ) {
       return; // already resolved or terminal
     }
-    if (action === 'approve') {
-      await this.resume(gateId, { decision: 'approved', decidedBy: 'timeout' });
-      return;
+    this.#timingOutGates.add(gateId);
+    try {
+      this.#disarmTimer(gateId);
+      if (action === 'approve') {
+        const allowance = this.#pendingGates.get(gateId)?.allowance;
+        const quote = allowance?.kind === 'frozen' ? allowance.quote : undefined;
+        const amount =
+          quote?.kind === 'quoted' && quote.quote.amount.kind === 'representable'
+            ? quote.quote.amount.microcents
+            : undefined;
+        try {
+          await this.resume(gateId, {
+            decision: 'approved',
+            decidedBy: 'timeout',
+            ...(amount === undefined ? {} : { approvedAmountMicrocents: amount }),
+          });
+        } catch (error) {
+          // A deadline cannot authorize a stale/reject-only quote or leave a timerless gate parked.
+          // Preserve the refusal and terminate through the existing timeout failure path.
+          if (!(error instanceof EngineStateError && error.code === 'invalid_decision'))
+            throw error;
+          await this.#failGateOnTimeout(gateId, vertexId);
+        }
+        return;
+      }
+      await this.#failGateOnTimeout(gateId, vertexId);
+    } finally {
+      this.#timingOutGates.delete(gateId);
     }
-    await this.#failGateOnTimeout(gateId, vertexId);
   }
 
-  /** Timeout with `timeout_action: reject` — fail the run with `run_timeout` (execution-model.md). */
+  /** Rejection or refused auto-approval at the deadline fails with `run_timeout` (execution-model.md). */
   async #failGateOnTimeout(gateId: string, vertexId: string): Promise<void> {
+    // A resume claim keeps its pending row until durable ACK; the claim already owns this decision.
+    if (this.#settled || this.#resolvedGates.has(gateId) || !this.#pendingGates.has(gateId)) return;
     this.#pendingGates.delete(gateId);
     // Mark the gate resolved (symmetry with resume / the approve path) so a late re-delivery of this
     // gate's decision is an idempotent no-op rather than a `run_already_terminal` throw.
@@ -3130,15 +3960,15 @@ class RunExecution {
   }
 
   /** Mark a vertex failed and fail the run (unless already cancelling/failing) — the internal backstop. */
-  #failNodeInternal(vertex: PlanVertex, message: string): void {
-    const state = this.#states.get(vertex.id);
+  #failNodeInternal(nodeId: string, message: string): void {
+    const state = this.#states.get(nodeId);
     // A media-parked node is `'paused'`, not `'running'`, when its poll loop's settle-path backstop fires —
     // transition it to `'failed'` too so the in-memory state matches the run's terminal outcome (L1).
     if (state?.status === 'running' || state?.status === 'paused') {
       state.status = 'failed';
     }
     if (!this.#settled && this.#failure === undefined && !this.#cancelling) {
-      this.#failure = { nodeId: vertex.id, error: { code: 'internal', message, retryable: false } };
+      this.#failure = { nodeId, error: { code: 'internal', message, retryable: false } };
       this.#abort.abort();
     }
   }
@@ -3161,24 +3991,11 @@ class RunExecution {
     // on, and would make the second decision of a two-gate workflow fail against this process's own stale
     // claim. Whichever process resumes re-acquires (ADR-0079 §4).
     //
-    // **Defence in depth, not the sole protection** — measured, and worth stating so a future refactor judges
-    // the risk correctly. Two other mechanisms already cover this: `#emitDurable` re-reads the ownership
-    // state at WRITE time rather than caching it, and `#schedule`'s single-flight guard means a post-gate
-    // dispatch cannot begin until the `#step()` containing this whole function has unwound. A reviewer moved
-    // the hand-off back after the emit AND injected a real delay to force the race, and the suite stayed
-    // green. The ordering is kept because it makes the invariant true by construction rather than by two
-    // coincidences, but it is not load-bearing alone.
-    //
-    // **The claim is dropped BEFORE the pause is observable, and the row is deleted after.** Both halves are
-    // forced, in opposite directions. The row must go last because `run:paused` is itself a fence-guarded
-    // write — deleting first would make the run's own pause event fail its own guard. But `#owned` must drop
-    // FIRST, because `#emitDurable` delivers to consumers, and an inline prompter (`relavium gate`'s
-    // interactive re-pause) resumes the instant it sees `run:paused` — synchronously, before this function
-    // continues. Dropping `#owned` after the emit let that resume observe `#owned === true`, skip its
-    // re-acquire, and then have the row deleted out from under it; its very next `node:started` was fenced
-    // and the run died `uncertain` on the happy path. Deleting the row late is safe because `release` is
-    // scoped to `(ownerId, generation)`: if a resume already re-acquired, the generation has moved and this
-    // delete matches nothing.
+    // ADR-0103 retains the exact claim while registered actors or receipts can still use the host.
+    // This scheduler and the pause writer are themselves registered, so publication precedes quiet
+    // handoff. An inline resume registers before its first await and clears the pause episode before
+    // dispatch. The idle park rechecks that episode after joining every actor, and cannot release
+    // ownership beneath that resume. Lease deletion is always scoped to the captured exact fence.
     await this.#emitDurable(
       {
         type: 'run:paused',
@@ -3234,6 +4051,9 @@ class RunExecution {
     // previous timer with no way to stop it — a heartbeat that keeps renewing a stale fence for the life of
     // the process, long after the run it belonged to settled.
     this.#stopHeartbeat();
+    // Terminal delivery does not end an admitted raw/receipt lifetime. Retain this exact fence's
+    // heartbeat until the final quiet retirement claim closes callback admission.
+    if (this.#retiringHost || this.#ownership !== 'held') return;
     // **`'liveness'`, not a work timer** — the kind is the whole reason the seam carries one. This beat
     // advances nothing and re-arms itself for as long as the run lives, so it must not join the set a test
     // fires to drive a run forward (a drive-to-quiescence loop would never terminate) nor the set that
@@ -3241,14 +4061,17 @@ class RunExecution {
     // {@link TimerKind}.
     this.#heartbeatDisarm = this.#host.setTimer(
       RUN_LEASE_HEARTBEAT_MS,
-      () => void this.#beat(fence),
+      () => {
+        if (this.#retiringHost || this.#ownership !== 'held' || this.#fence !== fence) return;
+        void this.#hostWork.invoke(() => this.#beat(fence));
+      },
       'liveness',
     );
   }
 
   /** One heartbeat: refresh the lease, then either re-arm or stop as a fenced run. */
   async #beat(fence: RunFence): Promise<void> {
-    if (this.#settled || this.#ownership !== 'held') return;
+    if (this.#retiringHost || this.#ownership !== 'held' || this.#fence !== fence) return;
     let alive = false;
     try {
       alive = await this.#host.runLeases.heartbeat(this.runId, fence, RUN_LEASE_TTL_MS);
@@ -3268,7 +4091,7 @@ class RunExecution {
     // Re-checked, and against `held` rather than `lost`: the await above suspends, and a gate park during it
     // hands the claim back without setting `lost`. A beat that then acted would either re-arm a timer for a
     // parked run or read a deliberate release as a takeover.
-    if (this.#settled || this.#ownership !== 'held') return;
+    if (this.#retiringHost || this.#ownership !== 'held' || this.#fence !== fence) return;
     if (!alive) {
       this.#loseOwnership();
       return;
@@ -3291,7 +4114,7 @@ class RunExecution {
   /** The one transition into `lost` (§5) — every discovery point routes here, so the teardown is identical. */
   #loseOwnership(): void {
     this.#ownership = 'lost';
-    this.#terminalDurability = 'uncertain';
+    if (this.#terminalDurability !== 'durable') this.#terminalDurability = 'uncertain';
     this.#settleFenced();
   }
 
@@ -3354,6 +4177,7 @@ class RunExecution {
       return;
     }
     this.#abort.abort(); // make sure any straggler executor sees cancellation
+    if (this.#checkpoint !== undefined) this.#activateCheckpoint();
     // The run is closing — no gate or media-poll timer may fire afterwards (1.Q / ADR-0045 §4). Disarm each,
     // then clear in one shot. The #abort.abort() above also aborts any in-flight pollMediaJob (the signal is
     // threaded into the executor poll), so a cancelled job's open provider request is dropped, not just its
@@ -3362,12 +4186,33 @@ class RunExecution {
       disarm();
     }
     this.#gateTimers.clear();
+    // Abort and the exactly-once guard stay immediate. A pricing callback may have entered this settle
+    // while its cost addend is still being computed; join that explicit completion before taking totals.
+    const accounting = this.#mediaAccountingDone;
+    if (accounting !== undefined) await accounting;
     // A paid media job still pending at the terminal (a cancel, or a sibling's failure abandoning it) was
     // billed by the provider even though its output is discarded — emit its lone cost addend before clearing
     // (ADR-0045 §5, the local-only-cancel cost-integrity caveat). run:completed never reaches here with a
     // pending job (each completes + clears at its own `done`). Emit BEFORE the terminal so the run total folds it.
     for (const [nodeId, job] of this.#pendingMediaJobs) {
-      this.#emitMediaJobCost(nodeId, job);
+      try {
+        this.#emitMediaJobCost(nodeId, job);
+      } catch {
+        // The accepted reservation is already conserved. Continue EVERY job and the terminal cleanup:
+        // #settled is true, so another #settle cannot rescue an interrupted timer/lease/stream teardown.
+        // Cancellation and an earlier failure retain precedence; an otherwise successful run fails loudly.
+        if (type !== 'run:cancelled') {
+          this.#failure ??= {
+            nodeId,
+            error: {
+              code: 'internal',
+              message: 'a submitted media job cost could not be accounted for',
+              retryable: false,
+            },
+          };
+          type = 'run:failed';
+        }
+      }
     }
     for (const disarm of this.#mediaJobTimers.values()) {
       disarm();
@@ -3380,16 +4225,44 @@ class RunExecution {
       this.#budgetGovernor?.clearLegacyMediaJob(nodeId);
     }
     this.#pendingMediaJobs.clear();
-    this.#budgetApprovedVertices.clear(); // drop any unconsumed budget-approval (a sibling failure/cancel
-    // can settle the run between resume() arming it and the re-dispatch — no stale entry on the retained run)
+    this.#clearBudgetDispatchState();
     this.#disarmRunTimeout();
     this.#disarmGraceWindow(); // ADR-0085 §3 — a settled run leaves no backstop holding the loop open
     // Live `keys()` — see the note at the `#onGraceElapsed` sweep for why deleting during iteration is safe.
     for (const vertexId of this.#nodeDeadlineDisarm.keys()) this.#disarmNodeDeadline(vertexId);
-    const durationMs = Math.max(0, this.#elapsedMs());
+    // The media sweep above can START new conservative writes, including when pricing throws. Drain
+    // both money chains after that sweep and observe their failures before stamping the terminal's
+    // sequence/totals. Outcome timer/job teardown is complete; separately retained raw/receipt work may
+    // still owe host retirement. A failing accounting join cannot strand the outcome timers or jobs.
+    await this.#joinMoneyDurability();
+    if (this.#lostOwnership()) return;
+    if (type === 'run:completed' && this.#failure !== undefined) type = 'run:failed';
     let draft: RunEventDraft;
+    try {
+      draft = this.#prepareTerminalDraft(type);
+    } catch {
+      // The admission latch and accounting stay final. A host clock/id fault before publication
+      // must not replay settlement; the minimal failed draft needs neither of those host ports.
+      draft = this.#terminalPreparationFailure(type === 'run:cancelled');
+    }
+    // **Re-take ownership before claiming an outcome, if a park gave it up (ADR-0079 §4/§5).** A gate
+    // deadline, the run-level `timeout_ms` and a cooperative cancel all stay armed across a park and all end
+    // here, so this is the one place a parked process can still speak for the run. Usually nobody took it
+    // over and the re-acquire is uncontended — a user Ctrl-C-ing their own parked run must still record the
+    // cancellation. When somebody DID take it over, the acquire fails and this process stops without
+    await this.#emitDurable(draft);
+    // The terminal was REFUSED (§5) — `#emitDurable` reconciled ownership, found it gone, and `#settleFenced`
+    // already tore the run down without writing or delivering anything. Returning stops a loser from freeing
+    // the winner's lease row and from firing `#onSettled` a second time.
+    if (this.#lostOwnership()) return;
+    this.#beginHostRetirement();
+  }
+
+  /** Construct terminal data separately from the immediate settled/admission latch. */
+  #prepareTerminalDraft(type: 'run:completed' | 'run:failed' | 'run:cancelled'): RunEventDraft {
+    const durationMs = Math.max(0, this.#elapsedMs());
     if (type === 'run:completed') {
-      draft = {
+      return {
         type,
         runId: this.runId,
         outputs: this.#collectOutputs('output'),
@@ -3401,7 +4274,7 @@ class RunExecution {
       const failure = this.#failure ?? {
         error: { code: 'internal' as const, message: 'the run failed', retryable: false },
       };
-      draft = {
+      return {
         type,
         runId: this.runId,
         error: {
@@ -3422,30 +4295,36 @@ class RunExecution {
       // media job pending at the cancel had its lone estimate addend emitted just above (#emitMediaJobCost,
       // before this terminal), so the cumulative now includes it and the fail-cost is durable here (cost:updated
       // is transient). run:completed carries the same figure as totalCostMicrocents.
-      draft = { type, runId: this.runId, cumulativeCostMicrocents: this.#cumulativeCostMicrocents };
+      return { type, runId: this.runId, cumulativeCostMicrocents: this.#cumulativeCostMicrocents };
     }
-    // **Re-take ownership before claiming an outcome, if a park gave it up (ADR-0079 §4/§5).** A gate
-    // deadline, the run-level `timeout_ms` and a cooperative cancel all stay armed across a park and all end
-    // here, so this is the one place a parked process can still speak for the run. Usually nobody took it
-    // over and the re-acquire is uncontended — a user Ctrl-C-ing their own parked run must still record the
-    // cancellation. When somebody DID take it over, the acquire fails and this process stops without
-    await this.#emitDurable(draft);
-    // The terminal was REFUSED (§5) — `#emitDurable` reconciled ownership, found it gone, and `#settleFenced`
-    // already tore the run down without writing or delivering anything. Returning stops a loser from freeing
-    // the winner's lease row and from firing `#onSettled` a second time.
-    if (this.#lostOwnership()) return;
-    // **Ownership ends with the run, and only AFTER the terminal is written** (ADR-0079 §4). The order is
-    // forced: the terminal is itself fence-checked, so releasing first would make this run's own last write
-    // fail its own guard.
-    //
-    // Both halves are load-bearing. An un-disarmed beat re-arms itself forever, so a finished run would keep
-    // writing a lease renewal every 20s for the life of the process; an unreleased lease leaves a
-    // `run_leases` row per run, growing without bound in `history.db`. Released even when the terminal write
-    // FAILED (the run is `uncertain` and its terminal is in the outbox): letting another process take the run
-    // over is exactly what should happen next, and the generation only moves forward, so this process stays
-    // fenced if it ever wakes.
-    await this.#releaseOwnership();
-    this.#onSettled(this.runId);
+  }
+
+  /** Fixed fallback for an unstamped terminal; the run identity is reused, not a fresh host id. */
+  #terminalPreparationFailure(cancelled: boolean): RunEventDraft {
+    if (cancelled)
+      return {
+        type: 'run:cancelled',
+        runId: this.runId,
+        cumulativeCostMicrocents: this.#cumulativeCostMicrocents,
+      };
+    this.#failure ??= {
+      error: {
+        code: 'internal',
+        message: 'the run terminal could not be prepared',
+        retryable: false,
+      },
+    };
+    return {
+      type: 'run:failed',
+      runId: this.runId,
+      error: {
+        ...this.#failure.error,
+        ...(this.#failure.nodeId === undefined ? {} : { nodeId: this.#failure.nodeId }),
+        correlationId: this.runId,
+      },
+      partialOutputs: {},
+      cumulativeCostMicrocents: this.#cumulativeCostMicrocents,
+    };
   }
 
   /**
@@ -3466,6 +4345,8 @@ class RunExecution {
     if (this.#fencedSettled) return;
     this.#fencedSettled = true;
     this.#settled = true; // no terminal may be emitted after this point, by any path
+    this.#checkpoint = undefined;
+    this.#clearBudgetDispatchState();
     this.#stopHeartbeat();
     this.#abort.abort();
     // ADR-0085 §8.12 requires the grace window disarmed on a FENCED settle as well as a normal one, and it
@@ -3496,7 +4377,359 @@ class RunExecution {
     this.#pendingMediaJobs.clear();
     this.#disarmRunTimeout();
     this.#closeStream?.();
+    this.#beginHostRetirement();
+  }
+
+  /** Wake provisional departure on actual entry/completion, never on a polling microtask. */
+  #wakeDeparture(): void {
+    const waiters = [...this.#departureWaiters];
+    this.#departureWaiters.clear();
+    for (const wake of waiters) wake();
+  }
+
+  #departureActivity(): { readonly promise: Promise<void>; readonly dispose: () => void } {
+    let wake!: () => void;
+    const promise = new Promise<void>((resolve) => {
+      wake = resolve;
+    });
+    this.#departureWaiters.add(wake);
+    return {
+      promise,
+      dispose: () => {
+        this.#departureWaiters.delete(wake);
+      },
+    };
+  }
+
+  /** A queued callback belongs to this execution, including after its timer was disarmed. */
+  #runTimerActor(operation: () => Promise<void>): void {
+    if (this.#retiringHost) return;
+    void this.#hostWork
+      .invoke(() => {
+        if (this.#retiringHost) return Promise.resolve();
+        return operation();
+      })
+      .catch((error: unknown) => {
+        this.#effectHealth.observeFailure(error);
+        if (this.#settled || this.#retiringHost) return;
+        this.#failure ??= {
+          error: {
+            code: 'internal',
+            message: 'a run-owned timer operation failed',
+            retryable: false,
+          },
+        };
+        this.#abort.abort();
+        this.#schedule();
+      });
+  }
+
+  #beginParkAfterReceipts(): void {
+    if (this.#parkingWork !== undefined || this.#retiringHost) return;
+    const current = this.#parkAfterReceipts();
+    this.#parkingWork = current;
+    void current.then(
+      () => {
+        if (this.#parkingWork === current) this.#parkingWork = undefined;
+        this.#wakeDeparture();
+      },
+      (error: unknown) => {
+        if (this.#parkingWork === current) this.#parkingWork = undefined;
+        this.#effectHealth.observeFailure(error);
+        this.#wakeDeparture();
+      },
+    );
+  }
+
+  #assertDeparturePrimary(): EventStreamDeliveryState {
+    const state = this.#readPrimary?.();
+    if (state === undefined || state.hasGap || state.abandoned) {
+      throw new EngineStateError(
+        'invalid_departure',
+        'paused departure requires an intact primary reader',
+        {
+          runId: this.runId,
+        },
+      );
+    }
+    return state;
+  }
+
+  #sameDeparturePause(generation: number, resolvedGates: number): boolean {
+    const primary = this.#assertDeparturePrimary();
+    return (
+      generation > 0 &&
+      this.#pauseGeneration === generation &&
+      this.#pauseEpisode &&
+      // Receipt publications do not begin a new pause episode. The original pause must have been
+      // consumed, and the CURRENT cursor must be drained, including successful late money receipts.
+      primary.publishedCount >= this.#pausePublication &&
+      primary.deliveredCount === primary.publishedCount &&
+      this.#resolvedGates.size === resolvedGates &&
+      this.#countRunning() === 0 &&
+      !this.#cancelling &&
+      this.#failure === undefined &&
+      !this.#abort.signal.aborted
+    );
+  }
+
+  #finalDeparture(kind: 'closed' | 'detached'): RunDeparture {
+    return Object.freeze({
+      kind,
+      moneyDurability:
+        this.#money.durabilityBroken || this.#budgetGovernor?.conservativeDurabilityBroken === true
+          ? 'uncertain'
+          : 'durable',
+      effectNeedsAttention: this.#effectHealth.needsAttention,
+    });
+  }
+
+  /** Due actions keep their existing outcome paths; no fresh poll/provider call repairs departure. */
+  #serviceDepartureDeadline(): boolean {
+    const now = Date.parse(this.#host.clock.now());
+    if (this.#settled || this.#retiringHost || this.#abort.signal.aborted) return false;
+    const timeout = this.#plan.timeoutMs;
+    if (timeout !== undefined && now >= this.#startEpochMs + timeout) {
+      this.#runTimerActor(() => this.#onRunTimeout(timeout));
+      return true;
+    }
+    for (const [id, started] of this.#nodeDeadlineStartMs) {
+      const vertex = this.#plan.vertices.get(id);
+      const status = this.#states.get(id)?.status;
+      const bound = vertex?.config.kind === 'agent' ? vertex.config.node.timeout_ms : undefined;
+      if (
+        vertex !== undefined &&
+        bound !== undefined &&
+        status !== undefined &&
+        !SETTLED.has(status) &&
+        now >= this.#startEpochMs + started + bound
+      ) {
+        // This path services the clock directly; the host has not fired/removed its timer.
+        this.#disarmNodeDeadline(id);
+        this.#runTimerActor(() => this.#onNodeDeadline(vertex, bound));
+        return true;
+      }
+    }
+    for (const [id, gate] of this.#pendingGates) {
+      if (
+        !this.#resolvedGates.has(id) &&
+        !this.#timingOutGates.has(id) &&
+        gate.expiresAt !== undefined &&
+        gate.timeoutAction !== undefined &&
+        now >= Date.parse(gate.expiresAt)
+      ) {
+        const action = gate.timeoutAction;
+        this.#runTimerActor(() => this.#onGateTimeout(id, gate.vertexId, action));
+        return true;
+      }
+    }
+    for (const [id, job] of this.#pendingMediaJobs) {
+      if (now > Date.parse(job.deadlineAt)) {
+        this.#runTimerActor(() => this.#expireDepartureMedia(id, job));
+        return true;
+      }
+    }
+    return false;
+  }
+
+  async #expireDepartureMedia(id: string, job: ParkedMediaJob): Promise<void> {
+    if (this.#settled || this.#retiringHost || this.#pendingMediaJobs.get(id) !== job) return;
+    const vertex = this.#plan.vertices.get(id);
+    if (vertex === undefined) {
+      this.#emitMediaJobCost(id, job);
+      this.#clearMediaJob(id);
+      this.#schedule();
+      return;
+    }
+    await this.#settleMediaJobFailed(vertex, job, {
+      code: 'provider_unavailable',
+      message: `media job '${job.jobId}' exceeded its deadline (${job.deadlineAt})`,
+      retryable: true,
+    });
+  }
+
+  #armQuiescingMediaDeadline(id: string, job: ParkedMediaJob): void {
+    if (!this.#quiescing || this.#retiringHost || this.#quiescingMediaDeadlines.has(id)) return;
+    // Existing media expiry is strictly past deadlineAt. Preserve it rather than polling at equality.
+    const remaining = Math.max(
+      0,
+      Date.parse(job.deadlineAt) + 1 - Date.parse(this.#host.clock.now()),
+    );
+    const disarm = armLongTimer(
+      remaining,
+      () => {
+        this.#quiescingMediaDeadlines.delete(id);
+        if (!this.#quiescing || this.#retiringHost || this.#pendingMediaJobs.get(id) !== job)
+          return;
+        this.#runTimerActor(async () => {
+          if (Date.parse(this.#host.clock.now()) > Date.parse(job.deadlineAt)) {
+            await this.#expireDepartureMedia(id, job);
+          } else this.#armQuiescingMediaDeadline(id, job);
+        });
+      },
+      (ms, fire) => this.#host.setTimer(ms, fire, 'deadline'),
+    );
+    if (!this.#quiescing || this.#retiringHost || this.#pendingMediaJobs.get(id) !== job) disarm();
+    else this.#quiescingMediaDeadlines.set(id, disarm);
+  }
+
+  #suspendMediaPolls(): void {
+    const timers = [...this.#mediaJobTimers.values()];
+    this.#mediaJobTimers.clear();
+    for (const disarm of timers) disarm();
+    for (const [id, job] of this.#pendingMediaJobs) this.#armQuiescingMediaDeadline(id, job);
+  }
+
+  #clearQuiescingMediaDeadlines(): void {
+    const timers = [...this.#quiescingMediaDeadlines.values()];
+    this.#quiescingMediaDeadlines.clear();
+    for (const disarm of timers) disarm();
+  }
+
+  #disarmPausedTimers(): void {
+    this.#stopHeartbeat();
+    this.#disarmRunTimeout();
+    this.#disarmGraceWindow();
+    for (const id of [...this.#nodeDeadlineDisarm.keys()]) this.#disarmNodeDeadline(id);
+    const gates = [...this.#gateTimers.values()];
+    this.#gateTimers.clear();
+    for (const disarm of gates) disarm();
+    const polls = [...this.#mediaJobTimers.values()];
+    this.#mediaJobTimers.clear();
+    for (const disarm of polls) disarm();
+    this.#clearQuiescingMediaDeadlines();
+  }
+
+  #restoreAttachedTimers(): void {
+    if (this.#settled || this.#retiringHost || this.#abort.signal.aborted) return;
+    if (this.#runTimeoutDisarm === undefined) this.#armRunTimeout();
+    for (const [id, gate] of this.#pendingGates) {
+      if (
+        !this.#gateTimers.has(id) &&
+        !this.#resolvedGates.has(id) &&
+        !this.#timingOutGates.has(id)
+      ) {
+        this.#reArmGateDeadline({
+          gateId: id,
+          nodeId: gate.vertexId,
+          isBudgetGate: gate.isBudgetGate,
+          ...this.#gateDeadline(gate),
+        });
+      }
+    }
+    for (const [id, state] of this.#states) {
+      const vertex = this.#plan.vertices.get(id);
+      if (vertex !== undefined && (state.status === 'running' || state.status === 'paused'))
+        this.#armNodeDeadline(vertex);
+    }
+    for (const id of this.#pendingMediaJobs.keys()) this.#armMediaPoll(id);
+  }
+
+  /** Only this execution owns the pause episode, primary cursor and final host-safe claim. */
+  async #depart(): Promise<RunDeparture> {
+    const generation = this.#pauseGeneration;
+    const resolvedGates = this.#resolvedGates.size;
+    this.#quiescing = true;
+    this.#suspendMediaPolls();
+    try {
+      for (;;) {
+        if (this.#settled) {
+          this.#beginHostRetirement();
+          await this.#hostRetirement;
+          return this.#finalDeparture('closed');
+        }
+        if (!this.#sameDeparturePause(generation, resolvedGates)) return { kind: 'continue' };
+        if (this.#serviceDepartureDeadline()) continue;
+        // Subscribe before observing idle: a completion between the observation and await cannot vanish.
+        const activity = this.#departureActivity();
+        try {
+          if (!this.#hostWork.isIdle || this.#publishingPauses !== 0) {
+            await activity.promise;
+            continue;
+          }
+        } finally {
+          activity.dispose();
+        }
+        await this.#parkingWork;
+        await this.#money.waitForWrites();
+        await this.#deliveryTail;
+        if (this.#settled) continue;
+        if (!this.#sameDeparturePause(generation, resolvedGates)) return { kind: 'continue' };
+        if (
+          !this.#hostWork.isIdle ||
+          this.#publishingPauses !== 0 ||
+          this.#serviceDepartureDeadline()
+        )
+          continue;
+        // Relinquish the exact claim while cancellation and due deadlines are still admitted.
+        const fence = this.#park();
+        if (fence !== undefined) {
+          await this.#releaseLeaseRow(fence);
+          continue;
+        }
+        this.#disarmPausedTimers();
+        // Cleanup ports and the clock can reenter; the final synchronous claim must recheck them too.
+        if (this.#settled) continue;
+        if (!this.#sameDeparturePause(generation, resolvedGates)) return { kind: 'continue' };
+        if (
+          !this.#hostWork.isIdle ||
+          this.#publishingPauses !== 0 ||
+          this.#serviceDepartureDeadline()
+        )
+          continue;
+        if (this.#settled) continue;
+        if (!this.#sameDeparturePause(generation, resolvedGates) || !this.#hostWork.isIdle)
+          return { kind: 'continue' };
+        this.#retiringHost = true;
+        this.#onDetached(this.runId);
+        this.#closeStream?.();
+        return this.#finalDeparture('detached');
+      }
+    } finally {
+      this.#quiescing = false;
+      this.#clearQuiescingMediaDeadlines();
+      if (!this.#retiringHost && !this.#settled) this.#restoreAttachedTimers();
+    }
+  }
+
+  /** Outcome publication stays bounded; raw/child/entered host work has its own unbounded join. */
+  #beginHostRetirement(): void {
+    if (this.#hostRetirement !== undefined) return;
+    this.#hostRetirement = this.#retireHostWhenQuiet();
+  }
+
+  async #retireHostWhenQuiet(): Promise<void> {
+    do {
+      await this.#hostWork.join();
+      await this.#money.waitForWrites();
+      await this.#deliveryTail;
+    } while (!this.#hostWork.isIdle);
+    // No raw/child authority remains. Stop future callbacks in this synchronous turn, then join the
+    // exact release. An entered heartbeat was itself registered and therefore already completed.
+    this.#clearQuiescingMediaDeadlines();
+    this.#retiringHost = true;
+    this.#stopHeartbeat();
+    await this.#parkingWork;
+    if (this.#ownership === 'held') await this.#releaseOwnership();
     this.#onSettled(this.runId);
+    this.#wakeDeparture();
+  }
+
+  /** An ordinary pause relinquishes its claim only after its admitted receipts become idle. */
+  async #parkAfterReceipts(): Promise<void> {
+    await this.#hostWork.join();
+    await this.#deliveryTail;
+    if (
+      this.#settled ||
+      !this.#pauseEpisode ||
+      this.#countRunning() !== 0 ||
+      this.#pendingMediaJobs.size !== 0 ||
+      this.#publishingPauses !== 0 ||
+      !this.#hostWork.isIdle
+    )
+      return;
+    const fence = this.#park();
+    if (fence !== undefined) await this.#releaseLeaseRow(fence);
   }
 
   /** Stop beating and give the lease back — the run is over, one way or another (ADR-0079 §4). */
@@ -3513,10 +4746,8 @@ class RunExecution {
   /**
    * Drop the ownership CLAIM synchronously, returning the fence whose row still needs deleting.
    *
-   * Split from the row delete so the two can straddle an await — see `#emitPausedOnce`, where dropping the
-   * claim must happen before the pause is observable while the delete must happen after the pause is
-   * durable. `#fence` is deliberately KEPT: clearing it would make a subsequent write unguarded (an absent
-   * fence is a pass, not a refusal), which is the failure this pair of fields exists to close.
+   * Called only after registered actors/receipts become quiet. Keep the fence for guarded late
+   * writes and scope the subsequent row deletion to that exact generation (ADR-0103/ADR-0079).
    */
   #park(): RunFence | undefined {
     if (this.#ownership !== 'held') return undefined;
@@ -3714,16 +4945,11 @@ class RunExecution {
    * failed the run — before the node reaches any boundary. Without it the node could settle while the write was
    * still in flight, and a crash in that window loses money the provider may have billed.
    *
-   * The catch below is a BACKSTOP, and on the run path it is deliberately unreachable: `#emitDurable` is total for
-   * store faults, so a failed non-terminal write sets `#failure` and aborts there rather than rejecting. **That
-   * still holds under ADR-0078's ordered append** — §2's `AppendConflictError` is a non-terminal store
-   * rejection like any other, absorbed by the same catch, so the write path still resolves and this argument
-   * is unchanged rather than merely un-revisited. It
-   * matters for a HOST-wired governor whose sink can reject — the chat path, once §4 gives it a real durable
-   * write. Kept here so the two surfaces cannot diverge in what a durability failure means: never a released
-   * reservation, always a loud failure.
+   * Ordinary delivery remains total for store faults. Its private per-append acknowledgement makes
+   * the money bridge reject missing persistence even when the run already had a failure or lost its
+   * ownership. Both chains retain sticky failure state independently of their consume-once join errors.
    */
-  async #joinMoneyDurability(nodeId: string): Promise<void> {
+  async #joinMoneyDurability(nodeId?: string): Promise<void> {
     // **Barrier B3 (ADR-0077)** — and it is now the SINGLE join for both money chains. The old
     // `if (governor === undefined) return;` is gone: it was one of §5's three barrier holes, because a run
     // without a budget has no conservative commitments but does have a realized ledger, and returning early
@@ -3747,7 +4973,7 @@ class RunExecution {
    * `??=` throughout: a sibling's already-recorded root cause always wins, which is also why this is usually
    * a no-op on the ordinary path (`#emitDurable` has already set `#failure` from the same fault).
    */
-  #failMoneyDurability(error: unknown, nodeId: string): void {
+  #failMoneyDurability(error: unknown, nodeId?: string): void {
     // Attribute it to the node whose write actually failed, not to whichever node reached this barrier
     // first — under a `fan_out` both branches await the same chain link, so the first to flush may have made no
     // commitment at all. Falls back to this node when the error carries no owner.
@@ -3755,7 +4981,7 @@ class RunExecution {
     const owner =
       error instanceof CommitmentDurabilityError || ledger ? (error.nodeId ?? nodeId) : nodeId;
     this.#failure ??= {
-      nodeId: owner,
+      ...(owner === undefined ? {} : { nodeId: owner }),
       error: {
         code: 'internal',
         // The cause is deliberately NOT in the message: a durable-write failure can carry a filesystem path, and
@@ -3772,7 +4998,25 @@ class RunExecution {
     this.#abort.abort();
   }
 
-  async #emitDurable(draft: RunEventDraft, opts?: { readonly handOff?: boolean }): Promise<void> {
+  #emitDurable(
+    draft: RunEventDraft,
+    opts?: {
+      readonly handOff?: boolean;
+      /** Only an already-incurred money append can use the retained terminal claim. */
+      readonly receipt?: boolean;
+    },
+  ): Promise<DurableAppendAcknowledgement> {
+    return this.#hostWork.invoke(() => this.#writeDurable(draft, opts));
+  }
+
+  async #writeDurable(
+    draft: RunEventDraft,
+    opts?: {
+      readonly handOff?: boolean;
+      /** Only an already-incurred money append can use the retained terminal claim. */
+      readonly receipt?: boolean;
+    },
+  ): Promise<DurableAppendAcknowledgement> {
     const handOff = opts?.handOff === true;
     // **`CR-32`'s durable-event bound, and the terminal is exempt.** A run that cannot publish its terminal
     // is worse in every way than one that wrote an oversized final event: the stream never closes, the lease
@@ -3791,8 +5035,9 @@ class RunExecution {
     // durable-event size bound (below, after the de-inline). A store fault
     // must neither break the exactly-one-terminal-event invariant nor escape as an unhandled rejection
     // out of the fire-and-forget `#loop`. So the `sequenceNumber` is assigned once at the single
-    // authoritative point (`next`), and the event is **always delivered** — keeping the stream gap-free
-    // and guaranteeing a terminal always closes the consumer's `for await`. On a persist failure of a
+    // authoritative point (`next`), and an admitted event is delivered even on a store fault. Ownership
+    // loss can refuse a terminal; an unacknowledged terminal refuses every later ask (ADR-0103). Neither
+    // refusal is a persistence ACK. On a persist failure of a
     // **non-terminal** event we additionally fail the run (we must never report progress the durable
     // log lacks); a terminal whose write fails is still delivered in-process, and `reconcile()` repairs
     // the durable record on restart.
@@ -3853,45 +5098,44 @@ class RunExecution {
       throw new RunLoopInvariantError('event_too_large', describeBreach(sizeBreach));
     }
 
-    const event = this.#bus.next(durable);
-    // Record the run's reference for every produced durable media handle (1.AF/D12c), then release the
-    // run's references at its terminal event (D11 sweep). Best-effort + synchronous-to-the-stream: a
-    // retention failure never touches the I3 / gap-free / exactly-one-terminal guarantees below.
-    this.#recordProducedMedia(durable);
+    let event: RunEvent;
+    try {
+      event = this.#bus.next(durable);
+    } catch (error) {
+      if (!TERMINAL_TYPES.has(durable.type)) throw error;
+      // next() advances only after successful stamping/validation. Retry this still-unstamped
+      // terminal once with fixed data, before any append or delivery. Never retry persistence,
+      // replay accounting, fabricate a timestamp or classify a broken clock as a fencing loss.
+      // A permanently unavailable host clock remains outside this bounded recovery guarantee.
+      durable = this.#terminalPreparationFailure(durable.type === 'run:cancelled');
+      event = this.#bus.next(durable);
+    }
+    // Retention follows the ordered writer's acknowledgement below. A numbered event alone is not
+    // evidence this process still owns the run: a CAS pin may finish after another owner settles it.
     // NOTE: the terminal media reclaim used to sit here, before the write. It now runs only after the
     // terminal's persist SUCCEEDS — see the write below (ADR-0078 §1 re-timing ADR-0042 §4).
     const prior = this.#deliveryTail;
-    // **The ordered append (ADR-0078 §1), and it is one line.** `expectedLastSequenceNumber` is read HERE,
-    // synchronously, before the region is entered — reading it inside would race with a concurrent emitter
-    // that has already advanced it, which is the very interleaving the tail exists to remove.
-    //
-    // **The terminal stays exempt, and CR-92 is where that was DECIDED rather than deferred.** The original
-    // reason — "a terminal the store will not take has nowhere to go" — is gone: §4's outbox now gives it a
-    // home, so a guarded terminal that conflicted would report `uncertain` and be re-appended by the drain
-    // with a fresh belief. It is exempt on a different ground. Guarding it would convert the COMMON case —
-    // a non-terminal write was lost, so `#lastAskedSequenceNumber` no longer matches the log — into a run
-    // whose terminal is refused, reported `uncertain`, and only lands at the next `reconcile()`. That trades
-    // a run that ends correctly-but-with-a-hole for one that does not durably end at all, on the failure
-    // path, which is the wrong direction. Exactly-one-terminal (ADR-0036) also outranks the guard.
-    //
-    // The residual is stated rather than hidden: a terminal can still land past a hole left by a lost
-    // non-terminal write. `checkDurableTruth` reports that log as ordered and `createAppendAudit` reports it
-    // as holed — which is the honest pair, since the run really did end and really did lose an event.
-    const expectedLastSequenceNumber = this.#lastAskedSequenceNumber;
-    const guarded = !TERMINAL_TYPES.has(event.type);
-    if (guarded) {
-      this.#lastAskedSequenceNumber = event.sequenceNumber;
-    }
+    const terminal = TERMINAL_TYPES.has(event.type);
+    const guarded = !terminal;
     // This closure's branch count is NOT extractable, and the reason is written throughout it:
     // every branch below is an ORDERING guarantee relative to `await prior` and the persist. Moving any of
     // them into a helper inserts a microtask hop at exactly the point the comments below record as having
     // reordered the log once already, and the `held`/`unclaimed` fast path exists specifically to AVOID that
     // hop. A metric is not worth re-opening the race this function was written to close (CR-10, CR-92).
-    const settled = (async (): Promise<void> => {
+    const settled = (async (): Promise<DurableAppendAcknowledgement> => {
       // `await prior` moved ABOVE the persist. Below it, the previous event's write had already been
       // STARTED but not joined, so two events for one run overlapped — nothing but the store's timing kept
       // the log a prefix. The same single tail now serializes the ask, the write and the delivery.
       await prior;
+      // This check precedes ownership reconciliation and head mutation: neither a recovered store nor
+      // a retained claim can make a later receipt poison original terminal-outbox recovery (ADR-0103).
+      if (this.#terminalAppendFailure !== undefined) {
+        return { kind: 'refused', cause: this.#terminalAppendFailure.cause };
+      }
+      if (this.#terminalDurability === 'durable' && opts?.receipt !== true) {
+        return { kind: 'refused' };
+      }
+      let acknowledgement: DurableAppendAcknowledgement;
       try {
         // **Ownership is reconciled HERE, and only here.** `#emitDurable` is the run's single durable
         // writer, so every path that can write after a gate park — a cooperative cancel, a gate deadline,
@@ -3909,9 +5153,15 @@ class RunExecution {
         if (!settledClaim && !(await this.#authorizeWrite())) {
           // Refused. A TERMINAL is not delivered either: `handle.subscribe` observers outlive the stream
           // close, and telling them the run ended is §5's "durable lie" in delivered form.
-          if (!TERMINAL_TYPES.has(event.type)) this.#bus.deliver(event);
-          return;
+          if (!terminal) this.#bus.deliver(event);
+          return { kind: 'refused' };
         }
+        // Derive the head at append time, after the predecessor's ACK. A guarded failed ask still
+        // advances the expectation so the next ordinary append fails closed (ADR-0078). A terminal
+        // remains exempt from that guard so it can end a log with an earlier hole; only its ACK advances
+        // the head. An unacknowledged terminal instead selects the sticky refusal above.
+        const expectedLastSequenceNumber = this.#lastAskedSequenceNumber;
+        if (guarded) this.#lastAskedSequenceNumber = event.sequenceNumber;
         // A terminal is exempt from the APPEND guard (ADR-0078 §2) but NOT from the fence: a process that
         // has been taken over must not write the run's terminal either — that is the whole of ADR-0079 §5.
         // The two claims are independent fields precisely so this asymmetry is expressible.
@@ -3919,34 +5169,30 @@ class RunExecution {
           ...(guarded ? { expectedLastSequenceNumber } : {}),
           ...(this.#fence === undefined ? {} : { fence: this.#fence }),
         });
-        if (handOff && !TERMINAL_TYPES.has(event.type)) {
-          // The pause is now durable and was written AS THE OWNER; hand the claim back only after that.
-          // Entering `parked` here rather than before the write means the write that creates the state can
-          // never observe it, and a pause that fails for an ordinary store fault KEEPS ownership instead of
-          // stranding a dropped claim.
-          this.#park();
-        }
-        if (TERMINAL_TYPES.has(event.type)) {
+        acknowledgement = { kind: 'persisted' };
+        if (terminal) {
+          this.#lastAskedSequenceNumber = event.sequenceNumber;
           this.#terminalDurability = 'durable';
-          // **The media reclaim happens HERE, not before the write** (ADR-0078 §1, re-timing ADR-0042 §4).
-          // It used to run at the emit, so a terminal whose write then failed had already released the run's
-          // media references — the outbox could retry the terminal into a log whose media was gone.
-          this.#reclaimRunMedia();
         }
       } catch (writeError) {
+        acknowledgement = { kind: 'failed', cause: writeError };
+        if (terminal) this.#terminalAppendFailure = { cause: writeError };
         // **A FENCE rejection is not a store fault, and must not be treated as one (ADR-0079 §5).** Another
         // process owns the run now. This one stops: it does not fail the run, does not write a terminal, and
         // does not hand the terminal to the outbox — the run's real outcome belongs to the new owner, and
         // recording anything here would be a durable lie about somebody else's run.
         if (isLeaseFencedError(writeError)) {
           this.#loseOwnership();
-          if (TERMINAL_TYPES.has(event.type)) return; // §5 again, on the race path: deliver nothing
+          if (terminal) return acknowledgement; // §5 again, on the race path: deliver nothing
         } else if (TERMINAL_TYPES.has(event.type)) {
           // **The terminal outbox** (ADR-0078 §4). The run is settling and the caller is about to be handed
           // this terminal in-process; the durable record does not have it. Hold the intended payload OUTSIDE
           // the store — the store is the thing that just failed — so a later start can retry it under the
           // same identity, and report `uncertain` so no surface says `completed` on a record that disagrees.
           this.#terminalDurability = 'uncertain';
+          // An owned terminal refused for a store fault still needs its media while the outbox waits.
+          // A fence rejection takes the separate branch above and must never re-add retention.
+          this.#recordProducedMedia(durable);
           await this.#bestEffortOutbox(event);
         }
         if (
@@ -3957,10 +5203,9 @@ class RunExecution {
         ) {
           this.#failure = {
             // Attribute it when the event names a node. This is the failure a user ACTUALLY sees for a failed
-            // durable write — including a `budget:estimate_committed`, whose typed
-            // `CommitmentDurabilityError` never fires here because this catch is total and resolves rather than
-            // rejecting. Without the id, `run:failed` said only "a durable run-event write failed" with nothing
-            // to point at, in a run that may have dozens of nodes.
+            // durable write — including a `budget:estimate_committed`. The private ACK separately tells
+            // its money bridge to reject. Without the id, `run:failed` named no owning node in a run
+            // that may have dozens of them.
             ...('nodeId' in event && typeof event.nodeId === 'string'
               ? { nodeId: event.nodeId }
               : {}),
@@ -3978,10 +5223,29 @@ class RunExecution {
           this.#schedule();
         }
       }
+      if (acknowledgement.kind === 'persisted') {
+        // Post-ACK observers/retention cannot turn a successful store append into an outbox failure.
+        this.#recordProducedMedia(durable);
+        if (handOff && !terminal) {
+          this.#beginParkAfterReceipts();
+        }
+        if (terminal) this.#reclaimRunMedia();
+      }
+      // This writer and its calling actor are still registered. Publish the bounded outcome now;
+      // host retirement releases the exact fence only after all actors and receipts actually settle.
       this.#bus.deliver(event); // still in seq order — `prior` is now awaited above, before the write
+      if (event.type === 'run:paused' && acknowledgement.kind === 'persisted') {
+        this.#pauseGeneration += 1;
+        this.#pausePublication = this.#readPrimary?.().publishedCount ?? 0;
+      }
+      this.#wakeDeparture();
+      return acknowledgement;
     })();
-    this.#deliveryTail = settled.catch(() => undefined);
-    await settled;
+    this.#deliveryTail = settled.then(
+      () => undefined,
+      () => undefined,
+    );
+    return await settled;
   }
 
   /**
@@ -4194,8 +5458,8 @@ class RunExecution {
   }
 
   /**
-   * Record the producing run's reference for every durable media handle a just-stamped event carries
-   * (1.AF/D12c, ADR-0042 §3). **Best-effort**: a collection or host-write failure is swallowed — it never
+   * Record the producing run's reference after its append acknowledgement, or for an owned terminal
+   * awaiting the outbox (1.AF/D12c, ADR-0042 §3). **Best-effort**: a collection or host-write failure is swallowed — it never
    * touches the I3 / gap-free / exactly-one-terminal guarantees (a missing ref only risks GC
    * over/under-retention). No-op without a `mediaReferences` host port or when the event carries no handle.
    */
@@ -4248,12 +5512,10 @@ class RunExecution {
    *  retention failure never breaks the run (the port is documented best-effort, ADR-0042 §3-4). */
   #bestEffortMediaRef(call: () => void | Promise<void>): void {
     try {
-      const result = call();
-      if (result instanceof Promise) {
-        result.catch(() => undefined); // never an unhandled rejection
-      }
+      const entered = this.#hostWork.enter(call);
+      if (entered !== undefined) void entered.catch(() => {});
     } catch {
-      // best-effort retention; the run is unaffected (I3 / totality untouched)
+      /* Best-effort retention: failure never changes money or the actual outcome. */
     }
   }
 
@@ -4316,12 +5578,17 @@ export class WorkflowEngine {
    */
   readonly #onLegacyMediaJobHold: ((nodeIds: readonly string[]) => void) | undefined;
   readonly #runs = new Map<string, RunExecution>();
+  readonly #resumingRuns = new Map<string, AbortControllerLike>();
   /**
    * Settled run ids in settle order — `CR-33`'s retention queue
-   * ([ADR-0086](../../../docs/decisions/0086-absolute-admission-ceilings-on-authored-values.md)).
+   * ([ADR-0087](../../../docs/decisions/0087-consumed-streams-size-bounds-and-run-retention.md) §4; this
+   * pointed at ADR-0086 until 2026-09-04, which governs admission ceilings and not this).
    *
-   * **Count-based rather than age-based, and that is the decision.** An age policy needs a clock, and a
-   * clock in `packages/core` means a new host seam for a bound that a count expresses exactly as well —
+   * **Count-based rather than age-based, and that is the decision** — but not for the reason first written
+   * here. An earlier version of this comment (and ADR-0087 §4 itself) argued that an age policy "needs a
+   * clock, and a clock in `packages/core` is a new host seam". That was false: `ExecutionHost.clock` has
+   * existed since ADR-0036 and this file reads it for lease expiry, gate deadlines, media-job deadlines and
+   * every event timestamp. The reasons that survive are the ones that were always the real ones —
    * "the last N runs stay addressable" is a promise a caller can reason about, where "runs younger than T"
    * depends on how busy the process was. It also makes the eviction deterministic, so a test asserts it
    * rather than waiting for one.
@@ -4390,7 +5657,7 @@ export class WorkflowEngine {
     }
     const runId = this.#host.ids.newId();
     const bus = new RunEventBus({ now: this.#host.clock.now, validate: this.#validateEvents });
-    const execution = new RunExecution({
+    const execution: RunExecution = new RunExecution({
       runId,
       plan,
       workflow: input.workflow,
@@ -4403,6 +5670,13 @@ export class WorkflowEngine {
       bus,
       capacity: this.#capacity,
       onSettled: (settledRunId) => this.#retainSettled(settledRunId),
+      onDetached: (detachedRunId) => {
+        if (this.#runs.get(detachedRunId) === execution) {
+          this.#runs.delete(detachedRunId);
+          const index = this.#settledOrder.indexOf(detachedRunId);
+          if (index >= 0) this.#settledOrder.splice(index, 1);
+        }
+      },
       ownerId: this.#ownerId,
       ...(this.#effectJournalFactory === undefined
         ? {}
@@ -4479,6 +5753,27 @@ export class WorkflowEngine {
   //
   // What CAN move out is a message the ordering does not depend on — see `#ownedElsewhereMessage`.
   async resumeFromCheckpoint(input: ResumeFromCheckpointInput): Promise<RunHandle> {
+    assertValidResumeInput(input);
+    if (this.#resumingRuns.has(input.runId) || this.#runs.has(input.runId)) {
+      throw new EngineStateError(
+        'run_already_active',
+        'this engine is already preparing or executing the run',
+        { runId: input.runId },
+      );
+    }
+    const preparingAbort = this.#host.newAbortController();
+    this.#resumingRuns.set(input.runId, preparingAbort);
+    try {
+      return await this.#resumeCheckpoint(input, preparingAbort.signal);
+    } finally {
+      this.#resumingRuns.delete(input.runId);
+    }
+  }
+
+  async #resumeCheckpoint(
+    input: ResumeFromCheckpointInput,
+    preparingSignal: AbortSignalLike,
+  ): Promise<RunHandle> {
     // A gate resume supplies gateId + decision; a media-ONLY resume (1.AG Section D) supplies neither.
     const isGateResume = input.gateId !== undefined && input.decision !== undefined;
     assertValidResumeInput(input); // a half-supplied pair, or a malformed decision, is a caller misuse
@@ -4516,14 +5811,19 @@ export class WorkflowEngine {
     if (checkpoint === undefined) {
       // Release what we just took: the run does not exist, so holding its lease would lock a runId nobody
       // can use. Every refusal below this point does the same — an acquire that leads nowhere must not leak.
-      await this.#host.runLeases.release(input.runId, fence);
+      await this.#releaseReconcileClaim(input.runId, fence);
       throw new EngineStateError('unknown_run', 'no checkpoint exists for the supplied runId', {
         runId: input.runId,
       });
     }
-    // Only CHECKPOINT_SCHEMA_VERSION (v1) exists today, so no migration/guard runs here yet. When the
-    // derivation shape changes, this is the single point a future engine must refuse or migrate an older
-    // `checkpoint.schemaVersion` before consuming the state (the field exists precisely for that, 1.R).
+    if (checkpoint.schemaVersion !== CHECKPOINT_SCHEMA_VERSION) {
+      await this.#releaseReconcileClaim(input.runId, fence);
+      throw new EngineStateError(
+        'admission_record_unreadable',
+        'the checkpoint derivation is unsupported; rebuild it with the current event reader',
+        { runId: input.runId },
+      );
+    }
     // Identity guard: the workflow handed in must be the one the run started on. Comparing the surrogate
     // `workflows.id` UUID catches resuming the wrong workflow entirely (a different slug). A subtler
     // same-slug-edited-content drift needs a content hash on `run:started` — deferred (a canonical event
@@ -4532,7 +5832,7 @@ export class WorkflowEngine {
       this.#host.store.resolveWorkflowId(input.workflow.workflow.id),
     );
     if (expectedWorkflowId !== checkpoint.workflowId) {
-      await this.#host.runLeases.release(input.runId, fence);
+      await this.#releaseReconcileClaim(input.runId, fence);
       throw new EngineStateError(
         'workflow_mismatch',
         'the supplied workflow is not the one this run started on',
@@ -4547,7 +5847,7 @@ export class WorkflowEngine {
       // leads nowhere must not leak. Holding it would convert the documented idempotent no-op into a
       // transient refusal (exit 6) for a full TTL, over a run that has been over for hours, and leave a
       // `run_leases` row per re-delivery that nothing ever deletes.
-      await this.#host.runLeases.release(input.runId, fence);
+      await this.#releaseReconcileClaim(input.runId, fence);
       return createClosedRunHandle(input.runId);
     }
     // **The graph's CONTENT, not just its id (ADR-0083 §5).** The surrogate-id guard above catches resuming
@@ -4567,7 +5867,7 @@ export class WorkflowEngine {
         verifyFrozenWorkflowContent(frozenWorkflow, input.workflow),
       );
       if (contentRefusal !== undefined) {
-        await this.#host.runLeases.release(input.runId, fence);
+        await this.#releaseReconcileClaim(input.runId, fence);
         throw new EngineStateError(contentRefusal.code, contentRefusal.message, {
           runId: input.runId,
         });
@@ -4593,7 +5893,7 @@ export class WorkflowEngine {
       // §5: a refusal releases the lease. Every identity check sits after ownership was acquired, and
       // ADR-0079 §4's rule — an acquire that leads nowhere must not leak — covers these exactly as it
       // covers `workflow_mismatch` above.
-      await this.#host.runLeases.release(input.runId, fence);
+      await this.#releaseReconcileClaim(input.runId, fence);
       throw new EngineStateError(identity.refusal.code, identity.refusal.message, {
         runId: input.runId,
       });
@@ -4601,13 +5901,19 @@ export class WorkflowEngine {
     // From here to `adoptLease`, ANY throw must release the claim — `buildRunPlan` on an edited workflow and
     // the `RunExecution` constructor's checkpoint rehydration both throw outside the try below, and both
     // used to strand the lease for a TTL. The claim about the CONSTRUCTOR was false until now: only
-    // `buildRunPlan` was wrapped, while `new RunExecution(...)` — which runs `#seedFromCheckpoint`, including
-    // `#restoreParkedMediaJob` — sat bare. The comment and the code had disagreed since `cf93e32`.
+    // `buildRunPlan` was wrapped while the constructor sat bare. Constructor seeding is now passive,
+    // but malformed derived state can still throw and must not strand the acquired fence.
     const plan = await this.#releaseFenceOnThrow(input.runId, fence, () =>
       buildRunPlan(input.workflow, input.planOptions),
     );
+    const restoredNodeDeadlineStarts = await this.#releaseFenceOnThrow(input.runId, fence, () =>
+      restoredNodeClockBases(input.runId, plan, checkpoint),
+    );
+    const resumePreparation = await this.#releaseFenceOnThrow(input.runId, fence, () =>
+      this.#prepareCheckpointGate(input, checkpoint, plan, identity.inputs, preparingSignal),
+    );
     const bus = new RunEventBus({ now: this.#host.clock.now, validate: this.#validateEvents });
-    const execution = await this.#releaseFenceOnThrow(
+    const execution: RunExecution = await this.#releaseFenceOnThrow(
       input.runId,
       fence,
       () =>
@@ -4636,6 +5942,13 @@ export class WorkflowEngine {
           bus,
           capacity: this.#capacity,
           onSettled: (settledRunId) => this.#retainSettled(settledRunId),
+          onDetached: (detachedRunId) => {
+            if (this.#runs.get(detachedRunId) === execution) {
+              this.#runs.delete(detachedRunId);
+              const index = this.#settledOrder.indexOf(detachedRunId);
+              if (index >= 0) this.#settledOrder.splice(index, 1);
+            }
+          },
           resolverCapabilities: this.#resolverCapabilities,
           maxTokensEstimate: this.#maxTokensEstimate,
           ...(this.#resolvePrice === undefined ? {} : { resolvePrice: this.#resolvePrice }),
@@ -4647,10 +5960,49 @@ export class WorkflowEngine {
             ? {}
             : { onLegacyMediaJobHold: this.#onLegacyMediaJobHold }),
           checkpoint,
+          restoredNodeDeadlineStarts,
+          ...(resumePreparation === undefined ? {} : { resumePreparation }),
         }),
     );
-    this.#runs.set(input.runId, execution);
+    // A cancel while the known run is still being prepared must never schedule before lease adoption.
+    // Carry that intent into the passive execution, then let the existing refused-admission path settle it.
+    const cancelPreparation = (): void => execution.cancelResumePreparation();
+    preparingSignal.addEventListener('abort', cancelPreparation);
+    if (preparingSignal.aborted) cancelPreparation();
     try {
+      const admitted = await execution.prepareResumeAdmission();
+      // Passive admission can outlive the lease TTL. Renew the EXACT acquired fence after every
+      // preparation/context/effect await, before registration, checkpoint activation or any key/poll.
+      // A second acquire would mint a generation and could replace a successor's claim. Heartbeat
+      // instead renews the same owner/generation atomically, including an expired but untaken claim.
+      // Refused admission also needs this proof before its ordered writer settles the run.
+      let ownershipConfirmed: boolean;
+      try {
+        ownershipConfirmed = await this.#host.runLeases.heartbeat(
+          input.runId,
+          fence,
+          RUN_LEASE_TTL_MS,
+        );
+      } catch (cause) {
+        throw new EngineStateError(
+          'run_owned_elsewhere',
+          'run ownership could not be confirmed; retry the resume',
+          { runId: input.runId, cause },
+        );
+      }
+      if (!ownershipConfirmed)
+        throw new EngineStateError(
+          'run_owned_elsewhere',
+          'run ownership changed during resume preparation; retry the resume',
+          { runId: input.runId },
+        );
+      if (!admitted || preparingSignal.aborted) {
+        execution.adoptLease(fence, false);
+        await execution.refuseResume();
+        this.#runs.set(input.runId, execution); // retain the already-closed outcome, never dispatch it
+        return execution.handle;
+      }
+      this.#runs.set(input.runId, execution);
       // beginResume re-resolves the workflow context (not checkpointed) then drives: kick if the gate was
       // already resolved in the prior process (no re-apply), else apply the decision. A media-ONLY resume
       // (no gate) re-attaches + re-polls the parked job(s). The events buffer on the returned handle.
@@ -4670,14 +6022,17 @@ export class WorkflowEngine {
     } catch (error) {
       // resume() validates the gate AFTER rehydration; an unknown_gate / run_not_paused /
       // pending_gate_requires_decision throw must not strand the half-initialized execution in #runs (a retry
-      // would then wrongly hit run_already_active) NOR leave its armed timers firing — the constructor's
-      // #seedFromCheckpoint already armed a media-poll timer per parked job and beginResume* armed the
-      // run-timeout. Abandon (disarm + abort) BEFORE dropping it, else an orphan poll would later hit the
-      // provider for a run the caller saw rejected (and a natural retry could double-attach the same jobId).
-      execution.abandon();
+      // would then wrongly hit run_already_active) or leave work installed by checkpoint activation.
+      // Retire and join BEFORE dropping it or releasing its fence: no returned handle exists to retain
+      // a heartbeat/raw port after this rejection authorizes the caller's host teardown.
+      await execution.abandon();
       this.#runs.delete(input.runId);
-      await this.#host.runLeases.release(input.runId, fence);
+      // A cleanup I/O fault must not replace the safe admission refusal with raw host content.
+      // This exact-fence release cannot delete a successor; failure leaves only our original TTL.
+      await this.#releaseReconcileClaim(input.runId, fence);
       throw error;
+    } finally {
+      preparingSignal.removeEventListener('abort', cancelPreparation);
     }
     // **No release here — the resumed execution owns its own lease lifetime now.**
     //
@@ -4694,10 +6049,114 @@ export class WorkflowEngine {
     return execution.handle;
   }
 
-  /** Request cooperative cancellation. Throws {@link EngineStateError} for an unknown/terminal run. */
+  async #prepareCheckpointGate(
+    input: ResumeFromCheckpointInput,
+    checkpoint: CheckpointState,
+    plan: RunPlan,
+    inputs: Readonly<Record<string, unknown>>,
+    signal: AbortSignalLike,
+  ): Promise<
+    | {
+        readonly gateId: string;
+        readonly preparation: BudgetDispatchPreparation;
+        readonly context: Readonly<Record<string, string>>;
+      }
+    | undefined
+  > {
+    if (input.gateId === undefined || input.decision === undefined) {
+      if (checkpoint.pendingMediaJobs.length === 0)
+        throw new EngineStateError(
+          'run_not_paused',
+          'the run has no pending media job to re-attach',
+          { runId: input.runId },
+        );
+      if (checkpoint.pendingGates.length > 0)
+        throw new EngineStateError(
+          'pending_gate_requires_decision',
+          'the run also has a pending human gate',
+          { runId: input.runId },
+        );
+      return undefined;
+    }
+    if (checkpoint.resolvedGateIds.includes(input.gateId)) return undefined;
+    const gate = checkpoint.pendingGates.find((candidate) => candidate.gateId === input.gateId);
+    if (gate === undefined)
+      throw new EngineStateError(
+        checkpoint.pendingGates.length === 0 ? 'run_not_paused' : 'unknown_gate',
+        'no pending gate matches the supplied gateId',
+        { runId: input.runId, gateId: input.gateId },
+      );
+    if (!gate.isBudgetGate) return undefined;
+    const pending: PendingGate = {
+      vertexId: gate.nodeId,
+      isBudgetGate: true,
+      acknowledged: true,
+      ...(gate.allowance === undefined ? {} : { allowance: gate.allowance }),
+    };
+    const amount = budgetApprovalAmount(pending, input.decision, input.runId, input.gateId);
+    if (input.decision.decision !== 'approved' || amount === undefined) return undefined;
+    const prepare = this.#executor.prepareBudgetDispatch?.bind(this.#executor);
+    const vertex = plan.vertices.get(gate.nodeId);
+    if (prepare === undefined || vertex === undefined || plan.budget === undefined)
+      throw new EngineStateError(
+        'invalid_decision',
+        'this executor cannot prepare the quoted budget dispatch; reject remains available',
+        { runId: input.runId, gateId: input.gateId },
+      );
+    try {
+      const context = await resolveContext(
+        input.workflow,
+        inputs,
+        this.#resolverCapabilities,
+        signal,
+      );
+      const outputs = new Map<string, unknown>();
+      for (const [nodeId, state] of checkpoint.nodeStates)
+        if (state.status === 'completed') outputs.set(nodeId, state.output);
+      const prepared = await prepare.call(this.#executor, {
+        vertex,
+        runOutputs: outputs,
+        inputs,
+        ctx: context,
+        secretInputNames: new Set(
+          (input.workflow.workflow.inputs ?? [])
+            .filter((value) => value.type === 'secret')
+            .map((value) => value.name),
+        ),
+        toolPolicy: input.workflow.workflow.tools ?? {},
+        signal,
+        maxTokensEstimate: this.#maxTokensEstimate,
+      });
+      if (prepared.kind !== 'prepared') throw new Error('preparation refused');
+      assertBudgetQuoteCurrent(
+        pending,
+        prepared.preparation,
+        input.gateId,
+        input.runId,
+        plan.budget.strict_cost_cap === true,
+        this.#resolvePrice,
+      );
+      return { gateId: input.gateId, preparation: prepared.preparation, context };
+    } catch {
+      if (signal.aborted) return undefined; // cancel wins; passive admission will settle without egress
+      throw new EngineStateError(
+        'invalid_decision',
+        'the quoted dispatch or current price basis no longer matches; reject remains available',
+        { runId: input.runId, gateId: input.gateId },
+      );
+    }
+  }
+
+  /** Request cooperative cancellation, including a known run in passive resume preparation.
+   * Throws {@link EngineStateError} for an unknown/terminal run. */
   cancel(runId: string): void {
     const execution = this.#runs.get(runId);
     if (execution === undefined) {
+      const preparing = this.#resumingRuns.get(runId);
+      if (preparing !== undefined) {
+        preparing.abort();
+        return;
+      }
       throw new EngineStateError('unknown_run', 'no run matches the supplied runId', { runId });
     }
     execution.requestCancel();
@@ -4705,7 +6164,8 @@ export class WorkflowEngine {
 
   /**
    * Crash reconciliation (startup). For every run the store reports as interrupted-and-not-resumable
-   * (started, no terminal event, not parked at a gate), persist a terminal `run:failed{internal}`
+   * (started, no terminal event, not parked at a gate), persist a terminal `run:failed{internal}`,
+   * or `budget_exceeded` when ordered gate history already records a budget rejection,
    * continuing that run's `sequenceNumber` — so a crashed run never lingers as a stuck `run:started`.
    * Returns the reconciled events. Resumable runs (parked at a gate) are left for `resume`.
    */
@@ -4742,8 +6202,11 @@ export class WorkflowEngine {
         timestamp: this.#host.clock.now(),
         sequenceNumber: run.lastSequenceNumber + 1,
         error: {
-          code: 'internal',
-          message: 'the run was interrupted before completion and reconciled on restart',
+          code: run.budgetRejected === true ? 'budget_exceeded' : 'internal',
+          message:
+            run.budgetRejected === true
+              ? 'the recorded budget rejection was reconciled before completion'
+              : 'the run was interrupted before completion and reconciled on restart',
           retryable: false,
           correlationId: this.#host.ids.newId(), // matches the #settle / node:failed live-failure paths
         },
@@ -4766,7 +6229,7 @@ export class WorkflowEngine {
         // media is never GC-eligible (refcount stuck > 0). Best-effort + idempotent like the in-process
         // sweep — a retention failure must never abandon reconciliation (mirrors RunExecution's
         // #bestEffortMediaRef; reclaimRun on a run with no rows is a harmless no-op).
-        this.#bestEffortReclaim(run.runId);
+        await this.#bestEffortReclaim(run.runId);
       } catch {
         // A store fault reconciling one run must not abandon the rest: skip it (it stays interrupted
         // and is retried on the next reconcile). Reconciliation is best-effort and idempotent.
@@ -4841,7 +6304,7 @@ export class WorkflowEngine {
     // generation, which would fence our live execution out at its next write and then delete its row in the
     // caller's `finally`. The lease cannot express this because the two claimants share an `ownerId`; the
     // in-memory run table can, and it is the authority on what this process is running.
-    if (this.#runs.has(runId)) return undefined;
+    if (this.#runs.has(runId) || this.#resumingRuns.has(runId)) return undefined;
     try {
       return await this.#host.runLeases.acquire(runId, this.#ownerId, RUN_LEASE_TTL_MS);
     } catch {
@@ -4875,12 +6338,12 @@ export class WorkflowEngine {
     }
   }
 
-  /** Hand back a reconcile takeover claim; a failure only costs a TTL, never correctness. */
+  /** Release the exact claim without replacing the primary outcome on cleanup faults. */
   async #releaseReconcileClaim(runId: string, fence: RunFence): Promise<void> {
     try {
       await this.#host.runLeases.release(runId, fence);
     } catch {
-      // Left to expire on its own TTL — slower, never wrong.
+      // Preserve the primary refusal/no-op/reconcile result; this exact claim expires on its TTL.
     }
   }
 
@@ -4951,7 +6414,7 @@ export class WorkflowEngine {
         // The D11 terminal sweep, exactly as `reconcile()`'s own repair arm does it (ADR-0042 §4). The
         // crashed process never ran its in-process reclaim — that is why the terminal is here — so without
         // this the run's media references survive forever and its partial media is never GC-eligible.
-        this.#bestEffortReclaim(runId);
+        await this.#bestEffortReclaim(runId);
         written.push(event);
       } catch {
         // Still unwritable, or another process moved the log first. The entry stays for the next start; the
@@ -4974,16 +6437,13 @@ export class WorkflowEngine {
 
   /** Best-effort terminal media-ref reclaim for a reconciled run — swallows a sync throw + an async
    *  rejection so retention never breaks reconciliation (ADR-0042 §3-4; retention is never run-correctness). */
-  #bestEffortReclaim(runId: string): void {
+  async #bestEffortReclaim(runId: string): Promise<void> {
     const port = this.#host.mediaReferences;
     if (port === undefined) {
       return;
     }
     try {
-      const result = port.reclaimRun(runId);
-      if (result instanceof Promise) {
-        result.catch(() => undefined);
-      }
+      await port.reclaimRun(runId);
     } catch {
       // best-effort retention; reconciliation is unaffected
     }

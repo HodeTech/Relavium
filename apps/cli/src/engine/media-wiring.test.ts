@@ -98,6 +98,18 @@ describe('buildMediaEngineWiring (2.S — the shared run/gate media wiring)', ()
     ).toBeUndefined();
   });
 
+  it('forwards the estimate-only fallback to the workflow builder', () => {
+    expect(
+      buildMediaEngineWiring(client.db, '/home/u', '/proj', {
+        ...EMPTY_CONFIG,
+        maxTokensEstimate: 17,
+      }).maxTokensEstimate,
+    ).toBe(17);
+    expect(
+      buildMediaEngineWiring(client.db, '/home/u', '/proj', EMPTY_CONFIG).maxTokensEstimate,
+    ).toBeUndefined();
+  });
+
   describe('workflowModelCatalog (the D15 load-check projection — capabilities → CapabilityFlags)', () => {
     it('projects a row with a well-formed chat capabilities blob into validated CapabilityFlags', () => {
       createModelCatalogStore(client.db, dbDeps).upsert({

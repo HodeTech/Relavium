@@ -1,4 +1,16 @@
-import type { LlmError, LlmErrorKind, ProviderId } from './types.js';
+import { LlmErrorSchema, type LlmError, type LlmErrorKind, type ProviderId } from './types.js';
+
+/** Own validated diagnostic fields before returning control to a provider or attempt observer. */
+export function snapshotLlmError(error: unknown): LlmError {
+  // Cause remains an opaque private identity; copying or freezing it would invoke host code.
+  const owned = LlmErrorSchema.parse(error);
+  if (owned.usage !== undefined) {
+    for (const unit of owned.usage.mediaUnits ?? []) Object.freeze(unit);
+    if (owned.usage.mediaUnits !== undefined) Object.freeze(owned.usage.mediaUnits);
+    Object.freeze(owned.usage);
+  }
+  return Object.freeze(owned);
+}
 
 /**
  * `LlmError` classification — the contract the `FallbackChain` (1.K) narrows on (1.I). Every adapter
@@ -8,9 +20,10 @@ import type { LlmError, LlmErrorKind, ProviderId } from './types.js';
  */
 
 /**
- * The four retryable kinds — the fallback chain advances to the next provider on these (with
- * backoff) and records the failed attempt's usage so cost stays accurate. Every other kind is fatal:
- * it stops the chain rather than silently masking a real problem.
+ * The four retryable kinds. Failover also checks whether content was committed; a pre-content
+ * protocol violation may advance even though its kind is not retryable. Attempt records carry
+ * actual usage only when available. For an engaged attempt with a bounded reservation, the consumer
+ * retains that reservation when trustworthy usage is missing, unless a proven refusal permits release.
  */
 export const RETRYABLE_KINDS: ReadonlySet<LlmErrorKind> = new Set<LlmErrorKind>([
   'rate_limit',

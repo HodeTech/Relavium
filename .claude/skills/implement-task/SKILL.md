@@ -99,7 +99,7 @@ cites the standards and delegates committing — it does not restate either.
 
 8. **Commit.** Use [../commit-and-pr/SKILL.md](../commit-and-pr/SKILL.md) — Conventional
    Commits, one scope per package, `Refs: ADR-XXXX` when the change implements a decision,
-   body ending with `Co-Authored-By: Claude <noreply@anthropic.com>`. See
+   body ending with a truthful co-author trailer for the actual assisting tool. See
    [commit-style.md](../../../docs/standards/commit-style.md).
 
 9. **Summary.** State what changed and why, which files moved, which standards/ADRs apply,

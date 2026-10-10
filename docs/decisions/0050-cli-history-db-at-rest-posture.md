@@ -4,6 +4,37 @@
 - **Date**: 2026-06-23
 - **Related**: [0005-sqlite-drizzle-local-postgres-cloud.md](0005-sqlite-drizzle-local-postgres-cloud.md) (refines its at-rest framing for the Node/CLI surface), [0008-local-first-phase-1-cloud-phase-2.md](0008-local-first-phase-1-cloud-phase-2.md) (same), [0006-os-keychain-for-api-keys.md](0006-os-keychain-for-api-keys.md), [0021-node-sqlite-driver-better-sqlite3.md](0021-node-sqlite-driver-better-sqlite3.md), [0036-run-loop-substrate-event-bus-and-execution-host.md](0036-run-loop-substrate-event-bus-and-execution-host.md), [../reference/shared-core/database-schema.md](../reference/shared-core/database-schema.md), [../reference/desktop/keychain-and-secrets.md](../reference/desktop/keychain-and-secrets.md), [../reference/contracts/config-spec.md](../reference/contracts/config-spec.md), [../roadmap/phases/phase-2-cli.md](../roadmap/phases/phase-2-cli.md) (workstream 2.H)
 
+> **Corrected 2026-09-14 by [ADR-0098](0098-a-session-effect-row-holds-no-result-and-never-replays.md), with [ADR-0095](0095-what-an-agent-session-remembers-across-turns.md) — the premise is narrowed to what holds.**
+> This ADR's decisive scoping fact, that `history.db` "holds no credentials", overstated what the database holds, in
+> four ways:
+>
+> 1. **Tool I/O masking is not at the `RunEventBus`.** It is shape-based regex applied upstream, to event copies. The
+>    bus does no redaction.
+> 2. **User-injected content is already at rest**, as user data: an `@`-attached file, or `!`-shell output.
+> 3. **A committed tier-3 run effect keeps its bounded result** in `run_effects.result_json` until the run's terminal
+>    sweep. ADR-0080 chose that for exactly-once re-delivery.
+> 4. **Session-scoped effect rows keep their results too** (`CR-97`). ADR-0098 removes this.
+>
+> After ADR-0098 and ADR-0095, a session's transcript, its export and its effect rows hold no tool result. Point 3
+> stands. Both ADRs are **Accepted** as of 2026-09-14 with their implementation staged for `W7`.
+
+> **Scoped 2026-09-18 (the `W7` pre-implementation review), on two points.**
+>
+> - **"No tool result" means a MODEL-ISSUED tool call.** Point 2 above already records the other half: an
+>   `@`-attached file and `!`-shell output are injected into the user's own message, and they stay at rest — and in
+>   an export — as user data.
+> - **At rest means the file's bytes, not only the row.** (Maintainer, 2026-09-18.) `history.db` runs in WAL mode
+>   with `secure_delete` off, so clearing a value or deleting a row frees the page without zeroing it: the old bytes
+>   remain readable in free pages and in the `-wal` file. `W7` opens the connection with `PRAGMA secure_delete = ON`
+>   and checkpoints the WAL with `TRUNCATE` after ADR-0098's one-time clear of pre-existing session rows AND after
+>   each session-scope sweep. The checkpoint is not optional dressing: in WAL mode the zeroing write is a NEW frame
+>   while the old page image sits in the `-wal` file until a checkpoint moves it, so `secure_delete` alone leaves
+>   the bytes readable there. The claim is therefore "after a successful checkpoint, nothing freed since the upgrade
+>   survives in the main database or the WAL". Two residuals are named rather than covered: a checkpoint blocked by
+>   a concurrent reader (`SQLITE_BUSY`) defers the clearing to the next successful one, and pages freed by sweeps
+>   that ran BEFORE the upgrade are not zeroed retroactively — only a `VACUUM` would reclaim them. Point 3's "until
+>   the run's terminal sweep" becomes honest under the same rule.
+
 ## Context
 
 Phase-2 workstream **2.H** wires durable CLI run history to `~/.relavium/history.db`
@@ -126,3 +157,22 @@ is not a new decision.
 - A deliberate **divergence from the desktop** (SQLCipher) and a partial divergence from the
   original "encrypted local SQLite" intent of 0005/0008 — accepted knowingly, scoped to the
   CLI surface, and recorded rather than silent.
+
+### Session-effect privacy implementation — 2026-10-02
+
+W7 steps 2–4 implement ADR-0095's structural transcript and ADR-0098's session effect suppression and retention.
+The Node client enables `secure_delete = ON`, initializes the durable effect-turn high-water mark before clearing
+legacy session results, and follows the clear and each session sweep with an after-commit `TRUNCATE` checkpoint.
+The successful-checkpoint claim covers bytes freed from the upgrade onward, in both the main database and WAL,
+with the connection still open. A busy reader can leave old bytes in **both** files until a later successful
+checkpoint; even an empty sweep retries it. Pages freed before the upgrade are not retroactively erased.
+Run effect results, user text, `@` content and `!` output remain sensitive data at rest; keychain custody is a
+separate property. See [effect-journal.md §11](../reference/shared-core/effect-journal.md#11-secrets-what-a-row-may-hold)
+for the canonical guarantee and the two accepted residuals.
+
+### W7 implementation landing — 2026-10-10
+
+The approved W7 implementation and scoped independent reviews are complete. Final whole-wave
+acceptance, per-item causal evidence, canonical landing checks and approved residuals are joined in
+the [W7 closing register](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w7-closing-register--2026-10-10).
+This dated note preserves the earlier decision and status history; W8 and the phase remain open.
