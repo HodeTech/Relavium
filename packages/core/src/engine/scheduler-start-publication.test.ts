@@ -154,3 +154,131 @@ for (const inject of [false, true])
       unsubscribe();
     }
   });
+
+for (const outcome of ['completed', 'failed', 'cancelled'] as const)
+  for (const site of ['none', 'elapsed', 'stamp', 'id'] as const) {
+    if (site === 'id' && outcome !== 'failed') continue;
+    it(`settles one unstamped terminal host fault (${outcome}, ${site})`, async () => {
+      const base = createInMemoryHost();
+      let clockCalls = 0,
+        armed = false,
+        faults = 0,
+        executions = 0;
+      const host: typeof base = {
+        ...base,
+        clock: {
+          now: () => {
+            if (
+              armed &&
+              site !== 'none' &&
+              site !== 'id' &&
+              ++clockCalls === (site === 'elapsed' ? 1 : 2)
+            ) {
+              faults++;
+              throw new Error('PRIVATE-TERMINAL-CLOCK');
+            }
+            return base.clock.now();
+          },
+        },
+        ids: {
+          newId: () => {
+            if (armed && site === 'id' && faults === 0) {
+              faults++;
+              throw new Error('PRIVATE-TERMINAL-ID');
+            }
+            return base.ids.newId();
+          },
+        },
+      };
+      const handle = new WorkflowEngine({
+        host,
+        executor: {
+          execute: () => {
+            executions++;
+            return Promise.resolve(
+              outcome === 'failed'
+                ? {
+                    kind: 'failed',
+                    error: {
+                      code: 'validation',
+                      message: 'original node failure',
+                      retryable: false,
+                    },
+                  }
+                : { kind: 'completed', output: 'answer' },
+            );
+          },
+        },
+      }).start({
+        workflow: parseWorkflow(
+          JSON.stringify({
+            schema_version: '1.0',
+            workflow: {
+              id: 'terminal-preparation-fault',
+              nodes: [{ id: 'a', type: 'input' }],
+              edges: [],
+            },
+          }),
+        ),
+      });
+      const unsubscribe = handle.subscribe((event) => {
+        if (event.type !== 'node:completed' && event.type !== 'node:failed') return;
+        armed = true;
+        if (outcome === 'cancelled') handle.cancel();
+      });
+      const events: RunEvent[] = [];
+      let closed = false;
+      const drained = (async () => {
+        for await (const event of handle.events) events.push(event);
+        closed = true;
+      })();
+      try {
+        for (
+          let tick = 0;
+          tick < 1000 &&
+          !events.some(
+            (e) =>
+              e.type === 'run:completed' || e.type === 'run:failed' || e.type === 'run:cancelled',
+          );
+          tick++
+        )
+          await Promise.resolve();
+        const expected =
+          outcome === 'cancelled'
+            ? 'run:cancelled'
+            : outcome === 'failed' || site !== 'none'
+              ? 'run:failed'
+              : 'run:completed';
+        expect(events.at(-1)?.type).toBe(expected);
+        await drained;
+        expect(closed).toBe(true);
+        expect(faults).toBe(site === 'none' ? 0 : 1);
+        expect(executions).toBe(1);
+        const terminal = events.filter(
+          (e) =>
+            e.type === 'run:completed' || e.type === 'run:failed' || e.type === 'run:cancelled',
+        );
+        expect(terminal).toHaveLength(1);
+        if (expected === 'run:failed')
+          expect(terminal[0]).toMatchObject({
+            error: {
+              code: outcome === 'failed' ? 'validation' : 'internal',
+              retryable: false,
+            },
+          });
+        expect(events.map((e) => e.sequenceNumber)).toEqual(
+          Array.from({ length: events.length }, (_, i) => i),
+        );
+        expect(JSON.stringify(events)).not.toContain('PRIVATE-TERMINAL');
+        expect(handle.durability()).toBe('durable');
+        await expect(handle.depart()).resolves.toMatchObject({ kind: 'closed' });
+        expect(await host.runLeases.read(handle.runId)).toBeUndefined();
+        expect(base.armedCount() + base.deadlineCount() + base.livenessCount()).toBe(0);
+      } finally {
+        // A failed assertion must stay an assertion rather than await a stranded primary forever.
+        handle.cancel();
+        await handle.depart();
+        unsubscribe();
+      }
+    });
+  }

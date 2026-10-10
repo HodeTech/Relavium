@@ -3771,8 +3771,8 @@ class RunExecution {
         cleanupFailure = { error };
       }
     }
-    // A primary throw skips this arm; cleanup cannot mask it through an unsafe finally override.
-    if (cleanupFailure !== undefined) throw cleanupFailure.error;
+    // A throw skips this arm; a fulfilled failed status is also an established primary refusal.
+    if (cleanupFailure !== undefined && status.state !== 'failed') throw cleanupFailure.error;
     return status;
   }
 
@@ -4237,10 +4237,32 @@ class RunExecution {
     await this.#joinMoneyDurability();
     if (this.#lostOwnership()) return;
     if (type === 'run:completed' && this.#failure !== undefined) type = 'run:failed';
-    const durationMs = Math.max(0, this.#elapsedMs());
     let draft: RunEventDraft;
+    try {
+      draft = this.#prepareTerminalDraft(type);
+    } catch {
+      // The admission latch and accounting stay final. A host clock/id fault before publication
+      // must not replay settlement; the minimal failed draft needs neither of those host ports.
+      draft = this.#terminalPreparationFailure(type === 'run:cancelled');
+    }
+    // **Re-take ownership before claiming an outcome, if a park gave it up (ADR-0079 §4/§5).** A gate
+    // deadline, the run-level `timeout_ms` and a cooperative cancel all stay armed across a park and all end
+    // here, so this is the one place a parked process can still speak for the run. Usually nobody took it
+    // over and the re-acquire is uncontended — a user Ctrl-C-ing their own parked run must still record the
+    // cancellation. When somebody DID take it over, the acquire fails and this process stops without
+    await this.#emitDurable(draft);
+    // The terminal was REFUSED (§5) — `#emitDurable` reconciled ownership, found it gone, and `#settleFenced`
+    // already tore the run down without writing or delivering anything. Returning stops a loser from freeing
+    // the winner's lease row and from firing `#onSettled` a second time.
+    if (this.#lostOwnership()) return;
+    this.#beginHostRetirement();
+  }
+
+  /** Construct terminal data separately from the immediate settled/admission latch. */
+  #prepareTerminalDraft(type: 'run:completed' | 'run:failed' | 'run:cancelled'): RunEventDraft {
+    const durationMs = Math.max(0, this.#elapsedMs());
     if (type === 'run:completed') {
-      draft = {
+      return {
         type,
         runId: this.runId,
         outputs: this.#collectOutputs('output'),
@@ -4252,7 +4274,7 @@ class RunExecution {
       const failure = this.#failure ?? {
         error: { code: 'internal' as const, message: 'the run failed', retryable: false },
       };
-      draft = {
+      return {
         type,
         runId: this.runId,
         error: {
@@ -4273,19 +4295,36 @@ class RunExecution {
       // media job pending at the cancel had its lone estimate addend emitted just above (#emitMediaJobCost,
       // before this terminal), so the cumulative now includes it and the fail-cost is durable here (cost:updated
       // is transient). run:completed carries the same figure as totalCostMicrocents.
-      draft = { type, runId: this.runId, cumulativeCostMicrocents: this.#cumulativeCostMicrocents };
+      return { type, runId: this.runId, cumulativeCostMicrocents: this.#cumulativeCostMicrocents };
     }
-    // **Re-take ownership before claiming an outcome, if a park gave it up (ADR-0079 §4/§5).** A gate
-    // deadline, the run-level `timeout_ms` and a cooperative cancel all stay armed across a park and all end
-    // here, so this is the one place a parked process can still speak for the run. Usually nobody took it
-    // over and the re-acquire is uncontended — a user Ctrl-C-ing their own parked run must still record the
-    // cancellation. When somebody DID take it over, the acquire fails and this process stops without
-    await this.#emitDurable(draft);
-    // The terminal was REFUSED (§5) — `#emitDurable` reconciled ownership, found it gone, and `#settleFenced`
-    // already tore the run down without writing or delivering anything. Returning stops a loser from freeing
-    // the winner's lease row and from firing `#onSettled` a second time.
-    if (this.#lostOwnership()) return;
-    this.#beginHostRetirement();
+  }
+
+  /** Fixed fallback for an unstamped terminal; the run identity is reused, not a fresh host id. */
+  #terminalPreparationFailure(cancelled: boolean): RunEventDraft {
+    if (cancelled)
+      return {
+        type: 'run:cancelled',
+        runId: this.runId,
+        cumulativeCostMicrocents: this.#cumulativeCostMicrocents,
+      };
+    this.#failure ??= {
+      error: {
+        code: 'internal',
+        message: 'the run terminal could not be prepared',
+        retryable: false,
+      },
+    };
+    return {
+      type: 'run:failed',
+      runId: this.runId,
+      error: {
+        ...this.#failure.error,
+        ...(this.#failure.nodeId === undefined ? {} : { nodeId: this.#failure.nodeId }),
+        correlationId: this.runId,
+      },
+      partialOutputs: {},
+      cumulativeCostMicrocents: this.#cumulativeCostMicrocents,
+    };
   }
 
   /**
@@ -5059,7 +5098,18 @@ class RunExecution {
       throw new RunLoopInvariantError('event_too_large', describeBreach(sizeBreach));
     }
 
-    const event = this.#bus.next(durable);
+    let event: RunEvent;
+    try {
+      event = this.#bus.next(durable);
+    } catch (error) {
+      if (!TERMINAL_TYPES.has(durable.type)) throw error;
+      // next() advances only after successful stamping/validation. Retry this still-unstamped
+      // terminal once with fixed data, before any append or delivery. Never retry persistence,
+      // replay accounting, fabricate a timestamp or classify a broken clock as a fencing loss.
+      // A permanently unavailable host clock remains outside this bounded recovery guarantee.
+      durable = this.#terminalPreparationFailure(durable.type === 'run:cancelled');
+      event = this.#bus.next(durable);
+    }
     // Retention follows the ordered writer's acknowledgement below. A numbered event alone is not
     // evidence this process still owns the run: a CAS pin may finish after another owner settles it.
     // NOTE: the terminal media reclaim used to sit here, before the write. It now runs only after the
