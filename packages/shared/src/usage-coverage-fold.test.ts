@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { UsageCoverageFold } from './usage-coverage-fold.js';
-import type { UsageInvocation } from './usage-coverage.js';
+import type { UsageDisposition, UsageInvocation } from './usage-coverage.js';
 const invocation = (ordinal: number): UsageInvocation => ({
   producerId: 'producer',
   ordinal,
@@ -12,6 +12,145 @@ const unknown = {
   kind: 'incomplete',
   evidence: { kind: 'missing', reason: 'not_reported' },
 } as const;
+const identityMutations: readonly {
+  readonly field: keyof UsageInvocation;
+  readonly mutate: (id: UsageInvocation) => void;
+}[] = [
+  {
+    field: 'producerId',
+    mutate: (id) => {
+      id.producerId = 'observer-producer';
+    },
+  },
+  {
+    field: 'ordinal',
+    mutate: (id) => {
+      id.ordinal = 100;
+    },
+  },
+  {
+    field: 'dispatchId',
+    mutate: (id) => {
+      id.dispatchId = 'observer-dispatch';
+    },
+  },
+  {
+    field: 'round',
+    mutate: (id) => {
+      id.round = 100;
+    },
+  },
+  {
+    field: 'chainAttempt',
+    mutate: (id) => {
+      id.chainAttempt = 100;
+    },
+  },
+];
+
+function pendingInvocation() {
+  const fold = new UsageCoverageFold();
+  fold.start('complete');
+  const published = invocation(1);
+  const original = { ...published };
+  fold.pending('model', published);
+  return { fold, published, original };
+}
+
+function expectCoverage(fold: UsageCoverageFold, unknownCalls: number) {
+  const coverage = { unverified: false, pendingInvocations: 0, unknownCalls };
+  expect(fold.snapshot().coverage).toEqual(coverage);
+  expect(fold.snapshot().models).toEqual([{ model: 'model', coverage }]);
+  expect(fold.retainedInvocations).toBe(0);
+}
+
+describe('usage correlation owned across public identity mutation', () => {
+  it.each(identityMutations)('settles complete usage after $field mutation', ({ mutate }) => {
+    const { fold, published, original } = pendingInvocation();
+    mutate(published);
+    expect(fold.complete('model', published)).toBe(false);
+    expect(fold.complete('other-model', original)).toBe(false);
+    expect(fold.complete('model', original)).toBe(true);
+    expect(fold.complete('model', original)).toBe(false);
+    expectCoverage(fold, 0);
+    expect(fold.highWater).toBe(1);
+    expect(() => fold.pending('model', original)).toThrow('ordinal');
+    const next = invocation(2);
+    fold.pending('model', next);
+    expect(fold.highWater).toBe(2);
+    expect(fold.complete('model', next)).toBe(true);
+    expectCoverage(fold, 0);
+  });
+
+  it.each(identityMutations)(
+    'records incomplete usage once after $field mutation',
+    ({ mutate }) => {
+      const { fold, published, original } = pendingInvocation();
+      mutate(published);
+      expect(fold.disposition('model', published, unknown)).toBe(false);
+      expect(fold.disposition('other-model', original, unknown)).toBe(false);
+      expect(fold.disposition('model', original, unknown)).toBe(true);
+      expect(fold.disposition('model', original, unknown)).toBe(false);
+      expect(fold.complete('model', original)).toBe(false);
+      expectCoverage(fold, 1);
+    },
+  );
+
+  for (const disposition of [
+    { kind: 'not_invoked', reason: 'admission_refused' },
+    { kind: 'official_refusal', reason: 'pre_content_refusal' },
+  ] satisfies UsageDisposition[]) {
+    it.each(identityMutations)(
+      `preserves ${disposition.kind} release after $field mutation`,
+      ({ mutate }) => {
+        const { fold, published, original } = pendingInvocation();
+        mutate(published);
+        expect(fold.disposition('model', published, disposition)).toBe(false);
+        expect(fold.disposition('other-model', original, disposition)).toBe(false);
+        expect(fold.disposition('model', original, disposition)).toBe(true);
+        expect(fold.disposition('model', original, disposition)).toBe(false);
+        expect(fold.complete('model', original)).toBe(false);
+        expectCoverage(fold, 0);
+      },
+    );
+  }
+
+  it.each(identityMutations)(
+    'accepts one late complete receipt after $field mutation',
+    ({ mutate }) => {
+      const { fold, published, original } = pendingInvocation();
+      expect(fold.disposition('model', original, unknown, true)).toBe(true);
+      expect(fold.snapshot().coverage).toEqual({
+        unverified: false,
+        pendingInvocations: 0,
+        unknownCalls: 1,
+      });
+      expect(fold.retainedInvocations).toBe(1);
+      mutate(published);
+      expect(fold.complete('model', published)).toBe(false);
+      expect(fold.complete('other-model', original)).toBe(false);
+      expect(fold.complete('model', original)).toBe(true);
+      expect(fold.complete('model', original)).toBe(false);
+      expectCoverage(fold, 0);
+    },
+  );
+
+  it.each(identityMutations)(
+    'retires a late incomplete receipt once after $field mutation',
+    ({ mutate }) => {
+      const { fold, published, original } = pendingInvocation();
+      expect(fold.disposition('model', original, unknown, true)).toBe(true);
+      mutate(published);
+      expect(fold.disposition('model', published, unknown)).toBe(false);
+      expect(fold.disposition('other-model', original, unknown)).toBe(false);
+      expect(fold.disposition('model', original, unknown, true)).toBe(false);
+      expect(fold.disposition('model', original, unknown)).toBe(true);
+      expect(fold.disposition('model', original, unknown)).toBe(false);
+      expect(fold.complete('model', original)).toBe(false);
+      expectCoverage(fold, 1);
+    },
+  );
+});
 
 describe('bounded incremental usage coverage', () => {
   it('retires 100,000 settlements while retaining at most 64 unresolved identities', () => {

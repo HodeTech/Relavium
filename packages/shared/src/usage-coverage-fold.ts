@@ -75,12 +75,25 @@ export class UsageCoverageFold {
     return coverage;
   }
   pending(model: string, invocation: UsageInvocation): void {
+    // The acknowledged event can later reach mutable public subscribers. Retained correlation
+    // must own its scalars so those observations cannot change private settlement identity.
+    const ownedInvocation: UsageInvocation = {
+      producerId: invocation.producerId,
+      ordinal: invocation.ordinal,
+      dispatchId: invocation.dispatchId,
+      round: invocation.round,
+      chainAttempt: invocation.chainAttempt,
+    };
     // The owner-wide ordinal is monotonically minted at the durable pending boundary. Retired
     // identities cannot be reintroduced and need no completed-identity tombstones.
-    if (invocation.ordinal <= this.#highWater)
+    if (ownedInvocation.ordinal <= this.#highWater)
       throw new Error('Usage invocation ordinal is not increasing');
-    this.#highWater = invocation.ordinal;
-    this.#pending.set(keyOf(invocation), { model, invocation, state: 'pending' });
+    this.#highWater = ownedInvocation.ordinal;
+    this.#pending.set(keyOf(ownedInvocation), {
+      model,
+      invocation: ownedInvocation,
+      state: 'pending',
+    });
     this.#total.pendingInvocations++;
     this.#model(model).pendingInvocations++;
   }
