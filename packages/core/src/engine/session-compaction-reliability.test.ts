@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { AgentSchema, SessionContextSchema } from '@relavium/shared';
 import {
   estimateRequestTokens,
+  FallbackChain,
+  LlmProviderError,
   makeLlmError,
   type LlmMessage,
   type LlmProvider,
@@ -693,6 +695,160 @@ describe('W7 acknowledged disclosure, cap priority and hard turn boundaries', ()
 });
 
 describe('W7 current-invocation overflow authority and cancellable disclosure', () => {
+  for (const earlierEngaged of [false, true])
+    it(`does not recover a prior chain wrapper thrown by admission; earlierEngaged=${earlierEngaged}`, async () => {
+      const old = fixture({ history: [text('old')], window: 10000 });
+      const previousChain = new FallbackChain(
+        [
+          {
+            provider: {
+              ...old.provider,
+              generate: () =>
+                Promise.reject(
+                  new LlmProviderError(
+                    makeLlmError({
+                      provider: 'openai',
+                      kind: 'context_overflow',
+                      message: 'earlier offline refusal',
+                      status: 400,
+                    }),
+                  ),
+                ),
+            },
+            model: 'compaction-fixture',
+            maxAttempts: 1,
+          },
+        ],
+        { keyFor: old.deps.keyFor, sleep: old.deps.sleep },
+      );
+      let previous: unknown;
+      try {
+        await previousChain.generate({ model: 'compaction-fixture', messages: [text('earlier')] });
+      } catch (error) {
+        previous = error;
+      }
+      expect(previous).toBeInstanceOf(LlmProviderError);
+      let actualMainCalls = 0,
+        summaries = 0;
+      const h = fixture({
+        history: [text('old'), text('middle'), text('latest')],
+        window: 10000,
+        ...(earlierEngaged ? { fallbackProvider: {} } : {}),
+        provider: {
+          stream: async function* (request): AsyncGenerator<StreamChunk> {
+            await Promise.resolve();
+            if (request.maxTokens === 4096) {
+              summaries++;
+              yield { type: 'text_delta', text: 'should never summarize' };
+              yield {
+                type: 'stop',
+                stopReason: 'stop',
+                usage: { inputTokens: 1, outputTokens: 1 },
+              };
+            } else {
+              actualMainCalls++;
+              yield {
+                type: 'error',
+                error: makeLlmError({
+                  provider: 'openai',
+                  kind: 'protocol',
+                  message: 'advance',
+                }),
+              };
+            }
+          },
+        },
+        deps: {
+          preEgress: (info) => {
+            if (info.maxTokens !== 4096 && (!earlierEngaged || info.provider === 'anthropic'))
+              throw previous;
+          },
+        },
+      });
+      await h.session.sendMessage('current');
+      expect(actualMainCalls).toBe(earlierEngaged ? 1 : 0);
+      expect(summaries).toBe(0);
+      expect(h.counts().summaryCalls).toBe(0);
+      expect(h.events.some((e) => e.type === 'session:compacting')).toBe(false);
+      expect(h.events.find((e) => e.type === 'session:turn_completed')).toMatchObject({
+        error: { code: 'context_overflow' },
+      });
+    });
+
+  for (const inline of [false, true])
+    for (const origin of ['provider', 'admission', 'credential'] as const)
+      it(`binds overflow to the current ${inline ? 'generate' : 'stream'} provider attempt; origin=${origin}`, async () => {
+        const h = fixture({ history: [text('old')], window: 10000 });
+        let calls = 0;
+        const refusal = () =>
+          new LlmProviderError(
+            makeLlmError({
+              provider: 'openai',
+              kind: 'context_overflow',
+              message: 'offline refusal',
+              status: 400,
+            }),
+          );
+        const provider: LlmProvider = {
+          ...h.provider,
+          supports: {
+            ...h.provider.supports,
+            media: { ...h.provider.supports.media, outputCombinations: [['image']] },
+          },
+          generate: () => {
+            calls++;
+            return Promise.reject(refusal());
+          },
+          stream: async function* (): AsyncGenerator<StreamChunk> {
+            calls++;
+            await Promise.resolve();
+            yield { type: 'error', error: refusal().llmError };
+          },
+        };
+        const outcome = await captureAgentTurnOutcome({
+          nodeId: 'current',
+          messages: [text('current')],
+          ...(inline ? { outputModalities: ['image'] } : {}),
+          planEntries: [{ provider, model: 'compaction-fixture', maxAttempts: 1 }],
+          chainCapabilities: {
+            keyFor: () => {
+              if (origin === 'credential') throw refusal();
+              return 'offline';
+            },
+            sleep: () => Promise.resolve(),
+          },
+          preEgress: () => {
+            if (origin === 'admission') throw refusal();
+          },
+          emit: () => undefined,
+          signal: createAbortController().signal,
+          registry: h.deps.registry,
+          dispatchContext: {
+            nodeId: 'current',
+            grantedToolIds: new Set(),
+            config: {},
+            toolPolicy: {},
+            fsScope: 'sandboxed',
+            gateApproved: false,
+            effects: createInMemoryEffectJournalStore().for({
+              kind: 'session',
+              sessionId: 'current',
+              turn: 1,
+            }),
+            effectSlot: 0,
+          },
+          limits: DEFAULT_AGENT_TURN_LIMITS,
+        });
+        expect(outcome.kind).toBe('failed');
+        if (outcome.kind !== 'failed') throw new Error('expected refusal');
+        expect(calls).toBe(origin === 'provider' ? 1 : 0);
+        expect(outcome.error).toMatchObject({
+          code: origin === 'credential' ? 'provider_auth' : 'context_overflow',
+        });
+        if (origin === 'provider') expect(outcome.overflowEntry?.provider).toBe(provider);
+        else expect(outcome.overflowEntry).toBeUndefined();
+      });
+
   it('does not borrow a previous genuine overflow when a current admission rethrows its error', async () => {
     const old = fixture({ history: [text('old')], window: 10000, overflow: true });
     const outcome = await captureAgentTurnOutcome({

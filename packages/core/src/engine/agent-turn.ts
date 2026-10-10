@@ -761,8 +761,15 @@ function throwMappedChainError(
   if (mapped?.kind === 'original') throw cause;
   if (mapped?.kind === 'budget') throw new AgentTurnError('budget_exceeded', mapped.message, false);
   if (error.kind === 'context_overflow') {
+    const attempted = usage.overflowAttempt;
+    // Diagnosis alone is not provider evidence: admission may rethrow a genuine older wrapper.
+    // Join the exact failed diagnostic to this chain's current invoked, official, pre-content attempt.
+    const currentAttempt = attempted !== undefined && Object.is(attempted.error, error);
     const matches = params.planEntries.filter(
-      (candidate) => candidate.model === model && candidate.provider.id === error.provider,
+      (candidate) =>
+        currentAttempt &&
+        candidate.model === attempted.model &&
+        candidate.provider.id === attempted.provider,
     );
     // A duplicate binding with different metadata is not evidence of which window was attempted.
     const entry = matches.length === 1 ? matches[0] : undefined;
@@ -771,7 +778,8 @@ function throwMappedChainError(
       contextOverflowMessage(model, entry?.provider, turnCommitted),
       false,
     );
-    mapped.recoverableOverflow = !turnCommitted && error.contentCommitted !== true;
+    mapped.recoverableOverflow =
+      currentAttempt && !turnCommitted && error.contentCommitted !== true;
     if (entry !== undefined && mapped.recoverableOverflow)
       usage.overflow = { error: mapped, entry };
     throw mapped;
@@ -1555,6 +1563,12 @@ interface TurnUsageAccumulator {
   attemptFailure?: { readonly error: unknown };
   /** Exact escape from this turn's current pre-attempt budget/money boundary. */
   preAttemptFailure?: { readonly error: unknown };
+  /** Exact failed official provider attempt, independent of earlier engagement in this turn. */
+  overflowAttempt?: {
+    readonly error: LlmError;
+    readonly model: string;
+    readonly provider: ProviderId;
+  };
   /** Provider-origin overflow mapped during this exact capture, never shared across invocations. */
   overflow?: { readonly error: AgentTurnError; readonly entry: FallbackPlanEntry };
   /** A terminal usage chunk observed before readiness/folding, not yet consumed by onAttempt. */
@@ -1640,6 +1654,20 @@ async function driveAgentTurn(
     // A SKIPPED entry (cooldown / capability) was not invoked — it must not become `activeModel`, or
     // the next entry's streamed tokens would be mis-attributed to a provider that never ran.
     if (record.outcome === 'skipped') return;
+    delete usage.overflowAttempt;
+    if (
+      record.outcome === 'failed' &&
+      record.providerInvoked &&
+      !record.customEndpoint &&
+      !record.contentReceived &&
+      record.error?.kind === 'context_overflow'
+    ) {
+      usage.overflowAttempt = {
+        error: record.error,
+        model: record.model,
+        provider: record.provider,
+      };
+    }
     // The chain owns the actual seam-invocation boundary, independent of governor presence.
     const providerMayHaveEngaged = record.providerInvoked;
     if (!providerMayHaveEngaged) {

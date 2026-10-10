@@ -11,6 +11,9 @@ added.
 
 ## Records
 
+- [2026-10-10 — W7 Step 8, cumulative round 2](2026-10-10T01-38-00-w7-step-8-round-2-review.md):
+  current provider-attempt authority High corrected; two fresh clean complete rounds required.
+
 - [2026-10-10 — W7 Step 8, cumulative round 1](2026-10-10T01-26-00-w7-step-8-round-1-review.md):
   four confirmed findings corrected together; fresh complete acceptance remains required.
 - [2026-10-10 — W7 final Sonar triage](2026-10-10T01-26-10-w7-final-sonar-triage-review.md):

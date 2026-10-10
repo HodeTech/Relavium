@@ -45,7 +45,7 @@ export class EffectReceiptHealth {
   /** Observe before returning the exact Promise to its existing owner/lifetime registry. */
   invocation<T>(factory: () => Promise<T>, onValue?: (value: T) => void): Promise<T> {
     let raw: Promise<T>;
-    try {
+    try /* NOSONAR — S4822: synchronous factory refusal; #observe below owns both async outcomes and preserves the exact raw Promise. */ {
       raw = factory();
     } catch (error) {
       this.observeFailure(error);
@@ -93,7 +93,7 @@ export class EffectReceiptHealth {
 
   #completion(factory: () => Promise<void>, onAck: () => void): Promise<void> {
     let raw: Promise<void>;
-    try {
+    try /* NOSONAR — S4822: synchronous settle/discard refusal; the two-arm ACK observer below preserves the exact raw Promise. */ {
       raw = factory();
     } catch (error) {
       this.#stickyAttention = true;
