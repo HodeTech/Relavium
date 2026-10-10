@@ -6,7 +6,8 @@
  * API-boundary faults ({@link ./errors.ts | EngineStateError}); they surface loudly so a bug is caught at its
  * source rather than silently corrupting the gap-free `sequenceNumber` stream.
  *
- * **Two members are not impossibilities, and saying so is more useful than pretending otherwise.**
+ * **Some codes describe reachable integration errors rather than impossibilities.**
+ * `invalid_consumer_mode` means a caller tried to iterate a subscribe-only handle (ADR-0087 §1).
  * `media_store_unavailable` is a host-wiring gap and `event_too_large` is a run that produced more than the
  * durable boundary accepts — both are reachable by a correct engine given a wrong host or an oversized
  * payload. They live here rather than in the `ErrorCode` taxonomy because they are raised at the emit choke

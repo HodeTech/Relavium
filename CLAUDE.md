@@ -113,9 +113,12 @@ silently sent prompts and keys to `api.openai.com`; it now installs a refusing a
 never its credentials. The test that was supposed to pin `CR-80` asserted only `toBeDefined()`, which a
 refusing adapter satisfies too, so it passed either way — the finding under the defect was the test.
 [ADR-0087](docs/decisions/0087-consumed-streams-size-bounds-and-run-retention.md) was also **accepted
-(2026-09-04) with nine dated corrections** after a review refused it as written; its §1 remains unimplemented
-and the `W3` live blocker with it, while its §3 turned out to have shipped in `W5` under a different item
-number.
+(2026-09-04) with nine dated corrections** after a review refused it as written; §1 was still unimplemented
+at that checkpoint, while §3 turned out to have shipped in `W5` under a different item number.
+**Current W8 checkpoint — 2026-10-10:** §1 is implemented on `development`; final cumulative
+review is pending after runtime acceptance checks and living-document reconciliation. The
+[Step 1 register](docs/roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w8-step-1-consumption-modes--2026-10-10)
+owns scoped acceptance. W8 and the existing exact-capacity residual remain open.
 
 **W7 merged to `main` on 2026-10-10 as PR #90, including final whole-wave Step 12.**
 Steps 1–11, all five genuine overflow records, owned measured requests and consolidated provider/MCP/host

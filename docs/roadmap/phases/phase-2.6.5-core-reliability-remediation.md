@@ -2489,7 +2489,7 @@ stand.
 
 ## W8 — Provider and conformance
 
-**Preflight in progress (2026-10-10); implementation awaits the proposed decision and plan approval.**
+**Plan and ADR-0104 approved on 2026-10-10; Step 1 implemented, final cumulative review pending.**
 ADR-0087 §1, CR-81 and CR-82 remain open. CR-80 below was already closed before W7. Current execution order is in
 [current.md](../current.md#next-work--phase-265-w8).
 
@@ -2550,7 +2550,7 @@ closes against exit criteria 2 and 4 and `W8`'s closing register rather than aga
 
 ### W8 preflight and proposed execution plan — 2026-10-10
 
-**Status: preflight complete, plan and ADR-0104 approved on 2026-10-10; Step 1 implementation in progress.**
+**Status: preflight complete, plan and ADR-0104 approved on 2026-10-10; Step 1 final cumulative review pending.**
 No W8 runtime step is accepted yet.
 The maintainer requests implementation on `development`, an implementation commit followed by
 two fresh independent cumulative review rounds per step, confirmed fixes committed between
@@ -2744,8 +2744,16 @@ The confirmed correction establishes an unchanged idle pause before requiring pr
 authority. A permanent paired iterated/subscribe-only test covers running `continue`, then
 subscribe-only paused refusal and actual terminal `closed` joining. It fails on `e213398c`
 for the reported reason and passes with the correction. No approval or scope change is
-needed; this enforces ADR-0103's existing result table. Second fresh cumulative review is
-still required before Step 1 acceptance.
+needed; this enforces ADR-0103's existing result table.
+
+**Round 2 — corrected commit `7f9dc993`:** two further NEW independent reviewers inspected
+the complete cumulative step. GPT-6-astra/high returned zero new findings and independently
+reproduced the old guard-order failure; 265 permanent tests and two external lifecycle
+probes passed. GPT-6.1-sol/high returned no runtime/API finding, with 587 fresh passing tests,
+and one Medium current-document discrepancy: the live W3 residual still said no consumption
+mode existed. The phase introduction also still awaited approval. Those living status claims
+are reconciled; historical checkpoints and Accepted ADR bodies remain preserved. A third
+NEW complete cumulative round follows the documentation correction before scoped acceptance.
 
 ### CR-81 — Conformance cassettes do not verify the request wire contract · High
 A recorded response carries status, content type and body only; replay checks that the request body is parseable

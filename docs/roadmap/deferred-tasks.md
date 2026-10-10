@@ -813,13 +813,15 @@ severity, the trigger and the product claim each narrows, per exit criterion 2.
   is true today for a stream nobody iterates. **Trigger:** any consumer that attaches after `capacity` events,
   which on the session path is every consumer. The fix is
   [ADR-0087](../decisions/0087-consumed-streams-size-bounds-and-run-retention.md) §1 — a handle declares
-  whether its stream is consumed. That ADR is **Accepted as of 2026-09-04**, with §1 recorded and still
-  **unimplemented**: no consumption mode exists anywhere in the tree. Its Correction 1 also names what §1 got
-  wrong and must be settled before it can be built: the two factories §1 names are not symmetric.
-  `createSessionHandle` is exported and `session-host.ts` calls it directly, so the session half is
-  implementable as written; `createRunHandle` is internal and only `WorkflowEngine.start()` /
-  `resumeFromCheckpoint()` produce a `RunHandle`, so the run half needs the mode plumbed onto an engine entry
-  point first. A `subscribe-only` handle must also not present a silently-empty iterable.
+  whether its stream is consumed. That ADR was Accepted on 2026-09-04 before §1 was implemented.
+  **Current checkpoint — 2026-10-10:** [W8 Step 1](phases/phase-2.6.5-core-reliability-remediation.md#w8-step-1-consumption-modes--2026-10-10)
+  implements the immutable mode through both standalone session handles and workflow
+  start/checkpoint resume. Iterated streams retain every publication before first pull;
+  subscribe-only streams retain no primary buffer and refuse iteration with a typed error.
+  CLI builders select their actual consumption mode. Runtime review is clean after the
+  running-departure correction; final cumulative review of the documentation reconciliation
+  remains open. The checkbox stays open until scoped acceptance, and publication to `main`
+  remains part of the W8 PR. The separate exact-capacity residual below is unchanged.
   *(packages/core/src/engine/event-stream.ts, run-handle.ts, session-handle.ts)*
 
 - [x] **Media is measured as a handle but RETAINED as base64.** *Medium — CLOSED 2026-09-04, fixed in `W5`.*
