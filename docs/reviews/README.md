@@ -11,6 +11,9 @@ added.
 
 ## Records
 
+- [2026-10-10 — W7 post-closure Step 1, round 3](2026-10-10T12-18-00-w7-post-closure-step-1-round-3-review.md):
+  second new clean complete cumulative round; core corrections accepted within scope.
+
 - [2026-10-10 — W7 post-closure Step 1, round 2](2026-10-10T12-08-30-w7-post-closure-step-1-round-2-review.md):
   first clean complete cumulative round; second fresh round required.
 

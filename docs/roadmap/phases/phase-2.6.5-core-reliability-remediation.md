@@ -4855,3 +4855,8 @@ The [second core-increment review](../../reviews/2026-10-10T12-08-30-w7-post-clo
 finds no new material issue across all fifteen paths/thirty-one hunks. Both independent 321-case
 runs and additional held-writer/paid-accounting probes pass. Parent verifies the complete artifacts
 and exact clean freeze after both releases. One further NEW complete clean round remains required.
+
+The [third core-increment review](../../reviews/2026-10-10T12-18-00-w7-post-closure-step-1-round-3-review.md)
+accepts the complete core correction after two NEW clean rounds. Both independent source runs pass
+321 cases; Parent audits reports, artifacts and the exact frozen sixteen-path composition after
+release. CLI/DB and tooling/document corrections remain open; no paid operation or user decision is pending.
