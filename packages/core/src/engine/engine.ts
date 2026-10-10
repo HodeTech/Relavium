@@ -4469,20 +4469,25 @@ class RunExecution {
   }
 
   #sameDeparturePause(generation: number, resolvedGates: number): boolean {
+    // Running work owes its outcome even without a primary. Demand consumption authority only
+    // after establishing that this is the unchanged pause we could actually detach from.
+    if (
+      generation <= 0 ||
+      this.#pauseGeneration !== generation ||
+      !this.#pauseEpisode ||
+      this.#resolvedGates.size !== resolvedGates ||
+      this.#countRunning() !== 0 ||
+      this.#cancelling ||
+      this.#failure !== undefined ||
+      this.#abort.signal.aborted
+    )
+      return false;
     const primary = this.#assertDeparturePrimary();
+    // Receipt publications do not begin a new pause episode. The original pause must have been
+    // consumed, and the CURRENT cursor must be drained, including successful late money receipts.
     return (
-      generation > 0 &&
-      this.#pauseGeneration === generation &&
-      this.#pauseEpisode &&
-      // Receipt publications do not begin a new pause episode. The original pause must have been
-      // consumed, and the CURRENT cursor must be drained, including successful late money receipts.
       primary.publishedCount >= this.#pausePublication &&
-      primary.deliveredCount === primary.publishedCount &&
-      this.#resolvedGates.size === resolvedGates &&
-      this.#countRunning() === 0 &&
-      !this.#cancelling &&
-      this.#failure === undefined &&
-      !this.#abort.signal.aborted
+      primary.deliveredCount === primary.publishedCount
     );
   }
 

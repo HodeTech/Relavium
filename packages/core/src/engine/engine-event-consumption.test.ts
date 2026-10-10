@@ -159,6 +159,45 @@ it('subscribe-only pause refuses primary departure authority but can still cance
   expect((await handle.depart()).kind).toBe('closed');
 });
 
+it.each(['iterated', 'subscribe-only'] as const)(
+  'running %s departure continues until a pause needs primary authority',
+  async (eventConsumption) => {
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    const paused = deferred<void>();
+    const handle = new WorkflowEngine({
+      host: createInMemoryHost(),
+      eventBufferCapacity: 1,
+      executor: {
+        execute: async () => {
+          entered.resolve();
+          await release.promise;
+          return { kind: 'paused', gate: { gateType: 'approval', message: 'approve?' } };
+        },
+      },
+    }).start({ workflow, eventConsumption });
+    const observed = observeTerminal(handle);
+    handle.subscribe((event) => {
+      if (event.type === 'run:paused') paused.resolve();
+    });
+    const reader = eventConsumption === 'iterated' ? drain(handle) : undefined;
+    try {
+      await entered.promise;
+      await expect(handle.depart()).resolves.toEqual({ kind: 'continue' });
+      release.resolve();
+      await paused.promise;
+      if (eventConsumption === 'subscribe-only')
+        await expect(handle.depart()).rejects.toMatchObject({ code: 'invalid_departure' });
+    } finally {
+      release.resolve();
+      handle.cancel();
+      await observed.terminal;
+      await reader;
+      expect((await handle.depart()).kind).toBe('closed');
+    }
+  },
+);
+
 type ResumeCase =
   | 'gate'
   | 'budget-approved'

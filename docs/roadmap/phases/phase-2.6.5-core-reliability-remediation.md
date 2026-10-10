@@ -2732,6 +2732,21 @@ caught two test-only unsafe asymmetric-matcher arguments; typed error-class asse
 them before the green run. Relative/archive-link and whitespace checks pass; no dependency,
 vendor-seam or engine-platform import change is introduced. Detailed logs remain external.
 
+**Round 1 — author commit `e213398c`:** two NEW independent reviewers inspected the complete
+step against base `8844eb0b`: GPT-6-astra/high (lifecycle/receipt authority) and
+GPT-6.1-sol/high (shipping integration/contracts). The lifecycle review verified one High:
+the new no-primary guard ran before checking whether departure was actually a paused
+candidate, incorrectly rejecting running subscribe-only work instead of returning `continue`.
+The integration review returned no actionable findings. Independent fresh checks passed
+113 core tests and 544 integration/core tests respectively; neither claimed full CI.
+
+The confirmed correction establishes an unchanged idle pause before requiring primary
+authority. A permanent paired iterated/subscribe-only test covers running `continue`, then
+subscribe-only paused refusal and actual terminal `closed` joining. It fails on `e213398c`
+for the reported reason and passes with the correction. No approval or scope change is
+needed; this enforces ADR-0103's existing result table. Second fresh cumulative review is
+still required before Step 1 acceptance.
+
 ### CR-81 — Conformance cassettes do not verify the request wire contract · High
 A recorded response carries status, content type and body only; replay checks that the request body is parseable
 JSON and matches nothing else — not method, path, headers, or a canonical body. A dropped `response_format`, a
