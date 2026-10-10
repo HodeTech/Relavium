@@ -11,6 +11,9 @@ added.
 
 ## Records
 
+- [2026-10-10 — W7 post-closure Step 1, round 1](2026-10-10T11-51-35-w7-post-closure-step-1-round-1-review.md):
+  two confirmed failure schedules corrected; two fresh clean cumulative rounds required.
+
 - [2026-10-10 — W7 post-closure systematic intake](2026-10-10T11-30-00-w7-post-closure-intake-review.md):
   new report triaged; confirmed corrections require two fresh reviews per increment.
 

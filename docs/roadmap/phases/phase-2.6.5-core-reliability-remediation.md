@@ -4845,3 +4845,8 @@ distinguish confirmed defects from intentional security/compatibility guarantees
 acceptances remain dated evidence; current closure requires the new corrections, two NEW independent
 review rounds per increment and new source gates. No capture, billing, key or maintainer decision is
 pending for these existing-contract fixes. PR #90 remains draft and unmerged.
+
+The [first core-increment review](../../reviews/2026-10-10T11-51-35-w7-post-closure-step-1-round-1-review.md)
+independently reproduced two adjacent failure schedules. `11453744` corrects returned poll-refusal
+precedence and bounded unstamped terminal preparation, with fourteen additional permanent cases.
+Current root CI and 321 focused cases pass; two fresh clean complete cumulative reviews remain required.
