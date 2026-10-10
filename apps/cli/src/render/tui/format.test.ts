@@ -22,18 +22,24 @@ describe('formatCostUsd', () => {
   });
 });
 
-describe('formatCostShort (2.5.B Home)', () => {
-  it('is "free" at zero/negative, else the canonical USD figure (shares the 1e8 conversion — no drift)', () => {
-    expect(formatCostShort(0)).toBe('free');
-    expect(formatCostShort(-5)).toBe('free');
-    expect(formatCostShort(100_000_000)).toBe('$1.0000'); // 1e8 micro-cents = $1 (NOT $100 — the 1e6 bug)
-    expect(formatCostShort(120_000_000)).toBe('$1.2000');
-    expect(formatCostShort(5_000_000)).toBe('$0.0500');
+describe('formatCostShort — coverage-qualified Home amounts', () => {
+  const complete = { unverified: false, pendingInvocations: 0, unknownCalls: 0 };
+  it('calls only a verified fully priced zero free, preserving the canonical conversion', () => {
+    expect(formatCostShort(0, complete)).toBe('free');
+    expect(formatCostShort(100_000_000, complete)).toBe('$1.0000');
+    expect(formatCostShort(5_000_000, complete)).toBe('$0.0500');
+    expect(formatCostShort(0, undefined)).toBe('$0.0000 known; usage unverified');
+    expect(formatCostShort(0, { ...complete, pendingInvocations: 1 })).toBe(
+      '$0.0000 known; 1 usage pending',
+    );
+    expect(formatCostShort(0, { ...complete, unknownCalls: 2 })).toBe(
+      '$0.0000 known; usage unknown for 2 calls',
+    );
+    expect(formatCostShort(0, complete, 1)).toBe('$0.0000 known; price unknown for 1 call');
   });
-
-  it('is "free" (never "$NaN"/"$∞") for a non-finite value — the Number.isFinite guard holds', () => {
-    expect(formatCostShort(Number.NaN)).toBe('free');
-    expect(formatCostShort(Number.POSITIVE_INFINITY)).toBe('free'); // positive but non-finite
+  it('does not present invalid amounts as free', () => {
+    for (const value of [-5, Number.NaN, Number.POSITIVE_INFINITY])
+      expect(formatCostShort(value, complete)).toBe('unavailable');
   });
 });
 

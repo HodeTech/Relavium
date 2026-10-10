@@ -83,7 +83,7 @@ function provider(calls: { value: number }, result: () => LlmResult): LlmProvide
       await Promise.resolve();
       calls.value++;
       yield { type: 'text_delta', text: 'independent paid answer' };
-      yield { type: 'stop', stopReason: 'stop', usage: usage() };
+      yield { type: 'stop', stopReason: 'stop', usage: { kind: 'complete', usage: usage() } };
     },
   };
 }
@@ -194,7 +194,7 @@ describe('R10 independent actual generated ownership', () => {
         provider(calls, () => ({
           content: trappedContent(error),
           stopReason: 'stop',
-          usage: usage(),
+          usage: { kind: 'complete', usage: usage() },
         })),
       );
       expect.soft(calls.value).toBe(1);
@@ -222,7 +222,7 @@ describe('R10 independent actual generated ownership', () => {
       provider(calls, () => ({
         content: [media, { type: 'text', text: 'successful independent answer' }],
         stopReason: 'stop',
-        usage: usage(),
+        usage: { kind: 'complete', usage: usage() },
       })),
     );
     expect(calls.value).toBe(1);
@@ -245,7 +245,7 @@ describe('R10 independent actual generated ownership', () => {
         const result: LlmResult = {
           content: [media],
           stopReason: 'stop',
-          usage: usage(),
+          usage: { kind: 'complete', usage: usage() },
           raw: { safe: true },
         };
         Object.defineProperty(result, field, {
@@ -289,13 +289,17 @@ describe('R10 independent chain terminal and quantity controls', () => {
     const calls = { value: 0 },
       records: AttemptRecord[] = [];
     const raw = usage();
-    const p = provider(calls, () => ({ content: [media], stopReason: 'stop', usage: raw }));
+    const p = provider(calls, () => ({
+      content: [media],
+      stopReason: 'stop',
+      usage: { kind: 'complete', usage: raw },
+    }));
     const q: LlmProvider = {
       ...p,
       stream: async function* () {
         await Promise.resolve();
         calls.value++;
-        yield { type: 'stop', stopReason: 'stop', usage: raw };
+        yield { type: 'stop', stopReason: 'stop', usage: { kind: 'complete', usage: raw } };
         raw.inputTokens = 0;
         raw.outputTokens = 0;
         raw.cacheReadTokens = 0;
@@ -316,7 +320,10 @@ describe('R10 independent chain terminal and quantity controls', () => {
     expect(chunks).toMatchObject([
       {
         type: 'stop',
-        usage: { inputTokens: 9, outputTokens: 5, cacheReadTokens: 2, cacheWriteTokens: 1 },
+        usage: {
+          kind: 'complete',
+          usage: { inputTokens: 9, outputTokens: 5, cacheReadTokens: 2, cacheWriteTokens: 1 },
+        },
       },
     ]);
     expect(records).toMatchObject([{ outcome: 'succeeded', cost: { costMicrocents: CHARGE } }]);
@@ -329,7 +336,11 @@ describe('R10 independent chain terminal and quantity controls', () => {
       message: 'fixed ordinary refusal',
       status: 400,
     });
-    const p = provider(calls, () => ({ content: [], stopReason: 'stop', usage: usage() }));
+    const p = provider(calls, () => ({
+      content: [],
+      stopReason: 'stop',
+      usage: { kind: 'complete', usage: usage() },
+    }));
     const q: LlmProvider = {
       ...p,
       stream: async function* () {
@@ -375,7 +386,11 @@ describe('R10 returned content downstream and callback mutation', () => {
       source: { kind: 'handle', ref: `media://sha256-${'c'.repeat(64)}` },
     };
     const h = await workflow(
-      provider(calls, () => ({ content: [part], stopReason: 'stop', usage: usage() })),
+      provider(calls, () => ({
+        content: [part],
+        stopReason: 'stop',
+        usage: { kind: 'complete', usage: usage() },
+      })),
     );
     expect.soft(calls.value).toBe(1);
     expect.soft(h.events.at(-1)).toMatchObject({
@@ -398,7 +413,11 @@ describe('R10 returned content downstream and callback mutation', () => {
     const h = await workflow(
       provider(calls, () => {
         pending = true;
-        return { content: [media, part], stopReason: 'stop', usage: usage() };
+        return {
+          content: [media, part],
+          stopReason: 'stop',
+          usage: { kind: 'complete', usage: usage() },
+        };
       }),
       () => {
         if (pending) {
@@ -452,7 +471,11 @@ describe('R10 exact pre-attempt ownership and truthful generated accounting', ()
                 cause: fault,
               }),
             );
-          return { content: [media], stopReason: 'stop', usage: usage() };
+          return {
+            content: [media],
+            stopReason: 'stop',
+            usage: { kind: 'complete', usage: usage() },
+          };
         });
         const out = await captureAgentTurnOutcome(
           params(p, {
@@ -491,7 +514,7 @@ describe('R10 exact pre-attempt ownership and truthful generated accounting', ()
         const result: LlmResult = {
           content: [media],
           stopReason: 'stop',
-          usage: usage(),
+          usage: { kind: 'complete', usage: usage() },
           raw: { opaque: 'retained' },
         };
         Object.defineProperty(result, field, {
@@ -519,11 +542,11 @@ describe('R10 exact pre-attempt ownership and truthful generated accounting', ()
       expect(sequence).toEqual([field, 'observer']);
       expect(records).toHaveLength(1);
       if (field === 'usage') {
-        expect(records[0]?.usage).toBeUndefined();
+        expect(records[0]?.usage).toMatchObject({ kind: 'missing' });
         expect(records[0]?.cost).toBeUndefined();
       } else
         expect(records[0]).toMatchObject({
-          usage: { inputTokens: 9, outputTokens: 5 },
+          usage: { kind: 'complete', usage: { inputTokens: 9, outputTokens: 5 } },
           cost: { costMicrocents: CHARGE },
         });
     });
@@ -535,7 +558,11 @@ describe('R10 exact pre-attempt ownership and truthful generated accounting', ()
         return super.get(model);
       }
     }
-    const p = provider(calls, () => ({ content: [media], stopReason: 'stop', usage: usage() }));
+    const p = provider(calls, () => ({
+      content: [media],
+      stopReason: 'stop',
+      usage: { kind: 'complete', usage: usage() },
+    }));
     const rows: SettledAttemptDraft[] = [];
     const money = new MoneyDurability({
       emit: (r) => {
@@ -582,7 +609,11 @@ describe('R10 independently constructed real shared money barrier', () => {
       });
     const out = await captureAgentTurnOutcome(
       params(
-        provider(calls, () => ({ content: [media], stopReason: 'stop', usage: usage() })),
+        provider(calls, () => ({
+          content: [media],
+          stopReason: 'stop',
+          usage: { kind: 'complete', usage: usage() },
+        })),
         { outputModalities: ['image'], money: money.turnPort(() => CHARGE) },
       ),
     );

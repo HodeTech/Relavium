@@ -2930,7 +2930,7 @@ entry revision mismatch before writing and acknowledge their final revision in o
 retryable immediate transaction, preserving prior taint. Generic inserts and migrated sessions
 remain unverified. A separate explicit fresh-empty-owner API is implemented and tested but is
 not called by shipping hosts yet. The canonical [database transition table](../../reference/shared-core/database-schema.md),
-[seam foundation](../../reference/shared-core/llm-provider-seam.md#w8-usage-evidence-foundation-inert-step-4)
+[seam foundation](../../reference/shared-core/llm-provider-seam.md#w8-production-evidence-contract)
 and [event staging contract](../../reference/contracts/sse-event-schema.md#the-runevent-union)
 state these boundaries; ADR-0005/0070 receive append-only foundation notes.
 
@@ -2977,6 +2977,59 @@ reader and causal acceptance matrix, fixes confirmed gaps and receives two furth
 cumulative rounds before CR-82 can close. Existing OpenAI parameter-repair retries must retain
 their behaviour while each potentially billable native invocation is durably accounted for;
 custom 400s cannot silently inherit official refusal authority.
+
+### W8 Step 5 complete-path usage activation — 2026-10-10
+
+**Implementation staged; independent review and CR-82 acceptance remain open.** Base `017b399c`.
+The approved cross-package activation now carries owned complete/partial/missing `UsageEvidence`
+through results, stops, accountable errors and invoked-attempt records. Native counters are read
+before defaults; only complete evidence enters realized pricing. OpenAI's existing native parameter
+repairs keep their behaviour and acknowledge a fresh pending marker before each additional SDK
+invocation. Custom refusals do not inherit official non-billing authority.
+
+Workflow owners establish a durable basis before activation. Every potentially billable invocation
+acknowledges its correlated pending write, with or without a cap. Complete receipts resolve through
+the existing sole actual-money writer; incomplete or proven-uninvoked dispositions preserve the
+independent uncertainty axes. Live exact late receipts retain their host lifetime and correlation;
+restart never restores permission to charge. Common money serialization includes pending allocation,
+append and fold. The engine's pre-existing delivery queue already prevents an inverted store ACK;
+the new async-port control independently pins the shared money queue, without claiming an engine
+race that the probe did not reproduce.
+
+Generated additive migration `0019_regular_stingray.sql` supplies the durable session ordinal and
+pending/incomplete state. Opaque process-local receipts govern complete, disposition and retirement
+operations. Session hosts attach the writer before use, restore an atomic breakdown with coverage,
+and wait for retained receipts before closing the persister/database. A one-shot owns hidden typed
+coverage, realized-cost and effect metadata without retaining its transcript or becoming resumable.
+Revision mismatch stays sticky across actual predecessor writes. The bounded incremental run visitor
+validates every stored row before excluding streaming rows; normal receipts do not reload history.
+
+Human totals and JSON projections expose usage coverage separately from missing prices. A known
+zero with pending, unknown or unverified usage cannot display `free`. Session `/cost` includes
+usage-only models; summaries qualify partial token observations. Fixture cassettes intentionally
+move to schema `2.0`; old unqualified usage objects are refused rather than promoted to complete.
+Canonical seam, database, event, runner, session and CLI contracts and 21 append-only ADR landing
+notes describe the change. No new dependency, provider call, credential or billing action is involved.
+
+Author controls include real SDK HTTP captures, native SQLite transactions, actual CLI child-process
+crash cuts and old executable session mutations. The crash matrix has **49** cases: **30** SIGKILL
+cuts across capped/uncapped run/session primary, failover and session-summary invocations, **4**
+pending-write refusals, **8** cancellation/credential boundaries, **2** session late receipts, **4**
+session busy-retry recovery/exhaustion controls and **1** omitted-run-pending causal control. Late
+receipt and lock cases here are session-specific; summary cases call actual `AgentSession.compact`.
+The LLM's seven source-removal controls include the same-checkpoint deadline/receipt race; exact
+source restoration passes. These author results do not substitute for either Step 5 review round
+or Step 6's additional cumulative acceptance rounds. The register remains **48/51**.
+
+**Author gates:** fresh monorepo lint/typecheck/test passed **23/23**, none cached: shared **871**,
+LLM **1,821 / 11 existing live skips**, core **3,131**, DB **590**, MCP **220**, CLI **3,289**
+tests (**9,922 passed**). Fresh build/format passed **7/7**. Tools lint/typecheck, isolation
+(**463** files), seam/purity/dependency fences, whitespace, canonical links and the offline
+CLI/overflow/budget-replay smokes passed. The native 100,000-settlement test yields between
+batches for worker responsiveness; transaction count and assertions remain unchanged. The
+new CLI worker lives in the existing test-fixture directory, outside production-surface discovery.
+Schema synchronization is checked after committing its generated migration. Remote CI and
+whole-W8 coverage are not claimed at this author checkpoint.
 
 ### CR-81 — Conformance cassettes do not verify the request wire contract · High · ✅ CLOSED on `development` 2026-10-10
 **Accepted on `development`, 2026-10-10; publication pending.** The [Step 3 register](#w8-step-3-canonical-sdk-http-matrix--2026-10-10)

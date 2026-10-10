@@ -35,7 +35,12 @@ function accounting() {
 /** Exercise the public factory's official adapter without network or credential stores. */
 function officialProvider(path: CallPath) {
   const fetch = vi.fn(() => {
-    const usage = { prompt_tokens: 2, completion_tokens: 1, total_tokens: 3 };
+    const usage = {
+      prompt_tokens: 2,
+      completion_tokens: 1,
+      total_tokens: 3,
+      prompt_tokens_details: { cached_tokens: 0 },
+    };
     const common = { id: 'offline', created: 0, model: MODEL };
     const body =
       path === 'generate'
@@ -97,7 +102,7 @@ function hostFailure(usage: Usage): LlmProviderError {
       retryAfterMs: 17,
       cause: new Error('PRIVATE_HOST_CAUSE'),
     }),
-    usage,
+    usage: { kind: 'complete' as const, usage: usage },
     contentCommitted: true,
   });
 }
@@ -211,7 +216,9 @@ describe('fallback usage requires provider invocation', () => {
           }
           expect(diagnostic.message).not.toContain('PRIVATE_HOST_CAUSE');
           expect(Object.isFrozen(refusal.llmError.cause)).toBe(false);
-          expect(refusal.llmError.usage).toBe(originalUsage);
+          expect(
+            refusal.llmError.usage?.kind === 'complete' ? refusal.llmError.usage.usage : undefined,
+          ).toBe(originalUsage);
           expect(refusal.llmError.contentCommitted).toBe(true);
           expect(Object.isFrozen(refusal.llmError)).toBe(false);
         });
@@ -354,12 +361,12 @@ describe('fallback usage requires provider invocation', () => {
           outcome: 'failed',
           providerInvoked: true,
           contentReceived: path === 'generate',
-          usage: expectedUsage,
+          usage: { kind: 'complete' as const, usage: expectedUsage },
           cost: { costMicrocents: amount, cumulativeCostMicrocents: amount },
         });
         expect(Object.hasOwn(records[0] ?? {}, 'priced')).toBe(false);
         expect(diagnostic.kind).toBe('context_overflow');
-        expect(diagnostic.usage).toEqual(expectedUsage);
+        expect(diagnostic.usage).toEqual({ kind: 'complete', usage: expectedUsage });
         expect(diagnostic.contentCommitted).toBe(path === 'generate' ? true : undefined);
         expect(diagnostic.cause).toBe(refusal.llmError.cause);
         expect(Object.isFrozen(diagnostic)).toBe(true);
@@ -373,8 +380,8 @@ describe('fallback usage requires provider invocation', () => {
         expect(stream).toHaveBeenCalledTimes(path === 'stream' ? 1 : 0);
         expect(sdk.fetch).not.toHaveBeenCalled();
         originalUsage.outputTokens = 999;
-        expect(records[0]?.usage).toEqual(expectedUsage);
-        expect(diagnostic.usage).toEqual(expectedUsage);
+        expect(records[0]?.usage).toEqual({ kind: 'complete', usage: expectedUsage });
+        expect(diagnostic.usage).toEqual({ kind: 'complete', usage: expectedUsage });
         expect(money.tracker.cumulativeCostMicrocents).toBe(amount);
       });
     }
@@ -414,7 +421,7 @@ describe('fallback usage requires provider invocation', () => {
         outcome: 'failed',
         providerInvoked: true,
         contentReceived: path === 'generate',
-        usage,
+        usage: { kind: 'complete' as const, usage: usage },
         priced: false,
       });
       expect(Object.hasOwn(records[0] ?? {}, 'cost')).toBe(false);
@@ -422,7 +429,7 @@ describe('fallback usage requires provider invocation', () => {
         kind: 'unknown',
         retryable: false,
         message: 'cost accounting failed after a failed provider response',
-        usage,
+        usage: { kind: 'complete' as const, usage: usage },
       });
       expect(diagnostic.cause).toBe(pricingCause);
       expect(diagnostic.message).not.toContain('PRIVATE_PRICING_CAUSE');
@@ -445,7 +452,7 @@ describe('fallback usage requires provider invocation', () => {
           kind: 'transport',
           message: 'transient host failure',
         }),
-        usage: { inputTokens: 19, outputTokens: 7 },
+        usage: { kind: 'complete' as const, usage: { inputTokens: 19, outputTokens: 7 } },
         contentCommitted: true,
       });
       let hookCalls = 0;
@@ -474,7 +481,10 @@ describe('fallback usage requires provider invocation', () => {
         outcome: 'succeeded',
         providerInvoked: true,
         contentReceived: true,
-        usage: { inputTokens: 2, outputTokens: 1 },
+        usage: {
+          kind: 'complete' as const,
+          usage: { inputTokens: 2, outputTokens: 1, cacheReadTokens: 0 },
+        },
         cost: { costMicrocents: 3, cumulativeCostMicrocents: 3 },
       });
       expect(preAttempt).toHaveBeenCalledTimes(2);
@@ -486,6 +496,7 @@ describe('fallback usage requires provider invocation', () => {
       expect(money.record).toHaveBeenCalledExactlyOnceWith(MODEL, {
         inputTokens: 2,
         outputTokens: 1,
+        cacheReadTokens: 0,
       });
       expect(money.tracker.cumulativeCostMicrocents).toBe(3);
     });

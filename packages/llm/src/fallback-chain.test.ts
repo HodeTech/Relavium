@@ -1,3 +1,4 @@
+import type { UsageEvidence } from './types.js';
 import type { AbortSignalLike } from '@relavium/shared';
 import { describe, expect, it } from 'vitest';
 
@@ -94,7 +95,12 @@ function entry(fake: FakeProvider, model: string, maxAttempts = 1): FallbackPlan
 const USAGE: Usage = { inputTokens: 1000, outputTokens: 500 };
 
 function result(text: string, usage: Usage = USAGE): LlmResult {
-  return { content: [{ type: 'text', text }], stopReason: 'stop', usage, raw: undefined };
+  return {
+    content: [{ type: 'text', text }],
+    stopReason: 'stop',
+    usage: { kind: 'complete' as const, usage: usage },
+    raw: undefined,
+  };
 }
 
 function providerError(
@@ -158,7 +164,11 @@ function committedErrChunk(provider: ProviderId, kind: LlmErrorKind): StreamChun
   };
 }
 
-const STOP_CHUNK: StreamChunk = { type: 'stop', stopReason: 'stop', usage: USAGE };
+const STOP_CHUNK: StreamChunk = {
+  type: 'stop',
+  stopReason: 'stop',
+  usage: { kind: 'complete' as const, usage: USAGE },
+};
 
 const userReq: LlmRequest = {
   model: 'incoming',
@@ -400,7 +410,12 @@ describe('FallbackChain.generate — pure-on-discriminant decision', () => {
     const primary = makeProvider({
       id: 'anthropic',
       generate: () =>
-        Promise.resolve({ content: [], stopReason: 'stop', usage: USAGE, raw: undefined }),
+        Promise.resolve({
+          content: [],
+          stopReason: 'stop',
+          usage: { kind: 'complete' as const, usage: USAGE },
+          raw: undefined,
+        }),
     });
     const fallback = makeProvider({ id: 'openai', generate: resolves('unused') });
     const { options } = makeOptions();
@@ -1516,7 +1531,7 @@ describe('FallbackChain.stream', () => {
     expect(trace.filter((r) => r.outcome === 'succeeded')).toHaveLength(0);
     expect(trace.filter((r) => r.outcome === 'failed')).toHaveLength(1);
     // No usage was ever folded, so no cost is claimed for an attempt we cannot account for (ADR-0074).
-    expect(trace[0]?.usage).toBeUndefined();
+    expect(trace[0]?.usage).toMatchObject({ kind: 'missing' });
     expect(trace[0]?.cost).toBeUndefined();
   });
 
@@ -2093,7 +2108,7 @@ describe('cross-call reasoning strip latch (ADR-0039)', () => {
       { type: 'text', text: 'a1' },
     ],
     stopReason: 'stop',
-    usage: USAGE,
+    usage: { kind: 'complete' as const, usage: USAGE },
     raw: undefined,
   });
 
@@ -2766,7 +2781,7 @@ describe('FallbackChain — the grammar and the deadline are wired', () => {
           return Promise.resolve({
             content: [{ type: 'text', text: 'sent' }],
             stopReason: 'stop' as const,
-            usage: { inputTokens: 1, outputTokens: 1 },
+            usage: { kind: 'complete' as const, usage: { inputTokens: 1, outputTokens: 1 } },
             model: 'claude-opus-4-8',
             provider: 'anthropic' as const,
           });
@@ -2836,7 +2851,7 @@ describe('FallbackChain — the grammar and the deadline are wired', () => {
           Promise.resolve({
             content: [{ type: 'text', text: 'it worked' }],
             stopReason: 'stop' as const,
-            usage: { inputTokens: 1, outputTokens: 1 },
+            usage: { kind: 'complete' as const, usage: { inputTokens: 1, outputTokens: 1 } },
             model: 'claude-opus-4-8',
             provider: 'anthropic' as const,
           }),
@@ -3109,7 +3124,12 @@ describe('chain-owned failure evidence and staged caps (ADR-0096/0101)', () => {
     const provider = makeProvider({
       id: 'openai',
       generate: () =>
-        Promise.resolve({ content: [], stopReason: 'stop', usage: USAGE, raw: undefined }),
+        Promise.resolve({
+          content: [],
+          stopReason: 'stop',
+          usage: { kind: 'complete' as const, usage: USAGE },
+          raw: undefined,
+        }),
     });
     let trackerCalls = 0;
     const tracker = new CostTracker();
@@ -3258,7 +3278,11 @@ describe('chain-owned provider invocation evidence', () => {
           generate: resolves('ok'),
           stream: () =>
             streamFrom([
-              { type: 'stop', stopReason: 'stop', usage: { inputTokens: 0, outputTokens: 0 } },
+              {
+                type: 'stop',
+                stopReason: 'stop',
+                usage: { kind: 'complete' as const, usage: { inputTokens: 0, outputTokens: 0 } },
+              },
             ]),
         });
         const { options, trace } = makeOptions({
@@ -3333,7 +3357,10 @@ describe('chain-owned provider invocation evidence', () => {
                   Promise.resolve({
                     content: [],
                     stopReason: 'stop',
-                    usage: { inputTokens: 0, outputTokens: 0 },
+                    usage: {
+                      kind: 'complete' as const,
+                      usage: { inputTokens: 0, outputTokens: 0 },
+                    },
                   }),
           stream: () =>
             streamFrom(
@@ -3343,7 +3370,10 @@ describe('chain-owned provider invocation evidence', () => {
                     {
                       type: 'stop',
                       stopReason: 'stop',
-                      usage: { inputTokens: 0, outputTokens: 0 },
+                      usage: {
+                        kind: 'complete' as const,
+                        usage: { inputTokens: 0, outputTokens: 0 },
+                      },
                     },
                   ],
             ),
@@ -3362,7 +3392,10 @@ describe('chain-owned provider invocation evidence', () => {
           outcome: outcome === 'success' ? 'succeeded' : 'failed',
         });
         if (outcome === 'success')
-          expect(trace[0]?.usage).toEqual({ inputTokens: 0, outputTokens: 0 });
+          expect(trace[0]?.usage).toEqual({
+            kind: 'complete',
+            usage: { inputTokens: 0, outputTokens: 0 },
+          });
       },
     );
 });
@@ -3464,7 +3497,7 @@ describe('generated known usage survives cost calculation failure without accept
         providerInvoked: true,
         contentReceived: true,
         outcome: 'failed',
-        usage,
+        usage: { kind: 'complete' as const, usage: usage },
       });
       expect(trace[0]?.cost).toBeUndefined();
       expect(trace[0]?.error?.message).not.toContain('private');
@@ -3488,7 +3521,7 @@ describe('generated known usage survives cost calculation failure without accept
       const chain = new FallbackChain([entry(fake, 'claude-opus-4-8')], options);
       await expect(chain.generate(userReq)).rejects.toBeInstanceOf(LlmProviderError);
       expect(trace).toHaveLength(1);
-      expect(trace[0]?.usage).toBeUndefined();
+      expect(trace[0]?.usage).toMatchObject({ kind: 'missing' });
       expect(trace[0]).toMatchObject({ providerInvoked: true, contentReceived: true });
     });
 });
@@ -3502,7 +3535,7 @@ describe('generated usage inspection is recorded without losing validated quanti
         Promise.resolve({
           content: [],
           stopReason: 'stop',
-          get usage(): Usage {
+          get usage(): UsageEvidence {
             throw marker;
           },
         }),
@@ -3517,7 +3550,7 @@ describe('generated usage inspection is recorded without losing validated quanti
       contentReceived: true,
       outcome: 'failed',
     });
-    expect(trace[0]?.usage).toBeUndefined();
+    expect(trace[0]?.usage).toMatchObject({ kind: 'missing' });
     expect(trace[0]?.error?.retryable).toBe(false);
     expect(trace[0]?.error?.cause === marker).toBe(true);
     expect(trace[0]?.error?.message).not.toContain('private');
@@ -3531,10 +3564,10 @@ describe('generated usage inspection is recorded without losing validated quanti
         Promise.resolve({
           content: [],
           stopReason: 'stop',
-          get usage(): Usage {
+          get usage(): UsageEvidence {
             reads += 1;
             if (reads > 1) throw new Error('usage must only be read once');
-            return usage;
+            return { kind: 'complete', usage };
           },
         }),
     });
@@ -3543,7 +3576,10 @@ describe('generated usage inspection is recorded without losing validated quanti
     await chain.generate(userReq);
     expect(reads).toBe(1);
     expect(trace).toHaveLength(1);
-    expect(trace[0]).toMatchObject({ outcome: 'succeeded', usage });
+    expect(trace[0]).toMatchObject({
+      outcome: 'succeeded',
+      usage: { kind: 'complete' as const, usage: usage },
+    });
     expect(trace[0]?.cost?.inputTokens).toBe(5);
     expect(trace[0]?.cost?.outputTokens).toBe(6);
   });
@@ -3564,7 +3600,7 @@ describe('generated usage inspection is recorded without losing validated quanti
       providerInvoked: true,
       contentReceived: true,
       outcome: 'failed',
-      usage: { inputTokens: 5, outputTokens: 6 },
+      usage: { kind: 'complete' as const, usage: { inputTokens: 5, outputTokens: 6 } },
     });
     expect(trace[0]?.cost).toBeUndefined();
     expect(usage.inputTokens).toBe(999);
@@ -3591,7 +3627,14 @@ describe('context overflow classification, endpoint authority and money evidence
           const fallback = makeProvider({
             id: 'anthropic',
             generate: resolves('unexpected'),
-            stream: () => streamFrom([{ type: 'stop', stopReason: 'stop', usage: USAGE }]),
+            stream: () =>
+              streamFrom([
+                {
+                  type: 'stop',
+                  stopReason: 'stop',
+                  usage: { kind: 'complete' as const, usage: USAGE },
+                },
+              ]),
           });
           const records: AttemptRecord[] = [];
           const chain = new FallbackChain(
@@ -3644,7 +3687,7 @@ describe('context overflow classification, endpoint authority and money evidence
             kind: 'context_overflow',
             message: 'native overflow',
           }),
-          usage,
+          usage: { kind: 'complete' as const, usage: usage },
         };
         const fail = (): LlmProviderError => {
           if (outcome === 'cancel') controller.abort();
@@ -3722,7 +3765,11 @@ describe('context overflow classification, endpoint authority and money evidence
                 ? 'cancelled'
                 : 'unknown',
         );
-        expect(records[0]?.usage).toEqual(outcome === 'invalid-usage' ? undefined : USAGE);
+        expect(records[0]?.usage).toEqual(
+          outcome === 'invalid-usage'
+            ? { kind: 'missing', reason: 'not_reported' }
+            : { kind: 'complete', usage: USAGE },
+        );
         expect(priced).toBe(outcome === 'invalid-usage' ? 0 : 1);
         if (outcome === 'fold-failure') expect(records[0]?.priced).toBe(false);
       });
@@ -3734,7 +3781,7 @@ describe('failed-response usage is independent of diagnostics and observers', ()
   it('a generated paid transport failure cannot advance to another provider', async () => {
     const error = {
       ...makeLlmError({ provider: 'anthropic', kind: 'transport', message: 'teardown failed' }),
-      usage: USAGE,
+      usage: { kind: 'complete' as const, usage: USAGE },
     };
     const paid = makeProvider({
       id: 'anthropic',
@@ -3751,7 +3798,13 @@ describe('failed-response usage is independent of diagnostics and observers', ()
     });
     expect(paid.calls).toHaveLength(1);
     expect(fallback.calls).toHaveLength(0);
-    expect(trace).toMatchObject([{ outcome: 'failed', contentReceived: true, usage: USAGE }]);
+    expect(trace).toMatchObject([
+      {
+        outcome: 'failed',
+        contentReceived: true,
+        usage: { kind: 'complete' as const, usage: USAGE },
+      },
+    ]);
   });
 
   for (const path of ['generate', 'stream'] as const) {
@@ -3759,7 +3812,7 @@ describe('failed-response usage is independent of diagnostics and observers', ()
       const marker = new Error('private observer fault');
       const error = {
         ...makeLlmError({ provider: 'anthropic', kind: 'context_overflow', message: 'overflow' }),
-        usage: USAGE,
+        usage: { kind: 'complete' as const, usage: USAGE },
       };
       const provider = makeProvider({
         id: 'anthropic',
@@ -3783,7 +3836,7 @@ describe('failed-response usage is independent of diagnostics and observers', ()
         },
         onAttempt: (record) => {
           observations++;
-          expect(record.usage).toEqual(USAGE);
+          expect(record.usage).toEqual({ kind: 'complete', usage: USAGE });
           throw marker;
         },
       });

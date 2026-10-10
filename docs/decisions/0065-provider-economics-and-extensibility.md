@@ -194,3 +194,10 @@ enum-opening ADR.
   steps that add each artifact, matching ADR-0063's honest `config-spec.md` deferral.
 - **A mandatory security review** — the custom-`base_url` SSRF and the user-pricing/reference input validation +
   the cost-path injection each carry a dedicated security round before shipping.
+
+### W8 usage coverage activation — 2026-10-10
+
+Only complete provider quantities enter realized token pricing. Partial observations and coverage remain separate from rates, actual charges, admission estimates and accepted native-media volume pricing.
+
+See [ADR-0104](0104-unknown-provider-usage-is-durable-cost-uncertainty.md) and the
+[canonical usage contract](../reference/shared-core/llm-provider-seam.md#6-usage).

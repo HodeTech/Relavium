@@ -68,7 +68,11 @@ describe('independently designed held-terminal controls', () => {
               await Promise.resolve();
               calls++;
               yield { type: 'text_delta', text: 'committed paid response' };
-              yield { type: 'stop', stopReason: 'stop', usage: raw };
+              yield {
+                type: 'stop',
+                stopReason: 'stop',
+                usage: { kind: 'complete' as const, usage: raw },
+              };
               Object.assign(raw, {
                 inputTokens: 90,
                 outputTokens: 90,
@@ -79,7 +83,11 @@ describe('independently designed held-terminal controls', () => {
                 Object.assign(raw.mediaUnits[0], { units: 90 });
               if (ending === 'throw') throw new Error('private teardown');
               if (ending === 'duplicate')
-                yield { type: 'stop', stopReason: 'tool_use', usage: raw };
+                yield {
+                  type: 'stop',
+                  stopReason: 'tool_use',
+                  usage: { kind: 'complete' as const, usage: raw },
+                };
             },
           };
           const tracker = new CostTracker(
@@ -118,18 +126,21 @@ describe('independently designed held-terminal controls', () => {
               contentReceived: true,
             });
           expect(records[0]?.usage).toMatchObject({
-            inputTokens: quantity === 'zero' ? 0 : 2,
-            outputTokens: quantity === 'zero' ? 0 : 3,
-            cacheReadTokens: quantity === 'zero' ? 0 : 1,
-            cacheWriteTokens: quantity === 'zero' ? 0 : 2,
-            mediaUnits: [
-              {
-                modality: 'image',
-                direction: 'output',
-                unit: 'count',
-                units: quantity === 'zero' ? 0 : 4,
-              },
-            ],
+            kind: 'complete',
+            usage: {
+              inputTokens: quantity === 'zero' ? 0 : 2,
+              outputTokens: quantity === 'zero' ? 0 : 3,
+              cacheReadTokens: quantity === 'zero' ? 0 : 1,
+              cacheWriteTokens: quantity === 'zero' ? 0 : 2,
+              mediaUnits: [
+                {
+                  modality: 'image',
+                  direction: 'output',
+                  unit: 'count',
+                  units: quantity === 'zero' ? 0 : 4,
+                },
+              ],
+            },
           });
           if (quantity === 'unpriced') expect(records[0]?.priced).toBe(false);
           else expect(records[0]?.cost?.costMicrocents).toBe(quantity === 'zero' ? 0 : 60);

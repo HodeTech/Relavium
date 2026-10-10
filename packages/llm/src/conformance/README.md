@@ -164,3 +164,19 @@ media and overflow suites. Those older response-only helpers keep their narrower
 scope; arbitrary provider options and every model-specific behavior are not
 claimed here. All new seeds are synthetic, not captured provider traffic. The
 five genuine W7 overflow artifacts retain their immutable bytes and provenance.
+
+### W8 usage evidence (ADR-0104)
+
+`usage-evidence.test.ts` exercises the installed SDK HTTP parsers for all four routing dialects,
+both generate and stream, without credentials or external traffic. Synthetic responses distinguish
+whole/required-field absence from explicit complete zero, native cache split agreement, safe-count
+validation, cumulative replacement, thinking/tool applicability, inline audio units and truncation.
+The native parameter-repair controls verify prior disposition and a fresh pending acknowledgement
+before a second SDK create. Correlated delayed generate/stream controls retain exact raw producers
+and their receipt continuations, account a late complete observation once, and preserve identity.
+
+The older native fixture bytes remain unchanged. Their normalized assertions now reflect incomplete
+billing when the recorded shape omits an applicable counter; in particular gross-only OpenAI and
+Gemini responses do not claim net input, and unknown Gemini model calls without thinking counts do
+not claim complete output. Genuine W7 overflow captures are immutable. Only normalized expectations
+and test-provider implementations migrate to the new evidence contract.

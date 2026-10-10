@@ -191,7 +191,12 @@ export function reserveSessionEffectTurnKey(db: Db, sessionId: string): number {
  * A one-shot is never resumable. Its fresh identity and tombstone commit together,
  * without a snapshot, context, prompt or transcript. Retain the mark after teardown.
  */
-export function reserveOneShotSessionEffectTurnKey(db: Db, sessionId: string, now: number): number {
+export function reserveOneShotSessionEffectTurnKey(
+  db: Db,
+  sessionId: string,
+  now: number,
+  completeUsageCoverage = false,
+): number {
   if (db.$client.inTransaction) throw new SessionEffectTurnError('transaction_active');
   if (sessionId.length === 0 || !Number.isSafeInteger(now) || now < 0)
     throw new SessionEffectTurnError('history_invalid');
@@ -214,6 +219,7 @@ export function reserveOneShotSessionEffectTurnKey(db: Db, sessionId: string, no
       .values({
         id: sessionId,
         agentSlug: 'one-shot',
+        usageUnverified: !completeUsageCoverage,
         status: 'ended',
         effectTurnHighWater: 1,
         deletedAt: now,

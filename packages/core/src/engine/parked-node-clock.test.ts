@@ -425,7 +425,11 @@ it('a live reattachment polls the same job and can detach without another pause 
     moneyDurability: 'durable',
     effectNeedsAttention: false,
   });
-  expect(await pending).toEqual({ done: true, value: undefined });
+  expect(await pending).toMatchObject({
+    done: false,
+    value: { type: 'cost:coverage_started', basis: 'legacy_unverified' },
+  });
+  expect(await iterator.next()).toEqual({ done: true, value: undefined });
   expect(jobs).toEqual(['same-job']);
   expect(calls).toBe(0);
   expect(await host.runLeases.read(handle.runId)).toBeUndefined();

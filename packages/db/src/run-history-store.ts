@@ -11,7 +11,7 @@ import {
   type RunLeasePort,
   type RunStatus,
 } from '@relavium/shared';
-import { and, asc, desc, eq, getTableColumns, inArray, isNull, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, getTableColumns, gt, inArray, isNull, sql } from 'drizzle-orm';
 
 import type { Db, TxDb } from './client.js';
 import { withBusyRetry, withBusyRetryAsync } from './retry.js';
@@ -287,6 +287,12 @@ export interface RunHistoryReader {
    * @throws {CorruptRunEventError} when a row is damaged (unchanged from the tolerant reads).
    */
   loadRunEventLogForReplay: (runId: string) => RunEvent[];
+  /** Strict, indexed batches under one SQLite snapshot. The visitor must be synchronous. */
+  visitRunEventsForReplay: (
+    runId: string,
+    visitor: (event: RunEvent) => void,
+    options?: { readonly streamingIncluded?: boolean },
+  ) => void;
   /** A run's STATE-BEARING events in `seq` order — the full log MINUS the per-token/tool streaming firehose
    *  (`agent:token` / `agent:tool_call` / `agent:tool_result`), which neither checkpoint reconstruction nor gate
    *  detection consults. Every stored row is validated before genuine streaming events are excluded from
@@ -312,7 +318,12 @@ export interface RunHistoryReader {
  */
 export interface RunHistoryStore extends Pick<
   RunHistoryReader,
-  'listRuns' | 'loadRun' | 'loadRunEvents' | 'loadRunEventLog' | 'loadRunEventLogForReplay'
+  | 'listRuns'
+  | 'loadRun'
+  | 'loadRunEvents'
+  | 'loadRunEventLog'
+  | 'loadRunEventLogForReplay'
+  | 'visitRunEventsForReplay'
 > {
   resolveWorkflowId: (slug: string) => Promise<string>;
   /** Structurally the core `RunStore.persistEvent`; `ctx` carries ADR-0078 §2's compare-and-append guard. */
@@ -1201,6 +1212,7 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
     loadRunEvents: reader.loadRunEvents,
     loadRunEventLog: reader.loadRunEventLog,
     loadRunEventLogForReplay: reader.loadRunEventLogForReplay,
+    visitRunEventsForReplay: reader.visitRunEventsForReplay,
   };
 }
 
@@ -1255,6 +1267,37 @@ export function createRunHistoryReader(db: Db): RunHistoryReader {
     // The tolerant log + what it had to leave out. `logs` reports the skipped rows as a note; the RESUME path
     // does not use this — see `loadRunEventLogForReplay` below (ADR-0075).
     loadRunEventLog: (runId) => readEventLog(db, runId, { streamingIncluded: true }),
+
+    visitRunEventsForReplay: (runId, visitor, options) => {
+      db.transaction((tx) => {
+        let after: number | undefined;
+        for (;;) {
+          const rows = tx
+            .select({
+              seq: runEvents.seq,
+              eventType: runEvents.eventType,
+              payloadJson: runEvents.payloadJson,
+            })
+            .from(runEvents)
+            .where(
+              after === undefined
+                ? eq(runEvents.runId, runId)
+                : and(eq(runEvents.runId, runId), gt(runEvents.seq, after)),
+            )
+            .orderBy(asc(runEvents.seq))
+            .limit(256)
+            .all();
+          for (const row of rows) {
+            const event = readStoredEventRow(runId, row);
+            if (event === undefined) throw new UnreadableRunEventLogError(runId, [row.seq]);
+            if (options?.streamingIncluded !== false || !STREAMING_EVENT_TYPES.has(event.type))
+              visitor(event);
+            after = row.seq;
+          }
+          if (rows.length < 256) return;
+        }
+      });
+    },
 
     loadRunEventLogForReplay: (runId) => {
       const log = readEventLog(db, runId, { streamingIncluded: true });

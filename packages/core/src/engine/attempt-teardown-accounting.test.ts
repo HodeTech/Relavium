@@ -57,7 +57,7 @@ function provider(failed: boolean, onCall: () => void): LlmProvider {
       return Promise.resolve({
         content: [{ type: 'text', text: 'done' }],
         stopReason: 'stop',
-        usage: { inputTokens: 5, outputTokens: 3, cacheReadTokens: 2 },
+        usage: { kind: 'complete', usage: { inputTokens: 5, outputTokens: 3, cacheReadTokens: 2 } },
       });
     },
     stream: async function* (): AsyncGenerator<StreamChunk> {
@@ -71,7 +71,7 @@ function provider(failed: boolean, onCall: () => void): LlmProvider {
       yield {
         type: 'stop',
         stopReason: 'stop',
-        usage: { inputTokens: 5, outputTokens: 3, cacheReadTokens: 2 },
+        usage: { kind: 'complete', usage: { inputTokens: 5, outputTokens: 3, cacheReadTokens: 2 } },
       };
     },
   };
@@ -132,7 +132,10 @@ describe('R11 independent deadline disposal outcome accounting', () => {
               expect(records[0]).toMatchObject({
                 providerInvoked: true,
                 outcome: 'succeeded',
-                usage: { inputTokens: 5, outputTokens: 3, cacheReadTokens: 2 },
+                usage: {
+                  kind: 'complete',
+                  usage: { inputTokens: 5, outputTokens: 3, cacheReadTokens: 2 },
+                },
                 cost: { costMicrocents: 17 },
               });
           } else {
@@ -146,7 +149,7 @@ describe('R11 independent deadline disposal outcome accounting', () => {
             });
             if (!failed)
               expect.soft(records[0]).toMatchObject({
-                usage: { inputTokens: 5, outputTokens: 3 },
+                usage: { kind: 'complete', usage: { inputTokens: 5, outputTokens: 3 } },
                 cost: { costMicrocents: 17 },
               });
             if (path === 'generate') {

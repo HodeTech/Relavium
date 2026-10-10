@@ -1,3 +1,10 @@
+import {
+  openAiUsage,
+  missingUsage,
+  interruptedUsage,
+  usageApplicability,
+  type UsageApplicability,
+} from './native-usage.js';
 import OpenAI, {
   APIConnectionError,
   APIConnectionTimeoutError,
@@ -53,13 +60,12 @@ import type {
   MediaGenRequest,
   MediaGenResult,
   MediaJobStatus,
-  MediaUnitsEntry,
   ModelListing,
   ProviderId,
   StreamChunk,
   ToolChoice,
   ToolDef,
-  Usage,
+  UsageEvidence,
 } from '../types.js';
 
 import {
@@ -162,8 +168,6 @@ const DEEPSEEK_SUPPORTS: CapabilityFlags = {
   },
 };
 
-const ZERO_USAGE: Usage = { inputTokens: 0, outputTokens: 0 };
-
 // --- Normalization: OpenAI wire → canonical ---------------------------------------------------
 
 /** Map an OpenAI/DeepSeek finish reason to the canonical 5-value enum. */
@@ -187,48 +191,12 @@ export function mapStopReason(reason: string | null | undefined): StopReason {
  * includes cache reads), so net input = `prompt_tokens − cached`. The cache count comes from
  * OpenAI's `prompt_tokens_details.cached_tokens` or DeepSeek's top-level `prompt_cache_hit_tokens`.
  */
-export function mapUsage(usage: {
-  prompt_tokens?: number | null;
-  completion_tokens?: number | null;
-  prompt_tokens_details?: { cached_tokens?: number | null; audio_tokens?: number | null } | null;
-  prompt_cache_hit_tokens?: number | null;
-  completion_tokens_details?: {
-    reasoning_tokens?: number | null;
-    audio_tokens?: number | null;
-  } | null;
-}): Usage {
-  const cached = usage.prompt_tokens_details?.cached_tokens ?? usage.prompt_cache_hit_tokens ?? 0;
-  const gross = usage.prompt_tokens ?? 0;
-  const out: Usage = {
-    inputTokens: Math.max(0, gross - cached),
-    outputTokens: usage.completion_tokens ?? 0,
-  };
-  if (cached > 0) {
-    out.cacheReadTokens = cached;
-  }
-  // Reasoning tokens are already counted inside completion_tokens (billing unchanged); surface for
-  // observability only (ADR-0030).
-  const reasoning = usage.completion_tokens_details?.reasoning_tokens ?? 0;
-  if (reasoning > 0) {
-    out.reasoningTokens = reasoning;
-  }
-  // Media usage (ADR-0031/0044, 1.AF): OpenAI reports audio tokens. Report the RAW token count
-  // (`unit: 'count'`) — NOT a fabricated tokens→seconds conversion, which would mis-bill — on the
-  // disjoint `mediaUnits` axis, never folded into the token counts above. Anthropic/Gemini expose no
-  // media counter yet, so they leave `mediaUnits` nil.
-  const mediaUnits: MediaUnitsEntry[] = [];
-  const inputAudio = usage.prompt_tokens_details?.audio_tokens ?? 0;
-  if (inputAudio > 0) {
-    mediaUnits.push({ modality: 'audio', direction: 'input', units: inputAudio, unit: 'count' });
-  }
-  const outputAudio = usage.completion_tokens_details?.audio_tokens ?? 0;
-  if (outputAudio > 0) {
-    mediaUnits.push({ modality: 'audio', direction: 'output', units: outputAudio, unit: 'count' });
-  }
-  if (mediaUnits.length > 0) {
-    out.mediaUnits = mediaUnits;
-  }
-  return out;
+export function mapUsage(
+  raw: unknown,
+  deepseek = false,
+  applicable: UsageApplicability = {},
+): UsageEvidence {
+  return openAiUsage(raw, deepseek, applicable);
 }
 
 /** OpenAI tool-call arguments arrive as a JSON string; parse to the canonical `args` (empty → `{}`). */
@@ -608,6 +576,7 @@ async function createWithParamFallback<T>(
   scope: string,
   model: string,
   assertActive?: () => void,
+  beforeNativeRetry?: (error: unknown) => Promise<void>,
 ): Promise<T> {
   // Params THIS invocation has already stripped — deliberately SEPARATE from the module-wide learned set. Gating the
   // retry on the global set would hard-fail a CONCURRENT request that merely lost the race: another in-flight call
@@ -628,6 +597,8 @@ async function createWithParamFallback<T>(
       ) {
         throw err;
       }
+      await beforeNativeRetry?.(err);
+      assertActive?.();
       strippedHere.add(param);
       learnParamRejection(provider, scope, model, param);
     }
@@ -1250,6 +1221,7 @@ async function* streamChunks(
   scope: string,
   key: string,
   work?: ProviderInvocationWork,
+  options?: LlmInvocationOptions,
 ): AsyncGenerator<StreamChunk, void, unknown> {
   const state: OpenAiStreamState = {
     reasoningOpen: false,
@@ -1258,7 +1230,8 @@ async function* streamChunks(
     refused: false,
     toolIdByIndex: new Map<number, string>(),
   };
-  let usage: Usage = ZERO_USAGE;
+  let usage: UsageEvidence = missingUsage();
+  let authoritativeUsage = false;
   let sdkStream: AsyncIterable<OpenAI.ChatCompletionChunk>;
   try {
     const open = () =>
@@ -1266,19 +1239,23 @@ async function* streamChunks(
         () => {
           // A learned-parameter retry must never reuse an SDK-mutated envelope.
           const working = mutableOwnedRequest(req);
-          return client.chat.completions.create(
-            {
-              ...buildCommonBody(working, provider, capPlan, scope),
-              stream: true,
-              stream_options: { include_usage: true },
-            },
-            buildRequestOptions(working),
-          );
+          const body = {
+            ...buildCommonBody(working, provider, capPlan, scope),
+            stream: true as const,
+            stream_options: { include_usage: true },
+          };
+          const requestOptions = buildRequestOptions(working);
+          work?.assertActive();
+          options?.nativeInvocationStarted?.();
+          return client.chat.completions.create(body, requestOptions);
         },
         provider,
         scope,
         req.model,
         work?.assertActive.bind(work),
+        (error) =>
+          options?.beforeNativeRetry?.(openaiErrorToLlmError(error, provider, key)) ??
+          Promise.resolve(),
       );
     sdkStream = await (work === undefined ? open() : work.retainWork(open));
   } catch (err) {
@@ -1288,14 +1265,22 @@ async function* streamChunks(
   try {
     for await (const chunk of work === undefined ? sdkStream : work.ownIterator(sdkStream)) {
       if (chunk.usage) {
-        usage = mapUsage(chunk.usage); // the include_usage chunk arrives last, with empty choices
+        usage = mapUsage(chunk.usage, provider === 'deepseek', usageApplicability(req));
+        authoritativeUsage =
+          state.sawTerminal || chunk.choices.some((choice) => choice.finish_reason != null); // the include_usage chunk arrives last, with empty choices
       }
       for (const out of foldChatChunk(chunk, state)) {
         yield out;
       }
     }
   } catch (err) {
-    yield { type: 'error', error: openaiErrorToLlmError(err, provider, key) };
+    yield {
+      type: 'error',
+      error: {
+        ...openaiErrorToLlmError(err, provider, key),
+        usage: interruptedUsage(usage, authoritativeUsage),
+      },
+    };
     return;
   }
   // A stream that ends without a terminal finish_reason was truncated (dropped connection, partial
@@ -1303,15 +1288,22 @@ async function* streamChunks(
   if (!state.sawTerminal) {
     yield {
       type: 'error',
-      error: makeLlmError({
-        provider,
-        kind: 'transport',
-        message: 'stream ended before a terminal finish_reason (truncated response)',
-      }),
+      error: {
+        ...makeLlmError({
+          provider,
+          kind: 'transport',
+          message: 'stream ended before a terminal finish_reason (truncated response)',
+        }),
+        usage: interruptedUsage(usage, authoritativeUsage),
+      },
     };
     return;
   }
-  yield { type: 'stop', stopReason: state.stopReason, usage };
+  yield {
+    type: 'stop',
+    stopReason: state.stopReason,
+    usage: interruptedUsage(usage, authoritativeUsage),
+  };
 }
 
 // --- The adapter -----------------------------------------------------------------------------
@@ -1412,27 +1404,39 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
       assertMediaCapabilities(providerId, supports, req); // per-modality input/output gate (ADR-0031, 1.AE)
       const work =
         options === undefined ? undefined : new ProviderInvocationWork(options, req.signal);
+      let usage: UsageEvidence | undefined;
       try {
         const client = createClient(key, undefined, work);
         const invoke = () =>
           createWithParamFallback(
             () => {
               const working = mutableOwnedRequest(req);
-              return client.chat.completions.create(
-                {
-                  ...buildCommonBody(working, providerId, owned.plan, rejectionScope),
-                  stream: false,
-                },
-                buildRequestOptions(working),
-              );
+              const body = {
+                ...buildCommonBody(working, providerId, owned.plan, rejectionScope),
+                stream: false as const,
+              };
+              const requestOptions = buildRequestOptions(working);
+              work?.assertActive();
+              options?.nativeInvocationStarted?.();
+              return client.chat.completions.create(body, requestOptions);
             },
             providerId,
             rejectionScope,
             req.model,
             work?.assertActive.bind(work),
+            (error) =>
+              options?.beforeNativeRetry?.(openaiErrorToLlmError(error, providerId, key)) ??
+              Promise.resolve(),
           );
         const completion = await (work === undefined ? invoke() : work.retainWork(invoke));
+        const applicable = usageApplicability(req);
+        usage = mapUsage(completion.usage, providerId === 'deepseek', applicable);
         const choice = completion.choices[0];
+        if (choice?.message.audio != null)
+          usage = mapUsage(completion.usage, providerId === 'deepseek', {
+            ...applicable,
+            outputAudio: true,
+          });
         // A non-null refusal is a safety decline — normalize to content_filter, not a clean stop.
         const refused =
           typeof choice?.message.refusal === 'string' && choice.message.refusal.length > 0;
@@ -1445,11 +1449,14 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
           // An empty `choices` array is a complete-but-empty 200 — a clean empty stop, not an error.
           content: choice === undefined ? [] : mapContent(choice.message, providerId, audioMime),
           stopReason: refused ? 'content_filter' : mapStopReason(choice?.finish_reason),
-          usage: completion.usage ? mapUsage(completion.usage) : ZERO_USAGE,
+          usage,
           raw: completion,
         };
       } catch (err) {
-        throw new LlmProviderError(openaiErrorToLlmError(err, providerId, key));
+        throw new LlmProviderError({
+          ...openaiErrorToLlmError(err, providerId, key),
+          ...(usage === undefined ? {} : { usage }),
+        });
       } finally {
         work?.retire();
       }
@@ -1501,6 +1508,7 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
             rejectionScope,
             key,
             work,
+            options,
           );
         } finally {
           work.retire();

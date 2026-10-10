@@ -27,13 +27,17 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 const AGENT_YAML =
   'id: coder\nprovider: anthropic\nmodel: claude-sonnet-4-6\nsystem_prompt: You are a coder.\ntools:\n  - read_file';
 const CASSETTE = {
-  schema_version: '1.0',
+  schema_version: '2.0',
   provider: 'anthropic',
   model: 'claude-sonnet-4-6',
   calls: [
     [
       { type: 'text_delta', text: 'cassette reply' },
-      { type: 'stop', stopReason: 'stop', usage: { inputTokens: 10, outputTokens: 5 } },
+      {
+        type: 'stop',
+        stopReason: 'stop',
+        usage: { kind: 'complete', usage: { inputTokens: 10, outputTokens: 5 } },
+      },
     ],
   ],
 };
@@ -44,6 +48,29 @@ function globalOptions(cwd: string, json = false): GlobalOptions {
 }
 
 describe('agentRunCommand (2.Q)', () => {
+  it('closes MCP after the lifetime join reports a durability failure', async () => {
+    const closeMcp = vi.fn(async () => {});
+    const failure = new Error('synthetic final usage write failure');
+    const { d } = deps('synthetic prompt', {
+      providers: scriptedResolver([textTurn('done')]),
+      onBuilt: (built) => {
+        const join = built.whenHostSafeToClose;
+        vi.spyOn(built, 'whenHostSafeToClose').mockImplementation(async () => {
+          await join();
+          throw failure;
+        });
+      },
+    });
+    const original = d.buildSession ?? buildChatSession;
+    await expect(
+      agentRunCommand(
+        { agent: agentPath(), input: [], allowMcpStdio: [] },
+        { ...d, buildSession: async (options) => ({ ...(await original(options)), closeMcp }) },
+      ),
+    ).rejects.toBe(failure);
+    expect(closeMcp).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps only a hidden durable identity and refuses reuse before provider egress', async () => {
     const first = deps('private-prompt-sentinel', {
       json: true,
@@ -96,14 +123,17 @@ describe('agentRunCommand (2.Q)', () => {
       json: true,
       providers: scriptedResolver([textTurn('provider-must-not-run')]),
     });
-    expect(
-      await agentRunCommand(
+    await expect(
+      agentRunCommand(
         { agent: join(cwd, 'coder.agent.yaml'), input: [], allowMcpStdio: [] },
         { ...second.d, buildSession },
       ),
-    ).toBe(1);
+    ).rejects.toMatchObject({
+      code: 'invalid_invocation',
+      message: 'one-shot session identity could not be reserved',
+    });
     expect(second.out()).not.toContain('provider-must-not-run');
-    expect(second.out()).toContain('session effect identity could not be reserved');
+    expect(second.out()).toBe('');
     const after = openSessionStore(home);
     try {
       expect(after.db.$client.prepare('SELECT * FROM run_effects').all()).toHaveLength(1);
@@ -289,7 +319,11 @@ describe('agentRunCommand (2.Q)', () => {
     const resolver = scriptedResolver([
       [
         { type: 'text_delta', text: 'one reply' },
-        { type: 'stop', stopReason: 'stop', usage: { inputTokens: 9001, outputTokens: 5 } },
+        {
+          type: 'stop',
+          stopReason: 'stop',
+          usage: { kind: 'complete', usage: { inputTokens: 9001, outputTokens: 5 } },
+        },
       ],
     ]);
     const provider = resolver.resolveProvider('anthropic');
@@ -334,7 +368,11 @@ describe('agentRunCommand (2.Q)', () => {
         argsJsonDelta: JSON.stringify({ path: 'pwned.txt', content: 'x' }),
       },
       { type: 'tool_call_end', id: 'c1' },
-      { type: 'stop', stopReason: 'tool_use', usage: { inputTokens: 1, outputTokens: 1 } },
+      {
+        type: 'stop',
+        stopReason: 'tool_use',
+        usage: { kind: 'complete', usage: { inputTokens: 1, outputTokens: 1 } },
+      },
     ];
     const { d, out } = deps('write a file', {
       json: true,
@@ -365,7 +403,11 @@ describe('agentRunCommand (2.Q)', () => {
         argsJsonDelta: JSON.stringify({ path: 'pwned.txt', content: 'x' }),
       },
       { type: 'tool_call_end', id: 'c1' },
-      { type: 'stop', stopReason: 'tool_use', usage: { inputTokens: 1, outputTokens: 1 } },
+      {
+        type: 'stop',
+        stopReason: 'tool_use',
+        usage: { kind: 'complete', usage: { inputTokens: 1, outputTokens: 1 } },
+      },
     ];
     const { d, out } = deps('write a file', {
       json: false, // PLAIN mode — the surface that shares makePlainPrinter
@@ -445,18 +487,26 @@ describe('agentRunCommand (2.Q)', () => {
     // A 2-call cassette: a tool_use turn (forcing a 2nd stream() call) then the text turn. Drives the full
     // replay through the fail-closed tool host; the NDJSON stream carries agent:tool_call and the answer.
     const toolCassette = {
-      schema_version: '1.0',
+      schema_version: '2.0',
       provider: 'anthropic',
       model: 'claude-sonnet-4-6',
       calls: [
         [
           { type: 'tool_call_start', id: 'tc-1', name: 'read_file' },
           { type: 'tool_call_end', id: 'tc-1' },
-          { type: 'stop', stopReason: 'tool_use', usage: { inputTokens: 4, outputTokens: 2 } },
+          {
+            type: 'stop',
+            stopReason: 'tool_use',
+            usage: { kind: 'complete', usage: { inputTokens: 4, outputTokens: 2 } },
+          },
         ],
         [
           { type: 'text_delta', text: 'the answer' },
-          { type: 'stop', stopReason: 'stop', usage: { inputTokens: 5, outputTokens: 3 } },
+          {
+            type: 'stop',
+            stopReason: 'stop',
+            usage: { kind: 'complete', usage: { inputTokens: 5, outputTokens: 3 } },
+          },
         ],
       ],
     };

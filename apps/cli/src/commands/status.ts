@@ -17,6 +17,7 @@ import { writeRecordLines } from '../render/records.js';
 import { openHistoryReader } from '../history/reader.js';
 import { sanitizeInline } from '../render/sanitize.js';
 import { readPerRunOrDegrade } from '../history/per-run-read.js';
+import { readRunUsageCoverage, UNVERIFIED_USAGE } from '../history/usage-coverage.js';
 import { createFileTerminalOutbox } from '../engine/terminal-outbox.js';
 import { terminalOutboxPath } from '../history/open.js';
 
@@ -52,6 +53,7 @@ const defaultReadTerminalOutbox = (homeDir: string): Promise<readonly RunEvent[]
 
 interface ActiveRunStatus {
   readonly run: RunRecord;
+  readonly usage: ReturnType<typeof readRunUsageCoverage>;
   /** `true` when this run's terminal is held in the outbox — its outcome is known but not yet durable. */
   readonly terminalHeld: boolean;
   readonly steps: readonly StepRecord[];
@@ -89,6 +91,10 @@ export async function statusCommand(deps: StatusCommandDeps): Promise<ExitCode> 
   try {
     const statuses: ActiveRunStatus[] = reader.listActiveRuns().map((run) => ({
       run,
+      usage: readPerRunOrDegrade(
+        { usageCoverage: UNVERIFIED_USAGE, unpricedCalls: 0, nodes: new Map() },
+        () => readRunUsageCoverage(reader, run.id),
+      ).value,
       terminalHeld: held.has(run.id),
       steps: reader.loadStepExecutions(run.id),
       // Native authority and companion crash prefixes can leave either active status with pending gates.
@@ -138,6 +144,9 @@ function toJson(status: ActiveRunStatus): unknown {
     runId: status.run.id,
     workflowId: status.run.workflowId,
     status: status.run.status,
+    totalCostMicrocents: status.run.totalCostMicrocents,
+    usageCoverage: status.usage.usageCoverage,
+    unpricedCalls: status.usage.unpricedCalls,
     // The run's outcome is already known and only its durable record is missing — the exit-5 state. A
     // machine consumer needs this to tell "still working" from "finished, not yet recorded".
     terminalHeld: status.terminalHeld,
@@ -151,6 +160,7 @@ function toJson(status: ActiveRunStatus): unknown {
       completedAt: step.completedAt ?? null,
       durationMs: step.durationMs ?? null,
       costMicrocents: step.costMicrocents,
+      usageCoverage: status.usage.nodes.get(step.nodeId) ?? UNVERIFIED_USAGE,
     })),
     // Present ONLY when the log could not be read, so a
     // careful one can tell a damaged run from a run with nothing pending (#W15-15).

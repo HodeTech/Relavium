@@ -164,7 +164,11 @@ describe('AgentRunner end-to-end through the WorkflowEngine', () => {
       executor: agentExecutor(() =>
         provider([
           { type: 'text_delta', text: 'a summary' },
-          { type: 'stop', stopReason: 'stop', usage: { inputTokens: 8, outputTokens: 4 } },
+          {
+            type: 'stop',
+            stopReason: 'stop',
+            usage: { kind: 'complete', usage: { inputTokens: 8, outputTokens: 4 } },
+          },
         ]),
       ),
     });
@@ -199,7 +203,11 @@ describe('AgentRunner end-to-end through the WorkflowEngine', () => {
     const fallback = provider(
       [
         { type: 'text_delta', text: 'fallback wins' },
-        { type: 'stop', stopReason: 'stop', usage: { inputTokens: 2, outputTokens: 2 } },
+        {
+          type: 'stop',
+          stopReason: 'stop',
+          usage: { kind: 'complete', usage: { inputTokens: 2, outputTokens: 2 } },
+        },
       ],
       'openai',
     );
@@ -264,12 +272,20 @@ workflow:
             [
               { type: 'tool_call_start', id: 'c1', name: 'echo' },
               { type: 'tool_call_end', id: 'c1' },
-              { type: 'stop', stopReason: 'tool_use', usage: { inputTokens: 1, outputTokens: 1 } },
+              {
+                type: 'stop',
+                stopReason: 'tool_use',
+                usage: { kind: 'complete', usage: { inputTokens: 1, outputTokens: 1 } },
+              },
             ],
             // turn 2: the answer
             [
               { type: 'text_delta', text: 'answer' },
-              { type: 'stop', stopReason: 'stop', usage: { inputTokens: 1, outputTokens: 1 } },
+              {
+                type: 'stop',
+                stopReason: 'stop',
+                usage: { kind: 'complete', usage: { inputTokens: 1, outputTokens: 1 } },
+              },
             ],
           ]),
         echoRegistry,
@@ -318,7 +334,11 @@ workflow:
         // One executor instance serves both concurrent nodes; each builds its own chain + CostTracker.
         provider([
           { type: 'text_delta', text: 'done' },
-          { type: 'stop', stopReason: 'stop', usage: { inputTokens: 1, outputTokens: 1 } },
+          {
+            type: 'stop',
+            stopReason: 'stop',
+            usage: { kind: 'complete', usage: { inputTokens: 1, outputTokens: 1 } },
+          },
         ]),
       ),
     });
@@ -348,7 +368,11 @@ workflow:
       ],
       [
         { type: 'text_delta', text: 'recovered' },
-        { type: 'stop', stopReason: 'stop', usage: { inputTokens: 1, outputTokens: 1 } },
+        {
+          type: 'stop',
+          stopReason: 'stop',
+          usage: { kind: 'complete', usage: { inputTokens: 1, outputTokens: 1 } },
+        },
       ],
     ]);
     const wf = parseWorkflow(
@@ -509,7 +533,11 @@ workflow:
 function cheapProvider(): LlmProvider {
   return provider([
     { type: 'text_delta', text: 'ok' },
-    { type: 'stop', stopReason: 'stop', usage: { inputTokens: 1, outputTokens: 1 } },
+    {
+      type: 'stop',
+      stopReason: 'stop',
+      usage: { kind: 'complete', usage: { inputTokens: 1, outputTokens: 1 } },
+    },
   ]);
 }
 
@@ -551,14 +579,18 @@ describe('AgentRunner resource governance end-to-end (ADR-0028, 1.AC)', () => {
             yield {
               type: 'stop',
               stopReason: 'stop',
-              usage: { inputTokens: 1, outputTokens: 1000 },
+              usage: { kind: 'complete', usage: { inputTokens: 1, outputTokens: 1000 } },
             };
           })();
         }
         signalSecondProviderCall?.();
         return streamOf([
           { type: 'text_delta', text: 'ok' },
-          { type: 'stop', stopReason: 'stop', usage: { inputTokens: 1, outputTokens: 1000 } },
+          {
+            type: 'stop',
+            stopReason: 'stop',
+            usage: { kind: 'complete', usage: { inputTokens: 1, outputTokens: 1000 } },
+          },
         ]);
       },
     };
@@ -635,7 +667,11 @@ describe('AgentRunner resource governance end-to-end (ADR-0028, 1.AC)', () => {
         provider(
           [
             { type: 'text_delta', text: 'ok' },
-            { type: 'stop', stopReason: 'stop', usage: { inputTokens: 1, outputTokens: 1 } },
+            {
+              type: 'stop',
+              stopReason: 'stop',
+              usage: { kind: 'complete', usage: { inputTokens: 1, outputTokens: 1 } },
+            },
           ],
           'openai',
         ),
@@ -668,9 +704,12 @@ describe('AgentRunner resource governance end-to-end (ADR-0028, 1.AC)', () => {
             type: 'stop',
             stopReason: 'stop',
             usage: {
-              inputTokens: 1_000,
-              outputTokens: 10,
-              mediaUnits: [{ modality: 'audio', direction: 'output', units: 500, unit: 'count' }],
+              kind: 'complete',
+              usage: {
+                inputTokens: 1_000,
+                outputTokens: 10,
+                mediaUnits: [{ modality: 'audio', direction: 'output', units: 500, unit: 'count' }],
+              },
             },
           },
         ]),
@@ -692,7 +731,11 @@ describe('AgentRunner resource governance end-to-end (ADR-0028, 1.AC)', () => {
         provider(
           [
             { type: 'text_delta', text: 'ok' },
-            { type: 'stop', stopReason: 'stop', usage: { inputTokens: 1, outputTokens: 1 } },
+            {
+              type: 'stop',
+              stopReason: 'stop',
+              usage: { kind: 'complete', usage: { inputTokens: 1, outputTokens: 1 } },
+            },
           ],
           'openai',
         ),
@@ -791,7 +834,11 @@ describe('AgentRunner resource governance end-to-end (ADR-0028, 1.AC)', () => {
       ],
       [
         { type: 'text_delta', text: 'ok' },
-        { type: 'stop', stopReason: 'stop', usage: { inputTokens: 1, outputTokens: 1 } },
+        {
+          type: 'stop',
+          stopReason: 'stop',
+          usage: { kind: 'complete', usage: { inputTokens: 1, outputTokens: 1 } },
+        },
       ],
     ]);
     const scripted: LlmProvider = {
@@ -1052,7 +1099,7 @@ workflow:
                     {
                       type: 'stop',
                       stopReason: 'tool_use',
-                      usage: { inputTokens: 1, outputTokens: 1 },
+                      usage: { kind: 'complete', usage: { inputTokens: 1, outputTokens: 1 } },
                     },
                   ]
                 : [TIMEOUT],

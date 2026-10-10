@@ -950,7 +950,7 @@ describe('session_costs — the ADR-0070 reconciliation invariant', () => {
   const total = (sessionId: string): number =>
     store.loadSession(sessionId)?.totalCostMicrocents ?? -1;
 
-  const spend = (model: string, cost: number, opts: { priced?: boolean } = {}): void =>
+  const spend = (model: string, cost: number, opts: { priced?: boolean } = {}): boolean =>
     store.recordSessionCost({
       id: `sc-${model}-${cost}-${Math.random()}`,
       sessionId: 'sess-1',

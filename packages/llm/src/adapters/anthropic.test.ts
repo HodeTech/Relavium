@@ -690,8 +690,9 @@ describe('AnthropicAdapter', () => {
 
   it('maps usage with input net of cache, surfacing cache tokens only when present', () => {
     expect(mapUsage({ input_tokens: 100, output_tokens: 20 })).toEqual({
-      inputTokens: 100,
-      outputTokens: 20,
+      kind: 'partial',
+      known: { inputTokens: 100, outputTokens: 20 },
+      reason: 'missing_fields',
     });
     expect(
       mapUsage({
@@ -700,7 +701,10 @@ describe('AnthropicAdapter', () => {
         cache_read_input_tokens: 40,
         cache_creation_input_tokens: 10,
       }),
-    ).toEqual({ inputTokens: 100, outputTokens: 20, cacheReadTokens: 40, cacheWriteTokens: 10 });
+    ).toEqual({
+      kind: 'complete',
+      usage: { inputTokens: 100, outputTokens: 20, cacheReadTokens: 40, cacheWriteTokens: 10 },
+    });
     // null cache fields are omitted, not surfaced as 0.
     expect(
       mapUsage({
@@ -709,7 +713,11 @@ describe('AnthropicAdapter', () => {
         cache_read_input_tokens: null,
         cache_creation_input_tokens: null,
       }),
-    ).toEqual({ inputTokens: 5, outputTokens: 5 });
+    ).toEqual({
+      kind: 'partial',
+      known: { inputTokens: 5, outputTokens: 5 },
+      reason: 'missing_fields',
+    });
   });
 
   it('createAnthropicAdapter accepts injected transport deps (for the conformance replayer)', () => {
@@ -1214,11 +1222,14 @@ describe('AnthropicAdapter — stream edge cases', () => {
     expect(stop?.type).toBe('stop');
     if (stop?.type === 'stop') {
       expect(stop.usage).toEqual({
-        inputTokens: 10,
-        outputTokens: 5,
-        cacheReadTokens: 8,
-        cacheWriteTokens: 3,
-        reasoningTokens: 4, // read from the message_delta's output_tokens_details, not dropped
+        kind: 'complete',
+        usage: {
+          inputTokens: 10,
+          outputTokens: 5,
+          cacheReadTokens: 8,
+          cacheWriteTokens: 3,
+          reasoningTokens: 4, // read from the message_delta's output_tokens_details, not dropped
+        },
       });
     }
   });
@@ -1462,7 +1473,11 @@ describe('AnthropicAdapter — reasoning + structured output (ADR-0030)', () => 
         output_tokens: 20,
         output_tokens_details: { thinking_tokens: 8 },
       }),
-    ).toEqual({ inputTokens: 10, outputTokens: 20, reasoningTokens: 8 });
+    ).toEqual({
+      kind: 'partial',
+      known: { inputTokens: 10, outputTokens: 20, reasoningTokens: 8 },
+      reason: 'missing_fields',
+    });
   });
 
   it('lowers responseFormat json to output_config', async () => {

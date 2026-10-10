@@ -56,7 +56,7 @@ const image: Extract<ContentPart, { type: 'media' }> = {
 const generated: LlmResult = {
   content: [image],
   stopReason: 'stop',
-  usage: { inputTokens: 3, outputTokens: 2 },
+  usage: { kind: 'complete', usage: { inputTokens: 3, outputTokens: 2 } },
 };
 function provider(overrides: Partial<LlmProvider> = {}): LlmProvider {
   return {
@@ -198,6 +198,12 @@ for (const separateEndpoint of [false, true])
       expect(run.host.livenessCount()).toBe(1);
       expect(run.pins()).toBe(0);
       const authoritativeCosts = run.events.filter((e) => e.type.startsWith('cost:')).length;
+      const beforeReceipt = await run.host.checkpointer.load(run.handle.runId);
+      expect(beforeReceipt?.usageCoverage?.coverage).toEqual({
+        unverified: false,
+        pendingInvocations: 0,
+        unknownCalls: separateEndpoint ? 0 : 1,
+      });
       if (separateEndpoint) mediaRaw.resolve({ media: image, raw: {} });
       else raw.resolve(generated);
       await until(async () => (await run.host.runLeases.read(run.handle.runId)) === undefined);
@@ -206,6 +212,13 @@ for (const separateEndpoint of [false, true])
       expect(calls).toBe(1);
       expect(run.events.filter((e) => e.type.startsWith('cost:'))).toHaveLength(authoritativeCosts);
       expect(run.events.at(-1)?.type).toBe('run:failed');
+      const afterReceipt = await run.host.checkpointer.load(run.handle.runId);
+      expect(afterReceipt?.usageCoverage?.coverage).toEqual({
+        unverified: false,
+        pendingInvocations: 0,
+        unknownCalls: 0,
+      });
+      if (!separateEndpoint) expect(afterReceipt?.cumulativeCostMicrocents).toBeGreaterThan(0);
     } finally {
       raw.resolve(generated);
       mediaRaw.resolve({ media: image, raw: {} });

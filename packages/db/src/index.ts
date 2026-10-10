@@ -240,3 +240,9 @@ export type {
   CatalogMetaRow,
   NewCatalogMetaRow,
 } from './schema.js';
+
+export type {
+  SessionUsageReceipt,
+  SessionUsageInvocationInput,
+  SessionUsageOwner,
+} from './session-usage-receipt.js';

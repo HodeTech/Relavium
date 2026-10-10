@@ -1,5 +1,5 @@
 import {
-  formatCostUsd,
+  formatReportedCost,
   formatDuration,
   formatProducedMedia,
   formatTokens,
@@ -47,7 +47,7 @@ export function renderFinalSummary(state: RunViewState): string {
     meta.push(formatDuration(summary.durationMs));
   }
   meta.push(
-    `cost ${formatCostUsd(summary?.totalCostMicrocents ?? state.cumulativeCostMicrocents)}`,
+    `cost ${formatReportedCost(summary?.totalCostMicrocents ?? state.cumulativeCostMicrocents, state.usageCoverage, state.unpricedCalls)}`,
   );
   if (summary?.totalTokens !== undefined) {
     meta.push(formatTokens(summary.totalTokens));

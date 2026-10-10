@@ -32,7 +32,18 @@ export function chatListCommand(deps: ChatListCommandDeps): ExitCode {
     const sessions = opened.store.listSessions();
 
     if (deps.global.json) {
-      writeRecordLines(deps.io, sessions.map(toJson));
+      writeRecordLines(
+        deps.io,
+        sessions.map((session) => {
+          const costs = opened.store.loadSessionCostBreakdown(session.id);
+          return {
+            ...toJson(session),
+            totalCostMicrocents: costs.totalCostMicrocents,
+            usageCoverage: costs.coverage,
+            unpricedCalls: costs.rows.reduce((sum, row) => sum + row.unpricedCalls, 0),
+          };
+        }),
+      );
       return EXIT_CODES.success;
     }
 
@@ -70,7 +81,7 @@ function renderLine(session: AgentSessionRecord): string {
  * One session as a machine record — the secret-free identity + lifecycle fields (no transcript, no key). `title`
  * / `modelId` are `null` when the row declares none, mirroring `relavium list`'s null-for-absent convention.
  */
-function toJson(session: AgentSessionRecord): unknown {
+function toJson(session: AgentSessionRecord) {
   return {
     sessionId: session.id,
     agentSlug: session.agentSlug,

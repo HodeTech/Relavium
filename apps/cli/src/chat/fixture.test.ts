@@ -7,13 +7,17 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { cassetteResolver, loadCassette, type Cassette } from './fixture.js';
 
 const VALID: Cassette = {
-  schema_version: '1.0',
+  schema_version: '2.0',
   provider: 'anthropic',
   model: 'claude-sonnet-4-6',
   calls: [
     [
       { type: 'text_delta', text: 'hi' },
-      { type: 'stop', stopReason: 'stop', usage: { inputTokens: 10, outputTokens: 5 } },
+      {
+        type: 'stop',
+        stopReason: 'stop',
+        usage: { kind: 'complete', usage: { inputTokens: 10, outputTokens: 5 } },
+      },
     ],
   ],
 };
@@ -60,8 +64,28 @@ describe('loadCassette + cassetteResolver (2.Q)', () => {
     expect(() => loadCassette('bad.json', cwd)).toThrow(/not valid JSON/);
   });
 
+  it('refuses old unqualified usage cassettes rather than silently upgrading zeros', () => {
+    write(
+      'legacy.json',
+      JSON.stringify({
+        ...VALID,
+        schema_version: '1.0',
+        calls: [
+          [
+            {
+              type: 'stop',
+              stopReason: 'stop',
+              usage: { inputTokens: 0, outputTokens: 0 },
+            },
+          ],
+        ],
+      }),
+    );
+    expect(() => loadCassette('legacy.json', cwd)).toThrow(/not a valid cassette/);
+  });
+
   it('rejects an unknown schema_version as a clean exit-2 fault', () => {
-    write('v.json', JSON.stringify({ ...VALID, schema_version: '2.0' }));
+    write('v.json', JSON.stringify({ ...VALID, schema_version: '99.0' }));
     expect(() => loadCassette('v.json', cwd)).toThrow(/not a valid cassette/);
   });
 

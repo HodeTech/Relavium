@@ -1,8 +1,14 @@
 import { ProviderInvocationWork, retiringStream } from './adapters/invocation-work.js';
-import { ContentPartSchema, StopReasonSchema } from '@relavium/shared';
-import type { AbortSignalLike, BackoffStrategy, ContentPart, MediaSource } from '@relavium/shared';
+import { ContentPartSchema, StopReasonSchema, ownUsageEvidence } from '@relavium/shared';
+import type {
+  AbortSignalLike,
+  BackoffStrategy,
+  ContentPart,
+  MediaSource,
+  UsageInvocation,
+} from '@relavium/shared';
 
-import { snapshotAccountableUsage, type CostTracker, type CostUpdate } from './cost-tracker.js';
+import { type CostTracker, type CostUpdate } from './cost-tracker.js';
 import { UnknownModelError, UnsupportedRequestDataError } from './errors.js';
 import {
   DEFAULT_ATTEMPT_TIMEOUT_MS,
@@ -22,7 +28,8 @@ import type {
   LlmResult,
   ProviderId,
   StreamChunk,
-  Usage,
+  UsageEvidence,
+  LlmInvocationOptions,
 } from './types.js';
 import { catalogModel } from './catalog/lookup.js';
 import { acceptedTiers } from './reasoning-wire.js';
@@ -44,12 +51,44 @@ import {
 
 export type { BackoffStrategy };
 
+/** Receipt readiness and primary publication are independent sides of the deadline race. */
+class UsageReceipt {
+  #observed: UsageEvidence | undefined;
+  #active = false;
+  #settled = false;
+  constructor(readonly settle: (usage: UsageEvidence) => void) {}
+  observe(read: () => unknown): void {
+    try {
+      const value = read();
+      this.#observed =
+        value === undefined
+          ? ownUsageEvidence({ kind: 'missing', reason: 'interrupted' })
+          : ownUsageEvidence(value);
+    } catch {
+      this.#observed = ownUsageEvidence({ kind: 'missing', reason: 'invalid_fields' });
+    }
+    this.#flush();
+  }
+  activate(): void {
+    this.#active = true;
+    this.#flush();
+  }
+  #flush(): void {
+    if (!this.#active || this.#observed === undefined || this.#settled) return;
+    this.#settled = true;
+    this.settle(this.#observed);
+  }
+}
+
 type GeneratedResultProjection =
   | { readonly ok: true; readonly result: LlmResult }
   | { readonly ok: false; readonly error: unknown };
 
 /** Own typed output before host pricing runs, while allowing known usage to be charged on failure. */
-function captureGeneratedResult(result: LlmResult, usage: Usage): GeneratedResultProjection {
+function captureGeneratedResult(
+  result: LlmResult,
+  usage: UsageEvidence,
+): GeneratedResultProjection {
   try {
     return {
       ok: true,
@@ -126,7 +165,7 @@ export type AttemptOutcome = 'succeeded' | 'failed' | 'skipped';
  * already secret-free (the adapter redacted `message`); as everywhere, a sink must never serialize
  * `LlmError.cause` (the run-event error shape is only `{ code, message, retryable }`).
  */
-export interface AttemptRecord {
+interface InternalAttemptRecord {
   /** Chain-observed content/processed response, never an adapter-supplied error flag. */
   readonly contentReceived: boolean;
   /** True only after the chain invokes generate/stream; preparation, hooks and key failures stay false. */
@@ -148,7 +187,12 @@ export interface AttemptRecord {
   /** Whether the attempt succeeded, failed (provider error), or was skipped (capability/cooldown). */
   readonly outcome: AttemptOutcome;
   /** Actual usage supplied by a successful or failed processed response; never a reservation. */
-  readonly usage?: Usage;
+  readonly usage?: UsageEvidence;
+  readonly invocation?: UsageInvocation;
+  /** Additional native repair/late receipt coverage, not another chain admission. */
+  readonly coverageOnly?: true;
+  readonly receiptPending?: true;
+  readonly receiptFinal?: true;
   /** The cost folded into the tracker for this attempt (present iff a `costTracker` is wired and usage existed). */
   readonly cost?: CostUpdate;
   /** The classified failure on `outcome === 'failed'` (secret-free; never serialize `.cause`). */
@@ -166,6 +210,13 @@ export interface AttemptRecord {
    */
   readonly priced?: false;
 }
+
+/** Invoked attempts always carry explicit evidence; local failures carry none. */
+export type AttemptRecord = Omit<InternalAttemptRecord, 'providerInvoked' | 'usage'> &
+  (
+    | { readonly providerInvoked: true; readonly usage: UsageEvidence }
+    | { readonly providerInvoked: false; readonly usage?: never }
+  );
 
 /**
  * Hook called immediately before a provider attempt is actually dispatched (after skip checks,
@@ -203,6 +254,7 @@ export interface FallbackChainOptions {
    * See {@link PreAttemptHook}.
    */
   readonly preAttempt?: PreAttemptHook;
+  readonly beginUsageInvocation?: (info: PreAttemptInfo) => Promise<UsageInvocation>;
   /** Execution-local lifetime entry before invoking a raw producer; never request data or admission. */
   readonly retainWork?: <T>(factory: () => Promise<T>) => Promise<T>;
   /**
@@ -573,7 +625,7 @@ export class FallbackChain {
     return entry;
   }
 
-  #captureFailureRecord(): AttemptRecord {
+  #captureFailureRecord(): InternalAttemptRecord {
     const entry = this.#firstEntry();
     return {
       attemptNumber: 1,
@@ -807,7 +859,9 @@ export class FallbackChain {
     };
     let invocation: ProviderInvocationWork | undefined;
     let providerSucceeded = false;
-    let knownUsage: Usage | undefined;
+    let lateReceipt = false;
+    const usageReceipt = new UsageReceipt((usage) => this.#settleLateReceipt(record, usage));
+    let knownUsage: UsageEvidence | undefined;
     let projection: GeneratedResultProjection | undefined;
     let captureFailure: { readonly error: unknown } | undefined;
     let retentionFailure: { readonly error: unknown } | undefined;
@@ -818,7 +872,10 @@ export class FallbackChain {
         entry.provider.id,
         record.customEndpoint ? 'custom' : 'official',
       );
-      await this.#options.preAttempt?.({ ...plan, outputCapPlan: plan });
+      const info: PreAttemptInfo = { ...plan, outputCapPlan: plan };
+      await this.#options.preAttempt?.(info);
+      const coverage = await this.#options.beginUsageInvocation?.(info);
+      if (coverage !== undefined) record = { ...record, invocation: coverage };
       const key = await this.#resolveKey(entry.provider.id);
       // **Re-check the caller AFTER credential resolution, BEFORE the seam call.** `#resolveKey` is I/O — a
       // keychain read, and in Phase 2 a network one — so a cancel landing inside it used to be invisible
@@ -841,14 +898,40 @@ export class FallbackChain {
         if (this.#aborted(request))
           throw new LlmProviderError(this.#classifyDeadline(deadline, entry.provider.id));
         record = { ...record, providerInvoked: true };
-        return invocation === undefined
-          ? generate(request, key)
-          : generate(request, key, invocation);
+        return generate(
+          request,
+          key,
+          this.#invocationOptions(
+            invocation,
+            info,
+            () => record,
+            (next) => {
+              record = next;
+            },
+          ),
+        );
       });
+      if (record.invocation !== undefined) {
+        const receipt = this.#retainWork(() =>
+          call.then(
+            (result) => {
+              usageReceipt.observe(() => result.usage);
+            },
+            (error: unknown) => {
+              usageReceipt.observe(() => this.#errorOf(error, entry.provider.id).usage);
+            },
+          ),
+        );
+        void receipt.catch(() => undefined);
+      }
       // A `generate()` has no chunks, so there is nothing to commit: a deadline here is always pre-content
       // and may fail over, which is rule 7's other half rather than an exception to it.
       const raced = deadline === undefined ? undefined : await deadline.race(call);
       if (raced?.outcome === 'deadline') {
+        if (record.invocation !== undefined) {
+          lateReceipt = true;
+          record = { ...record, receiptPending: true };
+        }
         throw new LlmProviderError(this.#classifyDeadline(deadline, entry.provider.id));
       }
       outcome = { status: 'success', result: raced === undefined ? await call : raced.value };
@@ -857,8 +940,7 @@ export class FallbackChain {
       // but defer capture faults so the normal post-provider path still charges known valid usage.
       try {
         const resultUsage = outcome.result.usage;
-        if (resultUsage !== undefined)
-          knownUsage = snapshotAccountableUsage(entry.model, resultUsage);
+        if (resultUsage !== undefined) knownUsage = ownUsageEvidence(resultUsage);
         projection = captureGeneratedResult(outcome.result, knownUsage ?? resultUsage);
       } catch (error) {
         captureFailure = { error };
@@ -892,13 +974,14 @@ export class FallbackChain {
           ? { ...record, contentReceived: true }
           : record;
       const error = this.#emitFailure(received, outcome.error);
+      if (lateReceipt) usageReceipt.activate();
       if (retentionFailure !== undefined) throw retentionFailure.error;
       return { status: 'error', error: received.contentReceived ? committed(error) : error };
     }
     // A returned generation, even empty, was processed. Guard accounting separately from the
     // provider attempt so a tracker/observer cannot forge a refundable HTTP refusal or cause retries.
     const receivedRecord = { ...record, contentReceived: true };
-    let usage: Usage | undefined;
+    let usage: UsageEvidence | undefined;
     let folded: FoldedUsage | undefined;
     let captured: LlmResult;
     try {
@@ -987,11 +1070,13 @@ export class FallbackChain {
   // A SYNC generator: nothing here awaits, and an async one would only add a microtask hop between the
   // emit and the surfaced chunk. An async generator delegates to it with `yield*` unchanged.
   *#failAttempt(
-    record: AttemptRecord,
+    record: InternalAttemptRecord,
     error: LlmError,
     state: StreamAttemptState,
+    afterObservation?: () => void,
   ): Generator<StreamChunk, LlmError | undefined> {
     error = this.#emitFailure({ ...record, contentReceived: state.committed }, error);
+    afterObservation?.();
     if (state.committed) {
       yield { type: 'error', error: committed(error) };
       return undefined;
@@ -1000,7 +1085,7 @@ export class FallbackChain {
   }
 
   /** Account invoked-provider evidence before observation; local diagnostics cannot invent usage. */
-  #emitFailure(record: AttemptRecord, diagnostic: LlmError): LlmError {
+  #emitFailure(record: InternalAttemptRecord, diagnostic: LlmError): LlmError {
     if (!record.providerInvoked) {
       // This catch also handles admission, credentials and host setup. Even a genuine provider
       // error class thrown there is not evidence of usage from this attempt. Strip its quantities
@@ -1013,11 +1098,11 @@ export class FallbackChain {
       record.customEndpoint && diagnostic.kind === 'context_overflow'
         ? Object.freeze({ ...diagnostic, kind: 'bad_request' as const, retryable: false })
         : diagnostic;
-    let usage: Usage | undefined;
+    let usage: UsageEvidence | undefined;
     let folded: FoldedUsage | undefined;
     try {
       if (error.usage !== undefined) {
-        usage = snapshotAccountableUsage(record.model, error.usage);
+        usage = ownUsageEvidence(error.usage);
         folded = this.#foldUsage(record.model, usage);
       }
     } catch (cause) {
@@ -1050,11 +1135,12 @@ export class FallbackChain {
   async *#runStreamAttempt(
     entry: FallbackPlanEntry,
     entryReq: LlmRequest,
-    record: AttemptRecord,
+    record: InternalAttemptRecord,
     state: StreamAttemptState,
     setWork: (work: ProviderInvocationWork) => void,
   ): AsyncGenerator<StreamChunk, LlmError | undefined> {
-    let usage: Usage | undefined;
+    let usage: UsageEvidence | undefined;
+    let lateReceipt: UsageReceipt | undefined;
     let failure: LlmError | undefined;
     let retentionFailure: { readonly error: unknown } | undefined;
     let cleanupFailure: { readonly error: unknown } | undefined;
@@ -1072,7 +1158,10 @@ export class FallbackChain {
         entry.provider.id,
         record.customEndpoint ? 'custom' : 'official',
       );
-      await this.#options.preAttempt?.({ ...plan, outputCapPlan: plan });
+      const info: PreAttemptInfo = { ...plan, outputCapPlan: plan };
+      await this.#options.preAttempt?.(info);
+      const coverage = await this.#options.beginUsageInvocation?.(info);
+      if (coverage !== undefined) record = { ...record, invocation: coverage };
       const key = await this.#resolveKey(entry.provider.id);
       // **Re-check the caller AFTER credential resolution, BEFORE the seam call.** `#resolveKey` is I/O — a
       // keychain read, and in Phase 2 a network one — so a cancel landing inside it used to be invisible
@@ -1102,8 +1191,18 @@ export class FallbackChain {
         if (this.#aborted(request))
           throw new LlmProviderError(this.#classifyDeadline(deadline, entry.provider.id));
         record = { ...record, providerInvoked: true };
-        const source =
-          invocation === undefined ? stream(request, key) : stream(request, key, invocation);
+        const source = stream(
+          request,
+          key,
+          this.#invocationOptions(
+            invocation,
+            info,
+            () => record,
+            (next) => {
+              record = next;
+            },
+          ),
+        );
         const verified = verifyStreamGrammar(
           invocation === undefined ? source : invocation.ownIterator(source),
           entry.provider.id,
@@ -1118,8 +1217,23 @@ export class FallbackChain {
       // Manual iteration, not `for await`: every `next()` is raced against the ABSOLUTE deadline. A
       // `for await` can only be bounded by a signal, and a signal is a request the provider may ignore.
       for (;;) {
-        const step = await this.#raceStep(openIterator, deadline);
+        const readReceipt = new UsageReceipt((observed) =>
+          this.#settleLateReceipt(record, observed),
+        );
+        const step = await this.#raceStep(
+          openIterator,
+          deadline,
+          this.#options.beginUsageInvocation === undefined
+            ? undefined
+            : () => {
+                readReceipt.observe(() => usage);
+              },
+        );
         if (step.kind === 'timeout') {
+          if (record.invocation !== undefined && usage?.kind !== 'complete') {
+            lateReceipt = readReceipt;
+            record = { ...record, receiptPending: true };
+          }
           throw new LlmProviderError(this.#classifyDeadline(deadline, entry.provider.id));
         }
         if (step.kind === 'done') break;
@@ -1128,7 +1242,7 @@ export class FallbackChain {
           throw new LlmProviderError(chunk.error);
         }
         if (chunk.type === 'stop') {
-          usage = snapshotAccountableUsage(entry.model, chunk.usage);
+          usage = ownUsageEvidence(chunk.usage);
           state.committed = state.committed || isContentChunk(chunk);
           yield { ...chunk, usage };
           continue;
@@ -1181,6 +1295,7 @@ export class FallbackChain {
           { ...record, contentReceived: state.committed },
           usage === undefined ? error : Object.freeze({ ...error, usage }),
         );
+        lateReceipt?.activate();
         // Consumer return must reject this entry refusal; overriding its abrupt completion is intentional.
         // eslint-disable-next-line no-unsafe-finally -- Preserve the exact host refusal after accounting.
         throw retentionFailure.error;
@@ -1188,7 +1303,8 @@ export class FallbackChain {
     }
     // An existing provider failure keeps its diagnosis and financial evidence; cleanup cannot
     // replace it with an unrelated host exception or prevent its attempt record.
-    if (failure !== undefined) return yield* this.#failAttempt(record, failure, state);
+    if (failure !== undefined)
+      return yield* this.#failAttempt(record, failure, state, () => lateReceipt?.activate());
     return yield* this.#settleUsage(entry, record, usage, state, cleanupFailure);
   }
 
@@ -1209,8 +1325,8 @@ export class FallbackChain {
    */
   *#settleUsage(
     entry: FallbackPlanEntry,
-    record: AttemptRecord,
-    usage: Usage | undefined,
+    record: InternalAttemptRecord,
+    usage: UsageEvidence | undefined,
     state: StreamAttemptState,
     cleanupFailure?: { readonly error: unknown },
   ): Generator<StreamChunk, undefined> {
@@ -1476,8 +1592,13 @@ export class FallbackChain {
   async #raceStep(
     openIterator: () => AsyncIterator<StreamChunk>,
     deadline: DeadlineScope | undefined,
+    onReadSettled?: () => void,
   ): Promise<{ kind: 'chunk'; chunk: StreamChunk } | { kind: 'done' } | { kind: 'timeout' }> {
     const next = this.#retainWork(() => openIterator().next());
+    if (onReadSettled !== undefined) {
+      const receipt = this.#retainWork(() => next.then(onReadSettled, onReadSettled));
+      void receipt.catch(() => undefined);
+    }
     if (deadline === undefined) {
       const plain = await next;
       return plain.done === true ? { kind: 'done' } : { kind: 'chunk', chunk: plain.value };
@@ -1695,7 +1816,11 @@ export class FallbackChain {
    * present (a stream that ended without a `stop` chunk has no usage) — `exactOptionalPropertyTypes`
    * forbids an explicit `undefined` on an optional field.
    */
-  #emitSuccess(record: AttemptRecord, model: string, usage: Usage | undefined): void {
+  #emitSuccess(
+    record: InternalAttemptRecord,
+    model: string,
+    usage: UsageEvidence | undefined,
+  ): void {
     if (usage === undefined) {
       this.#emit({ ...record, outcome: 'succeeded' });
       return;
@@ -1720,10 +1845,11 @@ export class FallbackChain {
    * defect — without also swallowing a throw from the attempt observer, which is the consumer's bug and keeps
    * propagating on both paths exactly as before.
    */
-  #foldUsage(model: string, usage: Usage): FoldedUsage {
+  #foldUsage(model: string, usage: UsageEvidence): FoldedUsage {
+    if (usage.kind !== 'complete') return { unpriced: false };
     let cost: CostUpdate | undefined;
     try {
-      cost = this.#options.costTracker?.record(model, usage);
+      cost = this.#options.costTracker?.record(model, usage.usage);
     } catch (error_) {
       let unknownModel = false;
       try {
@@ -1744,7 +1870,7 @@ export class FallbackChain {
   }
 
   /** Emit the success record for an attempt whose usage has already been folded by {@link #foldUsage}. */
-  #emitFolded(record: AttemptRecord, usage: Usage, folded: FoldedUsage): void {
+  #emitFolded(record: InternalAttemptRecord, usage: UsageEvidence, folded: FoldedUsage): void {
     this.#emit({
       ...record,
       // 2.6.Q's realized-cost half: distinguish "could not price" from "nothing to charge".
@@ -1755,11 +1881,91 @@ export class FallbackChain {
     });
   }
 
-  #emit(record: AttemptRecord): void {
+  /** A registered producer receipt can refine coverage without reopening its public result. */
+  #settleLateReceipt(record: InternalAttemptRecord, value: unknown): void {
+    let usage: UsageEvidence;
+    try {
+      usage = ownUsageEvidence(value);
+    } catch {
+      usage = ownUsageEvidence({
+        kind: 'missing',
+        reason: value === undefined ? 'interrupted' : 'invalid_fields',
+      });
+    }
+    const folded = this.#foldUsage(record.model, usage);
+    this.#emit({
+      ...record,
+      receiptFinal: true,
+      coverageOnly: true,
+      usage,
+      ...(folded.cost === undefined ? {} : { cost: folded.cost }),
+      ...(folded.unpriced ? { priced: false } : {}),
+      outcome: 'failed',
+    });
+  }
+
+  #invocationOptions(
+    work: ProviderInvocationWork | undefined,
+    info: PreAttemptInfo,
+    getRecord: () => InternalAttemptRecord,
+    setRecord: (record: InternalAttemptRecord) => void,
+  ): LlmInvocationOptions {
+    const options: LlmInvocationOptions = {
+      retainWork:
+        work === undefined
+          ? <T>(factory: () => Promise<T>) => this.#retainWork(factory)
+          : work.retainWork.bind(work),
+      nativeInvocationStarted: () => {
+        setRecord({ ...getRecord(), providerInvoked: true });
+      },
+      beforeNativeRetry: async (error) => {
+        const previous = getRecord();
+        const owned = snapshotLlmError(error);
+        this.#emit({
+          ...previous,
+          coverageOnly: true,
+          providerInvoked: true,
+          outcome: 'failed',
+          error: owned,
+          usage: owned.usage ?? ownUsageEvidence({ kind: 'missing', reason: 'not_reported' }),
+        });
+        // The old call has settled. A failed new pending acknowledgement must not settle it twice.
+        const next = { ...previous };
+        delete next.invocation;
+        setRecord({ ...next, providerInvoked: false });
+        const coverage = await this.#options.beginUsageInvocation?.(info);
+        setRecord({
+          ...next,
+          providerInvoked: false,
+          ...(coverage === undefined ? {} : { invocation: coverage }),
+        });
+      },
+    };
+    return work === undefined || options.beforeNativeRetry === undefined
+      ? options
+      : Object.assign(work, {
+          beforeNativeRetry: options.beforeNativeRetry,
+          ...(options.nativeInvocationStarted === undefined
+            ? {}
+            : { nativeInvocationStarted: options.nativeInvocationStarted }),
+        });
+  }
+
+  #emit(record: InternalAttemptRecord): void {
     // Provider snapshots, locally synthesized failures and cancellation diagnostics all pass this
     // observer boundary. Preserve their classification before an observer can change retry policy.
     if (record.error !== undefined) Object.freeze(record.error);
-    this.#options.onAttempt?.(record);
+    if (record.providerInvoked) {
+      this.#options.onAttempt?.({
+        ...record,
+        providerInvoked: true,
+        usage: record.usage ?? ownUsageEvidence({ kind: 'missing', reason: 'not_reported' }),
+      });
+    } else {
+      const { usage, ...local } = record;
+      void usage;
+      this.#options.onAttempt?.({ ...local, providerInvoked: false });
+    }
   }
 }
 
@@ -1883,8 +2089,8 @@ class ChainRun {
   /** Allocate the next 1-based attempt record skeleton for this entry. */
   next(
     entry: FallbackPlanEntry,
-    extra?: Pick<AttemptRecord, 'outcome' | 'skipReason'>,
-  ): AttemptRecord {
+    extra?: Pick<InternalAttemptRecord, 'outcome' | 'skipReason'>,
+  ): InternalAttemptRecord {
     this.#attemptNumber += 1;
     return {
       attemptNumber: this.#attemptNumber,

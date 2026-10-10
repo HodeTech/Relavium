@@ -5,6 +5,7 @@ import { Buffer } from 'node:buffer';
 import {
   createEffectJournalPort,
   createEffectJournalStore,
+  createSessionUsageStore,
   createProviderStore,
   createRunHistoryReader,
 } from '@relavium/db';
@@ -510,6 +511,9 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
       let persister: SessionPersister | undefined;
       try {
         persister = createSessionPersister({
+          usageStore: createSessionUsageStore(opened.db),
+          mode: opts.open ? 'fresh' : 'adopt',
+          attachUsageWriter: built.attachUsageWriter,
           governor: built.governor,
           attachDurabilityProbe: built.attachDurabilityProbe,
           attachEffectTurnAllocator: built.attachEffectTurnAllocator,
@@ -582,9 +586,13 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
           clearInterval(frame);
           unsubscribe?.();
           try {
-            persister?.close();
+            await built.whenHostSafeToClose();
           } finally {
-            await built.closeMcp?.().catch(() => undefined); // best-effort; never orphan a spawned stdio child
+            try {
+              persister?.close();
+            } finally {
+              await built.closeMcp?.().catch(() => undefined); // best-effort; never orphan a spawned stdio child
+            }
           }
         };
         return {
@@ -792,12 +800,15 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
       });
       // Seed the view store with the carried model + cost/turns — a resumed session never re-emits session:started,
       // so without this the footer shows nothing until the first new turn (mirrors chatResumeCommand).
+      const costs = opened.store.loadSessionCostBreakdown(built.sessionId);
       const store = createChatStore(
         deps.global.color,
         {
           agentRef: built.agent.id,
           model: built.agent.model,
           cumulativeCostMicrocents: built.resumeState.cumulativeCostMicrocents,
+          usageCoverage: costs.coverage,
+          unpricedCalls: costs.rows.reduce((sum, row) => sum + row.unpricedCalls, 0),
           turnCount: built.resumeState.turnCount,
           // The OUTGOING store's rendered conversation (2.6.C / F1). On the full-screen renderer the store IS the
           // scrollback, so a reseat that seeded `[]` blanked the screen. The gate drops this on the inline renderer,

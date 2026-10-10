@@ -48,7 +48,11 @@ it('one approved default call covers both primary attempts and successful fallba
       calls.push('fallback');
       await Promise.resolve();
       yield { type: 'text_delta', text: 'fallback answer' };
-      yield { type: 'stop', stopReason: 'stop', usage: { inputTokens: 1, outputTokens: 1 } };
+      yield {
+        type: 'stop',
+        stopReason: 'stop',
+        usage: { kind: 'complete', usage: { inputTokens: 1, outputTokens: 1 } },
+      };
     },
   };
   const price = {
@@ -170,7 +174,11 @@ it('WorkflowEngine durably records aggregated cost when the transient cost times
       await Promise.resolve();
       calls += 1;
       costStampPending = true;
-      yield { type: 'stop', stopReason: 'stop', usage: { inputTokens: 7, outputTokens: 10 } };
+      yield {
+        type: 'stop',
+        stopReason: 'stop',
+        usage: { kind: 'complete', usage: { inputTokens: 7, outputTokens: 10 } },
+      };
     },
   };
   const prices = new Map<string, ModelPricing>([

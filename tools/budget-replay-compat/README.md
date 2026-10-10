@@ -12,16 +12,45 @@ first produces a genuine legacy budget pause and a historical `input_provided` d
 The current checkpoint, admitted engine and both strict discovery stores read the latter as a
 fatal budget rejection, retaining its original bytes and producing no agent output or egress.
 The current engine then produces
-12 durable pause/decision prefixes, including its decisions of that legacy gate.
+12 durable pause/decision prefixes, including its decisions of that legacy gate, plus four W8
+usage prefixes (owner basis, pending, disposition, and an ordinary gate before any provider call).
 The predecessor's actual parser, SQLite strict reader, CLI checkpointer and
 engine entry must refuse every prefix before execution registration, scheduling,
 credential resolution or egress. Its exact acquired lease must be released. A
 legacy budget rejection and an ordinary human-gate approval are positive controls.
 Tolerant display is tested separately and never supplies a replay checkpoint. The parent independently
-asserts the exact twelve unique `(label, cut)` pairs, exactly matching producer capture metadata in every
-completed predecessor refusal, zero egress and both named completed positive controls. Eleven mutation
+asserts the exact sixteen unique `(label, cut)` pairs, exactly matching producer capture metadata in every
+completed predecessor refusal, zero egress and both named completed positive controls. Twelve mutation
 controls remove/duplicate/change coverage or acceptance evidence and must be refused; unchanged actual
 worker evidence remains a positive control. Worker stdout counts alone cannot certify coverage.
+
+The W8 invocation fixture calls one local in-process missing-usage provider double; it cannot
+access a network or keychain. Its exact engine-produced durable arguments supply the three usage
+cuts. The ordinary-gate fixture invokes no provider. Separate isolation controls retain unchanged
+producer `run:started` and one usage discriminator at a time, proving all three independently refuse
+at the actual predecessor parser, strict SQLite store, checkpointer and engine. These selected-row
+controls are explicitly distinguished from native cumulative crash prefixes. Parent checks require
+all three completed isolated refusals and exact lease release, alongside the sixteen native cuts.
+
+A separate native session round trip executes current creation, the actual predecessor session
+writer, then current reopen/write/estimate release. Eight named owners cover old synthetic-zero
+cost, owner update, transcript insert/delete, monetary child deletion, both sides of transcript
+reparenting and predecessor owner insertion. Deletion/reparenting use the predecessor's native
+connection because that version has no corresponding store facade. Current reads preserve sticky
+unverified coverage at aggregate and per-model level after final revision acknowledgement. This
+proves downgrade uncertainty preservation, not old-runtime budget safety or reconstruction of a
+usage-less invocation that left no durable trace.
+
+`frozen/session-source-supplement.json` is a separate one-path allowlist for the predecessor's
+`packages/db/src/session-store.ts`, absent from the original 143-file source archive. The source is
+read directly from exact Git blob `9b4c5a1b5235dc44b110e41d7cc71cad5d071162` at the same baseline;
+its 36,496 bytes have SHA-256
+`8a42221ccf48f1361ba964796bf4638d745eeb286b53d66ef83a68bf4682d25b`. The parent checks the exact
+allowlist, Git identity, length and digest before writing a read-only supplementary file into the
+owned extraction. The loader independently restricts that supplemental path/blob/digest and checks
+its source bytes. This does not rewrite or regenerate the original archive, source manifest,
+dependency archives or their pins. Parent acceptance independently checks the three completed
+session workers, all eight operation names and exact predecessor source blob.
 
 `frozen/pre-w7-source.tar.gz` contains the original source, package metadata,
 lockfile, SQLite migrations and source manifest. Its SHA256 is

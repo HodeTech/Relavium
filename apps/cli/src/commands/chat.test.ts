@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -985,6 +986,7 @@ describe('chatCommand', () => {
       { agent: undefined },
       {
         ...b.d,
+        uuid: () => randomUUID(),
         ...recB.hoist,
         io: { ...b.d.io, stdoutIsTty: true },
         global: { ...globalOptions(cwd), noAltScreen: true },
@@ -1001,6 +1003,7 @@ describe('chatCommand', () => {
       { agent: undefined },
       {
         ...c.d,
+        uuid: () => randomUUID(),
         ...recC.hoist,
         openSessionStore: () => ({ store: c.store, db: client.db, close: () => undefined }),
         drive: exitDrive,
@@ -1040,6 +1043,7 @@ describe('chatCommand', () => {
       { agent: undefined },
       {
         ...b.d,
+        uuid: () => randomUUID(),
         ...recB.hoist,
         io: { ...b.d.io, stdoutIsTty: true },
         global: { ...globalOptions(cwd), noMouse: true },

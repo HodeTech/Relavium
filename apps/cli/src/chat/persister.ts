@@ -5,16 +5,24 @@ import {
   type SessionHandle,
   type SessionStreamHandleEvent,
 } from '@relavium/core';
-import { createModelCatalogStore, type Db, type SessionStore } from '@relavium/db';
+import {
+  createModelCatalogStore,
+  type Db,
+  type SessionStore,
+  type SessionUsageStore,
+  type SessionUsageReceipt,
+} from '@relavium/db';
 import type {
   AgentSessionRecord,
   SessionContext,
   SessionMessage,
   SessionStatus,
   SessionToolHistoryEntry,
+  UsageInvocation,
+  UsageCoverageSnapshot,
 } from '@relavium/shared';
 
-import type { GovernorWiring } from './session-host.js';
+import type { GovernorWiring, SessionUsageWriter } from './session-host.js';
 import { deriveSessionTitle } from './session-title.js';
 
 /**
@@ -51,6 +59,9 @@ export function makeCatalogIdResolver(
  */
 
 export interface SessionPersisterDeps {
+  readonly usageStore: SessionUsageStore;
+  readonly mode: 'fresh' | 'adopt';
+  readonly attachUsageWriter: (writer: SessionUsageWriter) => void;
   readonly store: SessionStore;
   /**
    * The session's budget wiring (`built.governor`), so the persister can attach itself as the durable sink for
@@ -137,6 +148,10 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
   // Frozen at persister construction (≈ session start) — the row's creation time never changes, so it is a
   // const and never the `''` sentinel a pre-start record() would otherwise carry into the schema.
   const createdAt = iso();
+  const producerId = deps.uuid();
+  let dispatchOrdinal = 0;
+  let initialUsageCoverage: UsageCoverageSnapshot | undefined;
+  const usageReceipts = new Map<UsageInvocation, SessionUsageReceipt>();
   let sequenceNumber = deps.initialSequenceNumber ?? 0;
   // Seeded from 0 for a fresh session; on resume start() hydrates these from the adopted row (see start()).
   let totalInputTokens = 0;
@@ -155,6 +170,7 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
   const sessionModelCatalogId = deps.resolveModelCatalogId?.(deps.agent.model);
   let unsubscribe: (() => void) | undefined;
   let started = false;
+  let closed = false;
   // ADR-0062: the ascending `sequenceNumber`s of the REAL (`user`/`assistant`) transcript rows — used to map a
   // compaction/trim event's `keptMessageCount` (an in-memory count) to the durable `droppedThroughSequence`
   // boundary. It EXCLUDES `system` boundary-marker rows (a naive "last N durable rows" would miscount once a
@@ -356,22 +372,8 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
         // would silently break the invariant on every errored turn. Writing per event also closes a live hole: a
         // manual `/compact` can bill and then fail without a user-turn terminal. Its failed-compaction
         // event closes the visible moment, while this per-attempt write preserves the actual spend.
-        persistDurably(() => {
-          deps.store.recordSessionCost({
-            id: deps.uuid(),
-            sessionId: deps.sessionId,
-            model: event.model, // the RAW provider string — the attribution key (never the catalog UUID)
-            ...(catalogId === undefined ? {} : { modelCatalogId: catalogId }),
-            inputTokens: event.inputTokens,
-            outputTokens: event.outputTokens,
-            costMicrocents: event.costMicrocents, // the PER-ATTEMPT increment, never the cumulative
-            priced: event.priced ?? true, // absent on an older event ⇒ assume priced (the pre-ADR-0070 behaviour)
-            ts: deps.now(),
-          });
-        });
-        // AFTER the durable write, never before it (#W15-4) — `persistDurably` re-throws, so a failed write
-        // never reaches these two lines. The running total used to advance FIRST, so a failed
-        // `recordSessionCost` left this process believing spend it had not recorded.
+        // Actual settlement is acknowledged through the attached money writer, once. The bus
+        // only projects the known total; listener delivery is never a durability certificate.
         totalCostMicrocents = event.cumulativeCostMicrocents;
         turnModelCatalogId = catalogId;
         return;
@@ -483,18 +485,29 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
 
   const persister: SessionPersister = {
     start(): void {
+      if (closed) throw new Error('session persistence is closed');
       if (started) return;
-      started = true;
       // A resumed session's row already exists (the prior process inserted it); re-INSERTing would hit the
-      // UNIQUE primary key and crash on start. Insert only when the row is absent. When it exists (resume),
-      // ADOPT it and hydrate the running totals from it BEFORE any turn flushes — otherwise the first resumed
+      // UNIQUE primary key and crash on start. Fresh owners use the atomic creation API; resume must
+      // adopt an existing row and hydrate its running totals BEFORE any turn flushes — otherwise the first resumed
       // `turn_completed` would write `record('active')` with only the new turn's delta, silently discarding the
       // persisted totals (cost too: a zero-egress resumed turn emits no `cost:updated`, so without the seed the
       // flush would reset the row's cost to 0).
       const existing = deps.store.loadSession(deps.sessionId);
-      if (existing === undefined) {
-        deps.store.createSession(record('active'));
+      if (deps.mode === 'fresh') {
+        const fresh = record('active');
+        deps.usageStore.createFreshSession({
+          id: fresh.id,
+          agentSlug: fresh.agentSlug,
+          agentSnapshot: fresh.agentSnapshot,
+          context: fresh.context,
+          createdAt: fresh.createdAt,
+          ...(fresh.agentId === undefined ? {} : { agentId: fresh.agentId }),
+          ...(fresh.title === undefined ? {} : { title: fresh.title }),
+          ...(fresh.modelId === undefined ? {} : { modelId: fresh.modelId }),
+        });
       } else {
+        if (existing === undefined) throw new Error('session to adopt does not exist');
         totalInputTokens = existing.totalInputTokens;
         totalOutputTokens = existing.totalOutputTokens;
         totalCostMicrocents = existing.totalCostMicrocents;
@@ -508,7 +521,16 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
         realMessageSeqs.push(...resumableMessageSequences(messages));
         turnBoundarySeqs.push(...resumableTurnBoundarySequences(messages));
       }
+      const loadedCoverage = deps.usageStore.loadCoverage(deps.sessionId);
+      if (loadedCoverage === undefined) throw new Error('session coverage is unavailable');
+      initialUsageCoverage = {
+        coverage: loadedCoverage.coverage,
+        models: loadedCoverage.models,
+        started: true,
+        highWater: 0,
+      };
       unsubscribe = deps.handle.subscribe(onEvent);
+      started = true;
     },
     get durabilityFailure(): Error | undefined {
       return durabilityFailure;
@@ -556,6 +578,9 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
       await Promise.resolve();
     },
     close(): void {
+      closed = true;
+      for (const receipt of usageReceipts.values()) deps.usageStore.retire(receipt);
+      usageReceipts.clear();
       unsubscribe?.();
       unsubscribe = undefined;
     },
@@ -566,9 +591,64 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
   // promise and marking their session durability-broken on the first usage-less response.
   // #W15-4: the host's `preEgress` gate reads THIS persister's latched failure, so a session whose record is
   // already lost stops spending instead of carrying on above a transcript that fell behind.
+  deps.attachUsageWriter({
+    initialCoverage: () => initialUsageCoverage,
+    begin: async (draft) => {
+      if (!started || closed || durabilityFailure !== undefined)
+        throw new Error('session persistence is unavailable');
+      let receipt: SessionUsageReceipt | undefined;
+      persistDurably(() => {
+        receipt = deps.usageStore.beginInvocation({
+          sessionId: deps.sessionId,
+          model: draft.model,
+          producerId,
+          dispatchId: `${draft.nodeId}:${++dispatchOrdinal}`,
+          round: draft.round,
+          chainAttempt: draft.chainAttempt,
+        });
+      });
+      if (receipt === undefined) throw new Error('session pending receipt is unavailable');
+      usageReceipts.set(receipt.invocation, receipt);
+      return await Promise.resolve(receipt.invocation);
+    },
+    disposition: (draft) => {
+      const receipt = usageReceipts.get(draft.invocation);
+      if (receipt === undefined) throw new Error('session usage receipt is unavailable');
+      persistDurably(() => {
+        deps.usageStore.disposition(receipt, draft.disposition);
+        if (draft.receiptPending !== true) {
+          deps.usageStore.retire(receipt);
+          usageReceipts.delete(draft.invocation);
+        }
+      });
+    },
+    record: (draft, cumulative) => {
+      const receipt =
+        draft.invocation === undefined ? undefined : usageReceipts.get(draft.invocation);
+      if (receipt === undefined)
+        throw new Error('session actual cost requires a live usage receipt');
+      const catalogId = deps.resolveModelCatalogId?.(draft.model);
+      persistDurably(() => {
+        deps.store.recordSessionCost({
+          id: deps.uuid(),
+          sessionId: deps.sessionId,
+          model: draft.model,
+          ...(catalogId === undefined ? {} : { modelCatalogId: catalogId }),
+          inputTokens: draft.inputTokens,
+          outputTokens: draft.outputTokens,
+          costMicrocents: draft.costMicrocents,
+          priced: draft.priced,
+          ts: deps.now(),
+          usageReceipt: receipt,
+        });
+        usageReceipts.delete(receipt.invocation);
+      });
+      totalCostMicrocents = cumulative;
+    },
+  });
   deps.attachDurabilityProbe(() => persister.durabilityFailure);
   deps.attachEffectTurnAllocator((sessionId) => {
-    if (sessionId !== deps.sessionId || !started || durabilityFailure !== undefined)
+    if (sessionId !== deps.sessionId || !started || closed || durabilityFailure !== undefined)
       throw new Error('session persistence is unavailable');
     return deps.store.reserveEffectTurnKey(sessionId);
   });

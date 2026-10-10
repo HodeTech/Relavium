@@ -28,7 +28,12 @@ import type {
   RunStatus,
 } from '@relavium/shared';
 
-import { RunSuspensionReducer, RunSuspensionCorruptionError } from '@relavium/shared';
+import {
+  UsageCoverageFold,
+  type UsageCoverageSnapshot,
+  RunSuspensionReducer,
+  RunSuspensionCorruptionError,
+} from '@relavium/shared';
 
 import type { GateRequest, NodeFailure } from './node-executor.js';
 import { NodeLifeClockReducer, type NodeLifeClock } from './node-life-clock.js';
@@ -109,6 +114,7 @@ export interface CheckpointPendingMediaJob {
 
 /** The derived state a rehydrating run is rebuilt from — never a persisted blob (reconstructed from rows). */
 export interface CheckpointState {
+  readonly usageCoverage?: UsageCoverageSnapshot;
   readonly schemaVersion: number;
   readonly runStatus: RunStatus;
   /** The surrogate `workflows.id` UUID from `run:started` — resume refuses a different workflow (identity guard). */
@@ -404,8 +410,18 @@ function applyGateEvent(acc: ReconAccumulator, transition: GateTransition | unde
  * appliers ({@link applyRunEvent} / {@link applyNodeEvent} / {@link applyGateEvent}) keep this fold flat.
  */
 export function reconstructCheckpointState(
-  events: readonly RunEvent[],
+  events: Iterable<RunEvent>,
 ): CheckpointState | undefined {
+  const reconstructor = createCheckpointReconstructor();
+  for (const event of events) reconstructor.apply(event);
+  return reconstructor.finish();
+}
+
+export function createCheckpointReconstructor(): {
+  readonly apply: (event: RunEvent) => void;
+  readonly finish: () => CheckpointState | undefined;
+} {
+  const coverage = new UsageCoverageFold();
   const acc: ReconAccumulator = {
     started: false,
     runId: '',
@@ -427,7 +443,8 @@ export function reconstructCheckpointState(
     nodeLife: new NodeLifeClockReducer(),
   };
 
-  for (const event of events) {
+  const apply = (event: RunEvent): void => {
+    coverage.apply(event);
     acc.lastSequenceNumber = Math.max(acc.lastSequenceNumber, event.sequenceNumber);
     if (event.type === 'cost:updated') {
       acc.cumulativeCostMicrocents = event.cumulativeCostMicrocents; // already a running total
@@ -477,55 +494,59 @@ export function reconstructCheckpointState(
         event.authorization.spentMicrocents,
       );
     }
-  }
-
-  if (!acc.started) {
-    return undefined;
-  }
-  const completedNodeIds = [...acc.nodeStates]
-    .filter(([, s]) => s.status === 'completed')
-    .map(([id]) => id);
-  return {
-    schemaVersion: CHECKPOINT_SCHEMA_VERSION,
-    runStatus: acc.runStatus,
-    workflowId: acc.workflowId,
-    startedAtMs: acc.startedAtMs,
-    admittedInputs: acc.admittedInputs,
-    executionMode: acc.executionMode,
-    nodeStates: acc.nodeStates,
-    completedNodeIds,
-    pendingGates: acc.suspensions.pendingGates(acc.runId).map((gate) => ({
-      nodeId: gate.nodeId,
-      gateId: gate.gateId,
-      isBudgetGate: gate.isBudgetGate,
-      ...(gate.allowance === undefined ? {} : { allowance: gate.allowance }),
-      ...(gate.timeoutMs === undefined ? {} : { timeoutMs: gate.timeoutMs }),
-      ...(gate.timeoutAction === undefined ? {} : { timeoutAction: gate.timeoutAction }),
-      ...(gate.expiresAt === undefined ? {} : { expiresAt: gate.expiresAt }),
-    })),
-    budgetRejections: acc.suspensions.budgetRejections(acc.runId),
-    nodeLifeClocks: acc.nodeLife.snapshot(),
-    pendingBudgetContinuationNodeIds: acc.nodeLife.pendingBudgetContinuations(),
-    pendingMediaJobs: acc.suspensions.pendingMediaJobs(acc.runId).map((job) => ({
-      nodeId: job.nodeId,
-      jobId: job.jobId,
-      provider: job.provider,
-      model: job.model,
-      modality: job.modality,
-      startedAt: job.startedAt,
-      deadlineAt: job.deadlineAt,
-      ...(job.units === undefined ? {} : { units: job.units }),
-      ...(job.acceptedCostMicrocents === undefined
-        ? {}
-        : { acceptedCostMicrocents: job.acceptedCostMicrocents }),
-    })),
-    resolvedGateIds: acc.suspensions.resolvedGateIds(acc.runId),
-    resolvedBudgetGateIds: acc.suspensions.resolvedGateIds(acc.runId, 'budget'),
-    lastSequenceNumber: acc.lastSequenceNumber,
-    totalInputTokens: acc.totalInputTokens,
-    totalOutputTokens: acc.totalOutputTokens,
-    nodeDispatches: acc.nodeDispatches,
-    cumulativeCostMicrocents: acc.cumulativeCostMicrocents,
-    conservativeCostMicrocents: acc.conservativeCostMicrocents,
   };
+
+  const finish = (): CheckpointState | undefined => {
+    if (!acc.started) {
+      return undefined;
+    }
+    const completedNodeIds = [...acc.nodeStates]
+      .filter(([, s]) => s.status === 'completed')
+      .map(([id]) => id);
+    return {
+      usageCoverage: coverage.snapshot(),
+      schemaVersion: CHECKPOINT_SCHEMA_VERSION,
+      runStatus: acc.runStatus,
+      workflowId: acc.workflowId,
+      startedAtMs: acc.startedAtMs,
+      admittedInputs: acc.admittedInputs,
+      executionMode: acc.executionMode,
+      nodeStates: acc.nodeStates,
+      completedNodeIds,
+      pendingGates: acc.suspensions.pendingGates(acc.runId).map((gate) => ({
+        nodeId: gate.nodeId,
+        gateId: gate.gateId,
+        isBudgetGate: gate.isBudgetGate,
+        ...(gate.allowance === undefined ? {} : { allowance: gate.allowance }),
+        ...(gate.timeoutMs === undefined ? {} : { timeoutMs: gate.timeoutMs }),
+        ...(gate.timeoutAction === undefined ? {} : { timeoutAction: gate.timeoutAction }),
+        ...(gate.expiresAt === undefined ? {} : { expiresAt: gate.expiresAt }),
+      })),
+      budgetRejections: acc.suspensions.budgetRejections(acc.runId),
+      nodeLifeClocks: acc.nodeLife.snapshot(),
+      pendingBudgetContinuationNodeIds: acc.nodeLife.pendingBudgetContinuations(),
+      pendingMediaJobs: acc.suspensions.pendingMediaJobs(acc.runId).map((job) => ({
+        nodeId: job.nodeId,
+        jobId: job.jobId,
+        provider: job.provider,
+        model: job.model,
+        modality: job.modality,
+        startedAt: job.startedAt,
+        deadlineAt: job.deadlineAt,
+        ...(job.units === undefined ? {} : { units: job.units }),
+        ...(job.acceptedCostMicrocents === undefined
+          ? {}
+          : { acceptedCostMicrocents: job.acceptedCostMicrocents }),
+      })),
+      resolvedGateIds: acc.suspensions.resolvedGateIds(acc.runId),
+      resolvedBudgetGateIds: acc.suspensions.resolvedGateIds(acc.runId, 'budget'),
+      lastSequenceNumber: acc.lastSequenceNumber,
+      totalInputTokens: acc.totalInputTokens,
+      totalOutputTokens: acc.totalOutputTokens,
+      nodeDispatches: acc.nodeDispatches,
+      cumulativeCostMicrocents: acc.cumulativeCostMicrocents,
+      conservativeCostMicrocents: acc.conservativeCostMicrocents,
+    };
+  };
+  return { apply, finish };
 }

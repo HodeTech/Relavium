@@ -137,6 +137,8 @@ describe('chatListCommand (2.O)', () => {
         createdAt: '2026-06-17T08:00:00.000Z',
         updatedAt: '2026-06-17T09:00:00.000Z',
         totalCostMicrocents: 0,
+        usageCoverage: { unverified: true, pendingInvocations: 0, unknownCalls: 0 },
+        unpricedCalls: 0,
       },
       {
         sessionId: 'sess-1',
@@ -147,6 +149,8 @@ describe('chatListCommand (2.O)', () => {
         createdAt: '2026-06-17T08:00:00.000Z',
         updatedAt: '2026-06-17T08:00:00.000Z',
         totalCostMicrocents: 0,
+        usageCoverage: { unverified: true, pendingInvocations: 0, unknownCalls: 0 },
+        unpricedCalls: 0,
       },
     ]);
   });

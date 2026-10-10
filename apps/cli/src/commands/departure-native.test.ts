@@ -105,7 +105,11 @@ async function exercise(
     stream: async function* () {
       providerCalls++;
       yield Promise.resolve({ type: 'text_delta', text: 'REAL_BUDGET_DISPATCH' } as const);
-      yield { type: 'stop', stopReason: 'stop', usage: { inputTokens: 1, outputTokens: 1 } };
+      yield {
+        type: 'stop',
+        stopReason: 'stop',
+        usage: { kind: 'complete', usage: { inputTokens: 1, outputTokens: 1 } },
+      };
     },
   };
   const providers = {

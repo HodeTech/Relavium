@@ -80,6 +80,7 @@ describe('row labels', () => {
     modelId: 'claude-opus-4-8',
     status: 'active',
     updatedAt: ago(5 * MIN),
+    usageCoverage: { unverified: false, pendingInvocations: 0, unknownCalls: 0 },
     totalCostMicrocents: 120_000_000, // $1.2000 via the canonical 1e8 µ¢→USD conversion
     ...over,
   });
@@ -91,6 +92,7 @@ describe('row labels', () => {
     createdAt: ago(2 * HR),
     startedAt: ago(2 * HR),
     completedAt: ago(1 * HR),
+    usageCoverage: { unverified: false, pendingInvocations: 0, unknownCalls: 0 },
     totalCostMicrocents: 0,
     ...over,
   });

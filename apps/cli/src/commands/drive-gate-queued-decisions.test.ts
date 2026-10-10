@@ -78,7 +78,11 @@ for (const scenario of [
         calls++;
         // Keep the fake provider asynchronous behind the actual held pause writer barrier.
         await releasePause.promise;
-        yield { type: 'stop', stopReason: 'stop', usage: { inputTokens: 1, outputTokens: 1 } };
+        yield {
+          type: 'stop',
+          stopReason: 'stop',
+          usage: { kind: 'complete', usage: { inputTokens: 1, outputTokens: 1 } },
+        };
       },
     };
     writeFileSync(

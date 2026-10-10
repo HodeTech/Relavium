@@ -234,3 +234,10 @@ evidence. Source and lockfile bytes are independently anchored to the immutable 
 portable dependency bytes remain reviewed, digest-pinned captures, not a registry-origin attestation.
 The [harness](../../tools/budget-replay-compat/README.md) documents that provenance boundary,
 read-only packaging verification and CI-only exact predecessor-object setup. No frozen bytes are refreshed.
+
+### W8 usage coverage activation — 2026-10-10
+
+Three usage discriminators extend the executable predecessor refusal matrix, including independent discriminator controls and the ordinary-human-gate prefix. Frozen original source/dependency artifacts remain unchanged; coverage identity grants no replay or payment authority.
+
+See [ADR-0104](0104-unknown-provider-usage-is-durable-cost-uncertainty.md) and the
+[canonical usage contract](../reference/shared-core/llm-provider-seam.md#6-usage).

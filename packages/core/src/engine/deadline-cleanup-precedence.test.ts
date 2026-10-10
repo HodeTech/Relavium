@@ -50,13 +50,17 @@ function p(fails: boolean): LlmProvider {
         : Promise.resolve({
             content: [{ type: 'text', text: 'ok' }],
             stopReason: 'stop',
-            usage: { inputTokens: 2, outputTokens: 3 },
+            usage: { kind: 'complete', usage: { inputTokens: 2, outputTokens: 3 } },
           }),
     stream: async function* () {
       await Promise.resolve();
       if (fails) throw auth;
       yield { type: 'text_delta', text: 'ok' };
-      yield { type: 'stop', stopReason: 'stop', usage: { inputTokens: 2, outputTokens: 3 } };
+      yield {
+        type: 'stop',
+        stopReason: 'stop',
+        usage: { kind: 'complete', usage: { inputTokens: 2, outputTokens: 3 } },
+      };
     },
   };
 }
@@ -110,7 +114,10 @@ describe('R11 independently challenge cleanup precedence after accounted success
           ]);
           if (result === 'success')
             expect(records).toMatchObject([
-              { usage: { inputTokens: 2, outputTokens: 3 }, cost: { costMicrocents: 8 } },
+              {
+                usage: { kind: 'complete', usage: { inputTokens: 2, outputTokens: 3 } },
+                cost: { costMicrocents: 8 },
+              },
             ]);
           if (mode === 'generate') {
             expect(caught).toBeInstanceOf(LlmProviderError);
@@ -135,7 +142,11 @@ describe('generated ownership before custom deadline cleanup', () => {
     it(`cleanup mutation cannot replace known quantities or typed content, throwing=${throwing}`, async () => {
       const usage = { inputTokens: 2, outputTokens: 3 };
       const part = { type: 'text' as const, text: 'owned answer' };
-      const result: LlmResult = { content: [part], stopReason: 'stop', usage };
+      const result: LlmResult = {
+        content: [part],
+        stopReason: 'stop',
+        usage: { kind: 'complete', usage },
+      };
       const provider = p(false);
       provider.generate = () => Promise.resolve(result);
       const records: AttemptRecord[] = [];
@@ -161,7 +172,7 @@ describe('generated ownership before custom deadline cleanup', () => {
       expect(records).toHaveLength(1);
       expect(records[0]).toMatchObject({
         providerInvoked: true,
-        usage: { inputTokens: 2, outputTokens: 3 },
+        usage: { kind: 'complete', usage: { inputTokens: 2, outputTokens: 3 } },
         cost: { costMicrocents: 8 },
         outcome: throwing ? 'failed' : 'succeeded',
       });

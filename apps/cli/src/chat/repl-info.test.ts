@@ -22,8 +22,8 @@ const entry = (slug: string, valid = true): CatalogEntry => ({
 
 describe('costNotice', () => {
   it('formats the cumulative spend in USD (micro-cents → $X.XXXX)', () => {
-    expect(costNotice(0, [])).toBe('Session cost: $0.0000');
-    expect(costNotice(5_000_000, [])).toBe('Session cost: $0.0500');
+    expect(costNotice(0, [])).toBe('Session cost: $0.0000 known; usage unverified');
+    expect(costNotice(5_000_000, [])).toBe('Session cost: $0.0500 known; usage unverified');
   });
 });
 
@@ -177,7 +177,7 @@ describe('costNotice — the per-model breakdown', () => {
   });
 
   it('with no rows it is the total alone — a session that has not spent says so in one line', () => {
-    expect(costNotice(0, [])).toBe('Session cost: $0.0000');
+    expect(costNotice(0, [])).toBe('Session cost: $0.0000 known; usage unverified');
   });
 
   it('shows a conservative estimate as ESTIMATED, never folded into the money (ADR-0074 §1/§4)', () => {

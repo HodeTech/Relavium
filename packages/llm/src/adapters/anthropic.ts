@@ -1,3 +1,4 @@
+import { anthropicUsage, AnthropicUsageAccumulator, missingUsage } from './native-usage.js';
 import Anthropic from '@anthropic-ai/sdk';
 
 import { mediaModalityOf } from '@relavium/shared';
@@ -34,7 +35,7 @@ import type {
   StreamChunk,
   ToolChoice,
   ToolDef,
-  Usage,
+  UsageEvidence,
 } from '../types.js';
 
 import {
@@ -117,26 +118,8 @@ export function mapStopReason(reason: Anthropic.StopReason | null): StopReason {
  * cache reads/writes (seam §6), so the four token classes stay disjoint and the CostTracker bills
  * each once.
  */
-export function mapUsage(usage: {
-  input_tokens: number;
-  output_tokens: number;
-  cache_read_input_tokens?: number | null;
-  cache_creation_input_tokens?: number | null;
-  output_tokens_details?: { thinking_tokens?: number | null } | null;
-}): Usage {
-  const out: Usage = { inputTokens: usage.input_tokens, outputTokens: usage.output_tokens };
-  if (usage.cache_read_input_tokens != null) {
-    out.cacheReadTokens = usage.cache_read_input_tokens;
-  }
-  if (usage.cache_creation_input_tokens != null) {
-    out.cacheWriteTokens = usage.cache_creation_input_tokens;
-  }
-  // Thinking tokens are already inside output_tokens (billing unchanged); surface for visibility (ADR-0030).
-  const thinking = usage.output_tokens_details?.thinking_tokens ?? 0;
-  if (thinking > 0) {
-    out.reasoningTokens = thinking;
-  }
-  return out;
+export function mapUsage(raw: unknown, authoritative = true): UsageEvidence {
+  return anthropicUsage(raw, authoritative);
 }
 
 /** Fold an Anthropic message's content blocks into canonical content parts (text + tool_call + reasoning). */
@@ -659,37 +642,6 @@ export interface AnthropicAdapterDeps {
 
 /** Merge a streamed `message_delta` usage (whose token fields are cumulative) over the accumulated
  * usage, field by field — so the final cache/input counts the SDK delivers on the delta are kept. */
-function mergeDeltaUsage(
-  prev: Usage,
-  delta: {
-    input_tokens: number | null;
-    output_tokens: number;
-    cache_read_input_tokens?: number | null;
-    cache_creation_input_tokens?: number | null;
-    output_tokens_details?: { thinking_tokens?: number | null } | null;
-  },
-): Usage {
-  const merged: Usage = {
-    inputTokens: delta.input_tokens ?? prev.inputTokens,
-    outputTokens: delta.output_tokens,
-  };
-  const cacheRead = delta.cache_read_input_tokens ?? prev.cacheReadTokens;
-  if (cacheRead != null) {
-    merged.cacheReadTokens = cacheRead;
-  }
-  const cacheWrite = delta.cache_creation_input_tokens ?? prev.cacheWriteTokens;
-  if (cacheWrite != null) {
-    merged.cacheWriteTokens = cacheWrite;
-  }
-  // message_delta carries the authoritative cumulative thinking count (same semantics as output_tokens).
-  // Fall back to the message_start value only if the delta omits the details field entirely.
-  const thinking = delta.output_tokens_details?.thinking_tokens ?? prev.reasoningTokens ?? 0;
-  if (thinking > 0) {
-    merged.reasoningTokens = thinking;
-  }
-  return merged;
-}
-
 /** Per-index reasoning-block state: the synthesized chunk id, accumulating signature, redacted flag. */
 interface ReasoningBlock {
   readonly id: string;
@@ -808,7 +760,7 @@ function isNativeContextOverflow(reason: string | null): boolean {
 }
 
 /** The live-captured native stop is a failed generation with real, billable usage (ADR-0096). */
-function nativeContextOverflow(usage: Usage): LlmError {
+function nativeContextOverflow(usage: UsageEvidence): LlmError {
   return {
     ...makeLlmError({
       provider: PROVIDER,
@@ -828,7 +780,8 @@ async function* streamChunks(
 ): AsyncIterable<StreamChunk> {
   const toolIdByIndex = new Map<number, string>();
   const reasoningByIndex = new Map<number, ReasoningBlock>();
-  let usage: Usage = { inputTokens: 0, outputTokens: 0 };
+  const cumulative = new AnthropicUsageAccumulator();
+  let usage: UsageEvidence = missingUsage();
   let stopReason: StopReason = 'stop';
   // The message_delta event carries the authoritative stop_reason + final usage; a stream that ends
   // without it was truncated and must not be reported as a successful stop.
@@ -853,9 +806,10 @@ async function* streamChunks(
   try {
     for await (const event of sdkStream) {
       if (event.type === 'message_start') {
-        usage = mapUsage(event.message.usage);
+        usage = cumulative.observe(event.message.usage, false);
       } else if (event.type === 'message_delta') {
-        usage = mergeDeltaUsage(usage, event.usage);
+        const final = event.delta?.stop_reason != null;
+        usage = cumulative.observe(event.usage, final);
         if (isNativeContextOverflow(event.delta.stop_reason)) {
           // Native overflow is already a processed, paid failure. Hand its first final usage to
           // the seam before another SDK read: later deltas, errors or a body that stays open have
@@ -866,7 +820,7 @@ async function* streamChunks(
           return;
         }
         stopReason = mapStopReason(event.delta.stop_reason);
-        sawStop = true;
+        sawStop = final;
       } else if (
         event.type === 'content_block_start' ||
         event.type === 'content_block_delta' ||
@@ -883,7 +837,7 @@ async function* streamChunks(
     // A cleanup throw after the authoritative failure is secondary. Emitting again would
     // manufacture a second canonical terminal and allow protocol failover before content.
     if (emittedNativeOverflow) return;
-    yield { type: 'error', error: anthropicErrorToLlmError(err) };
+    yield { type: 'error', error: { ...anthropicErrorToLlmError(err), usage } };
     return;
   }
   // No message_delta arrived → the SSE stream was cut before completion. Surface a retryable
@@ -891,11 +845,14 @@ async function* streamChunks(
   if (!sawStop) {
     yield {
       type: 'error',
-      error: makeLlmError({
-        provider: PROVIDER,
-        kind: 'transport',
-        message: 'stream ended before message_delta (truncated response)',
-      }),
+      error: {
+        ...makeLlmError({
+          provider: PROVIDER,
+          kind: 'transport',
+          message: 'stream ended before message_delta (truncated response)',
+        }),
+        usage,
+      },
     };
     return;
   }
@@ -947,18 +904,23 @@ export function createAnthropicAdapter(deps: AnthropicAdapterDeps = {}): LlmProv
         );
       } catch (err) {
         if (err instanceof LlmProviderError) throw err; // a pre-egress guard error — keep its classification
-        throw new LlmProviderError(anthropicErrorToLlmError(err));
+        throw new LlmProviderError({ ...anthropicErrorToLlmError(err) });
       }
+      const usage = mapUsage(message.usage);
       if (isNativeContextOverflow(message.stop_reason)) {
         // HTTP 200 is a processed, billed response even if its text happens to be empty.
         throw new LlmProviderError(nativeContextOverflow(mapUsage(message.usage)));
       }
-      return {
-        content: mapContent(message.content),
-        stopReason: mapStopReason(message.stop_reason),
-        usage: mapUsage(message.usage),
-        raw: message,
-      };
+      try {
+        return {
+          content: mapContent(message.content),
+          stopReason: mapStopReason(message.stop_reason),
+          usage,
+          raw: message,
+        };
+      } catch (error) {
+        throw new LlmProviderError({ ...anthropicErrorToLlmError(error), usage });
+      }
     },
     stream(req: LlmRequest, key: string): AsyncIterable<StreamChunk> {
       let owned: ReturnType<typeof prepareOwnedRequest>;

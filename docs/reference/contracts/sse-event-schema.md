@@ -39,25 +39,39 @@ interface BaseEvent {
 
 ## The `RunEvent` union
 
-**W8 Step 4 staging (2026-10-10).** [ADR-0104](../../decisions/0104-unknown-provider-usage-is-durable-cost-uncertainty.md)
-has accepted the coverage protocol; this foundation does **not** activate its events yet.
-`@relavium/shared` exports strict payload schemas for a coverage basis (`complete` or
-`legacy_unverified`), a model-attributed pending invocation, and its disposition. Coverage
-has three independent fields: `unverified`, `pendingInvocations` and `unknownCalls`.
-All must be clear before a total can be presented as complete; coverage never changes realized
-money or an admission estimate. Invocation correlation comprises `producerId`, a positive
-producer-wide `ordinal`, `dispatchId`, a zero-based `round` and positive `chainAttempt`.
-This identity grants no invocation/receipt authority and does not replace existing money keys.
-The pending and disposition payloads carry `model` and `invocation`; disposition distinguishes
-incomplete [usage evidence](../shared-core/llm-provider-seam.md#w8-usage-evidence-foundation-inert-step-4),
-proven non-invocation and official pre-content refusal. Complete settlement remains the sole
-existing actual-money writer. Counts and ordinals are safe integers; identifiers and model
-attribution are bounded, and extra fields are rejected.
+**Usage coverage (ADR-0104).** The three durable run events below bracket potentially billable
+invocations independently of whether a cost cap exists. Pending and disposition also share the session envelope. The shipping session host establishes
+the basis in typed rows at creation/adoption and stamps its aggregate onto session envelopes;
+it does not publish a separate basis event or create a run ledger for chat.
 
-`cost:coverage_started`, `cost:usage_pending` and `cost:usage_disposition` are **not** members
-of the current `RunEvent` union or durable-event classification in this commit. Their production
-writers, replay folds, acknowledgement barriers and all total readers activate together in the
-following W8 steps. These schemas alone provide no crash-persistence or CR-82 closure claim.
+| Event | Meaning |
+| --- | --- |
+| `cost:coverage_started` | Establishes `basis: complete` for a genuinely fresh owner, or `legacy_unverified` for history without a trustworthy basis. It precedes activation, including an ordinary human gate. It never resets resumed uncertainty. |
+| `cost:usage_pending` | Contains bounded `model` and `invocation` correlation. Its durable acknowledgement precedes the actual invocation, including failover, tool rounds and summarisation. It is a possibility, not a charge or completed call. |
+| `cost:usage_disposition` | Resolves pending into incomplete evidence, proven non-invocation, or official pre-content refusal. Incomplete evidence increments unknown usage; complete evidence resolves through the existing sole actual-money writer. |
+
+Coverage is `{unverified, pendingInvocations, unknownCalls}`; all must be clear before a reported
+amount is complete. Canonical envelopes can carry optional `usageCoverage` alongside a numeric
+known sum. Its absence means unverified history, never proof of free usage. Missing prices remain
+independent (`priced: false` / `unpricedCalls`); coverage does not estimate an invoice, alter an
+admission estimate, or authorize egress. Invocation correlation contains `producerId`, an
+owner-wide positive `ordinal`, `dispatchId`, zero-based `round` and positive `chainAttempt`.
+It grants no authority and does not replace existing money uniqueness keys.
+
+The incremental fold retains only unresolved and explicitly receipt-eligible identities. An
+incomplete disposition's optional literal `receiptPending: true` retains that correlation for
+an exact, process-local late receipt; it is not permission to charge after restart. A final
+incomplete disposition retires it without incrementing unknown usage again. Completed identities
+retire into aggregate counts. `cost:attempt_settled.invocation` correlates run completion;
+`cost:updated.invocation` does so on live session streams, after the direct actual write. Terminal
+closure never reopens the primary stream for late receipts. The append-only disk ledger keeps its
+existing run retention policy; bounded fold state does not imply a global disk cap.
+
+The executable predecessor harness refuses each new discriminator independently before executing
+or reading credentials, including the ordinary-gate prefix. The session downgrade defence uses
+[mutation revisions and transactional acknowledgements](../shared-core/database-schema.md), since
+session resume reads typed rows. The [LLM seam](../shared-core/llm-provider-seam.md#6-usage) owns
+complete/partial/missing evidence and native omission rules.
 
 ```ts
 export type RunEvent =
@@ -86,7 +100,10 @@ export type RunEvent =
   | BudgetAuthorizationEvent // RUN-ONLY (ADR-0100) — authoritative frozen pause/decision
   | BudgetPausedEvent
   | BudgetEstimateCommittedEvent // dual-envelope (ADR-0074 §2) — a conservative ESTIMATE, never realized spend
-  | CostAttemptSettledEvent; // RUN-ONLY (ADR-0076) — the REALIZED twin of the line above; the only DURABLE cost: event
+  | CostAttemptSettledEvent // RUN-ONLY (ADR-0076) — the REALIZED money record
+  | CostCoverageStartedEvent // RUN-ONLY (ADR-0104) — initial coverage basis
+  | CostUsagePendingEvent // dual-envelope (ADR-0104) — acknowledged before invocation
+  | CostUsageDispositionEvent; // dual-envelope (ADR-0104) — incomplete or proven non-invocation
 ```
 
 > `RunPausedEvent` is the multi-gate aggregate (below); `RunTimeoutEvent` / `BudgetWarningEvent` / `BudgetAuthorizationEvent` / `BudgetPausedEvent` / `BudgetEstimateCommittedEvent` are the resource-governance events defined in [Workflow governance and reserved events](#workflow-governance-and-reserved-events).

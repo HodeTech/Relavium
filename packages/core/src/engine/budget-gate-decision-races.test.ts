@@ -65,7 +65,11 @@ async function raceFixture() {
       calls++;
       await Promise.resolve();
       yield { type: 'text_delta', text: 'INDEPENDENT_REAL_OUTPUT' };
-      yield { type: 'stop', stopReason: 'stop', usage: { inputTokens: 1, outputTokens: 1 } };
+      yield {
+        type: 'stop',
+        stopReason: 'stop',
+        usage: { kind: 'complete', usage: { inputTokens: 1, outputTokens: 1 } },
+      };
     },
   };
   const prices = new Map([[MODEL, price]]);

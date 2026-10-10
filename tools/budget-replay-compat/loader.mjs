@@ -21,8 +21,21 @@ const manifestRaw = JSON.parse(
     'utf8',
   ),
 );
+const supplement =
+  mode === 'frozen' && existsSync(resolvePath(root, 'session-source-supplement.json'))
+    ? JSON.parse(readFileSync(resolvePath(root, 'session-source-supplement.json'), 'utf8')).files
+    : [];
+if (
+  supplement.length > 0 &&
+  (supplement.length !== 1 ||
+    supplement[0].path !== 'packages/db/src/session-store.ts' ||
+    supplement[0].gitBlob !== '9b4c5a1b5235dc44b110e41d7cc71cad5d071162' ||
+    supplement[0].bytes !== 36496 ||
+    supplement[0].sha256 !== '8a42221ccf48f1361ba964796bf4638d745eeb286b53d66ef83a68bf4682d25b')
+)
+  throw new Error('Session source supplement differs from its exact Git allowlist');
 const manifest = new Map(
-  (Array.isArray(manifestRaw) ? manifestRaw : manifestRaw.files).map((f) => [
+  [...(Array.isArray(manifestRaw) ? manifestRaw : manifestRaw.files), ...supplement].map((f) => [
     resolvePath(sourceRoot, f.path),
     f,
   ]),

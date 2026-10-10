@@ -1,6 +1,9 @@
 /**
- * The run's money-durability barrier — the single place a caller waits for BOTH kinds of money write
+ * The owner's money and usage-durability barrier — the single place a caller waits for BOTH kinds of money write
  * ([ADR-0077](../../../../docs/decisions/0077-realized-cost-ledger-uses-the-conservative-commitment-barrier.md)).
+ *
+ * Realized settlement and incomplete-usage dispositions share this queue. Pending markers are
+ * acknowledged before invocation; the same B1/B2/B3 join observes settlement failures.
  *
  * Two events record money and both are emitted from the SAME synchronous `onAttempt` callback, a few lines
  * apart in `agent-turn.ts`: `budget:estimate_committed` (a conservative ESTIMATE, ADR-0074 §2) and
@@ -18,6 +21,22 @@
  * reports whichever failure it finds. `waitForWrites()` separately observes realized-write lifetime
  * without consuming an error; it is not a money barrier or a durability certificate.
  */
+
+import type { UsageDisposition, UsageInvocation } from '@relavium/shared';
+
+export interface PendingUsageDraft {
+  readonly nodeId: string;
+  readonly model: string;
+  readonly round: number;
+  readonly chainAttempt: number;
+}
+export interface UsageDispositionDraft {
+  readonly nodeId: string;
+  readonly model: string;
+  readonly invocation: UsageInvocation;
+  readonly disposition: UsageDisposition;
+  readonly receiptPending?: true;
+}
 
 /** A realized-cost ledger write that did not reach the store. Carries the owning node for attribution. */
 export class LedgerDurabilityError extends Error {
@@ -38,6 +57,7 @@ export function isLedgerDurabilityError(error: unknown): error is LedgerDurabili
 
 /** The per-attempt ledger draft, minus the run-wide total the ENGINE stamps (it owns that counter). */
 export interface SettledAttemptDraft {
+  readonly invocation?: UsageInvocation;
   readonly nodeId: string;
   readonly model: string;
   readonly attemptNumber: number;
@@ -48,6 +68,8 @@ export interface SettledAttemptDraft {
 }
 
 export interface MoneyDurabilityOptions {
+  readonly beginUsageInvocation?: (draft: PendingUsageDraft) => Promise<UsageInvocation>;
+  readonly emitUsageDisposition?: (draft: UsageDispositionDraft) => Promise<void> | void;
   /**
    * Start the durable write for one settled attempt. The engine wires this to `#emitDurable`. **May throw
    * synchronously** — a `better-sqlite3` store does — which is why {@link MoneyDurability.record} never calls
@@ -76,6 +98,15 @@ export interface MoneyDurabilityOptions {
  * the barrier, and has no business inspecting or clearing durability state.
  */
 export interface TurnMoneyPort {
+  readonly emitCost?: (
+    event: Extract<import('./node-executor.js').NodeStreamEvent, { type: 'cost:updated' }>,
+  ) => void;
+  readonly beginUsageInvocation?: (draft: PendingUsageDraft) => Promise<UsageInvocation>;
+  readonly claimUsage?: (
+    invocation: UsageInvocation,
+    kind: 'complete' | 'incomplete' | 'released' | 'retired',
+  ) => boolean;
+  readonly usageDisposition?: (draft: UsageDispositionDraft) => void;
   readonly record: (draft: SettledAttemptDraft) => void;
   readonly join: () => Promise<void>;
 }
@@ -108,6 +139,7 @@ export class MoneyDurability {
 
   /** Sticky: a run whose ledger has ever failed keeps paying the barrier for the rest of the process. */
   #broken = false;
+  readonly #usageClaims = new WeakMap<UsageInvocation, 'pending' | 'incomplete' | 'finished'>();
 
   constructor(options: MoneyDurabilityOptions) {
     this.#options = options;
@@ -142,6 +174,71 @@ export class MoneyDurability {
         })
         .finally(() => {
           this.#pending -= 1;
+        }),
+    );
+  }
+
+  async beginUsageInvocation(draft: PendingUsageDraft): Promise<UsageInvocation> {
+    await this.join();
+    // Allocation, durable append and the owner's coverage fold are one serialized operation.
+    // Join BEFORE enqueueing: joining from our own queued callback would await itself. A second
+    // caller can have crossed the same join, so check the sticky failure again inside the queue.
+    this.#pending++;
+    const invocation = this.#inFlight.then(async () => {
+      if (this.#broken || this.#options.beginUsageInvocation === undefined)
+        throw new LedgerDurabilityError(
+          new Error('Usage durability is not attached'),
+          draft.nodeId,
+        );
+      try {
+        const identity = await this.#options.beginUsageInvocation(draft);
+        this.#usageClaims.set(identity, 'pending');
+        return identity;
+      } catch (error) {
+        this.#broken = true;
+        throw new LedgerDurabilityError(error, draft.nodeId);
+      }
+    });
+    // The returned promise carries this caller's failure. The shared tail must remain fulfilled,
+    // just like realized/disposition writes, so queued callers can observe the sticky refusal.
+    this.#inFlight = invocation
+      .then(
+        () => undefined,
+        () => undefined,
+      )
+      .finally(() => {
+        this.#pending--;
+      });
+    return invocation;
+  }
+
+  claimUsage(
+    invocation: UsageInvocation,
+    kind: 'complete' | 'incomplete' | 'released' | 'retired',
+  ): boolean {
+    const state = this.#usageClaims.get(invocation);
+    if (state === undefined || state === 'finished') return false;
+    if (kind === 'incomplete' && state === 'incomplete') return false;
+    if (kind === 'released' && state !== 'pending') return false;
+    this.#usageClaims.set(invocation, kind === 'incomplete' ? 'incomplete' : 'finished');
+    return true;
+  }
+
+  usageDisposition(draft: UsageDispositionDraft): void {
+    this.#pending++;
+    this.#inFlight = this.#inFlight.then(() =>
+      Promise.resolve()
+        .then(() => {
+          if (this.#options.emitUsageDisposition === undefined)
+            throw new Error('Usage durability is not attached');
+          return this.#options.emitUsageDisposition(draft);
+        })
+        .catch((error: unknown) => {
+          this.#failure ??= new LedgerDurabilityError(error, draft.nodeId);
+          this.#broken = true;
+        })
+        .finally(() => {
+          this.#pending--;
         }),
     );
   }
@@ -197,6 +294,16 @@ export class MoneyDurability {
    */
   turnPort(snapshotCumulative: () => number): TurnMoneyPort {
     return {
+      ...(this.#options.beginUsageInvocation === undefined
+        ? {}
+        : {
+            beginUsageInvocation: (draft: PendingUsageDraft) => this.beginUsageInvocation(draft),
+            claimUsage: (
+              invocation: UsageInvocation,
+              kind: 'complete' | 'incomplete' | 'released' | 'retired',
+            ) => this.claimUsage(invocation, kind),
+            usageDisposition: (draft: UsageDispositionDraft) => this.usageDisposition(draft),
+          }),
       record: (draft) => {
         this.record(draft, snapshotCumulative());
       },

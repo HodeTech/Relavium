@@ -150,7 +150,7 @@ describe('money appended while the next attempt is waiting (ADR-0077)', () => {
                 return {
                   content: [{ type: 'text', text: 'done' }],
                   stopReason: 'stop',
-                  usage: { inputTokens: 1, outputTokens: 0 },
+                  usage: { kind: 'complete', usage: { inputTokens: 1, outputTokens: 0 } },
                 };
               },
               stream: async function* (): AsyncGenerator<StreamChunk> {
@@ -160,7 +160,7 @@ describe('money appended while the next attempt is waiting (ADR-0077)', () => {
                   yield {
                     type: 'stop',
                     stopReason: 'stop',
-                    usage: { inputTokens: 1, outputTokens: 0 },
+                    usage: { kind: 'complete', usage: { inputTokens: 1, outputTokens: 0 } },
                   };
                 } finally {
                   calls.cleanup += 1;
@@ -382,7 +382,11 @@ describe('actual sibling AgentRunner writes before candidate WorkflowEngine egre
             if (id === 'owner-1') await outputFirst.promise;
             else if (id === 'owner-2') await outputSecond.promise;
             else await Promise.resolve();
-            yield { type: 'stop', stopReason: 'stop', usage: { inputTokens: 1, outputTokens: 1 } };
+            yield {
+              type: 'stop',
+              stopReason: 'stop',
+              usage: { kind: 'complete', usage: { inputTokens: 1, outputTokens: 1 } },
+            };
           },
         };
         const engine = new WorkflowEngine({

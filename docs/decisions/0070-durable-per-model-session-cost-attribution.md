@@ -222,3 +222,10 @@ money keys; provider pending/settlement and qualified total readers activate in 
 steps. ADR-0104's coverage refinements to §3 exceptions **1, 2 and 5** remain staged until that
 end-to-end path lands. A metadata revision cannot reconstruct an older executable's unobserved
 provider calls, and no provider-invoice reconciliation is claimed.
+
+### W8 usage coverage activation — 2026-10-10
+
+Exceptions 1, 2 and 5 retain their realized-money meaning but now gain durable usage uncertainty. Metadata-only mutation triggers are the explicitly accepted narrow exception to §3’s trigger rationale; all actual-money arithmetic remains in the existing TypeScript writer.
+
+See [ADR-0104](0104-unknown-provider-usage-is-durable-cost-uncertainty.md) and the
+[canonical usage contract](../reference/shared-core/llm-provider-seam.md#6-usage).

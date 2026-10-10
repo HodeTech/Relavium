@@ -359,3 +359,10 @@ accepted in the [W7 closing register](../roadmap/phases/phase-2.6.5-core-reliabi
 The later [post-closure systematic correction register](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#post-closure-systematic-review--2026-10-10)
 tracks reopened review findings and their scoped acceptance; it governs the current PR acceptance status.
 This additive note does not rewrite the original decision or claim that PR #90 has merged.
+
+### W8 usage coverage activation — 2026-10-10
+
+Pending and disposition acknowledgements now join the same durability discipline as actual settlement. B1/B2/B3, exact receipt ownership and failure precedence remain in force; late usage cannot reopen ordinary execution or the terminal stream.
+
+See [ADR-0104](0104-unknown-provider-usage-is-durable-cost-uncertainty.md) and the
+[canonical usage contract](../reference/shared-core/llm-provider-seam.md#6-usage).

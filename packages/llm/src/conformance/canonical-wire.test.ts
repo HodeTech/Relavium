@@ -1,3 +1,4 @@
+import { knownUsage } from './usage-test.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { ContentPart } from '@relavium/shared';
@@ -181,8 +182,8 @@ function expectedToolContent(provider: WireProvider, signed: boolean): ContentPa
 }
 
 function assertUsage(result: Pick<LlmResult, 'usage'>): void {
-  expect(result.usage.inputTokens).toBe(12);
-  expect(result.usage.outputTokens).toBe(7);
+  expect(knownUsage(result.usage).inputTokens).toBe(12);
+  expect(knownUsage(result.usage).outputTokens).toBe(7);
 }
 
 describe('canonical wire matrix through installed SDK HTTP (W8 Step 3)', () => {

@@ -6,7 +6,12 @@ import { agentSessions } from './schema.js';
 
 /** Fixed, content-free failures of the session coverage foundation (ADR-0104). */
 export class SessionUsageError extends Error {
-  readonly code: 'transaction_active' | 'history_invalid' | 'revision_exhausted' | 'not_fresh';
+  readonly code:
+    | 'transaction_active'
+    | 'history_invalid'
+    | 'revision_exhausted'
+    | 'not_fresh'
+    | 'receipt_invalid';
 
   constructor(code: SessionUsageError['code'], options?: ErrorOptions) {
     super('session usage coverage operation refused', options);

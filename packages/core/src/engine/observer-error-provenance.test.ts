@@ -62,7 +62,7 @@ function providerFor(calls: { count: number }, bodyFault?: LlmProviderError): Ll
           },
         ],
         stopReason: 'stop',
-        usage: { inputTokens: 7, outputTokens: 11 },
+        usage: { kind: 'complete', usage: { inputTokens: 7, outputTokens: 11 } },
       });
     },
     stream: async function* (): AsyncGenerator<StreamChunk> {
@@ -70,7 +70,11 @@ function providerFor(calls: { count: number }, bodyFault?: LlmProviderError): Ll
       await Promise.resolve();
       if (bodyFault !== undefined) throw bodyFault;
       yield { type: 'text_delta', text: 'paid' };
-      yield { type: 'stop', stopReason: 'stop', usage: { inputTokens: 7, outputTokens: 11 } };
+      yield {
+        type: 'stop',
+        stopReason: 'stop',
+        usage: { kind: 'complete', usage: { inputTokens: 7, outputTokens: 11 } },
+      };
     },
   };
 }

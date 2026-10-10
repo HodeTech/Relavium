@@ -176,7 +176,10 @@ it('rejected budget activation joins an entered heartbeat before releasing its f
     expect(usedAfterClose).toBe(false);
     expect(await host.runLeases.read(runId)).toBeUndefined();
     expect(executorCalls).toBe(0);
-    expect(published.map((event) => event.type)).toEqual(['budget:authorization']);
+    expect(published.map((event) => event.type)).toEqual([
+      'cost:coverage_started',
+      'budget:authorization',
+    ]);
     expect(host.armedCount() + host.deadlineCount() + host.livenessCount()).toBe(0);
   } finally {
     releaseDecision.resolve();

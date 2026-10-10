@@ -1,3 +1,4 @@
+import { createSessionUsageStore } from '@relavium/db';
 import { describe, expect, it } from 'vitest';
 import { AgentSchema, type AgentSessionRecord, type SessionMessage } from '@relavium/shared';
 import { createClient, createSessionStore, runMigrations } from '@relavium/db';
@@ -91,7 +92,7 @@ describe('W7 native SQLite compaction boundaries across active turns and resume'
             yield await Promise.resolve({
               type: 'stop',
               stopReason: 'stop',
-              usage: { inputTokens: 7, outputTokens: 3 },
+              usage: { kind: 'complete', usage: { inputTokens: 7, outputTokens: 3 } },
             });
           },
         };
@@ -105,6 +106,9 @@ describe('W7 native SQLite compaction boundaries across active turns and resume'
         });
         let id = 0;
         const persister = createSessionPersister({
+          usageStore: createSessionUsageStore(client.db),
+          mode: 'adopt',
+          attachUsageWriter: built.attachUsageWriter,
           store,
           governor: built.governor,
           handle: built.handle,

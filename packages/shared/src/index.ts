@@ -44,3 +44,5 @@ export * from './run.js';
 export * from './config.js';
 export * from './usage-evidence.js';
 export * from './usage-coverage.js';
+
+export * from './usage-coverage-fold.js';

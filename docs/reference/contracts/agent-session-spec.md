@@ -458,3 +458,7 @@ the canonical call parts; `name` and `toolCallId` must match the appropriate sin
 is a fixed stop-reason value on an assistant row. Unknown fields and malformed JSON are refused with
 fixed boundary errors. This prevents metadata from becoming a second tool-content channel. User
 conversational text, including `!` output and `@` file injection, remains user data at rest.
+
+## Usage coverage through session lifetime
+
+A shipping persisted host attaches a required usage writer independently of its optional cost governor. Fresh creation alone establishes a complete-zero basis; resume/reseat explicitly adopt the existing owner and preserve pending, unknown and historical uncertainty. Pending acknowledgement precedes conversational, tool-round and summariser invocation. Complete actual money and coverage resolve atomically through one direct writer, rather than a second bus subscriber. The CLI waits for retained producers and accounting writes before closing that writer or SQLite. One-shot agent runs use an opaque hidden owner without a transcript or resume privilege.

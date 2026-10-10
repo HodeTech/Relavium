@@ -4,12 +4,19 @@ import {
   SessionMessageSchema,
   SessionMessageMetaSchema,
   type AgentSessionRecord,
+  type UsageCoverage,
   type SessionMessage,
   type SessionToolCallPart,
 } from '@relavium/shared';
 import { and, asc, desc, eq, isNull, sql } from 'drizzle-orm';
 
 import type { Db } from './client.js';
+import {
+  completeSessionUsageInvocation,
+  acknowledgeSessionUsageComplete,
+  type SessionUsageReceipt,
+} from './session-usage-receipt.js';
+import { readSessionCoverage, type SessionUsageSnapshot } from './session-usage-read.js';
 import { withBusyRetry } from './retry.js';
 import { withSessionUsageWrite } from './session-usage-write.js';
 import {
@@ -287,6 +294,9 @@ export const LEGACY_COST_SENTINEL = '(pre-2.6.C)';
 
 /** One `cost:updated` egress, as the store folds it (ADR-0070 §2). */
 export interface SessionCostEntry {
+  readonly usageReceipt?: SessionUsageReceipt;
+  /** Native separate-endpoint authored-volume accounting is independently complete. */
+  readonly accountingBasis?: 'native_media';
   /** A fresh id from the host's `uuid()` — the pattern every other store write uses. It is DISCARDED on the common
    *  path: the conflict target is the `(session_id, model)` unique index, never the PK, so a repeat egress of the
    *  same model folds into the existing row and this id is never stored. */
@@ -400,7 +410,7 @@ export interface SessionStore {
    * Both halves MUST be additive. A resume or an ADR-0059 reseat builds a FRESH persister whose in-process
    * accumulators start at zero, so an absolute write would zero every model row the prior process had committed.
    */
-  recordSessionCost: (entry: SessionCostEntry) => void;
+  recordSessionCost: (entry: SessionCostEntry) => boolean;
   /**
    * Persist one conservative commitment (ADR-0074 §4) — the estimate twin of {@link recordSessionCost}, and the
    * durable half §2 requires on the session surface.
@@ -435,6 +445,8 @@ export interface SessionStore {
   loadSessionCostBreakdown: (sessionId: string) => {
     readonly totalCostMicrocents: number;
     readonly rows: SessionCostRow[];
+    readonly coverage: UsageCoverage;
+    readonly models: SessionUsageSnapshot['models'];
   };
   /** Append a transcript message (the caller assigns the next monotonic `sequenceNumber`). */
   appendMessage: (message: SessionMessage, meta?: SessionMessageMeta) => void;
@@ -586,7 +598,25 @@ export function createSessionStore(db: Db): SessionStore {
     recordSessionCost: (entry) => {
       // ONE transaction, TWO additive writes. `BEGIN IMMEDIATE` takes the write lock up front (never a DEFERRED
       // read→write upgrade race) and `withBusyRetry` waits out residual contention — the ADR-0064 §2.5.I convention.
-      withSessionUsageWrite(db, [entry.sessionId], (tx) => {
+      const accepted = withSessionUsageWrite(db, [entry.sessionId], (tx) => {
+        if (entry.usageReceipt !== undefined) {
+          if (
+            !completeSessionUsageInvocation(
+              db,
+              tx,
+              entry.usageReceipt,
+              entry.sessionId,
+              entry.model,
+            )
+          )
+            return false;
+        } else if (entry.accountingBasis !== 'native_media') {
+          // Uncorrelated old API calls retain numeric compatibility, never assert complete coverage.
+          tx.update(agentSessions)
+            .set({ usageUnverified: true })
+            .where(eq(agentSessions.id, entry.sessionId))
+            .run();
+        }
         tx.insert(sessionCosts)
           .values({
             id: entry.id, // discarded on conflict — the target is the unique index, never the PK
@@ -627,7 +657,11 @@ export function createSessionStore(db: Db): SessionStore {
           })
           .where(eq(agentSessions.id, entry.sessionId))
           .run();
+        return true;
       });
+      if (accepted && entry.usageReceipt !== undefined)
+        acknowledgeSessionUsageComplete(db, entry.usageReceipt);
+      return accepted;
     },
 
     recordSessionConservativeCommitment: (entry) => {
@@ -721,10 +755,19 @@ export function createSessionStore(db: Db): SessionStore {
       // panel would print rows summing to more than its own total. BOTH reads run against `tx` — a read issued on the
       // outer `db` would leave the snapshot the moment the driver is a connection pool ({@link DbTx}).
       withBusyRetry(() =>
-        db.transaction((tx) => ({
-          totalCostMicrocents: loadSession(sessionId, tx)?.totalCostMicrocents ?? 0,
-          rows: readCostRows(sessionId, tx),
-        })),
+        db.transaction((tx) => {
+          const usage = readSessionCoverage(tx, sessionId);
+          return {
+            totalCostMicrocents: loadSession(sessionId, tx)?.totalCostMicrocents ?? 0,
+            rows: readCostRows(sessionId, tx),
+            coverage: usage?.coverage ?? {
+              unverified: true,
+              pendingInvocations: 0,
+              unknownCalls: 0,
+            },
+            models: usage?.models ?? [],
+          };
+        }),
       ),
     loadSession,
     listSessions,

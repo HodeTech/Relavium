@@ -55,12 +55,12 @@ function providerFor(usage: Usage = { inputTokens: 5, outputTokens: 6 }): LlmPro
       Promise.resolve({
         content: [{ type: 'text', text: 'paid' }],
         stopReason: 'stop',
-        usage,
+        usage: { kind: 'complete', usage },
       }),
     stream: async function* (): AsyncGenerator<StreamChunk> {
       await Promise.resolve();
       yield { type: 'text_delta', text: 'paid' };
-      yield { type: 'stop', stopReason: 'stop', usage };
+      yield { type: 'stop', stopReason: 'stop', usage: { kind: 'complete', usage } };
     },
   };
 }
@@ -332,7 +332,7 @@ for (const path of ['generate', 'stream'] as const)
     expect(commitments).toHaveLength(1);
   });
 
-it('generated quantity accessor is captured once before repeated arithmetic reads', async () => {
+it('generated evidence rejects a quantity accessor without invoking it', async () => {
   let reads = 0;
   const raw: Usage = { inputTokens: 5, outputTokens: 6 };
   Object.defineProperty(raw, 'inputTokens', {
@@ -344,9 +344,9 @@ it('generated quantity accessor is captured once before repeated arithmetic read
   });
   const outcome = await captureAgentTurnOutcome(paramsFor(providerFor(raw), GENERATED));
 
-  expect(outcome.kind).toBe('succeeded');
-  if (outcome.kind === 'succeeded') expect(outcome.result.usage).toEqual({ input: 5, output: 6 });
-  expect(reads).toBe(1);
+  expect(outcome.kind).toBe('failed');
+  if (outcome.kind === 'failed') expect(outcome.usage).toEqual({ input: 0, output: 0 });
+  expect(reads).toBe(0);
 });
 
 it('generated pricing failure never publishes a priced row while the real governor retains its reservation', async () => {
@@ -364,7 +364,7 @@ it('generated pricing failure never publishes a priced row while the real govern
     return Promise.resolve({
       content: [{ type: 'text', text: 'paid' }],
       stopReason: 'stop',
-      usage: { inputTokens: 5, outputTokens: 6 },
+      usage: { kind: 'complete', usage: { inputTokens: 5, outputTokens: 6 } },
     });
   };
   const conservative: unknown[] = [];
@@ -517,7 +517,7 @@ for (const path of ['generate', 'stream'] as const) {
       await Promise.resolve();
       yield { type: 'text_delta', text: 'paid' };
       stopAvailable = true;
-      yield { type: 'stop', stopReason: 'stop', usage: raw };
+      yield { type: 'stop', stopReason: 'stop', usage: { kind: 'complete', usage: raw } };
     };
     const outcome = await captureAgentTurnOutcome(
       paramsFor(provider, {
@@ -643,7 +643,7 @@ it('generated result and AttemptRecord share the captured original quantities', 
     onAttempt: (record) => records.push(record),
   });
   const result = await chain.generate({ model: MODEL, messages: [] });
-  expect(result.usage).toEqual({ inputTokens: 5, outputTokens: 6 });
+  expect(result.usage).toEqual({ kind: 'complete', usage: { inputTokens: 5, outputTokens: 6 } });
   expect(records[0]?.usage).toBe(result.usage);
   expect(raw.inputTokens).toBe(500);
 });

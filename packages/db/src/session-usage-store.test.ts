@@ -85,6 +85,8 @@ describe('ADR-0104 session coverage foundations', () => {
       'session_messages_usage_update',
       'session_usage_bounds_insert',
       'session_usage_bounds_update',
+      'session_usage_high_water_insert',
+      'session_usage_high_water_update',
       'session_usage_owner_insert',
       'session_usage_owner_update',
     ]);

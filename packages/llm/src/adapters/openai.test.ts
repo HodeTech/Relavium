@@ -1,3 +1,4 @@
+import { knownUsage } from '../conformance/usage-test.js';
 import { APIConnectionError, APIConnectionTimeoutError, APIError, APIUserAbortError } from 'openai';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -1354,21 +1355,24 @@ describe('OpenAI-compatible adapter', () => {
         completion_tokens: 20,
         prompt_tokens_details: { cached_tokens: 30 },
       }),
-    ).toEqual({ inputTokens: 70, outputTokens: 20, cacheReadTokens: 30 });
+    ).toEqual({
+      kind: 'complete',
+      usage: { inputTokens: 70, outputTokens: 20, cacheReadTokens: 30 },
+    });
     // DeepSeek: top-level prompt_cache_hit_tokens
     expect(
-      mapUsage({ prompt_tokens: 50, completion_tokens: 5, prompt_cache_hit_tokens: 10 }),
+      mapUsage({ prompt_tokens: 50, completion_tokens: 5, prompt_cache_hit_tokens: 10 }, true),
     ).toEqual({
-      inputTokens: 40,
-      outputTokens: 5,
-      cacheReadTokens: 10,
+      kind: 'complete',
+      usage: { inputTokens: 40, outputTokens: 5, cacheReadTokens: 10 },
     });
-    // No cache → no cacheReadTokens key; clamps at 0.
+    // An absent cache split leaves net input unknown.
     expect(mapUsage({ prompt_tokens: 10, completion_tokens: 5 })).toEqual({
-      inputTokens: 10,
-      outputTokens: 5,
+      kind: 'partial',
+      known: { outputTokens: 5 },
+      reason: 'missing_fields',
     });
-    expect(mapUsage({})).toEqual({ inputTokens: 0, outputTokens: 0 });
+    expect(mapUsage({})).toEqual({ kind: 'missing', reason: 'missing_fields' });
   });
 
   it('mapContent keeps text + function tool_calls and skips custom (non-function) tool calls', () => {
@@ -1845,7 +1849,7 @@ describe('OpenAI-compatible adapter — additional fold + generate branches', ()
     expect(chunks.at(-1)?.type).toBe('error');
   });
 
-  it('generate tolerates an empty-choices completion (no content, zero usage)', async () => {
+  it('generate tolerates an empty-choices completion (no content, missing usage)', async () => {
     const adapter = createOpenAiAdapter({
       fetch: () =>
         Promise.resolve(
@@ -1865,7 +1869,7 @@ describe('OpenAI-compatible adapter — additional fold + generate branches', ()
     const result = await adapter.generate(REQ, 'k');
     expect(result.content).toEqual([]);
     expect(result.stopReason).toBe('stop');
-    expect(result.usage).toEqual({ inputTokens: 0, outputTokens: 0 });
+    expect(result.usage).toEqual({ kind: 'missing', reason: 'not_reported' });
   });
 });
 
@@ -1951,7 +1955,11 @@ describe('OpenAI-compatible adapter — reasoning + structured output (ADR-0030)
         completion_tokens: 20,
         completion_tokens_details: { reasoning_tokens: 12 },
       }),
-    ).toEqual({ inputTokens: 10, outputTokens: 20, reasoningTokens: 12 });
+    ).toEqual({
+      kind: 'partial',
+      known: { outputTokens: 20, reasoningTokens: 12 },
+      reason: 'missing_fields',
+    });
   });
 
   it('mapUsage surfaces audio tokens as a mediaUnits entry (raw count, no seconds — 1.AF/ADR-0044)', () => {
@@ -1963,15 +1971,20 @@ describe('OpenAI-compatible adapter — reasoning + structured output (ADR-0030)
         completion_tokens_details: { audio_tokens: 13 },
       }),
     ).toEqual({
-      inputTokens: 30,
-      outputTokens: 40,
-      mediaUnits: [
-        { modality: 'audio', direction: 'input', units: 7, unit: 'count' },
-        { modality: 'audio', direction: 'output', units: 13, unit: 'count' },
-      ],
+      kind: 'partial',
+      reason: 'missing_fields',
+      known: {
+        outputTokens: 40,
+        mediaUnits: [
+          { modality: 'audio', direction: 'input', units: 7, unit: 'count' },
+          { modality: 'audio', direction: 'output', units: 13, unit: 'count' },
+        ],
+      },
     });
     // No audio tokens ⇒ no mediaUnits axis at all.
-    expect(mapUsage({ prompt_tokens: 5, completion_tokens: 5 }).mediaUnits).toBeUndefined();
+    expect(
+      knownUsage(mapUsage({ prompt_tokens: 5, completion_tokens: 5 })).mediaUnits,
+    ).toBeUndefined();
   });
 
   it('lowers responseFormat json to response_format json_schema', async () => {

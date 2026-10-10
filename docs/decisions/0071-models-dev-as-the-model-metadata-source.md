@@ -517,3 +517,10 @@ types — one file, not a refactor.
   What changes is that a model now *declares* which of those tiers it accepts, and what native shape carries
   them, instead of the adapter assuming both.
 - **No new runtime dependency** (§3) — native `fetch`, existing Zod, `node:crypto`.
+
+### W8 usage coverage activation — 2026-10-10
+
+Missing usage and missing model/modality prices remain independent. A known zero actual sum cannot be presented as fully priced/free unless both coverage and price are known.
+
+See [ADR-0104](0104-unknown-provider-usage-is-durable-cost-uncertainty.md) and the
+[canonical usage contract](../reference/shared-core/llm-provider-seam.md#6-usage).

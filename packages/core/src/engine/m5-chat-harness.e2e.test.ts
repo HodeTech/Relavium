@@ -90,7 +90,7 @@ const usage = { inputTokens: 10, outputTokens: 5 };
 const STOP = (reason: 'stop' | 'tool_use' = 'stop'): StreamChunk => ({
   type: 'stop',
   stopReason: reason,
-  usage,
+  usage: { kind: 'complete', usage },
 });
 const textTurn = (text: string): StreamChunk[] => [{ type: 'text_delta', text }, STOP('stop')];
 const toolUseTurn = (id: string): StreamChunk[] => [

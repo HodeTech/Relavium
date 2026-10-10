@@ -1,3 +1,4 @@
+import { UsageCoverageFold, type UsageInvocation } from '@relavium/shared';
 /**
  * `WorkflowEngine` (1.N) — the run loop that walks a `RunPlan` (1.M), dispatches every vertex whose
  * dependencies are satisfied, and emits the canonical `RunEvent` stream
@@ -617,6 +618,8 @@ class RunExecution {
   readonly #budgetGovernor: BudgetGovernor | undefined;
   /** The money-durability barrier for BOTH chains — always present, cap or no cap (ADR-0077 §5). */
   readonly #money: MoneyDurability;
+  #usageCoverage = new UsageCoverageFold();
+  #usageOrdinal = 0;
   readonly #hostWork: HostWorkRegistry;
   readonly #effectHealth = new EffectReceiptHealth();
   #hostRetirement: Promise<void> | undefined;
@@ -810,6 +813,46 @@ class RunExecution {
     // ledger that only existed alongside a governor would silently skip every unbudgeted run. It fronts the
     // join for BOTH chains, so `flushConservative` is wired to the governor once that exists.
     this.#money = new MoneyDurability({
+      beginUsageInvocation: async (draft) => {
+        if (this.#settled || this.#abort.signal.aborted)
+          throw new Error('Run no longer admits usage');
+        const invocation = Object.freeze({
+          producerId: this.#ownerId,
+          ordinal: ++this.#usageOrdinal,
+          dispatchId: String(this.#dispatchIdForVertex.get(draft.nodeId) ?? 0),
+          round: draft.round,
+          chainAttempt: draft.chainAttempt,
+        });
+        const acknowledgement = await this.#emitDurable({
+          type: 'cost:usage_pending',
+          runId: this.runId,
+          nodeId: draft.nodeId,
+          model: draft.model,
+          invocation,
+        });
+        if (acknowledgement.kind !== 'persisted')
+          throw new DurableAppendNotPersistedError(acknowledgement);
+        this.#usageCoverage.pending(draft.model, invocation);
+        return invocation;
+      },
+      emitUsageDisposition: async (draft) => {
+        const acknowledgement = await this.#emitDurable(
+          {
+            ...draft,
+            type: 'cost:usage_disposition',
+            runId: this.runId,
+          },
+          { receipt: true },
+        );
+        if (acknowledgement.kind !== 'persisted')
+          throw new DurableAppendNotPersistedError(acknowledgement);
+        this.#usageCoverage.disposition(
+          draft.model,
+          draft.invocation,
+          draft.disposition,
+          draft.receiptPending,
+        );
+      },
       emit: async (draft, cumulativeCostMicrocents) => {
         // Each required money append observes its own store ACK, independently of earlier failures,
         // cancellation and ownership refusal. A total ordinary writer is not a money durability ACK.
@@ -832,6 +875,8 @@ class RunExecution {
         if (acknowledgement.kind !== 'persisted') {
           throw new DurableAppendNotPersistedError(acknowledgement);
         }
+        if (draft.invocation !== undefined)
+          this.#usageCoverage.complete(draft.model, draft.invocation);
       },
       ...(params.plan.budget === undefined
         ? {}
@@ -1053,6 +1098,7 @@ class RunExecution {
       // An acquisition already entered before cancellation still owes exact-fence cleanup. Keep
       // that returned claim for retirement, but do not enter context or dispatch after it resolves.
       if (this.#settled || this.#abort.signal.aborted) return;
+      await this.#startUsageCoverage('complete');
     } catch (error) {
       // Could not even start the run (e.g. the store rejected) — close with the single terminal event
       // rather than leaving a started-but-never-finished run. Never swallowed: it becomes run:failed.
@@ -1486,6 +1532,8 @@ class RunExecution {
 
   /** Seed `#states` / `#pendingGates` / tallies / the bus sequence from a checkpoint (rehydration, 1.R). */
   #seedFromCheckpoint(plan: RunPlan, cp: CheckpointState, bus: RunEventBus, runId: string): void {
+    this.#usageCoverage = new UsageCoverageFold(cp.usageCoverage);
+    this.#usageOrdinal = this.#usageCoverage.highWater;
     for (const id of plan.vertices.keys()) {
       const node = cp.nodeStates.get(id);
       if (node === undefined) {
@@ -1571,6 +1619,18 @@ class RunExecution {
     this.#startEpochMs = cp.startedAtMs;
   }
 
+  async #startUsageCoverage(basis: 'complete' | 'legacy_unverified'): Promise<void> {
+    if (this.#usageCoverage.started) return;
+    const acknowledgement = await this.#emitDurable({
+      type: 'cost:coverage_started',
+      runId: this.runId,
+      basis,
+    });
+    if (acknowledgement.kind !== 'persisted')
+      throw new DurableAppendNotPersistedError(acknowledgement);
+    this.#usageCoverage.start(basis);
+  }
+
   #activateCheckpoint(excludedGateId?: string): void {
     const cp = this.#checkpoint;
     if (cp === undefined) return;
@@ -1635,6 +1695,7 @@ class RunExecution {
 
   /** The sole ordered writer still owns a refused resume's terminal and paid-job accounting. */
   async refuseResume(): Promise<void> {
+    await this.#startUsageCoverage('legacy_unverified');
     this.#activateCheckpoint();
     await this.#settle(this.#cancelling ? 'run:cancelled' : 'run:failed');
   }
@@ -1645,6 +1706,7 @@ class RunExecution {
     gateAlreadyResolved: boolean,
   ): Promise<void> {
     if (!gateAlreadyResolved) this.#assertGatePending(gateId);
+    await this.#startUsageCoverage('legacy_unverified');
     if (!this.#resumeAdmitted && !(await this.#resolveContextOrFail())) {
       await this.#settle(this.#cancelling ? 'run:cancelled' : 'run:failed');
       return;
@@ -1688,6 +1750,7 @@ class RunExecution {
    * with no pending media job AND no pending gate is a misuse (`run_not_paused`).
    */
   async beginResumeMediaJobs(): Promise<void> {
+    await this.#startUsageCoverage('legacy_unverified');
     if ((this.#checkpoint?.pendingMediaJobs.length ?? this.#pendingMediaJobs.size) === 0) {
       // A media-only resume REQUIRES a parked media job. A run parked ONLY on a human gate must be resumed via
       // the gate form (gateId + decision) — resuming it here would silently re-park it forever (no decision).
@@ -2691,16 +2754,55 @@ class RunExecution {
   #receiptContext(
     scope: HostWorkScope,
     vertexId: string,
+    dispatchId: number,
     port?: EffectDispatchPort,
   ): NodeReceiptContext {
+    const issued = new WeakMap<UsageInvocation, 'pending' | 'claimed' | 'emitted' | 'recorded'>();
     return Object.freeze({
       money: {
-        record: (draft) => {
+        beginUsageInvocation: (draft) => {
           scope.assertActive();
+          return scope.enter(async () => {
+            const invocation = await this.#money.beginUsageInvocation({
+              ...draft,
+              nodeId: vertexId,
+            });
+            issued.set(invocation, 'pending');
+            return invocation;
+          });
+        },
+        claimUsage: (invocation, kind) => {
+          if (!issued.has(invocation)) return false;
+          const accepted = this.#money.claimUsage(invocation, kind);
+          if (accepted && kind === 'complete') issued.set(invocation, 'claimed');
+          return accepted;
+        },
+        emitCost: (event) => {
+          if (event.invocation === undefined || issued.get(event.invocation) !== 'claimed')
+            throw new Error('Usage receipt has not claimed its charge');
+          issued.set(event.invocation, 'emitted');
+          const live = this.#isLive(vertexId, dispatchId);
+          this.#nodeEmit({ ...event, nodeId: vertexId }, live);
+        },
+        usageDisposition: (draft) => {
+          if (!issued.has(draft.invocation)) throw new Error('Usage receipt is not registered');
+          this.#money.usageDisposition({ ...draft, nodeId: vertexId });
+          void this.#hostWork.enter(() => this.#money.waitForWrites());
+        },
+        record: (draft) => {
+          if (draft.invocation === undefined) scope.assertActive();
+          else {
+            if (
+              issued.get(draft.invocation) !== 'emitted' &&
+              issued.get(draft.invocation) !== 'claimed'
+            )
+              throw new Error('Usage receipt has not claimed its charge');
+            issued.set(draft.invocation, 'recorded');
+          }
           this.#money.record({ ...draft, nodeId: vertexId }, this.#cumulativeCostMicrocents);
           // Lifetime ACK only. The main money join owns its consume-once failure; this observation
           // cannot turn a refused write into persistence or consume the error before its caller.
-          void scope.enter(() => this.#money.waitForWrites());
+          void this.#hostWork.enter(() => this.#money.waitForWrites());
         },
         join: () => scope.enter(() => this.#money.join()),
       },
@@ -2721,7 +2823,7 @@ class RunExecution {
       continueReceipt: <T>(operation: (receipt: NodeReceiptContext) => Promise<T>): Promise<T> =>
         scope.continue((child) =>
           this.#effectHealth.invocation(() =>
-            operation(this.#receiptContext(child, vertexId, port)),
+            operation(this.#receiptContext(child, vertexId, dispatchId, port)),
           ),
         ),
     } satisfies NodeReceiptContext);
@@ -2923,7 +3025,7 @@ class RunExecution {
         const rawEffects = this.#effectJournal?.(correlation);
         const effects =
           rawEffects === undefined ? undefined : this.#effectHealth.bind(rawEffects, correlation);
-        const receipts = this.#receiptContext(scope, vertex.id, effects);
+        const receipts = this.#receiptContext(scope, vertex.id, dispatchId, effects);
         const ctx: NodeExecContext = {
           continueReceipt: receipts.continueReceipt,
           vertex,
@@ -4926,6 +5028,8 @@ class RunExecution {
         this.#bus.emit({ ...event, runId });
         return;
       case 'cost:updated':
+        if (event.invocation !== undefined)
+          this.#usageCoverage.complete(event.model, event.invocation);
         // The FOLD is unconditional: it is what keeps `#cumulativeCostMicrocents` a truthful record of money
         // the provider actually took, and what `TurnMoneyPort.record` stamps onto the durable ledger row.
         this.#cumulativeCostMicrocents += event.costMicrocents;
@@ -4936,6 +5040,7 @@ class RunExecution {
             ...event,
             runId,
             cumulativeCostMicrocents: this.#cumulativeCostMicrocents,
+            usageCoverage: this.#usageCoverage.snapshot().coverage,
           });
         }
         return;
@@ -5036,6 +5141,8 @@ class RunExecution {
     },
   ): Promise<DurableAppendAcknowledgement> {
     const handOff = opts?.handOff === true;
+    if (!draft.type.startsWith('cost:usage_') && draft.type !== 'cost:coverage_started')
+      draft = { ...draft, usageCoverage: this.#usageCoverage.snapshot().coverage };
     // **`CR-32`'s durable-event bound, and the terminal is exempt.** A run that cannot publish its terminal
     // is worse in every way than one that wrote an oversized final event: the stream never closes, the lease
     // is never released, and no surface can tell whether the run finished. ADR-0078 §6 draws the same line

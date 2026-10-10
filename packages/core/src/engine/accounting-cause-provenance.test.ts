@@ -99,7 +99,7 @@ async function actualWorkflow(
           },
         ],
         stopReason: 'stop',
-        usage: { inputTokens: 7, outputTokens: 11 },
+        usage: { kind: 'complete', usage: { inputTokens: 7, outputTokens: 11 } },
       };
       if (origin === 'result-getter' && kind !== 'none')
         Object.defineProperty(result, 'content', {
@@ -126,7 +126,11 @@ async function actualWorkflow(
         return;
       }
       if (origin === 'clock' && kind !== 'none') pending = true;
-      yield { type: 'stop', stopReason: 'stop', usage: { inputTokens: 7, outputTokens: 11 } };
+      yield {
+        type: 'stop',
+        stopReason: 'stop',
+        usage: { kind: 'complete', usage: { inputTokens: 7, outputTokens: 11 } },
+      };
     },
   };
   const store = new InMemoryRunStore(),
@@ -284,7 +288,11 @@ async function actualSession(kind: 'none' | 'raw' | 'turn' | 'pause') {
       await Promise.resolve();
       calls++;
       yield { type: 'text_delta', text: 'paid' };
-      yield { type: 'stop', stopReason: 'stop', usage: { inputTokens: 7, outputTokens: 11 } };
+      yield {
+        type: 'stop',
+        stopReason: 'stop',
+        usage: { kind: 'complete', usage: { inputTokens: 7, outputTokens: 11 } },
+      };
     },
   };
   const session = new AgentSession({

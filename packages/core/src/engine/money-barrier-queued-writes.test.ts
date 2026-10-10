@@ -92,7 +92,11 @@ describe('R11 fresh joined real MoneyDurability and current governor pre-egress'
             await Promise.resolve();
             calls++;
             yield { type: 'text_delta', text: 'r11' };
-            yield { type: 'stop', stopReason: 'stop', usage: { inputTokens: 2, outputTokens: 3 } };
+            yield {
+              type: 'stop',
+              stopReason: 'stop',
+              usage: { kind: 'complete', usage: { inputTokens: 2, outputTokens: 3 } },
+            };
           },
         };
         const params: AgentTurnParams = {

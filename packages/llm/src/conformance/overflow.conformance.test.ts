@@ -265,7 +265,7 @@ describe('Anthropic native HTTP 200 context stop is paid failure, never clean st
       expect(records[0]).toMatchObject({
         outcome: 'failed',
         contentReceived: true,
-        usage: { inputTokens: 199885, outputTokens: 12792 },
+        usage: { kind: 'complete' as const, usage: { inputTokens: 199885, outputTokens: 12792 } },
         cost: { costMicrocents: 212677 },
         error: { kind },
       });
@@ -347,7 +347,10 @@ describe('first native overflow owns its final evidence before another SDK read'
           type: 'error',
           error: {
             kind: 'context_overflow',
-            usage: { inputTokens: 199885, outputTokens: 12792 },
+            usage: {
+              kind: 'complete' as const,
+              usage: { inputTokens: 199885, outputTokens: 12792 },
+            },
             message: 'generation exceeded the model context window',
           },
         });
@@ -363,7 +366,7 @@ describe('first native overflow owns its final evidence before another SDK read'
           outcome: 'failed',
           contentReceived: includeContent,
           error: { kind: 'context_overflow' },
-          usage: { inputTokens: 199885, outputTokens: 12792 },
+          usage: { kind: 'complete' as const, usage: { inputTokens: 199885, outputTokens: 12792 } },
         });
       });
     }
@@ -475,7 +478,7 @@ describe('first native overflow owns its final evidence before another SDK read'
         expect(records).toHaveLength(1);
         expect(records[0]).toMatchObject({
           outcome: 'failed',
-          usage: { inputTokens: 199885, outputTokens: 12792 },
+          usage: { kind: 'complete' as const, usage: { inputTokens: 199885, outputTokens: 12792 } },
           cost: { costMicrocents: 212677 },
           error: { kind },
         });
@@ -560,7 +563,16 @@ describe('first native overflow owns its final evidence before another SDK read'
       },
     });
     const out = await chunks(chain.stream(request(capture.model)));
-    expect(out).toMatchObject([{ type: 'stop', usage: { inputTokens: 1, outputTokens: 1 } }]);
+    expect(out).toMatchObject([
+      {
+        type: 'stop',
+        usage: {
+          kind: 'partial',
+          reason: 'missing_fields',
+          known: { inputTokens: 1, outputTokens: 1 },
+        },
+      },
+    ]);
     expect(fetches).toBe(2);
     expect(cancellations).toBe(1);
     expect(records).toMatchObject([
@@ -568,19 +580,24 @@ describe('first native overflow owns its final evidence before another SDK read'
         outcome: 'failed',
         contentReceived: false,
         error: { kind: 'timeout' },
-        usage: { inputTokens: 199885, outputTokens: 12792 },
+        usage: { kind: 'complete' as const, usage: { inputTokens: 199885, outputTokens: 12792 } },
       },
-      { outcome: 'succeeded', contentReceived: false, usage: { inputTokens: 1, outputTokens: 1 } },
+      {
+        outcome: 'succeeded',
+        contentReceived: false,
+        usage: {
+          kind: 'partial',
+          reason: 'missing_fields',
+          known: { inputTokens: 1, outputTokens: 1 },
+        },
+      },
     ]);
     expect(records).toHaveLength(2);
-    expect(quantities).toEqual([
-      { inputTokens: 199885, outputTokens: 12792 },
-      { inputTokens: 1, outputTokens: 1 },
-    ]);
+    expect(quantities).toEqual([{ inputTokens: 199885, outputTokens: 12792 }]);
     release();
     await cleanupSettled;
     expect(records).toHaveLength(2);
-    expect(quantities).toHaveLength(2);
+    expect(quantities).toHaveLength(1);
   });
 });
 
@@ -602,7 +619,10 @@ it('native generate with no text still retains the captured paid usage as proces
     llmError: { kind: 'context_overflow', contentCommitted: true },
   });
   expect(records).toMatchObject([
-    { contentReceived: true, usage: { inputTokens: 199885, outputTokens: 12792 } },
+    {
+      contentReceived: true,
+      usage: { kind: 'complete' as const, usage: { inputTokens: 199885, outputTokens: 12792 } },
+    },
   ]);
   expect(records).toHaveLength(1);
 });

@@ -90,7 +90,7 @@ function fixture(
               message: 'synthetic overflow',
               status: 400,
             }),
-            usage: { inputTokens: 2, outputTokens: 1 },
+            usage: { kind: 'complete', usage: { inputTokens: 2, outputTokens: 1 } },
           },
         };
         return;
@@ -105,8 +105,11 @@ function fixture(
         type: 'stop',
         stopReason: 'stop',
         usage: {
-          inputTokens: summary ? 7 : (options.mainInputTokens ?? 11),
-          outputTokens: summary ? 3 : 5,
+          kind: 'complete',
+          usage: {
+            inputTokens: summary ? 7 : (options.mainInputTokens ?? 11),
+            outputTokens: summary ? 3 : 5,
+          },
         },
       };
     },
@@ -825,7 +828,7 @@ describe('W7 current-invocation overflow authority and cancellable disclosure', 
               yield {
                 type: 'stop',
                 stopReason: 'stop',
-                usage: { inputTokens: 1, outputTokens: 1 },
+                usage: { kind: 'complete', usage: { inputTokens: 1, outputTokens: 1 } },
               };
             } else {
               actualMainCalls++;

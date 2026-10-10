@@ -1202,3 +1202,10 @@ The approved W7 implementation and scoped independent reviews are complete. Fina
 acceptance, per-item causal evidence, canonical landing checks and approved residuals are joined in
 the [W7 closing register](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w7-closing-register--2026-10-10).
 This dated note preserves the earlier decision and status history; W8 and the phase remain open.
+
+### W8 usage coverage activation — 2026-10-10
+
+Retained raw producers and their exact late accounting callbacks join host-safe closure before the session writer or database closes. Completed/retired identities cannot reacquire authority; terminal closure does not reopen ordinary delivery.
+
+See [ADR-0104](0104-unknown-provider-usage-is-durable-cost-uncertainty.md) and the
+[canonical usage contract](../reference/shared-core/llm-provider-seam.md#6-usage).

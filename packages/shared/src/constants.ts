@@ -21,8 +21,7 @@ export type SchemaVersion = typeof SCHEMA_VERSION;
  * sit after `agent:tool_result`, then the governance events: `run:paused`, `run:timeout`,
  * `budget:warning`, `budget:paused` (ADR-0028), `budget:authorization` (ADR-0100) and
  * `budget:estimate_committed` ([ADR-0074], dual-envelope).
- * `cost:attempt_settled` ([ADR-0076]) closes the list — the realized twin of that last one, and the only
- * durable member of the `cost:` namespace (`cost:updated` is streamed).
+ * `cost:attempt_settled` ([ADR-0076]) closes the list — the realized twin of that last one, and ADR-0104 adds the three durable coverage boundaries (`cost:updated` remains streamed).
  */
 export const RUN_EVENT_TYPES = [
   'run:started',
@@ -66,6 +65,9 @@ export const RUN_EVENT_TYPES = [
   // RUN-ONLY, deliberately: the session path already records per-attempt realized spend into `session_costs`
   // on every 'cost:updated' (ADR-0070), so it needs no session arm and is NOT in SESSION_EVENT_TYPES.
   'cost:attempt_settled',
+  'cost:coverage_started',
+  'cost:usage_pending',
+  'cost:usage_disposition',
 ] as const;
 export type RunEventType = (typeof RUN_EVENT_TYPES)[number];
 

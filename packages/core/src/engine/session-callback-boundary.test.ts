@@ -45,7 +45,10 @@ function fixture(site: FaultSite, marker: Error, aborting = false, zero = false,
       yield {
         type: 'stop',
         stopReason: 'stop',
-        usage: { inputTokens: zero ? 0 : 2, outputTokens: zero ? 0 : 3 },
+        usage: {
+          kind: 'complete',
+          usage: { inputTokens: zero ? 0 : 2, outputTokens: zero ? 0 : 3 },
+        },
       };
     },
   };

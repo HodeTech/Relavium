@@ -1,4 +1,4 @@
-import type { RunEvent } from '@relavium/shared';
+import { UsageCoverageFold, type RunEvent } from '@relavium/shared';
 
 import { renderFinalSummary } from './final-summary.js';
 import { initialRunViewState, reduceRunEvent, type RunViewState } from './run-view-model.js';
@@ -57,6 +57,7 @@ const HIGH_FREQUENCY_EVENTS: ReadonlySet<RunEvent['type']> = new Set([
 export function createRunStore(color: boolean): RunStoreController {
   const listeners = new Set<() => void>();
   let state = initialRunViewState();
+  const coverage = new UsageCoverageFold();
   let tickCount = 0;
   let dirty = false;
   let snapshot: RunStoreSnapshot = { state, tick: tickCount, color };
@@ -85,7 +86,21 @@ export function createRunStore(color: boolean): RunStoreController {
     },
     getSnapshot: () => snapshot,
     apply: (event) => {
-      state = reduceRunEvent(state, event);
+      // Duplicate/replayed live events do not advance accounting twice.
+      if (
+        state.lastSequenceNumber === undefined ||
+        event.sequenceNumber > state.lastSequenceNumber
+      ) {
+        coverage.apply(event);
+        const unpricedCalls =
+          (state.unpricedCalls ?? 0) +
+          (event.type === 'cost:updated' && event.priced === false ? 1 : 0);
+        state = {
+          ...reduceRunEvent(state, event),
+          usageCoverage: coverage.snapshot().coverage,
+          unpricedCalls,
+        };
+      } else state = reduceRunEvent(state, event);
       if (HIGH_FREQUENCY_EVENTS.has(event.type)) {
         dirty = true; // coalesced to the next frame — no flood, no drop
       } else {

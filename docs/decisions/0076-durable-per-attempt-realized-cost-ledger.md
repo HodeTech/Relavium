@@ -142,3 +142,10 @@ accepted in the [W7 closing register](../roadmap/phases/phase-2.6.5-core-reliabi
 The later [post-closure systematic correction register](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#post-closure-systematic-review--2026-10-10)
 tracks reopened review findings and their scoped acceptance; it governs the current PR acceptance status.
 This additive note does not rewrite the original decision or claim that PR #90 has merged.
+
+### W8 usage coverage activation — 2026-10-10
+
+The invocation identity correlates coverage only; it is not a second money uniqueness key. Complete correlated settlement stays in the existing sole writer and resolves pending/unknown atomically with realized spend. Completed correlation identities retire into aggregates.
+
+See [ADR-0104](0104-unknown-provider-usage-is-durable-cost-uncertainty.md) and the
+[canonical usage contract](../reference/shared-core/llm-provider-seam.md#6-usage).

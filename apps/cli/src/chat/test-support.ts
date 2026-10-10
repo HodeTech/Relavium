@@ -16,7 +16,7 @@ const FIXED_USAGE = { inputTokens: 10, outputTokens: 5 } as const;
 export const stop = (reason: 'stop' | 'tool_use' = 'stop'): StreamChunk => ({
   type: 'stop',
   stopReason: reason,
-  usage: FIXED_USAGE,
+  usage: { kind: 'complete', usage: FIXED_USAGE },
 });
 
 /** A one-shot text turn: stream `text` then stop. */

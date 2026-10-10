@@ -1,6 +1,6 @@
 # `agent run` fixture cassette
 
-> Last updated: 2026-06-26
+> Last updated: 2026-10-10
 
 - **Status**: Reference (the cassette format consumed by `relavium agent run --fixture`, workstream **2.Q**)
 - **Surface**: CLI (`relavium agent run`)
@@ -34,18 +34,18 @@ A cassette is a single JSON object:
 
 ```json
 {
-  "schema_version": "1.0",
+  "schema_version": "2.0",
   "provider": "anthropic",
   "model": "claude-sonnet-4-6",
   "calls": [
     [
       { "type": "tool_call_start", "id": "call-1", "name": "read_file" },
       { "type": "tool_call_end", "id": "call-1" },
-      { "type": "stop", "stopReason": "tool_use", "usage": { "inputTokens": 12, "outputTokens": 4 } }
+      { "type": "stop", "stopReason": "tool_use", "usage": { "kind": "complete", "usage": { "inputTokens": 12, "outputTokens": 4 } } }
     ],
     [
       { "type": "text_delta", "text": "The file exports a single function." },
-      { "type": "stop", "stopReason": "stop", "usage": { "inputTokens": 30, "outputTokens": 8 } }
+      { "type": "stop", "stopReason": "stop", "usage": { "kind": "complete", "usage": { "inputTokens": 30, "outputTokens": 8 } } }
     ]
   ]
 }
@@ -53,7 +53,7 @@ A cassette is a single JSON object:
 
 | Field | Type | Meaning |
 |-------|------|---------|
-| `schema_version` | `"1.0"` | The cassette format version. An unknown version is a load fault (exit `2`). |
+| `schema_version` | `"2.0"` | The cassette format version. An unknown version is a load fault (exit `2`). |
 | `provider` | `ProviderId` | The id the replay provider answers as (`anthropic` / `openai` / `gemini` / `deepseek`). The agent's resolved provider must match, or the run fails fast. |
 | `model` | `string` (optional) | Informational only — the recorded model id, for provenance. Not used to route. |
 | `calls` | `StreamChunk[][]` | One entry per `provider.stream()` invocation during the turn, in order. |
@@ -69,8 +69,16 @@ A cassette is a single JSON object:
   `tool_call_end`, the `reasoning_*` and `media_*` triads, a provider-executed `tool_result`, and the
   terminal `stop` (carrying `stopReason` + `usage`) or `error`. A well-formed turn ends in exactly one
   `stop` (or `error`).
-- **`usage`** on the `stop` chunk carries `inputTokens` / `outputTokens` (and optional `reasoningTokens` ≤
-  `outputTokens`); these drive the recorded turn's token/cost accounting deterministically.
+- **`usage`** is the seam's single `UsageEvidence` value: `complete` wraps validated quantities,
+  `partial` contains only known canonical quantities, and `missing` contains a fixed reason. Only complete
+  evidence enters actual token pricing. Partial/missing cassette outcomes preserve useful output and explicit
+  uncertainty, exactly as a live provider does.
+
+Version `2.0` intentionally follows [ADR-0104](../../decisions/0104-unknown-provider-usage-is-durable-cost-uncertainty.md)'s
+breaking Phase-1 seam migration. Old `1.0` cassettes refuse at load rather than guessing completeness.
+For a genuinely complete old observation, wrap its usage in `{kind: "complete", usage: ...}` and update
+its version. If the old record was fabricated or zero-filled, use partial/missing evidence; changing the
+version alone cannot establish trustworthy usage.
 
 ## Validation and loading
 

@@ -568,3 +568,7 @@ For a complete walkthrough (key handling, gates, artifacts, exit-code checks), s
 ## Phase 2 note
 
 > In Phase 2, `relavium` gains cloud-mode commands (e.g. `relavium auth login` via OAuth Device Flow, and switching execution to the cloud). The engine interface is identical in both modes — the CLI requires no code changes to target cloud execution. See [../portal/api-reference.md](../portal/api-reference.md) and [../../architecture/cloud-phase-2.md](../../architecture/cloud-phase-2.md).
+
+## Qualified usage and cost totals
+
+Numeric cost totals are known realized sums. Human totals qualify unverified history, pending invocations, unknown usage and missing prices; machine records expose usageCoverage and independent price information. Unknown usage at a numeric zero is never free. The /cost panel includes models with uncertainty but no realized-money row; estimate release leaves usage uncertainty intact. Resumed/reseated views seed the existing durable coverage instead of a fresh zero. Compaction notices distinguish known observed tokens from complete summary usage. See the [seam](../shared-core/llm-provider-seam.md#6-usage), [event contract](../contracts/sse-event-schema.md), and [database contract](../shared-core/database-schema.md).

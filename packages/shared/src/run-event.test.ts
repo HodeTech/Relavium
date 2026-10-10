@@ -199,6 +199,22 @@ const valid: Record<string, Record<string, unknown>> = {
     cumulativeCostMicrocents: 400,
     priced: true,
   },
+  'cost:coverage_started': { type: 'cost:coverage_started', ...env, basis: 'complete' },
+  'cost:usage_pending': {
+    type: 'cost:usage_pending',
+    ...env,
+    nodeId: 'n',
+    model: 'm',
+    invocation: { producerId: 'p', ordinal: 1, dispatchId: 'd', round: 0, chainAttempt: 1 },
+  },
+  'cost:usage_disposition': {
+    type: 'cost:usage_disposition',
+    ...env,
+    nodeId: 'n',
+    model: 'm',
+    invocation: { producerId: 'p', ordinal: 1, dispatchId: 'd', round: 0, chainAttempt: 1 },
+    disposition: { kind: 'incomplete', evidence: { kind: 'missing', reason: 'not_reported' } },
+  },
 };
 
 /** One targeted invalid payload per variant (a missing/invalid required field). */
@@ -732,7 +748,7 @@ describe('RunEvent union — every variant', () => {
     }
   });
 
-  it('covers exactly the 26 canonical colon-namespaced names, pinned to a literal list', () => {
+  it('covers exactly the 29 canonical colon-namespaced names, pinned to a literal list', () => {
     // A hardcoded contract list — independent of RUN_EVENT_TYPES — so the union and the
     // constant cannot silently drift together.
     const CONTRACT_NAMES = [
@@ -761,7 +777,10 @@ describe('RunEvent union — every variant', () => {
       'budget:paused',
       'budget:authorization',
       'budget:estimate_committed', // ADR-0074 §2 — a durable conservative commitment; an ESTIMATE, not spend
-      'cost:attempt_settled', // ADR-0076 — the realized twin of the line above; the only DURABLE cost: event
+      'cost:attempt_settled',
+      'cost:coverage_started',
+      'cost:usage_pending',
+      'cost:usage_disposition',
     ];
     // The matrix above proves each canonical name's valid payload parses (so a
     // renamed/missing variant fails there); the union member count catches an *extra*

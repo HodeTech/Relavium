@@ -16,7 +16,7 @@ import {
   OUTPUT_MODALITIES,
   refineInFlightMediaPart,
   StopReasonSchema,
-  UsageSchema,
+  UsageEvidenceSchema,
 } from '@relavium/shared';
 import type { AbortSignalLike, LlmProviderId } from '@relavium/shared';
 import { isPreparedOutputCapPlan, type PreparedOutputCapPlan } from './output-cap.js';
@@ -278,7 +278,7 @@ export const LlmErrorSchema = z.object({
   contentCommitted: z.literal(true).optional(),
   /** Actual canonical usage supplied with a failed response (e.g. a native context-window stop).
    * Never inferred from a reservation; consumers account it even when the diagnostic changes. */
-  usage: UsageSchema.optional(),
+  usage: UsageEvidenceSchema.optional(),
 });
 export type LlmError = z.infer<typeof LlmErrorSchema>;
 
@@ -343,7 +343,7 @@ export const LlmResultSchema = z
   .object({
     content: z.array(ContentPartSchema), // text + any tool_call/media parts
     stopReason: StopReasonSchema,
-    usage: UsageSchema,
+    usage: UsageEvidenceSchema,
     // INTERNAL diagnostic only — the raw provider response, for debugging / the escape hatch.
     // Never log, serialize, checkpoint, or put it in a run event: any sink must strip `raw` first
     // (the same rule as LlmError.cause). From 1.AE/1.AG on it is the highest-volume media-bytes
@@ -430,7 +430,7 @@ export const StreamChunkSchema = z
       providerExecuted: z.literal(true),
       media: z.array(DurableMediaPartSchema).optional(),
     }),
-    z.object({ type: z.literal('stop'), stopReason: StopReasonSchema, usage: UsageSchema }),
+    z.object({ type: z.literal('stop'), stopReason: StopReasonSchema, usage: UsageEvidenceSchema }),
     z.object({ type: z.literal('error'), error: LlmErrorSchema }),
   ])
   .superRefine((chunk, ctx) => {
@@ -539,6 +539,10 @@ export interface EstimateTokensInput {
 /** Trusted, process-local lifetime authority, separate from request data and durable records. */
 export interface LlmInvocationOptions {
   readonly retainWork: <T>(factory: () => Promise<T>) => Promise<T>;
+  /** Native parameter repair must settle prior coverage and acknowledge the next call before egress. */
+  readonly beforeNativeRetry?: (error: LlmError) => Promise<void>;
+  /** Mark an acknowledged repaired invocation only at the next native create. */
+  readonly nativeInvocationStarted?: () => void;
 }
 
 /**

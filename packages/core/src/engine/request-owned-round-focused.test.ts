@@ -55,12 +55,16 @@ function provider(id: 'openai' | 'gemini' = 'openai'): LlmProvider {
     generate: () =>
       Promise.resolve({
         content: [],
-        usage: { inputTokens: 0, outputTokens: 0 },
+        usage: { kind: 'complete', usage: { inputTokens: 0, outputTokens: 0 } },
         stopReason: 'stop',
       }),
     stream: async function* (): AsyncGenerator<StreamChunk> {
       await Promise.resolve();
-      yield { type: 'stop', stopReason: 'stop', usage: { inputTokens: 0, outputTokens: 0 } };
+      yield {
+        type: 'stop',
+        stopReason: 'stop',
+        usage: { kind: 'complete', usage: { inputTokens: 0, outputTokens: 0 } },
+      };
     },
   };
 }
@@ -144,8 +148,17 @@ describe('owned core round identity and authority (ADR-0102)', () => {
       if (calls.length === 1) {
         yield { type: 'tool_call_start', id: 'c', name: 'echo' };
         yield { type: 'tool_call_end', id: 'c' };
-        yield { type: 'stop', stopReason: 'tool_use', usage: { inputTokens: 1, outputTokens: 1 } };
-      } else yield { type: 'stop', stopReason: 'stop', usage: { inputTokens: 1, outputTokens: 1 } };
+        yield {
+          type: 'stop',
+          stopReason: 'tool_use',
+          usage: { kind: 'complete', usage: { inputTokens: 1, outputTokens: 1 } },
+        };
+      } else
+        yield {
+          type: 'stop',
+          stopReason: 'stop',
+          usage: { kind: 'complete', usage: { inputTokens: 1, outputTokens: 1 } },
+        };
     };
     const first = prepareAgentTurnRequest(source);
     await runAgentTurn({
@@ -877,7 +890,11 @@ describe('owned core round identity and authority (ADR-0102)', () => {
     fallback.stream = async function* (request): AsyncGenerator<StreamChunk> {
       invoked.push(request.model);
       await Promise.resolve();
-      yield { type: 'stop', stopReason: 'stop', usage: { inputTokens: 0, outputTokens: 0 } };
+      yield {
+        type: 'stop',
+        stopReason: 'stop',
+        usage: { kind: 'complete', usage: { inputTokens: 0, outputTokens: 0 } },
+      };
     };
     try {
       const source = params(primary, {

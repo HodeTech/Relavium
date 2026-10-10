@@ -5,7 +5,7 @@ import { clearTimeout, setTimeout } from 'node:timers';
 
 const [, , distUrl, dbPath, mode] = process.argv;
 // eslint-disable-next-line no-restricted-syntax -- a native worker uses built files, not Vitest TS resolution
-const { createClient, createSessionStore } = await import(distUrl);
+const { createClient, createSessionStore, createSessionUsageStore } = await import(distUrl);
 const client = createClient(dbPath);
 try {
   if (mode === 'lock-release' || mode === 'lock-hold') {
@@ -36,31 +36,41 @@ try {
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10_000);
       return 0;
     };
-    if (mode === 'before-ack' || mode === 'after-ack') {
+    if (mode.endsWith('before-ack') || mode.endsWith('after-ack')) {
       client.sqlite.function('test_crash_cut', cut);
       client.sqlite.exec(
-        `CREATE TEMP TRIGGER test_crash_cut ${mode === 'before-ack' ? 'BEFORE' : 'AFTER'} UPDATE OF usage_ack_revision ON agent_sessions BEGIN SELECT test_crash_cut(); END`,
+        `CREATE TEMP TRIGGER test_crash_cut ${mode.endsWith('before-ack') ? 'BEFORE' : 'AFTER'} UPDATE OF usage_ack_revision ON agent_sessions BEGIN SELECT test_crash_cut(); END`,
       );
     }
     const store = createSessionStore(client.db);
     const session = store.loadSession('s1');
     if (session === undefined) throw new Error('missing fixture session');
-    store.writeTurn({
-      messages: [
-        {
-          message: {
-            id: 'child-message',
-            sessionId: 's1',
-            sequenceNumber: 0,
-            role: 'user',
-            content: [{ type: 'text', text: 'committed exchange' }],
-            timestamp: session.createdAt,
+    if (mode.startsWith('pending-')) {
+      createSessionUsageStore(client.db).beginInvocation({
+        sessionId: 's1',
+        model: 'm',
+        producerId: 'child',
+        dispatchId: 'd',
+        round: 0,
+        chainAttempt: 1,
+      });
+    } else
+      store.writeTurn({
+        messages: [
+          {
+            message: {
+              id: 'child-message',
+              sessionId: 's1',
+              sequenceNumber: 0,
+              role: 'user',
+              content: [{ type: 'text', text: 'committed exchange' }],
+              timestamp: session.createdAt,
+            },
           },
-        },
-      ],
-      session: { ...session, title: 'new-writer' },
-    });
-    if (mode === 'after-commit') cut();
+        ],
+        session: { ...session, title: 'new-writer' },
+      });
+    if (mode.endsWith('after-commit')) cut();
     else throw new Error('crash fixture escaped its cut');
   }
 } finally {

@@ -77,6 +77,55 @@ function seed(client: DbClient): void {
 }
 
 describe('native session usage transaction crash and contention', () => {
+  it.each(['pending-before-ack', 'pending-after-ack', 'pending-after-commit'])(
+    'pending marker survives only outer commit at native process cut %s',
+    async (mode) => {
+      const root = mkdtempSync(join(tmpdir(), 'relavium-pending-crash-'));
+      const path = join(root, 'history.db');
+      const client = createClient(path);
+      let run: Worker | undefined;
+      try {
+        seed(client);
+        run = startWorker(path, mode);
+        await run.ready;
+        run.child.kill('SIGKILL');
+        const result = await run.closed;
+        expect(result.signal, result.error).toBe('SIGKILL');
+        const reopened = createClient(path);
+        try {
+          const committed = mode === 'pending-after-commit';
+          const snapshot = createSessionUsageStore(reopened.db).loadCoverage('s1');
+          expect(snapshot?.coverage).toEqual({
+            unverified: false,
+            pendingInvocations: committed ? 1 : 0,
+            unknownCalls: 0,
+          });
+          expect(createSessionStore(reopened.db).loadSession('s1')?.totalCostMicrocents).toBe(0);
+          expect(
+            reopened.sqlite.prepare('SELECT count(*) AS n FROM session_usage_invocations').get(),
+          ).toEqual({ n: committed ? 1 : 0 });
+          // A reopened store cannot recover the dead process's opaque receipt authority.
+          const next = createSessionUsageStore(reopened.db).beginInvocation({
+            sessionId: 's1',
+            model: 'm',
+            producerId: 'child',
+            dispatchId: 'd',
+            round: 0,
+            chainAttempt: 1,
+          });
+          expect(next.invocation.ordinal).toBe(committed ? 2 : 1);
+        } finally {
+          reopened.sqlite.close();
+        }
+      } finally {
+        run?.child.kill('SIGKILL');
+        await run?.closed;
+        client.sqlite.close();
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
   it.each(['before-ack', 'after-ack', 'after-commit'])(
     'survives process death %s without laundering old writes',
     async (mode) => {

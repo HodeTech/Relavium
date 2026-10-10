@@ -150,6 +150,7 @@ export type CompactionResult =
       readonly keptMessageCount: number;
       readonly tokensBefore: number;
       readonly tokensAfter: number;
+      readonly summaryUsageCoverage?: import('@relavium/shared').UsageCoverage;
       readonly summaryTokens: { readonly input: number; readonly output: number };
     }
   | { readonly kind: 'nothing_to_compact' }
@@ -212,6 +213,13 @@ export type SessionApprovalStreamEvent = DistributiveOmit<
  * these; 1.W routes them onto the bus.
  */
 export type SessionStreamEvent =
+  | DistributiveOmit<
+      Extract<
+        import('@relavium/shared').RunEvent,
+        { type: 'cost:coverage_started' | 'cost:usage_pending' | 'cost:usage_disposition' }
+      >,
+      'runId' | 'sessionId' | 'timestamp' | 'sequenceNumber'
+    >
   | SessionLifecycleEvent
   | NodeStreamEvent
   | SessionApprovalStreamEvent;
@@ -254,6 +262,8 @@ export interface SessionTurnPolicy {
  * hook (no-op default; 1.AC supplies the estimator for both entry points through the same seam).
  */
 export interface SessionDeps {
+  readonly money?: import('./money-durability.js').TurnMoneyPort;
+  readonly retainWork?: import('@relavium/llm').FallbackChainOptions['retainWork'];
   /** Resolve an authored provider id to its concrete adapter instance; `undefined` ⇒ a host-wiring gap. */
   readonly resolveProvider: (providerId: ProviderId) => LlmProvider | undefined;
   /** The shared tool registry (1.T) the agent dispatches through (ADR-0037). */
@@ -922,6 +932,7 @@ export class AgentSession {
       // Captured BEFORE the flush, so a rejection below still knows what the provider billed (`CR-02`).
       this.#lastEngagedUsage = { input: result.usage.input, output: result.usage.output };
       try {
+        await this.#deps.money?.join();
         await this.#deps.flushBudgetCommitments?.();
       } catch (error) {
         lifecycleObserverFailure = { error };
@@ -1429,6 +1440,8 @@ export class AgentSession {
       messages: [],
       planEntries: plan.entries,
       chainCapabilities: this.#chainCapabilities(),
+      ...(this.#deps.money === undefined ? {} : { money: this.#deps.money }),
+      ...(this.#deps.retainWork === undefined ? {} : { retainWork: this.#deps.retainWork }),
       nodeId: this.#agentRef,
       maxTokens: COMPACTION_MAX_SUMMARY_TOKENS,
       emit: (event) => {
@@ -1458,6 +1471,7 @@ export class AgentSession {
       let running = this.#compactionSummary,
         offset = 0;
       const usage = { input: 0, output: 0 };
+      const summaryUsageCoverage = { unverified: false, pendingInvocations: 0, unknownCalls: 0 };
       for (let pass = 0; pass < COMPACTION_MAX_PASSES && offset < split.foldable.length; pass++) {
         const chunk = prepareCompactionChunk(split.foldable, offset, running, prepare, fits);
         checkCancelled();
@@ -1501,6 +1515,7 @@ export class AgentSession {
             observerFailure = { error: outcome.error, original: outcome.error };
           throw outcome.error;
         }
+        summaryUsageCoverage.unknownCalls += outcome.result.usageCoverage.unknownCalls;
         usage.input += outcome.result.usage.input;
         usage.output += outcome.result.usage.output;
         checkCancelled();
@@ -1549,6 +1564,7 @@ export class AgentSession {
             tokensBefore,
             tokensAfter,
             tokensUsed: usage,
+            summaryUsageCoverage,
           });
           closed = true;
         });
@@ -1570,6 +1586,7 @@ export class AgentSession {
         tokensBefore,
         tokensAfter,
         summaryTokens: usage,
+        summaryUsageCoverage,
       };
     } catch (error) {
       const observer = observerFailure !== undefined && Object.is(observerFailure.error, error);
@@ -1824,6 +1841,8 @@ export class AgentSession {
       ...(llmTools.length > 0 ? { tools: llmTools } : {}),
       planEntries: plan.entries,
       chainCapabilities: this.#chainCapabilities(),
+      ...(this.#deps.money === undefined ? {} : { money: this.#deps.money }),
+      ...(this.#deps.retainWork === undefined ? {} : { retainWork: this.#deps.retainWork }),
       ...(this.#agent.temperature === undefined ? {} : { temperature: this.#agent.temperature }),
       ...(this.#agent.max_tokens === undefined ? {} : { maxTokens: this.#agent.max_tokens }),
       ...(reasoningEffort === undefined ? {} : { reasoningEffort }),

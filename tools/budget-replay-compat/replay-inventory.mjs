@@ -5,6 +5,10 @@ import { join } from 'node:path';
 import { baselineCommit } from './baseline-provenance.mjs';
 
 const requiredCuts = [
+  ['usage-invocation', 'coverage-started'],
+  ['usage-invocation', 'usage-pending'],
+  ['usage-invocation', 'usage-disposition'],
+  ['usage-ordinary-gate', 'ordinary-gate-paused'],
   ['native-pause', 'authority-paused'],
   ['native-pause', 'budget-paused-companion'],
   ['native-pause', 'human-gate-paused-companion'],
@@ -38,12 +42,13 @@ function exactUnique(actual, required, label) {
 }
 
 export function verifyReplayInventory(producer, predecessor) {
-  assert.equal(requiredCuts.length, 12, 'pinned prefix coverage');
+  assert.equal(requiredCuts.length, 16, 'pinned prefix coverage');
   assert.equal(requiredControls.length, 2, 'pinned positive coverage');
   assert.equal(predecessor.completed, true, 'predecessor acceptance incomplete');
   assert.equal(predecessor.baselineCommit, baselineCommit, 'predecessor acceptance baseline');
   for (const field of ['fetches', 'providerCalls', 'keyResolutions'])
     assert.equal(producer[field], 0, `producer ${field}`);
+  assert.equal(producer.localFixtureCalls, 1, 'one offline usage fixture invocation');
   assert.equal(predecessor.fetches, 0, 'predecessor fetches');
   const expected = requiredCuts.map(([label, cut]) => key({ label, cut }));
   exactUnique(producer.cases.map(key), expected, 'producer prefixes');
@@ -83,6 +88,22 @@ export function verifyReplayInventory(producer, predecessor) {
       'effectRead',
     ])
       assert.equal(result.callsAtRefusal[field], 0, `refusal ${field}`);
+  }
+  exactUnique(
+    predecessor.isolatedDiscriminators.map((item) => item.type),
+    ['cost:coverage_started', 'cost:usage_pending', 'cost:usage_disposition'],
+    'independent usage discriminator refusal',
+  );
+  for (const isolated of predecessor.isolatedDiscriminators) {
+    assert.ok(producer.cases.some((capture) => key(capture) === key(isolated.sourceCapture)));
+    for (const field of ['strictError', 'checkpointError', 'engineError'])
+      assert.equal(isolated[field]?.code, 'unreadable_run_event_log');
+    assert.equal(isolated.parserReturnedUndefined.length, 1);
+    assert.equal(isolated.databaseClosed, true);
+    assert.equal(isolated.rawRowsPreserved, true);
+    assert.equal(isolated.leaseAfterRefusal, null);
+    assert.equal(isolated.callsAtRefusal.providerCall, 0);
+    assert.equal(isolated.callsAtRefusal.keyResolve, 0);
   }
   exactUnique(
     predecessor.controls.map(({ label }) => label),
@@ -135,6 +156,7 @@ export function checkReplayInventoryGuards(producer, predecessor, owned) {
         r.cases[0].capture.sha256 = '0'.repeat(64);
       },
     ],
+    ['missing-isolated-discriminator', (_p, r) => r.isolatedDiscriminators.pop()],
     ['missing-positive-control', (_p, r) => r.controls.pop()],
     [
       'duplicate-positive-control',

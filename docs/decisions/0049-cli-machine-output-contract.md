@@ -127,3 +127,10 @@ accepted in the [W7 closing register](../roadmap/phases/phase-2.6.5-core-reliabi
 The later [post-closure systematic correction register](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#post-closure-systematic-review--2026-10-10)
 tracks reopened review findings and their scoped acceptance; it governs the current PR acceptance status.
 This additive note does not rewrite the original decision or claim that PR #90 has merged.
+
+### W8 usage coverage activation — 2026-10-10
+
+Machine-readable events and durable discovery records now qualify numeric known sums with usage coverage. Missing prices are independent; an absent historical coverage basis is unverified. The CLI cassette follows the intentional seam break as format 2.0.
+
+See [ADR-0104](0104-unknown-provider-usage-is-durable-cost-uncertainty.md) and the
+[canonical usage contract](../reference/shared-core/llm-provider-seam.md#6-usage).

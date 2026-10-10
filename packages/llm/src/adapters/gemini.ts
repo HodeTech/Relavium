@@ -1,3 +1,9 @@
+import {
+  geminiUsage,
+  missingUsage,
+  usageApplicability,
+  type UsageApplicability,
+} from './native-usage.js';
 import { GenerateVideosOperation, GoogleGenAI } from '@google/genai';
 
 import { MediaMimeTypeSchema, mediaModalityOf } from '@relavium/shared';
@@ -43,7 +49,7 @@ import type {
   StreamChunk,
   ToolChoice,
   ToolDef,
-  Usage,
+  UsageEvidence,
 } from '../types.js';
 
 import {
@@ -96,8 +102,6 @@ const GEMINI_SUPPORTS: CapabilityFlags = {
     surface: 'chat', // inline media-out (responseModalities) is a chat turn; generative endpoints are 1.AG Section C
   },
 };
-
-const ZERO_USAGE: Usage = { inputTokens: 0, outputTokens: 0 };
 
 /**
  * The canonical BARE media MIME (no RFC-2045 parameters) from a vendor-reported type, validated against the
@@ -303,31 +307,23 @@ export function mapStopReason(reason: string | undefined, hasToolCalls: boolean)
  * — the four are **disjoint additive** terms (unlike Anthropic/OpenAI, where thinking is already inside
  * output). `promptTokenCount` includes cached content (subtracted out for NET input).
  */
-export function mapUsage(usage: {
-  promptTokenCount?: number;
-  candidatesTokenCount?: number;
-  cachedContentTokenCount?: number;
-  thoughtsTokenCount?: number;
-  toolUsePromptTokenCount?: number;
-}): Usage {
-  const cached = usage.cachedContentTokenCount ?? 0;
-  const thinking = usage.thoughtsTokenCount ?? 0;
-  const out: Usage = {
-    // Tool-use prompt tokens are input-priced and disjoint from promptTokenCount — include them so
-    // input is not undercounted on grounded/tool-use calls.
-    inputTokens:
-      Math.max(0, (usage.promptTokenCount ?? 0) - cached) + (usage.toolUsePromptTokenCount ?? 0),
-    // Thinking tokens are billed separately from candidates — sum both to match totalTokenCount (ADR-0030).
-    outputTokens: (usage.candidatesTokenCount ?? 0) + thinking,
-  };
-  if (cached > 0) {
-    out.cacheReadTokens = cached;
-  }
-  // Surface the thinking subset for observability (ADR-0030); already included in outputTokens above.
-  if (thinking > 0) {
-    out.reasoningTokens = thinking;
-  }
-  return out;
+export function mapUsage(
+  raw: unknown,
+  applicable: UsageApplicability = {},
+  authoritative = true,
+): UsageEvidence {
+  return geminiUsage(raw, applicable, authoritative);
+}
+
+/** Freeze billing applicability from the owned request and the exact lowered thinking control. */
+function billingApplicability(req: LlmRequest, lowered: GeminiRequest): UsageApplicability {
+  const model = catalogModel(req.model);
+  const config = lowered.config['thinkingConfig'];
+  const disabled = isRecord(config) && config['thinkingBudget'] === 0;
+  return usageApplicability(
+    req,
+    !disabled && (model === undefined || model.reasoning !== undefined),
+  );
 }
 
 /** Fold a non-streaming Gemini response into canonical content parts (text + synthesized tool_call). */
@@ -868,7 +864,8 @@ interface GeminiStreamState {
   /** The prompt was blocked (content_filter), not a normal completion. */
   blocked: boolean;
   finishReason: string | undefined;
-  usage: Usage;
+  usage: UsageEvidence;
+  readonly applicability: UsageApplicability;
   readonly ids: GeminiToolCallIds;
 }
 
@@ -937,7 +934,11 @@ function foldGeminiPart(part: GeminiPart, state: GeminiStreamState): StreamChunk
 function foldGeminiResponse(response: GeminiResponse, state: GeminiStreamState): StreamChunk[] {
   const out: StreamChunk[] = [];
   if (response.usageMetadata) {
-    state.usage = mapUsage(response.usageMetadata);
+    state.usage = mapUsage(
+      response.usageMetadata,
+      state.applicability,
+      state.sawTerminal || response.candidates?.[0]?.finishReason !== undefined,
+    );
   }
   if (isPromptBlocked(response.promptFeedback)) {
     state.blocked = true;
@@ -958,6 +959,7 @@ async function* streamChunks(
   transport: GeminiTransport,
   request: GeminiRequest,
   key: string,
+  applicability: UsageApplicability,
 ): AsyncIterable<StreamChunk> {
   const state: GeminiStreamState = {
     reasoningOpen: false,
@@ -966,7 +968,8 @@ async function* streamChunks(
     sawTerminal: false,
     blocked: false,
     finishReason: undefined,
-    usage: ZERO_USAGE,
+    usage: missingUsage(),
+    applicability,
     ids: new GeminiToolCallIds(),
   };
   let sdkStream: AsyncIterable<GeminiResponse>;
@@ -981,7 +984,7 @@ async function* streamChunks(
       yield* foldGeminiResponse(response, state);
     }
   } catch (err) {
-    yield { type: 'error', error: geminiErrorToLlmError(err) };
+    yield { type: 'error', error: { ...geminiErrorToLlmError(err), usage: state.usage } };
     return;
   }
   const tail: StreamChunk[] = [];
@@ -991,11 +994,14 @@ async function* streamChunks(
   if (!state.sawTerminal) {
     yield {
       type: 'error',
-      error: makeLlmError({
-        provider: PROVIDER,
-        kind: 'transport',
-        message: 'stream ended before a finishReason (truncated response)',
-      }),
+      error: {
+        ...makeLlmError({
+          provider: PROVIDER,
+          kind: 'transport',
+          message: 'stream ended before a finishReason (truncated response)',
+        }),
+        usage: state.usage,
+      },
     };
     return;
   }
@@ -1055,7 +1061,7 @@ async function geminiGenerateImage(
       key,
     );
   } catch (err) {
-    throw new LlmProviderError(geminiErrorToLlmError(err));
+    throw new LlmProviderError({ ...geminiErrorToLlmError(err) });
   }
   const first = response.generatedImages?.[0];
   const b64 = first?.image?.imageBytes;
@@ -1235,11 +1241,19 @@ export function createGeminiAdapter(deps: GeminiAdapterDeps = {}): LlmProvider {
       req = owned.request;
       assertSupported(PROVIDER, GEMINI_SUPPORTS, req); // fail fast on an unsupported feature
       assertMediaCapabilities(PROVIDER, GEMINI_SUPPORTS, req); // per-modality input/output gate (ADR-0031, 1.AE)
+      let usage: UsageEvidence | undefined;
       try {
-        const response = await transport.generate(
-          lowerGeminiRequest(mutableOwnedRequest(req), owned.plan),
-          key,
-        );
+        const lowered = lowerGeminiRequest(mutableOwnedRequest(req), owned.plan);
+        const applicable = billingApplicability(req, lowered);
+        const response = await transport.generate(lowered, key);
+        usage = mapUsage(response.usageMetadata, applicable);
+        if (
+          response.candidates?.some((candidate) =>
+            candidate.content?.parts?.some((part) => part.inlineData !== undefined),
+          ) === true
+        ) {
+          usage = mapUsage(response.usageMetadata, { ...applicable, unreportedMedia: true });
+        }
         const ids = new GeminiToolCallIds();
         const content = mapContent(response, ids);
         const hasToolCalls = content.some((part) => part.type === 'tool_call');
@@ -1252,11 +1266,14 @@ export function createGeminiAdapter(deps: GeminiAdapterDeps = {}): LlmProvider {
           stopReason: blocked
             ? 'content_filter'
             : mapStopReason(candidate?.finishReason, hasToolCalls),
-          usage: response.usageMetadata ? mapUsage(response.usageMetadata) : ZERO_USAGE,
+          usage,
           raw: response,
         };
       } catch (err) {
-        throw new LlmProviderError(geminiErrorToLlmError(err));
+        throw new LlmProviderError({
+          ...geminiErrorToLlmError(err),
+          ...(usage === undefined ? {} : { usage }),
+        });
       }
     },
     stream(req: LlmRequest, key: string): AsyncIterable<StreamChunk> {
@@ -1285,7 +1302,8 @@ export function createGeminiAdapter(deps: GeminiAdapterDeps = {}): LlmProvider {
       assertStreamable(PROVIDER, GEMINI_SUPPORTS);
       assertMediaCapabilities(PROVIDER, GEMINI_SUPPORTS, req); // per-modality input/output gate (ADR-0031, 1.AE)
       assertNoStreamingMediaOutput(PROVIDER, req); // media-out is generate()-only; streaming triad deferred (ADR-0046 §4)
-      return streamChunks(transport, lowerGeminiRequest(mutableOwnedRequest(req), owned.plan), key);
+      const lowered = lowerGeminiRequest(mutableOwnedRequest(req), owned.plan);
+      return streamChunks(transport, lowered, key, billingApplicability(req, lowered));
     },
     /**
      * Live model discovery (ADR-0064 §1) over the injected transport's `listModels` (default wraps

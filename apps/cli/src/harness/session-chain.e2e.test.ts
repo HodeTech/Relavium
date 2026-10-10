@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import {
   createClient,
   createSessionStore,
+  createSessionUsageStore,
   runMigrations,
   type DbClient,
   type SessionStore,
@@ -50,7 +51,7 @@ const EMPTY_CHAT: ResolvedChatConfig = {
 /** A one-turn cassette: the single `stream()` call replays the given assistant reply (the seam holds — all
  *  chunks are Relavium `StreamChunk`s). A fresh + a resumed build each get their OWN cassette (own call counter). */
 const oneTurnCassette = (reply: string): Cassette => ({
-  schema_version: '1.0',
+  schema_version: '2.0',
   provider: 'anthropic',
   calls: [textTurn(reply)],
 });
@@ -127,6 +128,9 @@ describe('session chain e2e (2.5.I S4) — Home→chat→resume→export over a 
         disableMcp: true, // fully offline: the default agent declares no mcp_servers, so make the intent explicit
       });
       const persister = createSessionPersister({
+        usageStore: createSessionUsageStore(first.client.db),
+        mode: 'fresh',
+        attachUsageWriter: built.attachUsageWriter,
         governor: undefined,
         store: first.store,
         handle: built.handle,
@@ -175,6 +179,9 @@ describe('session chain e2e (2.5.I S4) — Home→chat→resume→export over a 
       });
       expect(resumed.sessionId).toBe(SESSION_ID); // resume continues the SAME session, never a fresh one
       const persister = createSessionPersister({
+        usageStore: createSessionUsageStore(second.client.db),
+        mode: 'adopt',
+        attachUsageWriter: resumed.attachUsageWriter,
         governor: undefined,
         store: second.store,
         handle: resumed.handle,

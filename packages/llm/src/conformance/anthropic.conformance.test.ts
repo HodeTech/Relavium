@@ -1,3 +1,4 @@
+import { knownUsage } from './usage-test.js';
 import { describe, expect, it } from 'vitest';
 
 import { anthropicAdapter, createAnthropicAdapter } from '../adapters/anthropic.js';
@@ -27,6 +28,6 @@ describe('anthropic — conformance (live, nightly)', () => {
       liveKey,
     );
     expect(result.content.some((part) => part.type === 'text')).toBe(true);
-    expect(result.usage.outputTokens).toBeGreaterThan(0);
+    expect(knownUsage(result.usage).outputTokens).toBeGreaterThan(0);
   });
 });

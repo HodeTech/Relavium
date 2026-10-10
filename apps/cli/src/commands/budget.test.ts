@@ -107,7 +107,7 @@ const provider: LlmProvider = {
       yield {
         type: 'stop',
         stopReason: 'tool_use',
-        usage: { inputTokens: 1, outputTokens: 1 },
+        usage: { kind: 'complete', usage: { inputTokens: 1, outputTokens: 1 } },
       };
       return;
     }
@@ -115,7 +115,7 @@ const provider: LlmProvider = {
     yield {
       type: 'stop',
       stopReason: 'stop',
-      usage: { inputTokens: 1, outputTokens: 1 },
+      usage: { kind: 'complete', usage: { inputTokens: 1, outputTokens: 1 } },
     };
   },
 };

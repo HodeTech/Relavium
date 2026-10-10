@@ -193,7 +193,20 @@ export function createChatStore(
     },
     getSnapshot: () => snapshot,
     apply: (event) => {
-      state = reduceSessionEvent(state, event);
+      const next = reduceSessionEvent(state, event);
+      const fresh =
+        state.lastSequenceNumber === undefined || event.sequenceNumber > state.lastSequenceNumber;
+      state = fresh
+        ? {
+            ...next,
+            ...('usageCoverage' in event && event.usageCoverage !== undefined
+              ? { usageCoverage: event.usageCoverage }
+              : {}),
+            unpricedCalls:
+              (state.unpricedCalls ?? 0) +
+              (event.type === 'cost:updated' && event.priced === false ? 1 : 0),
+          }
+        : next;
       if (HIGH_FREQUENCY_EVENTS.has(event.type)) {
         dirty = true; // coalesced to the next frame — no flood, no drop
       } else {

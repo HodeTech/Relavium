@@ -470,6 +470,7 @@ export const agentSessions = sqliteTable(
     usageUnverified: boolFlag('usage_unverified', true),
     usagePendingInvocations: integer('usage_pending_invocations').notNull().default(0),
     usageUnknownCalls: integer('usage_unknown_calls').notNull().default(0),
+    usageInvocationHighWater: integer('usage_invocation_high_water').notNull().default(0),
     exportedWorkflowPath: text('exported_workflow_path'),
     deletedAt: epochMs('deleted_at'),
     createdAt: epochMs('created_at').notNull(),
@@ -644,9 +645,16 @@ export const sessionUsageInvocations = sqliteTable(
     round: integer('round').notNull(),
     chainAttempt: integer('chain_attempt').notNull(),
     model: text('model').notNull(),
+    coverageState: text('coverage_state', { enum: ['pending', 'incomplete'] })
+      .notNull()
+      .default('pending'),
   },
   (t) => [
     uniqueIndex('idx_session_usage_invocations_identity').on(t.sessionId, t.producerId, t.ordinal),
+    check(
+      'session_usage_invocations_state_check',
+      sql`${t.coverageState} in ('pending', 'incomplete')`,
+    ),
     check(
       'session_usage_invocations_producer_check',
       sql`length(${t.producerId}) between 1 and 256`,

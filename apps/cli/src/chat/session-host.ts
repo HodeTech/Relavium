@@ -1,6 +1,11 @@
 import {
   type AgentDefinition,
   AgentSession,
+  MoneyDurability,
+  HostWorkRegistry,
+  type PendingUsageDraft,
+  type UsageDispositionDraft,
+  type SettledAttemptDraft,
   BudgetGovernor,
   BUILTIN_TOOLS,
   createSessionEventSink,
@@ -29,6 +34,7 @@ import {
   type ProviderId,
 } from '@relavium/llm';
 import type { ManagerSkippedTool, McpClient, McpServerConfig } from '@relavium/mcp';
+import { UsageCoverageFold, type UsageCoverageSnapshot } from '@relavium/shared';
 import type {
   AbortSignalLike,
   AgentSessionRecord,
@@ -39,6 +45,7 @@ import type {
   SessionMessage,
   ToolPolicy,
   MediaBilledModality,
+  UsageInvocation,
 } from '@relavium/shared';
 
 import type { ResolvedChatConfig } from '../config/resolve.js';
@@ -194,7 +201,16 @@ export interface ChatBudgetWarning {
   readonly thresholdPct: number;
 }
 
+export interface SessionUsageWriter {
+  readonly initialCoverage: () => UsageCoverageSnapshot | undefined;
+  readonly begin: (draft: PendingUsageDraft) => Promise<UsageInvocation>;
+  readonly disposition: (draft: UsageDispositionDraft) => void | Promise<void>;
+  readonly record: (draft: SettledAttemptDraft, cumulative: number) => void | Promise<void>;
+}
+
 export interface BuiltChatSession {
+  readonly attachUsageWriter: (writer: SessionUsageWriter) => void;
+  readonly whenHostSafeToClose: () => Promise<void>;
   /** Host-authoritative base-model window; present undefined for custom/unknown metadata. */
   readonly contextWindowTokens?: number | undefined;
   readonly session: AgentSession;
@@ -309,6 +325,8 @@ function buildSessionRuntime(
   mcp: McpClient | undefined,
   context: SessionContext,
 ): {
+  attachUsageWriter: (writer: SessionUsageWriter) => void;
+  whenHostSafeToClose: () => Promise<void>;
   bus: RunEventBus;
   deps: SessionDeps;
   emit: SessionEventSink;
@@ -423,7 +441,60 @@ function buildSessionRuntime(
   let effectTurnAllocator: ((sessionId: string) => number) | undefined;
   let effectJournal: ((correlation: EffectCorrelation) => EffectDispatchPort) | undefined;
 
+  let usageWriter: SessionUsageWriter | undefined;
+  let usageCoverage: UsageCoverageFold | undefined;
+  const requiredUsageWriter = (): SessionUsageWriter => {
+    if (usageWriter === undefined) throw new Error('session usage durability is not attached');
+    const initial = usageWriter.initialCoverage();
+    if (initial !== undefined) usageCoverage ??= new UsageCoverageFold(initial);
+    return usageWriter;
+  };
+  const hostWork = new HostWorkRegistry(sessionId);
+  let cumulativeCost = 0;
+  const money = new MoneyDurability({
+    beginUsageInvocation: async (draft) => {
+      const invocation = await requiredUsageWriter().begin(draft);
+      usageCoverage?.pending(draft.model, invocation);
+      emit({
+        type: 'cost:usage_pending',
+        nodeId: draft.nodeId,
+        model: draft.model,
+        invocation,
+        usageCoverage: usageCoverage?.snapshot().coverage ?? {
+          unverified: true,
+          pendingInvocations: 0,
+          unknownCalls: 0,
+        },
+      });
+      return invocation;
+    },
+    emitUsageDisposition: async (draft) => {
+      await requiredUsageWriter().disposition(draft);
+      usageCoverage?.disposition(
+        draft.model,
+        draft.invocation,
+        draft.disposition,
+        draft.receiptPending,
+      );
+      emit({
+        ...draft,
+        type: 'cost:usage_disposition',
+        usageCoverage: usageCoverage?.snapshot().coverage ?? {
+          unverified: true,
+          pendingInvocations: 0,
+          unknownCalls: 0,
+        },
+      });
+    },
+    emit: (draft, cumulative) => requiredUsageWriter().record(draft, cumulative),
+    ...(governor === undefined
+      ? {}
+      : { flushConservative: () => governor.flushBudgetCommitments() }),
+  });
+  const moneyPort = money.turnPort(() => cumulativeCost);
   const deps: SessionDeps = {
+    money: moneyPort,
+    retainWork: (work) => hostWork.invoke(() => work()),
     ...(opts.maxTokensEstimate === undefined ? {} : { maxTokensEstimate: opts.maxTokensEstimate }),
     reserveEffectTurnKey: (id) => {
       if (effectTurnAllocator === undefined)
@@ -486,7 +557,21 @@ function buildSessionRuntime(
     now: opts.now,
     // Node's AbortController satisfies the engine's structural AbortControllerLike (abort() + signal).
     newAbortController: () => new AbortController(),
-    emit,
+    emit: (event) => {
+      if (usageWriter !== undefined) requiredUsageWriter();
+      if (event.type === 'cost:updated') {
+        cumulativeCost = event.cumulativeCostMicrocents;
+        if (event.invocation !== undefined) usageCoverage?.complete(event.model, event.invocation);
+      }
+      emit({
+        ...event,
+        usageCoverage: usageCoverage?.snapshot().coverage ?? {
+          unverified: true,
+          pendingInvocations: 0,
+          unknownCalls: 0,
+        },
+      });
+    },
     // The chat-default `ToolPolicy` comes from the factory (ADR-0055's single source), not an implicit engine
     // default: today it is `{}` (gated tools deny-all; `run_command` disabled via empty allowedCommands — a
     // standalone chat has no workflow allowedCommands to inherit, the secure default per config-spec.md `[chat]`
@@ -544,6 +629,14 @@ function buildSessionRuntime(
   // `governor` rides out so the CALLER can attach the durable conservative-commitment writer once the persister
   // exists (ADR-0074 §4) and expose §1's release. Undefined when the chat declares no cap.
   return {
+    attachUsageWriter: (writer) => {
+      usageWriter = writer;
+    },
+    whenHostSafeToClose: async () => {
+      await hostWork.join();
+      await money.waitForWrites();
+      await money.join();
+    },
     bus,
     deps,
     emit,
@@ -661,6 +754,8 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
 
   try {
     const {
+      attachUsageWriter,
+      whenHostSafeToClose,
       bus,
       deps,
       emit,
@@ -712,6 +807,8 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
             closeMcp: (onError?: (id: string, cause: unknown) => void) => mcp.close(onError),
             mcpChildPids: mcp.childPids,
           }),
+      attachUsageWriter,
+      whenHostSafeToClose,
       attachDurabilityProbe,
       attachEffectTurnAllocator,
       attachEffectJournal,
@@ -915,6 +1012,8 @@ export async function buildResumedChatSession(
 
   try {
     const {
+      attachUsageWriter,
+      whenHostSafeToClose,
       bus,
       deps,
       emit,
@@ -973,6 +1072,8 @@ export async function buildResumedChatSession(
             closeMcp: (onError?: (id: string, cause: unknown) => void) => mcp.close(onError),
             mcpChildPids: mcp.childPids,
           }),
+      attachUsageWriter,
+      whenHostSafeToClose,
       attachDurabilityProbe,
       attachEffectTurnAllocator,
       attachEffectJournal,

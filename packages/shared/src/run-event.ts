@@ -1,5 +1,12 @@
 import { z } from 'zod';
 import {
+  UsageCoverageSchema,
+  UsageInvocationSchema,
+  UsageCoverageStartedPayloadSchema,
+  UsagePendingPayloadSchema,
+  UsageDispositionPayloadSchema,
+} from './usage-coverage.js';
+import {
   BudgetAuthorizationStateSchema,
   AllowanceQuoteResultSchema,
   BudgetMicrocentsSchema,
@@ -33,6 +40,7 @@ import { GateTypeSchema, TimeoutActionSchema } from './node.js';
 // session. Exactly one correlation key — `runId` on a run, `sessionId` on a session — is present.
 
 const timestampSeq = {
+  usageCoverage: UsageCoverageSchema.optional(),
   timestamp: z.string().datetime({ offset: true }),
   sequenceNumber: nonNegativeInt,
 };
@@ -281,6 +289,7 @@ export const AgentFilePatchProposedEventSchema = z.object({
 
 export const CostUpdatedEventSchema = z.object({
   type: z.literal('cost:updated'),
+  invocation: UsageInvocationSchema.optional(),
   ...dualBase,
   nodeId: nonEmptyString,
   model: nonEmptyString,
@@ -645,7 +654,7 @@ export type BudgetEstimateCommittedEvent = z.infer<typeof BudgetEstimateCommitte
  *
  * **RUN PATH ONLY — `...runBase`, deliberately not `...dualBase`.** `cost:updated` is dual-envelope, so the
  * absence of a session arm is a choice, not an oversight: the session path ALREADY has this ledger.
- * `persister.ts` writes `recordSessionCost` on every `cost:updated`, carrying the PER-ATTEMPT increment (not a
+ * `persister.ts` attaches `recordSessionCost` directly to the required money port, carrying the PER-ATTEMPT increment (not a
  * cumulative snapshot) into `session_costs`, and since `#W15-4` that write is latched so a failure gates
  * further egress. This event closes the RUN path's equivalent gap.
  *
@@ -657,6 +666,7 @@ export type BudgetEstimateCommittedEvent = z.infer<typeof BudgetEstimateCommitte
  */
 export const CostAttemptSettledEventSchema = z.object({
   type: z.literal('cost:attempt_settled'),
+  invocation: UsageInvocationSchema.optional(),
   ...runBase,
   /** The agent node that owned the attempt. Required — on the run path every attempt has an owning vertex. */
   nodeId: nonEmptyString,
@@ -727,6 +737,25 @@ export const CostAttemptSettledEventSchema = z.object({
 });
 export type CostAttemptSettledEvent = z.infer<typeof CostAttemptSettledEventSchema>;
 
+/** ADR-0104 required accounting boundaries; strict records reject accidental payload additions. */
+export const CostCoverageStartedEventSchema = UsageCoverageStartedPayloadSchema.extend({
+  type: z.literal('cost:coverage_started'),
+  ...dualBase,
+}).strict();
+export const CostUsagePendingEventSchema = UsagePendingPayloadSchema.extend({
+  type: z.literal('cost:usage_pending'),
+  ...dualBase,
+  nodeId: nonEmptyString,
+}).strict();
+export const CostUsageDispositionEventSchema = UsageDispositionPayloadSchema.extend({
+  type: z.literal('cost:usage_disposition'),
+  ...dualBase,
+  nodeId: nonEmptyString,
+}).strict();
+export type CostCoverageStartedEvent = z.infer<typeof CostCoverageStartedEventSchema>;
+export type CostUsagePendingEvent = z.infer<typeof CostUsagePendingEventSchema>;
+export type CostUsageDispositionEvent = z.infer<typeof CostUsageDispositionEventSchema>;
+
 /** The run-event variants, discriminated on `type` (exposed via `RunEventSchema.innerType()`). */
 const RunEventUnionSchema = z.discriminatedUnion('type', [
   RunStartedEventSchema,
@@ -755,6 +784,9 @@ const RunEventUnionSchema = z.discriminatedUnion('type', [
   BudgetAuthorizationEventSchema,
   BudgetEstimateCommittedEventSchema,
   CostAttemptSettledEventSchema,
+  CostCoverageStartedEventSchema,
+  CostUsagePendingEventSchema,
+  CostUsageDispositionEventSchema,
 ]);
 
 /** The pre-refinement union value — the input every cross-field refinement helper below receives. */
@@ -1037,6 +1069,7 @@ export const SessionCompactingEventSchema = z.object({
  */
 export const SessionCompactedEventSchema = z.object({
   type: z.literal('session:compacted'),
+  summaryUsageCoverage: UsageCoverageSchema.optional(),
   ...sessionBase,
   reason: SessionCompactionReasonSchema,
   summary: nonEmptyString,

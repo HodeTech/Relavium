@@ -4,6 +4,7 @@ import {
   type AgentTokenEvent,
   type NodeCompletedEvent,
   type RunEvent,
+  type UsageCoverage,
 } from '@relavium/shared';
 import {
   budgetAllowanceLabel,
@@ -81,6 +82,8 @@ export interface RunViewState {
   readonly toolLines: readonly string[];
   /** The run-wide cost running total (integer micro-cents — 1e-8 USD; database-schema.md). */
   readonly cumulativeCostMicrocents: number;
+  readonly usageCoverage?: UsageCoverage;
+  readonly unpricedCalls?: number;
   /** The last observed `sequenceNumber`, for gap detection. */
   readonly lastSequenceNumber?: number;
   /** Set once a `sequenceNumber` gap is observed (the live stream is no-drop, so a gap signals a defect). */
@@ -341,6 +344,15 @@ export function reduceRunEvent(state: RunViewState, event: RunEvent): RunViewSta
           base.toolLines,
           `✎ patch proposed (${event.patches.length} file${event.patches.length === 1 ? '' : 's'})`,
           MAX_TOOL_LINES,
+        ),
+      };
+
+    case 'cost:attempt_settled':
+      return {
+        ...base,
+        cumulativeCostMicrocents: Math.max(
+          base.cumulativeCostMicrocents,
+          event.cumulativeCostMicrocents,
         ),
       };
 

@@ -302,3 +302,19 @@ pre-send and single pre-content overflow recovery, finite frozen allowances and 
 are implemented with scoped independent acceptance. The
 [closing register](../../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w7-closing-register--2026-10-10)
 tracks final whole-wave acceptance and approved limits; CR-82 and W8 remain open.
+
+## Usage evidence and durable coverage
+
+Every potentially billable token invocation acknowledges pending usage through the money port
+before it invokes the provider, with or without a cost cap. The single evidence value can be
+complete, partial or missing. Only complete quantities enter actual pricing; partial/missing
+evidence remains observable and becomes explicit unknown coverage. Proven non-invocation and
+official pre-content refusal resolve possibility without inventing a charge. Correlation has no
+budget authority. Exact retained late receipts can refine uncertainty once under their original
+fence; host closure joins those writes. The [LLM seam](llm-provider-seam.md#6-usage) owns the
+evidence contract and the [event contract](../contracts/sse-event-schema.md#the-runevent-union)
+owns coverage transitions.
+
+An exact late complete receipt refines usage coverage and records realized money once. It does
+not implicitly release an earlier retained conservative commitment; the existing explicit
+estimate-release policy remains separate from actual receipt accounting.

@@ -221,7 +221,13 @@ async function checkPrefix(capture) {
   const fixture = await setup(`${capture.label}-${capture.cut}`, lines, workflow);
   try {
     const { client, store, runId, raw } = fixture;
-    const unknown = raw.filter((e) => e.type === 'budget:authorization');
+    const unknownTypes = new Set([
+      'budget:authorization',
+      'cost:coverage_started',
+      'cost:usage_pending',
+      'cost:usage_disposition',
+    ]);
+    const unknown = raw.filter((e) => unknownTypes.has(e.type));
     assert.ok(unknown.length > 0);
     for (const event of unknown) assert.equal(shared.parseStoredRunEvent(event), undefined);
     const display = store.loadRunEventLog(runId);
@@ -229,7 +235,7 @@ async function checkPrefix(capture) {
     assert.deepEqual(display.skipped, skipped);
     assert.deepEqual(
       display.events.map((e) => e.sequenceNumber),
-      raw.filter((e) => e.type !== 'budget:authorization').map((e) => e.sequenceNumber),
+      raw.filter((e) => !unknownTypes.has(e.type)).map((e) => e.sequenceNumber),
     );
     const directParsed = raw
       .map((e) => shared.parseStoredRunEvent(e))
@@ -453,6 +459,7 @@ const result = {
   producerVersion: JSON.parse(readFileSync(resolve(root, 'producer-version.json'), 'utf8')),
   cases: [],
   controls: [],
+  isolatedDiscriminators: [],
   completed: false,
 };
 try {
@@ -460,6 +467,35 @@ try {
     readFileSync(resolve(root, 'results/producer-cases.json'), 'utf8'),
   ).cases;
   for (const capture of captures) result.cases.push(await checkPrefix(capture));
+  // Cumulative native prefixes prove real production order. Separate raw-row isolation controls
+  // prove each discriminator is independently strict, so the earlier basis cannot mask a gap.
+  for (const [type, cut] of [
+    ['cost:coverage_started', 'coverage-started'],
+    ['cost:usage_pending', 'usage-pending'],
+    ['cost:usage_disposition', 'usage-disposition'],
+  ]) {
+    const capture = captures.find((item) => item.label === 'usage-invocation' && item.cut === cut);
+    assert.ok(capture);
+    const lines = readFileSync(resolve(root, capture.path), 'utf8').trim().split('\n');
+    const selected = lines.filter((line) => {
+      const event = JSON.parse(line);
+      return event.type === 'run:started' || event.type === type;
+    });
+    assert.equal(selected.length, 2);
+    const bytes = `${selected.join('\n')}\n`;
+    const path = `raw/isolated-${cut}.ndjson`;
+    writeFileSync(resolve(root, path), bytes);
+    const isolated = await checkPrefix({
+      ...capture,
+      label: `isolated-${cut}`,
+      path,
+      sha256: digest(bytes),
+      rows: 2,
+      origin:
+        'Isolation control selecting unchanged actual producer run-start and discriminator rows; not claimed as a native crash prefix.',
+    });
+    result.isolatedDiscriminators.push({ type, sourceCapture: capture, ...isolated });
+  }
   result.controls.push(await legacyBudgetPositiveControl());
   result.controls.push(await ordinaryGatePositiveControl());
   assert.equal(fetches, 0);

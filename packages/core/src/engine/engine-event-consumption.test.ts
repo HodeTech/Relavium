@@ -72,7 +72,7 @@ it('the default capacity-one start waits before first pull and later delivers it
   }).start({ workflow });
   const observed = observeTerminal(handle);
   await turns();
-  expect(handle.bufferedCount).toBe(1);
+  expect(handle.bufferedCount).toBe(2); // run start and the required coverage basis, before any node
   expect(calls).toBe(0);
   let ready = false;
   void handle.whenConsumersReady().then(() => {
@@ -364,7 +364,10 @@ for (const kind of [
         if (kind !== 'terminal') await terminal.promise;
         await expect(drain(handle)).rejects.toMatchObject({ code: 'invalid_consumer_mode' });
         expect(handle.bufferedCount).toBe(0);
-        assertOrdered(kind === 'media' ? observed.events : published, first);
+        assertOrdered(
+          kind === 'media' ? observed.events : published,
+          kind === 'media' ? first + 1 : first,
+        );
       }
       const failed = ['budget-rejected', 'media', 'refused'].includes(kind);
       expect(published.at(-1)?.type).toBe(
@@ -454,7 +457,11 @@ it('subscribe-only fencing joins the real executor without inventing a terminal 
   expect(joined).toBe(false);
   release.resolve();
   expect((await departure).kind).toBe('closed');
-  expect(observed.events.map((event) => event.type)).toEqual(['run:started', 'node:started']);
+  expect(observed.events.map((event) => event.type)).toEqual([
+    'run:started',
+    'cost:coverage_started',
+    'node:started',
+  ]);
   expect(handle.bufferedCount).toBe(0);
   await expect(drain(handle)).rejects.toMatchObject({ code: 'invalid_consumer_mode' });
 });
@@ -490,6 +497,7 @@ it('a live resume snapshots its omitted iterated default before checkpoint loadi
   const handle = await pending;
   const events = await drain(handle);
   expect(events.map((event) => event.type)).toEqual([
+    'cost:coverage_started',
     'human_gate:resumed',
     'node:started',
     'node:completed',

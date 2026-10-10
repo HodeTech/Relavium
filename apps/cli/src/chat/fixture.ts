@@ -24,7 +24,7 @@ import { CliError } from '../process/errors.js';
 
 /** A cassette: the recorded `StreamChunk[]` per `provider.stream()` call, answered as `provider`. */
 export const CassetteSchema = z.object({
-  schema_version: z.literal('1.0'),
+  schema_version: z.literal('2.0'),
   provider: ProviderIdSchema,
   model: z.string().optional(),
   /** One entry per `stream()` call in the turn (call N → `calls[N]`); each is the ordered chunk list. */

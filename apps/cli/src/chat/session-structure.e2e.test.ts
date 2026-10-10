@@ -15,6 +15,7 @@ import {
   createEffectJournalPort,
   createEffectJournalStore,
   createSessionStore,
+  createSessionUsageStore,
   runMigrations,
 } from '@relavium/db';
 import { startMcpClient, type McpConnection } from '@relavium/mcp';
@@ -121,6 +122,9 @@ describe('session structure through the real CLI host and SQLite', () => {
       }),
     );
     const persister = createSessionPersister({
+      usageStore: createSessionUsageStore(client.db),
+      mode: initialSequenceNumber === undefined ? 'fresh' : 'adopt',
+      attachUsageWriter: built.attachUsageWriter,
       store,
       governor: built.governor,
       attachDurabilityProbe: built.attachDurabilityProbe,
@@ -623,7 +627,9 @@ describe('session structure through the real CLI host and SQLite', () => {
       throw new Error('synthetic-private-store-token');
     });
     persister.beginUserTurn('read');
-    await built.session.sendMessage('read');
+    await expect(built.session.sendMessage('read')).rejects.toThrow(
+      'a realized-cost ledger write could not be made durable',
+    );
     expect(persister.durabilityFailure).toBeDefined();
     expect(dispatch).not.toHaveBeenCalled();
     expect(egress).toHaveBeenCalledTimes(1);
@@ -659,7 +665,9 @@ describe('session structure through the real CLI host and SQLite', () => {
       throw new Error('synthetic-private-store-token');
     });
     persister.beginUserTurn('write');
-    await built.session.sendMessage('write');
+    await expect(built.session.sendMessage('write')).rejects.toThrow(
+      'a realized-cost ledger write could not be made durable',
+    );
     expect(persister.durabilityFailure).toBeDefined();
     expect(existsSync(join(root, 'out.txt'))).toBe(false);
     expect(egress).toHaveBeenCalledTimes(1);

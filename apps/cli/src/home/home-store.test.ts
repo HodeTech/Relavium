@@ -104,6 +104,8 @@ describe('buildHomeSnapshot (2.5.B Home aggregation)', () => {
         startedAt: ISO(T0 + 2_000),
         completedAt: ISO(T0 + 2_000),
         totalCostMicrocents: 100,
+        usageCoverage: { unverified: true, pendingInvocations: 0, unknownCalls: 0 },
+        unpricedCalls: 0,
       },
     ]);
     // The completed run is the only neutral "Continue" run — the failed + paused runs are in Attention, not here.
@@ -116,6 +118,8 @@ describe('buildHomeSnapshot (2.5.B Home aggregation)', () => {
         startedAt: ISO(T0 + 1_000),
         completedAt: ISO(T0 + 1_000),
         totalCostMicrocents: 100,
+        usageCoverage: { unverified: true, pendingInvocations: 0, unknownCalls: 0 },
+        unpricedCalls: 0,
       },
     ]);
     expect(snap.isEmpty).toBe(false);
@@ -385,6 +389,8 @@ describe('buildHomeSnapshot (2.5.B Home aggregation)', () => {
       status: 'active',
       updatedAt: ISO(T0),
       totalCostMicrocents: 0,
+      usageCoverage: { unverified: true, pendingInvocations: 0, unknownCalls: 0 },
+      unpricedCalls: 0,
     });
   });
 

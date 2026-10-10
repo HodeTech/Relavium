@@ -54,12 +54,54 @@ async function buildChatSession(opts: Parameters<typeof buildFreshSession>[0]) {
   const built = await buildFreshSession(opts);
   let key = 0;
   built.attachEffectTurnAllocator(() => ++key);
+  let invocationOrdinal = 0;
+  built.attachUsageWriter({
+    initialCoverage: () => ({
+      coverage: { unverified: false, pendingInvocations: 0, unknownCalls: 0 },
+      models: [],
+      started: true,
+      highWater: 0,
+    }),
+    begin: (draft) =>
+      Promise.resolve(
+        Object.freeze({
+          producerId: 'unit-host',
+          ordinal: ++invocationOrdinal,
+          dispatchId: draft.nodeId,
+          round: draft.round,
+          chainAttempt: draft.chainAttempt,
+        }),
+      ),
+    disposition: () => undefined,
+    record: () => undefined,
+  });
   return { ...built, recordedEvents: collectSubscribedSessionEvents(built.handle) };
 }
 async function buildResumedChatSession(opts: Parameters<typeof buildRestoredSession>[0]) {
   const built = await buildRestoredSession(opts);
   let key = 0;
   built.attachEffectTurnAllocator(() => ++key);
+  let invocationOrdinal = 0;
+  built.attachUsageWriter({
+    initialCoverage: () => ({
+      coverage: { unverified: false, pendingInvocations: 0, unknownCalls: 0 },
+      models: [],
+      started: true,
+      highWater: 0,
+    }),
+    begin: (draft) =>
+      Promise.resolve(
+        Object.freeze({
+          producerId: 'unit-host',
+          ordinal: ++invocationOrdinal,
+          dispatchId: draft.nodeId,
+          round: draft.round,
+          chainAttempt: draft.chainAttempt,
+        }),
+      ),
+    disposition: () => undefined,
+    record: () => undefined,
+  });
   return { ...built, recordedEvents: collectSubscribedSessionEvents(built.handle) };
 }
 

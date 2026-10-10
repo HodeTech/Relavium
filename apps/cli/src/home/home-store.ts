@@ -1,8 +1,9 @@
 import type { RunHistoryReader, RunRecord, SessionStore } from '@relavium/db';
-import type { AgentSessionRecord } from '@relavium/shared';
+import type { AgentSessionRecord, UsageCoverage } from '@relavium/shared';
 
 import { pendingHumanGates, type PendingGate } from '../gate/pending.js';
 import { readPerRunOrDegrade } from '../history/per-run-read.js';
+import { readRunUsageCoverage, UNVERIFIED_USAGE } from '../history/usage-coverage.js';
 
 /**
  * The data aggregator behind the bare-invocation **Home** (2.5.B, [ADR-0054](../../../../docs/decisions/0054-cli-bare-invocation-interactive-home.md)).
@@ -31,6 +32,8 @@ export interface HomeSessionRow {
   readonly updatedAt: string;
   /** Cumulative session cost — the agent-first primary row glances with cost too (parity with `HomeRunRow`). */
   readonly totalCostMicrocents: number;
+  readonly usageCoverage?: UsageCoverage;
+  readonly unpricedCalls?: number;
 }
 
 /** A run row (recent or failed), labeled by its workflow slug. */
@@ -46,6 +49,8 @@ export interface HomeRunRow {
    *  completed/failed/cancelled row, which `createdAt` alone cannot give. */
   readonly completedAt: string | undefined;
   readonly totalCostMicrocents: number;
+  readonly usageCoverage?: UsageCoverage;
+  readonly unpricedCalls?: number;
 }
 
 /** A pending human gate awaiting resolution — the most urgent "attention" item. */
@@ -98,8 +103,11 @@ export interface HomeSnapshot {
 
 /** The read seams the Home aggregates over — narrowed so a test can stub exactly these reads. */
 export interface HomeStoreDeps {
-  readonly sessions: Pick<SessionStore, 'listSessions'>;
-  readonly runs: Pick<RunHistoryReader, 'listRuns' | 'loadRunStateEvents' | 'loadWorkflowSlugs'>;
+  readonly sessions: Pick<SessionStore, 'listSessions' | 'loadSessionCostBreakdown'>;
+  readonly runs: Pick<
+    RunHistoryReader,
+    'listRuns' | 'loadRunStateEvents' | 'loadWorkflowSlugs' | 'visitRunEventsForReplay'
+  >;
   /**
    * Top-N per list (default {@link DEFAULT_HOME_LIMIT}). A positive integer; a non-positive value is clamped to
    * `1` (unlike the DB-layer `≤0 ⇒ unbounded` convention, `0` is not a meaningful Home request).
@@ -197,7 +205,25 @@ export function buildHomeSnapshot(deps: HomeStoreDeps): HomeSnapshot {
     })),
   );
 
-  const failedRuns = failedRunRecords.map((run) => toRunRow(run, slugOf(run)));
+  const usageByRun = new Map<string, ReturnType<typeof readRunUsageCoverage>>();
+  const runRow = (run: RunRecord): HomeRunRow => {
+    let usage = usageByRun.get(run.id);
+    if (usage === undefined) {
+      const read = readPerRunOrDegrade(
+        { usageCoverage: UNVERIFIED_USAGE, unpricedCalls: 0, nodes: new Map() },
+        () => readRunUsageCoverage(deps.runs, run.id),
+      );
+      usage = read.value;
+      if (read.degraded) unreadableRunIds.push(run.id);
+      usageByRun.set(run.id, usage);
+    }
+    return {
+      ...toRunRow(run, slugOf(run)),
+      usageCoverage: usage.usageCoverage,
+      unpricedCalls: usage.unpricedCalls,
+    };
+  };
+  const failedRuns = failedRunRecords.map(runRow);
   const recentRuns = recentRunRecords
     // Never repeat an attention row. A run whose log could not be read is an attention row too (#W15-15) —
     // without this it rendered in BOTH strips, once as "event log unreadable" and once as an ordinary run.
@@ -208,9 +234,17 @@ export function buildHomeSnapshot(deps: HomeStoreDeps): HomeSnapshot {
         !unreadableRunIds.includes(run.id),
     )
     .slice(0, limit) // trim the over-fetch back to the top-N survivors
-    .map((run) => toRunRow(run, slugOf(run)));
+    .map(runRow);
 
-  const recentSessions = recentSessionRecords.map(toSessionRow);
+  const recentSessions = recentSessionRecords.map((session) => {
+    const costs = deps.sessions.loadSessionCostBreakdown(session.id);
+    return {
+      ...toSessionRow(session),
+      totalCostMicrocents: costs.totalCostMicrocents,
+      usageCoverage: costs.coverage,
+      unpricedCalls: costs.rows.reduce((sum, row) => sum + row.unpricedCalls, 0),
+    };
+  });
   const recentAgents = deriveRecentAgents(recentSessionRecords);
 
   // `recentAgents` is intentionally omitted: it derives from `recentSessionRecords`, so a non-empty agent list

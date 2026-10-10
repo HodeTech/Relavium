@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { produceUsagePrefixes } from './usage-producer.mjs';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fixture, workflow, root, record } from './producer-common.mjs';
@@ -200,7 +201,10 @@ for (const capture of cases) {
   );
   assert.ok(events.some((e) => e.type === 'budget:authorization'));
 }
+const usagePrefixes = await produceUsagePrefixes();
+cases.push(...usagePrefixes.cases);
 record('results/producer-cases.json', {
+  localFixtureCalls: usagePrefixes.localFixtureCalls,
   producerVersionPath: 'producer-version.json',
   producerManifestPath: 'producer-source-manifest.json',
   cases,

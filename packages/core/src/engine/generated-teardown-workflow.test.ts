@@ -83,7 +83,7 @@ function build(
       const result: LlmResult = {
         content: [original, { type: 'text', text: 'detached answer' }],
         stopReason: 'stop',
-        usage: used(),
+        usage: { kind: 'complete', usage: used() },
       };
       if (kind === 'budget-getter' || kind === 'writer-getter')
         result.content = [

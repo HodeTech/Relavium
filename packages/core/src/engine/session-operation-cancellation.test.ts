@@ -43,7 +43,11 @@ function make(deps: Partial<SessionDeps> = {}) {
     stream: async function* (): AsyncGenerator<StreamChunk> {
       await Promise.resolve();
       yield { type: 'text_delta', text: 'answer' };
-      yield { type: 'stop', stopReason: 'stop', usage: { inputTokens: 0, outputTokens: 0 } };
+      yield {
+        type: 'stop',
+        stopReason: 'stop',
+        usage: { kind: 'complete', usage: { inputTokens: 0, outputTokens: 0 } },
+      };
     },
   };
   const session = new AgentSession({
@@ -125,7 +129,11 @@ describe('R11 sibling operation cancellation controls', () => {
           await done.promise;
         }
         yield { type: 'text_delta', text: calls === 3 ? 'new summary' : 'answer' };
-        yield { type: 'stop', stopReason: 'stop', usage: { inputTokens: 4, outputTokens: 1 } };
+        yield {
+          type: 'stop',
+          stopReason: 'stop',
+          usage: { kind: 'complete', usage: { inputTokens: 4, outputTokens: 1 } },
+        };
       };
       await h.session.sendMessage('first');
       await h.session.sendMessage('second');

@@ -1,19 +1,20 @@
-import {
-  UsageCoverageSchema,
-  UsageModelSchema,
-  type AgentSessionRecord,
-  type UsageCoverage,
-} from '@relavium/shared';
-import { asc, eq } from 'drizzle-orm';
+import { type AgentSessionRecord, type UsageDisposition } from '@relavium/shared';
+import { eq } from 'drizzle-orm';
 
 import type { Db } from './client.js';
-import { agentSessions, sessionUsageCoverage } from './schema.js';
+import { agentSessions } from './schema.js';
 import { toAgentSessionRow } from './session-store.js';
+import { SessionUsageError, withSessionUsageWrite } from './session-usage-write.js';
+
 import {
-  SessionUsageError,
-  validateUsageRevision,
-  withSessionUsageWrite,
-} from './session-usage-write.js';
+  beginSessionUsageInvocation,
+  createFreshOneShotUsageOwner,
+  type SessionUsageOwner,
+  disposeSessionUsageInvocation,
+  retireSessionUsageInvocation,
+  type SessionUsageInvocationInput,
+  type SessionUsageReceipt,
+} from './session-usage-receipt.js';
 
 /** Historical totals, lifecycle state and arbitrary coverage are deliberately not accepted. */
 export type FreshSessionSeed = Pick<
@@ -21,18 +22,22 @@ export type FreshSessionSeed = Pick<
   'id' | 'agentId' | 'agentSlug' | 'agentSnapshot' | 'title' | 'modelId' | 'context' | 'createdAt'
 >;
 
-export interface SessionUsageSnapshot {
-  readonly coverage: UsageCoverage;
-  /**
-   * Rows present in session_usage_coverage. A future reader joining historical money-only models
-   * must supply zero known pending/unknown counts and inherit aggregate coverage.unverified.
-   */
-  readonly models: readonly { readonly model: string; readonly coverage: UsageCoverage }[];
-}
+export type { SessionUsageSnapshot } from './session-usage-read.js';
+import { readSessionCoverage, type SessionUsageSnapshot } from './session-usage-read.js';
 
 export interface SessionUsageStore {
+  readonly createFreshOneShotOwner: (input: {
+    readonly sessionId: string;
+    readonly now: number;
+  }) => SessionUsageOwner;
+  readonly beginInvocation: (
+    input: SessionUsageInvocationInput,
+    owner?: SessionUsageOwner,
+  ) => SessionUsageReceipt;
+  readonly disposition: (receipt: SessionUsageReceipt, disposition: UsageDisposition) => boolean;
+  readonly retire: (receipt: SessionUsageReceipt) => void;
   /**
-   * Explicit NEW-owner privilege. Not called by shipping hosts in Step 4. It must never replace
+   * Explicit NEW-owner privilege. It must never replace
    * resume/reseat/import or generic createSession. Throws SessionUsageError on existing ids,
    * historical fields, or nested transactions; ordinary persistence validation/faults propagate.
    */
@@ -52,9 +57,13 @@ const FRESH_FIELDS: ReadonlySet<string> = new Set([
   'createdAt',
 ]);
 
-/** ADR-0104 inert foundations. Invocation production/settlement is deliberately not exposed yet. */
+/** ADR-0104 session usage authority, independent from admission estimates and actual-money arithmetic. */
 export function createSessionUsageStore(db: Db): SessionUsageStore {
   return {
+    createFreshOneShotOwner: (input) => createFreshOneShotUsageOwner(db, input),
+    beginInvocation: (input, owner) => beginSessionUsageInvocation(db, input, owner),
+    disposition: (receipt, disposition) => disposeSessionUsageInvocation(db, receipt, disposition),
+    retire: (receipt) => retireSessionUsageInvocation(db, receipt),
     createFreshSession: (seed) => {
       if (Object.keys(seed).some((key) => !FRESH_FIELDS.has(key)))
         throw new SessionUsageError('not_fresh');
@@ -86,42 +95,6 @@ export function createSessionUsageStore(db: Db): SessionUsageStore {
           .run();
       });
     },
-    loadCoverage: (sessionId) =>
-      db.transaction((tx) => {
-        const owner = tx
-          .select({
-            revision: agentSessions.usageMutationRevision,
-            acknowledged: agentSessions.usageAckRevision,
-            unverified: agentSessions.usageUnverified,
-            pendingInvocations: agentSessions.usagePendingInvocations,
-            unknownCalls: agentSessions.usageUnknownCalls,
-          })
-          .from(agentSessions)
-          .where(eq(agentSessions.id, sessionId))
-          .get();
-        if (owner === undefined) return undefined;
-        validateUsageRevision(owner.revision, owner.acknowledged);
-        const unverified = owner.unverified || owner.revision !== owner.acknowledged;
-        const coverage = UsageCoverageSchema.parse({
-          unverified,
-          pendingInvocations: owner.pendingInvocations,
-          unknownCalls: owner.unknownCalls,
-        });
-        const models = tx
-          .select()
-          .from(sessionUsageCoverage)
-          .where(eq(sessionUsageCoverage.sessionId, sessionId))
-          .orderBy(asc(sessionUsageCoverage.model))
-          .all()
-          .map((row) => ({
-            model: UsageModelSchema.parse(row.model),
-            coverage: UsageCoverageSchema.parse({
-              unverified,
-              pendingInvocations: row.pendingInvocations,
-              unknownCalls: row.unknownCalls,
-            }),
-          }));
-        return { coverage, models };
-      }),
+    loadCoverage: (sessionId) => db.transaction((tx) => readSessionCoverage(tx, sessionId)),
   };
 }

@@ -33,6 +33,7 @@ import {
 import { checkRetentionGuards } from './evidence-retention-smoke.mjs';
 import { runReplayStage } from './worker-stage.mjs';
 import { checkLifecycleGuards } from './lifecycle-smoke.mjs';
+import { installSessionSourceSupplement } from './session-source-supplement.mjs';
 import { verifyReplayInventory, checkReplayInventoryGuards } from './replay-inventory.mjs';
 
 const tooling = realpathSync(fileURLToPath(new URL('.', import.meta.url)));
@@ -121,6 +122,7 @@ try {
     `${JSON.stringify(verifyBaselineProvenance(repository, join(owned, 'frozen'), frozenManifest), null, 2)}\n`,
   );
   checkBaselineProvenanceGuards(repository, join(owned, 'frozen'), frozenManifest, owned);
+  installSessionSourceSupplement(repository, tooling, owned);
 
   const producerFiles = [];
   function snapshot(path) {
@@ -180,7 +182,11 @@ try {
     'producer-common.mjs',
     'legacy-producer.mjs',
     'producer.mjs',
+    'usage-producer.mjs',
     'predecessor.mjs',
+    'session-new.mjs',
+    'session-old.mjs',
+    'session-reopened.mjs',
   ];
   for (const file of workerFiles) cpSync(join(tooling, file), join(owned, file));
 
@@ -211,6 +217,9 @@ try {
   let workerFinalization = { failed: false };
   try {
     for (const [stage, mode, script] of [
+      ['session-new', 'producer', 'session-new.mjs'],
+      ['session-old', 'frozen', 'session-old.mjs'],
+      ['session-reopened', 'producer', 'session-reopened.mjs'],
       ['legacy', 'frozen', 'legacy-producer.mjs'],
       ['producer', 'producer', 'producer.mjs'],
       ['predecessor', 'frozen', 'predecessor.mjs'],
@@ -244,6 +253,32 @@ try {
   const inventory = verifyReplayInventory(producerEvidence, predecessorEvidence);
   writeFileSync(join(owned, 'replay-inventory.json'), `${JSON.stringify(inventory, null, 2)}\n`);
   checkReplayInventoryGuards(producerEvidence, predecessorEvidence, owned);
+  const sessionOperations = [
+    'zero-cost',
+    'owner-update',
+    'message-insert',
+    'message-delete',
+    'cost-delete',
+    'reparent-from',
+    'reparent-to',
+    'old-insert',
+  ];
+  for (const stage of ['session-new', 'session-old', 'session-reopened']) {
+    const evidence = JSON.parse(readFileSync(join(owned, `results/${stage}.json`), 'utf8'));
+    assert.equal(evidence.completed, true);
+    assert.equal(evidence.databaseClosed, true);
+    assert.deepEqual(
+      evidence.operations,
+      stage === 'session-new' ? sessionOperations.slice(0, -1) : sessionOperations,
+    );
+    if (stage === 'session-old')
+      assert.equal(evidence.sourceBlob, '9b4c5a1b5235dc44b110e41d7cc71cad5d071162');
+    if (stage === 'session-reopened') {
+      assert.equal(evidence.stickyOwners, 8);
+      assert.equal(evidence.zeroCostPreserved, true);
+      assert.equal(evidence.oldCallCountPreserved, true);
+    }
+  }
   completion = 'success';
 } catch (error) {
   primaryFailure = true;

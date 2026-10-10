@@ -48,7 +48,11 @@ describe('generated semantic projection before host pricing', () => {
             },
           ],
         };
-        const result: LlmResult = { content: [part], stopReason: 'stop', usage: quantity };
+        const result: LlmResult = {
+          content: [part],
+          stopReason: 'stop',
+          usage: { kind: 'complete', usage: quantity },
+        };
         Object.defineProperty(result, 'raw', {
           enumerable: true,
           get() {
@@ -118,8 +122,11 @@ describe('generated semantic projection before host pricing', () => {
         );
         expect(calls).toBe(1);
         expect(records).toHaveLength(1);
-        expect(records[0]?.usage?.inputTokens).toBe(3);
-        expect(records[0]?.usage?.mediaUnits?.[0]?.units).toBe(2);
+        const evidence = records[0]?.usage;
+        expect(evidence?.kind).toBe('complete');
+        if (evidence?.kind !== 'complete') throw new Error('expected complete usage');
+        expect(evidence.usage.inputTokens).toBe(3);
+        expect(evidence.usage.mediaUnits?.[0]?.units).toBe(2);
         expect(order.indexOf(projection === 'content-fault' ? 'text-fault' : 'raw')).toBeLessThan(
           order.indexOf('pricing'),
         );
@@ -175,7 +182,7 @@ describe('generated semantic projection before host pricing', () => {
           return Promise.resolve({
             content: [],
             stopReason: 'stop',
-            usage: { inputTokens: 0, outputTokens: 0 },
+            usage: { kind: 'complete', usage: { inputTokens: 0, outputTokens: 0 } },
           });
         },
         stream: () => {

@@ -177,11 +177,19 @@ function startRun(
         yield { type: 'tool_call_start', id: 'read-1', name: 'read_file' };
         yield { type: 'tool_call_delta', id: 'read-1', argsJsonDelta: '{"path":"fixture"}' };
         yield { type: 'tool_call_end', id: 'read-1' };
-        yield { type: 'stop', stopReason: 'tool_use', usage: { inputTokens: 1, outputTokens: 1 } };
+        yield {
+          type: 'stop',
+          stopReason: 'tool_use',
+          usage: { kind: 'complete', usage: { inputTokens: 1, outputTokens: 1 } },
+        };
         return;
       }
       yield { type: 'text_delta', text: 'ANSWER' };
-      yield { type: 'stop', stopReason: 'stop', usage: { inputTokens: 1, outputTokens: 1 } };
+      yield {
+        type: 'stop',
+        stopReason: 'stop',
+        usage: { kind: 'complete', usage: { inputTokens: 1, outputTokens: 1 } },
+      };
     },
   };
   const runner = createAgentNodeExecutor({

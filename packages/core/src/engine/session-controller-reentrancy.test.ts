@@ -94,7 +94,11 @@ function fixture(
       await Promise.resolve();
       invocations++;
       yield { type: 'text_delta', text: 'fresh offline answer' };
-      yield { type: 'stop', stopReason: 'stop', usage: { inputTokens: 2, outputTokens: 3 } };
+      yield {
+        type: 'stop',
+        stopReason: 'stop',
+        usage: { kind: 'complete', usage: { inputTokens: 2, outputTokens: 3 } },
+      };
     },
   };
   const session = new AgentSession({

@@ -351,3 +351,10 @@ known actual is being folded now joins that accounting completion before the dur
 total is captured, preserving immediate abort and exactly-once settlement. Missing evidence
 remains conservative, never an invented actual price. These are consumer corrections to the
 existing policy; durable allowance activation remains Step 10.
+
+### W8 usage coverage activation — 2026-10-10
+
+Missing inline-media usage is explicit uncertainty. Separate-endpoint media’s accepted volume basis remains valid and does not inherit token-provider pending coverage; absent modality prices continue to be unpriced.
+
+See [ADR-0104](0104-unknown-provider-usage-is-durable-cost-uncertainty.md) and the
+[canonical usage contract](../reference/shared-core/llm-provider-seam.md#6-usage).

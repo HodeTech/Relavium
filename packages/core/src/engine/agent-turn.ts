@@ -36,6 +36,7 @@ import type {
   ReasoningEffort,
   StopReason,
   SessionToolHistoryEntry,
+  UsageDisposition,
 } from '@relavium/shared';
 import {
   CostTracker,
@@ -266,13 +267,9 @@ export interface AgentTurnParams {
   /** Pre-egress budget hook (default no-op; 1.AC fills it). */
   readonly preEgress?: PreEgressHook;
   /**
-   * The run's money-durability port (ADR-0076 / ADR-0077) — RUN-PATH ONLY, and that is what makes
-   * `cost:attempt_settled` a run-only event as a runtime fact rather than a comment: `AgentSession` never sets
-   * this, so nothing is recorded on the session path and there is nothing for a sink to drop. (The session's
-   * realized spend is already recorded synchronously into `session_costs`, ADR-0070 + `#W15-4`.)
-   *
-   * Optional exactly like {@link preEgress}, and threaded the same way, because this is the boundary the
-   * session shares.
+   * Required accounting ACKs for persisted hosts, independent of budget presence. Workflows append
+   * the realized ledger; sessions attach their sole transactional cost writer directly. Volatile
+   * embeddings may omit the port and cannot promise crash-persistent usage coverage.
    */
   readonly money?: TurnMoneyPort;
   /**
@@ -295,6 +292,7 @@ export interface AgentTurnParams {
 
 /** What one settled agent turn produced. */
 export interface AgentTurnResult {
+  readonly usageCoverage: import('@relavium/shared').UsageCoverage;
   readonly toolHistory: readonly SessionToolHistoryEntry[];
   /** The final assistant content parts (text + any reasoning), in order. */
   readonly content: readonly ContentPart[];
@@ -658,15 +656,15 @@ async function streamOneTurn(
     if (chunk.type !== 'error') usage.engaged = true;
     if (
       chunk.type === 'stop' &&
-      chunk.usage !== undefined &&
-      Number.isSafeInteger(chunk.usage.inputTokens) &&
-      chunk.usage.inputTokens >= 0 &&
-      Number.isSafeInteger(chunk.usage.outputTokens) &&
-      chunk.usage.outputTokens >= 0
+      chunk.usage.kind === 'complete' &&
+      Number.isSafeInteger(chunk.usage.usage.inputTokens) &&
+      chunk.usage.usage.inputTokens >= 0 &&
+      Number.isSafeInteger(chunk.usage.usage.outputTokens) &&
+      chunk.usage.usage.outputTokens >= 0
     ) {
       usage.observedStopUsage = {
-        input: chunk.usage.inputTokens,
-        output: chunk.usage.outputTokens,
+        input: chunk.usage.usage.inputTokens,
+        output: chunk.usage.usage.outputTokens,
       };
     }
     // **ADR-0036's producer-await, at the only place a streaming turn can honour it (`CR-30`).**
@@ -1451,6 +1449,7 @@ export async function captureAgentTurnOutcome(
       ? {}
       : {
           money: {
+            ...supplied.money,
             join: () => supplied.money?.join() ?? Promise.resolve(),
             record: (draft) => {
               try {
@@ -1482,8 +1481,18 @@ export async function captureAgentTurnOutcome(
   };
   params = Object.freeze(observed);
   try {
-    return { kind: 'succeeded', result: await driveAgentTurn(params, acc) };
+    const result = await driveAgentTurn(params, acc);
+    if (params.money?.beginUsageInvocation !== undefined) await params.money.join();
+    return { kind: 'succeeded', result };
   } catch (error) {
+    let settledError: unknown = error;
+    if (params.money?.beginUsageInvocation !== undefined) {
+      try {
+        await params.money.join();
+      } catch (moneyError) {
+        settledError = moneyError;
+      }
+    }
     const knownUsage = {
       input: acc.input + (acc.observedStopUsage?.input ?? 0),
       output: acc.output + (acc.observedStopUsage?.output ?? 0),
@@ -1491,15 +1500,15 @@ export async function captureAgentTurnOutcome(
     // An error returned by an earlier call may be rethrown by a current host hook. Only this
     // capture's private mapping can authorise recovery; public class/identity metadata cannot.
     const overflowEntry =
-      acc.overflow !== undefined && Object.is(acc.overflow.error, error)
+      acc.overflow !== undefined && Object.is(acc.overflow.error, settledError)
         ? acc.overflow.entry
         : undefined;
     return {
       kind: 'failed',
-      error,
+      error: settledError,
       ...(overflowEntry === undefined ? {} : { overflowEntry }),
       failureOrigin:
-        acc.observerFailure !== undefined && Object.is(acc.observerFailure.error, error)
+        acc.observerFailure !== undefined && Object.is(acc.observerFailure.error, settledError)
           ? 'observer'
           : 'turn',
       engaged: acc.engaged,
@@ -1554,6 +1563,7 @@ function attachPublicTurnAccounting(
 
 /** The one canonical per-turn accounting accumulator, independent of failure classification. */
 interface TurnUsageAccumulator {
+  unknownCalls?: number;
   input: number;
   output: number;
   engaged: boolean;
@@ -1612,6 +1622,8 @@ async function driveAgentTurn(
   const costTracker = new CostTracker(params.resolvePrice);
   let activeModel = primaryModel;
   let nonSkippedAttempts = 0;
+  let coverageRound = 0;
+  let coverageAttempt = 0;
   const preEgress = params.preEgress;
   // A chain executes one provider attempt at a time, so one per-turn slot is sufficient. It is deliberately NOT a
   // governor-global FIFO: parallel nodes can settle out of order, and a failed/no-usage attempt has no cost event
@@ -1654,6 +1666,55 @@ async function driveAgentTurn(
     // A SKIPPED entry (cooldown / capability) was not invoked — it must not become `activeModel`, or
     // the next entry's streamed tokens would be mis-attributed to a provider that never ran.
     if (record.outcome === 'skipped') return;
+    const evidence = record.usage ?? { kind: 'missing', reason: 'not_reported' };
+    const invocation = record.invocation;
+    const status = record.error?.status;
+    const officialRefusal =
+      record.providerInvoked &&
+      record.outcome === 'failed' &&
+      !record.contentReceived &&
+      !record.customEndpoint &&
+      evidence.kind !== 'complete' &&
+      (record.error?.kind === 'context_overflow' ||
+        (status !== undefined && PRE_CONTENT_REFUSAL_STATUSES.has(status)));
+    const disposition: UsageDisposition | undefined = !record.providerInvoked
+      ? {
+          kind: 'not_invoked',
+          reason: record.error?.kind === 'cancelled' ? 'cancelled' : 'credentials',
+        }
+      : officialRefusal
+        ? { kind: 'official_refusal', reason: 'pre_content_refusal' }
+        : evidence.kind !== 'complete'
+          ? { kind: 'incomplete', evidence }
+          : undefined;
+    if (invocation !== undefined) {
+      const claim =
+        record.receiptFinal === true && evidence.kind !== 'complete'
+          ? 'retired'
+          : disposition === undefined
+            ? 'complete'
+            : disposition.kind === 'incomplete'
+              ? record.receiptPending === true
+                ? 'incomplete'
+                : 'retired'
+              : 'released';
+      if (params.money?.claimUsage?.(invocation, claim) !== true) return;
+      if (disposition !== undefined)
+        params.money?.usageDisposition?.({
+          nodeId: params.nodeId,
+          model: record.model,
+          invocation,
+          disposition,
+          ...(record.receiptPending === true ? { receiptPending: true } : {}),
+        });
+    }
+    // Native request repair and raw late receipt settlement carry their own coverage identity,
+    // but cannot consume the admission belonging to the outer chain attempt.
+    const coverageOnly = record.coverageOnly === true;
+    if (!coverageOnly && disposition?.kind === 'incomplete')
+      usage.unknownCalls = (usage.unknownCalls ?? 0) + 1;
+    if (coverageOnly && evidence.kind !== 'complete') return;
+
     delete usage.overflowAttempt;
     if (
       record.outcome === 'failed' &&
@@ -1673,13 +1734,13 @@ async function driveAgentTurn(
     if (!providerMayHaveEngaged) {
       // A successful pre-attempt check followed by a credential failure/cancellation never reached a provider.
       // Proven pre-provider failure: the held admission is safe to release after the hook returned.
-      dischargeAttemptAdmission((active) => active?.release());
+      if (!coverageOnly) dischargeAttemptAdmission((active) => active?.release());
       return;
     }
     activeModel = record.model;
-    nonSkippedAttempts += 1;
+    if (!coverageOnly) nonSkippedAttempts += 1;
     usage.engaged = true; // the provider method was invoked, even if it errored at zero usage
-    if (record.usage === undefined) {
+    if (evidence.kind !== 'complete') {
       const status = record.error?.status;
       if (
         record.outcome === 'failed' &&
@@ -1705,8 +1766,8 @@ async function driveAgentTurn(
     // This AttemptRecord consumes the stop chunk's quantities exactly once. A host failure before
     // the record retains the observed quantities separately, without inventing an attempt or price.
     delete usage.observedStopUsage;
-    usage.input += record.usage.inputTokens;
-    usage.output += record.usage.outputTokens;
+    usage.input += evidence.usage.inputTokens;
+    usage.output += evidence.usage.outputTokens;
     // The chain already folded this attempt's usage into our `costTracker` and put the per-attempt
     // figure on `record.cost`; read it rather than re-recording (which would double the total).
     // Settle BEFORE the event sink: it replaces this attempt's reservation with the realized amount atomically,
@@ -1726,7 +1787,9 @@ async function driveAgentTurn(
     // BOTH conditions are spelled out rather than relying on "priced !== false implies cost is defined". That
     // implication holds today, but it is an invariant of a type in another package, and the compiler cannot see
     // it — leaning on it here would be a narrowing that a future chain change could silently invalidate.
-    if (record.priced === false || record.cost === undefined) {
+    if (coverageOnly) {
+      // A late charge cannot reacquire or settle another live admission.
+    } else if (record.priced === false || record.cost === undefined) {
       dischargeAttemptAdmission((active) =>
         active?.settleAtReservedEstimate({
           nodeId: params.nodeId,
@@ -1751,12 +1814,13 @@ async function driveAgentTurn(
       }
     }
     try {
-      params.emit({
+      (coverageOnly ? (params.money?.emitCost ?? params.emit) : params.emit)({
         type: 'cost:updated',
+        ...(invocation === undefined ? {} : { invocation }),
         nodeId: params.nodeId,
         model: record.model,
-        inputTokens: record.usage.inputTokens,
-        outputTokens: record.usage.outputTokens,
+        inputTokens: evidence.usage.inputTokens,
+        outputTokens: evidence.usage.outputTokens,
         costMicrocents: record.cost?.costMicrocents ?? 0,
         // Placeholder — the engine owns the run-wide running total and overwrites this authoritatively.
         cumulativeCostMicrocents: 0,
@@ -1785,11 +1849,12 @@ async function driveAgentTurn(
       // producer gate — and that gate runs in `#bus.next`, OUTSIDE `#emitDurable`'s try, so the wrong order does
       // not degrade quietly: it makes `#emitDurable` REJECT in the one place the design assumes it cannot.
       params.money?.record({
+        ...(invocation === undefined ? {} : { invocation }),
         nodeId: params.nodeId,
         model: record.model,
         attemptNumber: nonSkippedAttempts,
-        inputTokens: record.usage.inputTokens,
-        outputTokens: record.usage.outputTokens,
+        inputTokens: evidence.usage.inputTokens,
+        outputTokens: evidence.usage.outputTokens,
         costMicrocents: record.cost?.costMicrocents ?? 0,
         // Same rule as the event above, and the same reason: this feeds the DURABLE `unpriced_calls` counter, so
         // a re-derivation here would persist "fully priced" for a call whose media charge was never accounted.
@@ -1801,6 +1866,20 @@ async function driveAgentTurn(
   const chain = new FallbackChain([...params.planEntries], {
     ...params.chainCapabilities,
     ...(params.retainWork === undefined ? {} : { retainWork: params.retainWork }),
+    ...(params.money?.beginUsageInvocation === undefined
+      ? {}
+      : {
+          beginUsageInvocation: async (info: PreAttemptInfo) => {
+            const begin = params.money?.beginUsageInvocation;
+            if (begin === undefined) throw new Error('Usage durability is unavailable');
+            return begin({
+              nodeId: params.nodeId,
+              model: info.model,
+              round: coverageRound,
+              chainAttempt: ++coverageAttempt,
+            });
+          },
+        }),
     costTracker,
     onAttempt: (record) => {
       try {
@@ -1920,6 +1999,11 @@ async function driveAgentTurn(
         content: turn.content,
         text: textOf(turn.content),
         usage: { input: usage.input, output: usage.output },
+        usageCoverage: {
+          unverified: false,
+          pendingInvocations: 0,
+          unknownCalls: usage.unknownCalls ?? 0,
+        },
         model: activeModel,
         stopReason: turn.stopReason,
         toolHistory: [],
@@ -1932,6 +2016,8 @@ async function driveAgentTurn(
     const toolHistory: SessionToolHistoryEntry[] = [];
 
     for (let toolTurn = 0; ; toolTurn += 1) {
+      coverageRound = toolTurn;
+      coverageAttempt = 0;
       throwIfAborted(params.signal);
       if (toolTurn > params.limits.maxToolTurns) {
         throw new AgentTurnError(
@@ -2014,6 +2100,11 @@ async function driveAgentTurn(
           content: turn.content,
           text: textOf(turn.content),
           usage: { input: usage.input, output: usage.output },
+          usageCoverage: {
+            unverified: false,
+            pendingInvocations: 0,
+            unknownCalls: usage.unknownCalls ?? 0,
+          },
           model: activeModel,
           stopReason: turn.stopReason,
           toolHistory,

@@ -444,3 +444,10 @@ rules. This is bounded result ownership, not Proposed ADR-0102's whole-request c
 The canonical [LLM seam](../reference/shared-core/llm-provider-seam.md#fallback-lives-outside-the-adapter)
 states the order. The interrupted review remains qualified and requires a fresh complete round.
 Historical text is preserved.
+
+### W8 usage coverage activation — 2026-10-10
+
+Terminal grammar now carries usage evidence that may be partial or missing. Adapters retain owned observations before projection, deadline or malformed-tail failure, and late observations remain attached to their original invocation.
+
+See [ADR-0104](0104-unknown-provider-usage-is-durable-cost-uncertainty.md) and the
+[canonical usage contract](../reference/shared-core/llm-provider-seam.md#6-usage).

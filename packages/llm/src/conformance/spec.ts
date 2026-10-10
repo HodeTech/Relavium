@@ -1,3 +1,4 @@
+import { knownUsage } from './usage-test.js';
 import { describe, expect, it } from 'vitest';
 
 import { MEDIA_SURFACES, type StopReason } from '@relavium/shared';
@@ -196,14 +197,21 @@ export function defineConformanceSuite(
       expect(LlmResultSchema.safeParse(result).success).toBe(true);
       const text = result.content.map((part) => (part.type === 'text' ? part.text : '')).join('');
       expect(text).toBe(expected.textGenerate.text); // exact value, not just presence
-      expect(result.usage.inputTokens).toBe(expected.textGenerate.inputTokens);
-      expect(result.usage.outputTokens).toBe(expected.textGenerate.outputTokens);
+      if (name === 'gemini') {
+        // Historical native fixture omits both cache and thinking counts for this unknown model.
+        expect(result.usage).toEqual({ kind: 'missing', reason: 'missing_fields' });
+      } else {
+        expect(knownUsage(result.usage).inputTokens).toBe(expected.textGenerate.inputTokens);
+        expect(knownUsage(result.usage).outputTokens).toBe(expected.textGenerate.outputTokens);
+      }
       expect(result.stopReason).toBe(expected.textGenerate.stopReason);
       expect(result.raw).toBeDefined();
       // A prompt-cache hit must fold into the ONE canonical Usage (cacheReadTokens), not be lost or
       // double-counted into inputTokens — asserted for providers whose fixture records a cache hit.
       if (expected.textGenerate.cacheReadTokens !== undefined) {
-        expect(result.usage.cacheReadTokens).toBe(expected.textGenerate.cacheReadTokens);
+        expect(knownUsage(result.usage).cacheReadTokens).toBe(
+          expected.textGenerate.cacheReadTokens,
+        );
       }
     });
 
@@ -228,8 +236,14 @@ export function defineConformanceSuite(
       expect(last?.type).toBe('stop');
       if (last?.type === 'stop') {
         expect(last.stopReason).toBe(expected.textStream.stopReason);
-        expect(last.usage.inputTokens).toBe(expected.textStream.inputTokens);
-        expect(last.usage.outputTokens).toBe(expected.textStream.outputTokens);
+        if (name === 'gemini') {
+          expect(last.usage).toEqual({ kind: 'missing', reason: 'missing_fields' });
+        } else {
+          expect(knownUsage(last.usage).inputTokens).toBe(
+            name === 'openai' ? undefined : expected.textStream.inputTokens,
+          );
+          expect(knownUsage(last.usage).outputTokens).toBe(expected.textStream.outputTokens);
+        }
       }
     });
 
@@ -313,7 +327,9 @@ export function defineConformanceSuite(
           const stop = chunks.at(-1);
           expect(stop?.type).toBe('stop');
           if (stop?.type === 'stop') {
-            expect(stop.usage.reasoningTokens).toBe(expected.reasoningStream.reasoningTokens);
+            expect(knownUsage(stop.usage).reasoningTokens).toBe(
+              expected.reasoningStream.reasoningTokens,
+            );
           }
         }
       },

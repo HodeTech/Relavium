@@ -107,3 +107,10 @@ namespace object; it never deletes it or restores over a successor. This is a sa
 mutation check, not a kernel boundary against a process that can mutate the private claim too.
 See the [harness contract](../../tools/budget-replay-compat/README.md). These are implementation
 corrections; independent corrective review and whole-W7 acceptance remain required.
+
+### W8 usage coverage activation — 2026-10-10
+
+The strict incremental replay visitor validates every row and refuses all new usage discriminators in the frozen predecessor. Display tolerance remains distinct from replay authority; session compatibility uses mutation metadata rather than an event log.
+
+See [ADR-0104](0104-unknown-provider-usage-is-durable-cost-uncertainty.md) and the
+[canonical usage contract](../reference/shared-core/llm-provider-seam.md#6-usage).

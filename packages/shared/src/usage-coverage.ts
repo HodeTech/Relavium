@@ -62,8 +62,7 @@ export const UsageDispositionSchema = z.discriminatedUnion('kind', [
 ]);
 export type UsageDisposition = z.infer<typeof UsageDispositionSchema>;
 
-// Inert payload foundations only. Run-event discriminators and production writers activate together
-// with the end-to-end protocol; exporting a schema is not evidence that current owners are covered.
+// ADR-0104 bounded durable accounting payloads.
 export const UsageCoverageStartedPayloadSchema = z
   .object({ basis: UsageCoverageBasisSchema })
   .strict();
@@ -75,6 +74,7 @@ export const UsageDispositionPayloadSchema = z
     model: UsageModelSchema,
     invocation: UsageInvocationSchema,
     disposition: UsageDispositionSchema,
+    receiptPending: z.literal(true).optional(),
   })
   .strict();
 
