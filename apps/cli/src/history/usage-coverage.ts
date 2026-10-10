@@ -29,7 +29,8 @@ export function readRunUsageCoverage(
       fold.apply(event);
       if (
         'nodeId' in event &&
-        (event.type === 'cost:usage_pending' ||
+        (event.type === 'node:started' ||
+          event.type === 'cost:usage_pending' ||
           event.type === 'cost:usage_disposition' ||
           event.type === 'cost:attempt_settled')
       ) {

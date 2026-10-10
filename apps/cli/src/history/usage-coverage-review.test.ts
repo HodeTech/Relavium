@@ -35,9 +35,15 @@ function deferred() {
 }
 
 describe('W8 review: actual persisted usage projections', () => {
-  it.each([false, true])(
-    'preserves native media basis with a %s explicit zero rate through durable readers',
-    async (priced) => {
+  it.each([
+    { imageRate: undefined, formatted: '$0.0000 known; price unknown for 1 call' },
+    { imageRate: 0, formatted: 'free' },
+    { imageRate: 120_000, formatted: '$0.0012' },
+  ])(
+    'preserves native media step coverage with image rate $imageRate through durable readers',
+    async ({ imageRate, formatted }) => {
+      const priced = imageRate !== undefined;
+      const expectedCostMicrocents = imageRate ?? 0;
       const client = createClient();
       const releaseTerminal = deferred();
       const terminalEntered = deferred();
@@ -131,7 +137,7 @@ describe('W8 review: actual persisted usage projections', () => {
           inputPerMtokMicrocents: 0,
           outputPerMtokMicrocents: 0,
           cachedInputPerMtokMicrocents: 0,
-          ...(priced ? { mediaOutputRates: { image: 0 } } : {}),
+          ...(imageRate === undefined ? {} : { mediaOutputRates: { image: imageRate } }),
         };
         const resolvePrice = new Map([[model, price]]);
         const executor = createAgentNodeExecutor({
@@ -160,16 +166,17 @@ describe('W8 review: actual persisted usage projections', () => {
         const durable = store.loadRunEventLogForReplay(handle.runId);
         expect(durable.some((event) => event.type === 'node:completed')).toBe(true);
         expect(durable.some((event) => event.type === 'cost:usage_pending')).toBe(false);
+        expect(durable.some((event) => event.type === 'cost:usage_disposition')).toBe(false);
         expect(durable.some((event) => event.type === 'cost:attempt_settled')).toBe(false);
         const usage = readRunUsageCoverage(store, handle.runId);
         expect(usage).toMatchObject({
-          totalCostMicrocents: 0,
+          totalCostMicrocents: expectedCostMicrocents,
           unpricedCalls: priced ? 0 : 1,
           usageCoverage: { unverified: false, pendingInvocations: 0, unknownCalls: 0 },
         });
         expect(
           formatCostShort(usage.totalCostMicrocents, usage.usageCoverage, usage.unpricedCalls),
-        ).toEqual(priced ? 'free' : expect.stringContaining('price unknown'));
+        ).toBe(formatted);
         const home = buildHomeSnapshot({
           sessions: createSessionStore(client.db),
           runs: createRunHistoryReader(client.db),
@@ -177,7 +184,7 @@ describe('W8 review: actual persisted usage projections', () => {
         expect(home.recentRuns).toContainEqual(
           expect.objectContaining({
             runId: handle.runId,
-            totalCostMicrocents: 0,
+            totalCostMicrocents: expectedCostMicrocents,
             unpricedCalls: priced ? 0 : 1,
             usageCoverage: usage.usageCoverage,
           }),
@@ -200,16 +207,25 @@ describe('W8 review: actual persisted usage projections', () => {
         expect(parseNdjson(out())).toContainEqual(
           expect.objectContaining({
             runId: handle.runId,
-            totalCostMicrocents: 0,
+            totalCostMicrocents: expectedCostMicrocents,
             unpricedCalls: priced ? 0 : 1,
             usageCoverage: usage.usageCoverage,
+            steps: [
+              expect.objectContaining({
+                nodeId: 'image',
+                status: 'completed',
+                costMicrocents: expectedCostMicrocents,
+                usageCoverage: usage.usageCoverage,
+              }),
+            ],
           }),
         );
+        expect(usage.nodes.get('image')).toEqual(usage.usageCoverage);
         releaseTerminal.resolve();
         await drained;
         expect(await handle.depart()).toMatchObject({ kind: 'closed', moneyDurability: 'durable' });
         expect(publicEvents.filter((event) => event.type === 'cost:updated')).toMatchObject([
-          { inputTokens: 0, outputTokens: 0, costMicrocents: 0 },
+          { inputTokens: 0, outputTokens: 0, costMicrocents: expectedCostMicrocents },
         ]);
         const finalUsage = readRunUsageCoverage(store, handle.runId);
         expect(finalUsage.unpricedCalls).toBe(priced ? 0 : 1);
