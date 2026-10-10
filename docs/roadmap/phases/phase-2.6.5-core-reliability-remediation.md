@@ -4899,3 +4899,12 @@ source, platform/cache, dependency-origin and physical-erasure limitations remai
 work is deferred; Phase 2.6.5 remains 47/51, with W8 and existing approved residuals open. No
 implementation, user decision, credential, capture or billing prerequisite remains. PR #90 is ready
 for maintainer review and unmerged; historical draft/progress wording above describes earlier checkpoints.
+
+#### Publication quality-gate follow-up — 2026-10-10
+
+At published `a733bdba`, both five-job GitHub CI runs pass; SonarCloud returns four new labels.
+The [author correction record](../../reviews/2026-10-10T13-22-20-w7-publication-sonar-author-review.md) traces every key, preserves explicit lexical
+set ordering and replaces two PATH-based Git calls with the existing canonical OS resolver.
+No shipping production/test, dependency, archive or threshold changes. Root CI and bounded controls
+pass, including a PATH-trap negative intervention. Two NEW complete clean cumulative rounds and
+exact new published-head gates are required before this supplemental increment is accepted.

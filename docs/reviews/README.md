@@ -11,6 +11,8 @@ added.
 
 ## Records
 
+- [2026-10-10 — W7 publication quality-gate correction](2026-10-10T13-22-20-w7-publication-sonar-author-review.md): four labels resolved in tools; fresh cumulative review and publication gates pending.
+
 - [2026-10-10 — W7 post-closure acceptance](2026-10-10T13-11-06-w7-post-closure-acceptance-review.md): all three correction increments accepted after two NEW clean complete cumulative rounds each.
 
 - [2026-10-10 — W7 post-closure Step 3, round 2](2026-10-10T13-11-06-w7-post-closure-step-3-round-2-review.md): second NEW clean complete cumulative round accepts the final correction increment.

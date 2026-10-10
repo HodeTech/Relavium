@@ -55,6 +55,11 @@ merged too (PR #85, 2026-08-28).
 > W7 has no implementation, provider, credential, billing or user-decision prerequisite left.
 > PR #90 is ready for maintainer review and unmerged; W8 and existing approved limits remain open.
 
+> **Publication quality-gate follow-up, 2026-10-10:** both five-job GitHub CI runs pass at `a733bdba`.
+> [Four new Sonar labels](../reviews/2026-10-10T13-22-20-w7-publication-sonar-author-review.md) have bounded tool corrections and causal controls;
+> two NEW complete clean cumulative rounds and the next published-head gates remain required.
+> No provider/user prerequisite or shipping-runtime change is involved.
+
 ## Historical W7 implementation checkpoints
 
 Dated W7 checkpoints throughout this page retain their original pending states. The closing checkpoint above
