@@ -3196,6 +3196,46 @@ unchanged; no review file is tracked. Compiled CLI, overflow and budget-replay s
 including all 16 strict predecessor refusals and two legacy positive controls with zero egress.
 These are local author gates, not remote CI or whole-wave acceptance.
 
+#### Step 5 sixth cumulative review and correction — 2026-10-11
+
+Three NEW independent reviewers completed the full `017b399c..43b72396` activation range,
+including every preceding correction. Their deduplicated result was **three High** findings.
+The parent independently reproduced the native observer/pricing failures and the actual status
+race. This round is not clean and cannot count towards acceptance.
+
+| Finding | Verified correction and permanent evidence |
+| --- | --- |
+| Native-repair predecessor observer errors became provider errors and duplicated the prior attempt | The chain privately retains observer provenance across adapter normalization, rethrows the exact opaque primary after cleanup and suppresses duplicate predecessor accounting. Actual installed-SDK generate/stream controls cover plain and typed observer throws, exact identity, one record and no fresh admission or native create. Core preserves external observer origin separately from existing admission/lease control-flow origin and required conservative cleanup. |
+| Complete native-repair predecessor usage bypassed pricing and appeared as a fully priced zero | The prior invocation uses the existing complete-only failure accounting path before another admission. Permanent public-seam generate/stream and real core money-fold controls cover positive and explicit-zero usage, partial/missing evidence, unknown token/media prices, pricing faults and observer failures, with once-only actual settlement and retained uncertainty. This complete-evidence defect applies to supported external seam implementations; current OpenAI HTTP parameter errors do not supply usage. |
+| Status attached older complete coverage to newer step amounts and completion | The strict indexed visitor optionally reads steps through its existing transaction handle after validating the event prefix. Status uses that snapshot rather than a later SELECT. A permanent two-connection native SQLite regression commits positive and missing usage plus node completion just before the step SELECT; the returned tuple remains entirely before that commit. Its before-status control returns the entire newer tuple, including unknown usage. Strict failures retain visible step detail only with unverified coverage and an explicit unavailable marker. |
+
+The 20 permanent LLM controls fail 16 relevant assertions before the chain correction while four
+incomplete-evidence controls pass. Their final 30-case LLM/core cohort passes. An initial core probe
+also had an invalid test-only cleanup import; its aggregate red count is not causal evidence and
+is not claimed here. The final core controls preserve the existing distinction between a rejected
+admission lease action and an external observer, rather than suppressing required conservative
+cleanup to satisfy a broad callback-count assertion. The status regression fails its old/new step
+tuple assertion before correction; the other 41 focused source tests pass. All 42 pass afterward,
+and 86 native DB history tests pass. The final two status fixtures also produce one relevant
+failure and one passing before-status control against physically isolated prior DB/CLI source
+copies, with developer bytes unchanged. Strict replay still validates excluded streaming rows;
+without a step callback it reads no step rows, and a failed replay invokes no step callback.
+
+These are local author corrections, not acceptance. Step 5 requires two NEW clean complete
+cumulative rounds after them. Step 6's further causal matrix and reviews, CR-82 and whole-W8
+publication remain open. No new policy, dependency, money writer, provider call or deferral is introduced.
+
+**Correction gates:** fresh forced monorepo lint/typecheck/test passed **23/23**, none cached,
+across **484** files / **10,215 passed** / **11 existing live-provider skips**, including the
+100,000-settlement case and all 57 CLI child-process controls. Fresh forced build/format passed
+**7/7**. Tools lint/typecheck, schema synchronization, seam/purity/dependency/bundle fences,
+canonical links, whitespace and 484-file test isolation passed. Compiled CLI, overflow capture
+and budget-replay smokes passed offline, with 16 strict predecessor refusals and two legacy
+positive controls. Original local review files remain unchanged and none is tracked. Initial
+author typecheck runs rejected non-canonical fields in the new status fixture; those fields were
+corrected before the reported fresh full pass. No remote CI, full coverage or whole-wave acceptance
+is claimed by these local gates.
+
 ### CR-81 — Conformance cassettes do not verify the request wire contract · High · ✅ CLOSED on `development` 2026-10-10
 **Accepted on `development`, 2026-10-10; publication pending.** The [Step 3 register](#w8-step-3-canonical-sdk-http-matrix--2026-10-10)
 joins all four independent review verdicts and three causal lowering controls. The pre-W8 defect was:

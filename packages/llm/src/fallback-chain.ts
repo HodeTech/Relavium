@@ -80,6 +80,11 @@ class UsageReceipt {
   }
 }
 
+/** Native host failures remain privately owned even when an adapter normalizes its rejection. */
+type NativeBoundaryFailure =
+  | { readonly kind: 'admission' | 'observer'; readonly error: unknown }
+  | { readonly kind: 'accounting'; readonly error: LlmError };
+
 type GeneratedResultProjection =
   | { readonly ok: true; readonly result: LlmResult }
   | { readonly ok: false; readonly error: unknown };
@@ -863,7 +868,7 @@ export class FallbackChain {
     };
     let invocation: ProviderInvocationWork | undefined;
     let primaryClosed = false;
-    let nativeBoundaryFailure: { readonly error: unknown } | undefined;
+    let nativeBoundaryFailure: NativeBoundaryFailure | undefined;
     let providerSucceeded = false;
     let lateReceipt = false;
     const usageReceipt = new UsageReceipt((usage) => this.#settleLateReceipt(record, usage));
@@ -931,8 +936,8 @@ export class FallbackChain {
               if (primaryClosed || this.#aborted(request))
                 throw new LlmProviderError(this.#classifyDeadline(deadline, entry.provider.id));
             },
-            (error) => {
-              nativeBoundaryFailure = { error };
+            (failure) => {
+              nativeBoundaryFailure = failure;
             },
           ),
         );
@@ -971,18 +976,21 @@ export class FallbackChain {
       // but defer capture faults so the normal post-provider path still charges known valid usage.
       observeGenerated(outcome.result);
     } catch (err) {
+      if (nativeBoundaryFailure?.kind === 'observer') throw nativeBoundaryFailure.error;
       retentionFailure = retainedEntryFailure(err);
       const error =
-        retentionFailure === undefined
-          ? this.#abortAware(
-              this.#errorOf(
-                nativeBoundaryFailure === undefined ? err : nativeBoundaryFailure.error,
+        nativeBoundaryFailure?.kind === 'accounting'
+          ? nativeBoundaryFailure.error
+          : retentionFailure === undefined
+            ? this.#abortAware(
+                this.#errorOf(
+                  nativeBoundaryFailure === undefined ? err : nativeBoundaryFailure.error,
+                  entry.provider.id,
+                ),
+                entryReq,
                 entry.provider.id,
-              ),
-              entryReq,
-              entry.provider.id,
-            )
-          : this.#retentionError(entry.provider.id, retentionFailure.error);
+              )
+            : this.#retentionError(entry.provider.id, retentionFailure.error);
       outcome = { status: 'error', error };
     } finally {
       primaryClosed = true;
@@ -997,6 +1005,8 @@ export class FallbackChain {
     }
     // All observers run outside the provider catch, including abort/deadline/failure observations.
     if (outcome.status === 'error') {
+      // Native predecessor accounting already delivered its sole record before refusing repair.
+      if (nativeBoundaryFailure?.kind === 'accounting') return outcome;
       // A cleanup fault is secondary to an existing provider/admission failure. Preserve its
       // original diagnosis, refusal proof and attempt observation instead of replacing them.
       // A failed generated response may carry real usage (native context-window stop).
@@ -1118,7 +1128,11 @@ export class FallbackChain {
   }
 
   /** Account invoked-provider evidence before observation; local diagnostics cannot invent usage. */
-  #emitFailure(record: InternalAttemptRecord, diagnostic: LlmError): LlmError {
+  #emitFailure(
+    record: InternalAttemptRecord,
+    diagnostic: LlmError,
+    accountingFailed?: (error: LlmError) => void,
+  ): LlmError {
     if (!record.providerInvoked) {
       // This catch also handles admission, credentials and host setup. Even a genuine provider
       // error class thrown there is not evidence of usage from this attempt. Strip its quantities
@@ -1148,6 +1162,7 @@ export class FallbackChain {
         }),
         ...(usage === undefined ? {} : { usage }),
       });
+      accountingFailed?.(error);
     }
     // The observer is outside the accounting catch, and its exact exception escapes once.
     this.#emit({
@@ -1187,7 +1202,7 @@ export class FallbackChain {
     let invocation: ProviderInvocationWork | undefined;
     let primaryClosed = false;
     let attemptExited = false;
-    let nativeBoundaryFailure: { readonly error: unknown } | undefined;
+    let nativeBoundaryFailure: NativeBoundaryFailure | undefined;
     try {
       const plan = outputCapPlanForRequest(
         entryReq,
@@ -1243,8 +1258,8 @@ export class FallbackChain {
               if (primaryClosed || this.#aborted(request))
                 throw new LlmProviderError(this.#classifyDeadline(deadline, entry.provider.id));
             },
-            (error) => {
-              nativeBoundaryFailure = { error };
+            (failure) => {
+              nativeBoundaryFailure = failure;
             },
           ),
         );
@@ -1308,18 +1323,21 @@ export class FallbackChain {
       attemptExited = true;
     } catch (err) {
       attemptExited = true;
+      if (nativeBoundaryFailure?.kind === 'observer') throw nativeBoundaryFailure.error;
       retentionFailure = retainedEntryFailure(err);
       failure =
-        retentionFailure === undefined
-          ? this.#abortAware(
-              this.#errorOf(
-                nativeBoundaryFailure === undefined ? err : nativeBoundaryFailure.error,
+        nativeBoundaryFailure?.kind === 'accounting'
+          ? nativeBoundaryFailure.error
+          : retentionFailure === undefined
+            ? this.#abortAware(
+                this.#errorOf(
+                  nativeBoundaryFailure === undefined ? err : nativeBoundaryFailure.error,
+                  entry.provider.id,
+                ),
+                entryReq,
                 entry.provider.id,
-              ),
-              entryReq,
-              entry.provider.id,
-            )
-          : this.#retentionError(entry.provider.id, retentionFailure.error);
+              )
+            : this.#retentionError(entry.provider.id, retentionFailure.error);
       // A raced confirming read can replace the diagnostic while the verifier still owns a
       // valid first terminal. Retain that observation; do not account here or invent a clean stop.
       if (usage !== undefined) failure = Object.freeze({ ...failure, usage });
@@ -1351,11 +1369,14 @@ export class FallbackChain {
       const returnFailure = this.#closeIterator(iterator);
       // Actual provider/deadline diagnosis stays primary. A standalone host-entry fault escapes only
       // after the attempt observer has accounted any terminal usage already observed by the verifier.
-      if (failure === undefined && returnFailure !== undefined) retentionFailure = returnFailure;
+      const predecessorSettled =
+        nativeBoundaryFailure?.kind === 'observer' || nativeBoundaryFailure?.kind === 'accounting';
+      if (!predecessorSettled && failure === undefined && returnFailure !== undefined)
+        retentionFailure = returnFailure;
       // Consumer return bypasses code after finally even after delivery of a stop. Settle that
       // engaged invocation here, using only already-owned evidence: never pull more SDK data or
       // yield another terminal from cleanup. Ordinary provider exits settle below instead.
-      if (retentionFailure !== undefined || !attemptExited) {
+      if (!predecessorSettled && (retentionFailure !== undefined || !attemptExited)) {
         const error =
           failure ??
           (retentionFailure !== undefined
@@ -1382,6 +1403,15 @@ export class FallbackChain {
         // eslint-disable-next-line no-unsafe-finally -- Preserve the exact host refusal after accounting.
         throw retentionFailure.error;
       }
+    }
+    if (nativeBoundaryFailure?.kind === 'accounting') {
+      // Pricing and observation already happened inside the repair boundary. Preserve the
+      // ordinary streamed accounting terminal without another predecessor settlement.
+      if (state.committed) {
+        yield { type: 'error', error: committed(nativeBoundaryFailure.error) };
+        return undefined;
+      }
+      return nativeBoundaryFailure.error;
     }
     // An existing provider failure keeps its diagnosis and financial evidence; cleanup cannot
     // replace it with an unrelated host exception or prevent its attempt record.
@@ -2024,7 +2054,7 @@ export class FallbackChain {
     setRecord: (record: InternalAttemptRecord) => void,
     isClosed: () => boolean,
     assertActive: () => void,
-    boundaryFailure: (error: unknown) => void,
+    boundaryFailure: (failure: NativeBoundaryFailure) => void,
   ): LlmInvocationOptions {
     const options: LlmInvocationOptions = {
       retainWork:
@@ -2038,14 +2068,30 @@ export class FallbackChain {
       beforeNativeRetry: async (error) => {
         const previous = getRecord();
         const owned = snapshotLlmError(error);
-        this.#emit({
-          ...previous,
-          coverageOnly: true,
-          providerInvoked: true,
-          outcome: 'failed',
-          error: owned,
-          usage: owned.usage ?? ownUsageEvidence({ kind: 'missing', reason: 'not_reported' }),
-        });
+        let accountingFailure: LlmError | undefined;
+        try {
+          this.#emitFailure(
+            {
+              ...previous,
+              coverageOnly: true,
+              providerInvoked: true,
+              contentReceived: previous.contentReceived || owned.usage !== undefined,
+            },
+            owned,
+            (failure) => {
+              accountingFailure = failure;
+            },
+          );
+        } catch (error) {
+          // Observation ran inside the native adapter stack, but it is host code. Its exact
+          // throwable must escape once after cleanup, regardless of SDK error normalization.
+          boundaryFailure({ kind: 'observer', error });
+          throw error;
+        }
+        if (accountingFailure !== undefined) {
+          boundaryFailure({ kind: 'accounting', error: accountingFailure });
+          throw new LlmProviderError(accountingFailure);
+        }
         // The old call has settled. A failed new pending acknowledgement must not settle it twice.
         const nextInfo: PreAttemptInfo = Object.freeze({ ...info });
         const next = { ...previous, preAttemptInfo: nextInfo, providerInvoked: false };
@@ -2058,7 +2104,7 @@ export class FallbackChain {
           coverage = await this.#options.beginUsageInvocation?.(nextInfo);
         } catch (error) {
           // Preserve only this explicitly owned host boundary's opaque cause through adapter normalization.
-          boundaryFailure(error);
+          boundaryFailure({ kind: 'admission', error });
           throw error;
         }
         const acknowledged = {

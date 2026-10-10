@@ -1185,8 +1185,9 @@ producer/dispatch/round/ordinal construction; resettable `attemptNumber` alone i
 A failed acknowledgement prevents provider invocation. Skipped entries require no marker.
 
 OpenAI-compatible parameter repair preserves the existing bounded temperature/reasoning fallback.
-Before each additional native create, `LlmInvocationOptions.beforeNativeRetry` reports the prior
-classified failure through a `coverageOnly: true` record, runs fresh admission through `preAttempt`,
+Before each additional native create, `LlmInvocationOptions.beforeNativeRetry` settles the prior
+classified failure through the existing complete-only pricing path and a `coverageOnly: true` record,
+runs fresh admission through `preAttempt`,
 and awaits the next pending acknowledgement. The host settles the prior admission and joins its
 disposition/conservative-write barrier before admitting that next call. An official pre-content
 refusal can release its estimate; a custom endpoint's unknown prior call retains conservative
@@ -1198,7 +1199,15 @@ from releasing a newer fallback admission. `nativeInvocationStarted` marks the r
 after body construction and the last activity check. If pending acknowledgement arrives after the
 public attempt has closed, a final correlated proven-non-invoked record retires that marker without
 starting the native call. Repair does not change the chain attempt number. Successful final complete
-usage follows the existing sole actual-cost writer.
+usage follows the existing sole actual-cost writer. The public hook also accepts complete prior
+failure evidence: positive and explicit-zero usage is priced, missing model/media rates remain
+explicitly unpriced, and incomplete evidence never invents actual money. Current OpenAI HTTP
+parameter errors do not supply usage; complete-predecessor controls exercise supported external
+seam implementations. A pricing failure refuses repair after its single accounting record. An
+observer throwable retains its exact opaque identity across adapter normalization and escapes
+after cleanup, without a duplicate predecessor record or another admission. This does not change
+core's existing distinction between external observer faults and admission/lease control-flow faults;
+a still-unsettled conservative lease retains its required cleanup obligation.
 
 A deadline with a still-live correlated producer marks its incomplete record `receiptPending: true`.
 The exact raw promise remains retained; a separate registered retained continuation owns late

@@ -471,3 +471,19 @@ and soft-deleted sessions. Numeric accounting access grants no transcript or res
 The canonical [seam](../reference/shared-core/llm-provider-seam.md) and
 [database schema](../reference/shared-core/database-schema.md) own these details. Step 5 still
 requires two NEW clean complete cumulative rounds; Step 6 and whole-W8 gates remain open.
+
+### W8 native-predecessor and status-snapshot correction — 2026-10-11
+
+The sixth cumulative activation review reproduced three gaps. A native repair's predecessor
+must use the existing complete-only accounting path before fresh admission; complete evidence
+accepted by the public hook cannot become an unqualified priced zero. Current OpenAI HTTP
+parameter failures carry no usage, so the positive-evidence control applies to supported external
+seam implementations. Host observer failures inside that repair boundary retain their opaque
+identity through adapter normalization, without another predecessor record or paid repair.
+This preserves the existing admission/lease fault classification and required conservative cleanup.
+Separately, status must read step money and lifecycle under the same SQLite snapshot as the owner
+amount and coverage fold; joining a later step SELECT can falsely qualify unknown usage as complete.
+The canonical [seam](../reference/shared-core/llm-provider-seam.md) and
+[database contract](../reference/shared-core/database-schema.md) own these corrections. Step 5
+requires two NEW clean complete cumulative reviews after correction. Step 6's further controls
+and reviews, CR-82 and whole-W8 acceptance remain open.
