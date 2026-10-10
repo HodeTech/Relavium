@@ -15,7 +15,7 @@
 
 import { createHash } from 'node:crypto';
 
-import { and, asc, eq, gte, lt, or } from 'drizzle-orm';
+import { and, asc, eq, gte, lt, or, sql } from 'drizzle-orm';
 
 import {
   canonicalJson,
@@ -153,6 +153,19 @@ function scopeRange(prefix: string): { readonly from: string; readonly toExclusi
   return { from: prefix, toExclusive: `${prefix.slice(0, -1)};` };
 }
 
+/** Session audit reads never select legacy result bytes; runs retain their replay evidence. */
+function auditFields(session: boolean) {
+  return {
+    scope: runEffects.scope,
+    slot: runEffects.slot,
+    toolId: runEffects.toolId,
+    state: runEffects.state,
+    tier: runEffects.tier,
+    targetIdempotencyKey: runEffects.targetIdempotencyKey,
+    resultJson: session ? sql<null>`NULL` : runEffects.resultJson,
+  };
+}
+
 export function createEffectJournalStore(db: Db, deps: EffectJournalStoreDeps): EffectJournalStore {
   const whereIdentity = (identity: EffectIdentity) =>
     and(
@@ -165,7 +178,7 @@ export function createEffectJournalStore(db: Db, deps: EffectJournalStoreDeps): 
   const unresolvedInScope = (prefix: string, session = false): readonly EffectRecord[] => {
     const range = scopeRange(prefix);
     return db
-      .select()
+      .select(auditFields(session))
       .from(runEffects)
       .where(and(gte(runEffects.scope, range.from), lt(runEffects.scope, range.toExclusive)))
       .orderBy(asc(runEffects.createdAt))
@@ -311,7 +324,7 @@ export function createEffectJournalStore(db: Db, deps: EffectJournalStoreDeps): 
     recordsFor: (correlation) => {
       const scope = effectScope(correlation);
       return db
-        .select()
+        .select(auditFields(correlation.kind === 'session'))
         .from(runEffects)
         .where(eq(runEffects.scope, scope))
         .orderBy(asc(runEffects.slot))

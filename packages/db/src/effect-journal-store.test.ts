@@ -8,7 +8,7 @@ import {
   NonCanonicalValueError,
   type EffectCorrelation,
 } from '@relavium/shared';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createClient, runMigrations, type DbClient } from './client.js';
 import {
@@ -367,3 +367,42 @@ describe('the effect journal store', () => {
     });
   });
 });
+
+for (const method of ['records', 'unresolved'] as const)
+  it(`does not select legacy session result bytes in ${method}, retaining run results`, () => {
+    const client = createClient(':memory:');
+    try {
+      runMigrations(client.db);
+      const store = createEffectJournalStore(client.db, { uuid: () => randomUUID(), now: () => 1 });
+      const session: EffectCorrelation = { kind: 'session', sessionId: 's1', turn: 1 };
+      const sid = { scope: effectScope(session), slot: 0, toolId: 'http_request' };
+      const run: EffectCorrelation = { kind: 'run', runId: 'r1', nodeId: 'n1', attempt: 1 };
+      const rid = { scope: effectScope(run), slot: 0, toolId: 'http_request' };
+      const attempt = { providerAttempt: 1, toolCallId: 'tool' };
+      store.prepare(sid, session, attempt, 3, 'digest');
+      store.settle(sid, 'ambiguous');
+      client.sqlite
+        .prepare('UPDATE run_effects SET result_json = ? WHERE scope = ?')
+        .run('MALFORMED_SYNTHETIC_SESSION_RESULT'.repeat(256), sid.scope);
+      store.prepare(rid, run, attempt, 3, 'digest');
+      store.settle(rid, 'ambiguous', { ticket: 42 });
+      const prepare = vi.spyOn(client.sqlite, 'prepare');
+      try {
+        const sessionRows =
+          method === 'records' ? store.recordsFor(session) : store.unresolvedForSession('s1');
+        expect(sessionRows).toHaveLength(1);
+        expect(sessionRows[0]).not.toHaveProperty('result');
+        const sessionSql = prepare.mock.calls.map((call) => call[0]);
+        expect(sessionSql.length).toBeGreaterThan(0);
+        expect(sessionSql.every((query) => !query.includes('result_json'))).toBe(true);
+        prepare.mockClear();
+        const runRows = method === 'records' ? store.recordsFor(run) : store.unresolvedForRun('r1');
+        expect(runRows[0]).toMatchObject({ state: 'ambiguous', result: { ticket: 42 } });
+        expect(prepare.mock.calls.some((call) => call[0].includes('result_json'))).toBe(true);
+      } finally {
+        prepare.mockRestore();
+      }
+    } finally {
+      client.sqlite.close();
+    }
+  });
