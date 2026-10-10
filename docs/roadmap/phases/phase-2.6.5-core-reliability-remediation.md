@@ -1,6 +1,6 @@
 # Phase 2.6.5 — Core reliability remediation (interlude)
 
-- **Status**: in progress — **`W0`–`W2` merged clean; `W3` merged 2026-08-30 (PR #86) with a live blocker; `W4` merged 2026-09-01 (PR #87) after a systematic review found five merge blockers in it — all reproduced and fixed before the merge.** `W5` merged 2026-09-02 (PR #88) behind ADR-0089 + ADR-0090 — a systematic maintainer review of the branch returned **six merge blockers**, all reproduced and fixed before it merged. **`W6` — authoring correctness — MERGED 2026-09-04 (PR #89)** — `CR-60`–`CR-64` behind [ADR-0091](../../decisions/0091-first-means-first-declared-not-first-to-finish.md)–[ADR-0094](../../decisions/0094-a-tool-grant-is-checked-when-the-plan-is-built.md), 32 commits — 27 of work across seven internal review rounds, then five folding four maintainer rounds on PR #89. **The maintainer review returned two merge blockers**, both of which broke a headline claim of the wave: deep validation did not enforce `required` when the property's schema constrained nothing (so `{ properties: { status: {} }, required: ['status'] }` accepted `{}`), and the expression scanner's regex was quadratic and synchronous (514 ms at 32 K of whitespace, on a parser that accepts 2 MiB, with no deadline able to interrupt it). Both reproduced and fixed before the merge, along with eight further High findings. **The pattern of the wave is that most of what the rounds found were defects in the FIXES, not in the code they repaired** — the branch-order search was wrong three times, the expression scan's central soundness claim was false in EIGHT ways, and one stand-down gate silently removed the check it was added to protect. Every one is recorded as a dated correction in its ADR rather than tidied away (39 of 48 items **at W6's merge** — the live count is further on in this line — and it said 39 and not 43 because W5's six items were counted TWICE: incrementally as they landed (28→32) and then wholesale when the wave closed (32→38), so the figure carried a +4 error into W6. `CR-95` is counted on its non-deferrable short-term half; its long-term half keeps the item on the board. `CR-21` closed with `CR-14`, `CR-21c` added 2026-08-25, `CR-95`'s non-deferrable short-term half closed with the spine on 2026-08-18 and found still marked open on 2026-08-28). **`CR-73` and `CR-80` closed 2026-09-06.** `invoke_agent` is no longer advertised without a delegate (and `read_media` rides along), and a rejected custom base URL refuses instead of falling back to the official API. **On 2026-09-14 the register grew to 50 items, and to 51 on 2026-09-18**: `CR-96` and `CR-97` on 2026-09-14, two shipping defects found while reviewing W7's ADRs, and `CR-98` on 2026-09-18 — ADR-0096's three prerequisites, which had been in `W7`'s scope since 2026-09-14 with no item of their own. `CR-96` and `CR-97` are non-deferrable and now close with W7 merged to `main` (PR #90, 2026-10-10), restoring exit criterion 1. **47 of 51** are closed: 46 checked item headings plus `CR-95`'s non-deferrable short-term half. Four remain open: decided/deferred `CR-70` and `CR-93`, and `CR-81`/`CR-82` in `W8`. ADR-0087 §1's existing W3 blocker is assigned to W8 and is not an extra item in the 51-heading denominator. **W7 merged to `main` on 2026-10-10 as PR #90 (`46a6a701`).** The [closing register](#w7-closing-register--2026-10-10) joins every step, per-item causal controls, systematic findings and approved limits. W8 and the phase remain open.
+- **Status**: in progress — **`W0`–`W2` merged clean; `W3` merged 2026-08-30 (PR #86) with a live blocker; `W4` merged 2026-09-01 (PR #87) after a systematic review found five merge blockers in it — all reproduced and fixed before the merge.** `W5` merged 2026-09-02 (PR #88) behind ADR-0089 + ADR-0090 — a systematic maintainer review of the branch returned **six merge blockers**, all reproduced and fixed before it merged. **`W6` — authoring correctness — MERGED 2026-09-04 (PR #89)** — `CR-60`–`CR-64` behind [ADR-0091](../../decisions/0091-first-means-first-declared-not-first-to-finish.md)–[ADR-0094](../../decisions/0094-a-tool-grant-is-checked-when-the-plan-is-built.md), 32 commits — 27 of work across seven internal review rounds, then five folding four maintainer rounds on PR #89. **The maintainer review returned two merge blockers**, both of which broke a headline claim of the wave: deep validation did not enforce `required` when the property's schema constrained nothing (so `{ properties: { status: {} }, required: ['status'] }` accepted `{}`), and the expression scanner's regex was quadratic and synchronous (514 ms at 32 K of whitespace, on a parser that accepts 2 MiB, with no deadline able to interrupt it). Both reproduced and fixed before the merge, along with eight further High findings. **The pattern of the wave is that most of what the rounds found were defects in the FIXES, not in the code they repaired** — the branch-order search was wrong three times, the expression scan's central soundness claim was false in EIGHT ways, and one stand-down gate silently removed the check it was added to protect. Every one is recorded as a dated correction in its ADR rather than tidied away (39 of 48 items **at W6's merge** — the live count is further on in this line — and it said 39 and not 43 because W5's six items were counted TWICE: incrementally as they landed (28→32) and then wholesale when the wave closed (32→38), so the figure carried a +4 error into W6. `CR-95` is counted on its non-deferrable short-term half; its long-term half keeps the item on the board. `CR-21` closed with `CR-14`, `CR-21c` added 2026-08-25, `CR-95`'s non-deferrable short-term half closed with the spine on 2026-08-18 and found still marked open on 2026-08-28). **`CR-73` and `CR-80` closed 2026-09-06.** `invoke_agent` is no longer advertised without a delegate (and `read_media` rides along), and a rejected custom base URL refuses instead of falling back to the official API. **On 2026-09-14 the register grew to 50 items, and to 51 on 2026-09-18**: `CR-96` and `CR-97` on 2026-09-14, two shipping defects found while reviewing W7's ADRs, and `CR-98` on 2026-09-18 — ADR-0096's three prerequisites, which had been in `W7`'s scope since 2026-09-14 with no item of their own. `CR-96` and `CR-97` are non-deferrable and now close with W7 merged to `main` (PR #90, 2026-10-10), restoring exit criterion 1. **47 of 51** were closed on `main` at W7's merge: 46 checked item headings plus `CR-95`'s non-deferrable short-term half. At that checkpoint four remained open: decided/deferred `CR-70` and `CR-93`, and `CR-81`/`CR-82` in `W8`. ADR-0087 §1's existing W3 blocker is assigned to W8 and is not an extra item in the 51-heading denominator. **W7 merged to `main` on 2026-10-10 as PR #90 (`46a6a701`).** The [closing register](#w7-closing-register--2026-10-10) joins every step, per-item causal controls, systematic findings and approved limits. W8 and the phase remain open.
 - **Opened**: 2026-08-09 · **Plan corrected**: 2026-08-10 · **First batch merged**: 2026-08-11 (PR #82) ·
   **`W1` merged**: 2026-08-24 (PR #83)
 - **Predecessor**: Wave 1 of the 2.5.5 remediation (complete — PR #81), then the `#W15-1` realized-cost
@@ -10,6 +10,11 @@
   layer, persistence-security and the 2.5.5 certification
 - **Kind**: interlude, like [phase 2.5.5](phase-2.5.5-hardening-and-remediation.md) — no new product surface,
   only the invariants an existing surface already claims
+
+**Current W8 checkpoint — 2026-10-10:** Steps 1–3 are independently accepted on `development`,
+including CR-81, so the implementation register is **48/51** (47 checked headings plus CR-95's
+short-term half). `main` remains **47/51** until W8 publication/merge. CR-82 and approved deferred
+CR-70/93 remain open; no existing residual is closed by this checkpoint.
 
 ## Why this phase exists
 
@@ -299,7 +304,7 @@ to correct.
 | `CR-72` | made 2026-09-13 (implement; an authored `memory` decides compaction at every entry point) | [ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) §4 | no | — |
 | `CR-73` | made (wire it, or stop advertising it) | — | yes | — |
 | `CR-80` | made (fail closed) | — | yes | provider/config |
-| `CR-81` | made (match the canonical request) | — | no | — |
+| `CR-81` | made (match the canonical request) · ✅ accepted on `development` 2026-10-10; W8 publication pending | — | no | — |
 | `CR-82` | made (missing usage is unknown) | — | no | — |
 | `CR-90` | made (exclude repo-local checkouts) | — | no | — |
 | `CR-91` | made (build the durable-truth oracle) | — | no | — |
@@ -2489,8 +2494,8 @@ stand.
 
 ## W8 — Provider and conformance
 
-**Plan and ADR-0104 approved on 2026-10-10; Steps 1–2 accepted on `development`; Step 3 is in progress.**
-ADR-0087 §1 has scoped implementation acceptance; CR-81/82 and whole-W8 publication remain open.
+**Plan and ADR-0104 approved on 2026-10-10; Steps 1–3 accepted on `development`; Step 4 is in progress.**
+ADR-0087 §1 and CR-81 have scoped implementation acceptance; CR-82 and whole-W8 publication remain open.
 CR-80 below was already closed before W7. Current execution order is in
 [current.md](../current.md#next-work--phase-265-w8).
 
@@ -2554,8 +2559,8 @@ remains approved and open; `main` publication follows the whole-W8 gate.
 
 ### W8 preflight and proposed execution plan — 2026-10-10
 
-**Status: preflight complete, plan and ADR-0104 approved on 2026-10-10; Steps 1–2 accepted on `development`.**
-Steps 3–7 and whole-W8 publication remain open.
+**Status: preflight complete, plan and ADR-0104 approved on 2026-10-10; Steps 1–3 accepted on `development`.**
+Steps 4–7 and whole-W8 publication remain open.
 The maintainer requests implementation on `development`, an implementation commit followed by
 two fresh independent cumulative review rounds per step, confirmed fixes committed between
 rounds, and approval of any new decision before dependent work. W7 and PR #91 are merged;
@@ -2866,7 +2871,7 @@ Steps 3–7 and whole-W8 publication remain open.
 
 ### W8 Step 3 canonical SDK HTTP matrix — 2026-10-10
 
-**Implementation checkpoint; independent acceptance remains pending.** Base `d6d88b0c`.
+**Accepted on `development` after two NEW complete cumulative rounds; publication remains pending.** Base `d6d88b0c`.
 The [permanent canonical matrix](../../../packages/llm/src/conformance/canonical-wire.test.ts)
 adds **24 cases / 32 expected HTTP exchanges**: four providers, generate/stream, populated
 system and structured-output fields, named tool schemas, and two-turn tool continuations.
@@ -2892,7 +2897,28 @@ shared/DB results replay caches. Tools lint/typecheck, formatting, whitespace an
 archive-link checks pass. Independent review acceptance, CR-81 closure, CR-82 integration and
 whole-W8 publication remain pending; no broader model/option or live-provider claim is made.
 
-### CR-81 — Conformance cassettes do not verify the request wire contract · High
+
+**Round 1 and round 2 — reviewed head `64ac849cbc5b9a012ffd63f293b5ea8693e72cac`:** each
+round used two NEW read-only reviewers, GPT-6-astra/high for oracle/SDK boundaries and
+GPT-6.1-sol/high for runner/integration, inspecting all nine cumulative paths against
+`d6d88b0c`. All four returned **zero actionable findings**. Every reviewer freshly reproduced
+the mutation baseline, intended **6/4/2** wire failures and **24/24** exact restorations.
+Both rounds independently passed the **233-test** conformance directory (11 existing skips),
+LLM strict/seam typechecks and changed-code lint. Each integration reviewer also freshly
+passed the full LLM suite (**1,752 passing / 11 existing skips**, 51 files). No source edits,
+branch changes or provider calls occurred. Windows behavior was inspected, not executed;
+remote CI and whole-W8 coverage are not claimed. Detailed records remain local and ignored.
+
+**Step 3 and CR-81 are accepted on `development`.** The implementation register advances to
+**48/51**; `main` remains **47/51** until W8 lands. The ordinary static matrix and reproducible
+causal controls close the wire-oracle obligation, without claiming every provider option or
+live behavior. Proceed to Step 4's inert ADR-0104 evidence/database foundations. CR-82,
+Steps 4–7, whole-W8 publication and existing approved residuals remain open.
+
+### [x] CR-81 — Conformance cassettes do not verify the request wire contract · High
+**Accepted on `development`, 2026-10-10; publication pending.** The [Step 3 register](#w8-step-3-canonical-sdk-http-matrix--2026-10-10)
+joins all four independent review verdicts and three causal lowering controls. The pre-W8 defect was:
+
 A recorded response carries status, content type and body only; replay checks that the request body is parseable
 JSON and matches nothing else — not method, path, headers, or a canonical body. A dropped `response_format`, a
 lost tool result on continuation, or a broken system-instruction mapper leaves the suite green.

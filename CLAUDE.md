@@ -118,7 +118,10 @@ at that checkpoint, while §3 turned out to have shipped in `W5` under a differe
 **Current W8 checkpoint — 2026-10-10:** §1 is implemented and independently accepted on
 `development` after three cumulative rounds; W8 publication remains pending. The
 [Step 1 register](docs/roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w8-step-1-consumption-modes--2026-10-10)
-owns scoped acceptance. W8 and the existing exact-capacity residual remain open.
+owns scoped acceptance. Steps 2–3 are also independently accepted on `development`; CR-81 closes
+with the static actual-SDK matrix and three reproducible lowering controls. The implementation
+register is 48/51; `main` remains 47/51 until W8 lands. Step 4 and CR-82 are next; W8 publication
+and the existing exact-capacity residual remain open. See the [Step 3 register](docs/roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w8-step-3-canonical-sdk-http-matrix--2026-10-10).
 
 **W7 merged to `main` on 2026-10-10 as PR #90, including final whole-wave Step 12.**
 Steps 1–11, all five genuine overflow records, owned measured requests and consolidated provider/MCP/host
@@ -135,7 +138,8 @@ correction also has two NEW complete clean rounds. The [post-closure register](d
 joins every report disposition, new permanent/causal evidence and current gates. Published-head checks
 passed at reviewed head `69ac80b0` before PR #90 merged. No W7 implementation, provider,
 billing, key or user decision is pending. The [merge checkpoint](docs/roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w7-merge-checkpoint--2026-10-10)
-records closure. Next is W8: ADR-0087 §1, CR-81 and CR-82; Phase 2.6.5 remains open.
+records W7 closure. W8 Steps 1–3 are accepted on `development`; Step 4 proceeds and CR-82
+remains open. Phase 2.6.5 and whole-W8 publication remain open.
 
 For live status, per-PR history, milestone dates, and open obligations, see the canonical
 home [docs/roadmap/current.md](docs/roadmap/current.md);

@@ -36,16 +36,19 @@ items are closed (47/51 closed); PR #90 is merged (`46a6a701`); W7 has no open i
 [closing register](docs/roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w7-closing-register--2026-10-10)
 joins evidence and every submitted review disposition. W8 and existing approved deferrals remain open.
 No user decision, billing setup, credential or provider capture is pending.
-**W8 Step 1 is accepted on `development`, 2026-10-10:** explicit run/session consumption modes
-have three independent cumulative review rounds. Step 2 is next; whole-W8 publication and
-CR-81/82 remain open. See the [Step 1 register](docs/roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w8-step-1-consumption-modes--2026-10-10).
+**W8 Steps 1–3 are accepted on `development`, 2026-10-10:** explicit consumption modes,
+strict exchange replay and the actual-SDK canonical matrix have independent cumulative reviews.
+CR-81 closes with three reproduced production-lowering controls; the implementation register is
+48/51 while `main` remains 47/51. Step 4 proceeds; CR-82, whole-W8 publication and approved
+residuals remain open. See the [Step 3 register](docs/roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w8-step-3-canonical-sdk-http-matrix--2026-10-10).
 **Post-closure corrections are independently accepted, 2026-10-10:** core, CLI/DB and tooling/docs
 each have two NEW clean complete cumulative review rounds. The supplemental publication-tool
 correction also has two NEW complete clean rounds. The [post-closure register](docs/roadmap/phases/phase-2.6.5-core-reliability-remediation.md#post-closure-systematic-review--2026-10-10)
 joins every report disposition, new permanent/causal evidence and current gates. Published-head checks
 passed at reviewed head `69ac80b0` before PR #90 merged. No W7 implementation, provider,
 billing, key or user decision is pending. The [merge checkpoint](docs/roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w7-merge-checkpoint--2026-10-10)
-records closure. Next is W8: ADR-0087 §1, CR-81 and CR-82; Phase 2.6.5 remains open.
+records W7 closure. W8 Steps 1–3 are accepted on `development`; Step 4 proceeds and CR-82
+remains open. Phase 2.6.5 and whole-W8 publication remain open.
 
 See [docs/roadmap/current.md](docs/roadmap/current.md) for live status.
 
