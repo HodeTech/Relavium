@@ -112,11 +112,13 @@ export function recordFetch(realFetch: FetchLike): {
 } {
   const recordings: RecordedResponse[] = [];
   const fetch: FetchLike = async (input, init) => {
+    let failureCode: FixtureRecordingError['code'] = 'capture_failed';
     try {
       const response = await realFetch(input, init);
       const body = await response.clone().text();
       const contentType = response.headers.get('content-type');
       if (looksLikeSecret(body) || (contentType !== null && looksLikeSecret(contentType))) {
+        failureCode = 'unsafe_recording';
         throw new FixtureRecordingError('unsafe_recording');
       }
       recordings.push(
@@ -127,15 +129,10 @@ export function recordFetch(realFetch: FetchLike): {
         ),
       );
       return response;
-    } catch (error) {
-      if (error instanceof FixtureRecordingError) {
-        // Even an externally thrown instance may have a mutated message or raw cause.
-        throw new FixtureRecordingError(
-          error.code === 'unsafe_recording' ? 'unsafe_recording' : 'capture_failed',
-        );
-      }
-      // Transport/read errors may contain the credential-bearing URL or provider response.
-      throw new FixtureRecordingError('capture_failed');
+    } catch {
+      // Never inspect a rejected value: even instanceof or a field read can run a hostile
+      // trap. Only this recorder's own secret check can select unsafe_recording.
+      throw new FixtureRecordingError(failureCode);
     }
   };
   return {

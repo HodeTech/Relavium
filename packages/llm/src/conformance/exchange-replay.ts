@@ -344,6 +344,7 @@ function ownExchangeValue(exchange: unknown, ordinal: number): ExpectedExchange 
     )
       refuse('invalid_expectation', ordinal);
     const url = new URL(`${origin}${path}${query}`);
+    safeText(decodeURIComponent(path), ordinal);
     if (
       url.origin !== origin ||
       url.pathname !== path ||

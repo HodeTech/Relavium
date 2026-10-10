@@ -172,6 +172,37 @@ describe('recordFetch', () => {
     }
   });
 
+  it.each(['code getter', 'prototype trap'])(
+    'contains hostile rejected objects: %s',
+    async (schedule) => {
+      const planted = 'sk-ant-synthetic-private-123456789';
+      const rejected =
+        schedule === 'code getter'
+          ? Object.defineProperty(new FixtureRecordingError('capture_failed'), 'code', {
+              get() {
+                throw new Error(planted);
+              },
+            })
+          : new Proxy(new Error('synthetic transport failure'), {
+              getPrototypeOf() {
+                throw new Error(planted);
+              },
+            });
+      const recorder = recordFetch(() => Promise.reject(rejected));
+      let caught: unknown;
+      try {
+        await recorder.fetch('https://example.test');
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBeInstanceOf(FixtureRecordingError);
+      expect(caught instanceof FixtureRecordingError && caught.code).toBe('capture_failed');
+      expect(String(caught)).not.toContain(planted);
+      expect(caught instanceof Error && caught.cause).toBeUndefined();
+      expect(recorder.recordings).toEqual([]);
+    },
+  );
+
   it('exposes frozen recording snapshots while preserving the unread response for the caller', async () => {
     const recorder = recordFetch(() => Promise.resolve(new Response('{"ok":true}')));
     const emptySnapshot = recorder.recordings;

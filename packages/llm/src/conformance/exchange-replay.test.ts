@@ -352,6 +352,13 @@ describe('strict expected exchange replay', () => {
 describe('credential-safe projection and diagnostics', () => {
   const secret = 'sk-ant-api03-abcdefghijklmnop1234';
 
+  it('rejects decoded secrets in expected paths', () => {
+    const encodedPath = '/sk-ant-%73ynthetic-private-123456789';
+    expect(() => createExchangeReplay([fixture({ ...request(), path: encodedPath })])).toThrow(
+      'unsafe_content',
+    );
+  });
+
   it('excludes authentication/volatile headers, credential query parameters and URL fragments', async () => {
     const recorder = recordExchangeFetch(() => Promise.resolve(new Response('{}')));
     await recorder.fetch(`${URL_VALUE}&api_key=${secret}&access-token=opaque#${secret}`, {

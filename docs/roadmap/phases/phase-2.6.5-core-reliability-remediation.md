@@ -2802,6 +2802,27 @@ This substrate mutation is not one of Step 3's required production-lowering muta
 Relative/archive links, whitespace and package/seam/dependency screens pass. No review or
 whole-W8 acceptance is claimed by these author checks.
 
+**Round 1 — reviewed head `a63f4bbd407b434275fd422e32c6ee77def476bf`:** two NEW read-only
+reviewers inspected the entire cumulative nine-file step against `577e0300`.
+GPT-6-astra/high and GPT-6.1-sol/high independently reproduced one High: the legacy recorder's
+catch inspected a rejected object's class and `code`, allowing a throwing prototype trap or
+accessor to escape with raw content. The boundary review also verified one Medium: expected
+paths skipped the decoded secret check already applied to actual requests. Both are corrected.
+The legacy catch now uses only its own locally selected classification and never inspects a
+rejected value; expected paths receive the same decoded check. Three permanent controls fail
+on the reviewed source for those exact reasons, then **100/100** focused controls pass after
+correction. The reviewers independently passed 97 focused controls; the integration reviewer
+also passed the full LLM suite (1,714 passing / 11 existing skips), typecheck and changed-file lint.
+Neither review claims whole-W8 acceptance or live traffic. A second NEW full cumulative round
+is required at the corrected committed checkpoint.
+
+Corrected author gates pass **23/23** lint/typecheck/test (8 cached) and **6/6** build (5 cached),
+including 1,717 passing LLM tests and 11 existing skips. The first corrected lint run caught
+a test-only non-Error rejection annotation; the hostile Proxy now wraps a typed Error and
+retains the same throwing prototype trap. All three final regressions were rerun against
+`a63f4bbd` source and fail, then byte-exact corrected source restores **100/100** passing
+focused controls. Whitespace and relative/archive links pass; the review gate remains open.
+
 ### CR-81 — Conformance cassettes do not verify the request wire contract · High
 A recorded response carries status, content type and body only; replay checks that the request body is parseable
 JSON and matches nothing else — not method, path, headers, or a canonical body. A dropped `response_format`, a
