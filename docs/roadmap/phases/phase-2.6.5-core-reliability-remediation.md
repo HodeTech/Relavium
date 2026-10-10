@@ -3271,6 +3271,40 @@ These author corrections do not substitute for acceptance. Step 5 requires two N
 cumulative rounds after correction. Step 6's further causal matrix and reviews, CR-82 and whole-W8
 publication remain open. No new policy, dependency, money writer, provider call or deferral is introduced.
 
+#### Step 5 eighth cumulative review and correction — 2026-10-11
+
+Three NEW independent reviewers completed the full `017b399c..af1d4cf4` activation range,
+including every preceding correction. The deduplicated result was **one High and two Medium**.
+The parent independently reproduced all three before correction. This is not a clean round;
+each reviewer finished the entire assigned scope after identifying its finding.
+
+| Finding | Correction and permanent evidence |
+| --- | --- |
+| A throwing primary observer skipped late-receipt activation | Generate and stream cleanup activate registered late evidence even when the original observer throws. The exact primary throwable survives a secondary activation/accounting failure. Manual-deadline controls cover later complete/zero/partial/missing/invalid evidence and already-observed complete/zero evidence, once-only actual settlement, final retirement, unchanged published outcome and no extra provider call. The demonstrated supported observer/admission boundary is not overstated as a synchronous failure from the current CLI governor. |
+| A valid long agent ID became invalid usage-correlation metadata | Both persisted chat and one-shot writers mint dispatch ordinals under their existing producer identity, independently of authored text. Six native SQLite shipping-path controls cover 254-character IDs through the tenth invocation and 255-/1,024-character IDs, with successful output, exact invocation correlation, complete coverage and known money. They all fail before correction and pass afterward; no authoring limit or correlation-schema relaxation is introduced. |
+| The new model bound made valid historical money unreadable | The coverage union preserves the existing monetary reader's raw model identities, while validating new coverage rows with the bounded schema. Actual 0017-to-current migration and production formatter controls preserve 4,096-/4,097-/10,000-character model names, exact known amounts and historical uncertainty. The two over-bound historical cases fail before correction; new over-bound invocations still refuse without changing the retained snapshot. |
+
+The final 58-case receipt cohort produces 30 relevant failures against byte-exact reviewed source,
+then passes against fixed and restored source. Independently removing generate or stream activation
+fails 29 cases each; a naive `finally` replacement and removal of secondary health notification
+each fail six. All interventions are OS-temporary source projections; developer bytes are unchanged.
+Initial scratch attempts had dependency-resolution and duplicate ownership-module setup failures;
+those logs and their timeouts are excluded from causal evidence. Final projections bind relative
+dependencies to the same source modules and record exact implementation/test hashes.
+
+**Correction gates:** fresh forced monorepo lint/typecheck/test passed **23/23**, none cached,
+across **489 files / 10,360 passed / 11 existing live-provider skips**, including the 100,000
+native settlements and all 57 CLI process controls. Fresh forced build/format passed **7/7**,
+none cached. The parent separately passed the full 71-case permanent correction cohort against
+explicit source aliases. Tools lint/typecheck, schema synchronization, seam/purity/dependency/
+bundle fences, 489-file isolation, canonical links and whitespace passed. Compiled CLI, overflow
+capture and budget-replay smokes passed offline; the immutable predecessor refused all 16 strict
+prefixes and passed both legacy controls. No remote CI, whole-wave coverage or acceptance is claimed.
+
+These author corrections do not substitute for acceptance. Step 5 requires two NEW clean complete
+cumulative rounds after correction. Step 6's further causal matrix and reviews, CR-82 and whole-W8
+publication remain open. No new policy, dependency, money writer, provider call or deferral is introduced.
+
 ### CR-81 — Conformance cassettes do not verify the request wire contract · High · ✅ CLOSED on `development` 2026-10-10
 **Accepted on `development`, 2026-10-10; publication pending.** The [Step 3 register](#w8-step-3-canonical-sdk-http-matrix--2026-10-10)
 joins all four independent review verdicts and three causal lowering controls. The pre-W8 defect was:

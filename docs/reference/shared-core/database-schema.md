@@ -892,6 +892,10 @@ An `is_legacy` aggregate represents unattributable historical money, not a model
 zero-cost usage-only call. Its amount and unavailable-breakdown disclosure remain visible
 in the monetary rows. The discriminator is the flag, never the model string: a real money
 or coverage model literally named like the legacy sentinel remains attributable.
+Historical monetary rows retain their exact raw model identities under the existing money-read
+contract, even when a name exceeds the new coverage/invocation bound. That bound applies to
+new coverage records, not retroactively to valid retained money. Such history remains unverified;
+reading it neither grants a receipt nor permits an over-bound new invocation.
 
 | Column | Type | Constraints |
 | --- | --- | --- |

@@ -1182,6 +1182,9 @@ is a behavioral port separate from `LlmRequest`. After admission and before cred
 it allocates and acknowledges pending coverage. The chain retains the exact returned identity on
 `AttemptRecord.invocation` across settlement and registered late receipts. The host owns its
 producer/dispatch/round/ordinal construction; resettable `attemptNumber` alone is not correlation.
+A persisted host mints its bounded dispatch identity independently of authored agent/node text;
+the producer identity scopes the monotonic dispatch ordinal. Valid long authored identifiers
+cannot become invalid usage-correlation metadata or collide through truncation.
 A failed acknowledgement prevents provider invocation. Skipped entries require no marker.
 
 OpenAI-compatible parameter repair preserves the existing bounded temperature/reasoning fallback.
@@ -1227,6 +1230,10 @@ observation retains complete evidence with `priced: false` and a fixed non-retry
 the public stream or rewriting a published terminal. A held
 already-complete terminal does not create another late charge. Receipt authority is process-local;
 persisted identity cannot reconstruct permission to deliver a receipt or invoke another call.
+Receipt activation remains a cleanup obligation when the primary attempt observer throws. It
+cannot depend on successful observer return. Activating already-observed evidence must also
+preserve that exact primary throwable if late accounting raises a secondary failure; no observer
+failure permits a retry or discards the retained producer's final evidence.
 The [event contract](../contracts/sse-event-schema.md) owns durable pending/disposition semantics.
 
 #### Managed mode compatibility (Phase 2)

@@ -501,3 +501,20 @@ disclosure remain visible. The canonical [seam](../reference/shared-core/llm-pro
 and [database contract](../reference/shared-core/database-schema.md) own these corrections.
 Step 5 requires two NEW clean complete cumulative reviews after correction. Step 6's further
 controls and reviews, CR-82 and whole-W8 acceptance remain open.
+
+### W8 observer cleanup and historical identity correction — 2026-10-11
+
+The eighth cumulative activation review reproduced one receipt-lifetime gap and two identifier
+compatibility gaps. Registered late evidence must activate even if the primary attempt observer
+throws, preserving that exact primary throwable when activation itself observes a secondary
+accounting failure. This extends no provider or retry authority and leaves actual money with
+the existing sole writer. The public observer and admission ports are the demonstrated boundary;
+the current CLI governor normally latches its own failures instead of throwing synchronously.
+Separately, a host's bounded dispatch identity must be independent of an unbounded valid authored
+agent identifier. Historical monetary model names retain their original raw identity and known
+amount without inheriting the new invocation-model bound. New invocation validation remains
+strict, and historical uncertainty remains visible. The canonical
+[seam](../reference/shared-core/llm-provider-seam.md) and
+[database contract](../reference/shared-core/database-schema.md) own these corrections.
+Step 5 still requires two NEW clean complete cumulative reviews. Step 6's further controls
+and reviews, CR-82 and whole-W8 acceptance remain open; no new policy or deferral is introduced.
