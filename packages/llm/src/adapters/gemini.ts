@@ -1,5 +1,7 @@
 import {
   geminiUsage,
+  nativeFieldPresent,
+  requireMediaUsage,
   missingUsage,
   usageApplicability,
   type UsageApplicability,
@@ -320,10 +322,20 @@ function billingApplicability(req: LlmRequest, lowered: GeminiRequest): UsageApp
   const model = catalogModel(req.model);
   const config = lowered.config['thinkingConfig'];
   const disabled = isRecord(config) && config['thinkingBudget'] === 0;
-  return usageApplicability(
+  const applicable = usageApplicability(
     req,
     !disabled && (model === undefined || model.reasoning !== undefined),
   );
+  const modalities = lowered.config['responseModalities'];
+  return {
+    ...applicable,
+    unreportedMedia:
+      applicable.unreportedMedia ||
+      (Array.isArray(modalities) &&
+        modalities.some(
+          (value: unknown) => value === 'IMAGE' || value === 'AUDIO' || value === 'VIDEO',
+        )),
+  };
 }
 
 /** Fold a non-streaming Gemini response into canonical content parts (text + synthesized tool_call). */
@@ -865,7 +877,7 @@ interface GeminiStreamState {
   blocked: boolean;
   finishReason: string | undefined;
   usage: UsageEvidence;
-  readonly applicability: UsageApplicability;
+  applicability: UsageApplicability;
   readonly ids: GeminiToolCallIds;
 }
 
@@ -930,9 +942,21 @@ function foldGeminiPart(part: GeminiPart, state: GeminiStreamState): StreamChunk
   return out;
 }
 
+function hasInlineMedia(response: GeminiResponse): boolean {
+  return (
+    response.candidates?.some((candidate) =>
+      candidate.content?.parts?.some((part) => nativeFieldPresent(part, 'inlineData')),
+    ) === true
+  );
+}
+
 /** Fold one streamed Gemini response into chunks, updating the terminal/usage tracking on `state`. */
 function foldGeminiResponse(response: GeminiResponse, state: GeminiStreamState): StreamChunk[] {
   const out: StreamChunk[] = [];
+  if (hasInlineMedia(response)) {
+    state.applicability = { ...state.applicability, unreportedMedia: true };
+    state.usage = requireMediaUsage(state.usage, state.applicability);
+  }
   if (response.usageMetadata) {
     state.usage = mapUsage(
       response.usageMetadata,
@@ -1247,12 +1271,8 @@ export function createGeminiAdapter(deps: GeminiAdapterDeps = {}): LlmProvider {
         const applicable = billingApplicability(req, lowered);
         const response = await transport.generate(lowered, key);
         usage = mapUsage(response.usageMetadata, applicable);
-        if (
-          response.candidates?.some((candidate) =>
-            candidate.content?.parts?.some((part) => part.inlineData !== undefined),
-          ) === true
-        ) {
-          usage = mapUsage(response.usageMetadata, { ...applicable, unreportedMedia: true });
+        if (hasInlineMedia(response)) {
+          usage = requireMediaUsage(usage, { ...applicable, unreportedMedia: true });
         }
         const ids = new GeminiToolCallIds();
         const content = mapContent(response, ids);

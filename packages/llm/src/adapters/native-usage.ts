@@ -68,6 +68,32 @@ export function interruptedUsage(evidence: UsageEvidence, authoritative: boolean
   return ownUsageEvidence({ kind: 'partial', known, reason: 'interrupted' });
 }
 
+/** Native media presence is accounting evidence even when content projection ignores the field. */
+export function nativeFieldPresent(value: unknown, key: string): boolean {
+  if (typeof value !== 'object' || value === null) return false;
+  const descriptor = Object.getOwnPropertyDescriptor(value, key);
+  return descriptor !== undefined && (!('value' in descriptor) || descriptor.value != null);
+}
+
+/** Newly observed media can invalidate completeness after the last native usage frame. */
+export function requireMediaUsage(
+  evidence: UsageEvidence,
+  applicable: UsageApplicability,
+): UsageEvidence {
+  if (evidence.kind !== 'complete') return evidence;
+  const media = evidence.usage.mediaUnits ?? [];
+  const missing =
+    applicable.unreportedMedia ||
+    (applicable.inputAudio &&
+      !media.some((entry) => entry.modality === 'audio' && entry.direction === 'input')) ||
+    (applicable.outputAudio &&
+      !media.some((entry) => entry.modality === 'audio' && entry.direction === 'output'));
+  if (!missing) return evidence;
+  const known = { ...evidence.usage };
+  delete known.costMicrocents;
+  return ownUsageEvidence({ kind: 'partial', known, reason: 'missing_fields' });
+}
+
 export interface UsageApplicability {
   readonly thinking?: boolean;
   readonly toolPrompt?: boolean;

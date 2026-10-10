@@ -30,6 +30,7 @@ interface BaseEvent {
   sessionId?: string;       // correlation key on an agent SESSION (omitted on a run)
   timestamp: string;        // ISO 8601
   sequenceNumber: number;   // monotonic per run OR per session
+  cumulativeCostMicrocents?: number; // known realized sum; never an admission estimate
 }
 ```
 
@@ -54,6 +55,12 @@ Coverage is `{unverified, pendingInvocations, unknownCalls}`; all must be clear 
 amount is complete. Canonical envelopes can carry optional `usageCoverage` alongside a numeric
 known sum. Its absence means unverified history, never proof of free usage. Missing prices remain
 independent (`priced: false` / `unpricedCalls`). Run envelopes also carry optional
+`cumulativeCostMicrocents`: the engine stamps the existing actual-money counter on durable events,
+including the first resumed gate decision. An attempt settlement retains its own captured total.
+Live readers restore this absolute sum before rendering that frame; they never add the snapshot
+as another charge. Authoritative coverage snapshots replace inherited display aggregates; later
+pending/disposition events without snapshots apply their correlated deltas to that aggregate.
+Duplicate delivery cannot advance accounting. Run envelopes also carry optional
 `cumulativeUnpricedCalls`, a non-negative safe integer counting accepted unpriced cost observations.
 The workflow engine increments it once per observation, stamps it on durable boundaries and restores
 the maximum on replay. This preserves native separate-endpoint media's missing-price qualification
@@ -108,7 +115,7 @@ export type RunEvent =
   | BudgetPausedEvent
   | BudgetEstimateCommittedEvent // dual-envelope (ADR-0074 §2) — a conservative ESTIMATE, never realized spend
   | CostAttemptSettledEvent // RUN-ONLY (ADR-0076) — the REALIZED money record
-  | CostCoverageStartedEvent // RUN-ONLY (ADR-0104) — initial coverage basis
+  | CostCoverageStartedEvent // dual-envelope (ADR-0104); shipping run emits, session uses typed rows
   | CostUsagePendingEvent // dual-envelope (ADR-0104) — acknowledged before invocation
   | CostUsageDispositionEvent; // dual-envelope (ADR-0104) — incomplete or proven non-invocation
 ```

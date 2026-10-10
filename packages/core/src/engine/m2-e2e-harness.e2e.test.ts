@@ -1684,12 +1684,14 @@ workflow:
       // Secret-free either way: a store error can carry a filesystem path and must never reach the user.
       expect(terminal.error.message).not.toContain('ledger write failed');
     }
-    // The activated coverage barrier preserves the same durable-writer diagnosis on the
-    // node boundary; cancellation cannot conceal the failed required acknowledgement.
+    // The turn has already observed cancellation from the engine's writer-failure abort.
+    // Draining its secondary money notification preserves that primary turn diagnosis;
+    // the run terminal above and sticky departure health retain the failed write.
     const nodeFailed = events.find((e) => e.type === 'node:failed');
-    expect(nodeFailed?.type === 'node:failed' ? nodeFailed.error.message : undefined).toBe(
-      'a durable run-event write failed',
+    expect(nodeFailed?.type === 'node:failed' ? nodeFailed.error.code : undefined).toBe(
+      'cancelled',
     );
+    expect(await handle.depart()).toMatchObject({ moneyDurability: 'uncertain' });
   });
 
   it('ledger: an UNBUDGETED run records its realized spend at all (ADR-0077 §5)', async () => {

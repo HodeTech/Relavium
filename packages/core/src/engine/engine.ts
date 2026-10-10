@@ -5146,7 +5146,13 @@ class RunExecution {
     },
   ): Promise<DurableAppendAcknowledgement> {
     const handOff = opts?.handOff === true;
-    draft = { ...draft, cumulativeUnpricedCalls: this.#cumulativeUnpricedCalls };
+    draft = {
+      ...draft,
+      // Resume's first gate decision must expose the inherited known sum immediately.
+      // Keep an actual receipt's captured total; it belongs to its own settlement.
+      cumulativeCostMicrocents: draft.cumulativeCostMicrocents ?? this.#cumulativeCostMicrocents,
+      cumulativeUnpricedCalls: this.#cumulativeUnpricedCalls,
+    };
     if (!draft.type.startsWith('cost:usage_') && draft.type !== 'cost:coverage_started')
       draft = { ...draft, usageCoverage: this.#usageCoverage.snapshot().coverage };
     // **`CR-32`'s durable-event bound, and the terminal is exempt.** A run that cannot publish its terminal

@@ -1485,12 +1485,14 @@ export async function captureAgentTurnOutcome(
     if (params.money?.beginUsageInvocation !== undefined) await params.money.join();
     return { kind: 'succeeded', result };
   } catch (error) {
-    let settledError: unknown = error;
+    const settledError: unknown = error;
     if (params.money?.beginUsageInvocation !== undefined) {
       try {
         await params.money.join();
-      } catch (moneyError) {
-        settledError = moneyError;
+      } catch {
+        // The failure already established by the turn remains primary, including its private
+        // observer/overflow origin. Joining drains the secondary write; the money owner retains
+        // sticky broken health and refuses later pending admission even after this notification.
       }
     }
     const knownUsage = {
@@ -1669,12 +1671,14 @@ async function driveAgentTurn(
     const evidence = record.usage ?? { kind: 'missing', reason: 'not_reported' };
     const invocation = record.invocation;
     const status = record.error?.status;
+    // Only absent usage can authorize this release. Even a partial known zero leaves the
+    // other quantities unknown; share this decision between coverage and budget settlement.
     const officialRefusal =
       record.providerInvoked &&
       record.outcome === 'failed' &&
       !record.contentReceived &&
       !record.customEndpoint &&
-      evidence.kind !== 'complete' &&
+      evidence.kind === 'missing' &&
       (record.error?.kind === 'context_overflow' ||
         (status !== undefined && PRE_CONTENT_REFUSAL_STATUSES.has(status)));
     const disposition: UsageDisposition | undefined = !record.providerInvoked
@@ -1743,14 +1747,7 @@ async function driveAgentTurn(
     if (!coverageOnly) nonSkippedAttempts += 1;
     usage.engaged = true; // the provider method was invoked, even if it errored at zero usage
     if (evidence.kind !== 'complete') {
-      const status = record.error?.status;
-      if (
-        record.outcome === 'failed' &&
-        record.contentReceived === false &&
-        record.customEndpoint === false &&
-        (record.error?.kind === 'context_overflow' ||
-          (status !== undefined && PRE_CONTENT_REFUSAL_STATUSES.has(status)))
-      ) {
+      if (officialRefusal) {
         dischargeAttemptAdmission((active) => active?.release());
         return;
       }

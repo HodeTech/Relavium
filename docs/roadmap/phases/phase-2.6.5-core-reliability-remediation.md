@@ -3065,6 +3065,33 @@ acceptance matrix, CR-82 and final whole-W8 gates remain open; no new deferral i
 passed **7/7**; tools lint/typecheck, whitespace and canonical links passed. These are local
 author results, not independent acceptance or remote CI.
 
+#### Step 5 second cumulative review and correction — 2026-10-10
+
+Three further NEW independent reviewers inspected the complete `017b399c..d1b51b59`
+activation and its first-round corrections. Their combined result was **three High and two
+Medium** findings. Step 5 remains open; this correction requires two NEW clean cumulative rounds.
+
+| Finding | Verified correction and permanent evidence |
+| --- | --- |
+| Streamed/native-request media could be classified as complete token-only usage | Applicability is captured from the owned lowered request before SDK egress and retained across all response frames. Missing applicable media quantities remain partial; an explicit OpenAI audio zero remains valid. Forty-seven real-SDK offline controls cover generate/stream, native controls, observed media, mutation and complete-only pricing. Isolated old adapters fail 12 OpenAI/DeepSeek and 10 Gemini cases; byte-exact corrected copies pass. |
+| A partial official refusal cleared coverage and released admission | One shared decision requires the missing evidence arm. Partial evidence, including a known zero quantity, preserves unknown usage and the conservative hold. Actual turn/session/summary/workflow controls distinguish official missing evidence from partial and custom refusals. |
+| Secondary accounting failure replaced the established primary turn error | Failed-turn draining preserves the primary error identity and private origin. Sticky accounting health still blocks further admission and makes departure uncertain. Thirty-seven regressions cover provider/auth/overflow/cancel/observer precedence and successful-boundary failures. |
+| A fresh resume view discarded inherited coverage | The live store uses authoritative envelope aggregates and applies subsequent correlated deltas without replaying or double-counting old invocations. Actual checkpoint/resume controls cover missing, complete zero, positive, unpriced and native-media histories, legacy deltas and duplicate accounting. |
+| The event reference called the dual-envelope basis schema run-only | The annotation now states its actual dual-envelope contract and shipping behaviour: workflow runs emit the basis event; session hosts establish their basis in typed rows. No additional session emission is introduced. |
+
+The resumed positive-cost control also exposed a known-sum display gap: the first gate-decision
+frame showed zero before the next node boundary. The engine now projects its existing actual-money
+counter on durable envelopes, preserving a receipt's own captured total. The view restores this
+absolute known sum before rendering; it never treats the snapshot as a second charge. Nine new
+resume controls and the existing 51 store/view controls pass, including every resumed frame's
+amount and independent usage/price qualification. The canonical event contract records both
+projection rules. No new policy, dependency, provider call or deferral is introduced.
+
+**Correction gates:** fresh forced lint/typecheck/test passed **23/23**, none cached, across
+**470** files / **10,064 passed** / **11 existing live-provider skips**. Native 100,000-settlement
+and all 57 real CLI child-process controls are included. Author evidence and isolated causal
+controls do not replace the outstanding independent Step 5 or additional Step 6 review gates.
+
 ### CR-81 — Conformance cassettes do not verify the request wire contract · High · ✅ CLOSED on `development` 2026-10-10
 **Accepted on `development`, 2026-10-10; publication pending.** The [Step 3 register](#w8-step-3-canonical-sdk-http-matrix--2026-10-10)
 joins all four independent review verdicts and three causal lowering controls. The pre-W8 defect was:

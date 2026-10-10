@@ -3,6 +3,8 @@ import {
   missingUsage,
   interruptedUsage,
   usageApplicability,
+  nativeFieldPresent,
+  requireMediaUsage,
   type UsageApplicability,
 } from './native-usage.js';
 import OpenAI, {
@@ -197,6 +199,17 @@ export function mapUsage(
   applicable: UsageApplicability = {},
 ): UsageEvidence {
   return openAiUsage(raw, deepseek, applicable);
+}
+
+/** Read modality controls from the exact owned lowering before handing its mutable copy to the SDK. */
+function billingApplicability(req: LlmRequest, body: OpenAiCompatibleBody): UsageApplicability {
+  const applicable = usageApplicability(req);
+  return {
+    ...applicable,
+    outputAudio:
+      applicable.outputAudio ||
+      (Array.isArray(body.modalities) && body.modalities.includes('audio')),
+  };
 }
 
 /** OpenAI tool-call arguments arrive as a JSON string; parse to the canonical `args` (empty → `{}`). */
@@ -1232,6 +1245,7 @@ async function* streamChunks(
   };
   let usage: UsageEvidence = missingUsage();
   let authoritativeUsage = false;
+  let applicable = usageApplicability(req);
   let sdkStream: AsyncIterable<OpenAI.ChatCompletionChunk>;
   try {
     const open = () =>
@@ -1244,6 +1258,7 @@ async function* streamChunks(
             stream: true as const,
             stream_options: { include_usage: true },
           };
+          applicable = billingApplicability(req, body);
           const requestOptions = buildRequestOptions(working);
           work?.assertActive();
           options?.nativeInvocationStarted?.();
@@ -1264,8 +1279,12 @@ async function* streamChunks(
   }
   try {
     for await (const chunk of work === undefined ? sdkStream : work.ownIterator(sdkStream)) {
+      if (chunk.choices.some((choice) => nativeFieldPresent(choice.delta, 'audio'))) {
+        applicable = { ...applicable, outputAudio: true };
+        usage = requireMediaUsage(usage, applicable);
+      }
       if (chunk.usage) {
-        usage = mapUsage(chunk.usage, provider === 'deepseek', usageApplicability(req));
+        usage = mapUsage(chunk.usage, provider === 'deepseek', applicable);
         authoritativeUsage =
           state.sawTerminal || chunk.choices.some((choice) => choice.finish_reason != null); // the include_usage chunk arrives last, with empty choices
       }
@@ -1405,6 +1424,7 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
       const work =
         options === undefined ? undefined : new ProviderInvocationWork(options, req.signal);
       let usage: UsageEvidence | undefined;
+      let applicable = usageApplicability(req);
       try {
         const client = createClient(key, undefined, work);
         const invoke = () =>
@@ -1415,6 +1435,7 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
                 ...buildCommonBody(working, providerId, owned.plan, rejectionScope),
                 stream: false as const,
               };
+              applicable = billingApplicability(req, body);
               const requestOptions = buildRequestOptions(working);
               work?.assertActive();
               options?.nativeInvocationStarted?.();
@@ -1429,14 +1450,10 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
               Promise.resolve(),
           );
         const completion = await (work === undefined ? invoke() : work.retainWork(invoke));
-        const applicable = usageApplicability(req);
         usage = mapUsage(completion.usage, providerId === 'deepseek', applicable);
         const choice = completion.choices[0];
-        if (choice?.message.audio != null)
-          usage = mapUsage(completion.usage, providerId === 'deepseek', {
-            ...applicable,
-            outputAudio: true,
-          });
+        if (nativeFieldPresent(choice?.message, 'audio'))
+          usage = requireMediaUsage(usage, { ...applicable, outputAudio: true });
         // A non-null refusal is a safety decline — normalize to content_filter, not a clean stop.
         const refused =
           typeof choice?.message.refusal === 'string' && choice.message.refusal.length > 0;

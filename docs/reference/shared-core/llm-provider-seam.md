@@ -1090,8 +1090,13 @@ remain present. No SDK optional property supplies evidence that its omitted clas
 
 OpenAI's native audio counters are disjoint `mediaUnits` with `unit: 'count'`. Requested or
 observed inline audio output requires its native audio units; inline media output with no
-supported counter remains incomplete. Gemini does not invent inline-media units. Ordinary
-text-only requests do not require a media axis. Separate-endpoint media continues using its
+supported counter remains incomplete. Applicability includes native modality controls captured from
+the owned lowered request before SDK egress, and media observed anywhere in the response stream.
+An earlier or later media frame cannot be erased by a text-only usage frame; a later observation
+also downgrades already-owned complete usage when its media axis is missing. This accounting
+observation adds no streaming media output chunks. Gemini does not invent inline-media units;
+zero text-token quantities do not establish zero media volume. Ordinary text-only requests do not
+require a media axis. Separate-endpoint media continues using its
 accepted authored/frozen volume basis, including fractional durations; it is outside token
 `UsageEvidence` and does not fabricate missing token usage.
 

@@ -295,11 +295,23 @@ function reduceNodeCompleted(base: RunViewState, event: NodeCompletedEvent): Run
  */
 export function reduceRunEvent(state: RunViewState, event: RunEvent): RunViewState {
   const seq = trackSeq(state, event);
-  const base: RunViewState = { ...state, ...seq.patch };
+  let base: RunViewState = { ...state, ...seq.patch };
   // An out-of-order / duplicate event recorded a warning above but is NOT applied — re-applying a stale
   // event would double a token or let it overwrite a fresher summary.
   if (!seq.apply) {
     return base;
+  }
+
+  // A resumed stream starts at a gate decision rather than replaying old charges.
+  // Common absolute snapshots restore the known sum before the next node boundary.
+  if (event.cumulativeCostMicrocents !== undefined) {
+    base = {
+      ...base,
+      cumulativeCostMicrocents: Math.max(
+        base.cumulativeCostMicrocents,
+        event.cumulativeCostMicrocents,
+      ),
+    };
   }
 
   switch (event.type) {

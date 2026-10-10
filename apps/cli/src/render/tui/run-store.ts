@@ -58,6 +58,7 @@ export function createRunStore(color: boolean): RunStoreController {
   const listeners = new Set<() => void>();
   let state = initialRunViewState();
   const coverage = new UsageCoverageFold();
+  let localCoverage = coverage.snapshot().coverage;
   let tickCount = 0;
   let dirty = false;
   let snapshot: RunStoreSnapshot = { state, tick: tickCount, color };
@@ -91,7 +92,32 @@ export function createRunStore(color: boolean): RunStoreController {
         state.lastSequenceNumber === undefined ||
         event.sequenceNumber > state.lastSequenceNumber
       ) {
+        const before = localCoverage;
         coverage.apply(event);
+        const after = event.type.startsWith('cost:') ? coverage.snapshot().coverage : before;
+        localCoverage = after;
+        // A resumed primary stream begins after the historical invocation markers. Its
+        // envelope supplies the inherited aggregate; keep local correlation only for
+        // subsequent deltas whose pending/disposition ACK has no aggregate envelope.
+        const previous = state.usageCoverage ?? before;
+        const usageCoverage =
+          event.usageCoverage ??
+          (after === before
+            ? previous
+            : {
+                unverified:
+                  event.type === 'cost:coverage_started' ? after.unverified : previous.unverified,
+                pendingInvocations: Math.max(
+                  0,
+                  previous.pendingInvocations +
+                    after.pendingInvocations -
+                    before.pendingInvocations,
+                ),
+                unknownCalls: Math.max(
+                  0,
+                  previous.unknownCalls + after.unknownCalls - before.unknownCalls,
+                ),
+              });
         const unpricedCalls =
           event.cumulativeUnpricedCalls === undefined
             ? (state.unpricedCalls ?? 0) +
@@ -99,7 +125,7 @@ export function createRunStore(color: boolean): RunStoreController {
             : Math.max(state.unpricedCalls ?? 0, event.cumulativeUnpricedCalls);
         state = {
           ...reduceRunEvent(state, event),
-          usageCoverage: coverage.snapshot().coverage,
+          usageCoverage,
           unpricedCalls,
         };
       } else state = reduceRunEvent(state, event);
