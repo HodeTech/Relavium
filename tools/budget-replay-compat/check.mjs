@@ -19,7 +19,11 @@ import { createRequire } from 'node:module';
 import { snapshotDependencyClosure } from './dependency-closure.mjs';
 import { checkClosureGuards } from './closure-smoke.mjs';
 import { systemTool } from './system-tools.mjs';
-import { verifyBaselineProvenance, checkBaselineProvenanceGuards } from './baseline-provenance.mjs';
+import {
+  assertBaselineAvailable,
+  verifyBaselineProvenance,
+  checkBaselineProvenanceGuards,
+} from './baseline-provenance.mjs';
 import {
   allocateEvidence,
   finishEvidence,
@@ -29,9 +33,11 @@ import {
 import { checkRetentionGuards } from './evidence-retention-smoke.mjs';
 import { runReplayStage } from './worker-stage.mjs';
 import { checkLifecycleGuards } from './lifecycle-smoke.mjs';
+import { verifyReplayInventory, checkReplayInventoryGuards } from './replay-inventory.mjs';
 
 const tooling = realpathSync(fileURLToPath(new URL('.', import.meta.url)));
 const repository = realpathSync(join(tooling, '../..'));
+assertBaselineAvailable(repository);
 const digest = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const archive = readFileSync(join(tooling, 'frozen/pre-w7-source.tar.gz'));
 assert.equal(archive.length, 843319);
@@ -229,6 +235,15 @@ try {
     );
   }
   if (workerFinalization.failed) throw workerFinalization.error;
+  const producerEvidence = JSON.parse(
+    readFileSync(join(owned, 'results/producer-cases.json'), 'utf8'),
+  );
+  const predecessorEvidence = JSON.parse(
+    readFileSync(join(owned, 'results/predecessor-evidence.json'), 'utf8'),
+  );
+  const inventory = verifyReplayInventory(producerEvidence, predecessorEvidence);
+  writeFileSync(join(owned, 'replay-inventory.json'), `${JSON.stringify(inventory, null, 2)}\n`);
+  checkReplayInventoryGuards(producerEvidence, predecessorEvidence, owned);
   completion = 'success';
 } catch (error) {
   primaryFailure = true;

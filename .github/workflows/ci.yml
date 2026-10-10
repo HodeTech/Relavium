@@ -76,6 +76,20 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
 
+      # A squash/main-based checkout need not contain development's immutable predecessor object.
+      # Fetch only this canonical pin during CI setup; the acceptance harness itself stays offline.
+      - name: Ensure immutable replay predecessor is available
+        shell: bash
+        run: |
+          BASELINE=$(node --input-type=module -e "import { baselineCommit } from './tools/budget-replay-compat/baseline-provenance.mjs'; process.stdout.write(baselineCommit)")
+          if ! git --no-replace-objects cat-file -e "$BASELINE^{commit}"; then
+            if ! git fetch --no-tags origin "$BASELINE"; then
+              echo "::error::Immutable replay predecessor $BASELINE is unavailable from origin; restore that exact object before running the offline gate."
+              exit 1
+            fi
+          fi
+          git --no-replace-objects cat-file -e "$BASELINE^{commit}"
+
       - name: Install (frozen lockfile)
         run: pnpm install --frozen-lockfile
 

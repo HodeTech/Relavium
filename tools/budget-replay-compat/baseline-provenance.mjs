@@ -8,7 +8,26 @@ import { dirname, join } from 'node:path';
 import { systemTool } from './system-tools.mjs';
 
 export const baselineCommit = '1b3f8d70c05c9152043dcc476eaa1afaaa87381d';
+export function assertBaselineAvailable(repository) {
+  try {
+    execFileSync(
+      systemTool('git'),
+      ['--no-replace-objects', 'cat-file', '-e', `${baselineCommit}^{commit}`],
+      {
+        cwd: repository,
+        stdio: 'ignore',
+        timeout: 15000,
+      },
+    );
+  } catch {
+    throw new Error(
+      `Immutable replay predecessor ${baselineCommit} is unavailable locally. Fetch that exact commit from origin before rerunning the offline check: git fetch --no-tags origin ${baselineCommit}`,
+    );
+  }
+}
+
 export function verifyBaselineProvenance(repository, frozen, manifest) {
+  assertBaselineAvailable(repository);
   assert.equal(manifest.baselineCommit, baselineCommit);
   assert.equal(manifest.files.length, 143);
   const seen = new Set();
