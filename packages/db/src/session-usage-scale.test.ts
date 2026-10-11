@@ -130,5 +130,10 @@ describe('ADR-0104 bounded native session settlement state', () => {
       pendingInvocations: 63,
       unknownCalls: 50_000,
     });
-  }, 180_000);
+    // This is a state/query-bound control, not a throughput benchmark: all 100000 settlements
+    // execute roughly two million ORM/native statements in independently committed transactions.
+    // The unchanged control took 163.5s in ordinary Linux CI; coverage and the Node-22 floor
+    // exhausted the former 180s watchdog. Allow contended/instrumented workers to finish without
+    // reducing the workload, batching away durable ACKs or relaxing any state/query assertion.
+  }, 600_000);
 });
