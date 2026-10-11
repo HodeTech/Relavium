@@ -4310,6 +4310,14 @@ Author lint/typecheck/test/build gates pass for shared, LLM, core and CLI (18 ta
 3,601 and 3,444 passing tests respectively, with 11 established LLM skips). Independent cumulative
 acceptance and the remaining increments are pending.
 
+Increment 2's first independent cumulative round reports one reproduced Low: continuation
+cleanup replaced an earlier literal usage assertion with under-consumption. Cleanup now records
+its own mandatory failure without replacing the primary diagnostic. Exact counter-preserving
+complete-to-partial mutation rejects all 24 cases with the intended evidence assertion visible;
+an independent consumption-only mutant also rejects all 24, so cleanup has not become optional.
+All three original wire-lowering mutations remain red and restore byte-exactly to green. The
+finding-bearing round does not count as clean acceptance; two NEW complete rounds are required.
+
 ### CR-81 — Conformance cassettes do not verify the request wire contract · High · ✅ CLOSED on `development` 2026-10-10
 **Accepted on `development`, 2026-10-10; publication pending.** The [Step 3 register](#w8-step-3-canonical-sdk-http-matrix--2026-10-10)
 joins all four independent review verdicts and three causal lowering controls. The pre-W8 defect was:

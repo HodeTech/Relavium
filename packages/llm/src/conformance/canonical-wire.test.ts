@@ -180,6 +180,22 @@ function expectedToolContent(provider: WireProvider, signed: boolean): ContentPa
   ];
 }
 
+/** Report cleanup failure without replacing an earlier wire/evidence assertion. */
+function assertConsumed(replay: ReturnType<typeof createExchangeReplay>): void {
+  let failure: { readonly error: unknown } | undefined;
+  try {
+    replay.assertConsumed();
+  } catch (error) {
+    failure = { error };
+  }
+  expect
+    .soft(
+      failure,
+      failure?.error instanceof Error ? failure.error.message : 'exchange consumption must succeed',
+    )
+    .toBeUndefined();
+}
+
 const expectedUsage: Record<WireProvider, UsageEvidence> = {
   anthropic: {
     kind: 'complete',
@@ -219,7 +235,7 @@ describe('canonical wire matrix through installed SDK HTTP (W8 Step 3)', () => {
           expect(result.stopReason).toBe('stop');
           assertUsage(provider, result);
         } finally {
-          replay.assertConsumed();
+          assertConsumed(replay);
         }
       });
 
@@ -231,7 +247,7 @@ describe('canonical wire matrix through installed SDK HTTP (W8 Step 3)', () => {
           expect(result.stopReason).toBe('tool_use');
           assertUsage(provider, result);
         } finally {
-          replay.assertConsumed();
+          assertConsumed(replay);
         }
       });
 
@@ -275,7 +291,7 @@ describe('canonical wire matrix through installed SDK HTTP (W8 Step 3)', () => {
           expect(final.stopReason).toBe('stop');
           assertUsage(provider, final);
         } finally {
-          replay.assertConsumed();
+          assertConsumed(replay);
         }
       });
     }
