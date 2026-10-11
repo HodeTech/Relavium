@@ -88,8 +88,9 @@ smokes passed at `ca5de9f8`; later acceptance changes are documentation only. Th
 qualifies exact counts, skips, cache use and limits. Published-head checks are separate and
 belong to the PR; local evidence does not claim remote CI or live-provider invoices.
 
-The implementation register is **49/51 on `development`**; `main` remains **47/51** until the W8 PR
-merges. ADR-0087 §1 is outside the 51-item denominator. CR-70 (cross-turn tool-history carrying),
+The implementation register is **49/51 on `development`**; `main` remains **47/51** until
+[W8 PR #92](https://github.com/HodeTech/Relavium/pull/92) merges. Implementation acceptance is
+complete; published-head checks and maintainer review are tracked on that PR. ADR-0087 §1 is outside the 51-item denominator. CR-70 (cross-turn tool-history carrying),
 CR-93 (tenant-scoped catalog/learning), CR-95's long continuation and other existing scoped
 residuals retain their approved severity, triggers and narrowed claims in
 [deferred-tasks.md](deferred-tasks.md); no new deferral is introduced.

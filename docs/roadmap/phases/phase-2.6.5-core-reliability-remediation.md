@@ -4185,6 +4185,15 @@ published-head GitHub checks follow; local evidence does not claim a remote resu
 approved residuals, independent native-media basis and platform/provenance limits are
 unchanged. No new user decision, credential, provider capture or paid call is required.
 
+#### W8 publication checkpoint — 2026-10-11
+
+[PR #92](https://github.com/HodeTech/Relavium/pull/92) publishes `development` against `main`
+for maintainer review. Implementation acceptance is complete; merge has not occurred.
+The two whole-wave rounds reviewed `d4b2566b`; `2c1882c0` records derived acceptance/status
+only. This publication checkpoint adds only the PR reference. Exact published-head required
+checks are tracked on the PR independently of the local source-gate evidence above.
+`main` remains 47/51 until merge; existing approved residuals are unchanged.
+
 ### CR-81 — Conformance cassettes do not verify the request wire contract · High · ✅ CLOSED on `development` 2026-10-10
 **Accepted on `development`, 2026-10-10; publication pending.** The [Step 3 register](#w8-step-3-canonical-sdk-http-matrix--2026-10-10)
 joins all four independent review verdicts and three causal lowering controls. The pre-W8 defect was:
