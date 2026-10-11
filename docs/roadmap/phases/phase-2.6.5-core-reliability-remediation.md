@@ -4254,6 +4254,24 @@ that runtime is not certified by the passing installed-driver result. Any SQLite
 upgrade must rerun the exact migration controls. Published-head checks, individual Sonar
 outcomes and maintainer review/merge remain tracked on PR #92.
 
+#### W8 PR #92 systematic-review corrections — 2026-10-11
+
+The maintainer review at `c46bb792` reopens the publication gate, not the already attributed
+implementation checkpoints. No merge or published-history rewrite is authorised. The correction
+sequence is: (1) run-only coverage basis and portable migration; (2) provider evidence and host
+capability contracts; (3) bounded storage/CLI reads and structural controls; (4) tooling, CI and
+document consistency. Each increment requires a commit and two NEW independent cumulative
+review rounds, followed by fresh final source and published-head gates.
+
+**Increment 1 author state:** H1 removes the run-only `cost:coverage_started` event from the
+dual envelope/session emission union and adds bus-boundary positive/negative controls. H2
+removes temporary-table qualifiers from migration 0019 CHECKs, preserves foreign-key enforcement,
+and normalizes newly generated rebuild CHECKs. Real native upgrade controls preserve retained
+0018 rows, money and ordinals. A separate SQLite 3.54.0 full-batch control passes the corrected
+SQL; the exact former qualified SQL fails at rename and rolls back the batch. The historical
+unsupported-runtime observation above is thus reproduced and corrected, rather than waived.
+Independent acceptance of this increment and the remaining report dispositions are pending.
+
 ### CR-81 — Conformance cassettes do not verify the request wire contract · High · ✅ CLOSED on `development` 2026-10-10
 **Accepted on `development`, 2026-10-10; publication pending.** The [Step 3 register](#w8-step-3-canonical-sdk-http-matrix--2026-10-10)
 joins all four independent review verdicts and three causal lowering controls. The pre-W8 defect was:
