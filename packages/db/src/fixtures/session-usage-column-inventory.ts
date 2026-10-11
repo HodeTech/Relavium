@@ -51,8 +51,14 @@ export function assertSessionUsageColumnInventory(sqlite: Database.Database): vo
     .get();
   if (typeof row !== 'object' || row === null || !('sql' in row) || typeof row.sql !== 'string')
     return refusal();
-  const text = /AFTER\s+UPDATE\s+OF\s+(.+?)\s+ON\s+agent_sessions/is.exec(row.sql)?.[1];
-  if (text === undefined) return refusal();
+  // Match fixed word boundaries separately. A lazy column-list capture followed
+  // by whitespace matching retries long valid padding before a comma.
+  const start = /\bAFTER\s+UPDATE\s+OF\s+/i.exec(row.sql);
+  if (start === null) return refusal();
+  const header = row.sql.slice(start.index + start[0].length);
+  const end = /\bON\s+agent_sessions\b/i.exec(header);
+  if (end === null) return refusal();
+  const text = header.slice(0, end.index).trim();
   const columns = text
     .split(',')
     .map((name) => name.trim().replace(/^["`]|["`]$/g, ''))
