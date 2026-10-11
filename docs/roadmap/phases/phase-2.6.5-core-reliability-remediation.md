@@ -4374,6 +4374,40 @@ findings are closed in this increment; M8 remains explicitly qualified rather th
 Tooling/document corrections and fresh whole-PR/publication gates remain open. No earlier-head
 CI result certifies those remaining changes.
 
+**Increment 4 author state — required causal gates and document consistency.** Both complete
+offline mutation commands now feed the existing required GitHub `ci` result through explicit
+success-only dependencies. Failed, skipped, cancelled or absent results cannot certify the gate;
+local `pnpm run ci` runs the same full commands. Permanent orchestration controls exercise actual
+workflow wiring and result combinations. The original three wire-lowering removals remain;
+counter-preserving complete-to-partial demotion adds a fourth control over all 24 literal cases.
+Every usage mechanism now requires its predeclared case identity and semantic signature; unrelated
+assertions or module loading alone cannot establish causality. All earlier mechanisms, native
+children, full-file inventories and scale workloads remain. Installed SDK version/package-byte,
+lockfile, source/fixture/configuration and built shared-support identities qualify wire reports.
+Optional CI exports retain bounded allowlisted metadata for seven days, excluding copied graphs,
+native databases, caches and executable dependency archives; primary failures remain primary.
+
+M9 is resolved by an append-only ADR-0104 qualification linking the canonical seam dialect table;
+the supported OpenAI chat dialect has no additional native cache-write billing counter. M10's
+package README distinguishes accepted implementation from the reopened publication gate. The
+event envelope and payload index include coverage fields and dispositions, and the stale inline
+dual-envelope basis comment is corrected. Historical 21/22-ADR checkpoint counts remain attributed:
+the current main-to-development inventory modifies 25 prior ADRs, adds ADR-0104, and updates the
+decision index (27 decision paths). Accepted dated corrections remain append-only rather than
+being relocated. M12 is qualified: five published documentation subjects use noncanonical scopes
+(`3684faf4`, `017b399c`, `4b98b9ca`, `0fd2da69`, `d6d88b0c`); their cited identities are retained.
+`test(mcp)` at `25de05f5` names a real workspace, now explicit in the canonical scope catalogue.
+No merge or published-history rewrite is authorised. Fresh author gates, two NEW independent
+complete cumulative rounds and final whole-PR/publication gates remain required.
+
+The author run completed all four wire removals over the same 24 literal cases, all 23 usage
+mechanisms/eight groups and the 427-case permanent native/scale cohort. Five affected workspaces
+passed lint, typecheck, test and build (21 successful tasks; 10,806 passing tests and 12 declared
+skips). The final metadata-only ceiling correction also counts `export.json` itself: 57 tooling
+controls pass, and removing that guard in an outside-source copy produces the intended one-case
+failure between five-case fixed/restored passes. Tool lint/typecheck and diff hygiene pass.
+These are author checks, not the two independent review verdicts or published-head acceptance.
+
 ### CR-81 — Conformance cassettes do not verify the request wire contract · High · ✅ CLOSED on `development` 2026-10-10
 **Accepted on `development`, 2026-10-10; publication pending.** The [Step 3 register](#w8-step-3-canonical-sdk-http-matrix--2026-10-10)
 joins all four independent review verdicts and three causal lowering controls. The pre-W8 defect was:

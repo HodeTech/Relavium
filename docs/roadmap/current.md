@@ -80,7 +80,7 @@ and Git-ignored; 181 original files are unchanged and historical citations are c
    three independently reproduced production-lowering removals.
 3. **CR-82 closed:** complete/partial/missing native evidence, acknowledged pending before
    invocation, exact once-only settlements/late receipts, sticky old-writer uncertainty and
-   qualified human/JSON totals. The permanent inventory has 21 causal mechanisms across all
+   qualified human/JSON totals. The original accepted inventory had 21 causal mechanisms across all
    eight ADR-0104 groups; native media retains its independent volume basis.
 
 Actual `pnpm run ci`, bare `pnpm coverage`, enforced coverage, wire/usage mutations and offline
@@ -98,7 +98,11 @@ retain separate scoped reviews and exact-head publication checks.
 
 The implementation register is **49/51 on `development`**; `main` remains **47/51** until
 [W8 PR #92](https://github.com/HodeTech/Relavium/pull/92) merges. Implementation acceptance is
-complete; published-head checks and maintainer review are tracked on that PR. ADR-0087 §1 is outside the 51-item denominator. CR-70 (cross-turn tool-history carrying),
+complete at the attributed checkpoint. The [maintainer correction register](phases/phase-2.6.5-core-reliability-remediation.md#w8-pr-92-systematic-review-corrections--2026-10-11)
+tracks the subsequent fixes and NEW cumulative reviews; fresh source and published-head checks
+remain required before landing. Its causal inventory extends to 23 usage mechanisms and four wire
+controls, retaining every earlier mechanism. These new controls have their own pending acceptance
+until that register records completion. ADR-0087 §1 is outside the 51-item denominator. CR-70 (cross-turn tool-history carrying),
 CR-93 (tenant-scoped catalog/learning), CR-95's long continuation and other existing scoped
 residuals retain their approved severity, triggers and narrowed claims in
 [deferred-tasks.md](deferred-tasks.md); no new deferral is introduced.

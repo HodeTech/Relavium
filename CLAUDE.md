@@ -118,10 +118,16 @@ at that checkpoint, while §3 turned out to have shipped in `W5` under a differe
 **Current W8 checkpoint — 2026-10-11:** All seven implementation/review steps are accepted on
 `development`, including ADR-0087 §1 and CR-81/82. The [closing register](docs/roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w8-closing-register--2026-10-11)
 joins scoped acceptance, actual full CI/bare and enforced coverage, three wire/21 usage controls
-and two NEW complete whole-wave review rounds. The implementation register is **49/51**;
+and two NEW complete whole-wave review rounds. Those counts belong to the original attributed
+source checkpoint, not to the later maintainer corrections. The implementation register is **49/51**;
 `main` remains **47/51** until W8 merges. Publication checks and maintainer review/merge remain
 the landing gate. CR-70/93 and existing exact-capacity/scoped residuals retain their approved
 limits; no new deferral, provider capture, billing, credential or user decision is pending.
+
+The [PR #92 maintainer corrections](docs/roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w8-pr-92-systematic-review-corrections--2026-10-11)
+reopen publication acceptance; the original closing evidence remains attributed to its source
+checkpoint. All correction increments and current-head checks must complete before publication
+acceptance is restored.
 
 **W7 merged to `main` on 2026-10-10 as PR #90, including final whole-wave Step 12.**
 Steps 1–11, all five genuine overflow records, owned measured requests and consolidated provider/MCP/host

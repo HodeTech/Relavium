@@ -39,7 +39,8 @@ No user decision, billing setup, credential or provider capture is pending.
 **All seven W8 implementation/review steps are accepted on `development`, 2026-10-11.**
 ADR-0087 §1 and CR-81/82 close against the [whole-W8 register](docs/roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w8-closing-register--2026-10-11).
 Actual full CI/bare and enforced coverage, three wire/21 usage controls and two NEW complete
-whole-wave review rounds pass. The register is **49/51 on development, 47/51 on main** until
+whole-wave review rounds pass. Those counts belong to the original attributed
+source checkpoint, not to the later maintainer corrections. The register is **49/51 on development, 47/51 on main** until
 W8 merges. Publication checks and maintainer review/merge remain the landing gate. Existing
 approved CR-70/93, exact-capacity and scoped residuals are unchanged. No new decision,
 provider capture, billing or credential is pending.
@@ -52,6 +53,10 @@ billing, key or user decision is pending. The [merge checkpoint](docs/roadmap/ph
 records W7 closure. All seven W8 implementation/review steps are accepted on `development`,
 including CR-81/82 and ADR-0087 §1. The register is 49/51 there and 47/51 on `main` until W8
 merges. Publication checks and maintainer review/merge remain; existing approved limits are unchanged.
+
+**PR #92 maintainer corrections:** the [correction register](docs/roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w8-pr-92-systematic-review-corrections--2026-10-11)
+reopens fresh acceptance/publication gates for the reported findings. Previous source checks do
+not certify subsequent corrections. No implementation deferral or maintainer decision is added.
 
 See [docs/roadmap/current.md](docs/roadmap/current.md) for live status.
 

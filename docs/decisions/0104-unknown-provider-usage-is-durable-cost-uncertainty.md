@@ -723,3 +723,16 @@ pending statements describe their checkpoint, not current implementation status.
 on `development`; publication checks and maintainer review/merge still gate landing on `main`.
 The approved evidence/identity/arithmetic/native-media boundaries and existing deferrals are
 unchanged. No new decision, dependency, provider invoice, paid call or platform result is claimed.
+
+### Canonical dialect clarification — 2026-10-11
+
+PR #92's systematic review identifies an overbroad cache-write qualification in the original
+OpenAI row above. The supported OpenAI Chat Completions dialect has no separate native
+cache-write billing counter. Its exact evidence requirements, including applicable native
+billing classes and omission rules on every dialect, are owned by the
+[canonical seam usage section](../reference/shared-core/llm-provider-seam.md#6-usage).
+That implemented contract qualifies the earlier condensed decision table; the table is not a
+second independently maintained dialect specification. Gross input without the required
+cache split remains partial, and neither missing evidence nor a non-applicable billing class
+is invented as a reported quantity. This correction does not change realized-money arithmetic,
+authorization, request ownership or the accepted uncertainty protocol.
