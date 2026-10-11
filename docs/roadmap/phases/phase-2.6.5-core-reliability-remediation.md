@@ -4573,6 +4573,37 @@ Exact replacement-head publication remains separately recorded in PR #92. The
 register stays 49/51 on `development`, 47/51 on `main`, pending maintainer merge;
 no new deferral, provider operation or user decision is introduced.
 
+#### Native process case budgets — 2026-10-11
+
+At published `6908e450`, the PR workflow passes completely. The same-head push
+workflow passes wire, usage, coverage, Windows, Node 22 and peers, then its required
+package job reports two DB process-case timeouts: pending-after-commit at 5,046ms
+and lock-hold at 5,004ms against the inherited 5,000ms Vitest default. These workflow
+outcomes remain distinct; the failed push is not represented as successful.
+
+Correction `671107df` gives all eight cases in the three native crash/contention
+families explicit 20,000ms case budgets, matching the existing isolated acceptance
+runner. The worker's independent 5,000ms readiness/lifetime guard, its cut/release
+bounds, all SIGKILL and close joins, real native transactions, the limit of five
+transaction attempts, revision/acknowledgement/taint assertions and cleanup remain
+unchanged. The full
+permanent watchdog already accounts for these eight cases within its 69 children
+at 20,000ms each; its 2,280,000ms calculation and complete inventory do not change.
+No production, global runner, dependency, query, workload, coverage or policy changes.
+
+Fresh focused execution passes all eight cases. Full DB lint/typecheck/test passes
+5/5 tasks and 34 files / 630 cases, including all 100,000 native settlements.
+Two NEW independent complete cumulative reviews of the sole changed path at
+`671107df` are clean. Each independently passes all eight native cases. Copied
+pre-child delay counterfactuals distinguish the inherited and explicit case budgets;
+delayed-child controls still fail at the independent five-second readiness guard
+and join SIGKILL cleanup. These are explicitly synthetic runner/lifecycle controls,
+not a reproduction of GitHub load or production-accounting mutations. Root read
+both full reports; no whole-W8, platform or publication certification is inferred.
+Exact replacement-head publication is recorded separately in PR #92. The register
+stays 49/51 on `development`, 47/51 on `main` pending maintainer merge; no new deferral,
+provider operation, billing, credential or user decision is introduced.
+
 ### CR-81 — Conformance cassettes do not verify the request wire contract · High · ✅ CLOSED on `development` 2026-10-10
 **Accepted on `development`, 2026-10-10; publication pending.** The [Step 3 register](#w8-step-3-canonical-sdk-http-matrix--2026-10-10)
 joins all four independent review verdicts and three causal lowering controls. The pre-W8 defect was:
