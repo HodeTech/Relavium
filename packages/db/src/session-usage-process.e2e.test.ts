@@ -95,6 +95,8 @@ function seed(client: DbClient): void {
   });
 }
 
+// Match the isolated acceptance runner's case budget for seed, child, reopen and cleanup.
+// The worker's five-second readiness/lifetime guard remains independent and unchanged.
 describe('native session usage transaction crash and contention', () => {
   it.each(['pending-before-ack', 'pending-after-ack', 'pending-after-commit'])(
     'pending marker survives only outer commit at native process cut %s',
@@ -143,6 +145,7 @@ describe('native session usage transaction crash and contention', () => {
         rmSync(root, { recursive: true, force: true });
       }
     },
+    20_000,
   );
 
   it.each(['before-ack', 'after-ack', 'after-commit'])(
@@ -190,6 +193,7 @@ describe('native session usage transaction crash and contention', () => {
         rmSync(root, { recursive: true, force: true });
       }
     },
+    20_000,
   );
 
   it.each(['lock-release', 'lock-hold'])(
@@ -262,5 +266,6 @@ describe('native session usage transaction crash and contention', () => {
         rmSync(root, { recursive: true, force: true });
       }
     },
+    20_000,
   );
 });
