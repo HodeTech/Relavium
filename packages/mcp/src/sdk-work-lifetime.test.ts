@@ -2,7 +2,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import type { ToolHostCallOptions } from '@relavium/core';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { connectSdkTransport } from './sdk-stdio.js';
 import { SdkTransportOwner } from './sdk-work.js';
 import { McpWorkScope } from './work-scope.js';
@@ -415,10 +415,18 @@ describe('MCP raw protocol ownership', () => {
   });
 
   it('bounded connect failure starts cleanup without awaiting an uncooperative start', async () => {
+    // Pin entry before expiry: a busy host can spend a real 20 ms window constructing
+    // the SDK client, legitimately refusing before there is any raw start to retain.
+    // Keep setImmediate real so the quietness check still observes native work.
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
     const start = deferred<void>();
     const closed = deferred<void>();
+    let starts = 0;
     const transport: Transport = {
-      start: () => start.promise,
+      start: () => {
+        starts += 1;
+        return start.promise;
+      },
       send: () => Promise.resolve(),
       close: () => {
         closed.resolve();
@@ -426,19 +434,31 @@ describe('MCP raw protocol ownership', () => {
       },
     };
     const owner = new SdkTransportOwner(transport);
-    await expect(
-      connectSdkTransport('bounded', transport, { timeoutMs: 20 }, owner),
-    ).rejects.toMatchObject({ name: 'McpDeadlineError' });
-    await closed.promise;
-    let quiet = false;
-    void owner.work.done.then(() => {
-      quiet = true;
-    });
-    await tick();
-    expect(quiet).toBe(false);
-    start.resolve();
-    await owner.close();
-    expect(quiet).toBe(true);
+    try {
+      const connecting = connectSdkTransport('bounded', transport, { timeoutMs: 20 }, owner);
+      // Observe rejection before advancing the guard, including on assertion failure.
+      void connecting.catch(() => undefined);
+      expect(starts).toBe(1);
+      await vi.advanceTimersByTimeAsync(20);
+      await expect(connecting).rejects.toMatchObject({ name: 'McpDeadlineError' });
+      await closed.promise;
+      let quiet = false;
+      void owner.work.done.then(() => {
+        quiet = true;
+      });
+      await tick();
+      expect(quiet).toBe(false);
+      start.resolve();
+      await owner.close();
+      expect(quiet).toBe(true);
+    } finally {
+      start.resolve();
+      try {
+        await owner.close();
+      } finally {
+        vi.useRealTimers();
+      }
+    }
   });
 
   it('transfers an initialized child lifetime before exposing it and observes detached native promises', async () => {
