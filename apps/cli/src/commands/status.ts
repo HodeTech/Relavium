@@ -93,8 +93,8 @@ export async function statusCommand(deps: StatusCommandDeps): Promise<ExitCode> 
   //
   // READ-ONLY, deliberately. Draining is a write that claims a run lease; a status read must not take
   // ownership of a run another process may be finishing right now.
-  const held = await heldTerminalRunIds(homeDir, deps.readTerminalOutbox, deps.io);
   try {
+    const held = await heldTerminalRunIds(homeDir, deps.readTerminalOutbox, deps.io);
     const statuses: ActiveRunStatus[] = reader.listActiveRuns().map((run) => {
       let steps: readonly StepRecord[] = [];
       const usage = readPerRunOrDegrade(

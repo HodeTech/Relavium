@@ -4356,6 +4356,12 @@ all fixed/restored cohorts pass. An independent SQL-first streaming-filter copy 
 70 existing integrity cases and restores green, corroborating M8's qualification.
 Independent cumulative acceptance and fresh whole-PR/publication gates remain pending.
 
+Increment 3's first independent complete cumulative round reproduced one Medium: a throwing
+outbox-warning sink bypassed the history reader's cleanup region. The held-terminal read now
+runs inside the existing `try/finally`; permanent human/JSON controls preserve the exact sink
+error and verify that native SQLite closes exactly once. The finding-bearing round is not
+clean acceptance. Two NEW complete cumulative review rounds remain required.
+
 ### CR-81 — Conformance cassettes do not verify the request wire contract · High · ✅ CLOSED on `development` 2026-10-10
 **Accepted on `development`, 2026-10-10; publication pending.** The [Step 3 register](#w8-step-3-canonical-sdk-http-matrix--2026-10-10)
 joins all four independent review verdicts and three causal lowering controls. The pre-W8 defect was:

@@ -128,6 +128,36 @@ describe('statusCommand', () => {
     },
   );
 
+  it.each([false, true])(
+    'closes the history reader and preserves a failing outbox warning sink (json=%s)',
+    async (json) => {
+      const { io } = captureIo();
+      const sinkFailure = new Error('diagnostic sink unavailable');
+      let closes = 0;
+      await expect(
+        statusCommand({
+          ...deps(io, json),
+          io: {
+            ...io,
+            writeErr: () => {
+              throw sinkFailure;
+            },
+          },
+          openDb: () => ({
+            db,
+            close: () => {
+              closes += 1;
+              client.sqlite.close();
+            },
+          }),
+          readTerminalOutbox: () => Promise.reject(new Error('outbox unavailable')),
+        }),
+      ).rejects.toBe(sinkFailure);
+      expect(closes).toBe(1);
+      expect(client.sqlite.open).toBe(false);
+    },
+  );
+
   it('reports "No active runs." when history holds only terminal runs', async () => {
     const { io, out } = captureIo();
     await seedRun(db, { slug: 'demo', runId: 'done', state: 'completed' });
