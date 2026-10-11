@@ -342,10 +342,15 @@ cleanup settles only the admission associated with its exact ephemeral pre-attem
 the original receiver through turn capture, including class/prototype and non-enumerable method
 implementations. A decorator must not silently turn a persisted host into a volatile host by
 dropping `beginUsageInvocation`, `claimUsage`, `usageDisposition`, `accountingFailure` or `emitCost`.
-Both `record` and optional `emitCost` retain the observer-failure origin, including native
-predecessor cost notifications. An observer's throwable keeps its exact identity but cannot
-authorize a budget pause, paid retry or arbitrary provider diagnosis. The `join` barrier remains
-unchanged; inert request data restrictions do not restrict implementations of this host port.
+Post-provider `claimUsage`, `usageDisposition`, `record` and optional `emitCost` retain the
+observer-failure origin, including native predecessor notifications. An observer's throwable
+keeps its exact identity but cannot authorize a budget pause, paid retry or arbitrary provider
+diagnosis. Physical engagement, complete observed quantities and exact live late-receipt metadata
+are captured before these callbacks can throw. Observation alone grants no realized-write
+authority. An explicit false claim restores only that callback's provisional observation and
+receipt contribution; it neither erases prior observations nor permits a duplicate charge.
+Mandatory pending admission and the `join` barrier retain their existing precedence; inert
+request data restrictions do not restrict implementations of this host port.
 
 Conservative admission cleanup preserves an established exact primary throwable, including an
 opaque or falsy value. This applies both when actual settlement falls back to retaining the

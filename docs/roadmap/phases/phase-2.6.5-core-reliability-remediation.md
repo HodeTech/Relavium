@@ -3022,7 +3022,7 @@ source restoration passes. These author results do not substitute for either Ste
 or Step 6's additional cumulative acceptance rounds. The register remains **48/51**.
 
 **Author gates:** fresh monorepo lint/typecheck/test passed **23/23**, none cached: shared **871**,
-LLM **1,821 / 11 existing live skips**, core **3,131**, DB **590**, MCP **220**, CLI **3,289**
+LLM **1,821 / 11 established LLM skips**, core **3,131**, DB **590**, MCP **220**, CLI **3,289**
 tests (**9,922 passed**). Fresh build/format passed **7/7**. Tools lint/typecheck, isolation
 (**463** files), seam/purity/dependency fences, whitespace, canonical links and the offline
 CLI/overflow/budget-replay smokes passed. The native 100,000-settlement test yields between
@@ -3060,7 +3060,7 @@ exact bytes. These controls do not replace new complete cumulative review rounds
 acceptance matrix, CR-82 and final whole-W8 gates remain open; no new deferral is introduced.
 
 **Correction gates:** fresh forced lint/typecheck/test passed **23/23**, none cached, across
-**467** files / **9,971 passed** / **11 existing live-provider skips**. This includes the native
+**467** files / **9,971 passed** / **11 established LLM skips**. This includes the native
 100,000-settlement structural case and all **57** CLI child-process cases. Fresh build/format
 passed **7/7**; tools lint/typecheck, whitespace and canonical links passed. These are local
 author results, not independent acceptance or remote CI.
@@ -3088,7 +3088,7 @@ amount and independent usage/price qualification. The canonical event contract r
 projection rules. No new policy, dependency, provider call or deferral is introduced.
 
 **Correction gates:** fresh forced lint/typecheck/test passed **23/23**, none cached, across
-**470** files / **10,064 passed** / **11 existing live-provider skips**. Native 100,000-settlement
+**470** files / **10,064 passed** / **11 established LLM skips**. Native 100,000-settlement
 and all 57 real CLI child-process controls are included. Author evidence and isolated causal
 controls do not replace the outstanding independent Step 5 or additional Step 6 review gates.
 
@@ -3116,7 +3116,7 @@ preserves its provider error while the independently failed durable writer owns 
 failure and uncertain departure, as ADR-0077 already requires. No additional policy or deferral is added.
 
 **Correction gates:** fresh forced monorepo lint/typecheck/test passed **23/23**, none cached,
-across **475** files / **10,131 passed** / **11 existing live-provider skips**. This includes
+across **475** files / **10,131 passed** / **11 established LLM skips**. This includes
 the native 100,000-settlement case and all 57 actual CLI child-process controls. The 28 new LLM
 regressions pass isolated removal controls: late-ACK retirement removal fails four, fresh native
 admission removal fails ten, and cumulative observation removal fails eighteen; each exact restored
@@ -3147,7 +3147,7 @@ new compatibility policy, paid call or deferral is introduced. The canonical con
 ADR-0104 correction record these mechanics. Detailed review notes stay local and ignored.
 
 **Correction gates:** fresh forced monorepo lint/typecheck/test passed **23/23**, none cached,
-across **478** files / **10,158 passed** / **11 existing live-provider skips**, including the
+across **478** files / **10,158 passed** / **11 established LLM skips**, including the
 native 100,000-settlement case and all 57 actual CLI child-process controls. The workflow's eight
 new regressions pass on isolated corrected/restored copies; restoring both preceding engine and
 reader fails all eight, and restoring only the reader fails its four correlation controls. Developer
@@ -3188,7 +3188,7 @@ provider call or deferral is introduced. Step 5 requires two NEW clean complete 
 after this correction; Step 6's further matrix and reviews, CR-82 and whole-W8 publication remain open.
 
 **Correction gates:** fresh forced monorepo lint/typecheck/test passed **23/23**, none cached,
-across **481** files / **10,183 passed** / **11 existing live-provider skips**, including the
+across **481** files / **10,183 passed** / **11 established LLM skips**, including the
 100,000-settlement structural case and all 57 CLI child-process controls. Fresh forced build/format
 passed **7/7**. Tools lint/typecheck, seam/purity/dependency and bundle fences, schema synchronization,
 canonical links, whitespace and test isolation passed. The original 181 local review files remain
@@ -3226,7 +3226,7 @@ cumulative rounds after them. Step 6's further causal matrix and reviews, CR-82 
 publication remain open. No new policy, dependency, money writer, provider call or deferral is introduced.
 
 **Correction gates:** fresh forced monorepo lint/typecheck/test passed **23/23**, none cached,
-across **484** files / **10,215 passed** / **11 existing live-provider skips**, including the
+across **484** files / **10,215 passed** / **11 established LLM skips**, including the
 100,000-settlement case and all 57 CLI child-process controls. Fresh forced build/format passed
 **7/7**. Tools lint/typecheck, schema synchronization, seam/purity/dependency/bundle fences,
 canonical links, whitespace and 484-file test isolation passed. Compiled CLI, overflow capture
@@ -3257,7 +3257,7 @@ nonconforming external provider that swallows a rejected native-repair hook is r
 boundary limit, not inflated into a supported-provider finding.
 
 **Correction gates:** fresh forced monorepo lint/typecheck/test passed **23/23**, none cached,
-across **486** files / **10,293 passed** / **11 existing live-provider skips**, including the
+across **486** files / **10,293 passed** / **11 established LLM skips**, including the
 100,000-settlement case and all 57 CLI process controls. Fresh forced build/format passed **7/7**.
 Tools lint/typecheck, schema synchronization, seam/purity/dependency/bundle fences and all three
 offline smokes passed; 486-file test isolation, canonical links and whitespace passed. The frozen
@@ -3293,7 +3293,7 @@ those logs and their timeouts are excluded from causal evidence. Final projectio
 dependencies to the same source modules and record exact implementation/test hashes.
 
 **Correction gates:** fresh forced monorepo lint/typecheck/test passed **23/23**, none cached,
-across **489 files / 10,360 passed / 11 existing live-provider skips**, including the 100,000
+across **489 files / 10,360 passed / 11 established LLM skips**, including the 100,000
 native settlements and all 57 CLI process controls. Fresh forced build/format passed **7/7**,
 none cached. The parent separately passed the full 71-case permanent correction cohort against
 explicit source aliases. Tools lint/typecheck, schema synchronization, seam/purity/dependency/
@@ -3318,7 +3318,7 @@ reproduced both findings against explicit current-source aliases. **This is not 
 | Conservative cleanup replaces the primary admission error | Final outstanding-admission cleanup and the actual-to-estimate fallback can each replace an exact primary throwable with a distinct secondary callback failure. Preserve the primary while retaining secondary accounting health and continuing owed cleanup. Standalone cleanup failures must still surface. This is supported admission-port reachability; no built-in-governor second synchronous throw, extra paid attempt or amount loss was reproduced. |
 
 The independent core review passed **61 files / 1,893 tests**; the broader LLM/core/shared review
-passed **227 files / 6,168 tests / 11 existing live-provider skips**. These cohorts overlap and
+passed **227 files / 6,168 tests / 11 established LLM skips**. These cohorts overlap and
 are not added together. Storage/CLI passed **21 files / 415 permanent tests**, including native
 crash controls, plus private receipt/disposition probes and the actual frozen predecessor
 compatibility harness: **16 strict refusals, two legacy controls, three isolated discriminators
@@ -3361,7 +3361,7 @@ LLM receipt cohort. Core lint, strict/purity and full-source-overlay typechecks 
 test-only typed-join expectations and lint/configuration issues were corrected before rerunning
 the final unchanged causal cohort; they are not product findings or counted defect evidence.
 Fresh forced full-workspace gates pass: lint/typecheck/test **23/23**, none cached, across
-**491 files / 10,486 passed / 11 existing live-provider skips**, including all 57 CLI process
+**491 files / 10,486 passed / 11 established LLM skips**, including all 57 CLI process
 controls and 100,000 native settlements. Build/format passes **7/7**, none cached. Tools
 lint/typecheck, schema synchronization, seam/purity/dependency/bundle fences, 491-file isolation,
 relative/archive links and whitespace pass. Compiled CLI, overflow-capture and frozen replay
@@ -3385,7 +3385,7 @@ call or admission bypass was reproduced. These synthetic legacy projections are 
 executable-predecessor or process-death claim.
 
 The money/core review independently passed **73 disjoint files / 2,284 tests**. The broader
-LLM/core/shared review passed **229 files / 6,294 tests / 11 existing live-provider skips**,
+LLM/core/shared review passed **229 files / 6,294 tests / 11 established LLM skips**,
 plus a separate 24-case behavioral-port probe. These overlapping cohorts are not added.
 Storage/CLI independently passed **30 disjoint files / 635 tests**, a native receipt/query-plan
 probe, all 65 source-bound child-process controls and the actual frozen predecessor harness:
@@ -3411,8 +3411,8 @@ Resolver logs are binding evidence, not a separate module-evaluation or child-pr
 An initial test-only optional-access type error and an omitted placeholder-package alias were
 corrected before the final unchanged cohort; only the final all-root-alias runs receive credit.
 Core and CLI strict checks, core purity, lint and formatting pass. Fresh forced workspace
-lint/typecheck/test passes **23/23**, none cached: **493 files / 10,507 passed / 11 existing
-live-provider skips**, including 100,000 native settlements and all 57 CLI process controls.
+lint/typecheck/test passes **23/23**, none cached: **493 files / 10,507 passed / 11 established
+LLM skips**, including 100,000 native settlements and all 57 CLI process controls.
 Build passes **6/6** and full formatting **1/1**, none cached. Tools lint/typecheck, schema
 synchronization, seam/purity/dependency/bundle fences, 493-file isolation, relative/archive links
 and whitespace pass. Compiled CLI, overflow capture and the frozen replay harness pass offline.
@@ -3447,7 +3447,7 @@ requires no change.
 
 Independent cumulative money/core/shared execution passed **64 files / 2,033 tests**, plus three
 new actual SQLite checkpoint/resume/reopen controls. The independently copied LLM/provider and
-adjacent engine graph passed **72 files / 2,302 tests / 11 existing live skips**. Storage/CLI
+adjacent engine graph passed **72 files / 2,302 tests / 11 established LLM skips**. Storage/CLI
 passed **28 files / 585 tests**, including **65** source-bound native child controls; the frozen
 predecessor harness passed **16 strict refusals, two legacy controls, three isolated discriminators
 and eight old-session operations**. These overlapping cohorts are not added. No live provider,
@@ -3473,7 +3473,8 @@ honestly synthetic; the separate root/frozen-predecessor positive control remain
 No developer source swap, filtered case or collection failure receives causal credit.
 
 Fresh forced `CI=true` workspace lint/typecheck/test passes **23/23**, none cached:
-**495 files / 10,604 passing / 12 skipped**. Eleven skips are the existing live-provider cases;
+**495 files / 10,604 passing / 12 skipped**. Eleven skips are established LLM cases (eight live,
+three unsupported replay);
 one is the pre-existing CI-disabled wrap-scale performance guard. Its complete 106-test file
 also passes locally without `CI`, exercising that guard; the two overlapping runs cover **10,605
 distinct passing tests**. Build passes **6/6** and format **1/1**, none cached. Strict CLI/core and
@@ -3502,8 +3503,9 @@ a finding-bearing round, not either required clean acceptance round.
 
 Independent money/core/shared execution passed **170 files / 4,371 tests**, plus **145** native
 SQLite/CLI cases and **12** new composition controls. The independent LLM graph collected **90
-files / 2,778 cases**: 2,760 passed, seven reproduced the same Gemini finding and eleven existing
-live-provider cases skipped. Its isolated one-expression correction passed 2,767 with the same
+files / 2,778 cases**: 2,760 passed, seven reproduced the same Gemini finding and eleven
+established cases skipped (eight live, three unsupported replay). Its isolated one-expression
+correction passed 2,767 with the same
 eleven skips. Storage/CLI passed **52 files / 838 cases**, plus two bug-demonstrating controls;
 its 65 actual child-process controls and frozen replay **16/2/3/8** matrix passed. Cohorts overlap
 and are not added. The parent independently reproduced both runtime findings in physical source
@@ -3529,7 +3531,8 @@ these overlapping runs are not added. Developer sources were never swapped, and 
 import, setup or timing failure receives causal credit.
 
 Fresh forced `CI=true` workspace lint/typecheck/test passes **23/23**, none cached:
-**499 files / 10,642 passing / 12 skipped**. Eleven are the existing live-provider skips;
+**499 files / 10,642 passing / 12 skipped**. Eleven are established LLM skips (eight live,
+three unsupported replay);
 the existing CI-disabled performance guard also passes in its complete 106-case local file,
 giving **10,643 distinct passing tests** across the overlapping runs. Forced build **6/6** and
 format **1/1** pass. Tools lint/typecheck, schema synchronization, seam/dependency/bundle fences,
@@ -3543,6 +3546,56 @@ retry authority, dependencies or approved deferrals. Step 5 still requires two N
 cumulative rounds after the correction. Step 6's further permanent causal matrix and reviews,
 CR-82 and Step 7/whole-W8 publication remain open. The register remains **48/51** on `development`,
 **47/51** on `main`; no paid call, credential, billing or user decision is pending.
+
+#### Step 5 thirteenth cumulative review — 2026-10-11
+
+Three NEW independent reviewers completed the full `017b399c..70ae5c44` activation and twelve
+corrections. Their combined result is **two High and one Medium finding**. All three complete
+reports, execution artifacts and explicit source-freeze releases were audited before editing;
+the frozen HEAD, logical index and all 1,264 tracked file hashes were unchanged.
+
+| Finding | Validated correction |
+| --- | --- |
+| Post-provider claim/disposition callback faults lost their observer origin | Preserve the original receiver and exact throwable, including null and undefined, through both optional callbacks. Such a host fault cannot authorize a budget pause, provider retry or provider diagnosis. Mandatory pending admission and the money join retain their existing precedence. |
+| Callback faults erased physical engagement, complete observations or exact late-receipt correlation | Capture physical invocation, complete quantities and exact pending metadata before post-provider callbacks. Explicit false claims roll back only their provisional contribution, preserving earlier legitimate observations. A thrown callback retains physical facts without granting actual-write authority; late evidence can refine only its original receipt. |
+| The public session stream type omitted two already active usage events | Include pending/disposition in the exported union and canonical session inventory. Actual sink delivery remains unchanged; owner-basis and attempt-ledger events remain run-only. |
+
+Independent money/core/shared execution passed **186 distinct whole files / 4,568 tests** across
+overlapping source cohorts; sixty-two additional controls reproduced the two money findings.
+LLM execution collected **199 files / 5,126 cases**: **5,115 passed**, eleven established cases
+skipped (eight live, three unsupported replay), and fifty-one new boundary controls passed.
+Storage/CLI passed **252 files / 4,049 tests**, with one established CI performance skip, plus
+five native SQLite probes. Its frozen replay matrix passed **16/2/3/8**. Cohorts overlap and are
+not added. Child traces in these reports prove source resolution/loading, not module evaluation.
+
+The parent independently reproduced both money faults and the public-type omission in physical
+source copies. Permanent money regressions now run as two whole files, **242 cases**: fixed
+bytes pass 242; replacing only copied `agent-turn.ts` with exact `70ae5c44` bytes gives **172
+passes / seventy semantic failures**; exact fixed restoration passes 242. Inventory is identical,
+with no skips, import/setup failures or developer source swaps. The controls include exact
+throwable origin, actual installed OpenAI SDK HTTP, public capped-session behaviour, complete
+observations, explicit-false claims, prior totals and registered late evidence.
+
+The session correction passes **125 cases** in three whole files with fixed, old and restored
+types. Its causal evidence is deliberately compile-time: the exact old public union fails only
+the new contract assertions, while fixed/restored core and CLI typechecks pass. Runtime delivery
+already worked and receives no invented runtime-failure credit. The runner, session event
+inventory and append-only ADR-0104 note record these existing-contract corrections.
+
+**Correction gates:** fresh forced `CI=true` workspace lint/typecheck/test passes **23/23**,
+none cached, across **499 files / 10,732 passing / twelve skipped**. Eleven are established LLM
+skips (eight live, three unsupported replay); the existing CI-disabled performance guard also
+passes in its complete 106-case local file, giving **10,733 distinct passing tests** across
+overlapping runs. Forced build **6/6** and format **1/1** pass. Tools lint/typecheck, schema
+synchronization, seam/dependency/bundle fences, 499-file isolation and whitespace pass.
+Compiled CLI, overflow-capture and the actual frozen replay harness pass offline. Relative and
+pinned archive links resolve; all original 181 ignored reviews remain byte-identical, with no
+review file tracked. These are local author gates, not remote CI or whole-W8 coverage results.
+
+This finding-bearing round supplies neither required clean acceptance round. Step 5 still needs
+two NEW complete clean cumulative reviews after correction; Step 6's further controls/reviews,
+CR-82 and whole-W8 validation/publication remain open. No new decision, dependency, paid call or
+deferral is introduced. The register remains **48/51** on `development`, **47/51** on `main`.
 
 ### CR-81 — Conformance cassettes do not verify the request wire contract · High · ✅ CLOSED on `development` 2026-10-10
 **Accepted on `development`, 2026-10-10; publication pending.** The [Step 3 register](#w8-step-3-canonical-sdk-http-matrix--2026-10-10)

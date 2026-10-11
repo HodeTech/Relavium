@@ -593,3 +593,25 @@ writer and acknowledged `cost:updated` publication; the run-only event boundary 
 This finding-bearing round supplies no clean acceptance. Step 5 still requires two NEW complete
 clean cumulative rounds after correction, followed by Step 6's further controls/reviews and
 whole-W8 validation/publication. No new dependency, key, paid capture or deferral is introduced.
+
+### W8 coverage callback observation and session stream correction — 2026-10-11
+
+The thirteenth complete cumulative review reproduced failures in supported injected money
+ports. Post-provider `claimUsage` and `usageDisposition` preserve observer origin, original
+receiver and exact throwable, as the existing cost notifications do. Physical engagement and
+canonical complete observations precede these callbacks; a host fault cannot erase a consumed
+session turn or already observed quantities. Exact pending-receipt metadata and its local unknown
+contribution also precede notification, so registered late evidence can refine or retire only
+its own identity. Explicit false claims restore only their provisional state and grant no new
+charge authority. Mandatory pending admission, money joins and conservative cleanup retain their
+existing precedence. The [runner contract](../reference/shared-core/agent-runner.md#usage-evidence-and-durable-coverage)
+owns this behavioral-port boundary.
+
+The exported session-handle union and the canonical
+[session event inventory](../reference/contracts/sse-event-schema.md#session-event-namespace)
+include the already active session-envelope usage pending/disposition events. This corrects
+their advertised type without adding a session basis event or run-only attempt-ledger event.
+
+The finding-bearing review grants no clean acceptance. Step 5 still requires two NEW complete
+clean cumulative rounds after correction, followed by Step 6's further controls/reviews and
+whole-W8 validation/publication. No new dependency, paid call or deferral is introduced.
