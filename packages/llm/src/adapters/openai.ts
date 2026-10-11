@@ -1444,6 +1444,8 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
         options === undefined ? undefined : new ProviderInvocationWork(options, req.signal);
       let usage: UsageEvidence | undefined;
       let applicable = usageApplicability(req);
+      let result: LlmResult;
+      let cleanupFailure: { readonly cause: unknown } | undefined;
       try {
         const client = createClient(key, undefined, work);
         const invoke = () =>
@@ -1481,7 +1483,7 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
         const audioMime = req.outputModalities?.includes('audio')
           ? outputAudioMime(req)
           : 'audio/wav';
-        return {
+        result = {
           // An empty `choices` array is a complete-but-empty 200 — a clean empty stop, not an error.
           content: choice === undefined ? [] : mapContent(choice.message, providerId, audioMime),
           stopReason: refused ? 'content_filter' : mapStopReason(choice?.finish_reason),
@@ -1494,8 +1496,25 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
           ...(usage === undefined ? {} : { usage }),
         });
       } finally {
-        work?.retire();
+        try {
+          work?.retire();
+        } catch (cause) {
+          // Retirement cannot replace the established failure or discard already owned evidence.
+          cleanupFailure = { cause };
+        }
       }
+      if (cleanupFailure !== undefined) {
+        throw new LlmProviderError({
+          ...makeLlmError({
+            provider: providerId,
+            kind: 'unknown',
+            message: 'the provider attempt cleanup could not be completed',
+            cause: cleanupFailure.cause,
+          }),
+          ...(usage === undefined ? {} : { usage }),
+        });
+      }
+      return result;
     },
     stream(
       req: LlmRequest,
