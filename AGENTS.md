@@ -25,40 +25,43 @@ phase 6 (cloud execution + portal); the engine is identical across all three (AD
 **Status: Phase 1 is complete; Phase 2 (CLI) is feature-complete (v0.1.1 release cut, publish
 pending); Phase 2.5 (CLI Consolidation) is complete (M2.5-4, 2026-07-08); Phase 2.6
 (Conversational Authoring and the First-Class CLI) is in progress, with an interlude —
-Phase 2.6.5 (Core reliability remediation) — running between remediation Waves 1 and 2:
-47 of 51 items closed (`CR-96` and `CR-97` were opened 2026-09-14, `CR-98` on 2026-09-18; `W7` merged to `main` on 2026-10-10 (PR #90), with ADR-0095–ADR-0103
+Phase 2.6.5 (Core reliability remediation) — completed between remediation Waves 1 and 2:
+49 of 51 items closed on `main`, with approved deferrals retained; W8 merged 2026-10-11 in PR #92 (`CR-96` and `CR-97` were opened 2026-09-14, `CR-98` on 2026-09-18; `W7` merged to `main` on 2026-10-10 (PR #90), with ADR-0095–ADR-0103
 accepted) — all eight P0 blockers (ADR-0078–ADR-0084, merged 2026-08-24), the `W2`
-liveness-and-deadlines wave (ADR-0085, merged 2026-08-28 as PR #85), `W3` resource governance and bounds (ADR-0086), merged 2026-08-30 as PR #86 **with a live blocker and nine open findings** — see the `W3` residuals in docs/roadmap/deferred-tasks.md — and `W4`, the hostile MCP boundary (ADR-0088), merged 2026-09-01 as PR #87 — a systematic review of the branch found five merge blockers, all reproduced and fixed before it merged. `W5`, media correctness (ADR-0089 + ADR-0090), **merged 2026-09-02 as PR #88** — a systematic review of that branch returned six merge blockers, all reproduced and fixed before the merge. `W6`, authoring correctness (ADR-0091–ADR-0094), **MERGED 2026-09-04 as PR #89** — `merge_strategy: first` means first DECLARED, a widened tool grant is refused when the plan is BUILT, an expression sees only its transitive closure with a literal out-of-closure read refused at parse, and an `output_schema` is compiled at parse and enforced at run time with **no new dependency**. Seven internal review rounds found that most defects were in the FIXES rather than the code they repaired; a systematic maintainer review then returned two merge blockers, both breaking a headline claim of the wave, plus eight further High findings — all reproduced and fixed before the merge. Each is a dated correction inside its own ADR.
+liveness-and-deadlines wave (ADR-0085, merged 2026-08-28 as PR #85), `W3` resource governance and bounds (ADR-0086), merged 2026-08-30 as PR #86 **with a live blocker and nine open findings at that merge** — the blocker is now closed by W8/PR #92; scoped residuals remain in docs/roadmap/deferred-tasks.md — and `W4`, the hostile MCP boundary (ADR-0088), merged 2026-09-01 as PR #87 — a systematic review of the branch found five merge blockers, all reproduced and fixed before it merged. `W5`, media correctness (ADR-0089 + ADR-0090), **merged 2026-09-02 as PR #88** — a systematic review of that branch returned six merge blockers, all reproduced and fixed before the merge. `W6`, authoring correctness (ADR-0091–ADR-0094), **MERGED 2026-09-04 as PR #89** — `merge_strategy: first` means first DECLARED, a widened tool grant is refused when the plan is BUILT, an expression sees only its transitive closure with a literal out-of-closure read refused at parse, and an `output_schema` is compiled at parse and enforced at run time with **no new dependency**. Seven internal review rounds found that most defects were in the FIXES rather than the code they repaired; a systematic maintainer review then returned two merge blockers, both breaking a headline claim of the wave, plus eight further High findings — all reproduced and fixed before the merge. Each is a dated correction inside its own ADR.
 **W7 merged to `main` on 2026-10-10 as PR #90, including final whole-wave Step 12.**
 Steps 1–11, all five genuine overflow records, ADR-0102 request ownership and consolidated ADR-0103
 host integration have independent acceptance. ADR-0095–ADR-0103 are Accepted. All six W7 register
-items are closed (47/51 closed); PR #90 is merged (`46a6a701`); W7 has no open implementation or review gate. The
+items are closed (47/51 at the W7 merge); PR #90 is merged (`46a6a701`); W7 has no open implementation or review gate. The
 [closing register](docs/roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w7-closing-register--2026-10-10)
-joins evidence and every submitted review disposition. W8 and existing approved deferrals remain open.
+joins evidence and every submitted review disposition. W8 subsequently merged in PR #92; approved deferrals remain.
 No user decision, billing setup, credential or provider capture is pending.
-**All seven W8 implementation/review steps are accepted on `development`, 2026-10-11.**
-ADR-0087 §1 and CR-81/82 close against the [whole-W8 register](docs/roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w8-closing-register--2026-10-11).
-Actual full CI/bare and enforced coverage, three wire/21 usage controls and two NEW complete
-whole-wave review rounds pass. Those counts belong to the original attributed
-source checkpoint, not to the later maintainer corrections. The register is **49/51 on development, 47/51 on main** until
-W8 merges. Publication checks and maintainer review/merge remain the landing gate. Existing
-approved CR-70/93, exact-capacity and scoped residuals are unchanged. No new decision,
-provider capture, billing or credential is pending.
+**W8 merged to `main` on 2026-10-11 as PR #92 (`ef0ffa54`); Phase 2.6.5 is complete with approved deferrals.**
+All seven steps, CR-81/82 and ADR-0087 §1 are complete on `main`; the register is **49/51**.
+The [merge checkpoint](docs/roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w8-merge-checkpoint--2026-10-11)
+joins original whole-wave acceptance, maintainer corrections and final reviewed-head `3d4491df`
+PR/push CI and SonarCloud success. Published ordinary/enforced coverage records 511 files /
+11,026 passing tests / 12 established skips; all four wire and 23 usage mechanisms pass.
+CR-70/93, CR-95's long continuation and exact-capacity/scoped residuals remain approved deferrals.
+Next is the joint [Wave 2 — Shut the doors](docs/roadmap/current.md#wave-2--shut-the-doors),
+starting with the remaining unified filesystem jail; the MCP queue already merged in W4.
+Phase 2.5.5 and Phase 2.6 remain in progress. No W8 implementation or landing gate remains.
 **Post-closure corrections are independently accepted, 2026-10-10:** core, CLI/DB and tooling/docs
 each have two NEW clean complete cumulative review rounds. The supplemental publication-tool
 correction also has two NEW complete clean rounds. The [post-closure register](docs/roadmap/phases/phase-2.6.5-core-reliability-remediation.md#post-closure-systematic-review--2026-10-10)
 joins every report disposition, new permanent/causal evidence and current gates. Published-head checks
 passed at reviewed head `69ac80b0` before PR #90 merged. No W7 implementation, provider,
 billing, key or user decision is pending. The [merge checkpoint](docs/roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w7-merge-checkpoint--2026-10-10)
-records W7 closure. All seven W8 implementation/review steps are accepted on `development`,
-including CR-81/82 and ADR-0087 §1. The register is 49/51 there and 47/51 on `main` until W8
-merges. Publication checks and maintainer review/merge remain; existing approved limits are unchanged.
+records W7 closure. W8 subsequently merged in PR #92; the register is 49/51 on `main`.
+Existing approved limits are unchanged.
 
 **PR #92 maintainer corrections:** the [correction register](docs/roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w8-pr-92-systematic-review-corrections--2026-10-11)
 records all four increments and the subsequent publication correction accepted after two NEW
 clean complete cumulative rounds each. Fresh full CI and bare/enforced coverage pass at `6139563e`,
 including four wire and 23 usage controls.
-Exact published-head CI/Sonar and maintainer review/merge remain. No new deferral or decision is added.
+Final reviewed head `3d4491df` passed PR/push CI and SonarCloud before PR #92 merged.
+No merge-commit execution or new whole-PR review is inferred. Two nonblocking Sonar complexity
+suggestions remain visible; no new deferral or decision is added.
 
 See [docs/roadmap/current.md](docs/roadmap/current.md) for live status.
 

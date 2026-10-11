@@ -361,6 +361,15 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 
 ## Phase 2.6.5 deferrals — `CR-93` and `CR-95` (long half), recorded 2026-09-06; `CR-70`, `CR-94` (remainder) and the in-turn overflow continuation, recorded 2026-09-14; the errored-or-aborted turn residual, the pre-upgrade free-page bytes and the estimator's calibration, recorded 2026-09-18
 
+**Phase closure — 2026-10-11:** W8 merged to `main` in PR #92 and Phase 2.6.5 is complete
+with approved deferrals, 49/51 items closed. The
+[merge checkpoint](phases/phase-2.6.5-core-reliability-remediation.md#w8-merge-checkpoint--2026-10-11)
+joins all seven exit criteria. CR-70/93 and every scoped residual below retain their
+existing severity, trigger and narrowed claim; none is marked implemented by phase closure.
+CR-70's measurement/recovery prerequisite has merged, but its trigger also requires release
+observation and a surface needing carrying. CR-93 remains due before the first multi-tenant
+surface ships. CR-95's long continuation and the exact-capacity residual remain separate.
+
 > Written to satisfy [exit criterion 2](phases/phase-2.6.5-core-reliability-remediation.md): a deferral carries
 > its **severity**, its **trigger**, and — the part usually skipped — **the product claim it narrows**. The decisions are recorded in the phase register or, for the in-turn continuation, in ADR-0096 §5; only the WORK is deferred.
 >
@@ -803,14 +812,14 @@ here so the residue sits on a backlog rather than only inside an ADR's Negative 
 ## Phase 2.6.5 `W3` residuals (PR #86, merged 2026-08-30)
 
 The PR #86 review returned 18 findings; an independent verification round reproduced or refuted each. Seven
-were fixed before the merge. **These ten went in open**, and the first is a blocker — recorded here with the
+were fixed before the merge. **These ten went in open**; the first was a blocker and is now closed by W8/PR #92. The original findings are recorded here with the
 severity, the trigger and the product claim each narrows, per exit criterion 2.
 
-- [x] **An un-pulled stream DROPS the terminal event ([ADR-0036](../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)).** *Implementation accepted on `development` 2026-10-10; W8 publication pending.*
-  *Blocker.* Reproduced on `main`: a `BoundedEventStream` at capacity 2 given three pushes and a `close()`
+- [x] **An un-pulled stream DROPS the terminal event ([ADR-0036](../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)).** *CLOSED on `main` in PR #92, 2026-10-11.*
+  *Former blocker; the following defect describes the pre-W8 tree.* A `BoundedEventStream` at capacity 2 given three pushes and a `close()`
   delivers a clean EOF and never the terminal, with no `sequenceNumber` gap to signal it. **The claim it
   narrows:** ADR-0036 promises a gap-free, no-drop canonical stream, and `run-handle.ts` repeats it — neither
-  is true today for a stream nobody iterates. **Trigger:** any consumer that attaches after `capacity` events,
+  held for an un-pulled stream at that checkpoint. **Trigger:** any consumer that attaches after `capacity` events,
   which on the session path is every consumer. The fix is
   [ADR-0087](../decisions/0087-consumed-streams-size-bounds-and-run-retention.md) §1 — a handle declares
   whether its stream is consumed. That ADR was Accepted on 2026-09-04 before §1 was implemented.
@@ -821,8 +830,9 @@ severity, the trigger and the product claim each narrows, per exit criterion 2.
   CLI builders select their actual consumption mode. Three NEW cumulative review rounds
   verify runtime and living-document corrections, with the final round clean in both
   dimensions. The linked register records exact heads, causal controls and scoped acceptance.
-  Publication to `main` remains part of the W8 PR. The separate exact-capacity residual below
-  is unchanged.
+  **Merged to `main` — 2026-10-11:** PR #92 completes publication; the
+  [merge checkpoint](phases/phase-2.6.5-core-reliability-remediation.md#w8-merge-checkpoint--2026-10-11)
+  joins final checks and maintainer acceptance. The separate exact-capacity residual below is unchanged.
   *(packages/core/src/engine/event-stream.ts, run-handle.ts, session-handle.ts)*
 
 - [x] **Media is measured as a handle but RETAINED as base64.** *Medium — CLOSED 2026-09-04, fixed in `W5`.*

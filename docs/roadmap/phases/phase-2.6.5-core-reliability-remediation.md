@@ -1,6 +1,6 @@
 # Phase 2.6.5 — Core reliability remediation (interlude)
 
-- **Status**: in progress — **`W0`–`W2` merged clean; `W3` merged 2026-08-30 (PR #86) with a live blocker; `W4` merged 2026-09-01 (PR #87) after a systematic review found five merge blockers in it — all reproduced and fixed before the merge.** `W5` merged 2026-09-02 (PR #88) behind ADR-0089 + ADR-0090 — a systematic maintainer review of the branch returned **six merge blockers**, all reproduced and fixed before it merged. **`W6` — authoring correctness — MERGED 2026-09-04 (PR #89)** — `CR-60`–`CR-64` behind [ADR-0091](../../decisions/0091-first-means-first-declared-not-first-to-finish.md)–[ADR-0094](../../decisions/0094-a-tool-grant-is-checked-when-the-plan-is-built.md), 32 commits — 27 of work across seven internal review rounds, then five folding four maintainer rounds on PR #89. **The maintainer review returned two merge blockers**, both of which broke a headline claim of the wave: deep validation did not enforce `required` when the property's schema constrained nothing (so `{ properties: { status: {} }, required: ['status'] }` accepted `{}`), and the expression scanner's regex was quadratic and synchronous (514 ms at 32 K of whitespace, on a parser that accepts 2 MiB, with no deadline able to interrupt it). Both reproduced and fixed before the merge, along with eight further High findings. **The pattern of the wave is that most of what the rounds found were defects in the FIXES, not in the code they repaired** — the branch-order search was wrong three times, the expression scan's central soundness claim was false in EIGHT ways, and one stand-down gate silently removed the check it was added to protect. Every one is recorded as a dated correction in its ADR rather than tidied away (39 of 48 items **at W6's merge** — the live count is further on in this line — and it said 39 and not 43 because W5's six items were counted TWICE: incrementally as they landed (28→32) and then wholesale when the wave closed (32→38), so the figure carried a +4 error into W6. `CR-95` is counted on its non-deferrable short-term half; its long-term half keeps the item on the board. `CR-21` closed with `CR-14`, `CR-21c` added 2026-08-25, `CR-95`'s non-deferrable short-term half closed with the spine on 2026-08-18 and found still marked open on 2026-08-28). **`CR-73` and `CR-80` closed 2026-09-06.** `invoke_agent` is no longer advertised without a delegate (and `read_media` rides along), and a rejected custom base URL refuses instead of falling back to the official API. **On 2026-09-14 the register grew to 50 items, and to 51 on 2026-09-18**: `CR-96` and `CR-97` on 2026-09-14, two shipping defects found while reviewing W7's ADRs, and `CR-98` on 2026-09-18 — ADR-0096's three prerequisites, which had been in `W7`'s scope since 2026-09-14 with no item of their own. `CR-96` and `CR-97` are non-deferrable and now close with W7 merged to `main` (PR #90, 2026-10-10), restoring exit criterion 1. **47 of 51** were closed on `main` at W7's merge: 46 checked item headings plus `CR-95`'s non-deferrable short-term half. At that checkpoint four remained open: decided/deferred `CR-70` and `CR-93`, and `CR-81`/`CR-82` in `W8`. ADR-0087 §1's existing W3 blocker is assigned to W8 and is not an extra item in the 51-heading denominator. **W7 merged to `main` on 2026-10-10 as PR #90 (`46a6a701`).** The [closing register](#w7-closing-register--2026-10-10) joins every step, per-item causal controls, systematic findings and approved limits. W8 and the phase remain open.
+- **Status**: Complete with approved deferrals — W8 merged to `main` on 2026-10-11 in [PR #92](https://github.com/HodeTech/Relavium/pull/92) (`ef0ffa54`). **49 of 51 items are closed**; CR-70 and CR-93 retain their approved deferrals. All seven exit criteria are met; existing scoped residuals remain in [deferred-tasks.md](../deferred-tasks.md). See the [merge checkpoint](#w8-merge-checkpoint--2026-10-11).
 - **Opened**: 2026-08-09 · **Plan corrected**: 2026-08-10 · **First batch merged**: 2026-08-11 (PR #82) ·
   **`W1` merged**: 2026-08-24 (PR #83)
 - **Predecessor**: Wave 1 of the 2.5.5 remediation (complete — PR #81), then the `#W15-1` realized-cost
@@ -11,12 +11,13 @@
 - **Kind**: interlude, like [phase 2.5.5](phase-2.5.5-hardening-and-remediation.md) — no new product surface,
   only the invariants an existing surface already claims
 
-**Current W8 checkpoint — 2026-10-11:** All seven steps, CR-81, CR-82 and ADR-0087 §1 are
-independently accepted on `development`; the implementation register is **49/51** (48 checked
-headings plus CR-95's short-term half). `main` remains **47/51** until the W8 PR merges. The
-[closing register](#w8-closing-register--2026-10-11) records local gates and two NEW complete
-whole-wave review rounds. Publication checks and maintainer review/merge remain the landing
-gate. Approved CR-70/93 and existing scoped residuals are unchanged.
+**W8 merged — 2026-10-11:** All seven steps, CR-81, CR-82 and ADR-0087 §1 are on
+`main` through PR #92. The register is **49/51** (48 fully closed headings plus CR-95's
+non-deferrable short-term half); the two other headings are approved deferrals, not
+unfinished W8 work. The [closing register](#w8-closing-register--2026-10-11) preserves
+original source acceptance; the [merge checkpoint](#w8-merge-checkpoint--2026-10-11)
+joins final published-head checks, maintainer corrections and phase closure. Earlier
+pending states below are historical. CR-70/93 and existing scoped residuals are unchanged.
 
 ## Why this phase exists
 
@@ -2496,12 +2497,12 @@ stand.
 
 ## W8 — Provider and conformance
 
-**All seven implementation/review steps accepted on `development`, 2026-10-11.**
-ADR-0087 §1, CR-81 and CR-82 close against the [whole-W8 register](#w8-closing-register--2026-10-11).
-The PR's publication checks and maintainer review/merge remain the landing gate; `main` is not
-claimed to contain W8 before merge.
+**Merged to `main` in PR #92, 2026-10-11 (`ef0ffa54`).** All seven implementation/review
+steps, ADR-0087 §1, CR-81 and CR-82 are complete. The [whole-W8 register](#w8-closing-register--2026-10-11)
+records implementation acceptance; the [merge checkpoint](#w8-merge-checkpoint--2026-10-11)
+records final publication and phase closure. No W8 implementation or landing gate remains.
 CR-80 below was already closed before W7. Current execution order is in
-[current.md](../current.md#next-work--phase-265-w8).
+[current.md](../current.md#next-work--wave-2--shut-the-doors).
 
 ### CR-80 — An invalid custom base URL fails OPEN to the official endpoint · High (security/compliance) · ✅ **closed 2026-09-06**
 When the custom provider factory rejects a private, malformed or credential-bearing URL, the error is caught and
@@ -2544,7 +2545,7 @@ asserting the username and password of `https://alice:hunter2@10.0.0.5/v1` are b
 The wave's **provider/config-trust security sitting** is recorded in
 [security-review.md](../../standards/security-review.md#sitting-provider-and-config-trust--cr-80-2026-09-06).
 
-### ADR-0087 §1 — the `W3` live blocker · Blocker · **implementation accepted on `development` 2026-10-10; W8 publication pending** · tracked as an ADR obligation, not a counted `CR` item
+### ADR-0087 §1 — the former `W3` live blocker · Blocker · **CLOSED on `main` in PR #92, 2026-10-11** · tracked as an ADR obligation, not a counted `CR` item
 An un-pulled event stream drops the terminal event, which breaches
 [ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)'s gap-free contract.
 [ADR-0087](../../decisions/0087-consumed-streams-size-bounds-and-run-retention.md) §1 is the accepted fix — a
@@ -2559,7 +2560,7 @@ event, and a `subscribe-only` handle buffers nothing while every subscriber stil
 closes against exit criteria 2 and 4 and `W8`'s closing register rather than against a register row.
 The [Step 1 register](#w8-step-1-consumption-modes--2026-10-10) records the accepted implementation,
 three independent cumulative rounds and causal controls. The separate exact-capacity residual
-remains approved and open; `main` publication follows the whole-W8 gate.
+remains approved and open; §1 publication is complete in [PR #92](https://github.com/HodeTech/Relavium/pull/92). The defect description above is historical.
 
 ### W8 preflight and proposed execution plan — 2026-10-10
 
@@ -4074,10 +4075,12 @@ Existing approved residuals are unchanged; no user/provider/key/billing decision
 
 ### W8 closing register — 2026-10-11
 
-**All seven implementation/review steps are accepted on `development`; CR-81 and CR-82 are closed
-there.** This register joins permanent evidence, Step 7's actual gates and two NEW complete
-whole-wave reviews. The register is **49/51 on development and 47/51 on main** until the W8 PR
-merges. Publication checks and maintainer review/merge remain the landing gate.
+**All seven implementation/review steps, CR-81 and CR-82 merged to `main` in PR #92,
+2026-10-11.** The register is **49/51 on `main`**. This register preserves permanent evidence,
+Step 7's original source gates and two NEW complete whole-wave reviews. The later
+[maintainer corrections](#w8-pr-92-systematic-review-corrections--2026-10-11) and
+[merge checkpoint](#w8-merge-checkpoint--2026-10-11) join final published-head checks and closure.
+Historical local/remote inventories below retain their own source attribution.
 ADR-0087 §1 is an additional obligation, not a 52nd CR item. No user decision, provider capture,
 key, billing setup or paid call is pending.
 
@@ -4604,8 +4607,8 @@ Exact replacement-head publication is recorded separately in PR #92. The registe
 stays 49/51 on `development`, 47/51 on `main` pending maintainer merge; no new deferral,
 provider operation, billing, credential or user decision is introduced.
 
-### CR-81 — Conformance cassettes do not verify the request wire contract · High · ✅ CLOSED on `development` 2026-10-10
-**Accepted on `development`, 2026-10-10; publication pending.** The [Step 3 register](#w8-step-3-canonical-sdk-http-matrix--2026-10-10)
+### CR-81 — Conformance cassettes do not verify the request wire contract · High · ✅ CLOSED on `main` in PR #92, 2026-10-11
+**Merged in PR #92.** The [Step 3 register](#w8-step-3-canonical-sdk-http-matrix--2026-10-10)
 joins all four independent review verdicts and three causal lowering controls. The pre-W8 defect was:
 
 A recorded response carries status, content type and body only; replay checks that the request body is parseable
@@ -4614,8 +4617,8 @@ lost tool result on continuation, or a broken system-instruction mapper leaves t
 **Fix + acceptance.** Match the canonical request. Mutating the request lowering must redden the suite — proven
 by actually applying at least three distinct mutations, not by assertion count.
 
-### CR-82 — Missing or partial usage can be read as zero · High · ✅ CLOSED on `development` 2026-10-11
-**Accepted on `development`; merge to `main` pending.** The [whole-W8 closing register](#w8-closing-register--2026-10-11)
+### CR-82 — Missing or partial usage can be read as zero · High · ✅ CLOSED on `main` in PR #92, 2026-10-11
+**Merged in PR #92.** The [whole-W8 closing register](#w8-closing-register--2026-10-11)
 joins ADR-0104's eight acceptance groups, all seven steps, permanent SDK/engine/SQLite/reader
 controls, 21 causal mechanisms and two NEW complete whole-wave review rounds. Partial/missing
 usage never enters actual pricing as zero; durable uncertainty qualifies every known-cost total.
@@ -4623,6 +4626,55 @@ The pre-W8 defect was carried from our own backlog and re-confirmed by the revie
 **Fix + acceptance.** Missing usage is *unknown*, never zero, on every path that reaches a cost total.
 
 ---
+
+### W8 merge checkpoint — 2026-10-11
+
+[PR #92](https://github.com/HodeTech/Relavium/pull/92) merged to `main` at
+**20:34:29 UTC**, merge commit `ef0ffa54c50acb5f814d58a38f1d0dec2c088508`.
+Its reviewed head is `3d4491df438134ed003c0e9bcc093624f77da1dc`; the merge tree is
+byte-identical to that head. All seven W8 steps, CR-81, CR-82 and ADR-0087 §1 are
+complete on `main`. The [original closing register](#w8-closing-register--2026-10-11)
+and [maintainer correction register](#w8-pr-92-systematic-review-corrections--2026-10-11)
+retain their exact source scopes, findings, causal controls and review qualifications.
+Every correction increment has two NEW independent complete clean cumulative rounds
+after its final fix; scoped correction reviews are not a new whole-PR review claim.
+
+**Final publication evidence:** both [PR CI](https://github.com/HodeTech/Relavium/actions/runs/38144626144)
+and [push CI](https://github.com/HodeTech/Relavium/actions/runs/38144620863) pass all
+seven jobs at reviewed head `3d4491df`. Forced Node 22.13.0 typecheck/test/build runs
+all 18 tasks without cache; the ordinary package suites and enforced coverage record
+**511 files, 11,026 passing tests and 12 established skips**. Windows native DB and
+headless CLI controls pass. All four wire controls, 23 usage mechanisms/eight groups,
+427 permanent cases and 69 joined native children pass; overlapping cohorts are not
+added to ordinary test counts. The usage artifacts identify exact push head
+`3d4491df` and PR synthetic merge `7c7ccc8729d55dd663731709a681243edeb0452c`
+(parents `f267bb0d` and `3d4491df`). Required package jobs pass 23 tasks (five cached),
+then build, format, DB-sync and architectural gates plus compiled CLI/overflow smokes.
+Offline predecessor replay confirms 16 refusal prefixes, two legacy controls and zero
+fetches. Fresh full local CI and bare/enforced coverage at `6139563e` remain separately
+attributed evidence; these pre-merge results do not claim a new merge-commit execution.
+
+Exact-head SonarCloud analysis succeeds and its quality gate is OK. Eight domain
+false positives have individual saved reasons; genuine quadratic scanner findings
+are fixed in source. Two nonblocking cognitive-complexity suggestions remain visible.
+Skipped or file-limited review bots supply no acceptance. No live provider invocation,
+paid capture, new dependency, user decision or new deferral is involved in closure.
+
+**Phase 2.6.5 is complete with approved deferrals:** 49/51 closed means 48 fully closed
+CR headings plus CR-95's non-deferrable short-term half. The other two headings,
+CR-70 (cross-turn tool-history carrying) and CR-93 (tenant-scoped mutable state), remain
+approved deferrals. CR-95's long continuation, exact-capacity admission and all other
+scoped residuals retain their severity, trigger and narrowed claim in
+[deferred-tasks.md](../deferred-tasks.md). Closure satisfies all seven [exit criteria](#exit-criteria);
+it does not mean 51 fully implemented items or an empty technical-debt backlog.
+
+**Next:** the joint 2.5.5/2.6 [Wave 2 — Shut the doors](../current.md#wave-2--shut-the-doors).
+Its MCP transport/config/definition queue (including G19 and #202) already merged in
+W4/PR #87. The first remaining change set is the unified filesystem jail, followed
+by secrets/config trust, persistence security and certification of the 2.5.5 exit
+criteria. W9 groups historical harness items and approved deferrals; it is not an
+unimplemented successor wave. This status-only update starts no new implementation.
+Earlier dated pending states throughout this file describe their original checkpoints.
 
 ## W9 — Harness honesty and isolation
 
@@ -4848,19 +4900,20 @@ This phase is done when **all** of the following hold:
 7. **A closing register in this file states, per item, the code that closes it** — verified by reading the code,
    not by trusting the mark. Wave 1's completion claim was wrong twice before this discipline was adopted.
 
-**Where the criteria stand — 2026-10-11, W8 accepted on `development`; PR merge pending.**
-W7 is already on `main` as PR #90. Implementation criteria below are satisfied on `development`
-with existing approved deferrals; Phase 2.6.5 publication/maintainer merge remains open.
+**Where the criteria stand — 2026-10-11, W8 merged to `main` as PR #92.**
+All seven criteria are met on `main`; Phase 2.6.5 is complete with approved deferrals.
+The [W8 merge checkpoint](#w8-merge-checkpoint--2026-10-11) joins final source validation
+and the merge, without promoting existing residuals into implemented guarantees.
 
 | # | Criterion | Status |
 |---|---|---|
 | 1 | every non-deferrable item closed, break-verified | ✅ met on `main` — CR-96/97 merged with W7; per-item causal controls and the accepted closing register are below |
-| 2 | every other item closed, or deferred with severity + trigger + the claim it narrows | ✅ met on `development` — CR-81/82 and ADR-0087 §1 accepted in the W8 closing register; approved CR-70/93 and other scoped residuals retain severity, trigger and narrowed claim in deferred-tasks.md; W8 merge to `main` pending |
+| 2 | every other item closed, or deferred with severity + trigger + the claim it narrows | ✅ met on `main` — CR-81/82 and ADR-0087 §1 merged in PR #92; approved CR-70/93 and other scoped residuals retain severity, trigger and narrowed claim in deferred-tasks.md |
 | 3 | each `W1` item has an accepted ADR, landing in dependency order | ✅ met — ADR-0078–ADR-0084 |
-| 4 | every canonical document says what the code now does | ✅ met on `development` — W8 canonical landing and two complete whole-wave reviews join consumption, usage, durability and readers; W7's checklist is reconciled; W8 merge to `main` pending |
+| 4 | every canonical document says what the code now does | ✅ met on `main` — W8 canonical landing and two complete whole-wave reviews join consumption, usage, durability and readers; maintainer corrections merged in PR #92; W7's checklist is reconciled |
 | 5 | five security-review sittings recorded, each with its adversarial test | ✅ **five recorded by 2026-10-02** — the fifth is [`history.db` at rest](../../standards/security-review.md#sitting-historydb-at-rest--cr-71-cr-97-2026-10-02) (`CR-71`'s invariant 1 and `CR-97`), with adversarial controls and qualified W7 acceptance records. The four earlier sittings are — [prompt/trust provenance](../../standards/security-review.md#sitting-prompt-and-trust-provenance--cr-01cr-03-cr-10cr-17-2026-09-06), [hostile MCP](../../standards/security-review.md#sitting-the-hostile-mcp-boundary--cr-40cr-42-2026-09-06), [media bytes](../../standards/security-review.md#sitting-media-bytes--cr-50-cr-53-cr-54-2026-09-02), [provider/config trust](../../standards/security-review.md#sitting-provider-and-config-trust--cr-80-2026-09-06). Three were written after their wave merged, which is late and is said so in each |
-| 6 | `pnpm run ci` **and** `pnpm coverage` both exit 0, checked by exit code | ✅ actual W8 `pnpm run ci` and bare `pnpm coverage` exit 0 at `ca5de9f8`; the closing register records exact inventories/floors, separate enforced coverage and subsequent documentation-only acceptance delta |
-| 7 | a closing register per item, per wave | ✅ W1–W7 recorded on `main`; W7 merged in [PR #90](https://github.com/HodeTech/Relavium/pull/90); the [W8 closing register](#w8-closing-register--2026-10-11) is accepted on `development`; W8 merge pending |
+| 6 | `pnpm run ci` **and** `pnpm coverage` both exit 0, checked by exit code | ✅ original W8 source gates at `ca5de9f8` and fresh full CI/bare/enforced coverage at `6139563e` exit 0; final reviewed head `3d4491df` has successful PR and push CI plus SonarCloud; see the merge checkpoint for exact attribution |
+| 7 | a closing register per item, per wave | ✅ W1–W8 recorded on `main`; W7 merged in [PR #90](https://github.com/HodeTech/Relavium/pull/90); the [W8 closing register](#w8-closing-register--2026-10-11) and its maintainer corrections merged in [PR #92](https://github.com/HodeTech/Relavium/pull/92) |
 
 ## What a later architecture review contributed — and what it did not
 
@@ -7031,5 +7084,5 @@ narrowed claim in [deferred-tasks.md](../deferred-tasks.md). No residual is sile
 The next work is [W8](#w8--provider-and-conformance), starting with the existing un-pulled-stream
 blocker, followed by canonical request conformance and unknown usage. Its preflight must reconcile
 ADR-0087's accepted corrections with the current W7 lifetime contracts. After W8, re-evaluate every
-phase exit criterion before the next remediation wave opens; [current.md](../current.md#next-work--phase-265-w8)
+phase exit criterion before the next remediation wave opens; [current.md](../current.md#next-work--wave-2--shut-the-doors)
 remains canonical for execution order. W8 implementation is not started by this documentation update.

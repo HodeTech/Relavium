@@ -156,8 +156,10 @@ The binding guarantees live in the [product constraints](docs/product-constraint
 
 Relavium is under active development. The **CLI is published as v0.1.1**; the pure engine,
 agent-session entry point, workflow runtime, inbound MCP client, and CLI management surface
-are implemented. The current engineering focus is **Phase 2.6.5 — Core Reliability
-Remediation**, which hardens the execution core before the next product wave opens.
+are implemented. **Phase 2.6.5 — Core Reliability Remediation is complete with approved
+deferrals**, with W8 merged in PR #92. The next engineering work is the joint Phase 2.5.5/2.6
+security remediation wave: filesystem access boundaries, secrets/config trust and persistence
+security, before further product work.
 
 Status changes quickly, so this README intentionally stays high-level. The canonical source
 for the exact active wave, completed work, and open reliability obligations is

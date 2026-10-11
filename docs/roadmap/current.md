@@ -42,10 +42,10 @@ merged too (PR #85, 2026-08-28).
 
 > **W7 merged to `main`, 2026-10-10 (PR #90, `46a6a701`):** all twelve steps, five genuine overflow records,
 > production request ownership and consolidated host lifetimes have independent acceptance.
-> All six W7 items are closed; Phase 2.6.5 stands at **47/51**. The
+> All six W7 items are closed; Phase 2.6.5 stood at **47/51 at that merge**. The
 > [closing register](phases/phase-2.6.5-core-reliability-remediation.md#w7-closing-register--2026-10-10)
 > joins per-item causal controls, both final review rounds and every submitted systematic finding.
-> PR #90 merged at 13:57:47 UTC. W8 and approved deferrals remain open.
+> PR #90 merged at 13:57:47 UTC. W8 was still open at that checkpoint; it subsequently merged in PR #92. Approved deferrals remain.
 > No implementation, user decision, credential, billing or provider capture is pending for W7.
 
 > **Post-closure corrections accepted, 2026-10-10:** the [new correction register](phases/phase-2.6.5-core-reliability-remediation.md#post-closure-systematic-review--2026-10-10)
@@ -53,7 +53,7 @@ merged too (PR #85, 2026-08-28).
 > cumulative review rounds. Fresh unchanged-production coverage passes 447 files / 9,512 cases /
 > eleven existing capability/key-gated LLM skips. Published-head checks are reported in PR #90.
 > W7 has no implementation, provider, credential, billing or user-decision prerequisite left.
-> The corrections merged with PR #90; W8 and existing approved limits remain open.
+> The corrections merged with PR #90; W8 subsequently merged in PR #92. Existing approved limits remain.
 
 > **Publication tool corrections accepted, 2026-10-10:** [two NEW complete clean cumulative rounds](https://github.com/HodeTech/Relavium/blob/f267bb0d4e9a4b4e2b51cb2c44ff744284d5228a/docs/reviews/2026-10-10T13-35-14-w7-publication-sonar-round-2-review.md)
 > independently verify all four Sonar-label dispositions, preserved UTF-16 ordering and OS-owned Git
@@ -61,59 +61,54 @@ merged too (PR #85, 2026-08-28).
 > and exact published-head GitHub/Sonar checks are reported in PR #90; the prior failed analysis stays recorded.
 > W7 has no implementation, capture, credential, billing or user-decision prerequisite left.
 
-## Next work — Phase 2.6.5 W8
+## W8 merged — Phase 2.6.5 complete
 
-The [W7 merge checkpoint](phases/phase-2.6.5-core-reliability-remediation.md#w7-merge-checkpoint--2026-10-10)
-closes all twelve steps and CR-71/72/94/96/97/98 on `main`. At reviewed head `69ac80b0`, both
-five-job GitHub CI runs and SonarCloud passed; all four supplemental Sonar labels closed.
-This evidence belongs to the reviewed head, not to a future W8 change.
+**W8 merged to `main` on 2026-10-11 as [PR #92](https://github.com/HodeTech/Relavium/pull/92),
+merge commit `ef0ffa54`. Phase 2.6.5 is complete with approved deferrals: 49/51 items closed.**
+The [merge checkpoint](phases/phase-2.6.5-core-reliability-remediation.md#w8-merge-checkpoint--2026-10-11)
+joins final publication evidence and all seven phase exit criteria. All seven W8 steps,
+CR-81, CR-82 and ADR-0087 §1 are complete on `main`; no W8 implementation, review,
+publication, provider, billing, credential or user-decision gate remains.
 
-**W8 — Provider and conformance: all seven implementation/review steps accepted on `development`, 2026-10-11.**
-The [closing register](phases/phase-2.6.5-core-reliability-remediation.md#w8-closing-register--2026-10-11)
-joins the approved seven-step plan, Accepted ADR-0104's eight groups, actual source gates and
-two NEW complete independent whole-wave rounds. Detailed review working records remain local
-and Git-ignored; 181 original files are unchanged and historical citations are commit-pinned.
+1. **Consumption:** explicit run/session modes preserve iterated delivery from construction;
+   subscribe-only handles retain no primary buffer and reject iteration with a typed error.
+2. **Conformance:** strict expected exchanges and the 24-case actual installed-SDK HTTP
+   matrix detect production-lowering regressions.
+3. **Usage uncertainty:** complete/partial/missing observations, pending ACK before invocation,
+   once-only settlement and late receipts, sticky old-writer uncertainty and qualified
+   human/JSON totals preserve the distinction between unknown usage and actual zero.
 
-1. **ADR-0087 §1 accepted:** explicit run/session consumption modes, preserved iterated delivery,
-   zero primary buffer for subscribe-only handles and typed misuse/departure checks.
-2. **CR-81 closed:** strict canonical expected exchanges, actual installed-SDK HTTP matrix and
-   three independently reproduced production-lowering removals.
-3. **CR-82 closed:** complete/partial/missing native evidence, acknowledged pending before
-   invocation, exact once-only settlements/late receipts, sticky old-writer uncertainty and
-   qualified human/JSON totals. The original accepted inventory had 21 causal mechanisms across all
-   eight ADR-0104 groups; native media retains its independent volume basis.
+The [original closing register](phases/phase-2.6.5-core-reliability-remediation.md#w8-closing-register--2026-10-11)
+preserves its source acceptance and two NEW complete whole-wave reviews. The
+[maintainer correction register](phases/phase-2.6.5-core-reliability-remediation.md#w8-pr-92-systematic-review-corrections--2026-10-11)
+joins all report dispositions and two NEW independent complete clean cumulative rounds per
+correction increment. Final reviewed head `3d4491df` passed both seven-job PR/push CI
+workflows and the SonarCloud quality gate. Published ordinary/enforced-coverage inventories
+are 511 files / 11,026 passing tests / 12 established skips; four wire and 23 usage
+mechanisms retain 427 permanent cases and 69 joined native children. Fresh full local
+CI and bare/enforced coverage at `6139563e` remain separately attributed evidence.
+No merge-commit execution, live-provider invoice or unsupported-platform result is inferred.
+Two nonblocking Sonar complexity suggestions remain visible. Detailed review records stay
+local and ignored; historical citations remain commit-pinned.
 
-Actual `pnpm run ci`, bare `pnpm coverage`, enforced coverage, wire/usage mutations and offline
-smokes passed at `ca5de9f8`; initial acceptance changes are documentation only. The later
-[publication watchdog correction](phases/phase-2.6.5-core-reliability-remediation.md#w8-publication-watchdog-correction--2026-10-11)
-changes only the native scale test's time budget after actual Linux CI exhausted its former
-watchdog. All 100,000 settlements and structural assertions remain unchanged; two NEW independent
-scoped rounds accepted that correction. The closing register qualifies exact counts, skips,
-cache use and limits. Published-head checks are separate and
-belong to the PR; local evidence does not claim remote CI or live-provider invoices.
-The later [publication timing and Sonar follow-up](phases/phase-2.6.5-core-reliability-remediation.md#w8-publication-timing-and-sonar-follow-up--2026-10-11)
-records the independently reproduced MCP test-entry assumption, explicit test clock,
-individual analyzer dispositions and the existing system-Git resolver reuse. These deltas
-retain separate scoped reviews and exact-head publication checks.
+**What remains:** CR-70 (cross-turn tool-history carrying) and CR-93 (tenant-scoped mutable
+state) are approved deferrals. The 49/51 count includes CR-95's short-term fail-closed fix;
+its long continuation and existing exact-capacity/scoped residuals remain in
+[deferred-tasks.md](deferred-tasks.md), with their existing severity, trigger and narrowed
+claim. ADR-0087 §1 is outside the denominator. Phase closure does not claim 51 fully
+implemented items or an empty debt backlog. Phase 2.5.5 and Phase 2.6 remain in progress.
+Earlier dated pending checkpoints in this page and the phase register are historical.
 
-The implementation register is **49/51 on `development`**; `main` remains **47/51** until
-[W8 PR #92](https://github.com/HodeTech/Relavium/pull/92) merges. Implementation acceptance is
-complete at the attributed checkpoint. The [maintainer correction register](phases/phase-2.6.5-core-reliability-remediation.md#w8-pr-92-systematic-review-corrections--2026-10-11)
-records all four correction increments and the subsequent publication correction accepted after
-two NEW clean complete cumulative rounds each. Fresh full CI and bare/enforced coverage pass at
-`6139563e`; all 23 usage mechanisms and four
-wire controls retain every earlier mechanism. Exact published-head CI/Sonar and maintainer
-review/merge remain the landing gate. ADR-0087 §1 is outside the 51-item denominator. CR-70 (cross-turn tool-history carrying),
-CR-93 (tenant-scoped catalog/learning), CR-95's long continuation and other existing scoped
-residuals retain their approved severity, triggers and narrowed claims in
-[deferred-tasks.md](deferred-tasks.md); no new deferral is introduced.
+## Next work — Wave 2 — Shut the doors
 
-The Phase 2.6.5 implementation exit criteria are reconciled individually in the closing register;
-publication checks and maintainer review/merge remain the landing gate. After that gate, the
-next work is [Wave 2 — Shut the doors](#wave-2--shut-the-doors) in the joint 2.5.5/2.6 order:
-filesystem jail, secrets/config trust, persistence security and 2.5.5 certification. This is
-separate from the already merged Phase 2.6.5 W2 liveness wave. No new provider/key/billing or
-maintainer-decision prerequisite is pending for W8.
+Resume the joint 2.5.5/2.6 [Wave 2 queue](#wave-2--shut-the-doors); this is separate from
+the already merged Phase 2.6.5 W2 liveness wave. Its hostile-MCP transport/config/definition
+work, including G19 and #202, already merged in W4/PR #87. The first remaining change set
+is the **unified filesystem jail** (#36/#39/#235 plus the pulled-forward 2.6.M/N path
+boundaries), followed by secrets/config trust, persistence security and certification
+of the 2.5.5 exit criteria 1–3. Existing decision gates in that queue retain their authority.
+W9 is a historical grouping of harness items and approved deferrals, not a new open wave.
+No Wave 2 code is started by this merge-status update.
 
 ## Historical W7 implementation checkpoints
 
@@ -487,7 +482,7 @@ flowchart TD
     W0["Wave 0 — One true baseline<br/>baseline ✅ · CI truth · numbers"]
     W1["Wave 1 — Stop the bleeding ✅<br/>3 CRITICALs · cost cap · ADR-0074"]
     LEDGER["#W15-1 — realized-cost ledger ✅<br/>ADR-0076 + ADR-0077"]
-    P265["Phase 2.6.5 — Core reliability<br/>51 CR items · 8 P0 blockers behind ADR-0078–0084<br/>W0+W1+W2 merged · W3 merged with a live blocker<br/>W4 merged — the hostile-MCP class, ADR-0088<br/>W5 merged — media correctness, ADR-0089+0090<br/>W6 merged — authoring correctness, ADR-0091–0094<br/>W7 merged — PR #90 · W8 accepted on development; merge pending"]
+    P265["Phase 2.6.5 — Core reliability<br/>51 CR items · 8 P0 blockers behind ADR-0078–0084<br/>W0–W8 complete · W3 blocker closed in W8<br/>W4 merged — the hostile-MCP class, ADR-0088<br/>W5 merged — media correctness, ADR-0089+0090<br/>W6 merged — authoring correctness, ADR-0091–0094<br/>W7 merged — PR #90 · W8 merged — PR #92<br/>49/51 closed · approved deferrals retained"]
     W2["Wave 2 — Shut the doors<br/>fs jail · secrets · config trust<br/>certifies 2.5.5 EXIT 1–3"]
     W3["Wave 3 — Clear the ground<br/>god-file decomposition · CLI net"]
     W4a["Wave 4a — The spine<br/>2.6.A/D/H/K + 2 ADRs"]
@@ -1047,8 +1042,9 @@ an ESLint selector rather than a list.
 The two named live security holes, one unified filesystem jail, the secrets layer under test — then
 certify while the reviews are still booked.
 
-1. 2.5.5.D · **project-layer MCP name collision redirecting a global secret** (G19), then **MCP tool-definition
-   poisoning** (#202).
+1. ✅ **Completed in W4/PR #87:** 2.5.5.D · project-layer MCP name collision redirecting a global secret
+   (G19) and MCP tool-definition poisoning (#202); see the
+   [W4 closing register](phases/phase-2.6.5-core-reliability-remediation.md#w4-closing-register).
 2. **MCP queue, strict — EXECUTED AS PHASE 2.6.5 `W4`, and COMPLETE there (2026-09-01, [ADR-0088](../decisions/0088-the-mcp-boundary-is-hostile.md)).** The queue below landed in five steps, plus `#202` and `G19` from step 1 of this wave and the MCP half of `#21` from 2.5.5.E — all the same threat class and the same security sitting, so splitting them would have booked the reviewer twice. Certify the 2.5.5 ids from the `W4` closing register in [phases/phase-2.6.5-core-reliability-remediation.md](phases/phase-2.6.5-core-reliability-remediation.md).
    *The original queue, for the record:* Connect-phase timeouts on every transport
    (#35, G32, #205) → transport/discovery/result size bounds against a hostile server (G33, #201, #209, #288) →
