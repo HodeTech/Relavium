@@ -3,6 +3,7 @@ import {
   nativeFieldPresent,
   requireMediaUsage,
   retainUsageObservation,
+  interruptedUsage,
   missingUsage,
   usageApplicability,
   type UsageApplicability,
@@ -943,9 +944,9 @@ function foldGeminiPart(part: GeminiPart, state: GeminiStreamState): StreamChunk
   return out;
 }
 
-function hasInlineMedia(response: GeminiResponse): boolean {
+function hasInlineMedia(candidates: GeminiResponse['candidates']): boolean {
   return (
-    response.candidates?.some((candidate) =>
+    candidates?.some((candidate) =>
       candidate.content?.parts?.some((part) => nativeFieldPresent(part, 'inlineData')),
     ) === true
   );
@@ -954,30 +955,33 @@ function hasInlineMedia(response: GeminiResponse): boolean {
 /** Fold one streamed Gemini response into chunks, updating the terminal/usage tracking on `state`. */
 function foldGeminiResponse(response: GeminiResponse, state: GeminiStreamState): StreamChunk[] {
   const out: StreamChunk[] = [];
-  if (hasInlineMedia(response)) {
-    state.applicability = { ...state.applicability, unreportedMedia: true };
-    state.usage = requireMediaUsage(state.usage, state.applicability);
-  }
-  if (response.usageMetadata) {
+  // Own counters before any other native getter can resume transport code. Until terminal
+  // metadata is captured, even a complete set of counters is only a nonfinal observation.
+  const nativeUsage = response.usageMetadata;
+  const ownedUsage =
+    nativeUsage === undefined ? undefined : mapUsage(nativeUsage, state.applicability);
+  if (ownedUsage !== undefined) {
     state.usage = retainUsageObservation(
       state.usage,
-      mapUsage(
-        response.usageMetadata,
-        state.applicability,
-        state.sawTerminal ||
-          response.candidates?.[0]?.finishReason !== undefined ||
-          isPromptBlocked(response.promptFeedback),
-      ),
+      interruptedUsage(ownedUsage, state.sawTerminal),
     );
+  }
+  const candidates = response.candidates;
+  const candidate = candidates?.[0];
+  const finishReason = candidate?.finishReason;
+  if (finishReason !== undefined) {
+    state.finishReason = finishReason;
+    state.sawTerminal = true;
+    if (ownedUsage !== undefined) state.usage = retainUsageObservation(state.usage, ownedUsage);
   }
   if (isPromptBlocked(response.promptFeedback)) {
     state.blocked = true;
     state.sawTerminal = true;
+    if (ownedUsage !== undefined) state.usage = retainUsageObservation(state.usage, ownedUsage);
   }
-  const candidate = response.candidates?.[0];
-  if (candidate?.finishReason !== undefined) {
-    state.finishReason = candidate.finishReason;
-    state.sawTerminal = true;
+  if (hasInlineMedia(candidates)) {
+    state.applicability = { ...state.applicability, unreportedMedia: true };
+    state.usage = requireMediaUsage(state.usage, state.applicability);
   }
   for (const part of candidate?.content?.parts ?? []) {
     out.push(...foldGeminiPart(part, state));
@@ -1277,7 +1281,7 @@ export function createGeminiAdapter(deps: GeminiAdapterDeps = {}): LlmProvider {
         const applicable = billingApplicability(req, lowered);
         const response = await transport.generate(lowered, key);
         usage = mapUsage(response.usageMetadata, applicable);
-        if (hasInlineMedia(response)) {
+        if (hasInlineMedia(response.candidates)) {
           usage = requireMediaUsage(usage, { ...applicable, unreportedMedia: true });
         }
         const ids = new GeminiToolCallIds();
