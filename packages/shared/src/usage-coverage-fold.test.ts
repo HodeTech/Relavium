@@ -70,8 +70,8 @@ describe('usage correlation owned across public identity mutation', () => {
     mutate(published);
     expect(fold.complete('model', published)).toBe(false);
     expect(fold.complete('other-model', original)).toBe(false);
-    expect(fold.complete('model', original)).toBe(true);
-    expect(fold.complete('model', original)).toBe(false);
+    expect(fold.complete('model', original), 'USAGE_CAUSAL_OWNED_IDENTITY').toBe(true);
+    expect(fold.complete('model', original), 'USAGE_CAUSAL_RETIRED_IDENTITY').toBe(false);
     expectCoverage(fold, 0);
     expect(fold.highWater).toBe(1);
     expect(() => fold.pending('model', original)).toThrow('ordinal');
@@ -91,7 +91,7 @@ describe('usage correlation owned across public identity mutation', () => {
       expect(fold.disposition('other-model', original, unknown)).toBe(false);
       expect(fold.disposition('model', original, unknown)).toBe(true);
       expect(fold.disposition('model', original, unknown)).toBe(false);
-      expect(fold.complete('model', original)).toBe(false);
+      expect(fold.complete('model', original), 'USAGE_CAUSAL_RETIRED_IDENTITY').toBe(false);
       expectCoverage(fold, 1);
     },
   );
@@ -109,7 +109,7 @@ describe('usage correlation owned across public identity mutation', () => {
         expect(fold.disposition('other-model', original, disposition)).toBe(false);
         expect(fold.disposition('model', original, disposition)).toBe(true);
         expect(fold.disposition('model', original, disposition)).toBe(false);
-        expect(fold.complete('model', original)).toBe(false);
+        expect(fold.complete('model', original), 'USAGE_CAUSAL_RETIRED_IDENTITY').toBe(false);
         expectCoverage(fold, 0);
       },
     );
@@ -129,8 +129,8 @@ describe('usage correlation owned across public identity mutation', () => {
       mutate(published);
       expect(fold.complete('model', published)).toBe(false);
       expect(fold.complete('other-model', original)).toBe(false);
-      expect(fold.complete('model', original)).toBe(true);
-      expect(fold.complete('model', original)).toBe(false);
+      expect(fold.complete('model', original), 'USAGE_CAUSAL_OWNED_IDENTITY').toBe(true);
+      expect(fold.complete('model', original), 'USAGE_CAUSAL_RETIRED_IDENTITY').toBe(false);
       expectCoverage(fold, 0);
     },
   );
@@ -146,7 +146,7 @@ describe('usage correlation owned across public identity mutation', () => {
       expect(fold.disposition('model', original, unknown, true)).toBe(false);
       expect(fold.disposition('model', original, unknown)).toBe(true);
       expect(fold.disposition('model', original, unknown)).toBe(false);
-      expect(fold.complete('model', original)).toBe(false);
+      expect(fold.complete('model', original), 'USAGE_CAUSAL_RETIRED_IDENTITY').toBe(false);
       expectCoverage(fold, 1);
     },
   );
