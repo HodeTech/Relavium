@@ -703,3 +703,12 @@ changes, new dependency, decision, paid call or deferral are introduced.
 The finding-bearing round supplies no clean acceptance. Step 6 requires two FURTHER NEW complete
 clean cumulative rounds after this correction; Step 7 whole-W8 checks/reviews/publication and
 CR-82 remain open.
+
+### W8 permanent-control acceptance — 2026-10-11
+
+The [Step 6 register](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#step-6-combined-acceptance--2026-10-11)
+records two FURTHER NEW complete clean cumulative rounds, R4 and R5, at `38c04748` after the
+Anthropic final-authority and canonical lifetime-wording corrections. Permanent controls are
+accepted on `development`; the earlier dated Step 6 pending statements are historical.
+Step 7's actual whole-wave gates, two NEW independent whole-W8 rounds and publication still
+gate CR-82 and final wave acceptance. No new decision or deferral is introduced.

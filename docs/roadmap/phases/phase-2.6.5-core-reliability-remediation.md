@@ -11,7 +11,7 @@
 - **Kind**: interlude, like [phase 2.5.5](phase-2.5.5-hardening-and-remediation.md) — no new product surface,
   only the invariants an existing surface already claims
 
-**Current W8 checkpoint — 2026-10-11:** Steps 1–5 are independently accepted on `development`,
+**Current W8 checkpoint — 2026-10-11:** Steps 1–6 are independently accepted on `development`,
 including CR-81, so the implementation register is **48/51** (47 checked headings plus CR-95's
 short-term half). `main` remains **47/51** until W8 publication/merge. CR-82 and approved deferred
 CR-70/93 remain open; no existing residual is closed by this checkpoint.
@@ -2494,7 +2494,7 @@ stand.
 
 ## W8 — Provider and conformance
 
-**Plan and ADR-0104 approved on 2026-10-10; Steps 1–5 accepted on `development`; Step 6 permanent controls are in progress.**
+**Plan and ADR-0104 approved on 2026-10-10; Steps 1–6 accepted on `development`; Step 7 whole-wave checks/reviews/publication remain open.**
 ADR-0087 §1 and CR-81 have scoped implementation acceptance; CR-82 and whole-W8 publication remain open.
 CR-80 below was already closed before W7. Current execution order is in
 [current.md](../current.md#next-work--phase-265-w8).
@@ -2559,8 +2559,8 @@ remains approved and open; `main` publication follows the whole-W8 gate.
 
 ### W8 preflight and proposed execution plan — 2026-10-10
 
-**Status: preflight complete, plan and ADR-0104 approved on 2026-10-10; Steps 1–5 accepted on `development`.**
-Steps 6–7 and whole-W8 publication remain open.
+**Status: preflight complete, plan and ADR-0104 approved on 2026-10-10; Steps 1–6 accepted on `development`.**
+Step 7 and whole-W8 publication remain open.
 The maintainer requests implementation on `development`, an implementation commit followed by
 two fresh independent cumulative review rounds per step, confirmed fixes committed between
 rounds, and approval of any new decision before dependent work. W7 and PR #91 are merged;
@@ -3848,7 +3848,7 @@ exact-capacity/CR-70/CR-93 residuals remain unchanged; no new deferral or prereq
 
 ### W8 Step 6 permanent controls — 2026-10-11
 
-**Implementation verified; independent acceptance pending.** The additional control step in the
+**Accepted on `development` after R4–R5; see [combined acceptance](#step-6-combined-acceptance--2026-10-11).** The additional control step in the
 approved seven-step plan follows Step 5 activation acceptance. It preserves native media's
 separate volume basis and adds no product surface, live provider call or dependency.
 
@@ -4030,6 +4030,41 @@ installed ABI exception. No live-provider, PostgreSQL, bare-coverage or remote-C
 Two FURTHER NEW clean complete cumulative Step 6 rounds remain required, then Step 7's actual
 CI/coverage, whole-W8 reviews and publication. CR-82 remains open, **48/51 on development,
 47/51 on main**. No new deferral or user/provider/key/billing prerequisite is introduced.
+
+#### Step 6 combined acceptance — 2026-10-11
+
+**Accepted on `development` at `38c04748`, after R4 and R5.** These are two FURTHER NEW
+complete clean cumulative rounds after the R3 runner wording correction. Each covered every
+one of the 289 paths from `017b399c`: 82 money/core/shared, 53 LLM/control-tooling and
+154 storage/CLI/replay/docs paths. GPT-6.1 Sol/xhigh reviewed money, GPT-6 Astra/xhigh LLM
+and GPT-6.1 Sol/high storage in both rounds. All six complete reports found zero actionable
+findings; prior finding-bearing rounds are not counted as clean acceptance.
+
+| Round | Fresh unchanged whole-file cohorts | Additional evidence and limits |
+| --- | --- | --- |
+| R4 | Money 69 files / 2,242 passed; LLM 34 / 1,190 passed and 11 established skips; storage 59 / 960 passed. | Four supported native rollback/receipt/query probes and 14 independently authored installed-Anthropic-SDK final-output cases passed. All 69 native cohort children closed, including four actual invoked CUT/SIGKILL controls; fresh default predecessor replay retained 16 strict prefixes, two legacy positives, three isolated discriminators and eight old operations. |
+| R5 | Money 69 files / 2,242 passed; LLM 34 / 1,190 passed and the same 11 established skips; storage 59 / 960 passed. | Fourteen independently authored actual-SDK/engine/native-SQLite final-output cases and eight actual-SDK native-overflow cases passed, reported separately. Fresh CLI-host/persister rollback controls, default predecessor replay with the same 16/2/3/8 inventory and native body/readiness/closure joins are reconciled by the parent's combined audit. |
+
+The parent read every report and readonly auditor and independently checked complete assigned
+inventories and exact cumulative diffs, all 1,288 tracked developer and physically owned files,
+HEAD/logical index, 457 installed packages / 21,013 dependency files, raw cases, actual module-body
+PID/thread-zero witnesses, native worker closures, source restorations and sealed artifacts.
+Migration metadata was recomputed against the native SQLite file. Global freezes were released
+only after all three complete reports, explicit partition releases and the parent's full audit
+in each round. Setup-only diagnostics earn no semantic credit. Eleven unchanged LLM skips mean
+eight live/nightly cases and three absent legacy replay capabilities, not eleven live calls.
+Overlapping cohorts/probes and successive rounds are not added together.
+
+All 21 causal mechanisms and eight acceptance groups were reviewed cumulatively. The complete
+runner's already independently reproduced result is not presented as a new execution by every
+reviewer; Step 7 must invoke the default whole runner freshly. Local dependency digests remain
+local byte provenance, native SQLite uses the installed ABI, and neither provider invoices,
+PostgreSQL parity, Windows execution nor remote CI is claimed.
+
+Step 6 closes its permanent-control/review obligation only. Step 7's actual CI, bare root
+coverage, canonical landing, two NEW whole-W8 rounds and publication still gate CR-82 and
+whole-wave acceptance. The register remains **48/51 on development, 47/51 on main**.
+Existing approved residuals are unchanged; no user/provider/key/billing decision is pending.
 
 ### CR-81 — Conformance cassettes do not verify the request wire contract · High · ✅ CLOSED on `development` 2026-10-10
 **Accepted on `development`, 2026-10-10; publication pending.** The [Step 3 register](#w8-step-3-canonical-sdk-http-matrix--2026-10-10)
