@@ -3732,6 +3732,76 @@ and reviews, CR-82 and Step 7/whole-W8 validation/publication remain open. The r
 **48/51** on `development`, **47/51** on `main`. No new decision, dependency, paid call or deferral
 is introduced.
 
+#### Step 5 sixteenth cumulative review — 2026-10-11
+
+Three NEW independent reviewers completed the full `017b399c..13a82b65` activation and all
+fifteen corrections: GPT-6-astra/xhigh for money/core/shared and LLM, GPT-6.1-sol/high for
+storage/CLI/tooling/docs. The combined result is **one High finding** in OpenAI-compatible
+generate cleanup; the other two partitions returned no actionable finding. All **257** changed
+paths were assigned exactly once. The parent read all complete reports and raw controls,
+verified explicit releases, artifact manifests and all **1,266** frozen tracked-file hashes in
+the developer and four physical review graphs before authoring. HEAD and logical index stayed
+unchanged throughout review. Configurations explicitly owned their cache directory and disabled
+Vitest result-order caching.
+
+A supported caller-listener cleanup callback could throw during invocation retirement after a
+native generate response, discarding complete usage or replacing an established provider HTTP
+400 refusal. The installed SDK's ordinary offline HTTP path reproduces both OpenAI and DeepSeek
+cases; actual Anthropic/Gemini generate and OpenAI-compatible stream controls retain the evidence.
+The review's identical whole 28-case control file produced **24 passes / four semantic failures**,
+a private candidate passed 28, and byte-exact original restoration returned 24/four. A repeated
+worker-Inspector execution proves actual SDK methods and response mapping; it adds no cases.
+The parent independently ran an eight-case whole direct-SDK file: original four/four, candidate
+eight passes, exact original four/four and exact candidate eight passes. These are intended
+usage/diagnosis assertion failures, not setup, import, timeout or skip credit. No developer source
+was swapped. Synthetic CostTracker pricing establishes 19 microcents from thirteen input and six
+output tokens in the reviewer chain control, not an invoice or a separately executed core/SQLite
+money integration. Native first-party listener cleanup is not claimed to throw.
+
+Money/core/shared passed **67 whole files / 2,234 cases**, plus four independent actual-SDK
+parallel-engine acknowledgement/resume schedules. LLM passed **64 whole files / 2,127 cases**
+with eleven established skips. Storage/CLI executed **56 disjoint whole files / 935 passing cases**,
+plus five independent native SQLite schedules and actual frozen replay **16/2/3/8** controls.
+Repeated and overlapping cohorts are not added. The parent rehashed all forty money artifacts,
+112 LLM artifacts and 18,988 storage artifacts, the actual frozen replay stage outputs, 143
+Git-anchored source blobs, 228 current producer files, 12,012 dependency/tool entries and the
+separately attributed old-session supplement. Final raw storage module-body observations supersede
+an earlier derived runtime count; resolver/loading traces are not execution evidence. Falsified
+consumer-throw and terminal-only content expectations remain disclosed diagnostic controls,
+not findings or causal acceptance.
+
+Permanent `openai-generate-cleanup.test.ts` supplies **56** whole actual-SDK HTTP cases across
+both providers and direct/chain entry. Final fixed source passes 56; exact `13a82b65` adapter-only
+replacement gives **24 passes / 32 semantic failures**; byte-exact fixed restoration passes 56,
+with identical test bytes/inventory and zero skips. All 24 clean controls pass on old source.
+Provider-shaped cleanup caused two extra old-source SDK requests across those same 56 cases;
+fixed source permits none. Partial/missing/positive/zero evidence, existing HTTP400/content
+failures, fixed private cleanup diagnostics and positively joined retained children are covered.
+The initial unsupported primary-cause oracle and throw-from-finally lint candidate are retained
+as superseded diagnostics, with no final acceptance credit.
+
+Fresh author checks pass **65 whole LLM files / 2,183 tests**, with eleven established skips,
+source/seam strict no-emit typechecks, changed-code lint and format. The parent read the full
+handoff, verified all **1,401** regular sealed files, 102 symlink targets, 1,267 copied inventory
+entries and all **21,141** installed dependency files, including size/mtime. The copied TypeScript
+config adds only exact source aliases; developer config stays unchanged. Actual worker Inspector
+records installed SDK create/request/parse/error execution, rather than resolution alone.
+
+Fresh forced `CI=true` workspace lint/typecheck/test passes **23/23**, none cached: **502 files /
+10,868 passing / twelve skipped**. The complete local 106-case performance file also passes
+without CI, giving **10,869 distinct passing tests** across overlapping runs; the eleven remaining
+skips are established LLM live/unsupported cases. Forced build **6/6** and format **1/1**, tools
+lint/typecheck, schema synchronization, engine/seam/dependency/bundle fences, test isolation,
+whitespace and document links pass. Compiled CLI, overflow capture and actual frozen replay
+**16/2/3/8** smokes pass offline; expected negative guard diagnostics are not worker failures.
+All 181 original ignored review files remain unchanged; none is tracked. These local author gates
+are neither remote CI nor whole-W8 coverage results.
+
+This finding-bearing round supplies neither required clean acceptance round. Step 5 still needs two NEW complete clean cumulative
+reviews after correction; Step 6's further permanent controls/reviews, CR-82 and Step 7/whole-W8
+validation/publication remain open. The register remains **48/51** on `development`, **47/51**
+on `main`. No new decision, dependency, paid call or deferral is introduced.
+
 ### CR-81 — Conformance cassettes do not verify the request wire contract · High · ✅ CLOSED on `development` 2026-10-10
 **Accepted on `development`, 2026-10-10; publication pending.** The [Step 3 register](#w8-step-3-canonical-sdk-http-matrix--2026-10-10)
 joins all four independent review verdicts and three causal lowering controls. The pre-W8 defect was:

@@ -633,6 +633,15 @@ listener removal throws; admitted descendants still hold their own completion. P
 setup retires its transferred aggregate without replacing the original entry error. An existing
 provider/cancellation diagnosis stays primary over cleanup; a standalone cleanup fault remains
 loud, without retry authority, and text attempts account known usage exactly once.
+The OpenAI-compatible generate adapter owns native usage before invocation retirement. If a
+supported caller-listener cleanup callback throws after a native response, its typed cleanup
+failure retains that evidence for the chain's complete-only settlement. An already established
+provider failure remains primary. A cleanup-only fault has fixed content-free, non-retryable
+`unknown` presentation and preserves only its opaque private cause; classifying that value as a
+provider error must not create retry, admission or budget authority. Partial and missing evidence
+remain uncertain. This includes DeepSeek's shared adapter and does not claim that first-party
+native AbortSignal cleanup throws.
+
 Public iterator `return()` and `throw()` attempt the underlying generator exit even when
 immediate invocation retirement fails. A consumer throw remains primary over secondary
 retirement failure; a standalone retirement failure remains observable after cleanup entry.

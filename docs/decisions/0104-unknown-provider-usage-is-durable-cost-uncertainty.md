@@ -653,3 +653,23 @@ provider behaviour or an invoice amount. These existing-contract corrections int
 decision, dependency, paid call or deferral. The finding-bearing round supplies no clean
 acceptance; Step 5 still requires two NEW complete clean cumulative rounds, followed by
 Step 6's further controls/reviews and whole-W8 validation/publication.
+
+### W8 OpenAI-compatible generate cleanup correction — 2026-10-11
+
+The sixteenth complete cumulative activation review reproduced a generate-only cleanup gap
+through the installed OpenAI SDK's ordinary offline HTTP path, for OpenAI and DeepSeek.
+Invocation retirement could discard already owned complete usage or replace an established
+HTTP provider refusal when a supported caller-listener cleanup callback threw. Cleanup keeps
+that observation on the typed failure, and an existing provider diagnosis stays primary. A
+cleanup-only fault receives fixed content-free, non-retryable `unknown` presentation and keeps
+its original value only as an opaque private cause; its exception class grants no provider retry,
+admission or budget authority. Complete evidence still reaches the existing sole cost writer
+exactly once, while partial or missing evidence remains uncertain. The canonical
+[seam](../reference/shared-core/llm-provider-seam.md#the-per-attempt-deadline) owns this boundary.
+
+The fault is demonstrated with a supported custom signal callback, not a claim that native
+first-party AbortSignal cleanup throws or that a provider invoice was measured. This is an
+existing-contract correction, with no new decision, dependency, paid call or deferral. The
+finding-bearing round supplies no clean acceptance. Step 5 still requires two NEW complete
+clean cumulative rounds after correction, followed by Step 6's further controls/reviews and
+whole-W8 validation/publication.
