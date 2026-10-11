@@ -47,7 +47,11 @@ describe('held terminal accounting survives the real attempt race', () => {
               try {
                 yield { type: 'text_delta', text: 'already delivered' };
                 yield terminal === 'stop'
-                  ? { type: 'stop', stopReason: 'stop', usage: original }
+                  ? {
+                      type: 'stop',
+                      stopReason: 'stop',
+                      usage: { kind: 'complete' as const, usage: original },
+                    }
                   : {
                       type: 'error',
                       error: {
@@ -56,7 +60,7 @@ describe('held terminal accounting survives the real attempt race', () => {
                           kind: 'context_overflow',
                           message: 'native failure',
                         }),
-                        usage: original,
+                        usage: { kind: 'complete' as const, usage: original },
                       },
                     };
                 resumed = true;
@@ -123,7 +127,11 @@ describe('held terminal accounting survives the real attempt race', () => {
           expect(activeTimers).toBe(0);
           expect(resumed).toBe(quantity !== 'invalid');
           expect(records[0]?.contentReceived).toBe(true);
-          expect(records[0]?.usage).toEqual(quantity === 'invalid' ? undefined : expected);
+          expect(records[0]?.usage, 'USAGE_CAUSAL_HELD_TERMINAL').toEqual(
+            quantity === 'invalid'
+              ? { kind: 'missing', reason: 'not_reported' }
+              : { kind: 'complete', usage: expected },
+          );
           expect(folded).toEqual(quantity === 'invalid' ? [] : [expected]);
           const failure = records[0]?.error;
           const kind =

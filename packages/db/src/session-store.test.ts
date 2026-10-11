@@ -885,13 +885,13 @@ describe('SessionStore — the session writers survive lock contention (#228)', 
   const busy = (): Error => Object.assign(new Error('database is locked'), { code: 'SQLITE_BUSY' });
 
   /**
-   * Inject ONE lock fault into the next `db.<verb>()` call, then let the real implementation through. The
+   * Inject ONE lock fault into the outer transaction, then let the real implementation through. The
    * throw lands inside the wrapped `fn`, which is all `withBusyRetry` cares about — so this pins "the wrapper
    * is present on this writer" deterministically, in ~25 ms, without a second process or a real held lock.
    * (`withBusyRetry`'s behaviour against REAL `SQLITE_BUSY` contention is covered in `retry.test.ts`.)
    */
-  const failOnce = (verb: 'insert' | 'update'): void => {
-    vi.spyOn(client.db, verb).mockImplementationOnce(() => {
+  const failOnce = (): void => {
+    vi.spyOn(client.db, 'transaction').mockImplementationOnce(() => {
       throw busy();
     });
   };
@@ -905,20 +905,20 @@ describe('SessionStore — the session writers survive lock contention (#228)', 
 
   it('appendMessage retries a lock fault instead of throwing — the lost-turn case', () => {
     store.createSession(makeSession());
-    failOnce('insert');
+    failOnce();
     expect(() => store.appendMessage(makeMessage(0))).not.toThrow();
     expect(store.loadMessages('sess-1')).toHaveLength(1); // the row really landed, not just "didn't throw"
   });
 
   it('createSession retries a lock fault', () => {
-    failOnce('insert');
+    failOnce();
     expect(() => store.createSession(makeSession())).not.toThrow();
     expect(store.loadSession('sess-1')).toBeDefined();
   });
 
   it('updateSession retries a lock fault', () => {
     store.createSession(makeSession());
-    failOnce('update');
+    failOnce();
     expect(() => store.updateSession(makeSession({ status: 'ended' }))).not.toThrow();
     expect(store.loadSession('sess-1')?.status).toBe('ended');
   });
@@ -929,7 +929,7 @@ describe('SessionStore — the session writers survive lock contention (#228)', 
     // what the bus's `onListenerError` sink then reports to the user.
     store.createSession(makeSession());
     const persistent = busy();
-    vi.spyOn(client.db, 'insert').mockImplementation(() => {
+    vi.spyOn(client.db, 'transaction').mockImplementation(() => {
       throw persistent;
     });
     // `toThrow(err)` compares MESSAGES, which cannot tell the original from a same-message wrapper — and
@@ -950,7 +950,7 @@ describe('session_costs — the ADR-0070 reconciliation invariant', () => {
   const total = (sessionId: string): number =>
     store.loadSession(sessionId)?.totalCostMicrocents ?? -1;
 
-  const spend = (model: string, cost: number, opts: { priced?: boolean } = {}): void =>
+  const spend = (model: string, cost: number, opts: { priced?: boolean } = {}): boolean =>
     store.recordSessionCost({
       id: `sc-${model}-${cost}-${Math.random()}`,
       sessionId: 'sess-1',

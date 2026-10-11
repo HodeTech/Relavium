@@ -3,8 +3,9 @@ import type { CompactionResult, TrimResult } from '@relavium/core';
 import type { CatalogEntry } from '../workflows/catalog.js';
 import { sanitizeInline, stripTerminalControls } from '../render/tui/chat-projection.js';
 import type { SessionCostRow } from '@relavium/db';
+import { isUsageCoverageComplete, type UsageCoverage } from '@relavium/shared';
 
-import { formatCostUsd } from '../render/tui/format.js';
+import { formatReportedCost } from '../render/tui/format.js';
 
 /**
  * Pure formatters for the in-REPL info commands (2.5.C S4) — `/cost` and `/workflows`. The output is rendered as
@@ -28,17 +29,26 @@ import { formatCostUsd } from '../render/tui/format.js';
  *   • a row that predates per-model attribution says so, per row — a resumed legacy session that spends again has
  *     BOTH its sentinel and real model rows, and the sentinel must never claim the calls and tokens it does not have.
  *
- * The total is `agent_sessions.total_cost_microcents` — the authoritative number, and the one the budget cap enforces
- * against (ADR-0028). It is against Relavium's own event stream, not the provider's invoice: an egress that streamed
- * content but ended without a usage chunk, and a mid-stream failure, are both recorded as 0 on BOTH sides (ADR-0070
- * §3), so the reported spend is a systematic under-estimate of the bill. That is stated here, not buried.
+ * The total is `agent_sessions.total_cost_microcents`, the authoritative realized sum used by the cap alongside
+ * conservative holds (ADR-0028/0074). An incomplete usage receipt adds no guessed realized charge; ADR-0104's
+ * durable coverage qualifies that known sum, and usage-only models remain visible. It is not a provider invoice.
  */
 export function costNotice(
   totalCostMicrocents: number,
   rows: readonly SessionCostRow[],
-  opts: { readonly durabilityBroken?: boolean; readonly released?: number } = {},
+  opts: {
+    readonly durabilityBroken?: boolean;
+    readonly released?: number;
+    readonly coverage?: UsageCoverage;
+    readonly models?: readonly { readonly model: string; readonly coverage: UsageCoverage }[];
+  } = {},
 ): string {
-  const total = `Session cost: ${formatCostUsd(totalCostMicrocents)}`;
+  const total = `Session cost: ${formatReportedCost(
+    totalCostMicrocents,
+    opts.coverage,
+    rows.reduce((sum, row) => sum + row.unpricedCalls, 0),
+  )}`;
+  const modelCoverage = new Map(opts.models?.map((entry) => [entry.model, entry.coverage]));
   // ADR-0074 §1 requires the surface that RENDERS the committed amount to also expose clearing it, and to say
   // when the record behind it is no longer durable (#W15-3). Both were reachable in code and invisible here.
   const notes: string[] = [];
@@ -53,12 +63,17 @@ export function costNotice(
         'session, but a resume would not see it. Use /cost --release to clear it deliberately.',
     );
   }
+  // A usage-only model has no realized-money row. Keep it visible without inventing a completed call.
+  for (const entry of opts.models ?? []) {
+    if (!rows.some((row) => !row.isLegacy && row.model === entry.model))
+      notes.push(`  ${sanitizeInline(entry.model)} — ${formatReportedCost(0, entry.coverage)}`);
+  }
   if (rows.length === 0) return [total, ...notes].join('\n');
 
   const lines = rows.map((r) => {
     const share =
       totalCostMicrocents > 0 ? Math.round((r.costMicrocents / totalCostMicrocents) * 100) : 0;
-    const money = `  ${formatCostUsd(r.costMicrocents)}  ${String(share).padStart(3)}%`;
+    const money = `  ${formatReportedCost(r.costMicrocents, modelCoverage.get(r.model) ?? opts.coverage, r.unpricedCalls)}  ${String(share).padStart(3)}%`;
 
     // The legacy row is handled PER ROW, not per panel. A resumed pre-2.6.C session that spends AGAIN carries BOTH the
     // legacy aggregate and real model rows — the likeliest way a user meets this table — and rendering the aggregate
@@ -142,7 +157,7 @@ export function compactionNotice(result: CompactionResult): string {
           : summary;
       return (
         `⟳ Compacted the conversation — ~${groupInt(result.tokensBefore)} → ~${groupInt(result.tokensAfter)} ` +
-        `context tokens (summary cost ${groupInt(result.summaryTokens.input)} in / ${groupInt(result.summaryTokens.output)} out).\n` +
+        `context tokens (summary usage: ${groupInt(result.summaryTokens.input)} in / ${groupInt(result.summaryTokens.output)} out${result.summaryUsageCoverage === undefined || !isUsageCoverageComplete(result.summaryUsageCoverage) ? '; known observations, usage incomplete' : ''}).\n` +
         `Summary:\n${preview}`
       );
     }

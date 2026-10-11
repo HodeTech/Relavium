@@ -10,6 +10,7 @@ import {
   LedgerDurabilityError,
   MoneyDurability,
   type SettledAttemptDraft,
+  type TurnMoneyPort,
 } from './money-durability.js';
 import { parseWorkflow } from '../parser.js';
 
@@ -150,7 +151,7 @@ describe('money appended while the next attempt is waiting (ADR-0077)', () => {
                 return {
                   content: [{ type: 'text', text: 'done' }],
                   stopReason: 'stop',
-                  usage: { inputTokens: 1, outputTokens: 0 },
+                  usage: { kind: 'complete', usage: { inputTokens: 1, outputTokens: 0 } },
                 };
               },
               stream: async function* (): AsyncGenerator<StreamChunk> {
@@ -160,7 +161,7 @@ describe('money appended while the next attempt is waiting (ADR-0077)', () => {
                   yield {
                     type: 'stop',
                     stopReason: 'stop',
-                    usage: { inputTokens: 1, outputTokens: 0 },
+                    usage: { kind: 'complete', usage: { inputTokens: 1, outputTokens: 0 } },
                   };
                 } finally {
                   calls.cleanup += 1;
@@ -382,7 +383,11 @@ describe('actual sibling AgentRunner writes before candidate WorkflowEngine egre
             if (id === 'owner-1') await outputFirst.promise;
             else if (id === 'owner-2') await outputSecond.promise;
             else await Promise.resolve();
-            yield { type: 'stop', stopReason: 'stop', usage: { inputTokens: 1, outputTokens: 1 } };
+            yield {
+              type: 'stop',
+              stopReason: 'stop',
+              usage: { kind: 'complete', usage: { inputTokens: 1, outputTokens: 1 } },
+            };
           },
         };
         const engine = new WorkflowEngine({
@@ -407,21 +412,30 @@ describe('actual sibling AgentRunner writes before candidate WorkflowEngine egre
                 tools: [],
                 resolvePrice: PRICES,
               });
-              const port = context.money;
+              const observeMoney = (port: TurnMoneyPort): TurnMoneyPort => ({
+                ...port,
+                // Observe both the original port and the explicitly transferred accounting child.
+                // The real runner still creates every row through its actual scoped engine port.
+                record: (record: SettledAttemptDraft) => {
+                  port.record(record);
+                  order.push(`record:${record.nodeId}`);
+                  if (record.nodeId === 'owner-2') secondRecorded.resolve();
+                },
+              });
+              const transfer = context.continueReceipt;
               return runner.execute({
                 ...context,
-                ...(port === undefined
+                ...(context.money === undefined ? {} : { money: observeMoney(context.money) }),
+                ...(transfer === undefined
                   ? {}
                   : {
-                      money: {
-                        join: () => port.join(),
-                        // Observation only: the real runner creates every cost row, through the actual engine port.
-                        record: (record: SettledAttemptDraft) => {
-                          port.record(record);
-                          order.push(`record:${record.nodeId}`);
-                          if (record.nodeId === 'owner-2') secondRecorded.resolve();
-                        },
-                      },
+                      continueReceipt: (operation) =>
+                        transfer((receipt) =>
+                          operation({
+                            ...receipt,
+                            money: observeMoney(receipt.money),
+                          }),
+                        ),
                     }),
               });
             },

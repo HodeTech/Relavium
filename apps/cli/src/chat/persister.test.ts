@@ -1,5 +1,5 @@
 import { prepareOutputCapPlan } from '@relavium/llm';
-import type { PreEgressInfo } from '@relavium/core';
+import type { PreEgressInfo, SessionStreamHandleEvent } from '@relavium/core';
 import { reconstructSessionState, unwrapUntrusted } from '@relavium/core';
 import type { StreamChunk } from '@relavium/llm';
 import {
@@ -7,6 +7,7 @@ import {
   createModelCatalogStore,
   createProviderStore,
   createSessionStore,
+  createSessionUsageStore,
   runMigrations,
   type DbClient,
   type SessionStore,
@@ -18,7 +19,13 @@ import type { ResolvedChatConfig } from '../config/resolve.js';
 import { buildDefaultChatAgent } from './default-agent.js';
 import { createSessionPersister, makeCatalogIdResolver } from './persister.js';
 import { buildChatSession, buildGovernorWiring, buildResumedChatSession } from './session-host.js';
-import { scriptedResolver, stop, textTurn, unresolvedResolver } from './test-support.js';
+import {
+  scriptedProvider,
+  scriptedResolver,
+  stop,
+  textTurn,
+  unresolvedResolver,
+} from './test-support.js';
 import type { ProviderResolver } from '../engine/providers.js';
 
 const EMPTY_CHAT: ResolvedChatConfig = {
@@ -69,7 +76,11 @@ describe('createSessionPersister', () => {
     listenerNotes = [];
   });
 
-  async function setup(providers: ProviderResolver, initialSequenceNumber?: number) {
+  async function setup(
+    providers: ProviderResolver,
+    initialSequenceNumber?: number,
+    mode: 'fresh' | 'adopt' = 'fresh',
+  ) {
     let tick = Date.parse('2026-06-25T00:00:00.000Z');
     const now = () => tick++;
     let msgId = 0;
@@ -83,7 +94,11 @@ describe('createSessionPersister', () => {
       providers,
       onListenerError: (note: string) => listenerNotes.push(note),
     });
+    const usageStore = createSessionUsageStore(client.db);
     const persister = createSessionPersister({
+      usageStore,
+      mode,
+      attachUsageWriter: built.attachUsageWriter,
       governor: undefined,
       store,
       handle: built.handle,
@@ -96,11 +111,121 @@ describe('createSessionPersister', () => {
       uuid: () => `msg-${msgId++}`,
       ...(initialSequenceNumber === undefined ? {} : { initialSequenceNumber }),
     });
-    return { built, persister, store };
+    return { built, persister, store, usageStore };
   }
 
+  it('publishes typed session usage events only after their native SQLite coverage ACK', async () => {
+    const { built, persister } = await setup(
+      scriptedResolver([
+        [
+          { type: 'text_delta', text: 'offline' },
+          { type: 'stop', stopReason: 'stop', usage: { kind: 'missing', reason: 'not_reported' } },
+        ],
+      ]),
+    );
+    const observed: SessionStreamHandleEvent[] = [];
+    const boundaries: { ordinal: number; disposition: string; pending: number; unknown: number }[] =
+      [];
+    const off = built.handle.subscribe((event) => {
+      observed.push(event);
+      if (event.type === 'cost:usage_pending' || event.type === 'cost:usage_disposition') {
+        const durable = store.loadSessionCostBreakdown(built.sessionId).coverage;
+        boundaries.push({
+          ordinal: event.invocation.ordinal,
+          disposition: event.type === 'cost:usage_pending' ? 'pending' : event.disposition.kind,
+          pending: durable.pendingInvocations,
+          unknown: durable.unknownCalls,
+        });
+        expect(event.usageCoverage).toEqual(durable);
+      }
+    });
+    try {
+      persister.start();
+      built.session.start();
+      persister.beginUserTurn('offline');
+      await built.session.sendMessage('offline');
+      built.session.cancel();
+      await built.whenHostSafeToClose();
+      expect(boundaries).toEqual([
+        { ordinal: 1, disposition: 'pending', pending: 1, unknown: 0 },
+        { ordinal: 1, disposition: 'incomplete', pending: 0, unknown: 1 },
+      ]);
+      expect(observed.map((event) => event.type)).not.toContain('cost:coverage_started');
+      expect(observed.map((event) => event.type)).not.toContain('cost:attempt_settled');
+      expect(store.loadSessionCostBreakdown(built.sessionId).coverage).toEqual({
+        unverified: false,
+        pendingInvocations: 0,
+        unknownCalls: 1,
+      });
+      expect(store.loadSessionCosts(built.sessionId)).toEqual([]);
+      expect(listenerNotes).toEqual([]);
+    } finally {
+      off();
+      persister.close();
+    }
+  });
+
+  it('retains the raw session receipt through cancellation and atomically refines late complete usage', async () => {
+    let resolveRead!: (value: IteratorResult<StreamChunk>) => void;
+    const read = new Promise<IteratorResult<StreamChunk>>((resolve) => {
+      resolveRead = resolve;
+    });
+    let markEntered!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      markEntered = resolve;
+    });
+    const provider = {
+      ...scriptedProvider([]),
+      stream: () => ({
+        [Symbol.asyncIterator]() {
+          return this;
+        },
+        next: () => {
+          markEntered();
+          return read;
+        },
+        return: () => Promise.resolve({ done: true as const, value: undefined }),
+      }),
+    };
+    const { built, persister, usageStore } = await setup({
+      resolveProvider: () => provider,
+      keyFor: () => 'offline',
+    });
+    persister.start();
+    built.session.start();
+    const turn = built.session.sendMessage('cancel with raw read pending');
+    await entered;
+    built.session.cancel();
+    await turn;
+    expect(usageStore.loadCoverage(built.sessionId)?.coverage).toEqual({
+      unverified: false,
+      pendingInvocations: 0,
+      unknownCalls: 1,
+    });
+    let safe = false;
+    const closed = built.whenHostSafeToClose().then(() => {
+      safe = true;
+    });
+    await Promise.resolve();
+    expect(safe).toBe(false);
+    resolveRead({ done: false, value: stop() });
+    await closed;
+    expect(usageStore.loadCoverage(built.sessionId)?.coverage).toEqual({
+      unverified: false,
+      pendingInvocations: 0,
+      unknownCalls: 0,
+    });
+    expect(store.loadSessionCosts(built.sessionId)).toMatchObject([{ callCount: 1 }]);
+    expect(store.loadSession(built.sessionId)?.totalCostMicrocents).toBeGreaterThan(0);
+    persister.close();
+  });
+
   /** {@link setup} against a caller-supplied store — for a scenario that must not share a session row. */
-  async function setupWith(target: SessionStore, providers: ProviderResolver) {
+  async function setupWith(
+    target: SessionStore,
+    providers: ProviderResolver,
+    targetClient: DbClient,
+  ) {
     let tick = Date.parse('2026-06-25T00:00:00.000Z');
     const now = () => tick++;
     let msgId = 0;
@@ -115,6 +240,9 @@ describe('createSessionPersister', () => {
       onListenerError: (note: string) => listenerNotes.push(note),
     });
     const persister = createSessionPersister({
+      usageStore: createSessionUsageStore(targetClient.db),
+      mode: 'fresh',
+      attachUsageWriter: built.attachUsageWriter,
       governor: undefined,
       store: target,
       handle: built.handle,
@@ -128,6 +256,48 @@ describe('createSessionPersister', () => {
     });
     return { built, persister };
   }
+
+  it('unknown uncapped usage is durable without manufacturing an actual model cost', async () => {
+    const { built, persister, usageStore } = await setup(
+      scriptedResolver([
+        [
+          { type: 'text_delta', text: 'useful' },
+          { type: 'stop', stopReason: 'stop', usage: { kind: 'missing', reason: 'not_reported' } },
+        ],
+      ]),
+    );
+    persister.start();
+    built.session.start();
+    persister.beginUserTurn('question');
+    await built.session.sendMessage('question');
+    await built.whenHostSafeToClose();
+    expect(usageStore.loadCoverage(built.sessionId)?.coverage).toEqual({
+      unverified: false,
+      pendingInvocations: 0,
+      unknownCalls: 1,
+    });
+    expect(store.loadSession(built.sessionId)?.totalCostMicrocents).toBe(0);
+    expect(store.loadSessionCosts(built.sessionId)).toEqual([]);
+    persister.close();
+    expect(usageStore.loadCoverage(built.sessionId)?.coverage.unknownCalls).toBe(1);
+  });
+
+  it('refuses uncapped provider egress when the pending transaction is rejected', async () => {
+    const resolver = scriptedResolver([textTurn('must not run')]);
+    const provider = resolver.resolveProvider('anthropic');
+    if (provider === undefined) throw new Error('missing fixture provider');
+    const stream = vi.spyOn(provider, 'stream');
+    const { built, persister, usageStore } = await setup(resolver);
+    persister.start();
+    built.session.start();
+    vi.spyOn(usageStore, 'beginInvocation').mockImplementation(() => {
+      throw new Error('pending refused');
+    });
+    await built.session.sendMessage('question');
+    expect(stream).not.toHaveBeenCalled();
+    expect(persister.durabilityFailure?.message).toBe('pending refused');
+    persister.close();
+  });
 
   /* --- #228: a failed turn write must leave NOTHING, not half a turn --- */
 
@@ -147,6 +317,9 @@ describe('createSessionPersister', () => {
     });
     expect(governor).toBeDefined();
     const persister = createSessionPersister({
+      usageStore: createSessionUsageStore(client.db),
+      mode: 'fresh',
+      attachUsageWriter: built.attachUsageWriter,
       governor, // NOT undefined — the whole point
       store,
       handle: built.handle,
@@ -226,6 +399,9 @@ describe('createSessionPersister', () => {
     // behind. The failure is now latched and the host's pre-egress gate reads it.
     const { built } = await setup(scriptedResolver([textTurn('hi'), textTurn('again')]));
     const persister = createSessionPersister({
+      usageStore: createSessionUsageStore(client.db),
+      mode: 'fresh',
+      attachUsageWriter: built.attachUsageWriter,
       governor: undefined,
       attachDurabilityProbe: built.attachDurabilityProbe, // the wiring under test
       store,
@@ -273,6 +449,9 @@ describe('createSessionPersister', () => {
     // believing it had ended cleanly.
     const { built } = await setup(scriptedResolver([textTurn('hi')]));
     const persister = createSessionPersister({
+      usageStore: createSessionUsageStore(client.db),
+      mode: 'fresh',
+      attachUsageWriter: built.attachUsageWriter,
       governor: undefined,
       attachDurabilityProbe: built.attachDurabilityProbe,
       store,
@@ -331,7 +510,7 @@ describe('createSessionPersister', () => {
     });
 
     persister.beginUserTurn('first');
-    await built.session.sendMessage('first');
+    await expect(built.session.sendMessage('first')).rejects.toThrow('ledger');
 
     // The spy is asserted BEFORE the restore, because without it this test passes when no `cost:updated` was
     // emitted at all — which is the vacuous reading its earlier comment settled for rather than closed.
@@ -362,6 +541,7 @@ describe('createSessionPersister', () => {
       const { built, persister } = await setupWith(
         store2,
         scriptedResolver([textTurn('hi'), textTurn('again')]),
+        other,
       );
       built.session.start();
       persister.start();
@@ -408,6 +588,9 @@ describe('createSessionPersister', () => {
     // A FRESH persister over the same store re-seeds from the rows that exist — which is none, so the next
     // turn starts at 0 rather than at a phantom offset. This is the real recovery path now.
     const recovered = createSessionPersister({
+      usageStore: createSessionUsageStore(client.db),
+      mode: 'adopt',
+      attachUsageWriter: built.attachUsageWriter,
       governor: undefined,
       store,
       handle: built.handle,
@@ -445,6 +628,7 @@ describe('createSessionPersister', () => {
       const { built, persister } = await setupWith(
         store2,
         scriptedResolver([textTurn('hi'), textTurn('again')]),
+        other,
       );
       built.session.start();
       persister.start();
@@ -480,7 +664,7 @@ describe('createSessionPersister', () => {
   });
 
   it('adopts an existing row on start instead of re-INSERTing (resume does not hit the UNIQUE pk)', async () => {
-    const { built, persister } = await setup(scriptedResolver([textTurn('hi')]), 5);
+    const { built, persister } = await setup(scriptedResolver([textTurn('hi')]), 5, 'adopt');
     // Simulate the prior process: the session row already exists in history.db before this resume starts.
     store.createSession({
       id: built.sessionId,
@@ -505,7 +689,7 @@ describe('createSessionPersister', () => {
 
   it('resumed persister folds new-turn tokens ON TOP of the adopted row totals, not from zero', async () => {
     // Simulate 2.N resume: a row with prior totals already exists; start() adopts it and hydrates the totals.
-    const { built, persister } = await setup(scriptedResolver([textTurn('go')]), 5);
+    const { built, persister } = await setup(scriptedResolver([textTurn('go')]), 5, 'adopt');
     store.createSession({
       id: built.sessionId,
       agentSlug: built.agent.id,
@@ -534,7 +718,7 @@ describe('createSessionPersister', () => {
     // A turn with no provider egress emits NO cost:updated, so the cost flush relies entirely on the hydrated
     // total. unresolvedResolver fails the turn `internal` before any egress; the prior row cost (1300) must
     // survive — without start()'s hydration the unconditional flush would reset it to 0.
-    const { built, persister } = await setup(unresolvedResolver(), 5);
+    const { built, persister } = await setup(unresolvedResolver(), 5, 'adopt');
     store.createSession({
       id: built.sessionId,
       agentSlug: built.agent.id,
@@ -609,6 +793,9 @@ describe('createSessionPersister', () => {
       providers: scriptedResolver([textTurn('hi there')]),
     });
     const persister = createSessionPersister({
+      usageStore: createSessionUsageStore(client.db),
+      mode: 'fresh',
+      attachUsageWriter: built.attachUsageWriter,
       governor: undefined,
       store,
       handle: built.handle,
@@ -950,6 +1137,9 @@ describe('createSessionPersister', () => {
     });
     let mid = 100;
     const persister = createSessionPersister({
+      usageStore: createSessionUsageStore(client.db),
+      mode: 'adopt',
+      attachUsageWriter: built.attachUsageWriter,
       governor: undefined,
       store,
       handle: built.handle,

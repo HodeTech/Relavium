@@ -82,7 +82,7 @@ function provider(result: () => LlmResult): LlmProvider {
     stream: async function* () {
       await Promise.resolve();
       yield { type: 'text_delta', text: 'safe answer' };
-      yield { type: 'stop', stopReason: 'stop', usage: amounts() };
+      yield { type: 'stop', stopReason: 'stop', usage: { kind: 'complete', usage: amounts() } };
     },
   };
 }
@@ -164,7 +164,7 @@ describe('R12 novel actual generated result counterfactuals', () => {
         return {
           content: [image(), { type: 'text', text: 'answer' }],
           stopReason: 'stop',
-          usage: amounts(),
+          usage: { kind: 'complete', usage: amounts() },
         };
       });
       const price =
@@ -209,7 +209,11 @@ describe('R12 novel actual generated result counterfactuals', () => {
         const out = await workflow(
           provider(() => {
             calls++;
-            return { content: [image(), part], stopReason: 'stop', usage: amounts() };
+            return {
+              content: [image(), part],
+              stopReason: 'stop',
+              usage: { kind: 'complete', usage: amounts() },
+            };
           }),
           new Overlay([[model, rate]]),
         );
@@ -255,12 +259,12 @@ describe('R12 novel actual generated result counterfactuals', () => {
             ? {
                 content: [{ type: 'tool_call', id: 'r12-c', name: 'write_file', args }],
                 stopReason: 'tool_use',
-                usage: amounts(),
+                usage: { kind: 'complete', usage: amounts() },
               }
             : {
                 content: [image(), { type: 'text', text: 'done' }],
                 stopReason: 'stop',
-                usage: amounts(),
+                usage: { kind: 'complete', usage: amounts() },
               };
         }),
         new Map([[model, rate]]),
@@ -320,10 +324,18 @@ describe('R12 new post-provider callback monetary and control contrast', () => {
             yield { type: 'tool_call_start', id: 'r12-effect', name: 'write_file' };
             yield { type: 'tool_call_delta', id: 'r12-effect', argsJsonDelta: '{}' };
             yield { type: 'tool_call_end', id: 'r12-effect' };
-            yield { type: 'stop', stopReason: 'tool_use', usage: amounts() };
+            yield {
+              type: 'stop',
+              stopReason: 'tool_use',
+              usage: { kind: 'complete', usage: amounts() },
+            };
           } else {
             yield { type: 'text_delta', text: 'actual stream answer' };
-            yield { type: 'stop', stopReason: 'stop', usage: amounts() };
+            yield {
+              type: 'stop',
+              stopReason: 'stop',
+              usage: { kind: 'complete', usage: amounts() },
+            };
           }
         };
         const out = await workflow(p, new Map([[model, rate]]), {
@@ -357,12 +369,16 @@ describe('R12 new post-provider callback monetary and control contrast', () => {
         used.cacheWriteTokens = 0;
         used.mediaUnits[0]!.units = 0;
       };
-      const p = provider(() => ({ content: [], stopReason: 'stop', usage: used }));
+      const p = provider(() => ({
+        content: [],
+        stopReason: 'stop',
+        usage: { kind: 'complete', usage: used },
+      }));
       p.stream = async function* () {
         await Promise.resolve();
         calls++;
         yield { type: 'text_delta', text: 'priced' };
-        yield { type: 'stop', stopReason: 'stop', usage: used };
+        yield { type: 'stop', stopReason: 'stop', usage: { kind: 'complete', usage: used } };
         if (phase === 'held-terminal') mutate();
       };
       const chain = new FallbackChain([{ provider: p, model, maxAttempts: 2 }], {
@@ -383,20 +399,27 @@ describe('R12 new post-provider callback monetary and control contrast', () => {
       expect(calls).toBe(1);
       expect(records).toMatchObject([
         {
-          usage: { inputTokens: 7, outputTokens: 2, cacheReadTokens: 3, cacheWriteTokens: 1 },
+          usage: {
+            kind: 'complete',
+            usage: { inputTokens: 7, outputTokens: 2, cacheReadTokens: 3, cacheWriteTokens: 1 },
+          },
           cost: { costMicrocents: 101 },
           outcome: 'succeeded',
         },
       ]);
       expect(chunks.at(-1)).toMatchObject({
         type: 'stop',
-        usage: { inputTokens: 7, outputTokens: 2 },
+        usage: { kind: 'complete', usage: { inputTokens: 7, outputTokens: 2 } },
       });
     });
   it('genuine uncommitted transport retries while committed provider transport never retries', async () => {
     for (const committed of [false, true]) {
       let calls = 0;
-      const p = provider(() => ({ content: [], stopReason: 'stop', usage: amounts() }));
+      const p = provider(() => ({
+        content: [],
+        stopReason: 'stop',
+        usage: { kind: 'complete', usage: amounts() },
+      }));
       p.stream = async function* () {
         await Promise.resolve();
         calls++;
@@ -410,7 +433,8 @@ describe('R12 new post-provider callback monetary and control contrast', () => {
               message: 'fixed canonical transport',
             }),
           };
-        else yield { type: 'stop', stopReason: 'stop', usage: amounts() };
+        else
+          yield { type: 'stop', stopReason: 'stop', usage: { kind: 'complete', usage: amounts() } };
       };
       const chain = new FallbackChain([{ provider: p, model, maxAttempts: 2 }], {
         keyFor: () => 'synthetic',
@@ -446,11 +470,15 @@ describe('R12 new post-provider callback monetary and control contrast', () => {
       },
       101,
     );
-    const p = provider(() => ({ content: [], stopReason: 'stop', usage: amounts() }));
+    const p = provider(() => ({
+      content: [],
+      stopReason: 'stop',
+      usage: { kind: 'complete', usage: amounts() },
+    }));
     p.stream = async function* () {
       await Promise.resolve();
       calls++;
-      yield { type: 'stop', stopReason: 'stop', usage: amounts() };
+      yield { type: 'stop', stopReason: 'stop', usage: { kind: 'complete', usage: amounts() } };
     };
     const make = (nodeId: string) =>
       captureAgentTurnOutcome({
@@ -502,12 +530,16 @@ describe('R12 real session primary/passive bus and cancellation', () => {
       const passive: RunOrSessionEvent[] = [];
       bus.subscribe((e) => passive.push(e));
       const journal = createInMemoryEffectJournalStore();
-      const p = provider(() => ({ content: [], stopReason: 'stop', usage: amounts() }));
+      const p = provider(() => ({
+        content: [],
+        stopReason: 'stop',
+        usage: { kind: 'complete', usage: amounts() },
+      }));
       p.stream = async function* () {
         await Promise.resolve();
         calls++;
         yield { type: 'text_delta', text: 'final answer' };
-        yield { type: 'stop', stopReason: 'stop', usage: amounts() };
+        yield { type: 'stop', stopReason: 'stop', usage: { kind: 'complete', usage: amounts() } };
       };
       let turn = 0;
       const session = new AgentSession({

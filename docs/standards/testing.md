@@ -114,6 +114,28 @@ It runs in two modes:
   logged). A nightly failure is the early-warning signal that a provider changed its
   contract under us. New model ids and pricing-table entries are validated here.
 
+**Implementation qualification — 2026-10-10:** the ordinary shared response suites use
+hand-authored synthetic seeds; Gemini's older suite uses a transport double. W8 adds a
+separate 24-case [canonical installed-SDK HTTP matrix](../../packages/llm/src/conformance/canonical-wire.test.ts)
+for Anthropic, OpenAI, DeepSeek and Gemini: generate/stream structured output, named tools and
+two-turn continuations, including applicable signatures. Independently authored static request
+expectations verify method, endpoint, query, protocol headers and structural JSON. Its internal
+[exchange harness](../../packages/llm/src/conformance/README.md) owns projection, sequence,
+recording and credential safeguards. The ordinary LLM test task runs this matrix in required CI.
+
+`pnpm check:wire-mutations` independently changes three actual production-lowering sites in
+isolated byte copies and requires wire mismatches, then exact restoration and a passing full
+matrix after each change. The [runner guide](../../tools/wire-conformance/README.md) owns its
+procedure and report format. This explicit offline author/reviewer command supplements the
+ordinary CI matrix; it does not authorize provider calls.
+
+Live cases remain separate smoke/effort probes, not execution of the complete offline matrix or
+an automatic fixture recorder. Synthetic protocol seeds are reviewed as authored test code;
+the earlier regeneration rule applies to genuine captured evidence. The five genuine W7 overflow
+artifacts retain distinct immutable provenance. Neither these tests nor their synthetic fixtures
+claim complete live-provider coverage or unknown-usage accounting acceptance. The W8 register
+records staged review and acceptance rather than inferring closure from test count.
+
 ## End-to-end tests — Playwright
 
 The desktop app (`apps/desktop`, Tauri v2) has Playwright e2e coverage for the critical

@@ -11,7 +11,7 @@ import {
   type RunLeasePort,
   type RunStatus,
 } from '@relavium/shared';
-import { and, asc, desc, eq, getTableColumns, inArray, isNull, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, getTableColumns, gt, inArray, isNull, sql } from 'drizzle-orm';
 
 import type { Db, TxDb } from './client.js';
 import { withBusyRetry, withBusyRetryAsync } from './retry.js';
@@ -287,6 +287,22 @@ export interface RunHistoryReader {
    * @throws {CorruptRunEventError} when a row is damaged (unchanged from the tolerant reads).
    */
   loadRunEventLogForReplay: (runId: string) => RunEvent[];
+  /**
+   * Strict, indexed batches and their owning run row under ONE SQLite snapshot. The first read
+   * pins the run's stored totals; a display must use the returned row rather than a prior discovery
+   * result when qualifying those amounts with its visitor's coverage fold. No money is re-folded.
+   * An optional step visitor receives the per-node projections under that same transaction, only
+   * after strict replay succeeds. Qualify step amounts with this snapshot, never a later standalone
+   * loadStepExecutions read. Both visitors must be synchronous; discard partial results on failure.
+   */
+  visitRunEventsForReplay: (
+    runId: string,
+    visitor: (event: RunEvent) => void,
+    options?: {
+      readonly streamingIncluded?: boolean;
+      readonly visitSteps?: (steps: readonly StepRecord[]) => void;
+    },
+  ) => RunRecord | undefined;
   /** A run's STATE-BEARING events in `seq` order — the full log MINUS the per-token/tool streaming firehose
    *  (`agent:token` / `agent:tool_call` / `agent:tool_result`), which neither checkpoint reconstruction nor gate
    *  detection consults. Every stored row is validated before genuine streaming events are excluded from
@@ -312,7 +328,12 @@ export interface RunHistoryReader {
  */
 export interface RunHistoryStore extends Pick<
   RunHistoryReader,
-  'listRuns' | 'loadRun' | 'loadRunEvents' | 'loadRunEventLog' | 'loadRunEventLogForReplay'
+  | 'listRuns'
+  | 'loadRun'
+  | 'loadRunEvents'
+  | 'loadRunEventLog'
+  | 'loadRunEventLogForReplay'
+  | 'visitRunEventsForReplay'
 > {
   resolveWorkflowId: (slug: string) => Promise<string>;
   /** Structurally the core `RunStore.persistEvent`; `ctx` carries ADR-0078 §2's compare-and-append guard. */
@@ -1201,6 +1222,7 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
     loadRunEvents: reader.loadRunEvents,
     loadRunEventLog: reader.loadRunEventLog,
     loadRunEventLogForReplay: reader.loadRunEventLogForReplay,
+    visitRunEventsForReplay: reader.visitRunEventsForReplay,
   };
 }
 
@@ -1256,6 +1278,43 @@ export function createRunHistoryReader(db: Db): RunHistoryReader {
     // does not use this — see `loadRunEventLogForReplay` below (ADR-0075).
     loadRunEventLog: (runId) => readEventLog(db, runId, { streamingIncluded: true }),
 
+    visitRunEventsForReplay: (runId, visitor, options) =>
+      db.transaction((tx) => {
+        // Pin amount and coverage to the same read snapshot, even if discovery happened before
+        // another process settled a charge. Visibility remains the caller's responsibility, just
+        // as for the existing strict log read keyed by run id (including retained deleted rows).
+        const owner = tx.select().from(runs).where(eq(runs.id, runId)).get();
+        let after: number | undefined;
+        for (;;) {
+          const rows = tx
+            .select({
+              seq: runEvents.seq,
+              eventType: runEvents.eventType,
+              payloadJson: runEvents.payloadJson,
+            })
+            .from(runEvents)
+            .where(
+              after === undefined
+                ? eq(runEvents.runId, runId)
+                : and(eq(runEvents.runId, runId), gt(runEvents.seq, after)),
+            )
+            .orderBy(asc(runEvents.seq))
+            .limit(256)
+            .all();
+          for (const row of rows) {
+            const event = readStoredEventRow(runId, row);
+            if (event === undefined) throw new UnreadableRunEventLogError(runId, [row.seq]);
+            if (options?.streamingIncluded !== false || !STREAMING_EVENT_TYPES.has(event.type))
+              visitor(event);
+            after = row.seq;
+          }
+          if (rows.length < 256) {
+            options?.visitSteps?.(readStepExecutions(tx, runId));
+            return owner === undefined ? undefined : fromRunRow(owner);
+          }
+        }
+      }),
+
     loadRunEventLogForReplay: (runId) => {
       const log = readEventLog(db, runId, { streamingIncluded: true });
       if (log.skipped.length > 0) {
@@ -1271,8 +1330,10 @@ export function createRunHistoryReader(db: Db): RunHistoryReader {
 
     loadRunStateEvents: (runId) =>
       // Same forward-compatible read (ADR-0074 §5). The skipped rows are deliberately DISCARDED here rather than
-      // reported: this read is the 2.5.B Home's bounded gate/state fold, it already excludes the streaming
-      // firehose (so its max `seq` is not the run's anyway), and nothing seeds a sequence counter from it. A row
+      // reported: the returned 2.5.B Home gate/state fold excludes streaming events AFTER row validation.
+      // Legacy/foreign stored streaming rows still undergo payload/projection integrity checks; filtering
+      // their SQL discriminator first would conceal corruption. Shipping token events are not durable.
+      // Its max `seq` is not the run's, and nothing seeds a sequence counter from this fold. A row
       // this binary cannot read also cannot describe a gate this binary knows how to render.
       readEventLog(db, runId, { streamingIncluded: false }).events,
 
@@ -1311,37 +1372,7 @@ export function createRunHistoryReader(db: Db): RunHistoryReader {
         .map((row): WorkflowRunSummary => ({ slug: row.slug, lastRun: fromRunRow(row) }));
     },
 
-    loadStepExecutions: (runId) =>
-      db
-        .select({
-          nodeId: stepExecutions.nodeId,
-          nodeType: stepExecutions.nodeType,
-          status: stepExecutions.status,
-          attemptNumber: stepExecutions.attemptNumber,
-          startedAt: stepExecutions.startedAt,
-          completedAt: stepExecutions.completedAt,
-          durationMs: stepExecutions.durationMs,
-          costMicrocents: stepExecutions.costMicrocents,
-        })
-        .from(stepExecutions)
-        .where(eq(stepExecutions.runId, runId))
-        // createdAt is the execution-order key; `rowid` (insertion order = persist/seq order) is the
-        // deterministic tiebreak for same-millisecond steps, so the per-node order never depends on the
-        // engine clock resolution or a future index over createdAt.
-        .orderBy(asc(stepExecutions.createdAt), asc(sql`rowid`))
-        .all()
-        .map(
-          (r): StepRecord => ({
-            nodeId: r.nodeId,
-            nodeType: r.nodeType,
-            status: r.status,
-            attemptNumber: r.attemptNumber,
-            ...(r.startedAt === null ? {} : { startedAt: epochMsToIso(r.startedAt) }),
-            ...(r.completedAt === null ? {} : { completedAt: epochMsToIso(r.completedAt) }),
-            ...(r.durationMs === null ? {} : { durationMs: r.durationMs }),
-            costMicrocents: r.costMicrocents,
-          }),
-        ),
+    loadStepExecutions: (runId) => readStepExecutions(db, runId),
 
     loadWorkflowSlugs: (ids) => {
       if (ids.length === 0) return new Map(); // no query for an empty set — the Home with no runs hits this
@@ -1353,6 +1384,42 @@ export function createRunHistoryReader(db: Db): RunHistoryReader {
       return new Map(rows.map((r) => [r.id, r.slug]));
     },
   };
+}
+
+/** The standalone read and strict snapshot share one projection; a snapshot passes its transaction. */
+function readStepExecutions(db: Db | TxDb, runId: string): StepRecord[] {
+  return (
+    db
+      .select({
+        nodeId: stepExecutions.nodeId,
+        nodeType: stepExecutions.nodeType,
+        status: stepExecutions.status,
+        attemptNumber: stepExecutions.attemptNumber,
+        startedAt: stepExecutions.startedAt,
+        completedAt: stepExecutions.completedAt,
+        durationMs: stepExecutions.durationMs,
+        costMicrocents: stepExecutions.costMicrocents,
+      })
+      .from(stepExecutions)
+      .where(eq(stepExecutions.runId, runId))
+      // createdAt is the execution-order key; `rowid` (insertion order = persist/seq order) is the
+      // deterministic tiebreak for same-millisecond steps, so the per-node order never depends on the
+      // engine clock resolution or a future index over createdAt.
+      .orderBy(asc(stepExecutions.createdAt), asc(sql`rowid`))
+      .all()
+      .map(
+        (r): StepRecord => ({
+          nodeId: r.nodeId,
+          nodeType: r.nodeType,
+          status: r.status,
+          attemptNumber: r.attemptNumber,
+          ...(r.startedAt === null ? {} : { startedAt: epochMsToIso(r.startedAt) }),
+          ...(r.completedAt === null ? {} : { completedAt: epochMsToIso(r.completedAt) }),
+          ...(r.durationMs === null ? {} : { durationMs: r.durationMs }),
+          costMicrocents: r.costMicrocents,
+        }),
+      )
+  );
 }
 
 /** Match the `step_executions` row for a node attempt (the node-retry dispatch index; absent ⇒ 1). */

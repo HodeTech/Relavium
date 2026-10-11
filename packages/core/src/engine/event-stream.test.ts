@@ -43,7 +43,7 @@ describe('BoundedEventStream — onClose cleanup hook (1.W)', () => {
 });
 
 describe('BoundedEventStream — one freed slot wakes one producer (CR-30)', () => {
-  it('never lets N concurrent producers overshoot the ceiling by N-1', async () => {
+  it('wakes one parked producer when one pull frees a slot', async () => {
     // Releasing EVERY parked waiter when one slot frees let each woken producer push, so the buffer peaked at
     // `capacity + N - 1` — 7 over at the default `max_parallel` of 8, and 63 over at an authored 64. A
     // ceiling that a legal number of producers can exceed is not a ceiling.
@@ -53,10 +53,9 @@ describe('BoundedEventStream — one freed slot wakes one producer (CR-30)', () 
     // Fill FIRST, then pull once. A pull on an empty stream parks as a waiting consumer and the next push is
     // handed straight to it, so pulling first would leave the buffer under capacity and every producer would
     // sail through `whenDrained` — the setup would test nothing.
-    // Also: an un-pulled stream DECLINES past its ceiling, so the fill has to happen in two stages.
     for (let i = 0; i < CAPACITY; i += 1) stream.push(i);
-    await stream.next(); // marks it pulled; buffer drops to CAPACITY - 1
-    stream.push(99); // back to exactly CAPACITY, now with `#everPulled` set
+    await stream.next(); // buffer drops to CAPACITY - 1
+    stream.push(99); // back to exactly CAPACITY
 
     let peak = stream.bufferedCount;
     expect(peak).toBe(CAPACITY); // the premise: producers really do park
@@ -119,5 +118,102 @@ describe('BoundedEventStream — actual delivery observation (ADR-0103)', () => 
       hasGap: false,
       abandoned: true,
     });
+  });
+});
+
+describe('BoundedEventStream — explicit consumption (ADR-0087 §1)', () => {
+  it('retains every event and terminal before the first pull even above capacity', async () => {
+    const stream = new BoundedEventStream<string>(1);
+    stream.push('started');
+    stream.push('progress');
+    stream.push('terminal');
+    stream.close();
+    expect(stream.bufferedCount).toBe(3);
+    expect(stream.unpulledOverflow).toBe(0);
+    const seen: string[] = [];
+    for await (const event of stream) seen.push(event);
+    expect(seen).toEqual(['started', 'progress', 'terminal']);
+    expect(stream.deliveryState).toEqual({
+      publishedCount: 3,
+      deliveredCount: 3,
+      hasGap: false,
+      abandoned: false,
+    });
+  });
+
+  it('blocks readiness at capacity before the first pull, then resumes when it drains', async () => {
+    const stream = new BoundedEventStream<number>(1);
+    await stream.whenDrained();
+    stream.push(1);
+    let ready = false;
+    const waiting = stream.whenDrained().then(() => {
+      ready = true;
+    });
+    await Promise.resolve();
+    expect(ready).toBe(false);
+    expect(await stream.next()).toEqual({ value: 1, done: false });
+    await waiting;
+    expect(ready).toBe(true);
+    stream.close();
+  });
+
+  it.each(['close', 'return'] as const)('releases pre-first-pull readiness on %s', async (end) => {
+    const stream = new BoundedEventStream<number>(1);
+    stream.push(1);
+    const ready = stream.whenDrained();
+    await stream[end]();
+    await ready;
+  });
+
+  it('subscribe-only holds no primary publications, buffer, overflow or readiness wait', async () => {
+    const stream = new BoundedEventStream<number>(1, undefined, 'subscribe-only');
+    for (let i = 0; i < 1000; i += 1) stream.push(i);
+    expect(stream.bufferedCount).toBe(0);
+    expect(stream.unpulledOverflow).toBe(0);
+    expect(stream.deliveryState).toEqual({
+      publishedCount: 0,
+      deliveredCount: 0,
+      hasGap: false,
+      abandoned: false,
+    });
+    await stream.whenDrained();
+    stream.close();
+    stream.push(1000);
+    expect(stream.deliveryState.hasGap).toBe(false);
+  });
+
+  it.each([false, true])(
+    'rejects subscribe-only iteration with a fixed typed error (closed=%s)',
+    async (closed) => {
+      const stream = new BoundedEventStream<number>(1, undefined, 'subscribe-only');
+      if (closed) stream.close();
+      await expect(stream.next()).rejects.toMatchObject({
+        name: 'RunLoopInvariantError',
+        code: 'invalid_consumer_mode',
+      });
+      await expect(stream.next()).rejects.toBeInstanceOf(RunLoopInvariantError);
+      expect(() => stream[Symbol.asyncIterator]()).toThrow(RunLoopInvariantError);
+      let caught: unknown;
+      try {
+        for await (const event of stream) {
+          void event;
+        }
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBeInstanceOf(RunLoopInvariantError);
+      expect(caught instanceof RunLoopInvariantError && caught.code).toBe('invalid_consumer_mode');
+    },
+  );
+
+  it('keeps direct return usable for subscribe-only cleanup without enabling iteration', async () => {
+    const onClose = vi.fn();
+    const stream = new BoundedEventStream<number>(1, onClose, 'subscribe-only');
+    await stream.return();
+    await stream.return();
+    stream.close();
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(stream.bufferedCount).toBe(0);
+    await expect(stream.next()).rejects.toMatchObject({ code: 'invalid_consumer_mode' });
   });
 });

@@ -25,16 +25,23 @@ import type { GlobalOptions } from '../process/options.js';
 import { createMcpSecretResolver, type McpSecretResolver } from '../secrets/mcp-secret.js';
 import { makePlainPrinter } from './chat.js';
 import { sanitizeInline, sanitizeUntrustedInline, stringifyJsonLine } from '../render/sanitize.js';
-import { createEffectJournalPort, createEffectJournalStore } from '@relavium/db';
+import {
+  createEffectJournalPort,
+  createEffectJournalStore,
+  createSessionUsageStore,
+  type SessionUsageReceipt,
+} from '@relavium/db';
 import { openSessionStore } from '../history/session-open.js';
 import { sweepOneShotSessionEffects } from '../engine/effect-retention.js';
+import type { UsageInvocation } from '@relavium/shared';
 
 /**
  * `relavium agent run <agent>` (2.Q) — invoke a single agent **one-shot** (non-interactive) on the same
  * `AgentSession` infra: a chat session with one turn, then exit. The user prompt is read from **stdin** (the
  * `echo … | relavium agent run` idiom); `--fixture <path>` replays a recorded cassette so the run is
  * deterministic + offline. `--json` emits the NDJSON `session:*` stream; otherwise the assistant reply streams
- * in human form. Unlike the REPL it is NOT persisted (a stateless invoke). Exit: the turn's outcome — `0` on
+ * in human form. Its transcript is not persisted or resumable; hidden owner metadata records usage coverage,
+ * realized cost and effects (ADR-0104). Exit: the turn's outcome — `0` on
  * success, `1` on a turn error; an invocation fault (no prompt / unknown agent / bad cassette / `--input`) is
  * `2`. `--input` is **reserved** — rejected until session `{{ctx.*}}` prompt interpolation lands (deferred-tasks.md).
  */
@@ -95,8 +102,8 @@ export async function agentRunCommand(
       ? (deps.providers ?? createProviderResolver(deps.io.env))
       : cassetteResolver(loadCassette(args.fixture, deps.global.cwd));
   // The ADR-0065 §2 user-pricing overlay (2.5.G S10) — so a one-shot live turn enforces + tracks a user-priced
-  // model. SKIPPED under `--fixture`: a cassette replay must stay deterministic + fully offline (no local
-  // `history.db` dependency); the recorded run already carries its costs.
+  // model. SKIPPED under `--fixture`: cassette pricing stays deterministic and fully offline. Usage coverage
+  // and realized attribution still use the local database, without consulting the user pricing overlay.
   const resolvePrice = offline ? undefined : loadUserPricingOverlay(homeDir);
 
   // An unknown `<agent>` (path or id) throws a typed CliError here (exit 2), before any turn. The build is
@@ -183,8 +190,8 @@ export async function agentRunCommand(
     throw err;
   });
 
-  // ADR-0074 §4: `agent run` is a ONE-SHOT, non-persisted invocation — it opens no session store and builds no
-  // persister, so a conservative commitment has nowhere durable to go and that is correct, not a gap. Attach an
+  // ADR-0074 §4: `agent run` has no resumable transcript or restored cap. Its hidden ADR-0104 owner records
+  // coverage and realized money, while conservative commitments retain the explicit one-shot no-op. Attach an
   // explicit no-op so the governor's emit resolves: without it every commitment would reject, mark the session
   // durability-broken, and the §2 barrier would fail a turn for a session nobody was ever going to resume. The
   // in-memory debit still consumes cap capacity for this process, which is the whole of what a one-shot needs.
@@ -196,10 +203,8 @@ export async function agentRunCommand(
   // no-op journal would be fail-open on exactly the guarantee CR-12 exists to give, and leaving it unattached
   // would refuse every effectful tool on this surface.
   //
-  // So it opens the store it otherwise would not, under an EPHEMERAL session correlation. Its rows are never
-  // read back (nothing resumes an `agent run`), which is why this buys the audit trail and the
-  // concurrent-dedup for free and costs no new correlation kind: a one-shot invocation IS a session that does
-  // not persist its transcript.
+  // The same hidden owner supplies effect correlation and durable usage coverage. It never grants transcript
+  // discovery or resume permission; an exact opaque owner receipt is required to attach usage writes.
   // Opened INSIDE a guard that owns `built`: from `buildChatSession` onward the process may hold live MCP
   // child processes, and `closeMcp` is otherwise only reachable through `runOneShotTurn`'s `finally`. A store
   // open that throws here (a locked or unwritable `history.db`) would take the one path that skips it,
@@ -214,11 +219,104 @@ export async function agentRunCommand(
   }
   let handedOff = false;
   let ownedEffectSessionId: string | undefined;
+  const usageStore = createSessionUsageStore(journalStore.db);
+  const receipts = new Map<UsageInvocation, SessionUsageReceipt>();
   try {
+    // A fresh hidden owner retains usage uncertainty without a transcript or resume privilege.
+    const owner = (() => {
+      try {
+        return usageStore.createFreshOneShotOwner({ sessionId: built.sessionId, now: now() });
+      } catch (cause) {
+        throw new CliError(
+          'invalid_invocation',
+          'one-shot session identity could not be reserved',
+          { cause },
+        );
+      }
+    })();
+    ownedEffectSessionId = owner.sessionId;
+    const producerId = randomUUID();
+    let dispatch = 0;
+    let failure: Error | undefined;
+    const write = (operation: () => void): void => {
+      if (failure !== undefined) throw failure;
+      try {
+        operation();
+      } catch (cause) {
+        failure = cause instanceof Error ? cause : new Error('One-shot usage persistence failed');
+        throw failure;
+      }
+    };
+    built.attachDurabilityProbe(() => failure);
+    built.attachUsageWriter({
+      readSnapshot: () => {
+        const snapshot = journalStore.store.loadSessionCostBreakdown(owner.sessionId);
+        return {
+          cumulativeCostMicrocents: snapshot.totalCostMicrocents,
+          cumulativeUnpricedCalls: snapshot.rows.reduce((sum, row) => sum + row.unpricedCalls, 0),
+          usageCoverage: snapshot.coverage,
+        };
+      },
+      initialCoverage: () => {
+        const snapshot = usageStore.loadCoverage(owner.sessionId);
+        if (snapshot === undefined) throw new Error('One-shot usage owner unavailable');
+        return { ...snapshot, started: true, highWater: 0 };
+      },
+      begin: (draft) => {
+        let receipt: SessionUsageReceipt | undefined;
+        write(() => {
+          receipt = usageStore.beginInvocation(
+            {
+              sessionId: owner.sessionId,
+              model: draft.model,
+              producerId,
+              // The producer scopes this ordinal; authored agent IDs are unbounded business identity.
+              dispatchId: String(++dispatch),
+              round: draft.round,
+              chainAttempt: draft.chainAttempt,
+            },
+            owner,
+          );
+        });
+        if (receipt === undefined) throw new Error('One-shot usage receipt unavailable');
+        receipts.set(receipt.invocation, receipt);
+        return Promise.resolve(receipt.invocation);
+      },
+      disposition: (draft) => {
+        const receipt = receipts.get(draft.invocation);
+        if (receipt === undefined) throw new Error('One-shot usage receipt unavailable');
+        write(() => {
+          usageStore.disposition(receipt, draft.disposition);
+          if (draft.receiptPending !== true) {
+            usageStore.retire(receipt);
+            receipts.delete(draft.invocation);
+          }
+        });
+      },
+      record: (draft) => {
+        const receipt = draft.invocation === undefined ? undefined : receipts.get(draft.invocation);
+        if (receipt === undefined)
+          throw new Error('One-shot actual cost requires its live receipt');
+        write(() => {
+          const accepted = journalStore.store.recordSessionCost({
+            id: randomUUID(),
+            sessionId: owner.sessionId,
+            model: draft.model,
+            inputTokens: draft.inputTokens,
+            outputTokens: draft.outputTokens,
+            costMicrocents: draft.costMicrocents,
+            priced: draft.priced,
+            ts: now(),
+            usageReceipt: receipt,
+          });
+          if (!accepted) throw new Error('One-shot actual cost acknowledgement refused');
+          receipts.delete(receipt.invocation);
+        });
+      },
+    });
     built.attachEffectTurnAllocator((id) => {
-      const key = journalStore.store.reserveOneShotEffectTurnKey(id, Date.now());
-      ownedEffectSessionId = id;
-      return key;
+      if (id !== owner.sessionId) throw new Error('One-shot effect owner mismatch');
+      return owner.effectTurnKey;
     });
     built.attachEffectJournal((correlation) =>
       createEffectJournalPort(
@@ -241,7 +339,16 @@ export async function agentRunCommand(
         if (ownedEffectSessionId !== undefined)
           sweepOneShotSessionEffects(deps.io, journalStore.db, ownedEffectSessionId);
       } finally {
-        journalStore.close();
+        try {
+          await built.whenHostSafeToClose();
+        } finally {
+          try {
+            for (const receipt of receipts.values()) usageStore.retire(receipt);
+            receipts.clear();
+          } finally {
+            journalStore.close();
+          }
+        }
       }
     }
   }
@@ -326,26 +433,30 @@ async function runOneShotTurn(
     }
   } finally {
     built.session.cancel(); // the session's terminal (session:cancelled) — closes the one-shot cleanly
-    unsubscribe();
-    // Tear down the MCP connections (2.R) after the one-shot turn; present only when `mcp_servers` is declared.
-    // Best-effort: a teardown rejection must NOT override the computed one-shot exit code (warn, don't throw).
-    // **Per-server, through the manager's own reporter.** The `.catch` below is a backstop and used to be the
-    // only mechanism — which meant it never fired: `closeAll` swallows each connection's rejection unless a
-    // reporter is supplied, so a wedged transport produced silence. `sanitizeUntrustedInline` because the
-    // cause is the SDK's, and it can carry a spawn command or a path.
-    await built
-      .closeMcp?.((serverId, cause) => {
-        deps.io.writeErr(
-          `warning: MCP server '${sanitizeInline(serverId)}' teardown failed: ${sanitizeUntrustedInline(
-            cause instanceof Error ? cause.message : String(cause),
-          )}\n`,
-        );
-      })
-      .catch((e: unknown) => {
-        deps.io.writeErr(
-          `warning: MCP teardown failed: ${sanitizeUntrustedInline(e instanceof Error ? e.message : String(e))}\n`,
-        );
-      });
+    try {
+      await built.whenHostSafeToClose();
+    } finally {
+      unsubscribe();
+      // Tear down the MCP connections (2.R) after the one-shot turn; present only when `mcp_servers` is declared.
+      // Best-effort: a teardown rejection must NOT override the computed one-shot exit code (warn, don't throw).
+      // **Per-server, through the manager's own reporter.** The `.catch` below is a backstop and used to be the
+      // only mechanism — which meant it never fired: `closeAll` swallows each connection's rejection unless a
+      // reporter is supplied, so a wedged transport produced silence. `sanitizeUntrustedInline` because the
+      // cause is the SDK's, and it can carry a spawn command or a path.
+      await built
+        .closeMcp?.((serverId, cause) => {
+          deps.io.writeErr(
+            `warning: MCP server '${sanitizeInline(serverId)}' teardown failed: ${sanitizeUntrustedInline(
+              cause instanceof Error ? cause.message : String(cause),
+            )}\n`,
+          );
+        })
+        .catch((e: unknown) => {
+          deps.io.writeErr(
+            `warning: MCP teardown failed: ${sanitizeUntrustedInline(e instanceof Error ? e.message : String(e))}\n`,
+          );
+        });
+    }
   }
   return turnErrorCode;
 }

@@ -462,6 +462,15 @@ export const agentSessions = sqliteTable(
     totalConservativeMicrocents: microcents('total_conservative_microcents'),
     // ADR-0098: advanced only by the effect-turn allocator; transcript/session flushes never SET it.
     effectTurnHighWater: integer('effect_turn_high_water').notNull().default(0),
+    // ADR-0104: all historical/predecessor inserts are unverified. Only the explicit fresh-owner
+    // operation may establish complete zero, in the insertion transaction. Revision triggers are
+    // migration-owned SQLite DDL; they track business writes, never money or coverage arithmetic.
+    usageMutationRevision: integer('usage_mutation_revision').notNull().default(0),
+    usageAckRevision: integer('usage_ack_revision').notNull().default(0),
+    usageUnverified: boolFlag('usage_unverified', true),
+    usagePendingInvocations: integer('usage_pending_invocations').notNull().default(0),
+    usageUnknownCalls: integer('usage_unknown_calls').notNull().default(0),
+    usageInvocationHighWater: integer('usage_invocation_high_water').notNull().default(0),
     exportedWorkflowPath: text('exported_workflow_path'),
     deletedAt: epochMs('deleted_at'),
     createdAt: epochMs('created_at').notNull(),
@@ -593,6 +602,80 @@ export const sessionCosts = sqliteTable(
     // The DB is the system of record: an empty-string model would be a silent, un-attributable money bucket. The
     // event type already forbids it (`cost:updated.model` is a Zod nonEmptyString) — this is the last line.
     check('session_costs_model_nonempty', sql`${t.model} <> ''`),
+  ],
+);
+
+// ADR-0104 coverage-only foundations. Neither table writes/deduplicates realized money. Step 4
+// leaves provider invocation production inactive; pending and settlement activation is a later,
+// atomic vertical slice through the engine and shipping persister.
+export const sessionUsageCoverage = sqliteTable(
+  'session_usage_coverage',
+  {
+    sessionId: text('session_id')
+      .notNull()
+      .references(() => agentSessions.id, { onDelete: 'cascade' }),
+    model: text('model').notNull(),
+    pendingInvocations: integer('pending_invocations').notNull().default(0),
+    unknownCalls: integer('unknown_calls').notNull().default(0),
+  },
+  (t) => [
+    uniqueIndex('idx_session_usage_coverage_model').on(t.sessionId, t.model),
+    check('session_usage_coverage_model_check', sql`length(${t.model}) between 1 and 4096`),
+    check(
+      'session_usage_coverage_pending_check',
+      sql`typeof(${t.pendingInvocations}) = 'integer' and ${t.pendingInvocations} between 0 and 9007199254740991`,
+    ),
+    check(
+      'session_usage_coverage_unknown_check',
+      sql`typeof(${t.unknownCalls}) = 'integer' and ${t.unknownCalls} between 0 and 9007199254740991`,
+    ),
+  ],
+);
+
+/** Only unresolved or receipt-eligible identities survive; this is not a historical money ledger. */
+export const sessionUsageInvocations = sqliteTable(
+  'session_usage_invocations',
+  {
+    sessionId: text('session_id')
+      .notNull()
+      .references(() => agentSessions.id, { onDelete: 'cascade' }),
+    producerId: text('producer_id').notNull(),
+    ordinal: integer('ordinal').notNull(),
+    dispatchId: text('dispatch_id').notNull(),
+    round: integer('round').notNull(),
+    chainAttempt: integer('chain_attempt').notNull(),
+    model: text('model').notNull(),
+    coverageState: text('coverage_state', { enum: ['pending', 'incomplete'] })
+      .notNull()
+      .default('pending'),
+  },
+  (t) => [
+    uniqueIndex('idx_session_usage_invocations_identity').on(t.sessionId, t.producerId, t.ordinal),
+    check(
+      'session_usage_invocations_state_check',
+      sql`${t.coverageState} in ('pending', 'incomplete')`,
+    ),
+    check(
+      'session_usage_invocations_producer_check',
+      sql`length(${t.producerId}) between 1 and 256`,
+    ),
+    check(
+      'session_usage_invocations_dispatch_check',
+      sql`length(${t.dispatchId}) between 1 and 256`,
+    ),
+    check('session_usage_invocations_model_check', sql`length(${t.model}) between 1 and 4096`),
+    check(
+      'session_usage_invocations_ordinal_check',
+      sql`typeof(${t.ordinal}) = 'integer' and ${t.ordinal} between 1 and 9007199254740991`,
+    ),
+    check(
+      'session_usage_invocations_round_check',
+      sql`typeof(${t.round}) = 'integer' and ${t.round} between 0 and 9007199254740991`,
+    ),
+    check(
+      'session_usage_invocations_attempt_check',
+      sql`typeof(${t.chainAttempt}) = 'integer' and ${t.chainAttempt} between 1 and 9007199254740991`,
+    ),
   ],
 );
 

@@ -67,7 +67,7 @@ function fixture() {
       yield {
         type: 'stop',
         stopReason: 'stop',
-        usage: { inputTokens: 7, outputTokens: 2, cacheReadTokens: 3 },
+        usage: { kind: 'complete', usage: { inputTokens: 7, outputTokens: 2, cacheReadTokens: 3 } },
       };
     },
   };

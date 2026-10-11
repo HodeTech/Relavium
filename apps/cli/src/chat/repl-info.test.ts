@@ -22,8 +22,8 @@ const entry = (slug: string, valid = true): CatalogEntry => ({
 
 describe('costNotice', () => {
   it('formats the cumulative spend in USD (micro-cents → $X.XXXX)', () => {
-    expect(costNotice(0, [])).toBe('Session cost: $0.0000');
-    expect(costNotice(5_000_000, [])).toBe('Session cost: $0.0500');
+    expect(costNotice(0, [])).toBe('Session cost: $0.0000 known; usage unverified');
+    expect(costNotice(5_000_000, [])).toBe('Session cost: $0.0500 known; usage unverified');
   });
 });
 
@@ -52,6 +52,47 @@ describe('catalogNotice', () => {
 });
 
 describe('compactionNotice / trimNotice (ADR-0062)', () => {
+  it.each([
+    { name: 'absent', coverage: undefined, incomplete: true },
+    {
+      name: 'pending',
+      coverage: { unverified: false, pendingInvocations: 1, unknownCalls: 0 },
+      incomplete: true,
+    },
+    {
+      name: 'unknown',
+      coverage: { unverified: false, pendingInvocations: 0, unknownCalls: 1 },
+      incomplete: true,
+    },
+    {
+      name: 'legacy',
+      coverage: { unverified: true, pendingInvocations: 0, unknownCalls: 0 },
+      incomplete: true,
+    },
+    {
+      name: 'complete',
+      coverage: { unverified: false, pendingInvocations: 0, unknownCalls: 0 },
+      incomplete: false,
+    },
+  ])(
+    'qualifies manual summary token observations with $name coverage',
+    ({ coverage, incomplete }) => {
+      const notice = compactionNotice({
+        kind: 'compacted',
+        reason: 'manual',
+        summary: 'offline summary',
+        keptMessageCount: 2,
+        tokensBefore: 100,
+        tokensAfter: 20,
+        summaryTokens: { input: 7, output: 3 },
+        ...(coverage === undefined ? {} : { summaryUsageCoverage: coverage }),
+      });
+      expect(notice).toContain('summary usage: 7 in / 3 out');
+      expect(notice.includes('; known observations, usage incomplete')).toBe(incomplete);
+      expect(notice).not.toMatch(/\$|free/);
+    },
+  );
+
   it('reports the token deltas, the summariser spend, and the (sanitized) summary text', () => {
     const result: CompactionResult = {
       kind: 'compacted',
@@ -177,7 +218,7 @@ describe('costNotice — the per-model breakdown', () => {
   });
 
   it('with no rows it is the total alone — a session that has not spent says so in one line', () => {
-    expect(costNotice(0, [])).toBe('Session cost: $0.0000');
+    expect(costNotice(0, [])).toBe('Session cost: $0.0000 known; usage unverified');
   });
 
   it('shows a conservative estimate as ESTIMATED, never folded into the money (ADR-0074 §1/§4)', () => {

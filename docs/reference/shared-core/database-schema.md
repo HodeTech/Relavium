@@ -1,6 +1,6 @@
 # Database Schema (Local SQLite)
 
-> Last updated: 2026-10-02
+> Last updated: 2026-10-10
 
 - **Status**: Reference
 - **Surface**: Shared — Desktop (Tauri v2, `tauri-plugin-sql`/SQLCipher), CLI (`better-sqlite3`, [ADR-0021](../../decisions/0021-node-sqlite-driver-better-sqlite3.md)/[ADR-0050](../../decisions/0050-cli-history-db-at-rest-posture.md)), and VS Code (a wasm SQLite build). One schema, three drivers — see [Concurrency & transaction behavior](#concurrency--transaction-behavior) and [Encryption at rest](#encryption-at-rest) for the per-surface divergences.
@@ -65,7 +65,7 @@ The local schema is the Postgres 13-table design reduced to what a single-user, 
 
 ### Entity relationships
 
-The 18 tables below, trimmed to the columns that define structure (full column lists follow per table). Every edge is a real foreign key in `schema.ts`; two are deliberately absent — see the note beneath the diagram. `model_metadata` and `catalog_meta` ([ADR-0072](../../decisions/0072-model-metadata-in-the-db-behind-a-generated-offline-floor.md)) are **FK-less leaves** (no edges): `model_metadata` is keyed by `model_id`, not the `model_catalog` UUID, on purpose. `run_effects` ([ADR-0080](../../decisions/0080-durable-effect-journal-and-the-tiered-effect-contract.md)) is a third, for a different reason: an unresolved effect row is exactly the record an operator needs **after** the run is purged, so a cascade would delete it at the worst moment.
+The 20 tables below, trimmed to the columns that define structure (full column lists follow per table). Every edge is a real foreign key in `schema.ts`; two are deliberately absent — see the note beneath the diagram. `model_metadata` and `catalog_meta` ([ADR-0072](../../decisions/0072-model-metadata-in-the-db-behind-a-generated-offline-floor.md)) are **FK-less leaves** (no edges): `model_metadata` is keyed by `model_id`, not the `model_catalog` UUID, on purpose. `run_effects` ([ADR-0080](../../decisions/0080-durable-effect-journal-and-the-tiered-effect-contract.md)) is a third, for a different reason: an unresolved effect row is exactly the record an operator needs **after** the run is purged, so a cascade would delete it at the worst moment.
 
 ```mermaid
 erDiagram
@@ -143,6 +143,7 @@ erDiagram
     agent_sessions {
         uuid id PK
         int effect_turn_high_water
+        int usage_invocation_high_water
         uuid agent_id FK
         uuid model_id FK
         text status
@@ -154,6 +155,22 @@ erDiagram
         uuid model_id FK
         int sequence_number
         text role
+    }
+    session_usage_coverage {
+        text session_id FK
+        text model
+        integer pending_invocations
+        integer unknown_calls
+    }
+    session_usage_invocations {
+        text session_id FK
+        text producer_id
+        integer ordinal
+        text dispatch_id
+        integer round
+        integer chain_attempt
+        text model
+        text coverage_state
     }
     session_costs {
         uuid id PK
@@ -203,6 +220,8 @@ erDiagram
     agents |o--o{ agent_sessions : "agent_id (nullable)"
     agent_sessions ||--o{ session_messages : "session_id CASCADE"
     agent_sessions ||--o{ session_costs : "session_id CASCADE"
+    agent_sessions ||--o{ session_usage_coverage : "session_id CASCADE"
+    agent_sessions ||--o{ session_usage_invocations : "session_id CASCADE"
     media_objects ||--o{ media_references : "handle CASCADE"
 ```
 
@@ -619,7 +638,7 @@ shipped `effect-retention.ts` and §9 of the effect-journal reference.)
 
 ### Agent-session tables
 
-These two tables persist **agent sessions** (the agent-first chat entry point —
+These tables persist **agent sessions** (the agent-first chat entry point —
 [ADR-0024](../../decisions/0024-agent-first-entry-point-agentsession.md),
 [agent-session-spec.md](../contracts/agent-session-spec.md)). They live in the **same
 `~/.relavium/history.db`** (desktop: SQLCipher-encrypted; CLI: unencrypted + `0600`/`0700` OS perms,
@@ -651,6 +670,12 @@ session variables); `agent_snapshot` freezes the agent config the session ran ag
 | `total_cost_microcents` | INTEGER | NOT NULL DEFAULT 0 |
 | `total_conservative_microcents` | INTEGER | NOT NULL DEFAULT 0 — the session's **conservative** total ([ADR-0074](../../decisions/0074-durable-conservative-budget-commitments.md) §1/§4): money a provider MAY already have billed for an attempt that returned no trustworthy usage. An **ESTIMATE**, deliberately apart from `total_cost_microcents` — it consumes cap capacity across a resume without ever inflating a reported cost. Single-writer (`recordSessionConservativeCommitment`), like its realized sibling |
 | `effect_turn_high_water` | INTEGER | NOT NULL DEFAULT 0 (migration 0017) — durable effect identity, written only by the session effect-key allocation operations; never SET by session updates/turn flushes or exposed as the reconstructed `max_turns` count |
+| `usage_mutation_revision` | INTEGER | NOT NULL DEFAULT 0 — database-maintained session business revision; safe integer, advances for every relevant INSERT/UPDATE/DELETE, including an equal-valued business assignment |
+| `usage_ack_revision` | INTEGER | NOT NULL DEFAULT 0 — new writer's final acknowledged revision, never greater than `usage_mutation_revision` |
+| `usage_unverified` | INTEGER (bool) | NOT NULL DEFAULT 1 — migrated and predecessor-inserted history is unverified; sticky once inherited or detected |
+| `usage_pending_invocations` | INTEGER | NOT NULL DEFAULT 0 — possibly invoked token-provider attempts without disposition; never an observed-call count |
+| `usage_unknown_calls` | INTEGER | NOT NULL DEFAULT 0 — invoked incomplete outcomes with unknown charge, separate from missing price and conservative money |
+| `usage_invocation_high_water` | INTEGER | NOT NULL DEFAULT 0 — safe integer monotonic allocator across all producers of this owner; metadata only |
 | `exported_workflow_path` | TEXT | NULL — set when the session is exported to a `.relavium.yaml` |
 | `deleted_at` | INTEGER | NULL |
 | `created_at` | INTEGER | NOT NULL |
@@ -755,6 +780,256 @@ CREATE INDEX        idx_session_costs_session       ON session_costs (session_id
 > the sentinel as *"per-model breakdown unavailable"* rather than as an implied single-model session.
 >
 > **Secret-free by construction** — no free-text or JSON column.
+
+#### Session usage coverage foundations — ADR-0104
+
+Migration [`0018_windy_rhodey.sql`](../../../packages/db/drizzle/0018_windy_rhodey.sql)
+adds the five owner columns and two coverage-only tables below, without rebuilding any existing
+table or changing historical money, token, transcript or conservative-commitment rows. Its
+SQLite trigger DDL is migration-owned because Drizzle's table snapshot does not represent triggers.
+The schema-sync generator checks columns/tables; native migration and trigger-inventory tests also
+check the trigger mechanism.
+
+**W8 Steps 5–6 activation:** the revision/acknowledgement protection remains installed on every
+business writer. Additive migration [`0019_regular_stingray.sql`](../../../packages/db/drizzle/0019_regular_stingray.sql)
+adds `agent_sessions.usage_invocation_high_water` (safe integer, default zero, monotonic) and
+`session_usage_invocations.coverage_state` (`pending` or `incomplete`). The generated table rebuild
+copies existing inert invocation rows as `pending`; historical migrations and money are unchanged.
+Rebuild CHECKs use unqualified column identifiers: a temporary-table qualifier can fail during
+rename on SQLite 3.54. `pnpm --filter @relavium/db db:generate` normalizes only newly generated
+rebuild SQL, retaining Drizzle's schema snapshots and leaving applied migrations untouched.
+The upgrade control retains 0018 rows, money, monotonic identities, constraints and foreign-key
+enforcement through the real migration batch. Foreign keys stay enabled throughout; toggling
+that PRAGMA inside Drizzle's transaction would be ineffective.
+`createSessionUsageStore` now brackets invocations with live receipt authority. The
+[W8 closing register](../../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w8-closing-register--2026-10-11)
+owns shipping-host, crash, downgrade and every-reader evidence beyond this storage foundation.
+
+`createFreshSession` accepts a seed with identity, agent/context and creation metadata only. It
+refuses supplied historical totals/lifecycle/coverage fields and any physically existing id,
+including a tombstone hidden by `loadSession`. In one transaction it inserts an empty active owner,
+clears only that fresh insertion's default taint and acknowledges the insertion revision. It never
+upserts/replaces, and generic `createSession`, resume, reseat, imported history and one-shot identity
+existing tombstones cannot acquire this privilege. A timestamp or zero numeric total is not proof of freshness.
+
+`loadCoverage` reads aggregate and per-model coverage through one transaction handle and never
+acknowledges a revision. Its `UsageCoverage` is defined by the shared schema and the
+[event contract](../contracts/sse-event-schema.md); effective `unverified` is persisted taint OR
+`usage_mutation_revision != usage_ack_revision`. Every model inherits that effective owner taint,
+including a historical money row with no new coverage row. The returned `models` array is the union of money-only and coverage-only raw models; missing
+coverage rows carry zero known pending/unknown counts and the aggregate's effective `unverified`.
+`loadSessionCostBreakdown` returns `{ totalCostMicrocents, rows, coverage, models }` from one
+SQLite snapshot, so a concurrent settlement cannot tear numeric amounts from their coverage.
+Absence never proves complete history. There is no independently
+clearable per-model taint or fabricated unknown-call count for an old writer.
+
+| Entry / operation | Committed result | Coverage interpretation |
+| --- | --- | --- |
+| Migrated owner | `(revision=0, ack=0, taint=true)`; amounts unchanged | Legacy/unverified, even if all amounts are zero |
+| Predecessor INSERT | Default taint true; insertion advances revision without acknowledgement | Unverified |
+| Explicit fresh-owner creation | Insertion revision acknowledged; taint false; pending/unknown zero | Complete zero, only before that new owner's first eligible invocation |
+| Old write from `(10,10,false)` | `(11,10,false)` | Read classifies mismatch as unverified; it does not repair/acknowledge |
+| New write entering `(11,10,false)` | Entry mismatch first latches taint; own writes advance to final revision, e.g. `(12,12,true)` | Acknowledged but permanently unverified |
+| Subsequent new write or estimate release | Final revision acknowledged, prior taint retained | Cannot recover complete/free coverage |
+| Business/acknowledgement failure or crash before COMMIT | Business writes, taint and acknowledgement all roll back | Original mismatch remains visible |
+| Read | No write or acknowledgement | Classifies mismatch without laundering it |
+| Pending/disposition/retirement transaction | No business revision increment; outer wrapper latches entry mismatch and acknowledges final revision | Prior taint and aggregate uncertainty survive |
+| Complete correlated settlement | Coverage change and the existing actual-money writes commit together | Exact live authority only; duplicate cannot replay money |
+
+All session business store operations use the package-private `withSessionUsageWrite` wrapper:
+refuse nested transactions; one outer `BEGIN IMMEDIATE`; read all affected owners' entry revision,
+ack and taint before business writes; latch mismatches; perform writes; acknowledge each final
+trigger-produced revision; commit. All statements use the transaction handle. `withBusyRetry`
+wraps the **whole** outer transaction with the existing bounded deterministic policy. A lock retry
+cannot repeat only the acknowledgement or accidentally send a provider request. Even a no-op
+conservative release visits entry classification before returning zero. A multi-owner `writeTurn`
+classifies all message/session owners before the first mutation.
+
+The concrete SQLite trigger inventory is:
+
+| Trigger | Covered columns / effect |
+| --- | --- |
+| `session_usage_owner_insert` | Every owner INSERT advances the inserted row's revision |
+| `session_usage_owner_update` | `UPDATE OF id, agent_id, agent_slug, agent_snapshot, title, model_id, working_dir, git_ref, fs_scope_tier, status, context_json, total_input_tokens, total_output_tokens, total_cost_microcents, total_conservative_microcents, exported_workflow_path, deleted_at, created_at, updated_at` advances that owner once |
+| `session_messages_usage_insert` / `_update` / `_delete` | Every transcript INSERT/UPDATE/DELETE, including canonical content and denormalized display metadata; deletion advances OLD owner; reparenting advances OLD and NEW owners once each |
+| `session_costs_usage_insert` / `_update` / `_delete` | Every monetary/model/token/counter/attribution/timestamp INSERT/UPDATE/DELETE, with the same old/new owner rules |
+| `session_usage_bounds_insert` / `_update` | Validate the five initial owner bookkeeping columns; revision/ack/counts are integers in `[0, 9007199254740991]`, ack ≤ revision, taint is 0/1; these guards never advance a revision |
+| `session_usage_high_water_insert` / `_update` | Validate integer `usage_invocation_high_water` in `[0, 9007199254740991]`; updates cannot decrease it; no business revision increment |
+
+The business UPDATE trigger is column-targeted, not a comparison of changed values: adding zero
+or flushing the same status is still an old business write. `updated_at` is included because a
+usage-less or aborted turn may leave only a session flush. Transcript's denormalized `content`,
+`tool_calls`, `tool_call_id`, `name`, `finish_reason`, model and timestamp are business data, not
+revision bookkeeping. All six usage owner fields and the two coverage tables are excluded from revision
+advancement, as is allocator-only `effect_turn_high_water` (including open-time seeding and sweep
+preservation). The compatibility one-shot tombstone INSERT follows unverified defaults. The explicit
+`createFreshOneShotOwner({ sessionId, now })` operation uses the same original physical-id and
+historical-effect-scope refusal in one transaction, inserting the fresh hidden tombstone with
+complete-zero coverage and final acknowledgement. It returns an opaque `SessionUsageOwner` with
+`effectTurnKey`; only that exact connection-bound object can be passed as the second argument to
+`beginInvocation` for the deleted owner. Generic admission refuses deleted rows. A copied or
+reloaded owner gains no authority, and no transcript, visible/resumable session, prompt or context
+is introduced. The existing one-shot reservation API retains its numeric compatibility behavior.
+
+`SessionStore.visitSessionSummaries(visitor)` is the full discovery/accounting read for
+`chat-list --json`: a synchronous visitor exhausts indexed 256-owner keyset pages ordered by
+`(updated_at DESC, id DESC)` in one read transaction. Each page reads owner identity, known money
+and coverage, then groups the independent unpriced-call counters for that page. It loads no
+transcript, context or per-model attribution and holds no all-session result array. The page
+bound does not truncate results; all pages and their accounting use the same SQLite snapshot.
+Visitor failures release the read transaction and propagate unchanged. `listSessions` retains
+its full-record/top-N compatibility interface for human listing and Home.
+
+Permanent revision controls derive business columns from the Drizzle owner schema, excluding
+only the six usage bookkeeping fields and allocator-only `effect_turn_high_water`. The migrated
+native column set and actual `UPDATE OF` trigger inventory must match that derived set; every
+business column is exercised even with an unchanged assignment. A future unclassified native
+column or a missing trigger column fails the structural gate. Settlement guards check exact
+session/producer/ordinal binding and indexed plans for SELECT, UPDATE and DELETE, including
+cached statements; owner-prefix mutations are independently rejected.
+
+`loadSessionCostBreakdown` reads the retained owner's numeric total directly by physical id in
+the same read transaction as per-model money and coverage. Hidden one-shot and soft-deleted
+owners retain their actual known sum; the visibility filter used by `loadSession`, `loadFull`
+and `listSessions` cannot replace it with zero. This accounting-only snapshot grants neither
+transcript discovery nor admission, resume or receipt authority. An absent owner remains
+unverified with no invented money.
+
+Triggers never price, reconcile, change actual/conservative money, or acknowledge. Revision
+exhaustion refuses the entire business statement with the fixed
+`session_usage_revision_exhausted` marker; store boundaries expose `SessionUsageError` with
+`revision_exhausted`. There is no wrap, floating-point increment or saturating acknowledgement.
+An active outer transaction is refused with `transaction_active`, because a savepoint release is
+not an outer durability boundary. A child cascade never creates an absent parent. Explicit owner
+deletion cascades its coverage; generic reinsertion remains unverified.
+
+#### `session_usage_coverage`
+
+One coverage aggregate per raw model and session, separate from the money key and its legacy
+aggregate discriminator. Neither a model-catalog FK nor a reserved string is its identity. This
+keeps pending markers out of `session_costs.call_count` and preserves coverage independently of
+an old writer's monetary child deletion. Pending admission, disposition and complete settlement update
+aggregate and model counters atomically, without changing the sole actual-cost writer or money arithmetic.
+
+The model breakdown joins this coverage table with **non-legacy** `session_costs` models.
+An `is_legacy` aggregate represents unattributable historical money, not a model or a
+zero-cost usage-only call. Its amount and unavailable-breakdown disclosure remain visible
+in the monetary rows. The discriminator is the flag, never the model string: a real money
+or coverage model literally named like the legacy sentinel remains attributable.
+Historical monetary rows retain their exact raw model identities under the existing money-read
+contract, even when a name exceeds the new coverage/invocation bound. That bound applies to
+new coverage records, not retroactively to valid retained money. Such history remains unverified;
+reading it neither grants a receipt nor permits an over-bound new invocation.
+
+| Column | Type | Constraints |
+| --- | --- | --- |
+| `session_id` | TEXT | NOT NULL REFERENCES `agent_sessions(id)` ON DELETE CASCADE |
+| `model` | TEXT | NOT NULL; CHECK length between 1 and 4096; shared model validation at the read boundary |
+| `pending_invocations` | INTEGER | NOT NULL DEFAULT 0; integer CHECK in `[0, 9007199254740991]` |
+| `unknown_calls` | INTEGER | NOT NULL DEFAULT 0; integer CHECK in `[0, 9007199254740991]` |
+
+```sql
+CREATE UNIQUE INDEX idx_session_usage_coverage_model
+  ON session_usage_coverage (session_id, model);
+```
+
+#### `session_usage_invocations`
+
+Bounded correlation storage for unresolved or still-authorized invocations, not a session attempt
+ledger or second money deduplication key. The shared invocation schema owns the identity contract.
+Reading a row grants no invocation, allowance or receipt authority.
+
+| Column | Type | Constraints |
+| --- | --- | --- |
+| `session_id` | TEXT | NOT NULL REFERENCES `agent_sessions(id)` ON DELETE CASCADE |
+| `producer_id` | TEXT | NOT NULL; CHECK length between 1 and 256 |
+| `ordinal` | INTEGER | NOT NULL; integer CHECK in `[1, 9007199254740991]`; minted from the session-wide high-water mark; never caller-supplied |
+| `dispatch_id` | TEXT | NOT NULL; CHECK length between 1 and 256 |
+| `round` | INTEGER | NOT NULL; integer CHECK in `[0, 9007199254740991]` |
+| `chain_attempt` | INTEGER | NOT NULL; integer CHECK in `[1, 9007199254740991]`; not the node retry counter |
+| `coverage_state` | TEXT | NOT NULL DEFAULT `pending`; CHECK `pending` or `incomplete` |
+| `model` | TEXT | NOT NULL; CHECK length between 1 and 4096 |
+
+```sql
+CREATE UNIQUE INDEX idx_session_usage_invocations_identity
+  ON session_usage_invocations (session_id, producer_id, ordinal);
+```
+
+`beginInvocation({ sessionId, model, producerId, dispatchId, round, chainAttempt })` mints an
+owner-wide ordinal and commits its pending row plus both counters before returning an immutable
+`SessionUsageReceipt`. Its fields disclose correlation only; a package-private WeakMap binds the
+exact receipt object to the originating DB connection. A copied/serialized receipt is refused.
+No read/resume API recreates authority, and admission never accepts an old ordinal for re-admission.
+
+`disposition(receipt, disposition)` changes pending to one unknown call for incomplete evidence,
+or removes pending for proven non-invocation/official refusal without adding money or a call.
+An incomplete row remains available for authorized late complete evidence. Complete evidence is
+accepted only by `SessionStore.recordSessionCost({ ...entry, usageReceipt })`, which resolves
+pending/unknown and writes both monetary aggregates inside its existing sole transaction. The
+method returns false for an already consumed/retired receipt, before another money write.
+It consumes in-memory authority only after successful commit, so an ACK failure rolls back coverage,
+money and revision together and permits the original receipt to retry. An uncorrelated legacy
+cost API call preserves numeric behavior and latches unverified coverage; native separate-endpoint
+volume accounting explicitly supplies `accountingBasis: 'native_media'` and retains its basis.
+
+`retire(receipt)` ends positive live authority and deletes that identity, preserving pending/unknown
+aggregate counts. Settled identities have no lifetime registry or permanent per-producer tombstones.
+The single high-water mark prevents reusing prior ordinals; the WeakMap has no enumerable completed
+history. Partial/missing duplicate callbacks add no durable record. Metadata is bounded by models,
+unresolved identities and still-authorized late receipts. Permanent native SQLite query controls
+validate the exact session/producer/ordinal bindings on every receipt lookup and inspect the
+identity-index SEARCH plan once per SQL shape. An owner-prefix scan cannot satisfy that structural
+control merely by preserving monetary outcomes. Retired duplicates perform no additional receipt
+lookup or actual charge; legitimate outer revision/acknowledgement SQL remains permitted.
+
+The separate 100,000-settlement scale control pins 100,064 admissions, 100,000 retirements,
+64 unresolved identities, three model aggregates and a 100,064 high-water mark. It verifies
+50,000 unknown calls, then refines one pending control to complete once, leaving 63 pending
+and 50,001 observed calls without changing the unknown aggregate. All 150,002 receipt lookups
+bind the exact identity; query-plan inspection is cached by SQL shape, while parameter validation
+runs every time. This state bound does not promise a constant-size append-only run ledger or
+automatic deletion of retained history.
+
+No session lease is introduced. Resuming/reseating a session cannot declare another live instance's
+pending rows orphaned. ADR-0103's retained exact-fence receipt authority applies to runs; genuine
+session unresolved state must remain until its producing authority is positively ended. No
+constant bound is claimed for genuinely unresolved or receipt-eligible work.
+
+An older executable cannot display these coverage fields or enforce the new accounting contract.
+Active downgrade execution is unsupported. Revision protection retains uncertainty after durable
+old writes; it cannot reconstruct usage/calls that left no durable trace, and existing conservative
+commitments do not cure the predecessor's synthetic-zero release behavior.
+
+#### Incremental strict run replay
+
+`RunHistoryReader.visitRunEventsForReplay(runId, visitor, { streamingIncluded, visitSteps })` uses indexed
+256-row sequence batches inside one SQLite read transaction. The method returns the typed
+`RunRecord | undefined` for that same snapshot: its first SELECT reads the owning `runs` row and
+pins the snapshot before visiting event rows. Coverage readers must qualify this returned row's
+`totalCostMicrocents`, not a prior `listRuns`/`loadRun` discovery amount. The existing stored-money
+projection remains authoritative; the reader does not introduce a second actual-cost fold. Raw
+replay remains keyed by run id, including retained deleted rows, and visibility remains the caller's
+responsibility. An absent owner returns `undefined` after strict validation of any stored rows. Its synchronous visitor folds each
+validated event without materializing the full prefix. Every stored row is validated before any
+stream exclusion; an unknown discriminator raises `UnreadableRunEventLogError`, and malformed or
+mismatched projections raise `CorruptRunEventError`. The caller discards its partial fold on failure.
+The [event contract](../contracts/sse-event-schema.md#event-envelope) also classifies inconsistent
+coverage sequences as per-run corruption; strict reconstruction refuses them, while discovery
+preserves healthy neighbors with explicit degradation for the affected run.
+The original array-returning strict read remains available for compatibility; the production
+checkpointer uses the incremental port. Concurrent WAL writes cannot enter the snapshot halfway
+through replay. This does not compact or delete the authoritative append-only event log.
+
+The optional synchronous `visitSteps` callback receives the existing per-node step projection
+after strict event validation succeeds, read through the same transaction handle as the owner and
+event batches. Status uses it to pair each step's amount and lifecycle with that snapshot's coverage.
+Each `node:started` establishes that node's coverage under the owner's current basis, including
+native-media and ordinary nodes without token-invocation events. A pre-basis node remains
+unverified; a later owner basis cannot retroactively qualify its history.
+It must not join a later standalone `loadStepExecutions` result to the earlier fold. Other visitors
+do not query or allocate step rows. A strict failure invokes no step callback; display degradation
+may still show standalone step detail only with explicitly unverified coverage and an unavailable
+usage marker. This grants no resume or mutation authority.
 
 #### Session content parts
 
@@ -912,7 +1187,7 @@ CREATE INDEX idx_media_references_handle ON media_references (handle);
 - **Write transactions use `BEGIN IMMEDIATE`**, never drizzle's `DEFERRED` default. A DEFERRED transaction that reads before it writes takes a read lock first and must *upgrade* to a write lock on the first write — if another connection committed in between, that upgrade fails immediately with `SQLITE_BUSY` (`SQLITE_BUSY_SNAPSHOT`), which `busy_timeout` does **not** cover. `BEGIN IMMEDIATE` takes the write lock up front, so the upgrade race cannot occur. Applied to every multi-statement writer: `persistEvent` (run history), the model-catalog `replaceProviderModels` (bulk live-upsert) and `upsert` (per-model pricing), the provider `upsert` read-then-write, and the media-reference GC writes (`addReference`, `removeRunReferences`, `reclaimExpired`). It applies only to the OUTERMOST `BEGIN` — a store method called inside another transaction is demoted to a `SAVEPOINT` and the IMMEDIATE behavior is ignored, so a future batch-in-one-transaction caller must itself open `BEGIN IMMEDIATE`.
 - **The bounded retry** (`packages/db/src/retry.ts`, `withBusyRetry` / `withBusyRetryAsync`) wraps those write transactions and retries only `SQLITE_BUSY` / `SQLITE_LOCKED` / `SQLITE_BUSY_SNAPSHOT` / `SQLITE_BUSY_RECOVERY` up to a bounded attempt budget (default 5) with a **deterministic** linear backoff — **no jitter**, never `Math.random`, per the no-jitter/deterministic-replay convention of [ADR-0040](../../decisions/0040-node-retry-budget-above-the-chain.md). `better-sqlite3` reports the **extended** result code, so the stale-DEFERRED upgrade failure arrives as the distinct string `SQLITE_BUSY_SNAPSHOT`, not as a `SQLITE_BUSY` prefix — matched exactly, so an unrelated future `SQLITE_BUSY_*` code is not swept into the set. It is **fail-loud**: on an exhausted budget (or any non-lock fault) it rethrows the original error and never silently drops a write, preserving [ADR-0050](../../decisions/0050-cli-history-db-at-rest-posture.md)'s durability-first `persistEvent` posture. A retried transaction rolls back with no partial write and re-runs the whole (idempotent) body. Because each attempt's `BEGIN IMMEDIATE` can itself wait up to `busy_timeout` (5 s) for the lock, the compounded worst case under sustained contention is ~25 s (5 attempts × 5 s + the sub-300 ms backoffs) of blocking before the fail-loud rethrow — a deliberate durability-over-latency trade on a path that only stalls under pathological multi-writer contention.
 - **Two retry twins, one policy.** `withBusyRetry` is synchronous, because the driver is. `withBusyRetryAsync` is the twin for the one call site whose caller is genuinely async today — `persistEvent` (run history) — where the backoff **yields the event loop** rather than parking the thread on `Atomics.wait`. Both share the retryable-code set, the attempt budget, the linear schedule and the fail-loud exhaustion; only the sleep differs. Read the scope precisely: this removes the **sub-300 ms** term of the ~25 s worst case above, not the dominant one — for `SQLITE_BUSY`/`SQLITE_LOCKED`, the codes that actually fire, each attempt still blocks inside the synchronous driver for up to `busy_timeout` (~5.2 s measured). `SQLITE_BUSY_SNAPSHOT` returns *immediately*, so for that code the backoff is the whole cost; it cannot reach a synchronous call site today because every one of them is `IMMEDIATE`, single-statement, or read-only. The remaining store methods stay synchronous deliberately: converting them would change five port interfaces and ripple through every CLI consumer without making a single write non-blocking. The async twin's `await` between attempts is an **observable yield**, so a sibling writer may commit during the backoff — the outcome the backoff exists to allow — which makes the "`fn` must be one self-contained, re-runnable transaction" requirement load-bearing rather than incidental.
-- **Single-statement writes** (e.g. `appendMessage`, `setKeychainRef`) go straight for the write lock and need no explicit transaction — `BEGIN IMMEDIATE` would buy nothing, since a lone INSERT/UPDATE takes the write lock directly and cannot hit a read→write upgrade race. They do still route through `withBusyRetry` where a failure is user-visible data loss: the three `agent_sessions` / `session_messages` writers do (#228), because `busy_timeout` waits 5 s and then *fails*, and the chat persister calls them from inside a `RunEventBus` subscriber.
+- **Single-statement writes** (e.g. `appendMessage`, `setKeychainRef`) go straight for the write lock and need no explicit transaction — `BEGIN IMMEDIATE` would buy nothing, since a lone INSERT/UPDATE takes the write lock directly and cannot hit a read→write upgrade race. They still use `withBusyRetry` where failure is user-visible data loss. **ADR-0104 exception:** session creation/update/message append now perform entry classification and final revision acknowledgement as well, so these formerly single-statement operations use the [session usage outer transaction](#session-usage-coverage-foundations--adr-0104).
 - **Reads that must be consistent across statements** use a read transaction: `sessionStore.loadFull` reads the session row and its transcript inside one deferred transaction so **both reads observe a single consistent DB snapshot** (never a two-`SELECT` straddle across a concurrent commit). This now composes with **turn atomicity** on the write side: `sessionStore.writeTurn` appends a turn's messages and flushes the session row in ONE `BEGIN IMMEDIATE` transaction (#228), so a snapshot can no longer observe messages ahead of their totals, and a failed write leaves neither a half-written turn nor an unanswered `user` row that resume cannot roll back. This discharges the per-turn-transaction follow-up this section previously tracked.
 - **The durable append is compare-and-append** ([ADR-0078](../../decisions/0078-ordered-durable-append-and-the-terminal-outbox.md) §2). `persistEvent` takes an optional `DurableWriteContext` carrying `expectedLastSequenceNumber` — the sequence the caller last *asked* to append, not the last it saw succeed. When present, the store reads `max(run_events.seq)` for that run **inside the same `BEGIN IMMEDIATE` transaction, through the transaction handle**, and refuses the append with a typed `AppendConflictError` when the two differ. `UNIQUE(run_id, seq)` bars a duplicate and says nothing about order or holes; this is what makes the committed log a *prefix* of what was asked rather than merely a set. Three properties are deliberate: the read is `max(seq)` rather than a denormalized `runs.last_event_seq` column, so there is no migration and no second source of truth that can drift from the rows; the check runs **before** the derived `runs`/`step_executions`/`run_costs` writes, so a refusal leaves nothing behind; and `AppendConflictError` is **not** in the retryable-code set above — a conflict is a stale belief, not lock contention, and retrying it five times would waste five transactions and report the wrong cause. The engine exempts the run TERMINAL from the guard, because exactly-one-terminal ([ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)) outranks it; a terminal the store will not take is ADR-0078 §4's outbox to own.
 - **The same write is fenced by run ownership** ([ADR-0079](../../decisions/0079-cross-process-run-ownership-lease-and-fencing-token.md) §2). `DurableWriteContext` carries a second, **independent** claim beside `expectedLastSequenceNumber`: a `fence` of `{ ownerId, generation }`. When present, the store reads the run's `run_leases` row **inside the same `BEGIN IMMEDIATE` transaction, through the transaction handle** — outside it, the read and the write would be two statements another process could interleave, which is the exact race the check exists to close — and refuses with a typed `LeaseFencedError` when the owner or generation differs, **or when the row is absent**: a writer that cannot prove ownership fails closed. It is checked *after* the append guard, because a stale belief about the log is the more specific diagnosis when a writer has both problems. The two fields are independent because the run TERMINAL carries the fence *without* the append guard — exempt from one, not the other. An **absent** `fence` is a pass rather than a refusal: a caller holding no ownership claim has nothing stale to catch. Like `AppendConflictError`, `LeaseFencedError` is **not** in the retryable set — a stale fence is an expected refusal, not lock contention.
@@ -956,6 +1231,7 @@ Drizzle ORM is used for both engines, so table and column names are identical an
 - **Multi-tenancy**: an `org_id` column is added to every table with Postgres row-level security and team-level sharing permissions.
 - **`run_events` partitioning**: the unbounded event log uses Postgres declarative `RANGE`-by-month partitioning (or a TimescaleDB hypertable) with `pg_cron` retention `DROP TABLE`. SQLite has no partitioning, hence the local 90-day archive/prune job.
 - **Concurrency**: Postgres MVCC supports many concurrent writers; SQLite's single-writer WAL lock is adequate locally but would bottleneck cloud-scale parallel runs.
+- **Session usage revision protection (ADR-0104)**: PostgreSQL must implement the same entry-mismatch/sticky-taint/final-acknowledgement transition table with dialect-specific triggers and locking/migration tests before that persistence target is enabled. SQLite's migration-owned trigger DDL is not portable by driver substitution. This local W8 foundation implements/tests SQLite only; it claims no PostgreSQL implementation or tested parity.
 - **Reintroduced tables**: `workflow_schedules` (cron/interval triggers) becomes functional in Phase 2; `*_versions` tables may return if portal-managed (non-git) versioning is needed.
 
 ### Managed-inference tables (Phase 2)

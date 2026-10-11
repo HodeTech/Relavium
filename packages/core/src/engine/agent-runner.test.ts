@@ -67,7 +67,7 @@ function provider(chunks: StreamChunk[], id: ProviderId = 'anthropic'): LlmProvi
 const STOP: StreamChunk = {
   type: 'stop',
   stopReason: 'stop',
-  usage: { inputTokens: 3, outputTokens: 2 },
+  usage: { kind: 'complete', usage: { inputTokens: 3, outputTokens: 2 } },
 };
 
 const AGENT: Agent = {
@@ -287,7 +287,7 @@ function reqCapturingProvider(supports: CapabilityFlags = CAPS): {
           ? [{ type: 'media', mimeType: 'image/png', source: { kind: 'base64', data: 'aW1n' } }]
           : [{ type: 'text', text: 'ok' }],
         stopReason: 'stop',
-        usage: { inputTokens: 1, outputTokens: 1 },
+        usage: { kind: 'complete', usage: { inputTokens: 1, outputTokens: 1 } },
       });
     },
     stream: (r) => {
@@ -394,7 +394,7 @@ describe('createAgentNodeExecutor — dispatch', () => {
         Promise.resolve({
           content: [{ type: 'text', text: 'here' }, image],
           stopReason: 'stop',
-          usage: { inputTokens: 3, outputTokens: 2 },
+          usage: { kind: 'complete', usage: { inputTokens: 3, outputTokens: 2 } },
         }),
       stream: (): AsyncIterable<StreamChunk> => {
         throw new Error('stream must NOT run for an inline media-out turn');
@@ -426,7 +426,7 @@ describe('createAgentNodeExecutor — dispatch', () => {
         Promise.resolve({
           content: [{ type: 'text', text: 'I cannot make an image' }],
           stopReason: 'stop',
-          usage: { inputTokens: 3, outputTokens: 2 },
+          usage: { kind: 'complete', usage: { inputTokens: 3, outputTokens: 2 } },
         }),
       stream: (): AsyncIterable<StreamChunk> => {
         throw new Error('stream must NOT run for a media-out turn');

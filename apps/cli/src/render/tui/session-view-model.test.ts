@@ -583,6 +583,47 @@ describe('session-view-model', () => {
     expect(manual.transcript).toHaveLength(0);
   });
 
+  it.each([
+    { name: 'absent', coverage: undefined, incomplete: true },
+    {
+      name: 'pending',
+      coverage: { unverified: false, pendingInvocations: 1, unknownCalls: 0 },
+      incomplete: true,
+    },
+    {
+      name: 'unknown',
+      coverage: { unverified: false, pendingInvocations: 0, unknownCalls: 1 },
+      incomplete: true,
+    },
+    {
+      name: 'legacy',
+      coverage: { unverified: true, pendingInvocations: 0, unknownCalls: 0 },
+      incomplete: true,
+    },
+    {
+      name: 'complete',
+      coverage: { unverified: false, pendingInvocations: 0, unknownCalls: 0 },
+      incomplete: false,
+    },
+  ])(
+    'qualifies automatic summary token observations with $name coverage',
+    ({ coverage, incomplete }) => {
+      const event = events().compacted('auto-threshold');
+      const state = reduceSessionEvent(
+        initialSessionViewState(undefined, INLINE_TRANSCRIPT_BOUND),
+        {
+          ...event,
+          ...(coverage === undefined ? {} : { summaryUsageCoverage: coverage }),
+        },
+      );
+      const notice = state.transcript.at(-1);
+      if (notice?.role !== 'notice') throw new Error('automatic summary notice missing');
+      expect(notice.text).toContain('auto-compacted');
+      expect(notice.text.includes('known observations, usage incomplete')).toBe(incomplete);
+      expect(notice.text).not.toMatch(/\$|free/);
+    },
+  );
+
   it('surfaces the AUTO-FALLBACK trim as a notice, but not a manual /trim (ADR-0062)', () => {
     const e = events();
     // The deterministic trim the engine degrades to when auto-compaction's summariser fails must NOT be silent.

@@ -1,4 +1,4 @@
-import { isCorruptRunEventError } from '@relavium/db';
+import { isCorruptRunEventError, isUnreadableRunEventLogError } from '@relavium/db';
 
 /**
  * Bound one damaged run's blast radius to that run.
@@ -12,9 +12,10 @@ import { isCorruptRunEventError } from '@relavium/db';
  * That is the wrong trade. The damaged run is already lost — its log cannot be read, so it cannot be resumed
  * either — but the other nineteen are fine, and the listing is exactly where a user would go to find out which
  * run is broken. So a {@link isCorruptRunEventError} from ONE run degrades that run's detail and the aggregation
- * continues.
+ * continues. A strict coverage read also refuses forward-written event types with
+ * {@link isUnreadableRunEventLogError}; discovery degrades that run rather than implying complete usage.
  *
- * Deliberately narrow in two ways. It catches **only** the typed corruption error — any other throw (a closed
+ * Deliberately narrow in two ways. It catches **only** these typed per-run log errors — any other throw (a closed
  * db handle, an out-of-memory, a programming fault) still propagates, because those are not per-run conditions
  * and swallowing them would hide a real failure. And it is for READS whose absence degrades gracefully; it is
  * NOT for the resume path, where a run's log failing to read must fail loudly rather than resume a run from a
@@ -33,7 +34,7 @@ export function readPerRunOrDegrade<T>(fallback: T, read: () => T): PerRunRead<T
   try {
     return { value: read(), degraded: false };
   } catch (err) {
-    if (isCorruptRunEventError(err)) {
+    if (isCorruptRunEventError(err) || isUnreadableRunEventLogError(err)) {
       return { value: fallback, degraded: true };
     }
     throw err;

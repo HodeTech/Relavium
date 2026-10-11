@@ -23,14 +23,14 @@ import { describe, expect, it } from 'vitest';
 
 const SRC = join(import.meta.dirname, '..');
 
-/** Every `.ts`/`.tsx` SOURCE file under `dir` whose text matches `pattern`, as `SRC`-relative paths. */
+/** Production `.ts`/`.tsx` files, excluding test fixtures, as `SRC`-relative paths. */
 function filesMatching(dir: string, pattern: RegExp): string[] {
   const out: string[] = [];
   const walk = (at: string): void => {
     for (const entry of readdirSync(at, { withFileTypes: true })) {
       const full = join(at, entry.name);
       if (entry.isDirectory()) {
-        walk(full);
+        if (entry.name !== 'fixtures') walk(full);
       } else if (/\.tsx?$/.test(entry.name) && !/\.test\.tsx?$/.test(entry.name)) {
         if (pattern.test(readFileSync(full, 'utf8'))) out.push(relative(SRC, full));
       }

@@ -26,6 +26,11 @@ import {
   runCosts,
 } from '@relavium/db';
 
+import { readRunUsageCoverage } from '../history/usage-coverage.js';
+import { createJsonRenderer } from '../render/renderer.js';
+import { createRunStore } from '../render/tui/run-store.js';
+import { captureIo, parseNdjson } from '../test-support.js';
+
 const VOLUME = 12.5;
 const CHARGE = 2513;
 const MODEL = 'offline-fractional-history';
@@ -189,8 +194,13 @@ async function runMedia(finish: Finish) {
     const engine = new WorkflowEngine({ host, executor, resolvePrice });
     const handle = engine.start({ workflow });
     const events: RunEvent[] = [];
+    const projection = createRunStore(false);
+    const json = captureIo();
+    const renderer = createJsonRenderer(json.io);
     for await (const event of handle.events) {
       events.push(event);
+      projection.apply(event);
+      renderer.onEvent(event);
       if (event.type === 'run:paused') {
         if (finish === 'cancel') handle.cancel();
         else {
@@ -238,6 +248,61 @@ async function runMedia(finish: Finish) {
       .get();
     expect(aggregate?.total).toBe(CHARGE);
     expect(store.loadRun(handle.runId)?.totalCostMicrocents).toBe(CHARGE);
+    const completeCoverage = { unverified: false, pendingInvocations: 0, unknownCalls: 0 };
+    const history = readRunUsageCoverage(store, handle.runId);
+    expect(history).toMatchObject({
+      totalCostMicrocents: CHARGE,
+      usageCoverage: completeCoverage,
+      unpricedCalls: 0,
+    });
+    expect(history.nodes.get('gen')).toEqual(completeCoverage);
+    expect(durable.filter((event) => event.type === 'cost:coverage_started')).toHaveLength(1);
+    expect(
+      durable.filter((event) =>
+        ['cost:usage_pending', 'cost:usage_disposition', 'cost:attempt_settled'].includes(
+          event.type,
+        ),
+      ),
+    ).toEqual([]);
+    projection.flush();
+    expect(projection.getSnapshot().state).toMatchObject({
+      cumulativeCostMicrocents: CHARGE,
+      usageCoverage: completeCoverage,
+      unpricedCalls: 0,
+      summary: { totalCostMicrocents: CHARGE },
+    });
+    const headline =
+      finish === 'sync-sdk' || finish === 'done'
+        ? 'run completed'
+        : finish === 'cancel'
+          ? 'run cancelled'
+          : 'run failed';
+    expect(projection.summaryText()).toContain(headline);
+    // This small known charge rounds to four-decimal USD; raw history/JSON preserve the integer.
+    expect(
+      projection
+        .summaryText()
+        .split('\n')[0]
+        ?.split(' · ')
+        .filter((part) => part.startsWith('cost ')),
+    ).toEqual(['cost $0.0000']);
+    const jsonEvents = parseNdjson(json.out());
+    expect(jsonEvents).toEqual(events);
+    expect(jsonEvents.filter((event) => event['type'] === 'cost:updated')).toMatchObject([
+      {
+        inputTokens: 0,
+        outputTokens: 0,
+        costMicrocents: CHARGE,
+        cumulativeCostMicrocents: CHARGE,
+        usageCoverage: completeCoverage,
+        cumulativeUnpricedCalls: 0,
+      },
+    ]);
+    expect(jsonEvents.at(-1)).toMatchObject({
+      usageCoverage: completeCoverage,
+      cumulativeUnpricedCalls: 0,
+    });
+    expect(json.err()).toBe('');
     expect(base.armedCount()).toBe(0);
     expect(base.deadlineCount()).toBe(0);
     expect(base.livenessCount()).toBe(0);

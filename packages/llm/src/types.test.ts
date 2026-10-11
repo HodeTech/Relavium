@@ -134,13 +134,18 @@ describe('seam result/usage/error/capability schemas', () => {
       LlmResultSchema.safeParse({
         content: [{ type: 'text', text: 'done' }],
         stopReason: 'stop',
-        usage,
+        usage: { kind: 'complete' as const, usage: usage },
         raw: { id: 'msg_1' },
       }).success,
     ).toBe(true);
     // stopReason is the closed StopReason enum (re-exported from @relavium/shared)
     expect(
-      LlmResultSchema.safeParse({ content: [], stopReason: 'banana', usage, raw: null }).success,
+      LlmResultSchema.safeParse({
+        content: [],
+        stopReason: 'banana',
+        usage: { kind: 'complete' as const, usage: usage },
+        raw: null,
+      }).success,
     ).toBe(false);
   });
 
@@ -249,7 +254,7 @@ describe('StreamChunk union', () => {
       result: { hits: 1 },
       providerExecuted: true,
     },
-    { type: 'stop', stopReason: 'tool_use', usage },
+    { type: 'stop', stopReason: 'tool_use', usage: { kind: 'complete' as const, usage: usage } },
     {
       type: 'error',
       error: { kind: 'overloaded', retryable: true, provider: 'gemini', message: 'busy' },
@@ -287,7 +292,13 @@ describe('seam types are pure Relavium types (no vendor SDK type crosses the sea
     // would make this fail to compile (and the import-zone fence forbids the import outright).
     const stub: LlmProvider = {
       id: 'anthropic',
-      generate: () => Promise.resolve({ content: [], stopReason: 'stop', usage, raw: null }),
+      generate: () =>
+        Promise.resolve({
+          content: [],
+          stopReason: 'stop',
+          usage: { kind: 'complete' as const, usage: usage },
+          raw: null,
+        }),
       stream: async function* () {
         await Promise.resolve();
         yield { type: 'text_delta', text: 'hi' } satisfies StreamChunk;
@@ -311,7 +322,13 @@ describe('seam types are pure Relavium types (no vendor SDK type crosses the sea
     // generative provider WITH them typechecks against only Relavium types too.
     const generative: LlmProvider = {
       id: 'openai',
-      generate: () => Promise.resolve({ content: [], stopReason: 'stop', usage, raw: null }),
+      generate: () =>
+        Promise.resolve({
+          content: [],
+          stopReason: 'stop',
+          usage: { kind: 'complete' as const, usage: usage },
+          raw: null,
+        }),
       stream: async function* () {
         await Promise.resolve();
         yield { type: 'text_delta', text: 'hi' } satisfies StreamChunk;
@@ -465,8 +482,12 @@ describe('seam shape amendment (ADR-0031) — multimodal I/O', () => {
       source: { kind: 'base64', data: overCeiling },
     };
     expect(
-      LlmResultSchema.safeParse({ content: [generated], stopReason: 'stop', usage, raw: null })
-        .success,
+      LlmResultSchema.safeParse({
+        content: [generated],
+        stopReason: 'stop',
+        usage: { kind: 'complete' as const, usage: usage },
+        raw: null,
+      }).success,
     ).toBe(true);
     expect(LlmMessageSchema.safeParse(message(generated)).success).toBe(false);
   });
@@ -516,8 +537,12 @@ describe('seam shape amendment (ADR-0031) — multimodal I/O', () => {
     };
     expect(LlmMessageSchema.safeParse({ role: 'tool', content: [smuggling] }).success).toBe(false);
     expect(
-      LlmResultSchema.safeParse({ content: [smuggling], stopReason: 'stop', usage, raw: null })
-        .success,
+      LlmResultSchema.safeParse({
+        content: [smuggling],
+        stopReason: 'stop',
+        usage: { kind: 'complete' as const, usage: usage },
+        raw: null,
+      }).success,
     ).toBe(false);
     expect(
       StreamChunkSchema.safeParse({
@@ -603,13 +628,13 @@ describe('seam shape amendment (ADR-0031) — multimodal I/O', () => {
     const mediaOnly = LlmResultSchema.parse({
       content: [{ type: 'media', mimeType: 'image/png', source: { kind: 'handle', ref: HANDLE } }],
       stopReason: 'stop',
-      usage,
+      usage: { kind: 'complete' as const, usage: usage },
       raw: null,
     });
     const emptyTextTurn = LlmResultSchema.parse({
       content: [{ type: 'text', text: '' }],
       stopReason: 'stop',
-      usage,
+      usage: { kind: 'complete' as const, usage: usage },
       raw: null,
     });
     const producedMedia = (result: LlmResult): boolean =>

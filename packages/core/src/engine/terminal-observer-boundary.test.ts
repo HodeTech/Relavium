@@ -74,12 +74,12 @@ function providerFor(raw: Usage, afterStop?: () => void, bare = false): LlmProvi
       Promise.resolve({
         content: [{ type: 'text', text: 'synthetic' }],
         stopReason: 'stop',
-        usage: raw,
+        usage: { kind: 'complete', usage: raw },
       }),
     stream: async function* (): AsyncGenerator<StreamChunk> {
       await Promise.resolve();
       if (!bare) yield { type: 'text_delta', text: 'synthetic' };
-      yield { type: 'stop', stopReason: 'stop', usage: raw };
+      yield { type: 'stop', stopReason: 'stop', usage: { kind: 'complete', usage: raw } };
       afterStop?.();
     },
   };
@@ -265,7 +265,7 @@ describe('held terminal ownership', () => {
       }).stream({ model: MODEL, messages: [] }))
         void chunk;
       expect(records).toHaveLength(1);
-      expect(records[0]?.usage).toEqual(usage());
+      expect(records[0]?.usage).toEqual({ kind: 'complete', usage: usage() });
       expect(tracker.cumulativeCostMicrocents).toBe(CHARGE);
     });
 });
@@ -341,7 +341,7 @@ describe('held terminal root and error ownership', () => {
       const stop: Extract<StreamChunk, { type: 'stop' }> = {
         type: 'stop',
         stopReason: 'stop',
-        usage: usage(),
+        usage: { kind: 'complete', usage: usage() },
       };
       const p: LlmProvider = {
         id: 'openai',

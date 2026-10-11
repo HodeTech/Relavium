@@ -1,3 +1,4 @@
+import { knownUsage } from '../conformance/usage-test.js';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { clearCatalogRefresh, installCatalogRefresh } from '../catalog/lookup.js';
@@ -324,12 +325,16 @@ describe('Gemini adapter', () => {
   it('maps usage to NET, subtracting cached content from the prompt count', () => {
     expect(
       mapUsage({ promptTokenCount: 100, candidatesTokenCount: 20, cachedContentTokenCount: 30 }),
-    ).toEqual({ inputTokens: 70, outputTokens: 20, cacheReadTokens: 30 });
-    expect(mapUsage({ promptTokenCount: 12, candidatesTokenCount: 7 })).toEqual({
-      inputTokens: 12,
-      outputTokens: 7,
+    ).toEqual({
+      kind: 'complete',
+      usage: { inputTokens: 70, outputTokens: 20, cacheReadTokens: 30 },
     });
-    expect(mapUsage({})).toEqual({ inputTokens: 0, outputTokens: 0 });
+    expect(mapUsage({ promptTokenCount: 12, candidatesTokenCount: 7 })).toEqual({
+      kind: 'partial',
+      known: { outputTokens: 7 },
+      reason: 'missing_fields',
+    });
+    expect(mapUsage({})).toEqual({ kind: 'missing', reason: 'missing_fields' });
   });
 
   describe('function-call continuation signature (CR-52, ADR-0090)', () => {
@@ -930,7 +935,7 @@ describe('Gemini adapter — generate / stream via injected transport', () => {
     const result = await adapter.generate(REQ, 'k');
     expect(result.content).toEqual([{ type: 'text', text: 'Hello' }]);
     expect(result.stopReason).toBe('stop');
-    expect(result.usage).toEqual({ inputTokens: 5, outputTokens: 2 });
+    expect(result.usage).toEqual({ kind: 'missing', reason: 'missing_fields' });
   });
 
   it('generate surfaces a transport rejection as a classified LlmProviderError', async () => {
@@ -1018,7 +1023,7 @@ describe('Gemini adapter — remaining branches', () => {
       },
     });
     const result = await adapter.generate(REQ, 'k');
-    expect(result.usage).toEqual({ inputTokens: 0, outputTokens: 0 });
+    expect(result.usage).toEqual({ kind: 'missing', reason: 'not_reported' });
   });
 
   it('folds a mid-stream iteration error into an error chunk', async () => {
@@ -1066,7 +1071,11 @@ describe('Gemini adapter — reasoning + structured output (ADR-0030)', () => {
   it('mapUsage adds thoughtsTokenCount into outputTokens (Gemini bills them separately)', () => {
     expect(
       mapUsage({ promptTokenCount: 10, candidatesTokenCount: 20, thoughtsTokenCount: 6 }),
-    ).toEqual({ inputTokens: 10, outputTokens: 26, reasoningTokens: 6 });
+    ).toEqual({
+      kind: 'partial',
+      known: { outputTokens: 26, reasoningTokens: 6 },
+      reason: 'missing_fields',
+    });
   });
 
   it('stream folds thought parts into reasoning_start/delta/end (signature) then text', async () => {
@@ -1094,7 +1103,7 @@ describe('Gemini adapter — reasoning + structured output (ADR-0030)', () => {
     const stop = chunks.at(-1);
     expect(stop?.type).toBe('stop');
     if (stop?.type === 'stop') {
-      expect(stop.usage.reasoningTokens).toBe(2);
+      expect(knownUsage(stop.usage).reasoningTokens).toBe(2);
     }
   });
 });
@@ -1135,7 +1144,7 @@ describe('Gemini adapter — usage, truncation, refusal, malformed tool (review 
   it('mapUsage adds toolUsePromptTokenCount to input (disjoint from prompt tokens)', () => {
     expect(
       mapUsage({ promptTokenCount: 10, candidatesTokenCount: 4, toolUsePromptTokenCount: 6 }),
-    ).toEqual({ inputTokens: 16, outputTokens: 4 });
+    ).toEqual({ kind: 'partial', known: { outputTokens: 4 }, reason: 'missing_fields' });
   });
 
   it('emits a transport error when a stream ends without a finishReason (truncated)', async () => {

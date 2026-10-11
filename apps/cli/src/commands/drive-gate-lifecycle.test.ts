@@ -111,7 +111,11 @@ for (const mode of [
           calls++;
           await Promise.resolve();
           yield { type: 'text_delta', text: 'bounded paid control' };
-          yield { type: 'stop', stopReason: 'stop', usage: { inputTokens: 1, outputTokens: 1 } };
+          yield {
+            type: 'stop',
+            stopReason: 'stop',
+            usage: { kind: 'complete', usage: { inputTokens: 1, outputTokens: 1 } },
+          };
         },
       };
       const agent = {

@@ -58,7 +58,11 @@ for (const first of ['request', 'response'] as const)
           choices: [
             { index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' },
           ],
-          usage: { prompt_tokens: 3, completion_tokens: 2 },
+          usage: {
+            prompt_tokens: 3,
+            completion_tokens: 2,
+            prompt_tokens_details: { cached_tokens: 0 },
+          },
         }),
       );
     });
@@ -120,7 +124,10 @@ for (const first of ['request', 'response'] as const)
           },
         },
       );
-      expect(result.usage).toEqual({ inputTokens: 3, outputTokens: 2 });
+      expect(result.usage).toEqual({
+        kind: 'complete',
+        usage: { inputTokens: 3, outputTokens: 2, cacheReadTokens: 0 },
+      });
       expect(admitted).toHaveLength(1);
       if (reqClose === undefined || resClose === undefined)
         throw new Error('missing native close hooks');

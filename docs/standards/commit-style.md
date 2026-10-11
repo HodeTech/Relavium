@@ -37,7 +37,7 @@ in the body under a `BREAKING CHANGE:` line.
 The scope is the package or app the change lives in, using the short workspace name (see
 [project-structure.md](../project-structure.md)):
 
-`llm`, `core`, `shared`, `db`, `ui`, `cli`, `desktop`, `vscode`, `api`, `portal`, `docs`,
+`llm`, `core`, `shared`, `db`, `mcp`, `ui`, `cli`, `desktop`, `vscode`, `api`, `portal`, `docs`,
 `repo` (root tooling / config).
 
 - One scope per commit; a change spanning packages is usually two commits. If genuinely

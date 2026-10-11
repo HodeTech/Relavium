@@ -189,14 +189,14 @@ for (const store of ['reference', 'native'] as const)
               yield {
                 type: 'stop',
                 stopReason: 'tool_use',
-                usage: { inputTokens: 3, outputTokens: 2 },
+                usage: { kind: 'complete', usage: { inputTokens: 3, outputTokens: 2 } },
               };
             } else {
               yield { type: 'text_delta', text: 'done' };
               yield {
                 type: 'stop',
                 stopReason: 'stop',
-                usage: { inputTokens: 3, outputTokens: 2 },
+                usage: { kind: 'complete', usage: { inputTokens: 3, outputTokens: 2 } },
               };
             }
           },

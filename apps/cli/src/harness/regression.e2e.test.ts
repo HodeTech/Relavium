@@ -71,6 +71,7 @@ const SCENARIOS: readonly Scenario[] = [
     exit: EXIT_CODES.success,
     events: [
       'run:started',
+      'cost:coverage_started',
       'node:started:start',
       'node:completed:start',
       'node:started:double',
@@ -87,6 +88,7 @@ const SCENARIOS: readonly Scenario[] = [
     parallel: true,
     events: [
       'run:started',
+      'cost:coverage_started',
       'node:started:start',
       'node:completed:start',
       'node:started:fan',
@@ -122,6 +124,7 @@ const SCENARIOS: readonly Scenario[] = [
     exit: EXIT_CODES.success,
     events: [
       'run:started',
+      'cost:coverage_started',
       'node:started:start',
       'node:completed:start',
       'node:started:check',
@@ -141,6 +144,7 @@ const SCENARIOS: readonly Scenario[] = [
     exit: EXIT_CODES.success,
     events: [
       'run:started',
+      'cost:coverage_started',
       'node:started:start',
       'node:completed:start',
       'node:started:check',
@@ -159,6 +163,7 @@ const SCENARIOS: readonly Scenario[] = [
     exit: EXIT_CODES.gatePaused,
     events: [
       'run:started',
+      'cost:coverage_started',
       'node:started:start',
       'node:completed:start',
       'node:started:gate',
@@ -172,6 +177,7 @@ const SCENARIOS: readonly Scenario[] = [
     exit: EXIT_CODES.workflowFailed,
     events: [
       'run:started',
+      'cost:coverage_started',
       'node:started:start',
       'node:completed:start',
       'node:started:boom',

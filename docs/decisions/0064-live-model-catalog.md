@@ -356,3 +356,10 @@ hint, a loading spinner, a per-provider partial-failure banner, and a "last upda
   this doc round**, together with the sibling
   [phase-2.6-conversational-authoring.md](../roadmap/phases/phase-2.6-conversational-authoring.md) out-of-scope
   list.
+
+### W8 usage coverage activation — 2026-10-10
+
+Usage pending and disposition writes use the existing bounded whole-transaction busy-retry convention. Exhausted or failed acknowledgement refuses the next invocation before provider egress; a retryable lock is not treated as an immediate permanent write failure.
+
+See [ADR-0104](0104-unknown-provider-usage-is-durable-cost-uncertainty.md) and the
+[canonical usage contract](../reference/shared-core/llm-provider-seam.md#6-usage).

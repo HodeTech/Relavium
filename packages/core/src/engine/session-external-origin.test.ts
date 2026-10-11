@@ -90,7 +90,11 @@ function makeSession(options: {
       if (options.toolRound && counts.calls === 1) {
         yield { type: 'tool_call_start', id: 'c1', name: 'r10-tool' };
         yield { type: 'tool_call_end', id: 'c1' };
-        yield { type: 'stop', stopReason: 'tool_use', usage: { inputTokens: 4, outputTokens: 3 } };
+        yield {
+          type: 'stop',
+          stopReason: 'tool_use',
+          usage: { kind: 'complete', usage: { inputTokens: 4, outputTokens: 3 } },
+        };
         return;
       }
       if (armed && (options.fault === 'backoff' || options.fault === 'clock')) {
@@ -106,7 +110,11 @@ function makeSession(options: {
         return;
       }
       yield { type: 'text_delta', text: 'independent summary' };
-      yield { type: 'stop', stopReason: 'stop', usage: { inputTokens: 6, outputTokens: 5 } };
+      yield {
+        type: 'stop',
+        stopReason: 'stop',
+        usage: { kind: 'complete', usage: { inputTokens: 6, outputTokens: 5 } },
+      };
     },
   };
   const tools = options.toolRound ? [tool] : [];

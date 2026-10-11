@@ -33,7 +33,7 @@ function representativeStream(): readonly StreamChunk[] {
   chunks.push({
     type: 'stop',
     stopReason: 'stop',
-    usage: { inputTokens: 1_000, outputTokens: DELTAS },
+    usage: { kind: 'complete' as const, usage: { inputTokens: 1_000, outputTokens: DELTAS } },
   });
   return chunks;
 }

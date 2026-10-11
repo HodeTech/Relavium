@@ -57,7 +57,11 @@ function provider(onCall: () => void): LlmProvider {
       await Promise.resolve();
       onCall();
       yield { type: 'text_delta', text: 'fresh summary' };
-      yield { type: 'stop', stopReason: 'stop', usage: { inputTokens: 3, outputTokens: 2 } };
+      yield {
+        type: 'stop',
+        stopReason: 'stop',
+        usage: { kind: 'complete', usage: { inputTokens: 3, outputTokens: 2 } },
+      };
     },
   };
 }
@@ -205,7 +209,7 @@ describe('R12 generation ownership at pricing vs teardown callbacks', () => {
       const result: LlmResult = {
         content: [part],
         stopReason: 'stop',
-        usage: { inputTokens: 3, outputTokens: 2 },
+        usage: { kind: 'complete', usage: { inputTokens: 3, outputTokens: 2 } },
       };
       const p = provider(() => undefined);
       let calls = 0;
@@ -261,7 +265,7 @@ describe('R12 pricing mutation at actual workflow output', () => {
             part,
           ],
           stopReason: 'stop',
-          usage: { inputTokens: 3, outputTokens: 2 },
+          usage: { kind: 'complete', usage: { inputTokens: 3, outputTokens: 2 } },
         });
       };
       const overlay = new Map([[model, rate]]);

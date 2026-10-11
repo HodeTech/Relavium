@@ -1,5 +1,13 @@
 import { z } from 'zod';
 import {
+  UsageCoverageSchema,
+  UsageInvocationSchema,
+  UsageCoverageStartedPayloadSchema,
+  UsagePendingPayloadSchema,
+  UsageDispositionPayloadSchema,
+} from './usage-coverage.js';
+import { refineUsageDispositionReceipt } from './usage-disposition-validation.js';
+import {
   BudgetAuthorizationStateSchema,
   AllowanceQuoteResultSchema,
   BudgetMicrocentsSchema,
@@ -33,6 +41,9 @@ import { GateTypeSchema, TimeoutActionSchema } from './node.js';
 // session. Exactly one correlation key — `runId` on a run, `sessionId` on a session — is present.
 
 const timestampSeq = {
+  cumulativeCostMicrocents: nonNegativeInt.optional(),
+  cumulativeUnpricedCalls: nonNegativeInt.max(Number.MAX_SAFE_INTEGER).optional(),
+  usageCoverage: UsageCoverageSchema.optional(),
   timestamp: z.string().datetime({ offset: true }),
   sequenceNumber: nonNegativeInt,
 };
@@ -47,7 +58,9 @@ const sessionBase = { sessionId: nonEmptyString, ...timestampSeq };
  * The dual envelope for the events that may carry EITHER correlation key: the reused conversational ones
  * (`agent:token` / `agent:reasoning` / `agent:tool_call` / `agent:tool_result` / `cost:updated`), plus
  * `agent:approval_requested` (dual at the schema level, but session-only-emitted in Phase 2.5 — the chat
- * approval regime) and `budget:estimate_committed` (ADR-0074 §2). **This spread is the definition of the set** —
+ * approval regime), `budget:estimate_committed` (ADR-0074 §2), and the invocation boundaries
+ * `cost:usage_pending` / `cost:usage_disposition` (ADR-0104). `cost:coverage_started` is run-only;
+ * a session establishes its basis in SQLite. **This spread is the definition of the set** —
  * every member is a `...dualBase` spread and nothing else, so grep it rather than trusting a hand-kept count.
  * They carry `runId` on a run and `sessionId` on a session. A `discriminatedUnion`
  * *member* can't carry a cross-field refinement, so the "exactly one of runId / sessionId" invariant is
@@ -281,6 +294,7 @@ export const AgentFilePatchProposedEventSchema = z.object({
 
 export const CostUpdatedEventSchema = z.object({
   type: z.literal('cost:updated'),
+  invocation: UsageInvocationSchema.optional(),
   ...dualBase,
   nodeId: nonEmptyString,
   model: nonEmptyString,
@@ -645,7 +659,7 @@ export type BudgetEstimateCommittedEvent = z.infer<typeof BudgetEstimateCommitte
  *
  * **RUN PATH ONLY — `...runBase`, deliberately not `...dualBase`.** `cost:updated` is dual-envelope, so the
  * absence of a session arm is a choice, not an oversight: the session path ALREADY has this ledger.
- * `persister.ts` writes `recordSessionCost` on every `cost:updated`, carrying the PER-ATTEMPT increment (not a
+ * `persister.ts` attaches `recordSessionCost` directly to the required money port, carrying the PER-ATTEMPT increment (not a
  * cumulative snapshot) into `session_costs`, and since `#W15-4` that write is latched so a failure gates
  * further egress. This event closes the RUN path's equivalent gap.
  *
@@ -657,6 +671,7 @@ export type BudgetEstimateCommittedEvent = z.infer<typeof BudgetEstimateCommitte
  */
 export const CostAttemptSettledEventSchema = z.object({
   type: z.literal('cost:attempt_settled'),
+  invocation: UsageInvocationSchema.optional(),
   ...runBase,
   /** The agent node that owned the attempt. Required — on the run path every attempt has an owning vertex. */
   nodeId: nonEmptyString,
@@ -727,6 +742,30 @@ export const CostAttemptSettledEventSchema = z.object({
 });
 export type CostAttemptSettledEvent = z.infer<typeof CostAttemptSettledEventSchema>;
 
+/** ADR-0104 required accounting boundaries; strict records reject accidental payload additions. */
+export const CostCoverageStartedEventSchema = UsageCoverageStartedPayloadSchema.extend({
+  type: z.literal('cost:coverage_started'),
+  ...runBase,
+}).strict();
+export const CostUsagePendingEventSchema = UsagePendingPayloadSchema.extend({
+  type: z.literal('cost:usage_pending'),
+  ...dualBase,
+  nodeId: nonEmptyString,
+}).strict();
+const CostUsageDispositionEventObjectSchema = UsageDispositionPayloadSchema.innerType()
+  .extend({
+    type: z.literal('cost:usage_disposition'),
+    ...dualBase,
+    nodeId: nonEmptyString,
+  })
+  .strict();
+export const CostUsageDispositionEventSchema = CostUsageDispositionEventObjectSchema.superRefine(
+  refineUsageDispositionReceipt,
+);
+export type CostCoverageStartedEvent = z.infer<typeof CostCoverageStartedEventSchema>;
+export type CostUsagePendingEvent = z.infer<typeof CostUsagePendingEventSchema>;
+export type CostUsageDispositionEvent = z.infer<typeof CostUsageDispositionEventSchema>;
+
 /** The run-event variants, discriminated on `type` (exposed via `RunEventSchema.innerType()`). */
 const RunEventUnionSchema = z.discriminatedUnion('type', [
   RunStartedEventSchema,
@@ -755,6 +794,9 @@ const RunEventUnionSchema = z.discriminatedUnion('type', [
   BudgetAuthorizationEventSchema,
   BudgetEstimateCommittedEventSchema,
   CostAttemptSettledEventSchema,
+  CostCoverageStartedEventSchema,
+  CostUsagePendingEventSchema,
+  CostUsageDispositionEventObjectSchema,
 ]);
 
 /** The pre-refinement union value — the input every cross-field refinement helper below receives. */
@@ -962,6 +1004,7 @@ export const RunEventSchema = RunEventUnionSchema.superRefine((event, ctx) => {
   refineApprovalPreview(event, ctx);
   refineBudgetEstimateCommitted(event, ctx);
   refineCostAttemptSettled(event, ctx);
+  if (event.type === 'cost:usage_disposition') refineUsageDispositionReceipt(event, ctx);
 });
 export type RunEvent = z.infer<typeof RunEventSchema>;
 
@@ -1037,6 +1080,7 @@ export const SessionCompactingEventSchema = z.object({
  */
 export const SessionCompactedEventSchema = z.object({
   type: z.literal('session:compacted'),
+  summaryUsageCoverage: UsageCoverageSchema.optional(),
   ...sessionBase,
   reason: SessionCompactionReasonSchema,
   summary: nonEmptyString,

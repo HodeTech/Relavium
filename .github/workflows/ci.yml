@@ -4,8 +4,9 @@
 # Turborepo cache, plus the formatting check and the no-vendor-type-across-the-seam fence.
 #
 # Branch protection (set in the GitHub repo settings, not here): `ci` and `coverage` are the REQUIRED
-# status checks to merge into `main`. Every other job self-labels `(advisory)` in its `name:`, which is
-# what shows in the PR checks list — `floor-check`, `peer-dep-gate` and `windows-concurrency`.
+# status checks to merge into `main`. The wire/usage mutation jobs feed `ci` through an explicit
+# success-only aggregation; they cannot silently skip or fail while `ci` stays green. The other jobs
+# self-label `(advisory)` — `floor-check`, `peer-dep-gate` and `windows-concurrency`.
 #
 # `coverage` enforces the testing.md >=90% line+branch floor for `@relavium/llm` and `@relavium/mcp` only.
 # `packages/core` is measured and printed by the same run but does not fail it: its branch margin is +0.83
@@ -56,6 +57,8 @@ env:
 
 jobs:
   ci:
+    needs: [wire-mutations, usage-mutations]
+    if: ${{ always() }}
     name: lint · typecheck · test
     runs-on: ubuntu-latest
     timeout-minutes: 15 # a hung step fails fast instead of inheriting the 360-min default
@@ -75,6 +78,11 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: pnpm
+
+      - name: Require complete W8 causal acceptance jobs
+        env:
+          RELAVIUM_W8_JOB_RESULTS: ${{ toJSON(needs) }}
+        run: node tools/ci/require-w8-acceptance.mjs
 
       # A squash/main-based checkout need not contain development's immutable predecessor object.
       # Fetch only this canonical pin during CI setup; the acceptance harness itself stays offline.
@@ -124,13 +132,7 @@ jobs:
       # regenerated via `pnpm --filter @relavium/db db:generate`, regenerating here produces
       # an uncommitted diff and fails — turning a silent stale-migration into a red check.
       - name: DB migration is in sync with the schema
-        run: |
-          pnpm --filter @relavium/db db:generate
-          if [ -n "$(git status --porcelain packages/db/drizzle)" ]; then
-            echo "::error::The committed @relavium/db migration is out of sync with src/schema.ts (or an upstream @relavium/shared enum the CHECKs derive from). Regenerate and commit: pnpm --filter @relavium/db db:generate"
-            git status --porcelain packages/db/drizzle
-            exit 1
-          fi
+        run: pnpm db:sync-check
 
       # Formatting is run, not argued (code-style-typescript.md). Via turbo so it caches.
       - name: Format check
@@ -182,6 +184,88 @@ jobs:
       # Keep the required GitHub gate aligned with the offline smoke in pnpm run ci (ADR-0100).
       - name: Smoke the budget replay compatibility harness (offline)
         run: pnpm smoke:budget-replay
+
+  # Offline, uncached semantic removal/restoration evidence. Required indirectly through ci.needs.
+  wire-mutations:
+    name: W8 wire causal acceptance
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - name: Install (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+      - name: Build workspaces
+        run: pnpm turbo run build
+      - name: Verify acceptance orchestration guards
+        run: pnpm test:acceptance-tools
+      - name: Run complete wire removal and restoration controls
+        env:
+          RELAVIUM_ACCEPTANCE_EVIDENCE: ${{ runner.temp }}/w8-acceptance
+        run: pnpm check:wire-mutations
+      - name: Retain bounded wire control metadata
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: w8-wire-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/w8-acceptance/wire
+          if-no-files-found: warn
+          retention-days: 7
+
+  # Offline, uncached semantic removal/restoration evidence. Required indirectly through ci.needs.
+  usage-mutations:
+    name: W8 usage causal acceptance
+    timeout-minutes: 60
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      # A squash/main-based checkout need not contain development's immutable predecessor object.
+      # Fetch only this canonical pin during CI setup; the acceptance harness itself stays offline.
+      - name: Ensure immutable replay predecessor is available
+        shell: bash
+        run: |
+          BASELINE=$(node --input-type=module -e "import { baselineCommit } from './tools/budget-replay-compat/baseline-provenance.mjs'; process.stdout.write(baselineCommit)")
+          if ! git --no-replace-objects cat-file -e "$BASELINE^{commit}"; then
+            if ! git fetch --no-tags origin "$BASELINE"; then
+              echo "::error::Immutable replay predecessor $BASELINE is unavailable from origin; restore that exact object before running the offline gate."
+              exit 1
+            fi
+          fi
+          git --no-replace-objects cat-file -e "$BASELINE^{commit}"
+
+      - name: Install (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+      - name: Build workspaces
+        run: pnpm turbo run build
+      - name: Verify acceptance orchestration guards
+        run: pnpm test:acceptance-tools
+      - name: Run complete usage removal and restoration controls
+        env:
+          RELAVIUM_ACCEPTANCE_EVIDENCE: ${{ runner.temp }}/w8-acceptance
+        run: pnpm check:usage-mutations
+      - name: Retain bounded usage control metadata
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: w8-usage-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/w8-acceptance/usage
+          if-no-files-found: warn
+          retention-days: 7
 
   # Supported-floor gate (ADR-0067). TWO floors, deliberately different:
   #   * the PUBLISHED floor is `apps/cli` `engines.node` = `>=22` — the max constraint in the CLI's RUNTIME

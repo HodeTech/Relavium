@@ -1,6 +1,11 @@
 import type { SessionStreamHandleEvent } from '@relavium/core';
 import { contextWindowForModel } from '@relavium/llm';
-import type { Memory, SessionStopReason } from '@relavium/shared';
+import {
+  isUsageCoverageComplete,
+  type Memory,
+  type SessionStopReason,
+  type UsageCoverage,
+} from '@relavium/shared';
 
 /**
  * The pure, framework-free view model for the `relavium chat` ink REPL (workstream **2.M**) — the session
@@ -101,6 +106,8 @@ export interface SessionViewState {
   readonly liveToolCalls: readonly ToolCallView[];
   /** The session-wide running cost, authoritatively stamped onto every `cost:updated`. */
   readonly cumulativeCostMicrocents: number;
+  readonly usageCoverage?: UsageCoverage;
+  readonly unpricedCalls?: number;
   /** The model that produced the IN-FLIGHT turn's tokens, captured from the accurate per-attempt
    *  `cost:updated.model` (EA2, 2.5.H) — the completed turn's summary is attributed to it when it differs from the
    *  bound `model` (a within-turn failover). Required-nullable (like `turnStartedAtMs`) so it resets to `undefined`
@@ -199,6 +206,8 @@ export interface SessionViewSeed {
   readonly agentRef?: string;
   readonly model?: string;
   readonly cumulativeCostMicrocents?: number;
+  readonly usageCoverage?: UsageCoverage;
+  readonly unpricedCalls?: number;
   readonly turnCount?: number;
   readonly transcript: readonly TranscriptEntry[];
 }
@@ -294,6 +303,8 @@ export function initialSessionViewState(
     liveReasoningTruncated: false,
     liveToolCalls: [],
     cumulativeCostMicrocents: seed?.cumulativeCostMicrocents ?? 0,
+    ...(seed?.usageCoverage === undefined ? {} : { usageCoverage: seed.usageCoverage }),
+    ...(seed?.unpricedCalls === undefined ? {} : { unpricedCalls: seed.unpricedCalls }),
     activeTurnModel: undefined,
     turnCount: seed?.turnCount ?? 0,
     turnStartedAtMs: undefined,
@@ -563,8 +574,8 @@ export function reduceSessionEvent(
           ? appendNotice(
               base,
               `⟳ Context auto-compacted to fit the window — ~${grouped(event.tokensBefore)} → ` +
-                `~${grouped(event.tokensAfter)} tokens (summary cost ${grouped(event.tokensUsed.input)} in / ` +
-                `${grouped(event.tokensUsed.output)} out).`,
+                `~${grouped(event.tokensAfter)} tokens (summary usage: ${grouped(event.tokensUsed.input)} in / ` +
+                `${grouped(event.tokensUsed.output)} out${event.summaryUsageCoverage === undefined || !isUsageCoverageComplete(event.summaryUsageCoverage) ? '; known observations, usage incomplete' : ''}).`,
             )
           : base;
       return { ...noticed, compacting: false };

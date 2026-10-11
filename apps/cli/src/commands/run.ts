@@ -396,6 +396,7 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
     // exists, rather than partway through, after upstream nodes have spent money.
     const handle = engine.start({
       workflow: runWorkflow,
+      eventConsumption: 'iterated',
       inputs,
       planOptions: { toolGrantsFinal: true },
     });

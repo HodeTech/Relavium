@@ -165,3 +165,71 @@ describe('createRunStore', () => {
     expect(store.summaryText()).toContain('run completed');
   });
 });
+
+it('isolates a resumed run before sequence, coverage correlation and notification changes', () => {
+  const store = createRunStore(false);
+  const invocation = {
+    producerId: 'same-producer',
+    ordinal: 1,
+    dispatchId: 'dispatch',
+    round: 0,
+    chainAttempt: 1,
+  };
+  const base = { timestamp: TS, nodeId: 'worker', model: 'model' };
+  // A session envelope cannot latch the run owner, even if it arrives first.
+  store.apply({
+    ...base,
+    type: 'cost:usage_pending',
+    sessionId: 'session',
+    sequenceNumber: 900,
+    invocation,
+  });
+  store.apply({ ...base, type: 'cost:usage_pending', runId: RUN, sequenceNumber: 20, invocation });
+  const owned = store.getSnapshot();
+  expect(owned.state.usageCoverage?.pendingInvocations).toBe(1);
+  let notified = 0;
+  store.subscribe(() => {
+    notified += 1;
+  });
+  store.apply({
+    type: 'run:started',
+    runId: 'foreign',
+    sequenceNumber: 1000,
+    timestamp: TS,
+    workflowId: '00000000-0000-4000-8000-000000000001',
+    inputs: {},
+    executionMode: 'local',
+  });
+  store.apply({
+    ...base,
+    type: 'cost:usage_disposition',
+    runId: 'foreign',
+    sequenceNumber: 1001,
+    invocation,
+    disposition: { kind: 'incomplete', evidence: { kind: 'missing', reason: 'not_reported' } },
+  });
+  store.apply({
+    ...base,
+    type: 'cost:usage_disposition',
+    sessionId: 'session',
+    sequenceNumber: 1002,
+    invocation,
+    disposition: { kind: 'not_invoked', reason: 'cancelled' },
+  });
+  expect(store.getSnapshot()).toBe(owned);
+  expect(notified).toBe(0);
+  store.apply({
+    ...base,
+    type: 'cost:usage_disposition',
+    runId: RUN,
+    sequenceNumber: 21,
+    invocation,
+    disposition: { kind: 'incomplete', evidence: { kind: 'missing', reason: 'not_reported' } },
+  });
+  expect(store.getSnapshot().state.lastSequenceNumber).toBe(21);
+  expect(store.getSnapshot().state.usageCoverage).toMatchObject({
+    pendingInvocations: 0,
+    unknownCalls: 1,
+  });
+  expect(notified).toBe(1);
+});

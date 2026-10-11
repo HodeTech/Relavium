@@ -85,7 +85,10 @@ function harness(
         yield {
           type: 'stop',
           stopReason: 'stop',
-          usage: { inputTokens: zero ? 0 : 2, outputTokens: zero ? 0 : 3 },
+          usage: {
+            kind: 'complete',
+            usage: { inputTokens: zero ? 0 : 2, outputTokens: zero ? 0 : 3 },
+          },
         };
         return;
       }
@@ -100,7 +103,10 @@ function harness(
         yield {
           type: 'stop',
           stopReason: 'tool_use',
-          usage: { inputTokens: zero ? 0 : 2, outputTokens: zero ? 0 : 3 },
+          usage: {
+            kind: 'complete',
+            usage: { inputTokens: zero ? 0 : 2, outputTokens: zero ? 0 : 3 },
+          },
         };
         return;
       }
@@ -127,7 +133,10 @@ function harness(
       yield {
         type: 'stop',
         stopReason: 'stop',
-        usage: { inputTokens: zero ? 0 : 5, outputTokens: zero ? 0 : 7 },
+        usage: {
+          kind: 'complete',
+          usage: { inputTokens: zero ? 0 : 5, outputTokens: zero ? 0 : 7 },
+        },
       };
     },
   };

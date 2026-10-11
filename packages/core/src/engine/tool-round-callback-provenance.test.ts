@@ -81,13 +81,21 @@ function sessionFixture(
       if (second && calls === 1) {
         yield { type: 'tool_call_start', id: 'first', name: 'probe' };
         yield { type: 'tool_call_end', id: 'first' };
-        yield { type: 'stop', stopReason: 'tool_use', usage: { inputTokens: 2, outputTokens: 3 } };
+        yield {
+          type: 'stop',
+          stopReason: 'tool_use',
+          usage: { kind: 'complete', usage: { inputTokens: 2, outputTokens: 3 } },
+        };
         return;
       }
       current = 'text';
       yield { type: 'text_delta', text: 'response' };
       current = 'stop';
-      yield { type: 'stop', stopReason: 'stop', usage: { inputTokens: 5, outputTokens: 7 } };
+      yield {
+        type: 'stop',
+        stopReason: 'stop',
+        usage: { kind: 'complete', usage: { inputTokens: 5, outputTokens: 7 } },
+      };
     },
   };
   const active = () => calls === (second ? 2 : 1);

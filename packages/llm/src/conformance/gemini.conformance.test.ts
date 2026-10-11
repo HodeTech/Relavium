@@ -1,3 +1,4 @@
+import { knownUsage } from './usage-test.js';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -121,6 +122,6 @@ describe('gemini — conformance (live, nightly)', () => {
       liveKey,
     );
     expect(result.content.some((part) => part.type === 'text')).toBe(true);
-    expect(result.usage.outputTokens).toBeGreaterThan(0);
+    expect(knownUsage(result.usage).outputTokens).toBeGreaterThan(0);
   });
 });

@@ -113,9 +113,23 @@ silently sent prompts and keys to `api.openai.com`; it now installs a refusing a
 never its credentials. The test that was supposed to pin `CR-80` asserted only `toBeDefined()`, which a
 refusing adapter satisfies too, so it passed either way — the finding under the defect was the test.
 [ADR-0087](docs/decisions/0087-consumed-streams-size-bounds-and-run-retention.md) was also **accepted
-(2026-09-04) with nine dated corrections** after a review refused it as written; its §1 remains unimplemented
-and the `W3` live blocker with it, while its §3 turned out to have shipped in `W5` under a different item
-number.
+(2026-09-04) with nine dated corrections** after a review refused it as written; §1 was still unimplemented
+at that checkpoint, while §3 turned out to have shipped in `W5` under a different item number.
+**Current W8 checkpoint — 2026-10-11:** All seven implementation/review steps are accepted on
+`development`, including ADR-0087 §1 and CR-81/82. The [closing register](docs/roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w8-closing-register--2026-10-11)
+joins scoped acceptance, actual full CI/bare and enforced coverage, three wire/21 usage controls
+and two NEW complete whole-wave review rounds. Those counts belong to the original attributed
+source checkpoint, not to the later maintainer corrections. The implementation register is **49/51**;
+`main` remains **47/51** until W8 merges. Publication checks and maintainer review/merge remain
+the landing gate. CR-70/93 and existing exact-capacity/scoped residuals retain their approved
+limits; no new deferral, provider capture, billing, credential or user decision is pending.
+
+The [PR #92 maintainer corrections](docs/roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w8-pr-92-systematic-review-corrections--2026-10-11)
+have independent acceptance for all four increments, each after two NEW clean complete cumulative
+rounds. The subsequent eleven-path publication correction also has two NEW clean complete rounds.
+Fresh full CI and bare/enforced coverage pass at `6139563e`, including four wire and 23 usage
+controls. Exact published-head CI/Sonar and maintainer review/merge remain the landing gate; earlier
+checks do not certify that publication. The original closing evidence retains its source attribution.
 
 **W7 merged to `main` on 2026-10-10 as PR #90, including final whole-wave Step 12.**
 Steps 1–11, all five genuine overflow records, owned measured requests and consolidated provider/MCP/host
@@ -132,7 +146,9 @@ correction also has two NEW complete clean rounds. The [post-closure register](d
 joins every report disposition, new permanent/causal evidence and current gates. Published-head checks
 passed at reviewed head `69ac80b0` before PR #90 merged. No W7 implementation, provider,
 billing, key or user decision is pending. The [merge checkpoint](docs/roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w7-merge-checkpoint--2026-10-10)
-records closure. Next is W8: ADR-0087 §1, CR-81 and CR-82; Phase 2.6.5 remains open.
+records W7 closure. All seven W8 implementation/review steps are accepted on `development`,
+including CR-81/82 and ADR-0087 §1. The register is 49/51 there and 47/51 on `main` until W8
+merges. Publication checks and maintainer review/merge remain; existing approved limits are unchanged.
 
 For live status, per-PR history, milestone dates, and open obligations, see the canonical
 home [docs/roadmap/current.md](docs/roadmap/current.md);

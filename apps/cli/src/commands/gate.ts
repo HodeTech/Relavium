@@ -517,6 +517,7 @@ async function resumeGateCommand(
     resumeStarted = true;
     const handle = await resumeOrFail(engine, {
       runId: args.runId,
+      eventConsumption: 'iterated',
       workflow,
       inputs,
       gateId: selection.gateId,

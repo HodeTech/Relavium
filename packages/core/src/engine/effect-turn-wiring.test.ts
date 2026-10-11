@@ -71,7 +71,7 @@ const USE = (id: string, name = 'send'): readonly StreamChunk[] => [
 const STOP = (reason: 'stop' | 'tool_use'): StreamChunk => ({
   type: 'stop',
   stopReason: reason,
-  usage: { inputTokens: 1, outputTokens: 1 },
+  usage: { kind: 'complete', usage: { inputTokens: 1, outputTokens: 1 } },
 });
 
 function paramsWith(provider: LlmProvider, registry: ToolRegistry): AgentTurnParams {

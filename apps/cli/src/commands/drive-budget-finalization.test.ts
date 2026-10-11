@@ -68,7 +68,11 @@ for (const mode of ['prompt-cancel', 'os-signal', 'approve-all'] as const)
           calls++;
           await Promise.resolve();
           yield { type: 'text_delta', text: 'native independent' };
-          yield { type: 'stop', stopReason: 'stop', usage: { inputTokens: 1, outputTokens: 1 } };
+          yield {
+            type: 'stop',
+            stopReason: 'stop',
+            usage: { kind: 'complete', usage: { inputTokens: 1, outputTokens: 1 } },
+          };
         },
       };
       writeFileSync(
@@ -350,7 +354,11 @@ for (const rendererMode of ['custom', 'custom-no-barrier', 'actual-ink'] as cons
           generate: () => Promise.reject(new Error('unused')),
           stream: async function* () {
             await Promise.resolve();
-            yield { type: 'stop', stopReason: 'stop', usage: { inputTokens: 0, outputTokens: 0 } };
+            yield {
+              type: 'stop',
+              stopReason: 'stop',
+              usage: { kind: 'complete', usage: { inputTokens: 0, outputTokens: 0 } },
+            };
           },
         };
         try {

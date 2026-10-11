@@ -75,10 +75,18 @@ function harness(
           yield { type: 'tool_call_start', id, name: 'echo' };
           yield { type: 'tool_call_end', id };
         }
-        yield { type: 'stop', stopReason: 'tool_use', usage: { inputTokens: 2, outputTokens: 3 } };
+        yield {
+          type: 'stop',
+          stopReason: 'tool_use',
+          usage: { kind: 'complete', usage: { inputTokens: 2, outputTokens: 3 } },
+        };
       } else {
         yield { type: 'text_delta', text: 'tool recovery completed' };
-        yield { type: 'stop', stopReason: 'stop', usage: { inputTokens: 1, outputTokens: 1 } };
+        yield {
+          type: 'stop',
+          stopReason: 'stop',
+          usage: { kind: 'complete', usage: { inputTokens: 1, outputTokens: 1 } },
+        };
       }
     },
   };

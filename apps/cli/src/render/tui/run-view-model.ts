@@ -4,6 +4,7 @@ import {
   type AgentTokenEvent,
   type NodeCompletedEvent,
   type RunEvent,
+  type UsageCoverage,
 } from '@relavium/shared';
 import {
   budgetAllowanceLabel,
@@ -81,6 +82,8 @@ export interface RunViewState {
   readonly toolLines: readonly string[];
   /** The run-wide cost running total (integer micro-cents — 1e-8 USD; database-schema.md). */
   readonly cumulativeCostMicrocents: number;
+  readonly usageCoverage?: UsageCoverage;
+  readonly unpricedCalls?: number;
   /** The last observed `sequenceNumber`, for gap detection. */
   readonly lastSequenceNumber?: number;
   /** Set once a `sequenceNumber` gap is observed (the live stream is no-drop, so a gap signals a defect). */
@@ -276,9 +279,6 @@ function reduceNodeCompleted(base: RunViewState, event: NodeCompletedEvent): Run
   return {
     ...base,
     ...withNode(base, event.nodeId, { status: 'completed', durationMs: event.durationMs }),
-    ...(event.cumulativeCostMicrocents === undefined
-      ? {}
-      : { cumulativeCostMicrocents: event.cumulativeCostMicrocents }),
     ...(produced.length === 0
       ? {}
       : { producedMedia: appendProducedMedia(base.producedMedia, produced) }),
@@ -292,11 +292,23 @@ function reduceNodeCompleted(base: RunViewState, event: NodeCompletedEvent): Run
  */
 export function reduceRunEvent(state: RunViewState, event: RunEvent): RunViewState {
   const seq = trackSeq(state, event);
-  const base: RunViewState = { ...state, ...seq.patch };
+  let base: RunViewState = { ...state, ...seq.patch };
   // An out-of-order / duplicate event recorded a warning above but is NOT applied — re-applying a stale
   // event would double a token or let it overwrite a fresher summary.
   if (!seq.apply) {
     return base;
+  }
+
+  // A resumed stream starts at a gate decision rather than replaying old charges.
+  // Common absolute snapshots restore the known sum before the next node boundary.
+  if (event.cumulativeCostMicrocents !== undefined) {
+    base = {
+      ...base,
+      cumulativeCostMicrocents: Math.max(
+        base.cumulativeCostMicrocents,
+        event.cumulativeCostMicrocents,
+      ),
+    };
   }
 
   switch (event.type) {
@@ -344,8 +356,17 @@ export function reduceRunEvent(state: RunViewState, event: RunEvent): RunViewSta
         ),
       };
 
+    case 'cost:attempt_settled':
+      return {
+        ...base,
+        cumulativeCostMicrocents: Math.max(
+          base.cumulativeCostMicrocents,
+          event.cumulativeCostMicrocents,
+        ),
+      };
+
     case 'cost:updated':
-      return { ...base, cumulativeCostMicrocents: event.cumulativeCostMicrocents };
+      return base; // the common absolute-snapshot fold above preserves the highest known live sum
 
     case 'node:completed':
       return reduceNodeCompleted(base, event);
@@ -358,12 +379,8 @@ export function reduceRunEvent(state: RunViewState, event: RunEvent): RunViewSta
           errorCode: event.error.code,
           ...attemptPatch(event.attemptNumber),
         }),
-        // node:failed carries the run-wide cost snapshot at this boundary (2.S/D-GC durable fail-cost) — fold it
-        // into the running total just like node:completed, so a billed-but-failed media job's cost survives a
-        // durable reconstruction (cost:updated is streamed-only). Optional (older logs omit it).
-        ...(event.cumulativeCostMicrocents === undefined
-          ? {}
-          : { cumulativeCostMicrocents: event.cumulativeCostMicrocents }),
+        // The common absolute-snapshot fold above also includes billed-but-failed media costs.
+        // Optional on older logs; a lower parallel sibling snapshot cannot erase the live sum.
       };
 
     case 'node:skipped':

@@ -17,6 +17,7 @@ import { writeRecordLines } from '../render/records.js';
 import { openHistoryReader } from '../history/reader.js';
 import { sanitizeInline } from '../render/sanitize.js';
 import { readPerRunOrDegrade } from '../history/per-run-read.js';
+import { readRunUsageCoverage, UNVERIFIED_USAGE } from '../history/usage-coverage.js';
 import { createFileTerminalOutbox } from '../engine/terminal-outbox.js';
 import { terminalOutboxPath } from '../history/open.js';
 
@@ -36,6 +37,7 @@ export interface StatusCommandDeps {
 async function heldTerminalRunIds(
   homeDir: string,
   read: StatusCommandDeps['readTerminalOutbox'],
+  io: CliIo,
 ): Promise<ReadonlySet<string>> {
   try {
     const events = await (read ?? defaultReadTerminalOutbox)(homeDir);
@@ -43,6 +45,10 @@ async function heldTerminalRunIds(
       events.map((event) => event.runId).filter((id): id is string => id !== undefined),
     );
   } catch {
+    // Fixed diagnostic only: filesystem errors may carry private paths or persisted text.
+    io.writeErr(
+      'Warning: terminal outbox unavailable; held terminal status could not be verified.\n',
+    );
     return new Set();
   }
 }
@@ -52,6 +58,8 @@ const defaultReadTerminalOutbox = (homeDir: string): Promise<readonly RunEvent[]
 
 interface ActiveRunStatus {
   readonly run: RunRecord;
+  readonly usage: ReturnType<typeof readRunUsageCoverage>;
+  readonly usageUnavailable: boolean;
   /** `true` when this run's terminal is held in the outbox — its outcome is known but not yet durable. */
   readonly terminalHeld: boolean;
   readonly steps: readonly StepRecord[];
@@ -85,18 +93,38 @@ export async function statusCommand(deps: StatusCommandDeps): Promise<ExitCode> 
   //
   // READ-ONLY, deliberately. Draining is a write that claims a run lease; a status read must not take
   // ownership of a run another process may be finishing right now.
-  const held = await heldTerminalRunIds(homeDir, deps.readTerminalOutbox);
   try {
-    const statuses: ActiveRunStatus[] = reader.listActiveRuns().map((run) => ({
-      run,
-      terminalHeld: held.has(run.id),
-      steps: reader.loadStepExecutions(run.id),
-      // Native authority and companion crash prefixes can leave either active status with pending gates.
-      // Per-run isolation (`readPerRunOrDegrade`): one damaged row in one run must not blank the whole list.
-      // The degradation travels WITH the value (#W15-15) — an empty `pendingGates` on a damaged run would
-      // otherwise read as "this run has no gates" when the truth is "its gates could not be read".
-      ...gatesOf(reader, run),
-    }));
+    const held = await heldTerminalRunIds(homeDir, deps.readTerminalOutbox, deps.io);
+    const statuses: ActiveRunStatus[] = reader.listActiveRuns().map((run) => {
+      let steps: readonly StepRecord[] = [];
+      const usage = readPerRunOrDegrade(
+        {
+          totalCostMicrocents: run.totalCostMicrocents,
+          usageCoverage: UNVERIFIED_USAGE,
+          unpricedCalls: 0,
+          nodes: new Map(),
+        },
+        () =>
+          readRunUsageCoverage(reader, run.id, (snapshot) => {
+            steps = snapshot;
+          }),
+      );
+      // A strict read's step amounts and usage fold share one SQLite snapshot. On a damaged log,
+      // retain discoverable step detail with explicitly unverified coverage, never the partial fold.
+      if (usage.degraded) steps = reader.loadStepExecutions(run.id);
+      return {
+        run,
+        usage: usage.value,
+        usageUnavailable: usage.degraded,
+        terminalHeld: held.has(run.id),
+        steps,
+        // Native authority and companion crash prefixes can leave either active status with pending gates.
+        // Per-run isolation (`readPerRunOrDegrade`): one damaged row in one run must not blank the whole list.
+        // The degradation travels WITH the value (#W15-15) — an empty `pendingGates` on a damaged run would
+        // otherwise read as "this run has no gates" when the truth is "its gates could not be read".
+        ...gatesOf(reader, run),
+      };
+    });
 
     if (deps.global.json) {
       writeRecordLines(deps.io, statuses.map(toJson));
@@ -138,6 +166,12 @@ function toJson(status: ActiveRunStatus): unknown {
     runId: status.run.id,
     workflowId: status.run.workflowId,
     status: status.run.status,
+    totalCostMicrocents: status.usage.totalCostMicrocents,
+    usageCoverage: status.usage.usageCoverage,
+    unpricedCalls: status.usage.unpricedCalls,
+    ...(status.usageUnavailable
+      ? { usageUnavailable: true, usageUnavailableReason: 'unreadable_event_log' }
+      : {}),
     // The run's outcome is already known and only its durable record is missing — the exit-5 state. A
     // machine consumer needs this to tell "still working" from "finished, not yet recorded".
     terminalHeld: status.terminalHeld,
@@ -151,6 +185,7 @@ function toJson(status: ActiveRunStatus): unknown {
       completedAt: step.completedAt ?? null,
       durationMs: step.durationMs ?? null,
       costMicrocents: step.costMicrocents,
+      usageCoverage: status.usage.nodes.get(step.nodeId) ?? UNVERIFIED_USAGE,
     })),
     // Present ONLY when the log could not be read, so a
     // careful one can tell a damaged run from a run with nothing pending (#W15-15).
@@ -176,6 +211,9 @@ function toJson(status: ActiveRunStatus): unknown {
 /** Render one run's status block: a header line, its per-node steps, then any pending gates. */
 function renderRun(io: CliIo, status: ActiveRunStatus): void {
   io.writeOut(`run ${status.run.id} — ${status.run.status} (workflow ${status.run.workflowId})\n`);
+  if (status.usageUnavailable) {
+    io.writeOut("  ⚠ usage coverage unavailable — this run's event log could not be read\n");
+  }
   if (status.steps.length === 0) {
     io.writeOut('  (no node activity recorded yet)\n');
   }

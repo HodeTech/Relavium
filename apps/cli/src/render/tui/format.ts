@@ -1,3 +1,4 @@
+import { isUsageCoverageComplete, type UsageCoverage } from '@relavium/shared';
 import type { NodeStatus } from './run-view-model.js';
 
 /**
@@ -67,15 +68,39 @@ export function formatCostUsd(microcents: number): string {
   return `$${usd.toFixed(4)}`;
 }
 
-/**
- * The Home-strip cost label (2.5.B): "free" at zero/non-finite (the common zero-cost chat reads better than
- * `$0.0000`), else {@link formatCostUsd}. Reuses the canonical µ¢→USD conversion so there is exactly one home for
- * that math (CLAUDE.md rule 8) — never a second hand-rolled divisor that could drift by a factor of 100. NOTE: a
- * tiny nonzero cost below 5000 µ¢ (sub-$0.0001) rounds to `$0.0000`, not `free` — nonzero is not free.
- */
-export function formatCostShort(microcents: number): string {
-  // `<= 0 || !isFinite` ⇒ "free": guards a NaN (which `<= 0` alone would miss → "$NaN") to a safe label.
-  return microcents > 0 && Number.isFinite(microcents) ? formatCostUsd(microcents) : 'free';
+/** A known sum qualified by accounting coverage; unknown usage is never a free call. */
+export function formatReportedCost(
+  microcents: number,
+  coverage: UsageCoverage | undefined,
+  unpricedCalls = 0,
+): string {
+  const amount =
+    Number.isSafeInteger(microcents) && microcents >= 0 ? formatCostUsd(microcents) : 'unavailable';
+  const notes: string[] = [];
+  if (coverage === undefined || coverage.unverified) notes.push('usage unverified');
+  if (coverage !== undefined && coverage.pendingInvocations > 0)
+    notes.push(`${coverage.pendingInvocations} usage pending`);
+  if (coverage !== undefined && coverage.unknownCalls > 0)
+    notes.push(
+      `usage unknown for ${coverage.unknownCalls} ${coverage.unknownCalls === 1 ? 'call' : 'calls'}`,
+    );
+  if (unpricedCalls > 0)
+    notes.push(`price unknown for ${unpricedCalls} ${unpricedCalls === 1 ? 'call' : 'calls'}`);
+  return notes.length === 0 ? amount : `${amount} known; ${notes.join('; ')}`;
+}
+
+/** Compact Home cost. Only verified, fully priced zero is free. */
+export function formatCostShort(
+  microcents: number,
+  coverage: UsageCoverage | undefined,
+  unpricedCalls = 0,
+): string {
+  return microcents === 0 &&
+    coverage !== undefined &&
+    isUsageCoverageComplete(coverage) &&
+    unpricedCalls === 0
+    ? 'free'
+    : formatReportedCost(microcents, coverage, unpricedCalls);
 }
 
 /** Format a millisecond duration compactly: `420ms`, `3.2s`, `1m04s`. Negatives (clock skew) clamp to 0. */

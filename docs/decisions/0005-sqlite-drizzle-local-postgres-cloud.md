@@ -62,3 +62,21 @@ PostgreSQL 16 + Redis 7 + BullMQ is the Phase-2 cloud store: Postgres for struct
 - SQLCipher requires the passphrase to be set before the database is opened (in the Tauri Rust setup hook) and derived from a stable machine secret; getting this wrong means the database fails to open or re-prompts on every launch.
 - Operating two database engines across phases is more surface area than committing to one; accepted because neither engine alone fits both the embedded local and concurrent cloud profiles.
 - Local run history does not automatically appear in the cloud; Phase-2 sync of historical local runs is an explicit, opt-in concern documented in [architecture/cloud-phase-2.md](../architecture/cloud-phase-2.md), not an implicit migration.
+
+### W8 session-coverage foundation — 2026-10-10
+
+[ADR-0104](0104-unknown-provider-usage-is-durable-cost-uncertainty.md) qualifies the dialect/target
+claim above. Migration `0018_windy_rhodey.sql` adds SQLite session-coverage storage and
+metadata-only mutation triggers; money remains calculated and written in TypeScript. The
+[canonical database contract](../reference/shared-core/database-schema.md) owns the revision,
+acknowledgement and sticky-taint transition table. SQLite behaviour is exercised with native
+transactions. PostgreSQL must implement and test that same table using its dialect-specific
+triggers before cloud persistence is enabled; this foundation does not claim that port is built
+or tested. Production usage evidence and total-reader activation remain staged in W8.
+
+### W8 usage coverage activation — 2026-10-10
+
+SQLite now carries additive metadata-only usage-revision triggers and bounded invocation coverage. PostgreSQL remains a future target and must provide equivalent transactional revision/acknowledgement semantics before it is enabled; the existing driver abstraction does not waive that obligation.
+
+See [ADR-0104](0104-unknown-provider-usage-is-durable-cost-uncertainty.md) and the
+[canonical usage contract](../reference/shared-core/llm-provider-seam.md#6-usage).

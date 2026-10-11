@@ -42,7 +42,7 @@ const sse =
   JSON.stringify({
     id: 'c',
     choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
-    usage: { prompt_tokens: 3, completion_tokens: 2 },
+    usage: { prompt_tokens: 3, completion_tokens: 2, prompt_tokens_details: { cached_tokens: 0 } },
   }) +
   '\n\ndata: [DONE]\n\n';
 

@@ -27,13 +27,17 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 const AGENT_YAML =
   'id: coder\nprovider: anthropic\nmodel: claude-sonnet-4-6\nsystem_prompt: You are a coder.\ntools:\n  - read_file';
 const CASSETTE = {
-  schema_version: '1.0',
+  schema_version: '2.0',
   provider: 'anthropic',
   model: 'claude-sonnet-4-6',
   calls: [
     [
       { type: 'text_delta', text: 'cassette reply' },
-      { type: 'stop', stopReason: 'stop', usage: { inputTokens: 10, outputTokens: 5 } },
+      {
+        type: 'stop',
+        stopReason: 'stop',
+        usage: { kind: 'complete', usage: { inputTokens: 10, outputTokens: 5 } },
+      },
     ],
   ],
 };
@@ -44,6 +48,29 @@ function globalOptions(cwd: string, json = false): GlobalOptions {
 }
 
 describe('agentRunCommand (2.Q)', () => {
+  it('closes MCP after the lifetime join reports a durability failure', async () => {
+    const closeMcp = vi.fn(async () => {});
+    const failure = new Error('synthetic final usage write failure');
+    const { d } = deps('synthetic prompt', {
+      providers: scriptedResolver([textTurn('done')]),
+      onBuilt: (built) => {
+        const join = built.whenHostSafeToClose;
+        vi.spyOn(built, 'whenHostSafeToClose').mockImplementation(async () => {
+          await join();
+          throw failure;
+        });
+      },
+    });
+    const original = d.buildSession ?? buildChatSession;
+    await expect(
+      agentRunCommand(
+        { agent: agentPath(), input: [], allowMcpStdio: [] },
+        { ...d, buildSession: async (options) => ({ ...(await original(options)), closeMcp }) },
+      ),
+    ).rejects.toBe(failure);
+    expect(closeMcp).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps only a hidden durable identity and refuses reuse before provider egress', async () => {
     const first = deps('private-prompt-sentinel', {
       json: true,
@@ -96,14 +123,17 @@ describe('agentRunCommand (2.Q)', () => {
       json: true,
       providers: scriptedResolver([textTurn('provider-must-not-run')]),
     });
-    expect(
-      await agentRunCommand(
+    await expect(
+      agentRunCommand(
         { agent: join(cwd, 'coder.agent.yaml'), input: [], allowMcpStdio: [] },
         { ...second.d, buildSession },
       ),
-    ).toBe(1);
+    ).rejects.toMatchObject({
+      code: 'invalid_invocation',
+      message: 'one-shot session identity could not be reserved',
+    });
     expect(second.out()).not.toContain('provider-must-not-run');
-    expect(second.out()).toContain('session effect identity could not be reserved');
+    expect(second.out()).toBe('');
     const after = openSessionStore(home);
     try {
       expect(after.db.$client.prepare('SELECT * FROM run_effects').all()).toHaveLength(1);
@@ -289,7 +319,11 @@ describe('agentRunCommand (2.Q)', () => {
     const resolver = scriptedResolver([
       [
         { type: 'text_delta', text: 'one reply' },
-        { type: 'stop', stopReason: 'stop', usage: { inputTokens: 9001, outputTokens: 5 } },
+        {
+          type: 'stop',
+          stopReason: 'stop',
+          usage: { kind: 'complete', usage: { inputTokens: 9001, outputTokens: 5 } },
+        },
       ],
     ]);
     const provider = resolver.resolveProvider('anthropic');
@@ -334,7 +368,11 @@ describe('agentRunCommand (2.Q)', () => {
         argsJsonDelta: JSON.stringify({ path: 'pwned.txt', content: 'x' }),
       },
       { type: 'tool_call_end', id: 'c1' },
-      { type: 'stop', stopReason: 'tool_use', usage: { inputTokens: 1, outputTokens: 1 } },
+      {
+        type: 'stop',
+        stopReason: 'tool_use',
+        usage: { kind: 'complete', usage: { inputTokens: 1, outputTokens: 1 } },
+      },
     ];
     const { d, out } = deps('write a file', {
       json: true,
@@ -365,7 +403,11 @@ describe('agentRunCommand (2.Q)', () => {
         argsJsonDelta: JSON.stringify({ path: 'pwned.txt', content: 'x' }),
       },
       { type: 'tool_call_end', id: 'c1' },
-      { type: 'stop', stopReason: 'tool_use', usage: { inputTokens: 1, outputTokens: 1 } },
+      {
+        type: 'stop',
+        stopReason: 'tool_use',
+        usage: { kind: 'complete', usage: { inputTokens: 1, outputTokens: 1 } },
+      },
     ];
     const { d, out } = deps('write a file', {
       json: false, // PLAIN mode — the surface that shares makePlainPrinter
@@ -445,18 +487,26 @@ describe('agentRunCommand (2.Q)', () => {
     // A 2-call cassette: a tool_use turn (forcing a 2nd stream() call) then the text turn. Drives the full
     // replay through the fail-closed tool host; the NDJSON stream carries agent:tool_call and the answer.
     const toolCassette = {
-      schema_version: '1.0',
+      schema_version: '2.0',
       provider: 'anthropic',
       model: 'claude-sonnet-4-6',
       calls: [
         [
           { type: 'tool_call_start', id: 'tc-1', name: 'read_file' },
           { type: 'tool_call_end', id: 'tc-1' },
-          { type: 'stop', stopReason: 'tool_use', usage: { inputTokens: 4, outputTokens: 2 } },
+          {
+            type: 'stop',
+            stopReason: 'tool_use',
+            usage: { kind: 'complete', usage: { inputTokens: 4, outputTokens: 2 } },
+          },
         ],
         [
           { type: 'text_delta', text: 'the answer' },
-          { type: 'stop', stopReason: 'stop', usage: { inputTokens: 5, outputTokens: 3 } },
+          {
+            type: 'stop',
+            stopReason: 'stop',
+            usage: { kind: 'complete', usage: { inputTokens: 5, outputTokens: 3 } },
+          },
         ],
       ],
     };
@@ -511,6 +561,89 @@ describe('agentRunCommand (2.Q)', () => {
       ),
     ).toBe(EXIT_CODES.success);
     expect(out()).toContain('cassette reply'); // the recorded chunks were replayed
+  });
+
+  it.each([
+    { name: 'positive', inputTokens: 1000, outputTokens: 1000, expected: 1_800_000 },
+    { name: 'explicit zero', inputTokens: 0, outputTokens: 0, expected: 0 },
+  ])('publishes the acknowledged hidden owner total for $name usage', async (sample) => {
+    writeFileSync(
+      join(cwd, 'accounted.json'),
+      JSON.stringify({
+        ...CASSETTE,
+        calls: [
+          [
+            { type: 'text_delta', text: 'offline accounted reply' },
+            {
+              type: 'stop',
+              stopReason: 'stop',
+              usage: {
+                kind: 'complete',
+                usage: { inputTokens: sample.inputTokens, outputTokens: sample.outputTokens },
+              },
+            },
+          ],
+        ],
+      }),
+    );
+    const { d, out, err } = deps('private-accounting-prompt', { json: true });
+    expect(
+      await agentRunCommand(
+        { agent: agentPath(), input: [], allowMcpStdio: [], fixture: 'accounted.json' },
+        d,
+      ),
+    ).toBe(EXIT_CODES.success);
+    const events = parseNdjson<Record<string, unknown>>(out());
+    const actual = events.filter((event) => event['type'] === 'cost:updated');
+    expect(actual).toHaveLength(1);
+    expect(actual[0]).toMatchObject({
+      costMicrocents: sample.expected,
+      cumulativeCostMicrocents: sample.expected,
+      cumulativeUnpricedCalls: 0,
+      usageCoverage: { unverified: false, pendingInvocations: 0, unknownCalls: 0 },
+    });
+    for (const type of ['session:turn_completed', 'session:cancelled']) {
+      const boundary = events.filter((event) => event['type'] === type);
+      expect(boundary).toHaveLength(1);
+      expect(boundary[0]).toMatchObject({
+        cumulativeCostMicrocents: sample.expected,
+        cumulativeUnpricedCalls: 0,
+        usageCoverage: { unverified: false, pendingInvocations: 0, unknownCalls: 0 },
+      });
+    }
+    expect(err()).toBe('');
+    const opened = openSessionStore(home);
+    try {
+      const rows = opened.db.$client
+        .prepare('SELECT id, total_cost_microcents FROM agent_sessions')
+        .all();
+      expect(rows).toHaveLength(1);
+      const row = rows[0];
+      if (!isRecord(row) || typeof row['id'] !== 'string') throw new Error('missing hidden owner');
+      expect(row['total_cost_microcents']).toBe(sample.expected);
+      const snapshot = opened.store.loadSessionCostBreakdown(row['id']);
+      expect(snapshot.totalCostMicrocents).toBe(sample.expected);
+      expect(snapshot.rows).toHaveLength(1);
+      expect(snapshot.rows[0]).toMatchObject({
+        costMicrocents: sample.expected,
+        callCount: 1,
+        unpricedCalls: 0,
+      });
+      expect(snapshot.coverage).toEqual({
+        unverified: false,
+        pendingInvocations: 0,
+        unknownCalls: 0,
+      });
+      expect(opened.store.loadSession(row['id'])).toBeUndefined();
+      expect(opened.store.loadFull(row['id'])).toBeUndefined();
+      expect(opened.store.loadMessages(row['id'])).toEqual([]);
+      expect(opened.store.listSessions()).toEqual([]);
+      expect(
+        JSON.stringify(opened.db.$client.prepare('SELECT * FROM agent_sessions').all()),
+      ).not.toContain('private-accounting-prompt');
+    } finally {
+      opened.close();
+    }
   });
 
   it('maps a turn failure to exit 1 (the turn outcome, not the command shell)', async () => {

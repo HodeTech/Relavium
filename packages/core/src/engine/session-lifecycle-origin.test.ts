@@ -61,14 +61,18 @@ function basicProvider(onCall: () => void = () => undefined): LlmProvider {
       return {
         content: [{ type: 'text', text: 'summary' }],
         stopReason: 'stop',
-        usage: { inputTokens: 3, outputTokens: 4 },
+        usage: { kind: 'complete', usage: { inputTokens: 3, outputTokens: 4 } },
       };
     },
     stream: async function* (): AsyncGenerator<StreamChunk> {
       await Promise.resolve();
       onCall();
       yield { type: 'text_delta', text: 'summary' };
-      yield { type: 'stop', stopReason: 'stop', usage: { inputTokens: 3, outputTokens: 4 } };
+      yield {
+        type: 'stop',
+        stopReason: 'stop',
+        usage: { kind: 'complete', usage: { inputTokens: 3, outputTokens: 4 } },
+      };
     },
   };
 }
@@ -375,11 +379,14 @@ describe('R10 generated projection and quantities', () => {
           content: [{ type: 'text', text: 'returned' }],
           stopReason: 'stop',
           usage: {
-            inputTokens: 3,
-            outputTokens: 4,
-            cacheReadTokens: 2,
-            cacheWriteTokens: 1,
-            mediaUnits: [{ modality: 'image', direction: 'output', unit: 'count', units: 2 }],
+            kind: 'complete',
+            usage: {
+              inputTokens: 3,
+              outputTokens: 4,
+              cacheReadTokens: 2,
+              cacheWriteTokens: 1,
+              mediaUnits: [{ modality: 'image', direction: 'output', unit: 'count', units: 2 }],
+            },
           },
         };
         Object.defineProperty(result, key, {
@@ -426,7 +433,10 @@ describe('R10 generated projection and quantities', () => {
           outcome: 'failed',
           contentReceived: true,
           providerInvoked: true,
-          usage: { inputTokens: 3, outputTokens: 4, cacheReadTokens: 2, cacheWriteTokens: 1 },
+          usage: {
+            kind: 'complete',
+            usage: { inputTokens: 3, outputTokens: 4, cacheReadTokens: 2, cacheWriteTokens: 1 },
+          },
         });
         if (pricingFails) expect(records[0]).toMatchObject({ priced: false });
         else expect(records[0]?.cost?.costMicrocents).toBe(31);
@@ -442,7 +452,11 @@ describe('R10 generated projection and quantities', () => {
           throw new LlmProviderError(
             makeLlmError({ provider: 'openai', kind: 'timeout', message: 'provider timed out' }),
           );
-        return { content: [], stopReason: 'stop', usage: { inputTokens: 0, outputTokens: 0 } };
+        return {
+          content: [],
+          stopReason: 'stop',
+          usage: { kind: 'complete', usage: { inputTokens: 0, outputTokens: 0 } },
+        };
       },
     };
     const chain = new FallbackChain([{ provider: p, model, maxAttempts: 2 }], {

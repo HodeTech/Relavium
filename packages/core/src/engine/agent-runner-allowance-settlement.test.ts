@@ -48,12 +48,16 @@ function provider(patch: Partial<LlmProvider> = {}): LlmProvider {
       Promise.resolve({
         content: [],
         stopReason: 'stop',
-        usage: { inputTokens: 0, outputTokens: 1 },
+        usage: { kind: 'complete', usage: { inputTokens: 0, outputTokens: 1 } },
       }),
     async *stream() {
       await Promise.resolve();
       yield { type: 'text_delta', text: 'offline' };
-      yield { type: 'stop', stopReason: 'stop', usage: { inputTokens: 0, outputTokens: 1 } };
+      yield {
+        type: 'stop',
+        stopReason: 'stop',
+        usage: { kind: 'complete', usage: { inputTokens: 0, outputTokens: 1 } },
+      };
     },
     generateMedia: () =>
       Promise.resolve({
@@ -173,7 +177,7 @@ it('unsafe actual text cost conserves E exactly once and releases the in-flight 
           yield {
             type: 'stop',
             stopReason: 'stop',
-            usage: { inputTokens: 0, outputTokens: 10_000_000 },
+            usage: { kind: 'complete', usage: { inputTokens: 0, outputTokens: 10_000_000 } },
           };
         },
       }),
@@ -341,7 +345,11 @@ for (const media of [false, true]) {
         async *stream() {
           await Promise.resolve();
           calls += 1;
-          yield { type: 'stop', stopReason: 'stop', usage: { inputTokens: 0, outputTokens: 1 } };
+          yield {
+            type: 'stop',
+            stopReason: 'stop',
+            usage: { kind: 'complete', usage: { inputTokens: 0, outputTokens: 1 } },
+          };
         },
         generateMedia: () => {
           calls += 1;

@@ -106,7 +106,7 @@ for (const store of ['reference', 'native'] as const)
           yield {
             type: 'stop',
             stopReason: 'tool_use',
-            usage: { inputTokens: 3, outputTokens: 2 },
+            usage: { kind: 'complete', usage: { inputTokens: 3, outputTokens: 2 } },
           };
         },
       };

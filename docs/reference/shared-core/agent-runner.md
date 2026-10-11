@@ -2,7 +2,7 @@
 
 > Status: Living
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-11
 
 - **Related**: [llm-provider-seam.md](llm-provider-seam.md), [tool-registry.md](tool-registry.md), [run-plan.md](run-plan.md), [built-in-tools.md](built-in-tools.md), [../contracts/sse-event-schema.md](../contracts/sse-event-schema.md), [../../decisions/0038-agentrunner-llm-call-boundary.md](../../decisions/0038-agentrunner-llm-call-boundary.md), [../../decisions/0039-same-provider-reasoning-replay.md](../../decisions/0039-same-provider-reasoning-replay.md), [../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md), [../../decisions/0037-engine-tool-execution-boundary.md](../../decisions/0037-engine-tool-execution-boundary.md), [../../standards/error-handling.md](../../standards/error-handling.md)
 
@@ -30,8 +30,11 @@ call-local producer-lifetime hook. Preparation grants no receipt authority. The 
 that hook separately from `ChainCapabilities` and request data; the separate-endpoint generative
 path uses it before invoking `generateMedia`. Both retain the raw producer before the existing
 deadline race. A refused registration preserves host-error identity and engages no provider;
-proven pre-egress generative admission is released. Late completion changes lifetime only,
-without a second attempt/cost event, media pin, save or ordinary execution restart. See the
+proven pre-egress generative admission is released. Raw completion creates no new provider
+attempt, media pin, save or ordinary execution restart. Lifetime-only completion cannot change
+accounting. Token accounting refinement requires the exact registered receipt authority described
+in [Usage evidence and durable coverage](#usage-evidence-and-durable-coverage); it can refine that
+invocation once without reopening its public result. See the
 [canonical chain lifetime contract](llm-provider-seam.md#the-per-attempt-deadline).
 The chain and separate media submission pass that authority through the provider's optional
 invocation argument, outside request data. Each engine-owned media poll creates a new retained
@@ -80,10 +83,10 @@ The error mapping to the closed `ErrorCode` ([error-handling.md](../../standards
 
 The runner emits, per [sse-event-schema.md](../contracts/sse-event-schema.md) (envelope-less; the bus stamps `runId`/`timestamp`/`sequenceNumber`):
 
-- `agent:token` `{ nodeId, token, model }` — `model` is the active attempt's model (see the model-attribution note in `agent-turn.ts`; the accurate per-attempt model is always on `cost:updated`).
+- `agent:token` `{ nodeId, token, model }` — `model` is the active attempt's model (see the model-attribution note in `agent-turn.ts`; per-attempt model identity is carried by usage-coverage dispositions and complete-evidence `cost:updated`).
 - `agent:reasoning` `{ nodeId, text, model }` — a streaming reasoning ("thinking") delta (EA6, 2.5.H — the reasoning counterpart of `agent:token`, one per `reasoning_delta`); `model` follows the same mid-stream attribution note. Never carries the ephemeral same-provider `signature` (ADR-0030).
 - `agent:tool_call` `{ nodeId, model, toolId, toolInput, attemptNumber? }` and `agent:tool_result` `{ nodeId, toolId, success, outputSummary, attemptNumber? }` — **assembled** from the registry's partial `events.call`/`events.result` (the runner adds `type` + `nodeId` + `model`); the registry does not carry them.
-- `cost:updated` `{ nodeId, model, inputTokens, outputTokens, costMicrocents, cumulativeCostMicrocents, attemptNumber? }` — one per **non-skipped** attempt; `attemptNumber` counts non-skipped records. `cumulativeCostMicrocents` is a **placeholder** the engine overwrites authoritatively (it owns the run-wide total).
+- `cost:updated` `{ nodeId, model, inputTokens, outputTokens, costMicrocents, cumulativeCostMicrocents, attemptNumber? }` — on the agent-turn path, for provider-engaged attempts with complete usage evidence; incomplete evidence follows the acknowledged [usage-coverage path](../contracts/sse-event-schema.md#the-runevent-union) without inventing an actual-money event. `attemptNumber` counts non-skipped records. `cumulativeCostMicrocents` is a **placeholder** the engine overwrites authoritatively (it owns the run-wide total).
 
 The runner emits **no** `budget:*` / `run_timeout` (run-level, not in the in-node set). Its
 host-owned pre-egress hook gates each actual provider attempt, including retries, failovers and
@@ -301,4 +304,68 @@ The earlier dated W7 status is historical. Measured request reuse, atomic multi-
 pre-send and single pre-content overflow recovery, finite frozen allowances and the CLI resume surface
 are implemented with scoped independent acceptance. The
 [closing register](../../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w7-closing-register--2026-10-10)
-tracks final whole-wave acceptance and approved limits; CR-82 and W8 remain open.
+tracks W7's final acceptance and approved limits. The
+[canonical roadmap](../../roadmap/current.md) owns subsequent W8 status.
+
+## Usage evidence and durable coverage
+
+Every potentially billable token invocation acknowledges pending usage through the money port
+before it invokes the provider, with or without a cost cap. The single evidence value can be
+complete, partial or missing. Only complete quantities enter actual pricing; partial/missing
+evidence remains observable and becomes explicit unknown coverage. Proven non-invocation and
+official pre-content refusal resolve possibility without inventing a charge. Correlation has no
+budget authority. Exact retained late receipts can refine uncertainty once under their original
+fence; host closure joins those writes. The [LLM seam](llm-provider-seam.md#6-usage) owns the
+evidence contract and the [event contract](../contracts/sse-event-schema.md#the-runevent-union)
+owns coverage transitions.
+
+Workflow checkpoint reconstruction preserves explicitly unpriced historical attempt rows even
+when they predate the cumulative missing-price envelope. Reconcile their count with absolute
+envelope snapshots without adding already included observations twice; separate-endpoint native
+media can supply a snapshot without a token-attempt row. Resume carries this known price gap
+into the fresh live reader independently of legacy/unverified usage coverage. Neither kind of
+uncertainty changes the known actual-money sum or fabricates historical calls.
+
+An exact late complete receipt refines usage coverage and records realized money once. It does
+not implicitly release an earlier retained conservative commitment; the existing explicit
+estimate-release policy remains separate from actual receipt accounting.
+
+Historical receipts retain their original within-chain diagnostic attempt and refine only their own
+local unknown-call contribution once. They cannot change the current response's model, overflow or
+terminal-observation ownership. A complete receipt joined before outcome construction can refine
+that outcome's usage coverage; a later receipt cannot mutate the already published result. Exact
+ephemeral pre-attempt metadata retires at the final receipt, without a completed-ID history.
+
+Every accounting port entry requires its producer's active receipt scope, even when it carries a
+previously issued invocation identity. The runner explicitly transfers a dedicated accounting child
+before entering provider work. That child joins the exact registered producer and receipt promises;
+it does not extend the original executor's ports or borrow an unrelated sibling's lifetime. Late
+cleanup settles only the admission associated with its exact ephemeral pre-attempt identity.
+
+`TurnMoneyPort` is a behavioral interface. Its optional capabilities retain their presence and
+the original receiver through turn capture, including class/prototype and non-enumerable method
+implementations. A decorator must not silently turn a persisted host into a volatile host by
+dropping `beginUsageInvocation`, `claimUsage`, `usageDisposition`, `accountingFailure` or `emitCost`.
+The pending/claim/disposition triple is one all-or-none coverage feature: an incomplete set is
+refused with a fixed `AgentTurnError` (`internal`, non-retryable) before key resolution, pending
+allocation or provider entry. A port supplying none retains volatile accounting. The independent
+`accountingFailure` and `emitCost` capabilities remain optional. `MoneyDurability` similarly
+requires both pending and disposition callbacks, or neither, at construction.
+Post-provider `claimUsage`, `usageDisposition`, `record` and optional `emitCost` retain the
+observer-failure origin, including native predecessor notifications. An observer's throwable
+keeps its exact identity but cannot authorize a budget pause, paid retry or arbitrary provider
+diagnosis. Physical engagement, complete observed quantities and exact live late-receipt metadata
+are captured before these callbacks can throw. Observation alone grants no realized-write
+authority. An explicit false claim restores only that callback's provisional observation and
+receipt contribution; it neither erases prior observations nor permits a duplicate charge.
+Mandatory pending admission and the `join` barrier retain their existing precedence; inert
+request data restrictions do not restrict implementations of this host port.
+
+Conservative admission cleanup preserves an established exact primary throwable, including an
+opaque or falsy value. This applies both when actual settlement falls back to retaining the
+estimate and when turn teardown retries an outstanding obligation. Secondary cleanup failures
+are retained through the existing accounting-health port when attached; a failing health callback
+cannot replace the primary. A cleanup failure with no earlier primary remains a failure. None of
+these paths authorizes another provider call, releases an uncertain admission or fabricates a
+successful settlement. The supported host admission callback is the failure boundary; a distinct
+second synchronous cleanup error is not claimed for the current built-in governor.

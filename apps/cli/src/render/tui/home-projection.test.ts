@@ -80,6 +80,7 @@ describe('row labels', () => {
     modelId: 'claude-opus-4-8',
     status: 'active',
     updatedAt: ago(5 * MIN),
+    usageCoverage: { unverified: false, pendingInvocations: 0, unknownCalls: 0 },
     totalCostMicrocents: 120_000_000, // $1.2000 via the canonical 1e8 µ¢→USD conversion
     ...over,
   });
@@ -91,6 +92,7 @@ describe('row labels', () => {
     createdAt: ago(2 * HR),
     startedAt: ago(2 * HR),
     completedAt: ago(1 * HR),
+    usageCoverage: { unverified: false, pendingInvocations: 0, unknownCalls: 0 },
     totalCostMicrocents: 0,
     ...over,
   });
@@ -103,6 +105,54 @@ describe('row labels', () => {
     expect(sessionLabel(sessionRow({ title: undefined }), NOW)).toBe(
       'planner  ·  5m ago  ·  $1.2000',
     );
+  });
+
+  it.each([0, 120_000_000])('qualifies both Home monetary leaves at %i microcents', (amount) => {
+    const cases = [
+      {
+        coverage: { unverified: false, pendingInvocations: 1, unknownCalls: 0 },
+        unpriced: 0,
+        suffix: '1 usage pending',
+      },
+      {
+        coverage: { unverified: false, pendingInvocations: 0, unknownCalls: 2 },
+        unpriced: 0,
+        suffix: 'usage unknown for 2 calls',
+      },
+      {
+        coverage: { unverified: true, pendingInvocations: 0, unknownCalls: 0 },
+        unpriced: 0,
+        suffix: 'usage unverified',
+      },
+      {
+        coverage: { unverified: false, pendingInvocations: 0, unknownCalls: 0 },
+        unpriced: 1,
+        suffix: 'price unknown for 1 call',
+      },
+    ];
+    for (const entry of cases) {
+      const tuple = {
+        totalCostMicrocents: amount,
+        usageCoverage: entry.coverage,
+        unpricedCalls: entry.unpriced,
+      };
+      for (const label of [runLabel(runRow(tuple), NOW), sessionLabel(sessionRow(tuple), NOW)]) {
+        expect(label).toContain(amount === 0 ? '$0.0000' : '$1.2000');
+        expect(label).toContain(entry.suffix);
+        expect(label).not.toContain('free');
+      }
+    }
+    const verified = {
+      totalCostMicrocents: amount,
+      usageCoverage: { unverified: false, pendingInvocations: 0, unknownCalls: 0 },
+      unpricedCalls: 0,
+    };
+    for (const label of [
+      runLabel(runRow(verified), NOW),
+      sessionLabel(sessionRow(verified), NOW),
+    ]) {
+      expect(label.endsWith(amount === 0 ? 'free' : '$1.2000')).toBe(true);
+    }
   });
 
   it('sessionLabel sanitizes a title — strips a control seq AND collapses a newline/tab (no forged rows)', () => {

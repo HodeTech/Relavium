@@ -36,13 +36,29 @@ items are closed (47/51 closed); PR #90 is merged (`46a6a701`); W7 has no open i
 [closing register](docs/roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w7-closing-register--2026-10-10)
 joins evidence and every submitted review disposition. W8 and existing approved deferrals remain open.
 No user decision, billing setup, credential or provider capture is pending.
+**All seven W8 implementation/review steps are accepted on `development`, 2026-10-11.**
+ADR-0087 §1 and CR-81/82 close against the [whole-W8 register](docs/roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w8-closing-register--2026-10-11).
+Actual full CI/bare and enforced coverage, three wire/21 usage controls and two NEW complete
+whole-wave review rounds pass. Those counts belong to the original attributed
+source checkpoint, not to the later maintainer corrections. The register is **49/51 on development, 47/51 on main** until
+W8 merges. Publication checks and maintainer review/merge remain the landing gate. Existing
+approved CR-70/93, exact-capacity and scoped residuals are unchanged. No new decision,
+provider capture, billing or credential is pending.
 **Post-closure corrections are independently accepted, 2026-10-10:** core, CLI/DB and tooling/docs
 each have two NEW clean complete cumulative review rounds. The supplemental publication-tool
 correction also has two NEW complete clean rounds. The [post-closure register](docs/roadmap/phases/phase-2.6.5-core-reliability-remediation.md#post-closure-systematic-review--2026-10-10)
 joins every report disposition, new permanent/causal evidence and current gates. Published-head checks
 passed at reviewed head `69ac80b0` before PR #90 merged. No W7 implementation, provider,
 billing, key or user decision is pending. The [merge checkpoint](docs/roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w7-merge-checkpoint--2026-10-10)
-records closure. Next is W8: ADR-0087 §1, CR-81 and CR-82; Phase 2.6.5 remains open.
+records W7 closure. All seven W8 implementation/review steps are accepted on `development`,
+including CR-81/82 and ADR-0087 §1. The register is 49/51 there and 47/51 on `main` until W8
+merges. Publication checks and maintainer review/merge remain; existing approved limits are unchanged.
+
+**PR #92 maintainer corrections:** the [correction register](docs/roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w8-pr-92-systematic-review-corrections--2026-10-11)
+records all four increments and the subsequent publication correction accepted after two NEW
+clean complete cumulative rounds each. Fresh full CI and bare/enforced coverage pass at `6139563e`,
+including four wire and 23 usage controls.
+Exact published-head CI/Sonar and maintainer review/merge remain. No new deferral or decision is added.
 
 See [docs/roadmap/current.md](docs/roadmap/current.md) for live status.
 

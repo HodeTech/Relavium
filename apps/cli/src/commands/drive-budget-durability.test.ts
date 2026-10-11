@@ -88,7 +88,11 @@ async function fixture(fallback = false, human = false) {
       await Promise.resolve();
       calls++;
       yield { type: 'text_delta', text: 'actual synthetic output' };
-      yield { type: 'stop', stopReason: 'stop', usage: { inputTokens: 1, outputTokens: 1 } };
+      yield {
+        type: 'stop',
+        stopReason: 'stop',
+        usage: { kind: 'complete', usage: { inputTokens: 1, outputTokens: 1 } },
+      };
     },
   };
   const providers = {

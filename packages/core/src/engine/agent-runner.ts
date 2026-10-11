@@ -81,6 +81,8 @@ import {
   type PreEgressHook,
 } from './agent-turn.js';
 import { BudgetExceededError, BudgetPauseError, type BudgetAdmission } from './budget-governor.js';
+import { HostWorkRegistry } from './host-work-registry.js';
+import type { TurnMoneyPort } from './money-durability.js';
 import { quoteBudgetAllowance } from './budget-allowance.js';
 import { effortToSend, gateReasoningEffort } from './reasoning-effort.js';
 import type {
@@ -583,24 +585,25 @@ async function prepareAgentDispatch(
         }),
       execute: async (execution) => {
         const preEgress = execution.preEgress ?? deps.preEgress;
-        const retainWork = executionRetainer(execution);
         generation.notify();
-        const outcome = await captureAgentTurnOutcome({
-          ...fields,
-          preparedRequest: first.request,
-          chainCapabilities: chainCapabilities(deps),
-          ...(retainWork === undefined ? {} : { retainWork }),
-          nodeId: node.id,
-          emit: execution.emit,
-          signal: execution.signal,
-          registry: deps.registry,
-          dispatchContext: makeAgentDispatchContext(execution, node.id, grantedToolIds, deps),
-          limits,
-          ...(execution.whenReady === undefined ? {} : { whenReady: execution.whenReady }),
-          ...(preEgress === undefined ? {} : { preEgress }),
-          ...(execution.money === undefined ? {} : { money: execution.money }),
-          ...(deps.resolvePrice === undefined ? {} : { resolvePrice: deps.resolvePrice }),
-        });
+        const outcome = await withAgentReceiptScope(execution, (money, retainWork) =>
+          captureAgentTurnOutcome({
+            ...fields,
+            preparedRequest: first.request,
+            chainCapabilities: chainCapabilities(deps),
+            ...(retainWork === undefined ? {} : { retainWork }),
+            nodeId: node.id,
+            emit: execution.emit,
+            signal: execution.signal,
+            registry: deps.registry,
+            dispatchContext: makeAgentDispatchContext(execution, node.id, grantedToolIds, deps),
+            limits,
+            ...(execution.whenReady === undefined ? {} : { whenReady: execution.whenReady }),
+            ...(preEgress === undefined ? {} : { preEgress }),
+            ...(money === undefined ? {} : { money }),
+            ...(deps.resolvePrice === undefined ? {} : { resolvePrice: deps.resolvePrice }),
+          }),
+        );
         if (outcome.kind === 'failed') {
           // A consumer may throw a genuine core error class after a paid attempt. Its origin,
           // rather than its prototype, keeps it outside retry and budget-gate authority.
@@ -617,6 +620,41 @@ async function prepareAgentDispatch(
       },
     },
   };
+}
+
+/**
+ * Explicitly transfer accounting before starting the turn. Its public result remains bounded;
+ * only this child's registered raw producers keep its receipt ports alive afterwards. The
+ * executor's original ports still end with execute, regardless of unrelated running siblings.
+ */
+function withAgentReceiptScope<T>(
+  ctx: NodeExecContext,
+  operation: (
+    money: TurnMoneyPort | undefined,
+    retainWork: import('@relavium/llm').FallbackChainOptions['retainWork'],
+  ) => Promise<T>,
+): Promise<T> {
+  const transfer = ctx.continueReceipt;
+  if (transfer === undefined) return operation(ctx.money, undefined);
+  return new Promise<T>((resolve, reject) => {
+    const registered = transfer(async (receipt) => {
+      // Reuse the exact-Promise observer: a producer's overridden `then` is never lifetime proof.
+      // This local registry only joins this turn's work, so it cannot self-join the run registry.
+      const producers = new HostWorkRegistry(ctx.vertex.id);
+      const retainWork = <R>(factory: () => Promise<R>): Promise<R> =>
+        producers.invoke(() => receipt.continueReceipt(() => factory()));
+      try {
+        resolve(await operation(receipt.money, retainWork));
+      } catch (error) {
+        // A host observer may throw any value; preserve the exact primary identity.
+        // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
+        reject(error);
+      } finally {
+        await producers.join();
+      }
+    });
+    void registered.catch(reject);
+  });
 }
 
 /** Execution-local transfer only; preparation and standalone/session callers acquire no host authority. */

@@ -1,3 +1,4 @@
+import { knownUsage } from './usage-test.js';
 import { describe, expect, it } from 'vitest';
 
 import { createAnthropicAdapter } from '../adapters/anthropic.js';
@@ -88,7 +89,9 @@ async function assertTierAccepted(
   );
   // The assertion is "the provider did not 400 on the tier" — `generate` throwing an LlmError is the failure. A
   // returned result with output tokens is proof the tier rode.
-  expect(result.usage.outputTokens, `${model} rejected tier '${tier}'`).toBeGreaterThan(0);
+  expect(knownUsage(result.usage).outputTokens, `${model} rejected tier '${tier}'`).toBeGreaterThan(
+    0,
+  );
 }
 
 const anthropicKey = process.env['ANTHROPIC_API_KEY'] ?? '';

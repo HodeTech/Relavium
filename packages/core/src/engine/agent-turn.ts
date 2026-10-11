@@ -36,6 +36,7 @@ import type {
   ReasoningEffort,
   StopReason,
   SessionToolHistoryEntry,
+  UsageDisposition,
 } from '@relavium/shared';
 import {
   CostTracker,
@@ -266,13 +267,9 @@ export interface AgentTurnParams {
   /** Pre-egress budget hook (default no-op; 1.AC fills it). */
   readonly preEgress?: PreEgressHook;
   /**
-   * The run's money-durability port (ADR-0076 / ADR-0077) — RUN-PATH ONLY, and that is what makes
-   * `cost:attempt_settled` a run-only event as a runtime fact rather than a comment: `AgentSession` never sets
-   * this, so nothing is recorded on the session path and there is nothing for a sink to drop. (The session's
-   * realized spend is already recorded synchronously into `session_costs`, ADR-0070 + `#W15-4`.)
-   *
-   * Optional exactly like {@link preEgress}, and threaded the same way, because this is the boundary the
-   * session shares.
+   * Required accounting ACKs for persisted hosts, independent of budget presence. Workflows append
+   * the realized ledger; sessions attach their sole transactional cost writer directly. Volatile
+   * embeddings may omit the port and cannot promise crash-persistent usage coverage.
    */
   readonly money?: TurnMoneyPort;
   /**
@@ -295,6 +292,7 @@ export interface AgentTurnParams {
 
 /** What one settled agent turn produced. */
 export interface AgentTurnResult {
+  readonly usageCoverage: import('@relavium/shared').UsageCoverage;
   readonly toolHistory: readonly SessionToolHistoryEntry[];
   /** The final assistant content parts (text + any reasoning), in order. */
   readonly content: readonly ContentPart[];
@@ -658,15 +656,15 @@ async function streamOneTurn(
     if (chunk.type !== 'error') usage.engaged = true;
     if (
       chunk.type === 'stop' &&
-      chunk.usage !== undefined &&
-      Number.isSafeInteger(chunk.usage.inputTokens) &&
-      chunk.usage.inputTokens >= 0 &&
-      Number.isSafeInteger(chunk.usage.outputTokens) &&
-      chunk.usage.outputTokens >= 0
+      chunk.usage.kind === 'complete' &&
+      Number.isSafeInteger(chunk.usage.usage.inputTokens) &&
+      chunk.usage.usage.inputTokens >= 0 &&
+      Number.isSafeInteger(chunk.usage.usage.outputTokens) &&
+      chunk.usage.usage.outputTokens >= 0
     ) {
       usage.observedStopUsage = {
-        input: chunk.usage.inputTokens,
-        output: chunk.usage.outputTokens,
+        input: chunk.usage.usage.inputTokens,
+        output: chunk.usage.usage.outputTokens,
       };
     }
     // **ADR-0036's producer-await, at the only place a streaming turn can honour it (`CR-30`).**
@@ -1385,6 +1383,63 @@ export type CapturedAgentTurnOutcome =
       readonly usage: { readonly input: number; readonly output: number };
     };
 
+/** Behavioral ports may use prototype/private state; forwarding preserves presence and receiver. */
+function observeTurnMoney(
+  money: TurnMoneyPort,
+  noteObserverFailure: (error: unknown) => never,
+): TurnMoneyPort {
+  const { beginUsageInvocation, claimUsage, usageDisposition, accountingFailure, emitCost } = money;
+  return {
+    ...(beginUsageInvocation === undefined
+      ? {}
+      : { beginUsageInvocation: beginUsageInvocation.bind(money) }),
+    ...(claimUsage === undefined
+      ? {}
+      : {
+          claimUsage: (...args) => {
+            try {
+              return claimUsage.call(money, ...args);
+            } catch (error) {
+              return noteObserverFailure(error);
+            }
+          },
+        }),
+    ...(usageDisposition === undefined
+      ? {}
+      : {
+          usageDisposition: (...args) => {
+            try {
+              return usageDisposition.call(money, ...args);
+            } catch (error) {
+              return noteObserverFailure(error);
+            }
+          },
+        }),
+    ...(accountingFailure === undefined
+      ? {}
+      : { accountingFailure: accountingFailure.bind(money) }),
+    ...(emitCost === undefined
+      ? {}
+      : {
+          emitCost: (event) => {
+            try {
+              emitCost.call(money, event);
+            } catch (error) {
+              noteObserverFailure(error);
+            }
+          },
+        }),
+    join: () => money.join(),
+    record: (draft) => {
+      try {
+        money.record(draft);
+      } catch (error) {
+        noteObserverFailure(error);
+      }
+    },
+  };
+}
+
 /**
  * Capture canonical accounting independently of an exception's type. A trusted callback can throw any
  * value after a provider engaged; replacing that value would break money/pause/host error contracts.
@@ -1449,18 +1504,7 @@ export async function captureAgentTurnOutcome(
         }),
     ...(supplied.money === undefined
       ? {}
-      : {
-          money: {
-            join: () => supplied.money?.join() ?? Promise.resolve(),
-            record: (draft) => {
-              try {
-                supplied.money?.record(draft);
-              } catch (error) {
-                noteObserverFailure(error);
-              }
-            },
-          },
-        }),
+      : { money: observeTurnMoney(supplied.money, noteObserverFailure) }),
     emit: (event) => {
       try {
         supplied.emit(event);
@@ -1481,9 +1525,35 @@ export async function captureAgentTurnOutcome(
         }),
   };
   params = Object.freeze(observed);
+  let coverageAttached = false;
   try {
-    return { kind: 'succeeded', result: await driveAgentTurn(params, acc) };
+    const capabilities = [
+      params.money?.beginUsageInvocation,
+      params.money?.claimUsage,
+      params.money?.usageDisposition,
+    ];
+    const attached = capabilities.filter((capability) => capability !== undefined).length;
+    if (attached !== 0 && attached !== capabilities.length)
+      throw new AgentTurnError(
+        'internal',
+        'usage durability capabilities must be supplied together',
+        false,
+      );
+    coverageAttached = attached === capabilities.length;
+    const result = await driveAgentTurn(params, acc);
+    if (coverageAttached) await params.money?.join();
+    return { kind: 'succeeded', result };
   } catch (error) {
+    const settledError: unknown = error;
+    if (coverageAttached) {
+      try {
+        await params.money?.join();
+      } catch {
+        // The failure already established by the turn remains primary, including its private
+        // observer/overflow origin. Joining drains the secondary write; the money owner retains
+        // sticky broken health and refuses later pending admission even after this notification.
+      }
+    }
     const knownUsage = {
       input: acc.input + (acc.observedStopUsage?.input ?? 0),
       output: acc.output + (acc.observedStopUsage?.output ?? 0),
@@ -1491,15 +1561,15 @@ export async function captureAgentTurnOutcome(
     // An error returned by an earlier call may be rethrown by a current host hook. Only this
     // capture's private mapping can authorise recovery; public class/identity metadata cannot.
     const overflowEntry =
-      acc.overflow !== undefined && Object.is(acc.overflow.error, error)
+      acc.overflow !== undefined && Object.is(acc.overflow.error, settledError)
         ? acc.overflow.entry
         : undefined;
     return {
       kind: 'failed',
-      error,
+      error: settledError,
       ...(overflowEntry === undefined ? {} : { overflowEntry }),
       failureOrigin:
-        acc.observerFailure !== undefined && Object.is(acc.observerFailure.error, error)
+        acc.observerFailure !== undefined && Object.is(acc.observerFailure.error, settledError)
           ? 'observer'
           : 'turn',
       engaged: acc.engaged,
@@ -1554,6 +1624,7 @@ function attachPublicTurnAccounting(
 
 /** The one canonical per-turn accounting accumulator, independent of failure classification. */
 interface TurnUsageAccumulator {
+  unknownCalls?: number;
   input: number;
   output: number;
   engaged: boolean;
@@ -1571,7 +1642,7 @@ interface TurnUsageAccumulator {
   };
   /** Provider-origin overflow mapped during this exact capture, never shared across invocations. */
   overflow?: { readonly error: AgentTurnError; readonly entry: FallbackPlanEntry };
-  /** A terminal usage chunk observed before readiness/folding, not yet consumed by onAttempt. */
+  /** Complete stop/attempt quantities observed before host callbacks, not yet consumed by accounting. */
   observedStopUsage?: { readonly input: number; readonly output: number };
 }
 
@@ -1612,50 +1683,178 @@ async function driveAgentTurn(
   const costTracker = new CostTracker(params.resolvePrice);
   let activeModel = primaryModel;
   let nonSkippedAttempts = 0;
+  let coverageRound = 0;
+  let coverageAttempt = 0;
   const preEgress = params.preEgress;
-  // A chain executes one provider attempt at a time, so one per-turn slot is sufficient. It is deliberately NOT a
-  // governor-global FIFO: parallel nodes can settle out of order, and a failed/no-usage attempt has no cost event
-  // from which a global queue could infer which reservation to release.
-  let attemptAdmission: BudgetAdmission | undefined;
-  let admissionPending = false;
-  const settleUnreportedAttemptAdmission = (): void => {
-    if (!admissionPending) return;
-    admissionPending = false;
-    const active = attemptAdmission;
-    attemptAdmission = undefined;
-    // A prior true-boundary admission with no matching AttemptRecord means the consumer/iterator failed after the
-    // chain might have handed work to a provider. A release would reopen capacity on an unknown bill; retain the
-    // bounded estimate instead. Proven pre-provider cancellation releases its just-returned admission before this
-    // slot is ever armed (below).
-    // The chain may have handed work to a provider before the consumer/iterator failed, so this is the
-    // conservative retain. NO `attemptNumber`: reaching here means `onAttempt` never fired for this admission, so
-    // there is no `AttemptRecord` and `nonSkippedAttempts` has not counted it. Passing that counter would not just
-    // be imprecise — it would COLLIDE with the number a later real attempt receives, making two commitments
-    // indistinguishable. Absent is the honest answer.
-    //
-    // Covered by "conservatively settles an admission the chain never reported, when the CONSUMER throws
-    // mid-stream": a `params.emit` that throws on an `agent:token` drops out of the drain loop after the provider
-    // has already produced a delta but before the chain records an `AttemptRecord`. Both wrong answers are
-    // mutation-killed there — releasing instead of retaining, and passing the un-incremented counter.
-    active?.settleAtReservedEstimate({ nodeId: params.nodeId });
+  // A native repair may still be awaiting admission when its public deadline settles. Exact
+  // callback identities keep that late lease separate from a newer failover or tool round.
+  type AdmissionSlot = {
+    acquiring: boolean;
+    admission?: BudgetAdmission;
+    settle?: (admission: BudgetAdmission | undefined) => void;
   };
-  const dischargeAttemptAdmission = (
+  const admissions = new WeakMap<PreAttemptInfo, AdmissionSlot>();
+  // Live receipt metadata only: the exact primary callback owns its diagnostic attempt and
+  // local uncertainty. Durable correlation is not authority, nor is a later chain counter.
+  const pendingReceipts = new WeakMap<
+    PreAttemptInfo,
+    { readonly attemptNumber: number; readonly unknown: boolean }
+  >();
+  const outstandingAdmissions = new Set<AdmissionSlot>();
+  const reportSecondaryAccountingFailure = (error: unknown): void => {
+    try {
+      params.money?.accountingFailure?.(error);
+    } catch {
+      // An established primary already owns the outcome. A failing health observer cannot
+      // replace it; hosts with the existing money latch retain the secondary accounting fault.
+    }
+  };
+  const dischargeAdmission = (
+    info: PreAttemptInfo | undefined,
     discharge: (active: BudgetAdmission | undefined) => void,
   ): void => {
-    const active = admissionPending ? attemptAdmission : undefined;
-    // Keep the slot owned until the lease action succeeds. A diagnostic/callback failure then reaches
-    // the outer conservative cleanup with its original admission still available.
-    discharge(active);
-    admissionPending = false;
-    attemptAdmission = undefined;
+    const slot = info === undefined ? undefined : admissions.get(info);
+    if (slot === undefined || slot.settle !== undefined) return;
+    // Do not consume a lease until its action succeeds. A throwing diagnostic leaves the
+    // obligation available to outer conservative cleanup, preserving the original failure.
+    discharge(slot.admission);
+    slot.settle = discharge;
+    delete slot.admission;
+    if (!slot.acquiring) outstandingAdmissions.delete(slot);
+  };
+  const settleUnreportedAttemptAdmission = (primaryFailure?: { readonly error: unknown }): void => {
+    let failure: { readonly error: unknown } | undefined;
+    for (const slot of outstandingAdmissions) {
+      if (slot.acquiring || slot.settle !== undefined) continue;
+      // No matching record: a consumer may have failed after egress. Retain the estimate
+      // without inventing an attempt number. Pending acquisitions are disposed by their
+      // exact eventual non-invoked record, never by another invocation's cleanup.
+      try {
+        slot.admission?.settleAtReservedEstimate({ nodeId: params.nodeId });
+        slot.settle = (active) => active?.settleAtReservedEstimate({ nodeId: params.nodeId });
+        delete slot.admission;
+        outstandingAdmissions.delete(slot);
+      } catch (error) {
+        // Keep failed slots owed, but one failed callback must not skip independent ready leases.
+        if (failure === undefined) failure = { error };
+        else reportSecondaryAccountingFailure(error);
+      }
+    }
+    if (failure !== undefined) {
+      // The explicit carrier includes undefined/null throws. Without an earlier primary,
+      // this cleanup failure is itself the outcome and must still surface.
+      if (primaryFailure === undefined) throw failure.error;
+      reportSecondaryAccountingFailure(failure.error);
+    }
   };
 
   const onAttempt = (record: AttemptRecord): void => {
     // A SKIPPED entry (cooldown / capability) was not invoked — it must not become `activeModel`, or
     // the next entry's streamed tokens would be mis-attributed to a provider that never ran.
     if (record.outcome === 'skipped') return;
-    delete usage.overflowAttempt;
+    const lateReceipt = record.receiptFinal === true;
+    const receipt =
+      lateReceipt && record.preAttemptInfo !== undefined
+        ? pendingReceipts.get(record.preAttemptInfo)
+        : undefined;
+    // The non-invoked final ACK of a timed-out native repair still releases its exact lease.
+    // An invoked receipt instead needs the original live callback, even without a money port.
+    if (lateReceipt && record.providerInvoked && receipt === undefined) return;
+    const dischargeAttemptAdmission = (
+      action: (active: BudgetAdmission | undefined) => void,
+    ): void => dischargeAdmission(record.preAttemptInfo, action);
+    const evidence = record.usage ?? { kind: 'missing', reason: 'not_reported' };
+    const invocation = record.invocation;
+    const status = record.error?.status;
+    // Only absent usage can authorize this release. Even a partial known zero leaves the
+    // other quantities unknown; share this decision between coverage and budget settlement.
+    const officialRefusal =
+      record.providerInvoked &&
+      record.outcome === 'failed' &&
+      !record.contentReceived &&
+      !record.customEndpoint &&
+      evidence.kind === 'missing' &&
+      (record.error?.kind === 'context_overflow' ||
+        (status !== undefined && PRE_CONTENT_REFUSAL_STATUSES.has(status)));
+    const disposition: UsageDisposition | undefined = !record.providerInvoked
+      ? {
+          kind: 'not_invoked',
+          reason: record.error?.kind === 'cancelled' ? 'cancelled' : 'credentials',
+        }
+      : officialRefusal
+        ? { kind: 'official_refusal', reason: 'pre_content_refusal' }
+        : evidence.kind !== 'complete'
+          ? { kind: 'incomplete', evidence }
+          : undefined;
+    // Physical invocation and canonical quantities are observations, not money authority.
+    // Keep them and the exact live receipt before a post-provider host callback can throw.
+    if (record.providerInvoked) usage.engaged = true;
+    const priorObservation = usage.observedStopUsage;
+    if (!lateReceipt && record.providerInvoked && evidence.kind === 'complete')
+      usage.observedStopUsage = {
+        input: evidence.usage.inputTokens,
+        output: evidence.usage.outputTokens,
+      };
+    const coverageOnly = record.coverageOnly === true;
+    // The current outer attempt has not advanced its counter; a native predecessor shares it.
+    const accountingAttempt = receipt?.attemptNumber ?? nonSkippedAttempts + (!lateReceipt ? 1 : 0);
+    const ownsUnknown = !lateReceipt && disposition?.kind === 'incomplete';
+    if (ownsUnknown) usage.unknownCalls = (usage.unknownCalls ?? 0) + 1;
+    const pendingInfo =
+      !lateReceipt && record.receiptPending === true ? record.preAttemptInfo : undefined;
+    const priorPending = pendingInfo === undefined ? undefined : pendingReceipts.get(pendingInfo);
+    if (pendingInfo !== undefined)
+      pendingReceipts.set(pendingInfo, {
+        attemptNumber: accountingAttempt,
+        unknown: disposition?.kind === 'incomplete',
+      });
+    if (invocation !== undefined) {
+      const claim =
+        record.receiptFinal === true && evidence.kind !== 'complete'
+          ? 'retired'
+          : disposition === undefined
+            ? 'complete'
+            : disposition.kind === 'incomplete'
+              ? record.receiptPending === true
+                ? 'incomplete'
+                : 'retired'
+              : 'released';
+      if (params.money?.claimUsage?.(invocation, claim) !== true) {
+        // Explicit duplicate refusal rolls back only this notification's provisional state.
+        // A thrown host callback instead retains the physical facts for failure/late capture.
+        if (pendingInfo !== undefined) {
+          if (priorPending === undefined) pendingReceipts.delete(pendingInfo);
+          else pendingReceipts.set(pendingInfo, priorPending);
+        }
+        if (ownsUnknown) usage.unknownCalls = (usage.unknownCalls ?? 0) - 1;
+        if (!lateReceipt) {
+          if (priorObservation === undefined) delete usage.observedStopUsage;
+          else usage.observedStopUsage = priorObservation;
+        }
+        return;
+      }
+      if (disposition !== undefined)
+        params.money?.usageDisposition?.({
+          nodeId: params.nodeId,
+          model: record.model,
+          invocation,
+          disposition,
+          ...(disposition.kind === 'incomplete' &&
+          record.receiptPending === true &&
+          record.receiptFinal !== true
+            ? { receiptPending: true }
+            : {}),
+        });
+    }
+    // Native repairs own independent admissions; late receipt refinement never consumes a
+    // newer invocation's lease. Proven non-invocation may release its exact pending lease.
+    if (lateReceipt && record.preAttemptInfo !== undefined)
+      pendingReceipts.delete(record.preAttemptInfo);
+    if (lateReceipt && record.providerInvoked && evidence.kind !== 'complete') return;
+
+    if (!lateReceipt) delete usage.overflowAttempt;
     if (
+      !lateReceipt &&
       record.outcome === 'failed' &&
       record.providerInvoked &&
       !record.customEndpoint &&
@@ -1676,18 +1875,12 @@ async function driveAgentTurn(
       dischargeAttemptAdmission((active) => active?.release());
       return;
     }
-    activeModel = record.model;
-    nonSkippedAttempts += 1;
-    usage.engaged = true; // the provider method was invoked, even if it errored at zero usage
-    if (record.usage === undefined) {
-      const status = record.error?.status;
-      if (
-        record.outcome === 'failed' &&
-        record.contentReceived === false &&
-        record.customEndpoint === false &&
-        (record.error?.kind === 'context_overflow' ||
-          (status !== undefined && PRE_CONTENT_REFUSAL_STATUSES.has(status)))
-      ) {
+    if (!lateReceipt) activeModel = record.model;
+    if (!coverageOnly && !lateReceipt) nonSkippedAttempts += 1;
+    if (lateReceipt && receipt?.unknown === true)
+      usage.unknownCalls = (usage.unknownCalls ?? 0) - 1;
+    if (evidence.kind !== 'complete') {
+      if (officialRefusal) {
         dischargeAttemptAdmission((active) => active?.release());
         return;
       }
@@ -1697,16 +1890,16 @@ async function driveAgentTurn(
       dischargeAttemptAdmission((active) =>
         active?.settleAtReservedEstimate({
           nodeId: params.nodeId,
-          attemptNumber: nonSkippedAttempts,
+          attemptNumber: accountingAttempt,
         }),
       );
       return;
     }
     // This AttemptRecord consumes the stop chunk's quantities exactly once. A host failure before
     // the record retains the observed quantities separately, without inventing an attempt or price.
-    delete usage.observedStopUsage;
-    usage.input += record.usage.inputTokens;
-    usage.output += record.usage.outputTokens;
+    if (!lateReceipt) delete usage.observedStopUsage;
+    usage.input += evidence.usage.inputTokens;
+    usage.output += evidence.usage.outputTokens;
     // The chain already folded this attempt's usage into our `costTracker` and put the per-attempt
     // figure on `record.cost`; read it rather than re-recording (which would double the total).
     // Settle BEFORE the event sink: it replaces this attempt's reservation with the realized amount atomically,
@@ -1726,11 +1919,13 @@ async function driveAgentTurn(
     // BOTH conditions are spelled out rather than relying on "priced !== false implies cost is defined". That
     // implication holds today, but it is an invariant of a type in another package, and the compiler cannot see
     // it — leaning on it here would be a narrowing that a future chain change could silently invalidate.
-    if (record.priced === false || record.cost === undefined) {
+    if (lateReceipt) {
+      // A late charge cannot reacquire or settle another live admission.
+    } else if (record.priced === false || record.cost === undefined) {
       dischargeAttemptAdmission((active) =>
         active?.settleAtReservedEstimate({
           nodeId: params.nodeId,
-          attemptNumber: nonSkippedAttempts,
+          attemptNumber: accountingAttempt,
         }),
       );
     } else {
@@ -1741,26 +1936,31 @@ async function driveAgentTurn(
         // Settlement rejects an unsafe actual before consuming the lease. Retain E with this recorded
         // attempt number before propagating the fault. The slot stays owned if this action also fails.
         // A lease already settled before another callback fault makes this conservative fallback a no-op.
-        dischargeAttemptAdmission((active) =>
-          active?.settleAtReservedEstimate({
-            nodeId: params.nodeId,
-            attemptNumber: nonSkippedAttempts,
-          }),
-        );
+        try {
+          dischargeAttemptAdmission((active) =>
+            active?.settleAtReservedEstimate({
+              nodeId: params.nodeId,
+              attemptNumber: accountingAttempt,
+            }),
+          );
+        } catch (secondary) {
+          reportSecondaryAccountingFailure(secondary);
+        }
         throw error;
       }
     }
     try {
-      params.emit({
+      (coverageOnly ? (params.money?.emitCost ?? params.emit) : params.emit)({
         type: 'cost:updated',
+        ...(invocation === undefined ? {} : { invocation }),
         nodeId: params.nodeId,
         model: record.model,
-        inputTokens: record.usage.inputTokens,
-        outputTokens: record.usage.outputTokens,
+        inputTokens: evidence.usage.inputTokens,
+        outputTokens: evidence.usage.outputTokens,
         costMicrocents: record.cost?.costMicrocents ?? 0,
         // Placeholder — the engine owns the run-wide running total and overwrites this authoritatively.
         cumulativeCostMicrocents: 0,
-        attemptNumber: nonSkippedAttempts,
+        attemptNumber: accountingAttempt,
         // ADR-0070 §6. Without this flag, `costMicrocents: 0` with real tokens is ambiguous between "unpriced" and
         // "genuinely free" — and a free-LOOKING row in the /cost breakdown would be a lie.
         //
@@ -1785,11 +1985,12 @@ async function driveAgentTurn(
       // producer gate — and that gate runs in `#bus.next`, OUTSIDE `#emitDurable`'s try, so the wrong order does
       // not degrade quietly: it makes `#emitDurable` REJECT in the one place the design assumes it cannot.
       params.money?.record({
+        ...(invocation === undefined ? {} : { invocation }),
         nodeId: params.nodeId,
         model: record.model,
-        attemptNumber: nonSkippedAttempts,
-        inputTokens: record.usage.inputTokens,
-        outputTokens: record.usage.outputTokens,
+        attemptNumber: accountingAttempt,
+        inputTokens: evidence.usage.inputTokens,
+        outputTokens: evidence.usage.outputTokens,
         costMicrocents: record.cost?.costMicrocents ?? 0,
         // Same rule as the event above, and the same reason: this feeds the DURABLE `unpriced_calls` counter, so
         // a re-derivation here would persist "fully priced" for a call whose media charge was never accounted.
@@ -1801,7 +2002,24 @@ async function driveAgentTurn(
   const chain = new FallbackChain([...params.planEntries], {
     ...params.chainCapabilities,
     ...(params.retainWork === undefined ? {} : { retainWork: params.retainWork }),
+    ...(params.money?.beginUsageInvocation === undefined
+      ? {}
+      : {
+          beginUsageInvocation: async (info: PreAttemptInfo) => {
+            const begin = params.money?.beginUsageInvocation;
+            if (begin === undefined) throw new Error('Usage durability is unavailable');
+            return begin({
+              nodeId: params.nodeId,
+              model: info.model,
+              round: coverageRound,
+              chainAttempt: ++coverageAttempt,
+            });
+          },
+        }),
     costTracker,
+    ...(params.money?.accountingFailure === undefined
+      ? {}
+      : { onAccountingFailure: params.money.accountingFailure }),
     onAttempt: (record) => {
       try {
         onAttempt(record);
@@ -1825,6 +2043,9 @@ async function driveAgentTurn(
           preAttempt: async (info: PreAttemptInfo) => {
             delete usage.preAttemptFailure;
             const currentRound = round;
+            const slot: AdmissionSlot = { acquiring: true };
+            admissions.set(info, slot);
+            outstandingAdmissions.add(slot);
             try {
               // **Barrier B1 (ADR-0077)** — before the next egress admission, and before the governor call, so a
               // run whose ledger write did not land admits nothing further. It awaits AND observes: `join()`
@@ -1839,7 +2060,11 @@ async function driveAgentTurn(
               // The money join can suspend a budgetless turn too. Observe cancellation before returning from
               // that branch, so an aborted wait reaches neither credential resolution nor provider egress.
               throwIfAborted(params.signal);
-              if (preEgress === undefined) return;
+              if (preEgress === undefined) {
+                slot.acquiring = false;
+                outstandingAdmissions.delete(slot);
+                return;
+              }
               // This is the only admitting boundary. Re-check after the governor await and release any newly
               // acquired lease before propagating a cancellation during warning durability/admission.
               const { request, inputTokensEstimate } = currentRound;
@@ -1870,11 +2095,19 @@ async function driveAgentTurn(
                 nextAdmission?.release();
                 throwIfAborted(params.signal);
               }
-              if (nextAdmission !== undefined) {
-                attemptAdmission = nextAdmission;
-                admissionPending = true;
-              }
+              slot.acquiring = false;
+              if (nextAdmission !== undefined) slot.admission = nextAdmission;
+              if (slot.settle !== undefined) {
+                const settle = slot.settle;
+                delete slot.settle;
+                settle(slot.admission);
+                slot.settle = settle;
+                delete slot.admission;
+                outstandingAdmissions.delete(slot);
+              } else if (nextAdmission === undefined) outstandingAdmissions.delete(slot);
             } catch (error) {
+              slot.acquiring = false;
+              if (slot.admission === undefined) outstandingAdmissions.delete(slot);
               usage.preAttemptFailure = { error };
               throw error;
             }
@@ -1887,6 +2120,7 @@ async function driveAgentTurn(
     content: [...m.content],
   }));
 
+  let primaryFailure: { readonly error: unknown } | undefined;
   try {
     // Inline media-out (1.AG/[ADR-0046]): a node requesting a non-text output modality runs a single-shot
     // `generate()` (the chain's existing non-streaming path) — terminal, NO tool loop (a media turn is the
@@ -1920,6 +2154,11 @@ async function driveAgentTurn(
         content: turn.content,
         text: textOf(turn.content),
         usage: { input: usage.input, output: usage.output },
+        usageCoverage: {
+          unverified: false,
+          pendingInvocations: 0,
+          unknownCalls: usage.unknownCalls ?? 0,
+        },
         model: activeModel,
         stopReason: turn.stopReason,
         toolHistory: [],
@@ -1932,6 +2171,8 @@ async function driveAgentTurn(
     const toolHistory: SessionToolHistoryEntry[] = [];
 
     for (let toolTurn = 0; ; toolTurn += 1) {
+      coverageRound = toolTurn;
+      coverageAttempt = 0;
       throwIfAborted(params.signal);
       if (toolTurn > params.limits.maxToolTurns) {
         throw new AgentTurnError(
@@ -2014,6 +2255,11 @@ async function driveAgentTurn(
           content: turn.content,
           text: textOf(turn.content),
           usage: { input: usage.input, output: usage.output },
+          usageCoverage: {
+            unverified: false,
+            pendingInvocations: 0,
+            unknownCalls: usage.unknownCalls ?? 0,
+          },
           model: activeModel,
           stopReason: turn.stopReason,
           toolHistory,
@@ -2034,9 +2280,12 @@ async function driveAgentTurn(
         toolHistory,
       ));
     }
+  } catch (error) {
+    primaryFailure = { error };
+    throw error;
   } finally {
     // An iterator consumer/fold/event sink can throw before FallbackChain emits its record. The provider may
     // already have received work, so close that half-open admission conservatively rather than freeing capacity.
-    settleUnreportedAttemptAdmission();
+    settleUnreportedAttemptAdmission(primaryFailure);
   }
 }

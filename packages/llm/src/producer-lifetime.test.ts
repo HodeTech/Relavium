@@ -71,7 +71,7 @@ const request: LlmRequest = {
 const result: LlmResult = {
   content: [{ type: 'text', text: 'done' }],
   stopReason: 'stop',
-  usage: { inputTokens: 3, outputTokens: 2 },
+  usage: { kind: 'complete' as const, usage: { inputTokens: 3, outputTokens: 2 } },
 };
 const stop: StreamChunk = { type: 'stop', stopReason: 'stop', usage: result.usage };
 function source(overrides: Partial<LlmProvider> = {}): LlmProvider {
@@ -492,7 +492,9 @@ for (const afterStop of [false, true])
     expect(entries).toBe(3);
     expect(records).toHaveLength(1);
     expect(records[0]?.providerInvoked).toBe(true);
-    expect(records[0]?.usage).toEqual(afterStop ? result.usage : undefined);
+    expect(records[0]?.usage).toEqual(
+      afterStop ? result.usage : { kind: 'missing', reason: 'not_reported' },
+    );
   });
 
 describe('custom provider invocation authority (ADR-0103)', () => {
@@ -779,14 +781,31 @@ for (const mode of ['generate', 'stream'] as const)
         const p = source({
           generate: () =>
             failed
-              ? Promise.reject(new LlmProviderError({ ...original, usage: counts }))
-              : Promise.resolve({ content: [text], usage: counts, stopReason: 'stop' }),
+              ? Promise.reject(
+                  new LlmProviderError({
+                    ...original,
+                    usage: { kind: 'complete' as const, usage: counts },
+                  }),
+                )
+              : Promise.resolve({
+                  content: [text],
+                  usage: { kind: 'complete' as const, usage: counts },
+                  stopReason: 'stop',
+                }),
           stream: async function* () {
             await Promise.resolve();
-            if (failed) yield { type: 'error', error: { ...original, usage: counts } };
+            if (failed)
+              yield {
+                type: 'error',
+                error: { ...original, usage: { kind: 'complete' as const, usage: counts } },
+              };
             else {
               yield { type: 'text_delta', text: text.text };
-              yield { type: 'stop', stopReason: 'stop', usage: counts };
+              yield {
+                type: 'stop',
+                stopReason: 'stop',
+                usage: { kind: 'complete' as const, usage: counts },
+              };
             }
           },
         });
@@ -802,7 +821,10 @@ for (const mode of ['generate', 'stream'] as const)
           try {
             const output = await c.generate({ ...request, signal });
             expect(output.content).toEqual([{ type: 'text', text: 'owned before cleanup' }]);
-            expect(output.usage).toEqual({ inputTokens: 3, outputTokens: 2 });
+            expect(output.usage).toEqual({
+              kind: 'complete',
+              usage: { inputTokens: 3, outputTokens: 2 },
+            });
           } catch (error) {
             if (!(error instanceof LlmProviderError)) throw error;
             errorKind = error.llmError.kind;
@@ -816,7 +838,7 @@ for (const mode of ['generate', 'stream'] as const)
               text: 'owned before cleanup',
             });
             expect(chunks.find((chunk) => chunk.type === 'stop')).toMatchObject({
-              usage: { inputTokens: 3, outputTokens: 2 },
+              usage: { kind: 'complete' as const, usage: { inputTokens: 3, outputTokens: 2 } },
             });
           }
         }
@@ -828,7 +850,7 @@ for (const mode of ['generate', 'stream'] as const)
         expect(attempts[0]).toMatchObject({
           providerInvoked: true,
           contentReceived: mode === 'generate' || !failed,
-          usage: { inputTokens: 3, outputTokens: 2 },
+          usage: { kind: 'complete' as const, usage: { inputTokens: 3, outputTokens: 2 } },
         });
         expect(attempts[0]?.cost?.costMicrocents).toBeGreaterThan(0);
         await until(() => tracked.pending.size === 0);
@@ -851,7 +873,11 @@ it('captures generated content and accountable usage before invocation abort obs
           usage.inputTokens = 0;
           usage.outputTokens = 0;
         });
-        return Promise.resolve({ content: [text], usage, stopReason: 'stop' });
+        return Promise.resolve({
+          content: [text],
+          usage: { kind: 'complete' as const, usage: usage },
+          stopReason: 'stop',
+        });
       },
     }),
     {
@@ -865,7 +891,7 @@ it('captures generated content and accountable usage before invocation abort obs
   const output = await c.generate(request);
   expect(aborted).toBe(1);
   expect(output.content).toEqual([{ type: 'text', text: 'original output' }]);
-  expect(output.usage).toEqual({ inputTokens: 3, outputTokens: 2 });
+  expect(output.usage).toEqual({ kind: 'complete', usage: { inputTokens: 3, outputTokens: 2 } });
   expect(attempts).toHaveLength(1);
   expect(attempts[0]?.usage).toEqual(output.usage);
   expect(attempts[0]?.cost?.costMicrocents).toBeGreaterThan(0);

@@ -158,3 +158,10 @@ OpenAI chat emits no reasoning) with conformance scenarios. `providerExecuted` l
 - The reasoning ephemerality guarantee is a standing correctness/data-handling obligation every later
   consumer (fallback, session persistence, run-event logging) must uphold — called out as design
   notes on 1.K and 1.Z.
+
+### W8 usage coverage activation — 2026-10-10
+
+Reasoning quantities remain part of complete output evidence when applicable. Unknown required quantities are partial evidence rather than a synthetic zero; request lowering and reasoning replay ownership remain unchanged.
+
+See [ADR-0104](0104-unknown-provider-usage-is-durable-cost-uncertainty.md) and the
+[canonical usage contract](../reference/shared-core/llm-provider-seam.md#6-usage).

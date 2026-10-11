@@ -17,6 +17,17 @@ function run(command, args) {
   return spawnSync(command, args, { cwd: repoRoot, encoding: 'utf8', shell: false });
 }
 
+const controls = run(process.execPath, [
+  '--test',
+  'tools/db-sync/portable-checks.test.mjs',
+  'tools/db-sync/scan-regressions.test.mjs',
+  'tools/db-sync/generate.test.mjs',
+]);
+if (controls.status !== 0 || controls.error !== undefined) {
+  console.error(controls.stdout, controls.stderr, controls.error ?? '');
+  process.exit(1);
+}
+
 // pnpm is the process manager already running this script, so it is on PATH by construction here.
 const generated = run('pnpm', ['--filter', '@relavium/db', 'db:generate']);
 if (generated.error !== undefined) {

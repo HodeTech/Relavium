@@ -1,15 +1,23 @@
+import { ownUsageEvidence, InvalidUsageEvidenceError, type UsageEvidence } from '@relavium/shared';
 import { LlmErrorSchema, type LlmError, type LlmErrorKind, type ProviderId } from './types.js';
 
-/** Own validated diagnostic fields before returning control to a provider or attempt observer. */
+const DiagnosticSchema = LlmErrorSchema.omit({ usage: true });
+
+/** Own evidence before parsing diagnostics; neither usage getters nor nested traps execute. */
 export function snapshotLlmError(error: unknown): LlmError {
-  // Cause remains an opaque private identity; copying or freezing it would invoke host code.
-  const owned = LlmErrorSchema.parse(error);
-  if (owned.usage !== undefined) {
-    for (const unit of owned.usage.mediaUnits ?? []) Object.freeze(unit);
-    if (owned.usage.mediaUnits !== undefined) Object.freeze(owned.usage.mediaUnits);
-    Object.freeze(owned.usage);
+  let usage: UsageEvidence | undefined;
+  if (typeof error === 'object' && error !== null) {
+    const descriptor = Object.getOwnPropertyDescriptor(error, 'usage');
+    if (descriptor !== undefined) {
+      if (!('value' in descriptor)) throw new InvalidUsageEvidenceError();
+      if (descriptor.value !== undefined) usage = ownUsageEvidence(descriptor.value);
+    }
   }
-  return Object.freeze(owned);
+  // Cause remains an opaque private identity; copying or freezing it would invoke host code.
+  return Object.freeze({
+    ...DiagnosticSchema.parse(error),
+    ...(usage === undefined ? {} : { usage }),
+  });
 }
 
 /**

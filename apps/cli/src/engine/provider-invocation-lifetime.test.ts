@@ -41,7 +41,7 @@ const jsonReply = JSON.stringify({
   created: 0,
   model: 'custom-text',
   choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
-  usage: { prompt_tokens: 3, completion_tokens: 2 },
+  usage: { prompt_tokens: 3, completion_tokens: 2, prompt_tokens_details: { cached_tokens: 0 } },
 });
 function hop(bytes: string | Uint8Array, mime = 'application/json'): HopResponse {
   return {
@@ -120,7 +120,10 @@ describe('actual OpenAI SDK invocation-local validated transport', () => {
       },
     });
     const result = await adapter.generate(request('one'), 'fixture-key', observed.options);
-    expect(result.usage).toEqual({ inputTokens: 3, outputTokens: 2 });
+    expect(result.usage).toEqual({
+      kind: 'complete',
+      usage: { inputTokens: 3, outputTokens: 2, cacheReadTokens: 0 },
+    });
     expect(observed.admitted).toHaveLength(1);
     expect(observed.complete()).toBe(false);
     expect(JSON.stringify(sent)).not.toMatch(/retainWork|hostCallOptions|LlmInvocationOptions/);
@@ -187,7 +190,11 @@ describe('actual OpenAI SDK invocation-local validated transport', () => {
       JSON.stringify({
         id: 'c',
         choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
-        usage: { prompt_tokens: 3, completion_tokens: 2 },
+        usage: {
+          prompt_tokens: 3,
+          completion_tokens: 2,
+          prompt_tokens_details: { cached_tokens: 0 },
+        },
       }) +
       '\n\ndata: [DONE]\n\n';
     const adapter = adapterFor({

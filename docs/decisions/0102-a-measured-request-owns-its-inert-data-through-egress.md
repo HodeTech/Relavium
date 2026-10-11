@@ -8,7 +8,7 @@
 ## Context
 
 PR 90's systematic review demonstrates that a shallow cap snapshot leaves message arrays and nested
-tool schemas mutable. The [independent intake probe](../reviews/2026-10-04T10-35-00-w7-systematic-review-intake-review.md)
+tool schemas mutable. The [independent intake probe](https://github.com/HodeTech/Relavium/blob/f267bb0d4e9a4b4e2b51cb2c44ff744284d5228a/docs/reviews/2026-10-04T10-35-00-w7-systematic-review-intake-review.md)
 measures 37 tokens at admission while the actual installed OpenAI SDK sends a later-mutated
 construction measuring 50,035. Independent owned-tree controls also reproduce
 mutation through response schemas, tool arguments/results and provider options. This breaks the
@@ -349,7 +349,7 @@ the ownership High, Step 8's session/summariser/recovery integration, ADR-0103 o
 
 ## Core owned-round scoped acceptance — 2026-10-09
 
-[Two fresh cumulative round-2 reviews](../reviews/2026-10-09T01-00-00-w7-owned-core-round-2-review.md),
+[Two fresh cumulative round-2 reviews](https://github.com/HodeTech/Relavium/blob/f267bb0d4e9a4b4e2b51cb2c44ff744284d5228a/docs/reviews/2026-10-09T01-00-00-w7-owned-core-round-2-review.md),
 following round 1, accept the Core measured-round increment through `f1281214`. Both complete
 reports and their sealed controls, exact source restoration and 19-path/53-hunk inventories
 are independently verified by Parent. The implementation checkpoint above is now accepted

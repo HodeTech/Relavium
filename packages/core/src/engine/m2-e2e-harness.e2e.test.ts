@@ -125,7 +125,7 @@ const usage = { inputTokens: 10, outputTokens: 5 };
 const STOP = (reason: 'stop' | 'tool_use' = 'stop'): StreamChunk => ({
   type: 'stop',
   stopReason: reason,
-  usage,
+  usage: { kind: 'complete', usage },
 });
 const textTurn = (text: string): StreamChunk[] => [{ type: 'text_delta', text }, STOP('stop')];
 const toolUseTurn = (id: string): StreamChunk[] => [
@@ -165,7 +165,7 @@ function mediaProvider(id: ProviderId = 'gemini'): LlmProvider {
       Promise.resolve({
         content: [{ type: 'text', text: 'here is your image' }, IMAGE_PART],
         stopReason: 'stop',
-        usage,
+        usage: { kind: 'complete', usage },
       }),
     stream: (): AsyncIterable<StreamChunk> => {
       throw new Error('stream must NOT run for an inline media-out turn');
@@ -1684,15 +1684,14 @@ workflow:
       // Secret-free either way: a store error can carry a filesystem path and must never reach the user.
       expect(terminal.error.message).not.toContain('ledger write failed');
     }
-    // And the NODE terminal says `the run was cancelled`, NOT the barrier's diagnosis — measured, after an
-    // assertion here claimed otherwise. It is the same fact as the paragraph above: the abort wins, the turn
-    // ends at `throwIfAborted`, and B2's `LedgerDurabilityError` is never the error that classifies this node.
-    // `#runAttempt` DOES have an arm that keeps that class intact (it used to flatten it to `the node handler
-    // threw an unexpected error`), but reaching it needs the same abort-defeating fixture named above.
+    // The turn has already observed cancellation from the engine's writer-failure abort.
+    // Draining its secondary money notification preserves that primary turn diagnosis;
+    // the run terminal above and sticky departure health retain the failed write.
     const nodeFailed = events.find((e) => e.type === 'node:failed');
-    expect(nodeFailed?.type === 'node:failed' ? nodeFailed.error.message : undefined).toBe(
-      'the run was cancelled',
+    expect(nodeFailed?.type === 'node:failed' ? nodeFailed.error.code : undefined).toBe(
+      'cancelled',
     );
+    expect(await handle.depart()).toMatchObject({ moneyDurability: 'uncertain' });
   });
 
   it('ledger: an UNBUDGETED run records its realized spend at all (ADR-0077 §5)', async () => {

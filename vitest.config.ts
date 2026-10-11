@@ -44,8 +44,9 @@ export const REPO_LOCAL_CHECKOUTS = [
  * Coverage uses the V8 provider with branch reporting. The Phase-1 **>= 90% line + branch**
  * engine floor (docs/standards/testing.md#coverage-expectations) is the threshold the built engine
  * package(s) must meet under `pnpm coverage` (run from the repo ROOT — the threshold glob below is
- * root-relative). NOTE: `pnpm coverage` runs as an ADVISORY (non-required) `coverage` job in ci.yml
- * (promote it to a required check once the core-branch margin is confirmed stable). Surfaces stay smoke-only.
+ * root-relative). The required `coverage` job in ci.yml runs `pnpm coverage:enforced` for llm/mcp;
+ * core remains measured there under the existing promotion ruling below. Bare `pnpm coverage`
+ * still enforces all three packages locally. Surfaces stay smoke-only.
  */
 export default defineConfig({
   test: {
@@ -87,15 +88,15 @@ export default defineConfig({
       // and a maintainer deciding whether it is still needed should not be reading a mechanism that does not
       // exist.
       exclude: ['**/*.test.ts', '**/*.test.tsx', '**/apps/**', ...REPO_LOCAL_CHECKOUTS],
-      // The enforced Phase-1 engine floor, scoped per-glob so it targets only the built engine
-      // package(s) and never the not-yet-90% shared/db or the unbuilt core.
+      // The Phase-1 engine floor targets core, llm and mcp through per-package globs.
+      // shared/db remain measured without a floor; the CI-only subset is documented below.
       //
       // KNOWN LIMIT (verified empirically): the floor fires only on a repo-ROOT run
       // (`pnpm coverage`). A package-scoped run (`cd packages/llm && vitest --coverage`) keys the
       // coverage map cwd-relative (`src/…`), so NO single glob can both stay package-targeted at
       // the root and still match there — a cwd-tolerant `src/**` would wrongly bind shared/db
-      // package runs to the engine floor. The advisory `coverage` job (ci.yml) runs at the repo root,
-      // which is exactly where this per-glob threshold is authoritative.
+      // package runs to the engine floor. Both local coverage commands and the required `coverage`
+      // job (ci.yml) run at the repo root, where these per-glob thresholds are authoritative.
       // `RELAVIUM_COVERAGE_ENFORCED_ONLY=1` narrows the failing set to the packages whose floor is a REQUIRED
       // CI check, leaving `packages/core` measured and printed but non-blocking. That split is a maintainer
       // ruling (2026-07-29), not a lowered standard: measured margins are `llm` +7.30 and `mcp` +5.54 on

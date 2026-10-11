@@ -195,7 +195,7 @@ interface ToolDef {
 interface LlmResult {
   content: ContentPart[];        // text + any tool_call parts
   stopReason: StopReason;
-  usage: Usage;
+  usage: UsageEvidence;
   raw: unknown;                  // provider response, for debugging/escape hatch
 }
 
@@ -206,7 +206,7 @@ type StopReason = 'stop' | 'length' | 'tool_use' | 'content_filter' | 'error';
 interface Usage {
   inputTokens: number;
   outputTokens: number;
-  cacheReadTokens?: number;      // Anthropic/DeepSeek expose; others undefined
+  cacheReadTokens?: number;      // Explicit cache-read observation; see the native dialect rules below
   cacheWriteTokens?: number;
   reasoningTokens?: number;      // ADR-0030 — OBSERVABILITY only; a subset of outputTokens (≤), never billed separately
   mediaUnits?: MediaUnitsEntry[]; // ADR-0031 — a DISJOINT media axis (per-image / per-second), never folded into tokens
@@ -237,11 +237,13 @@ type StreamChunk =
   | { type: 'media_end'; id: string; media: DurableMediaPart }       // closes the media block — the finished media as a handle-only durable part
   | { type: 'tool_result'; id: string; name: string; result: unknown; isError?: boolean; providerExecuted: true;
       media?: DurableMediaPart[] }  // ADR-0030 provider-run tool (engine records, never runs); media: ADR-0031 #7
-  | { type: 'stop'; stopReason: StopReason; usage: Usage }
+  | { type: 'stop'; stopReason: StopReason; usage: UsageEvidence }
   | { type: 'error'; error: LlmError };
 
 interface LlmInvocationOptions {
   readonly retainWork: <T>(factory: () => Promise<T>) => Promise<T>;
+  readonly beforeNativeRetry?: (error: LlmError) => Promise<void>;
+  readonly nativeInvocationStarted?: () => void;
 }
 
 interface LlmProvider {
@@ -394,9 +396,11 @@ global defaults cannot redirect the request while retaining official cap/refund 
 handoff foundations are implemented. Session measured pre-send/recovery and each summariser candidate's
 automatic handoff remain step 8; frozen allowance consumers remain step 9. This section does not claim
 those later entry points have shipped merely because the seam now supports them.
-Step 6 also leaves the existing [CR-82 usage-normalization defect](../../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#cr-82--missing-or-partial-usage-can-be-read-as-zero--high)
-open for W8: an adapter can turn missing usage into zero and reopen reserved headroom. Retaining
-an attempt with absent usage cannot detect an adapter-invented zero usage value.
+W8 replaces the earlier synthetic-zero adapter behavior with the explicit
+[usage-evidence contract](#6-usage). Admission estimates and prepared cap ownership stay separate
+from realized usage. The
+[W8 closing register](../../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w8-closing-register--2026-10-11)
+owns CR-82 acceptance.
 
 > **`CapabilityFlags` is per-PROVIDER; a second, per-MODEL axis sits beside it (`CR-51`,
 > [ADR-0071](../../decisions/0071-models-dev-as-the-model-metadata-source.md) amendment).** The catalog's
@@ -468,7 +472,7 @@ interface LlmError {
   message: string;           // human-readable, already redacted of any secret material
   cause?: unknown;           // original error, for debugging/escape hatch only — never re-thrown across the seam
   contentCommitted?: true;   // chain-observed streamed content or a processed generated response
-  usage?: Usage;             // actual provider usage on a failed response, never a reserved estimate
+  usage?: UsageEvidence;             // actual provider usage on a failed response, never a reserved estimate
 }
 
 type LlmErrorKind =
@@ -631,6 +635,15 @@ listener removal throws; admitted descendants still hold their own completion. P
 setup retires its transferred aggregate without replacing the original entry error. An existing
 provider/cancellation diagnosis stays primary over cleanup; a standalone cleanup fault remains
 loud, without retry authority, and text attempts account known usage exactly once.
+The OpenAI-compatible generate adapter owns native usage before invocation retirement. If a
+supported caller-listener cleanup callback throws after a native response, its typed cleanup
+failure retains that evidence for the chain's complete-only settlement. An already established
+provider failure remains primary. A cleanup-only fault has fixed content-free, non-retryable
+`unknown` presentation and preserves only its opaque private cause; classifying that value as a
+provider error must not create retry, admission or budget authority. Partial and missing evidence
+remain uncertain. This includes DeepSeek's shared adapter and does not claim that first-party
+native AbortSignal cleanup throws.
+
 Public iterator `return()` and `throw()` attempt the underlying generator exit even when
 immediate invocation retirement fails. A consumer throw remains primary over secondary
 retirement failure; a standalone retirement failure remains observable after cleanup entry.
@@ -666,10 +679,13 @@ classification. An established provider/deadline failure stays primary over best
 iterator cleanup; a cleanup-only host-entry failure accounts known usage once before escaping,
 including an explicit public stream-iterator `return()`. Its handler runs in generator `finally`:
 consumer return bypasses subsequent statements, so those statements cannot observe the attempt
-or propagate the original refusal. The observer runs once, with already confirmed terminal usage.
-Identity recognition does not inspect an arbitrary throwable's prototype. Raw completion after
-a bounded failure adds no second attempt observation, late charge, refund or terminal. This
-boundary does not certify all transitive SDK/network/MCP work or safe host departure; those
+or propagate the original refusal. That cleanup handler reports its primary observation once,
+with already confirmed terminal usage. Identity recognition does not inspect an arbitrary
+throwable's prototype. Raw completion after a bounded failure creates no new provider attempt
+or public terminal. Accounting refinement requires the registered receipt authority defined in
+[Invocation correlation, repairs and late receipts](#invocation-correlation-repairs-and-late-receipts);
+lifetime-only completion cannot charge or refund. This boundary does not certify all transitive
+SDK/network/MCP work or safe host departure; those
 remaining obligations are recorded in [ADR-0103](../../decisions/0103-a-paused-run-hands-off-its-local-producers-before-its-host-closes.md).
 
 A deadline abort is `timeout`; a caller abort is `cancelled`, and **a caller abort wins a same-tick tie** —
@@ -1069,30 +1085,62 @@ All native stop reasons map onto the five-value `StopReason` enum
 
 ### 6. Usage
 
-| Provider | Native usage | Maps to |
-| --- | --- | --- |
-| OpenAI | `usage { prompt_tokens, completion_tokens }` (+ `prompt_tokens_details.cached_tokens`) | `inputTokens` / `outputTokens` (+ `cacheReadTokens`) |
-| Anthropic | `usage { input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens }` | `inputTokens` / `outputTokens` / `cacheReadTokens` / `cacheWriteTokens` |
-| Gemini | `usageMetadata { promptTokenCount, candidatesTokenCount }` | `inputTokens` / `outputTokens` |
-| DeepSeek | mirrors OpenAI + `prompt_cache_hit_tokens` | `inputTokens` / `outputTokens` / `cacheReadTokens` |
+Native presence is interpreted before defaults or arithmetic. `inputTokens` is **net** of
+cache; cache reads, cache writes and net input are disjoint billing classes. Only `complete`
+evidence reaches `CostTracker.record(model, Usage)`. Partial observations remain visible and
+never choose a price tier or manufacture a partial monetary amount.
 
-> **`inputTokens` is net of cache (each token billed once).** `inputTokens`, `cacheReadTokens`,
-> and `cacheWriteTokens` are **disjoint** counts — the `CostTracker` bills each at its own rate, so
-> `inputTokens` must exclude cache reads/writes. Anthropic's native `input_tokens` is already net,
-> so it maps straight across. **OpenAI / DeepSeek `prompt_tokens` is *gross*** (it includes
-> `cached_tokens` / `prompt_cache_hit_tokens`), so that adapter sets `inputTokens = prompt_tokens −
-> cached_tokens` (the cached subset moves to `cacheReadTokens`). Gemini exposes no cache split, so
-> `inputTokens` is simply the prompt count.
+| Dialect | Complete billing evidence and omissions |
+| --- | --- |
+| OpenAI Chat Completions | `prompt_tokens` is gross. Net input requires validated `prompt_tokens_details.cached_tokens`, including explicit zero. Missing cached count leaves gross unmapped and preserves independently known `completion_tokens`. Reasoning is an optional observability subset already included in completion. The supported chat dialect has no additional native cache-write billing counter. |
+| DeepSeek | Native `prompt_cache_hit_tokens` is cache read and `prompt_cache_miss_tokens` is net input. Either missing half can be derived from gross plus the other. Gross, hit, miss and `prompt_tokens_details.cached_tokens`, whenever present together, must agree. Gross alone cannot prove a cache miss. |
+| Anthropic | `input_tokens` is already net; `output_tokens`, `cache_read_input_tokens` and `cache_creation_input_tokens` remain independent. Both cache classes require explicit evidence. A cumulative stream starts absent and replaces only fields later frames report, retaining prior observations. Complete evidence requires an authoritative final stop reason, a valid output count in that same frame and all four billing counts across the retained observations. An output-only final frame cannot invent start input. Missing/null/invalid final output leaves prior quantities partial; explicit final zero is valid. Optional thinking is already included in output. |
+| Gemini | `promptTokenCount` is gross including `cachedContentTokenCount`; derive net only with both counts. Add `toolUsePromptTokenCount` when tools are applicable. Output is candidates plus thoughts: a thinking-capable or unknown model requires `thoughtsTokenCount`. The exact lowered `thinkingBudget: 0`, or a catalog model with no reasoning capability, establishes non-applicability. Tools absent from both canonical/native request and conversation establish non-applicability of tool-prompt counts. |
 
-Two streaming subtleties the adapters must handle:
+All native counts must be nonnegative safe integers before arithmetic; sums must remain safe.
+Contradictory splits are never clamped. Independently trustworthy quantities survive invalid or
+contradictory fields with fixed reasons. Explicit zero counts, including zero cache/media counts,
+remain present. No SDK optional property supplies evidence that its omitted class equals zero.
 
-- **OpenAI** requires `stream_options: { include_usage: true }` to emit a final
-  usage chunk; Anthropic puts usage in `message_delta`; Gemini in the final
-  chunk.
-- **`costMicrocents` is ours, never the provider's** — it is computed by a Relavium
-  generated catalog snapshot keyed on the **canonical model id** (ADR-0071), not read from any provider
-  response. This is the same `costMicrocents` that surfaces in the `cost:updated` run
-  event (see [../contracts/sse-event-schema.md](../contracts/sse-event-schema.md)).
+OpenAI's native audio counters are disjoint `mediaUnits` with `unit: 'count'`. Requested or
+observed inline audio output requires its native audio units; inline media output with no
+supported counter remains incomplete. Applicability includes native modality controls captured from
+the owned lowered request before SDK egress, and media observed anywhere in the response stream.
+An earlier or later media frame cannot be erased by a text-only usage frame; a later observation
+also downgrades already-owned complete usage when its media axis is missing. This accounting
+observation includes native input/output audio-counter presence, even when the reported quantity
+is zero or invalid: an invalid quantity establishes no units, but a later omitted counter cannot
+erase the applicable axis. An explicit later valid counter can repair that observation. This
+adds no streaming media output chunks. Gemini does not invent inline-media units;
+zero text-token quantities do not establish zero media volume. Ordinary text-only requests do not
+require a media axis. Separate-endpoint media continues using its
+accepted authored/frozen volume basis, including fractional durations; it is outside token
+`UsageEvidence` and does not fabricate missing token usage.
+
+Adapters own evidence before content projection. Stream errors and truncation preserve observed
+quantities, downgrading nonfinal cumulative observations to partial. Authoritative final evidence
+survives a later cleanup error. OpenAI/DeepSeek capture each frame's usage once before accessing
+its choices. Malformed choices still fail the stream, preserving independently valid counters;
+they do not establish terminal authority. Gemini reads each response's usage property once and
+owns its canonical quantities before further response access can throw or mutate that native object.
+Its streaming quantities remain partial until terminal authority is verified. That authority
+promotes the same owned observation, without rereading native counters; a later Gemini terminal
+with no usage cannot promote an earlier nonfinal observation. Observed inline media still
+downgrades complete evidence when its applicable billing axis is absent.
+OpenAI/DeepSeek force `include_usage`; this requests a final
+usage frame but cannot prove that it arrives. A native OpenAI/DeepSeek observation acquires final
+authority only when its own frame carries a finish reason or a previously verified finish already
+exists (including the ordinary empty-choice usage tail). A later usage-less finish or EOF cannot
+promote an earlier nonfinal cumulative count; those retained quantities stay partial and do not enter pricing.
+The same rule applies to OpenAI-compatible custom endpoints. Anthropic's final authority requires both a non-null
+native stop reason and that frame's validated `output_tokens`, captured through the same single
+read that retains the quantity. A stop reason alone cannot promote an earlier output count.
+Gemini recognizes a current-frame
+prompt block as terminal authority before interpreting that frame's usage, just as it recognizes
+a candidate finish reason. Fully explicit applicable counts remain complete on a blocked response;
+absent or incomplete counters and earlier nonfinal counts remain uncertain. The seam verifier owns
+every held terminal's evidence before its confirming read, preserving it across malformed tails and deadlines.
+`costMicrocents` remains a Relavium-computed quantity, never a native provider price.
 
 > **Canonical cost unit (the one home).** All cost figures in Relavium — the seam's
 > `Usage.costMicrocents`, the `cost:updated` event's `costMicrocents` /
@@ -1103,32 +1151,132 @@ Two streaming subtleties the adapters must handle:
 > [../shared-core/database-schema.md](../shared-core/database-schema.md). Every other
 > document links here rather than restating the unit.
 
-#### Stricter usage-capture rules in managed mode (Phase 2)
+#### W8 production evidence contract
 
-In Phase 1 (BYOK), missing usage affects the local cost ledger and budget capacity; the
-[current estimate contract](#current-request-estimates-and-bound-output-caps) records its
-known adapter-normalization limitation. In **managed** mode (Phase 2,
-[../../architecture/managed-inference.md](../../architecture/managed-inference.md))
-the same `Usage` shape becomes a **billing record**, so the gateway tightens the
-capture rules — without changing the seam types:
+[ADR-0104](../../decisions/0104-unknown-provider-usage-is-durable-cost-uncertainty.md)
+activates one intentionally breaking local/Phase-1 seam contract. `LlmResult.usage` and every
+successful `stop.usage` require `UsageEvidence`; accountable `LlmError.usage` optionally carries
+the same value. `AttemptRecord` is discriminated: `providerInvoked: true` requires evidence,
+including the missing arm, while a proven non-invoked record has none. External provider
+implementers must migrate together with their consumers; no plain-`Usage` compatibility alias or
+automatic wrapping adapter is accepted. `@relavium/shared` owns all quantity/evidence definitions;
+`@relavium/llm` re-exports them. Complete `Usage` arithmetic and pricing remain unchanged.
 
-- **Forced `include_usage`.** The gateway **forces**
-  `stream_options: { include_usage: true }` on every OpenAI/DeepSeek managed
-  request (it is not left to caller config), so a final usage chunk is always
-  emitted. Anthropic usage is accumulated from `message_start` (input) and
-  `message_delta` (running output); Gemini usage is read from the final chunk's
-  `usageMetadata`.
-- **Interruption estimation.** If the stream is aborted before a final usage
-  frame arrives, the gateway **estimates** usage from the streamed output plus
-  the known input and records the event as estimated — a billable request is
-  never silently dropped.
-- **Nightly reconciliation.** Estimated and rounded rows are reconciled against
-  the providers' own usage/invoice data nightly, correcting drift in the COGS
-  figure.
+Both packages additionally export `UsageEvidenceSchema`, `UsageEvidence`, the three named
+arm schemas (`CompleteUsageEvidenceSchema`, `PartialUsageEvidenceSchema`,
+`MissingUsageEvidenceSchema`), `KnownUsageQuantitiesSchema` / `KnownUsageQuantities`,
+`UsageEvidenceReasonSchema` / `UsageEvidenceReason`, and `ownUsageEvidence`:
 
-These are gateway-side behaviors layered on top of the same normalized `Usage`;
-the seam types are unchanged. The full metering design is in
-[../../architecture/managed-inference.md](../../architecture/managed-inference.md).
+```ts
+type UsageEvidence =
+  | { kind: 'complete'; usage: Usage }
+  | { kind: 'partial'; known: KnownUsageQuantities; reason: UsageEvidenceReason }
+  | { kind: 'missing'; reason: UsageEvidenceReason };
+```
+
+Complete evidence requires input/output counts and validates every present count, including
+Relavium's optional computed `costMicrocents`, as a nonnegative safe integer. Partial evidence
+permits only known `inputTokens`, `outputTokens`, `cacheReadTokens`, `cacheWriteTokens`,
+`reasoningTokens` and `mediaUnits`; it never contains guessed money. It requires at least one
+numeric observation or one media entry. An empty media array alone supplies no known quantity.
+An explicitly reported zero is preserved; absent fields stay absent and explicit `undefined`
+properties are rejected. Reasoning cannot exceed output when both are known. Missing evidence
+contains no quantities. The fixed reasons allowed on either incomplete arm are `not_reported`,
+`missing_fields`, `invalid_fields`, `contradictory_fields` and `interrupted`; no free-form reason,
+raw provider object or extra field is accepted on any arm or nested quantity object.
+
+Inline media keeps the existing integer-unit semantics and disjoint axes: at most six entries,
+one per image/audio/video × input/output pair. Entry objects are strict and units are
+nonnegative safe integers. The separate-endpoint native-media fractional-duration types and
+accounting basis are unchanged. The dialect rules above own applicability; the evidence schema
+does not infer applicability or invent cache zero.
+
+`ownUsageEvidence(value: unknown)` snapshots descriptor-first, accepts only inert own plain or
+null-prototype record data and ordinary dense arrays, and deeply freezes the resulting arm,
+quantities, media array and media entries before returning. It rejects accessors without calling
+them, symbol/non-enumerable properties, exotic prototypes, cycles, sparse arrays and unsupported
+values. The pre-parse traversal is bounded to 16 containers, four levels, eight own keys per
+container, six array elements and 32 characters per key/string; unsupported oversized graphs
+are rejected rather than traversed without a bound. Reflection failures, including hostile or
+revoked proxies, and all validation failures produce only `InvalidUsageEvidenceError` with
+`code: 'invalid_usage_evidence'`, message `Invalid usage evidence` and no input-derived cause.
+The exported Zod schemas remain direct data validators and may expose Zod diagnostics;
+callers handling untrusted values use the owned boundary. This adds no durable `ErrorCode`,
+request contract, invocation authority or pricing path for partial/missing evidence.
+
+Incomplete cumulative OpenAI/DeepSeek and Gemini usage frames retain earlier independently known
+canonical quantities. Valid newly reported quantities replace their predecessors, never sum with
+them; a partial or invalid later frame remains incomplete even if retained fields fill its gaps.
+Missing Gemini thoughts cannot be treated as zero to derive a new combined output count.
+
+#### Invocation correlation, repairs and late receipts
+
+`FallbackChainOptions.beginUsageInvocation(info: PreAttemptInfo): Promise<UsageInvocation>`
+is a behavioral port separate from `LlmRequest`. After admission and before credential resolution,
+it allocates and acknowledges pending coverage. The chain retains the exact returned identity on
+`AttemptRecord.invocation` across settlement and registered late receipts. The host owns its
+producer/dispatch/round/ordinal construction; resettable `attemptNumber` alone is not correlation.
+A persisted host mints its bounded dispatch identity independently of authored agent/node text;
+the producer identity scopes the monotonic dispatch ordinal. Valid long authored identifiers
+cannot become invalid usage-correlation metadata or collide through truncation.
+A failed acknowledgement prevents provider invocation. Skipped entries require no marker.
+
+OpenAI-compatible parameter repair preserves the existing bounded temperature/reasoning fallback.
+Before each additional native create, `LlmInvocationOptions.beforeNativeRetry` settles the prior
+classified failure through the existing complete-only pricing path and a `coverageOnly: true` record,
+runs fresh admission through `preAttempt`,
+and awaits the next pending acknowledgement. The host settles the prior admission and joins its
+disposition/conservative-write barrier before admitting that next call. An official pre-content
+refusal can release its estimate; a custom endpoint's unknown prior call retains conservative
+exposure, and a later zero cannot refund it. Repair never drops an output cap: only temperature and
+reasoning effort are repairable, so every retry uses the same central `outputCapPlan`.
+An explicit `missing` usage arm supplies no processed-content evidence, just like an absent
+error usage field. Generate and native-repair failure accounting preserve this distinction:
+partial or complete quantities, including explicit zero, and actual content still establish
+processing. Without such proof, an official enumerated pre-content refusal can release its
+reservation and a retryable pre-content failure can fail over. A custom endpoint retains its
+existing uncertainty; the mere presence of a missing-evidence object cannot change either policy.
+`AttemptRecord.preAttemptInfo` carries the exact fresh frozen admission-info object for each native
+call. It is ephemeral correlation, never durable data or billing authority, and prevents late cleanup
+from releasing a newer fallback admission. `nativeInvocationStarted` marks the repaired call only
+after body construction and the last activity check. If pending acknowledgement arrives after the
+public attempt has closed, a final correlated proven-non-invoked record retires that marker without
+starting the native call. Repair does not change the chain attempt number. Successful final complete
+usage follows the existing sole actual-cost writer. The public hook also accepts complete prior
+failure evidence: positive and explicit-zero usage is priced, missing model/media rates remain
+explicitly unpriced, and incomplete evidence never invents actual money. Current OpenAI HTTP
+parameter errors do not supply usage; complete-predecessor controls exercise supported external
+seam implementations. A pricing failure refuses repair after its single accounting record. An
+observer throwable retains its exact opaque identity across adapter normalization and escapes
+after cleanup, without a duplicate predecessor record or another admission. This does not change
+core's existing distinction between external observer faults and admission/lease control-flow faults;
+a still-unsettled conservative lease retains its required cleanup obligation.
+
+A deadline with a still-live correlated producer marks its incomplete record `receiptPending: true`.
+The exact raw promise remains retained; a separate registered retained continuation owns late
+settlement before the host can close. Its `receiptFinal: true`, `coverageOnly: true` record carries
+the same invocation identity and owned evidence, omits `receiptPending`, and retires receipt authority
+for every evidence arm. Complete evidence reaches pricing once. Generated usage is read and owned
+once, shared by primary settlement and the late receipt; a late accountable stream rejection contributes
+its owned usage unless a held terminal already established authority. If late pricing throws, the final
+observation retains complete evidence with `priced: false` and a fixed non-retryable diagnostic before
+`onAccountingFailure` latches the host's money health failure. This refines coverage without reopening
+the public stream or rewriting a published terminal. A held
+already-complete terminal does not create another late charge. Receipt authority is process-local;
+persisted identity cannot reconstruct permission to deliver a receipt or invoke another call.
+Receipt activation remains a cleanup obligation when the primary attempt observer throws. It
+cannot depend on successful observer return. Activating already-observed evidence must also
+preserve that exact primary throwable if late accounting raises a secondary failure; no observer
+failure permits a retry or discards the retained producer's final evidence.
+The [event contract](../contracts/sse-event-schema.md) owns durable pending/disposition semantics.
+
+#### Managed mode compatibility (Phase 2)
+
+The managed gateway is not implemented. Its future `LLMProvider` must implement this same
+`UsageEvidence` contract. Forced `include_usage` is a request, not proof of final evidence;
+interruption cannot be converted into actual complete usage through estimation. Reservations and
+future gateway reconciliation must remain separate from reported actual charges. W8 makes no
+claim of compatibility with an older gateway or a new runtime version-negotiation protocol.
 
 ## Fallback lives outside the adapter
 
@@ -1197,7 +1345,11 @@ followed by each authored `fallback_chain` entry:
   Every attempt diagnostic remains frozen before observer delivery and retry decisions, including
   locally synthesized failures, cancellation and commitment decoration/removal; causes remain private
   opaque identities. A consumer observer exception propagates once outside provider and accounting
-  guards. Core carries its exact external observer origin through generated-result handling and the
+  guards. Abrupt consumer closure still settles the exact entered invocation once, including already
+  owned complete terminal evidence or an incomplete disposition when no complete evidence exists.
+  This teardown cannot yield a replacement terminal, retry the call or discard known spend; registered
+  late receipt authority and the original consumer exception retain their existing precedence.
+  Core carries its exact external observer origin through generated-result handling and the
   runner, including later tool rounds and host clock/backoff callbacks. Throwing a genuine provider,
   turn, budget or money error class from that observer authorises neither a paid retry, a budget gate
   nor a different ledger failure-writer owner. Core unwraps a private cause as admission/money control
@@ -1217,11 +1369,12 @@ followed by each authored `fallback_chain` entry:
   the output projection does not itself acquire that wider ownership. An admission
   stays owned until its release or settlement succeeds, so a diagnostic failure reaches conservative
   cleanup rather than losing the lease.
-- Surface **per-attempt usage** to the injected `CostTracker` (against that
+- Surface **complete per-attempt usage** to the injected `CostTracker` (against that
   attempt's model) so cost stays accurate across a failover, and report each
   attempt (succeeded / failed / skipped) via an `onAttempt` observer so the
-  engine can emit a `cost:updated` per attempt and a warn log — **visible**
-  failover, never a silent provider switch. The runner imports no event bus; it
+  engine can report complete-evidence actual costs, qualify incomplete attempts through
+  [usage coverage](../contracts/sse-event-schema.md#the-runevent-union), and log visible failover.
+  The runner imports no event bus; it
   is platform-free (the host injects the `sleep` timer).
 
 This keeps per-agent fallback (e.g. Anthropic → OpenAI → DeepSeek) a config
@@ -1230,7 +1383,7 @@ concern declared in [`agent-yaml-spec.md`](../contracts/agent-yaml-spec.md)
 
 ## A second implementation behind the same seam: `ManagedGatewayProvider` (Phase 2)
 
-Phase 2 adds a **new `LLMProvider` implementation, `ManagedGatewayProvider`**,
+Phase 2 plans a **new `LLMProvider` implementation, `ManagedGatewayProvider`** (not implemented),
 selected by the factory when `executionMode` is `'managed'`. Instead of calling a
 provider SDK directly, it is a thin client that calls a Relavium gateway over
 HTTPS; the gateway runs the **same** per-provider adapters server-side with
@@ -1270,4 +1423,5 @@ The earlier dated W7 status is historical. Measured request reuse, atomic multi-
 pre-send and single pre-content overflow recovery, finite frozen allowances and the CLI resume surface
 are implemented with scoped independent acceptance. The
 [closing register](../../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w7-closing-register--2026-10-10)
-tracks final whole-wave acceptance and approved limits; CR-82 and W8 remain open.
+tracks W7's final acceptance and approved limits. The
+[canonical roadmap](../../roadmap/current.md) owns subsequent W8 status.

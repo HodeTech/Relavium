@@ -1,3 +1,4 @@
+import { knownUsage } from './conformance/usage-test.js';
 /**
  * ADR-0082 §12's grammar acceptance — one test per row of §2's classification table, each driven by a fake
  * provider producing exactly that observation.
@@ -33,7 +34,7 @@ const TEXT: StreamChunk = { type: 'text_delta', text: 'hello' };
 const STOP: StreamChunk = {
   type: 'stop',
   stopReason: 'stop',
-  usage: { inputTokens: 1, outputTokens: 1 },
+  usage: { kind: 'complete' as const, usage: { inputTokens: 1, outputTokens: 1 } },
 };
 const ERR: StreamChunk = {
   type: 'error',
@@ -165,12 +166,15 @@ describe('failed native terminal usage is owned before the confirming read', () 
           retryable: false,
           provider: 'anthropic',
           message: 'native overflow',
-          usage,
+          usage: { kind: 'complete' as const, usage: usage },
         },
       },
       TEXT,
     ]);
-    expect(failureOf(out)).toMatchObject({ kind: 'protocol', usage });
+    expect(failureOf(out)).toMatchObject({
+      kind: 'protocol',
+      usage: { kind: 'complete' as const, usage: usage },
+    });
     expect(out.filter((chunk) => chunk.type === 'error')).toHaveLength(1);
     expect(out.some((chunk) => chunk.type === 'stop')).toBe(false);
   });
@@ -178,13 +182,16 @@ describe('failed native terminal usage is owned before the confirming read', () 
     const usage = { inputTokens: 19, outputTokens: 7 };
     const out = await verified([
       TEXT,
-      { type: 'stop', stopReason: 'stop', usage },
+      { type: 'stop', stopReason: 'stop', usage: { kind: 'complete' as const, usage: usage } },
       {
         type: 'error',
         error: { provider: 'anthropic', kind: 'transport', message: 'tail', retryable: true },
       },
     ]);
-    expect(failureOf(out)).toMatchObject({ kind: 'protocol', usage });
+    expect(failureOf(out)).toMatchObject({
+      kind: 'protocol',
+      usage: { kind: 'complete' as const, usage: usage },
+    });
     expect(out.filter((chunk) => chunk.type === 'error')).toHaveLength(1);
     expect(out.some((chunk) => chunk.type === 'stop')).toBe(false);
   });
@@ -210,7 +217,7 @@ describe('failed native terminal usage is owned before the confirming read', () 
           retryable: false,
           provider: 'anthropic',
           message: 'native overflow',
-          usage,
+          usage: { kind: 'complete' as const, usage: usage },
         },
       };
       usage.inputTokens = 999;
@@ -219,7 +226,9 @@ describe('failed native terminal usage is owned before the confirming read', () 
     }
     const out: StreamChunk[] = [];
     for await (const chunk of verifyStreamGrammar(source(), 'anthropic')) out.push(chunk);
-    const captured = failureOf(out)?.usage;
+    const evidence = failureOf(out)?.usage;
+    if (evidence === undefined) throw new Error('Missing evidence');
+    const captured = knownUsage(evidence);
     expect(captured?.inputTokens).toBe(19);
     expect(captured?.mediaUnits?.[0]?.units).toBe(1);
     expect(Object.isFrozen(captured)).toBe(true);

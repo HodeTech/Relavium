@@ -285,3 +285,139 @@ describe('nonconsuming money lifetime join', () => {
     expect(money.durabilityBroken).toBe(true);
   });
 });
+
+for (const siblingLive of [false, true])
+  it(`ended correlated receipt ports refuse entry even when another scope is live=${siblingLive}`, async () => {
+    const store = new InMemoryRunStore();
+    const host = createInMemoryHost({ store });
+    const sibling = deferred<NodeOutcome>();
+    const captured = deferred<NodeExecContext>();
+    const ended = deferred<void>();
+    const parallel = parseWorkflow(`schema_version: '1.0'
+workflow:
+  id: ended-correlated
+  max_parallel: 2
+  nodes: [{ id: n, type: input }, { id: sibling, type: input }]
+  edges: []
+`);
+    let invocation: import('@relavium/shared').UsageInvocation | undefined;
+    const handle = new WorkflowEngine({
+      host,
+      executor: {
+        execute: async (ctx) => {
+          if (ctx.vertex.id === 'sibling') return sibling.promise;
+          invocation = await ctx.money?.beginUsageInvocation?.({
+            nodeId: 'n',
+            model: draft.model,
+            round: 0,
+            chainAttempt: 1,
+          });
+          captured.resolve(ctx);
+          return { kind: 'completed', output: 'done' };
+        },
+      },
+    }).start({ workflow: parallel });
+    const drained = (async () => {
+      for await (const event of handle.events)
+        if (event.type === 'node:completed' && event.nodeId === 'n') ended.resolve();
+    })();
+    const ctx = await captured.promise;
+    await ended.promise;
+    if (!siblingLive) {
+      sibling.resolve({ kind: 'completed', output: 'done' });
+      await drained;
+      await handle.depart();
+    }
+    if (invocation === undefined || ctx.money === undefined) throw new Error('missing receipt');
+    const money = ctx.money;
+    const identity = invocation;
+    const receipt = { ...draft, nodeId: 'n', invocation };
+    const event = { ...receipt, type: 'cost:updated' as const, cumulativeCostMicrocents: 0 };
+    const entries = [
+      () => money.accountingFailure?.(new Error('stale failure')),
+      () =>
+        money.beginUsageInvocation?.({
+          nodeId: 'n',
+          model: draft.model,
+          round: 0,
+          chainAttempt: 2,
+        }),
+      () => money.claimUsage?.(identity, 'complete'),
+      () => money.emitCost?.(event),
+      () =>
+        money.usageDisposition?.({
+          nodeId: 'n',
+          model: draft.model,
+          invocation: identity,
+          disposition: { kind: 'not_invoked', reason: 'cancelled' },
+        }),
+      () => money.record(receipt),
+      () => money.join(),
+      () => ctx.continueReceipt?.(() => Promise.resolve()),
+    ];
+    for (const enter of entries) expect(enter).toThrow('receipt scope has already ended');
+    sibling.resolve({ kind: 'completed', output: 'done' });
+    await drained;
+    expect(
+      store.eventsFor(handle.runId).filter((event) => event.type === 'cost:attempt_settled'),
+    ).toEqual([]);
+    expect(await handle.depart()).toMatchObject({ moneyDurability: 'durable' });
+  });
+
+it('an explicitly transferred child can settle its parent-issued correlated receipt after the parent ends', async () => {
+  const store = new InMemoryRunStore();
+  const host = createInMemoryHost({ store });
+  const finish = deferred<void>();
+  const child = deferred<NodeReceiptContext>();
+  const parent = deferred<NodeExecContext>();
+  let invocation: import('@relavium/shared').UsageInvocation | undefined;
+  let completed: Promise<void> | undefined;
+  const handle = new WorkflowEngine({
+    host,
+    executor: {
+      execute: async (ctx) => {
+        parent.resolve(ctx);
+        invocation = await ctx.money?.beginUsageInvocation?.({
+          nodeId: 'n',
+          model: draft.model,
+          round: 0,
+          chainAttempt: 1,
+        });
+        completed = ctx.continueReceipt?.(async (receipt) => {
+          child.resolve(receipt);
+          await finish.promise;
+          if (invocation === undefined) throw new Error('missing invocation');
+          expect(receipt.money.claimUsage?.(invocation, 'complete')).toBe(true);
+          receipt.money.emitCost?.({
+            ...draft,
+            invocation,
+            type: 'cost:updated',
+            cumulativeCostMicrocents: 0,
+          });
+          receipt.money.record({ ...draft, invocation });
+          await receipt.money.join();
+        });
+        return { kind: 'completed', output: 'done' };
+      },
+    },
+  }).start({ workflow: plain });
+  const receipt = await child.promise;
+  for await (const event of handle.events) expect(event.runId).toBe(handle.runId);
+  const original = await parent.promise;
+  if (invocation === undefined) throw new Error('missing invocation');
+  const originalIdentity = invocation;
+  expect(() => original.money?.claimUsage?.(originalIdentity, 'complete')).toThrow(
+    'receipt scope has already ended',
+  );
+  finish.resolve();
+  await completed;
+  expect(await handle.depart()).toMatchObject({ moneyDurability: 'durable' });
+  expect(
+    store.eventsFor(handle.runId).filter((event) => event.type === 'cost:attempt_settled'),
+  ).toMatchObject([{ costMicrocents: 17 }]);
+  if (invocation === undefined) throw new Error('missing invocation');
+  const identity = invocation;
+  expect(() => receipt.money.claimUsage?.(identity, 'complete')).toThrow(
+    'receipt scope has already ended',
+  );
+});

@@ -133,19 +133,31 @@ const CONTEXT: SessionContext = SessionContextSchema.parse({
 
 const textTurn = (text: string): StreamChunk[] => [
   { type: 'text_delta', text },
-  { type: 'stop', stopReason: 'stop', usage: { inputTokens: 5, outputTokens: 3 } },
+  {
+    type: 'stop',
+    stopReason: 'stop',
+    usage: { kind: 'complete', usage: { inputTokens: 5, outputTokens: 3 } },
+  },
 ];
 
 /** A turn reporting a controllable real input-token usage — for the auto-compaction threshold (ADR-0062). */
 const inputTurn = (text: string, inputTokens: number): StreamChunk[] => [
   { type: 'text_delta', text },
-  { type: 'stop', stopReason: 'stop', usage: { inputTokens, outputTokens: 3 } },
+  {
+    type: 'stop',
+    stopReason: 'stop',
+    usage: { kind: 'complete', usage: { inputTokens, outputTokens: 3 } },
+  },
 ];
 
 const toolUseTurn = (id: string): StreamChunk[] => [
   { type: 'tool_call_start', id, name: 'echo' },
   { type: 'tool_call_end', id },
-  { type: 'stop', stopReason: 'tool_use', usage: { inputTokens: 4, outputTokens: 2 } },
+  {
+    type: 'stop',
+    stopReason: 'tool_use',
+    usage: { kind: 'complete', usage: { inputTokens: 4, outputTokens: 2 } },
+  },
 ];
 
 interface Harness {
@@ -719,7 +731,11 @@ describe('AgentSession (1.V) — multi-turn entry point over the shared turn cor
       ],
       [
         { type: 'text_delta', text: 'recovered' },
-        { type: 'stop', stopReason: 'stop', usage: { inputTokens: 5, outputTokens: 3 } },
+        {
+          type: 'stop',
+          stopReason: 'stop',
+          usage: { kind: 'complete', usage: { inputTokens: 5, outputTokens: 3 } },
+        },
       ],
     ]);
     const s = session(deps);
@@ -1392,7 +1408,11 @@ describe('AgentSession — reseat-less modes + mid-turn abort (ADR-0057 Step 2)'
     async function* blockingStream(): AsyncGenerator<StreamChunk> {
       yield { type: 'text_delta', text: 'partial' }; // a provider engaged + a token streamed
       await barrier; // hold the turn open mid-stream until the test releases it
-      yield { type: 'stop', stopReason: 'stop', usage: { inputTokens: 7, outputTokens: 4 } };
+      yield {
+        type: 'stop',
+        stopReason: 'stop',
+        usage: { kind: 'complete', usage: { inputTokens: 7, outputTokens: 4 } },
+      };
     }
     let n = 0;
     const provider: LlmProvider = {
@@ -1538,7 +1558,11 @@ describe('AgentSession.runUserCommand — the `!`-shell escape (2.5.D, ADR-0061)
       { type: 'tool_call_start', id, name: 'run_command' },
       { type: 'tool_call_delta', id, argsJsonDelta: '{"command":"ls","args":[]}' },
       { type: 'tool_call_end', id },
-      { type: 'stop', stopReason: 'tool_use', usage: { inputTokens: 4, outputTokens: 2 } },
+      {
+        type: 'stop',
+        stopReason: 'tool_use',
+        usage: { kind: 'complete', usage: { inputTokens: 4, outputTokens: 2 } },
+      },
     ];
     let allocations = 40;
     const { deps, events } = harness(
@@ -2259,7 +2283,11 @@ describe('AgentSession — context compaction + trim (ADR-0062)', () => {
     // The summariser returns NO text (empty summary ⇒ compact 'failed'); with maxMessages wired the session
     // falls back to a zero-cost /trim rather than sending an ever-growing context.
     const emptySummary: StreamChunk[] = [
-      { type: 'stop', stopReason: 'stop', usage: { inputTokens: 1, outputTokens: 0 } },
+      {
+        type: 'stop',
+        stopReason: 'stop',
+        usage: { kind: 'complete', usage: { inputTokens: 1, outputTokens: 0 } },
+      },
     ];
     const { session: s, events } = compactHarness(
       [inputTurn('a1', 9000), inputTurn('a2', 9000), emptySummary],
@@ -2280,7 +2308,11 @@ describe('AgentSession — context compaction + trim (ADR-0062)', () => {
 
   it('auto-compaction failure WITHOUT maxMessages leaves the context un-compacted (no throw, no trim)', async () => {
     const emptySummary: StreamChunk[] = [
-      { type: 'stop', stopReason: 'stop', usage: { inputTokens: 1, outputTokens: 0 } },
+      {
+        type: 'stop',
+        stopReason: 'stop',
+        usage: { kind: 'complete', usage: { inputTokens: 1, outputTokens: 0 } },
+      },
     ];
     const { session: s, events } = compactHarness(
       [inputTurn('a1', 9000), inputTurn('a2', 9000), emptySummary],
@@ -2335,7 +2367,11 @@ describe('AgentSession — context compaction + trim (ADR-0062)', () => {
     // when result.text is non-empty). compact() must NOT keep that lone user as the "kept exchange" — with only
     // one complete exchange before it, there is nothing earlier to fold, so it is a clean no-op.
     const emptyTurn: StreamChunk[] = [
-      { type: 'stop', stopReason: 'stop', usage: { inputTokens: 5, outputTokens: 0 } },
+      {
+        type: 'stop',
+        stopReason: 'stop',
+        usage: { kind: 'complete', usage: { inputTokens: 5, outputTokens: 0 } },
+      },
     ];
     const { session: s, events } = compactHarness(
       [textTurn('a1'), emptyTurn, textTurn('summary')],

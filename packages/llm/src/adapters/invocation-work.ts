@@ -37,7 +37,15 @@ export function captureInvocationOptions(
 ): LlmInvocationOptions | undefined {
   return options === undefined
     ? undefined
-    : Object.freeze({ retainWork: options.retainWork.bind(options) });
+    : Object.freeze({
+        retainWork: options.retainWork.bind(options),
+        ...(options.nativeInvocationStarted === undefined
+          ? {}
+          : { nativeInvocationStarted: options.nativeInvocationStarted.bind(options) }),
+        ...(options.beforeNativeRetry === undefined
+          ? {}
+          : { beforeNativeRetry: options.beforeNativeRetry.bind(options) }),
+      });
 }
 
 /** One invocation's admitted SDK work and transitive transport children, never ambient state. */

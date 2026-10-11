@@ -56,7 +56,11 @@ function fixture(action: 'none' | 'cancel' | 'abort' | 'send', warm: boolean) {
       entered.release();
       await finish.promise;
       yield { type: 'text_delta', text: 'summary result' };
-      yield { type: 'stop', stopReason: 'stop', usage: { inputTokens: 2, outputTokens: 1 } };
+      yield {
+        type: 'stop',
+        stopReason: 'stop',
+        usage: { kind: 'complete', usage: { inputTokens: 2, outputTokens: 1 } },
+      };
     },
   };
   const context = SessionContextSchema.parse({

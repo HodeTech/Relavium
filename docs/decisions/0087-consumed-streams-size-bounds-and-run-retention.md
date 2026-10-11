@@ -254,3 +254,44 @@ caller narrow on the fault class and an admission ceiling is a genuinely new cla
   its own ceilings: the alternative is an engine with no defined behaviour at the extremes.
 - **Retention is one more number that will eventually be wrong.** Accepted rather than pretended otherwise;
   it is a named constant and moving it upward is not a breaking change.
+
+## W8 preflight correction — 2026-10-10
+
+Correction 2's statement that parked waiters reserve correctly is also false. The current
+`#wakeDrainWaiters` subtracts buffered events but tracks no outstanding grants. At capacity 2,
+with six parked producers, two immediate buffered pulls before producer continuations can
+wake three producers and reach depth 3. The previously measured fast-path depth 11 at capacity
+4 with eight producers remains reproducible. Both schedules belong to the same recorded
+exact-capacity residual; neither is repaired by accepting §1's consumption mode.
+
+The [W8 proposed plan](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w8-preflight-and-proposed-execution-plan--2026-10-10)
+separates §1's no-drop/no-primary-buffer obligation from that existing residual and specifies
+mode/default plumbing and its interaction with ADR-0103's primary-delivery authority for
+maintainer review. No implementation or new producer-await decision is claimed here. The
+accepted body and all nine corrections remain historical records.
+
+## W8 §1 implementation — 2026-10-10
+
+The maintainer approved the W8 plan and compatibility default on 2026-10-10. Workflow
+start/checkpoint resume and standalone session handles now fix their consumption mode at
+construction. Iterated streams preserve every publication before their first pull, including
+terminals; subscribe-only streams retain no primary events. Attempted iteration is a typed
+`invalid_consumer_mode` refusal, including after closure, rather than the original decision's
+empty-iteration alternative. CLI workflow drivers select iteration and CLI session builders
+select live subscription before production. Terminal metadata and ADR-0103's actual
+primary-consumption authority remain independent of passive subscribers.
+
+The [canonical consumption contract](../reference/contracts/sse-event-schema.md#primary-stream-consumption-in-process)
+owns these details; the [W8 Step 1 register](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w8-step-1-consumption-modes--2026-10-10)
+owns implementation/review acceptance. This implements §1's consumption repair only. Both
+concurrent-readiness schedules in the preceding correction remain the existing approved
+exact-capacity residual; no emission permit or stronger capacity guarantee is introduced.
+
+### W8 §1 whole-wave acceptance — 2026-10-11
+
+The [W8 closing register](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w8-closing-register--2026-10-11)
+accepts §1 on `development` after the whole-wave source gates and two NEW complete cumulative
+reviews. Run/session consumption and departure controls retain their scoped acceptance.
+Publication checks and maintainer review/merge gate landing on `main`. Both concurrent-readiness
+exact-capacity schedules remain the existing approved residual; this note neither introduces
+an emission permit nor strengthens that capacity claim.

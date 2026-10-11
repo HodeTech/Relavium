@@ -120,7 +120,11 @@ import { createChatStore, type ChatStoreController } from '../render/tui/chat-st
 import { createMentionReader, type MentionReader } from '../render/tui/mention.js';
 import { createMcpSecretResolver, type McpSecretResolver } from '../secrets/mcp-secret.js';
 import { stringifyJsonLine } from '../render/sanitize.js';
-import { createEffectJournalPort, createEffectJournalStore } from '@relavium/db';
+import {
+  createEffectJournalPort,
+  createEffectJournalStore,
+  createSessionUsageStore,
+} from '@relavium/db';
 
 /**
  * `relavium chat` (2.M) — the agent-first interactive REPL over `@relavium/core`'s `AgentSession`. It binds
@@ -617,6 +621,9 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
   let persister: SessionPersister;
   try {
     persister = createSessionPersister({
+      usageStore: createSessionUsageStore(opened.db),
+      mode: 'fresh',
+      attachUsageWriter: built.attachUsageWriter,
       governor: built.governor,
       attachDurabilityProbe: built.attachDurabilityProbe,
       attachEffectTurnAllocator: built.attachEffectTurnAllocator,
@@ -1281,11 +1288,12 @@ export function createChatLineHandler(
         if (release) built.governor?.releaseConservativeCommitments();
         // ONE snapshot: the rows and the total they are printed under must come from the same read, or a concurrent
         // process's cost write can land between them and the panel prints rows summing to MORE than its own total.
-        const { totalCostMicrocents, rows } = opened.store.loadSessionCostBreakdown(
-          built.sessionId,
-        );
+        const { totalCostMicrocents, rows, coverage, models } =
+          opened.store.loadSessionCostBreakdown(built.sessionId);
         emitOutput(
           costNotice(totalCostMicrocents, rows, {
+            coverage,
+            models,
             ...(released === undefined ? {} : { released }),
             ...(built.governor === undefined
               ? {}
@@ -1633,6 +1641,9 @@ async function buildFreshChatWiring(deps: FreshChatWiringDeps, intro: string): P
   let persister: SessionPersister;
   try {
     persister = createSessionPersister({
+      usageStore: createSessionUsageStore(deps.opened.db),
+      mode: 'fresh',
+      attachUsageWriter: built.attachUsageWriter,
       governor: built.governor,
       attachDurabilityProbe: built.attachDurabilityProbe,
       attachEffectTurnAllocator: built.attachEffectTurnAllocator,
@@ -1764,12 +1775,17 @@ function seedResumedWiring(
   transcriptBound: TranscriptBound,
   carriedTranscript: readonly TranscriptEntry[],
 ): { store: ChatStoreController; persister: SessionPersister } {
+  const costs = opened.store.loadSessionCostBreakdown(resumed.sessionId);
   const store = createChatStore(
     color,
     {
       agentRef: resumed.agent.id,
       model: resumed.agent.model,
-      cumulativeCostMicrocents: resumed.resumeState.cumulativeCostMicrocents,
+      // A live receipt may settle while the resumed host builds. Display money and its coverage
+      // from the same SQLite snapshot, rather than pairing the older engine seed with fresh coverage.
+      cumulativeCostMicrocents: costs.totalCostMicrocents,
+      usageCoverage: costs.coverage,
+      unpricedCalls: costs.rows.reduce((sum, row) => sum + row.unpricedCalls, 0),
       turnCount: resumed.resumeState.turnCount,
       // The RENDERED transcript to carry into the new store (2.6.C). TWO callers reach this helper and they want
       // different things: `chat-resume` carries NOTHING (it has never repainted prior turns — a separate, tracked
@@ -1782,6 +1798,9 @@ function seedResumedWiring(
     transcriptBound,
   );
   const persister = createSessionPersister({
+    usageStore: createSessionUsageStore(opened.db),
+    mode: 'adopt',
+    attachUsageWriter: resumed.attachUsageWriter,
     governor: resumed.governor,
     attachDurabilityProbe: resumed.attachDurabilityProbe,
     attachEffectTurnAllocator: resumed.attachEffectTurnAllocator,
@@ -2173,8 +2192,14 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
     // Attempt EVERY teardown step (a reject in one must not skip the next) and never let a cleanup fault mask the
     // outcome — each is best-effort, surfacing a warning rather than throwing. MCP tears down LAST, AFTER the
     // session terminal, so no tool call can race the close (idempotent; present only with `mcp_servers`).
-    closeQuietly(deps.io, 'persister', () => persister.close());
-    await built.closeMcp?.().catch((e: unknown) => warnTeardown(deps.io, 'MCP', e));
+    try {
+      await built.whenHostSafeToClose();
+    } finally {
+      // The lifetime join finishes before its durability verdict can reject. A failed final write
+      // must still release the now-quiescent persister and MCP clients.
+      closeQuietly(deps.io, 'persister', () => persister.close());
+      await built.closeMcp?.().catch((e: unknown) => warnTeardown(deps.io, 'MCP', e));
+    }
   }
 }
 

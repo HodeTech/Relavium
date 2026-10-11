@@ -16,6 +16,7 @@ import {
   OUTPUT_MODALITIES,
   refineInFlightMediaPart,
   StopReasonSchema,
+  UsageEvidenceSchema,
 } from '@relavium/shared';
 import type { AbortSignalLike, LlmProviderId } from '@relavium/shared';
 import { isPreparedOutputCapPlan, type PreparedOutputCapPlan } from './output-cap.js';
@@ -36,7 +37,6 @@ import { isPreparedOutputCapPlan, type PreparedOutputCapPlan } from './output-ca
 
 /** Non-empty string — `@relavium/shared` keeps its Zod primitives internal, so the seam owns one. */
 const nonEmptyString = z.string().min(1);
-const nonNegativeInt = z.number().int().nonnegative();
 
 /** The seam's closed provider-id set (`LLM_PROVIDERS`; additive per ADR-0011). */
 export const ProviderIdSchema = z.enum(LLM_PROVIDERS);
@@ -134,43 +134,26 @@ export const ResponseFormatSchema = z.discriminatedUnion('type', [
 ]);
 export type ResponseFormat = z.infer<typeof ResponseFormatSchema>;
 
-/**
- * One per-modality media usage record (ADR-0031 decision #4). A DISJOINT observability+billing
- * axis: media bills per-image / per-second, NOT in tokens, so — unlike `reasoningTokens` — there
- * is deliberately no refine tying it to the token counts. `modality` is the deliberately complete
- * media-billed closed set (`document`/PDF and text bill as tokens, so they are excluded, not
- * forgotten). Doubles as the managed-mode metering record: counts, never content.
- */
-export const MediaUnitsEntrySchema = z.object({
-  modality: z.enum(MEDIA_BILLED_MODALITIES),
-  direction: z.enum(['input', 'output']),
-  units: nonNegativeInt, // images, audio-seconds, video-seconds — the provider's billed unit
-  unit: z.enum(['count', 'second']),
-});
-export type MediaUnitsEntry = z.infer<typeof MediaUnitsEntrySchema>;
-
-/** Normalized token usage. `costMicrocents` is Relavium's, computed from the pricing table. */
-export const UsageSchema = z
-  .object({
-    inputTokens: nonNegativeInt,
-    outputTokens: nonNegativeInt,
-    cacheReadTokens: nonNegativeInt.optional(),
-    cacheWriteTokens: nonNegativeInt.optional(),
-    // Reasoning ("thinking") tokens — OBSERVABILITY only (ADR-0030). Already counted inside
-    // `outputTokens` for billing, so the CostTracker bills `outputTokens` whole; this is not a new
-    // cost class, just visibility into how much of the output was reasoning.
-    reasoningTokens: nonNegativeInt.optional(),
-    // Media usage (ADR-0031) — an extra disjoint axis, never folded into the token counts.
-    mediaUnits: z.array(MediaUnitsEntrySchema).optional(),
-    costMicrocents: nonNegativeInt.optional(),
-  })
-  // Enforce the ADR-0030 invariant: reasoning is a SUBSET of output, never larger. Catches an adapter
-  // that mis-maps the reasoning count (the seam's contract, not a billing input).
-  .refine((u) => u.reasoningTokens === undefined || u.reasoningTokens <= u.outputTokens, {
-    message: 'reasoningTokens must be ≤ outputTokens (reasoning is counted inside output)',
-    path: ['reasoningTokens'],
-  });
-export type Usage = z.infer<typeof UsageSchema>;
+// Shared owns usage so evidence can also cross event/DB boundaries without a dependency cycle.
+export {
+  UsageSchema,
+  MediaUnitsEntrySchema,
+  UsageEvidenceSchema,
+  CompleteUsageEvidenceSchema,
+  PartialUsageEvidenceSchema,
+  MissingUsageEvidenceSchema,
+  KnownUsageQuantitiesSchema,
+  UsageEvidenceReasonSchema,
+  ownUsageEvidence,
+  InvalidUsageEvidenceError,
+} from '@relavium/shared';
+export type {
+  Usage,
+  MediaUnitsEntry,
+  UsageEvidence,
+  KnownUsageQuantities,
+  UsageEvidenceReason,
+} from '@relavium/shared';
 
 /**
  * One **modality-set** a model can emit in a single turn (ADR-0031 decision #3) — an element of
@@ -295,7 +278,7 @@ export const LlmErrorSchema = z.object({
   contentCommitted: z.literal(true).optional(),
   /** Actual canonical usage supplied with a failed response (e.g. a native context-window stop).
    * Never inferred from a reservation; consumers account it even when the diagnostic changes. */
-  usage: UsageSchema.optional(),
+  usage: UsageEvidenceSchema.optional(),
 });
 export type LlmError = z.infer<typeof LlmErrorSchema>;
 
@@ -360,7 +343,7 @@ export const LlmResultSchema = z
   .object({
     content: z.array(ContentPartSchema), // text + any tool_call/media parts
     stopReason: StopReasonSchema,
-    usage: UsageSchema,
+    usage: UsageEvidenceSchema,
     // INTERNAL diagnostic only — the raw provider response, for debugging / the escape hatch.
     // Never log, serialize, checkpoint, or put it in a run event: any sink must strip `raw` first
     // (the same rule as LlmError.cause). From 1.AE/1.AG on it is the highest-volume media-bytes
@@ -447,7 +430,7 @@ export const StreamChunkSchema = z
       providerExecuted: z.literal(true),
       media: z.array(DurableMediaPartSchema).optional(),
     }),
-    z.object({ type: z.literal('stop'), stopReason: StopReasonSchema, usage: UsageSchema }),
+    z.object({ type: z.literal('stop'), stopReason: StopReasonSchema, usage: UsageEvidenceSchema }),
     z.object({ type: z.literal('error'), error: LlmErrorSchema }),
   ])
   .superRefine((chunk, ctx) => {
@@ -556,6 +539,10 @@ export interface EstimateTokensInput {
 /** Trusted, process-local lifetime authority, separate from request data and durable records. */
 export interface LlmInvocationOptions {
   readonly retainWork: <T>(factory: () => Promise<T>) => Promise<T>;
+  /** Native parameter repair must settle prior coverage, re-admit and acknowledge the next call before egress. */
+  readonly beforeNativeRetry?: (error: LlmError) => Promise<void>;
+  /** Mark an acknowledged repaired invocation only at the next native create. */
+  readonly nativeInvocationStarted?: () => void;
 }
 
 /**

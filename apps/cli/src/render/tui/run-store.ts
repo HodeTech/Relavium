@@ -1,4 +1,4 @@
-import type { RunEvent } from '@relavium/shared';
+import { UsageCoverageFold, type RunEvent } from '@relavium/shared';
 
 import { renderFinalSummary } from './final-summary.js';
 import { initialRunViewState, reduceRunEvent, type RunViewState } from './run-view-model.js';
@@ -57,6 +57,9 @@ const HIGH_FREQUENCY_EVENTS: ReadonlySet<RunEvent['type']> = new Set([
 export function createRunStore(color: boolean): RunStoreController {
   const listeners = new Set<() => void>();
   let state = initialRunViewState();
+  let runId: string | undefined;
+  const coverage = new UsageCoverageFold();
+  let localCoverage = coverage.snapshot().coverage;
   let tickCount = 0;
   let dirty = false;
   let snapshot: RunStoreSnapshot = { state, tick: tickCount, color };
@@ -85,7 +88,59 @@ export function createRunStore(color: boolean): RunStoreController {
     },
     getSnapshot: () => snapshot,
     apply: (event) => {
-      state = reduceRunEvent(state, event);
+      // A resumed primary may start at a gate rather than run:started. Latch its first run owner,
+      // then reject foreign/session envelopes before sequence, correlation or repaint state changes.
+      if (event.runId === undefined || (runId !== undefined && event.runId !== runId)) return;
+      runId ??= event.runId;
+      // Duplicate/replayed live events do not advance accounting twice.
+      if (
+        state.lastSequenceNumber === undefined ||
+        event.sequenceNumber > state.lastSequenceNumber
+      ) {
+        const before = localCoverage;
+        // Successful workflow accounting ACKs are envelope-free transitions. A failed/refused
+        // ask is still delivered (ADR-0078), qualified with the unchanged authoritative snapshot;
+        // it must not consume local correlation before a subsequent real ACK.
+        const unacknowledgedAccounting =
+          event.type.startsWith('cost:') &&
+          event.type !== 'cost:updated' &&
+          event.usageCoverage !== undefined;
+        if (!unacknowledgedAccounting) coverage.apply(event);
+        const after = event.type.startsWith('cost:') ? coverage.snapshot().coverage : before;
+        localCoverage = after;
+        // A resumed primary stream begins after the historical invocation markers. Its
+        // envelope supplies the inherited aggregate; keep local correlation only for
+        // subsequent deltas whose pending/disposition ACK has no aggregate envelope.
+        const previous = state.usageCoverage ?? before;
+        const usageCoverage =
+          event.usageCoverage ??
+          (after === before
+            ? previous
+            : {
+                unverified:
+                  event.type === 'cost:coverage_started' ? after.unverified : previous.unverified,
+                pendingInvocations: Math.max(
+                  0,
+                  previous.pendingInvocations +
+                    after.pendingInvocations -
+                    before.pendingInvocations,
+                ),
+                unknownCalls: Math.max(
+                  0,
+                  previous.unknownCalls + after.unknownCalls - before.unknownCalls,
+                ),
+              });
+        const unpricedCalls =
+          event.cumulativeUnpricedCalls === undefined
+            ? (state.unpricedCalls ?? 0) +
+              (event.type === 'cost:updated' && event.priced === false ? 1 : 0)
+            : Math.max(state.unpricedCalls ?? 0, event.cumulativeUnpricedCalls);
+        state = {
+          ...reduceRunEvent(state, event),
+          usageCoverage,
+          unpricedCalls,
+        };
+      } else state = reduceRunEvent(state, event);
       if (HIGH_FREQUENCY_EVENTS.has(event.type)) {
         dirty = true; // coalesced to the next frame — no flood, no drop
       } else {

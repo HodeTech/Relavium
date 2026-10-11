@@ -27,6 +27,57 @@ describe('statusCommand', () => {
     return { io, global: globalOptions(json), openDb: () => ({ db, close: () => {} }) };
   }
 
+  it('keeps healthy status beside a future event and explicitly marks unavailable usage in human and JSON output', async () => {
+    await seedRun(db, { slug: 'healthy', runId: 'healthy', state: 'running' });
+    await seedRun(db, { slug: 'future', runId: 'future', state: 'running' });
+    client.db
+      .insert(runEvents)
+      .values({
+        id: 'future-usage',
+        runId: 'future',
+        seq: 900,
+        eventType: 'future:usage',
+        payloadJson: JSON.stringify({
+          type: 'future:usage',
+          runId: 'future',
+          sequenceNumber: 900,
+          timestamp: '2026-10-10T00:00:00.000Z',
+        }),
+        ts: 1,
+      })
+      .run();
+    const human = captureIo();
+    expect(
+      await statusCommand({ ...deps(human.io), readTerminalOutbox: () => Promise.resolve([]) }),
+    ).toBe(EXIT_CODES.success);
+    expect(human.out()).toContain('run healthy — running');
+    expect(human.out()).toContain('run future — running');
+    expect(human.out()).toContain('usage coverage unavailable');
+    const machine = captureIo();
+    expect(
+      await statusCommand({
+        ...deps(machine.io, true),
+        readTerminalOutbox: () => Promise.resolve([]),
+      }),
+    ).toBe(EXIT_CODES.success);
+    const records = parseNdjson(machine.out());
+    expect(records.find((row) => row['runId'] === 'future')).toMatchObject({
+      usageUnavailable: true,
+      usageUnavailableReason: 'unreadable_event_log',
+      usageCoverage: { unverified: true, pendingInvocations: 0, unknownCalls: 0 },
+      steps: [
+        expect.objectContaining({
+          nodeId: 'n1',
+          status: 'completed',
+          usageCoverage: { unverified: true, pendingInvocations: 0, unknownCalls: 0 },
+        }),
+      ],
+    });
+    expect(records.find((row) => row['runId'] === 'healthy')).not.toHaveProperty(
+      'usageUnavailable',
+    );
+  });
+
   it('NAMES a run whose terminal is held in the outbox — the exit-5 state (ADR-0078 §4/§5)', async () => {
     // A run in this state is still `running` in the derived projection, so it listed here as an ordinary
     // active run with nothing saying its outcome was already known. Exit 5 tells a script to "re-check
@@ -55,16 +106,57 @@ describe('statusCommand', () => {
     expect(out()).toContain('relavium run');
   });
 
-  it('is UNAFFECTED when the outbox cannot be read — a status read must not fail on it', async () => {
-    const { io, out } = captureIo();
-    await seedRun(db, { slug: 'demo', runId: 'running-1', state: 'running' });
-    const code = await statusCommand({
-      ...deps(io),
-      readTerminalOutbox: () => Promise.reject(new Error('outbox unreadable')),
-    });
-    expect(code).toBe(EXIT_CODES.success);
-    expect(out()).not.toContain('this run has FINISHED');
-  });
+  it.each([false, true])(
+    'warns without failing or leaking an unreadable outbox (json=%s)',
+    async (json) => {
+      const { io, out, err } = captureIo();
+      await seedRun(db, { slug: 'demo', runId: 'running-1', state: 'running' });
+      const code = await statusCommand({
+        ...deps(io, json),
+        readTerminalOutbox: () =>
+          Promise.reject(new Error('/private/outbox\x1b[31m sensitive-payload')),
+      });
+      expect(code).toBe(EXIT_CODES.success);
+      expect(out()).not.toContain('this run has FINISHED');
+      expect(err()).toBe(
+        'Warning: terminal outbox unavailable; held terminal status could not be verified.\n',
+      );
+      expect(out() + err()).not.toMatch(/private|sensitive-payload/);
+      expect(out() + err()).not.toContain('\x1b');
+      if (json) expect(parseNdjson(out())).toMatchObject([{ runId: 'running-1' }]);
+      else expect(out()).toContain('run running-1');
+    },
+  );
+
+  it.each([false, true])(
+    'closes the history reader and preserves a failing outbox warning sink (json=%s)',
+    async (json) => {
+      const { io } = captureIo();
+      const sinkFailure = new Error('diagnostic sink unavailable');
+      let closes = 0;
+      await expect(
+        statusCommand({
+          ...deps(io, json),
+          io: {
+            ...io,
+            writeErr: () => {
+              throw sinkFailure;
+            },
+          },
+          openDb: () => ({
+            db,
+            close: () => {
+              closes += 1;
+              client.sqlite.close();
+            },
+          }),
+          readTerminalOutbox: () => Promise.reject(new Error('outbox unavailable')),
+        }),
+      ).rejects.toBe(sinkFailure);
+      expect(closes).toBe(1);
+      expect(client.sqlite.open).toBe(false);
+    },
+  );
 
   it('reports "No active runs." when history holds only terminal runs', async () => {
     const { io, out } = captureIo();

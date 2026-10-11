@@ -4,7 +4,7 @@ import type { Memory, ReasoningEffort } from '@relavium/shared';
 import { MODE_LABEL, type ChatMode } from '../../chat/chat-mode.js';
 import { effortRowLabel } from '../../chat/effort-notice.js';
 import { sanitizeInline, stripTerminalControls } from '../sanitize.js';
-import { formatCostUsd, formatDuration, formatElapsed, formatTokens } from './format.js';
+import { formatReportedCost, formatDuration, formatElapsed, formatTokens } from './format.js';
 import type {
   SessionViewState,
   ToolCallView,
@@ -620,7 +620,7 @@ function formatContextFullness(state: SessionViewState): string | undefined {
 export function formatSessionFooter(state: SessionViewState): string {
   const parts = [
     state.model === undefined ? undefined : sanitizeInline(state.model),
-    formatCostUsd(state.cumulativeCostMicrocents),
+    formatReportedCost(state.cumulativeCostMicrocents, state.usageCoverage, state.unpricedCalls),
     `${state.turnCount} ${state.turnCount === 1 ? 'turn' : 'turns'}`,
     formatContextFullness(state),
   ].filter((part): part is string => part !== undefined);

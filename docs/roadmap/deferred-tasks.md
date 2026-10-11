@@ -806,20 +806,23 @@ The PR #86 review returned 18 findings; an independent verification round reprod
 were fixed before the merge. **These ten went in open**, and the first is a blocker — recorded here with the
 severity, the trigger and the product claim each narrows, per exit criterion 2.
 
-- [ ] **An un-pulled stream DROPS the terminal event ([ADR-0036](../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)).**
+- [x] **An un-pulled stream DROPS the terminal event ([ADR-0036](../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)).** *Implementation accepted on `development` 2026-10-10; W8 publication pending.*
   *Blocker.* Reproduced on `main`: a `BoundedEventStream` at capacity 2 given three pushes and a `close()`
   delivers a clean EOF and never the terminal, with no `sequenceNumber` gap to signal it. **The claim it
   narrows:** ADR-0036 promises a gap-free, no-drop canonical stream, and `run-handle.ts` repeats it — neither
   is true today for a stream nobody iterates. **Trigger:** any consumer that attaches after `capacity` events,
   which on the session path is every consumer. The fix is
   [ADR-0087](../decisions/0087-consumed-streams-size-bounds-and-run-retention.md) §1 — a handle declares
-  whether its stream is consumed. That ADR is **Accepted as of 2026-09-04**, with §1 recorded and still
-  **unimplemented**: no consumption mode exists anywhere in the tree. Its Correction 1 also names what §1 got
-  wrong and must be settled before it can be built: the two factories §1 names are not symmetric.
-  `createSessionHandle` is exported and `session-host.ts` calls it directly, so the session half is
-  implementable as written; `createRunHandle` is internal and only `WorkflowEngine.start()` /
-  `resumeFromCheckpoint()` produce a `RunHandle`, so the run half needs the mode plumbed onto an engine entry
-  point first. A `subscribe-only` handle must also not present a silently-empty iterable.
+  whether its stream is consumed. That ADR was Accepted on 2026-09-04 before §1 was implemented.
+  **Current checkpoint — 2026-10-10:** [W8 Step 1](phases/phase-2.6.5-core-reliability-remediation.md#w8-step-1-consumption-modes--2026-10-10)
+  implements the immutable mode through both standalone session handles and workflow
+  start/checkpoint resume. Iterated streams retain every publication before first pull;
+  subscribe-only streams retain no primary buffer and refuse iteration with a typed error.
+  CLI builders select their actual consumption mode. Three NEW cumulative review rounds
+  verify runtime and living-document corrections, with the final round clean in both
+  dimensions. The linked register records exact heads, causal controls and scoped acceptance.
+  Publication to `main` remains part of the W8 PR. The separate exact-capacity residual below
+  is unchanged.
   *(packages/core/src/engine/event-stream.ts, run-handle.ts, session-handle.ts)*
 
 - [x] **Media is measured as a handle but RETAINED as base64.** *Medium — CLOSED 2026-09-04, fixed in `W5`.*
@@ -843,9 +846,12 @@ severity, the trigger and the product claim each narrows, per exit criterion 2.
   and `tool_call_*`, `reasoning_start/end`, `stop`, `media_*` and `tool_result` emit nothing, so every such
   chunk leaks a permit. The correct shape moves the await to the emit site, which revises CR-30's producer-await
   and therefore wants an ADR. **ADR-0087 is Accepted with this explicitly OUT of scope** (its Correction 2), so
-  its §1 "bounded per consumer" must not be read as a guarantee that holds today — the un-parked fast path of
-  `whenDrained()` grants a slot it does not reserve, while `#wakeDrainWaiters` reserves correctly for producers
-  already parked. *(packages/core/src/engine/event-stream.ts)*
+  its §1 "bounded per consumer" must not be read as a guarantee that holds today. **Corrected 2026-10-10:**
+  neither the un-parked fast path nor `#wakeDrainWaiters` reserves outstanding grants. At capacity 2,
+  six parked producers and two immediate pulls before their continuations can wake three producers
+  and reach depth 3. This is a second schedule of the same residual, not a new deferral; the dated
+  [ADR correction](../decisions/0087-consumed-streams-size-bounds-and-run-retention.md#w8-preflight-correction--2026-10-10)
+  preserves the original claim and its correction. *(packages/core/src/engine/event-stream.ts)*
 
 - [ ] **Dispatch headroom is computed but not reserved.** *Medium.* Retry timers can dispatch from the same
   headroom during a batch's durable `node:started` awaits, so a pre-selected batch still starts.
@@ -1508,7 +1514,7 @@ model/provider/cost. If it's deliberately left out, that should be a stated deci
   remains authoritative. See the [canonical command](../reference/cli/commands.md#relavium-budget-resume),
   [ADR-0097](../decisions/0097-a-budget-approval-is-an-allowance-not-an-exemption.md) and the
   [W7 execution plan](phases/phase-2.6.5-core-reliability-remediation.md#w7-pre-implementation-review-and-proposed-execution-plan--2026-10-02).
-  [Step 11 round 3](../reviews/2026-10-04T01-17-23-w7-step-11-round-3-review.md) accepts the complete
+  [Step 11 round 3](https://github.com/HodeTech/Relavium/blob/f267bb0d4e9a4b4e2b51cb2c44ff744284d5228a/docs/reviews/2026-10-04T01-17-23-w7-step-11-round-3-review.md) accepts the complete
   path after the two corrective rounds; this closes the moved command follow-up, not the W7 register.
   *(low · apps/cli/src/commands/gate.ts + manifest.ts + dispatch.ts; ADR-0028, ADR-0097)*
 - [ ] **`project`-tier `extraRoots` allowlist (carried from 2.5.A).** The `project` fs tier behaves as
@@ -1604,7 +1610,7 @@ model/provider/cost. If it's deliberately left out, that should be a stated deci
   resume and verifies secret admission alongside frozen amount, ownership and MCP consent. Drained stdin
   disables a later interactive gate prompt. See the [canonical stdin contract](../reference/cli/commands.md#relavium-gate)
   and [ADR-0083](../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md).
-  [Step 11 round 3](../reviews/2026-10-04T01-17-23-w7-step-11-round-3-review.md) accepts the complete shared
+  [Step 11 round 3](https://github.com/HodeTech/Relavium/blob/f267bb0d4e9a4b4e2b51cb2c44ff744284d5228a/docs/reviews/2026-10-04T01-17-23-w7-step-11-round-3-review.md) accepts the complete shared
   path. The inherited secret-stdin interval before the connect/build signal guard remains qualified
   in the canonical command; this does not introduce a whole-stdin signal-handling promise.
   *(medium · apps/cli/src/commands/gate.ts; ADR-0006, ADR-0083)*

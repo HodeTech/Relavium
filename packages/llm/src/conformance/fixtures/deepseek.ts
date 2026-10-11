@@ -216,12 +216,13 @@ export const DEEPSEEK_FIXTURES: ConformanceFixtures = {
     textGenerate: {
       stopReason: 'stop',
       text: 'Hello, world!',
-      inputTokens: 8,
-      outputTokens: 7,
-      cacheReadTokens: 4,
+      usage: { kind: 'complete', usage: { inputTokens: 8, outputTokens: 7, cacheReadTokens: 4 } },
     },
     toolGenerate: { toolName: 'get_weather', stopReason: 'tool_use' },
-    textStream: { stopReason: 'stop', inputTokens: 8, outputTokens: 7 },
+    textStream: {
+      stopReason: 'stop',
+      usage: { kind: 'complete', usage: { inputTokens: 8, outputTokens: 7, cacheReadTokens: 4 } },
+    },
     toolStream: { toolName: 'get_weather', stopReason: 'tool_use' },
     streamErrorKind: 'overloaded',
     reasoningStream: { text: 'let me think' },

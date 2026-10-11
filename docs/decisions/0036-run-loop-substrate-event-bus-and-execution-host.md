@@ -92,3 +92,13 @@ accepted in the [W7 closing register](../roadmap/phases/phase-2.6.5-core-reliabi
 The later [post-closure systematic correction register](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#post-closure-systematic-review--2026-10-10)
 tracks reopened review findings and their scoped acceptance; it governs the current PR acceptance status.
 This additive note does not rewrite the original decision or claim that PR #90 has merged.
+
+### W8 consumption implementation — 2026-10-10
+
+ADR-0087 §1 now supplies an explicit, immutable consumption choice instead of inferring a
+consumer from its first pull. Iterated delivery retains publications from construction;
+subscribe-only handles own no primary buffer and reject iteration with a typed invariant
+error. The [canonical consumption contract](../reference/contracts/sse-event-schema.md#primary-stream-consumption-in-process)
+owns the API, defaults and host responsibilities. Step acceptance and independent reviews
+are recorded in the [W8 register](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w8-step-1-consumption-modes--2026-10-10).
+Advisory readiness does not close the separately recorded exact-capacity residual.

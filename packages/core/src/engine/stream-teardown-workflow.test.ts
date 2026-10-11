@@ -77,10 +77,18 @@ function provider(onGenerate: () => LlmResult, tool = false, count = { calls: 0 
       if (tool && count.calls === 1) {
         yield { type: 'tool_call_start', id: 'fresh-call', name: 'r11_echo' };
         yield { type: 'tool_call_end', id: 'fresh-call' };
-        yield { type: 'stop', stopReason: 'tool_use', usage: { inputTokens: 2, outputTokens: 3 } };
+        yield {
+          type: 'stop',
+          stopReason: 'tool_use',
+          usage: { kind: 'complete', usage: { inputTokens: 2, outputTokens: 3 } },
+        };
       } else {
         yield { type: 'text_delta', text: 'fresh answer' };
-        yield { type: 'stop', stopReason: 'stop', usage: { inputTokens: 2, outputTokens: 3 } };
+        yield {
+          type: 'stop',
+          stopReason: 'stop',
+          usage: { kind: 'complete', usage: { inputTokens: 2, outputTokens: 3 } },
+        };
       }
     },
   };
@@ -193,7 +201,7 @@ describe('R11 fresh downstream generated semantic projection in actual WorkflowE
         () => ({
           content: [{ type: 'media', mimeType: 'image/png', source }],
           stopReason: 'stop',
-          usage: generatedUsage(),
+          usage: { kind: 'complete', usage: generatedUsage() },
         }),
         false,
         count,
@@ -243,7 +251,11 @@ describe('R11 real ordered-store B2/B3 controls', () => {
         const count = { calls: 0 };
         const h = workflow(
           provider(
-            () => ({ content: [media], stopReason: 'stop', usage: generatedUsage() }),
+            () => ({
+              content: [media],
+              stopReason: 'stop',
+              usage: { kind: 'complete', usage: generatedUsage() },
+            }),
             boundary === 'tools-B2',
             count,
           ),
@@ -309,7 +321,7 @@ describe('R11 generated observer mutations and truthful quantity combinations', 
             provider: provider(() => ({
               content: [media, original],
               stopReason: 'stop',
-              usage: raw,
+              usage: { kind: 'complete', usage: raw },
               raw: opaque,
             })),
             model,
@@ -340,7 +352,9 @@ describe('R11 generated observer mutations and truthful quantity combinations', 
       expect(result.content[1]).toEqual({ type: 'text', text: 'owned original' });
       expect(result.usage).toBe(records[0]?.usage);
       expect(result.raw).toBe(opaque);
-      expect(result.usage?.inputTokens).toBe(pricing === 'zero' ? 0 : 3);
+      expect(result.usage.kind).toBe('complete');
+      if (result.usage.kind !== 'complete') throw new Error('expected complete usage');
+      expect(result.usage.usage.inputTokens).toBe(pricing === 'zero' ? 0 : 3);
       expect(records[0]?.cost?.costMicrocents).toBe(
         pricing === 'zero' ? 0 : pricing === 'missing-media' ? 25 : 43,
       );
@@ -365,7 +379,11 @@ describe('R11 actual stream deadline cleanup provenance and settled money', () =
       const count = { calls: 0 };
       const h = workflow(
         provider(
-          () => ({ content: [media], stopReason: 'stop', usage: generatedUsage() }),
+          () => ({
+            content: [media],
+            stopReason: 'stop',
+            usage: { kind: 'complete', usage: generatedUsage() },
+          }),
           false,
           count,
         ),

@@ -86,7 +86,11 @@ describe('B1 joins the shared ledger before the next provider admission (ADR-007
           stream: async function* (): AsyncGenerator<StreamChunk> {
             calls.provider += 1;
             await Promise.resolve();
-            yield { type: 'stop', stopReason: 'stop', usage: { inputTokens: 1, outputTokens: 0 } };
+            yield {
+              type: 'stop',
+              stopReason: 'stop',
+              usage: { kind: 'complete', usage: { inputTokens: 1, outputTokens: 0 } },
+            };
           },
         };
         const params: AgentTurnParams = {
@@ -207,7 +211,11 @@ describe('realized recording survives a post-aggregation cost notification fault
         },
         stream: async function* (): AsyncGenerator<StreamChunk> {
           await Promise.resolve();
-          yield { type: 'stop', stopReason: 'stop', usage: { inputTokens: 7, outputTokens: 10 } };
+          yield {
+            type: 'stop',
+            stopReason: 'stop',
+            usage: { kind: 'complete', usage: { inputTokens: 7, outputTokens: 10 } },
+          };
         },
       };
       const params: AgentTurnParams = {

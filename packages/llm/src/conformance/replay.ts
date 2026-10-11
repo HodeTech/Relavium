@@ -2,8 +2,9 @@
  * The fixture record/replay substrate of the conformance harness (1.F). A `RecordedResponse` is one
  * provider HTTP reply captured as text; `replayFetch` serves it back so an adapter can be driven
  * **offline and deterministically** in PR mode, and `recordFetch` captures live responses to mint
- * fresh fixtures. Provider SDKs accept a custom `fetch`, so the adapter is exercised end-to-end
- * (real SDK parsing + our normalization) without touching the network or a key.
+ * fresh response seeds. These legacy helpers do not verify the wire request; the strict
+ * expected-exchange harness lives in `exchange-replay.ts`. SDK parsing and normalization
+ * alone are not proof of correct request lowering.
  */
 
 /** One recorded HTTP response — the unit of a conformance fixture. */
@@ -23,6 +24,7 @@ const SECRET_PATTERNS: readonly RegExp[] = [
   /sk-[a-zA-Z0-9_-]{16,}/, // OpenAI / Anthropic style keys
   /\bBearer\s+[a-z0-9._-]{16,}/i, // bearer tokens (case-insensitive, so a-z covers both cases)
   /AIza[0-9A-Za-z_-]{20,}/, // Google API keys
+  /\bAQ\.[0-9A-Za-z_-]{24,}/, // newer Google API key representation
   /\bxox[baprs]-[0-9A-Za-z-]{10,}/, // Slack tokens
 ];
 
@@ -34,7 +36,7 @@ export function looksLikeSecret(text: string): boolean {
 /**
  * A `fetch` that replays one recorded response — drives an adapter offline, deterministically. It
  * fails loud on a malformed request (a body that isn't valid JSON) rather than serving the canned
- * response blind; full recorded-request body-matching lands with the on-disk recorder.
+ * response without that syntax check. Canonical request matching belongs to `createExchangeReplay`.
  */
 export function replayFetch(recorded: RecordedResponse): FetchLike {
   return (_input, init) => {
@@ -100,8 +102,9 @@ export function replayFor(recorded: RecordedResponse | readonly RecordedResponse
 
 /**
  * Wrap a real `fetch` to capture each response as a `RecordedResponse` — the live-mode recorder. It
- * **refuses to record** a body that looks like it contains a secret, so a captured fixture can never
- * carry a key into version control (security-review.md).
+ * Refuses known secret-shaped response bodies/metadata and returns immutable recording snapshots.
+ * This heuristic cannot establish that arbitrary provider/user content is secret-free; use only
+ * synthetic inputs. It does not record or validate requests; see `recordExchangeFetch` for exchanges.
  */
 export function recordFetch(realFetch: FetchLike): {
   readonly fetch: FetchLike;
@@ -109,22 +112,46 @@ export function recordFetch(realFetch: FetchLike): {
 } {
   const recordings: RecordedResponse[] = [];
   const fetch: FetchLike = async (input, init) => {
-    const response = await realFetch(input, init);
-    const body = await response.clone().text();
-    if (looksLikeSecret(body)) {
-      throw new Error(
-        'recordFetch: refusing to record a fixture whose body looks like it contains a secret',
+    let failureCode: FixtureRecordingError['code'] = 'capture_failed';
+    try {
+      const response = await realFetch(input, init);
+      const body = await response.clone().text();
+      const contentType = response.headers.get('content-type');
+      if (looksLikeSecret(body) || (contentType !== null && looksLikeSecret(contentType))) {
+        failureCode = 'unsafe_recording';
+        throw new FixtureRecordingError('unsafe_recording');
+      }
+      recordings.push(
+        Object.freeze(
+          contentType === null
+            ? { status: response.status, body }
+            : { status: response.status, contentType, body },
+        ),
       );
+      return response;
+    } catch {
+      // Never inspect a rejected value: even instanceof or a field read can run a hostile
+      // trap. Only this recorder's own secret check can select unsafe_recording.
+      throw new FixtureRecordingError(failureCode);
     }
-    const contentType = response.headers.get('content-type');
-    recordings.push(
-      contentType === null
-        ? { status: response.status, body }
-        : { status: response.status, contentType, body },
-    );
-    return response;
   };
-  return { fetch, recordings };
+  return {
+    fetch,
+    get recordings() {
+      return Object.freeze([...recordings]);
+    },
+  };
+}
+
+/** Fixed diagnostics: recording failures never carry raw requests, provider text or causes. */
+export class FixtureRecordingError extends Error {
+  readonly code: 'unsafe_recording' | 'capture_failed';
+
+  constructor(code: 'unsafe_recording' | 'capture_failed') {
+    super('recordFetch: refusing an unsafe or failed fixture capture');
+    this.name = 'FixtureRecordingError';
+    this.code = code;
+  }
 }
 
 /** Replay the SDK's diagnostic body verbatim, so classification sees the captured provider message. */

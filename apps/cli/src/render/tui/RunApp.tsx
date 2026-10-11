@@ -2,7 +2,7 @@ import { Box, Text } from 'ink';
 import { useSyncExternalStore, type ReactElement } from 'react';
 
 import {
-  formatCostUsd,
+  formatReportedCost,
   formatProducedMedia,
   formatTokens,
   spinnerFrame,
@@ -111,7 +111,12 @@ export function RunApp(props: Readonly<{ store: RunStore }>): ReactElement {
       {/* Running cost footer (and total tokens once the run completes) */}
       <Box marginTop={1}>
         <Text {...colorProps(color, 'gray')}>
-          cost {formatCostUsd(state.cumulativeCostMicrocents)}
+          cost{' '}
+          {formatReportedCost(
+            state.cumulativeCostMicrocents,
+            state.usageCoverage,
+            state.unpricedCalls,
+          )}
           {state.summary?.totalTokens === undefined
             ? ''
             : `  ·  ${formatTokens(state.summary.totalTokens)}`}

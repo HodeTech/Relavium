@@ -112,6 +112,7 @@ export type {
   BusEventDraft,
 } from './engine/event-bus.js';
 export type { RunHandle, RunDeparture } from './engine/run-handle.js';
+export type { EventConsumption } from './engine/event-stream.js';
 export {
   InMemoryRunStore,
   createInMemoryHost,
@@ -126,7 +127,11 @@ export {
 } from './engine/execution-host.js';
 // Checkpointer + resume (1.R) — reconstruct a run's state from its persisted event stream (no checkpoint
 // table; ADR-0003). The in-memory reference ships here; the SQLite/cloud one is Phase-2/CLI.
-export { reconstructCheckpointState, CHECKPOINT_SCHEMA_VERSION } from './engine/checkpoint.js';
+export {
+  reconstructCheckpointState,
+  createCheckpointReconstructor,
+  CHECKPOINT_SCHEMA_VERSION,
+} from './engine/checkpoint.js';
 export type {
   Checkpointer,
   CheckpointState,
@@ -431,3 +436,12 @@ export type {
   ToolResultLimits,
   FsScopeTier,
 } from './tools/types.js';
+
+export {
+  MoneyDurability,
+  type TurnMoneyPort,
+  type SettledAttemptDraft,
+  type PendingUsageDraft,
+  type UsageDispositionDraft,
+} from './engine/money-durability.js';
+export { HostWorkRegistry } from './engine/host-work-registry.js';

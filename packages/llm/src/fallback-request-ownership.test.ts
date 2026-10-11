@@ -45,7 +45,7 @@ function provider(id: ProviderId = 'openai') {
         content: [{ type: 'text', text: 'ok' }],
         stopReason: 'stop',
         raw: undefined,
-        usage,
+        usage: { kind: 'complete' as const, usage: usage },
       });
     },
     stream(request) {
@@ -53,7 +53,11 @@ function provider(id: ProviderId = 'openai') {
       return (async function* (): AsyncIterable<StreamChunk> {
         await Promise.resolve();
         yield { type: 'text_delta', text: 'ok' };
-        yield { type: 'stop', stopReason: 'stop', usage };
+        yield {
+          type: 'stop',
+          stopReason: 'stop',
+          usage: { kind: 'complete' as const, usage: usage },
+        };
       })();
     },
   };

@@ -76,12 +76,16 @@ function provider(id: ProviderId = 'openai', patch: Partial<LlmProvider> = {}): 
         model: 'review-model',
         content: [],
         stopReason: 'stop',
-        usage: { inputTokens: 0, outputTokens: 0 },
+        usage: { kind: 'complete', usage: { inputTokens: 0, outputTokens: 0 } },
       });
     },
     async *stream(): AsyncIterable<StreamChunk> {
       await Promise.resolve();
-      yield { type: 'stop', stopReason: 'stop', usage: { inputTokens: 0, outputTokens: 0 } };
+      yield {
+        type: 'stop',
+        stopReason: 'stop',
+        usage: { kind: 'complete', usage: { inputTokens: 0, outputTokens: 0 } },
+      };
     },
     ...patch,
   };

@@ -1,9 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import type { RunEvent } from '@relavium/shared';
+import type { RunDurability, RunEvent } from '@relavium/shared';
 
 import { RunEventBus, type RunEventDraft } from './event-bus.js';
-import { createRunHandle } from './run-handle.js';
+import type { EventStreamDeliveryState } from './event-stream.js';
+import { RunLoopInvariantError } from './invariant-error.js';
+import { createClosedRunHandle, createRunHandle } from './run-handle.js';
 
 function bus(): RunEventBus {
   let tick = Date.parse('2026-06-13T00:00:00.000Z');
@@ -226,5 +228,135 @@ describe('RunHandle — the async-iterable event stream', () => {
     await expect(iterator.next()).rejects.toThrow(/concurrent next/);
     b.emit(started('a'));
     await first;
+  });
+});
+
+describe('RunHandle — subscribe-only consumption (ADR-0087 §1)', () => {
+  it.each(['run:completed', 'run:cancelled', 'run:failed'] as const)(
+    'observes %s metadata and cleans up without a primary buffer',
+    async (terminalType) => {
+      const b = bus();
+      const detached = vi.fn();
+      const subscribe = b.subscribe.bind(b);
+      vi.spyOn(b, 'subscribe').mockImplementation((listener) => {
+        const off = subscribe(listener);
+        return () => {
+          detached();
+          off();
+        };
+      });
+      let durability: RunDurability = 'pending';
+      let read: (() => EventStreamDeliveryState) | undefined;
+      const cancel = vi.fn();
+      const handle = createRunHandle(
+        b,
+        'run-1',
+        cancel,
+        1,
+        () => durability,
+        undefined,
+        (reader) => {
+          read = reader;
+        },
+        undefined,
+        'subscribe-only',
+      );
+      const seen: RunEvent[] = [];
+      const off = handle.subscribe((event) => seen.push(event));
+      for (let i = 0; i < 100; i += 1) {
+        await handle.whenConsumersReady();
+        b.emit(started(`n${i}`));
+      }
+      b.emit({ ...started('other'), runId: 'other-run' });
+      b.emit({ type: 'session:cancelled', sessionId: 'other-session' });
+      durability = 'uncertain';
+      if (terminalType === 'run:failed') {
+        b.emit({
+          type: 'run:failed',
+          runId: 'run-1',
+          error: {
+            code: 'effect_needs_attention',
+            message: 'attention required',
+            retryable: false,
+          },
+          partialOutputs: {},
+        });
+      } else if (terminalType === 'run:cancelled') {
+        b.emit({ type: 'run:cancelled', runId: 'run-1' });
+      } else {
+        b.emit(completed());
+      }
+      expect(detached).toHaveBeenCalledTimes(1); // construction-time observer is terminal-driven
+      expect(seen).toHaveLength(101);
+      expect(seen.at(-1)?.type).toBe(terminalType);
+      expect(seen.map((event) => event.sequenceNumber)).toEqual(
+        Array.from({ length: 101 }, (_, i) => i),
+      );
+      expect(handle.bufferedCount).toBe(0);
+      expect(read?.()).toEqual({
+        publishedCount: 0,
+        deliveredCount: 0,
+        hasGap: false,
+        abandoned: false,
+      });
+      expect(handle.durability()).toBe('uncertain');
+      expect(handle.terminalError()).toBe(
+        terminalType === 'run:failed' ? 'effect_needs_attention' : undefined,
+      );
+      let lateSaw = false;
+      const lateOff = handle.subscribe(() => {
+        lateSaw = true;
+      });
+      expect(lateSaw).toBe(false);
+      expect(() => handle.events[Symbol.asyncIterator]()).toThrow(RunLoopInvariantError);
+      await expect(drain(handle.events)).rejects.toMatchObject({ code: 'invalid_consumer_mode' });
+      handle.cancel();
+      expect(cancel).toHaveBeenCalledTimes(1);
+      off();
+      off();
+      lateOff(); // passive subscriptions keep their own idempotent cleanup
+    },
+  );
+
+  it('keeps explicit fenced closure available without granting primary delivery authority', async () => {
+    const b = bus();
+    let close: (() => void) | undefined;
+    const handle = createRunHandle(
+      b,
+      'run-1',
+      () => undefined,
+      1,
+      undefined,
+      (closer) => {
+        close = closer;
+      },
+      undefined,
+      () =>
+        Promise.resolve({
+          kind: 'closed',
+          moneyDurability: 'durable',
+          effectNeedsAttention: false,
+        }),
+      'subscribe-only',
+    );
+    close?.();
+    expect(await handle.depart()).toEqual({
+      kind: 'closed',
+      moneyDurability: 'durable',
+      effectNeedsAttention: false,
+    });
+    expect(handle.bufferedCount).toBe(0);
+    await expect(drain(handle.events)).rejects.toMatchObject({ code: 'invalid_consumer_mode' });
+  });
+
+  it('closed handles preserve the chosen mode instead of disguising misuse as EOF', async () => {
+    const iterated = createClosedRunHandle('prior-run');
+    expect(await drain(iterated.events)).toEqual([]);
+    const passive = createClosedRunHandle('prior-run', 'subscribe-only');
+    await expect(drain(passive.events)).rejects.toMatchObject({ code: 'invalid_consumer_mode' });
+    expect(passive.bufferedCount).toBe(0);
+    await passive.whenConsumersReady();
+    expect(passive.durability()).toBe('durable');
+    expect(await passive.depart()).toMatchObject({ kind: 'closed' });
   });
 });

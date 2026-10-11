@@ -283,7 +283,11 @@ async function* streamOf(chunks: readonly StreamChunk[]): AsyncGenerator<StreamC
 
 const textTurn = (text: string): StreamChunk[] => [
   { type: 'text_delta', text },
-  { type: 'stop', stopReason: 'stop', usage: { inputTokens: 5, outputTokens: 3 } },
+  {
+    type: 'stop',
+    stopReason: 'stop',
+    usage: { kind: 'complete', usage: { inputTokens: 5, outputTokens: 3 } },
+  },
 ];
 
 const noToolRegistry: ToolRegistry = {

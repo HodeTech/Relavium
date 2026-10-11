@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  FixtureRecordingError,
   looksLikeSecret,
   recordFetch,
   replayFetch,
@@ -104,8 +105,119 @@ describe('recordFetch', () => {
         }),
       );
     const recorder = recordFetch(real);
-    await expect(recorder.fetch('https://x')).rejects.toThrow(/secret/);
+    await expect(recorder.fetch('https://x')).rejects.toMatchObject({
+      code: 'unsafe_recording',
+    });
     expect(recorder.recordings).toHaveLength(0);
+  });
+
+  it('rejects planted newer Google keys in bodies and response metadata without retaining them', async () => {
+    const planted = 'AQ.synthetic_fixture_credential_1234567890';
+    for (const where of ['body', 'content-type'] as const) {
+      const recorder = recordFetch(() =>
+        Promise.resolve(
+          new Response(where === 'body' ? planted : '{}', {
+            headers: { 'content-type': where === 'content-type' ? planted : 'application/json' },
+          }),
+        ),
+      );
+      let caught: unknown;
+      try {
+        await recorder.fetch('https://example.test');
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBeInstanceOf(FixtureRecordingError);
+      expect(caught instanceof FixtureRecordingError && caught.code).toBe('unsafe_recording');
+      expect(String(caught)).not.toContain(planted);
+      expect(caught instanceof Error && caught.cause).toBeUndefined();
+      expect(recorder.recordings).toEqual([]);
+    }
+  });
+
+  it('refuses transport/body-read failures with a content-free typed diagnostic', async () => {
+    const planted = 'sk-ant-synthetic-credential-123456789';
+    const providers = [
+      () => Promise.reject(new Error(planted)),
+      () => {
+        const error = new FixtureRecordingError('capture_failed');
+        error.message = planted;
+        error.cause = new Error(planted);
+        return Promise.reject(error);
+      },
+      () =>
+        Promise.resolve(
+          new Response(
+            new ReadableStream({
+              start(controller) {
+                controller.error(new Error(planted));
+              },
+            }),
+          ),
+        ),
+    ];
+    for (const provider of providers) {
+      const recorder = recordFetch(provider);
+      let caught: unknown;
+      try {
+        await recorder.fetch('https://example.test');
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBeInstanceOf(FixtureRecordingError);
+      expect(caught instanceof FixtureRecordingError && caught.code).toBe('capture_failed');
+      expect(String(caught)).not.toContain(planted);
+      expect(caught instanceof Error && caught.cause).toBeUndefined();
+      expect(recorder.recordings).toEqual([]);
+    }
+  });
+
+  it.each(['code getter', 'prototype trap'])(
+    'contains hostile rejected objects: %s',
+    async (schedule) => {
+      const planted = 'sk-ant-synthetic-private-123456789';
+      const rejected =
+        schedule === 'code getter'
+          ? Object.defineProperty(new FixtureRecordingError('capture_failed'), 'code', {
+              get() {
+                throw new Error(planted);
+              },
+            })
+          : new Proxy(new Error('synthetic transport failure'), {
+              getPrototypeOf() {
+                throw new Error(planted);
+              },
+            });
+      const recorder = recordFetch(() => Promise.reject(rejected));
+      let caught: unknown;
+      try {
+        await recorder.fetch('https://example.test');
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBeInstanceOf(FixtureRecordingError);
+      expect(caught instanceof FixtureRecordingError && caught.code).toBe('capture_failed');
+      expect(String(caught)).not.toContain(planted);
+      expect(caught instanceof Error && caught.cause).toBeUndefined();
+      expect(recorder.recordings).toEqual([]);
+    },
+  );
+
+  it('exposes frozen recording snapshots while preserving the unread response for the caller', async () => {
+    const recorder = recordFetch(() => Promise.resolve(new Response('{"ok":true}')));
+    const emptySnapshot = recorder.recordings;
+    const response = await recorder.fetch('https://example.test');
+    const first = recorder.recordings;
+    expect(emptySnapshot).toEqual([]);
+    expect(Object.isFrozen(first)).toBe(true);
+    expect(Object.isFrozen(first[0])).toBe(true);
+    expect(await response.text()).toBe('{"ok":true}');
+    expect(() => Object.defineProperty(first, '0', { value: 'changed' })).toThrow(TypeError);
+    expect(() => Object.defineProperty(first[0], 'body', { value: 'changed' })).toThrow(TypeError);
+    await recorder.fetch('https://example.test');
+    expect(first).toHaveLength(1);
+    expect(recorder.recordings).toHaveLength(2);
+    expect(recorder.recordings[0]?.body).toBe('{"ok":true}');
   });
 });
 
@@ -113,6 +225,7 @@ describe('looksLikeSecret', () => {
   it('flags key-shaped strings and clears clean text', () => {
     expect(looksLikeSecret('sk-ant-api03-abcdefghijklmnop')).toBe(true);
     expect(looksLikeSecret('Authorization: Bearer abcdefghijklmnop1234')).toBe(true);
+    expect(looksLikeSecret('AQ.synthetic_fixture_credential_1234567890')).toBe(true);
     expect(looksLikeSecret('{"model":"claude-opus-4-8","ok":true}')).toBe(false);
   });
 });

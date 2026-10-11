@@ -36,7 +36,7 @@ describe('generated projection failure retains known accounting and pricing prec
           throw projectionFault;
         },
         stopReason: 'stop',
-        usage,
+        usage: { kind: 'complete', usage },
       };
       const prices = new Map([[model, price]]);
       prices.get = () => {
@@ -94,7 +94,7 @@ describe('generated projection failure retains known accounting and pricing prec
         contentReceived: true,
         providerInvoked: true,
         outcome: 'failed',
-        usage: { inputTokens: 2, outputTokens: 3 },
+        usage: { kind: 'complete', usage: { inputTokens: 2, outputTokens: 3 } },
         error: { kind: 'unknown', retryable: false },
       });
       if (pricingThrows) {

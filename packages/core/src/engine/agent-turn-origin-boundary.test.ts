@@ -60,13 +60,21 @@ function turnFixture(second: boolean, site: 'ready' | 'token' | 'admission', mar
       if (second && calls === 1) {
         yield { type: 'tool_call_start', id: 'call', name: 'probe' };
         yield { type: 'tool_call_end', id: 'call' };
-        yield { type: 'stop', stopReason: 'tool_use', usage: { inputTokens: 2, outputTokens: 3 } };
+        yield {
+          type: 'stop',
+          stopReason: 'tool_use',
+          usage: { kind: 'complete', usage: { inputTokens: 2, outputTokens: 3 } },
+        };
         return;
       }
       phase = 'text';
       yield { type: 'text_delta', text: 'safe' };
       phase = 'stop';
-      yield { type: 'stop', stopReason: 'stop', usage: { inputTokens: 5, outputTokens: 7 } };
+      yield {
+        type: 'stop',
+        stopReason: 'stop',
+        usage: { kind: 'complete', usage: { inputTokens: 5, outputTokens: 7 } },
+      };
     },
   };
   const actualTool: ToolDef = {
@@ -304,7 +312,11 @@ function compactFixture(
       phase = 'text';
       yield { type: 'text_delta', text: 'summary safe' };
       phase = 'stop';
-      yield { type: 'stop', stopReason: 'stop', usage: { inputTokens: 5, outputTokens: 7 } };
+      yield {
+        type: 'stop',
+        stopReason: 'stop',
+        usage: { kind: 'complete', usage: { inputTokens: 5, outputTokens: 7 } },
+      };
     },
   };
   const journal = createInMemoryEffectJournalStore();
@@ -515,9 +527,12 @@ describe('post-return private result accessor provenance', () => {
                   },
                 ],
                 stopReason: 'stop',
-                usage: { inputTokens: 5, outputTokens: 7 },
+                usage: { kind: 'complete', usage: { inputTokens: 5, outputTokens: 7 } },
               };
-              if (!usagePresent) Object.defineProperty(result, 'usage', { value: undefined });
+              if (!usagePresent)
+                Object.defineProperty(result, 'usage', {
+                  value: { kind: 'missing', reason: 'not_reported' },
+                });
               const prior = result[field];
               Object.defineProperty(result, field, {
                 get: () => {

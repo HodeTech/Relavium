@@ -76,7 +76,11 @@ for (const decision of ['approved', 'rejected'] as const)
           calls++;
           await ack.promise;
           yield { type: 'text_delta', text: 'real synthetic output' };
-          yield { type: 'stop', stopReason: 'stop', usage: { inputTokens: 1, outputTokens: 1 } };
+          yield {
+            type: 'stop',
+            stopReason: 'stop',
+            usage: { kind: 'complete', usage: { inputTokens: 1, outputTokens: 1 } },
+          };
         },
       };
       const prices = new Map([[model, price]]);

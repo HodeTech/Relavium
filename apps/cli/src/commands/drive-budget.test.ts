@@ -35,7 +35,7 @@ for (const mode of ['approve', 'reject', 'stale', 'missing_amount', 'input'] as 
         yield {
           type: 'stop',
           stopReason: 'stop',
-          usage: { inputTokens: 1, outputTokens: 1 },
+          usage: { kind: 'complete', usage: { inputTokens: 1, outputTokens: 1 } },
         };
       },
     };

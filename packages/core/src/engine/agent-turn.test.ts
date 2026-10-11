@@ -102,7 +102,7 @@ function scriptedProvider(id: ProviderId, scripts: StreamChunk[][]): LlmProvider
 const STOP = (reason: 'stop' | 'tool_use' = 'stop'): StreamChunk => ({
   type: 'stop',
   stopReason: reason,
-  usage: { inputTokens: 10, outputTokens: 5 },
+  usage: { kind: 'complete', usage: { inputTokens: 10, outputTokens: 5 } },
 });
 
 /** Caps advertising inline image output (so the chain's per-attempt capability pre-skip keeps the model). */
@@ -214,11 +214,19 @@ describe('a streamed tool-call continuation token reaches the assembled part (CR
         { type: 'tool_call_start', id: 't1', name: 'echo' },
         { type: 'tool_call_delta', id: 't1', argsJsonDelta: '{"v":1}' },
         { type: 'tool_call_end', id: 't1', signature: 'fn-sig' },
-        { type: 'stop', stopReason: 'tool_use', usage: { inputTokens: 1, outputTokens: 1 } },
+        {
+          type: 'stop',
+          stopReason: 'tool_use',
+          usage: { kind: 'complete', usage: { inputTokens: 1, outputTokens: 1 } },
+        },
       ],
       [
         { type: 'text_delta', text: 'done' },
-        { type: 'stop', stopReason: 'stop', usage: { inputTokens: 1, outputTokens: 1 } },
+        {
+          type: 'stop',
+          stopReason: 'stop',
+          usage: { kind: 'complete', usage: { inputTokens: 1, outputTokens: 1 } },
+        },
       ],
     ]);
     await runAgentTurn(baseParams(provider));
@@ -238,11 +246,19 @@ describe('a streamed tool-call continuation token reaches the assembled part (CR
         { type: 'tool_call_start', id: 't1', name: 'echo' },
         { type: 'tool_call_delta', id: 't1', argsJsonDelta: '{"v":1}' },
         { type: 'tool_call_end', id: 't1' },
-        { type: 'stop', stopReason: 'tool_use', usage: { inputTokens: 1, outputTokens: 1 } },
+        {
+          type: 'stop',
+          stopReason: 'tool_use',
+          usage: { kind: 'complete', usage: { inputTokens: 1, outputTokens: 1 } },
+        },
       ],
       [
         { type: 'text_delta', text: 'done' },
-        { type: 'stop', stopReason: 'stop', usage: { inputTokens: 1, outputTokens: 1 } },
+        {
+          type: 'stop',
+          stopReason: 'stop',
+          usage: { kind: 'complete', usage: { inputTokens: 1, outputTokens: 1 } },
+        },
       ],
     ]);
     await runAgentTurn(baseParams(provider));
@@ -274,9 +290,12 @@ describe('an unpriced MODALITY holds its reservation conservatively (ADR-0089 §
           // The real shape: a token-based provider reports audio as a raw token COUNT, which no per-second
           // rate can price — so the model prices for tokens and not for this.
           usage: {
-            inputTokens: 1_000,
-            outputTokens: 10,
-            mediaUnits: [{ modality: 'audio', direction: 'output', units: 500, unit: 'count' }],
+            kind: 'complete',
+            usage: {
+              inputTokens: 1_000,
+              outputTokens: 10,
+              mediaUnits: [{ modality: 'audio', direction: 'output', units: 500, unit: 'count' }],
+            },
           },
         },
       ],
@@ -309,7 +328,11 @@ describe('an unpriced MODALITY holds its reservation conservatively (ADR-0089 §
     const provider = scriptedProvider('anthropic', [
       [
         { type: 'text_delta', text: 'ok' },
-        { type: 'stop', stopReason: 'stop', usage: { inputTokens: 1_000, outputTokens: 10 } },
+        {
+          type: 'stop',
+          stopReason: 'stop',
+          usage: { kind: 'complete', usage: { inputTokens: 1_000, outputTokens: 10 } },
+        },
       ],
     ]);
     let realizedSettlements = 0;
@@ -508,7 +531,7 @@ describe('runAgentTurn — inline media-out (1.AG/ADR-0046)', () => {
     const provider = mediaGenerateProvider('gemini', {
       content: [{ type: 'text', text: 'here is your image' }, image],
       stopReason: 'stop',
-      usage: { inputTokens: 10, outputTokens: 5 },
+      usage: { kind: 'complete', usage: { inputTokens: 10, outputTokens: 5 } },
     });
     const params = baseParams(provider, {
       planEntries: [{ provider, model: 'gemini-2.5-flash', maxAttempts: 1 }],
@@ -547,7 +570,7 @@ describe('runAgentTurn — inline media-out (1.AG/ADR-0046)', () => {
     const secondary = mediaGenerateProvider('openai', {
       content: [{ type: 'text', text: 'made it' }, image],
       stopReason: 'stop',
-      usage: { inputTokens: 4, outputTokens: 2 },
+      usage: { kind: 'complete', usage: { inputTokens: 4, outputTokens: 2 } },
     });
     const params = baseParams(primary, {
       planEntries: [
@@ -597,7 +620,7 @@ describe('runAgentTurn — inline media-out (1.AG/ADR-0046)', () => {
       const provider = mediaGenerateProvider('gemini', {
         content: [image],
         stopReason: 'stop',
-        usage: { inputTokens: 1, outputTokens: 1 },
+        usage: { kind: 'complete', usage: { inputTokens: 1, outputTokens: 1 } },
       });
       const marker =
         decision === 'fail'
@@ -641,7 +664,7 @@ describe('runAgentTurn — inline media-out (1.AG/ADR-0046)', () => {
         return Promise.resolve({
           content: [image],
           stopReason: 'stop' as const,
-          usage: { inputTokens: 1, outputTokens: 1 },
+          usage: { kind: 'complete', usage: { inputTokens: 1, outputTokens: 1 } },
         });
       },
       stream: (): AsyncIterable<StreamChunk> => {
@@ -683,7 +706,7 @@ describe('runAgentTurn — inline media-out (1.AG/ADR-0046)', () => {
     const provider = mediaGenerateProvider('gemini', {
       content: [{ type: 'tool_call', id: 't1', name: 'echo', args: {} }],
       stopReason: 'tool_use',
-      usage: { inputTokens: 10, outputTokens: 5 },
+      usage: { kind: 'complete', usage: { inputTokens: 10, outputTokens: 5 } },
     });
     const params = baseParams(provider, {
       planEntries: [{ provider, model: 'gemini-2.5-flash', maxAttempts: 1 }],
@@ -1679,19 +1702,22 @@ describe('runAgentTurn — failover + cancel + reasoning', () => {
     expect(origins[0]).toEqual({ nodeId: params.nodeId, attemptNumber: 1 });
   });
 
-  it('conservatively settles an admission the chain never reported, when the CONSUMER throws mid-stream', async () => {
-    // The `settleUnreportedAttemptAdmission` path — the third commit site, and the one the code marked UNTESTED.
-    // It fires when `preAttempt` granted an admission but `onAttempt` never consumed it, so there is no
-    // `AttemptRecord` at all. Reached here by making OUR consumer throw while draining the stream: the provider
-    // was already engaged (it produced a delta), so releasing would reopen cap capacity against money that may
-    // already be owed — the retain is the whole point.
+  it('conservatively settles the reported attempt once when the consumer throws mid-stream', async () => {
+    // Consumer closure now emits an AttemptRecord from the chain's finally (ADR-0104). That
+    // callback consumes the admission before the turn's unreported-admission backstop runs.
+    // The provider already produced a delta, so retain its estimate with the exact attempt
+    // identity rather than reopening cap capacity against money that may already be owed.
     const provider = scriptedProvider('anthropic', [
       [{ type: 'text_delta', text: 'partial' }, STOP()],
     ]);
     let releases = 0;
+    let actualSettlements = 0;
+    let admissions = 0;
     const origins: (CommitmentOrigin | undefined)[] = [];
     const admission = {
-      settle: (): void => undefined,
+      settle: (): void => {
+        actualSettlements += 1;
+      },
       settleAtReservedEstimate: (origin?: CommitmentOrigin): void => {
         origins.push(origin);
       },
@@ -1701,7 +1727,10 @@ describe('runAgentTurn — failover + cancel + reasoning', () => {
     };
     const boom = new Error('the renderer threw while consuming the stream');
     const params = baseParams(provider, {
-      preEgress: () => admission,
+      preEgress: () => {
+        admissions += 1;
+        return admission;
+      },
       emit: (event) => {
         if (event.type === 'agent:token') throw boom;
       },
@@ -1710,10 +1739,12 @@ describe('runAgentTurn — failover + cancel + reasoning', () => {
     await expect(runAgentTurn(params)).rejects.toBe(boom);
     // RETAINED, not released — the provider had already streamed a delta.
     expect(releases).toBe(0);
+    expect(actualSettlements).toBe(0);
+    expect(admissions).toBe(1);
     expect(origins).toHaveLength(1);
-    // And NO `attemptNumber`: `onAttempt` never fired, so the counter has not counted this attempt. Passing it
-    // would COLLIDE with the number a later real attempt receives, making two commitments indistinguishable.
-    expect(origins[0]).toEqual({ nodeId: params.nodeId });
+    // The chain reported this invocation, so its conservative debit owns attempt 1. The
+    // turn's backstop must neither lose that correlation nor settle the estimate again.
+    expect(origins[0]).toEqual({ nodeId: params.nodeId, attemptNumber: 1 });
   });
 
   it('conservatively settles a clean provider EOF that omits the terminal usage record', async () => {
@@ -2258,7 +2289,7 @@ describe('pre-egress current-round request estimation (ADR-0096/0101)', () => {
               { type: 'media', mimeType: 'image/png', source: { kind: 'base64', data: 'aW1n' } },
             ],
             stopReason: 'stop',
-            usage: { inputTokens: 3, outputTokens: 1 },
+            usage: { kind: 'complete', usage: { inputTokens: 3, outputTokens: 1 } },
           })
         : scriptedProvider('gemini', [[{ type: 'text_delta', text: '{}' }, STOP()]]);
       let request: LlmRequest | undefined;
@@ -2379,7 +2410,7 @@ describe('local preparation and structural tool failures (PR 90)', () => {
           : mediaGenerateProvider('anthropic', {
               content: [],
               stopReason: 'stop',
-              usage: { inputTokens: 0, outputTokens: 0 },
+              usage: { kind: 'complete', usage: { inputTokens: 0, outputTokens: 0 } },
             });
       const plan = prepareOutputCapPlan({
         model: 'claude-opus-4-8',
@@ -2541,7 +2572,7 @@ describe('generated accounting retains validated quantities independently of pri
       const provider = mediaGenerateProvider('anthropic', {
         content: [{ type: 'text', text: 'paid response' }],
         stopReason: 'stop',
-        usage,
+        usage: { kind: 'complete', usage },
       });
       const prices = new Map<string, import('@relavium/llm').ModelPricing>();
       prices.get = () => {
@@ -2709,7 +2740,7 @@ describe('classified overflow turn evidence and admission (ADR-0096 Step 7)', ()
               message: 'PRIVATE_SENTINEL',
               status: 400,
             }),
-            usage: { inputTokens: 199885, outputTokens: 12792 },
+            usage: { kind: 'complete', usage: { inputTokens: 199885, outputTokens: 12792 } },
           },
         },
       ],

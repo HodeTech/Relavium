@@ -105,3 +105,10 @@ This is the adapter/chain integration increment, not closure of the measured-req
 exact first measured/quoted-round reuse, pre-attempt closure and Step 8 summariser/context recovery
 remain open and require their own production controls and fresh independent acceptance. Implementation
 of this increment does not assert that those later obligations have landed.
+
+### W8 usage coverage activation — 2026-10-10
+
+The Phase-1 provider seam intentionally changes result, stop, accountable-error and invoked-attempt usage to one complete/partial/missing evidence value. External providers and the future managed gateway must migrate; old fabricated zeros are not upgraded into complete evidence.
+
+See [ADR-0104](0104-unknown-provider-usage-is-durable-cost-uncertainty.md) and the
+[canonical usage contract](../reference/shared-core/llm-provider-seam.md#6-usage).
