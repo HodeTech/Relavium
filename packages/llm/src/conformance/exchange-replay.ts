@@ -209,7 +209,7 @@ function projectedQuery(url: URL, ordinal: number): string {
     });
   const query = parts.join('&');
   safeText(query, ordinal);
-  safeText(decodeURIComponent(query.replace(/\+/g, ' ')), ordinal);
+  safeText(decodeURIComponent(query.replaceAll('+', ' ')), ordinal);
   return query.length === 0 ? '' : `?${query}`;
 }
 
