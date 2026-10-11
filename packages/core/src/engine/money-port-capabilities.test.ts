@@ -333,7 +333,7 @@ for (const shape of shapes) {
         expect(outcome.kind).toBe('failed');
         if (outcome.kind !== 'failed') throw new Error('expected the observer failure');
         expect(outcome.error).toBe(marker);
-        expect(outcome.failureOrigin).toBe('observer');
+        expect(outcome.failureOrigin, 'USAGE_CAUSAL_OBSERVER_ORIGIN').toBe('observer');
       });
     }
   }
@@ -656,7 +656,7 @@ for (const boundary of ['claimUsage', 'usageDisposition'] as const) {
           expect(outcome.kind).toBe('failed');
           if (outcome.kind !== 'failed') throw new Error('expected the observer failure');
           expect(outcome.error).toBe(marker);
-          expect(outcome.failureOrigin).toBe('observer');
+          expect(outcome.failureOrigin, 'USAGE_CAUSAL_OBSERVER_ORIGIN').toBe('observer');
           expect(outcome.engaged).toBe(true);
           expect(outcome.usage).toEqual({ input: 0, output: 0 });
         });
@@ -772,9 +772,9 @@ for (const streaming of [false, true]) {
       expect(outcome.kind).toBe('failed');
       if (outcome.kind !== 'failed') throw new Error('expected the observer failure');
       expect(outcome.error).toBe(marker);
-      expect(outcome.failureOrigin).toBe('observer');
+      expect(outcome.failureOrigin, 'USAGE_CAUSAL_OBSERVER_ORIGIN').toBe('observer');
       expect(outcome.engaged).toBe(true);
-      expect(outcome.usage).toEqual({ input: 3, output: 2 });
+      expect(outcome.usage, 'USAGE_CAUSAL_PRE_OBSERVER_EVIDENCE').toEqual({ input: 3, output: 2 });
       expect(h.rows).toHaveLength(0);
       expect(h.counts()).toEqual({ pending: 1, invoked: 1, repaired: 0 });
     });

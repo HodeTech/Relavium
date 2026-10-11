@@ -104,7 +104,7 @@ describe('ADR-0104 production turn accounting', () => {
     it(`retains useful ${evidence.kind} output and unknown uncapped coverage`, async () => {
       const h = harness(evidence);
       expect((await h.run()).text).toBe('useful');
-      expect(h.order).toEqual(['pending', 'invoke', 'disposition']);
+      expect(h.order, 'USAGE_CAUSAL_DISPOSITION_ACK').toEqual(['pending', 'invoke', 'disposition']);
       expect(h.actualWrites()).toBe(0);
       expect(h.coverage.snapshot().coverage).toEqual({
         unverified: false,
