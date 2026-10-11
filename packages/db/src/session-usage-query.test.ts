@@ -1,4 +1,5 @@
 import type { UsageDisposition } from '@relavium/shared';
+import { and, eq } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -52,7 +53,7 @@ function setup() {
     usageReceipt: receipt,
   };
   const withReceipt = <T>(operation: () => T) => guard.forReceipt(receipt, operation);
-  return { guard, usage, costs, receipt, entry, withReceipt };
+  return { db, guard, usage, costs, receipt, entry, withReceipt };
 }
 
 function counts(receipt: SessionUsageReceipt) {
@@ -71,6 +72,8 @@ describe('session settlement exact-identity query shape', () => {
     withReceipt(() => usage.retire(receipt));
     expect(guard.receiptLookups).toBe(1);
     expect(guard.queryPlans).toBe(1);
+    expect(guard.receiptMutations).toBe(1);
+    expect(guard.mutationQueryPlans).toBe(1);
     expect(counts(receipt)).toEqual({ n: 0 });
     expect(costs.loadSessionCostBreakdown(receipt.sessionId)).toMatchObject({
       totalCostMicrocents: 7,
@@ -86,6 +89,8 @@ describe('session settlement exact-identity query shape', () => {
     expect(withReceipt(() => costs.recordSessionCost(entry))).toBe(false);
     expect(guard.receiptLookups).toBe(2);
     expect(guard.queryPlans).toBe(1);
+    expect(guard.receiptMutations).toBe(2);
+    expect(guard.mutationQueryPlans).toBe(2);
     expect(counts(receipt)).toEqual({ n: 0 });
     expect(usage.loadCoverage(receipt.sessionId)?.coverage).toEqual({
       unverified: false,
@@ -111,6 +116,8 @@ describe('session settlement exact-identity query shape', () => {
       withReceipt(() => usage.retire(receipt));
       expect(guard.receiptLookups).toBe(lookups);
       expect(guard.queryPlans).toBe(1);
+      expect(guard.receiptMutations).toBe(state === 'incomplete' ? 2 : 1);
+      expect(guard.mutationQueryPlans).toBe(state === 'incomplete' ? 2 : 1);
       expect(counts(receipt)).toEqual({ n: 0 });
       expect(costs.loadSessionCostBreakdown(receipt.sessionId)).toMatchObject({
         totalCostMicrocents: 0,
@@ -124,3 +131,98 @@ describe('session settlement exact-identity query shape', () => {
     },
   );
 });
+
+for (const operation of ['update', 'delete'] as const) {
+  it(`${operation}: refuses a real owner-prefix mutation before touching either live receipt`, () => {
+    const { db, guard, usage, receipt, withReceipt } = setup();
+    usage.beginInvocation({
+      sessionId: receipt.sessionId,
+      model: 'second-model',
+      producerId: 'second-producer',
+      dispatchId: 'second',
+      round: 0,
+      chainAttempt: 1,
+    });
+    expect(() =>
+      withReceipt(() =>
+        operation === 'update'
+          ? db
+              .update(schema.sessionUsageInvocations)
+              .set({ coverageState: 'incomplete' })
+              .where(eq(schema.sessionUsageInvocations.sessionId, receipt.sessionId))
+              .run()
+          : db
+              .delete(schema.sessionUsageInvocations)
+              .where(eq(schema.sessionUsageInvocations.sessionId, receipt.sessionId))
+              .run(),
+      ),
+    ).toThrow('USAGE_QUERY_NOT_EXACT_IDENTITY');
+    expect(
+      client.sqlite
+        .prepare('SELECT coverage_state AS state FROM session_usage_invocations ORDER BY ordinal')
+        .all(),
+    ).toEqual([{ state: 'pending' }, { state: 'pending' }]);
+    expect(usage.loadCoverage(receipt.sessionId)?.coverage).toEqual({
+      unverified: false,
+      pendingInvocations: 2,
+      unknownCalls: 0,
+    });
+    expect(guard.receiptMutations).toBe(0);
+  });
+}
+
+for (const operation of ['select', 'update', 'delete'] as const) {
+  for (const wrongKey of ['session', 'producer', 'ordinal'] as const) {
+    it(`${operation}: cached plans still refuse a different ${wrongKey} binding`, () => {
+      const { db, guard, receipt, withReceipt } = setup();
+      const where = and(
+        eq(schema.sessionUsageInvocations.sessionId, receipt.sessionId),
+        eq(schema.sessionUsageInvocations.producerId, receipt.invocation.producerId),
+        eq(schema.sessionUsageInvocations.ordinal, receipt.invocation.ordinal),
+      );
+      const statement =
+        operation === 'select'
+          ? db.select().from(schema.sessionUsageInvocations).where(where).toSQL()
+          : operation === 'update'
+            ? db
+                .update(schema.sessionUsageInvocations)
+                .set({ coverageState: 'incomplete' })
+                .where(where)
+                .toSQL()
+            : db.delete(schema.sessionUsageInvocations).where(where).toSQL();
+      withReceipt(() => guard.logQuery(statement.sql, statement.params));
+      const params = [...statement.params];
+      const offset = operation === 'update' ? 1 : 0;
+      const index = offset + (wrongKey === 'session' ? 0 : wrongKey === 'producer' ? 1 : 2);
+      params[index] = wrongKey === 'ordinal' ? receipt.invocation.ordinal + 1 : 'different-owner';
+      expect(() => withReceipt(() => guard.logQuery(statement.sql, params))).toThrow(
+        'USAGE_QUERY_NOT_EXACT_IDENTITY',
+      );
+      expect(guard.queryPlans + guard.mutationQueryPlans).toBe(1);
+      expect(counts(receipt)).toEqual({ n: 1 });
+    });
+  }
+  for (const suffix of [' or 1 = 1', ' and exists (select 1 from "session_usage_invocations")']) {
+    it(`${operation}: refuses expanded/subquery predicates`, () => {
+      const { guard, receipt, withReceipt } = setup();
+      const prefix =
+        operation === 'select'
+          ? 'select * from "session_usage_invocations" where '
+          : operation === 'update'
+            ? 'update "session_usage_invocations" set "coverage_state" = ? where '
+            : 'delete from "session_usage_invocations" where ';
+      const where =
+        '"session_usage_invocations"."session_id" = ? and "session_usage_invocations"."producer_id" = ? and "session_usage_invocations"."ordinal" = ?';
+      const params = [
+        ...(operation === 'update' ? ['incomplete'] : []),
+        receipt.sessionId,
+        receipt.invocation.producerId,
+        receipt.invocation.ordinal,
+      ];
+      expect(() => withReceipt(() => guard.logQuery(prefix + where + suffix, params))).toThrow(
+        'USAGE_QUERY_NOT_EXACT_IDENTITY',
+      );
+      expect(counts(receipt)).toEqual({ n: 1 });
+    });
+  }
+}

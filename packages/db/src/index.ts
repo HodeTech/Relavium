@@ -88,6 +88,7 @@ export {
   type SessionUsageStore,
 } from './session-usage-store.js';
 export { SessionUsageError } from './session-usage-write.js';
+export type { SessionSummary } from './session-summaries.js';
 
 export { SessionEffectTurnError } from './session-effect-turns.js';
 

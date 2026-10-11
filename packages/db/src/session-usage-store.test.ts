@@ -10,6 +10,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createClient, runMigrations, type DbClient } from './client.js';
 import { agentSessions, sessionUsageCoverage, sessionUsageInvocations } from './schema.js';
+import {
+  assertSessionUsageColumnInventory,
+  sessionBusinessColumns,
+} from './fixtures/session-usage-column-inventory.js';
 import { createSessionStore } from './session-store.js';
 import { createSessionUsageStore, type FreshSessionSeed } from './session-usage-store.js';
 import { SessionUsageError, withSessionUsageWrite } from './session-usage-write.js';
@@ -70,7 +74,7 @@ function oldWrite(id = 's1'): void {
 }
 
 describe('ADR-0104 session coverage foundations', () => {
-  it('installs the complete ten-trigger inventory without rebuilding an existing table', () => {
+  it('installs twelve triggers; migration 0018 does not rebuild an existing table', () => {
     const triggers = client.db
       .all<{
         name: string;
@@ -95,6 +99,35 @@ describe('ADR-0104 session coverage foundations', () => {
       'utf8',
     );
     expect(migration).not.toMatch(/DROP TABLE|RENAME TO|__new_/i);
+  });
+
+  it('matches every native and modelled owner column to the actual revision trigger', () => {
+    expect(() => assertSessionUsageColumnInventory(client.sqlite)).not.toThrow();
+  });
+
+  it('refuses an unclassified native business column', () => {
+    client.sqlite.exec('ALTER TABLE agent_sessions ADD COLUMN future_business TEXT');
+    expect(() => assertSessionUsageColumnInventory(client.sqlite)).toThrow(
+      'SESSION_USAGE_TRIGGER_COLUMN_DRIFT',
+    );
+  });
+
+  it('detects a missing business assignment in the actual trigger, even when unchanged', () => {
+    fresh();
+    const row = client.sqlite
+      .prepare("SELECT sql FROM sqlite_master WHERE name='session_usage_owner_update'")
+      .get();
+    if (typeof row !== 'object' || row === null || !('sql' in row) || typeof row.sql !== 'string')
+      throw new Error('missing trigger');
+    const weakened = row.sql.replace(/\btitle,\s*/, '');
+    expect(weakened).not.toBe(row.sql);
+    client.sqlite.exec('DROP TRIGGER session_usage_owner_update');
+    client.sqlite.exec(weakened);
+    client.sqlite.exec("UPDATE agent_sessions SET title=title WHERE id='s1'");
+    expect(state()).toEqual({ revision: 1, ack: 1, taint: false });
+    expect(() => assertSessionUsageColumnInventory(client.sqlite)).toThrow(
+      'SESSION_USAGE_TRIGGER_COLUMN_DRIFT',
+    );
   });
 
   it('keeps generic and predecessor creation unverified; only explicit fresh creation acknowledges complete zero', () => {
@@ -128,27 +161,7 @@ describe('ADR-0104 session coverage foundations', () => {
     expect(state('imported')).toBeUndefined();
   });
 
-  it.each([
-    'id',
-    'agent_id',
-    'agent_slug',
-    'agent_snapshot',
-    'title',
-    'model_id',
-    'working_dir',
-    'git_ref',
-    'fs_scope_tier',
-    'status',
-    'context_json',
-    'total_input_tokens',
-    'total_output_tokens',
-    'total_cost_microcents',
-    'total_conservative_microcents',
-    'exported_workflow_path',
-    'deleted_at',
-    'created_at',
-    'updated_at',
-  ])('tracks even unchanged business assignments to %s', (column) => {
+  it.each(sessionBusinessColumns)('tracks even unchanged business assignments to %s', (column) => {
     fresh();
     // All identifiers are fixed test inventory, never user-controlled SQL.
     client.sqlite.exec(`UPDATE agent_sessions SET ${column} = ${column} WHERE id = 's1'`);

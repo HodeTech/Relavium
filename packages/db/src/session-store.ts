@@ -11,6 +11,7 @@ import {
 import { and, asc, desc, eq, isNull, sql } from 'drizzle-orm';
 
 import type { Db } from './client.js';
+import { visitSessionSummaries, type SessionSummary } from './session-summaries.js';
 import {
   completeSessionUsageInvocation,
   acknowledgeSessionUsageComplete,
@@ -399,6 +400,8 @@ export interface SessionStore {
    * omit it for the full list (the `chat-list` contract).
    */
   listSessions: (opts?: { readonly limit?: number }) => AgentSessionRecord[];
+  /** Visit all live discovery/accounting summaries in bounded indexed pages under one read snapshot. */
+  visitSessionSummaries: (visit: (summary: SessionSummary) => void) => void;
   /**
    * Fold ONE `cost:updated` egress into the session's durable money attribution (ADR-0070).
    *
@@ -780,6 +783,7 @@ export function createSessionStore(db: Db): SessionStore {
       ),
     loadSession,
     listSessions,
+    visitSessionSummaries: (visit) => visitSessionSummaries(db, visit),
     appendMessage: (message, meta) => {
       withSessionUsageWrite(db, [message.sessionId], (tx) => {
         tx.insert(sessionMessages).values(toSessionMessageRow(message, meta)).run();

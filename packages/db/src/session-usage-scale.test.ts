@@ -122,6 +122,8 @@ describe('ADR-0104 bounded native session settlement state', () => {
     expect(queryGuard.forReceipt(live, () => costs.recordSessionCost(entry(live)))).toBe(true);
     expect(queryGuard.queryPlans).toBe(1);
     expect(queryGuard.receiptLookups).toBe(150_002);
+    expect(queryGuard.receiptMutations).toBe(150_002);
+    expect(queryGuard.mutationQueryPlans).toBe(2);
     expect(client.sqlite.prepare('SELECT sum(call_count) AS n FROM session_costs').get()).toEqual({
       n: 50_001,
     });

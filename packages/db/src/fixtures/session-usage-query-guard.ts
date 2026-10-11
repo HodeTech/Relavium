@@ -10,22 +10,29 @@ type Identity = readonly [sessionId: string, producerId: string, ordinal: number
 export class SessionUsageQueryGuard implements Logger {
   readonly #sqlite: Database.Database;
   readonly #plans = new Set<string>();
+  readonly #mutationPlans = new Set<string>();
   #expected: Identity | undefined;
   #lookups = 0;
+  #mutations = 0;
 
   constructor(sqlite: Database.Database) {
     this.#sqlite = sqlite;
   }
-
   get receiptLookups(): number {
     return this.#lookups;
   }
-
+  /** SELECT plans, kept separate from mutation plans for the existing scale control. */
   get queryPlans(): number {
     return this.#plans.size;
   }
+  get receiptMutations(): number {
+    return this.#mutations;
+  }
+  get mutationQueryPlans(): number {
+    return this.#mutationPlans.size;
+  }
 
-  /** Receipt operations are synchronous; each lookup must bind this operation's exact identity. */
+  /** Receipt operations are synchronous; each statement must bind this operation's exact identity. */
   forReceipt<T>(receipt: SessionUsageReceipt, operation: () => T): T {
     if (this.#expected !== undefined) throw new Error(REFUSAL);
     this.#expected = [receipt.sessionId, receipt.invocation.producerId, receipt.invocation.ordinal];
@@ -37,23 +44,32 @@ export class SessionUsageQueryGuard implements Logger {
   }
 
   logQuery(query: string, params: unknown[]): void {
-    // Revision/ACK bookkeeping and ordinary aggregate readers are legitimate separate SQL.
-    if (!/^\s*select\b/i.test(query) || !/\bsession_usage_invocations\b/i.test(query)) return;
-    const expected = this.#expected;
+    // Admissions INSERT new identities; revision/ACK and ordinary aggregates are separate SQL.
+    if (
+      !/^\s*(?:select|update|delete)\b/i.test(query) ||
+      !/\bsession_usage_invocations\b/i.test(query)
+    )
+      return;
     const normalized = query.replace(/\s+/g, ' ').trim();
-    const match = /^select (.+) from "session_usage_invocations" where (.+)$/i.exec(normalized);
-    const columns = match?.[1];
-    const where = match?.[2];
+    if (/\b(?:join|union|or|limit|offset|group|order|returning)\b/i.test(normalized))
+      throw new Error(REFUSAL);
+    const select = /^select (.+) from "session_usage_invocations" where (.+)$/i.exec(normalized);
+    const update =
+      /^update "session_usage_invocations" set "coverage_state" = \? where (.+)$/i.exec(normalized);
+    const deletion = /^delete from "session_usage_invocations" where (.+)$/i.exec(normalized);
+    const where = select?.[2] ?? update?.[1] ?? deletion?.[1];
+    const expected = this.#expected;
+    const columns = select?.[1];
+    const offset = update === null ? 0 : 1;
     if (
       expected === undefined ||
-      columns === undefined ||
       where === undefined ||
-      (normalized.match(/\bselect\b/gi)?.length ?? 0) !== 1 ||
-      /\b(?:join|union|or|limit|offset|group|order)\b/i.test(normalized) ||
-      !/^(?:\*|"[a-z_]+"(?:, "[a-z_]+")*)$/.test(columns)
+      (normalized.match(/\bselect\b/gi)?.length ?? 0) !== (select === null ? 0 : 1) ||
+      (select !== null &&
+        (columns === undefined || !/^(?:\*|"[a-z_]+"(?:, "[a-z_]+")*)$/.test(columns))) ||
+      (update !== null && params[0] !== 'incomplete')
     )
       throw new Error(REFUSAL);
-
     const terms = [...where.matchAll(/"session_usage_invocations"\."([a-z_]+)" = \?/g)];
     const remainder = where
       .replace(/"session_usage_invocations"\."[a-z_]+" = \?/g, '')
@@ -65,12 +81,12 @@ export class SessionUsageQueryGuard implements Logger {
       terms[0]?.[1] !== 'session_id' ||
       terms[1]?.[1] !== 'producer_id' ||
       terms[2]?.[1] !== 'ordinal' ||
-      params.length !== 3 ||
-      params.some((value, index) => value !== expected[index])
+      params.length !== 3 + offset ||
+      expected.some((value, index) => params[index + offset] !== value)
     )
       throw new Error(REFUSAL);
-
-    if (!this.#plans.has(query)) {
+    const plans = select === null ? this.#mutationPlans : this.#plans;
+    if (!plans.has(query)) {
       const plan = this.#sqlite.prepare(`EXPLAIN QUERY PLAN ${query}`).all(...params);
       if (
         plan.length !== 1 ||
@@ -86,9 +102,10 @@ export class SessionUsageQueryGuard implements Logger {
         )
       )
         throw new Error(REFUSAL);
-      this.#plans.add(query);
+      plans.add(query);
     }
-    // Parameters are validated above on EVERY call, including cached-plan calls.
-    this.#lookups += 1;
+    // Validate bindings above on EVERY call, including cached-plan calls.
+    if (select === null) this.#mutations += 1;
+    else this.#lookups += 1;
   }
 }

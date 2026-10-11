@@ -1330,8 +1330,10 @@ export function createRunHistoryReader(db: Db): RunHistoryReader {
 
     loadRunStateEvents: (runId) =>
       // Same forward-compatible read (ADR-0074 §5). The skipped rows are deliberately DISCARDED here rather than
-      // reported: this read is the 2.5.B Home's bounded gate/state fold, it already excludes the streaming
-      // firehose (so its max `seq` is not the run's anyway), and nothing seeds a sequence counter from it. A row
+      // reported: the returned 2.5.B Home gate/state fold excludes streaming events AFTER row validation.
+      // Legacy/foreign stored streaming rows still undergo payload/projection integrity checks; filtering
+      // their SQL discriminator first would conceal corruption. Shipping token events are not durable.
+      // Its max `seq` is not the run's, and nothing seeds a sequence counter from this fold. A row
       // this binary cannot read also cannot describe a gate this binary knows how to render.
       readEventLog(db, runId, { streamingIncluded: false }).events,
 
