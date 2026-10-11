@@ -1094,7 +1094,10 @@ supported counter remains incomplete. Applicability includes native modality con
 the owned lowered request before SDK egress, and media observed anywhere in the response stream.
 An earlier or later media frame cannot be erased by a text-only usage frame; a later observation
 also downgrades already-owned complete usage when its media axis is missing. This accounting
-observation adds no streaming media output chunks. Gemini does not invent inline-media units;
+observation includes native input/output audio-counter presence, even when the reported quantity
+is zero or invalid: an invalid quantity establishes no units, but a later omitted counter cannot
+erase the applicable axis. An explicit later valid counter can repair that observation. This
+adds no streaming media output chunks. Gemini does not invent inline-media units;
 zero text-token quantities do not establish zero media volume. Ordinary text-only requests do not
 require a media axis. Separate-endpoint media continues using its
 accepted authored/frozen volume basis, including fractional durations; it is outside token
@@ -1102,8 +1105,10 @@ accepted authored/frozen volume basis, including fractional durations; it is out
 
 Adapters own evidence before content projection. Stream errors and truncation preserve observed
 quantities, downgrading nonfinal cumulative observations to partial. Authoritative final evidence
-survives a later cleanup error. Gemini reads each response's usage property once and owns its
-canonical quantities before further response access can throw or mutate that native object.
+survives a later cleanup error. OpenAI/DeepSeek capture each frame's usage once before accessing
+its choices. Malformed choices still fail the stream, preserving independently valid counters;
+they do not establish terminal authority. Gemini reads each response's usage property once and
+owns its canonical quantities before further response access can throw or mutate that native object.
 Its streaming quantities remain partial until terminal authority is verified. That authority
 promotes the same owned observation, without rereading native counters; a later Gemini terminal
 with no usage cannot promote an earlier nonfinal observation. Observed inline media still

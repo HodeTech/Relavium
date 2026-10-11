@@ -633,3 +633,23 @@ did not reproduce it. This does not change native pricing, admission, retry poli
 claims. The finding-bearing round supplies no clean acceptance: Step 5 still needs two NEW
 complete clean cumulative rounds, followed by Step 6's further controls/reviews and whole-W8
 validation/publication. No new decision, dependency, paid call or deferral is introduced.
+
+### W8 OpenAI-compatible streamed evidence correction — 2026-10-11
+
+The fifteenth complete cumulative activation review reproduced two distinct retention defects
+through the installed SDK's ordinary offline HTTP/SSE path. Malformed absent/null choices could
+throw before the adapter owned otherwise valid native usage. Such a failure retains nonfinal
+known quantities as partial; malformed content does not supply terminal authority. Separately,
+a later cumulative text-only usage frame could erase an earlier native audio counter and enter
+complete-only pricing without that billing axis. Input/output audio-counter presence remains
+applicable across the invocation, including explicit zero and invalid quantities. Invalid
+quantities establish no billed units; omission cannot repair them, while a later explicit valid
+counter can. The canonical [usage contract](../reference/shared-core/llm-provider-seam.md#6-usage)
+owns the mapping and regression obligations.
+
+Absent/null choices is malformed native runtime input admitted by the SDK parser, not valid
+typed provider grammar. The controls establish retention and pricing eligibility, not observed
+provider behaviour or an invoice amount. These existing-contract corrections introduce no new
+decision, dependency, paid call or deferral. The finding-bearing round supplies no clean
+acceptance; Step 5 still requires two NEW complete clean cumulative rounds, followed by
+Step 6's further controls/reviews and whole-W8 validation/publication.

@@ -3658,6 +3658,80 @@ and reviews, CR-82 and Step 7/whole-W8 validation/publication remain open. The r
 **48/51** on `development`, **47/51** on `main`. No new decision, dependency, paid call or deferral
 is introduced.
 
+#### Step 5 fifteenth cumulative review — 2026-10-11
+
+Three NEW independent reviewers completed the full `017b399c..2436bc87` activation and all
+fourteen corrections: GPT-6-astra/xhigh for money/core/shared, GPT-6.1-sol/xhigh for LLM and
+GPT-6.1-sol/high for storage/CLI/tooling/docs. Their combined result is **two High findings**
+in OpenAI-compatible stream evidence retention; the other two partitions returned no actionable
+finding. All **256** changed paths were assigned exactly once. The parent read all complete
+reports, raw controls/results and explicit releases, verified artifact manifests and all **1,265**
+frozen tracked-file hashes in the developer and four physical review graphs before authoring.
+HEAD and logical index remained unchanged throughout review.
+
+The installed OpenAI SDK parses SSE JSON without validating choices. Absent/null choices could
+therefore fail before valid native counters were owned. This is a malformed native-content
+failure path, not valid typed provider grammar; independently trustworthy counters remain partial,
+without inventing terminal authority. Separately, a later cumulative text-only usage frame could
+erase a previously observed native audio billing axis and enter complete-only pricing. Native
+input/output audio-counter presence now remains applicable across the invocation, including zero
+and invalid quantities. Invalid quantities establish no units; omission cannot repair them, while
+an explicit later valid counter can. Canonical usage and the append-only ADR-0104 note own these
+existing-contract corrections. No live-provider observation or numerical invoice defect is claimed.
+
+Independent money/core/shared execution passed **67 whole files / 2,234 cases**, plus nine
+new supported schedules. Storage/CLI passed **53 whole files / 841 cases**, five independent
+native SQLite schedules with forty explicitly counted assertions, source-only CLI/DB typechecks,
+and actual frozen replay **16/2/3/8** controls. LLM passed **63 whole files / 2,091 cases**, with
+eleven established skips, plus **12 whole downstream files / 547 cases**. Cohorts overlap and
+are not added. Child module-body witnesses, real process/crash/database observations and actual
+frozen workers are distinguished from resolution/loading traces. The parent independently
+rehashed the 143 frozen source files, 228 current producer files, 12,012 dependency-runtime/tool
+entries and separately attributed old-session supplement with no mismatch.
+
+The LLM review's independent ten-case actual-SDK HTTP file produced original **four passes /
+six semantic failures**. Ordering-only correction gave eight/two; audio-axis-only correction gave
+six/four; both gave ten passes; exact original restoration returned four/six. The parent separately
+ran sixteen whole zero/positive controls: original **eight passes / eight semantic failures**,
+private candidate sixteen passes, exact original repeat eight/eight, exact candidate restoration
+sixteen passes. Identical inventories, zero skips and intended assertion failures distinguish
+these from import/setup/timeout failures. Developer source was never swapped.
+
+Executed review configurations incidentally wrote generated Vitest scheduling metadata through
+linked `node_modules`. Recorded installed runtime/package/native bytes and tracked source/index/
+HEAD stayed unchanged. Installed cache implementation stores duration/failed flags for ordering;
+it does not replay passing tests. The deviation and missing initial cache hash are retained in
+raw review evidence rather than claiming wholly read-only dependency directories. Future review
+configs explicitly own `cacheDir` and disable that cache. These are actual fresh executions;
+no repeated cohort is credited merely to conceal the metadata side effect.
+
+Permanent `openai-stream-usage-ownership.test.ts` adds **36** actual installed-SDK HTTP
+controls across OpenAI and DeepSeek. Fixed bytes pass 36; replacing only the copied adapter
+with exact `2436bc87` bytes gives **twenty passes / sixteen semantic failures**; exact fixed
+restoration passes 36. The whole inventory and final test bytes are identical, with zero skips.
+Positive/zero quantities, absent/null choices, current/prior verified finish, both audio directions,
+omission/repetition and invalid-counter repair are covered. Complete evidence prices once;
+incomplete evidence never reaches the tracker. The parent read the complete handoff, raw results,
+failure bodies and configs, rehashed all **48** sealed artifacts and **1,266** owned source files,
+and confirmed exact developer/runtime/test and installed dependency/tool bytes. An initial
+throw-versus-error-chunk harness mistake is retained separately and receives no causal credit.
+Author configs explicitly own their cache directory and disable result-order caching.
+
+Fresh forced `CI=true` workspace lint/typecheck/test passes **23/23**, none cached: **501 files /
+10,812 passing / twelve skipped**. The complete local 106-case performance file also passes
+without CI, giving **10,813 distinct passing tests** across overlapping runs; the remaining eleven
+skips are the established LLM live/unsupported cases. Forced build **6/6** and format **1/1**,
+tools lint/typecheck, schema synchronization, engine/seam/dependency/bundle fences, test isolation,
+whitespace and document links pass. Compiled CLI, overflow capture and actual frozen replay
+**16/2/3/8** smokes pass offline. All 181 original ignored review files remain unchanged; none
+is tracked. These local author gates are neither remote CI nor whole-W8 coverage results.
+
+This finding-bearing round supplies neither required clean acceptance round. Step 5 still needs
+two NEW complete clean cumulative reviews after correction; Step 6's further permanent controls
+and reviews, CR-82 and Step 7/whole-W8 validation/publication remain open. The register remains
+**48/51** on `development`, **47/51** on `main`. No new decision, dependency, paid call or deferral
+is introduced.
+
 ### CR-81 — Conformance cassettes do not verify the request wire contract · High · ✅ CLOSED on `development` 2026-10-10
 **Accepted on `development`, 2026-10-10; publication pending.** The [Step 3 register](#w8-step-3-canonical-sdk-http-matrix--2026-10-10)
 joins all four independent review verdicts and three causal lowering controls. The pre-W8 defect was:
