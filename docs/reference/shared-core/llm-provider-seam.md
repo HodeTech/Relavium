@@ -1089,7 +1089,7 @@ never choose a price tier or manufacture a partial monetary amount.
 | --- | --- |
 | OpenAI Chat Completions | `prompt_tokens` is gross. Net input requires validated `prompt_tokens_details.cached_tokens`, including explicit zero. Missing cached count leaves gross unmapped and preserves independently known `completion_tokens`. Reasoning is an optional observability subset already included in completion. The supported chat dialect has no additional native cache-write billing counter. |
 | DeepSeek | Native `prompt_cache_hit_tokens` is cache read and `prompt_cache_miss_tokens` is net input. Either missing half can be derived from gross plus the other. Gross, hit, miss and `prompt_tokens_details.cached_tokens`, whenever present together, must agree. Gross alone cannot prove a cache miss. |
-| Anthropic | `input_tokens` is already net; `output_tokens`, `cache_read_input_tokens` and `cache_creation_input_tokens` remain independent. Both cache classes require explicit evidence. A cumulative stream starts absent and replaces only fields later frames report, retaining prior observations. Complete evidence requires an authoritative final stop reason and all four billing counts; an output-only final frame cannot invent start input. Optional thinking is already included in output. |
+| Anthropic | `input_tokens` is already net; `output_tokens`, `cache_read_input_tokens` and `cache_creation_input_tokens` remain independent. Both cache classes require explicit evidence. A cumulative stream starts absent and replaces only fields later frames report, retaining prior observations. Complete evidence requires an authoritative final stop reason, a valid output count in that same frame and all four billing counts across the retained observations. An output-only final frame cannot invent start input. Missing/null/invalid final output leaves prior quantities partial; explicit final zero is valid. Optional thinking is already included in output. |
 | Gemini | `promptTokenCount` is gross including `cachedContentTokenCount`; derive net only with both counts. Add `toolUsePromptTokenCount` when tools are applicable. Output is candidates plus thoughts: a thinking-capable or unknown model requires `thoughtsTokenCount`. The exact lowered `thinkingBudget: 0`, or a catalog model with no reasoning capability, establishes non-applicability. Tools absent from both canonical/native request and conversation establish non-applicability of tool-prompt counts. |
 
 All native counts must be nonnegative safe integers before arithmetic; sums must remain safe.
@@ -1123,8 +1123,10 @@ promotes the same owned observation, without rereading native counters; a later 
 with no usage cannot promote an earlier nonfinal observation. Observed inline media still
 downgrades complete evidence when its applicable billing axis is absent.
 OpenAI/DeepSeek force `include_usage`; this requests a final
-usage frame but cannot prove that it arrives. Anthropic's final authority comes from a non-null
-native stop reason, not merely a `message_delta` event name. Gemini recognizes a current-frame
+usage frame but cannot prove that it arrives. Anthropic's final authority requires both a non-null
+native stop reason and that frame's validated `output_tokens`, captured through the same single
+read that retains the quantity. A stop reason alone cannot promote an earlier output count.
+Gemini recognizes a current-frame
 prompt block as terminal authority before interpreting that frame's usage, just as it recognizes
 a candidate finish reason. Fully explicit applicable counts remain complete on a blocked response;
 absent or incomplete counters and earlier nonfinal counts remain uncertain. The seam verifier owns

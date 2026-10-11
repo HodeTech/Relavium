@@ -3903,6 +3903,53 @@ cumulative Step 6 reviews or Step 7's whole-W8 CI/coverage/reviews/publication. 
 the implementation register remains **48/51 on development, 47/51 on main**. Approved residuals
 remain unchanged. No user, provider, credential, billing or architecture decision is pending.
 
+#### Step 6 cumulative round 1 and final-output correction — 2026-10-11
+
+Three NEW independent reviewers completed all **286 cumulative paths** at `16232a3e`:
+81 money/core/shared, 52 LLM/control-tooling and 153 storage/CLI/replay/docs paths. Every
+partition delivered its complete inventory, raw evidence, final source/dependency audit, seal
+and explicit release before the parent released the global freeze. The parent rehashed all
+1,286 tracked developer/owned source files and every sealed artifact, checked exact inventories,
+actual module-body PID/thread records, native worker closure, source restorations, installed
+and captured dependencies, and the frozen Git objects. This is a **finding-bearing round**,
+not clean acceptance.
+
+One High was independently reproduced at the installed Anthropic SDK/fallback boundary and
+through the real engine/native SQLite: a final stop without final output evidence promoted an
+earlier output count into actual pricing and complete coverage. It is one corroborated finding,
+not two. No additional assigned defect was established. Whole independent cohorts passed
+68 files/2,234 cases (money), 33 files/1,174 cases plus eleven existing skips (LLM), and
+59 files/960 cases (storage). Repeated/causal probes overlap those cohorts and are not summed.
+Four LLM, two money and five storage mechanism removals failed semantically with identical
+whole inventories and exact restored passes. Default actual predecessor replay preserved
+16 strict prefixes, two genuine legacy controls, three isolated discriminators and eight old
+session operations. All 69 native storage workers closed, including 42 intentional SIGKILLs.
+Local dependency digests are not registry attestation; neither live providers nor PostgreSQL
+parity nor whole-W8 acceptance is claimed.
+
+The bounded correction requires a validated output count from the current final frame through
+its existing single read. Missing/null/invalid final output preserves earlier quantities as
+partial. An output-only final frame can retain earlier input/cache; explicit final zero remains
+valid. The canonical [usage contract](../../reference/shared-core/llm-provider-seam.md#6-usage)
+and the dated ADR-0104 correction own this boundary. Sixteen permanent installed-SDK cases
+and eight native engine/SQLite cases pin pricing eligibility, once-only money and uncertainty.
+On unchanged pre-fix code, ten SDK cases and six native money cases fail semantically; all
+positive controls remain green. With the correction, the complete five-file focused cohort
+passes **144 cases, zero skips**. Initial unsupported package lookup and mixed source/dist
+request authorities were test-setup diagnostics, corrected using the existing package-import
+pattern; they earn no semantic credit and no assertion was weakened.
+
+Fresh forced local gates pass: workspace lint/typecheck/test **23/23 tasks, zero cache hits**,
+**508 files / 10,928 passing cases / twelve established skips**; build/format **7/7, zero cache
+hits**. Tooling, migration, isolation, seam, engine dependency and bundle checks, and compiled
+CLI/overflow/frozen replay smokes all exit zero. The replay retains 16/2/3/8; intentional smoke
+failure diagnostics remain distinguished from gate failure. The first author gate stopped on the
+new fixture tuple type; its explicit strict type was corrected before the complete green rerun.
+These author gates do not claim bare coverage or remote CI. Step 6 needs two FURTHER NEW complete
+clean cumulative rounds after the correction; Step 7 whole-W8 CI/coverage/reviews and publication
+remain required. CR-82 stays open, **48/51 on development, 47/51 on main**.
+No new decision, dependency, paid call, deferral or user prerequisite is introduced.
+
 ### CR-81 — Conformance cassettes do not verify the request wire contract · High · ✅ CLOSED on `development` 2026-10-10
 **Accepted on `development`, 2026-10-10; publication pending.** The [Step 3 register](#w8-step-3-canonical-sdk-http-matrix--2026-10-10)
 joins all four independent review verdicts and three causal lowering controls. The pre-W8 defect was:

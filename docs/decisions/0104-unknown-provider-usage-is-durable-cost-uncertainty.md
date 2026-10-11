@@ -682,3 +682,24 @@ Complete-path activation is accepted on `development`; this does not close CR-82
 Step 6 permanent causal/crash/reader/retirement controls and two independent review rounds,
 then Step 7 whole-wave checks and publication, remain required. No new decision or deferral
 is introduced; the eight acceptance groups above remain the whole-W8 obligations.
+
+### W8 Anthropic final output authority correction — 2026-10-11
+
+The first complete cumulative Step 6 review reproduced an invalid final promotion through the
+installed Anthropic SDK's offline SSE path. A final stop reason with omitted, empty, input-only
+or null usage could promote the retained initial output count into complete evidence. An
+independent real-engine/native-SQLite probe confirmed once-only actual pricing and closed coverage
+using that unverified output. This is one corroborated finding, not two independent defects.
+
+Final authority requires the current frame's validated nonnegative safe-integer output count,
+observed in the existing single read. Earlier trustworthy input/cache/output remain partial when
+that final count is absent or invalid. Legitimate output-only final usage retains earlier input
+and cache; explicit final zero remains complete. The canonical
+[usage contract](../reference/shared-core/llm-provider-seam.md#6-usage) owns this clarification.
+Malformed native payloads admitted by the SDK parser establish the boundary defect, not a claim
+about live provider behaviour or invoice amounts. No admission, retry or realized-money policy
+changes, new dependency, decision, paid call or deferral are introduced.
+
+The finding-bearing round supplies no clean acceptance. Step 6 requires two FURTHER NEW complete
+clean cumulative rounds after this correction; Step 7 whole-W8 checks/reviews/publication and
+CR-82 remain open.
