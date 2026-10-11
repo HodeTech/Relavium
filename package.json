@@ -34,7 +34,7 @@
     "smoke:budget-replay": "node tools/budget-replay-compat/check.mjs",
     "check:wire-mutations": "node tools/wire-conformance/check.mjs",
     "check:usage-mutations": "node tools/usage-coverage-controls/check.mjs",
-    "test:acceptance-tools": "node --test tools/usage-coverage-controls/outcome.test.mjs tools/ci/require-w8-acceptance.test.mjs tools/acceptance-evidence/export.test.mjs tools/wire-conformance/provenance.test.mjs"
+    "test:acceptance-tools": "node --test tools/usage-coverage-controls/outcome.test.mjs tools/usage-coverage-controls/workload.test.mjs tools/ci/require-w8-acceptance.test.mjs tools/acceptance-evidence/export.test.mjs tools/wire-conformance/provenance.test.mjs"
   },
   "devDependencies": {
     "@eslint/js": "catalog:",

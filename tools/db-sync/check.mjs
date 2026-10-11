@@ -20,6 +20,7 @@ function run(command, args) {
 const controls = run(process.execPath, [
   '--test',
   'tools/db-sync/portable-checks.test.mjs',
+  'tools/db-sync/scan-regressions.test.mjs',
   'tools/db-sync/generate.test.mjs',
 ]);
 if (controls.status !== 0 || controls.error !== undefined) {

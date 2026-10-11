@@ -272,11 +272,22 @@ export function relativeSource(state, specifier, importer) {
   return undefined;
 }
 
+const compilers = new WeakMap();
+function compilerFor(state) {
+  if (!compilers.has(state)) {
+    const require = createRequire(join(state.sourceRoot, 'package.json'));
+    // One actual compiler load per owned runtime state; retain its physical byte witness.
+    // Requiring the cached module per transform otherwise rehashes its entire 9MB body.
+    verifyResolved(state, require.resolve('typescript'));
+    compilers.set(state, require('typescript'));
+  }
+  return compilers.get(state);
+}
+
 /** Synthetic AST nodes preserve original source positions/maps; runtime records raw physical bytes. */
 export function instrument(state, path) {
   const checked = verifyResolved(state, path);
-  const require = createRequire(join(state.sourceRoot, 'package.json'));
-  const ts = require('typescript');
+  const ts = compilerFor(state);
   const source = checked.bytes.toString('utf8');
   let name = `__relaviumUsageEvaluation_${checked.entry.sha256.slice(0, 12)}`;
   while (source.includes(name)) name += '_';

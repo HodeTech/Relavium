@@ -30,6 +30,11 @@ import { mutations, permanentFiles } from './mutations.mjs';
 import { exportAcceptanceEvidence } from '../acceptance-evidence/export.mjs';
 import { causalWitnesses } from './causal-witnesses.mjs';
 import { checkOutcome } from './outcome.mjs';
+import {
+  assertPermanentWorkload,
+  ordinaryPhaseTimeoutMs,
+  permanentPhaseTimeoutMs,
+} from './workload.mjs';
 
 const repository = realpathSync(fileURLToPath(new URL('../../', import.meta.url)));
 const scratch = realpathSync(mkdtempSync(join(tmpdir(), 'relavium-usage-controls-')));
@@ -66,7 +71,7 @@ const selected =
 assert.ok(selected.length > 0, 'Unknown declared mechanism');
 console.log(`Usage control evidence: ${scratch}`);
 
-function spawnJoined(command, args, options, path) {
+function spawnJoined(command, args, options, path, timeoutMs = ordinaryPhaseTimeoutMs) {
   return new Promise((resolve) => {
     // Match the existing tool-host convention: POSIX descendants inherit this owned group.
     // Windows has no POSIX groups; timeout cleanup there is explicitly single-child best effort.
@@ -94,7 +99,7 @@ function spawnJoined(command, args, options, path) {
     const timer = setTimeout(() => {
       timedOut = true;
       killOwned();
-    }, 300_000);
+    }, timeoutMs);
     child.once('error', (error) => {
       spawnError = { name: error.name, message: error.message };
     });
@@ -118,6 +123,7 @@ function spawnJoined(command, args, options, path) {
         signal,
         spawnError,
         timedOut,
+        timeoutMs,
         ownedProcessGroup,
         joined: true,
       };
@@ -429,6 +435,9 @@ async function runPhase(mechanism, graph, phase) {
       ],
       { cwd: graph, env: phaseEnvironment(controlPath, graph, nativeEvents) },
       join(output, 'command'),
+      mechanism.id === 'permanent-native-and-scale'
+        ? permanentPhaseTimeoutMs
+        : ordinaryPhaseTimeoutMs,
     );
     assert.ok(existsSync(report), `No complete Vitest report; inspect ${output}`);
     const data = JSON.parse(readFileSync(report, 'utf8'));
@@ -497,6 +506,7 @@ try {
   if (requested.length === 0) {
     const permanent = { id: 'permanent-native-and-scale', files: permanentFiles };
     summary.permanent = await runPhase(permanent, sourceVariant(permanent), 'fixed');
+    assertPermanentWorkload(summary.permanent);
     assert.deepEqual(
       [...new Set(summary.mechanisms.map((m) => m.group))].sort(),
       [1, 2, 3, 4, 5, 6, 7, 8],

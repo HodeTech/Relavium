@@ -78,3 +78,16 @@ SELECT "__new_t"."n"; CHECK("s" <> 'it''s (CHECK)');`,
   );
   assert.equal(portableRebuildChecks('CHECK("__new_my-table"."n" > 0)'), 'CHECK("n" > 0)');
 });
+
+test('escaped quote terminators and adjacent CHECK spans preserve exact source bytes', () => {
+  const source = `CHECK(coalesce("__new_a"."n", 0) > 0); CHECK([__new_b].[n] > 0);
+SELECT 'a''b', "a""b", \`a\`\`b\`, [a]]b]; -- CHECK(__new_t.n)\r
+/* CHECK(__new_t.n) */`;
+  const expected = source.replace('"__new_a".', '').replace('[__new_b].', '');
+  assert.equal(portableRebuildChecks(source), expected);
+  for (const unfinished of ["'escaped''", '"escaped""', '`escaped``', '[escaped]]']) {
+    assert.throws(() => portableRebuildChecks(unfinished), {
+      message: 'Malformed generated SQL token',
+    });
+  }
+});

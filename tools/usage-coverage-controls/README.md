@@ -62,6 +62,16 @@ identical case inventories and final source/dependency identity checks. The extr
 shared 100,000-case scale files run separately from repeated small mutation cohorts; permanent
 crash, lock, receipt and scale tests remain part of ordinary package CI.
 
+Each ordinary phase retains its five-minute outer watchdog. The one complete permanent
+cohort pins 427 cases and 69 joined native children. Its outer watchdog is calculated from
+the existing five-minute setup/general allowance, 69 existing 20-second native-case bounds
+and the existing ten-minute DB scale bound (38 minutes total). Individual test/readiness
+bounds, both full 100,000-case scale controls and process-group cleanup remain in force.
+The watchdog and exact case/native counts are recorded and checked; an incomplete or
+shortened cohort cannot pass. The TypeScript compiler is physically verified on its first
+load per owned runtime state and reused for that state's transforms; every product-source
+transform still verifies its own physical bytes. Final dependency checks remain mandatory.
+
 The governing contracts are [ADR-0104](../../docs/decisions/0104-unknown-provider-usage-is-durable-cost-uncertainty.md),
 [usage evidence](../../docs/reference/shared-core/llm-provider-seam.md#6-usage),
 [coverage events](../../docs/reference/contracts/sse-event-schema.md#the-runevent-union) and
