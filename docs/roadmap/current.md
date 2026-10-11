@@ -84,8 +84,12 @@ and Git-ignored; 181 original files are unchanged and historical citations are c
    eight ADR-0104 groups; native media retains its independent volume basis.
 
 Actual `pnpm run ci`, bare `pnpm coverage`, enforced coverage, wire/usage mutations and offline
-smokes passed at `ca5de9f8`; later acceptance changes are documentation only. The closing register
-qualifies exact counts, skips, cache use and limits. Published-head checks are separate and
+smokes passed at `ca5de9f8`; initial acceptance changes are documentation only. The later
+[publication watchdog correction](phases/phase-2.6.5-core-reliability-remediation.md#w8-publication-watchdog-correction--2026-10-11)
+changes only the native scale test's time budget after actual Linux CI exhausted its former
+watchdog. All 100,000 settlements and structural assertions remain unchanged; two NEW independent
+scoped rounds accepted that correction. The closing register qualifies exact counts, skips,
+cache use and limits. Published-head checks are separate and
 belong to the PR; local evidence does not claim remote CI or live-provider invoices.
 
 The implementation register is **49/51 on `development`**; `main` remains **47/51** until

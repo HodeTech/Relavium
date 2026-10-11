@@ -4180,7 +4180,8 @@ retain complete case/source/runtime evidence.
 
 Steps 1–7, CR-81, CR-82 and ADR-0087 §1 are accepted on `development`; the implementation
 register is **49/51 there and 47/51 on main** until W8 merges. The actual source gates at
-`ca5de9f8` precede only canonical documentation/acceptance changes. Publication and exact
+`ca5de9f8` precede the initial canonical documentation/acceptance changes; the later scoped
+publication correction below is separately reviewed. Publication and exact
 published-head GitHub checks follow; local evidence does not claim a remote result. Existing
 approved residuals, independent native-media basis and platform/provenance limits are
 unchanged. No new user decision, credential, provider capture or paid call is required.
@@ -4193,6 +4194,25 @@ The two whole-wave rounds reviewed `d4b2566b`; `2c1882c0` records derived accept
 only. This publication checkpoint adds only the PR reference. Exact published-head required
 checks are tracked on the PR independently of the local source-gate evidence above.
 `main` remains 47/51 until merge; existing approved residuals are unchanged.
+
+#### W8 publication watchdog correction — 2026-10-11
+
+At initial published head `f6b2852f`, ordinary PR CI passed, including the unchanged native
+100,000-settlement control in **163.497 seconds**. The push, Node-22 floor and coverage runs
+exhausted that same case's 180-second watchdog. Their other cases passed; this was not a
+query/state assertion failure. Bounded native diagnostics confirmed linear CPU work in ORM/SQL
+construction, with roughly two million statements and independently committed writer operations.
+
+`b9407aab` changes only that test's finite watchdog to 600 seconds and adds its rationale.
+The complete workload, 64 unresolved controls, every state/money/index/identity assertion and
+periodic worker-RPC yield remain byte-identical. Production behavior, coverage floors and the
+existing 900-second CI job caps are unchanged. Both native scale/query files passed locally
+(five cases, no skips; scale 48.456 seconds), as did DB lint/typecheck and formatting.
+Two NEW independent complete scoped rounds—GPT-6 Astra/high, then GPT-6.1 Sol/xhigh—found
+zero actionable findings; the parent read both full reports and verified their exact body/hash
+and prior-CI evidence. These are publication-delta reviews, not additional whole-wave rounds.
+Current-head remote results remain a separate requirement tracked on PR #92; increasing the
+watchdog alone is not evidence of a passing published check.
 
 ### CR-81 — Conformance cassettes do not verify the request wire contract · High · ✅ CLOSED on `development` 2026-10-10
 **Accepted on `development`, 2026-10-10; publication pending.** The [Step 3 register](#w8-step-3-canonical-sdk-http-matrix--2026-10-10)
