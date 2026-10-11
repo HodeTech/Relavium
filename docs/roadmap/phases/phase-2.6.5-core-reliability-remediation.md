@@ -11,10 +11,12 @@
 - **Kind**: interlude, like [phase 2.5.5](phase-2.5.5-hardening-and-remediation.md) — no new product surface,
   only the invariants an existing surface already claims
 
-**Current W8 checkpoint — 2026-10-11:** Steps 1–6 are independently accepted on `development`,
-including CR-81, so the implementation register is **48/51** (47 checked headings plus CR-95's
-short-term half). `main` remains **47/51** until W8 publication/merge. CR-82 and approved deferred
-CR-70/93 remain open; no existing residual is closed by this checkpoint.
+**Current W8 checkpoint — 2026-10-11:** All seven steps, CR-81, CR-82 and ADR-0087 §1 are
+independently accepted on `development`; the implementation register is **49/51** (48 checked
+headings plus CR-95's short-term half). `main` remains **47/51** until the W8 PR merges. The
+[closing register](#w8-closing-register--2026-10-11) records local gates and two NEW complete
+whole-wave review rounds. Publication checks and maintainer review/merge remain the landing
+gate. Approved CR-70/93 and existing scoped residuals are unchanged.
 
 ## Why this phase exists
 
@@ -305,7 +307,7 @@ to correct.
 | `CR-73` | made (wire it, or stop advertising it) | — | yes | — |
 | `CR-80` | made (fail closed) | — | yes | provider/config |
 | `CR-81` | made (match the canonical request) · ✅ accepted on `development` 2026-10-10; W8 publication pending | — | no | — |
-| `CR-82` | made (missing usage is unknown) | — | no | — |
+| `CR-82` | made (missing usage is unknown) · ✅ accepted on `development` 2026-10-11; W8 merge pending | — | no | — |
 | `CR-90` | made (exclude repo-local checkouts) | — | no | — |
 | `CR-91` | made (build the durable-truth oracle) | — | no | — |
 | `CR-92` | made (durable outbox, distinct typed result) | with `CR-10`'s | yes | — |
@@ -2494,8 +2496,10 @@ stand.
 
 ## W8 — Provider and conformance
 
-**Plan and ADR-0104 approved on 2026-10-10; Steps 1–6 accepted on `development`; Step 7 whole-wave checks/reviews/publication remain open.**
-ADR-0087 §1 and CR-81 have scoped implementation acceptance; CR-82 and whole-W8 publication remain open.
+**All seven implementation/review steps accepted on `development`, 2026-10-11.**
+ADR-0087 §1, CR-81 and CR-82 close against the [whole-W8 register](#w8-closing-register--2026-10-11).
+The PR's publication checks and maintainer review/merge remain the landing gate; `main` is not
+claimed to contain W8 before merge.
 CR-80 below was already closed before W7. Current execution order is in
 [current.md](../current.md#next-work--phase-265-w8).
 
@@ -2559,8 +2563,10 @@ remains approved and open; `main` publication follows the whole-W8 gate.
 
 ### W8 preflight and proposed execution plan — 2026-10-10
 
-**Status: preflight complete, plan and ADR-0104 approved on 2026-10-10; Steps 1–6 accepted on `development`.**
-Step 7 and whole-W8 publication remain open.
+**Status: preflight and ADR-0104 approved on 2026-10-10; all seven implementation/review steps
+accepted on `development` on 2026-10-11.** The [closing register](#w8-closing-register--2026-10-11)
+controls current status. Earlier dated pending checkpoints below retain their historical context;
+publication checks and maintainer review/merge remain the landing gate.
 The maintainer requests implementation on `development`, an implementation commit followed by
 two fresh independent cumulative review rounds per step, confirmed fixes committed between
 rounds, and approval of any new decision before dependent work. W7 and PR #91 are merged;
@@ -4068,9 +4074,10 @@ Existing approved residuals are unchanged; no user/provider/key/billing decision
 
 ### W8 closing register — 2026-10-11
 
-**Steps 1–6 are accepted on `development`; whole-wave review and publication remain open.**
-This register joins their permanent evidence with Step 7's fresh gates. It does not yet close
-CR-82 or claim a merge to `main`. The register remains 48/51 on development and 47/51 on main.
+**All seven implementation/review steps are accepted on `development`; CR-81 and CR-82 are closed
+there.** This register joins permanent evidence, Step 7's actual gates and two NEW complete
+whole-wave reviews. The register is **49/51 on development and 47/51 on main** until the W8 PR
+merges. Publication checks and maintainer review/merge remain the landing gate.
 ADR-0087 §1 is an additional obligation, not a 52nd CR item. No user decision, provider capture,
 key, billing setup or paid call is pending.
 
@@ -4138,10 +4145,45 @@ The 12 ordinary skips are eight live/nightly LLM cases, three absent legacy repl
 and one CI-only performance-shape skip; the last passed in the separate whole local file.
 Neither coverage run, repeated mutation phase nor reviewer probe inflates the ordinary total.
 
-**Whole-wave acceptance gate.** Two NEW independent complete cumulative main→development
-review rounds follow this canonical landing. CR-82 and whole-W8 acceptance remain open until
-all partitions finish and their raw evidence is independently audited. Publication and exact
-published-head GitHub checks follow those reviews; no remote result is claimed here.
+**Whole-wave implementation acceptance — 2026-10-11.** Two NEW complete clean cumulative
+main→development review rounds accepted source head `d4b2566b` against `f267bb0d`. Every round
+covered all 501 cumulative paths: 91 money/core/shared, 62 LLM/wire/usage-tooling and 348
+storage/CLI/replay/docs/archive identities. The 177 deleted archival identities are distinct
+from the 181 exact retained local originals. All six complete reports found zero actionable
+findings; neither earlier scoped acceptance nor author controls supplied independent review
+credit.
+
+| Round | Independent reviewers | Fresh unchanged whole-file cohorts | Additional evidence |
+| --- | --- | --- | --- |
+| R1 | Money: GPT-6 Astra/xhigh; LLM and storage: GPT-6.1 Sol/xhigh. | Money 74 files / 2,330 passed; LLM 36 / 1,301 passed and 11 established skips; storage 59 / 960 passed. | Three independent actual-Anthropic-SDK→engine→native-SQLite controls; fresh source-boundary controls; native CUT/SIGKILL/close joins and six-process frozen replay. |
+| R2 | Money and storage: GPT-6.1 Sol/xhigh; LLM: GPT-6 Astra/xhigh. | The same complete file/case inventories passed freshly, with the same 11 LLM skips and no failures. | Independent mixed-producer/receipt/resume sequence; four actual OpenAI/DeepSeek generate/stream deadline/repair controls; fresh source-boundary controls, native crash/reopen and six-process frozen replay. |
+
+The parent read full reports, auditor and probe source and independently checked every assigned
+path, all 1,288 developer/physically copied files, HEAD/logical index, 457 installed packages /
+21,013 dependency files, complete case identities/statuses, actual module-body PID/thread-zero/
+raw-SHA witnesses, native-addon test contexts, all four primary invoked run/session × capped/
+uncapped CUT/SIGKILL schedules, worker readiness/closure, frozen Git blobs, exact restoration
+and full artifact seals. Both rounds' storage cohorts closed all 69 native children, including
+42 SIGKILL closures; each fresh replay closed all six workers and retained the 16 strict
+prefixes / two genuine legacy positives / three isolated discriminators / eight old-session
+operations. Global freezes were released only after all three complete reports, explicit
+partition releases and the parent's full raw audit.
+
+Report metadata qualifications in R1 distinguish bare versus enforced LCOV, sibling frozen
+replay ownership and workspace versus root script-manifest scope; raw sealed product results
+are unchanged. Setup/import diagnostics receive no semantic credit. Reviewer cohorts, extra
+probes, successive rounds and author mutation phases are not added together. The full
+21-mechanism command above is actual author execution with independent raw review, not a
+claimed new whole-run execution by every reviewer. Wire-runner scratch is discarded; its
+retained log records semantic failures/restoration, while independent whole-file SDK runs
+retain complete case/source/runtime evidence.
+
+Steps 1–7, CR-81, CR-82 and ADR-0087 §1 are accepted on `development`; the implementation
+register is **49/51 there and 47/51 on main** until W8 merges. The actual source gates at
+`ca5de9f8` precede only canonical documentation/acceptance changes. Publication and exact
+published-head GitHub checks follow; local evidence does not claim a remote result. Existing
+approved residuals, independent native-media basis and platform/provenance limits are
+unchanged. No new user decision, credential, provider capture or paid call is required.
 
 ### CR-81 — Conformance cassettes do not verify the request wire contract · High · ✅ CLOSED on `development` 2026-10-10
 **Accepted on `development`, 2026-10-10; publication pending.** The [Step 3 register](#w8-step-3-canonical-sdk-http-matrix--2026-10-10)
@@ -4153,8 +4195,12 @@ lost tool result on continuation, or a broken system-instruction mapper leaves t
 **Fix + acceptance.** Match the canonical request. Mutating the request lowering must redden the suite — proven
 by actually applying at least three distinct mutations, not by assertion count.
 
-### CR-82 — Missing or partial usage can be read as zero · High
-Carried from our own backlog and re-confirmed by the reviews.
+### CR-82 — Missing or partial usage can be read as zero · High · ✅ CLOSED on `development` 2026-10-11
+**Accepted on `development`; merge to `main` pending.** The [whole-W8 closing register](#w8-closing-register--2026-10-11)
+joins ADR-0104's eight acceptance groups, all seven steps, permanent SDK/engine/SQLite/reader
+controls, 21 causal mechanisms and two NEW complete whole-wave review rounds. Partial/missing
+usage never enters actual pricing as zero; durable uncertainty qualifies every known-cost total.
+The pre-W8 defect was carried from our own backlog and re-confirmed by the reviews.
 **Fix + acceptance.** Missing usage is *unknown*, never zero, on every path that reaches a cost total.
 
 ---
@@ -4383,17 +4429,19 @@ This phase is done when **all** of the following hold:
 7. **A closing register in this file states, per item, the code that closes it** — verified by reading the code,
    not by trusting the mark. Wave 1's completion claim was wrong twice before this discipline was adopted.
 
-**Where the criteria stand — 2026-10-10, W7 merged to `main` as PR #90.** Scored honestly, including phase-level obligations still open.
+**Where the criteria stand — 2026-10-11, W8 accepted on `development`; PR merge pending.**
+W7 is already on `main` as PR #90. Implementation criteria below are satisfied on `development`
+with existing approved deferrals; Phase 2.6.5 publication/maintainer merge remains open.
 
 | # | Criterion | Status |
 |---|---|---|
 | 1 | every non-deferrable item closed, break-verified | ✅ met on `main` — CR-96/97 merged with W7; per-item causal controls and the accepted closing register are below |
-| 2 | every other item closed, or deferred with severity + trigger + the claim it narrows | ⬜ open for W8 — CR-81/82 and ADR-0087 §1; approved CR-70/93 and other scoped residuals retain severity, trigger and narrowed claim in deferred-tasks.md |
+| 2 | every other item closed, or deferred with severity + trigger + the claim it narrows | ✅ met on `development` — CR-81/82 and ADR-0087 §1 accepted in the W8 closing register; approved CR-70/93 and other scoped residuals retain severity, trigger and narrowed claim in deferred-tasks.md; W8 merge to `main` pending |
 | 3 | each `W1` item has an accepted ADR, landing in dependency order | ✅ met — ADR-0078–ADR-0084 |
-| 4 | every canonical document says what the code now does | ⬜ phase open for W8 — ADR-0087 gap-free stream obligation remains; W7's complete per-document checklist is reconciled and independently reviewed |
+| 4 | every canonical document says what the code now does | ✅ met on `development` — W8 canonical landing and two complete whole-wave reviews join consumption, usage, durability and readers; W7's checklist is reconciled; W8 merge to `main` pending |
 | 5 | five security-review sittings recorded, each with its adversarial test | ✅ **five recorded by 2026-10-02** — the fifth is [`history.db` at rest](../../standards/security-review.md#sitting-historydb-at-rest--cr-71-cr-97-2026-10-02) (`CR-71`'s invariant 1 and `CR-97`), with adversarial controls and qualified W7 acceptance records. The four earlier sittings are — [prompt/trust provenance](../../standards/security-review.md#sitting-prompt-and-trust-provenance--cr-01cr-03-cr-10cr-17-2026-09-06), [hostile MCP](../../standards/security-review.md#sitting-the-hostile-mcp-boundary--cr-40cr-42-2026-09-06), [media bytes](../../standards/security-review.md#sitting-media-bytes--cr-50-cr-53-cr-54-2026-09-02), [provider/config trust](../../standards/security-review.md#sitting-provider-and-config-trust--cr-80-2026-09-06). Three were written after their wave merged, which is late and is said so in each |
-| 6 | `pnpm run ci` **and** `pnpm coverage` both exit 0, checked by exit code | ✅ W7 source gates verified by exit code; exact source/check heads and final harness results are recorded below and in the final review |
-| 7 | a closing register per item, per wave | ✅ W1–W7 recorded on `main`; W7 merged in [PR #90](https://github.com/HodeTech/Relavium/pull/90) on 2026-10-10; W8 remains open |
+| 6 | `pnpm run ci` **and** `pnpm coverage` both exit 0, checked by exit code | ✅ actual W8 `pnpm run ci` and bare `pnpm coverage` exit 0 at `ca5de9f8`; the closing register records exact inventories/floors, separate enforced coverage and subsequent documentation-only acceptance delta |
+| 7 | a closing register per item, per wave | ✅ W1–W7 recorded on `main`; W7 merged in [PR #90](https://github.com/HodeTech/Relavium/pull/90); the [W8 closing register](#w8-closing-register--2026-10-11) is accepted on `development`; W8 merge pending |
 
 ## What a later architecture review contributed — and what it did not
 

@@ -286,3 +286,12 @@ owns these details; the [W8 Step 1 register](../roadmap/phases/phase-2.6.5-core-
 owns implementation/review acceptance. This implements §1's consumption repair only. Both
 concurrent-readiness schedules in the preceding correction remain the existing approved
 exact-capacity residual; no emission permit or stronger capacity guarantee is introduced.
+
+### W8 §1 whole-wave acceptance — 2026-10-11
+
+The [W8 closing register](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w8-closing-register--2026-10-11)
+accepts §1 on `development` after the whole-wave source gates and two NEW complete cumulative
+reviews. Run/session consumption and departure controls retain their scoped acceptance.
+Publication checks and maintainer review/merge gate landing on `main`. Both concurrent-readiness
+exact-capacity schedules remain the existing approved residual; this note neither introduces
+an emission permit nor strengthens that capacity claim.

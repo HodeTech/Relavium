@@ -68,44 +68,38 @@ closes all twelve steps and CR-71/72/94/96/97/98 on `main`. At reviewed head `69
 five-job GitHub CI runs and SonarCloud passed; all four supplemental Sonar labels closed.
 This evidence belongs to the reviewed head, not to a future W8 change.
 
-**W8 — Provider and conformance: Steps 1–6 accepted on `development`; Step 7 remains open.**
-The [seven-step plan](phases/phase-2.6.5-core-reliability-remediation.md#w8-preflight-and-proposed-execution-plan--2026-10-10)
-and [Accepted ADR-0104](../decisions/0104-unknown-provider-usage-is-durable-cost-uncertainty.md)
-were approved by the maintainer on 2026-10-10. The submitted ADR review is dispositioned;
-two fresh complete cumulative rounds returned zero actionable findings at `292ccccd` before approval.
-Detailed review records are now local and Git-ignored; acceptance remains in the linked plan.
-The consumption-mode obligation, strict exchange substrate and actual-SDK request matrix are
-accepted. Step 5 unknown-usage activation has two NEW complete clean cumulative reviews; Step 6
-controls have two FURTHER NEW complete clean rounds, R4–R5. Whole-W8 validation remains open. [The Step 2 register](phases/phase-2.6.5-core-reliability-remediation.md#w8-step-2-expected-exchange-substrate--2026-10-10)
-records three complete cumulative review rounds and their verified corrections. The obligations are:
+**W8 — Provider and conformance: all seven implementation/review steps accepted on `development`, 2026-10-11.**
+The [closing register](phases/phase-2.6.5-core-reliability-remediation.md#w8-closing-register--2026-10-11)
+joins the approved seven-step plan, Accepted ADR-0104's eight groups, actual source gates and
+two NEW complete independent whole-wave rounds. Detailed review working records remain local
+and Git-ignored; 181 original files are unchanged and historical citations are commit-pinned.
 
-1. **ADR-0087 §1:** declare primary-stream consumption for run and session handles; an
-   un-pulled stream must preserve its terminal, and a subscribe-only handle must buffer nothing.
-   **Accepted after three NEW cumulative rounds**, including the departure and living-status
-   corrections; publication to `main` is pending. [The Step 1 register](phases/phase-2.6.5-core-reliability-remediation.md#w8-step-1-consumption-modes--2026-10-10)
-   records exact heads, causal controls and all review dispositions.
-2. **CR-81:** make conformance cassettes verify the canonical wire request, including method,
-   path, headers and body; prove at least three distinct lowering mutations fail the suite.
-   **Accepted after two NEW complete cumulative rounds.** The [Step 3 register](phases/phase-2.6.5-core-reliability-remediation.md#w8-step-3-canonical-sdk-http-matrix--2026-10-10)
-   joins the 24-case actual-SDK matrix and three independently reproduced lowering controls.
-3. **CR-82:** preserve missing or partial provider usage as unknown on every cost-total path.
-   The [Step 4 register](phases/phase-2.6.5-core-reliability-remediation.md#w8-step-4-usage-evidence-and-session-coverage-foundations--2026-10-10)
-   accepts strict inert evidence and SQLite revision/acknowledgement foundations after two NEW
-   complete cumulative review rounds. The [Step 5 register](phases/phase-2.6.5-core-reliability-remediation.md#step-5-combined-acceptance--2026-10-11)
-   accepts production pending/settlement, evidence migration and qualified readers after R17–R18.
-   The [Step 6 register](phases/phase-2.6.5-core-reliability-remediation.md#step-6-combined-acceptance--2026-10-11)
-   accepts permanent controls after R4–R5. Step 7 whole-W8 checks/reviews/publication still gate CR-82.
+1. **ADR-0087 §1 accepted:** explicit run/session consumption modes, preserved iterated delivery,
+   zero primary buffer for subscribe-only handles and typed misuse/departure checks.
+2. **CR-81 closed:** strict canonical expected exchanges, actual installed-SDK HTTP matrix and
+   three independently reproduced production-lowering removals.
+3. **CR-82 closed:** complete/partial/missing native evidence, acknowledged pending before
+   invocation, exact once-only settlements/late receipts, sticky old-writer uncertainty and
+   qualified human/JSON totals. The permanent inventory has 21 causal mechanisms across all
+   eight ADR-0104 groups; native media retains its independent volume basis.
 
-The implementation register is **48/51 on `development`**; `main` remains **47/51** until W8
-lands. CR-81 is accepted; CR-82 remains W8 work. CR-70 (cross-turn tool-history carrying)
-and CR-93 (tenant-scoped catalog/learning) retain their approved triggers in
-[deferred-tasks.md](deferred-tasks.md).
-ADR-0087 §1 is an additional obligation outside that 51-item denominator. Existing scoped
-residuals, including CR-95's long continuation, remain recorded there. No new deferral is created.
+Actual `pnpm run ci`, bare `pnpm coverage`, enforced coverage, wire/usage mutations and offline
+smokes passed at `ca5de9f8`; later acceptance changes are documentation only. The closing register
+qualifies exact counts, skips, cache use and limits. Published-head checks are separate and
+belong to the PR; local evidence does not claim remote CI or live-provider invoices.
 
-After W8, certify the full Phase 2.6.5 exit gate before opening
-[Wave 2 — Shut the doors](#wave-2--shut-the-doors) of the 2.5.5/2.6 execution order.
-W7 completion has no credential, capture, billing or maintainer-decision prerequisite left.
+The implementation register is **49/51 on `development`**; `main` remains **47/51** until the W8 PR
+merges. ADR-0087 §1 is outside the 51-item denominator. CR-70 (cross-turn tool-history carrying),
+CR-93 (tenant-scoped catalog/learning), CR-95's long continuation and other existing scoped
+residuals retain their approved severity, triggers and narrowed claims in
+[deferred-tasks.md](deferred-tasks.md); no new deferral is introduced.
+
+The Phase 2.6.5 implementation exit criteria are reconciled individually in the closing register;
+publication checks and maintainer review/merge remain the landing gate. After that gate, the
+next work is [Wave 2 — Shut the doors](#wave-2--shut-the-doors) in the joint 2.5.5/2.6 order:
+filesystem jail, secrets/config trust, persistence security and 2.5.5 certification. This is
+separate from the already merged Phase 2.6.5 W2 liveness wave. No new provider/key/billing or
+maintainer-decision prerequisite is pending for W8.
 
 ## Historical W7 implementation checkpoints
 
@@ -479,7 +473,7 @@ flowchart TD
     W0["Wave 0 — One true baseline<br/>baseline ✅ · CI truth · numbers"]
     W1["Wave 1 — Stop the bleeding ✅<br/>3 CRITICALs · cost cap · ADR-0074"]
     LEDGER["#W15-1 — realized-cost ledger ✅<br/>ADR-0076 + ADR-0077"]
-    P265["Phase 2.6.5 — Core reliability<br/>51 CR items · 8 P0 blockers behind ADR-0078–0084<br/>W0+W1+W2 merged · W3 merged with a live blocker<br/>W4 merged — the hostile-MCP class, ADR-0088<br/>W5 merged — media correctness, ADR-0089+0090<br/>W6 merged — authoring correctness, ADR-0091–0094<br/>W7 merged — PR #90 · W8 Steps 1–6 accepted on development"]
+    P265["Phase 2.6.5 — Core reliability<br/>51 CR items · 8 P0 blockers behind ADR-0078–0084<br/>W0+W1+W2 merged · W3 merged with a live blocker<br/>W4 merged — the hostile-MCP class, ADR-0088<br/>W5 merged — media correctness, ADR-0089+0090<br/>W6 merged — authoring correctness, ADR-0091–0094<br/>W7 merged — PR #90 · W8 accepted on development; merge pending"]
     W2["Wave 2 — Shut the doors<br/>fs jail · secrets · config trust<br/>certifies 2.5.5 EXIT 1–3"]
     W3["Wave 3 — Clear the ground<br/>god-file decomposition · CLI net"]
     W4a["Wave 4a — The spine<br/>2.6.A/D/H/K + 2 ADRs"]

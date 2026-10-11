@@ -712,3 +712,14 @@ Anthropic final-authority and canonical lifetime-wording corrections. Permanent 
 accepted on `development`; the earlier dated Step 6 pending statements are historical.
 Step 7's actual whole-wave gates, two NEW independent whole-W8 rounds and publication still
 gate CR-82 and final wave acceptance. No new decision or deferral is introduced.
+
+### W8 whole-wave implementation acceptance — 2026-10-11
+
+All eight acceptance groups and all seven implementation/review steps are independently accepted on
+`development`. The [closing register](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w8-closing-register--2026-10-11)
+joins actual whole CI/bare and enforced coverage, permanent controls, 21 copied-source causal
+mechanisms and two NEW complete cumulative main→development review rounds. Earlier dated
+pending statements describe their checkpoint, not current implementation status. CR-82 closes
+on `development`; publication checks and maintainer review/merge still gate landing on `main`.
+The approved evidence/identity/arithmetic/native-media boundaries and existing deferrals are
+unchanged. No new decision, dependency, provider invoice, paid call or platform result is claimed.
