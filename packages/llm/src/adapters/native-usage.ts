@@ -232,6 +232,7 @@ export class AnthropicUsageAccumulator {
   readonly #values: Record<string, unknown> = {};
   readonly #invalid = new Set<string>();
   observe(raw: unknown, authoritative: boolean): UsageEvidence {
+    let currentOutputObserved = false;
     for (const key of [
       'input_tokens',
       'output_tokens',
@@ -249,11 +250,12 @@ export class AnthropicUsageAccumulator {
         continue;
       }
       this.#invalid.delete(key);
+      if (key === 'output_tokens') currentOutputObserved = true;
       if (key === 'thinking_tokens')
         this.#values['output_tokens_details'] = { thinking_tokens: value };
       else this.#values[key] = value;
     }
-    const evidence = anthropicUsage(this.#values, authoritative);
+    const evidence = anthropicUsage(this.#values, authoritative && currentOutputObserved);
     if (this.#invalid.size === 0) return evidence;
     if (evidence.kind === 'missing')
       return ownUsageEvidence({ kind: 'missing', reason: 'invalid_fields' });
