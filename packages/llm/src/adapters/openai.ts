@@ -1280,17 +1280,32 @@ async function* streamChunks(
   }
   try {
     for await (const chunk of work === undefined ? sdkStream : work.ownIterator(sdkStream)) {
+      // Own counters before content/choice access can fail. Native audio presence remains an
+      // applicable billing axis even when a later cumulative frame omits or repairs its value.
+      const nativeUsage = chunk.usage;
+      if (nativeUsage) {
+        applicable = {
+          ...applicable,
+          inputAudio:
+            applicable.inputAudio ||
+            nativeFieldPresent(nativeUsage.prompt_tokens_details, 'audio_tokens'),
+          outputAudio:
+            applicable.outputAudio ||
+            nativeFieldPresent(nativeUsage.completion_tokens_details, 'audio_tokens'),
+        };
+        usage = retainUsageObservation(
+          usage,
+          mapUsage(nativeUsage, provider === 'deepseek', applicable),
+        );
+        // A newly owned observation is nonfinal until current or prior terminal metadata proves
+        // authority. Keep that distinction if malformed choices throw during verification.
+        authoritativeUsage = state.sawTerminal;
+        authoritativeUsage =
+          state.sawTerminal || chunk.choices.some((choice) => choice.finish_reason != null); // the include_usage chunk arrives last, with empty choices
+      }
       if (chunk.choices.some((choice) => nativeFieldPresent(choice.delta, 'audio'))) {
         applicable = { ...applicable, outputAudio: true };
         usage = requireMediaUsage(usage, applicable);
-      }
-      if (chunk.usage) {
-        usage = retainUsageObservation(
-          usage,
-          mapUsage(chunk.usage, provider === 'deepseek', applicable),
-        );
-        authoritativeUsage =
-          state.sawTerminal || chunk.choices.some((choice) => choice.finish_reason != null); // the include_usage chunk arrives last, with empty choices
       }
       for (const out of foldChatChunk(chunk, state)) {
         yield out;
