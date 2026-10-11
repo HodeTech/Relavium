@@ -146,6 +146,7 @@ describe('native usage evidence through actual offline SDK HTTP', () => {
           const fetch = vi.fn(() => Promise.resolve(response(provider, streaming, raw)));
           expect(
             (await evidence(adapter(provider, fetch), request(provider), streaming)).kind,
+            'USAGE_CAUSAL_NATIVE_OMISSION',
           ).toBe('missing');
           expect(fetch).toHaveBeenCalledTimes(1);
         }

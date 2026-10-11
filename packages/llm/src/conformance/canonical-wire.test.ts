@@ -216,7 +216,7 @@ const expectedUsage: Record<WireProvider, UsageEvidence> = {
 };
 
 function assertUsage(provider: WireProvider, result: Pick<LlmResult, 'usage'>): void {
-  expect(result.usage).toEqual(expectedUsage[provider]);
+  expect(result.usage, 'WIRE_CAUSAL_USAGE_EVIDENCE').toEqual(expectedUsage[provider]);
 }
 
 describe('canonical wire matrix through installed SDK HTTP (W8 Step 3)', () => {

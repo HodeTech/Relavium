@@ -19,7 +19,9 @@ The Anthropic, OpenAI-compatible (OpenAI + DeepSeek) and Gemini adapters, `Fallb
 `CostTracker` and offline conformance suite are implemented. W7's request ownership and
 overflow work is merged. W8's internal [expected-exchange harness](src/conformance/README.md)
 provides strict request matching and a 24-case canonical actual-SDK HTTP matrix, with
-reproducible production-lowering mutation controls. Step 3 is independently accepted on `development`;
-honest missing/partial usage integration and whole-W8 publication remain open. See
+reproducible production-lowering mutation controls. All seven W8 implementation steps, including
+honest missing/partial usage and durable cost uncertainty, are independently accepted on
+`development`; CR-81 and CR-82 are closed there. PR #92 remains unmerged. Its maintainer-review
+corrections and fresh publication gates are tracked separately from those attributed checkpoints. See
 [current work](../../docs/roadmap/current.md#next-work--phase-265-w8).
 Existing response fixtures alone do not prove the request wire contract.

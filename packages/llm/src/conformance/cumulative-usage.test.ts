@@ -76,7 +76,7 @@ describe('installed SDK cumulative evidence never erases independent observation
               : last?.type === 'error'
                 ? last.error.usage
                 : undefined;
-          expect(usage).toMatchObject({
+          expect(usage, 'USAGE_CAUSAL_RETAINED_COUNTERS').toMatchObject({
             kind: 'partial',
             known: {
               inputTokens: 10,
@@ -84,9 +84,14 @@ describe('installed SDK cumulative evidence never erases independent observation
               outputTokens: invalid || provider === 'gemini' ? 3 : 7,
             },
           });
-          if (invalid) expect(usage).toMatchObject({ reason: 'invalid_fields' });
+          if (invalid)
+            expect(usage, 'USAGE_CAUSAL_RETAINED_COUNTERS').toMatchObject({
+              reason: 'invalid_fields',
+            });
           else if (provider === 'gemini')
-            expect(usage).toMatchObject({ known: { reasoningTokens: 0 } });
+            expect(usage, 'USAGE_CAUSAL_RETAINED_COUNTERS').toMatchObject({
+              known: { reasoningTokens: 0 },
+            });
           expect(Object.isFrozen(usage)).toBe(true);
         });
       }

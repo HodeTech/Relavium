@@ -38,7 +38,7 @@ describe('every evidence arm is owned before the terminal confirming read', () =
         const end = chunks.at(-1);
         const observed =
           end?.type === 'stop' ? end.usage : end?.type === 'error' ? end.error.usage : undefined;
-        expect(observed).toEqual(expected);
+        expect(observed, 'USAGE_CAUSAL_OWNED_TERMINAL').toEqual(expected);
         expect(Object.isFrozen(observed)).toBe(true);
       });
     }

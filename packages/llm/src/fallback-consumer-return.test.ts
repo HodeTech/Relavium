@@ -88,7 +88,7 @@ describe('consumer return settles the engaged attempt', () => {
       await Promise.all(h.retained);
       expect(p.finalized()).toBe(1);
       expect(p.resumed()).toBe(terminal === 'text' ? 0 : 1);
-      expect(h.records).toHaveLength(1);
+      expect(h.records, 'USAGE_CAUSAL_CONSUMER_SETTLEMENT').toHaveLength(1);
       expect(h.records[0]).toMatchObject({
         invocation,
         providerInvoked: true,
@@ -104,7 +104,7 @@ describe('consumer return settles the engaged attempt', () => {
       }
       await close(iterator);
       expect(await iterator.next()).toEqual({ done: true, value: undefined });
-      expect(h.records).toHaveLength(1);
+      expect(h.records, 'USAGE_CAUSAL_CONSUMER_SETTLEMENT').toHaveLength(1);
       expect(h.stream).toHaveBeenCalledTimes(1);
     });
   }
@@ -175,7 +175,7 @@ describe('consumer return settles the engaged attempt', () => {
     await close(iterator);
     await Promise.all(h.retained);
     expect(fetch).toHaveBeenCalledTimes(1);
-    expect(h.records).toHaveLength(1);
+    expect(h.records, 'USAGE_CAUSAL_CONSUMER_SETTLEMENT').toHaveLength(1);
     expect(h.records[0]).toMatchObject({
       invocation,
       usage: complete,
@@ -216,7 +216,7 @@ describe('consumer return settles the engaged attempt', () => {
       joined = true;
     });
     try {
-      expect(h.records).toHaveLength(1);
+      expect(h.records, 'USAGE_CAUSAL_CONSUMER_SETTLEMENT').toHaveLength(1);
       expect(h.records[0]?.usage).toEqual({ kind: 'missing', reason: 'interrupted' });
       await Promise.resolve();
       expect(finalized).toBe(false);
@@ -226,7 +226,7 @@ describe('consumer return settles the engaged attempt', () => {
       await joining;
     }
     expect(finalized).toBe(true);
-    expect(h.records).toHaveLength(1);
+    expect(h.records, 'USAGE_CAUSAL_CONSUMER_SETTLEMENT').toHaveLength(1);
     expect(h.record).not.toHaveBeenCalled();
   });
 });

@@ -127,7 +127,7 @@ describe('held terminal accounting survives the real attempt race', () => {
           expect(activeTimers).toBe(0);
           expect(resumed).toBe(quantity !== 'invalid');
           expect(records[0]?.contentReceived).toBe(true);
-          expect(records[0]?.usage).toEqual(
+          expect(records[0]?.usage, 'USAGE_CAUSAL_HELD_TERMINAL').toEqual(
             quantity === 'invalid'
               ? { kind: 'missing', reason: 'not_reported' }
               : { kind: 'complete', usage: expected },
