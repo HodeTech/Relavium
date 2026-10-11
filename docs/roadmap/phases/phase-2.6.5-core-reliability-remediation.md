@@ -4066,6 +4066,83 @@ coverage, canonical landing, two NEW whole-W8 rounds and publication still gate 
 whole-wave acceptance. The register remains **48/51 on development, 47/51 on main**.
 Existing approved residuals are unchanged; no user/provider/key/billing decision is pending.
 
+### W8 closing register — 2026-10-11
+
+**Steps 1–6 are accepted on `development`; whole-wave review and publication remain open.**
+This register joins their permanent evidence with Step 7's fresh gates. It does not yet close
+CR-82 or claim a merge to `main`. The register remains 48/51 on development and 47/51 on main.
+ADR-0087 §1 is an additional obligation, not a 52nd CR item. No user decision, provider capture,
+key, billing setup or paid call is pending.
+
+| Obligation | Implementation and permanent controls | Causal acceptance |
+| --- | --- | --- |
+| ADR-0087 §1 | Explicit consumption on both handles, lossless iterated delivery, subscribe-only zero primary buffer, typed misuse and paused departure checks; shipping CLI constructors/consumers. | [Step 1](#w8-step-1-consumption-modes--2026-10-10): capacity-1 start/resume, every terminal/gate/media path and independently reproduced guard-order/consumption removals. Exact-capacity admission remains the separately approved residual. |
+| CR-81 | [Strict expected exchanges and actual installed-SDK HTTP matrix](../../../packages/llm/src/conformance/README.md), with static expectations independent of adapter lowering. | [Steps 2–3](#w8-step-3-canonical-sdk-http-matrix--2026-10-10); [three distinct production-lowering controls](../../../tools/wire-conformance/README.md), semantic rejection and byte-exact restoration. |
+| ADR-0104 group 1 | Native field presence, validated complete evidence and dialect-specific gross/cache split before defaults. | Whole-zero, required-counter zero and gross-as-net removals; actual SDK generate/stream evidence controls. |
+| Group 2 | Owned current observations across cumulative frames, held terminal, confirming read, errors and consumer return. | Borrowed-terminal, prior-observation, terminal-callback and consumer-return removals; permanent actual-SDK final-output and native-overflow controls preserve missing versus explicit zero. |
+| Group 3 | Acknowledged pending before capped/uncapped run/session invocations, including failover and summariser paths. | Four actual invoked CUT/SIGKILL controls, crash/reopen, lock/exhaustion, cancellation and credentials-between-marker-and-invocation controls. |
+| Group 4 | Single actual writer, durable dispositions, exact registered receipt identity, observer origin and physical accounting facts. | Usage-less early return, omitted disposition, receipt-owner/identity, observer and evidence-order removals; native SQLite/engine money barriers and once-only late refinement. |
+| Group 5 | Once-per-run owner basis and strict replay for all three new discriminators. | Actual frozen ordinary-gate engine before the basis oracle, genuine legacy positive, 16 strict prefixes / two legacy positives / three isolated discriminators. |
+| Group 6 | Database mutation revisions, transactional acknowledgements and sticky old-writer taint. | Eight actual old-writer operations, subsequent new writes and estimate release; native transaction rollback and predecessor-created legacy controls. |
+| Group 7 | Every human/JSON total qualifies known money with coverage and separate missing-price information; native media retains its authored/frozen volume basis. | Six reader groups, shipping persister/reader failures, fractional native-media positive and unqualified/free-zero removals. |
+| Group 8 | Incremental coverage retirement and indexed exact three-key receipt lookups. | Shared/native 100,000-settlement controls; completed-identity retirement and outcome-preserving query mutation, with activation positive and no extra retired-receipt SQL. |
+
+The eight groups join [ADR-0104](../../decisions/0104-unknown-provider-usage-is-durable-cost-uncertainty.md#acceptance-and-landing-obligations),
+[Step 5 activation](#step-5-combined-acceptance--2026-10-11),
+[Step 6 independent acceptance](#step-6-combined-acceptance--2026-10-11) and the
+[21-mechanism executable control inventory](../../../tools/usage-coverage-controls/README.md).
+Each copied-source mechanism uses the same whole fixed/mutated/restored case inventory;
+collection, timeout or readiness failure earns no semantic credit. Source selection alone is
+not runtime execution. Overlapping cohorts, probes and successive rounds are not added together.
+
+**Canonical landing.** Usage evidence and Phase-1 implementer compatibility live in the
+[LLM seam](../../reference/shared-core/llm-provider-seam.md#6-usage); the concrete revision/trigger
+transition table lives in the [database schema](../../reference/shared-core/database-schema.md#session-usage-coverage-foundations--adr-0104).
+The [event contract](../../reference/contracts/sse-event-schema.md), shared schemas/constants,
+[runner](../../reference/shared-core/agent-runner.md), [session contract](../../reference/shared-core/agent-session-spec.md)
+and [CLI reference](../../reference/cli/commands.md) describe the implemented lifecycle and qualified totals.
+Affected ADRs have dated forward notes; accepted decision bodies are preserved. Historical raw
+JSON is not retroactively enriched. Detailed review records are ignored/local; 181 original files
+remain byte-identical and 343 historical citations resolve to 147 commit-pinned archived targets.
+
+Shipping host acceptance covers CLI workflow/chat/Home. Native media keeps its separate volume
+basis; portable predecessor dependencies are digest-local captures, not registry attestation,
+and native SQLite uses the installed ABI. No live-provider invoice, PostgreSQL parity, Windows
+execution or remote CI result follows from local evidence. Approved CR-70/CR-93, exact-capacity
+and other recorded scoped residuals remain unchanged; no new deferral is introduced.
+
+
+**Fresh Step 7 author gates — source head `ca5de9f8`.** All commands below exited 0;
+HEAD, logical index, developer sources and exact log hashes were checked. Coverage artifacts
+were retained separately before the second coverage invocation replaced the working report.
+
+| Gate | Actual result |
+| --- | --- |
+| `pnpm run ci` | Lint/typecheck/test 23/23, zero cached tasks; 508 files, 10,928 passed and 12 established skips. Build/format 7/7, five cached. Migration sync, tooling checks, test isolation, seam/engine/dependency/bundle fences and compiled CLI/overflow/replay smokes passed. Default replay retained 16 strict prefixes, two legacy positives, three isolated discriminators and eight old-session operations. |
+| Bare `pnpm coverage` | Exit 0 with all three package floors enforced. Lines/branches: core 96.35%/92.92%, LLM 97.66%/94.61%, MCP 96.18%/90.57%. Shared/DB remain measured without a floor. |
+| `pnpm coverage:enforced` | Exit 0 under the existing required-CI LLM/MCP policy; core remains measured. This is separately reported and does not substitute for bare coverage. |
+| CI-unset whole `chat-projection.test.ts` | 106/106 passed, including the local-only shape control. This replaces that file's 105-pass/one-skip CI result; overlapping cases are not added together. |
+| `pnpm check:wire-mutations` | Unchanged 24-case actual-SDK matrix passed, then three distinct production-lowering mutations failed their semantic oracle, with byte-exact restoration and 24/24 passing after each. |
+| `pnpm check:usage-mutations` | All 21 declared mechanisms across eight groups completed fixed/semantic-red/exact-restored trios with identical whole inventories; the separate 17-file permanent group passed 409/409. |
+
+The parent independently checked the usage runner's raw complete cases, source variants and
+exact restorations, all 991 captured current source files, 457 packages/21,013 installed files,
+25,588 current module-body records, separate loader preparation, frozen-driver phase inventories,
+93 native child readiness/close joins and all 334 observed closed PIDs. All four invoked
+run/session × capped/uncapped CUT/SIGKILL schedules joined in each causal pending variant.
+The original crash/receipt/lock/scale controls ran unchanged. Setup or timeout failure supplies
+no semantic acceptance; the complete invocation had none. These are author controls, not
+independent whole-wave reviews or portable dependency-origin attestations.
+
+The 12 ordinary skips are eight live/nightly LLM cases, three absent legacy replay capabilities
+and one CI-only performance-shape skip; the last passed in the separate whole local file.
+Neither coverage run, repeated mutation phase nor reviewer probe inflates the ordinary total.
+
+**Whole-wave acceptance gate.** Two NEW independent complete cumulative main→development
+review rounds follow this canonical landing. CR-82 and whole-W8 acceptance remain open until
+all partitions finish and their raw evidence is independently audited. Publication and exact
+published-head GitHub checks follow those reviews; no remote result is claimed here.
+
 ### CR-81 — Conformance cassettes do not verify the request wire contract · High · ✅ CLOSED on `development` 2026-10-10
 **Accepted on `development`, 2026-10-10; publication pending.** The [Step 3 register](#w8-step-3-canonical-sdk-http-matrix--2026-10-10)
 joins all four independent review verdicts and three causal lowering controls. The pre-W8 defect was:

@@ -795,8 +795,9 @@ business writer. Additive migration [`0019_regular_stingray.sql`](../../../packa
 adds `agent_sessions.usage_invocation_high_water` (safe integer, default zero, monotonic) and
 `session_usage_invocations.coverage_state` (`pending` or `incomplete`). The generated table rebuild
 copies existing inert invocation rows as `pending`; historical migrations and money are unchanged.
-`createSessionUsageStore` now brackets invocations with live receipt authority. Whole-W8/CR-82
-acceptance additionally requires the shipping host, crash, downgrade and every-reader controls.
+`createSessionUsageStore` now brackets invocations with live receipt authority. The
+[W8 closing register](../../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w8-closing-register--2026-10-11)
+owns shipping-host, crash, downgrade and every-reader evidence beyond this storage foundation.
 
 `createFreshSession` accepts a seed with identity, agent/context and creation metadata only. It
 refuses supplied historical totals/lifecycle/coverage fields and any physically existing id,

@@ -304,7 +304,8 @@ The earlier dated W7 status is historical. Measured request reuse, atomic multi-
 pre-send and single pre-content overflow recovery, finite frozen allowances and the CLI resume surface
 are implemented with scoped independent acceptance. The
 [closing register](../../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w7-closing-register--2026-10-10)
-tracks final whole-wave acceptance and approved limits; CR-82 and W8 remain open.
+tracks W7's final acceptance and approved limits. The
+[canonical roadmap](../../roadmap/current.md) owns subsequent W8 status.
 
 ## Usage evidence and durable coverage
 

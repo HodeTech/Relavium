@@ -398,7 +398,9 @@ automatic handoff remain step 8; frozen allowance consumers remain step 9. This 
 those later entry points have shipped merely because the seam now supports them.
 W8 replaces the earlier synthetic-zero adapter behavior with the explicit
 [usage-evidence contract](#6-usage). Admission estimates and prepared cap ownership stay separate
-from realized usage. CR-82 closure follows the W8 acceptance register.
+from realized usage. The
+[W8 closing register](../../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w8-closing-register--2026-10-11)
+owns CR-82 acceptance.
 
 > **`CapabilityFlags` is per-PROVIDER; a second, per-MODEL axis sits beside it (`CR-51`,
 > [ADR-0071](../../decisions/0071-models-dev-as-the-model-metadata-source.md) amendment).** The catalog's
@@ -1417,4 +1419,5 @@ The earlier dated W7 status is historical. Measured request reuse, atomic multi-
 pre-send and single pre-content overflow recovery, finite frozen allowances and the CLI resume surface
 are implemented with scoped independent acceptance. The
 [closing register](../../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w7-closing-register--2026-10-10)
-tracks final whole-wave acceptance and approved limits; CR-82 and W8 remain open.
+tracks W7's final acceptance and approved limits. The
+[canonical roadmap](../../roadmap/current.md) owns subsequent W8 status.
