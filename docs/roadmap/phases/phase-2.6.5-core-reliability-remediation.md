@@ -4318,6 +4318,19 @@ an independent consumption-only mutant also rejects all 24, so cleanup has not b
 All three original wire-lowering mutations remain red and restore byte-exactly to green. The
 finding-bearing round does not count as clean acceptance; two NEW complete rounds are required.
 
+**Increment 2 accepted — 2026-10-11, reviewed head `b7ad90ee`.** Two NEW independent complete
+cumulative rounds reviewed all 29 changed paths after the diagnostic correction; both returned
+zero findings. The first ran 1,025 cases (seven established skips), four-package strict checks,
+all three original wire mutations, and independent full-inventory evidence-demotion, mandatory
+consumption and 17-case consumer-return controls. The second ran 733 cases (seven established
+skips), four-package strict checks and changed-code lint; independently removed capability,
+receipt and constructor guards (48, three and two intended failures respectively), restored each
+green, and audited the retained diagnostic and relocated integration evidence against this head.
+M2, M4, M5 and the actionable evidence/receipt/consumer Low findings are closed in this increment.
+M1, price-gap semantics, the compatibility slot and the pending-count symptom have explicit
+contract-preserving qualifications above. Remaining increments and fresh whole-PR/publication
+gates remain open; this acceptance does not certify a merge or the unreviewed changes to come.
+
 ### CR-81 — Conformance cassettes do not verify the request wire contract · High · ✅ CLOSED on `development` 2026-10-10
 **Accepted on `development`, 2026-10-10; publication pending.** The [Step 3 register](#w8-step-3-canonical-sdk-http-matrix--2026-10-10)
 joins all four independent review verdicts and three causal lowering controls. The pre-W8 defect was:
