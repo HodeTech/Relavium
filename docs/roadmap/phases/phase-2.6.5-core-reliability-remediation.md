@@ -4362,6 +4362,18 @@ runs inside the existing `try/finally`; permanent human/JSON controls preserve t
 error and verify that native SQLite closes exactly once. The finding-bearing round is not
 clean acceptance. Two NEW complete cumulative review rounds remain required.
 
+**Increment 3 accepted — 2026-10-11, reviewed head `9bf268b6`.** Two NEW independent complete
+cumulative rounds reviewed all 23 paths after the cleanup correction; both returned zero findings.
+Each ran 160 permanent cases, independently reproduced SELECT/UPDATE/DELETE guard failures and
+restored the complete cohorts, and corroborated M8's 70/11/70 qualification. The first additionally
+ran eight new probes and six causal reversals; the second ran eleven probes and seven reversals,
+including an actual same-page WAL accounting tear when the read transaction is removed. Both
+independently verified exact sink-error preservation and native cleanup, tuple ordering, cached
+bindings, run isolation and nonterminal max accounting. M3, M6, M7 and the actionable DB/CLI Low
+findings are closed in this increment; M8 remains explicitly qualified rather than deferred.
+Tooling/document corrections and fresh whole-PR/publication gates remain open. No earlier-head
+CI result certifies those remaining changes.
+
 ### CR-81 — Conformance cassettes do not verify the request wire contract · High · ✅ CLOSED on `development` 2026-10-10
 **Accepted on `development`, 2026-10-10; publication pending.** The [Step 3 register](#w8-step-3-canonical-sdk-http-matrix--2026-10-10)
 joins all four independent review verdicts and three causal lowering controls. The pre-W8 defect was:
