@@ -9,7 +9,7 @@ describe('ADR-0104 invoked crash pending durability', () => {
         await atCut(surface, 'primary', 'invoked', cap, (state, barrier) => {
           expect(barrier.kind).toBe('CUT');
           expect(barrier.invocations).toBe(1);
-          expect(state.coverage).toEqual({
+          expect(state.coverage, 'USAGE_CAUSAL_CRASH_PENDING').toEqual({
             unverified: false,
             pendingInvocations: 1,
             unknownCalls: 0,

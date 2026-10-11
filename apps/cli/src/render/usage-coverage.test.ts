@@ -44,7 +44,9 @@ describe('usage coverage across live and persisted cost projections', () => {
     store.flush();
     expect(store.getSnapshot().state.unpricedCalls).toBe(2);
     expect(store.getSnapshot().state.usageCoverage).toEqual(complete);
-    expect(store.summaryText()).toContain('price unknown for 2 calls');
+    expect(store.summaryText(), 'USAGE_CAUSAL_REPORTED_UNCERTAINTY').toContain(
+      'price unknown for 2 calls',
+    );
     expect(store.summaryText()).not.toContain('free');
   });
   it('qualifies zero and positive known sums through pending, unknown and exact late settlement', () => {

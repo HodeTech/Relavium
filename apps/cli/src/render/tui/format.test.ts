@@ -28,7 +28,9 @@ describe('formatCostShort — coverage-qualified Home amounts', () => {
     expect(formatCostShort(0, complete)).toBe('free');
     expect(formatCostShort(100_000_000, complete)).toBe('$1.0000');
     expect(formatCostShort(5_000_000, complete)).toBe('$0.0500');
-    expect(formatCostShort(0, undefined)).toBe('$0.0000 known; usage unverified');
+    expect(formatCostShort(0, undefined), 'USAGE_CAUSAL_VERIFIED_FREE').toBe(
+      '$0.0000 known; usage unverified',
+    );
     expect(formatCostShort(0, { ...complete, pendingInvocations: 1 })).toBe(
       '$0.0000 known; 1 usage pending',
     );
