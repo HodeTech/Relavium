@@ -124,13 +124,7 @@ jobs:
       # regenerated via `pnpm --filter @relavium/db db:generate`, regenerating here produces
       # an uncommitted diff and fails — turning a silent stale-migration into a red check.
       - name: DB migration is in sync with the schema
-        run: |
-          pnpm --filter @relavium/db db:generate
-          if [ -n "$(git status --porcelain packages/db/drizzle)" ]; then
-            echo "::error::The committed @relavium/db migration is out of sync with src/schema.ts (or an upstream @relavium/shared enum the CHECKs derive from). Regenerate and commit: pnpm --filter @relavium/db db:generate"
-            git status --porcelain packages/db/drizzle
-            exit 1
-          fi
+        run: pnpm db:sync-check
 
       # Formatting is run, not argued (code-style-typescript.md). Via turbo so it caches.
       - name: Format check

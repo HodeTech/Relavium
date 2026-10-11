@@ -17,7 +17,11 @@ function run(command, args) {
   return spawnSync(command, args, { cwd: repoRoot, encoding: 'utf8', shell: false });
 }
 
-const controls = run(process.execPath, ['--test', 'tools/db-sync/portable-checks.test.mjs']);
+const controls = run(process.execPath, [
+  '--test',
+  'tools/db-sync/portable-checks.test.mjs',
+  'tools/db-sync/generate.test.mjs',
+]);
 if (controls.status !== 0 || controls.error !== undefined) {
   console.error(controls.stdout, controls.stderr, controls.error ?? '');
   process.exit(1);

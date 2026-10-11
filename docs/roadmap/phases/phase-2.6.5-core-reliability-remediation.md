@@ -4272,6 +4272,14 @@ SQL; the exact former qualified SQL fails at rename and rolls back the batch. Th
 unsupported-runtime observation above is thus reproduced and corrected, rather than waived.
 Independent acceptance of this increment and the remaining report dispositions are pending.
 
+Increment 1's first independent round rejects the initial line-based generation normalizer:
+real Drizzle controls reproduce an unhandled multiline CHECK and a rewritten multiline literal.
+The correction lexes the complete SQL, preserves literal/comment bytes and normalizes only
+identifier tokens within balanced CHECK expressions. Permanent controls also exercise the actual
+generation entrypoint, historical SQL/snapshot preservation and constraint behavior. The required
+GitHub DB gate now calls the same `db:sync-check` as local CI, including those controls.
+The finding-bearing round is not clean acceptance; two NEW complete independent rounds remain.
+
 ### CR-81 — Conformance cassettes do not verify the request wire contract · High · ✅ CLOSED on `development` 2026-10-10
 **Accepted on `development`, 2026-10-10; publication pending.** The [Step 3 register](#w8-step-3-canonical-sdk-http-matrix--2026-10-10)
 joins all four independent review verdicts and three causal lowering controls. The pre-W8 defect was:

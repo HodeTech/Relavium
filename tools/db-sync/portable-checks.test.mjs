@@ -35,3 +35,46 @@ test('every committed migration already has portable rebuild CHECKs', () => {
     assert.equal(portableRebuildChecks(source), source, name);
   }
 });
+
+test('multiline CHECKs preserve nested expressions and comments', () => {
+  const source = `CONSTRAINT "valid" CHECK(typeof("__new_example"."n") = 'integer'
+    /* CHECK("__new_example"."leave_this_comment") */
+    and ("__new_example" /* keep */ . "n" > 0));`;
+  assert.equal(
+    portableRebuildChecks(source),
+    `CONSTRAINT "valid" CHECK(typeof("n") = 'integer'
+    /* CHECK("__new_example"."leave_this_comment") */
+    and ( /* keep */  "n" > 0));`,
+  );
+});
+
+test('multiline literals containing constraint-like SQL remain byte-identical', () => {
+  const source = `CONSTRAINT "literal" CHECK(s <> 'prefix
+  CONSTRAINT "embedded" CHECK("__new_example"."n" > 0)
+suffix');`;
+  assert.equal(portableRebuildChecks(source), source);
+});
+
+test('quoted identifiers, unquoted identifiers and escaped literals retain their meaning', () => {
+  assert.equal(
+    portableRebuildChecks('CHECK(`__new_t`.`n` + [__new_t].[n] + __new_t.n > 0)'),
+    'CHECK(`n` + [n] + n > 0)',
+  );
+  const source = `-- CHECK("__new_t"."n")
+SELECT "__new_t"."n"; CHECK("__new_t"."s" <> 'it''s (CHECK)');`;
+  assert.equal(
+    portableRebuildChecks(source),
+    `-- CHECK("__new_t"."n")
+SELECT "__new_t"."n"; CHECK("s" <> 'it''s (CHECK)');`,
+  );
+  assert.throws(
+    () => portableRebuildChecks('CHECK("__new_t"."n" > 0'),
+    /Malformed generated CHECK/,
+  );
+  assert.throws(() => portableRebuildChecks('CHECK(n > 0) /*'), /Malformed generated SQL token/);
+  assert.throws(
+    () => portableRebuildChecks("CHECK(n <> 'unfinished)"),
+    /Malformed generated SQL token/,
+  );
+  assert.equal(portableRebuildChecks('CHECK("__new_my-table"."n" > 0)'), 'CHECK("n" > 0)');
+});
