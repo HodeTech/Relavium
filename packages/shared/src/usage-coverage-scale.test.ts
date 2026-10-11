@@ -14,6 +14,8 @@ const unknown = {
 } as const;
 
 describe('bounded incremental usage coverage', () => {
+  // This is a structural 100,000-settlement control, not a five-second throughput promise.
+  // Keep the complete workload and every assertion under a finite, test-local bound on CI.
   it('retires 100,000 settlements while retaining at most 64 unresolved identities', () => {
     const fold = new UsageCoverageFold();
     fold.start('complete');
@@ -42,5 +44,5 @@ describe('bounded incremental usage coverage', () => {
     fold.retire();
     expect(fold.retainedInvocations).toBe(0);
     expect(fold.snapshot().coverage.pendingInvocations).toBe(64);
-  });
+  }, 30_000);
 });
