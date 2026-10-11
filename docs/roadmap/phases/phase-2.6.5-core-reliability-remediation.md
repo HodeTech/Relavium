@@ -4518,6 +4518,31 @@ on `development`; no merge is performed. The register remains 49/51 there and
 47/51 on `main`, with existing approved limits unchanged. No provider, key, billing
 or user decision is pending. Review working records remain outside Git.
 
+#### Scale-test runner correction — 2026-10-11
+
+At published `7e8bf277`, PR CI completes all 23 usage mechanisms and the full
+427-case/69-native-child permanent cohort, but its following required package run
+reports the shared 100,000-settlement test timed out at the inherited 5,000ms
+default (8,503ms reported duration). No capacity/aggregate assertion mismatch is
+reported. This failure remains attributed evidence, not a successful CI run.
+
+Correction `319f3bb0` gives only that structural scale test a finite 30,000ms bound.
+Every iteration, per-iteration retention assertion, final aggregate, duplicate
+refusal and retirement check remains byte-identical. The workload is not a
+five-second throughput contract. Ordinary test defaults, production deadlines,
+coverage policy and both full 100,000-settlement workloads remain unchanged; the
+existing five-minute ordinary allowance still covers this test within the complete
+38-minute permanent phase. Fresh shared lint/typecheck/test passes 3/3 tasks,
+26 files / 915 cases. Two NEW independent complete one-path rounds at `319f3bb0`
+return zero findings.
+Both independently preserve the full structural negative control: removing
+settlement retirement still fails at identity 65. A copied-source delay probe also
+reproduces old-default refusal and corrected-bound success without changing the
+workload. Parent reads both complete reports; these scoped reviews do not claim
+a new whole-PR review or remote certification.
+Exact replacement-head CI/Sonar is recorded separately in PR #92; maintainer merge
+remains pending. No new product change, deferral or user decision is introduced.
+
 ### CR-81 — Conformance cassettes do not verify the request wire contract · High · ✅ CLOSED on `development` 2026-10-10
 **Accepted on `development`, 2026-10-10; publication pending.** The [Step 3 register](#w8-step-3-canonical-sdk-http-matrix--2026-10-10)
 joins all four independent review verdicts and three causal lowering controls. The pre-W8 defect was:
