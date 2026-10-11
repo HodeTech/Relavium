@@ -1,3 +1,4 @@
+import { CorruptRunEventError } from './run-history-errors.js';
 import type { RunEvent } from './run-event.js';
 import type {
   UsageCoverage,
@@ -36,6 +37,12 @@ const matches = (a: UsageInvocation, b: UsageInvocation): boolean =>
   a.round === b.round &&
   a.chainAttempt === b.chainAttempt;
 
+/** Only these fold invariants classify inconsistent persisted event sequences. */
+class UsageCoverageInvariantError extends Error {
+  override readonly name = 'UsageCoverageInvariantError';
+  readonly code = 'usage_coverage_invariant' as const;
+}
+
 /** Incremental accounting only. Persisted correlation never grants permission to invoke or charge. */
 export class UsageCoverageFold {
   readonly #total: MutableCoverage = empty(true);
@@ -62,7 +69,8 @@ export class UsageCoverageFold {
     return this.#started;
   }
   start(basis: UsageCoverageBasis): void {
-    if (this.#started) throw new Error('Usage coverage basis already established');
+    if (this.#started)
+      throw new UsageCoverageInvariantError('Usage coverage basis already established');
     this.#started = true;
     this.#total.unverified = basis === 'legacy_unverified';
   }
@@ -87,7 +95,7 @@ export class UsageCoverageFold {
     // The owner-wide ordinal is monotonically minted at the durable pending boundary. Retired
     // identities cannot be reintroduced and need no completed-identity tombstones.
     if (ownedInvocation.ordinal <= this.#highWater)
-      throw new Error('Usage invocation ordinal is not increasing');
+      throw new UsageCoverageInvariantError('Usage invocation ordinal is not increasing');
     this.#highWater = ownedInvocation.ordinal;
     this.#pending.set(keyOf(ownedInvocation), {
       model,
@@ -143,6 +151,16 @@ export class UsageCoverageFold {
     this.#pending.clear();
   }
   apply(event: RunEvent): void {
+    try {
+      this.#apply(event);
+    } catch (cause) {
+      // A discovery read may degrade this run, while strict checkpoint reconstruction still
+      // refuses it. Unrelated runtime/database/observer faults retain their original identity.
+      if (!(cause instanceof UsageCoverageInvariantError) || event.runId === undefined) throw cause;
+      throw new CorruptRunEventError(event.runId, event.sequenceNumber, event.type, cause);
+    }
+  }
+  #apply(event: RunEvent): void {
     switch (event.type) {
       case 'cost:coverage_started':
         this.start(event.basis);
