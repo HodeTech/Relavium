@@ -20,6 +20,19 @@ const invocation = {
 };
 
 describe('usage coverage foundations (ADR-0104)', () => {
+  for (const disposition of [
+    { kind: 'incomplete', evidence: { kind: 'missing', reason: 'interrupted' } },
+    { kind: 'not_invoked', reason: 'credentials' },
+    { kind: 'official_refusal', reason: 'pre_content_refusal' },
+  ] as const)
+    it(`${disposition.kind}: only incomplete usage may retain a pending receipt`, () => {
+      const payload = { model: 'model', invocation, disposition };
+      expect(UsageDispositionPayloadSchema.safeParse(payload).success).toBe(true);
+      expect(
+        UsageDispositionPayloadSchema.safeParse({ ...payload, receiptPending: true }).success,
+      ).toBe(disposition.kind === 'incomplete');
+    });
+
   it('requires every uncertainty axis to be clear before any complete/free presentation', () => {
     const cases = [
       { coverage: { unverified: false, pendingInvocations: 0, unknownCalls: 0 }, complete: true },

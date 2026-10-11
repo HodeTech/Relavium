@@ -3,6 +3,7 @@ import { describe, expect, expectTypeOf, it } from 'vitest';
 import { RUN_EVENT_TYPES, SESSION_EVENT_TYPES } from './constants.js';
 import {
   CostUpdatedEventSchema,
+  CostUsageDispositionEventSchema,
   RunOrSessionEventSchema,
   MaskedSecretSchema,
   parseStoredRunEvent,
@@ -804,6 +805,25 @@ describe('RunEvent union — every variant', () => {
 });
 
 describe('cost:updated and sequenceNumber invariants', () => {
+  it('enforces pending-receipt authority through direct and combined event boundaries', () => {
+    const body = { ...valid['cost:usage_disposition'] };
+    delete body['runId'];
+    for (const envelope of [{ runId: 'run-1' }, { sessionId: 'session-1' }])
+      for (const disposition of [
+        { kind: 'incomplete', evidence: { kind: 'missing', reason: 'interrupted' } },
+        { kind: 'not_invoked', reason: 'credentials' },
+        { kind: 'official_refusal', reason: 'pre_content_refusal' },
+      ] as const) {
+        const event = { ...body, ...envelope, disposition };
+        for (const schema of [CostUsageDispositionEventSchema, RunOrSessionEventSchema]) {
+          expect(schema.safeParse(event).success).toBe(true);
+          expect(schema.safeParse({ ...event, receiptPending: true }).success).toBe(
+            disposition.kind === 'incomplete',
+          );
+        }
+      }
+  });
+
   it('keeps cost:coverage_started run-only at the bus validation boundary', () => {
     const started = valid['cost:coverage_started'];
     expect(RunOrSessionEventSchema.safeParse(started).success).toBe(true);

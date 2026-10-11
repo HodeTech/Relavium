@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { MissingUsageEvidenceSchema, PartialUsageEvidenceSchema } from './usage-evidence.js';
+import { refineUsageDispositionReceipt } from './usage-disposition-validation.js';
 
 /** ADR-0104 accounting metadata, separate from actual money and admission estimates. */
 const safeCount = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
@@ -76,7 +77,8 @@ export const UsageDispositionPayloadSchema = z
     disposition: UsageDispositionSchema,
     receiptPending: z.literal(true).optional(),
   })
-  .strict();
+  .strict()
+  .superRefine(refineUsageDispositionReceipt);
 
 /** Every total reader uses all three coverage axes before presenting a complete/free total. */
 export function isUsageCoverageComplete(coverage: UsageCoverage): boolean {

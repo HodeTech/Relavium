@@ -6,6 +6,7 @@ import {
   UsagePendingPayloadSchema,
   UsageDispositionPayloadSchema,
 } from './usage-coverage.js';
+import { refineUsageDispositionReceipt } from './usage-disposition-validation.js';
 import {
   BudgetAuthorizationStateSchema,
   AllowanceQuoteResultSchema,
@@ -751,11 +752,16 @@ export const CostUsagePendingEventSchema = UsagePendingPayloadSchema.extend({
   ...dualBase,
   nodeId: nonEmptyString,
 }).strict();
-export const CostUsageDispositionEventSchema = UsageDispositionPayloadSchema.extend({
-  type: z.literal('cost:usage_disposition'),
-  ...dualBase,
-  nodeId: nonEmptyString,
-}).strict();
+const CostUsageDispositionEventObjectSchema = UsageDispositionPayloadSchema.innerType()
+  .extend({
+    type: z.literal('cost:usage_disposition'),
+    ...dualBase,
+    nodeId: nonEmptyString,
+  })
+  .strict();
+export const CostUsageDispositionEventSchema = CostUsageDispositionEventObjectSchema.superRefine(
+  refineUsageDispositionReceipt,
+);
 export type CostCoverageStartedEvent = z.infer<typeof CostCoverageStartedEventSchema>;
 export type CostUsagePendingEvent = z.infer<typeof CostUsagePendingEventSchema>;
 export type CostUsageDispositionEvent = z.infer<typeof CostUsageDispositionEventSchema>;
@@ -790,7 +796,7 @@ const RunEventUnionSchema = z.discriminatedUnion('type', [
   CostAttemptSettledEventSchema,
   CostCoverageStartedEventSchema,
   CostUsagePendingEventSchema,
-  CostUsageDispositionEventSchema,
+  CostUsageDispositionEventObjectSchema,
 ]);
 
 /** The pre-refinement union value — the input every cross-field refinement helper below receives. */
@@ -998,6 +1004,7 @@ export const RunEventSchema = RunEventUnionSchema.superRefine((event, ctx) => {
   refineApprovalPreview(event, ctx);
   refineBudgetEstimateCommitted(event, ctx);
   refineCostAttemptSettled(event, ctx);
+  if (event.type === 'cost:usage_disposition') refineUsageDispositionReceipt(event, ctx);
 });
 export type RunEvent = z.infer<typeof RunEventSchema>;
 
