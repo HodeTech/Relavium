@@ -4290,6 +4290,26 @@ and whitespace checks passed. H1, H2 and the ineffective migration FK-toggle fin
 within this increment. Remaining increments and fresh whole-PR/published-head gates stay open;
 old-head CI results do not certify the corrections.
 
+**Increment 2 author state — provider evidence and host capabilities.** The 24 canonical wire
+cases now compare literal complete evidence, including explicit zero cache/reasoning counters;
+fixture metadata declares exact evidence without provider-name branches. Nonzero asymmetric
+truncation controls retain every observed quantity. Pending/claim/disposition capabilities are
+all-or-none: an incoherent external host is refused before allocation, credentials or egress,
+including receiver-bound/class/non-enumerable ports. Constructor callbacks obey the same pairing.
+`receiptPending` is valid only for an incomplete disposition at direct payload and event-bus
+boundaries. SQLite workflow integrations move to the CLI, which declares both public packages;
+pure turn tests remain in core and the causal consumer-return cohort retains both locations.
+
+M1's proposed promotion is qualified: a later usage-less finish does not prove that an earlier
+nonfinal counter was the final billed observation. Installed-SDK controls pin that conservative
+case, final include-usage frames, larger final observations, truncation and errors after final
+usage. The apparent dead assignment first clears stale authority before malformed choices can
+throw; the equivalent conditional keeps that failure-path property. Unknown usage and unavailable
+pricing remain distinct axes, and the documented stream-grammar compatibility slot is retained.
+Author lint/typecheck/test/build gates pass for shared, LLM, core and CLI (18 tasks; 915, 2,209,
+3,601 and 3,444 passing tests respectively, with 11 established LLM skips). Independent cumulative
+acceptance and the remaining increments are pending.
+
 ### CR-81 — Conformance cassettes do not verify the request wire contract · High · ✅ CLOSED on `development` 2026-10-10
 **Accepted on `development`, 2026-10-10; publication pending.** The [Step 3 register](#w8-step-3-canonical-sdk-http-matrix--2026-10-10)
 joins all four independent review verdicts and three causal lowering controls. The pre-W8 defect was:

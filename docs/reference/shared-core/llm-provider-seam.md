@@ -1128,7 +1128,11 @@ promotes the same owned observation, without rereading native counters; a later 
 with no usage cannot promote an earlier nonfinal observation. Observed inline media still
 downgrades complete evidence when its applicable billing axis is absent.
 OpenAI/DeepSeek force `include_usage`; this requests a final
-usage frame but cannot prove that it arrives. Anthropic's final authority requires both a non-null
+usage frame but cannot prove that it arrives. A native OpenAI/DeepSeek observation acquires final
+authority only when its own frame carries a finish reason or a previously verified finish already
+exists (including the ordinary empty-choice usage tail). A later usage-less finish or EOF cannot
+promote an earlier nonfinal cumulative count; those retained quantities stay partial and do not enter pricing.
+The same rule applies to OpenAI-compatible custom endpoints. Anthropic's final authority requires both a non-null
 native stop reason and that frame's validated `output_tokens`, captured through the same single
 read that retains the quantity. A stop reason alone cannot promote an earlier output count.
 Gemini recognizes a current-frame

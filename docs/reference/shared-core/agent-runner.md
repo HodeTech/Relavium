@@ -346,6 +346,11 @@ cleanup settles only the admission associated with its exact ephemeral pre-attem
 the original receiver through turn capture, including class/prototype and non-enumerable method
 implementations. A decorator must not silently turn a persisted host into a volatile host by
 dropping `beginUsageInvocation`, `claimUsage`, `usageDisposition`, `accountingFailure` or `emitCost`.
+The pending/claim/disposition triple is one all-or-none coverage feature: an incomplete set is
+refused with a fixed `AgentTurnError` (`internal`, non-retryable) before key resolution, pending
+allocation or provider entry. A port supplying none retains volatile accounting. The independent
+`accountingFailure` and `emitCost` capabilities remain optional. `MoneyDurability` similarly
+requires both pending and disposition callbacks, or neither, at construction.
 Post-provider `claimUsage`, `usageDisposition`, `record` and optional `emitCost` retain the
 observer-failure origin, including native predecessor notifications. An observer's throwable
 keeps its exact identity but cannot authorize a budget pause, paid retry or arbitrary provider
