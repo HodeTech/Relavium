@@ -979,6 +979,9 @@ responsibility. An absent owner returns `undefined` after strict validation of a
 validated event without materializing the full prefix. Every stored row is validated before any
 stream exclusion; an unknown discriminator raises `UnreadableRunEventLogError`, and malformed or
 mismatched projections raise `CorruptRunEventError`. The caller discards its partial fold on failure.
+The [event contract](../contracts/sse-event-schema.md#event-envelope) also classifies inconsistent
+coverage sequences as per-run corruption; strict reconstruction refuses them, while discovery
+preserves healthy neighbors with explicit degradation for the affected run.
 The original array-returning strict read remains available for compatibility; the production
 checkpointer uses the incremental port. Concurrent WAL writes cannot enter the snapshot halfway
 through replay. This does not compact or delete the authoritative append-only event log.

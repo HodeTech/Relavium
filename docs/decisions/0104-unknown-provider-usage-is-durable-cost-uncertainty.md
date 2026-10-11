@@ -570,3 +570,26 @@ change. The canonical [event contract](../reference/contracts/sse-event-schema.m
 [database contract](../reference/shared-core/database-schema.md) own these requirements. This
 finding-bearing round supplies no clean acceptance; Step 5 still requires two NEW complete clean
 cumulative reviews before Step 6's further controls/reviews and the whole-W8 gates.
+
+### W8 blocked-terminal evidence and corrupt-history isolation — 2026-10-11
+
+The twelfth complete cumulative activation review reproduced a Gemini streaming ordering defect:
+current prompt-block authority must be recognized before interpreting that frame's usage.
+Fully explicit applicable counters on that terminal reach actual pricing and close coverage,
+including legitimate zero. Missing, partial, contradictory, invalid and earlier nonfinal evidence
+remain uncertain. This corrects normalization; it does not authorize a retry, change admission
+policy or establish provider invoice behavior. The canonical
+[usage contract](../reference/shared-core/llm-provider-seam.md#6-usage) owns the rule.
+
+Individually valid persisted rows can form a corrupt coverage sequence. The incremental fold
+classifies its duplicate-basis and non-increasing-ordinal invariants using the existing typed
+per-run corruption boundary. Strict checkpoint loading still refuses the affected history;
+Home/status preserve healthy neighbors and explicitly mark that run unavailable/unverified.
+Unrelated runtime, database and observer exceptions are not swallowed or reclassified. The
+[event contract](../reference/contracts/sse-event-schema.md#event-envelope) owns this distinction.
+The session namespace's stale absent-money-port rationale is corrected to reflect its direct
+writer and acknowledged `cost:updated` publication; the run-only event boundary is unchanged.
+
+This finding-bearing round supplies no clean acceptance. Step 5 still requires two NEW complete
+clean cumulative rounds after correction, followed by Step 6's further controls/reviews and
+whole-W8 validation/publication. No new dependency, key, paid capture or deferral is introduced.

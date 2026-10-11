@@ -3487,6 +3487,63 @@ This finding-bearing round contributes neither required clean acceptance round. 
 further Step 6 controls/reviews, CR-82 and Step 7/whole-W8 publication remain open. The register
 stays **48/51** on `development`, **47/51** on `main`; no new deferral is introduced.
 
+#### Step 5 twelfth cumulative review — 2026-10-11
+
+Three NEW independent reviewers completed the entire `017b399c..d9296d13` activation and all
+eleven corrections. Their combined result is **one High, one Medium and one Low finding**.
+All three full reports and source-freeze releases were read before authoring resumed. This is
+a finding-bearing round, not either required clean acceptance round.
+
+| Finding | Validated correction |
+| --- | --- |
+| Gemini prompt-block streaming demoted fully explicit final usage to interrupted evidence | Recognize the current prompt block before interpreting its usage. Complete positive and explicit-zero evidence reaches actual pricing; missing, partial, invalid, contradictory and earlier nonfinal evidence remains uncertain. Text blocks retain their existing empty-output completion and `content_filter` stop; no retry or new outcome policy is introduced. |
+| Schema-valid inconsistent coverage sequences defeated Home/status per-run isolation | Duplicate owner bases and non-increasing pending ordinals use the existing typed per-run corruption boundary. Strict checkpoint reconstruction still refuses that history; discovery preserves healthy neighbors and marks the affected run unavailable/unverified. Unrelated Error, null and undefined failures retain exact identity. No corrupt row is repaired or deleted. |
+| The session namespace described an absent money port that now exists | The canonical event contract describes the shared turn-core money port, direct acknowledged session writer and `cost:updated` publication. `cost:attempt_settled` remains run-only. |
+
+Independent money/core/shared execution passed **170 files / 4,371 tests**, plus **145** native
+SQLite/CLI cases and **12** new composition controls. The independent LLM graph collected **90
+files / 2,778 cases**: 2,760 passed, seven reproduced the same Gemini finding and eleven existing
+live-provider cases skipped. Its isolated one-expression correction passed 2,767 with the same
+eleven skips. Storage/CLI passed **52 files / 838 cases**, plus two bug-demonstrating controls;
+its 65 actual child-process controls and frozen replay **16/2/3/8** matrix passed. Cohorts overlap
+and are not added. The parent independently reproduced both runtime findings in physical source
+copies before correction; the LLM review's downstream pricing probe used the supported turn port,
+while the permanent correction below additionally crosses actual SQLite.
+
+**Permanent author controls:** two whole Gemini files pass **28/28**: twenty default-transport,
+installed-SDK generate/stream cases and eight actual WorkflowEngine/AgentRunner/native-SQLite
+cases. Original copied adapter bytes produce **19 passes / nine semantic failures**; fixed bytes
+pass 28, exact original restoration repeats the same nine failures, and exact fixed restoration
+passes 28. Both complete zero and positive blocked usage fail the original live/durable path;
+missing/partial controls pass both versions. Exactly one HTTP call and a durable pending marker
+before egress are checked. Actual settlement, zero-delta terminal rows, known sum, conservative
+estimate, run/node coverage and strict checkpoint agree. The shipping text engine streams;
+generate evidence is direct SDK coverage, not an invented text engine generate route.
+
+The two whole corruption files pass **10/10**. Original copied fold bytes give **four passes /
+six semantic failures**; exact fixed restoration passes ten with identical inventory. Actual
+SQLite controls establish healthy Home/status neighbors, explicit affected-run degradation,
+typed strict refusal and unchanged stored rows. The eight-file adjacent reader cohort passes
+**93/93**. The nine-file Gemini/reader cohort passes **283**, with one existing live skip;
+these overlapping runs are not added. Developer sources were never swapped, and no collection,
+import, setup or timing failure receives causal credit.
+
+Fresh forced `CI=true` workspace lint/typecheck/test passes **23/23**, none cached:
+**499 files / 10,642 passing / 12 skipped**. Eleven are the existing live-provider skips;
+the existing CI-disabled performance guard also passes in its complete 106-case local file,
+giving **10,643 distinct passing tests** across the overlapping runs. Forced build **6/6** and
+format **1/1** pass. Tools lint/typecheck, schema synchronization, seam/dependency/bundle fences,
+499-file isolation, whitespace and **2,346 relative links / 343 pinned archive citations** pass.
+All 22 changed ADR prefixes are append-only, the original 181 ignored reviews are byte-identical,
+and no review file is tracked. Compiled CLI, overflow capture and the frozen replay harness pass
+offline. No remote CI or whole-W8 coverage result is claimed at this author checkpoint.
+
+These corrections do not change admission, realized-money arithmetic, native-media accounting,
+retry authority, dependencies or approved deferrals. Step 5 still requires two NEW complete clean
+cumulative rounds after the correction. Step 6's further permanent causal matrix and reviews,
+CR-82 and Step 7/whole-W8 publication remain open. The register remains **48/51** on `development`,
+**47/51** on `main`; no paid call, credential, billing or user decision is pending.
+
 ### CR-81 — Conformance cassettes do not verify the request wire contract · High · ✅ CLOSED on `development` 2026-10-10
 **Accepted on `development`, 2026-10-10; publication pending.** The [Step 3 register](#w8-step-3-canonical-sdk-http-matrix--2026-10-10)
 joins all four independent review verdicts and three causal lowering controls. The pre-W8 defect was:

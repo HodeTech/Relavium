@@ -1104,8 +1104,11 @@ Adapters own evidence before content projection. Stream errors and truncation pr
 quantities, downgrading nonfinal cumulative observations to partial. Authoritative final evidence
 survives a later cleanup error. OpenAI/DeepSeek force `include_usage`; this requests a final
 usage frame but cannot prove that it arrives. Anthropic's final authority comes from a non-null
-native stop reason, not merely a `message_delta` event name. The seam verifier owns every held
-terminal's evidence before its confirming read, preserving it across malformed tails and deadlines.
+native stop reason, not merely a `message_delta` event name. Gemini recognizes a current-frame
+prompt block as terminal authority before interpreting that frame's usage, just as it recognizes
+a candidate finish reason. Fully explicit applicable counts remain complete on a blocked response;
+absent or incomplete counters and earlier nonfinal counts remain uncertain. The seam verifier owns
+every held terminal's evidence before its confirming read, preserving it across malformed tails and deadlines.
 `costMicrocents` remains a Relavium-computed quantity, never a native provider price.
 
 > **Canonical cost unit (the one home).** All cost figures in Relavium — the seam's
