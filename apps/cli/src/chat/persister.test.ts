@@ -1,5 +1,5 @@
 import { prepareOutputCapPlan } from '@relavium/llm';
-import type { PreEgressInfo } from '@relavium/core';
+import type { PreEgressInfo, SessionStreamHandleEvent } from '@relavium/core';
 import { reconstructSessionState, unwrapUntrusted } from '@relavium/core';
 import type { StreamChunk } from '@relavium/llm';
 import {
@@ -113,6 +113,57 @@ describe('createSessionPersister', () => {
     });
     return { built, persister, store, usageStore };
   }
+
+  it('publishes typed session usage events only after their native SQLite coverage ACK', async () => {
+    const { built, persister } = await setup(
+      scriptedResolver([
+        [
+          { type: 'text_delta', text: 'offline' },
+          { type: 'stop', stopReason: 'stop', usage: { kind: 'missing', reason: 'not_reported' } },
+        ],
+      ]),
+    );
+    const observed: SessionStreamHandleEvent[] = [];
+    const boundaries: { ordinal: number; disposition: string; pending: number; unknown: number }[] =
+      [];
+    const off = built.handle.subscribe((event) => {
+      observed.push(event);
+      if (event.type === 'cost:usage_pending' || event.type === 'cost:usage_disposition') {
+        const durable = store.loadSessionCostBreakdown(built.sessionId).coverage;
+        boundaries.push({
+          ordinal: event.invocation.ordinal,
+          disposition: event.type === 'cost:usage_pending' ? 'pending' : event.disposition.kind,
+          pending: durable.pendingInvocations,
+          unknown: durable.unknownCalls,
+        });
+        expect(event.usageCoverage).toEqual(durable);
+      }
+    });
+    try {
+      persister.start();
+      built.session.start();
+      persister.beginUserTurn('offline');
+      await built.session.sendMessage('offline');
+      built.session.cancel();
+      await built.whenHostSafeToClose();
+      expect(boundaries).toEqual([
+        { ordinal: 1, disposition: 'pending', pending: 1, unknown: 0 },
+        { ordinal: 1, disposition: 'incomplete', pending: 0, unknown: 1 },
+      ]);
+      expect(observed.map((event) => event.type)).not.toContain('cost:coverage_started');
+      expect(observed.map((event) => event.type)).not.toContain('cost:attempt_settled');
+      expect(store.loadSessionCostBreakdown(built.sessionId).coverage).toEqual({
+        unverified: false,
+        pendingInvocations: 0,
+        unknownCalls: 1,
+      });
+      expect(store.loadSessionCosts(built.sessionId)).toEqual([]);
+      expect(listenerNotes).toEqual([]);
+    } finally {
+      off();
+      persister.close();
+    }
+  });
 
   it('retains the raw session receipt through cancellation and atomically refines late complete usage', async () => {
     let resolveRead!: (value: IteratorResult<StreamChunk>) => void;
