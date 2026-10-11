@@ -1,5 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -13,6 +13,13 @@ import { createSessionStore } from './session-store.js';
 import { createSessionUsageStore } from './session-usage-store.js';
 
 const dist = new URL('../dist/index.js', import.meta.url);
+// The isolated causal runner supplies only this test's physical sibling source entry.
+// Normal package CI still requires and exercises the actual built DB entry.
+const sourceEntry = new URL('./index.ts', import.meta.url);
+const requestedEntry = process.env['RELAVIUM_USAGE_TEST_SOURCE_ENTRY'];
+if (requestedEntry !== undefined && requestedEntry !== sourceEntry.href)
+  throw new Error('Usage test source entry must be the exact sibling source index.');
+const entry = requestedEntry === undefined ? dist : sourceEntry;
 const worker = fileURLToPath(new URL('./fixtures/session-usage-worker.mjs', import.meta.url));
 
 interface Worker {
@@ -22,11 +29,20 @@ interface Worker {
 }
 
 function startWorker(path: string, mode: string): Worker {
-  if (!existsSync(fileURLToPath(dist)))
+  if (!existsSync(fileURLToPath(entry)))
     throw new Error('Build @relavium/db before its native session-usage tests.');
-  const child = spawn(process.execPath, [worker, dist.href, path, mode], {
+  const child = spawn(process.execPath, [worker, entry.href, path, mode], {
     stdio: ['pipe', 'pipe', 'pipe'],
   });
+  const record = (value: object): void => {
+    const destination = process.env['RELAVIUM_USAGE_NATIVE_EVENTS'];
+    if (destination !== undefined)
+      appendFileSync(
+        destination,
+        `${JSON.stringify({ callerPid: process.pid, pid: child.pid, mode, ...value })}\n`,
+      );
+  };
+  record({ stage: 'spawn' });
   let resolveReady: () => void = () => {};
   let rejectReady: (error: Error) => void = () => {};
   const ready = new Promise<void>((resolve, reject) => {
@@ -39,6 +55,8 @@ function startWorker(path: string, mode: string): Worker {
   child.stdout.setEncoding('utf8').on('data', (text: string) => {
     output += text;
     if (output.includes('CUT\n') || output.includes('LOCKED\n')) {
+      if (!announced)
+        record({ stage: 'barrier', kind: output.includes('CUT\n') ? 'CUT' : 'LOCKED' });
       announced = true;
       resolveReady();
     }
@@ -56,6 +74,7 @@ function startWorker(path: string, mode: string): Worker {
         rejectReady(fault);
       });
       child.once('close', (code, signal) => {
+        record({ stage: 'close', code, signal });
         clearTimeout(timeout);
         if (!announced)
           rejectReady(new Error(`session usage worker closed before readiness: ${error}`));

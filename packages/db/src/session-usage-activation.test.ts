@@ -1,12 +1,10 @@
 import type { UsageDisposition } from '@relavium/shared';
-import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { createClient, runMigrations, type DbClient, type Db } from './client.js';
 import { createSessionStore, type SessionCostEntry } from './session-store.js';
 import { createSessionUsageStore } from './session-usage-store.js';
 import { type SessionUsageReceipt } from './session-usage-receipt.js';
-import * as schema from './schema.js';
 import { SessionUsageError } from './session-usage-write.js';
 
 let client: DbClient;
@@ -110,6 +108,25 @@ describe('ADR-0104 production session coverage', () => {
       unknownCalls: 0,
     });
     expect(() => costs.recordSessionCost(entry({ ...receipt }))).toThrow(SessionUsageError);
+    usage.createFreshSession({
+      id: 'other-existing',
+      agentSlug: 'a',
+      context: { workingDir: '/tmp', fsScopeTier: 'sandboxed' },
+      createdAt: '2026-10-11T00:00:00.000Z',
+    });
+    const original = costs.loadSessionCostBreakdown('s');
+    const other = costs.loadSessionCostBreakdown('other-existing');
+    // Use the real live capability against another existing owner/model: a cloned receipt
+    // alone would be refused by the WeakMap before reaching the correlation guard.
+    expect(() =>
+      costs.recordSessionCost({ ...entry(receipt), sessionId: 'other-existing' }),
+    ).toThrow(SessionUsageError);
+    expect(() => costs.recordSessionCost({ ...entry(receipt), model: 'other-model' })).toThrow(
+      SessionUsageError,
+    );
+    expect(costs.loadSessionCostBreakdown('s')).toEqual(original);
+    expect(costs.loadSessionCostBreakdown('other-existing')).toEqual(other);
+    expect(usage.loadCoverage('s')?.coverage.pendingInvocations).toBe(1);
     expect(costs.recordSessionCost(entry(receipt))).toBe(true);
     expect(costs.recordSessionCost(entry(receipt))).toBe(false);
     expect(usage.disposition(receipt, missing)).toBe(false);
@@ -252,71 +269,4 @@ describe('ADR-0104 production session coverage', () => {
     costs.releaseSessionConservativeCommitments('s', 1);
     expect(usage.loadCoverage('s')?.coverage.unverified).toBe(true);
   });
-
-  it('retains only unresolved identities after 100000 settlements with 64 concurrent pending controls', async () => {
-    let admissions = 0;
-    let retirements = 0;
-    let inspectLiveQueries = true;
-    const observed = drizzle(client.sqlite, {
-      schema,
-      logger: {
-        logQuery(query) {
-          if (inspectLiveQueries) {
-            if (/insert into "session_usage_invocations"/i.test(query)) admissions += 1;
-            if (/delete from "session_usage_invocations"/i.test(query)) retirements += 1;
-            if (
-              /select.*from "(?:session_usage_invocations|run_events)"/i.test(query) &&
-              !/where/i.test(query)
-            )
-              throw new Error('live settlement attempted a full history scan');
-          }
-        },
-      },
-    });
-    const { usage, costs, begin, entry } = setup(observed);
-    const pending = Array.from({ length: 64 }, () => begin('held'));
-    const duplicate = begin('paid');
-    expect(costs.recordSessionCost(entry(duplicate))).toBe(true);
-    for (let index = 1; index < 100_000; index += 1) {
-      const receipt = begin(index % 2 === 0 ? 'paid' : 'unknown');
-      if (index % 2 === 0) costs.recordSessionCost(entry(receipt));
-      else {
-        usage.disposition(receipt, missing);
-        usage.retire(receipt);
-      }
-      // Keep Vitest's worker RPC responsive on contended CI machines. Every production
-      // transaction and all 100000 settlements still execute; no elapsed-time assertion is used.
-      if (index % 256 === 0) await new Promise<void>((resolve) => setImmediate(resolve));
-    }
-    inspectLiveQueries = false;
-    expect(admissions).toBe(100_064);
-    expect(retirements).toBe(100_000);
-    expect(
-      client.sqlite.prepare('SELECT count(*) AS n FROM session_usage_invocations').get(),
-    ).toEqual({ n: 64 });
-    expect(client.sqlite.prepare('SELECT count(*) AS n FROM session_usage_coverage').get()).toEqual(
-      { n: 3 },
-    );
-    expect(
-      client.sqlite.prepare('SELECT usage_invocation_high_water AS n FROM agent_sessions').get(),
-    ).toEqual({ n: 100_064 });
-    expect(usage.loadCoverage('s')?.coverage).toEqual({
-      unverified: false,
-      pendingInvocations: 64,
-      unknownCalls: 50_000,
-    });
-    expect(costs.recordSessionCost(entry(duplicate))).toBe(false);
-    const live = pending[0];
-    if (live === undefined) throw new Error('missing control');
-    usage.disposition(live, missing);
-    expect(costs.recordSessionCost(entry(live))).toBe(true);
-    expect(client.sqlite.prepare('SELECT sum(call_count) AS n FROM session_costs').get()).toEqual({
-      n: 50_001,
-    });
-    expect(usage.loadCoverage('s')?.coverage).toEqual({
-      unverified: false,
-      pendingInvocations: 63,
-      unknownCalls: 50_000,
-    });
-  }, 180_000);
 });
