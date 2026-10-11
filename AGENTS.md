@@ -55,8 +55,9 @@ including CR-81/82 and ADR-0087 §1. The register is 49/51 there and 47/51 on `m
 merges. Publication checks and maintainer review/merge remain; existing approved limits are unchanged.
 
 **PR #92 maintainer corrections:** the [correction register](docs/roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w8-pr-92-systematic-review-corrections--2026-10-11)
-reopens fresh acceptance/publication gates for the reported findings. Previous source checks do
-not certify subsequent corrections. No implementation deferral or maintainer decision is added.
+records all four increments accepted after two NEW clean complete cumulative rounds each. Fresh
+full CI and bare/enforced coverage pass at `ffdc5ffb`, including four wire and 23 usage controls.
+Exact published-head CI/Sonar and maintainer review/merge remain. No new deferral or decision is added.
 
 See [docs/roadmap/current.md](docs/roadmap/current.md) for live status.
 

@@ -125,9 +125,10 @@ the landing gate. CR-70/93 and existing exact-capacity/scoped residuals retain t
 limits; no new deferral, provider capture, billing, credential or user decision is pending.
 
 The [PR #92 maintainer corrections](docs/roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w8-pr-92-systematic-review-corrections--2026-10-11)
-reopen publication acceptance; the original closing evidence remains attributed to its source
-checkpoint. All correction increments and current-head checks must complete before publication
-acceptance is restored.
+have independent acceptance for all four increments, each after two NEW clean complete cumulative
+rounds. Fresh full CI and bare/enforced coverage pass at `ffdc5ffb`, including four wire and 23 usage
+controls. Exact published-head CI/Sonar and maintainer review/merge remain the landing gate; earlier
+checks do not certify that publication. The original closing evidence retains its source attribution.
 
 **W7 merged to `main` on 2026-10-10 as PR #90, including final whole-wave Step 12.**
 Steps 1–11, all five genuine overflow records, owned measured requests and consolidated provider/MCP/host

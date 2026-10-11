@@ -99,10 +99,10 @@ retain separate scoped reviews and exact-head publication checks.
 The implementation register is **49/51 on `development`**; `main` remains **47/51** until
 [W8 PR #92](https://github.com/HodeTech/Relavium/pull/92) merges. Implementation acceptance is
 complete at the attributed checkpoint. The [maintainer correction register](phases/phase-2.6.5-core-reliability-remediation.md#w8-pr-92-systematic-review-corrections--2026-10-11)
-tracks the subsequent fixes and NEW cumulative reviews; fresh source and published-head checks
-remain required before landing. Its causal inventory extends to 23 usage mechanisms and four wire
-controls, retaining every earlier mechanism. These new controls have their own pending acceptance
-until that register records completion. ADR-0087 §1 is outside the 51-item denominator. CR-70 (cross-turn tool-history carrying),
+records all four correction increments accepted after two NEW clean complete cumulative rounds
+each. Fresh full CI and bare/enforced coverage pass at `ffdc5ffb`; all 23 usage mechanisms and four
+wire controls retain every earlier mechanism. Exact published-head CI/Sonar and maintainer
+review/merge remain the landing gate. ADR-0087 §1 is outside the 51-item denominator. CR-70 (cross-turn tool-history carrying),
 CR-93 (tenant-scoped catalog/learning), CR-95's long continuation and other existing scoped
 residuals retain their approved severity, triggers and narrowed claims in
 [deferred-tasks.md](deferred-tasks.md); no new deferral is introduced.

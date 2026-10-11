@@ -4408,6 +4408,52 @@ controls pass, and removing that guard in an outside-source copy produces the in
 failure between five-case fixed/restored passes. Tool lint/typecheck and diff hygiene pass.
 These are author checks, not the two independent review verdicts or published-head acceptance.
 
+**Increment 4 accepted — 2026-10-11, reviewed head `ffdc5ffb`.** Two NEW independent
+complete cumulative rounds each reviewed all 37 changed paths, the final export-manifest guard
+and preceding correction composition. Both returned zero findings, including Low. Each independently
+ran all 57 orchestration controls and the full four-control actual-SDK wire command: 24 fixed cases,
+six/four/two intended lowering failures and 24 literal evidence-demotion failures, with every complete
+restoration green. The first additionally ran the native gross-input causal cohort and seven new
+provenance/export probes; the second independently ran exact SELECT/UPDATE/DELETE and invoked-crash
+controls, all 25 actual required-guard status combinations and four malformed inputs. Both verified
+installed SDK/support identities, bounded artifacts and preservation of primary failures. The second
+also reproduced the final-manifest guard's five-pass/one-intended-failure/five-pass reversal. Neither
+review claims the author's full 23-mechanism/100,000-scale run or remote publication as its own.
+
+M9, M10, M11 and the actionable SSE/provenance/causal-oracle Low findings are closed. M12,
+attributed ADR checkpoint counts and append-only correction placement retain the explicit
+qualifications above. All 35 submitted High/Medium/Low dispositions now have an implemented
+correction or a reviewed contract-preserving qualification; no new deferral is introduced.
+Each of the four increments has two NEW clean complete cumulative rounds after its last fix;
+finding-bearing earlier rounds are excluded. Detailed reports remain outside Git, as requested.
+
+**Fresh final source gates — 2026-10-11, `ffdc5ffb`.** Actual `CI=true pnpm run ci` exits 0:
+23 package lint/typecheck/test tasks succeed (20 cache hits), followed by seven build/format tasks
+(six cache hits), DB generation sync, tooling strict/lint and architecture/dependency/bundle fences.
+Compiled CLI, overflow and budget-replay smokes pass offline; the replay reports 16 strict refusal
+prefixes, two legacy positive controls and zero provider/key/fetch operations. All 57 orchestration
+cases, four wire mutations and 23 usage mechanisms/eight groups pass fixed/red/restored controls;
+the final permanent native/scale cohort passes all 427 cases, retaining both 100,000-settlement
+workloads. These mutation phases overlap permanent tests and are not added to the ordinary total.
+
+Fresh bare coverage and the separately executed CI-enforced coverage each pass **511 files,
+11,026 tests and 12 established skips**. Bare coverage enforces all three existing engine-package
+floors. The enforced run measures core at 96.36% lines / 92.92% branches, LLM at 97.74% / 94.60%
+and MCP at 96.18% / 90.54%; the CI policy remains unchanged. The 12 skips comprise eight live/nightly
+LLM cases, three absent legacy replay capabilities and one CI performance-shape case. With CI unset,
+the complete unchanged chat-projection file separately passes 106/106, including that performance
+case. No new skip or threshold relaxation is introduced. The changed-document audit resolves all
+2,540 actual inline relative links/anchors in 52 non-archive Markdown paths; two inline-code
+formatting examples are excluded explicitly. Whitespace checks pass; `docs/reviews` has zero tracked
+files and its 181 local originals remain preserved.
+
+All correction implementation and local acceptance gates are complete. Publication remains a
+separate gate: the documentation-only acceptance commit must be pushed, and its exact published
+head must pass both push/PR CI and individual Sonar review. Earlier `c46bb792` checks do not certify
+these corrections. PR #92 remains unmerged; `development` is 49/51 and `main` is 47/51. Maintainer
+review/merge and existing approved limits remain; no provider call, credential, billing setup or
+user decision is pending.
+
 ### CR-81 — Conformance cassettes do not verify the request wire contract · High · ✅ CLOSED on `development` 2026-10-10
 **Accepted on `development`, 2026-10-10; publication pending.** The [Step 3 register](#w8-step-3-canonical-sdk-http-matrix--2026-10-10)
 joins all four independent review verdicts and three causal lowering controls. The pre-W8 defect was:
