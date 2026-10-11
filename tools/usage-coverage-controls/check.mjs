@@ -27,6 +27,9 @@ import {
   verifyFiles,
 } from './source-graph.mjs';
 import { mutations, permanentFiles } from './mutations.mjs';
+import { exportAcceptanceEvidence } from '../acceptance-evidence/export.mjs';
+import { causalWitnesses } from './causal-witnesses.mjs';
+import { checkOutcome } from './outcome.mjs';
 
 const repository = realpathSync(fileURLToPath(new URL('../../', import.meta.url)));
 const scratch = realpathSync(mkdtempSync(join(tmpdir(), 'relavium-usage-controls-')));
@@ -52,6 +55,11 @@ const requested = process.argv.slice(2);
 assert.ok(
   requested.length === 0 || (requested.length === 2 && requested[0] === '--mechanism'),
   'Usage: node tools/usage-coverage-controls/check.mjs [--mechanism declared-id]',
+);
+assert.deepEqual(
+  mutations.map((entry) => entry.id).sort(),
+  Object.keys(causalWitnesses).sort(),
+  'Declared mechanism/witness inventory drift',
 );
 const selected =
   requested.length === 0 ? mutations : mutations.filter((m) => m.id === requested[1]);
@@ -214,7 +222,7 @@ function auditRuntime(directory, graph, manifest, manifestSha256, mechanism, pha
   if (mechanism.path)
     assert.ok(
       evaluations.some((r) => r.relativePath === mechanism.path),
-      'Changed mechanism never evaluated',
+      'Changed source module has no runtime body-entry witness',
     );
   for (const record of dependencies) {
     const bytes = readFileSync(record.path);
@@ -250,7 +258,7 @@ function auditRuntime(directory, graph, manifest, manifestSha256, mechanism, pha
     if (mechanism.nativeChildren) {
       assert.ok(
         witness.some((r) => r.relativePath === mechanism.path),
-        'Native child never evaluated causal target',
+        'Native child has no target module body-entry witness',
       );
       assert.ok(
         children.some(
@@ -291,42 +299,6 @@ function inventory(data, graph) {
     'Non-complete case status',
   );
   return tests;
-}
-function checkOutcome(tests, processResult, phase, mechanism) {
-  assert.equal(processResult.timedOut, false, 'Control process timed out');
-  assert.equal(processResult.joined, true, 'Control process closure was not joined');
-  assert.equal(processResult.signal, null, 'Control process was killed');
-  assert.equal(processResult.spawnError, undefined, 'Control process failed to spawn');
-  const failures = tests.filter((t) => t.status === 'failed');
-  if (phase !== 'mutated') {
-    assert.equal(processResult.code, 0, 'Fixed/restored whole cohort failed');
-    assert.equal(failures.length, 0, 'Fixed/restored case failed');
-    return;
-  }
-  assert.equal(processResult.code, 1, 'Mutant was not rejected by complete tests');
-  assert.ok(failures.length > 0, 'Mutant failed before any semantic assertion');
-  for (const test of failures) {
-    const messages = test.failures.join('\n');
-    assert.ok(
-      !/USAGE_SOURCE_|USAGE_EVALUATION_|before (?:barrier|readiness)|worker (?:readiness )?deadline|Timed out|Failed to load|Cannot find module|SyntaxError|ReferenceError|TypeError/.test(
-        messages,
-      ),
-      `Setup/runtime failure is not a causal assertion: ${test.id}`,
-    );
-    assert.ok(
-      mechanism.marker
-        ? messages.includes(mechanism.marker)
-        : /AssertionError|expected .* to /s.test(messages) ||
-            (/^Error: promise resolved .+ instead of rejecting/m.test(messages) &&
-              messages.includes('_Assertion.__VITEST_REJECTS__')),
-      `Failure lacks the declared semantic assertion: ${test.id}`,
-    );
-  }
-  if (mechanism.positiveFile)
-    assert.ok(
-      tests.filter((t) => t.file === mechanism.positiveFile).every((t) => t.status === 'passed'),
-      'Outcome-positive receipt controls changed',
-    );
 }
 async function runPhase(mechanism, graph, phase) {
   const output = join(scratch, mechanism.id, phase);
@@ -390,7 +362,7 @@ async function runPhase(mechanism, graph, phase) {
           ? []
           : [typeof item.failure === 'string' ? item.failure : JSON.stringify(item.failure)],
     }));
-    checkOutcome(tests, processResult, phase, mechanism);
+    checkOutcome(tests, processResult, phase, mechanism, causalWitnesses[mechanism.id]);
     assert.ok(
       Array.isArray(replay.evaluationRecords) && replay.evaluationRecords.length > 0,
       'Frozen driver lacks runtime body witnesses',
@@ -422,7 +394,7 @@ async function runPhase(mechanism, graph, phase) {
         (entry) =>
           entry.sourcePath === join(graph, mechanism.path) && entry.rawSha256 === target.sha256,
       ),
-      'Replay never evaluated the actual copied mechanism',
+      'Replay has no copied target module body-entry witness',
     );
     assert.ok(
       replay.processes.every(
@@ -464,7 +436,7 @@ async function runPhase(mechanism, graph, phase) {
     const listed = [...new Set(tests.map((t) => t.file))].sort();
     assert.deepEqual(listed, [...mechanism.files].sort(), 'Whole-file inventory differs');
     json(join(output, 'cases.json'), tests);
-    checkOutcome(tests, processResult, phase, mechanism);
+    checkOutcome(tests, processResult, phase, mechanism, causalWitnesses[mechanism.id]);
     const runtime = auditRuntime(
       evaluationDirectory,
       graph,
@@ -483,6 +455,7 @@ async function runPhase(mechanism, graph, phase) {
   );
   return result;
 }
+let primaryFailure;
 try {
   for (const mechanism of selected) {
     const graph = sourceVariant(mechanism);
@@ -541,8 +514,15 @@ try {
     `Completed ${summary.mechanisms.length} declared mechanism controls. Evidence: ${scratch}`,
   );
 } catch (error) {
+  primaryFailure = { error };
   summary.failure = { name: error.name, message: error.message, stack: error.stack };
   json(join(scratch, 'summary.json'), summary);
   console.error(`Control invocation incomplete; diagnostic evidence retained: ${scratch}`);
-  throw error;
 }
+try {
+  exportAcceptanceEvidence({ repository, scratch, kind: 'usage', report: summary });
+} catch (error) {
+  if (primaryFailure === undefined) primaryFailure = { error };
+  else console.error('Acceptance evidence export failed after the primary usage-control failure.');
+}
+if (primaryFailure !== undefined) throw primaryFailure.error;

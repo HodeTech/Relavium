@@ -43,6 +43,9 @@ const sourceRoots = [
   ...packages.map((p) => `${p}/src`),
   'packages/db/drizzle',
   'tools/usage-coverage-controls',
+  'tools/wire-conformance',
+  'tools/acceptance-evidence',
+  'tools/ci',
   'tools/budget-replay-compat',
 ];
 const rootFiles = [

@@ -1,7 +1,7 @@
 # Usage coverage causal controls
 
-This offline author/reviewer command exercises ADR-0104's eight acceptance groups against
-physical copied sources. It supplements ordinary required tests and CI; a successful invocation
+This offline required-CI and author/reviewer command exercises ADR-0104's eight acceptance groups against
+physical copied sources. It supplements ordinary package tests; a successful invocation
 is not independent review, provider evidence, an invoice claim or whole-W8 acceptance.
 
 ```sh
@@ -24,7 +24,10 @@ Each entry in [mutations.mjs](mutations.mjs) removes one declared accounting mec
 copy. Its fixed, mutated and byte-exact restored phases run the same whole files in fresh
 processes with independent caches and reports. The runner retains complete case identities,
 statuses and diagnostics. A nonzero exit alone never establishes causality: the declared
-semantic assertions must fail. Import, collection, readiness and timeout failures invalidate the
+semantic assertion must fail at its predeclared whole-file case identity and fixed signature in
+[causal-witnesses.mjs](causal-witnesses.mjs). An unrelated assertion, even in the same file, cannot
+certify removal. Negative orchestration controls reject unrelated markers/cases, runtime failures,
+empty inventories and failed or absent positive controls. Import, collection, readiness and timeout failures invalidate the
 control. The exact-query mutation is deliberately outcome preserving: only the native SQL
 `USAGE_QUERY_NOT_EXACT_IDENTITY` guard fails; the whole activation file stays positive.
 
@@ -34,6 +37,8 @@ installed external file is pinned by physical package, size and SHA-256; Node's 
 also checks the real resolved target before executing it. Native SQLite uses the installed
 platform ABI, with captured bytes, rather than claiming a portable historical native binary.
 
+Source instrumentation records module-body entry, not execution of a particular mutated branch.
+Behavioral causality comes from the separate fixed/removal/restored semantic case and signature.
 Source instrumentation inserts a synchronous call into the evaluated module body without
 rewriting physical product files. It preserves TypeScript source maps and the hashbang. The
 runtime record includes the actual PID/thread, physical source path, original raw-source SHA,
@@ -61,3 +66,18 @@ The governing contracts are [ADR-0104](../../docs/decisions/0104-unknown-provide
 [usage evidence](../../docs/reference/shared-core/llm-provider-seam.md#6-usage),
 [coverage events](../../docs/reference/contracts/sse-event-schema.md#the-runevent-union) and
 [session persistence](../../docs/reference/shared-core/database-schema.md#session-usage-coverage-foundations--adr-0104).
+
+## Required CI and bounded metadata retention
+
+The complete command runs in its own offline `usage-mutations` job on the frozen installed
+lockfile. The existing required `ci` job waits for it and the wire controls, and explicitly
+rejects failure, cancellation, skipping or absent results. Local `pnpm run ci` runs both full
+commands too. This arrangement requires no branch-protection setting change. Targeted diagnosis
+never replaces the full 23-mechanism/eight-group command or its permanent native/100,000-scale cohort.
+
+When `RELAVIUM_ACCEPTANCE_EVIDENCE` names an outside-source directory, the runner exports only
+allowlisted reports, process diagnostics and module journals, including incomplete-run evidence.
+Export is bounded to 20,000 files/256 MiB and never includes the copied graph, native databases,
+caches or executable dependency archives. CI retains that metadata for seven days. The full raw
+OS-temp evidence remains available locally; a failed export cannot replace the primary control
+failure. A hard-killed process may leave incomplete metadata, which cannot certify acceptance.

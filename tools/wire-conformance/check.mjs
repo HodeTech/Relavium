@@ -16,11 +16,15 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { exportAcceptanceEvidence } from '../acceptance-evidence/export.mjs';
+import { captureWireProvenance } from './provenance.mjs';
+
 const repository = fileURLToPath(new URL('../../', import.meta.url));
 const require = createRequire(import.meta.url);
 const vitest = join(dirname(require.resolve('vitest/package.json')), 'vitest.mjs');
 const suite = 'src/conformance/canonical-wire.test.ts';
 const expectedTests = 24;
+const provenance = captureWireProvenance(repository);
 const mutations = [
   {
     name: 'anthropic-system',
@@ -41,6 +45,14 @@ const mutations = [
     after: "...(part.signature === undefined ? {} : { thoughtSignature: 'mutated-signature' }),",
   },
 ];
+mutations.push({
+  name: 'complete-evidence-demotion',
+  path: 'src/adapters/native-usage.ts',
+  before: "kind: 'complete',\n        usage: { ...this.known, inputTokens, outputTokens },",
+  after:
+    "kind: 'partial',\n        known: { ...this.known, inputTokens, outputTokens },\n        reason: 'missing_fields',",
+  evidence: true,
+});
 const digest = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const sources = new Map(
   mutations.map(({ path }) => [path, readFileSync(join(repository, 'packages/llm', path))]),
@@ -48,8 +60,9 @@ const sources = new Map(
 const scratch = mkdtempSync(join(tmpdir(), 'relavium-wire-mutations-'));
 const workspace = join(scratch, 'packages/llm');
 const results = [];
+let expectedCaseIds;
 
-function run(label, shouldPass) {
+function run(label, shouldPass, mutation) {
   const report = join(scratch, `${label}.json`);
   const child = spawnSync(
     process.execPath,
@@ -62,6 +75,16 @@ function run(label, shouldPass) {
   assert.equal(data.numTotalTests, expectedTests, `${label}: canonical matrix changed`);
   assert.equal(data.numPendingTests, 0, `${label}: skipped canonical case`);
   assert.equal(data.numTodoTests, 0, `${label}: unfinished canonical case`);
+  const cases = data.testResults.flatMap((file) => file.assertionResults);
+  assert.equal(cases.length, expectedTests, `${label}: incomplete case inventory`);
+  assert.ok(
+    cases.every((test) => test.status === 'passed' || test.status === 'failed'),
+    `${label}: unfinished case`,
+  );
+  const caseIds = cases.map((test) => test.fullName).sort();
+  assert.equal(new Set(caseIds).size, expectedTests, `${label}: duplicated canonical case`);
+  if (expectedCaseIds === undefined) expectedCaseIds = caseIds;
+  else assert.deepEqual(caseIds, expectedCaseIds, `${label}: canonical case identities changed`);
   const failed = data.testResults.flatMap((file) =>
     file.assertionResults.filter((test) => test.status === 'failed'),
   );
@@ -74,9 +97,25 @@ function run(label, shouldPass) {
     assert.ok(failed.length > 0, `${label}: suite failure is not a lowering regression`);
     assert.ok(
       failed.some((test) =>
-        test.failureMessages.some((message) => message.includes('request_mismatch')),
+        test.failureMessages.some((message) =>
+          message.includes(mutation.evidence ? 'WIRE_CAUSAL_USAGE_EVIDENCE' : 'request_mismatch'),
+        ),
       ),
-      `${label}: mutation failed without the strict wire mismatch`,
+      `${label}: mutation failed without its declared strict assertion`,
+    );
+  }
+  if (!shouldPass && mutation.evidence) {
+    assert.equal(failed.length, expectedTests, 'Evidence demotion must fail every canonical case');
+    assert.ok(
+      failed.every((test) =>
+        test.failureMessages.some(
+          (message) =>
+            message.includes('WIRE_CAUSAL_USAGE_EVIDENCE') &&
+            message.includes('partial') &&
+            message.includes('complete'),
+        ),
+      ),
+      'Evidence demotion lost the literal arm diagnostic',
     );
   }
   return {
@@ -86,6 +125,8 @@ function run(label, shouldPass) {
   };
 }
 
+let report = { complete: false, provenance, mutations: results };
+let primaryFailure;
 try {
   mkdirSync(workspace, { recursive: true });
   cpSync(join(repository, 'packages/llm/src'), join(workspace, 'src'), { recursive: true });
@@ -119,7 +160,7 @@ try {
     let rejected;
     try {
       writeFileSync(target, text.replace(mutation.before, mutation.after));
-      rejected = run(mutation.name, false);
+      rejected = run(mutation.name, false, mutation);
     } finally {
       writeFileSync(target, original);
       assert.deepEqual(readFileSync(target), original, 'source restoration is not byte-exact');
@@ -140,13 +181,36 @@ try {
       'developer source changed during validation',
     );
   }
-  console.log(
-    JSON.stringify(
-      { baseline, mutations: results, isolated: true, developerSourcesUnchanged: true },
-      null,
-      2,
-    ),
+  assert.deepEqual(
+    captureWireProvenance(repository),
+    provenance,
+    'Wire source/dependency provenance changed',
   );
+  report = {
+    complete: true,
+    provenance,
+    baseline,
+    mutations: results,
+    isolated: true,
+    developerSourcesUnchanged: true,
+  };
+  writeFileSync(join(scratch, 'summary.json'), JSON.stringify(report, null, 2) + '\n');
+  console.log(JSON.stringify(report, null, 2));
+} catch (error) {
+  primaryFailure = { error };
+  report.failure = { name: error.name, message: error.message };
 } finally {
-  rmSync(scratch, { recursive: true, force: true });
+  try {
+    exportAcceptanceEvidence({ repository, scratch, kind: 'wire', report });
+  } catch (error) {
+    if (primaryFailure === undefined) primaryFailure = { error };
+    else console.error('Acceptance evidence export failed after the primary wire-control failure.');
+  }
+  try {
+    rmSync(scratch, { recursive: true, force: true });
+  } catch (error) {
+    if (primaryFailure === undefined) primaryFailure = { error };
+    else console.error('Scratch cleanup failed after the primary wire-control failure.');
+  }
 }
+if (primaryFailure !== undefined) throw primaryFailure.error;
