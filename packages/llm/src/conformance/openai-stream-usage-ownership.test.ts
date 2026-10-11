@@ -130,6 +130,57 @@ function expectOutcome(
 
 describe('OpenAI-compatible stream usage ownership through installed SDK HTTP', () => {
   for (const provider of ['openai', 'deepseek'] as const) {
+    it(`${provider}: a later usage-less finish cannot promote earlier nonfinal counts`, async () => {
+      expectOutcome(
+        await run(provider, 'nonfinal-then-finish', [
+          frame(nativeUsage(provider), false),
+          frame(undefined, true),
+        ]),
+        { kind: 'partial', known, reason: 'interrupted' },
+      );
+    });
+
+    it(`${provider}: include_usage after finish carries complete final authority`, async () => {
+      expectOutcome(
+        await run(provider, 'finish-then-usage', [
+          frame(undefined, true),
+          { ...frame(nativeUsage(provider), false), choices: [] },
+        ]),
+        { kind: 'complete', usage: known },
+      );
+    });
+
+    it(`${provider}: truncation retains exact nonfinal quantities without pricing them`, async () => {
+      expectOutcome(
+        await run(provider, 'truncated-nonfinal', [frame(nativeUsage(provider), false)]),
+        { kind: 'partial', known, reason: 'interrupted' },
+        true,
+      );
+    });
+
+    it(`${provider}: a larger authoritative observation replaces earlier cumulative counts`, async () => {
+      expectOutcome(
+        await run(provider, 'larger-final', [
+          frame(nativeUsage(provider, { input: 11, output: 1 }), false),
+          frame(nativeUsage(provider), true),
+        ]),
+        { kind: 'complete', usage: known },
+      );
+    });
+
+    it(`${provider}: a final complete observation survives a later native stream error`, async () => {
+      expectOutcome(
+        await run(provider, 'error-after-final', [
+          frame(nativeUsage(provider), true),
+          {
+            error: { type: 'server_error', code: 'server_error', message: 'offline cleanup error' },
+          },
+        ]),
+        { kind: 'complete', usage: known },
+        true,
+      );
+    });
+
     for (const count of ['positive', 'zero'] as const) {
       it(`${provider}/${count}: ordinary explicit terminal usage prices exactly once`, async () => {
         const counts = count === 'zero' ? { input: 0, output: 0 } : { input: 11, output: 4 };

@@ -200,7 +200,7 @@ interface InternalAttemptRecord {
   readonly coverageOnly?: true;
   readonly receiptPending?: true;
   readonly receiptFinal?: true;
-  /** The cost folded into the tracker for this attempt (present iff a `costTracker` is wired and usage existed). */
+  /** The cost folded for complete evidence with an attached tracker and an available price. */
   readonly cost?: CostUpdate;
   /** The classified failure on `outcome === 'failed'` (secret-free; never serialize `.cause`). */
   readonly error?: LlmError;
@@ -214,6 +214,8 @@ interface InternalAttemptRecord {
    * cannot be enforced over a model whose spend is unknown, so the surface must be able to say so instead of
    * silently reporting zero. Absent (rather than `true`) on the ordinary priced path, so nothing changes shape
    * for existing consumers; ADR-0070's durable `unpriced_calls` counter is the same distinction, persisted.
+   * This flag describes a determined price gap. Missing/partial usage has its own evidence arm;
+   * absence of this flag never establishes complete usage or a free call.
    */
   readonly priced?: false;
 }
@@ -1086,7 +1088,7 @@ export class FallbackChain {
       });
       return { status: 'error', error };
     }
-    if (usage === undefined) this.#emitSuccess(receivedRecord, entry.model, undefined);
+    if (usage === undefined) this.#emit({ ...receivedRecord, outcome: 'succeeded' });
     else this.#emitFolded(receivedRecord, usage, folded);
     return {
       status: 'success',
@@ -1487,7 +1489,7 @@ export class FallbackChain {
         yield { type: 'error', error: state.committed ? committed(error) : error };
         return undefined;
       }
-      this.#emitSuccess(record, entry.model, undefined); // nothing to fold
+      this.#emit({ ...record, outcome: 'succeeded' }); // no provider usage to fold
       return undefined;
     }
     let folded: FoldedUsage;
@@ -1966,23 +1968,6 @@ export class FallbackChain {
   }
 
   /**
-   * Emit a success record, folding usage into the cost tracker. `usage`/`cost` are included only when
-   * present (a stream that ended without a `stop` chunk has no usage) — `exactOptionalPropertyTypes`
-   * forbids an explicit `undefined` on an optional field.
-   */
-  #emitSuccess(
-    record: InternalAttemptRecord,
-    model: string,
-    usage: UsageEvidence | undefined,
-  ): void {
-    if (usage === undefined) {
-      this.#emit({ ...record, outcome: 'succeeded' });
-      return;
-    }
-    this.#emitFolded(record, usage, this.#foldUsage(model, usage));
-  }
-
-  /**
    * Fold usage into the cost tracker, and return the priced/unpriced outcome.
    *
    * `priceModel` throws `UnknownModelError` for a model id outside the pricing table (a new snapshot, an
@@ -1995,7 +1980,7 @@ export class FallbackChain {
    * like an unpriced model. Anything that is not `UnknownModelError` propagates, because a money bug must be
    * loud (`docs/standards/error-handling.md` — no silent catches).
    *
-   * Split out of {@link #emitSuccess} for #W15-9: the streaming path needs to guard THIS — an accounting
+   * Kept separate from observer delivery for #W15-9: the streaming path needs to guard THIS — an accounting
    * defect — without also swallowing a throw from the attempt observer, which is the consumer's bug and keeps
    * propagating on both paths exactly as before.
    */
@@ -2194,8 +2179,8 @@ export class FallbackChain {
   }
 }
 
-/** The outcome of folding one attempt's usage into the cost tracker — `unpriced` when the model is outside
- *  the pricing table (`cost` absent for a reason other than "there was nothing to charge"). */
+/** `unpriced` records a determined model/modality price gap, independently of evidence completeness.
+ * Incomplete evidence is never priced: it has no cost and does not invent a missing-price count. */
 interface FoldedUsage {
   readonly cost?: CostUpdate;
   readonly unpriced: boolean;

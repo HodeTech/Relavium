@@ -82,15 +82,17 @@ export function retainUsageObservation(
       : { ...previous.known, costMicrocents: undefined };
   void costMicrocents;
   const known: KnownUsageQuantities = { ...quantities, ...after };
-  if (before.mediaUnits !== undefined && after.mediaUnits !== undefined) {
+  const beforeMedia = before.mediaUnits;
+  const afterMedia = after.mediaUnits;
+  if (beforeMedia !== undefined && afterMedia !== undefined) {
     known.mediaUnits = [
-      ...before.mediaUnits.filter(
+      ...beforeMedia.filter(
         (prior) =>
-          !after.mediaUnits?.some(
+          !afterMedia.some(
             (next) => next.modality === prior.modality && next.direction === prior.direction,
           ),
       ),
-      ...after.mediaUnits,
+      ...afterMedia,
     ];
   }
   // Do not combine a newly observed subtotal with an older incompatible total (or vice versa).

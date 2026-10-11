@@ -1,7 +1,7 @@
 import { knownUsage } from './usage-test.js';
 import { describe, expect, it } from 'vitest';
 
-import { MEDIA_SURFACES, type StopReason } from '@relavium/shared';
+import { MEDIA_SURFACES, type StopReason, type UsageEvidence } from '@relavium/shared';
 
 import { LlmProviderError } from '../llm-error.js';
 import {
@@ -34,14 +34,10 @@ export interface ConformanceExpectations {
   readonly textGenerate: {
     stopReason: StopReason;
     text: string;
-    inputTokens: number;
-    outputTokens: number;
-    /** The cached prompt tokens that folded into the canonical `Usage` (prompt-cache hit) — providers
-     *  whose textGenerate fixture records a cache hit assert this; omit for a no-cache fixture. */
-    cacheReadTokens?: number;
+    usage: UsageEvidence;
   };
   readonly toolGenerate: { toolName: string; stopReason: StopReason };
-  readonly textStream: { stopReason: StopReason; inputTokens: number; outputTokens: number };
+  readonly textStream: { stopReason: StopReason; usage: UsageEvidence };
   readonly toolStream: { toolName: string; stopReason: StopReason };
   /** The classified kind a mid-stream `error` event should yield. */
   readonly streamErrorKind: LlmErrorKind;
@@ -197,22 +193,9 @@ export function defineConformanceSuite(
       expect(LlmResultSchema.safeParse(result).success).toBe(true);
       const text = result.content.map((part) => (part.type === 'text' ? part.text : '')).join('');
       expect(text).toBe(expected.textGenerate.text); // exact value, not just presence
-      if (name === 'gemini') {
-        // Historical native fixture omits both cache and thinking counts for this unknown model.
-        expect(result.usage).toEqual({ kind: 'missing', reason: 'missing_fields' });
-      } else {
-        expect(knownUsage(result.usage).inputTokens).toBe(expected.textGenerate.inputTokens);
-        expect(knownUsage(result.usage).outputTokens).toBe(expected.textGenerate.outputTokens);
-      }
+      expect(result.usage).toEqual(expected.textGenerate.usage);
       expect(result.stopReason).toBe(expected.textGenerate.stopReason);
       expect(result.raw).toBeDefined();
-      // A prompt-cache hit must fold into the ONE canonical Usage (cacheReadTokens), not be lost or
-      // double-counted into inputTokens — asserted for providers whose fixture records a cache hit.
-      if (expected.textGenerate.cacheReadTokens !== undefined) {
-        expect(knownUsage(result.usage).cacheReadTokens).toBe(
-          expected.textGenerate.cacheReadTokens,
-        );
-      }
     });
 
     it('generate: a tool call normalizes to a tool_call part with the expected name + id', async () => {
@@ -236,14 +219,7 @@ export function defineConformanceSuite(
       expect(last?.type).toBe('stop');
       if (last?.type === 'stop') {
         expect(last.stopReason).toBe(expected.textStream.stopReason);
-        if (name === 'gemini') {
-          expect(last.usage).toEqual({ kind: 'missing', reason: 'missing_fields' });
-        } else {
-          expect(knownUsage(last.usage).inputTokens).toBe(
-            name === 'openai' ? undefined : expected.textStream.inputTokens,
-          );
-          expect(knownUsage(last.usage).outputTokens).toBe(expected.textStream.outputTokens);
-        }
+        expect(last.usage).toEqual(expected.textStream.usage);
       }
     });
 

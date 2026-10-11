@@ -1300,8 +1300,8 @@ async function* streamChunks(
         // A newly owned observation is nonfinal until current or prior terminal metadata proves
         // authority. Keep that distinction if malformed choices throw during verification.
         authoritativeUsage = state.sawTerminal;
-        authoritativeUsage =
-          state.sawTerminal || chunk.choices.some((choice) => choice.finish_reason != null); // the include_usage chunk arrives last, with empty choices
+        if (!authoritativeUsage)
+          authoritativeUsage = chunk.choices.some((choice) => choice.finish_reason != null);
       }
       if (chunk.choices.some((choice) => nativeFieldPresent(choice.delta, 'audio'))) {
         applicable = { ...applicable, outputAudio: true };

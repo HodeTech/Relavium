@@ -1,7 +1,6 @@
-import { knownUsage } from './usage-test.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { ContentPart } from '@relavium/shared';
+import type { ContentPart, UsageEvidence } from '@relavium/shared';
 import { createAnthropicAdapter } from '../adapters/anthropic.js';
 import { createGeminiAdapter } from '../adapters/gemini.js';
 import { createOpenAiAdapter } from '../adapters/openai.js';
@@ -181,9 +180,27 @@ function expectedToolContent(provider: WireProvider, signed: boolean): ContentPa
   ];
 }
 
-function assertUsage(result: Pick<LlmResult, 'usage'>): void {
-  expect(knownUsage(result.usage).inputTokens).toBe(12);
-  expect(knownUsage(result.usage).outputTokens).toBe(7);
+const expectedUsage: Record<WireProvider, UsageEvidence> = {
+  anthropic: {
+    kind: 'complete',
+    usage: { inputTokens: 12, outputTokens: 7, cacheReadTokens: 0, cacheWriteTokens: 0 },
+  },
+  openai: {
+    kind: 'complete',
+    usage: { inputTokens: 12, outputTokens: 7, cacheReadTokens: 0, reasoningTokens: 0 },
+  },
+  deepseek: {
+    kind: 'complete',
+    usage: { inputTokens: 12, outputTokens: 7, cacheReadTokens: 0, reasoningTokens: 0 },
+  },
+  gemini: {
+    kind: 'complete',
+    usage: { inputTokens: 12, outputTokens: 7, cacheReadTokens: 0, reasoningTokens: 0 },
+  },
+};
+
+function assertUsage(provider: WireProvider, result: Pick<LlmResult, 'usage'>): void {
+  expect(result.usage).toEqual(expectedUsage[provider]);
 }
 
 describe('canonical wire matrix through installed SDK HTTP (W8 Step 3)', () => {
@@ -200,7 +217,7 @@ describe('canonical wire matrix through installed SDK HTTP (W8 Step 3)', () => {
           const result = await call(adapter(provider, replay), structuredRequest(provider), method);
           expect(result.content).toEqual([{ type: 'text', text: '{"ok":true}' }]);
           expect(result.stopReason).toBe('stop');
-          assertUsage(result);
+          assertUsage(provider, result);
         } finally {
           replay.assertConsumed();
         }
@@ -212,7 +229,7 @@ describe('canonical wire matrix through installed SDK HTTP (W8 Step 3)', () => {
           const result = await call(adapter(provider, replay), toolRequest(provider, true), method);
           expect(result.content).toEqual(expectedToolContent(provider, false));
           expect(result.stopReason).toBe('tool_use');
-          assertUsage(result);
+          assertUsage(provider, result);
         } finally {
           replay.assertConsumed();
         }
@@ -230,7 +247,7 @@ describe('canonical wire matrix through installed SDK HTTP (W8 Step 3)', () => {
           // Pin literal canonical IDs, parsed args and signatures BEFORE using the returned data.
           expect(first.content).toEqual(expectedToolContent(provider, true));
           expect(first.stopReason).toBe('tool_use');
-          assertUsage(first);
+          assertUsage(provider, first);
           const tool = first.content.find((part) => part.type === 'tool_call');
           if (tool?.type !== 'tool_call') throw new Error('missing canonical tool call');
           const final = await call(
@@ -256,7 +273,7 @@ describe('canonical wire matrix through installed SDK HTTP (W8 Step 3)', () => {
           );
           expect(final.content).toEqual([{ type: 'text', text: 'Paris is sunny at 18 C.' }]);
           expect(final.stopReason).toBe('stop');
-          assertUsage(final);
+          assertUsage(provider, final);
         } finally {
           replay.assertConsumed();
         }

@@ -226,9 +226,16 @@ export const OPENAI_FIXTURES: ConformanceFixtures = {
     expected: { toolName: 'get_weather', finalText: 'Hello, world!' },
   },
   expected: {
-    textGenerate: { stopReason: 'stop', text: 'Hello, world!', inputTokens: 12, outputTokens: 7 },
+    textGenerate: {
+      stopReason: 'stop',
+      text: 'Hello, world!',
+      usage: { kind: 'complete', usage: { inputTokens: 12, outputTokens: 7, cacheReadTokens: 0 } },
+    },
     toolGenerate: { toolName: 'get_weather', stopReason: 'tool_use' },
-    textStream: { stopReason: 'stop', inputTokens: 12, outputTokens: 7 },
+    textStream: {
+      stopReason: 'stop',
+      usage: { kind: 'partial', known: { outputTokens: 7 }, reason: 'missing_fields' },
+    },
     toolStream: { toolName: 'get_weather', stopReason: 'tool_use' },
     streamErrorKind: 'overloaded',
     structuredOutput: { text: '{"ok":true}' },

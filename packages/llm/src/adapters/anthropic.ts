@@ -909,7 +909,7 @@ export function createAnthropicAdapter(deps: AnthropicAdapterDeps = {}): LlmProv
       const usage = mapUsage(message.usage);
       if (isNativeContextOverflow(message.stop_reason)) {
         // HTTP 200 is a processed, billed response even if its text happens to be empty.
-        throw new LlmProviderError(nativeContextOverflow(mapUsage(message.usage)));
+        throw new LlmProviderError(nativeContextOverflow(usage));
       }
       try {
         return {

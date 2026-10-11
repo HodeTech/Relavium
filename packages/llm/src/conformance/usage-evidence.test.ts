@@ -258,12 +258,49 @@ describe('native usage evidence through actual offline SDK HTTP', () => {
   });
   for (const provider of providers)
     it(`${provider}: truncation preserves trustworthy observed quantities`, async () => {
+      const observed: Record<ProviderId, Record<string, unknown>> = {
+        openai: {
+          prompt_tokens: 14,
+          completion_tokens: 7,
+          prompt_tokens_details: { cached_tokens: 3 },
+        },
+        deepseek: {
+          prompt_tokens: 14,
+          completion_tokens: 7,
+          prompt_cache_hit_tokens: 3,
+          prompt_cache_miss_tokens: 11,
+        },
+        anthropic: {
+          input_tokens: 11,
+          output_tokens: 7,
+          cache_read_input_tokens: 3,
+          cache_creation_input_tokens: 2,
+        },
+        gemini: {
+          promptTokenCount: 14,
+          candidatesTokenCount: 5,
+          cachedContentTokenCount: 3,
+          thoughtsTokenCount: 2,
+        },
+      };
       const output = await evidence(
-        adapter(provider, () => Promise.resolve(response(provider, true, zeros[provider], false))),
+        adapter(provider, () =>
+          Promise.resolve(response(provider, true, observed[provider], false)),
+        ),
         request(provider),
         true,
       );
-      expect(output.kind).toBe('partial');
+      expect(output).toEqual({
+        kind: 'partial',
+        known: {
+          inputTokens: 11,
+          outputTokens: 7,
+          cacheReadTokens: 3,
+          ...(provider === 'anthropic' ? { cacheWriteTokens: 2 } : {}),
+          ...(provider === 'gemini' ? { reasoningTokens: 2 } : {}),
+        },
+        reason: 'interrupted',
+      });
     });
 });
 

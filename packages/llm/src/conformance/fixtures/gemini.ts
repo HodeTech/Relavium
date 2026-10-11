@@ -168,9 +168,13 @@ export const GEMINI_FIXTURES: ConformanceFixtures = {
     expected: { toolName: 'get_weather', finalText: 'Hello, world!' },
   },
   expected: {
-    textGenerate: { stopReason: 'stop', text: 'Hello, world!', inputTokens: 12, outputTokens: 7 },
+    textGenerate: {
+      stopReason: 'stop',
+      text: 'Hello, world!',
+      usage: { kind: 'missing', reason: 'missing_fields' },
+    },
     toolGenerate: { toolName: 'get_weather', stopReason: 'tool_use' },
-    textStream: { stopReason: 'stop', inputTokens: 12, outputTokens: 7 },
+    textStream: { stopReason: 'stop', usage: { kind: 'missing', reason: 'missing_fields' } },
     toolStream: { toolName: 'get_weather', stopReason: 'tool_use' },
     streamErrorKind: 'overloaded',
     reasoningStream: { text: 'let me think', reasoningTokens: 2 },
