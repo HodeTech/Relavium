@@ -32,7 +32,8 @@
     "smoke:cli": "node tools/cli-smoke/check.mjs",
     "smoke:overflow-capture": "node tools/overflow-capture/check.mjs",
     "smoke:budget-replay": "node tools/budget-replay-compat/check.mjs",
-    "check:wire-mutations": "node tools/wire-conformance/check.mjs"
+    "check:wire-mutations": "node tools/wire-conformance/check.mjs",
+    "check:usage-mutations": "node tools/usage-coverage-controls/check.mjs"
   },
   "devDependencies": {
     "@eslint/js": "catalog:",

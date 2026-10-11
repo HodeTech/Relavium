@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { Buffer } from 'node:buffer';
 import { setImmediate } from 'node:timers';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -25,7 +26,7 @@ globalThis.fetch = () => {
   throw new Error('Network forbidden');
 };
 
-async function setup(label, rawLines, workflow) {
+export async function setup(label, rawLines, workflow) {
   const client = createClient(
     resolve(root, `databases/${process.env.COMPAT_LABEL}-${label}.sqlite`),
   );
@@ -78,7 +79,7 @@ async function setup(label, rawLines, workflow) {
   }
 }
 
-function observedEngine({ store }) {
+export function observedEngine({ store }) {
   const calls = {
     acquire: 0,
     release: 0,
@@ -216,7 +217,9 @@ function observedEngine({ store }) {
 async function checkPrefix(capture) {
   const bytes = readFileSync(resolve(root, capture.path));
   assert.equal(digest(bytes), capture.sha256);
+  assert.equal(bytes.length, capture.bytes);
   const lines = bytes.toString('utf8').trim().split('\n');
+  assert.equal(lines.length, capture.rows);
   const workflow = core.parseWorkflow(readFileSync(resolve(root, capture.workflowPath), 'utf8'));
   const fixture = await setup(`${capture.label}-${capture.cut}`, lines, workflow);
   try {
@@ -382,7 +385,7 @@ async function legacyBudgetPositiveControl() {
   }
 }
 
-async function ordinaryGatePositiveControl() {
+export async function ordinaryGatePositiveControl() {
   const workflow = core.parseWorkflow(
     JSON.stringify({
       schema_version: '1.0',
@@ -454,64 +457,70 @@ async function ordinaryGatePositiveControl() {
   }
 }
 
-const result = {
-  baselineCommit: '1b3f8d70c05c9152043dcc476eaa1afaaa87381d',
-  producerVersion: JSON.parse(readFileSync(resolve(root, 'producer-version.json'), 'utf8')),
-  cases: [],
-  controls: [],
-  isolatedDiscriminators: [],
-  completed: false,
-};
-try {
-  const captures = JSON.parse(
-    readFileSync(resolve(root, 'results/producer-cases.json'), 'utf8'),
-  ).cases;
-  for (const capture of captures) result.cases.push(await checkPrefix(capture));
-  // Cumulative native prefixes prove real production order. Separate raw-row isolation controls
-  // prove each discriminator is independently strict, so the earlier basis cannot mask a gap.
-  for (const [type, cut] of [
-    ['cost:coverage_started', 'coverage-started'],
-    ['cost:usage_pending', 'usage-pending'],
-    ['cost:usage_disposition', 'usage-disposition'],
-  ]) {
-    const capture = captures.find((item) => item.label === 'usage-invocation' && item.cut === cut);
-    assert.ok(capture);
-    const lines = readFileSync(resolve(root, capture.path), 'utf8').trim().split('\n');
-    const selected = lines.filter((line) => {
-      const event = JSON.parse(line);
-      return event.type === 'run:started' || event.type === type;
-    });
-    assert.equal(selected.length, 2);
-    const bytes = `${selected.join('\n')}\n`;
-    const path = `raw/isolated-${cut}.ndjson`;
-    writeFileSync(resolve(root, path), bytes);
-    const isolated = await checkPrefix({
-      ...capture,
-      label: `isolated-${cut}`,
-      path,
-      sha256: digest(bytes),
-      rows: 2,
-      origin:
-        'Isolation control selecting unchanged actual producer run-start and discriminator rows; not claimed as a native crash prefix.',
-    });
-    result.isolatedDiscriminators.push({ type, sourceCapture: capture, ...isolated });
+export async function runRequiredPredecessor() {
+  const result = {
+    baselineCommit: '1b3f8d70c05c9152043dcc476eaa1afaaa87381d',
+    producerVersion: JSON.parse(readFileSync(resolve(root, 'producer-version.json'), 'utf8')),
+    cases: [],
+    controls: [],
+    isolatedDiscriminators: [],
+    completed: false,
+  };
+  try {
+    const captures = JSON.parse(
+      readFileSync(resolve(root, 'results/producer-cases.json'), 'utf8'),
+    ).cases;
+    for (const capture of captures) result.cases.push(await checkPrefix(capture));
+    // Cumulative native prefixes prove real production order. Separate raw-row isolation controls
+    // prove each discriminator is independently strict, so the earlier basis cannot mask a gap.
+    for (const [type, cut] of [
+      ['cost:coverage_started', 'coverage-started'],
+      ['cost:usage_pending', 'usage-pending'],
+      ['cost:usage_disposition', 'usage-disposition'],
+    ]) {
+      const capture = captures.find(
+        (item) => item.label === 'usage-invocation' && item.cut === cut,
+      );
+      assert.ok(capture);
+      const lines = readFileSync(resolve(root, capture.path), 'utf8').trim().split('\n');
+      const selected = lines.filter((line) => {
+        const event = JSON.parse(line);
+        return event.type === 'run:started' || event.type === type;
+      });
+      assert.equal(selected.length, 2);
+      const bytes = `${selected.join('\n')}\n`;
+      const path = `raw/isolated-${cut}.ndjson`;
+      writeFileSync(resolve(root, path), bytes);
+      const isolated = await checkPrefix({
+        ...capture,
+        label: `isolated-${cut}`,
+        path,
+        sha256: digest(bytes),
+        bytes: Buffer.byteLength(bytes),
+        rows: 2,
+        origin:
+          'Isolation control selecting unchanged actual producer run-start and discriminator rows; not claimed as a native crash prefix.',
+      });
+      result.isolatedDiscriminators.push({ type, sourceCapture: capture, ...isolated });
+    }
+    result.controls.push(await legacyBudgetPositiveControl());
+    result.controls.push(await ordinaryGatePositiveControl());
+    assert.equal(fetches, 0);
+    result.fetches = fetches;
+    result.completed = true;
+    record('results/predecessor-evidence.json', result);
+    console.log(
+      JSON.stringify({
+        completed: true,
+        strictRefusals: result.cases.length,
+        positiveControls: result.controls.length,
+        fetches,
+      }),
+    );
+  } catch (error) {
+    result.failure = { ...errorJson(error), stack: error.stack };
+    record(`results/${process.env.COMPAT_LABEL}-failed.json`, result);
+    throw error;
   }
-  result.controls.push(await legacyBudgetPositiveControl());
-  result.controls.push(await ordinaryGatePositiveControl());
-  assert.equal(fetches, 0);
-  result.fetches = fetches;
-  result.completed = true;
-  record('results/predecessor-evidence.json', result);
-  console.log(
-    JSON.stringify({
-      completed: true,
-      strictRefusals: result.cases.length,
-      positiveControls: result.controls.length,
-      fetches,
-    }),
-  );
-} catch (error) {
-  result.failure = { ...errorJson(error), stack: error.stack };
-  record(`results/${process.env.COMPAT_LABEL}-failed.json`, result);
-  throw error;
 }
+if (process.env.COMPAT_LABEL === 'predecessor') await runRequiredPredecessor();

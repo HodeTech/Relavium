@@ -140,7 +140,12 @@ module.exports = { shared: require('fixture-shared'), peer: require('fixture-pee
   const runtime = snapshotDependencyClosure(repository, control, pins, portableBytes);
   mkdirSync(join(control, 'frozen'));
   writeFileSync(join(control, 'frozen/source-manifest.json'), '{"files":[]}\n');
-  for (const file of ['dependency-runtime.mjs', 'loader.mjs', 'register.mjs'])
+  mkdirSync(join(control, 'evaluation'));
+  writeFileSync(
+    join(control, 'evaluation-context.json'),
+    `${JSON.stringify({ directory: join(control, 'evaluation'), phase: 'dependency-closure-control', mutationId: null, currentSourceRoot: null, outerSourceManifestSha256: null })}\n`,
+  );
+  for (const file of ['dependency-runtime.mjs', 'loader.mjs', 'register.mjs', 'evaluation.mjs'])
     cpSync(join(tooling, file), join(control, file));
   writeFileSync(
     join(control, 'probe.mjs'),
@@ -153,7 +158,13 @@ assert.equal(require('fixture-secondary'), 'two');
 assert.equal((await import('fixture-esm')).default, 'one');
 `,
   );
-  for (const file of ['dependency-runtime.mjs', 'loader.mjs', 'register.mjs', 'probe.mjs']) {
+  for (const file of [
+    'dependency-runtime.mjs',
+    'loader.mjs',
+    'register.mjs',
+    'evaluation.mjs',
+    'probe.mjs',
+  ]) {
     const bytes = readFileSync(join(control, file));
     runtime.files.push({
       path: file,

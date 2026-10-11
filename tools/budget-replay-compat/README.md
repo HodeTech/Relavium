@@ -186,3 +186,49 @@ regeneration recipe. This procedure verifies the existing immutable artifacts; i
 that rebuilding tar/gzip output recreates their compressed bytes. Do not refresh archives, manifests
 or digests to accommodate a current dependency update. A deliberate new predecessor requires its own
 reviewed compatibility decision rather than silently replacing this one.
+
+## Owned source controls
+
+The required smoke still runs the full sixteen native refusal prefixes, two legacy positive
+controls, three isolated discriminators, eight actual old session-writer operations and all
+existing graph/provenance/retention/lifecycle controls. Its default current source, Git provenance
+and installed native dependency authorities are the same repository. The internal replay
+preparation accepts those three roots independently: `currentSourceRoot` supplies executable
+current source and worker tools, `provenanceRoot` supplies only Git identity/blob evidence and
+`installedDependencyRoot` supplies only the invocation-specific native SQLite binary. Mutable
+copied source is identified by its exact manifest; provenance HEAD/status does not assert those
+bytes equal a commit. No product source is executed from either authority root.
+
+`causal-driver.mjs <request.json>` runs one complete bounded cohort for the
+[usage-coverage mutation runner](../usage-coverage-controls/README.md). The request contains
+`mode` (`ordinary-gate` or `session-roundtrip`), physical absolute `sourceRoot`, `provenanceRoot`,
+`installedDependencyRoot`, an exclusively empty external `outputDir`, and
+`evaluation: { directory, phase, mutationId, manifestPath }`. Phase is `fixed`, `mutated` or
+`restored`. The outer manifest is `{ version: 1, sourceRoot, files: [{ path, bytes, sha256 }] }`;
+its authority is the SHA-256 of its exact bytes. Current captures and copied worker tools must
+match that manifest. Each invocation emits `outputDir/result.json`, raw process logs, exact
+commands/exits/signals, complete case inventories, source/dependency manifests and their joins.
+The bounded driver does not replace or weaken the required smoke.
+
+The ordinary-gate cohort captures the actual current engine's durable prefix before the normal
+producer basis assertion. It runs the actual frozen parser, strict SQLite reader, checkpointer
+and engine on those bytes, records the observed behavior, then asserts refusal with
+`USAGE_OWNER_BASIS_REPLAY_NOT_REFUSED`. Its genuine frozen-produced ordinary gate must resume
+to completion in the same cohort. Thus removing initialization is observed by the old engine
+rather than failing only in an early current-producer or unknown-row assertion.
+
+The session cohort retains all eight actual old operations. Every owner then crosses a new
+business update and explicit estimate release before the oracle requires sticky aggregate and
+per-model taint even when final revision equals acknowledgement. It records every case before
+asserting `USAGE_SESSION_REVISION_TAINT_LOST`; the predecessor-inserted owner remains an explicit
+unverified-default positive member. No unknown call count or realized amount is invented.
+
+The verified TS loader injects a synchronous runtime module-body witness after transpilation,
+without modifying physical source. Inline source mappings retain original raw source and shift
+for the injected line. Each witness rechecks physical raw byte count/digest and manifest digest,
+and records actual PID/PPID/thread, current/frozen mode, source path, phase and mutation identity.
+Worker helpers are explicitly admitted in the copied dependency fence. Resolver/load logs remain
+preparation evidence. The bounded driver requires the actual worker and targeted product modules
+under each worker PID, rejects loader-thread or opposite-root witnesses, joins current copied
+bytes to the outer variant manifest, and rechecks source/dependency bytes after worker closure.
+Frozen archive/supplement identities and the portable/native provenance limits above remain intact.
