@@ -3597,6 +3597,67 @@ two NEW complete clean cumulative reviews after correction; Step 6's further con
 CR-82 and whole-W8 validation/publication remain open. No new decision, dependency, paid call or
 deferral is introduced. The register remains **48/51** on `development`, **47/51** on `main`.
 
+#### Step 5 fourteenth cumulative review — 2026-10-11
+
+Three NEW independent reviewers completed the full `017b399c..8db28312` activation and all
+thirteen corrections. Their combined result is **one High finding** in Gemini stream observation
+ownership; money/core/shared and storage/CLI/tooling/docs had no actionable finding. All three
+complete reports, raw execution artifacts and explicit releases were audited before editing.
+The frozen HEAD, logical index and all **1,264** tracked file hashes were unchanged. All **255**
+changed paths were assigned exactly once, with no omitted scope.
+
+Gemini's supported injected transport could resume a content getter before owning native usage,
+and the stream read the response usage property twice. Generate already preserved that
+observation. The correction reads and maps native usage once before further response access,
+retains nonfinal quantities as partial, and promotes that same owned observation only after
+verified current or prior terminal authority. A verified finish survives a later metadata fault.
+Inline media still demotes complete text-only quantities when its billing axis is absent; a later
+terminal without usage cannot promote earlier nonfinal counts. The canonical usage contract and
+append-only ADR-0104 note record this existing-contract correction.
+
+Independent money/core/shared execution passed **171 whole files / 4,467 cases**, plus **56**
+new composition controls. Its exact original `70ae5c44` turn-file transplant produced twelve
+passes and forty-four semantic failures; exact restoration passed all 56. Storage/CLI passed
+**77 whole files / 1,313 cases**, source typechecking, native SQLite receipt/ACK/revision/indexed
+lookup probes and actual frozen replay **16/2/3/8** controls. LLM passed **62 whole files / 2,047
+cases**, with eleven established skips (eight live, three unsupported replay), and **21 downstream
+files / 738 cases**. Its additional forty actual installed-SDK offline HTTP and twenty supported
+sequence controls passed. Cohorts overlap and are not added. Selection/loading traces are not
+module-evaluation claims.
+
+The LLM review reproduced the Gemini defect in five independent injected-transport controls:
+original **three passes / two semantic failures**, private candidate **five passes**, exact
+original restoration **three passes / two failures**. The parent separately reproduced it in
+eight whole private controls: original **two passes / six semantic failures**, corrected **eight
+passes**, exact original repeat **two passes / six failures**, exact corrected restoration **eight
+passes**. Both inventories stayed identical with no skips, import/setup failures or timing-based
+credit; developer source was never swapped. The finding is established for the typed injected
+transport. Ordinary installed-SDK HTTP data passed; no live-provider or invoice defect is claimed.
+
+Permanent `gemini-usage-ownership.test.ts` now contains **44** controls: fixed bytes pass 44;
+replacing only the copied adapter with exact `8db28312` bytes gives **26 passes / eighteen
+semantic failures**; exact fixed restoration passes 44. The complete inventory is identical,
+with no skips. Nine adjacent whole files pass **329**, with one established live skip; this
+cohort includes the 44 and is not added to them. LLM source/seam typechecks, lint and formatting
+pass. The controls preserve explicit zero, prior verified authority, partial observations before
+metadata faults and complete evidence after a verified finish, without pricing incomplete usage.
+
+Fresh forced `CI=true` workspace lint/typecheck/test passes **23/23**, none cached: **500 files /
+10,776 passing / twelve skipped**. Eleven are established LLM skips (eight live, three unsupported
+replay); the complete 106-case local performance file also passes without CI, exercising that check,
+giving **10,777 distinct passing tests** across overlapping runs. Forced build **6/6** and format
+**1/1** pass. Tools lint/typecheck, schema synchronization, engine/seam/dependency/bundle fences,
+test isolation and whitespace pass. Compiled CLI, overflow capture and actual frozen replay
+**16/2/3/8** smokes pass offline. Relative and pinned archive links resolve; all original 181
+ignored reviews remain byte-identical and no review file is tracked. These are local author gates,
+not remote CI or whole-W8 coverage results.
+
+This finding-bearing round supplies neither required clean acceptance round. Step 5 still needs
+two NEW complete clean cumulative reviews after correction. Step 6's further permanent controls
+and reviews, CR-82 and Step 7/whole-W8 validation/publication remain open. The register remains
+**48/51** on `development`, **47/51** on `main`. No new decision, dependency, paid call or deferral
+is introduced.
+
 ### CR-81 — Conformance cassettes do not verify the request wire contract · High · ✅ CLOSED on `development` 2026-10-10
 **Accepted on `development`, 2026-10-10; publication pending.** The [Step 3 register](#w8-step-3-canonical-sdk-http-matrix--2026-10-10)
 joins all four independent review verdicts and three causal lowering controls. The pre-W8 defect was:

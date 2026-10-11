@@ -615,3 +615,21 @@ their advertised type without adding a session basis event or run-only attempt-l
 The finding-bearing review grants no clean acceptance. Step 5 still requires two NEW complete
 clean cumulative rounds after correction, followed by Step 6's further controls/reviews and
 whole-W8 validation/publication. No new dependency, paid call or deferral is introduced.
+
+### W8 Gemini streamed observation ownership correction — 2026-10-11
+
+The fourteenth complete cumulative activation review reproduced a stream-only ownership gap
+in the supported injected Gemini transport. Content access could throw or mutate native counters
+before the adapter owned them, and the response usage property was read twice. Generate already
+preserved this observation. Stream normalization must likewise own the canonical quantities once
+before further response access, retain them as partial until terminal authority is verified, then
+promote that same observation without rereading native counters. Inline-media applicability still
+demotes otherwise complete evidence, and a later terminal without usage cannot make earlier
+nonfinal counts complete. The canonical
+[usage contract](../reference/shared-core/llm-provider-seam.md#6-usage) owns this clarification.
+
+The finding is established for the typed injected transport; ordinary installed-SDK HTTP controls
+did not reproduce it. This does not change native pricing, admission, retry policy or invoice
+claims. The finding-bearing round supplies no clean acceptance: Step 5 still needs two NEW
+complete clean cumulative rounds, followed by Step 6's further controls/reviews and whole-W8
+validation/publication. No new decision, dependency, paid call or deferral is introduced.

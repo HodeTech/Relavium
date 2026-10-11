@@ -1102,7 +1102,13 @@ accepted authored/frozen volume basis, including fractional durations; it is out
 
 Adapters own evidence before content projection. Stream errors and truncation preserve observed
 quantities, downgrading nonfinal cumulative observations to partial. Authoritative final evidence
-survives a later cleanup error. OpenAI/DeepSeek force `include_usage`; this requests a final
+survives a later cleanup error. Gemini reads each response's usage property once and owns its
+canonical quantities before further response access can throw or mutate that native object.
+Its streaming quantities remain partial until terminal authority is verified. That authority
+promotes the same owned observation, without rereading native counters; a later Gemini terminal
+with no usage cannot promote an earlier nonfinal observation. Observed inline media still
+downgrades complete evidence when its applicable billing axis is absent.
+OpenAI/DeepSeek force `include_usage`; this requests a final
 usage frame but cannot prove that it arrives. Anthropic's final authority comes from a non-null
 native stop reason, not merely a `message_delta` event name. Gemini recognizes a current-frame
 prompt block as terminal authority before interpreting that frame's usage, just as it recognizes
