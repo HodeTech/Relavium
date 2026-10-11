@@ -2,7 +2,9 @@
 
 > Status: Living
 
-> Last updated: 2026-09-18 — the Phase-2.6 rewrite triaged every open item, the 2026-07-19 full-project
+> Last updated: 2026-10-11 — W8 merged in PR #92; phase closure preserves approved deferrals.
+>
+> Earlier triage: the Phase-2.6 rewrite triaged every open item, the 2026-07-19 full-project
 > review added the deliberately-unscheduled block at the end, Phase 2.6.5's `W1` and `W2` residual
 > sections were appended as those waves closed, and the `W7` document review added three deferrals, re-owned
 > the `memory` policy and the delegate fields, and moved `relavium budget resume` into `W7`.
