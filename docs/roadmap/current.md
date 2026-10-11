@@ -1039,8 +1039,8 @@ an ESLint selector rather than a list.
 
 ### Wave 2 — Shut the doors
 
-The two named live security holes, one unified filesystem jail, the secrets layer under test — then
-certify while the reviews are still booked.
+The hostile-MCP holes are closed in W4/PR #87. Complete the unified filesystem jail and the remaining
+secrets/config and persistence-security work, then certify while the reviews are still booked.
 
 1. ✅ **Completed in W4/PR #87:** 2.5.5.D · project-layer MCP name collision redirecting a global secret
    (G19) and MCP tool-definition poisoning (#202); see the
