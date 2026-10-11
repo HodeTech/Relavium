@@ -4099,7 +4099,7 @@ not runtime execution. Overlapping cohorts, probes and successive rounds are not
 [LLM seam](../../reference/shared-core/llm-provider-seam.md#6-usage); the concrete revision/trigger
 transition table lives in the [database schema](../../reference/shared-core/database-schema.md#session-usage-coverage-foundations--adr-0104).
 The [event contract](../../reference/contracts/sse-event-schema.md), shared schemas/constants,
-[runner](../../reference/shared-core/agent-runner.md), [session contract](../../reference/shared-core/agent-session-spec.md)
+[runner](../../reference/shared-core/agent-runner.md), [session contract](../../reference/contracts/agent-session-spec.md)
 and [CLI reference](../../reference/cli/commands.md) describe the implemented lifecycle and qualified totals.
 Affected ADRs have dated forward notes; accepted decision bodies are preserved. Historical raw
 JSON is not retroactively enriched. Detailed review records are ignored/local; 181 original files
