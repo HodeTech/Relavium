@@ -17,6 +17,7 @@ import {
 import Module, { createRequire, isBuiltin } from 'node:module';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { systemTool } from '../budget-replay-compat/system-tools.mjs';
 
 export const aliases = Object.freeze({
   '@relavium/shared': 'packages/shared/src/index.ts',
@@ -52,7 +53,7 @@ const rootFiles = [
   'vitest.config.ts',
 ];
 function git(repository, args) {
-  const run = spawnSync('git', ['-C', repository, ...args], {
+  const run = spawnSync(systemTool('git'), ['-C', repository, ...args], {
     encoding: 'utf8',
     env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
   });
