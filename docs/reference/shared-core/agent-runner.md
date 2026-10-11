@@ -2,7 +2,7 @@
 
 > Status: Living
 
-> Last updated: 2026-10-04
+> Last updated: 2026-10-11
 
 - **Related**: [llm-provider-seam.md](llm-provider-seam.md), [tool-registry.md](tool-registry.md), [run-plan.md](run-plan.md), [built-in-tools.md](built-in-tools.md), [../contracts/sse-event-schema.md](../contracts/sse-event-schema.md), [../../decisions/0038-agentrunner-llm-call-boundary.md](../../decisions/0038-agentrunner-llm-call-boundary.md), [../../decisions/0039-same-provider-reasoning-replay.md](../../decisions/0039-same-provider-reasoning-replay.md), [../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md), [../../decisions/0037-engine-tool-execution-boundary.md](../../decisions/0037-engine-tool-execution-boundary.md), [../../standards/error-handling.md](../../standards/error-handling.md)
 
@@ -30,8 +30,11 @@ call-local producer-lifetime hook. Preparation grants no receipt authority. The 
 that hook separately from `ChainCapabilities` and request data; the separate-endpoint generative
 path uses it before invoking `generateMedia`. Both retain the raw producer before the existing
 deadline race. A refused registration preserves host-error identity and engages no provider;
-proven pre-egress generative admission is released. Late completion changes lifetime only,
-without a second attempt/cost event, media pin, save or ordinary execution restart. See the
+proven pre-egress generative admission is released. Raw completion creates no new provider
+attempt, media pin, save or ordinary execution restart. Lifetime-only completion cannot change
+accounting. Token accounting refinement requires the exact registered receipt authority described
+in [Usage evidence and durable coverage](#usage-evidence-and-durable-coverage); it can refine that
+invocation once without reopening its public result. See the
 [canonical chain lifetime contract](llm-provider-seam.md#the-per-attempt-deadline).
 The chain and separate media submission pass that authority through the provider's optional
 invocation argument, outside request data. Each engine-owned media poll creates a new retained

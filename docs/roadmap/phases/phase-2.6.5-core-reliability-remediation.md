@@ -3990,6 +3990,47 @@ correction changes documentation only. Two FURTHER NEW clean complete cumulative
 remain required, followed by Step 7's whole-W8 gates/reviews/publication. CR-82 remains open,
 **48/51 on development, 47/51 on main**; no new deferral or user prerequisite is introduced.
 
+#### Step 6 cumulative round 3 and runner wording correction — 2026-10-11
+
+Three NEW independent reviewers completed all **288 cumulative paths** at `2ceb0c5a`:
+82 money/core/shared, 53 LLM/control-tooling and 153 storage/CLI/replay/docs paths.
+GPT-6 Astra/xhigh reviewed money, GPT-6.1 Sol/xhigh LLM and GPT-6.1 Sol/high storage.
+Every complete report, path inventory, sealed raw audit and explicit partition release preceded
+the parent's global release. The parent independently verified all 1,288 tracked developer files,
+physical owned sources, exact cumulative diffs, HEAD/logical index, installed dependency bytes,
+full case inventories, thread-zero module-body witnesses, closed workers, semantic controls,
+exact restoration and every sealed artifact. Native migration metadata was independently
+recomputed against the closed SQLite file, including all 20 tables and 12 usage triggers.
+
+One corroborated **canonical-document closure blocker**, with no new runtime defect, remained:
+the runner's shared chat/media paragraph still made the unqualified lifetime-only claim corrected
+in the seam during R2. Money rated this Blocker under the repository's drifted-spec rubric;
+storage rated the same issue Medium. These are one finding, not two. The living
+[runner contract](../../reference/shared-core/agent-runner.md#usage-evidence-and-durable-coverage)
+now distinguishes ordinary lifetime completion from exact registered token-receipt accounting.
+It preserves no new attempt, media pin, save, public result or ordinary execution restart.
+This is an existing-contract correction, not a new decision. R3 is **not clean acceptance**.
+
+Fresh whole cohorts passed **69 files / 2,242 cases** (money), **34 files / 1,190 cases plus
+11 existing skips** (LLM), and **59 files / 960 cases** (storage). Two independent real-engine/
+SQLite late-receipt controls verified complete once-only synthetic accounting versus partial
+unknown usage without changing the published terminal. The Anthropic authority removal caused
+ten semantic failures; exact restoration passed all 16 cases. Four fresh native storage controls,
+all 69 closed native cohort children, four actual invoked CUT/SIGKILL schedules and the default
+predecessor **16/2/3/8** inventory passed. Overlapping results are not summed. The full
+21-mechanism runner was statically reviewed rather than redundantly rerun by every reviewer;
+its fresh Step 7 invocation remains required.
+
+Pre-existing coverage configuration comments now describe the actual required llm/mcp subset
+and the bare local three-package floor. Thresholds and executable configuration are unchanged,
+verified by identical comment-free TypeScript output. Setup-only bundled-config/replay diagnostics
+and a root-only inventory-annotation comparison were corrected without semantic credit or sealed
+evidence changes. Portable dependency provenance remains digest-local and native SQLite the
+installed ABI exception. No live-provider, PostgreSQL, bare-coverage or remote-CI claim follows.
+Two FURTHER NEW clean complete cumulative Step 6 rounds remain required, then Step 7's actual
+CI/coverage, whole-W8 reviews and publication. CR-82 remains open, **48/51 on development,
+47/51 on main**. No new deferral or user/provider/key/billing prerequisite is introduced.
+
 ### CR-81 — Conformance cassettes do not verify the request wire contract · High · ✅ CLOSED on `development` 2026-10-10
 **Accepted on `development`, 2026-10-10; publication pending.** The [Step 3 register](#w8-step-3-canonical-sdk-http-matrix--2026-10-10)
 joins all four independent review verdicts and three causal lowering controls. The pre-W8 defect was:
