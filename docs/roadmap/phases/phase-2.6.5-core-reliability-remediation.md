@@ -4543,6 +4543,36 @@ a new whole-PR review or remote certification.
 Exact replacement-head CI/Sonar is recorded separately in PR #92; maintainer merge
 remains pending. No new product change, deferral or user decision is introduced.
 
+#### Native snapshot test preparation — 2026-10-11
+
+At `f0c1d310`, the PR Windows advisory run reports the indexed replay snapshot
+case at 5,342ms against Vitest's inherited 5,000ms default. Its 599 raw fixture
+rows were individually committed before any reader observation. Correction
+`0c1a62ca` commits only those preparation rows in one native transaction. The
+visitor's later sequence-600 write remains independent, after the read snapshot
+starts. The 600 observed rows, three indexed batches, zero step reads, unknown
+schema refusal and corrupt excluded-streaming refusal are unchanged.
+
+The three replay cases and the 600-owner disk-backed summary snapshot case now
+have explicit test-local 30,000ms limits. All 600 session owners still use real,
+separately acknowledged production creation. The protected session writer's
+outer-transaction refusal remains intact; no preparation shortcut bypasses it.
+No global/default/product deadline, production writer, query, workload or assertion
+changes. Fresh focused tests pass 6/6; fresh full DB lint/typecheck/test passes
+5/5 tasks and 34 files / 630 cases, including all 100,000 native settlements.
+
+Two NEW independent complete cumulative reviews of both changed paths at
+`0c1a62ca` are clean. Each independently runs all six controls in outside-repository
+copies. Removing the replay or summary reader's snapshot transaction still fails;
+the second round also verifies that early streaming filtering suppresses the
+required corruption refusal and fails its control. Exact restoration passes all
+six again. Root read both complete reports; these scoped reviews do not claim a
+new whole-W8 or Windows acceptance.
+
+Exact replacement-head publication remains separately recorded in PR #92. The
+register stays 49/51 on `development`, 47/51 on `main`, pending maintainer merge;
+no new deferral, provider operation or user decision is introduced.
+
 ### CR-81 — Conformance cassettes do not verify the request wire contract · High · ✅ CLOSED on `development` 2026-10-10
 **Accepted on `development`, 2026-10-10; publication pending.** The [Step 3 register](#w8-step-3-canonical-sdk-http-matrix--2026-10-10)
 joins all four independent review verdicts and three causal lowering controls. The pre-W8 defect was:
