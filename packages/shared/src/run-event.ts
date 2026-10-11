@@ -57,7 +57,9 @@ const sessionBase = { sessionId: nonEmptyString, ...timestampSeq };
  * The dual envelope for the events that may carry EITHER correlation key: the reused conversational ones
  * (`agent:token` / `agent:reasoning` / `agent:tool_call` / `agent:tool_result` / `cost:updated`), plus
  * `agent:approval_requested` (dual at the schema level, but session-only-emitted in Phase 2.5 — the chat
- * approval regime) and `budget:estimate_committed` (ADR-0074 §2). **This spread is the definition of the set** —
+ * approval regime), `budget:estimate_committed` (ADR-0074 §2), and the invocation boundaries
+ * `cost:usage_pending` / `cost:usage_disposition` (ADR-0104). `cost:coverage_started` is run-only;
+ * a session establishes its basis in SQLite. **This spread is the definition of the set** —
  * every member is a `...dualBase` spread and nothing else, so grep it rather than trusting a hand-kept count.
  * They carry `runId` on a run and `sessionId` on a session. A `discriminatedUnion`
  * *member* can't carry a cross-field refinement, so the "exactly one of runId / sessionId" invariant is
@@ -742,7 +744,7 @@ export type CostAttemptSettledEvent = z.infer<typeof CostAttemptSettledEventSche
 /** ADR-0104 required accounting boundaries; strict records reject accidental payload additions. */
 export const CostCoverageStartedEventSchema = UsageCoverageStartedPayloadSchema.extend({
   type: z.literal('cost:coverage_started'),
-  ...dualBase,
+  ...runBase,
 }).strict();
 export const CostUsagePendingEventSchema = UsagePendingPayloadSchema.extend({
   type: z.literal('cost:usage_pending'),

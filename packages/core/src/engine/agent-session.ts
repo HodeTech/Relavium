@@ -216,7 +216,7 @@ export type SessionStreamEvent =
   | DistributiveOmit<
       Extract<
         import('@relavium/shared').RunEvent,
-        { type: 'cost:coverage_started' | 'cost:usage_pending' | 'cost:usage_disposition' }
+        { type: 'cost:usage_pending' | 'cost:usage_disposition' }
       >,
       'runId' | 'sessionId' | 'timestamp' | 'sequenceNumber'
     >

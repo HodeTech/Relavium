@@ -3,6 +3,7 @@ import { describe, expect, expectTypeOf, it } from 'vitest';
 import { RUN_EVENT_TYPES, SESSION_EVENT_TYPES } from './constants.js';
 import {
   CostUpdatedEventSchema,
+  RunOrSessionEventSchema,
   MaskedSecretSchema,
   parseStoredRunEvent,
   RunEventSchema,
@@ -803,6 +804,19 @@ describe('RunEvent union — every variant', () => {
 });
 
 describe('cost:updated and sequenceNumber invariants', () => {
+  it('keeps cost:coverage_started run-only at the bus validation boundary', () => {
+    const started = valid['cost:coverage_started'];
+    expect(RunOrSessionEventSchema.safeParse(started).success).toBe(true);
+    const body = { ...started };
+    delete body['runId'];
+    expect(RunOrSessionEventSchema.safeParse({ ...body, sessionId: 'session-1' }).success).toBe(
+      false,
+    );
+    expect(RunOrSessionEventSchema.safeParse({ ...started, sessionId: 'session-1' }).success).toBe(
+      false,
+    );
+  });
+
   it('pins cost:updated to integer micro-cents', () => {
     const ok = valid['cost:updated'];
     expect(CostUpdatedEventSchema.safeParse(ok).success).toBe(true);
