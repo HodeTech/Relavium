@@ -2,7 +2,13 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { createClient, createSessionStore, runMigrations, type DbClient } from '@relavium/db';
+import {
+  createClient,
+  createSessionStore,
+  createSessionUsageStore,
+  runMigrations,
+  type DbClient,
+} from '@relavium/db';
 import type { AgentSessionRecord } from '@relavium/shared';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -162,4 +168,95 @@ describe('chatListCommand (2.O)', () => {
     chatListCommand(deps(io));
     expect(closed).toBe(true);
   });
+
+  it.each([0, 100_000_000])(
+    'reads current pending, unknown and unpriced snapshots at %i known microcents',
+    (amount) => {
+      const usage = createSessionUsageStore(client.db);
+      for (const kind of ['pending', 'unknown'] as const) {
+        const id = `current-${kind}`;
+        usage.createFreshSession({
+          id,
+          agentSlug: 'current',
+          context: CTX,
+          createdAt: '2026-10-11T00:00:00.000Z',
+        });
+        const invoke = (model: string) =>
+          usage.beginInvocation({
+            sessionId: id,
+            model,
+            producerId: id,
+            dispatchId: 'turn',
+            round: 0,
+            chainAttempt: 1,
+          });
+        const known = invoke('known');
+        expect(
+          opened.store.recordSessionCost({
+            id: `${id}-known`,
+            sessionId: id,
+            model: 'known',
+            inputTokens: 1,
+            outputTokens: 0,
+            costMicrocents: amount,
+            priced: true,
+            ts: 1,
+            usageReceipt: known,
+          }),
+        ).toBe(true);
+        const unpriced = invoke('unpriced');
+        expect(
+          opened.store.recordSessionCost({
+            id: `${id}-unpriced`,
+            sessionId: id,
+            model: 'unpriced',
+            inputTokens: 1,
+            outputTokens: 0,
+            costMicrocents: 0,
+            priced: false,
+            ts: 2,
+            usageReceipt: unpriced,
+          }),
+        ).toBe(true);
+        const uncertain = invoke('uncertain');
+        if (kind === 'unknown') {
+          expect(
+            usage.disposition(uncertain, {
+              kind: 'incomplete',
+              evidence: { kind: 'missing', reason: 'not_reported' },
+            }),
+          ).toBe(true);
+          usage.retire(uncertain);
+        }
+      }
+      const json = captureIo();
+      expect(chatListCommand(deps(json.io, true))).toBe(EXIT_CODES.success);
+      const records = parseNdjson<{
+        sessionId: string;
+        totalCostMicrocents: number;
+        usageCoverage: unknown;
+        unpricedCalls: number;
+      }>(json.out());
+      expect(records).toHaveLength(2);
+      for (const kind of ['pending', 'unknown'] as const) {
+        expect(records.find((record) => record.sessionId === `current-${kind}`)).toMatchObject({
+          totalCostMicrocents: amount,
+          unpricedCalls: 1,
+          usageCoverage: {
+            unverified: false,
+            pendingInvocations: kind === 'pending' ? 1 : 0,
+            unknownCalls: kind === 'unknown' ? 1 : 0,
+          },
+        });
+      }
+      expect(json.err()).toBe('');
+      const human = captureIo();
+      expect(chatListCommand(deps(human.io))).toBe(EXIT_CODES.success);
+      expect(human.out()).toContain('current-pending');
+      expect(human.out()).toContain('current-unknown');
+      expect(human.out()).not.toMatch(
+        /\$|free|usage pending|usage unknown|price unknown|microcents/,
+      );
+    },
+  );
 });

@@ -1,4 +1,12 @@
-import { createClient, runEvents, runMigrations, type Db, type DbClient } from '@relavium/db';
+import {
+  createClient,
+  createRunHistoryStore,
+  runEvents,
+  runMigrations,
+  type Db,
+  type DbClient,
+} from '@relavium/db';
+import { RunEventSchema, type RunEvent } from '@relavium/shared';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { isCliError } from '../process/errors.js';
@@ -139,5 +147,107 @@ describe('logsCommand', () => {
     expect(events.map((e) => e.sequenceNumber)).toEqual([0, 1, 2, 3]);
     expect(events[0]?.type).toBe('run:started');
     expect(events.every((e) => e.runId === 'run-1')).toBe(true);
+  });
+
+  it('preserves historical field absence and all coverage evidence without enriching raw logs', async () => {
+    await seedRun(db, { slug: 'raw-accounting', runId: 'raw-accounting', state: 'running' });
+    let id = 0;
+    const store = createRunHistoryStore(db, {
+      uuid: () => `raw-event-${++id}`,
+      now: () => 0,
+      workflow: { slug: 'raw-accounting', name: 'raw-accounting', definitionJson: '{}' },
+    });
+    const invocation = {
+      producerId: 'producer',
+      ordinal: 1,
+      dispatchId: 'turn',
+      round: 0,
+      chainAttempt: 1,
+    };
+    const bodies = [
+      {
+        type: 'cost:updated',
+        nodeId: 'n1',
+        model: 'offline',
+        inputTokens: 4,
+        outputTokens: 2,
+        costMicrocents: 123456,
+        cumulativeCostMicrocents: 123456,
+      },
+      { type: 'cost:coverage_started', basis: 'legacy_unverified' },
+      { type: 'cost:usage_pending', nodeId: 'n1', model: 'offline', invocation },
+      {
+        type: 'cost:usage_disposition',
+        nodeId: 'n1',
+        model: 'offline',
+        invocation,
+        disposition: {
+          kind: 'incomplete',
+          evidence: { kind: 'partial', known: { outputTokens: 2 }, reason: 'missing_fields' },
+        },
+        receiptPending: true,
+      },
+      {
+        type: 'budget:estimate_committed',
+        nodeId: 'n1',
+        model: 'offline',
+        estimateMicrocents: 9876,
+        cumulativeConservativeMicrocents: 9876,
+      },
+      {
+        type: 'run:completed',
+        outputs: {},
+        totalTokensUsed: { input: 4, output: 2 },
+        totalCostMicrocents: 123456,
+        durationMs: 3,
+      },
+    ];
+    const expected: RunEvent[] = [];
+    for (const [index, body] of bodies.entries()) {
+      const event = RunEventSchema.parse({
+        ...body,
+        runId: 'raw-accounting',
+        timestamp: '2026-10-11T00:00:00.000Z',
+        sequenceNumber: index + 3,
+      });
+      await store.persistEvent(event);
+      expected.push(event);
+    }
+    db.insert(runEvents)
+      .values({
+        id: 'future-accounting',
+        runId: 'raw-accounting',
+        seq: 99,
+        eventType: 'cost:future',
+        payloadJson: JSON.stringify({ type: 'cost:future' }),
+        ts: 0,
+      })
+      .run();
+    const json = captureIo();
+    expect(logsCommand({ runId: 'raw-accounting' }, deps(json.io, true))).toBe(EXIT_CODES.success);
+    const emitted = parseNdjson<RunEvent>(json.out()).slice(3);
+    expect(emitted).toEqual(expected);
+    for (const event of emitted.filter(
+      (event) => event.type === 'cost:updated' || event.type === 'run:completed',
+    )) {
+      for (const key of ['usageCoverage', 'cumulativeUnpricedCalls', 'invocation'])
+        expect(Object.hasOwn(event, key)).toBe(false);
+    }
+    expect(
+      emitted.filter((event) =>
+        ['cost:coverage_started', 'cost:usage_pending', 'cost:usage_disposition'].includes(
+          event.type,
+        ),
+      ),
+    ).toHaveLength(3);
+    expect(json.err()).toContain(
+      '1 event written by a newer version of Relavium was skipped (seq 99)',
+    );
+    expect(json.out()).not.toContain('newer version');
+    const human = captureIo();
+    expect(logsCommand({ runId: 'raw-accounting' }, deps(human.io))).toBe(EXIT_CODES.success);
+    expect(human.out()).toContain('~9876µ¢ estimated, possibly billed (~9876µ¢ total)');
+    expect(human.out()).not.toMatch(/123456|\$|free|realized|Session cost/);
+    expect(human.err()).toContain('seq 99');
   });
 });

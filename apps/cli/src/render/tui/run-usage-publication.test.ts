@@ -1,14 +1,19 @@
 import {
   createAgentNodeExecutor,
+  createDispatchingNodeExecutor,
+  createHumanGateNodeExecutor,
   createInMemoryHost,
   parseWorkflow,
   WorkflowEngine,
 } from '@relavium/core';
-import type { LlmProvider, ModelPricing } from '@relavium/llm';
+import { makeLlmError, type LlmProvider, type ModelPricing } from '@relavium/llm';
 import { UsageCoverageFold, type RunEvent, type UsageEvidence } from '@relavium/shared';
 import { describe, expect, it, vi } from 'vitest';
 
 import { createRunStore } from './run-store.js';
+import { formatReportedCost } from './format.js';
+import { createJsonRenderer } from '../renderer.js';
+import { captureIo, parseNdjson, CHAT_TEXT_CAPABILITY_FLAGS } from '../../test-support.js';
 
 function deferred() {
   let resolve: () => void = () => {};
@@ -230,3 +235,202 @@ describe.each([false, true])(
     );
   },
 );
+
+describe.each([0, 10000])('real workflow lifecycle totals (known input=%i)', (knownInput) => {
+  it.each(['failed', 'cancelled', 'paused', 'early-exit'] as const)(
+    'keeps the %s final/footer and raw JSON qualified',
+    async (outcome) => {
+      const entered = deferred();
+      let calls = 0;
+      const provider: LlmProvider = {
+        id: 'openai',
+        customEndpoint: true,
+        supports: CHAT_TEXT_CAPABILITY_FLAGS,
+        generate: () => Promise.reject(new Error('nonstreaming forbidden')),
+        async *stream(request) {
+          calls++;
+          yield { type: 'text_delta', text: 'offline' };
+          if (calls === 1) {
+            yield {
+              type: 'stop',
+              stopReason: 'stop',
+              usage: { kind: 'complete', usage: { inputTokens: knownInput, outputTokens: 0 } },
+            };
+            return;
+          }
+          entered.resolve();
+          if (outcome === 'failed')
+            throw Object.assign(
+              new Error('offline refusal'),
+              makeLlmError({
+                kind: 'content_filter',
+                message: 'offline refusal',
+                provider: 'openai',
+              }),
+            );
+          if (outcome === 'cancelled' || outcome === 'early-exit') {
+            await new Promise<void>((resolve) => {
+              if (request.signal?.aborted === true) resolve();
+              else request.signal?.addEventListener('abort', () => resolve());
+            });
+          }
+          yield {
+            type: 'stop',
+            stopReason: 'stop',
+            usage: { kind: 'missing', reason: 'not_reported' },
+          };
+        },
+      };
+      const price: ModelPricing = {
+        provider: 'openai',
+        nativeId: 'offline',
+        displayName: 'offline',
+        contextWindowTokens: 10000,
+        maxOutputTokens: 1000,
+        inputPerMtokMicrocents: 100000000,
+        outputPerMtokMicrocents: 0,
+        cachedInputPerMtokMicrocents: 0,
+      };
+      const resolvePrice = new Map([['offline', price]]);
+      const workflow = parseWorkflow(
+        JSON.stringify({
+          schema_version: '1.0',
+          workflow: {
+            id: 'lifecycle-coverage',
+            agents: [{ id: 'a', provider: 'openai', model: 'offline', system_prompt: 'offline' }],
+            nodes: [
+              { id: 'known', type: 'agent', agent_ref: 'a', prompt_template: 'offline' },
+              { id: 'uncertain', type: 'agent', agent_ref: 'a', prompt_template: 'offline' },
+              ...(outcome === 'paused'
+                ? [
+                    {
+                      id: 'gate',
+                      type: 'human_gate',
+                      gate_type: 'approval',
+                    },
+                  ]
+                : []),
+            ],
+            edges: [
+              { from: 'known', to: 'uncertain' },
+              ...(outcome === 'paused' ? [{ from: 'uncertain', to: 'gate' }] : []),
+            ],
+          },
+        }),
+      );
+      const handle = new WorkflowEngine({
+        host: createInMemoryHost(),
+        resolvePrice,
+        executor: createDispatchingNodeExecutor({
+          human_in_the_loop: createHumanGateNodeExecutor({}),
+          agent: createAgentNodeExecutor({
+            resolveProvider: () => provider,
+            keyFor: () => 'offline-fixture',
+            resolvePrice,
+            sleep: () => Promise.resolve(),
+            tools: [],
+            registry: {
+              has: () => false,
+              list: () => [],
+              dispatch: () => Promise.reject(new Error('tools forbidden')),
+            },
+          }),
+        }),
+      }).start({ workflow });
+      const view = createRunStore(false);
+      const io = captureIo();
+      const renderer = createJsonRenderer(io.io);
+      const paused = deferred();
+      const releasePausedReader = deferred();
+      const drain = (async () => {
+        for await (const event of handle.events) {
+          renderer.onEvent(event);
+          view.apply(event);
+          view.flush();
+          if (event.type === 'run:paused') {
+            paused.resolve();
+            await releasePausedReader.promise;
+          }
+        }
+      })();
+      try {
+        await Promise.race([
+          entered.promise,
+          drain.then(() => {
+            throw new Error('run ended before uncertain provider invocation');
+          }),
+        ]);
+        if (outcome === 'early-exit') {
+          const state = view.getSnapshot().state;
+          expect(state.usageCoverage).toEqual({
+            unverified: false,
+            pendingInvocations: 1,
+            unknownCalls: 0,
+          });
+          expect(view.summaryText()).toContain('run ended');
+          expect(view.summaryText()).toContain(
+            `${knownInput === 0 ? '$0.0000' : '$0.0100'} known; 1 usage pending`,
+          );
+          expect(
+            formatReportedCost(
+              state.cumulativeCostMicrocents,
+              state.usageCoverage,
+              state.unpricedCalls,
+            ),
+          ).toContain('1 usage pending');
+          const prefix = parseNdjson<RunEvent>(io.out());
+          expect(prefix.filter((event) => event.type === 'cost:usage_pending')).toHaveLength(2);
+          expect(
+            prefix.some(
+              (event) =>
+                event.type === 'run:completed' ||
+                event.type === 'run:cancelled' ||
+                event.type === 'run:failed',
+            ),
+          ).toBe(false);
+        }
+        if (outcome === 'cancelled' || outcome === 'early-exit') handle.cancel();
+        if (outcome === 'paused') await paused.promise;
+        else await drain;
+        expect(await handle.depart()).toMatchObject({
+          kind: outcome === 'paused' ? 'detached' : 'closed',
+        });
+        releasePausedReader.resolve();
+        await drain;
+        expect(calls).toBe(2);
+        const events = parseNdjson<RunEvent>(io.out());
+        const terminal = events.at(-1);
+        expect(terminal?.type).toBe(
+          outcome === 'paused'
+            ? 'run:paused'
+            : outcome === 'failed'
+              ? 'run:failed'
+              : 'run:cancelled',
+        );
+        expect(terminal?.usageCoverage).toEqual({
+          unverified: false,
+          pendingInvocations: 0,
+          unknownCalls: 1,
+        });
+        expect(terminal?.cumulativeCostMicrocents).toBe(knownInput * 100);
+        const state = view.getSnapshot().state;
+        expect(state.cumulativeCostMicrocents).toBe(knownInput * 100);
+        expect(view.summaryText()).toContain('known; usage unknown for 1 call');
+        expect(
+          formatReportedCost(
+            state.cumulativeCostMicrocents,
+            state.usageCoverage,
+            state.unpricedCalls,
+          ),
+        ).toContain('known; usage unknown for 1 call');
+        expect(view.summaryText()).not.toContain('free');
+        expect(io.err()).toBe('');
+      } finally {
+        releasePausedReader.resolve();
+        handle.cancel();
+        await drain;
+        await handle.depart();
+      }
+    },
+  );
+});

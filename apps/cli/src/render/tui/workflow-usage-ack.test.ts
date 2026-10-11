@@ -22,6 +22,9 @@ import { UsageCoverageFold, type RunEvent, type UsageCoverage } from '@relavium/
 import { describe, expect, it } from 'vitest';
 
 import { createRunStore } from './run-store.js';
+import { createJsonRenderer } from '../renderer.js';
+import { captureIo, parseNdjson } from '../../test-support.js';
+import { formatReportedCost } from './format.js';
 
 function latch() {
   let resolve: () => void = () => {};
@@ -148,9 +151,12 @@ describe.each([false, true])('actual workflow settlement ACK (refused=%s)', (ref
         readonly coverage: UsageCoverage | undefined;
       }[] = [];
       const view = createRunStore(false);
+      const json = captureIo();
+      const renderer = createJsonRenderer(json.io);
       const drain = (async () => {
         for await (const event of handle.events) {
           events.push(event);
+          renderer.onEvent(event);
           view.apply(event);
           view.flush();
           projections.push({ event, coverage: view.getSnapshot().state.usageCoverage });
@@ -197,6 +203,21 @@ describe.each([false, true])('actual workflow settlement ACK (refused=%s)', (ref
           usageCoverage: finalCoverage,
         });
         expect(view.getSnapshot().state.usageCoverage).toEqual(finalCoverage);
+        expect(parseNdjson<RunEvent>(json.out())).toEqual(events);
+        if (refused) {
+          const state = view.getSnapshot().state;
+          expect(view.summaryText()).toContain('run failed');
+          expect(view.summaryText()).toContain('known; 1 usage pending');
+          expect(view.summaryText()).not.toContain('free');
+          expect(
+            formatReportedCost(
+              state.cumulativeCostMicrocents,
+              state.usageCoverage,
+              state.unpricedCalls,
+            ),
+          ).toContain('known; 1 usage pending');
+          expect(parseNdjson<RunEvent>(json.out()).at(-1)?.usageCoverage).toEqual(pending);
+        }
         const settled = events.filter((event) => event.type === 'cost:attempt_settled');
         expect(settled).toHaveLength(1);
         // Failed durable asks remain delivered under ADR-0078; only the ACKed row belongs to replay.

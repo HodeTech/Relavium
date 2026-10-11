@@ -5,13 +5,14 @@ import { join } from 'node:path';
 import { PassThrough, Readable } from 'node:stream';
 
 import type { SessionStreamHandleEvent } from '@relavium/core';
-import type { ProviderId, StreamChunk } from '@relavium/llm';
+import { makeLlmError, type ProviderId, type StreamChunk } from '@relavium/llm';
 import {
   createClient,
   createEffectJournalStore,
   createModelCatalogStore,
   createProviderStore,
   createSessionStore,
+  createSessionUsageStore,
   runMigrations,
   type Db,
   type DbClient,
@@ -1502,6 +1503,115 @@ describe('chatCommand', () => {
     expect(err()).toContain("unknown command '/bogus'"); // it went to stderr
   });
 
+  it.each(['success', 'failure', 'cancelled'] as const)(
+    'actual summary JSON preserves earlier unknown coverage on %s',
+    async (outcome) => {
+      const missing: StreamChunk[] = [
+        { type: 'text_delta', text: 'first answer' },
+        { type: 'stop', stopReason: 'stop', usage: { kind: 'missing', reason: 'not_reported' } },
+      ];
+      const { d, out, store } = deps([], [missing, textTurn('second answer')]);
+      const resolver = d.providers;
+      const base = resolver?.resolveProvider('anthropic');
+      if (base === undefined || resolver === undefined) throw new Error('offline provider missing');
+      let calls = 0;
+      let cancelSummary: (() => void) | undefined;
+      expect(
+        await chatCommand(
+          { agent: undefined },
+          {
+            ...d,
+            global: { ...d.global, json: true },
+            io: { ...d.io, stdin: Readable.from(['first\nsecond\n/compact\n/exit\n']) },
+            providers: {
+              keyFor: resolver.keyFor,
+              resolveProvider: () => ({
+                ...base,
+                async *stream(...args) {
+                  calls++;
+                  if (calls <= 2) {
+                    yield* base.stream(...args);
+                    return;
+                  }
+                  yield { type: 'text_delta', text: 'offline summary' };
+                  if (outcome === 'failure')
+                    throw Object.assign(
+                      new Error('offline summary refusal'),
+                      makeLlmError({
+                        provider: 'anthropic',
+                        kind: 'content_filter',
+                        message: 'offline summary refusal',
+                      }),
+                    );
+                  if (outcome === 'cancelled') {
+                    cancelSummary?.();
+                    throw Object.assign(
+                      new Error('offline summary cancelled'),
+                      makeLlmError({
+                        provider: 'anthropic',
+                        kind: 'cancelled',
+                        message: 'offline summary cancelled',
+                      }),
+                    );
+                  }
+                  yield {
+                    type: 'stop',
+                    stopReason: 'stop',
+                    usage: { kind: 'missing', reason: 'not_reported' },
+                  };
+                },
+              }),
+            },
+            drive: (ctx) => {
+              cancelSummary = ctx.onAbort;
+              return driveJson(ctx);
+            },
+          },
+        ),
+      ).toBe(EXIT_CODES.chatEnded);
+      expect(calls).toBe(3);
+      const events = parseNdjson<SessionStreamHandleEvent>(out());
+      const compactingIndex = events.findIndex((event) => event.type === 'session:compacting');
+      expect(compactingIndex).toBeGreaterThan(0);
+      expect(events[compactingIndex]?.usageCoverage).toEqual({
+        unverified: false,
+        pendingInvocations: 0,
+        unknownCalls: 1,
+      });
+      const summaryPending = events
+        .slice(compactingIndex)
+        .find((event) => event.type === 'cost:usage_pending');
+      expect(summaryPending?.usageCoverage).toEqual({
+        unverified: false,
+        pendingInvocations: 1,
+        unknownCalls: 1,
+      });
+      const end = events.at(-1);
+      expect(end?.type).toBe('session:cancelled');
+      const snapshot = store.loadSessionCostBreakdown('id-0');
+      expect(snapshot.coverage).toEqual({
+        unverified: false,
+        pendingInvocations: 0,
+        unknownCalls: 2,
+      });
+      expect(end?.usageCoverage).toEqual(snapshot.coverage);
+      expect(end?.cumulativeCostMicrocents).toBe(snapshot.totalCostMicrocents);
+      expect(snapshot.totalCostMicrocents).toBeGreaterThan(0);
+      expect(snapshot.rows.reduce((sum, row) => sum + row.callCount, 0)).toBe(1);
+      if (outcome === 'success') {
+        const summary = events.find((event) => event.type === 'session:compacted');
+        expect(summary?.usageCoverage).toEqual(snapshot.coverage);
+        expect(
+          summary?.type === 'session:compacted' ? summary.summaryUsageCoverage : undefined,
+        ).toEqual({ unverified: false, pendingInvocations: 0, unknownCalls: 1 });
+      } else {
+        expect(events.some((event) => event.type === 'session:compacted')).toBe(false);
+        if (outcome === 'failure')
+          expect(events.some((event) => event.type === 'session:compaction_failed')).toBe(true);
+      }
+    },
+  );
+
   it('chat --json /help writes the command list to stderr, never the stdout NDJSON stream', async () => {
     const { io, out, err } = captureIo();
     const store = createSessionStore(client.db);
@@ -1908,6 +2018,112 @@ describe('chatResumeCommand (2.N)', () => {
     expect(panel).not.toContain('$0.0000'); // the prior process's spend is VISIBLE, not zeroed
     expect(panel).toMatch(/\(\d+ calls?, \d+ tok\)/); // …and its per-model row survived the process boundary
   });
+
+  it.each([0, 100_000_000])(
+    'wired /cost keeps per-model coverage and %i known microcents through estimate release',
+    async (amount) => {
+      const store = createSessionStore(client.db);
+      const zero: StreamChunk[] = [
+        { type: 'text_delta', text: 'seed' },
+        {
+          type: 'stop',
+          stopReason: 'stop',
+          usage: { kind: 'complete', usage: { inputTokens: 0, outputTokens: 0 } },
+        },
+      ];
+      expect(
+        await chatCommand({ agent: undefined }, freshDeps(['hello', '/exit'], [zero], store)),
+      ).toBe(EXIT_CODES.chatEnded);
+      const usage = createSessionUsageStore(client.db);
+      const invoke = (model: string) =>
+        usage.beginInvocation({
+          sessionId: 'id-0',
+          model,
+          producerId: 'matrix',
+          dispatchId: 'turn',
+          round: 0,
+          chainAttempt: 1,
+        });
+      const known = invoke('known-model');
+      expect(
+        store.recordSessionCost({
+          id: 'known',
+          sessionId: 'id-0',
+          model: 'known-model',
+          inputTokens: 7,
+          outputTokens: 3,
+          costMicrocents: amount,
+          priced: true,
+          ts: 1,
+          usageReceipt: known,
+        }),
+      ).toBe(true);
+      const unpriced = invoke('unpriced-model');
+      expect(
+        store.recordSessionCost({
+          id: 'unpriced',
+          sessionId: 'id-0',
+          model: 'unpriced-model',
+          inputTokens: 2,
+          outputTokens: 1,
+          costMicrocents: 0,
+          priced: false,
+          ts: 2,
+          usageReceipt: unpriced,
+        }),
+      ).toBe(true);
+      invoke('pending-model');
+      const unknown = invoke('unknown-model');
+      expect(
+        usage.disposition(unknown, {
+          kind: 'incomplete',
+          evidence: { kind: 'partial', known: { outputTokens: 2 }, reason: 'missing_fields' },
+        }),
+      ).toBe(true);
+      usage.retire(unknown);
+      store.recordSessionConservativeCommitment({
+        id: 'estimate',
+        sessionId: 'id-0',
+        model: 'known-model',
+        estimateMicrocents: 12345,
+        ts: 3,
+      });
+      const before = store.loadSessionCostBreakdown('id-0');
+      const { d, err } = resumeDeps(['/cost', '/cost --release', '/exit'], [], store);
+      expect(await chatResumeCommand({ sessionId: 'id-0' }, d)).toBe(EXIT_CODES.chatEnded);
+      const panels = err().split('Session cost: ').slice(1);
+      expect(panels).toHaveLength(2);
+      for (const panel of panels) {
+        expect(panel.split('\n')[0]).toBe(
+          `${amount === 0 ? '$0.0000' : '$1.0000'} known; 1 usage pending; usage unknown for 1 call; price unknown for 1 call`,
+        );
+        const lines = panel.split('\n');
+        expect(lines.find((line) => line.includes('pending-model'))).toBe(
+          '  pending-model — $0.0000 known; 1 usage pending',
+        );
+        expect(lines.find((line) => line.includes('unknown-model'))).toBe(
+          '  unknown-model — $0.0000 known; usage unknown for 1 call',
+        );
+        const knownLine = lines.find((line) => line.includes('  known-model  '));
+        expect(knownLine).toContain('(1 call, 10 tok)');
+        expect(knownLine).not.toMatch(/usage pending|usage unknown|unverified|price unknown/);
+        expect(lines.find((line) => line.includes('unpriced-model'))).toContain(
+          'price unknown for 1 call',
+        );
+        expect(panel).not.toContain('(0 calls');
+        expect(panel).not.toContain('free');
+      }
+      expect(panels[0]).toContain('~12345µ¢ estimated, possibly billed');
+      expect(panels[1]).toContain('Released ~12345µ¢');
+      expect(panels[1]).not.toContain('estimated, possibly billed');
+      const after = store.loadSessionCostBreakdown('id-0');
+      expect(after.totalCostMicrocents).toBe(amount);
+      expect(after.coverage).toEqual(before.coverage);
+      expect(after.models).toEqual(before.models);
+      expect(after.rows.reduce((sum, row) => sum + row.costMicrocents, 0)).toBe(amount);
+      expect(after.rows.reduce((sum, row) => sum + row.conservativeMicrocents, 0)).toBe(0);
+    },
+  );
 
   it('reloads a persisted session and continues it, appending sequenced rows past the prior max', async () => {
     const store = createSessionStore(client.db);
