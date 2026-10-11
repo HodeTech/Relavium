@@ -4280,6 +4280,16 @@ generation entrypoint, historical SQL/snapshot preservation and constraint behav
 GitHub DB gate now calls the same `db:sync-check` as local CI, including those controls.
 The finding-bearing round is not clean acceptance; two NEW complete independent rounds remain.
 
+**Increment 1 accepted — 2026-10-11, reviewed head `78d0f9d2`.** Two NEW independent complete
+cumulative rounds each reviewed all 14 changed files from `c46bb792`. Both returned zero findings.
+The first ran 202 focused cases and seven generator controls; the second ran 259 focused cases
+and seven generator controls, plus 150 independently constructed lexer cases. Both independently
+reproduced SQLite 3.54 fixed/former migration behavior, retained money/identity/coverage, and
+copied-source event/generator regressions. Strict/purity typechecks, changed-code lint, formatting
+and whitespace checks passed. H1, H2 and the ineffective migration FK-toggle finding are closed
+within this increment. Remaining increments and fresh whole-PR/published-head gates stay open;
+old-head CI results do not certify the corrections.
+
 ### CR-81 — Conformance cassettes do not verify the request wire contract · High · ✅ CLOSED on `development` 2026-10-10
 **Accepted on `development`, 2026-10-10; publication pending.** The [Step 3 register](#w8-step-3-canonical-sdk-http-matrix--2026-10-10)
 joins all four independent review verdicts and three causal lowering controls. The pre-W8 defect was:
