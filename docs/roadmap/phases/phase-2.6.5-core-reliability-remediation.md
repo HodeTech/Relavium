@@ -3950,6 +3950,46 @@ clean cumulative rounds after the correction; Step 7 whole-W8 CI/coverage/review
 remain required. CR-82 stays open, **48/51 on development, 47/51 on main**.
 No new decision, dependency, paid call, deferral or user prerequisite is introduced.
 
+#### Step 6 cumulative round 2 and late-receipt wording correction — 2026-10-11
+
+Three NEW independent reviewers completed all **288 cumulative paths** at `928da5d3`:
+82 money/core/shared, 53 LLM/control-tooling and 153 storage/CLI/replay/docs paths.
+GPT-6.1 Sol/xhigh reviewed money and storage; GPT-6 Astra/xhigh reviewed LLM/tooling.
+All complete reports, inventories, raw audits, seals and explicit partition releases preceded
+the parent's global release. The parent read every complete report and independently checked
+all 1,288 developer/owned tracked files, exact HEAD/logical index, every sealed artifact,
+installed/captured dependencies, full case inventories, actual thread-zero module bodies,
+closed native workers, semantic failures, exact restorations and original frozen Git blobs.
+
+One corroborated Medium canonical-document contradiction was confirmed, with **no new runtime
+defect**. The earlier lifetime paragraph universally prohibited late observations/charges;
+the later registered-receipt contract and implementation correctly refine the same invocation
+once. The living [seam contract](../../reference/shared-core/llm-provider-seam.md#invocation-correlation-repairs-and-late-receipts)
+now distinguishes lifetime-only completion from registered receipt authority. It preserves no
+new provider attempt or public terminal and does not grant charge/refund authority to ordinary
+raw completion. This is an existing-contract documentation correction, not a new decision.
+This finding-bearing round is **not clean acceptance**.
+
+Fresh whole cohorts passed **69 files / 2,242 cases** (money), **66 files / 2,199 cases plus
+11 existing skips** (LLM), and **59 files / 960 cases** (storage). Independent installed-SDK/
+native SQLite money controls passed eleven cases, including held pending acknowledgement.
+The independent final-output authority control passed 104 cases, failed twelve assertions when
+its protection was removed, and passed the identical 104 cases after exact restoration. The
+fresh full control runner preserved all 21 semantic-red/exact-restored mechanisms and the
+17-file, 409-case permanent cohort. Storage independently verified eight relevant mechanisms,
+five new native transaction/revision/query schedules, all 69 closed native cohort children and
+the actual default predecessor **16/2/3/8** inventory. Overlapping runs are not summed.
+
+Harness-only diagnostics include a guessed mutant failure count, initial native-ESM fencing,
+disabled-cache directory bookkeeping and audit metadata shapes. Corrected raw evidence, exact
+source identity and semantic failures were audited; diagnostics earn no product acceptance.
+Portable dependency provenance remains digest-local, native SQLite the installed ABI exception,
+and live providers, PostgreSQL parity, bare root coverage and remote CI are not claimed.
+The shipping source/tests remain those of the preceding complete green forced gates; this
+correction changes documentation only. Two FURTHER NEW clean complete cumulative Step 6 rounds
+remain required, followed by Step 7's whole-W8 gates/reviews/publication. CR-82 remains open,
+**48/51 on development, 47/51 on main**; no new deferral or user prerequisite is introduced.
+
 ### CR-81 — Conformance cassettes do not verify the request wire contract · High · ✅ CLOSED on `development` 2026-10-10
 **Accepted on `development`, 2026-10-10; publication pending.** The [Step 3 register](#w8-step-3-canonical-sdk-http-matrix--2026-10-10)
 joins all four independent review verdicts and three causal lowering controls. The pre-W8 defect was:

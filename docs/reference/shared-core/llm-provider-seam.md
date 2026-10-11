@@ -677,10 +677,13 @@ classification. An established provider/deadline failure stays primary over best
 iterator cleanup; a cleanup-only host-entry failure accounts known usage once before escaping,
 including an explicit public stream-iterator `return()`. Its handler runs in generator `finally`:
 consumer return bypasses subsequent statements, so those statements cannot observe the attempt
-or propagate the original refusal. The observer runs once, with already confirmed terminal usage.
-Identity recognition does not inspect an arbitrary throwable's prototype. Raw completion after
-a bounded failure adds no second attempt observation, late charge, refund or terminal. This
-boundary does not certify all transitive SDK/network/MCP work or safe host departure; those
+or propagate the original refusal. That cleanup handler reports its primary observation once,
+with already confirmed terminal usage. Identity recognition does not inspect an arbitrary
+throwable's prototype. Raw completion after a bounded failure creates no new provider attempt
+or public terminal. Accounting refinement requires the registered receipt authority defined in
+[Invocation correlation, repairs and late receipts](#invocation-correlation-repairs-and-late-receipts);
+lifetime-only completion cannot charge or refund. This boundary does not certify all transitive
+SDK/network/MCP work or safe host departure; those
 remaining obligations are recorded in [ADR-0103](../../decisions/0103-a-paused-run-hands-off-its-local-producers-before-its-host-closes.md).
 
 A deadline abort is `timeout`; a caller abort is `cancelled`, and **a caller abort wins a same-tick tie** —
