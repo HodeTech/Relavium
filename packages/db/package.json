@@ -22,7 +22,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint src",
     "test": "vitest run",
-    "db:generate": "drizzle-kit generate"
+    "db:generate": "node ../../tools/db-sync/generate.mjs"
   },
   "dependencies": {
     "@relavium/shared": "workspace:*",

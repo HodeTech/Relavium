@@ -795,6 +795,12 @@ business writer. Additive migration [`0019_regular_stingray.sql`](../../../packa
 adds `agent_sessions.usage_invocation_high_water` (safe integer, default zero, monotonic) and
 `session_usage_invocations.coverage_state` (`pending` or `incomplete`). The generated table rebuild
 copies existing inert invocation rows as `pending`; historical migrations and money are unchanged.
+Rebuild CHECKs use unqualified column identifiers: a temporary-table qualifier can fail during
+rename on SQLite 3.54. `pnpm --filter @relavium/db db:generate` normalizes only newly generated
+rebuild SQL, retaining Drizzle's schema snapshots and leaving applied migrations untouched.
+The upgrade control retains 0018 rows, money, monotonic identities, constraints and foreign-key
+enforcement through the real migration batch. Foreign keys stay enabled throughout; toggling
+that PRAGMA inside Drizzle's transaction would be ineffective.
 `createSessionUsageStore` now brackets invocations with live receipt authority. The
 [W8 closing register](../../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w8-closing-register--2026-10-11)
 owns shipping-host, crash, downgrade and every-reader evidence beyond this storage foundation.

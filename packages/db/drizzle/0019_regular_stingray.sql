@@ -1,5 +1,4 @@
 ALTER TABLE `agent_sessions` ADD `usage_invocation_high_water` integer DEFAULT 0 NOT NULL;--> statement-breakpoint
-PRAGMA foreign_keys=OFF;--> statement-breakpoint
 CREATE TABLE `__new_session_usage_invocations` (
 	`session_id` text NOT NULL,
 	`producer_id` text NOT NULL,
@@ -10,19 +9,18 @@ CREATE TABLE `__new_session_usage_invocations` (
 	`model` text NOT NULL,
 	`coverage_state` text DEFAULT 'pending' NOT NULL,
 	FOREIGN KEY (`session_id`) REFERENCES `agent_sessions`(`id`) ON UPDATE no action ON DELETE cascade,
-	CONSTRAINT "session_usage_invocations_state_check" CHECK("__new_session_usage_invocations"."coverage_state" in ('pending', 'incomplete')),
-	CONSTRAINT "session_usage_invocations_producer_check" CHECK(length("__new_session_usage_invocations"."producer_id") between 1 and 256),
-	CONSTRAINT "session_usage_invocations_dispatch_check" CHECK(length("__new_session_usage_invocations"."dispatch_id") between 1 and 256),
-	CONSTRAINT "session_usage_invocations_model_check" CHECK(length("__new_session_usage_invocations"."model") between 1 and 4096),
-	CONSTRAINT "session_usage_invocations_ordinal_check" CHECK(typeof("__new_session_usage_invocations"."ordinal") = 'integer' and "__new_session_usage_invocations"."ordinal" between 1 and 9007199254740991),
-	CONSTRAINT "session_usage_invocations_round_check" CHECK(typeof("__new_session_usage_invocations"."round") = 'integer' and "__new_session_usage_invocations"."round" between 0 and 9007199254740991),
-	CONSTRAINT "session_usage_invocations_attempt_check" CHECK(typeof("__new_session_usage_invocations"."chain_attempt") = 'integer' and "__new_session_usage_invocations"."chain_attempt" between 1 and 9007199254740991)
+	CONSTRAINT "session_usage_invocations_state_check" CHECK("coverage_state" in ('pending', 'incomplete')),
+	CONSTRAINT "session_usage_invocations_producer_check" CHECK(length("producer_id") between 1 and 256),
+	CONSTRAINT "session_usage_invocations_dispatch_check" CHECK(length("dispatch_id") between 1 and 256),
+	CONSTRAINT "session_usage_invocations_model_check" CHECK(length("model") between 1 and 4096),
+	CONSTRAINT "session_usage_invocations_ordinal_check" CHECK(typeof("ordinal") = 'integer' and "ordinal" between 1 and 9007199254740991),
+	CONSTRAINT "session_usage_invocations_round_check" CHECK(typeof("round") = 'integer' and "round" between 0 and 9007199254740991),
+	CONSTRAINT "session_usage_invocations_attempt_check" CHECK(typeof("chain_attempt") = 'integer' and "chain_attempt" between 1 and 9007199254740991)
 );
 --> statement-breakpoint
 INSERT INTO `__new_session_usage_invocations`("session_id", "producer_id", "ordinal", "dispatch_id", "round", "chain_attempt", "model", "coverage_state") SELECT "session_id", "producer_id", "ordinal", "dispatch_id", "round", "chain_attempt", "model", 'pending' FROM `session_usage_invocations`;--> statement-breakpoint
 DROP TABLE `session_usage_invocations`;--> statement-breakpoint
 ALTER TABLE `__new_session_usage_invocations` RENAME TO `session_usage_invocations`;--> statement-breakpoint
-PRAGMA foreign_keys=ON;--> statement-breakpoint
 CREATE UNIQUE INDEX `idx_session_usage_invocations_identity` ON `session_usage_invocations` (`session_id`,`producer_id`,`ordinal`);
 --> statement-breakpoint
 -- Preserve monotonic identity even for rows retained by the inert foundation.
