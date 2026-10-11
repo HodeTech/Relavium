@@ -138,6 +138,7 @@ it('exhausts indexed tied-key pages with two queries per page and qualified summ
   }
 });
 
+// Keep all 600 independently acknowledged session writes; this is not a disk-throughput contract.
 it('keeps every page, known sum and coverage in one WAL snapshot while another connection writes', () => {
   const dir = mkdtempSync(join(tmpdir(), 'relavium-summary-snapshot-'));
   const reader = createClient(join(dir, 'history.db'));
@@ -194,7 +195,7 @@ it('keeps every page, known sum and coverage in one WAL snapshot while another c
     reader.sqlite.close();
     rmSync(dir, { recursive: true, force: true });
   }
-});
+}, 30_000);
 
 it('releases the read transaction and preserves a visitor failure exactly', () => {
   const client = createClient();

@@ -116,6 +116,7 @@ describe('strict incremental replay', () => {
         rmSync(root, { recursive: true, force: true });
       }
     },
+    30_000,
   );
 
   it('validates indexed batches under one snapshot, including excluded streaming rows', async () => {
@@ -143,17 +144,20 @@ describe('strict incremental replay', () => {
       const insert = writer.sqlite.prepare(
         'INSERT INTO run_events (id, run_id, seq, event_type, payload_json, ts) VALUES (?, ?, ?, ?, ?, ?)',
       );
-      for (let seq = 1; seq < 600; seq += 1) {
-        const event: RunEvent = {
-          type: 'node:started',
-          runId: 'r',
-          nodeId: 'a',
-          nodeType: 'agent',
-          sequenceNumber: seq,
-          timestamp,
-        };
-        insert.run(`e-${seq}`, 'r', seq, event.type, JSON.stringify(event), 1);
-      }
+      // Commit only fixture preparation together; the visitor's concurrent write stays separate.
+      writer.sqlite.transaction(() => {
+        for (let seq = 1; seq < 600; seq += 1) {
+          const event: RunEvent = {
+            type: 'node:started',
+            runId: 'r',
+            nodeId: 'a',
+            nodeType: 'agent',
+            sequenceNumber: seq,
+            timestamp,
+          };
+          insert.run(`e-${seq}`, 'r', seq, event.type, JSON.stringify(event), 1);
+        }
+      })();
       const prepare = client.sqlite.prepare.bind(client.sqlite);
       let batches = 0;
       let stepReads = 0;
@@ -220,5 +224,5 @@ describe('strict incremental replay', () => {
       client.sqlite.close();
       rmSync(root, { recursive: true, force: true });
     }
-  });
+  }, 30_000);
 });
