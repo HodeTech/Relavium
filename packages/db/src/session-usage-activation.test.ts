@@ -118,8 +118,9 @@ describe('ADR-0104 production session coverage', () => {
     const other = costs.loadSessionCostBreakdown('other-existing');
     // Use the real live capability against another existing owner/model: a cloned receipt
     // alone would be refused by the WeakMap before reaching the correlation guard.
-    expect(() =>
-      costs.recordSessionCost({ ...entry(receipt), sessionId: 'other-existing' }),
+    expect(
+      () => costs.recordSessionCost({ ...entry(receipt), sessionId: 'other-existing' }),
+      'USAGE_CAUSAL_RECEIPT_OWNER',
     ).toThrow(SessionUsageError);
     expect(() => costs.recordSessionCost({ ...entry(receipt), model: 'other-model' })).toThrow(
       SessionUsageError,
