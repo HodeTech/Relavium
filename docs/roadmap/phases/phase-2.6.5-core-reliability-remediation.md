@@ -3848,13 +3848,60 @@ exact-capacity/CR-70/CR-93 residuals remain unchanged; no new deferral or prereq
 
 ### W8 Step 6 permanent controls — 2026-10-11
 
-**Implementation in progress; acceptance pending.** This is the additional control step in the
-approved seven-step plan, following Step 5 activation acceptance. It preserves native media's
-separate authored/frozen volume basis and adds no new product surface, provider call or dependency.
-The bounded source-only causal runner, actual invoked crash controls, frozen predecessor/session
-round trips, every affected reader and structural retirement/query controls will be implemented and
-validated together before two FURTHER NEW complete cumulative reviews. Preparation probes and
-prior review executions do not certify this step.
+**Implementation verified; independent acceptance pending.** The additional control step in the
+approved seven-step plan follows Step 5 activation acceptance. It preserves native media's
+separate volume basis and adds no product surface, live provider call or dependency.
+
+The committed `pnpm check:usage-mutations` runner captures physical authored sources and installed
+dependency identities, then executes 21 named mechanism removals across all eight ADR-0104 groups.
+Each runs the same whole-case inventory fixed, semantically failing and byte-exact restored in
+fresh processes/caches. Exact workspace aliases, transitive/CommonJS fences and raw module-body
+PID/thread/hash records distinguish execution from loader preparation. Setup/import/readiness/
+timeout failures never earn causal credit. POSIX timeout cleanup owns the descendant process group;
+Windows retains the documented single-child best-effort convention.
+
+| Group | Permanent controls and mechanism-removal proof |
+| --- | --- |
+| Native evidence | Whole/required zero-fill and gross-as-net removals fail the unchanged 62-case actual-SDK evidence file. |
+| Owned observations | Terminal borrowing, discarded prior observations, absent terminal observation and consumer-return settlement fail their respective whole SDK/fallback/core cohorts. |
+| Pending before egress | Four actual invoked run/session capped/uncapped CUT/SIGKILL controls retain pending uncertainty after reopening; separate engine/session pending removals each fail the two affected cases. Original 57 crash/lock/receipt controls remain intact. |
+| Settlement and money | Usage-less early return, absent durable disposition, wrong-owner receipt, borrowed invocation identity and observer/evidence-order removals fail direct engine/SQLite/fold controls. Native fractional media keeps 2,513 microcents once, qualified terminal coverage and its separate volume basis. |
+| Strict replay | The ordinary-gate test runs the actual frozen engine before the basis oracle: removing the owner basis permits the old resume and fails the intended assertion, while the genuine legacy gate stays positive. Default smoke retains all 16 refusal prefixes, two legacy positives and three isolated discriminators. |
+| Session revisions | Eight actual predecessor operations cross a new write and estimate release. Removing entry taint fails seven pre-existing owners after revision equals ACK; the predecessor-created default remains a positive control. |
+| Every cost reader | Eight whole CLI reader files cover live/history/model, JSON terminals, raw historical field absence, compaction, pause/cancel/fail/early exit, Home and session entry. Unqualified-total/free-zero removals fail the renderer cohort. |
+| Bounded retirement | Original shared/native 100,000-settlement controls remain in ordinary CI, extracted from repeated small cohorts. Native receipt operations require an exact three-key indexed lookup; retired duplicates perform no additional receipt SQL. The outcome-preserving prefix-query removal fails all four structural guards while the unchanged 12-case activation cohort remains positive. |
+
+The full author invocation captured 989 physical source/config/tool files at `054811f1` plus the
+explicit uncommitted Step 6 changes and 21,013 installed external files. All 21 complete trios and
+the separate 17-file permanent cohort passed their contracts: **409 permanent cases, zero skips**.
+The parent independently audited full raw reports, identical inventories, semantic failure frames,
+all current/frozen/source/dependency hashes, exact restorations, actual worker PIDs and final
+source/index/HEAD identity. It checked 26,737 source/worker module-body records separately from 85
+loader-helper preparation records; all 69 permanent native children reached their expected barriers
+and closed. These are execution records, not unique test counts or provider-invoice evidence.
+
+Retained diagnostics include canonical scratch-path rejection, precise Vitest rejection-matcher
+classification, separate loader-thread preparation, POSIX descendant cleanup and a wrong fixture
+gate ID. Each was corrected before the full invocation; no diagnostic earns acceptance. The parent
+then found inherited byte-length metadata on two isolated default-smoke captures. The bounded
+ordinary/session paths do not execute that default-only function. Its subsequent one-file raw-size/
+row-count correction and fresh complete default smoke are reported separately, preserving the full
+invocation's exact captured-source provenance. Frozen source/dependency archives were unchanged;
+portable dependency bytes retain digest-local provenance and native SQLite the installed ABI exception.
+
+Fresh forced local gates passed: workspace lint/typecheck/test **23/23 tasks, zero cache hits**,
+**506 whole test files, 10,904 passing cases and 12 established skips**; build/format **7/7 tasks,
+zero cache hits**. Tooling typecheck/lint, migration sync, test ownership/isolation, seam, engine
+runtime-dependency and CLI bundle fences all exited zero. Compiled CLI, overflow-capture and
+strict frozen replay smokes passed offline. The complete replay retained 16 native refusal
+prefixes, two genuine legacy positives, three isolated discriminators and eight old session
+operations. The intentional smoke failure fixtures are diagnostics, not failed gates. These local
+checks do not claim bare root coverage, remote CI or a provider invoice.
+
+These author controls and local gates do not substitute for two FURTHER NEW complete independent
+cumulative Step 6 reviews or Step 7's whole-W8 CI/coverage/reviews/publication. CR-82 stays open;
+the implementation register remains **48/51 on development, 47/51 on main**. Approved residuals
+remain unchanged. No user, provider, credential, billing or architecture decision is pending.
 
 ### CR-81 — Conformance cassettes do not verify the request wire contract · High · ✅ CLOSED on `development` 2026-10-10
 **Accepted on `development`, 2026-10-10; publication pending.** The [Step 3 register](#w8-step-3-canonical-sdk-http-matrix--2026-10-10)

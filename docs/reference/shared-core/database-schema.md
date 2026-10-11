@@ -952,9 +952,19 @@ volume accounting explicitly supplies `accountingBasis: 'native_media'` and reta
 aggregate counts. Settled identities have no lifetime registry or permanent per-producer tombstones.
 The single high-water mark prevents reusing prior ordinals; the WeakMap has no enumerable completed
 history. Partial/missing duplicate callbacks add no durable record. Metadata is bounded by models,
-unresolved identities and still-authorized late receipts. A native SQLite structural test executes
-100,000 settlements with 64 unresolved controls, checking inserted/deleted identity counts, surviving
-rows/counters and refusal of an unbounded live invocation-history query.
+unresolved identities and still-authorized late receipts. Permanent native SQLite query controls
+validate the exact session/producer/ordinal bindings on every receipt lookup and inspect the
+identity-index SEARCH plan once per SQL shape. An owner-prefix scan cannot satisfy that structural
+control merely by preserving monetary outcomes. Retired duplicates perform no additional receipt
+lookup or actual charge; legitimate outer revision/acknowledgement SQL remains permitted.
+
+The separate 100,000-settlement scale control pins 100,064 admissions, 100,000 retirements,
+64 unresolved identities, three model aggregates and a 100,064 high-water mark. It verifies
+50,000 unknown calls, then refines one pending control to complete once, leaving 63 pending
+and 50,001 observed calls without changing the unknown aggregate. All 150,002 receipt lookups
+bind the exact identity; query-plan inspection is cached by SQL shape, while parameter validation
+runs every time. This state bound does not promise a constant-size append-only run ledger or
+automatic deletion of retained history.
 
 No session lease is introduced. Resuming/reseating a session cannot declare another live instance's
 pending rows orphaned. ADR-0103's retained exact-fence receipt authority applies to runs; genuine

@@ -72,8 +72,10 @@ a pipe/redirect, or `CI`.)
   header, or version line. Every event the run emits appears, unfiltered.
 - **The terminal `run:completed` event is the final result line** — it already carries `outputs` +
   `totalTokensUsed` + `totalCostMicrocents` + `durationMs`, so there is no separate summary line. A
-  `run:failed` terminal carries `error` + `partialOutputs`; a `run:cancelled` carries only the
-  envelope (read run totals for those from the last `cost:updated.cumulativeCostMicrocents`).
+  `run:failed` terminal carries `error` + `partialOutputs`; failed and cancelled terminals also
+  carry the engine's current `cumulativeCostMicrocents`. The [canonical envelope](../contracts/sse-event-schema.md#the-runevent-union)
+  qualifies this known sum with usage and price coverage. These additive fields remain optional
+  when reading historical events.
 - **All diagnostics go to stderr, never stdout.** A pre-run CLI fault (bad arguments, workflow not
   found, missing key) is written to stderr as a structured `{ "type": "error", "code", "message" }`
   envelope (distinct from the run stream's `run:failed`/`node:failed`) and exits `2`; stdout stays
@@ -219,6 +221,9 @@ Both are **surface-agnostic** git-native YAML operations — they read/write `.r
 ### `relavium logs <runId>`
 
 Replays a past run's persisted `run_events` in `seq` order (the same data the desktop run-detail drawer replays) — a terse line per event in human mode. Under `--json` it emits each **raw [RunEvent](../contracts/sse-event-schema.md) as one NDJSON line** — the same `RunEvent` data `relavium run --json` streamed (this is the "raw RunEvent JSON" the run-detail replay consumes — no separate `--raw` flag). For a run paused at a gate, the `human_gate:paused` event surfaces the **`gateId`** to copy into `relavium gate <runId> --gate <gateId>`. An unknown `runId` is an invalid invocation (exit `2`).
+
+Raw historical events preserve absent fields: the reader does not synthesize `usageCoverage`,
+`cumulativeUnpricedCalls` or invocation correlation; absence cannot certify complete or free coverage.
 
 Two rows the replay may not be able to read, and it says which is which ([ADR-0074](../../decisions/0074-durable-conservative-budget-commitments.md) §5):
 
@@ -399,7 +404,7 @@ relavium gate list <runId>     # just one run's
 
 ### `relavium chat-list`
 
-Lists past [agent sessions](../contracts/agent-session-spec.md) from durable `history.db`, most-recently-updated first — the session counterpart of `relavium list`. Human output is one line per session (`<id>  <agentSlug>  [<status>]  <updatedAt>  "<title>"`); an empty history is reported clearly (exit `0`). Under `--json` each session is one NDJSON record — `{ sessionId, agentSlug, title, status, modelId, createdAt, updatedAt, totalCostMicrocents }`, where `title` / `modelId` are `null` when absent (see [Read-command `--json` output](#read-command---json-output)). Soft-deleted sessions are excluded.
+Lists past [agent sessions](../contracts/agent-session-spec.md) from durable `history.db`, most-recently-updated first — the session counterpart of `relavium list`. Human output is one line per session (`<id>  <agentSlug>  [<status>]  <updatedAt>  "<title>"`); an empty history is reported clearly (exit `0`). Under `--json` each session is one NDJSON record — `{ sessionId, agentSlug, title, status, modelId, createdAt, updatedAt, totalCostMicrocents, usageCoverage, unpricedCalls }`, where `title` / `modelId` are `null` when absent (see [Read-command `--json` output](#read-command---json-output)). The known actual amount, usage coverage and independent missing-price count come from one durable accounting snapshot. Human output remains identity/lifecycle metadata only. Soft-deleted sessions are excluded.
 
 ### `relavium chat-export`
 

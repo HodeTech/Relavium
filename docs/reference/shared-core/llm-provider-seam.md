@@ -206,7 +206,7 @@ type StopReason = 'stop' | 'length' | 'tool_use' | 'content_filter' | 'error';
 interface Usage {
   inputTokens: number;
   outputTokens: number;
-  cacheReadTokens?: number;      // Anthropic/DeepSeek expose; others undefined
+  cacheReadTokens?: number;      // Explicit cache-read observation; see the native dialect rules below
   cacheWriteTokens?: number;
   reasoningTokens?: number;      // ADR-0030 — OBSERVABILITY only; a subset of outputTokens (≤), never billed separately
   mediaUnits?: MediaUnitsEntry[]; // ADR-0031 — a DISJOINT media axis (per-image / per-second), never folded into tokens
@@ -1361,8 +1361,9 @@ followed by each authored `fallback_chain` entry:
 - Surface **complete per-attempt usage** to the injected `CostTracker` (against that
   attempt's model) so cost stays accurate across a failover, and report each
   attempt (succeeded / failed / skipped) via an `onAttempt` observer so the
-  engine can emit a `cost:updated` per attempt and a warn log — **visible**
-  failover, never a silent provider switch. The runner imports no event bus; it
+  engine can report complete-evidence actual costs, qualify incomplete attempts through
+  [usage coverage](../contracts/sse-event-schema.md#the-runevent-union), and log visible failover.
+  The runner imports no event bus; it
   is platform-free (the host injects the `sleep` timer).
 
 This keeps per-agent fallback (e.g. Anthropic → OpenAI → DeepSeek) a config

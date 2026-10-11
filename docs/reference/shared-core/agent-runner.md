@@ -80,10 +80,10 @@ The error mapping to the closed `ErrorCode` ([error-handling.md](../../standards
 
 The runner emits, per [sse-event-schema.md](../contracts/sse-event-schema.md) (envelope-less; the bus stamps `runId`/`timestamp`/`sequenceNumber`):
 
-- `agent:token` `{ nodeId, token, model }` — `model` is the active attempt's model (see the model-attribution note in `agent-turn.ts`; the accurate per-attempt model is always on `cost:updated`).
+- `agent:token` `{ nodeId, token, model }` — `model` is the active attempt's model (see the model-attribution note in `agent-turn.ts`; per-attempt model identity is carried by usage-coverage dispositions and complete-evidence `cost:updated`).
 - `agent:reasoning` `{ nodeId, text, model }` — a streaming reasoning ("thinking") delta (EA6, 2.5.H — the reasoning counterpart of `agent:token`, one per `reasoning_delta`); `model` follows the same mid-stream attribution note. Never carries the ephemeral same-provider `signature` (ADR-0030).
 - `agent:tool_call` `{ nodeId, model, toolId, toolInput, attemptNumber? }` and `agent:tool_result` `{ nodeId, toolId, success, outputSummary, attemptNumber? }` — **assembled** from the registry's partial `events.call`/`events.result` (the runner adds `type` + `nodeId` + `model`); the registry does not carry them.
-- `cost:updated` `{ nodeId, model, inputTokens, outputTokens, costMicrocents, cumulativeCostMicrocents, attemptNumber? }` — one per **non-skipped** attempt; `attemptNumber` counts non-skipped records. `cumulativeCostMicrocents` is a **placeholder** the engine overwrites authoritatively (it owns the run-wide total).
+- `cost:updated` `{ nodeId, model, inputTokens, outputTokens, costMicrocents, cumulativeCostMicrocents, attemptNumber? }` — on the agent-turn path, for provider-engaged attempts with complete usage evidence; incomplete evidence follows the acknowledged [usage-coverage path](../contracts/sse-event-schema.md#the-runevent-union) without inventing an actual-money event. `attemptNumber` counts non-skipped records. `cumulativeCostMicrocents` is a **placeholder** the engine overwrites authoritatively (it owns the run-wide total).
 
 The runner emits **no** `budget:*` / `run_timeout` (run-level, not in the in-node set). Its
 host-owned pre-egress hook gates each actual provider attempt, including retries, failovers and
