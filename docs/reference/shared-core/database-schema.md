@@ -871,6 +871,23 @@ complete-zero coverage and final acknowledgement. It returns an opaque `SessionU
 reloaded owner gains no authority, and no transcript, visible/resumable session, prompt or context
 is introduced. The existing one-shot reservation API retains its numeric compatibility behavior.
 
+`SessionStore.visitSessionSummaries(visitor)` is the full discovery/accounting read for
+`chat-list --json`: a synchronous visitor exhausts indexed 256-owner keyset pages ordered by
+`(updated_at DESC, id DESC)` in one read transaction. Each page reads owner identity, known money
+and coverage, then groups the independent unpriced-call counters for that page. It loads no
+transcript, context or per-model attribution and holds no all-session result array. The page
+bound does not truncate results; all pages and their accounting use the same SQLite snapshot.
+Visitor failures release the read transaction and propagate unchanged. `listSessions` retains
+its full-record/top-N compatibility interface for human listing and Home.
+
+Permanent revision controls derive business columns from the Drizzle owner schema, excluding
+only the six usage bookkeeping fields and allocator-only `effect_turn_high_water`. The migrated
+native column set and actual `UPDATE OF` trigger inventory must match that derived set; every
+business column is exercised even with an unchanged assignment. A future unclassified native
+column or a missing trigger column fails the structural gate. Settlement guards check exact
+session/producer/ordinal binding and indexed plans for SELECT, UPDATE and DELETE, including
+cached statements; owner-prefix mutations are independently rejected.
+
 `loadSessionCostBreakdown` reads the retained owner's numeric total directly by physical id in
 the same read transaction as per-model money and coverage. Hidden one-shot and soft-deleted
 owners retain their actual known sum; the visibility filter used by `loadSession`, `loadFull`

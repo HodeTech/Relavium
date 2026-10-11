@@ -4331,6 +4331,31 @@ M1, price-gap semantics, the compatibility slot and the pending-count symptom ha
 contract-preserving qualifications above. Remaining increments and fresh whole-PR/publication
 gates remain open; this acceptance does not certify a merge or the unreviewed changes to come.
 
+**Increment 3 author state — bounded storage and CLI reads.** JSON session discovery exhausts
+256-owner indexed tuple-key pages under one SQLite read snapshot, with grouped missing-price
+counts per page and no transcript/context/per-model materialization. It retains the unlimited
+NDJSON result contract. Native 600-owner controls pin tied ordering, hidden owners, truthful
+accounting, exact indexed query counts, cross-page concurrent WAL writes and failure cleanup.
+Exact receipt guards now include UPDATE/DELETE and every cached binding; two additional copied
+production mutations extend the causal inventory from 21 to 23 without removing an earlier
+mechanism. All 100,000-scale settlements and their existing assertions remain; 150,002 mutation
+statements and two indexed mutation plans are additionally checked. Trigger coverage is derived
+from the modelled business columns and compared to both native columns and actual trigger SQL;
+new/uncovered columns fail the structural controls. Migration 0018's no-rebuild assertion and the
+actual twelve-trigger inventory are accurately named.
+
+Live nonterminal cost snapshots retain the highest known sum; authoritative run-terminal behavior
+is unchanged. The run store rejects foreign/session envelopes before sequence, coverage or
+notification state, including a resumed stream starting after run:started. Outbox read degradation
+keeps status available with a fixed content-free stderr warning. M8 is qualified: shipping tokens
+are not durable, and SQL-first filtering would conceal damaged stored streaming projections.
+The misleading Home comment is corrected; existing corruption controls remain mandatory.
+The original exact-SELECT mutation still rejects four structural cases while its 12 activation
+controls stay positive. The two new UPDATE/DELETE mutations each reject two structural cases;
+all fixed/restored cohorts pass. An independent SQL-first streaming-filter copy fails 11 of
+70 existing integrity cases and restores green, corroborating M8's qualification.
+Independent cumulative acceptance and fresh whole-PR/publication gates remain pending.
+
 ### CR-81 — Conformance cassettes do not verify the request wire contract · High · ✅ CLOSED on `development` 2026-10-10
 **Accepted on `development`, 2026-10-10; publication pending.** The [Step 3 register](#w8-step-3-canonical-sdk-http-matrix--2026-10-10)
 joins all four independent review verdicts and three causal lowering controls. The pre-W8 defect was:

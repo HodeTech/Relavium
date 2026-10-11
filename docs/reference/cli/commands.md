@@ -406,6 +406,11 @@ relavium gate list <runId>     # just one run's
 
 Lists past [agent sessions](../contracts/agent-session-spec.md) from durable `history.db`, most-recently-updated first — the session counterpart of `relavium list`. Human output is one line per session (`<id>  <agentSlug>  [<status>]  <updatedAt>  "<title>"`); an empty history is reported clearly (exit `0`). Under `--json` each session is one NDJSON record — `{ sessionId, agentSlug, title, status, modelId, createdAt, updatedAt, totalCostMicrocents, usageCoverage, unpricedCalls }`, where `title` / `modelId` are `null` when absent (see [Read-command `--json` output](#read-command---json-output)). The known actual amount, usage coverage and independent missing-price count come from one durable accounting snapshot. Human output remains identity/lifecycle metadata only. Soft-deleted sessions are excluded.
 
+JSON discovery exhausts all live sessions in indexed 256-row pages within one read snapshot;
+page size is a working-memory bound, not a result limit. Identity, known money, usage coverage
+and missing-price counts therefore remain consistent across pages while another process writes.
+No per-session attribution or transcript is loaded for this listing.
+
 ### `relavium chat-export`
 
 Exports a persisted session to a `.relavium.yaml` **scaffold** for review before commit ([ADR-0026](../../decisions/0026-session-export-to-workflow.md)) — the same contract the in-REPL `/export` drives. Writes `<sessionId>.relavium.yaml` in cwd by default (the file name is keyed on the unique session id, so two sessions never collide); `--out <path>` overrides, `--force` overwrites an existing target. The session row is marked `exported` with the written path. Under `--json` it emits a single `session:exported` event (`{ type, sessionId, timestamp, sequenceNumber, workflowPath }`). An unknown sessionId or an existing target without `--force` exits `2`; success is exit `0`.
