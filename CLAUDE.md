@@ -126,7 +126,8 @@ limits; no new deferral, provider capture, billing, credential or user decision 
 
 The [PR #92 maintainer corrections](docs/roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w8-pr-92-systematic-review-corrections--2026-10-11)
 have independent acceptance for all four increments, each after two NEW clean complete cumulative
-rounds. Fresh full CI and bare/enforced coverage pass at `ffdc5ffb`, including four wire and 23 usage
+rounds. The subsequent eleven-path publication correction also has two NEW clean complete rounds.
+Fresh full CI and bare/enforced coverage pass at `6139563e`, including four wire and 23 usage
 controls. Exact published-head CI/Sonar and maintainer review/merge remain the landing gate; earlier
 checks do not certify that publication. The original closing evidence retains its source attribution.
 

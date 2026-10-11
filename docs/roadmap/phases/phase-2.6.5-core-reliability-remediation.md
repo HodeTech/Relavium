@@ -4454,6 +4454,70 @@ these corrections. PR #92 remains unmerged; `development` is 49/51 and `main` is
 review/merge and existing approved limits remain; no provider call, credential, billing setup or
 user decision is pending.
 
+#### Publication correction acceptance — 2026-10-11
+
+At published `717cbf7d`, both CI usage jobs exhausted the same five-minute outer
+watchdog after all 23 fixed/removal/restored mechanisms completed. The PR artifact
+shows 41 native spawns and 40 joined barrier/close completions; its last child was
+still loading source. Neither scale suite had started. All 1,008 captured source
+files match the preceding successful source capture byte-for-byte. This is a
+cohort-budget defect, not evidence of a product deadlock or a failed scale assertion.
+The failed runs remain attributed evidence; they are not relabelled as passes.
+
+Corrections `0568bc47` and `6139563e` replace two genuinely superlinear scanners
+with advancing SQL tokenization and separate own-trigger boundaries. External
+watchdog tests execute the actual current source, real SQLite and current schema;
+both exact-base implementations time out after their setup/positive markers,
+while corrected source passes the positive and refusal controls. Literal/comment
+bytes, adjacent/nested CHECKs, migration history and missing-column refusal remain.
+Required DB-sync now runs ten controls, including actual Drizzle/native generation.
+
+The complete usage phase retains one report, all 427 cases, 17 whole files and 69
+joined native children, with both full 100,000-settlement controls. Its outer bound
+is calculated from existing bounds: five minutes plus 69 twenty-second native
+cases plus the ten-minute DB scale bound, totalling 38 minutes. Ordinary phases,
+inner readiness/test deadlines and process-group cleanup remain unchanged. The
+physically verified compiler is reused per owned runtime state; every product-source
+transform and final dependency audit still verifies its own bytes. Permanent
+orchestration controls pin workload drift and cache authority; 59 tooling cases pass.
+
+Two NEW independent complete cumulative rounds at `6139563e` each cover all eleven
+changed paths and their DB, loader/fence, native-worker and required-CI callers;
+both return zero findings. Each independently passes twelve copied-source controls
+and reproduces the two exact-base timeout causes. Additional independent lexer,
+native-inventory, source-map and compiler-authority probes are recorded in the local
+working reports. Parent reads both complete reports. These source reviews do not
+claim remote publication or substitute for full CI/coverage.
+
+Fresh `CI=true pnpm run ci` exits 0 at `6139563e`: all 23 package tasks pass
+(cache hits after the same-source author run), followed by seven build/format tasks
+(six cache hits), DB/tooling/architecture gates and all three offline smokes. All four
+wire controls and all 23 usage mechanisms/eight groups pass fixed/removal/restored;
+the complete permanent cohort passes 427 cases and audits exactly 69 native children.
+Fresh bare and separately executed enforced coverage each pass 511 files / 11,026
+tests / 12 existing skips. All three existing engine-package floors remain enforced:
+core 96.36% lines / 92.92% branches, LLM 97.74% / 94.60%, MCP 96.18% / 90.54%.
+No new skip, threshold relaxation or reduced scale workload is introduced.
+
+All thirteen Sonar labels added at `717cbf7d` have individual dispositions. Eight
+are independently verified domain false positives, saved with per-key reasons:
+restricted pnpm lifecycle policy (`AaEq1Fp6N7J46rLy-dUT`/`dUU`), deterministic string
+inventory equality (`AaEq1FUVN7J46rLy-dUN`, `AaEq1EroN7J46rLy-dUI`/`dUK`/`dUL`),
+intentional balanced-parser span consumption (`AaEq1FWFN7J46rLy-dUS`) and SQLite
+DDL analysed as PL/SQL (`AaEq1EynN7J46rLy-dUM`). The two genuine scanner findings
+(`AaEq1EroN7J46rLy-dUJ`, `AaEq1FWFN7J46rLy-dUQ`) are corrected in source, not waived
+or accepted as debt. The removed token regex also addresses `AaEq1FWFN7J46rLy-dUR`.
+The two cognitive-complexity suggestions (`AaEq1FVuN7J46rLy-dUO`,
+`AaEq1FWFN7J46rLy-dUP`) remain visible maintainability feedback; their thresholds
+alone establish no incorrect result or new product defect. No global rule,
+quality gate, dependency policy, workload or coverage threshold is weakened.
+
+Exact publication checks remain a separate gate recorded in PR #92 after this
+acceptance note is pushed. All implementation/correction increments are accepted
+on `development`; no merge is performed. The register remains 49/51 there and
+47/51 on `main`, with existing approved limits unchanged. No provider, key, billing
+or user decision is pending. Review working records remain outside Git.
+
 ### CR-81 — Conformance cassettes do not verify the request wire contract · High · ✅ CLOSED on `development` 2026-10-10
 **Accepted on `development`, 2026-10-10; publication pending.** The [Step 3 register](#w8-step-3-canonical-sdk-http-matrix--2026-10-10)
 joins all four independent review verdicts and three causal lowering controls. The pre-W8 defect was:
