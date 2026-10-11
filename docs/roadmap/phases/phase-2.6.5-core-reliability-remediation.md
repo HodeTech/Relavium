@@ -4214,6 +4214,46 @@ and prior-CI evidence. These are publication-delta reviews, not additional whole
 Current-head remote results remain a separate requirement tracked on PR #92; increasing the
 watchdog alone is not evidence of a passing published check.
 
+#### W8 publication timing and Sonar follow-up — 2026-10-11
+
+At `0f2c3943`, all five PR workflow jobs passed, including enforced coverage and the
+Node-22 floor. Push coverage/floor/Windows/peers also passed; push ordinary CI exposed
+an independent MCP test assumption: a real 20 ms connection window could expire during
+SDK construction, before raw transport start. The failed log proves the quietness assertion
+failure, not its exact scheduling history. A controlled pre-entry-expiry probe reproduces it;
+an admitted held start remains nonquiet until that exact raw work settles.
+
+`25de05f5` controls only that test's Date/timeout clock, witnesses actual SDK start entry
+before expiry and preserves real Promise/setImmediate settlement, typed deadline refusal,
+held-work nonquietness and release/join cleanup. The focused three-file cohort passes all
+41 cases. Removing raw-start retention in memory fails the intended quietness assertion;
+unchanged-source restoration passes. Production MCP behavior is unchanged.
+Two NEW independent complete scoped rounds—GPT-6 Astra/high and GPT-6.1 Sol/xhigh—accept
+this correction with zero findings. Their independent focused cohorts pass 41 and 43 cases;
+the latter also proves timer restoration after both substantive and early assertion failures.
+
+Two independent Sonar inventories reviewed all 100 exact issue keys (7 bug, 3 vulnerability,
+90 smell) against the actual callers and installed target. They establish no current-target
+material product defect. Fixed schema/file/group sort domains and intentional all-owner
+SQLite backfill receive individual evidence-based dispositions; complexity/style observations
+remain visible feedback. No analyzer rule, quality threshold or coverage floor is disabled.
+`7976dc62` additionally reuses the existing OS-owned Git resolver for the usage-control
+inventory; an adversarial PATH preserves the exact inventory, while removing the pin executes
+the fake Git. `81af9ac8` makes the already-global query safety replacement explicit with
+`replaceAll`; all 96 strict exchange cases pass. These are scoped publication corrections,
+separate from the two complete whole-W8 reviews and the earlier watchdog reviews.
+Both corrections have two NEW independent complete clean scoped rounds—GPT-6 Astra/high
+and GPT-6.1 Sol/xhigh. Each independently passes all 96 exchange cases and verifies the
+991-file physical copied graph against hostile PATH; the first also executes one complete
+fixed/mutated/restored usage mechanism, whose raw closure evidence the second audits.
+The parent reads all four new MCP/Sonar-delta reports and verifies unchanged reviewed bytes.
+
+Native migration evidence is limited to the installed better-sqlite3 / SQLite 3.53.1 target.
+A separate SQLite 3.54 probe rejects migration 0019's table-qualified CHECK during rename;
+that runtime is not certified by the passing installed-driver result. Any SQLite runtime
+upgrade must rerun the exact migration controls. Published-head checks, individual Sonar
+outcomes and maintainer review/merge remain tracked on PR #92.
+
 ### CR-81 — Conformance cassettes do not verify the request wire contract · High · ✅ CLOSED on `development` 2026-10-10
 **Accepted on `development`, 2026-10-10; publication pending.** The [Step 3 register](#w8-step-3-canonical-sdk-http-matrix--2026-10-10)
 joins all four independent review verdicts and three causal lowering controls. The pre-W8 defect was:

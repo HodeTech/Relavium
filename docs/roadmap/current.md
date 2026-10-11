@@ -91,6 +91,10 @@ watchdog. All 100,000 settlements and structural assertions remain unchanged; tw
 scoped rounds accepted that correction. The closing register qualifies exact counts, skips,
 cache use and limits. Published-head checks are separate and
 belong to the PR; local evidence does not claim remote CI or live-provider invoices.
+The later [publication timing and Sonar follow-up](phases/phase-2.6.5-core-reliability-remediation.md#w8-publication-timing-and-sonar-follow-up--2026-10-11)
+records the independently reproduced MCP test-entry assumption, explicit test clock,
+individual analyzer dispositions and the existing system-Git resolver reuse. These deltas
+retain separate scoped reviews and exact-head publication checks.
 
 The implementation register is **49/51 on `development`**; `main` remains **47/51** until
 [W8 PR #92](https://github.com/HodeTech/Relavium/pull/92) merges. Implementation acceptance is
