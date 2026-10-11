@@ -23,6 +23,8 @@ import type {
   AgentTokenEvent,
   BudgetEstimateCommittedEvent,
   CostUpdatedEvent,
+  CostUsageDispositionEvent,
+  CostUsagePendingEvent,
   RunOrSessionEvent,
   SessionEvent,
 } from '@relavium/shared';
@@ -37,10 +39,11 @@ import {
 
 /**
  * The fully-stamped events a session stream carries: the `session:*` lifecycle/side events (started /
- * turn_started / turn_completed / cancelled / exported / compacting / compacted / trimmed — ADR-0062), the five
- * dual-envelope in-turn events (`agent:token` / `agent:reasoning` / `agent:tool_call` / `agent:tool_result` /
- * `cost:updated`), and the host-emitted `agent:approval_requested` (ADR-0057) — all carrying `sessionId`. The
- * complete session stream per sse-event-schema.md §"Session event namespace".
+ * turn_started / turn_completed / cancelled / exported / compaction outcomes / compacted / trimmed), the
+ * dual-envelope in-turn agent events, actual cost updates and usage pending/disposition events (ADR-0104),
+ * conservative budget commitments, and host approval requests — all carrying `sessionId`. The complete
+ * session stream per sse-event-schema.md §"Session event namespace". Coverage starts in session rows;
+ * `cost:coverage_started` and `cost:attempt_settled` remain run-only production events.
  */
 export type SessionStreamHandleEvent =
   | SessionEvent
@@ -50,6 +53,8 @@ export type SessionStreamHandleEvent =
   | AgentToolResultEvent
   | AgentApprovalRequestedEvent
   | CostUpdatedEvent
+  | CostUsagePendingEvent
+  | CostUsageDispositionEvent
   // ADR-0074 §2 — a conservative budget commitment, dual-envelope like `cost:updated`. It MUST be listed here:
   // `isForSession` narrows on the runtime `sessionId` check alone, so a session-enveloped commitment would
   // otherwise reach every consumer as a value whose static type says it cannot exist, with nothing in the
@@ -109,14 +114,14 @@ export function createSessionEventSink(bus: RunEventBus, sessionId: string): Ses
     // session-carrying schema member, so it could not validate on the bus. Drop it at this single
     // translation point — the contract boundary 1.W owns — keeping the session stream to its
     // sse-event-schema.md contract (the `session:*` lifecycle/side events, the dual
-    // `agent:*`/`cost:updated` — incl. `agent:reasoning` (EA6) — and the host-emitted
+    // `agent:*`/`cost:updated`/usage pending and disposition — incl. `agent:reasoning` (EA6) — and the host-emitted
     // `agent:approval_requested` — ADR-0057).
     if (event.type === 'agent:file_patch_proposed') {
       return;
     }
     // Attach the correlation key; the bus then stamps the per-session sequenceNumber + timestamp and
     // validates against the combined RunOrSessionEventSchema. After the guard the body is a `session:*`
-    // lifecycle body, one of the dual `agent:*`/`cost:updated`/`budget:*` bodies (incl. `agent:reasoning`), or the
+    // lifecycle body, a dual agent/cost/usage/budget body, or the
     // host-emitted `agent:approval_requested` body, so `+ sessionId` is a
     // BusEventDraft the session-side `emit` overload accepts (a session lifecycle → `SessionEventDraft`,
     // a dual body → the optional-`sessionId` `RunEventDraft` arm). The bus stamps and returns it.

@@ -1393,8 +1393,28 @@ function observeTurnMoney(
     ...(beginUsageInvocation === undefined
       ? {}
       : { beginUsageInvocation: beginUsageInvocation.bind(money) }),
-    ...(claimUsage === undefined ? {} : { claimUsage: claimUsage.bind(money) }),
-    ...(usageDisposition === undefined ? {} : { usageDisposition: usageDisposition.bind(money) }),
+    ...(claimUsage === undefined
+      ? {}
+      : {
+          claimUsage: (...args) => {
+            try {
+              return claimUsage.call(money, ...args);
+            } catch (error) {
+              return noteObserverFailure(error);
+            }
+          },
+        }),
+    ...(usageDisposition === undefined
+      ? {}
+      : {
+          usageDisposition: (...args) => {
+            try {
+              return usageDisposition.call(money, ...args);
+            } catch (error) {
+              return noteObserverFailure(error);
+            }
+          },
+        }),
     ...(accountingFailure === undefined
       ? {}
       : { accountingFailure: accountingFailure.bind(money) }),
@@ -1608,7 +1628,7 @@ interface TurnUsageAccumulator {
   };
   /** Provider-origin overflow mapped during this exact capture, never shared across invocations. */
   overflow?: { readonly error: AgentTurnError; readonly entry: FallbackPlanEntry };
-  /** A terminal usage chunk observed before readiness/folding, not yet consumed by onAttempt. */
+  /** Complete stop/attempt quantities observed before host callbacks, not yet consumed by accounting. */
   observedStopUsage?: { readonly input: number; readonly output: number };
 }
 
@@ -1752,6 +1772,28 @@ async function driveAgentTurn(
         : evidence.kind !== 'complete'
           ? { kind: 'incomplete', evidence }
           : undefined;
+    // Physical invocation and canonical quantities are observations, not money authority.
+    // Keep them and the exact live receipt before a post-provider host callback can throw.
+    if (record.providerInvoked) usage.engaged = true;
+    const priorObservation = usage.observedStopUsage;
+    if (!lateReceipt && record.providerInvoked && evidence.kind === 'complete')
+      usage.observedStopUsage = {
+        input: evidence.usage.inputTokens,
+        output: evidence.usage.outputTokens,
+      };
+    const coverageOnly = record.coverageOnly === true;
+    // The current outer attempt has not advanced its counter; a native predecessor shares it.
+    const accountingAttempt = receipt?.attemptNumber ?? nonSkippedAttempts + (!lateReceipt ? 1 : 0);
+    const ownsUnknown = !lateReceipt && disposition?.kind === 'incomplete';
+    if (ownsUnknown) usage.unknownCalls = (usage.unknownCalls ?? 0) + 1;
+    const pendingInfo =
+      !lateReceipt && record.receiptPending === true ? record.preAttemptInfo : undefined;
+    const priorPending = pendingInfo === undefined ? undefined : pendingReceipts.get(pendingInfo);
+    if (pendingInfo !== undefined)
+      pendingReceipts.set(pendingInfo, {
+        attemptNumber: accountingAttempt,
+        unknown: disposition?.kind === 'incomplete',
+      });
     if (invocation !== undefined) {
       const claim =
         record.receiptFinal === true && evidence.kind !== 'complete'
@@ -1763,7 +1805,20 @@ async function driveAgentTurn(
                 ? 'incomplete'
                 : 'retired'
               : 'released';
-      if (params.money?.claimUsage?.(invocation, claim) !== true) return;
+      if (params.money?.claimUsage?.(invocation, claim) !== true) {
+        // Explicit duplicate refusal rolls back only this notification's provisional state.
+        // A thrown host callback instead retains the physical facts for failure/late capture.
+        if (pendingInfo !== undefined) {
+          if (priorPending === undefined) pendingReceipts.delete(pendingInfo);
+          else pendingReceipts.set(pendingInfo, priorPending);
+        }
+        if (ownsUnknown) usage.unknownCalls = (usage.unknownCalls ?? 0) - 1;
+        if (!lateReceipt) {
+          if (priorObservation === undefined) delete usage.observedStopUsage;
+          else usage.observedStopUsage = priorObservation;
+        }
+        return;
+      }
       if (disposition !== undefined)
         params.money?.usageDisposition?.({
           nodeId: params.nodeId,
@@ -1777,11 +1832,8 @@ async function driveAgentTurn(
     }
     // Native repairs own independent admissions; late receipt refinement never consumes a
     // newer invocation's lease. Proven non-invocation may release its exact pending lease.
-    const coverageOnly = record.coverageOnly === true;
     if (lateReceipt && record.preAttemptInfo !== undefined)
       pendingReceipts.delete(record.preAttemptInfo);
-    if (!lateReceipt && disposition?.kind === 'incomplete')
-      usage.unknownCalls = (usage.unknownCalls ?? 0) + 1;
     if (lateReceipt && record.providerInvoked && evidence.kind !== 'complete') return;
 
     if (!lateReceipt) delete usage.overflowAttempt;
@@ -1809,18 +1861,8 @@ async function driveAgentTurn(
     }
     if (!lateReceipt) activeModel = record.model;
     if (!coverageOnly && !lateReceipt) nonSkippedAttempts += 1;
-    // A native predecessor belongs to the current outer chain attempt, whose final record
-    // has not incremented the diagnostic counter yet. Receipt identity remains the money key.
-    const accountingAttempt =
-      receipt?.attemptNumber ?? nonSkippedAttempts + (coverageOnly && !lateReceipt ? 1 : 0);
-    if (!lateReceipt && record.receiptPending === true && record.preAttemptInfo !== undefined)
-      pendingReceipts.set(record.preAttemptInfo, {
-        attemptNumber: accountingAttempt,
-        unknown: disposition?.kind === 'incomplete',
-      });
     if (lateReceipt && receipt?.unknown === true)
       usage.unknownCalls = (usage.unknownCalls ?? 0) - 1;
-    usage.engaged = true; // the provider method was invoked, even if it errored at zero usage
     if (evidence.kind !== 'complete') {
       if (officialRefusal) {
         dischargeAttemptAdmission((active) => active?.release());

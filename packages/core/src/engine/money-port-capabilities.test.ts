@@ -124,6 +124,7 @@ function fixture(
   pendingFails = false,
   nativeRetry = false,
   costObserver?: () => void,
+  predecessorEvidence = evidence,
 ) {
   const fold = new UsageCoverageFold();
   fold.start('complete');
@@ -183,7 +184,7 @@ function fixture(
         status: 400,
         message: 'parameter rejected',
       }),
-      usage: evidence,
+      usage: predecessorEvidence,
     });
     options?.nativeInvocationStarted?.();
     repaired++;
@@ -519,6 +520,252 @@ for (const streaming of [false, true]) {
         expect(outcome.failureOrigin).toBe(boundary === 'record' ? 'observer' : 'turn');
       }
       expect(h.counts().invoked).toBe(boundary === 'record' ? 1 : 0);
+    });
+  }
+}
+
+type CoverageObserver = 'claimUsage' | 'usageDisposition';
+
+class CoverageObserverPort extends PrivateMoneyPort {
+  readonly #boundary: CoverageObserver;
+  readonly #observe: () => void;
+  constructor(inner: TurnMoneyPort, boundary: CoverageObserver, observe: () => void) {
+    super(inner);
+    this.#boundary = boundary;
+    this.#observe = observe;
+  }
+  override claimUsage(invocation: UsageInvocation, kind: Claim): boolean {
+    if (this.#boundary === 'claimUsage') this.#observe();
+    return super.claimUsage(invocation, kind);
+  }
+  override usageDisposition(draft: UsageDispositionDraft): void {
+    if (this.#boundary === 'usageDisposition') this.#observe();
+    super.usageDisposition(draft);
+  }
+}
+
+function cappedSession(
+  h: ReturnType<typeof fixture>,
+  money: TurnMoneyPort,
+  provider: LlmProvider = h.provider,
+) {
+  let effectTurn = 0;
+  const events: SessionStreamEvent[] = [];
+  const session = new AgentSession({
+    sessionId: 'coverage-observer',
+    agentRef: 'a',
+    agent: AgentSchema.parse({
+      id: 'a',
+      provider: 'openai',
+      model: 'gpt-4o',
+      system_prompt: 'offline',
+      temperature: 0.5,
+    }),
+    context: SessionContextSchema.parse({ workingDir: '/offline', fsScopeTier: 'sandboxed' }),
+    deps: {
+      money,
+      maxTurns: 1,
+      resolveProvider: () => provider,
+      registry: h.params.registry,
+      tools: [],
+      keyFor: () => 'offline',
+      sleep: () => Promise.resolve(),
+      newAbortController: () => new AbortController(),
+      reserveEffectTurnKey: () => ++effectTurn,
+      autoCompact: false,
+      emit: (event) => events.push(event),
+    },
+  });
+  session.start();
+  return { session, events };
+}
+
+for (const boundary of ['claimUsage', 'usageDisposition'] as const) {
+  for (const streaming of [false, true]) {
+    for (const native of [false, true]) {
+      for (const [name, makeMarker] of Object.entries(observerMarkers)) {
+        it(`${boundary}/${streaming}/${native}/${name}: coverage observer failure retains exact origin and engagement`, async () => {
+          const marker = makeMarker();
+          const h = fixture('private-class', streaming, cases.missing, false, native);
+          const money = new CoverageObserverPort(h.money, boundary, () => {
+            // eslint-disable-next-line @typescript-eslint/only-throw-error -- Public observers may throw opaque or falsy values.
+            throw marker;
+          });
+          const outcome = await captureAgentTurnOutcome({ ...h.params, money });
+          expect(h.counts()).toEqual({ pending: 1, invoked: 1, repaired: 0 });
+          expect(h.rows).toHaveLength(0);
+          expect(outcome.kind).toBe('failed');
+          if (outcome.kind !== 'failed') throw new Error('expected the observer failure');
+          expect(outcome.error).toBe(marker);
+          expect(outcome.failureOrigin).toBe('observer');
+          expect(outcome.engaged).toBe(true);
+          expect(outcome.usage).toEqual({ input: 0, output: 0 });
+        });
+      }
+    }
+  }
+  for (const name of ['pause', 'retry'] as const) {
+    it(`${boundary}/${name}: a native coverage observer neither classifies the session nor grants another capped turn`, async () => {
+      const h = fixture('private-class', true, cases.missing, false, true);
+      const marker = observerMarkers[name]();
+      let observed = false;
+      const money = new CoverageObserverPort(h.money, boundary, () => {
+        if (observed) return;
+        observed = true;
+        throw marker;
+      });
+      const { session, events } = cappedSession(h, money);
+      await session.sendMessage('first');
+      expect(events.find((event) => event.type === 'session:turn_completed')).toMatchObject({
+        error: {
+          code: 'internal',
+          retryable: false,
+          message: 'the session turn failed with an unexpected error',
+        },
+      });
+      await session.sendMessage('second');
+      expect(h.counts()).toEqual({ pending: 1, invoked: 1, repaired: 0 });
+      const completed = events.filter((event) => event.type === 'session:turn_completed');
+      expect(completed).toHaveLength(2);
+      expect(completed[1]).toMatchObject({ error: { code: 'turn_limit', retryable: false } });
+    });
+  }
+  it(`${boundary}: an installed-SDK native predecessor consumes its hard-capped session turn`, async () => {
+    const h = fixture('private-class', true, cases.missing);
+    let calls = 0;
+    const provider = createOpenAiAdapter({
+      maxRetries: 0,
+      fetch: () => {
+        calls++;
+        if (calls === 1)
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({
+                error: {
+                  message: 'Unsupported parameter: temperature',
+                  param: 'temperature',
+                  code: 'unsupported_parameter',
+                },
+              }),
+              { status: 400, headers: { 'content-type': 'application/json' } },
+            ),
+          );
+        return Promise.resolve(
+          new Response(
+            [
+              `data: ${JSON.stringify({
+                id: 'offline',
+                object: 'chat.completion.chunk',
+                created: 1,
+                model: 'gpt-4o',
+                choices: [
+                  { index: 0, delta: { role: 'assistant', content: 'reply' }, finish_reason: null },
+                ],
+              })}`,
+              `data: ${JSON.stringify({
+                id: 'offline',
+                object: 'chat.completion.chunk',
+                created: 1,
+                model: 'gpt-4o',
+                choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+                usage: {
+                  prompt_tokens: 0,
+                  completion_tokens: 0,
+                  total_tokens: 0,
+                  prompt_tokens_details: { cached_tokens: 0 },
+                },
+              })}`,
+              'data: [DONE]',
+              '',
+            ].join('\n\n'),
+            { headers: { 'content-type': 'text/event-stream' } },
+          ),
+        );
+      },
+    });
+    let observed = false;
+    const money = new CoverageObserverPort(h.money, boundary, () => {
+      if (observed) return;
+      observed = true;
+      throw observerMarkers.retry();
+    });
+    const { session, events } = cappedSession(h, money, provider);
+    await session.sendMessage('first');
+    expect(calls).toBe(1);
+    await session.sendMessage('second');
+    expect(calls).toBe(1);
+    const completed = events.filter((event) => event.type === 'session:turn_completed');
+    expect(completed).toHaveLength(2);
+    expect(completed[0]).toMatchObject({ error: { code: 'internal', retryable: false } });
+    expect(completed[1]).toMatchObject({ error: { code: 'turn_limit', retryable: false } });
+  });
+}
+
+for (const streaming of [false, true]) {
+  for (const native of [false, true]) {
+    it(`${streaming}/${native}: a throwing complete claim preserves observed quantities without inventing an actual ACK`, async () => {
+      const h = fixture('private-class', streaming, cases.positive, false, native);
+      const marker = new Error('complete claim observer failed');
+      const money = new CoverageObserverPort(h.money, 'claimUsage', () => {
+        throw marker;
+      });
+      const outcome = await captureAgentTurnOutcome({ ...h.params, money });
+      expect(outcome.kind).toBe('failed');
+      if (outcome.kind !== 'failed') throw new Error('expected the observer failure');
+      expect(outcome.error).toBe(marker);
+      expect(outcome.failureOrigin).toBe('observer');
+      expect(outcome.engaged).toBe(true);
+      expect(outcome.usage).toEqual({ input: 3, output: 2 });
+      expect(h.rows).toHaveLength(0);
+      expect(h.counts()).toEqual({ pending: 1, invoked: 1, repaired: 0 });
+    });
+  }
+  for (const [name, evidence] of Object.entries(cases)) {
+    it(`${streaming}/${name}: a returning coverage port accounts both native invocations exactly once`, async () => {
+      const h = fixture('private-class', streaming, evidence, false, true);
+      const outcome = await captureAgentTurnOutcome(h.params);
+      expect(outcome.kind).toBe('succeeded');
+      expect(h.counts()).toEqual({ pending: 2, invoked: 1, repaired: 1 });
+      expect(h.rows).toHaveLength(evidence.kind === 'complete' ? 2 : 0);
+      expect(h.fold.retainedInvocations).toBe(0);
+      expect(h.fold.snapshot().coverage).toEqual({
+        unverified: false,
+        pendingInvocations: 0,
+        // Only the missing native predecessor is a proven pre-content 400 refusal.
+        unknownCalls: evidence.kind === 'complete' ? 0 : evidence.kind === 'missing' ? 1 : 2,
+      });
+    });
+    it(`${streaming}/${name}: a declined claim preserves prior usage without duplicate actual or diagnostic accounting`, async () => {
+      const h = fixture(
+        'private-class',
+        streaming,
+        evidence,
+        false,
+        true,
+        undefined,
+        cases.positive,
+      );
+      class DecliningPort extends PrivateMoneyPort {
+        override claimUsage(invocation: UsageInvocation, kind: Claim): boolean {
+          return invocation.ordinal === 2 ? false : super.claimUsage(invocation, kind);
+        }
+      }
+      const outcome = await captureAgentTurnOutcome({
+        ...h.params,
+        money: new DecliningPort(h.money),
+      });
+      expect(outcome.kind).toBe('succeeded');
+      if (outcome.kind !== 'succeeded') throw new Error('expected a completed response');
+      expect(outcome.result.usage).toEqual({ input: 3, output: 2 });
+      expect(outcome.result.usageCoverage.unknownCalls).toBe(0);
+      expect(h.rows).toHaveLength(1);
+      expect(h.rows[0]).toMatchObject({
+        inputTokens: 3,
+        outputTokens: 2,
+        invocation: { ordinal: 1 },
+      });
+      expect(h.dispositions).toHaveLength(0);
+      expect(h.counts()).toEqual({ pending: 2, invoked: 1, repaired: 1 });
     });
   }
 }

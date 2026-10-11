@@ -22,8 +22,17 @@ function deferred<T>() {
 }
 
 for (const streaming of [false, true]) {
-  for (const failureMode of ['none', 'attempt', 'attempt-and-cleanup']) {
+  for (const failureMode of [
+    'none',
+    'attempt',
+    'attempt-and-cleanup',
+    'claim-observer',
+    'disposition-observer',
+  ]) {
     const throws = failureMode !== 'none';
+    const admissionFails = failureMode === 'attempt' || failureMode === 'attempt-and-cleanup';
+    const observerFails =
+      failureMode === 'claim-observer' || failureMode === 'disposition-observer';
     for (const [name, evidence] of Object.entries({
       positive: { kind: 'complete', usage: { inputTokens: 3, outputTokens: 2 } },
       zero: { kind: 'complete', usage: { inputTokens: 0, outputTokens: 0 } },
@@ -31,11 +40,11 @@ for (const streaming of [false, true]) {
       missing: { kind: 'missing', reason: 'not_reported' },
       invalid: { kind: 'complete', usage: { inputTokens: -1, outputTokens: 2 } },
     } satisfies Record<string, UsageEvidence>)) {
-      it(`${streaming}/${failureMode}/${name}: an admission fault cannot strand late accounting authority`, async () => {
+      it(`${streaming}/${failureMode}/${name}: a callback failure cannot strand registered late accounting`, async () => {
         const raw = deferred<LlmResult>();
         const entered = deferred<void>();
         const held: Promise<unknown>[] = [];
-        const primary = Object.freeze({ admission: 'opaque primary fault' });
+        const primary = Object.freeze({ callback: 'opaque primary fault' });
         const secondary = new Error('secondary conservative cleanup fault');
         const accountingFailures: unknown[] = [];
         const fold = new UsageCoverageFold();
@@ -90,6 +99,7 @@ for (const streaming of [false, true]) {
             if (draft.invocation !== undefined) fold.complete(draft.model, draft.invocation);
           },
         });
+        const basePort = money.turnPort(() => 0);
         const abort = new AbortController();
         const params: AgentTurnParams = {
           nodeId: 'turn',
@@ -130,7 +140,23 @@ for (const streaming of [false, true]) {
           },
           limits: DEFAULT_AGENT_TURN_LIMITS,
           money: {
-            ...money.turnPort(() => 0),
+            ...basePort,
+            claimUsage: (invocation, kind) => {
+              const claimed = basePort.claimUsage?.(invocation, kind) ?? false;
+              // Delegate first: the initial claim can be accepted before its observer fails.
+              if (failureMode === 'claim-observer' && kind === 'incomplete') {
+                // eslint-disable-next-line @typescript-eslint/only-throw-error -- The supported host callback may throw an opaque value.
+                throw primary;
+              }
+              return claimed;
+            },
+            usageDisposition: (draft) => {
+              basePort.usageDisposition?.(draft);
+              if (failureMode === 'disposition-observer' && draft.receiptPending === true) {
+                // eslint-disable-next-line @typescript-eslint/only-throw-error -- Acknowledged disposition does not change the callback's exact failure.
+                throw primary;
+              }
+            },
             accountingFailure: (error) => {
               accountingFailures.push(error);
               money.accountingFailure(error);
@@ -145,7 +171,7 @@ for (const streaming of [false, true]) {
             },
             settleAtReservedEstimate: () => {
               // eslint-disable-next-line @typescript-eslint/only-throw-error -- Supplied admission callbacks may throw opaque non-Error values.
-              if (++estimates === 1 && throws) throw primary;
+              if (++estimates === 1 && admissionFails) throw primary;
               if (estimates === 2 && failureMode === 'attempt-and-cleanup') throw secondary;
             },
           }),
@@ -158,7 +184,8 @@ for (const streaming of [false, true]) {
           expect(outcome.kind).toBe('failed');
           if (outcome.kind === 'failed') {
             expect.soft(outcome.error).toBe(primary);
-            expect(outcome.failureOrigin).toBe('turn');
+            expect(outcome.failureOrigin).toBe(observerFails ? 'observer' : 'turn');
+            expect(outcome.engaged).toBe(true);
           }
         } else expect(outcome.kind).toBe('failed');
         expect
@@ -168,8 +195,8 @@ for (const streaming of [false, true]) {
         const published = JSON.stringify(outcome);
         expect(fold.snapshot().coverage).toEqual({
           unverified: false,
-          pendingInvocations: 0,
-          unknownCalls: 1,
+          pendingInvocations: failureMode === 'claim-observer' ? 1 : 0,
+          unknownCalls: failureMode === 'claim-observer' ? 0 : 1,
         });
         expect(fold.retainedInvocations).toBe(1);
         raw.resolve({ content: [], stopReason: 'stop', usage: evidence });
@@ -190,7 +217,8 @@ for (const streaming of [false, true]) {
             outputTokens: evidence.usage.outputTokens,
             attemptNumber: 1,
           });
-        expect(dispositions).toHaveLength(complete ? 1 : 2);
+        const initialDispositions = failureMode === 'claim-observer' ? 0 : 1;
+        expect(dispositions).toHaveLength(initialDispositions + (complete ? 0 : 1));
         expect(fold.snapshot().coverage).toEqual({
           unverified: false,
           pendingInvocations: 0,
@@ -199,7 +227,7 @@ for (const streaming of [false, true]) {
         expect(fold.retainedInvocations).toBe(0);
         expect(actualSettlements).toBe(0);
         expect(releases).toBe(0);
-        expect(estimates).toBe(throws ? 2 : 1);
+        expect(estimates).toBe(admissionFails ? 2 : 1);
         expect(calls).toBe(1);
         expect(JSON.stringify(outcome)).toBe(published);
       });

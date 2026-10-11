@@ -1,5 +1,9 @@
-import { SessionContextSchema } from '@relavium/shared';
-import { describe, expect, it, vi } from 'vitest';
+import {
+  SessionContextSchema,
+  type CostUsageDispositionEvent,
+  type CostUsagePendingEvent,
+} from '@relavium/shared';
+import { describe, expect, expectTypeOf, it, vi } from 'vitest';
 
 import { RunLoopInvariantError } from './invariant-error.js';
 import { RunEventBus, type RunEventDraft, type SessionEventDraft } from './event-bus.js';
@@ -153,6 +157,90 @@ describe('SessionHandle (1.W) — the long-lived session event stream', () => {
     await iterator.return?.(); // early abandon → return() → close() → onClose → unsubscribe()
     expect(detached).toHaveBeenCalledTimes(1);
   });
+});
+
+describe('SessionHandle — typed usage delivery (ADR-0104)', () => {
+  it('includes active usage variants while retaining the run-only coverage and settlement boundary', () => {
+    expectTypeOf<
+      Extract<SessionStreamHandleEvent, { type: 'cost:usage_pending' }>
+    >().toEqualTypeOf<CostUsagePendingEvent>();
+    expectTypeOf<
+      Extract<SessionStreamHandleEvent, { type: 'cost:usage_disposition' }>
+    >().toEqualTypeOf<CostUsageDispositionEvent>();
+    expectTypeOf<
+      Extract<SessionStreamHandleEvent, { type: 'cost:coverage_started' | 'cost:attempt_settled' }>
+    >().toBeNever();
+  });
+
+  it.each(['iterated', 'subscribe-only'] as const)(
+    'delivers pending and disposition through the exported %s handle contract',
+    async (mode) => {
+      const b = bus();
+      const handle = createSessionHandle(b, 'sess-1', () => undefined, 4, mode);
+      const emit = createSessionEventSink(b, 'sess-1');
+      const invocation = {
+        producerId: 'producer',
+        ordinal: 1,
+        dispatchId: 'dispatch',
+        round: 0,
+        chainAttempt: 1,
+      };
+      // Narrow the actual public handle type, without widening to the bus union.
+      const summarize = (event: SessionStreamHandleEvent): string | undefined => {
+        switch (event.type) {
+          case 'cost:usage_pending':
+            return `${event.invocation.ordinal}:pending`;
+          case 'cost:usage_disposition':
+            return `${event.invocation.ordinal}:${event.disposition.kind}`;
+          default:
+            return undefined;
+        }
+      };
+      const observed: string[] = [];
+      const off = handle.subscribe((event) => {
+        const summary = summarize(event);
+        if (summary !== undefined) observed.push(summary);
+      });
+      try {
+        emit({ type: 'cost:usage_pending', nodeId: 'chatter', model: 'model', invocation });
+        emit({
+          type: 'cost:usage_disposition',
+          nodeId: 'chatter',
+          model: 'model',
+          invocation,
+          disposition: {
+            kind: 'incomplete',
+            evidence: { kind: 'missing', reason: 'not_reported' },
+          },
+        });
+        createSessionEventSink(
+          b,
+          'sess-2',
+        )({
+          type: 'cost:usage_pending',
+          nodeId: 'chatter',
+          model: 'model',
+          invocation,
+        });
+        b.emit({ type: 'cost:coverage_started', runId: 'run-1', basis: 'complete' });
+        b.emit(cancelled());
+        expect(observed).toEqual(['1:pending', '1:incomplete']);
+        if (mode === 'iterated') {
+          const events = await drain(handle.events);
+          expect(events.map((event) => summarize(event))).toEqual([
+            '1:pending',
+            '1:incomplete',
+            undefined,
+          ]);
+          expect(events.map((event) => event.sequenceNumber)).toEqual([0, 1, 2]);
+        } else {
+          expect(handle.bufferedCount).toBe(0);
+        }
+      } finally {
+        off();
+      }
+    },
+  );
 });
 
 describe('SessionHandle — the producer-await bound (CR-30, ADR-0036)', () => {
