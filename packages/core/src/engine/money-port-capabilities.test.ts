@@ -110,6 +110,65 @@ function ownMoneyPort(inner: TurnMoneyPort, enumerable: boolean): TurnMoneyPort 
 
 const shapes = ['literal', 'private-class', 'own-receiver', 'non-enumerable'] as const;
 type Shape = (typeof shapes)[number];
+const coverageCapabilities = ['beginUsageInvocation', 'claimUsage', 'usageDisposition'] as const;
+
+for (const shape of shapes)
+  for (const streaming of [false, true])
+    for (const mask of [1, 2, 3, 4, 5, 6])
+      it(`${shape}/${streaming}/${mask}: an incomplete coverage capability set refuses before any egress`, async () => {
+        const h = fixture(shape, streaming, cases.positive);
+        for (const [index, capability] of coverageCapabilities.entries())
+          if ((mask & (1 << index)) === 0)
+            Object.defineProperty(h.money, capability, { value: undefined });
+        let keys = 0;
+        const outcome = await captureAgentTurnOutcome({
+          ...h.params,
+          chainCapabilities: {
+            ...h.params.chainCapabilities,
+            keyFor: () => {
+              keys++;
+              return 'offline';
+            },
+          },
+        });
+        expect(outcome.kind).toBe('failed');
+        if (outcome.kind !== 'failed') throw new Error('expected capability refusal');
+        expect(outcome.error).toBeInstanceOf(AgentTurnError);
+        expect(outcome.error).toMatchObject({
+          code: 'internal',
+          message: 'usage durability capabilities must be supplied together',
+          retryable: false,
+        });
+        expect(outcome.engaged).toBe(false);
+        expect(outcome.usage).toEqual({ input: 0, output: 0 });
+        expect(keys).toBe(0);
+        expect(h.counts()).toEqual({ pending: 0, invoked: 0, repaired: 0 });
+        expect(h.rows).toHaveLength(0);
+        expect(h.dispositions).toHaveLength(0);
+        expect(h.fold.snapshot().coverage).toEqual({
+          unverified: false,
+          pendingInvocations: 0,
+          unknownCalls: 0,
+        });
+      });
+
+for (const callback of ['begin', 'disposition'])
+  it(`the money owner refuses a ${callback}-only coverage configuration`, () => {
+    const begin = () => Promise.reject(new Error('must not mint an invocation'));
+    const disposition = () => {
+      throw new Error('must not dispose an invocation');
+    };
+    expect(
+      () =>
+        new MoneyDurability({
+          emit: () => undefined,
+          ...(callback === 'begin'
+            ? { beginUsageInvocation: begin }
+            : { emitUsageDisposition: disposition }),
+        }),
+    ).toThrow(LedgerDurabilityError);
+  });
+
 const cases = {
   missing: { kind: 'missing', reason: 'not_reported' },
   partial: { kind: 'partial', known: { outputTokens: 2 }, reason: 'missing_fields' },

@@ -148,6 +148,7 @@ for (const streaming of [false, true]) {
             chainAttempt: 1,
           }),
         claimUsage: () => false,
+        usageDisposition: () => undefined,
       },
       preEgress: () => ({
         settle: () => {

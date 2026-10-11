@@ -27,6 +27,7 @@ it('serializes allocation through ACK and fold even when a later pending port wo
   const begun: number[] = [];
   const acknowledged: number[] = [];
   const money = new MoneyDurability({
+    emitUsageDisposition: () => undefined,
     beginUsageInvocation: async (draft) => {
       const invocation: UsageInvocation = Object.freeze({
         producerId: 'owner',
@@ -89,6 +90,7 @@ it('a failed pending ACK refuses a concurrently queued allocation and drains wit
   const entered = deferred<void>();
   let calls = 0;
   const money = new MoneyDurability({
+    emitUsageDisposition: () => undefined,
     beginUsageInvocation: async () => {
       calls++;
       entered.resolve();

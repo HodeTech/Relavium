@@ -4,13 +4,13 @@ import {
   runMigrations,
   createRunHistoryStore,
   createRunLeasePort,
-} from '../../../db/src/index.js';
+} from '@relavium/db';
 import {
   WorkflowEngine,
   createInMemoryHost,
   createAgentNodeExecutor,
   parseWorkflow,
-} from '../index.js';
+} from '@relavium/core';
 import { createAnthropicAdapter } from '@relavium/llm/adapters';
 import { UsageCoverageFold, type RunEvent } from '@relavium/shared';
 for (const startOutput of [0, 2])

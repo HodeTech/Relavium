@@ -1525,15 +1525,29 @@ export async function captureAgentTurnOutcome(
         }),
   };
   params = Object.freeze(observed);
+  let coverageAttached = false;
   try {
+    const capabilities = [
+      params.money?.beginUsageInvocation,
+      params.money?.claimUsage,
+      params.money?.usageDisposition,
+    ];
+    const attached = capabilities.filter((capability) => capability !== undefined).length;
+    if (attached !== 0 && attached !== capabilities.length)
+      throw new AgentTurnError(
+        'internal',
+        'usage durability capabilities must be supplied together',
+        false,
+      );
+    coverageAttached = attached === capabilities.length;
     const result = await driveAgentTurn(params, acc);
-    if (params.money?.beginUsageInvocation !== undefined) await params.money.join();
+    if (coverageAttached) await params.money?.join();
     return { kind: 'succeeded', result };
   } catch (error) {
     const settledError: unknown = error;
-    if (params.money?.beginUsageInvocation !== undefined) {
+    if (coverageAttached) {
       try {
-        await params.money.join();
+        await params.money?.join();
       } catch {
         // The failure already established by the turn remains primary, including its private
         // observer/overflow origin. Joining drains the secondary write; the money owner retains
@@ -1825,7 +1839,9 @@ async function driveAgentTurn(
           model: record.model,
           invocation,
           disposition,
-          ...(record.receiptPending === true && record.receiptFinal !== true
+          ...(disposition.kind === 'incomplete' &&
+          record.receiptPending === true &&
+          record.receiptFinal !== true
             ? { receiptPending: true }
             : {}),
         });

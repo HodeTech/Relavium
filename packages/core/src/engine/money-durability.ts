@@ -68,6 +68,7 @@ export interface SettledAttemptDraft {
 }
 
 export interface MoneyDurabilityOptions {
+  /** Both coverage callbacks are supplied together, or neither for a volatile money owner. */
   readonly beginUsageInvocation?: (draft: PendingUsageDraft) => Promise<UsageInvocation>;
   readonly emitUsageDisposition?: (draft: UsageDispositionDraft) => Promise<void> | void;
   /**
@@ -103,6 +104,7 @@ export interface TurnMoneyPort {
   readonly emitCost?: (
     event: Extract<import('./node-executor.js').NodeStreamEvent, { type: 'cost:updated' }>,
   ) => void;
+  /** The pending/claim/disposition capabilities form one all-or-none coverage feature. */
   readonly beginUsageInvocation?: (draft: PendingUsageDraft) => Promise<UsageInvocation>;
   readonly claimUsage?: (
     invocation: UsageInvocation,
@@ -144,6 +146,13 @@ export class MoneyDurability {
   readonly #usageClaims = new WeakMap<UsageInvocation, 'pending' | 'incomplete' | 'finished'>();
 
   constructor(options: MoneyDurabilityOptions) {
+    if (
+      (options.beginUsageInvocation === undefined) !==
+      (options.emitUsageDisposition === undefined)
+    )
+      throw new LedgerDurabilityError(
+        new Error('usage durability callbacks must be supplied together'),
+      );
     this.#options = options;
   }
 

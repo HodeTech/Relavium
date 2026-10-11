@@ -70,7 +70,11 @@ export const mutations = [
     id: 'omit-consumer-return-settlement',
     group: 2,
     path: 'packages/llm/src/fallback-chain.ts',
-    files: [llm('fallback-consumer-return'), core('usage-consumer-return')],
+    files: [
+      llm('fallback-consumer-return'),
+      core('usage-consumer-return'),
+      cli('engine/usage-consumer-return'),
+    ],
     before: 'if (!predecessorSettled && (retentionFailure !== undefined || !attemptExited)) {',
     after: 'if (!predecessorSettled && retentionFailure !== undefined) {',
   },
