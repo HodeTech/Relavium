@@ -201,6 +201,27 @@ export const mutations = [
     after: 'void priorObservation;',
   },
 ];
+// Full receipt mutation predicates are independently load-bearing, not only SELECT lookups.
+mutations.push(
+  {
+    id: 'owner-prefix-receipt-update',
+    group: 8,
+    path: receipt,
+    files: [db('session-usage-query')],
+    marker: 'USAGE_QUERY_NOT_EXACT_IDENTITY',
+    before: `.set({ coverageState: 'incomplete' })\n        .where(identityWhere(receipt))`,
+    after: `.set({ coverageState: 'incomplete' })\n        .where(eq(sessionUsageInvocations.sessionId, receipt.sessionId))`,
+  },
+  {
+    id: 'owner-prefix-receipt-delete',
+    group: 8,
+    path: receipt,
+    files: [db('session-usage-query')],
+    marker: 'USAGE_QUERY_NOT_EXACT_IDENTITY',
+    before: `tx.delete(sessionUsageInvocations).where(identityWhere(receipt)).run();\n  return true;`,
+    after: `tx.delete(sessionUsageInvocations).where(eq(sessionUsageInvocations.sessionId, receipt.sessionId)).run();\n  return true;`,
+  },
+);
 export const permanentFiles = [
   cli('engine/usage-coverage-crash.e2e'),
   ...crash,
