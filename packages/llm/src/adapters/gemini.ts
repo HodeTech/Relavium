@@ -964,7 +964,9 @@ function foldGeminiResponse(response: GeminiResponse, state: GeminiStreamState):
       mapUsage(
         response.usageMetadata,
         state.applicability,
-        state.sawTerminal || response.candidates?.[0]?.finishReason !== undefined,
+        state.sawTerminal ||
+          response.candidates?.[0]?.finishReason !== undefined ||
+          isPromptBlocked(response.promptFeedback),
       ),
     );
   }
