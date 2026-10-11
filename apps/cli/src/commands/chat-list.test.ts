@@ -161,6 +161,48 @@ describe('chatListCommand (2.O)', () => {
     ]);
   });
 
+  it('emits every session across bounded pages without loading full records or per-owner breakdowns', () => {
+    const usage = createSessionUsageStore(client.db);
+    for (let i = 0; i < 600; i++)
+      usage.createFreshSession({
+        id: `page-${String(i).padStart(4, '0')}`,
+        agentSlug: 'paged',
+        context: CTX,
+        createdAt: '2026-10-11T00:00:00.000Z',
+      });
+    let closed = false;
+    opened = {
+      ...opened,
+      close: () => {
+        closed = true;
+      },
+      store: {
+        ...opened.store,
+        listSessions: () => {
+          throw new Error('must not materialize full sessions');
+        },
+        loadSessionCostBreakdown: () => {
+          throw new Error('must not make N+1 reads');
+        },
+      },
+    };
+    const { io, out, err } = captureIo();
+    expect(chatListCommand(deps(io, true))).toBe(EXIT_CODES.success);
+    const records = parseNdjson<{ sessionId: string; usageCoverage: unknown }>(out());
+    expect(records.map((row) => row.sessionId)).toEqual(
+      Array.from({ length: 600 }, (_, i) => `page-${String(599 - i).padStart(4, '0')}`),
+    );
+    expect(
+      records.every(
+        (row) =>
+          JSON.stringify(row.usageCoverage) ===
+          JSON.stringify({ unverified: false, pendingInvocations: 0, unknownCalls: 0 }),
+      ),
+    ).toBe(true);
+    expect(err()).toBe('');
+    expect(closed).toBe(true);
+  });
+
   it('closes the opened store even on the empty path', () => {
     let closed = false;
     opened = { ...opened, close: () => (closed = true) };

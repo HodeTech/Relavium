@@ -106,16 +106,27 @@ describe('statusCommand', () => {
     expect(out()).toContain('relavium run');
   });
 
-  it('is UNAFFECTED when the outbox cannot be read — a status read must not fail on it', async () => {
-    const { io, out } = captureIo();
-    await seedRun(db, { slug: 'demo', runId: 'running-1', state: 'running' });
-    const code = await statusCommand({
-      ...deps(io),
-      readTerminalOutbox: () => Promise.reject(new Error('outbox unreadable')),
-    });
-    expect(code).toBe(EXIT_CODES.success);
-    expect(out()).not.toContain('this run has FINISHED');
-  });
+  it.each([false, true])(
+    'warns without failing or leaking an unreadable outbox (json=%s)',
+    async (json) => {
+      const { io, out, err } = captureIo();
+      await seedRun(db, { slug: 'demo', runId: 'running-1', state: 'running' });
+      const code = await statusCommand({
+        ...deps(io, json),
+        readTerminalOutbox: () =>
+          Promise.reject(new Error('/private/outbox\x1b[31m sensitive-payload')),
+      });
+      expect(code).toBe(EXIT_CODES.success);
+      expect(out()).not.toContain('this run has FINISHED');
+      expect(err()).toBe(
+        'Warning: terminal outbox unavailable; held terminal status could not be verified.\n',
+      );
+      expect(out() + err()).not.toMatch(/private|sensitive-payload/);
+      expect(out() + err()).not.toContain('\x1b');
+      if (json) expect(parseNdjson(out())).toMatchObject([{ runId: 'running-1' }]);
+      else expect(out()).toContain('run running-1');
+    },
+  );
 
   it('reports "No active runs." when history holds only terminal runs', async () => {
     const { io, out } = captureIo();

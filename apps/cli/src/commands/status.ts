@@ -37,6 +37,7 @@ export interface StatusCommandDeps {
 async function heldTerminalRunIds(
   homeDir: string,
   read: StatusCommandDeps['readTerminalOutbox'],
+  io: CliIo,
 ): Promise<ReadonlySet<string>> {
   try {
     const events = await (read ?? defaultReadTerminalOutbox)(homeDir);
@@ -44,6 +45,10 @@ async function heldTerminalRunIds(
       events.map((event) => event.runId).filter((id): id is string => id !== undefined),
     );
   } catch {
+    // Fixed diagnostic only: filesystem errors may carry private paths or persisted text.
+    io.writeErr(
+      'Warning: terminal outbox unavailable; held terminal status could not be verified.\n',
+    );
     return new Set();
   }
 }
@@ -88,7 +93,7 @@ export async function statusCommand(deps: StatusCommandDeps): Promise<ExitCode> 
   //
   // READ-ONLY, deliberately. Draining is a write that claims a run lease; a status read must not take
   // ownership of a run another process may be finishing right now.
-  const held = await heldTerminalRunIds(homeDir, deps.readTerminalOutbox);
+  const held = await heldTerminalRunIds(homeDir, deps.readTerminalOutbox, deps.io);
   try {
     const statuses: ActiveRunStatus[] = reader.listActiveRuns().map((run) => {
       let steps: readonly StepRecord[] = [];

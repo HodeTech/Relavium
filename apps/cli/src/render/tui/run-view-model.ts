@@ -279,9 +279,6 @@ function reduceNodeCompleted(base: RunViewState, event: NodeCompletedEvent): Run
   return {
     ...base,
     ...withNode(base, event.nodeId, { status: 'completed', durationMs: event.durationMs }),
-    ...(event.cumulativeCostMicrocents === undefined
-      ? {}
-      : { cumulativeCostMicrocents: event.cumulativeCostMicrocents }),
     ...(produced.length === 0
       ? {}
       : { producedMedia: appendProducedMedia(base.producedMedia, produced) }),
@@ -369,7 +366,7 @@ export function reduceRunEvent(state: RunViewState, event: RunEvent): RunViewSta
       };
 
     case 'cost:updated':
-      return { ...base, cumulativeCostMicrocents: event.cumulativeCostMicrocents };
+      return base; // the common absolute-snapshot fold above preserves the highest known live sum
 
     case 'node:completed':
       return reduceNodeCompleted(base, event);
@@ -382,12 +379,8 @@ export function reduceRunEvent(state: RunViewState, event: RunEvent): RunViewSta
           errorCode: event.error.code,
           ...attemptPatch(event.attemptNumber),
         }),
-        // node:failed carries the run-wide cost snapshot at this boundary (2.S/D-GC durable fail-cost) — fold it
-        // into the running total just like node:completed, so a billed-but-failed media job's cost survives a
-        // durable reconstruction (cost:updated is streamed-only). Optional (older logs omit it).
-        ...(event.cumulativeCostMicrocents === undefined
-          ? {}
-          : { cumulativeCostMicrocents: event.cumulativeCostMicrocents }),
+        // The common absolute-snapshot fold above also includes billed-but-failed media costs.
+        // Optional on older logs; a lower parallel sibling snapshot cannot erase the live sum.
       };
 
     case 'node:skipped':

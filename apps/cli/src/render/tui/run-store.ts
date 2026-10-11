@@ -57,6 +57,7 @@ const HIGH_FREQUENCY_EVENTS: ReadonlySet<RunEvent['type']> = new Set([
 export function createRunStore(color: boolean): RunStoreController {
   const listeners = new Set<() => void>();
   let state = initialRunViewState();
+  let runId: string | undefined;
   const coverage = new UsageCoverageFold();
   let localCoverage = coverage.snapshot().coverage;
   let tickCount = 0;
@@ -87,6 +88,10 @@ export function createRunStore(color: boolean): RunStoreController {
     },
     getSnapshot: () => snapshot,
     apply: (event) => {
+      // A resumed primary may start at a gate rather than run:started. Latch its first run owner,
+      // then reject foreign/session envelopes before sequence, correlation or repaint state changes.
+      if (event.runId === undefined || (runId !== undefined && event.runId !== runId)) return;
+      runId ??= event.runId;
       // Duplicate/replayed live events do not advance accounting twice.
       if (
         state.lastSequenceNumber === undefined ||

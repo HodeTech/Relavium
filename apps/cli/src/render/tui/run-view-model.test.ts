@@ -926,3 +926,53 @@ describe('budget notice removal uses the resumed gate identity', () => {
     ).toHaveLength(removes ? 2 : 1);
   });
 });
+
+for (const kind of ['cost:updated', 'node:completed', 'node:failed'] as const) {
+  it(`${kind} retains the highest nonterminal absolute snapshot across parallel boundaries`, () => {
+    let state = { ...initialRunViewState(), cumulativeCostMicrocents: 100 };
+    for (const [sequenceNumber, amount] of [10, 100, 150, 50].entries()) {
+      const base = { runId: RUN, timestamp: TS, sequenceNumber, cumulativeCostMicrocents: amount };
+      const event: RunEvent =
+        kind === 'cost:updated'
+          ? {
+              ...base,
+              type: kind,
+              nodeId: 'a',
+              model: 'm',
+              inputTokens: 1,
+              outputTokens: 1,
+              costMicrocents: 1,
+            }
+          : kind === 'node:completed'
+            ? {
+                ...base,
+                type: kind,
+                nodeId: 'a',
+                output: null,
+                tokensUsed: { input: 1, output: 1 },
+                durationMs: 1,
+              }
+            : {
+                ...base,
+                type: kind,
+                nodeId: 'a',
+                error: { code: 'internal', message: 'failed', retryable: false },
+              };
+      state = reduceRunEvent(state, event);
+      expect(state.cumulativeCostMicrocents).toBe(sequenceNumber < 2 ? 100 : 150);
+    }
+    const duplicate: RunEvent = {
+      type: 'cost:updated',
+      runId: RUN,
+      timestamp: TS,
+      sequenceNumber: 1,
+      nodeId: 'a',
+      model: 'm',
+      inputTokens: 0,
+      outputTokens: 0,
+      costMicrocents: 0,
+      cumulativeCostMicrocents: 1,
+    };
+    expect(reduceRunEvent(state, duplicate).cumulativeCostMicrocents).toBe(150);
+  });
+}

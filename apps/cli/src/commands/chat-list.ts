@@ -17,8 +17,9 @@ export interface ChatListCommandDeps {
 
 /**
  * The `relavium chat-list` core (**2.O**) — list the past agent sessions (id, agent, title, last activity)
- * from durable `history.db`, the session counterpart of `relavium list`. Reads the additive `listSessions`
- * seam (non-deleted rows, most-recently-updated first); soft-deleted sessions are excluded. Framework-free
+ * from durable `history.db`, the session counterpart of `relavium list`. JSON uses bounded summary
+ * pages; human output uses full-record `listSessions`. Both exclude deleted rows and order by last
+ * activity. Framework-free
  * (no commander/ink). `--json` emits one NDJSON record per session ([ADR-0049](../../../docs/decisions/0049-cli-machine-output-contract.md));
  * an empty history is reported clearly (exit `0` — no sessions is not a fault).
  */
@@ -29,23 +30,19 @@ export function chatListCommand(deps: ChatListCommandDeps): ExitCode {
   });
   const opened = (deps.openSessionStore ?? openSessionStore)(homeDir);
   try {
-    const sessions = opened.store.listSessions();
-
     if (deps.global.json) {
-      writeRecordLines(
-        deps.io,
-        sessions.map((session) => {
-          const costs = opened.store.loadSessionCostBreakdown(session.id);
-          return {
+      opened.store.visitSessionSummaries((session) => {
+        writeRecordLines(deps.io, [
+          {
             ...toJson(session),
-            totalCostMicrocents: costs.totalCostMicrocents,
-            usageCoverage: costs.coverage,
-            unpricedCalls: costs.rows.reduce((sum, row) => sum + row.unpricedCalls, 0),
-          };
-        }),
-      );
+            usageCoverage: session.usageCoverage,
+            unpricedCalls: session.unpricedCalls,
+          },
+        ]);
+      });
       return EXIT_CODES.success;
     }
+    const sessions = opened.store.listSessions();
 
     if (sessions.length === 0) {
       deps.io.writeOut('No agent sessions yet.\n');
@@ -81,7 +78,19 @@ function renderLine(session: AgentSessionRecord): string {
  * One session as a machine record — the secret-free identity + lifecycle fields (no transcript, no key). `title`
  * / `modelId` are `null` when the row declares none, mirroring `relavium list`'s null-for-absent convention.
  */
-function toJson(session: AgentSessionRecord) {
+function toJson(
+  session: Pick<
+    AgentSessionRecord,
+    | 'id'
+    | 'agentSlug'
+    | 'title'
+    | 'status'
+    | 'modelId'
+    | 'createdAt'
+    | 'updatedAt'
+    | 'totalCostMicrocents'
+  >,
+) {
   return {
     sessionId: session.id,
     agentSlug: session.agentSlug,
