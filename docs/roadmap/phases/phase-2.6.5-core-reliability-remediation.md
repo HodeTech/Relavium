@@ -11,7 +11,7 @@
 - **Kind**: interlude, like [phase 2.5.5](phase-2.5.5-hardening-and-remediation.md) — no new product surface,
   only the invariants an existing surface already claims
 
-**Current W8 checkpoint — 2026-10-10:** Steps 1–3 are independently accepted on `development`,
+**Current W8 checkpoint — 2026-10-11:** Steps 1–5 are independently accepted on `development`,
 including CR-81, so the implementation register is **48/51** (47 checked headings plus CR-95's
 short-term half). `main` remains **47/51** until W8 publication/merge. CR-82 and approved deferred
 CR-70/93 remain open; no existing residual is closed by this checkpoint.
@@ -2494,7 +2494,7 @@ stand.
 
 ## W8 — Provider and conformance
 
-**Plan and ADR-0104 approved on 2026-10-10; Steps 1–4 accepted on `development`; Steps 5–6 activation is in progress.**
+**Plan and ADR-0104 approved on 2026-10-10; Steps 1–5 accepted on `development`; Step 6 permanent controls are in progress.**
 ADR-0087 §1 and CR-81 have scoped implementation acceptance; CR-82 and whole-W8 publication remain open.
 CR-80 below was already closed before W7. Current execution order is in
 [current.md](../current.md#next-work--phase-265-w8).
@@ -2559,8 +2559,8 @@ remains approved and open; `main` publication follows the whole-W8 gate.
 
 ### W8 preflight and proposed execution plan — 2026-10-10
 
-**Status: preflight complete, plan and ADR-0104 approved on 2026-10-10; Steps 1–4 accepted on `development`.**
-Steps 5–7 and whole-W8 publication remain open.
+**Status: preflight complete, plan and ADR-0104 approved on 2026-10-10; Steps 1–5 accepted on `development`.**
+Steps 6–7 and whole-W8 publication remain open.
 The maintainer requests implementation on `development`, an implementation commit followed by
 two fresh independent cumulative review rounds per step, confirmed fixes committed between
 rounds, and approval of any new decision before dependent work. W7 and PR #91 are merged;
@@ -2980,7 +2980,9 @@ custom 400s cannot silently inherit official refusal authority.
 
 ### W8 Step 5 complete-path usage activation — 2026-10-10
 
-**Implementation staged; independent review and CR-82 acceptance remain open.** Base `017b399c`.
+**Accepted on `development` after two NEW complete clean cumulative rounds, R17–R18.**
+Base `017b399c`; reviewed head `21aa4d5e`. CR-82 remains open until the additional Step 6 and
+whole-W8 gates. See [combined acceptance](#step-5-combined-acceptance--2026-10-11).
 The approved cross-package activation now carries owned complete/partial/missing `UsageEvidence`
 through results, stops, accountable errors and invoked-attempt records. Native counters are read
 before defaults; only complete evidence enters realized pricing. OpenAI's existing native parameter
@@ -3801,6 +3803,58 @@ This finding-bearing round supplies neither required clean acceptance round. Ste
 reviews after correction; Step 6's further permanent controls/reviews, CR-82 and Step 7/whole-W8
 validation/publication remain open. The register remains **48/51** on `development`, **47/51**
 on `main`. No new decision, dependency, paid call or deferral is introduced.
+
+#### Step 5 combined acceptance — 2026-10-11
+
+**Accepted on `development`; CR-82 and whole-W8 publication remain open.** Two NEW complete
+independent cumulative rounds, R17 and R18, reviewed `017b399c..21aa4d5e` after all sixteen
+corrections. Each assigned all 258 changed paths exactly once (80 money/core/shared, 45 LLM,
+133 storage/CLI/tooling/docs); both returned zero confirmed findings. R17 used GPT-6-astra/xhigh
+for money and GPT-6.1-sol/xhigh for LLM, GPT-6.1-sol/high for storage. R18 used GPT-6.1-sol/xhigh
+for money and storage, GPT-6-astra/xhigh for LLM. These are new reviews, not inherited author
+or earlier-round acceptance.
+
+The parent read all six complete reports, checked explicit releases and audited the actual raw
+results, full inventories, physical source/dependency identities and runtime witnesses before
+releasing each combined freeze. All 1,267 tracked developer and owned files, HEAD and logical
+index remained unchanged. Whole-file runs, independently chosen SDK/native controls and exact
+copied-mechanism removals distinguish supported behavior from setup diagnostics; repeated or
+overlapping cases are not added. Detailed reports remain local and Git-ignored under the
+maintainer's retention instruction; the permanent regression tests and contracts are committed.
+
+| Round | Complete assigned whole-file evidence | Independent evidence and causal qualifications |
+| --- | --- | --- |
+| R17 | Money 67 files / 2,234 passing cases; LLM 65 / 2,183 passing with 11 established skips; storage 56 / 850 passing. | Four actual-SDK/engine ACK schedules; 40 independently authored four-dialect SDK cases; five native schedules; six real frozen workers with 16 refusal prefixes, two legacy positives, three isolated discriminators and eight sticky session owners. Same-whole copied-mechanism controls were fixed 4 → two semantic failures → restored 4 for aggregate uncertainty, fixed 56 → 32 semantic failures → restored 56 for generate cleanup, and fixed 5 → three semantic failures → restored 5 for entry taint. The 56 cleanup cases overlap the LLM whole suite and are not added. |
+| R18 | Money 67 files / 2,234 passing cases; LLM 65 / 2,183 passing with the same 11 established skips; storage 53 / 841 passing. | Four new actual-SDK/engine ACK and cancellation schedules; 20 new four-dialect SDK/cleanup cases; four new native schedules; six real frozen workers with the same 16/2/3/8 inventory. The identical 20-case SDK cohort was fixed 20 → four expected semantic failures on exact old cleanup bytes → restored 20. Storage joins all 65 native test-child PIDs to successful native loading, readiness and closure. |
+
+These are whole-case executions, including existing parameterised cases with shared display names,
+not unique-name or aggregate cross-round counts. R17 storage's whole-file rerun replaces its initial
+38-case loader diagnostic; its nine additional media cases are disjoint. R18's superseded subset and
+initial setup/oracle diagnostics receive no additional credit. Actual SDK methods and frozen module
+bodies were checked against raw V8 records, separately from resolution/load traces. Synthetic money
+is arithmetic evidence only. The cancellation control promises zero provider entry and the exact
+not-invoked disposition; it does not claim zero injected local credential-fixture reads after ACK.
+Installed dependencies were rehashed with the timing and observed-file qualifications retained in
+the local reports; frozen source is Git-anchored, while portable dependency bytes retain their
+existing digest-local provenance qualification.
+
+The final source's forced local author gates are recorded in the preceding sixteenth correction.
+Review does not claim a provider invoice, live execution, remote CI or whole-W8 coverage.
+Step 6 must add its planned permanent causal/crash/reader/retirement controls and complete two
+FURTHER NEW independent cumulative rounds. Step 7 must reconcile all eight ADR-0104 acceptance
+groups, run the full local CI/build/coverage and whole-wave reviews, then publish the reviewable
+PR without merging. The register remains **48/51 on `development`, 47/51 on `main`**. Approved
+exact-capacity/CR-70/CR-93 residuals remain unchanged; no new deferral or prerequisite is created.
+
+### W8 Step 6 permanent controls — 2026-10-11
+
+**Implementation in progress; acceptance pending.** This is the additional control step in the
+approved seven-step plan, following Step 5 activation acceptance. It preserves native media's
+separate authored/frozen volume basis and adds no new product surface, provider call or dependency.
+The bounded source-only causal runner, actual invoked crash controls, frozen predecessor/session
+round trips, every affected reader and structural retirement/query controls will be implemented and
+validated together before two FURTHER NEW complete cumulative reviews. Preparation probes and
+prior review executions do not certify this step.
 
 ### CR-81 — Conformance cassettes do not verify the request wire contract · High · ✅ CLOSED on `development` 2026-10-10
 **Accepted on `development`, 2026-10-10; publication pending.** The [Step 3 register](#w8-step-3-canonical-sdk-http-matrix--2026-10-10)

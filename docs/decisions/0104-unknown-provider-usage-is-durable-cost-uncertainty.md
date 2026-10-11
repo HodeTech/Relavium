@@ -673,3 +673,12 @@ existing-contract correction, with no new decision, dependency, paid call or def
 finding-bearing round supplies no clean acceptance. Step 5 still requires two NEW complete
 clean cumulative rounds after correction, followed by Step 6's further controls/reviews and
 whole-W8 validation/publication.
+
+### W8 complete-path activation acceptance — 2026-10-11
+
+The [Step 5 register](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#step-5-combined-acceptance--2026-10-11)
+records two NEW complete clean cumulative rounds at `21aa4d5e` after all sixteen corrections.
+Complete-path activation is accepted on `development`; this does not close CR-82. The further
+Step 6 permanent causal/crash/reader/retirement controls and two independent review rounds,
+then Step 7 whole-wave checks and publication, remain required. No new decision or deferral
+is introduced; the eight acceptance groups above remain the whole-W8 obligations.

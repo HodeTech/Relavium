@@ -115,13 +115,14 @@ refusing adapter satisfies too, so it passed either way — the finding under th
 [ADR-0087](docs/decisions/0087-consumed-streams-size-bounds-and-run-retention.md) was also **accepted
 (2026-09-04) with nine dated corrections** after a review refused it as written; §1 was still unimplemented
 at that checkpoint, while §3 turned out to have shipped in `W5` under a different item number.
-**Current W8 checkpoint — 2026-10-10:** §1 is implemented and independently accepted on
+**Current W8 checkpoint — 2026-10-11:** §1 is implemented and independently accepted on
 `development` after three cumulative rounds; W8 publication remains pending. The
 [Step 1 register](docs/roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w8-step-1-consumption-modes--2026-10-10)
 owns scoped acceptance. Steps 2–3 are also independently accepted on `development`; CR-81 closes
 with the static actual-SDK matrix and three reproducible lowering controls. The implementation
 register is 48/51; `main` remains 47/51 until W8 lands. Step 4's inert evidence/SQLite foundations
-are accepted after two NEW cumulative rounds; production activation is in progress in Steps 5–6.
+are accepted after two NEW cumulative rounds. Step 5 activation is accepted after two NEW clean
+complete cumulative rounds; Step 6 permanent controls and its further reviews remain open.
 See the [Step 4 register](docs/roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w8-step-4-usage-evidence-and-session-coverage-foundations--2026-10-10). CR-82, W8 publication
 and the existing exact-capacity residual remain open. See the [Step 3 register](docs/roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w8-step-3-canonical-sdk-http-matrix--2026-10-10).
 
@@ -140,7 +141,7 @@ correction also has two NEW complete clean rounds. The [post-closure register](d
 joins every report disposition, new permanent/causal evidence and current gates. Published-head checks
 passed at reviewed head `69ac80b0` before PR #90 merged. No W7 implementation, provider,
 billing, key or user decision is pending. The [merge checkpoint](docs/roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w7-merge-checkpoint--2026-10-10)
-records W7 closure. W8 Steps 1–4 are accepted on `development`; Steps 5–6 proceed and CR-82
+records W7 closure. W8 Steps 1–5 are accepted on `development`; Step 6 proceeds and CR-82
 remains open. Phase 2.6.5 and whole-W8 publication remain open.
 
 For live status, per-PR history, milestone dates, and open obligations, see the canonical
