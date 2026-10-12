@@ -44,6 +44,15 @@ describe('@relavium/shared public surface', () => {
       'containsInlineMediaBytes',
       'refineInFlightMediaPart',
       'persistableMediaRefine',
+      'MAX_MEDIA_OBJECT_BYTES',
+      'MAX_MEDIA_INSPECTION_BYTES',
+      'MediaAdmissionError',
+      'canonicalMediaMimeType',
+      'mediaMimeTypesCompatible',
+      'admitMediaDescriptor',
+      'reconcileMediaDescriptors',
+      'collectMediaForAdmission',
+      'createMediaVerifier',
     ] as const;
     for (const name of names) {
       expect(shared[name]).toBeDefined();
@@ -59,6 +68,11 @@ describe('@relavium/shared public surface', () => {
       'nonNegativeInt',
       'findDuplicates',
       'jsonSchemaMetadataSchema',
+      'MediaInspectionMemory',
+      'ParserReader',
+      'snapshotMediaValue',
+      'mediaDataField',
+      'PNG',
     ]) {
       expect(exported).not.toContain(internal);
     }

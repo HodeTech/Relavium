@@ -21,6 +21,7 @@ import { createAbortController, createInMemoryHost, InMemoryRunStore } from './e
 import { createToolRegistry } from '../tools/registry.js';
 import { RunEventBus } from './event-bus.js';
 import { createSessionEventSink, createSessionHandle } from './session-handle.js';
+import { accountingImagePorts } from './fixtures/accounting-media.js';
 
 const model = 'r12-cold-resume';
 const rate: ModelPricing = {
@@ -275,7 +276,7 @@ describe('R12 pricing mutation at actual workflow output', () => {
         return get(key);
       };
       const store = new InMemoryRunStore();
-      const host = createInMemoryHost({ store });
+      const host = createInMemoryHost({ store, ...accountingImagePorts('c') });
       const executor = createAgentNodeExecutor({
         resolveProvider: () => p,
         keyFor: () => 'r12-synthetic',

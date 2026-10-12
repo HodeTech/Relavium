@@ -37,7 +37,7 @@ vi.mock('node:fs/promises', async (original) => {
   };
 });
 
-const bytes = Buffer.from('cooperating native deletion fixture');
+const bytes = Buffer.from('cooperating native deletion fixture ');
 let root: string;
 let store: FilesystemMediaStore;
 let handle: string;
@@ -48,7 +48,7 @@ beforeEach(async () => {
   boundary.afterRm.mockReset();
   root = realpathSync(mkdtempSync(join(tmpdir(), 'relavium-cas-delete-races-')));
   store = new FilesystemMediaStore(root);
-  handle = await store.put(bytes);
+  handle = await store.put(bytes, 'audio/L16');
   const digest = handle.slice('media://sha256-'.length);
   target = join(root, digest.slice(0, 2), digest.slice(2));
 });

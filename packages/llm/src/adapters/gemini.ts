@@ -10,7 +10,7 @@ import {
 } from './native-usage.js';
 import { GenerateVideosOperation, GoogleGenAI } from '@google/genai';
 
-import { MediaMimeTypeSchema, mediaModalityOf } from '@relavium/shared';
+import { canonicalMediaMimeType, MediaMimeTypeSchema, mediaModalityOf } from '@relavium/shared';
 import type {
   AbortSignalLike,
   ContentPart,
@@ -1062,6 +1062,25 @@ async function* streamChunks(
  * content-policy signal to key on; message-sniffing would be fragile. The OpenAI sibling can map both
  * paths; this is a documented, behaviorally-inert divergence (both kinds are fatal/non-retryable).
  */
+function admittedGenerationMime(value: unknown, allowed: readonly string[]): string | undefined {
+  if (value === undefined) return undefined;
+  try {
+    if (typeof value === 'string') {
+      const canonical = canonicalMediaMimeType(value);
+      if (allowed.includes(canonical)) return canonical;
+    }
+  } catch {
+    /* Fixed format-only refusal below. */
+  }
+  throw new LlmProviderError(
+    makeLlmError({
+      provider: PROVIDER,
+      kind: 'bad_request',
+      message: 'Unsupported media output format',
+    }),
+  );
+}
+
 async function geminiGenerateImage(
   transport: GeminiTransport,
   req: MediaGenRequest,
@@ -1076,6 +1095,11 @@ async function geminiGenerateImage(
       }),
     );
   }
+  const nativeMime = req.providerOptions?.['outputMimeType'];
+  const outputMimeType = admittedGenerationMime(
+    req.mimeType === undefined ? nativeMime : req.mimeType,
+    ['image/png', 'image/jpeg'],
+  );
   let response: GeminiImageResponse;
   try {
     response = await transport.generateImages(
@@ -1089,6 +1113,7 @@ async function geminiGenerateImage(
         config: {
           ...stripTransportKeys(req.providerOptions ?? {}),
           numberOfImages: 1,
+          ...(outputMimeType === undefined ? {} : { outputMimeType }),
           ...(isAbortSignal(req.signal) ? { abortSignal: req.signal } : {}),
         },
       },
@@ -1143,6 +1168,10 @@ async function geminiGenerateVideo(
   req: MediaGenRequest,
   key: string,
 ): Promise<MediaGenResult> {
+  admittedGenerationMime(req.mimeType, ['video/mp4']);
+  // The installed Veo config has no output MIME selector; an explicit escape hatch cannot be ignored.
+  if (req.providerOptions?.['outputMimeType'] !== undefined)
+    admittedGenerationMime(req.providerOptions['outputMimeType'], []);
   let op: GeminiVideoOperation;
   try {
     op = await transport.generateVideos(

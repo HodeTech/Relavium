@@ -21,6 +21,7 @@ const price: ModelPricing = {
   mediaOutputRates: { image: 9 },
 };
 const store: MediaStore = {
+  validateMedia: (handle, descriptor) => Promise.resolve({ ...descriptor, handle, byteLength: 1 }),
   put: (bytes) =>
     Promise.resolve('media://sha256-' + createHash('sha256').update(bytes).digest('hex')),
   get: () => Promise.resolve(new Uint8Array([1])),

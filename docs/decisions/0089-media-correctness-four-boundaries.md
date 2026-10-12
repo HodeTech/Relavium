@@ -358,3 +358,14 @@ Missing inline-media usage is explicit uncertainty. Separate-endpoint media’s 
 
 See [ADR-0104](0104-unknown-provider-usage-is-durable-cost-uncertainty.md) and the
 [canonical usage contract](../reference/shared-core/llm-provider-seam.md#6-usage).
+
+### Wave 2 media implementation checkpoint — 2026-10-12
+
+ADR-0106 extends the existing streamed URL path with independent store ceilings, bounded
+format/count/hash evidence and pre-publication immutable metadata admission. Installed-SDK offline
+OpenAI chat/TTS AAC, Ogg Opus and raw PCM plus Gemini PCM compatibility controls exercise actual
+CAS and file-backed SQLite; these are synthetic HTTP fixtures, not paid-provider captures or codec
+playback certification. Explicit unsupported output selectors refuse before SDK entry. The
+[canonical media publication contract](../reference/shared-core/llm-provider-seam.md#bounded-verified-media-publication-adr-0106)
+owns profiles and the raw PCM qualification. Two new clean cumulative review rounds and broader
+gates are still required before Step 6 acceptance.

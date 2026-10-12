@@ -34,6 +34,7 @@ import {
   type EffectTier,
   LeaseFencedError,
   type MediaReferencePort,
+  type HostMediaRequest,
   type MediaStore,
   type MediaWritePort,
   nodeIdFromRunScope,
@@ -320,17 +321,9 @@ export interface ExecutionHost {
 
 /** The host media-egress port: a public-HTTPS `url` → its bytes, under an engine-supplied size bound. */
 /** The streaming media-egress port: a public-HTTPS `url` → its bytes, chunk by chunk, under a size bound. */
-export type HostMediaStream = (
-  url: string,
-  maxBytes: number,
-  signal: AbortSignalLike,
-) => AsyncIterable<Uint8Array>;
-
-export type HostMediaFetch = (
-  url: string,
-  maxBytes: number,
-  signal?: AbortSignalLike,
-) => Promise<Uint8Array>;
+export type { HostMediaRequest } from '@relavium/shared';
+export type HostMediaStream = (request: HostMediaRequest) => AsyncIterable<Uint8Array>;
+export type HostMediaFetch = (request: HostMediaRequest) => Promise<Uint8Array>;
 
 // --- In-memory reference implementation (engine tests + the local reference) -------------------
 

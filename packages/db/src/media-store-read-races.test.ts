@@ -36,10 +36,10 @@ vi.mock('node:fs/promises', async (original) => {
         await file.close();
         throw error;
       }
-      const read = file.readFile.bind(file);
-      vi.spyOn(file, 'readFile').mockImplementation(async (...readArgs) => {
-        const result = await read(...readArgs);
-        boundary.afterRead();
+      const read = file.read.bind(file);
+      vi.spyOn(file, 'read').mockImplementation(async (options) => {
+        const result = await read(options);
+        if (result.bytesRead === 0) boundary.afterRead();
         return result;
       });
       return file;
@@ -47,7 +47,7 @@ vi.mock('node:fs/promises', async (original) => {
   };
 });
 
-const bytes = Buffer.from('native descriptor content');
+const bytes = Buffer.from('native descriptor content ');
 const actualPlatform = process.platform;
 let base: string;
 let root: string;
@@ -61,7 +61,7 @@ beforeEach(async () => {
   base = mkdtempSync(join(tmpdir(), 'relavium-cas-read-races-'));
   root = join(base, 'cas');
   store = new FilesystemMediaStore(root);
-  handle = await store.put(bytes);
+  handle = await store.put(bytes, 'audio/L16');
   const digest = handle.slice('media://sha256-'.length);
   target = join(root, digest.slice(0, 2), digest.slice(2));
   for (const hook of Object.values(boundary)) hook.mockClear();
@@ -147,7 +147,7 @@ it.each([
 it.each(['afterOpen', 'afterRead'] as const)(
   'keeps opened bytes and hash verification together when another inode replaces the name at %s',
   async (point) => {
-    boundary[point].mockImplementationOnce(() => replace(Buffer.from('corrupt replacement')));
+    boundary[point].mockImplementationOnce(() => replace(Buffer.from('corrupt replacement ')));
     // This read linearizes at open; a subsequent read must verify the replacement independently.
     const result = await store.get(handle).then(
       (value) => ({ value, error: undefined }),
@@ -165,7 +165,7 @@ it.each(['afterOpen', 'afterRead'] as const)(
 );
 
 it('refuses a corrupt replacement opened after pathname admission', async () => {
-  boundary.beforeOpen.mockImplementationOnce(() => replace(Buffer.from('corrupt replacement')));
+  boundary.beforeOpen.mockImplementationOnce(() => replace(Buffer.from('corrupt replacement ')));
   await expect(store.get(handle)).rejects.toThrow(/content-address/);
 });
 

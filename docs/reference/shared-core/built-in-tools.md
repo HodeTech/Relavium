@@ -113,7 +113,47 @@ A pathname stat can itself observe the just-detached regular inode with zero lin
 
 These are owner-controlled storage/cooperating-host controls. Neither pre/post realpath nor final `O_NOFOLLOW` makes parent-directory swaps race-free or supplies a descriptor-relative jail against a hostile same-user process. Windows file-tool reads explicitly refuse an already-planted final symlink before open; Node's ignored Windows `O_NOFOLLOW` supplies no syscall-race guarantee. Native path membership accepts Windows case aliases while refusing sibling and cross-drive escapes. Filesystem grants do not constrain arbitrary subprocess arguments or provide an OS sandbox. Command allowlisting remains independent of file-tool scope.
 
-CAS bounded fd delivery, own `put` ceilings, cancellation, temp-age/live-writer maintenance and descriptor/media admission remain [Wave 2 Step 6 / ADR-0106](../../decisions/0106-media-publication-requires-bounded-verified-bytes.md) obligations. Current filesystem `get` reads the whole file and `readRange` slices that whole read; no bounded/cancellable-read claim follows from physical containment.
+[ADR-0106](../../decisions/0106-media-publication-requires-bounded-verified-bytes.md) adds independent
+store bounds and byte admission. The exact supported format profiles, errors and host API are in the
+[media publication contract](llm-provider-seam.md#bounded-verified-media-publication-adr-0106).
+`get`, `readRange` and `resolveForEgress` check the actual opened regular fd against the **25 MiB**
+object ceiling before allocation and cumulatively during reads, including old-layout blobs and tiny
+range requests. Oversized legacy bytes refuse without automatic deletion. `validateMedia` instead
+uses an incremental hash/format/count scan without whole-object `get` or base64 materialization.
+Both reference stores check range pre-abort and cancellation before delivery; filesystem operations
+join their owned fd close and remove listeners. `readRange` still has whole-object backing under
+CR-53; this is bounded cancellable delivery, not streaming range delivery. Windows replacement
+contention verifies the existing winner through the bounded scanner rather than `get`.
+
+New producers use exclusive owner-private `media-v1.<PID>.<UUID-v4>.tmp` files inside the pinned
+root. Automatic `sweepTemporaries({ now? })` has a separate **24-hour** minimum age and requires
+the producer PID to be proven absent. A live/reused PID, uncertain/permission-denied probe,
+future timestamp, malformed candidate or unsafe entry is retained. An atomic claim preserves
+original file identity and producer/claimant nonces. Destructive ownership requires one link;
+dead claimant recovery recognizes pre/post-move and post-unlink states without recursive deletion
+or stealing live claims. Recovery itself uses an exclusive claimant marker. Producer and offline
+maintenance handshakes prevent a new writer from starting inside maintenance. This protocol is
+local-device cooperating storage, not a distributed lease or hostile same-user jail.
+
+`pruneLegacyTemporaries({ legacyOffline: true, force: true })` requires **both** strict boolean
+acknowledgements before mutation. It refuses the entire maintenance operation before any legacy
+deletion if a new producer is live or uncertain. It admits only the two historical ownerless
+grammars: root `stream.<UUID>.tmp` and one two-hex shard containing `<62-lowercase-hex>.<UUID>.tmp`.
+Other suffix matches, symlinks and special entries do not acquire authority. The flags acknowledge
+that old binaries, which have no producer records, are stopped. The
+[CLI maintenance command](../cli/commands.md#relavium-media-prune-temporaries) fixes the global CAS
+destination; absence reports zero without provisioning it or opening config/history/key services.
+Normal temporary sweeping is independent of published-object reference GC and active run filters.
+
+Both maintenance methods return `{ removed, retained, reasons }`, counting a claim plus its blob
+as one candidate. Retained reason counts sum to `retained`. Fixed reasons are `too_young`,
+`future_timestamp`, `owner_live`, `owner_unknown`, `claimant_live`, `claimant_unknown`, `malformed`,
+`unsafe_entry`, `identity_changed`, `legacy_offline_required`, `maintenance_active`, `io`.
+Arbitrary unrelated strays and published blobs are not candidates. `MediaTemporaryMaintenanceError`
+has fixed `flags_required`, `producer_active`, `owner_unknown` or `maintenance_active` reasons;
+physical root failures remain `MediaStoreFilesystemError`. No path, bytes or native error detail
+is added to the public report. Step 6's cumulative review and native-platform gates separately
+certify these mechanisms; this description does not infer Windows execution from portable tests.
 
 ## Where tools run
 

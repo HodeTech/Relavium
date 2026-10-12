@@ -51,6 +51,8 @@ for (const rate of [undefined, 0, 17])
     };
     const host = createInMemoryHost({
       mediaStore: {
+        validateMedia: (handle, descriptor) =>
+          Promise.resolve({ ...descriptor, handle, byteLength: 1 }),
         put: () => Promise.resolve(`media://sha256-${'1'.repeat(64)}`),
         get: () => Promise.resolve(new Uint8Array([1])),
         readRange: () => Promise.reject(new Error('unexpected range')),

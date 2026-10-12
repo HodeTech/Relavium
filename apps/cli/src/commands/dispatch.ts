@@ -57,6 +57,7 @@ import {
 } from './provider.js';
 import { runCommand, type RunCommandArgs } from './run.js';
 import { statusCommand } from './status.js';
+import { pruneTemporariesCommand, type MediaPruneArgs } from './media.js';
 
 /**
  * The shared **command dispatch table** ([ADR-0056](../../../../docs/decisions/0056-cli-in-app-slash-command-system-and-manifest.md),
@@ -701,9 +702,27 @@ function providerExecutor(build: (input: CommandInput) => ProviderCommandArgs): 
   };
 }
 
+export function buildMediaPruneArgs(input: CommandInput): MediaPruneArgs {
+  if (
+    input.positionals.length !== 0 ||
+    input.options['legacyOffline'] !== true ||
+    input.options['force'] !== true
+  ) {
+    throw new CliError(
+      'invalid_invocation',
+      'Temporary maintenance requires --legacy-offline and --force.',
+    );
+  }
+  return { legacyOffline: true, force: true };
+}
+
 // ── the dispatch table ───────────────────────────────────────────────────────
 
 const COMMAND_EXECUTORS: ReadonlyMap<string, CommandExecutor> = new Map<string, CommandExecutor>([
+  [
+    'media.prune-temporaries',
+    (input, ctx) => pruneTemporariesCommand(buildMediaPruneArgs(input), ctx),
+  ],
   ['run', executeRun],
   ['chat', executeChat],
   ['chat-resume', executeChatResume],

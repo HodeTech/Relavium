@@ -25,6 +25,7 @@ for (const ending of ['acknowledged', 'terminal-store-refusal', 'terminal-fenced
     const nativeReferences = createMediaReferencePort(referenceStore);
     const actions: string[] = [];
     const references: MediaReferencePort = {
+      admitProducedMedia: (batch) => nativeReferences.admitProducedMedia(batch),
       recordRunMedia: (meta, runId) => {
         actions.push('record');
         return nativeReferences.recordRunMedia(meta, runId);
@@ -68,8 +69,8 @@ for (const ending of ['acknowledged', 'terminal-store-refusal', 'terminal-fenced
             output: {
               image: {
                 type: 'media',
-                mimeType: 'image/png',
-                source: { kind: 'base64', data: 'aGVsbG8=' },
+                mimeType: 'audio/L16',
+                source: { kind: 'base64', data: 'AQACAAMA' },
               },
             },
           }),

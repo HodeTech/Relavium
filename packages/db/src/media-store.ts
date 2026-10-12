@@ -1,12 +1,25 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { constants, type Stats } from 'node:fs';
 import { open, readdir, rename, rm, type FileHandle } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { MediaStoreFilesystemError, MediaStorePaths } from './media-store-paths.js';
+import { assertMediaNotAborted, scanMediaFile } from './media-store-read.js';
+import {
+  MediaStoreTemporaries,
+  type MediaTemporarySweepResult,
+} from './media-store-temporaries.js';
 
 import {
   MEDIA_HANDLE_PATTERN,
+  MAX_MEDIA_OBJECT_BYTES,
+  INLINE_MEDIA_CEILING,
+  MediaAdmissionError,
+  admitMediaDescriptor,
+  canonicalMediaMimeType,
+  createMediaVerifier,
+  type AbortSignalLike,
+  type DurableMediaMeta,
   validateByteRange,
   type ByteRange,
   type MediaSource,
@@ -24,6 +37,71 @@ import {
  */
 
 const HANDLE_PREFIX = 'media://sha256-';
+type Descriptor = Omit<DurableMediaMeta, 'handle' | 'byteLength'> & {
+  readonly byteLength?: number;
+};
+
+/** Snapshot all metadata before asynchronous fd operations; optional count remains a claim. */
+function snapshotDescriptor(
+  handle: string,
+  descriptor: Descriptor,
+): { meta: DurableMediaMeta; count?: number } {
+  let fields: PropertyDescriptorMap;
+  try {
+    fields = Object.getOwnPropertyDescriptors(descriptor);
+  } catch {
+    throw new MediaAdmissionError('invalid_descriptor');
+  }
+  const owned: Record<string, unknown> = { handle };
+  for (const key of ['mimeType', 'modality', 'byteLength', 'durationMs']) {
+    const field = fields[key];
+    if (field === undefined) continue;
+    if (!('value' in field)) throw new MediaAdmissionError('invalid_descriptor');
+    owned[key] = field.value;
+  }
+  const count = owned['byteLength'];
+  if (count === undefined) owned['byteLength'] = 0;
+  const meta = admitMediaDescriptor(owned);
+  return count === undefined ? { meta } : { meta, count: meta.byteLength };
+}
+
+/** Use the typed-array internal byte length; subclasses cannot waive a pre-copy ceiling. */
+function inputByteLength(bytes: Uint8Array): number {
+  try {
+    if (!(bytes instanceof Uint8Array)) throw new MediaAdmissionError('source_failed');
+    const prototype: unknown = Object.getPrototypeOf(Uint8Array.prototype);
+    if (typeof prototype !== 'object' || prototype === null)
+      throw new MediaAdmissionError('source_failed');
+    const length: unknown = Object.getOwnPropertyDescriptor(prototype, 'byteLength')?.get?.call(
+      bytes,
+    );
+    if (typeof length !== 'number' || !Number.isSafeInteger(length) || length < 0)
+      throw new MediaAdmissionError('source_failed');
+    return length;
+  } catch {
+    throw new MediaAdmissionError('source_failed');
+  }
+}
+
+function admitInline(bytes: Uint8Array, mimeType: string): void {
+  const mime = canonicalMediaMimeType(mimeType);
+  const ceiling = mime.startsWith('image/')
+    ? INLINE_MEDIA_CEILING.image
+    : mime.startsWith('audio/')
+      ? INLINE_MEDIA_CEILING.audio
+      : 0;
+  if (ceiling === 0 || inputByteLength(bytes) > ceiling)
+    throw new MediaAdmissionError('inline_limit');
+}
+
+function validatedDescriptor(
+  snapshot: ReturnType<typeof snapshotDescriptor>,
+  evidence: Readonly<Pick<DurableMediaMeta, 'mimeType' | 'modality' | 'byteLength'>>,
+): DurableMediaMeta {
+  if (snapshot.count !== undefined && snapshot.count !== evidence.byteLength)
+    throw new MediaAdmissionError('descriptor_conflict');
+  return admitMediaDescriptor({ ...snapshot.meta, ...evidence });
+}
 
 /** sha256 hex of the bytes — the content address that forms the handle. */
 function sha256Hex(bytes: Uint8Array): string {
@@ -83,43 +161,55 @@ function sliceRange(bytes: Uint8Array, range: ByteRange): Uint8Array {
  */
 export class FilesystemMediaStore implements MediaStore {
   readonly #paths: MediaStorePaths;
+  readonly #temporaries: MediaStoreTemporaries;
 
   constructor(rootDir: string) {
     this.#paths = new MediaStorePaths(rootDir);
+    this.#temporaries = new MediaStoreTemporaries(this.#paths);
   }
 
-  put(bytes: Uint8Array): Promise<string> {
-    // Own the bytes before the first asynchronous boundary: the hash and published file must agree.
+  async put(bytes: Uint8Array, mimeType: string): Promise<string> {
+    admitInline(bytes, mimeType);
     const owned = new Uint8Array(bytes);
+    const verifier = createMediaVerifier(mimeType);
+    verifier.push(owned);
+    verifier.finish();
     return this.#publish(async (file) => {
       await file.writeFile(owned).catch((error: unknown) => {
         throw this.#paths.error(error);
       });
       return handleOf(owned);
-    });
+    }, mimeType);
   }
 
-  /** Incremental hashing/writing; caller stream failures preserve their primary outcome and publish nothing. */
-  putStream(chunks: AsyncIterable<Uint8Array>): Promise<string> {
+  /** Count before every copy/hash/write; EOF verification precedes publication. */
+  async putStream(chunks: AsyncIterable<Uint8Array>, mimeType: string): Promise<string> {
+    const verifier = createMediaVerifier(mimeType);
     return this.#publish(async (file) => {
       const hash = createHash('sha256');
+      let total = 0;
       for await (const chunk of chunks) {
+        if (inputByteLength(chunk) > MAX_MEDIA_OBJECT_BYTES - total)
+          throw new MediaAdmissionError('object_limit');
         const owned = new Uint8Array(chunk);
+        verifier.push(owned);
+        total += owned.length;
         hash.update(owned);
         const { bytesWritten } = await file.write(owned).catch((error: unknown) => {
           throw this.#paths.error(error);
         });
-        if (bytesWritten !== owned.length)
-          throw new Error('media putStream: short write — the content address would not match');
+        if (bytesWritten !== owned.length) throw new MediaStoreFilesystemError('io');
       }
+      verifier.finish();
       return HANDLE_PREFIX + hash.digest('hex');
-    });
+    }, mimeType);
   }
 
-  async #publish(write: (file: FileHandle) => Promise<string>): Promise<string> {
+  async #publish(write: (file: FileHandle) => Promise<string>, mimeType: string): Promise<string> {
     const root = this.#paths.root(true);
     if (root === undefined) throw new MediaStoreFilesystemError('missing');
-    const tmp = join(root, `stream.${randomUUID()}.tmp`);
+    this.#temporaries.assertProducerAllowed();
+    const tmp = this.#temporaries.producerPath(root);
     this.#paths.assertParent(tmp);
     // No cleanup is attempted for an EEXIST occupant: the exclusive open did not make it ours.
     const file = await open(
@@ -143,6 +233,7 @@ export class FilesystemMediaStore implements MediaStore {
         throw this.#paths.error(error);
       });
       this.#paths.assertOwnedFile(tmp, identity);
+      this.#temporaries.assertProducerAllowed();
       const handle = await write(file);
       const digest = digestOf(handle);
       const target = this.#paths.path(digest, true);
@@ -166,7 +257,7 @@ export class FilesystemMediaStore implements MediaStore {
         // This is one verification, not a retry or permission bypass. Keep our temp owned and
         // unpublished so the finally block removes it; missing/corrupt/unsafe winners still fail.
         try {
-          await this.get(handle);
+          await scanMediaFile(this.#paths, digest, false, mimeType);
         } catch {
           throw this.#paths.error(error);
         }
@@ -196,61 +287,45 @@ export class FilesystemMediaStore implements MediaStore {
   }
 
   async get(handle: string): Promise<Uint8Array> {
-    const digest = digestOf(handle);
-    const path = this.#paths.path(digest, false);
-    if (path === undefined) throw new MediaStoreFilesystemError('missing');
-    const admitted = this.#paths.fileSnapshot(path);
-    if (admitted === undefined) throw new MediaStoreFilesystemError('missing');
-    const file = await open(
-      path,
-      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
-    ).catch((error: unknown) => {
-      throw this.#paths.error(error);
-    });
-    let result: Uint8Array | undefined;
-    let cleanupError: MediaStoreFilesystemError | undefined;
-    try {
-      const opened = await file.stat().catch((error: unknown) => {
-        throw this.#paths.error(error);
-      });
-      if (opened.dev !== admitted.dev) throw new MediaStoreFilesystemError('unsafe_path');
-      // An idempotent publisher may replace the admitted inode before open, or unlink the opened
-      // inode afterwards. Validate the live pathname floor independently and hash only this fd.
-      this.#paths.assertReadableFile(path, opened);
-      // Step 6 adds bounded fd delivery; physical containment and one-fd integrity are established here.
-      const bytes = new Uint8Array(
-        await file.readFile().catch((error: unknown) => {
-          throw this.#paths.error(error);
-        }),
-      );
-      const finished = await file.stat().catch((error: unknown) => {
-        throw this.#paths.error(error);
-      });
-      if (finished.dev !== opened.dev || finished.ino !== opened.ino)
-        throw new MediaStoreFilesystemError('unsafe_path');
-      this.#paths.assertReadableFile(path, finished);
-      if (sha256Hex(bytes) !== digest)
-        throw new Error('media bytes failed their content-address (sha256) integrity check');
-      result = bytes;
-    } finally {
-      try {
-        await file.close();
-      } catch (error) {
-        // Preserve the primary delivery/integrity outcome; a close failure is reported on an otherwise successful read.
-        cleanupError = this.#paths.error(error);
-      }
-    }
-    if (cleanupError !== undefined) throw cleanupError;
-    if (result === undefined) throw new MediaStoreFilesystemError('io');
-    return result;
+    const result = await scanMediaFile(this.#paths, digestOf(handle), true);
+    if (result.bytes === undefined) throw new MediaStoreFilesystemError('io');
+    return result.bytes;
   }
 
-  async readRange(handle: string, range: ByteRange): Promise<Uint8Array> {
-    return sliceRange(await this.get(handle), range);
+  async validateMedia(handle: string, descriptor: Descriptor): Promise<DurableMediaMeta> {
+    const snapshot = snapshotDescriptor(handle, descriptor);
+    const result = await scanMediaFile(
+      this.#paths,
+      digestOf(handle),
+      false,
+      snapshot.meta.mimeType,
+    );
+    if (result.evidence === undefined) throw new MediaAdmissionError('store_contract');
+    return validatedDescriptor(snapshot, result.evidence);
+  }
+
+  async readRange(handle: string, range: ByteRange, signal?: AbortSignalLike): Promise<Uint8Array> {
+    assertMediaNotAborted(signal);
+    const result = await scanMediaFile(this.#paths, digestOf(handle), true, undefined, signal);
+    if (result.bytes === undefined) throw new MediaStoreFilesystemError('io');
+    const bytes = sliceRange(result.bytes, range);
+    assertMediaNotAborted(signal);
+    return bytes;
   }
 
   async resolveForEgress(handle: string): Promise<MediaSource> {
     return toBase64Source(await this.get(handle));
+  }
+
+  sweepTemporaries(options?: { readonly now?: number }): Promise<MediaTemporarySweepResult> {
+    return this.#temporaries.sweep(options);
+  }
+
+  pruneLegacyTemporaries(options: {
+    readonly legacyOffline: true;
+    readonly force: true;
+  }): Promise<MediaTemporarySweepResult> {
+    return this.#temporaries.pruneLegacy(options);
   }
 
   /** Host GC is subject to the same physical root/shard/final identity checks as delivery. */
@@ -309,54 +384,85 @@ export class FilesystemMediaStore implements MediaStore {
 export class InMemoryMediaStore implements MediaStore {
   readonly #blobs = new Map<string, Uint8Array>();
 
-  put(bytes: Uint8Array): Promise<string> {
-    const handle = handleOf(bytes);
-    // Defensive copy on write (match FilesystemMediaStore.get's copy-on-read): a later mutation of the
-    // caller's array must never corrupt the content-addressed blob this handle names.
-    this.#blobs.set(handle, new Uint8Array(bytes));
+  async put(bytes: Uint8Array, mimeType: string): Promise<string> {
+    admitInline(bytes, mimeType);
+    const owned = new Uint8Array(bytes);
+    const verifier = createMediaVerifier(mimeType);
+    verifier.push(owned);
+    verifier.finish();
+    const handle = handleOf(owned);
+    this.#blobs.set(handle, owned);
     return Promise.resolve(handle);
   }
 
-  /**
-   * The streaming write (ADR-0089 §2). An in-MEMORY store necessarily ends up holding the whole body — that
-   * is what it is — so this exists for CONTRACT parity, not for a memory saving: an engine that refuses the
-   * url path without a `putStream` would otherwise be untestable against the reference store, and a test
-   * host would be forced to pretend. Nothing about the real guarantee rests on this implementation; the
-   * filesystem one is where it is kept.
-   */
-  async putStream(chunks: AsyncIterable<Uint8Array>): Promise<string> {
+  async putStream(chunks: AsyncIterable<Uint8Array>, mimeType: string): Promise<string> {
+    const verifier = createMediaVerifier(mimeType);
+    // Bound collection metadata independently of source fragmentation: at most 400 blocks,
+    // rather than retaining one array entry for every byte or empty source chunk.
     const collected: Uint8Array[] = [];
+    let block: Uint8Array | undefined;
+    let used = 0;
     let total = 0;
     for await (const chunk of chunks) {
-      collected.push(chunk);
-      total += chunk.length;
+      if (inputByteLength(chunk) > MAX_MEDIA_OBJECT_BYTES - total)
+        throw new MediaAdmissionError('object_limit');
+      const owned = new Uint8Array(chunk);
+      verifier.push(owned);
+      let offset = 0;
+      while (offset < owned.length) {
+        if (block === undefined || used === block.length) {
+          block = new Uint8Array(64 * 1024);
+          collected.push(block);
+          used = 0;
+        }
+        const count = Math.min(block.length - used, owned.length - offset);
+        block.set(owned.subarray(offset, offset + count), used);
+        used += count;
+        offset += count;
+      }
+      total += owned.length;
     }
+    verifier.finish();
     const bytes = new Uint8Array(total);
     let at = 0;
     for (const chunk of collected) {
-      bytes.set(chunk, at);
-      at += chunk.length;
+      const count = Math.min(chunk.length, total - at);
+      bytes.set(chunk.subarray(0, count), at);
+      at += count;
     }
-    return this.put(bytes);
+    const handle = handleOf(bytes);
+    this.#blobs.set(handle, bytes);
+    return Promise.resolve(handle);
   }
 
-  get(handle: string): Promise<Uint8Array> {
-    if (!MEDIA_HANDLE_PATTERN.test(handle)) {
-      return Promise.reject(new Error('not a media://sha256-<64hex> handle'));
-    }
+  async get(handle: string): Promise<Uint8Array> {
+    digestOf(handle);
     const bytes = this.#blobs.get(handle);
-    return bytes === undefined
-      ? Promise.reject(new Error(`no media bytes for ${handle}`))
-      : Promise.resolve(bytes.slice()); // copy on read — the caller cannot mutate the stored blob
+    if (bytes === undefined) throw new MediaStoreFilesystemError('missing');
+    if (bytes.byteLength > MAX_MEDIA_OBJECT_BYTES) throw new MediaAdmissionError('object_limit');
+    return Promise.resolve(bytes.slice());
+  }
+
+  async validateMedia(handle: string, descriptor: Descriptor): Promise<DurableMediaMeta> {
+    const snapshot = snapshotDescriptor(handle, descriptor);
+    const bytes = this.#blobs.get(handle);
+    if (bytes === undefined) throw new MediaStoreFilesystemError('missing');
+    if (bytes.byteLength > MAX_MEDIA_OBJECT_BYTES) throw new MediaAdmissionError('object_limit');
+    const verifier = createMediaVerifier(snapshot.meta.mimeType);
+    verifier.push(bytes);
+    const evidence = verifier.finish();
+    if (handleOf(bytes) !== handle) throw new MediaAdmissionError('store_contract');
+    return Promise.resolve(validatedDescriptor(snapshot, evidence));
   }
 
   async resolveForEgress(handle: string): Promise<MediaSource> {
     return toBase64Source(await this.get(handle));
   }
 
-  // The `signal` of the `MediaStore.readRange` contract is omitted (a fewer-param method still satisfies
-  // the interface): the in-memory blob is already resident, so there is no streamed I/O to abort.
-  async readRange(handle: string, range: ByteRange): Promise<Uint8Array> {
-    return sliceRange(await this.get(handle), range);
+  async readRange(handle: string, range: ByteRange, signal?: AbortSignalLike): Promise<Uint8Array> {
+    assertMediaNotAborted(signal);
+    const bytes = sliceRange(await this.get(handle), range);
+    assertMediaNotAborted(signal);
+    return bytes;
   }
 }

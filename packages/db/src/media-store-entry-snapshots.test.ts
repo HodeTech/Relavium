@@ -43,7 +43,7 @@ vi.mock('node:fs/promises', async (original) => {
   };
 });
 
-const bytes = Buffer.from('native file content behind a detached pathname snapshot');
+const bytes = Buffer.from('native file content behind a detached pathname snapshot ');
 let root: string;
 let store: FilesystemMediaStore;
 let handle: string;
@@ -53,7 +53,7 @@ beforeEach(async () => {
   snapshot.hits = 0;
   root = realpathSync(mkdtempSync(join(tmpdir(), 'relavium-cas-entry-snapshot-')));
   store = new FilesystemMediaStore(root);
-  handle = await store.put(bytes);
+  handle = await store.put(bytes, 'audio/L16');
   const digest = handle.slice('media://sha256-'.length);
   snapshot.path = join(root, digest.slice(0, 2), digest.slice(2));
   io.rename.mockClear();
@@ -66,12 +66,13 @@ it.each(['get', 'readRange', 'resolveForEgress', 'put', 'putStream'] as const)(
   async (operation) => {
     const result =
       operation === 'put'
-        ? store.put(bytes)
+        ? store.put(bytes, 'audio/L16')
         : operation === 'putStream'
           ? store.putStream(
               (async function* () {
                 yield await Promise.resolve(bytes);
               })(),
+              'audio/L16',
             )
           : operation === 'readRange'
             ? store.readRange(handle, { start: 0, end: 2 })
@@ -109,7 +110,7 @@ it.each(['delete', 'listHandles'] as const)(
 it('a detached temporary snapshot cannot prove ownership for publication or cleanup', async () => {
   snapshot.path = '';
   snapshot.temporary = true;
-  await expect(store.put(bytes)).rejects.toMatchObject({ reason: 'unsafe_path' });
+  await expect(store.put(bytes, 'audio/L16')).rejects.toMatchObject({ reason: 'unsafe_path' });
   expect(io.rename).not.toHaveBeenCalled();
   expect(io.rm).not.toHaveBeenCalled();
   expect(readdirSync(root).filter((name) => name.endsWith('.tmp'))).toHaveLength(1);

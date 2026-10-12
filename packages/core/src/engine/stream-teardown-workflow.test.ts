@@ -21,6 +21,7 @@ import type { ToolDef } from '../tools/types.js';
 import { LedgerDurabilityError } from './money-durability.js';
 import { AgentTurnError } from './agent-turn.js';
 import { BudgetPauseError } from './budget-governor.js';
+import { accountingImagePorts } from './fixtures/accounting-media.js';
 
 const model = 'r11-money-model';
 const price: ModelPricing = {
@@ -111,7 +112,7 @@ function workflow(
   options: { generated: boolean; tool?: boolean; store?: InMemoryRunStore; cleanupFault?: unknown },
 ) {
   const store = options.store ?? new InMemoryRunStore(),
-    host = createInMemoryHost({ store });
+    host = createInMemoryHost({ store, ...accountingImagePorts('d') });
   let toolsRun = 0;
   const tool: ToolDef = {
     id: 'r11_echo',

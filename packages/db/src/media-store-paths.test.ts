@@ -62,7 +62,7 @@ const operations: ReadonlyArray<
 > = [
   ['get', (store) => store.get(handle)],
   ['readRange', (store) => store.readRange(handle, { start: 0, end: 2 })],
-  ['put', (store) => store.put(bytes)],
+  ['put', (store) => store.put(bytes, 'audio/L16')],
   [
     'putStream',
     (store) =>
@@ -70,6 +70,7 @@ const operations: ReadonlyArray<
         (async function* () {
           yield await Promise.resolve(bytes);
         })(),
+        'audio/L16',
       ),
   ],
   ['delete', (store) => store.delete(handle)],
@@ -135,7 +136,7 @@ describe.each(['replace-directory', 'retarget-alias'] as const)('CAS pinned root
       const lexical = shape === 'retarget-alias' ? join(base, 'alias') : root;
       if (shape === 'retarget-alias') symlinkSync(root, lexical, 'junction');
       const store = new FilesystemMediaStore(lexical);
-      expect(await store.put(bytes)).toBe(handle);
+      expect(await store.put(bytes, 'audio/L16')).toBe(handle);
       if (shape === 'retarget-alias') {
         rmSync(lexical);
         symlinkSync(outside, lexical, 'junction');
@@ -154,9 +155,9 @@ it('does not remove an unowned temporary occupant after an exclusive-open refusa
   tempName.fixed = true;
   const victim = join(outside, 'victim');
   writeFileSync(victim, 'unowned');
-  const occupied = join(root, 'stream.00000000-0000-4000-8000-000000000000.tmp');
+  const occupied = join(root, `media-v1.${process.pid}.00000000-0000-4000-8000-000000000000.tmp`);
   symlinkSync(victim, occupied);
-  await expect(new FilesystemMediaStore(root).put(bytes)).rejects.toBeInstanceOf(
+  await expect(new FilesystemMediaStore(root).put(bytes, 'audio/L16')).rejects.toBeInstanceOf(
     MediaStoreFilesystemError,
   );
   expect(readFileSync(victim, 'utf8')).toBe('unowned');
@@ -166,15 +167,16 @@ it('does not remove an unowned temporary occupant after an exclusive-open refusa
 it('owns put bytes before awaiting and preserves concurrent atomic/idempotent publication', async () => {
   const store = new FilesystemMediaStore(root);
   const mutable = Buffer.from(bytes);
-  const pending = store.put(mutable);
+  const pending = store.put(mutable, 'audio/L16');
   mutable.fill(0);
   expect(await pending).toBe(handle);
   const handles = await Promise.all([
-    store.put(bytes),
+    store.put(bytes, 'audio/L16'),
     new FilesystemMediaStore(root).putStream(
       (async function* () {
         yield await Promise.resolve(bytes);
       })(),
+      'audio/L16',
     ),
   ]);
   expect(handles).toEqual([handle, handle]);

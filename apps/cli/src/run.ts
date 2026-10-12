@@ -58,7 +58,8 @@ export async function run(
   //
   // No fetch here, ever. `[catalog] auto_refresh` (default `false`) governs whether a background refresh may run at
   // all, and even when it is on, the fetch belongs on a path the user can see — not in the boot of every `--help`.
-  seedCatalog();
+  // Offline media maintenance needs only its canonical CAS root, even for malformed flags.
+  if (rest[2] !== 'media') seedCatalog();
 
   const result: { exitCode?: ExitCode } = {};
   const program = buildProgram(io, {

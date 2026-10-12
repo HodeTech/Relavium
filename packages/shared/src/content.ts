@@ -819,6 +819,11 @@ export function refineInFlightMediaPart(
  * deliberately NOT specified here (A3 — reserved, host-implementation-defined).
  */
 export interface MediaStore {
+  /** Independently scan bounded bytes and return owned actual metadata (ADR-0106). */
+  validateMedia(
+    handle: string,
+    descriptor: Omit<DurableMediaMeta, 'handle' | 'byteLength'> & { readonly byteLength?: number },
+  ): Promise<DurableMediaMeta>;
   /**
    * Content-address `bytes` and return the canonical `media://sha256-<64hex>` handle.
    *
@@ -951,12 +956,15 @@ export interface DurableMediaMeta {
  * [ADR-0042](../../../docs/decisions/0042-engine-media-storage-substrate-mediastore-deinline-retention.md)
  * §3-4): the engine records a produced handle's reference for the producing **run** at the de-inline choke
  * point ({@link recordRunMedia}) and reclaims a run's references at its terminal event ({@link reclaimRun},
- * the D11 sweep). **Optional + best-effort**: a record/reclaim failure is a retention concern (GC
- * over/under-retention), NEVER an I3 or run-correctness break, so it must never fail the run. The Node
+ * the D11 sweep). The port itself is optional. When present, `admitProducedMedia` is REQUIRED
+ * before publication and a failure refuses that media-bearing value (ADR-0106). Only post-ACK
+ * record/reclaim operations are best-effort retention concerns and must never fail the run. The Node
  * reference is `@relavium/db`'s `MediaReferenceStore` behind a host adapter; the pure engine calls only
  * this interface. (A `session`/`workspace` read-grant is the surface/`AgentSession` concern, not this.)
  */
 export interface MediaReferencePort {
+  /** Mandatory admission before publication; does not grant reads or create run references. */
+  admitProducedMedia(batch: readonly DurableMediaMeta[]): void | Promise<void>;
   recordRunMedia(meta: DurableMediaMeta, runId: string): void | Promise<void>;
   reclaimRun(runId: string): void | Promise<void>;
 }
@@ -1078,10 +1086,16 @@ export function collectDurableMediaHandles(value: unknown): DurableMediaMeta[] {
 export interface DeInlineMedia {
   (
     parts: readonly ContentPart[],
-    store: MediaStore,
+    store: MediaStore | undefined,
     egress?: MediaEgressHooks,
+    beforeStoreWrite?: (unpinnedCount: number) => void,
   ): Promise<DurableContentPart[]>;
-  (value: unknown, store: MediaStore, egress?: MediaEgressHooks): Promise<unknown>;
+  (
+    value: unknown,
+    store: MediaStore | undefined,
+    egress?: MediaEgressHooks,
+    beforeStoreWrite?: (unpinnedCount: number) => void,
+  ): Promise<unknown>;
 }
 
 /**
@@ -1095,7 +1109,13 @@ export interface DeInlineMedia {
  * so the seam type stays a narrow `url → bytes` function — never a socket in `@relavium/shared`. When no
  * hook is wired, `deInlineMedia` hard-fails a `url` source (an un-re-hosted url may never persist, I3).
  */
-export type MediaUrlFetch = (url: string) => Promise<Uint8Array>;
+export interface HostMediaRequest {
+  readonly url: string;
+  readonly mimeType: string;
+  readonly maxBytes: number;
+  readonly signal?: AbortSignalLike;
+}
+export type MediaUrlFetch = (request: HostMediaRequest) => Promise<Uint8Array>;
 
 /**
  * The STREAMING sibling of {@link MediaUrlFetch}
@@ -1110,7 +1130,7 @@ export type MediaUrlFetch = (url: string) => Promise<Uint8Array>;
  *
  * The whole-buffer form is kept for sub-ceiling callers; it is not the media path.
  */
-export type MediaUrlStream = (url: string) => AsyncIterable<Uint8Array>;
+export type MediaUrlStream = (request: HostMediaRequest) => AsyncIterable<Uint8Array>;
 
 /**
  * The host media-egress hooks `deInlineMedia` may use to re-host a `url` media source.

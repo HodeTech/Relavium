@@ -337,3 +337,13 @@ Inline-media accounting now preserves missing applicable usage. Separate-endpoin
 
 See [ADR-0104](0104-unknown-provider-usage-is-durable-cost-uncertainty.md) and the
 [canonical usage contract](../reference/shared-core/llm-provider-seam.md#6-usage).
+
+### Wave 2 media implementation checkpoint — 2026-10-12
+
+The accepted ADR-0106 host compatibility change is implemented in the Step 6 working tree:
+finite first-party format admission, required byte-backed `validateMedia` and one shared
+MIME-bearing host request replace the old implicit handle trust and positional fetch arguments.
+The extensible in-flight/durable shapes and vendor-free seam remain. Exact supported profiles,
+raw PCM qualification, limits and errors have one home in the
+[media publication contract](../reference/shared-core/llm-provider-seam.md#bounded-verified-media-publication-adr-0106).
+Independent cumulative implementation review and whole-wave gates remain open at this checkpoint.

@@ -168,7 +168,9 @@ it.each(['tool', 'save_to'])('FS_CAUSAL_ANCESTOR_CLIMB %s', async (port) => {
   expect(failure, 'FS_CAUSAL_ANCESTOR_CLIMB').toBeUndefined();
   expect(readFileSync(join(workspace, 'new/deep/a.txt'), 'utf8')).toBe('x');
 });
-const bytes = Buffer.from('correct content identity does not confer path authority');
+// Explicit even L16 samples are the structural-only PCM arm. These bytes retain
+// the physical CAS identity/path witness without claiming a fabricated file format.
+const bytes = Buffer.from([0, 1, 0, 2, 0, 3, 0, 4]);
 const digest = createHash('sha256').update(bytes).digest('hex'),
   handle = `media://sha256-${digest}`;
 it.each(['shard', 'final', 'hardlink'])('FS_CAUSAL_CAS %s', async (shape) => {
@@ -190,10 +192,10 @@ it.each(['shard', 'final', 'hardlink'])('FS_CAUSAL_CAS %s', async (shape) => {
 it('FS_CAUSAL_CAS_ROOT_PIN', async () => {
   const root = join(base, 'cas'),
     store = new FilesystemMediaStore(root);
-  await store.put(bytes);
+  await store.put(bytes, 'audio/L16');
   renameSync(root, root + '-old');
   mkdirSync(root);
-  await requireRefusal(store.put(bytes), 'FS_CAUSAL_CAS_ROOT_PIN');
+  await requireRefusal(store.put(bytes, 'audio/L16'), 'FS_CAUSAL_CAS_ROOT_PIN');
 });
 it('FS_CAUSAL_CATALOG_DIRECTORY', () => {
   const project = join(workspace, '.relavium');

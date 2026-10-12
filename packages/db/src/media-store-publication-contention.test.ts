@@ -81,11 +81,12 @@ function asWindows(): void {
 
 function publish(method: 'put' | 'putStream'): Promise<string> {
   return method === 'put'
-    ? store.put(bytes)
+    ? store.put(bytes, 'audio/L16')
     : store.putStream(
         (async function* () {
           yield await Promise.resolve(bytes);
         })(),
+        'audio/L16',
       );
 }
 
@@ -104,7 +105,7 @@ describe.each(['put', 'putStream'] as const)('Windows CAS %s rename contention',
         status: 'fulfilled',
         value: handle,
       });
-      expect(read).toHaveBeenCalledExactlyOnceWith(handle);
+      expect(read).not.toHaveBeenCalled(); // winner verification never buffers the whole object
       expect(fault.rename).toHaveBeenCalledOnce();
       expect(fault.rm).toHaveBeenCalledOnce();
       expect(readdirSync(root).filter((name) => name.endsWith('.tmp'))).toEqual([]);
@@ -130,7 +131,9 @@ it.each(['missing', 'corrupt', 'symlink', 'hardlink', 'directory', 'replaced-roo
         mkdirSync(root);
       }
     };
-    await expect(store.put(bytes)).rejects.toEqual(new MediaStoreFilesystemError('io'));
+    await expect(store.put(bytes, 'audio/L16')).rejects.toEqual(
+      new MediaStoreFilesystemError('io'),
+    );
     expect(fault.rename).toHaveBeenCalledOnce();
     expect(readFileSync(join(base, 'sibling'))).toEqual(bytes);
     expect(readdirSync(root).filter((name) => name.endsWith('.tmp'))).toEqual([]);
@@ -151,7 +154,9 @@ it.each([
     fault.code = code;
     fault.beforeFailure = (_source, target) => writeFileSync(target, bytes);
     const read = vi.spyOn(store, 'get');
-    await expect(store.put(bytes)).rejects.toEqual(new MediaStoreFilesystemError('io'));
+    await expect(store.put(bytes, 'audio/L16')).rejects.toEqual(
+      new MediaStoreFilesystemError('io'),
+    );
     expect(read).not.toHaveBeenCalled();
     expect(fault.rename).toHaveBeenCalledOnce();
     expect(fault.rm).toHaveBeenCalledOnce();
@@ -163,7 +168,7 @@ it('reports owned-temp cleanup failure even after a winner passed verification',
   fault.code = 'EPERM';
   fault.cleanupFails = true;
   fault.beforeFailure = (_source, target) => writeFileSync(target, bytes);
-  await expect(store.put(bytes)).rejects.toEqual(new MediaStoreFilesystemError('io'));
+  await expect(store.put(bytes, 'audio/L16')).rejects.toEqual(new MediaStoreFilesystemError('io'));
   expect(fault.rm).toHaveBeenCalledOnce();
   expect(readdirSync(root).filter((name) => name.endsWith('.tmp'))).toHaveLength(1);
 });
@@ -178,7 +183,9 @@ it('does not remove a replacement of its temp even when the winning blob verifie
     replacedTemp = source;
     writeFileSync(target, bytes);
   };
-  await expect(store.put(bytes)).rejects.toEqual(new MediaStoreFilesystemError('unsafe_path'));
+  await expect(store.put(bytes, 'audio/L16')).rejects.toEqual(
+    new MediaStoreFilesystemError('unsafe_path'),
+  );
   expect(fault.rm).not.toHaveBeenCalled();
   expect(replacedTemp).toBeDefined();
   if (replacedTemp !== undefined)

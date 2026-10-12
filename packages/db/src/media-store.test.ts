@@ -8,7 +8,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 
 import { FilesystemMediaStore, InMemoryMediaStore } from './media-store.js';
 
-const HELLO = new Uint8Array([0x68, 0x65, 0x6c, 0x6c, 0x6f]); // "hello"
+const HELLO = new Uint8Array([0x68, 0x65, 0x6c, 0x6c, 0x6f, 0]); // "hello"
 const expectedHandle = `media://sha256-${createHash('sha256').update(HELLO).digest('hex')}`;
 
 describe('FilesystemMediaStore (1.AF, ADR-0042 — content-addressed CAS)', () => {
@@ -51,7 +51,10 @@ describe('FilesystemMediaStore (1.AF, ADR-0042 — content-addressed CAS)', () =
     // The digest is computed incrementally, so a body split across chunks must land on the byte-identical
     // content address — otherwise two writes of the same asset would produce two handles and the CAS would
     // stop being content-addressed.
-    const handle = await store.putStream(chunkStream([HELLO.slice(0, 2), HELLO.slice(2)]));
+    const handle = await store.putStream(
+      chunkStream([HELLO.slice(0, 2), HELLO.slice(2)]),
+      'audio/L16',
+    );
     expect(handle).toBe(expectedHandle);
     expect(await store.get(handle)).toEqual(HELLO);
   });
@@ -64,9 +67,9 @@ describe('FilesystemMediaStore (1.AF, ADR-0042 — content-addressed CAS)', () =
     const failRoot = mkdtempSync(join(tmpdir(), 'relavium-media-partial-'));
     try {
       const failing = new FilesystemMediaStore(failRoot);
-      await expect(failing.putStream(chunkStream([HELLO.slice(0, 2)], 1))).rejects.toThrow(
-        /body failed mid-stream/,
-      );
+      await expect(
+        failing.putStream(chunkStream([HELLO.slice(0, 2)], 1), 'audio/L16'),
+      ).rejects.toThrow(/body failed mid-stream/);
       expect(readdirSync(failRoot)).toEqual([]); // no shard directory, and no stray `.tmp`
     } finally {
       rmSync(failRoot, { recursive: true, force: true });
@@ -92,37 +95,37 @@ describe('FilesystemMediaStore (1.AF, ADR-0042 — content-addressed CAS)', () =
           next: (): Promise<IteratorResult<Uint8Array>> => {
             seen.push(tmpBytes()); // bytes the STORE had durably written when this chunk was requested
             i += 1;
-            if (i > 3) return Promise.resolve({ done: true, value: undefined });
+            if (i > 4) return Promise.resolve({ done: true, value: undefined });
             return Promise.resolve({ done: false, value: new Uint8Array([i]) });
           },
         };
       },
     };
     try {
-      await new FilesystemMediaStore(streamRoot).putStream(observed);
+      await new FilesystemMediaStore(streamRoot).putStream(observed, 'audio/L16');
       // Pull N found N-1 bytes already on disk — the store wrote each chunk before asking for the next.
       // A buffering store would have found 0 every time.
-      expect(seen).toEqual([0, 1, 2, 3]);
+      expect(seen).toEqual([0, 1, 2, 3, 4]);
     } finally {
       rmSync(streamRoot, { recursive: true, force: true });
     }
   });
 
   it('put returns the canonical media://sha256-<hex> handle = sha256 of the bytes', async () => {
-    const handle = await store.put(HELLO);
+    const handle = await store.put(HELLO, 'audio/L16');
     expect(handle).toBe(expectedHandle);
     expect(handle).toMatch(MEDIA_HANDLE_PATTERN);
   });
 
   it('get round-trips the exact bytes; put is idempotent (same bytes → same handle)', async () => {
-    const h1 = await store.put(HELLO);
-    const h2 = await store.put(HELLO); // content-addressed ⇒ the same bytes always yield the same handle
+    const h1 = await store.put(HELLO, 'audio/L16');
+    const h2 = await store.put(HELLO, 'audio/L16'); // content-addressed ⇒ the same bytes always yield the same handle
     expect(h2).toBe(h1);
     expect([...(await store.get(h1))]).toEqual([...HELLO]);
   });
 
   it('resolveForEgress returns an inline base64 source of the bytes', async () => {
-    const handle = await store.put(HELLO);
+    const handle = await store.put(HELLO, 'audio/L16');
     const source = await store.resolveForEgress(handle);
     expect(source).toEqual({ kind: 'base64', data: Buffer.from(HELLO).toString('base64') });
   });
@@ -139,7 +142,7 @@ describe('FilesystemMediaStore (1.AF, ADR-0042 — content-addressed CAS)', () =
     const tamperRoot = mkdtempSync(join(tmpdir(), 'relavium-media-tamper-'));
     try {
       const tamperStore = new FilesystemMediaStore(tamperRoot);
-      const handle = await tamperStore.put(HELLO);
+      const handle = await tamperStore.put(HELLO, 'audio/L16');
       const digest = handle.slice('media://sha256-'.length);
       const casPath = join(tamperRoot, digest.slice(0, 2), digest.slice(2));
       writeFileSync(casPath, new Uint8Array([0xff])); // overwrite the stored bytes in place
@@ -153,32 +156,32 @@ describe('FilesystemMediaStore (1.AF, ADR-0042 — content-addressed CAS)', () =
 describe('InMemoryMediaStore (1.AF — reference impl)', () => {
   it('round-trips bytes content-addressed and rejects an unknown / malformed handle', async () => {
     const store = new InMemoryMediaStore();
-    const handle = await store.put(HELLO);
+    const handle = await store.put(HELLO, 'audio/L16');
     expect(handle).toBe(expectedHandle);
     expect([...(await store.get(handle))]).toEqual([...HELLO]);
-    await expect(store.get(`media://sha256-${'f'.repeat(64)}`)).rejects.toThrow(/no media bytes/);
+    await expect(store.get(`media://sha256-${'f'.repeat(64)}`)).rejects.toThrow(/unavailable/);
     await expect(store.get('nonsense')).rejects.toThrow(/handle/);
   });
 
   it('copies on put and get — a caller mutation cannot corrupt the stored blob', async () => {
     const store = new InMemoryMediaStore();
-    const bytes = new Uint8Array([1, 2, 3]);
-    const handle = await store.put(bytes);
+    const bytes = new Uint8Array([1, 2, 3, 4]);
+    const handle = await store.put(bytes, 'audio/L16');
     bytes[0] = 99; // mutate the caller's array AFTER put
     const got = await store.get(handle);
-    expect([...got]).toEqual([1, 2, 3]); // the stored blob is intact (put copied)
+    expect([...got]).toEqual([1, 2, 3, 4]); // the stored blob is intact (put copied)
     got[0] = 88; // mutate the returned array
-    expect([...(await store.get(handle))]).toEqual([1, 2, 3]); // still intact (get copied)
+    expect([...(await store.get(handle))]).toEqual([1, 2, 3, 4]); // still intact (get copied)
   });
 });
 
 describe('MediaStore.readRange (1.AF/D13 — byte-delivery Range gate)', () => {
   it('InMemoryMediaStore reads a valid inclusive range and rejects an out-of-bounds one', async () => {
     const store = new InMemoryMediaStore();
-    const handle = await store.put(HELLO); // [0x68,0x65,0x6c,0x6c,0x6f] = "hello"
+    const handle = await store.put(HELLO, 'audio/L16'); // [0x68,0x65,0x6c,0x6c,0x6f] = "hello"
     expect([...(await store.readRange(handle, { start: 1, end: 3 }))]).toEqual([0x65, 0x6c, 0x6c]); // "ell"
-    expect([...(await store.readRange(handle, { start: 0, end: 4 }))]).toEqual([...HELLO]); // whole
-    await expect(store.readRange(handle, { start: 0, end: 5 })).rejects.toThrow(/out of bounds/);
+    expect([...(await store.readRange(handle, { start: 0, end: 5 }))]).toEqual([...HELLO]); // whole
+    await expect(store.readRange(handle, { start: 0, end: 6 })).rejects.toThrow(/out of bounds/);
     await expect(store.readRange(handle, { start: 3, end: 1 })).rejects.toThrow(
       /reversed|>= start/,
     );
@@ -194,7 +197,7 @@ describe('MediaStore.readRange (1.AF/D13 — byte-delivery Range gate)', () => {
     const root = mkdtempSync(join(tmpdir(), 'relavium-media-range-'));
     try {
       const store = new FilesystemMediaStore(root);
-      const handle = await store.put(HELLO);
+      const handle = await store.put(HELLO, 'audio/L16');
       expect([...(await store.readRange(handle, { start: 1, end: 2 }))]).toEqual([0x65, 0x6c]); // "el"
       await expect(store.readRange(handle, { start: 2, end: 99 })).rejects.toThrow(/out of bounds/);
       await expect(store.readRange('../../etc/passwd', { start: 0, end: 1 })).rejects.toThrow(
@@ -220,15 +223,15 @@ describe('FilesystemMediaStore — host GC support (2.S/D-GC: delete + listHandl
     // A store at a NEVER-created path exercises the absent-root (readdir ENOENT) branch — not just empty-dir.
     const absent = new FilesystemMediaStore(join(root, 'never-created-subdir'));
     expect(await absent.listHandles()).toEqual([]);
-    const h1 = await store.put(new Uint8Array([1]));
-    const h2 = await store.put(new Uint8Array([2, 3]));
+    const h1 = await store.put(new Uint8Array([1, 0]), 'audio/L16');
+    const h2 = await store.put(new Uint8Array([2, 3]), 'audio/L16');
     const listed = await store.listHandles();
     expect(new Set(listed.map((e) => e.handle))).toEqual(new Set([h1, h2]));
     expect(listed.every((e) => typeof e.mtimeMs === 'number' && e.mtimeMs > 0)).toBe(true);
   });
 
   it('listHandles skips strays: a non-conforming file, a non-shard dir, a root file, a subdir in a shard', async () => {
-    const h1 = await store.put(HELLO);
+    const h1 = await store.put(HELLO, 'audio/L16');
     const shard = h1.slice('media://sha256-'.length, 'media://sha256-'.length + 2);
     // (a) a leftover temp file in the shard dir; (b) a subdir inside the shard dir (would reconstruct a bogus
     // handle if treated as a file); (c) a non-2-hex dir at the root; (d) a loose file at the root.
@@ -240,7 +243,7 @@ describe('FilesystemMediaStore — host GC support (2.S/D-GC: delete + listHandl
   });
 
   it('delete removes a blob (a later get fails) and is idempotent on a missing blob', async () => {
-    const handle = await store.put(HELLO);
+    const handle = await store.put(HELLO, 'audio/L16');
     await store.delete(handle);
     await expect(store.get(handle)).rejects.toThrow();
     await expect(store.delete(handle)).resolves.toBeUndefined(); // a 2nd delete is a no-op

@@ -550,6 +550,28 @@ and `relavium budget resume`, including their non-interactive execution-resume p
 workflow execution and use the same MCP consent rules; the interactive chat family answers at the
 prompt instead.
 
+### `relavium media prune-temporaries`
+
+```bash
+relavium media prune-temporaries --legacy-offline --force [--json]
+```
+
+Explicit offline cleanup of the two historical ownerless media-temp layouts under the canonical
+global home CAS. **Both flags are required strict booleans**; absence or a string-valued equivalent
+is an invocation refusal before CAS/service construction. Stop old producer binaries first: their
+ownerless files cannot prove quiescence. A live or uncertain new-protocol producer refuses the
+entire operation before any legacy deletion. An absent store reports zero and is not created.
+The command opens no project config, history database, keychain, provider or network service.
+
+Human output reports removed/retained counts and fixed retention reasons. `--json` emits one
+`{ removed, retained, reasons }` object; retained reason counts sum to `retained`. Neither form
+contains paths, native diagnostics or file bytes. Successful maintenance, including conservatively
+retained candidates, exits `0`; missing flags/exclusive-offline refusal exits `2`; an operational
+filesystem failure exits `1`. This command never changes published CAS objects or read grants.
+Exact temp grammars, ownership/recovery rules and reason vocabulary belong to the
+[physical media lifecycle contract](../shared-core/built-in-tools.md#physical-media-storage-and-limits),
+under [ADR-0106](../../decisions/0106-media-publication-requires-bounded-verified-bytes.md).
+
 ## Exit codes
 
 CI relies on deterministic exit codes. The table is the closed set for `run` and `gate`; the signal codes

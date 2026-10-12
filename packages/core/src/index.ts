@@ -171,6 +171,9 @@ export type {
   InterruptedRun,
   SetTimer,
   ManualTimerController,
+  HostMediaRequest,
+  HostMediaFetch,
+  HostMediaStream,
 } from './engine/execution-host.js';
 export type {
   NodeExecutor,

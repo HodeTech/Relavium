@@ -10,6 +10,7 @@ import { createToolRegistry } from '../tools/registry.js';
 import { BudgetPauseError } from './budget-governor.js';
 import { LedgerDurabilityError } from './money-durability.js';
 import { AgentTurnError } from './agent-turn.js';
+import { accountingImagePorts } from './fixtures/accounting-media.js';
 
 const model = 'r11-generated';
 const price: ModelPricing = {
@@ -125,7 +126,7 @@ function build(
         ? { ...price, mediaOutputRates: {} }
         : price;
   const prices = new Map<string, ModelPricing>(kind === 'unknown' ? [] : [[model, selected]]);
-  const host = createInMemoryHost({ store });
+  const host = createInMemoryHost({ store, ...accountingImagePorts('c') });
   const runner = createAgentNodeExecutor({
     resolveProvider: () => provider,
     keyFor: () => 'synthetic',

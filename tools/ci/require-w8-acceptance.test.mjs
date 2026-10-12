@@ -100,7 +100,7 @@ test('the actual required workflow joins both full offline controls and checks t
   const filesystem = workflow.jobs['fs-mutations'];
   assert.equal(filesystem['continue-on-error'], undefined);
   assert.equal(filesystem.if, undefined);
-  assert.equal(filesystem['timeout-minutes'], 10);
+  assert.equal(filesystem['timeout-minutes'], 20);
   assert.ok(filesystem.steps.some((step) => step.run === 'pnpm install --frozen-lockfile'));
   const fsCommand = filesystem.steps.find((step) => step.run === 'pnpm check:fs-mutations');
   assert.equal(fsCommand['continue-on-error'], undefined);

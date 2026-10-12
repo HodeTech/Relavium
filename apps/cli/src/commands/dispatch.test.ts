@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { captureIo } from '../test-support.js';
 import {
   boolFlag,
+  buildMediaPruneArgs,
   buildAgentRunArgs,
   buildChatArgs,
   buildChatExportArgs,
@@ -380,4 +381,22 @@ describe('budget resume exact transport', () => {
       expect(() => buildBudgetArgs(input(['r'], options))).toThrow();
     }
   });
+});
+
+it('MEDIA_MAINTENANCE_STRICT_FLAGS: both acknowledgements are literal booleans before composition', () => {
+  expect(buildMediaPruneArgs(input([], { legacyOffline: true, force: true }))).toEqual({
+    legacyOffline: true,
+    force: true,
+  });
+  for (const options of [
+    {},
+    { legacyOffline: true },
+    { force: true },
+    { legacyOffline: 'true', force: true },
+    { legacyOffline: true, force: 'true' },
+  ]) {
+    expect(() => buildMediaPruneArgs(input([], options)), 'MEDIA_MAINTENANCE_STRICT_FLAGS').toThrow(
+      'requires --legacy-offline and --force',
+    );
+  }
 });

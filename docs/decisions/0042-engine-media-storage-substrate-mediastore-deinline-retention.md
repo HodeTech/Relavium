@@ -91,3 +91,14 @@ tracks reopened review findings and their scoped acceptance; it governs the curr
 This additive note does not rewrite the original decision or claim that PR #90 has merged.
 
 > Amended 2026-10-12 by [ADR-0105](0105-filesystem-roots-are-invocation-grants-not-project-authority.md): Filesystem CAS physical containment now pins root identity, refuses linked/special descendants and uses exclusive temporary ownership with atomic publication. The MediaStore port, handle identity, retention and authorization remain intact. Bounded fd reads, cancellation and temp/live-writer maintenance remain Wave 2 Step 6 / ADR-0106 obligations. Exact mechanisms are in the [tool filesystem contract](../reference/shared-core/built-in-tools.md#filesystem-permission-tiers), with [argv authority](../reference/cli/commands.md#global-options) and [config selectors](../reference/contracts/config-spec.md#chat-filesystem-root-selectors) in their canonical homes. Implementation review/gates remain open.
+
+### Wave 2 media implementation checkpoint — 2026-10-12
+
+ADR-0106 refines the formerly all-post-append metadata mechanism: mandatory byte/descriptor
+admission and a present port's atomic batch metadata ACK precede workflow state, `save_to`,
+sequence allocation, append and terminal outbox publication. Post-ACK lifetime reference mutation
+and reclaim remain best effort; admission grants no read access. The immutable tuple/retry/rollback
+rules live in [database-schema.md](../reference/shared-core/database-schema.md#media-metadata-admission);
+[the media contract](../reference/shared-core/llm-provider-seam.md#bounded-verified-media-publication-adr-0106)
+owns host shapes and byte evidence. This supersedes the earlier Step 6 pending mechanism statement,
+not its historical review status. Implementation is undergoing cumulative independent review.

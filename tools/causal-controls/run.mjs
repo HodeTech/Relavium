@@ -68,7 +68,8 @@ export async function runControls({ repository, evidenceKind, mutations, toolRoo
       }),
     };
     const manifestPath = join(output, 'source-manifest.json');
-    json(manifestPath, current);
+    // Preserve every pin while keeping repeated phase manifests inside the fixed evidence cap.
+    writeFileSync(manifestPath, `${JSON.stringify(current)}\n`, { flag: 'wx' });
     const evaluationDirectory = join(output, 'evaluation');
     mkdirSync(evaluationDirectory);
     const config = join(output, 'vitest.config.mjs');

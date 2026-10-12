@@ -16,8 +16,8 @@ describe.each(['put', 'putStream'] as const)('cooperating CAS %s publishers', (p
   it.each(['get', 'readRange', 'resolveForEgress'] as const)(
     'preserves native %s delivery while independent stores republish the same handle',
     async (delivery) => {
-      const bytes = Buffer.alloc(1024 * 1024, 65);
-      const handle = await new FilesystemMediaStore(root).put(bytes);
+      const bytes = Buffer.alloc(256 * 1024, 65);
+      const handle = await new FilesystemMediaStore(root).put(bytes, 'audio/L16');
       const expected =
         delivery === 'resolveForEgress'
           ? { kind: 'base64', data: bytes.toString('base64') }
@@ -30,11 +30,12 @@ describe.each(['put', 'putStream'] as const)('cooperating CAS %s publishers', (p
         const store = new FilesystemMediaStore(root);
         if (index % 2 === 0) {
           return publish === 'put'
-            ? store.put(bytes)
+            ? store.put(bytes, 'audio/L16')
             : store.putStream(
                 (async function* () {
                   yield await Promise.resolve(bytes);
                 })(),
+                'audio/L16',
               );
         }
         if (delivery === 'readRange') return store.readRange(handle, { start: 3, end: 17 });

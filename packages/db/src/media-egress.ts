@@ -1,14 +1,21 @@
-import type { AbortSignalLike } from '@relavium/shared';
+import {
+  canonicalMediaMimeType,
+  createMediaVerifier,
+  mediaMimeTypesCompatible,
+  MediaAdmissionError,
+  type AbortSignalLike,
+} from '@relavium/shared';
 
 import {
   connectValidated,
   isRedirectStatus,
   nodeEgressDeps,
-  readBounded,
   streamBounded,
   SafeEgressError,
   withEgressTimeout,
   type EgressDeps,
+  type HopResponse,
+  type EgressWorkOptions,
   type LocalEndpoint,
 } from './safe-egress.js';
 
@@ -23,8 +30,8 @@ import {
  * the media-specific POLICY: GET-only, FOLLOW redirects (each hop re-validated by `connectValidated`; media
  * has no `allowedDomains` allowlist, only the range-block), `200`-only, and size-bounded bytes.
  *
- * Errors are a typed {@link MediaEgressError} (= the shared `SafeEgressError`) whose message names a reason
- * only — never the url, the resolved IP, a host stack, or bytes (ADR-0043 §4). The DNS resolver + connection
+ * Network errors are typed {@link MediaEgressError} (= `SafeEgressError`); descriptor/byte failures
+ * use the shared fixed MediaAdmissionError vocabulary. Messages name a reason only — never the url, the resolved IP, a host stack, or bytes (ADR-0043 §4). The DNS resolver + connection
  * opener are injectable ({@link MediaEgressDeps}) so the policy is deterministically unit-testable.
  */
 
@@ -41,6 +48,8 @@ export type {
 } from './safe-egress.js';
 
 export interface FetchMediaBytesOptions {
+  /** Admitted declared MIME; response headers and bytes must agree. */
+  readonly mimeType: string;
   /** The per-fetch upper bound on the streamed body in bytes (the engine supplies this policy). */
   readonly maxBytes: number;
   /** Overall request timeout in ms (default 30000). */
@@ -48,8 +57,8 @@ export interface FetchMediaBytesOptions {
   /** Maximum number of redirects followed before failing (default 5). */
   readonly maxRedirects?: number;
   /**
-   * How long a STREAMED body may go with no progress before it is abandoned (default 30000). Streaming
-   * only — the whole-buffer form reads inside `withEgressTimeout`, which already bounds it end to end.
+   * How long a body may go with no progress before it is abandoned (default 30000). The whole-buffer
+   * form additionally preserves its overall request deadline. Streaming has no total body deadline.
    */
   readonly bodyIdleTimeoutMs?: number;
   /**
@@ -94,54 +103,68 @@ const DEFAULT_MAX_REDIRECTS = 5;
 /**
  * Fetch the bytes at a public-HTTPS `url`, enforcing the full SSRF + size-bound policy via the shared
  * mechanism. Media FOLLOWS redirects (each hop re-validated) and requires a final `200`. Its ONLY thrown
- * type is {@link MediaEgressError} — every raw error is normalized by `withEgressTimeout`.
+ * network type is {@link MediaEgressError}; format admission uses fixed MediaAdmissionError codes.
  */
 export async function fetchMediaBytes(
   url: string,
   options: FetchMediaBytesOptions,
   deps: EgressDeps = nodeEgressDeps,
 ): Promise<Uint8Array> {
-  const maxRedirects = options.maxRedirects ?? DEFAULT_MAX_REDIRECTS;
-  const localEndpoint = options.localEndpoint;
-  return withEgressTimeout(
-    options.signal,
-    options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-    async (signal) => {
-      let target = url;
-      for (let redirects = 0; ; redirects += 1) {
-        if (redirects > maxRedirects) {
-          throw new SafeEgressError(
-            'too_many_redirects',
-            'media egress exceeded the redirect limit',
-          );
-        }
-        const response = await connectValidated(
-          target,
-          {
-            method: 'GET',
-            ...(localEndpoint === undefined ? {} : { localEndpoint }),
-          },
-          deps,
-          signal,
-        );
-        if (isRedirectStatus(response.status)) {
-          response.dispose(); // never read a redirect body
-          const location = response.location;
-          if (location === undefined || location.length === 0) {
-            throw new SafeEgressError('bad_status', 'media egress redirect had no Location');
-          }
-          // A relative Location resolves against the current url; the next iteration re-validates it (per-hop).
-          target = new URL(location, target).toString();
-          continue;
-        }
-        if (response.status !== 200) {
-          response.dispose();
-          throw new SafeEgressError('bad_status', 'media egress received a non-200 status');
-        }
-        return readBounded(response.body, options.maxBytes, response.dispose);
-      }
-    },
+  const controller = new AbortController();
+  const abort = (): void => controller.abort();
+  options.signal?.addEventListener('abort', abort);
+  if (options.signal?.aborted === true) abort();
+  const timer = setTimeout(abort, options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+  try {
+    const chunks: Uint8Array[] = [];
+    let length = 0;
+    for await (const chunk of streamMediaBytes(
+      url,
+      { ...options, signal: controller.signal },
+      deps,
+    )) {
+      chunks.push(chunk.slice());
+      length += chunk.length;
+    }
+    const bytes = new Uint8Array(length);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.length;
+    }
+    return bytes;
+  } finally {
+    clearTimeout(timer);
+    options.signal?.removeEventListener('abort', abort);
+  }
+}
+
+/** Normalize one final Content-Type; duplicate/invalid values never become a wildcard. */
+function admitResponseHeader(response: HopResponse, declared: string): string | undefined {
+  const entries = Object.entries(response.headers ?? {}).filter(
+    ([name]) => name.toLowerCase() === 'content-type',
   );
+  if (entries.length > 1) throw new MediaAdmissionError('descriptor_conflict');
+  const raw = entries[0]?.[1];
+  const bare = raw?.split(';', 1)[0]?.trim().toLowerCase();
+  if (
+    raw !== undefined &&
+    (bare === undefined || !/^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/.test(bare))
+  )
+    throw new MediaAdmissionError('unsupported_mime');
+  if (bare === undefined || bare === 'application/octet-stream') {
+    if (declared === 'audio/L16') throw new MediaAdmissionError('descriptor_conflict');
+    return undefined;
+  }
+  const header = canonicalMediaMimeType(bare);
+  // Ogg is a container declaration: agreement is finalized against the identified codec at EOF.
+  if (
+    header !== declared &&
+    !(header === 'audio/ogg' && declared === 'audio/opus') &&
+    !(declared === 'audio/ogg' && header === 'audio/opus')
+  )
+    throw new MediaAdmissionError('descriptor_conflict');
+  return header;
 }
 
 /**
@@ -163,50 +186,96 @@ export async function* streamMediaBytes(
   options: FetchMediaBytesOptions,
   deps: EgressDeps = nodeEgressDeps,
 ): AsyncIterable<Uint8Array> {
-  const maxRedirects = options.maxRedirects ?? DEFAULT_MAX_REDIRECTS;
-  const localEndpoint = options.localEndpoint;
-  // `withEgressTimeout` wraps a promise, not a stream, so it is used to establish the CONNECTION (including
-  // every redirect hop) and the body is then streamed outside it. The run `AbortSignal` still bounds the
-  // read: it is threaded into the connect, and aborting it destroys the socket the body is coming from.
-  const connected = await withEgressTimeout(
-    options.signal,
-    options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-    async (signal) => {
-      let target = url;
-      for (let redirects = 0; ; redirects += 1) {
-        if (redirects > maxRedirects) {
-          throw new SafeEgressError(
-            'too_many_redirects',
-            'media egress exceeded the redirect limit',
-          );
-        }
-        const response = await connectValidated(
-          target,
-          { method: 'GET', ...(localEndpoint === undefined ? {} : { localEndpoint }) },
-          deps,
-          signal,
-        );
-        if (isRedirectStatus(response.status)) {
-          response.dispose(); // never read a redirect body
-          const location = response.location;
-          if (location === undefined || location.length === 0) {
-            throw new SafeEgressError('bad_status', 'media egress redirect had no Location');
-          }
-          target = new URL(location, target).toString();
-          continue;
-        }
-        if (response.status !== 200) {
-          response.dispose();
-          throw new SafeEgressError('bad_status', 'media egress received a non-200 status');
-        }
-        return response;
-      }
+  options = { ...options };
+  const declared = canonicalMediaMimeType(options.mimeType);
+  const nativeClosures = new Set<Promise<unknown>>();
+  const nativeWork: EgressWorkOptions = {
+    retainWork: <T>(factory: () => Promise<T>): Promise<T> => {
+      const pending = factory();
+      nativeClosures.add(pending);
+      void pending.then(
+        () => nativeClosures.delete(pending),
+        () => nativeClosures.delete(pending),
+      );
+      return pending;
     },
-  );
-  // The body phase gets its OWN liveness: an idle deadline and a link to the caller's signal, neither of
-  // which survives `withEgressTimeout`'s teardown. `dispose` destroys the socket, so both paths actually
-  // stop the transfer rather than merely stopping the wait.
-  yield* streamWithLiveness(connected, options);
+  };
+  // Only platform-owned native work is joined; hostile injected iterator returns remain bounded.
+  const ownedDeps: EgressDeps =
+    deps === nodeEgressDeps
+      ? {
+          ...deps,
+          openConnection: (request, signal) => deps.openConnection(request, signal, nativeWork),
+        }
+      : deps;
+  try {
+    const maxRedirects = options.maxRedirects ?? DEFAULT_MAX_REDIRECTS;
+    const localEndpoint = options.localEndpoint;
+    // `withEgressTimeout` wraps a promise, not a stream, so it is used to establish the CONNECTION (including
+    // every redirect hop) and the body is then streamed outside it. The run `AbortSignal` still bounds the
+    // read: it is threaded into the connect, and aborting it destroys the socket the body is coming from.
+    const connected = await withEgressTimeout(
+      options.signal,
+      options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+      async (signal) => {
+        let target = url;
+        for (let redirects = 0; ; redirects += 1) {
+          if (redirects > maxRedirects) {
+            throw new SafeEgressError(
+              'too_many_redirects',
+              'media egress exceeded the redirect limit',
+            );
+          }
+          const response = await connectValidated(
+            target,
+            { method: 'GET', ...(localEndpoint === undefined ? {} : { localEndpoint }) },
+            ownedDeps,
+            signal,
+          );
+          if (isRedirectStatus(response.status)) {
+            response.dispose(); // never read a redirect body
+            const location = response.location;
+            if (location === undefined || location.length === 0) {
+              throw new SafeEgressError('bad_status', 'media egress redirect had no Location');
+            }
+            target = new URL(location, target).toString();
+            continue;
+          }
+          if (response.status !== 200) {
+            response.dispose();
+            throw new SafeEgressError('bad_status', 'media egress received a non-200 status');
+          }
+          let disposed = false;
+          return {
+            ...response,
+            dispose: () => {
+              if (disposed) return;
+              disposed = true;
+              response.dispose();
+            },
+          };
+        }
+      },
+    );
+    // The body phase gets its OWN liveness: an idle deadline and a link to the caller's signal, neither of
+    // which survives `withEgressTimeout`'s teardown. `dispose` destroys the socket, so both paths actually
+    // stop the transfer rather than merely stopping the wait.
+    try {
+      const header = admitResponseHeader(connected, declared);
+      const verifier = createMediaVerifier(declared);
+      for await (const chunk of streamWithLiveness(connected, options)) {
+        verifier.push(chunk);
+        yield chunk;
+      }
+      const actual = verifier.finish();
+      if (header !== undefined && !mediaMimeTypesCompatible(header, actual.mimeType))
+        throw new MediaAdmissionError('descriptor_conflict');
+    } finally {
+      connected.dispose();
+    }
+  } finally {
+    await Promise.allSettled([...nativeClosures]);
+  }
 }
 
 /**

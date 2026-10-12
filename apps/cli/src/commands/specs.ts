@@ -51,6 +51,7 @@ export function registerCommands(program: Command, ctx?: CommandContext): void {
   registerBudget(program, ctx);
   registerModels(program, ctx);
   registerProvider(program, ctx);
+  registerMedia(program, ctx);
   registerList(program, ctx);
   registerLogs(program, ctx);
   registerStatus(program, ctx);
@@ -763,4 +764,39 @@ function registerProvider(program: Command, ctx?: CommandContext): void {
 /** First whitespace-delimited token of a command name — `logs <runId>` → `logs`. */
 function commandWord(name: string): string {
   return name.split(' ', 1)[0] ?? name;
+}
+
+function registerMedia(program: Command, ctx?: CommandContext): void {
+  const media = program.command('media').description('Manage local media storage.');
+  const prune = media.createCommand('prune-temporaries');
+  media.addCommand(prune);
+  prune
+    .configureOutput({
+      ...program.configureOutput(),
+      outputError: (_message, write) => write('error: invalid media maintenance arguments.\n'),
+    })
+    .exitOverride((error) => {
+      if (error.exitCode === 0) throw error;
+      throw new CommanderError(
+        error.exitCode,
+        error.code,
+        'error: invalid media maintenance arguments.',
+      );
+    })
+    .description('Remove legacy temporary media after all old producers are stopped.')
+    .option('--legacy-offline', 'acknowledge that all old media producers are stopped')
+    .option('--force', 'authorize legacy temporary media deletion')
+    .allowExcessArguments(false)
+    .action(async (opts: { legacyOffline?: boolean; force?: boolean }) => {
+      if (ctx === undefined)
+        throw new CliError(
+          'not_implemented',
+          'Media maintenance requires the CLI runtime context.',
+        );
+      ctx.result.exitCode = await executeCommand(
+        'media.prune-temporaries',
+        { positionals: [], options: { legacyOffline: opts.legacyOffline, force: opts.force } },
+        ctx,
+      );
+    });
 }

@@ -23,7 +23,7 @@
  * also why the reason has to be this specific.
  */
 
-import type { ErrorCode } from '@relavium/shared';
+import { MediaAdmissionError, type ErrorCode } from '@relavium/shared';
 
 import type { NodeFailure } from './node-executor.js';
 
@@ -69,6 +69,17 @@ export class NodeMediaPinError extends Error {
       return error;
     }
     const where = `node \`${nodeId}\` produced media that could not be re-hosted`;
+    if (error instanceof MediaAdmissionError) {
+      const internal =
+        error.code === 'store_contract' ||
+        error.code === 'store_unavailable' ||
+        error.code === 'source_unavailable' ||
+        error.code === 'verifier_state';
+      return new NodeMediaPinError(
+        `${where}: ${error.message}`,
+        internal ? 'internal' : 'validation',
+      );
+    }
     const egress = egressCodeOf(error);
     if (egress !== undefined && REFUSED_EGRESS_CODES.has(egress)) {
       // Non-retryable: the same url refused for the same reason on every attempt. The remedy is the

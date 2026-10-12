@@ -104,21 +104,29 @@ describe('createCliHost', () => {
     // DNS/connect, so the wiring is verified offline (the mechanism's own redirect/rebinding vectors are covered
     // by @relavium/db's 23 media-egress tests — here we only assert the CLI wires it with allowPrivate=false).
     it('rejects a non-HTTPS url (insecure_url), opening no connection', async () => {
-      await expect(mediaFetch()('http://media.example/a.png', 1000)).rejects.toMatchObject({
+      await expect(
+        mediaFetch()({ url: 'http://media.example/a.png', mimeType: 'image/png', maxBytes: 1000 }),
+      ).rejects.toMatchObject({
         code: 'insecure_url',
       });
     });
 
     it('rejects a url with embedded credentials (insecure_url)', async () => {
       await expect(
-        mediaFetch()('https://user:pass@media.example/a.png', 1000),
+        mediaFetch()({
+          url: 'https://user:pass@media.example/a.png',
+          mimeType: 'image/png',
+          maxBytes: 1000,
+        }),
       ).rejects.toMatchObject({
         code: 'insecure_url',
       });
     });
 
     it('rejects a literal private/loopback target — proving allowPrivate=false (blocked_host, no network)', async () => {
-      await expect(mediaFetch()('https://127.0.0.1/a.png', 1000)).rejects.toMatchObject({
+      await expect(
+        mediaFetch()({ url: 'https://127.0.0.1/a.png', mimeType: 'image/png', maxBytes: 1000 }),
+      ).rejects.toMatchObject({
         code: 'blocked_host',
       });
     });
@@ -225,7 +233,7 @@ describe('createCliHost', () => {
           throw new Error('createCliHost must wire mediaStore when a casRoot is given');
         }
         // A content-addressed round-trip proves it is a real FilesystemMediaStore over the CAS root.
-        const handle = await store.put(new Uint8Array([1, 2, 3, 4]), 'application/octet-stream');
+        const handle = await store.put(new Uint8Array([1, 2, 3, 4]), 'audio/L16');
         expect(handle).toMatch(/^media:\/\/sha256-[0-9a-f]{64}$/);
         expect(Array.from(await store.get(handle))).toEqual([1, 2, 3, 4]);
         // Fail-closed: an unknown handle (no CAS file) rejects with the file-not-found CAUSE (a content-address
@@ -306,3 +314,35 @@ function setTimeoutHandleOf(
   if (handle === undefined) throw new Error(`no timer was armed for kind=${kind}`);
   return { hasRef: () => handle.hasRef(), disarm };
 }
+
+it('MEDIA_HOST_REQUEST_FORWARDING: both host arms forward declared MIME, cap and exact run signal', async () => {
+  const db = await import('@relavium/db');
+  const fetched = vi.spyOn(db, 'fetchMediaBytes').mockResolvedValue(new Uint8Array([0, 0]));
+  const body: AsyncIterable<Uint8Array> = {
+    async *[Symbol.asyncIterator]() {
+      yield await Promise.resolve(new Uint8Array([0, 0]));
+    },
+  };
+  const streamed = vi.spyOn(db, 'streamMediaBytes').mockReturnValue(body);
+  const signal = new AbortController().signal;
+  try {
+    const host = createCliHost();
+    const request = {
+      url: 'https://media.example/fixture',
+      mimeType: 'audio/L16',
+      maxBytes: 456,
+      signal,
+    };
+    await host.fetchMedia?.(request);
+    expect(host.streamMedia?.(request)).toBe(body);
+    for (const call of [fetched.mock.calls[0], streamed.mock.calls[0]]) {
+      expect(call, 'MEDIA_HOST_REQUEST_FORWARDING').toEqual([
+        request.url,
+        { mimeType: request.mimeType, maxBytes: request.maxBytes, signal },
+      ]);
+    }
+  } finally {
+    fetched.mockRestore();
+    streamed.mockRestore();
+  }
+});

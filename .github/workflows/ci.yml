@@ -228,7 +228,9 @@ jobs:
   # ADR-0105 isolated, current-source removal/restoration evidence, required through ci.needs.
   fs-mutations:
     name: Wave 2 filesystem causal controls
-    timeout-minutes: 10
+    # ADR-0106 expands 26 controls to 71 complete fixed/removal/restored workloads.
+    # The per-phase 90-second deadline and output/evidence ceilings remain unchanged.
+    timeout-minutes: 20
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -529,6 +531,12 @@ jobs:
       - name: Shared filesystem ancestor algorithm and selector schema (ADR-0105)
         if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
         run: pnpm --filter @relavium/shared exec vitest run src/existing-ancestor.test.ts src/config.test.ts
+      - name: Shared media byte verification and publication (ADR-0106)
+        if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
+        run: pnpm --filter @relavium/shared exec vitest run src/media-admission.test.ts src/media-deinline.test.ts src/media-publication.test.ts src/media-verifier.test.ts src/media-verifier-invalid.test.ts src/media-verifier-variants.test.ts
+      - name: Native CLI media publication and offline temporary maintenance (ADR-0106)
+        if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
+        run: pnpm --filter relavium exec vitest run src/engine/media-paid-publication.test.ts src/engine/media-provider-admission.test.ts src/engine/media-publication.e2e.test.ts src/engine/media-retention-ack.test.ts src/engine/media-gc.test.ts src/engine/media-gc-delete-races.test.ts src/run-media-prune.test.ts
       - name: Headless no-TTY smoke (the bundle loads; a piped chat picks the plain driver and exits cleanly)
         if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
         shell: bash

@@ -1,4 +1,5 @@
 import { eq } from 'drizzle-orm';
+import { MediaAdmissionError, type DurableMediaMeta } from '@relavium/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createClient, runMigrations, type DbClient } from './client.js';
@@ -30,18 +31,197 @@ describe('MediaReferenceStore (1.AF/D12c + D11 — media_objects/media_reference
     store.recordObject({ handle: HANDLE, mimeType: 'image/png', modality: 'image', byteLength: 5 });
   }
 
-  it('the three multi-statement GC writers each open an IMMEDIATE transaction (2.5.I write-path convention)', () => {
-    record(); // recordObject (single-statement upsert) opens no transaction; it seeds the FK target
+  it('admission and all three GC writers each open an IMMEDIATE transaction', () => {
     const txnSpy = vi.spyOn(client.db, 'transaction');
+    record(); // immutable tuple admission seeds the FK target atomically
     store.addReference(HANDLE, 'run', 'run-1'); // INSERT + cursor UPDATE
     store.removeRunReferences('run-1'); // SELECT + DELETE + cursor UPDATE
     store.reclaimExpired(0); // SELECT + SELECT + soft-delete
     // All three serialize under BEGIN IMMEDIATE so a concurrent sweep/refresh can't straddle their statements
     // (ADR-0064 §5); a DEFERRED begin would drop the config arg on any of them.
-    expect(txnSpy).toHaveBeenCalledTimes(3);
+    expect(txnSpy).toHaveBeenCalledTimes(4);
     for (const call of txnSpy.mock.calls) {
-      expect(call[1]).toEqual({ behavior: 'immediate' });
+      expect(call[1], 'FS_CAUSAL_MEDIA_METADATA_IMMEDIATE').toEqual({ behavior: 'immediate' });
     }
+  });
+
+  it('admits canonical aliases without adding a read grant or lifetime reference', async () => {
+    const port = createMediaReferencePort(store);
+    await port.admitProducedMedia([
+      { handle: HANDLE, mimeType: 'IMAGE/JPG', modality: 'image', byteLength: 5 },
+    ]);
+    expect(store.describe(HANDLE)).toEqual({
+      mimeType: 'image/jpeg',
+      byteLength: 5,
+      allowedScopes: [],
+    });
+    expect(client.db.select().from(mediaReferences).all()).toEqual([]);
+  });
+
+  it('reconciles a supported legacy lexical alias to the same canonical tuple', () => {
+    store.recordObject({
+      handle: HANDLE,
+      mimeType: 'image/jpeg',
+      modality: 'image',
+      byteLength: 5,
+    });
+    client.db
+      .update(mediaObjects)
+      .set({ mimeType: 'image/jpg', deletedAt: 1234 })
+      .where(eq(mediaObjects.handle, HANDLE))
+      .run();
+    store.recordObject({
+      handle: HANDLE,
+      mimeType: 'IMAGE/JPEG',
+      modality: 'image',
+      byteLength: 5,
+    });
+    expect(store.describe(HANDLE)).toEqual({
+      mimeType: 'image/jpeg',
+      byteLength: 5,
+      allowedScopes: [],
+    });
+  });
+
+  it.each([
+    { handle: 'private invalid handle' },
+    { mimeType: 'private/unknown' },
+    { modality: 'audio' },
+    { byteLength: -1 },
+    { byteLength: 1.5 },
+    { byteLength: Number.MAX_SAFE_INTEGER + 1 },
+    { durationMs: 0 },
+    { durationMs: 1 }, // duration is not admitted on an image
+  ] satisfies readonly Partial<DurableMediaMeta>[])(
+    'refuses invalid descriptors before entering a transaction: %j',
+    (override) => {
+      const txnSpy = vi.spyOn(client.db, 'transaction');
+      expect(() =>
+        store.recordObject({
+          handle: HANDLE,
+          mimeType: 'image/png',
+          modality: 'image',
+          byteLength: 5,
+          ...override,
+        }),
+      ).toThrow(MediaAdmissionError);
+      expect(txnSpy).not.toHaveBeenCalled();
+      expect(store.listObjectHandles()).toEqual([]);
+    },
+  );
+
+  it('enriches unknown duration once and never erases or contradicts known evidence', () => {
+    const audio = {
+      handle: HANDLE,
+      mimeType: 'audio/mpeg',
+      modality: 'audio',
+      byteLength: 5,
+    } satisfies DurableMediaMeta;
+    store.recordObject(audio);
+    store.recordObject({ ...audio, durationMs: 7 });
+    store.recordObject(audio);
+    expect(client.db.select().from(mediaObjects).get()?.durationMs).toBe(7);
+    const before = client.db.select().from(mediaObjects).all();
+    expect(
+      () => store.recordObject({ ...audio, durationMs: 8 }),
+      'FS_CAUSAL_MEDIA_METADATA_TUPLE',
+    ).toThrowError(new MediaAdmissionError('descriptor_conflict'));
+    expect(client.db.select().from(mediaObjects).all()).toEqual(before);
+  });
+
+  it.each([
+    { mimeType: 'image/jpeg', modality: 'image', byteLength: 5 },
+    { mimeType: 'audio/mpeg', modality: 'audio', byteLength: 5 },
+    { mimeType: 'image/png', modality: 'image', byteLength: 6 },
+  ] satisfies readonly Omit<DurableMediaMeta, 'handle'>[])(
+    'retains soft-deleted identity and cursor on conflicting resurrection: %j',
+    (descriptor) => {
+      record();
+      expect(store.reclaimExpired(0)).toEqual([HANDLE]);
+      const before = client.db.select().from(mediaObjects).all();
+      expect(() => store.recordObject({ handle: HANDLE, ...descriptor })).toThrowError(
+        new MediaAdmissionError('descriptor_conflict'),
+      );
+      expect(client.db.select().from(mediaObjects).all()).toEqual(before);
+      expect(store.describe(HANDLE)).toBeUndefined();
+    },
+  );
+
+  it('a final tuple conflict rolls back insertion, duration enrichment, resurrection and grace refresh', () => {
+    const audio = {
+      handle: HANDLE,
+      mimeType: 'audio/mpeg',
+      modality: 'audio',
+      byteLength: 5,
+    } satisfies DurableMediaMeta;
+    const conflict = {
+      handle: `media://sha256-${'b'.repeat(64)}`,
+      mimeType: 'image/png',
+      modality: 'image',
+      byteLength: 9,
+    } satisfies DurableMediaMeta;
+    store.admitProducedMedia([audio, conflict]);
+    expect(store.reclaimExpired(0)).toHaveLength(2);
+    const before = client.db.select().from(mediaObjects).all();
+    expect(
+      () =>
+        store.admitProducedMedia([
+          { ...audio, handle: `media://sha256-${'c'.repeat(64)}` },
+          { ...audio, durationMs: 7 },
+          { ...conflict, byteLength: 10 },
+        ]),
+      'FS_CAUSAL_MEDIA_METADATA_ATOMIC_BATCH',
+    ).toThrowError(new MediaAdmissionError('descriptor_conflict'));
+    expect(
+      client.db.select().from(mediaObjects).all(),
+      'FS_CAUSAL_MEDIA_METADATA_ATOMIC_BATCH',
+    ).toEqual(before);
+    expect(client.db.select().from(mediaReferences).all()).toEqual([]);
+  });
+
+  it('owns batch metadata and timestamp before a busy retry can mutate caller input', () => {
+    const input = {
+      handle: HANDLE,
+      mimeType: 'image/png',
+      modality: 'image',
+      byteLength: 5,
+    } satisfies DurableMediaMeta;
+    const clock = vi.fn(() => 4321);
+    const admitting = createMediaReferenceStore(client.db, clock);
+    const original = client.db.transaction.bind(client.db);
+    const transaction = vi.spyOn(client.db, 'transaction');
+    transaction
+      .mockImplementationOnce(() => {
+        input.mimeType = 'image/jpeg';
+        input.byteLength = 99;
+        throw Object.assign(new Error('busy'), { code: 'SQLITE_BUSY' });
+      })
+      .mockImplementation(original);
+    admitting.admitProducedMedia([input]);
+    expect(clock).toHaveBeenCalledTimes(1);
+    expect(transaction).toHaveBeenCalledTimes(2);
+    expect(client.db.select().from(mediaObjects).get()).toMatchObject({
+      mimeType: 'image/png',
+      byteLength: 5,
+      createdAt: 4321,
+      lastReferencedAt: 4321,
+    });
+  });
+
+  it('never invokes a descriptor getter and refuses it before any database work', () => {
+    const getter = vi.fn(() => 'image/png');
+    const input = {
+      handle: HANDLE,
+      get mimeType() {
+        return getter();
+      },
+      modality: 'image',
+      byteLength: 5,
+    } satisfies DurableMediaMeta;
+    const transaction = vi.spyOn(client.db, 'transaction');
+    expect(() => store.recordObject(input)).toThrowError(new MediaAdmissionError('unsafe_value'));
+    expect(getter).not.toHaveBeenCalled();
+    expect(transaction).not.toHaveBeenCalled();
   });
 
   it('describe returns the durable metadata + only the session/workspace authz scopes', () => {

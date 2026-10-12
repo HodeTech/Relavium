@@ -223,3 +223,18 @@ The maintainer approved the revised decision and the eight-step Wave 2 execution
 plan after the ten-comment intake and two fresh independent cumulative proposal
 reviews. Dependent implementation is authorised on `development`; acceptance of
 this decision does not certify unimplemented mechanisms or close the wave.
+
+### Wave 2 implementation checkpoint — 2026-10-12
+
+Step 6 implements this decision on `development`. The
+[canonical seam](../reference/shared-core/llm-provider-seam.md#bounded-verified-media-publication-adr-0106)
+now specifies the finite admitted/refused profiles, structural-only PCM qualification,
+required host request/validation ports and content-free errors; the
+[database reference](../reference/shared-core/database-schema.md#media-metadata-admission)
+specifies atomic immutable metadata admission. Physical temporary ownership and explicit
+offline maintenance are specified in the
+[built-in tools contract](../reference/shared-core/built-in-tools.md#physical-media-storage-and-limits).
+Author checks are not independent acceptance: the
+[Step 6 register](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#step-6-media-implementation-checkpoint--2026-10-12)
+retains the pending causal, cumulative-review and platform gates. This checkpoint does
+not close the wave or expand decoder, hostile-same-user jail or CR-53 range claims.

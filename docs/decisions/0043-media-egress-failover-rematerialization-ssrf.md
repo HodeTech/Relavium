@@ -73,3 +73,13 @@ We resolve the ADR-0031 contradiction decisively:
 
 - Per ADR-0009's append-only rule, ADR-0031 is unchanged in history; this ADR is the authoritative record for the media-egress byte path, the failover re-materialization contract, and the SSRF mechanism placement. Future seam-egress readers should read ADR-0031 **and** this.
 - `width`/`height` stay **excluded** from the media metadata (ADR-0031 Y3, a pure-render concern) — no egress or failover consumer needs them, so this ADR inherits that exclusion unchanged.
+
+### Wave 2 media implementation checkpoint — 2026-10-12
+
+ADR-0106 now carries declared MIME in the one shared host request and compares final HTTP
+header evidence with bounded verified body evidence. Connect/body-idle bounds, SSRF validation,
+run cancellation and actual native resource ownership remain; progressing transfers acquire no
+new total deadline. Raw L16 needs explicit compatible HTTP type and aligned nonempty samples,
+with no detected-identity or rate-repair claim. Exact compatibility/error rules live in the
+[media publication contract](../reference/shared-core/llm-provider-seam.md#bounded-verified-media-publication-adr-0106).
+Implementation is present in the Step 6 working tree; cumulative independent acceptance is pending.

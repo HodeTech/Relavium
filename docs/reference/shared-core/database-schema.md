@@ -1164,6 +1164,31 @@ CREATE INDEX idx_media_references_scope  ON media_references (scope_kind, scope_
 CREATE INDEX idx_media_references_handle ON media_references (handle);
 ```
 
+#### Media metadata admission
+
+[ADR-0106](../../decisions/0106-media-publication-requires-bounded-verified-bytes.md) separates
+mandatory pre-publication metadata admission from post-ACK best-effort reference retention.
+`MediaReferenceStore.admitProducedMedia(batch)` synchronously owns and validates every descriptor
+before deduplicating or entering SQLite. `recordObject` uses the same singleton-batch path.
+One `BEGIN IMMEDIATE`, with the [existing busy retry](#concurrency--transaction-behavior), checks
+and writes the entire batch. Its timestamp is captured once and remains stable across retries.
+Statements use the transaction handle. There is no schema migration or second descriptor DTO.
+
+For a given handle, canonical MIME, modality and actual nonnegative safe byte count are immutable,
+including on soft-deleted rows. The supported lexical aliases share canonical identity; alias
+normalization cannot relabel an incompatible format. Optional duration is a positive safe integer
+on audio/video only. Unknown duration may be enriched, equal known duration is idempotent,
+absence preserves known evidence, and conflicting known duration refuses. Compatible admission
+refreshes `last_referenced_at` and clears `deleted_at`; conflict changes neither.
+
+A conflict in the final item rolls back earlier insertion, enrichment, resurrection and cursor
+refresh in that batch. Admission adds **no** `media_references` rows or read grants. The engine
+awaits it before state/`save_to` and before durable append. Append failure may leave compatible,
+unreferenced object metadata for ordinary grace GC. After ACK, `recordRunMedia` and `reclaimRun`
+retain their existing best-effort lifetime semantics; their failures cannot revoke publication.
+Byte/format verification and exact host shapes live in the
+[media publication contract](llm-provider-seam.md#bounded-verified-media-publication-adr-0106).
+
 > **Refcount ↔ authz keying — one junction, two roles ([ADR-0042](../../decisions/0042-engine-media-storage-substrate-mediastore-deinline-retention.md) §3 / [ADR-0044](../../decisions/0044-media-access-governance-read-media-save-to-cost.md)).** A handle's refcount is its **row count** here. `scope_kind` is a deliberate **superset**: `run` / `node` references are lifetime/refcount entries ONLY (the terminal-state sweep reclaims a run's `run` rows when it reaches `run:completed|failed|cancelled`), while `session` / (reserved) `workspace` are ALSO the `read_media` authz `Scope` kinds — `read_media` authz consults **only** the `session`/`workspace` rows, so a `run`/`node` reference **never grants read**. A handle may carry both a `run` reference (lifetime) and a `session` reference (authz); the terminal sweep removing the run row leaves the handle alive while a session row remains.
 
 > **Retention / GC ([ADR-0042](../../decisions/0042-engine-media-storage-substrate-mediastore-deinline-retention.md) §4).** A handle whose reference count reaches zero enters a **grace window** (default **7 days**, measured from `last_referenced_at`); refcount-GC reclaims the bytes and sets `deleted_at` only after it elapses — distinct from the 90-day `run_events` prune. GC ownership is the host's (Rust on desktop / filesystem on CLI/VS Code).

@@ -47,3 +47,17 @@ export * from './usage-evidence.js';
 export * from './usage-coverage.js';
 
 export * from './usage-coverage-fold.js';
+
+export {
+  MAX_MEDIA_OBJECT_BYTES,
+  MAX_MEDIA_INSPECTION_BYTES,
+  MediaAdmissionError,
+  canonicalMediaMimeType,
+  mediaMimeTypesCompatible,
+  admitMediaDescriptor,
+  reconcileMediaDescriptors,
+} from './media-admission.js';
+export type { CanonicalMediaMimeType, MediaAdmissionErrorCode } from './media-admission.js';
+export { createMediaVerifier } from './media-verifier.js';
+export type { MediaVerifier } from './media-verifier.js';
+export { collectMediaForAdmission } from './media-publication.js';

@@ -16,6 +16,7 @@ import OpenAI, {
 } from 'openai';
 
 import {
+  canonicalMediaMimeType,
   isPrivateOrLocalHost,
   urlHasCredentials,
   type AbortSignalLike,
@@ -232,16 +233,34 @@ const OPENAI_AUDIO_FORMATS = ['wav', 'aac', 'mp3', 'flac', 'opus', 'pcm16'] as c
 /** Map a requested image-out MIME (`MediaGenRequest.mimeType`) to OpenAI's image `output_format` enum, or
  *  `undefined` to leave the default (gpt-image-1 → PNG). Only the gpt-image-1-supported formats are honored. */
 function imageOutputFormat(mimeType: string | undefined): 'png' | 'jpeg' | 'webp' | undefined {
-  switch (mimeType) {
+  if (mimeType === undefined) return undefined;
+  switch (canonicalOutputMime(mimeType)) {
     case 'image/png':
       return 'png';
     case 'image/jpeg':
-    case 'image/jpg': // the common non-canonical alias — map it rather than silently falling back to PNG
       return 'jpeg';
     case 'image/webp':
       return 'webp';
     default:
-      return undefined;
+      throw unsupportedOutputFormat();
+  }
+}
+
+function unsupportedOutputFormat(provider: ProviderId = 'openai'): LlmProviderError {
+  return new LlmProviderError(
+    makeLlmError({
+      provider,
+      kind: 'bad_request',
+      message: 'Unsupported media output format',
+    }),
+  );
+}
+
+function canonicalOutputMime(value: string): string {
+  try {
+    return canonicalMediaMimeType(value);
+  } catch {
+    throw unsupportedOutputFormat();
   }
 }
 
@@ -455,7 +474,7 @@ export function openaiErrorToLlmError(err: unknown, provider: ProviderId, key?: 
   if (isProviderInvocationCancelled(err)) {
     return makeLlmError({ provider, kind: 'cancelled', message: 'provider invocation cancelled' });
   }
-  const base = classifyOpenAiError(err, provider);
+  const base = err instanceof LlmProviderError ? err.llmError : classifyOpenAiError(err, provider);
   if (key === undefined || key.length === 0) return base;
   return makeLlmError({
     provider: base.provider,
@@ -926,7 +945,7 @@ function buildCommonBody(
     // Inline audio-out (1.AG/ADR-0046): request the text+audio combination. `body` is spread last below, so
     // these win over a raw providerOptions echo.
     body.modalities = ['text', 'audio'];
-    body.audio = resolveOpenAiAudio(req.providerOptions);
+    body.audio = resolveOpenAiAudio(req.providerOptions, provider);
   }
   if (req.providerOptions === undefined) {
     return body;
@@ -951,7 +970,10 @@ function buildCommonBody(
   for (const param of DROPPABLE_PARAMS) {
     if (hasLearnedRejection(provider, scope, req.model, param)) delete escape[param];
   }
-  return { ...escape, ...body };
+  const effective = { ...escape, ...body };
+  // Validate the owned effective native selector even without canonical outputModalities.
+  if (effective.audio !== undefined) resolveOpenAiAudio({ audio: effective.audio }, provider);
+  return effective;
 }
 
 /**
@@ -1034,15 +1056,21 @@ function toOpenAiResponseFormat(
 
 /** Resolve OpenAI inline-audio `voice` (any string) + `format` (a closed union) from
  *  `providerOptions.audio` when supplied, else OpenAI's defaults (1.AG/ADR-0046). */
-function resolveOpenAiAudio(providerOptions: LlmRequest['providerOptions']): {
+function resolveOpenAiAudio(
+  providerOptions: LlmRequest['providerOptions'],
+  provider: ProviderId = 'openai',
+): {
   voice: string;
   format: (typeof OPENAI_AUDIO_FORMATS)[number];
 } {
   const audioOpts = isRecord(providerOptions) ? providerOptions['audio'] : undefined;
+  if (audioOpts !== undefined && !isRecord(audioOpts)) throw unsupportedOutputFormat(provider);
   const voice =
     isRecord(audioOpts) && typeof audioOpts['voice'] === 'string' ? audioOpts['voice'] : 'alloy';
   const rawFormat = isRecord(audioOpts) ? audioOpts['format'] : undefined;
-  const format = OPENAI_AUDIO_FORMATS.find((f) => f === rawFormat) ?? 'wav';
+  const format =
+    rawFormat === undefined ? 'wav' : OPENAI_AUDIO_FORMATS.find((f) => f === rawFormat);
+  if (format === undefined) throw unsupportedOutputFormat(provider);
   return { voice, format };
 }
 
@@ -1062,9 +1090,12 @@ const TTS_FORMAT_TO_MIME = {
 } as const satisfies Record<string, string>;
 
 /** Map a requested output `mimeType` to a TTS `response_format` — the inverse of {@link TTS_FORMAT_TO_MIME}.
- *  Default mp3 (the API default + the canonical fallback for an unspecified/unknown request). */
+ *  Default mp3 only for an unspecified request; explicit unsupported formats refuse. */
 function ttsResponseFormat(mimeType: string | undefined): keyof typeof TTS_FORMAT_TO_MIME {
-  switch (mimeType) {
+  if (mimeType === undefined) return 'mp3';
+  switch (canonicalOutputMime(mimeType)) {
+    case 'audio/mpeg':
+      return 'mp3';
     case 'audio/opus':
       return 'opus';
     case 'audio/aac':
@@ -1076,7 +1107,7 @@ function ttsResponseFormat(mimeType: string | undefined): keyof typeof TTS_FORMA
     case 'audio/L16':
       return 'pcm';
     default:
-      return 'mp3'; // 'audio/mpeg' or anything unspecified
+      throw unsupportedOutputFormat();
   }
 }
 
@@ -1444,6 +1475,7 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
         options === undefined ? undefined : new ProviderInvocationWork(options, req.signal);
       let usage: UsageEvidence | undefined;
       let applicable = usageApplicability(req);
+      let audioMime = 'audio/wav';
       let result: LlmResult;
       let cleanupFailure: { readonly cause: unknown } | undefined;
       try {
@@ -1457,6 +1489,7 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
                 stream: false as const,
               };
               applicable = billingApplicability(req, body);
+              audioMime = outputAudioMime({ ...req, providerOptions: { audio: body.audio } });
               const requestOptions = buildRequestOptions(working);
               work?.assertActive();
               options?.nativeInvocationStarted?.();
@@ -1478,11 +1511,7 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
         // A non-null refusal is a safety decline — normalize to content_filter, not a clean stop.
         const refused =
           typeof choice?.message.refusal === 'string' && choice.message.refusal.length > 0;
-        // Compute the inline-audio output MIME only when audio was actually requested (it is read solely by
-        // mapContent's audio branch); a text turn keeps the default and pays no providerOptions scan.
-        const audioMime = req.outputModalities?.includes('audio')
-          ? outputAudioMime(req)
-          : 'audio/wav';
+        // Response MIME is captured from the admitted owned effective wire selector above.
         result = {
           // An empty `choices` array is a complete-but-empty 200 — a clean empty stop, not an error.
           content: choice === undefined ? [] : mapContent(choice.message, providerId, audioMime),
@@ -1639,6 +1668,25 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
           `${providerId} generates no media (only OpenAI generateMedia is wired)`,
         );
       }
+      if (
+        req.modality === 'video' &&
+        req.mimeType !== undefined &&
+        canonicalOutputMime(req.mimeType) !== 'video/mp4'
+      )
+        throw unsupportedOutputFormat();
+      const native = req.providerOptions;
+      const nested = isRecord(native)
+        ? native[req.modality === 'image' ? 'image' : 'audio']
+        : undefined;
+      if (
+        (isRecord(native) &&
+          (native['output_format'] !== undefined || native['response_format'] !== undefined)) ||
+        (isRecord(nested) &&
+          (nested['format'] !== undefined ||
+            nested['output_format'] !== undefined ||
+            nested['response_format'] !== undefined))
+      )
+        throw unsupportedOutputFormat();
       const work =
         options === undefined ? undefined : new ProviderInvocationWork(options, req.signal);
       const invoke = async (): Promise<MediaGenResult> => {

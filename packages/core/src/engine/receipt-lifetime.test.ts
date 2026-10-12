@@ -64,6 +64,8 @@ it('the exact held raw producer outlives bounded cancellation; late incurred rec
   const host = createInMemoryHost({
     store,
     mediaStore: {
+      validateMedia: (handle, descriptor) =>
+        Promise.resolve({ ...descriptor, handle, byteLength: 1 }),
       put: () => {
         pins++;
         return Promise.resolve(`media://sha256-${'1'.repeat(64)}`);

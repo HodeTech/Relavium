@@ -48,8 +48,31 @@ review and the full required gates remain separate obligations.
 
 The coordinator, process join and semantic outcome authority now live once in
 [causal-controls](../causal-controls/README.md). This entry point remains a thin
-filesystem wrapper with the same 26 mechanisms, workloads, artifact directory,
+filesystem wrapper retaining the original 26 mechanisms and their workloads, artifact directory,
 process bounds and inherited filesystem environment. Both directories are included
 in the physical source closure. Ancestor tool/save_to and delete/GC requirements
 are explicit declarative witnesses, with no family special case in the authority.
 This extraction does not relabel historical execution evidence.
+
+ADR-0106 extends the same family with bounded media writes and reads, independent
+byte/type verification, handle admission before durable publication, atomic SQLite
+metadata, owner-qualified temporary cleanup, response header agreement and provider
+selector preflight. The original 26 ADR-0105 controls remain declared. Parser controls
+pin the object and inspection arenas, recognizer finish, finite structure counts,
+WebM track/block counts, Ogg comments and PDF ID hex length. Borrowed URL chunks,
+early upstream close, body abort and native HTTP close have separate controls. Each new
+control runs an entire named regression file in fixed, removal and restored phases;
+native child fixtures are part of the physical source graph and must join before a
+phase completes. The mechanism inventory in `mutations.mjs` and a completed retained
+`export.json` are the evidence for a particular source head. An author-local fixed
+test run or selected `--mechanism` diagnosis does not certify the full matrix.
+
+The direct 4 KiB reader-request and 25 MiB skip exact/+1 cases pin helper contracts;
+current admitted parser calls cannot request their over-limit values. Current MP4
+and WebM grammars cannot reach their depth-16 checks, and the accepted PDF profile
+cannot reach its 65,536-token count within the rolling tail. Those defensive guards
+are not represented as hostile-byte removal evidence. The PDF tail's read-window
+check remains a separate bound: a malformed over-tail input refuses even if that
+one check is removed, so ordinary rejection alone does not certify it. Inspection
+arena observation measures byte-array allocations, not the entire JavaScript heap;
+these controls make no full-decoder claim.

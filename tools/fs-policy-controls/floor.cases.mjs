@@ -132,10 +132,10 @@ it('FS_CAUSAL_SAVE_DRIVE_PREFIX', async () => {
 });
 it('FS_CAUSAL_CAS_EXCLUSIVE_TEMP', async () => {
   state.fixedUUID = true;
-  const temp = join(root, 'stream.00000000-0000-4000-8000-000000000000.tmp');
+  const temp = join(root, `media-v1.${process.pid}.00000000-0000-4000-8000-000000000000.tmp`);
   writeFileSync(temp, 'unowned');
   await refuse(
-    new FilesystemMediaStore(root).put(Buffer.from('replacement')),
+    new FilesystemMediaStore(root).put(Buffer.from([0, 1]), 'audio/L16'),
     'FS_CAUSAL_CAS_EXCLUSIVE_TEMP',
   );
   expect(readFileSync(temp, 'utf8'), 'FS_CAUSAL_CAS_EXCLUSIVE_TEMP').toBe('unowned');

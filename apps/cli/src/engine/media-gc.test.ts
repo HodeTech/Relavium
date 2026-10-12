@@ -18,7 +18,7 @@ import {
   runMigrations,
   type DbClient,
 } from '@relavium/db';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { seedRun } from '../test-support.js';
 import {
@@ -39,6 +39,7 @@ function fakeCas(handles: Array<{ handle: string; mtimeMs: number }> = []): {
   return {
     deleted,
     store: {
+      sweepTemporaries: () => Promise.resolve({ removed: 0, retained: 0, reasons: {} }),
       delete: (handle) => {
         deleted.push(handle);
         return Promise.resolve();
@@ -146,12 +147,14 @@ describe('runHostMediaGc (2.S/D-GC, ADR-0042 §4)', () => {
 
   it('orphan-sweep: SKIPPED entirely while another run is active (protects a concurrent writer)', async () => {
     const cas = fakeCas([{ handle: H('a'), mtimeMs: 0 }]);
+    const temporarySweep = vi.spyOn(cas.store, 'sweepTemporaries');
     const report = await runHostMediaGc(
       baseDeps({ casStore: cas.store, hasOtherActiveRuns: () => true }),
     );
     expect(cas.deleted).toEqual([]);
     expect(report.orphansDeleted).toBe(0);
     expect(report.orphanSweepRan).toBe(false);
+    expect(temporarySweep, 'MEDIA_TEMP_SWEEP_INDEPENDENT').toHaveBeenCalledTimes(1);
   });
 
   it('runs the steps in order: reclaim retry → grace GC → orphan sweep (the fresh-window ordering)', async () => {
@@ -259,7 +262,7 @@ describe('sweepHostMediaBestEffort (the run/gate run-end wrapper — real db + C
     refs.recordObject({ handle: H('a'), mimeType: 'image/png', modality: 'image', byteLength: 5 });
     refs.addReference(H('a'), 'run', 'paused-run'); // a legitimately-live ref on the paused run
     const cas = new FilesystemMediaStore(casRoot);
-    const orphan = await cas.put(new Uint8Array([9, 9, 9])); // a row-less blob the sweep WOULD delete if it ran
+    const orphan = await cas.put(new Uint8Array([9, 9, 9, 9]), 'audio/L16'); // a row-less blob the sweep WOULD delete if it ran
 
     const report = await sweepHostMediaBestEffort({
       db: client.db,
@@ -294,7 +297,7 @@ describe('sweepHostMediaBestEffort (the run/gate run-end wrapper — real db + C
 
   it('sweeps a row-less CAS orphan when no run is active (the current run is excluded)', async () => {
     const cas = new FilesystemMediaStore(casRoot);
-    const orphan = await cas.put(new Uint8Array([1, 2, 3])); // bytes written, NO media_objects row recorded
+    const orphan = await cas.put(new Uint8Array([1, 2, 3, 4]), 'audio/L16'); // bytes written, NO media_objects row recorded
     const report = await sweepHostMediaBestEffort({
       db: client.db,
       casRoot,

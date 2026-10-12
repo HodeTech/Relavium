@@ -18,6 +18,7 @@ import { createDispatchingNodeExecutor } from './node-handlers/dispatcher.js';
 import { createHumanGateNodeExecutor } from './node-handlers/human-gate.js';
 import { reconstructCheckpointState } from './checkpoint.js';
 import type { NodeOutcome } from './node-executor.js';
+import { accountingImagePorts } from './fixtures/accounting-media.js';
 import { WorkflowEngine } from './engine.js';
 import {
   createInMemoryEffectJournalStore,
@@ -41,7 +42,7 @@ function deferred<T>() {
 async function hostFromLog(events: readonly RunEvent[]) {
   const store = new InMemoryRunStore();
   for (const event of events) await store.persistEvent(event);
-  return { host: createInMemoryHost({ store }), store };
+  return { host: createInMemoryHost({ store, ...accountingImagePorts('a') }), store };
 }
 
 function expectUnknownRun(engine: WorkflowEngine, runId: string): void {
@@ -78,7 +79,7 @@ function startRun(
   } = {},
 ) {
   const store = new InMemoryRunStore();
-  const base = createInMemoryHost({ store });
+  const base = createInMemoryHost({ store, ...accountingImagePorts('a') });
   const host = {
     ...base,
     setTimer: (ms: number, fire: () => void, kind: TimerKind = 'work') => {
@@ -430,7 +431,7 @@ describe('durable budget authorization through the actual runner', () => {
       const leases = createInMemoryRunLeases(() => now);
       const store = new InMemoryRunStore();
       for (const event of prefix) await store.persistEvent(event);
-      const host = createInMemoryHost({ store, runLeases: leases });
+      const host = createInMemoryHost({ store, runLeases: leases, ...accountingImagePorts('a') });
       const entered = deferred<void>();
       const release = deferred<void>();
       const engine = new WorkflowEngine({
@@ -524,7 +525,7 @@ describe('durable budget authorization through the actual runner', () => {
       const leases = createInMemoryRunLeases(() => now);
       const store = new InMemoryRunStore();
       for (const event of prefix) await store.persistEvent(event);
-      const host = createInMemoryHost({ store, runLeases: leases });
+      const host = createInMemoryHost({ store, runLeases: leases, ...accountingImagePorts('a') });
       const entered = deferred<void>();
       const release = deferred<void>();
       const engine = new WorkflowEngine({
@@ -1934,7 +1935,7 @@ describe('durable budget authorization through the actual runner', () => {
         const leases = createInMemoryRunLeases(() => now);
         const store = new InMemoryRunStore();
         for (const event of prefix) await store.persistEvent(event);
-        const host = createInMemoryHost({ store, runLeases: leases });
+        const host = createInMemoryHost({ store, runLeases: leases, ...accountingImagePorts('a') });
         const entered = deferred<void>();
         const release = deferred<void>();
         const prepare = run.executor.prepareBudgetDispatch?.bind(run.executor);
@@ -2168,7 +2169,7 @@ describe('terminal paid-media money barrier — ADR-0077/0097', () => {
       const leases = createInMemoryRunLeases(() => now);
       const store = new InMemoryRunStore();
       for (const event of prefix) await store.persistEvent(event);
-      const base = createInMemoryHost({ store, runLeases: leases });
+      const base = createInMemoryHost({ store, runLeases: leases, ...accountingImagePorts('a') });
       const entered = deferred<void>();
       const release = deferred<void>();
       const host = {

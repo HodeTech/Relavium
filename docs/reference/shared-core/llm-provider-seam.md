@@ -945,12 +945,12 @@ split plus the engine's active `deInlineMedia` pass at the one emit choke point,
 1.AF). Result content is deliberately **not** ceiling-bounded: a generated image
 legitimately exceeds the inline ceiling in flight and is de-inlined at the seam return.
 The platform-free **`MediaStore`** contract — `put` / `get` / `resolveForEgress` /
-`readRange`, bytes as `Uint8Array`, named only by the handle string — and the
+`readRange` / `validateMedia`, bytes as `Uint8Array`, named only by the handle string — and the
 **`DeInlineMedia`** transform are **implemented**: `@relavium/db` ships the filesystem CAS
 and an in-memory reference, and the choke-point wiring landed at 1.AF. The filesystem implementation's
 [physical containment and limits](built-in-tools.md#physical-media-storage-and-limits) are refined by
-[ADR-0105](../../decisions/0105-filesystem-roots-are-invocation-grants-not-project-authority.md);
-bounded fd reads, cancellation and maintenance remain Step 6/ADR-0106 obligations.
+[ADR-0105](../../decisions/0105-filesystem-roots-are-invocation-grants-not-project-authority.md).
+The publication and host API refinements are specified [below](#bounded-verified-media-publication-adr-0106).
 [ADR-0089](../../decisions/0089-media-correctness-four-boundaries.md) §2 adds a fifth
 method, optional **`putStream?(bytes: AsyncIterable<Uint8Array>, mimeType)`**, plus
 **`MediaUrlStream`** — the streaming sibling of `MediaUrlFetch` — so a media body is never
@@ -962,6 +962,143 @@ whole-buffer form has its `url` sources **refused** rather than quietly buffered
 optional guarantee with a buffering fallback is not a guarantee. The bound is enforced as
 the stream is consumed, so an over-size body is aborted mid-flight instead of downloaded
 and then rejected.
+
+### Bounded verified media publication (ADR-0106)
+
+[ADR-0106](../../decisions/0106-media-publication-requires-bounded-verified-bytes.md) narrows
+first-party ingestion to independently verified finite format profiles. A MIME prefix, filename,
+HTTP header, existing handle or caller-supplied verification flag cannot establish identity.
+All media remains untrusted. Structural identity checks do not establish decoder validity,
+playability, absence of malicious content or polyglot exclusion. Explicit raw PCM has the
+structural-only qualification below.
+
+Both reference stores independently enforce the existing **256 KiB** decoded inline bound for
+image/audio `put`; video/document `put` refuses at any size. Their separate `putStream` path
+counts at most **25 MiB**, before excess hashing, copying or writing. It never falls back to
+`put`. The in-memory implementation owns borrowed chunks and accumulates within that bound;
+the filesystem implementation consumes them incrementally. Recognizers retain at most
+**64 KiB inspection scratch**, with bounded structural depth/count and safe lengths.
+Required tails, checksums and track identity complete before publication.
+
+The exact initial canonical MIME set is `image/png`, `image/jpeg`, `image/gif`, `image/webp`,
+`audio/wav`, `audio/mpeg`, `audio/flac`, `audio/ogg`, `audio/opus`, `audio/aac`, `audio/L16`,
+`video/mp4`, `video/webm` and `application/pdf`. Bare MIME comparison is case-insensitive;
+only `image/jpg`, `audio/x-wav` and `audio/x-flac` are lexical aliases. Identified Ogg Opus
+produces `audio/opus`; an `audio/ogg` declaration can accept that independently observed codec.
+This relation is directional and does not make Ogg and Opus metadata interchangeable.
+Unsupported variants refuse rather than acquiring a generic MIME label.
+
+The following is the finite ingestion profile, rather than a claim to decode every file
+carrying one of these MIME labels. Each family consumes the complete body. Large skipped
+payloads remain subject to the object bound; required structural evidence cannot be skipped.
+
+| Canonical MIME | Admitted identity and framing | Explicit limits |
+| --- | --- | --- |
+| `image/png` | Signature, unique first IHDR, legal colour/depth fields, palette ordering, consecutive nonempty IDAT, every chunk CRC and exact IEND. | Unknown critical chunks and APNG refuse; compressed pixels are not decoded. [PNG specification](https://www.w3.org/TR/png-3/). |
+| `image/jpeg` | SOF0/1/2, 1–4 components, positive dimensions, DQT/DHT, referenced SOS tables, sequential/progressive scan framing, entropy marker escaping/restarts and EOI. | Other SOF, arithmetic and lossless families refuse; entropy coefficients and progressive reconstruction are not decoded. [ITU T.81](https://www.w3.org/Graphics/JPEG/itu-t81.pdf). |
+| `image/gif` | GIF87a/89a screen/palettes, image rectangles, LZW minimum code size, terminated nonempty subblocks, reviewed extensions and exact trailer; multiple images allowed. | LZW output is not decoded. [GIF89a](https://www.w3.org/Graphics/GIF/spec-gif89a.txt). |
+| `image/webp` | Exact RIFF extent/padding; static VP8 keyframe or VP8L header; optional first VP8X; metadata/ALPH ordering and flags agree. | Animation/unknown chunks refuse; compressed pixels and VP8L alpha content are not decoded. [WebP RIFF](https://developers.google.com/speed/webp/docs/riff_container). |
+| `audio/wav` | RIFF/WAVE extent/padding; one fmt before nonempty aligned data; PCM 8/16/24/32-bit or float 32/64-bit; fmt16/18 or extensible40 PCM/float GUID. | 1–32 channels, rate 1–768000, matching block/byte rate and valid bits. RF64/RIFX/other codecs refuse; channel-mask layout is not decoded. [WAVEFORMATEX](https://learn.microsoft.com/en-us/windows/win32/api/mmreg/ns-mmreg-waveformatex), [extensible format](https://learn.microsoft.com/en-us/windows/win32/api/mmreg/ns-mmreg-waveformatextensible). |
+| `audio/mpeg` | At least two contiguous complete frames; MPEG 1/2/2.5, layers I/II/III, finite bitrate/rate tables, stable version/layer/rate and padding-aware lengths. Optional single ID3v2.3/2.4 and terminal ID3v1. | Free/reserved bitrate/rate fields refuse; codec CRC, payload and full ID3 frame grammar are not decoded. [MPEG-1 standard text](https://ossrs.net/lts/zh-cn/assets/files/ISO_IEC_11172-3-MP3-1993-7e218e3ec360c25149d36152c4e02f08.pdf), [MPEG-2 standard text](https://ossrs.net/lts/zh-cn/assets/files/ISO_IEC_13818-3-MP3-1997-8bbd47f7cd4e0325f23b9473f6932fa1.pdf), [ID3 structure](https://id3.org/id3v2.4.0-structure). MPEG-2.5 is an extension, not an ISO conformance claim. |
+| `audio/flac` | fLaC, first STREAMINFO34, bounded metadata chain; consistent frame fields/coded numbers, subframe framing including fixed/LPC/Rice/escape residuals, zero padding, CRC8/CRC16 and declared nonzero sample total. | Samples and STREAMINFO MD5 are not reconstructed. [RFC 9639](https://www.rfc-editor.org/rfc/rfc9639.html). |
+| `audio/ogg`, `audio/opus` | One serial, contiguous v0 pages from BOS through EOS, continuation/lacing and page CRC. OpusHead v1/map0/mono-stereo plus OpusTags and audio packet yields `audio/opus`; Vorbis identification/comments/setup signature/framing plus audio packet yields `audio/ogg`. | Chained streams, alternate Opus mapping and combined first BOS/EOS refuse. Vorbis setup codebooks/audio packets are not decoded; duration is not inferred from granules. [Ogg Opus](https://www.rfc-editor.org/rfc/rfc7845.html), [Vorbis](https://www.xiph.org/vorbis/doc/Vorbis_I_spec.html). |
+| `audio/aac` | Complete ADTS 7/9-byte frames, legal frequency/channel fields, one raw-data block, stable ID/profile/rate/channels and nonempty payload. | Raw AAC, LATM/LOAS, channel configuration zero and multiblock ADTS refuse; codec CRC/payload are not decoded. [ADTS standard text](https://previewnorm.com/iso/ISO%20IEC%2014496%203-2005%20PDF.pdf), tables 1.A.6–7. |
+| `audio/L16` | Explicit protocol/declaration authority plus nonempty even sample-byte count. | Structural exception: no independent format signature, rate/endianness conversion or duration derivation. Fetched bytes require an explicit compatible HTTP header. |
+| `video/mp4` | Reviewed ftyp brands; one moov with video track, positive track ID/timescale/dimensions/data reference, visual sample description and nonempty mdat. avc1/avc3+avcC, hvc1/hev1+hvcC, vp09+vpcC or av01+av1C configuration framing required. Late moov and bounded extended box sizes supported. | Nonfragmented, unencrypted video only. Audio-only/unknown codecs refuse. Parameter sets/sample payloads, offsets, timing and complete presentation are not decoded. [Visual sample description](https://developer.apple.com/documentation/quicktime-file-format/video_sample_description), [registered brands](https://mp4ra.org/registered-types/brands), [VP9 binding](https://www.webmproject.org/vp9/mp4/), [AV1 binding](https://aomediacodec.github.io/av1-isobmff/). |
+| `video/webm` | EBML webm header, one known/unknown-size Segment, known-size children/clusters; up to 32 tracks; positive-dimension VP8/VP9/AV1 video track and an actual unlaced block referencing it. Late Tracks supported. | Unknown-size clusters, lacing, encryption, audio-only and unknown video codecs refuse. Timing, seeking, codec-private and compressed payload semantics are not decoded. [WebM container](https://www.webmproject.org/docs/container/), [EBML](https://www.rfc-editor.org/rfc/rfc8794.html). |
+| `application/pdf` | PDF 1.0–1.7/2.0 header, terminal startxref/EOF, classic xref within a 49152-byte rolling tail, bounded subsection entries and flat reviewed trailer keys with Root/Size consistency. | Xref streams, hybrid/encrypted/nested or unreviewed trailers refuse. Objects/pages, prior xref chains and live entry targets are not resolved; header 2.0 is admitted only within this classic profile. [ISO 32000-1](https://opensource.adobe.com/dc-acrobat-sdk-docs/standards/pdfstandards/pdf/PDF32000_2008.pdf). |
+
+One selected recognizer owns a reusable 4096-byte arena; Ogg additionally retains 287
+header/lacing bytes. PDF instead owns its 49152-byte tail and 9-byte header, plus bounded
+tokens (64 ordinary or 256 hex characters) and eight trailer keys. One allocation authority
+bounds aggregate retained inspection buffers to 65536 bytes. Parser tables and stacks have
+finite scalar limits: structural nesting 16 where applicable, general structures 65536,
+audio frames/Ogg pages 1048576, and Ogg comments 65536. This describes inspection data,
+not total V8 heap, decoded base64, store-owned object memory or decoder validity.
+
+The provider compatibility controls exercise installed SDK HTTP bodies through actual CAS
+and SQLite admission: OpenAI chat and TTS AAC/Opus/PCM, plus Gemini inline PCM, including
+effective native chat selectors. Unknown explicit output selectors refuse before SDK entry;
+ordinary Gemini text `application/json` remains a text response format. These are offline
+synthetic compatibility controls, not paid-provider captures or decoded audio evidence.
+
+```ts
+interface HostMediaRequest {
+  readonly url: string;
+  readonly mimeType: string;
+  readonly maxBytes: number;
+  readonly signal?: AbortSignalLike;
+}
+type MediaUrlFetch = (request: HostMediaRequest) => Promise<Uint8Array>;
+type MediaUrlStream = (request: HostMediaRequest) => AsyncIterable<Uint8Array>;
+// Core HostMediaFetch/HostMediaStream import this same shared request shape.
+// The engine supplies its trusted maxBytes and run signal before host entry.
+
+interface DurableMediaMeta {
+  readonly handle: string;
+  readonly mimeType: string;
+  readonly modality: 'image' | 'audio' | 'video' | 'document';
+  readonly byteLength: number;
+  readonly durationMs?: number;
+}
+// Required on a present MediaStore:
+validateMedia(
+  handle: string,
+  descriptor: Omit<DurableMediaMeta, 'handle' | 'byteLength'> & { readonly byteLength?: number },
+): Promise<DurableMediaMeta>;
+```
+
+This replaces the former positional host fetch/stream arguments; embeddings must migrate both
+ports and supply `validateMedia`. Missing validation refuses. Optional input byte count is a
+claim, while the returned count is required and independently observed. A supplied count must
+be a nonnegative safe integer equal to actual bytes. Present duration must be a positive safe
+integer on audio/video; it is consistency metadata, not decoded duration evidence. Invalid
+presence is never erased. The returned descriptor is owned. Filesystem validation incrementally
+checks the opened bounded fd, hash and format; it does not invoke whole-object `get`.
+
+De-inlining synchronously owns the supported inert graph before its first await,
+including source/hints, nested arrays/records and intrinsic Map/Set keys/values. It refuses
+accessors, unsupported carriers and inspection faults without invoking caller getters or overridden
+collection iterators. Transparent Proxy reflection can itself trap; thrown faults become fixed
+errors, without a claim of universally trap-free detection. Every occurrence is checked before
+handle deduplication and again against actual returned evidence. Same-hash canonical MIME,
+modality, known counts and known durations must agree. Missing stores refuse handle-only media
+as well as inline/URL media; text-only values need no store but also return the owned snapshot,
+so a caller cannot introduce unvalidated media during the promise gap.
+
+The optional synchronous `deInlineMedia` fourth callback receives the owned graph's unpinned
+count after all original occurrences pass preflight and before host entry. The engine reserves
+its existing per-node/run rehost budgets there. This prevents counting one caller-owned graph
+and subsequently publishing a mutated graph. A source iterator is acquired once and closed on
+early store return/failure; actual native host resources are joined, while an arbitrary hostile
+never-settling iterator return does not defeat the existing bounded-liveness contract.
+
+Fetch receives the declared MIME. It normalizes the final Content-Type casing/parameters once;
+an explicit conflicting header refuses before body consumption. Missing/octet-stream headers
+require unambiguous self-describing byte evidence. **Raw `audio/L16` requires nonempty even
+sample bytes and an explicit compatible HTTP header**; native provider PCM instead has its
+explicit protocol type. This does not detect PCM identity, convert sample rate/endianness or
+repair existing provider representation limitations. Connect/body-idle deadlines and cancellation
+remain; a progressing download gains no new total deadline.
+
+The engine awaits a present `MediaReferencePort.admitProducedMedia(batch)` before media enters
+workflow state, `save_to`, durable sequence allocation, append or terminal outbox publication.
+Absent reference ports are allowed after byte admission; present incomplete ports refuse.
+The [SQLite immutable batch contract](database-schema.md#media-metadata-admission) creates no
+read grants. After append ACK, reference mutation/reclaim remains best effort. Terminal
+preparation failure strips nested media from its outputs while preserving one terminal and
+already incurred accounting. Every later publication revalidates bytes; there is no mutable-file
+verification cache. Unsupported old handles may remain stored but cannot bypass new admission.
+
+`MediaAdmissionError` has fixed content-free diagnostics and these closed reasons:
+`unsupported_mime`, `invalid_descriptor`, `descriptor_conflict`, `invalid_format`,
+`inspection_limit`, `object_limit`, `inline_limit`, `unsafe_value`, `store_unavailable`,
+`store_contract`, `source_unavailable`, `source_failed`, `stream_incomplete`, `verifier_state`.
+It carries no supplied MIME, URL, handle, native cause or bytes. Existing classified network/
+timeout errors retain their identity; a failed rehost never repeats already billed node execution.
+The [physical storage and maintenance contract](built-in-tools.md#physical-media-storage-and-limits)
+owns native file/temporary mechanisms. Whole-Step 6 causal controls and independent cumulative
+acceptance remain required; implementation of this contract alone does not close that gate.
 
 ### Model discovery — the `listModels?` capability ([ADR-0064](../../decisions/0064-live-model-catalog.md))
 

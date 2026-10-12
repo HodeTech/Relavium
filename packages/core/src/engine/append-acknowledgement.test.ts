@@ -344,6 +344,7 @@ describe('ADR-0103 private append acknowledgement', () => {
       host: {
         ...host,
         mediaReferences: {
+          admitProducedMedia: () => undefined,
           recordRunMedia: () => {},
           reclaimRun: () => {
             callbackCalls += 1;

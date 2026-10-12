@@ -36,7 +36,7 @@ it('both cooperating grace collectors continue to the orphan phase after one rem
   root = realpathSync(mkdtempSync(join(tmpdir(), 'relavium-gc-delete-races-')));
   const first = new FilesystemMediaStore(root);
   const second = new FilesystemMediaStore(root);
-  const handle = await first.put(Buffer.from('native GC deletion fixture'));
+  const handle = await first.put(Buffer.from('native GC deletion fixture'), 'audio/L16');
   const digest = handle.slice('media://sha256-'.length);
   const target = join(root, digest.slice(0, 2), digest.slice(2));
   const firstList = vi.spyOn(first, 'listHandles');

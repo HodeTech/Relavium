@@ -255,3 +255,17 @@ describe('W7 native budget and secret/MCP flag forwarding', () => {
     });
   });
 });
+
+it('MEDIA_MAINTENANCE_FORWARDING: parser forwards each acknowledgement exactly', () => {
+  for (const flags of [[], ['--legacy-offline'], ['--force'], ['--legacy-offline', '--force']]) {
+    const result = drive(['media', 'prune-temporaries', ...flags]);
+    expect(result.id, 'MEDIA_MAINTENANCE_FORWARDING').toBe('media.prune-temporaries');
+    expect(result.input, 'MEDIA_MAINTENANCE_FORWARDING').toEqual({
+      positionals: [],
+      options: {
+        legacyOffline: flags.includes('--legacy-offline') ? true : undefined,
+        force: flags.includes('--force') ? true : undefined,
+      },
+    });
+  }
+});

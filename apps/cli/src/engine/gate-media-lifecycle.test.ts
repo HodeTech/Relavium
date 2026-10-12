@@ -43,11 +43,12 @@ for (const ending of [
     });
     const cas = new InMemoryMediaStore();
     const mediaStore: MediaStore = {
-      put: async (bytes) => {
+      validateMedia: (handle, descriptor) => cas.validateMedia(handle, descriptor),
+      put: async (bytes, mimeType) => {
         entered();
         await held;
         if (ending === 'late-pin-rejection') throw new Error('synthetic private pin failure');
-        return cas.put(bytes);
+        return cas.put(bytes, mimeType);
       },
       get: (handle) => cas.get(handle),
       resolveForEgress: (handle) => cas.resolveForEgress(handle),
@@ -60,6 +61,7 @@ for (const ending of [
     const activeRefs = new Set<string>();
     const referenceActions: string[] = [];
     const mediaReferences: MediaReferencePort = {
+      admitProducedMedia: (batch) => nativeReferences.admitProducedMedia(batch),
       recordRunMedia: (meta, runId) => {
         const recorded = nativeReferences.recordRunMedia(meta, runId);
         activeRefs.add(meta.handle);
@@ -106,8 +108,8 @@ for (const ending of [
             payload: {
               image: {
                 type: 'media',
-                mimeType: 'image/png',
-                source: { kind: 'base64', data: 'aGVsbG8=' },
+                mimeType: 'audio/L16',
+                source: { kind: 'base64', data: 'AQACAAMA' },
               },
             },
           });

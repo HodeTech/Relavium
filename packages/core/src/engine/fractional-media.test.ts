@@ -17,6 +17,7 @@ import { reconstructCheckpointState } from './checkpoint.js';
 import { WorkflowEngine } from './engine.js';
 import { createInMemoryHost, InMemoryRunStore } from './execution-host.js';
 import type { NodeExecutor } from './node-executor.js';
+import { accountingMediaPorts } from './fixtures/accounting-media.js';
 
 const MODEL = 'offline-fractional-media';
 const HANDLE = `media://sha256-${'1'.repeat(64)}`;
@@ -58,7 +59,15 @@ function startMedia(options: {
   const modality = options.modality ?? (options.finish === 'sync' ? 'audio' : 'video');
   const overlay = new OfflineOverlay(options.unknownModel ? [] : [[MODEL, options.price ?? PRICE]]);
   const store = new InMemoryRunStore();
-  const base = createInMemoryHost({ store });
+  const base = createInMemoryHost({
+    store,
+    ...accountingMediaPorts({
+      handle: HANDLE,
+      mimeType: modality === 'audio' ? 'audio/mpeg' : 'video/mp4',
+      modality,
+      byteLength: 4,
+    }),
+  });
   let clockJump = 0;
   const host = {
     ...base,

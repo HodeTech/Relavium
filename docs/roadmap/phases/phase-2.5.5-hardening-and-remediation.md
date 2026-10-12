@@ -2008,6 +2008,102 @@ Step 6's media work, Step 7's interim provider-header gate and Step 8's whole-wa
 security sittings, full coverage and exact published-head CI remain open. This
 acceptance does not close Phase 2.5.5 A–I, later joint waves or approved CR limits.
 
+### Step 6 media implementation checkpoint — 2026-10-12
+
+**Implementation on `development`; acceptance remains open.** This increment implements
+[ADR-0106](../../decisions/0106-media-publication-requires-bounded-verified-bytes.md)
+on the released Step 5 base `c6921be1`. Its exact formats, qualifiers, required host
+compatibility change and fixed errors have one home in the
+[media seam](../../reference/shared-core/llm-provider-seam.md#bounded-verified-media-publication-adr-0106).
+The [database reference](../../reference/shared-core/database-schema.md#media-metadata-admission)
+owns immutable metadata-batch admission, while the
+[physical storage contract](../../reference/shared-core/built-in-tools.md#physical-media-storage-and-limits)
+and [CLI command](../../reference/cli/commands.md#relavium-media-prune-temporaries)
+own temporary maintenance. No new dependency, migration, paid capture or credential
+is required.
+
+| Boundary | Implemented controls; still subject to cumulative review |
+| --- | --- |
+| Shared publication | Own the inert graph before the first await, preflight all original occurrences, validate handle-only carriers and reconcile actual descriptors. Separate bounded recognizers consume complete bodies; raw PCM remains explicitly structural. |
+| Stores and native reads | Independent inline/stream bounds, owned memory chunks, completed verification, opened-fd actual-size/cumulative bounds, fresh incremental handle validation, range cancellation and joined native reads/close. Existing physical-jail controls remain. |
+| Metadata and engine | One owned BEGIN IMMEDIATE/busy-retried metadata batch before state/save, and a separate fresh barrier before durable numbering/append/outbox. Admission grants no read scope; post-ACK retention remains best effort. Terminal refusal strips its media without repeating billed execution. |
+| Temporary ownership | Conservative absent-owner/24-hour reclamation, exclusive identity-bearing claims and crash recovery, live/uncertain-owner retention, producer/maintenance handshake and exact legacy offline grammars. Native children use readiness/release barriers and kill/join cleanup. |
+| Providers and host | Installed SDK AAC/Opus/PCM compatibility, unsupported selector refusal before entry, normalized declared/header/body agreement, exact MIME/cap/signal forwarding and joined platform-owned HTTP closure. |
+
+Author self-review reproduced a promise-gap defect: media-free values returned the
+caller-owned graph after ownership scanning, so a caller could introduce media before
+the continuation. The implementation now returns the owned snapshot for these values
+too; a permanent regression covers callback and immediate promise-gap mutation through
+records/Map/Set. This is a correction within the approved ownership obligation, not a
+new design decision.
+
+The author ran the complete ordinary workspace gate after migrating the existing
+accounting fixtures to the required media ports: `pnpm turbo run lint typecheck test
+--concurrency=1` passed all **23 tasks without cache**, with **549 complete test files,
+12,122 passing cases and 13 declared skips**. These are actual executions on the
+implementation working tree, not execution of a later commit. The native media
+process tests retain explicit five-second IPC readiness bounds and kill/join cleanup;
+their multi-process cases have a separate thirty-second aggregate test budget.
+No production deadline or causal-phase limit was raised.
+
+The whole-workspace build/format gate passed all seven tasks (five cached). A further
+self-check found that two new native-test bootstraps used `registerHooks`, introduced
+after the supported Node 22.13 floor. They now use the floor-compatible `register`
+loader, still resolving the current checkout's TypeScript sources. An official
+SHA-256-verified Node 22.13.0 runtime passes all three complete native temporary,
+metadata-writer and CLI-maintenance files: **36 cases**. This evidence is specific to
+that macOS runtime and does not stand in for the Windows gate.
+
+The first extended causal capture is **incomplete**: 32 mechanisms completed before
+the next removal produced a rejection-assertion shape the evidence tool correctly
+refused to certify. All 33 attempted source changes were restored byte-for-byte and
+the worker joined. The affected tests now use explicit settled outcomes with named
+semantic assertions; this test-evidence correction does not establish whole-matrix
+acceptance. Additional reachable classifier bounds and resource-close controls are
+being included before the next complete capture.
+
+Author checks are preparation, not acceptance. The extended existing filesystem
+causal family, exact fixed/removal/restored inventories,
+two NEW clean independent complete cumulative rounds and platform-scoped evidence
+remain required. Step 6 queue items and the whole-wave security certificate stay open
+until those gates are recorded.
+
+### Step 6 evidence corrections — 2026-10-13
+
+**Implementation remains subject to independent review; Step 6 is not yet accepted.**
+The complete uncached ordinary gate subsequently passed **549 files / 12,126 cases /
+13 established skips**. After the final terminal-witness correction, all 23 ordinary
+tasks passed again, with twelve cached tasks; the complete CLI file inventory still
+has 241 files / 4,119 passing cases and two established skips. These executions
+describe the implementation working tree, not a later commit or platform.
+
+Two further incomplete physical captures exposed evidence defects. One stopped
+after 33 complete controls because its memory-store removal bypassed `finish()` but
+left the earlier byte verifier active. The declaration now removes that independent
+verification sequence while retaining the unrelated missing-object, hash and size
+checks. The next run completed 54 controls before a terminal removal survived: two
+tests used `toMatchObject({ outputs: {} })`, which accepts additional output keys.
+They now require exact empty terminal outputs and positively assert the successfully
+published node descriptor. The production barriers were retained. Every attempted
+source change was restored; incomplete runs and a discarded built-package diagnostic
+are not causal acceptance.
+
+The repaired terminal controls and the remaining parser/resource controls pass
+their separate complete-file fixed/removal/restored diagnoses. The full inventory
+remains **71 mechanisms** (26 filesystem and 45 media), with no dropped workload or
+raised phase, output or evidence ceiling. Selected runs do not establish the full
+matrix. The failed 54-control run plus the next attempted control took 589.54 seconds;
+the existing CI job now allows twenty minutes for the expanded aggregate workload,
+installation and orchestration checks. The ninety-second phase bound, 8-MiB output
+bound and 2,000-file / 64-MiB retained-evidence limits remain unchanged. Per-phase
+source manifests use compact JSON with every path, size and digest retained.
+
+The next full physical run will use the committed review head. Independent cumulative
+review, exact source/evidence attribution and two NEW clean complete rounds remain
+gates. Native Windows execution and whole-wave certification remain separate open
+obligations; the Windows workflow now includes the complete shared recognizer and
+CLI media lifecycle cohorts alongside its existing complete DB suite.
+
 ### Remaining gate
 
 The maintainer approved the revised four-ADR decision package and eight-step plan
