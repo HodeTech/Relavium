@@ -28,7 +28,14 @@ vi.mock('node:fs/promises', async (original) => {
     open: async (...args: Parameters<typeof native.open>) => {
       boundary.beforeOpen();
       const file = await native.open(...args);
-      boundary.afterOpen(file);
+      try {
+        boundary.afterOpen(file);
+      } catch (error) {
+        // A native fixture mutation can itself be refused on Windows. The caller has not
+        // received this fd yet, so the wrapper still owns closing it on that path.
+        await file.close();
+        throw error;
+      }
       const read = file.readFile.bind(file);
       vi.spyOn(file, 'readFile').mockImplementation(async (...readArgs) => {
         const result = await read(...readArgs);
@@ -46,7 +53,9 @@ let root: string;
 let target: string;
 let handle: string;
 let store: FilesystemMediaStore;
+let replacementFailure: { code: unknown; syscall: unknown } | undefined;
 beforeEach(async () => {
+  replacementFailure = undefined;
   for (const hook of Object.values(boundary)) hook.mockReset();
   base = mkdtempSync(join(tmpdir(), 'relavium-cas-read-races-'));
   root = join(base, 'cas');
@@ -64,14 +73,46 @@ afterEach(() => {
 function replace(bytes: Uint8Array): void {
   const temporary = join(root, 'replacement');
   writeFileSync(temporary, bytes);
-  renameSync(temporary, target);
+  fixtureRename(temporary, target);
+}
+
+function fixtureRename(from: string, to: string): void {
+  try {
+    renameSync(from, to);
+  } catch (error) {
+    replacementFailure = {
+      code: typeof error === 'object' && error !== null && 'code' in error ? error.code : undefined,
+      syscall:
+        typeof error === 'object' && error !== null && 'syscall' in error
+          ? error.syscall
+          : undefined,
+    };
+    throw error;
+  }
+}
+
+/** Assert an actual native Windows rename refusal, without claiming an inode replacement occurred. */
+function expectNativeRenameRefusal(error: unknown): void {
+  expect(process.platform).toBe('win32');
+  expect(replacementFailure?.syscall).toBe('rename');
+  expect(['EPERM', 'EBUSY']).toContain(replacementFailure?.code);
+  expect(error).toEqual(new MediaStoreFilesystemError('io'));
 }
 
 it.each(['beforeOpen', 'afterOpen', 'afterRead'] as const)(
   'accepts a cooperative atomic replacement at %s with the same content address',
   async (point) => {
     boundary[point].mockImplementationOnce(() => replace(bytes));
-    expect(await store.get(handle)).toEqual(new Uint8Array(bytes));
+    const result = await store.get(handle).then(
+      (value) => ({ value, error: undefined }),
+      (error: unknown) => ({ value: undefined, error }),
+    );
+    if (replacementFailure === undefined) expect(result.value).toEqual(new Uint8Array(bytes));
+    else {
+      expectNativeRenameRefusal(result.error);
+      expect(result.value).toBeUndefined();
+      expect(await store.get(handle)).toEqual(new Uint8Array(bytes));
+    }
     expect(boundary[point]).toHaveBeenCalledOnce();
   },
 );
@@ -81,8 +122,18 @@ it.each(['afterOpen', 'afterRead'] as const)(
   async (point) => {
     boundary[point].mockImplementationOnce(() => replace(Buffer.from('corrupt replacement')));
     // This read linearizes at open; a subsequent read must verify the replacement independently.
-    expect(await store.get(handle)).toEqual(new Uint8Array(bytes));
-    await expect(store.get(handle)).rejects.toThrow(/content-address/);
+    const result = await store.get(handle).then(
+      (value) => ({ value, error: undefined }),
+      (error: unknown) => ({ value: undefined, error }),
+    );
+    if (replacementFailure === undefined) {
+      expect(result.value).toEqual(new Uint8Array(bytes));
+      await expect(store.get(handle)).rejects.toThrow(/content-address/);
+    } else {
+      expectNativeRenameRefusal(result.error);
+      expect(result.value).toBeUndefined();
+      expect(await store.get(handle)).toEqual(new Uint8Array(bytes));
+    }
   },
 );
 
@@ -141,10 +192,18 @@ it.each(['afterOpen', 'afterRead'] as const)(
 
 it('still refuses a root replacement after reading', async () => {
   boundary.afterRead.mockImplementationOnce(() => {
-    renameSync(root, `${root}-old`);
+    fixtureRename(root, `${root}-old`);
     mkdirSync(root);
   });
-  await expect(store.get(handle)).rejects.toMatchObject({ reason: 'unsafe_path' });
+  const error: unknown = await store.get(handle).then(
+    () => undefined,
+    (failure: unknown) => failure,
+  );
+  if (replacementFailure === undefined) expect(error).toMatchObject({ reason: 'unsafe_path' });
+  else {
+    expectNativeRenameRefusal(error);
+    expect(await store.get(handle)).toEqual(new Uint8Array(bytes));
+  }
 });
 
 it('reports a close failure after a successful read without leaking the native error', async () => {

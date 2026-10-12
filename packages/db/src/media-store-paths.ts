@@ -153,10 +153,22 @@ export class MediaStorePaths {
   }
 
   file(path: string): Stats | undefined {
+    const info = this.fileSnapshot(path);
+    // fileSnapshot already excludes additional links; ownership also excludes detachment.
+    if (info !== undefined && info.nlink === 0) throw new MediaStoreFilesystemError('unsafe_path');
+    return info;
+  }
+
+  /**
+   * A pathname stat may observe a just-detached inode when a concurrent rename wins
+   * between the kernel's lookup and attribute read. Accept that zero-link snapshot only
+   * for non-owning reads/publication checks; temporary ownership and deletion stay strict.
+   */
+  fileSnapshot(path: string): Stats | undefined {
     this.assertParent(path);
     try {
       const info = lstatSync(path);
-      if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1)
+      if (!info.isFile() || info.isSymbolicLink() || (info.nlink !== 0 && info.nlink !== 1))
         throw new MediaStoreFilesystemError('unsafe_path');
       return info;
     } catch (error) {
@@ -181,14 +193,14 @@ export class MediaStorePaths {
   /**
    * Read from the opened descriptor, not from a durable association with its pathname.
    * Cooperative atomic publication can replace that name before/after open or detach the fd's
-   * inode (nlink=0). Neither permits an additional hard link: the current entry must still be a
-   * regular single-link file, and the fd must have at most one link on the same filesystem.
+   * inode (nlink=0). Neither permits an additional hard link: the current entry snapshot and
+   * fd must remain regular files with at most one link on the same filesystem.
    * The caller must verify the bytes' content hash before delivery. This retains ADR-0105's
    * owner-controlled-parent assumption; it is not a descriptor-relative parent-swap jail.
    * Temporary-file ownership and destructive operations must not use this read-only check.
    */
   assertReadableFile(path: string, opened: Stats): void {
-    const current = this.file(path);
+    const current = this.fileSnapshot(path);
     if (
       !opened.isFile() ||
       (opened.nlink !== 0 && opened.nlink !== 1) ||

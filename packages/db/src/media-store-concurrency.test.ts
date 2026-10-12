@@ -43,7 +43,19 @@ describe.each(['put', 'putStream'] as const)('cooperating CAS %s publishers', (p
       // Join failures too: fixture cleanup must never race an outstanding publisher or reader.
       const results = await Promise.allSettled(work);
       expect(
-        results.filter((result) => result.status === 'rejected'),
+        results.flatMap((result, index) =>
+          result.status === 'rejected'
+            ? [
+                {
+                  index,
+                  operation: index % 2 === 0 ? publish : delivery,
+                  error:
+                    result.reason instanceof Error ? result.reason.message : 'non-error rejection',
+                  stack: result.reason instanceof Error ? result.reason.stack : undefined,
+                },
+              ]
+            : [],
+        ),
         'FS_CAUSAL_CAS_COOPERATIVE_READ',
       ).toEqual([]);
       for (const [index, result] of results.entries()) {

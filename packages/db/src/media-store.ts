@@ -35,6 +35,17 @@ function handleOf(bytes: Uint8Array): string {
   return `${HANDLE_PREFIX}${sha256Hex(bytes)}`;
 }
 
+/** Windows MoveFileExW may refuse replacement while a cooperating reader owns the target fd. */
+function isWindowsRenameContention(error: unknown): boolean {
+  return (
+    process.platform === 'win32' &&
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    (error.code === 'EPERM' || error.code === 'EBUSY')
+  );
+}
+
 /** Extract the validated 64-hex digest from a handle, or throw — never trust an arbitrary string. */
 function digestOf(handle: string): string {
   if (!MEDIA_HANDLE_PATTERN.test(handle)) {
@@ -136,7 +147,7 @@ export class FilesystemMediaStore implements MediaStore {
       const digest = digestOf(handle);
       const target = this.#paths.path(digest, true);
       if (target === undefined) throw new MediaStoreFilesystemError('unsafe_path');
-      this.#paths.file(target); // Existing final links/special files are refused, even though rename replaces names.
+      this.#paths.fileSnapshot(target); // Final links/special files refuse; a detached snapshot may reflect another publisher.
       this.#paths.assertOwnedFile(tmp, identity);
       await file.close().catch((error: unknown) => {
         throw this.#paths.error(error);
@@ -145,11 +156,21 @@ export class FilesystemMediaStore implements MediaStore {
       this.#paths.assertOwnedFile(tmp, identity);
       if (this.#paths.path(digest, false) !== target)
         throw new MediaStoreFilesystemError('unsafe_path');
-      this.#paths.file(target);
-      await rename(tmp, target).catch((error: unknown) => {
-        throw this.#paths.error(error);
-      });
-      published = true;
+      this.#paths.fileSnapshot(target);
+      try {
+        await rename(tmp, target);
+        published = true;
+      } catch (error) {
+        if (!isWindowsRenameContention(error)) throw this.#paths.error(error);
+        // Another publisher's admitted, hash-verified bytes satisfy the same content address.
+        // This is one verification, not a retry or permission bypass. Keep our temp owned and
+        // unpublished so the finally block removes it; missing/corrupt/unsafe winners still fail.
+        try {
+          await this.get(handle);
+        } catch {
+          throw this.#paths.error(error);
+        }
+      }
       result = handle;
     } finally {
       // Join close and cleanup independently. A cleanup fault must not replace the upstream stream failure.
@@ -178,7 +199,7 @@ export class FilesystemMediaStore implements MediaStore {
     const digest = digestOf(handle);
     const path = this.#paths.path(digest, false);
     if (path === undefined) throw new MediaStoreFilesystemError('missing');
-    const admitted = this.#paths.file(path);
+    const admitted = this.#paths.fileSnapshot(path);
     if (admitted === undefined) throw new MediaStoreFilesystemError('missing');
     const file = await open(
       path,
