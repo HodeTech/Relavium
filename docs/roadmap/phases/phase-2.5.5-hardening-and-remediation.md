@@ -1390,6 +1390,31 @@ and unchanged developer sources. Its 1,034-file / 457-dependency manifest attrib
 execution to `962c6a54` plus this correction working tree. Fresh published native
 execution and two NEW clean complete cumulative rounds still gate Step 2 acceptance.
 
+**Fourth-round credential-floor correction:** the complete cumulative review at
+`5c95857d` found one High omission: Terraform's standard `.terraformrc` and Windows
+`terraform.rc` files may contain access tokens but bypassed the common basename
+floor. An independent synthetic native probe reproduced read, mention, discovery
+and write access in all three tiers. The two names now join the existing folded
+floor; ordinary Terraform source and similarly named files remain usable. Sixteen
+new permanent controls failed against the original source before the fix. The
+basename-removal matrix includes both names without weakening its exact inventories.
+The CAS and tooling/document slices found no additional issue, but combined R4 is
+**not clean**. Published `5c95857d` Windows, Node 22.13, coverage, wire and filesystem
+jobs pass; usage and required aggregation remain separately pending. These results
+precede this floor correction and do not certify its final head. Fresh gates and
+two NEW complete clean cumulative rounds are still required.
+
+**Fourth-correction local gates:** full `pnpm run ci` passes with **522 package
+files / 11,251 passing tests / 13 established skips**, including all lint/typecheck,
+build/format, isolation/seam/dependency checks, three offline smokes and 78 acceptance
+tool guards. Four wire and 23 usage mechanisms pass, including 429 permanent cases,
+71 joined native children and the actual readiness-timeout control. The complete
+filesystem matrix passes **25 mechanisms / 1,161 assertion executions / 65 expected
+semantic failures**; fixed/restored inventories match, source restoration is exact
+and developer sources remain unchanged. Its 1,034-file / 457-dependency manifest
+identifies `5c95857d` plus the correction working tree, not the later commit. Fresh
+published platform gates and two NEW complete clean cumulative rounds remain open.
+
 ### Remaining gate
 
 The maintainer approved the revised four-ADR decision package and eight-step plan

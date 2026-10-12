@@ -221,3 +221,14 @@ session-anchor validation and catalog containment, retaining original lexical pi
 The [canonical filesystem contract](../reference/shared-core/built-in-tools.md#cli-authority-and-floors)
 owns that join. A deterministic real-file control removes native root selection;
 new native execution and fresh cumulative reviews still gate implementation acceptance.
+
+### Terraform default credential-file correction — 2026-10-12
+
+The fourth cumulative implementation review reproduced a gap in the named Terraform
+credential floor: its standard `.terraformrc` and Windows `terraform.rc` files may
+contain API tokens but were absent from the common basename predicate. They now
+join that same folded read/write/discovery floor, including canonical aliases;
+ordinary Terraform source and similarly named non-credential files remain usable.
+The [canonical filesystem contract](../reference/shared-core/built-in-tools.md#cli-authority-and-floors)
+owns the file list. Permanent native controls and the existing basename-removal
+mechanism require the correction; the finding-bearing review is not a clean round.
