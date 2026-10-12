@@ -1286,7 +1286,7 @@ export function createChatLineHandler(
           // id, so `force` here can only ever clobber this session's prior export, never another session's.
           force: true,
         });
-        deps.io.writeErr(SESSION_EXPORT_REVIEW_NOTICE);
+        emitOutput(SESSION_EXPORT_REVIEW_NOTICE.trimEnd());
         if (deps.global.json) {
           // Machine mode (--json, 2.Q): emit `session:exported` THROUGH the session bus, so it rides the
           // live stream's monotonic per-session sequenceNumber (a DB-derived seq would jump backward and

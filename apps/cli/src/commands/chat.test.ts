@@ -19,6 +19,8 @@ import {
 } from '@relavium/db';
 import { startMcpClient as realStartMcpClient, type McpConnection } from '@relavium/mcp';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { render } from 'ink';
+import { createElement } from 'react';
 
 import type { DoctorProbes } from '../chat/doctor.js';
 import { buildChatSession, buildResumedChatSession } from '../chat/session-host.js';
@@ -31,11 +33,11 @@ import {
 import type { ResolvedChatConfig } from '../config/resolve.js';
 import { EXIT_CODES } from '../process/exit-codes.js';
 import type { GlobalOptions } from '../process/options.js';
-import { selectChatDriver } from '../render/tui/chat-ink.js';
+import { ChatApp, selectChatDriver } from '../render/tui/chat-ink.js';
 import { createChatStore, type ChatStoreController } from '../render/tui/chat-store.js';
 import { INLINE_TRANSCRIPT_BOUND } from '../render/tui/session-view-model.js';
 import { formatTurnSummary, errorRecoveryHint } from '../render/tui/chat-projection.js';
-import { captureIo, parseNdjson, OwnedTtyOutput } from '../test-support.js';
+import { captureIo, parseNdjson, OwnedTtyInput, OwnedTtyOutput } from '../test-support.js';
 import { processIo } from '../process/io.js';
 import {
   DISABLE_MOUSE,
@@ -915,6 +917,90 @@ describe('chatCommand', () => {
       }
     },
   );
+
+  it.each([
+    { result: 'success', refuse: false },
+    { result: 'refusal', refuse: true },
+  ])('renders the live export $result through the interactive transcript', async ({ refuse }) => {
+    client.sqlite.close();
+    client = createClient(join(home, 'export-notice.db'));
+    runMigrations(client.db);
+    const { d, err } = deps([], [textTurn('PRIVATE_ASSISTANT_SENTINEL')]);
+    if (refuse) mkdirSync(join(cwd, 'id-0.relavium.yaml'));
+    const stdout = new OwnedTtyOutput();
+    const stdin = new OwnedTtyInput();
+    let app: ReturnType<typeof render> | undefined;
+    try {
+      await chatCommand(
+        { agent: undefined },
+        {
+          ...d,
+          ...INERT_HOIST,
+          io: { ...d.io, stdoutIsTty: true },
+          drive: async (ctx) => {
+            ctx.startSession();
+            app = render(
+              createElement(ChatApp, {
+                store: ctx.store,
+                alternateScreen: true,
+                onSubmit: ctx.processLine,
+                shouldStop: ctx.shouldStop,
+                onExit: () => undefined,
+                onError: (error) => {
+                  throw error;
+                },
+                onModeChange: () => undefined,
+              }),
+              {
+                stdout,
+                stdin,
+                stderr: stdout,
+                patchConsole: false,
+                interactive: true,
+                alternateScreen: false,
+                exitOnCtrlC: false,
+              },
+            );
+            await app.waitUntilRenderFlush();
+            await ctx.processLine('PRIVATE_USER_SENTINEL');
+            await ctx.processLine('/export');
+            ctx.store.notice('EXPORT_RENDER_POSITIVE_CONTROL');
+            await app.waitUntilRenderFlush();
+            const notices = ctx.store
+              .getSnapshot()
+              .state.transcript.filter((entry) => entry.role === 'notice')
+              .map((entry) => entry.text);
+            const frames = stdout.frames.join('');
+            expect(notices).toContain('EXPORT_RENDER_POSITIVE_CONTROL');
+            expect(frames).toContain('EXPORT_RENDER_POSITIVE_CONTROL');
+            const warning = notices.filter((text) => text.startsWith('note: exported workflow'));
+            expect(warning, 'W2_EXPORT_LIVE_RENDERED_NOTICE').toHaveLength(refuse ? 0 : 1);
+            if (refuse) {
+              expect(frames).not.toContain('exported workflow is a scaffold');
+              expect(err()).toContain('export failed:');
+            } else {
+              expect(frames, 'W2_EXPORT_LIVE_RENDERED_NOTICE').toContain(
+                'exported workflow is a scaffold',
+              );
+              expect(warning[0]).not.toContain('PRIVATE_');
+              expect(existsSync(join(cwd, 'id-0.relavium.yaml'))).toBe(true);
+            }
+            expect(err()).not.toContain('note: exported workflow');
+            await ctx.processLine('/exit');
+            return { kind: 'exit' };
+          },
+        },
+      );
+    } finally {
+      try {
+        app?.unmount();
+        if (app !== undefined) await app.waitUntilExit();
+      } finally {
+        stdin.destroy();
+        stdout.destroy();
+      }
+    }
+  });
 
   it('exports the session-so-far to a scaffold on /export, continues, and does NOT mark the live row', async () => {
     // The filename is the session id ('id-0'). A custom drive snapshots the row status IMMEDIATELY after

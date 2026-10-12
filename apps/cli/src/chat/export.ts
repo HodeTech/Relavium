@@ -22,7 +22,7 @@ import { CliError } from '../process/errors.js';
  * summaries, trimming and omitted context may not transfer into its executable nodes.
  */
 
-/** Fixed, value-free notice shared by both successful CLI export callers; write only to stderr. */
+/** Fixed, value-free successful-export notice: interactive transcript or plain/JSON stderr. */
 export const SESSION_EXPORT_REVIEW_NOTICE =
   'note: exported workflow is a scaffold; conversation context is not reproduced. Compaction summaries, trimming and omitted context may not transfer. Review retained user/assistant text, @-attached files, !-shell output and authored agent literals before committing.\n';
 
