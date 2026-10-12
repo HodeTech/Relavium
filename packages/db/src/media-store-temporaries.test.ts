@@ -1,17 +1,20 @@
 import { randomUUID } from 'node:crypto';
 import { execFileSync, fork, type ChildProcess } from 'node:child_process';
+import fs from 'node:fs';
 import {
   existsSync,
   linkSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
+  renameSync,
   rmSync,
   statSync,
   symlinkSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -135,6 +138,122 @@ async function deadProducer(): Promise<{ path: string; pid: number }> {
   age(path);
   await producer.stop();
   return { path, pid: producer.child.pid };
+}
+
+/** Production writer/reader vectors use real temp files and replace only native identity observations. */
+async function exactIdentityClaims(): Promise<void> {
+  const nativeStat = fs.lstatSync;
+  const nativeUnlink = fs.promises.unlink;
+  let inode = 0n;
+  let interrupted = true;
+  const kill = vi.spyOn(process, 'kill').mockImplementation(() => {
+    throw Object.assign(new Error('fixture absent owner'), { code: 'ESRCH' });
+  });
+  const unlink = vi.spyOn(fs.promises, 'unlink').mockImplementation(async (path) => {
+    if (interrupted && basename(String(path)) === 'blob')
+      throw Object.assign(new Error('fixture interrupted claim'), { code: 'EIO' });
+    await nativeUnlink(path);
+  });
+  const snapshot = (...args: Parameters<typeof nativeStat>): ReturnType<typeof nativeStat> => {
+    const info = nativeStat(...args);
+    const name = basename(String(args[0]));
+    if (info !== undefined && (name.startsWith('media-v1.') || name === 'blob'))
+      Object.defineProperty(info, 'ino', {
+        value: typeof info.ino === 'bigint' ? inode : Number(inode),
+      });
+    return info;
+  };
+  Object.defineProperty(fs, 'lstatSync', { value: snapshot });
+  syncBuiltinESMExports();
+  const makeClaim = async (
+    label: string,
+    value: bigint,
+  ): Promise<{ dir: string; blob: string }> => {
+    inode = value;
+    interrupted = true;
+    const vectorRoot = join(base, label);
+    mkdirSync(vectorRoot);
+    const source = join(vectorRoot, `media-v1.${process.pid}.${randomUUID()}.tmp`);
+    writeFileSync(source, new Uint8Array([5, 6]));
+    age(source);
+    expect(await new FilesystemMediaStore(vectorRoot).sweepTemporaries()).toMatchObject({
+      removed: 0,
+      retained: 1,
+      reasons: { io: 1 },
+    });
+    const name = readdirSync(vectorRoot).find((entry) => entry.startsWith('media-claim-v2.'));
+    if (name === undefined) throw new Error('production writer did not leave an exact claim');
+    interrupted = false;
+    return { dir: join(vectorRoot, name), blob: join(vectorRoot, name, 'blob') };
+  };
+  try {
+    // Both native values collapse to the same Number. The writer and reader must retain exact bits.
+    const first = 1n << 53n;
+    const collision = await makeClaim('collision', first);
+    inode = first + 1n;
+    expect(Number(first)).toBe(Number(inode));
+    expect(
+      {
+        result: await new FilesystemMediaStore(join(base, 'collision')).sweepTemporaries(),
+        exists: existsSync(collision.blob),
+      },
+      'MEDIA_TEMP_NATIVE_IDENTITY_PRECISION',
+    ).toEqual({
+      result: { removed: 0, retained: 1, reasons: { identity_changed: 1 } },
+      exists: true,
+    });
+    for (const [index, value] of [
+      BigInt(Number.MAX_SAFE_INTEGER),
+      first,
+      first + 1n,
+      11193352636847878000n,
+      (1n << 64n) - 1n,
+    ].entries()) {
+      const label = `exact-${index}`;
+      const claim = await makeClaim(label, value);
+      expect(
+        await new FilesystemMediaStore(join(base, label)).sweepTemporaries(),
+        'MEDIA_TEMP_NATIVE_IDENTITY_RECOVERY',
+      ).toEqual({ removed: 1, retained: 0, reasons: {} });
+      expect(existsSync(claim.dir)).toBe(false);
+    }
+    for (const [index, token] of ['00', '0z', 'z'.repeat(14), (1n << 64n).toString(36)].entries()) {
+      const label = `malformed-${index}`;
+      const claim = await makeClaim(label, 123n);
+      const fields = basename(claim.dir).split('.');
+      fields[4] = token;
+      const altered = join(base, label, fields.join('.'));
+      renameSync(claim.dir, altered);
+      expect(await new FilesystemMediaStore(join(base, label)).sweepTemporaries()).toEqual({
+        removed: 0,
+        retained: 1,
+        reasons: { malformed: 1 },
+      });
+      expect(existsSync(join(altered, 'blob'))).toBe(true);
+    }
+    for (const value of [123n, first]) {
+      const label = `legacy-${value}`;
+      const claim = await makeClaim(label, value);
+      const legacy = join(
+        base,
+        label,
+        basename(claim.dir).replace('media-claim-v2.', 'media-claim-v1.'),
+      );
+      renameSync(claim.dir, legacy);
+      const safe = value === 123n;
+      expect(await new FilesystemMediaStore(join(base, label)).sweepTemporaries()).toEqual(
+        safe
+          ? { removed: 1, retained: 0, reasons: {} }
+          : { removed: 0, retained: 1, reasons: { malformed: 1 } },
+      );
+      expect(existsSync(join(legacy, 'blob'))).toBe(!safe);
+    }
+  } finally {
+    Object.defineProperty(fs, 'lstatSync', { value: nativeStat });
+    unlink.mockRestore();
+    kill.mockRestore();
+    syncBuiltinESMExports();
+  }
 }
 
 it('uses exclusive private owner records and only absent old producers are removed', async () => {
@@ -284,6 +403,7 @@ it('retains a mismatched claimed file identity and corrupt claim children', asyn
   expect(await new FilesystemMediaStore(root).sweepTemporaries()).toMatchObject({
     reasons: { malformed: 1 },
   });
+  await exactIdentityClaims();
 });
 
 it('requires BOTH runtime flags and deletes only the two exact offline legacy grammars', async () => {

@@ -38,11 +38,31 @@ const PRODUCER = new RegExp(`^media-v1\\.(${PID})\\.(${UUID})\\.tmp$`);
 const MAINTENANCE = new RegExp(`^media-maintenance-v1\\.(${PID})\\.(${UUID})$`);
 const RECOVERY = new RegExp(`^recovery-v1\\.(${PID})\\.(${UUID})$`);
 const CLAIM = new RegExp(
-  `^media-claim-v1\\.(${PID})\\.(${UUID})\\.([0-9a-z]+)\\.([0-9a-z]+)\\.(${PID})\\.(${UUID})$`,
+  `^media-claim-v[12]\\.(${PID})\\.(${UUID})\\.([0-9a-z]+)\\.([0-9a-z]+)\\.(${PID})\\.(${UUID})$`,
 );
 const LEGACY_ROOT = new RegExp(`^stream\\.${UUID}\\.tmp$`);
 const LEGACY_SHARD = new RegExp(`^[0-9a-f]{62}\\.${UUID}\\.tmp$`);
 const MIN_AGE = 24 * 60 * 60 * 1000;
+const MAX_NATIVE_IDENTITY = (1n << 64n) - 1n;
+const MAX_NATIVE_TOKEN = MAX_NATIVE_IDENTITY.toString(36);
+
+interface NativeIdentity {
+  readonly dev: string;
+  readonly ino: string;
+}
+function nativeIdentityToken(value: bigint): string {
+  if (value < 0n || value > MAX_NATIVE_IDENTITY) throw new MediaStoreFilesystemError('unsafe_path');
+  return value.toString(36);
+}
+function canonicalNativeToken(field: string): boolean {
+  return (
+    /^(?:0|[1-9a-z][0-9a-z]{0,12})$/.test(field) &&
+    (field.length < MAX_NATIVE_TOKEN.length || field <= MAX_NATIVE_TOKEN)
+  );
+}
+function sameNative(a: NativeIdentity, b: NativeIdentity): boolean {
+  return a.dev === b.dev && a.ino === b.ino;
+}
 
 type Liveness = 'absent' | 'live' | 'unknown';
 function live(pid: string): Liveness {
@@ -306,6 +326,19 @@ export class MediaStoreTemporaries {
       throw error;
     }
   }
+  /** Exact claim identity supplements, rather than replaces, the existing cooperative path floor. */
+  private nativeFile(path: string, expected: Stats): NativeIdentity {
+    const info = lstatSync(path, { bigint: true });
+    if (
+      !info.isFile() ||
+      info.isSymbolicLink() ||
+      info.nlink !== 1n ||
+      Number(info.dev) !== expected.dev ||
+      Number(info.ino) !== expected.ino
+    )
+      throw new MediaStoreFilesystemError('unsafe_path');
+    return { dev: nativeIdentityToken(info.dev), ino: nativeIdentityToken(info.ino) };
+  }
   private async claim(
     root: string,
     source: string,
@@ -313,17 +346,24 @@ export class MediaStoreTemporaries {
     pid: string,
     nonce: string,
   ): Promise<boolean> {
-    const name = `media-claim-v1.${pid}.${nonce}.${info.dev.toString(36)}.${info.ino.toString(36)}.${process.pid}.${randomUUID()}`;
+    const original = this.nativeFile(source, info);
+    const name = `media-claim-v2.${pid}.${nonce}.${original.dev}.${original.ino}.${process.pid}.${randomUUID()}`;
     const dir = join(root, name);
     this.paths.root(false);
     await mkdir(dir, { mode: 0o700 }); // Exclusive mkdir: never overwrite another claimant's target.
     const identity = this.directory(root, name);
     try {
       this.paths.assertOwnedFile(source, info);
+      if (!sameNative(this.nativeFile(source, info), original))
+        throw new MediaStoreFilesystemError('unsafe_path');
       this.directory(root, name, identity);
       await rename(source, join(dir, 'blob'));
       const moved = this.child(root, name, identity, 'blob');
-      if (moved === undefined || !same(moved, info))
+      if (
+        moved === undefined ||
+        !same(moved, info) ||
+        !sameNative(this.nativeFile(join(dir, 'blob'), moved), original)
+      )
         throw new MediaStoreFilesystemError('unsafe_path');
       await unlink(join(dir, 'blob'));
       return true;
@@ -354,6 +394,7 @@ export class MediaStoreTemporaries {
     const device = parsed[3];
     const inode = parsed[4];
     const claimant = parsed[5];
+    const exact = name.startsWith('media-claim-v2.');
     if (
       producer === undefined ||
       device === undefined ||
@@ -362,9 +403,14 @@ export class MediaStoreTemporaries {
     )
       return 'malformed';
     for (const field of [device, inode]) {
-      const value = Number.parseInt(field, 36);
-      if (!Number.isSafeInteger(value) || value < 0 || value.toString(36) !== field)
-        return 'malformed';
+      if (exact) {
+        if (!canonicalNativeToken(field)) return 'malformed';
+      } else {
+        // Historical v1 encoded Number stats. An unsafe old token cannot establish exact identity.
+        const value = Number.parseInt(field, 36);
+        if (!Number.isSafeInteger(value) || value < 0 || value.toString(36) !== field)
+          return 'malformed';
+      }
     }
     const unavailable = ownerReason(claimant, true) ?? ownerReason(producer);
     if (unavailable !== undefined) return unavailable;
@@ -406,13 +452,17 @@ export class MediaStoreTemporaries {
         }
         const blob = this.child(root, name, identity, 'blob');
         if (blob !== undefined) {
-          if (blob.dev.toString(36) !== device || blob.ino.toString(36) !== inode)
-            return 'identity_changed';
+          const original = exact
+            ? this.nativeFile(join(dir, 'blob'), blob)
+            : { dev: blob.dev.toString(36), ino: blob.ino.toString(36) };
+          if (original.dev !== device || original.ino !== inode) return 'identity_changed';
           const reason = age(blob, now);
           if (reason !== undefined) return reason;
           this.directory(root, name, identity);
           const current = this.child(root, name, identity, 'blob');
           if (current === undefined || !same(current, blob)) return 'identity_changed';
+          if (exact && !sameNative(this.nativeFile(join(dir, 'blob'), current), original))
+            return 'identity_changed';
           await unlink(join(dir, 'blob'));
         }
         return undefined;
