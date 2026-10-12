@@ -255,10 +255,18 @@ export class FilesystemMediaStore implements MediaStore {
 
   /** Host GC is subject to the same physical root/shard/final identity checks as delivery. */
   async delete(handle: string): Promise<void> {
-    const path = this.#paths.path(digestOf(handle), false);
+    const digest = digestOf(handle);
+    const path = this.#paths.path(digest, false);
     if (path === undefined || this.#paths.file(path) === undefined) return;
     await rm(path).catch((error: unknown) => {
-      throw this.#paths.error(error);
+      const failure = this.#paths.error(error);
+      if (failure.reason === 'missing') {
+        // A cooperating collector may remove the admitted blob before native rm starts.
+        // Revalidate containment and absence; a revoked root or replacement is not success.
+        const current = this.#paths.path(digest, false);
+        if (current === undefined || this.#paths.file(current) === undefined) return;
+      }
+      throw failure;
     });
   }
 
