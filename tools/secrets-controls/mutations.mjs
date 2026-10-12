@@ -112,4 +112,43 @@ export const mutations = [
     'SECRETS_CAUSAL_QUERY_NAMES masks each added family without another credential shape',
     'SECRETS_CAUSAL_QUERY_NAMES',
   ),
+  control(
+    'diagnostic-residual-scrub',
+    'apps/cli/src/render/sanitize.ts',
+    '  const scrubbed = scrubSecrets(normalized);',
+    `  const scrubbed = scrubSecrets(normalized);
+  if (scrubbed !== normalized) return scrubbed;`,
+    ['apps/cli/src/render/sanitize.test.ts', 'apps/cli/src/process/render-error.test.ts'],
+    56,
+    "SECRETS_CAUSAL_RESIDUAL_SCRUB protects 'client_secret' beside a split credential: 'multiline'",
+    'SECRETS_CAUSAL_RESIDUAL_SCRUB',
+    [
+      ...[
+        'client_secret',
+        'refresh_token',
+        'id_token',
+        'auth_token',
+        'session_token',
+        'api_secret',
+        'access_key',
+        'secret_key',
+      ].flatMap((name) =>
+        ['multiline', 'inline']
+          .filter((label) => name !== 'client_secret' || label !== 'multiline')
+          .map((label) => ({
+            target: `SECRETS_CAUSAL_RESIDUAL_SCRUB protects '${name}' beside a split credential: '${label}'`,
+            marker: 'SECRETS_CAUSAL_RESIDUAL_SCRUB',
+          })),
+      ),
+      ...['human', 'human verbose', 'JSON', 'JSON verbose'].map((label) => ({
+        target: `SECRETS_CAUSAL_RESIDUAL_SCRUB protects mixed credentials in '${label}' diagnostics`,
+        marker: 'SECRETS_CAUSAL_RESIDUAL_SCRUB',
+      })),
+      {
+        target:
+          'SECRETS_CAUSAL_RESIDUAL_SCRUB protects a mixed-credential verbose stack with a benign message',
+        marker: 'SECRETS_CAUSAL_RESIDUAL_SCRUB',
+      },
+    ],
+  ),
 ];
