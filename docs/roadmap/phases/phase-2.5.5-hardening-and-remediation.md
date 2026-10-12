@@ -1,6 +1,6 @@
 # Phase 2.5.5 — Hardening and Remediation
 
-> Status: 🚧 **Open — Wave 2 Steps 1–3 accepted; Step 4 first-run secrets in progress.** Live progress and execution order are canonical in
+> Status: 🚧 **Open — Wave 2 Steps 1–4 accepted; Step 5 snapshot/export review in progress.** Live progress and execution order are canonical in
 > [../current.md](../current.md#execution-order--phase-255--phase-26-temporary); this banner does not
 > restate them. A full-project multi-agent code review completed
 > 2026-07-19 at HEAD `f88b0e8` — 377 findings, 373 surviving two-lens adversarial
@@ -1869,9 +1869,9 @@ The core parser refuses unsupported direct `secrets.*` references in workflow
 context even when unread. Legitimate caller-secret-input context propagation and
 existing transitive text-sink checks remain intact; ADR-0060 remains Proposed.
 Export IDs have deterministic ASCII title normalisation and bounded legal
-session-identity fallback. Both successful standalone and live session exports
-emit one fixed continuity/content-review notice on stderr, including JSON mode,
-without introducing raw tool-content export. The
+session-identity fallback. Successful standalone exports emit one fixed
+continuity/content-review notice on stderr, including JSON mode. Live exports use
+the interactive transcript or plain/JSON stderr without introducing raw tool-content export. The
 [canonical export mapping](../../reference/contracts/agent-session-spec.md#export-to-workflow)
 owns the identity rules and their explicit uniqueness limit.
 
@@ -1880,18 +1880,18 @@ identity, strict raw legacy tool-content refusal, native SQLite snapshots and
 fresh-process strict resume. Existing DNS/caller-abort/late-connect tests pass
 **92 cases across three files**. G31's already recorded non-abortable native DNS
 background-work limit remains explicit; no resolver replacement or new waiver is
-claimed. The ten new causal controls retain all 24 prior mechanisms and require
+claimed. The initial ten new causal controls retain all 24 prior mechanisms and require
 12 additional named assertion witnesses. The complete physical capture passes
 all **34 mechanisms / 102 fixed, removal and restored phases / 254 required named
 witnesses**, with 7,335 case executions and 585 expected assertion failures in
-the removal phases. The final capture records `f3e09db9` plus the corrected working
+the removal phases. That capture records `f3e09db9` plus the corrected working
 tree: 1,055 source/tool files and 457 installed dependency packages. The root
 audit verifies complete identical case inventories, source/evaluation hashes,
 current fixed-source correspondence, exact restoration and removed scratch
 trees. This is not relabelled as execution at a later committed head. Two NEW
 complete clean independent review rounds remain required before acceptance.
 
-Final source-backed checks pass 366 cases in thirteen files, including the native
+Before the R2 runtime correction, source-backed checks passed 366 cases in thirteen files, including the native
 snapshot/resume test's four fresh-process child checks. The workspace gate passes
 **533 files / 11,860 tests**, with fourteen existing skips: lint/typecheck has
 17 successful tasks (nine cached), and tests have eleven successful tasks (eight
@@ -1930,6 +1930,40 @@ the corrected working tree, with the same 34/102/254 witness inventory and verif
 current source correspondence. The earlier successful capture remains historical
 evidence at `3f2b01af` plus its recorded working tree. Two NEW complete clean
 cumulative rounds follow the correction; neither earlier capture is relabelled.
+
+The second complete cumulative round reproduced one live interactive delivery
+defect: raw stderr contained the successful export warning, but the actual Ink
+frames and transcript did not. A visible transcript-notice positive control
+established that the renderer was active. The root independently reran the
+reproduction, read all three reports and corrected the shared chat/Home handler
+to use its existing interactive-aware notice channel. Plain/JSON stderr and the
+machine export event remain intact; refused writes produce no review notice.
+This round is finding-bearing; neither clean sibling slice counts as acceptance.
+
+Two permanent file-backed SQLite/actual Ink cases now exercise successful and
+refused exports with owned synthetic TTY streams and joined renderer cleanup.
+The successful witness failed before the correction at its named assertion.
+The manifest retains all 34 prior controls and adds a separate routing removal
+that restores raw stderr while keeping plain/JSON positive cases intact. Its
+complete inventory is **35 mechanisms / 105 phases / 256 named witnesses**.
+The fresh physical capture at `ff7d43e6` plus the corrected working tree passes
+**7,707 case executions / 587 expected removal failures**. The audit independently
+checks all complete inventories, actual named assertions, evaluated source hashes,
+current fixed-source correspondence, exact restoration and removed scratch trees.
+Its 970 metadata files total 49,951,805 bytes, within the unchanged 2,000-file/64 MiB
+bound; 1,055 source/tool files and 457 installed packages remain pinned. No later
+commit execution is inferred. The fresh collected inventory independently confirms
+every complete-file count, unique case identity, witness name and exact mutation anchor.
+
+Current-source checks under `CI=true` pass **368 cases in thirteen files** and the
+workspace gate passes **533 files / 11,862 tests**, with fourteen existing skips.
+Lint/typecheck has seventeen successful tasks (fifteen cached); tests have eleven
+successful tasks (ten cached), with the affected CLI's 4,067 tests actually executed.
+The seven-task build/format gate passes (five cached), as do 112 acceptance-tool
+tests, tools lint/typecheck, seam/engine fences, bundle closure and compiled CLI smoke.
+Earlier unchanged DB/overflow/replay/DNS evidence retains its own recorded attribution.
+Two NEW complete clean cumulative review rounds remain required; the four NEW
+whole-wave security sittings, final coverage and exact published-head CI stay open.
 
 ### Remaining gate
 

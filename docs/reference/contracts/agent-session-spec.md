@@ -404,8 +404,9 @@ Per [ADR-0026](../../decisions/0026-session-export-to-workflow.md), a session ex
   contain sensitive content. Prompt interpolation neutralisation does not redact that text;
 - parallel / conditional / loop structure is **not** auto-inferred — the author adds it on the canvas.
 
-Successful CLI `chat-export` and live `/export` write a fixed continuity/review notice to stderr,
-including in JSON mode; the machine event stream is unchanged. A scaffold does not recreate the
+Successful CLI `chat-export` writes a fixed continuity/review notice to stderr, including
+in JSON mode. Live `/export` renders the same notice in the interactive chat/Home transcript
+and uses stderr on plain/JSON drivers; the machine event stream is unchanged. A scaffold does not recreate the
 session's working context: summarised, trimmed or omitted context may not transfer, and no raw
 model-issued tool arguments/results are available to restore. Historical persisted turns and
 content-free tool structure are mapped as below. Retained user/assistant text, `@` attachments,

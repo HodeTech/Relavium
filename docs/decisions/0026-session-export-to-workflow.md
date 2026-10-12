@@ -93,3 +93,13 @@ content limits live in [the session contract](../reference/contracts/agent-sessi
 [CLI commands](../reference/cli/commands.md#relavium-chat-export) owns output behaviour.
 This does not reconstruct omitted working context, alter the archive or add raw tool
 content. Implementation is staged in Step 5; independent acceptance remains required.
+
+### Wave 2 live notice delivery correction — 2026-10-12
+
+The second implementation review reproduced a live export warning written to raw
+stderr but absent from the actual full-screen transcript and Ink frames. Live
+exports now use the existing interactive-aware notice channel shared by standalone
+chat and Home; plain/JSON drivers and the standalone export command retain stderr.
+The [CLI output contract](../reference/cli/commands.md#relavium-chat-export) owns
+the exact delivery behaviour. A real renderer regression and independent routing
+removal control are required; this correction does not itself record acceptance.
