@@ -30,7 +30,12 @@ import {
   type FsPathPolicy,
 } from './fs-policy.js';
 
-const observed = vi.hoisted(() => ({ readdir: vi.fn(), open: vi.fn() }));
+const observed = vi.hoisted(() => ({
+  readdir: vi.fn(),
+  open: vi.fn(),
+  mkdir: vi.fn(),
+  writeFile: vi.fn(),
+}));
 vi.mock('node:fs/promises', async (original) => {
   const native = await original<typeof import('node:fs/promises')>();
   return {
@@ -42,6 +47,14 @@ vi.mock('node:fs/promises', async (original) => {
     readdir: (...args: Parameters<typeof native.readdir>) => {
       observed.readdir(args[0]);
       return native.readdir(...args);
+    },
+    mkdir: (...args: Parameters<typeof native.mkdir>) => {
+      observed.mkdir(args[0]);
+      return native.mkdir(...args);
+    },
+    writeFile: (...args: Parameters<typeof native.writeFile>) => {
+      observed.writeFile(args[0]);
+      return native.writeFile(...args);
     },
   };
 });
@@ -61,6 +74,8 @@ beforeEach(() => {
   writeFileSync(join(grant, 'ok.txt'), 'grant');
   observed.readdir.mockClear();
   observed.open.mockClear();
+  observed.mkdir.mockClear();
+  observed.writeFile.mockClear();
 });
 afterEach(() => rmSync(base, { recursive: true, force: true }));
 
@@ -249,6 +264,85 @@ describe.each(['sandboxed', 'project', 'full'] as const)('credential floors in %
     }
     expect((await fs.readFile('ok.txt', {})).content).toBe('workspace');
   });
+});
+
+describe.each([
+  { tier: 'sandboxed', location: 'workspace' },
+  { tier: 'project', location: 'workspace' },
+  { tier: 'full', location: 'workspace' },
+  { tier: 'project', location: 'grant' },
+  { tier: 'full', location: 'grant' },
+] as const)('Terraform credential floor in $tier/$location', ({ tier, location }) => {
+  it.each(['.terraformrc', 'terraform.rc'])(
+    'refuses %s and its aliases before byte I/O without refusing ordinary Terraform files',
+    async (name) => {
+      const anchor = location === 'workspace' ? workspace : grant;
+      const secret = join(anchor, name);
+      const canonicalAlias = join(anchor, 'ordinary-link.txt');
+      const lexicalAlias = join(anchor, 'aliases', name);
+      const benign = ['main.tf', 'terraform.rc.txt'];
+      const sentinel = 'credentials "app.terraform.io" { token = "synthetic-floor-token" }';
+      writeFileSync(secret, sentinel);
+      for (const path of benign) writeFileSync(join(anchor, path), 'ordinary Terraform content');
+      mkdirSync(dirname(lexicalAlias));
+      symlinkSync(secret, canonicalAlias, 'file');
+      symlinkSync(join(anchor, 'main.tf'), lexicalAlias, 'file');
+      const fs = capability(
+        selectInvocationFsPolicy(admitInvocationFsGrants([grant]), workspace, undefined),
+        tier,
+      );
+      const mention = createMentionReader(fs);
+
+      for (const path of [secret, canonicalAlias, lexicalAlias]) {
+        await expect(fs.readFile(path, {})).rejects.toThrow(/credential/);
+        await expect(mention.read(path)).rejects.toThrow(/credential/);
+      }
+      for (const path of [secret, lexicalAlias]) {
+        await expect(fs.writeFile(path, 'replacement', { createDirs: true })).rejects.toThrow(
+          /credential|protected/,
+        );
+      }
+      await expect(
+        fs.writeFile(canonicalAlias, 'replacement', { createDirs: false }),
+      ).rejects.toThrow(/symlink|credential|protected/);
+      expect(observed.open).not.toHaveBeenCalled();
+      expect(observed.mkdir).not.toHaveBeenCalled();
+      expect(observed.writeFile).not.toHaveBeenCalled();
+      expect(readFileSync(secret, 'utf8')).toBe(sentinel);
+      expect(readFileSync(join(anchor, 'main.tf'), 'utf8')).toBe('ordinary Terraform content');
+
+      const listing = await fs.listDirectory(anchor, { recursive: true });
+      const names = listing.entries.map((entry) => entry.name);
+      for (const refused of [name, 'ordinary-link.txt', `aliases/${name}`])
+        expect(names).not.toContain(refused);
+      expect(names).toEqual(expect.arrayContaining(benign));
+      expect((await mention.list(anchor)).map((entry) => entry.name)).not.toContain(name);
+      expect((await fs.readFile(join(anchor, '**', '*'), { glob: true })).content).not.toContain(
+        'synthetic-floor-token',
+      );
+      expect(observed.open.mock.calls.map(([path]) => String(path))).not.toContain(secret);
+
+      for (const path of benign) {
+        const target = join(anchor, path);
+        expect((await fs.readFile(target, {})).content).toBe('ordinary Terraform content');
+        await fs.writeFile(target, 'ordinary update', {});
+        expect((await fs.readFile(target, {})).content).toBe('ordinary update');
+      }
+      expect(readFileSync(secret, 'utf8')).toBe(sentinel);
+    },
+  );
+});
+
+it.each([
+  'C:\\users\\me\\.TERRAFORMRC',
+  'C:\\users\\me\\.terraformrc. ',
+  'C:\\users\\me\\.terraformrc::$DATA',
+  'C:\\users\\me\\AppData\\Roaming\\TERRAFORM.RC',
+  'C:\\users\\me\\AppData\\Roaming\\terraform.rc. ',
+  'C:\\users\\me\\AppData\\Roaming\\terraform.rc::$DATA',
+])('folds the standard Terraform credential spelling: %s', (path) => {
+  expect(isSensitiveReadPath(path)).toBe(true);
+  expect(isProtectedPath(path)).toBe(true);
 });
 
 describe('exact private host scratch descriptors (no production allocator)', () => {

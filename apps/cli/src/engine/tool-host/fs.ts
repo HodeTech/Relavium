@@ -563,6 +563,8 @@ const SENSITIVE_READ_BASENAMES: ReadonlySet<string> = new Set([
   '.dockercfg', // legacy Docker registry auth (pre-`config.json`) — plaintext base64 `auth` credentials
   'application_default_credentials.json',
   'credentials.tfrc.json',
+  '.terraformrc', // Unix CLI config supports token-bearing credentials blocks.
+  'terraform.rc', // Windows CLI config in APPDATA supports the same credentials blocks.
 ]);
 
 /**
