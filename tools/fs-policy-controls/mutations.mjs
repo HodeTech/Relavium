@@ -163,5 +163,30 @@ mutations.push(
     floorCases,
   ),
 );
-for (const mutation of mutations)
-  mutation.expectedTests = mutation.files[0] === floorCases[0] ? 9 : 19;
+const workspaceCases = 'apps/cli/src/commands/fs-workspace-admission.test.ts';
+const cooperativeCases = 'packages/db/src/media-store-concurrency.test.ts';
+mutations.push(
+  control(
+    'WORKSPACE_ADMISSION',
+    'apps/cli/src/engine/tool-host/fs-admission.ts',
+    'if (paths.some(isSensitiveReadPath))',
+    'if (false)',
+    'FS_CAUSAL_WORKSPACE_ADMISSION',
+    [workspaceCases],
+    'refuses real argv surface',
+  ),
+  control(
+    'CAS_COOPERATIVE_READ',
+    paths,
+    '  assertReadableFile(path: string, opened: Stats): void {\n    const current = this.file(path);',
+    '  assertReadableFile(path: string, opened: Stats): void {\n    this.assertOwnedFile(path, opened);\n    const current = this.file(path);',
+    'FS_CAUSAL_CAS_COOPERATIVE_READ',
+    [cooperativeCases],
+    'preserves native',
+  ),
+);
+for (const mutation of mutations) {
+  const file = mutation.files[0];
+  mutation.expectedTests =
+    file === floorCases[0] ? 9 : file === workspaceCases ? 8 : file === cooperativeCases ? 6 : 19;
+}

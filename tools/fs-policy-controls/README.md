@@ -18,6 +18,11 @@ linked for reads and verified unchanged. Source/HEAD/index digests are checked a
 the run, so run this against a stable checkout. Tests never mutate developer sources.
 No Windows-only test is selected; native Windows evidence has its separate gate.
 
+The matrix also removes sensitive-workspace admission and reinstates the overly
+strict CAS pathname/inode coupling. Real argv pre-composition witnesses and native
+concurrent publishers/readers must then fail their named assertions. These guard
+both confidentiality and the availability of legitimate cooperative storage use.
+
 `RELAVIUM_ACCEPTANCE_EVIDENCE=/absolute/directory` retains bounded JSON/JSONL/log
 metadata under `filesystem/`, outside authored source. It excludes the copied graph,
 cache, native databases and dependency bytes. Scratch copies are removed even on
