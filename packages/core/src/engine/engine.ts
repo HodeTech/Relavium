@@ -992,7 +992,7 @@ class RunExecution {
    * publication is awaiting a host operation.
    */
   async #pinMediaOutput(outcome: NodeOutcome, nodeId: string): Promise<NodeOutcome> {
-    if (outcome.kind !== 'completed') {
+    if (outcome.kind !== 'completed' && outcome.kind !== 'branch') {
       return outcome;
     }
     return { ...outcome, output: await this.#pinMediaValue(outcome.output, nodeId) };

@@ -121,6 +121,122 @@ function host(
   return createInMemoryHost({ store, mediaStore: cas, mediaReferences: port });
 }
 
+function startBranch(
+  output: unknown,
+  executionHost: ExecutionHost,
+  downstream: (output: unknown) => void,
+): RunHandle {
+  const run = new WorkflowEngine({
+    host: executionHost,
+    executor: {
+      execute: (ctx) => {
+        if (ctx.vertex.id === 'route') {
+          ctx.emit({
+            type: 'cost:updated',
+            nodeId: 'route',
+            model: 'synthetic-offline-model',
+            inputTokens: 2,
+            outputTokens: 3,
+            costMicrocents: 7,
+            cumulativeCostMicrocents: 0,
+          });
+          return Promise.resolve({
+            kind: 'branch',
+            selected: ['yes'],
+            output,
+            tokensUsed: { input: 2, output: 3 },
+          });
+        }
+        expect(ctx.vertex.id).toBe('yes');
+        const pinned = ctx.runOutputs.get('route');
+        downstream(pinned);
+        return Promise.resolve({ kind: 'completed', output: pinned });
+      },
+    },
+  }).start({
+    workflow: parseWorkflow(
+      `schema_version: '1.0'
+workflow:
+  id: branch-publication
+  nodes:
+    - { id: route, type: condition, expression: 'true', branches: [{ when: true, target_node: yes }, { when: false, target_node: no }] }
+    - { id: yes, type: output }
+    - { id: no, type: output }
+  edges: []`,
+    ),
+  });
+  runs.push(run);
+  return run;
+}
+
+it('pins branch media once before state so downstream and durable readers share the first bytes', async () => {
+  const raw = {
+    type: 'media',
+    mimeType: 'audio/L16',
+    source: { kind: 'url', url: 'https://fixture.invalid/branch' },
+  };
+  let downloads = 0;
+  const stream = vi.fn(async function* () {
+    // A second download would produce a different CAS object.
+    yield await Promise.resolve(new Uint8Array([++downloads, 0]));
+  });
+  const downstream = vi.fn<(output: unknown) => void>();
+  const events = await drain(startBranch(raw, { ...host(), streamMedia: stream }, downstream));
+  const branch = events.find(
+    (event) => event.type === 'node:completed' && event.nodeId === 'route',
+  );
+  expect(downstream, 'FS_CAUSAL_MEDIA_BRANCH_PRESTATE').toHaveBeenCalledOnce();
+  expect(downstream.mock.calls[0]?.[0], 'FS_CAUSAL_MEDIA_BRANCH_PRESTATE').toEqual(
+    branch?.type === 'node:completed' ? branch.output : undefined,
+  );
+  expect(stream, 'FS_CAUSAL_MEDIA_BRANCH_PRESTATE').toHaveBeenCalledOnce();
+  expect(branch).toMatchObject({
+    type: 'node:completed',
+    selected: ['yes'],
+    tokensUsed: { input: 2, output: 3 },
+  });
+  expect(collectDurableMediaHandles(events.at(-1))).toEqual(collectDurableMediaHandles(branch));
+  expect(collectDurableMediaHandles(branch)).toHaveLength(1);
+  expect(references.listObjectHandles()).toHaveLength(1);
+  expect(raw.source).toEqual({ kind: 'url', url: 'https://fixture.invalid/branch' });
+  expect(events.some((event) => event.type === 'node:completed' && event.nodeId === 'no')).toBe(
+    false,
+  );
+});
+
+it('refuses 33 branch media parts before any source pull or downstream execution, retaining charge', async () => {
+  const raw = Array.from({ length: 33 }, (_, i) => ({
+    type: 'media',
+    mimeType: 'audio/L16',
+    source: { kind: 'url', url: `https://fixture.invalid/${i}` },
+  }));
+  const stream = vi.fn(async function* () {
+    yield await Promise.resolve(new Uint8Array([1, 0]));
+  });
+  const downstream = vi.fn<(output: unknown) => void>();
+  const events = await drain(startBranch(raw, { ...host(), streamMedia: stream }, downstream));
+  expect(events.at(-1)?.type, 'FS_CAUSAL_MEDIA_BRANCH_BOUND').toBe('run:failed');
+  expect(stream, 'FS_CAUSAL_MEDIA_BRANCH_BOUND').not.toHaveBeenCalled();
+  expect(downstream, 'FS_CAUSAL_MEDIA_BRANCH_BOUND').not.toHaveBeenCalled();
+  expect(events.some((event) => event.type === 'node:completed')).toBe(false);
+  expect(references.listObjectHandles()).toEqual([]);
+  expect(events.filter((event) => event.type === 'cost:updated')).toHaveLength(1);
+});
+
+it('preserves branch routing and tokens with an undefined output and no media service', async () => {
+  const downstream = vi.fn<(output: unknown) => void>();
+  const events = await drain(startBranch(undefined, createInMemoryHost(), downstream));
+  expect(downstream).toHaveBeenCalledExactlyOnceWith(undefined);
+  expect(
+    events.find((event) => event.type === 'node:completed' && event.nodeId === 'route'),
+  ).toMatchObject({
+    type: 'node:completed',
+    selected: ['yes'],
+    tokensUsed: { input: 2, output: 3 },
+  });
+  expect(events.at(-1)?.type).toBe('run:completed');
+});
+
 it('admits metadata before append and creates lifetime references only after its ACK', async () => {
   expect(await cas.put(bytes, 'audio/L16')).toBe(handle);
   const store = new InMemoryRunStore();
