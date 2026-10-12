@@ -2,6 +2,7 @@ import { CommanderError } from 'commander';
 
 import { resolveHomeDir } from './config/load.js';
 import { loadCachedCatalog } from './engine/catalog-refresh.js';
+import { admitFsInvocation } from './engine/tool-host/fs-admission.js';
 import { driveHome, type HomeDeps } from './home/drive-home.js';
 import { shouldOpenHome } from './home/should-open-home.js';
 import { CliError, toUserFacing } from './process/errors.js';
@@ -43,6 +44,7 @@ export async function run(
   let global: GlobalOptions;
   try {
     global = resolveGlobalOptions(raw, process.cwd(), io.env); // env feeds NO_COLOR/FORCE_COLOR; also enforces --verbose/--quiet
+    global = Object.freeze({ ...global, fsGrants: admitFsInvocation(global) });
   } catch (err) {
     renderError(err, renderCtx, io);
     return toUserFacing(err).exitCode;

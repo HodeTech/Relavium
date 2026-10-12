@@ -36,7 +36,17 @@ test('the actual required workflow joins both full offline controls and checks t
     readFileSync(new URL('../../.github/workflows/ci.yml', import.meta.url), 'utf8'),
   );
   const ci = workflow.jobs.ci;
-  assert.deepEqual(ci.needs, ['wire-mutations', 'usage-mutations']);
+  assert.deepEqual(ci.needs, ['wire-mutations', 'usage-mutations', 'fs-mutations']);
+  const fsGuard = ci.steps.find(
+    (step) => step.name === 'Require complete filesystem causal controls',
+  );
+  assert.equal(fsGuard.env.FS_CONTROLS_RESULT, '${{ needs.fs-mutations.result }}');
+  assert.equal(
+    fsGuard.run,
+    "node -e \"require('node:assert/strict').equal(process.env.FS_CONTROLS_RESULT, 'success')\"",
+  );
+  assert.equal(fsGuard.if, undefined);
+  assert.equal(fsGuard['continue-on-error'], undefined);
   assert.equal(ci.if, '${{ always() }}');
   const guard = ci.steps.find((step) => step.run === 'node tools/ci/require-w8-acceptance.mjs');
   assert.equal(guard.env.RELAVIUM_W8_JOB_RESULTS, '${{ toJSON(needs) }}');
@@ -55,9 +65,27 @@ test('the actual required workflow joins both full offline controls and checks t
     assert.equal(artifact.if, '${{ always() }}');
     assert.equal(artifact.with['retention-days'], 7);
   }
+  const filesystem = workflow.jobs['fs-mutations'];
+  assert.equal(filesystem['continue-on-error'], undefined);
+  assert.equal(filesystem.if, undefined);
+  assert.equal(filesystem['timeout-minutes'], 10);
+  assert.ok(filesystem.steps.some((step) => step.run === 'pnpm install --frozen-lockfile'));
+  const fsCommand = filesystem.steps.find((step) => step.run === 'pnpm check:fs-mutations');
+  assert.equal(fsCommand['continue-on-error'], undefined);
+  assert.equal(fsCommand.env.RELAVIUM_ACCEPTANCE_EVIDENCE, '${{ runner.temp }}/wave2-acceptance');
+  const fsArtifact = filesystem.steps.find((step) =>
+    step.uses?.startsWith('actions/upload-artifact@'),
+  );
+  assert.equal(fsArtifact.if, '${{ always() }}');
+  assert.equal(fsArtifact.with.path, '${{ runner.temp }}/wave2-acceptance/filesystem');
+  assert.equal(fsArtifact.with['retention-days'], 7);
   const packageJson = JSON.parse(
     readFileSync(new URL('../../package.json', import.meta.url), 'utf8'),
   );
-  for (const kind of ['wire', 'usage'])
+  assert.equal(
+    packageJson.scripts['check:fs-mutations'],
+    'node tools/fs-policy-controls/check.mjs',
+  );
+  for (const kind of ['wire', 'usage', 'fs'])
     assert.ok(packageJson.scripts.ci.split(' && ').includes(`pnpm check:${kind}-mutations`));
 });

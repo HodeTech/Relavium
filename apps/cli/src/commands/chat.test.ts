@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough, Readable } from 'node:stream';
@@ -208,7 +208,7 @@ describe('chatCommand', () => {
   const savedHome = new Map<string, string | undefined>();
 
   beforeEach(() => {
-    cwd = mkdtempSync(join(tmpdir(), 'relavium-chat-cwd-'));
+    cwd = realpathSync(mkdtempSync(join(tmpdir(), 'relavium-chat-cwd-')));
     home = mkdtempSync(join(tmpdir(), 'relavium-chat-home-'));
     // os.homedir() reads HOME (POSIX) / USERPROFILE (Windows) — override BOTH so config load is hermetic.
     for (const v of HOME_ENV_VARS) {
@@ -2279,20 +2279,12 @@ describe('chatResumeCommand (2.N)', () => {
       { agent: undefined },
       freshDeps(['t1', 't2', '/exit'], [textTurn('a'), textTurn('b')], store),
     );
-    // A separate project whose [chat].max_turns = 1 is BELOW the session's 2 prior turns.
-    const capCwd = mkdtempSync(join(tmpdir(), 'relavium-cap-'));
-    mkdirSync(join(capCwd, '.relavium'), { recursive: true });
-    writeFileSync(join(capCwd, '.relavium', 'project.toml'), '[chat]\nmax_turns = 1\n');
-    try {
-      const { d, err } = resumeDeps([], [], store);
-      await chatResumeCommand(
-        { sessionId: 'id-0' },
-        { ...d, global: { ...globalOptions(capCwd), json: false } },
-      );
-      expect(err()).toContain('new turns will be refused');
-    } finally {
-      rmSync(capCwd, { recursive: true, force: true });
-    }
+    // Current config is rediscovered at the ORIGINAL workspace, regardless of launch cwd.
+    mkdirSync(join(cwd, '.relavium'), { recursive: true });
+    writeFileSync(join(cwd, '.relavium', 'project.toml'), '[chat]\nmax_turns = 1\n');
+    const { d, err } = resumeDeps([], [], store);
+    await chatResumeCommand({ sessionId: 'id-0' }, { ...d, global: { ...d.global, json: false } });
+    expect(err()).toContain('new turns will be refused');
   });
 
   it('does NOT warn when resuming a session below the (default) turn cap', async () => {

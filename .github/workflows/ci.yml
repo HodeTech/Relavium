@@ -4,7 +4,7 @@
 # Turborepo cache, plus the formatting check and the no-vendor-type-across-the-seam fence.
 #
 # Branch protection (set in the GitHub repo settings, not here): `ci` and `coverage` are the REQUIRED
-# status checks to merge into `main`. The wire/usage mutation jobs feed `ci` through an explicit
+# status checks to merge into `main`. Wire, usage and filesystem mutation jobs feed `ci` through an explicit
 # success-only aggregation; they cannot silently skip or fail while `ci` stays green. The other jobs
 # self-label `(advisory)` — `floor-check`, `peer-dep-gate` and `windows-concurrency`.
 #
@@ -57,7 +57,7 @@ env:
 
 jobs:
   ci:
-    needs: [wire-mutations, usage-mutations]
+    needs: [wire-mutations, usage-mutations, fs-mutations]
     if: ${{ always() }}
     name: lint · typecheck · test
     runs-on: ubuntu-latest
@@ -83,6 +83,11 @@ jobs:
         env:
           RELAVIUM_W8_JOB_RESULTS: ${{ toJSON(needs) }}
         run: node tools/ci/require-w8-acceptance.mjs
+
+      - name: Require complete filesystem causal controls
+        env:
+          FS_CONTROLS_RESULT: ${{ needs.fs-mutations.result }}
+        run: node -e "require('node:assert/strict').equal(process.env.FS_CONTROLS_RESULT, 'success')"
 
       # A squash/main-based checkout need not contain development's immutable predecessor object.
       # Fetch only this canonical pin during CI setup; the acceptance harness itself stays offline.
@@ -186,6 +191,37 @@ jobs:
         run: pnpm smoke:budget-replay
 
   # Offline, uncached semantic removal/restoration evidence. Required indirectly through ci.needs.
+  # ADR-0105 isolated, current-source removal/restoration evidence, required through ci.needs.
+  fs-mutations:
+    name: Wave 2 filesystem causal controls
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - name: Install (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+      - name: Verify causal outcome and worker lifecycle guards
+        run: pnpm test:acceptance-tools
+      - name: Run filesystem removal and restoration controls
+        env:
+          RELAVIUM_ACCEPTANCE_EVIDENCE: ${{ runner.temp }}/wave2-acceptance
+        run: pnpm check:fs-mutations
+      - name: Retain bounded filesystem control metadata
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: wave2-filesystem-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/wave2-acceptance/filesystem
+          if-no-files-found: warn
+          retention-days: 7
+
   wire-mutations:
     name: W8 wire causal acceptance
     timeout-minutes: 10
@@ -376,12 +412,14 @@ jobs:
   # a file:// import of the built @relavium/db) are the parts most likely to behave differently on Windows —
   # ci.yml ran ubuntu-only (release.yml already smokes the built binary cross-OS, but never the test suite).
   # Runs the @relavium/db concurrency suite (the real Windows native-addon + WAL exercise) + the CLI
-  # concurrency/perf harness there, plus a headless no-TTY smoke. A SEPARATE, advisory job (the required check
+  # concurrency/perf harness there, the native Step 2 filesystem boundaries (ADR-0105), plus a headless
+  # no-TTY smoke. Native links/containment complement portable Windows lexical vectors; these results are
+  # evidence only after this job actually runs. A SEPARATE, advisory job (the required check
   # stays the ubuntu `ci` job) — promote to required in branch protection once confirmed stable. POSIX 0600/0700
   # perm assertions are NOT exercised here (a documented Windows no-op — ADR-0050); nor is ink's raw-mode code,
   # which is TTY-gated (the driver-selection gate picks the plain driver without a TTY — see the smoke below).
   windows-concurrency:
-    name: windows · db concurrency + headless smoke (advisory)
+    name: windows · db concurrency + filesystem + headless smoke (advisory)
     runs-on: windows-latest
     timeout-minutes: 25
     steps:
@@ -410,6 +448,12 @@ jobs:
         run: pnpm --filter @relavium/db test
       - name: CLI concurrency + query-shape harness (cross-process spawn + EXPLAIN plans on Windows)
         run: pnpm --filter relavium exec vitest run concurrency perf-budget session-chain
+      - name: Native CLI filesystem admission, containment, catalog and config (ADR-0105)
+        run: pnpm --filter relavium exec vitest run src/config/paths.test.ts src/engine/tool-host/fs-policy.test.ts src/engine/tool-host/fs-ancestor-consumers.test.ts src/engine/tool-host/fs.test.ts src/commands/fs-invocation.test.ts src/workflows/catalog.test.ts src/config/resolve.test.ts
+      - name: Native CAS and save_to containment (ADR-0105)
+        run: pnpm --filter @relavium/db exec vitest run src/media-store-paths.test.ts src/media-store.test.ts src/media-write.test.ts
+      - name: Shared filesystem ancestor algorithm and selector schema (ADR-0105)
+        run: pnpm --filter @relavium/shared exec vitest run src/existing-ancestor.test.ts src/config.test.ts
       - name: Headless no-TTY smoke (the bundle loads; a piped chat picks the plain driver and exits cleanly)
         shell: bash
         run: |

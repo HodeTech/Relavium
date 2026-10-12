@@ -1,4 +1,13 @@
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  openSync,
+  readSync,
+  readdirSync,
+  realpathSync,
+  statSync,
+} from 'node:fs';
 import { basename, join, relative } from 'node:path';
 
 import {
@@ -10,6 +19,7 @@ import {
 } from '@relavium/core';
 
 import { CliError } from '../process/errors.js';
+import { isWithinFsRoot } from '../engine/tool-host/fs-policy.js';
 
 /**
  * Discover the workflow / agent YAML catalog under a project's `.relavium/` for `relavium list` (2.I). It is a
@@ -70,8 +80,12 @@ export function discoverCatalog(opts: {
 }): CatalogEntry[] {
   const dir = join(opts.projectConfigDir, opts.kind);
   let names: readonly string[];
+  let root: string;
   try {
-    names = readdirSync(dir, { withFileTypes: true })
+    root = realpathSync(opts.projectConfigDir);
+    const realDir = realpathSync(dir);
+    if (!isWithinFsRoot(root, realDir)) throw new Error('outside catalog authority');
+    names = readdirSync(realDir, { withFileTypes: true })
       // Include symlinks (a `.yaml` may be symlinked into the catalog) so `list` matches `run`, which
       // resolves a symlinked workflow path; a dangling/dir symlink simply fails the read → a flagged entry.
       .filter((d) => d.isFile() || d.isSymbolicLink())
@@ -81,16 +95,12 @@ export function discoverCatalog(opts: {
     if (errnoCode(err) === 'ENOENT') {
       return []; // no workflows/ (or agents/) directory — an empty catalog, not an error
     }
-    throw new CliError(
-      'invalid_invocation',
-      `could not read the ${opts.kind} catalog at '${dir}'.`,
-      {
-        cause: err,
-      },
-    );
+    throw new CliError('invalid_invocation', `could not read the ${opts.kind} catalog directory.`, {
+      cause: err,
+    });
   }
 
-  const entries = names.map((name) => readEntry(join(dir, name), opts.cwd, opts.kind));
+  const entries = names.map((name) => readEntry(join(dir, name), opts.cwd, opts.kind, root));
   return entries.sort((a, b) => a.slug.localeCompare(b.slug));
 }
 
@@ -107,11 +117,14 @@ function invalidEntry(path: string, rel: string, error: string): CatalogEntry {
 }
 
 /** Read + parse one catalog file into an entry; any read/parse fault becomes a `valid: false` entry. */
-function readEntry(path: string, cwd: string, kind: CatalogKind): CatalogEntry {
+function readEntry(path: string, cwd: string, kind: CatalogKind, root: string): CatalogEntry {
   const rel = relative(cwd, path);
   let yaml: string;
   try {
-    const stats = statSync(path);
+    const canonical = realpathSync(path);
+    if (!isWithinFsRoot(root, canonical))
+      return invalidEntry(path, rel, 'outside the project catalog');
+    const stats = statSync(canonical);
     // statSync FOLLOWS a symlink, so a `.yaml` symlinked to a directory, FIFO, or character device (e.g.
     // /dev/zero) resolves here — and readFileSync on a FIFO/char-device BLOCKS INDEFINITELY (a local DoS via a
     // crafted symlink in the catalog dir). Reject anything that is not a regular file BEFORE reading; the size
@@ -126,7 +139,31 @@ function readEntry(path: string, cwd: string, kind: CatalogKind): CatalogEntry {
     if (stats.size > MAX_SOURCE_CHARS * 4) {
       return invalidEntry(path, rel, 'exceeds the size limit');
     }
-    yaml = readFileSync(path, 'utf8');
+    // Contained aliases are allowed; open their canonical target without following a newly planted final link.
+    const fd = openSync(
+      canonical,
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+    );
+    try {
+      const opened = fstatSync(fd);
+      if (!opened.isFile() || opened.dev !== stats.dev || opened.ino !== stats.ino) {
+        return invalidEntry(path, rel, 'not the admitted regular file');
+      }
+      const maxBytes = MAX_SOURCE_CHARS * 4;
+      const chunks: Buffer[] = [];
+      let total = 0;
+      for (;;) {
+        const buffer = Buffer.alloc(Math.min(64 * 1024, maxBytes + 1 - total));
+        const count = readSync(fd, buffer, 0, buffer.length, null);
+        if (count === 0) break;
+        total += count;
+        if (total > maxBytes) return invalidEntry(path, rel, 'exceeds the size limit');
+        chunks.push(buffer.subarray(0, count));
+      }
+      yaml = Buffer.concat(chunks, total).toString('utf8');
+    } finally {
+      closeSync(fd);
+    }
   } catch (err) {
     // Generic, path-free reason — never echo a raw fs `err.message` (it carries the absolute path) into the
     // catalog entry / `--json` `error` field (error-handling.md; same discipline as parseReason below).

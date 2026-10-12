@@ -77,6 +77,49 @@ describe('resolveConfig', () => {
     expect(resolved.onExceed).toBe('warn'); // only on project
   });
 
+  it('replaces workspace filesystem selectors with project selectors without merging (ADR-0105)', () => {
+    const workspace: ProjectConfig = { chat: { extra_roots: ['../workspace-root'] } };
+    const project: ProjectConfig = { chat: { extra_roots: ['../project-root'] } };
+    expect(resolveConfig({ workspace, project }).chat.extraRoots).toEqual(['../project-root']);
+    expect(resolveConfig({ workspace }).chat.extraRoots).toEqual(['../workspace-root']);
+    expect(resolveConfig({ project }).chat.extraRoots).toEqual(['../project-root']);
+    expect(
+      resolveConfig({ workspace, project: { chat: { fs_scope: 'sandboxed' } } }).chat.extraRoots,
+    ).toEqual(['../workspace-root']);
+  });
+
+  it('keeps absent selectors distinct from an explicit empty selection (ADR-0105)', () => {
+    expect(resolveConfig({}).chat.extraRoots).toBeUndefined();
+    expect(resolveConfig({ project: { chat: {} } }).chat.extraRoots).toBeUndefined();
+    expect(resolveConfig({ workspace: { chat: { extra_roots: [] } } }).chat.extraRoots).toEqual([]);
+    expect(
+      resolveConfig({
+        workspace: { chat: { extra_roots: ['../workspace-root'] } },
+        project: { chat: { extra_roots: [] } },
+      }).chat.extraRoots,
+    ).toEqual([]);
+    expect(
+      resolveConfig({
+        workspace: { chat: { extra_roots: [] } },
+        project: { chat: { extra_roots: ['../project-root'] } },
+      }).chat.extraRoots,
+    ).toEqual(['../project-root']);
+  });
+
+  it('cannot obtain filesystem selectors from global preferences or a stray global chat block (ADR-0105)', () => {
+    // Strict schema admission rejects these stray fields. Even a structurally compatible in-process
+    // caller bypassing admission cannot turn the global preference layer into filesystem authority.
+    const global = {
+      preferences: { default_model: 'g', extra_roots: ['/outside-preferences'] },
+      chat: { extra_roots: ['/outside-chat'] },
+      extra_roots: ['/outside-top-level'],
+    };
+    expect(resolveConfig({ global }).chat.extraRoots).toBeUndefined();
+    expect(
+      resolveConfig({ global, workspace: { chat: { extra_roots: [] } } }).chat.extraRoots,
+    ).toEqual([]);
+  });
+
   it('resolves [chat].reasoning_effort (ADR-0066) last-writer-wins project > workspace > global [preferences]', () => {
     const workspace: ProjectConfig = { chat: { reasoning_effort: 'low' } };
     const project: ProjectConfig = { chat: { reasoning_effort: 'high' } };

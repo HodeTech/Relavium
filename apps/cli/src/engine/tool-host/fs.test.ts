@@ -28,6 +28,7 @@ import {
   readJailedFile,
   type NodeFsCapabilityConfig,
 } from './fs.js';
+import { issueHostScratchRoot } from './fs-policy.js';
 
 /** An aborted signal for cancellation tests (AbortSignalLike: aborted + the two listener no-ops). */
 const ABORTED = {
@@ -965,11 +966,12 @@ describe('createNodeFsCapability — cancellation + malformed paths', () => {
 });
 
 describe('createNodeFsCapability — tiers', () => {
-  it('sandboxed tier allows the optional tmp root (read + write)', async () => {
-    const tmp = join(workspace, '..', 'tmproot');
-    await mkdir(tmp, { recursive: true });
+  it('sandboxed tier allows an exact host-issued private scratch root (read + write)', async () => {
+    const home = join(workspace, '..', 'home');
+    const tmp = join(home, '.relavium', 'tmp');
+    await mkdir(tmp, { recursive: true, mode: 0o700 });
     await writeFile(join(tmp, 't.txt'), 'tmp-ok');
-    const fs = sandboxed({ tmpDir: tmp });
+    const fs = sandboxed({ scratch: issueHostScratchRoot({ homeDir: home, rootDir: tmp }) });
     expect((await fs.readFile(join(tmp, 't.txt'), {})).content).toBe('tmp-ok');
     const written = await fs.writeFile(join(tmp, 'w.txt'), 'tmp-written', {});
     expect(written.bytesWritten).toBe('tmp-written'.length);

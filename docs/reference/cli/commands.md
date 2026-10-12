@@ -105,14 +105,17 @@ before parsing the subcommand).
 | `--json` | Emit machine-readable NDJSON output (disables the TUI) — see [Output modes](#output-modes). |
 | `--color` | Force colored (ANSI) output on. |
 | `--no-color` | Disable colored (ANSI) output. |
-| `--cwd <dir>` | Run as if started in `<dir>` (project discovery and relative paths resolve from here). |
-| `--config <path>` | Use an explicit global config file instead of `~/.relavium/config.toml` — the project `.relavium/` layers still apply ([config-spec.md](../contracts/config-spec.md)). |
+| `--cwd <dir>` | Run as if started in `<dir>` (project discovery and relative paths resolve from here). On chat resume this cannot replace the original workspace. |
+| `--config <path>` | Use an explicit global config file instead of `~/.relavium/config.toml` — the project `.relavium/` layers still apply ([config-spec.md](../contracts/config-spec.md)). Chat resume uses this current global override while discovering current project layers at its original workspace. |
+| `--allow-fs-root <absolute-directory>` | Repeatable invocation-only filesystem grant for bare Home, `chat`, `chat-resume` and `agent run`; at most 16 arguments, at most 4096 characters each, naming existing accessible directories. Other commands, including workflow `run`, refuse it (exit `2`). [Project/workspace selectors](../contracts/config-spec.md#chat-filesystem-root-selectors) can narrow these grants. |
 | `--no-alt-screen` | Keep the byte-identical inline renderer for the bare Home + `relavium chat` (no full-screen alternate screen) — the screen-reader fallback. Overrides `[preferences].alt_screen`; a non-TTY / `--json` / CI path is always inline regardless ([ADR-0068](../../decisions/0068-full-screen-tui-renderer-ink7-harness.md)). |
 | `--no-mouse` | Disable terminal mouse reporting (DECSET 1002+1006) inside the full-screen renderer. The wheel stops scrolling the transcript (PgUp/PgDn + Ctrl+Home/Ctrl+End still page), in-app selection and copy-on-select go with it, and the emulator's own click-drag selection works again without a modifier. Overrides `[preferences].mouse`, and forces `[preferences].copy_on_select` off. Ignored outside the alt screen ([ADR-0068](../../decisions/0068-full-screen-tui-renderer-ink7-harness.md) §e, [accessibility.md](accessibility.md)). |
 | `-v, --verbose` | Print verbose diagnostics to stderr. |
 | `-q, --quiet` | Suppress non-essential output. (`--verbose` and `--quiet` cannot be combined → exit `2`.) |
 | `-V, --version` | Print the version and exit `0`. |
 | `-h, --help` | Print help for the program or a subcommand and exit `0`. |
+
+Filesystem grants undergo native admission before dispatcher history/provider/key/MCP composition. Invalid or unavailable roots refuse with value-free diagnostics. No environment/config/session/model output grants a root. The flag works without selector config; fresh resumes require fresh grants under the [session authority contract](chat-session.md#filesystem-authority-and-resume).
 
 ## Commands
 
@@ -435,6 +438,7 @@ echo "review it" | relavium agent run code-reviewer --fixture ./fixtures/review.
 - `--fixture <path>` replays a recorded LLM **cassette** so the run is deterministic and fully offline (no key, no network, no keychain) — the format is documented in [agent-run-fixture.md](agent-run-fixture.md). A malformed cassette exits `2`.
 - `--json` emits the [`SessionEvent`](../contracts/sse-event-schema.md#session-event-namespace) NDJSON stream on stdout (the same shape `chat --json` produces); otherwise the assistant reply streams in human form.
 - `--allow-mcp-stdio <digest>` (repeatable) authorizes a **local MCP program** for this invocation only. `agent run` is the one-shot, pipeline-facing member of the chat family — its stdin carries the prompt, so it can never prompt for consent, and an agent declaring an unapproved `stdio` MCP server exits `2` before anything spawns. See [Local MCP servers need consent](#local-mcp-servers-need-consent).
+- `--allow-fs-root` uses the [global invocation contract](#global-options), including when no selector config exists.
 - **The transcript is not persisted** — a stateless invoke (no transcript or resumable session; only an already-tombstoned durable effect-identity bookkeeping row), unlike the REPL. It does still **open `history.db`** to attach the effect journal ([effect-journal.md](../shared-core/effect-journal.md)): an external effect is carried forward by the target, not by the run, so an unattached journal would refuse every effectful tool on this surface. Its effect metadata is read at teardown for the owned committed-row sweep, never for replay. A `history.db` that cannot be opened fails the invocation.
 - The exit code is the **turn's outcome**: `0` on success, `1` on a turn error; an invocation fault is `2`. It is **never** `4` (that is the interactive REPL's session-ended code). A termination **signal** exits `128+signo` (`130` on Ctrl-C) after tearing any MCP servers down — this surface has no cooperative-cancel contract to preserve, unlike `run` ([ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md) §1.3).
 - **Ctrl-C leaves no orphan.** Any `stdio` MCP server this invocation spawned is reaped before the process exits, including on a `kill`, a closed terminal window, or a second impatient Ctrl-C.

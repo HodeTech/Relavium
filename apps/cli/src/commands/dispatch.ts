@@ -425,7 +425,7 @@ const executeChat: CommandExecutor = (input, ctx) =>
   chatCommand(buildChatArgs(input), {
     io: ctx.io,
     global: ctx.global,
-    ...keyResolvers(ctx),
+    resolveKeys: (db) => keyResolvers(ctx, db),
     openSessionStore,
     drive: selectChatDriver,
   });
@@ -436,7 +436,7 @@ const executeChatResume: CommandExecutor = (input, ctx) =>
     {
       io: ctx.io,
       global: ctx.global,
-      ...keyResolvers(ctx),
+      resolveKeys: (db) => keyResolvers(ctx, db),
       openSessionStore,
       drive: selectChatDriver,
     },
@@ -467,7 +467,7 @@ const executeAgentRun: CommandExecutor = (input, ctx) =>
   agentRunCommand(buildAgentRunArgs(input), {
     io: ctx.io,
     global: ctx.global,
-    ...keyResolvers(ctx),
+    resolveKeys: () => keyResolvers(ctx),
   });
 
 const executeGate: CommandExecutor = (input, ctx) =>
@@ -755,6 +755,15 @@ export async function executeCommand(
   const executor = COMMAND_EXECUTORS.get(id);
   if (executor === undefined) {
     throw new CliError('invalid_invocation', 'unknown command.');
+  }
+  if (
+    (ctx.global.allowFsRoots?.length ?? 0) > 0 &&
+    !['chat', 'chat-resume', 'agent.run'].includes(id)
+  ) {
+    throw new CliError(
+      'invalid_invocation',
+      '--allow-fs-root applies only to Home, chat, chat-resume and agent run.',
+    );
   }
   return executor(input, ctx);
 }

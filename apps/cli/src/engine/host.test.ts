@@ -231,7 +231,8 @@ describe('createCliHost', () => {
         // Fail-closed: an unknown handle (no CAS file) rejects with the file-not-found CAUSE (a content-address
         // miss), never serving stray bytes — the CAUSE is asserted, mirroring the mediaWrite traversal rigor.
         await expect(store.get(`media://sha256-${'0'.repeat(64)}`)).rejects.toMatchObject({
-          code: 'ENOENT',
+          name: 'MediaStoreFilesystemError',
+          reason: 'missing',
         });
       } finally {
         rmSync(casRoot, { recursive: true, force: true });

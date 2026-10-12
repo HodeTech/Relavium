@@ -29,6 +29,7 @@ export * from './ordering.js';
 export * from './terminal-safe.js';
 export * from './constants.js';
 export * from './declared-env.js';
+export * from './existing-ancestor.js';
 export * from './content.js';
 export * from './deadline.js';
 export * from './media-deinline.js';

@@ -251,8 +251,13 @@ is therefore **narrowed to a local, opted-in endpoint** rather than left on a fl
 
 Media artifacts are served back to a surface (e.g. the desktop WebView) only through the **one bounded
 `read_media(ref)` gate** ([ADR-0032](../decisions/0032-desktop-rust-media-de-inline-amends-0018.md)) — never
-a second raw static-file mount, and **never with symlink-following on**. A review of any byte-delivery or
-upload surface must confirm:
+a second raw static-file mount, and **never with symlink-following on**.
+
+The [shared ancestor and CAS physical-containment contract](../reference/shared-core/built-in-tools.md#shared-ancestor-resolution)
+refines Node host path handling under ADR-0105. These controls assume owner-controlled storage/cooperating hosts,
+not a race-free hostile parent-swap jail. Bounded delivery, cancellation and maintenance below remain acceptance
+obligations; Step 2 physical containment alone does not satisfy Step 6/ADR-0106. A review of any byte-delivery
+or upload surface must confirm:
 
 - **Range/offset is validated, fail-closed.** A `Range`/offset is rejected if negative, reversed
   (`end < start`), or out of bounds against the known `byteLength` — a raw `parseInt` with no bound check is
@@ -460,11 +465,12 @@ This is the **binding home** for the tool-policy rules; the rationale is
 restated). Three of the four rules below are **security tightenings** — public
 workflow-API tightenings, cheap now because no workflow exists yet, never sold as additive.
 
-- The `run_command` built-in tool spawns **model-driven shell execution** and runs
-  sandboxed: only commands on the workflow's `allowedCommands` allowlist execute (an
-  unlisted command never runs), under the workflow's filesystem **scope tier** (restricted
-  fs — no reach outside the granted paths), with **no network** authority beyond what an
-  allowed command itself performs, and a CPU/memory/time budget that terminates a runaway.
+- The `run_command` built-in tool spawns **model-driven shell execution**. Only commands
+  on the workflow's `allowedCommands` allowlist execute (an
+  unlisted command never runs). File-tool scope does not constrain arbitrary subprocess
+  arguments or provide OS filesystem isolation; an allowed command can access files or
+  network resources using its own process authority. Review its argument surface and the
+  host's actual resource/time controls rather than inferring an OS sandbox from a root grant.
   It never receives a provider key or any secret. Treat its output (stdout/stderr/exit code)
   as untrusted input.
 - **`run_command` matches exactly by default.** *(Security tightening — ADR-0029(a).)* An
@@ -505,7 +511,9 @@ workflow-API tightenings, cheap now because no workflow exists yet, never sold a
   **authored error at parse**, not a silent drop at spawn: an author who declared it believed
   it would take effect. Executable resolution reads the **ambient** `PATH`, never a declared
   one, so a declared `PATH` cannot select the binary either. `{{secrets.*}}` credential
-  references are unaffected.
+  references are unaffected. Modern cloud, Kubernetes and Terraform config/credential
+  selectors use this same [shared predicate](../../packages/shared/src/declared-env.ts);
+  do not maintain a second denylist in a process host.
 - **Nothing spawns a local MCP server without the user's consent on that machine.** A `stdio`
   MCP server is a **program the artifact chooses**, so the decision cannot belong to the
   artifact. Every host path that can open an MCP-bearing artifact passes one chokepoint before

@@ -1,4 +1,13 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -412,4 +421,38 @@ describe('sweepMediaAtTerminal (the shared run/gate run-end GC guard)', () => {
       }),
     ).resolves.toBeUndefined();
   });
+});
+
+describe('native CAS physical containment through both host GC paths (ADR-0105)', () => {
+  it.each(['grace', 'orphan'] as const)(
+    '%s GC refuses a symlinked shard and never deletes its sibling bytes',
+    async (kind) => {
+      const root = realpathSync(mkdtempSync(join(tmpdir(), 'relavium-gc-containment-')));
+      try {
+        const casRoot = join(root, 'cas');
+        const sibling = join(root, 'sibling');
+        mkdirSync(casRoot);
+        mkdirSync(sibling);
+        const bytes = Buffer.from('correct-hash GC sibling');
+        const digest = createHash('sha256').update(bytes).digest('hex');
+        const handle = 'media://sha256-' + digest;
+        const outsideFile = join(sibling, digest.slice(2));
+        writeFileSync(outsideFile, bytes);
+        symlinkSync(sibling, join(casRoot, digest.slice(0, 2)), 'junction');
+        const references = fakeRefs(kind === 'grace' ? { expired: [handle] } : {}).refs;
+        await expect(
+          runHostMediaGc(
+            baseDeps({
+              casStore: new FilesystemMediaStore(casRoot),
+              references,
+              now: () => Date.now() + 60_000,
+            }),
+          ),
+        ).rejects.toThrow(/admitted/);
+        expect(readFileSync(outsideFile)).toEqual(bytes);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
 });

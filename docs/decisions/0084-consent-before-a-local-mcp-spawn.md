@@ -529,3 +529,5 @@ later anyway, at the `chat` / `agent run` / `run` that actually opens the artifa
   anything with that access can also write the artifact, so this adds no exposure the machine did not have.
 - **Lazy connect stays undone**, so a granted server is spawned at every session/run start whether or not a
   tool is ever called. §8 names the blocker; the cost is startup time and a running child, not a trust gap.
+
+> Amended 2026-10-12 by [ADR-0105](0105-filesystem-roots-are-invocation-grants-not-project-authority.md): The existing shared declared-env predicate now includes modern cloud, Kubernetes and Terraform credential/config selectors; no second host list is introduced. Filesystem flags never authorize an MCP spawn, and MCP consent never grants filesystem roots. Exact mechanisms are in the [tool filesystem contract](../reference/shared-core/built-in-tools.md#filesystem-permission-tiers), with [argv authority](../reference/cli/commands.md#global-options) and [config selectors](../reference/contracts/config-spec.md#chat-filesystem-root-selectors) in their canonical homes. Implementation review/gates remain open.

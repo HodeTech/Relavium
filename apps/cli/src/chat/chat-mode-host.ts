@@ -2,7 +2,8 @@ import { resolve } from 'node:path';
 
 import type { AgentSession, ToolApprovalRequest, ToolDef } from '@relavium/core';
 
-import { isProtectedPath } from '../engine/tool-host/fs.js';
+import { isProtectedPolicyPath } from '../engine/tool-host/fs.js';
+import type { FsPathPolicy } from '../engine/tool-host/fs-policy.js';
 import {
   ApprovalCache,
   buildTurnPolicy,
@@ -44,6 +45,7 @@ export interface MakeChatModeEnvOptions {
   readonly tools: readonly ToolDef[];
   /** The session working dir — the anchor a relative preview path is resolved against for the protected check. */
   readonly workspaceDir: string;
+  readonly fsPolicy?: FsPathPolicy;
   /** The REPL's interactive approval prompt. */
   readonly prompt: ApprovalPrompt;
 }
@@ -69,7 +71,9 @@ export function makeChatModeEnv(opts: MakeChatModeEnvOptions): ChatModeEnv {
     // fs floor still hard-denies the write — while the primary path cannot under-classify at all.
     isProtectedTarget: (request) => {
       const path = request.unredactedPreview?.path ?? request.preview.path;
-      return path !== undefined && isProtectedPath(resolve(opts.workspaceDir, path));
+      return (
+        path !== undefined && isProtectedPolicyPath(resolve(opts.workspaceDir, path), opts.fsPolicy)
+      );
     },
   };
 }

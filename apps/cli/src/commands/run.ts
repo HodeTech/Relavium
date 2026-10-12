@@ -152,6 +152,12 @@ function parseOrRefuse(yaml: string, source: string): WorkflowDefinition {
 }
 
 export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Promise<ExitCode> {
+  if ((deps.global.allowFsRoots?.length ?? 0) > 0) {
+    throw new CliError(
+      'invalid_invocation',
+      '--allow-fs-root applies only to Home, chat, chat-resume and agent run.',
+    );
+  }
   const build = deps.buildEngine ?? defaultBuildEngine;
   // One resolver shared by the key pre-flight and the engine, reading the CLI's env seam (io.env).
   const providers = deps.providers ?? createProviderResolver(deps.io.env);

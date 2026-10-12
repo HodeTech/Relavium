@@ -52,10 +52,11 @@ describe('ensureGlobalConfigDir', () => {
     rmSync(home, { recursive: true, force: true });
   });
 
-  it('creates ~/.relavium and its tmp/ idempotently', () => {
+  it('creates ~/.relavium idempotently without allocating unused scratch', () => {
     const dir = ensureGlobalConfigDir(home);
     expect(dir).toBe(join(home, '.relavium'));
-    expect(existsSync(join(home, '.relavium', 'tmp'))).toBe(true);
+    expect(existsSync(dir)).toBe(true);
+    expect(existsSync(join(home, '.relavium', 'tmp'))).toBe(false);
     expect(() => ensureGlobalConfigDir(home)).not.toThrow();
   });
 });

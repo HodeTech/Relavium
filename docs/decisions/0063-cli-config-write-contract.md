@@ -128,3 +128,5 @@ and unit-tested with an injected home dir + fs, no TTY.
   ADR refines that to global `[preferences].default_model` + a chat fallback layer. The phase-2.5 §2.5.G text is
   **already reconciled in this doc round**; the remaining `config-spec.md` update (the config-write contract +
   the `[preferences].default_model` chat fallback) lands in the implementing PR.
+
+> Amended 2026-10-12 by [ADR-0105](0105-filesystem-roots-are-invocation-grants-not-project-authority.md): `[chat].extra_roots` is a project/workspace narrowing selector, never a global preference or grant. Resume applies the current global override while discovering current project/workspace layers at its original canonical workspace. The typed global preference setter remains unchanged. Exact mechanisms are in the [tool filesystem contract](../reference/shared-core/built-in-tools.md#filesystem-permission-tiers), with [argv authority](../reference/cli/commands.md#global-options) and [config selectors](../reference/contracts/config-spec.md#chat-filesystem-root-selectors) in their canonical homes. Implementation review/gates remain open.

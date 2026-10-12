@@ -56,6 +56,11 @@ import {
 } from '../engine/mcp-servers.js';
 import { createProviderResolver, type ProviderResolver } from '../engine/providers.js';
 import { assembleToolEnv, clampChatTier, wiredToolIds } from '../engine/tool-host/assemble.js';
+import {
+  fsPolicyScopeRoots,
+  fsPolicyWorkspace,
+  type FsPathPolicy,
+} from '../engine/tool-host/fs-policy.js';
 import { CliError } from '../process/errors.js';
 import type { McpSecretResolver } from '../secrets/mcp-secret.js';
 import {
@@ -85,6 +90,8 @@ export interface BuildChatSessionOptions {
   /** The resolved `[chat]` block (default model, fs scope, turn cap, cost cap). */
   readonly chat: ResolvedChatConfig;
   readonly maxTokensEstimate?: number;
+  /** Host-owned transient policy; never part of SessionContext or the durable snapshot. */
+  readonly fsPolicy?: FsPathPolicy;
   /** `--agent <ref>` (path or bare id); `undefined` ⇒ the built-in default agent over `[chat].default_model`. */
   readonly agentRef: string | undefined;
   /**
@@ -224,6 +231,7 @@ export interface BuiltChatSession {
   readonly session: AgentSession;
   readonly handle: SessionHandle;
   readonly sessionId: string;
+  readonly fsPolicy?: FsPathPolicy;
   /**
    * The bound agent — its `id` is the session's `agentRef`. This is the **ORIGINAL** resolved agent (it carries
    * `mcp_servers` but NOT the dynamically-discovered MCP tool ids), so the persisted snapshot and the
@@ -306,6 +314,7 @@ type SessionRuntimeOptions = Pick<
   | 'now'
   | 'providers'
   | 'toolHost'
+  | 'fsPolicy'
   | 'afterTurnCompaction'
   | 'onCompactionStart'
   | 'onBudgetWarning'
@@ -390,12 +399,13 @@ function buildSessionRuntime(
   // 2.5.E (ADR-0057): the shared factory wires the FULL-CAPABILITY chat host (fs read+WRITE, process, egress,
   // os) jailed to the session's fs-scope tier. Safety rests on the mode's per-tool APPROVAL floor, not on
   // capability absence — the REPL activates the fail-closed `confirmAction` regime via `applyChatMode` (default
-  // `ask` denies every governed action). Building it is pure (no I/O), so we always assemble it for the policy
+  // `ask` denies every governed action). Building it pins native filesystem identities, so we always assemble it for the policy
   // even when a test injects its own `toolHost` (e.g. a fail-closed `{}` for a capability-gap assertion).
   const factoryEnv = assembleToolEnv({
     profile: 'chat-read-write',
     fsScopeTier: context.fsScopeTier,
     workspaceDir: context.workingDir,
+    ...(opts.fsPolicy === undefined ? {} : { fsPolicy: opts.fsPolicy }),
   });
   const baseHost: ToolHost = opts.toolHost ?? factoryEnv.host;
   // Conditional spread ⇒ the inbound-MCP arm is a true MERGE onto fs/process, never a replace (the prior bug).
@@ -776,12 +786,37 @@ function mcpOptionsFor(
   };
 }
 
+/** Validate owned authority before binding agents/providers or reconnecting MCP, including clear/reseat. */
+function assertSessionFsPolicy(
+  policy: FsPathPolicy | undefined,
+  workspace: string,
+  chat: ResolvedChatConfig,
+): void {
+  if (policy === undefined && (chat.extraRoots?.length ?? 0) > 0) {
+    throw new CliError(
+      'config_error',
+      'Chat filesystem selectors require an admitted host filesystem policy.',
+    );
+  }
+  if (policy !== undefined) {
+    try {
+      fsPolicyScopeRoots(policy, workspace, clampChatTier(chat.fsScope ?? DEFAULT_FS_SCOPE));
+    } catch {
+      throw new CliError(
+        'invalid_invocation',
+        'The admitted filesystem root identities changed; start a new invocation to authorise them again.',
+      );
+    }
+  }
+}
+
 export async function buildChatSession(opts: BuildChatSessionOptions): Promise<BuiltChatSession> {
+  assertSessionFsPolicy(opts.fsPolicy, opts.cwd, opts.chat);
   const sessionId = opts.uuid();
   const { agent, artifact } = bindChatAgent(opts);
   const mcpArtifact = opts.mcpArtifact ?? artifact;
   const context: SessionContext = {
-    workingDir: opts.cwd,
+    workingDir: opts.fsPolicy === undefined ? opts.cwd : fsPolicyWorkspace(opts.fsPolicy),
     // The EFFECTIVE tier (full→project clamped for the chat surface — a chat READ can exfiltrate) — the SAME value the factory
     // jails the host to, so the dispatch-context `fsScope` and the host jail stay consistent (ADR-0055), and
     // the persisted `SessionContext.fsScope` records what the session actually ran at (a resume re-reads it).
@@ -795,7 +830,10 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
   // (fixture/offline replay) bypasses the path entirely — no config build, no spawn, no dial.
   const mcp = opts.disableMcp
     ? undefined
-    : await connectAgentMcp(agent.mcp_servers, mcpOptionsFor(opts, mcpArtifact, opts.cwd));
+    : await connectAgentMcp(
+        agent.mcp_servers,
+        mcpOptionsFor(opts, mcpArtifact, context.workingDir),
+      );
 
   try {
     const {
@@ -842,6 +880,7 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
       sessionId,
       agent,
       context,
+      ...(opts.fsPolicy === undefined ? {} : { fsPolicy: opts.fsPolicy }),
       contextWindowTokens: sessionContextWindow(agent, deps),
       tools: deps.tools,
       emitSessionEvent: emit,
@@ -939,7 +978,7 @@ export interface BuiltResumedChatSession extends BuiltChatSession {
 
 export interface BuildResumedChatSessionOptions extends Pick<
   BuildChatSessionOptions,
-  'afterTurnCompaction' | 'onCompactionStart'
+  'afterTurnCompaction' | 'onCompactionStart' | 'fsPolicy'
 > {
   /** The resolved `[chat]` block (turn cap, cost cap) — applied to the resumed session's deps. */
   readonly chat: ResolvedChatConfig;
@@ -1024,6 +1063,7 @@ export async function buildResumedChatSession(
   opts: BuildResumedChatSessionOptions,
 ): Promise<BuiltResumedChatSession> {
   const { record, messages } = opts;
+  assertSessionFsPolicy(opts.fsPolicy, record.context.workingDir, opts.chat);
   const agent = record.agentSnapshot;
   if (agent === undefined) {
     throw new CliError(
@@ -1105,6 +1145,7 @@ export async function buildResumedChatSession(
       sessionId: record.id,
       agent,
       context,
+      ...(opts.fsPolicy === undefined ? {} : { fsPolicy: opts.fsPolicy }),
       contextWindowTokens: sessionContextWindow(agent, deps),
       tools: deps.tools,
       emitSessionEvent: emit,

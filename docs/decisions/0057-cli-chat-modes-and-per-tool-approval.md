@@ -204,3 +204,5 @@ read-only `ask` and no mode escapes protected-paths + the jail).
 - This is the most complex workstream: a new shared event, a new session state, a registry approval hook,
   three new host arms, and a REPL intercept — isolated in 2.5.E behind this ADR so the rest of Phase 2.5
   does not depend on it.
+
+> Amended 2026-10-12 by [ADR-0105](0105-filesystem-roots-are-invocation-grants-not-project-authority.md): The mode-independent floor gains only a contextual exemption for the ancestor `.relavium` component of an exact host-issued scratch descriptor. Nested credentials/protected components, project metadata and home config/history remain denied, including auto. Ordinary chat has no production scratch producer. Project chat may use invocation-authorized selected roots; full still clamps to project. Exact mechanisms are in the [tool filesystem contract](../reference/shared-core/built-in-tools.md#filesystem-permission-tiers), with [argv authority](../reference/cli/commands.md#global-options) and [config selectors](../reference/contracts/config-spec.md#chat-filesystem-root-selectors) in their canonical homes. Implementation review/gates remain open.

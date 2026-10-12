@@ -3,6 +3,7 @@ import type { ToolPolicy } from '@relavium/shared';
 
 import { createNodeEgressCapability } from './egress.js';
 import { createNodeFsCapability } from './fs.js';
+import type { FsPathPolicy, HostScratchRoot } from './fs-policy.js';
 import { createNodeOsCapability } from './os.js';
 import { createNodeProcessCapability } from './process.js';
 
@@ -49,8 +50,10 @@ export interface AssembleToolEnvOptions {
   readonly fsScopeTier: FsScopeTier;
   /** The session/run working directory (absolute) — the fs jail anchor and the process spawn cwd. */
   readonly workspaceDir: string;
-  /** An optional extra sandboxed fs root (e.g. `~/.relavium/tmp/`); absent ⇒ workspace-only. */
-  readonly tmpDir?: string;
+  /** Immutable host-only invocation policy; never a project-authored grant. */
+  readonly fsPolicy?: FsPathPolicy;
+  /** Exact host-issued private scratch prerequisite (no shipping allocator). */
+  readonly scratch?: HostScratchRoot;
   /**
    * Resolve a `web_search` / `http_request` `credentialRef` to its secret VALUE host-side (the keychain) for
    * the `egress` arm — never logged, never returned to the engine ([ADR-0006](../../../../../docs/decisions/0006-os-keychain-for-api-keys.md)).
@@ -83,7 +86,7 @@ export function clampChatTier(tier: FsScopeTier): FsScopeTier {
   return tier === 'full' ? 'project' : tier;
 }
 
-/** Assemble the `ToolHost` + chat-default `ToolPolicy` for a profile. Pure construction — no I/O here. */
+/** Assemble the `ToolHost` + chat-default `ToolPolicy`; fs construction captures native root identities. */
 export function assembleToolEnv(opts: AssembleToolEnvOptions): AssembledToolEnv {
   const readOnly = opts.profile === 'chat-read-only';
   const isChat = opts.profile === 'chat-read-only' || opts.profile === 'chat-read-write';
@@ -93,15 +96,13 @@ export function assembleToolEnv(opts: AssembleToolEnvOptions): AssembledToolEnv 
   // the per-tool approval floor (the regime + advertise-filter the session-host activates), NOT by absence.
   const wireEgressOs = opts.profile === 'chat-read-write';
   const host: ToolHost = {
-    // NOTE: the factory does not yet pass `extraRoots`, so the `project` tier behaves as workspace-only (it can
-    // only NARROW the jail — never a hole); until the `project` path-allowlist lands, `project` ==
-    // `sandboxed`-minus-tmp. The `chat-read-write` profile sets `readOnly:false` — its writes are gated by the
-    // ADR-0057 approval floor (and the always-on protected-paths refusal in fs.ts), never by capability absence.
+    // Strings in committed config cannot grant roots: only the pre-admitted host policy can widen project scope.
     fs: createNodeFsCapability({
       tier,
       workspaceDir: opts.workspaceDir,
       readOnly,
-      ...(opts.tmpDir === undefined ? {} : { tmpDir: opts.tmpDir }),
+      ...(opts.fsPolicy === undefined ? {} : { pathPolicy: opts.fsPolicy }),
+      ...(opts.scratch === undefined ? {} : { scratch: opts.scratch }),
     }),
     // The process arm itself has no read-only notion — chat-safety rests ENTIRELY on the policy layer above:
     // the empty `allowedCommands` default denies `run_command`, and `git_status` exposes no model-controlled

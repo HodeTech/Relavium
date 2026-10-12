@@ -947,7 +947,10 @@ legitimately exceeds the inline ceiling in flight and is de-inlined at the seam 
 The platform-free **`MediaStore`** contract — `put` / `get` / `resolveForEgress` /
 `readRange`, bytes as `Uint8Array`, named only by the handle string — and the
 **`DeInlineMedia`** transform are **implemented**: `@relavium/db` ships the filesystem CAS
-and an in-memory reference, and the choke-point wiring landed at 1.AF.
+and an in-memory reference, and the choke-point wiring landed at 1.AF. The filesystem implementation's
+[physical containment and limits](built-in-tools.md#physical-media-storage-and-limits) are refined by
+[ADR-0105](../../decisions/0105-filesystem-roots-are-invocation-grants-not-project-authority.md);
+bounded fd reads, cancellation and maintenance remain Step 6/ADR-0106 obligations.
 [ADR-0089](../../decisions/0089-media-correctness-four-boundaries.md) §2 adds a fifth
 method, optional **`putStream?(bytes: AsyncIterable<Uint8Array>, mimeType)`**, plus
 **`MediaUrlStream`** — the streaming sibling of `MediaUrlFetch` — so a media body is never

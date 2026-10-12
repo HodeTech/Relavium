@@ -1535,9 +1535,8 @@ model/provider/cost. If it's deliberately left out, that should be a stated deci
   [Step 11 round 3](https://github.com/HodeTech/Relavium/blob/f267bb0d4e9a4b4e2b51cb2c44ff744284d5228a/docs/reviews/2026-10-04T01-17-23-w7-step-11-round-3-review.md) accepts the complete
   path after the two corrective rounds; this closes the moved command follow-up, not the W7 register.
   *(low · apps/cli/src/commands/gate.ts + manifest.ts + dispatch.ts; ADR-0028, ADR-0097)*
-- [ ] **`project`-tier `extraRoots` allowlist (carried from 2.5.A).** The `project` fs tier behaves as
-  workspace-only until the path-allowlist lands (it can only NARROW the jail, never open a hole).
-  **Scheduled → 2.6.M** (the `[chat].extra_roots` config key is the missing source). *(low · apps/cli/src/engine/tool-host/assemble.ts)*
+- [ ] **`project`-tier invocation roots/selectors (carried from 2.5.A; pulled forward 2026-10-12).** Implemented in the [Wave 2 Step 2 checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#step-2-implementation-checkpoint--2026-10-12), pending unified independent review/gates. Explicit invocation grants provide authority; strict project/workspace selectors only narrow it. This item stays unchecked until Step 2 acceptance.
+
 - [ ] **fs hard-link aliasing — the pnpm virtual-store read exemption (accepted residual, ADR-0057 review record).**
   The hard-link aliasing READ guard (`st.nlink > 1` ⇒ refused) is disabled ONLY for pnpm's `node_modules/.pnpm/…`
   virtual store (`isPnpmStorePath`), so dependency-source reads work on Linux (where pnpm hard-links). The bounded
@@ -1555,14 +1554,7 @@ model/provider/cost. If it's deliberately left out, that should be a stated deci
   surface the MCP server/tool in `ToolActionPreview` (today `mcp_call`/`web_search` return a BLANK preview, so
   F3 correctly forbids caching their `always`) — a structured `{mcpServer,mcpTool}` preview would turn the
   blank-check downgrade into a real, reviewable, cacheable per-server grant. **Scheduled → 2.6.M.** *(medium · apps/cli/src/chat/chat-mode.ts + packages/core/src/tools/{types,registry,builtins}.ts + run-event.ts)*
-- [ ] **fs `.relavium` sensitive-read/write segment vs. the `~/.relavium/tmp` sandboxed root (latent).** Both the
-  read floor (`SENSITIVE_READ_DIR_SEGMENTS`) and the write floor (`PROTECTED_DIR_SEGMENTS`) match a `.relavium`
-  segment anywhere, so they would refuse the sanctioned `tmpDir` scratch root — inert today (no call site wires
-  `tmpDir`). Resolve (home-anchored match, or exclude the wired tmp root) before any caller passes `tmpDir`.
-  **Scheduled → 2.6.M / 2.6.N** — promoted from latent to a **prerequisite**: 2.6.N's central ephemeral
-  artifact root (`~/.relavium/artifacts/<sessionId>/`) needs tool read/write into a `~/.relavium/` subdir, so
-  the home-anchored fix (protect the secrets-bearing root + project `.relavium/`, exclude the wired sanctioned
-  scratch subroot) must land with the `extra_roots`/`tmpDir` wiring. *(low→prereq · apps/cli/src/engine/tool-host/fs.ts + assemble.ts)*
+- [ ] **Exact host-issued scratch floor prerequisite (L605; pulled forward 2026-10-12).** Implemented in the [Wave 2 Step 2 checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#step-2-implementation-checkpoint--2026-10-12), pending unified independent review/gates. This replaces the historical inert `tmpDir` prerequisite with a host-only exact private descriptor/factory, lexical/canonical containment, identity checks, POSIX private-directory checks and retained nested floors. Automatic global tmp provisioning is removed without deleting existing directories. Windows retains the owner-controlled profile/ACL assumption. Ordinary chat has no production allocator; production provisioning/isolation/join/cleanup/recovery remains 2.6.N.
 
 ## Phase-2 CLI (2.D) follow-ups
 
@@ -1692,10 +1684,8 @@ model/provider/cost. If it's deliberately left out, that should be a stated deci
 > 2.5.A items were confirmed by the PR #60 review passes and deliberately **not** taken in-PR — none blocked the milestone.
 
 - [x] **`egress` + `os` host arms wired (governed) — RESOLVED in 2.5.E.** *Landed in 2.5.E ([ADR-0057](../decisions/0057-cli-chat-modes-and-per-tool-approval.md), PR #63, merged 2026-07-03):* `apps/cli/src/engine/tool-host/egress.ts` (over the shared `connectValidated` connect-by-validated-IP mechanism, Host/`:authority`-header-strip) + `os.ts`, wired by the `chat-read-write` factory profile as **governed** classes on the fail-closed approval floor (denied in `ask`, prompt in `accept-edits`). *(apps/cli/src/engine/tool-host/; security-review.md)*
-- [ ] **Project-tier path-allowlist (`extraRoots`) not yet passed by the factory.** The `project` tier therefore
-  behaves as **workspace-only** (it can only narrow the jail, never open a hole — `project` ==
-  `sandboxed`-minus-tmp). It did **not** land in 2.5.E — carried forward under the *Phase 2.5.E follow-ups*
-  entry above (single tracking point). *(low · apps/cli/src/engine/tool-host/assemble.ts; ADR-0057; built-in-tools.md fs-tier note)*
+- [ ] **Project-tier path-allowlist (`extraRoots`) — historical 2.5.A carry.** The current invocation-grant/selector implementation is tracked by the [Wave 2 Step 2 checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#step-2-implementation-checkpoint--2026-10-12) and the Phase 2.5.E entry above. Independent Step 2 review/gates remain pending; this duplicate pointer makes no separate closure claim.
+
 - [x] **Write-capable chat — RESOLVED in 2.5.E.** *Landed in 2.5.E ([ADR-0057](../decisions/0057-cli-chat-modes-and-per-tool-approval.md), PR #63, merged 2026-07-03):* the `relavium chat` default profile is now the full-capability `chat-read-write` host — `write_file` is wired and gated by the per-tool approval floor (denied in the default `ask` mode as `tool_denied`, not `tool_unavailable`); a declared `full` tier is still **clamped to `project`** for the chat surface (an unjailed read exfiltrates `~/.ssh` / `~/.aws`, a write-capable chat shares that risk). *(apps/cli/src/chat/session-host.ts; ADR-0057)*
 - [x] **Profile-unaware advertise-filter — DONE (2.5-close Step 15, Batch E; PR #69).** `wiredToolIds` now takes a
   `{ readOnly }` option: on a read-only host a WRITE-class (`fsWrite`) tool is no longer advertised (its `fs` arm is

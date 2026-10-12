@@ -30,6 +30,7 @@ Global options (usable anywhere on the command line):
   --no-color        disable colored output
   --cwd <dir>       run as if started in <dir>
   --config <path>   use an explicit config file
+  --allow-fs-root <absolute-directory>  grant a chat/Home/agent-run root (repeatable, max 16)
   --no-alt-screen   keep the inline renderer (no full-screen alt screen)
   --no-mouse        disable mouse reporting (restores native click-drag selection)
   -v, --verbose     print verbose diagnostics to stderr

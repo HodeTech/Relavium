@@ -378,3 +378,5 @@ had. That follows from §5's authority rule and needs no version marker.
 - **A `secret` input must be re-supplied on every resume**, through stdin, which is friction on an unattended
   resume and the honest cost of never persisting a credential — and it still does not prove continuity (§6).
 - **A catastrophic authored `pattern` can still stall a run** whose input has no `max_length`.
+
+> Amended 2026-10-12 by [ADR-0105](0105-filesystem-roots-are-invocation-grants-not-project-authority.md): This ADR’s workflow-resume identity contract remains intact. ADR-0105 adds a separate chat-resume original-canonical-workspace/current-config root reauthorization contract; workflow execution does not consume chat grants. Exact mechanisms are in the [tool filesystem contract](../reference/shared-core/built-in-tools.md#filesystem-permission-tiers), with [argv authority](../reference/cli/commands.md#global-options) and [config selectors](../reference/contracts/config-spec.md#chat-filesystem-root-selectors) in their canonical homes. Implementation review/gates remain open.

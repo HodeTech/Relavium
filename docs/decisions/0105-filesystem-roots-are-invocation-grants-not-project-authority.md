@@ -181,3 +181,7 @@ The maintainer approved the revised decision and the eight-step Wave 2 execution
 plan after the ten-comment intake and two fresh independent cumulative proposal
 reviews. Dependent implementation is authorised on `development`; acceptance of
 this decision does not certify unimplemented mechanisms or close the wave.
+
+### Implementation-scope checkpoint — 2026-10-12
+
+Step 2 code and canonical documentation are being reconciled on `development` against this accepted decision. The [owning checkpoint](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#step-2-implementation-checkpoint--2026-10-12) distinguishes the scratch prerequisite from its future producer and CAS physical containment from Step 6 bounds/cancellation/maintenance. Unified independent implementation review and required gates remain pending; decision acceptance is not implementation acceptance.

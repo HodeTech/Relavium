@@ -98,3 +98,5 @@ per rule.
   node — slightly more typing for explicit safety; documented as a tightening.
 - Rejecting `secret` interpolation removes a (dangerous) convenience; the supported path is
   credential/header fields, which is documented.
+
+> Amended 2026-10-12 by [ADR-0105](0105-filesystem-roots-are-invocation-grants-not-project-authority.md): The CLI now separates host invocation grants from committed narrowing selectors, with mode-independent credential/protected-write floors. Core command allowlist decisions remain intact. File-tool roots do not constrain arbitrary subprocess arguments or create an OS sandbox. Exact mechanisms are in the [tool filesystem contract](../reference/shared-core/built-in-tools.md#filesystem-permission-tiers), with [argv authority](../reference/cli/commands.md#global-options) and [config selectors](../reference/contracts/config-spec.md#chat-filesystem-root-selectors) in their canonical homes. Implementation review/gates remain open.

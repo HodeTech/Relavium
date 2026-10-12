@@ -39,6 +39,8 @@ describe('createFilesystemMediaWrite (1.AF/D16, ADR-0044 §2 — save_to write p
     const write = createFilesystemMediaWrite(root);
     await expect(write('/etc/passwd', BYTES)).rejects.toThrow(/relative/);
     await expect(write(String.raw`C:\win.png`, BYTES)).rejects.toThrow(/relative/);
+    await expect(write('C:relative.png', BYTES)).rejects.toThrow(/relative/);
+    await expect(write('z:relative.png', BYTES)).rejects.toThrow(/relative/);
     await expect(write(String.raw`\\server\share\x.png`, BYTES)).rejects.toThrow(/relative/);
     await expect(write('../escape/x.png', BYTES)).rejects.toThrow(/\.\./);
     await expect(write('a/../../escape.png', BYTES)).rejects.toThrow(/\.\./);
@@ -86,6 +88,17 @@ describe('createFilesystemMediaWrite (1.AF/D16, ADR-0044 §2 — save_to write p
     }
     // The symlink target file is untouched (1 byte, not overwritten with BYTES).
     expect(readFileSync(target).length).toBe(1);
+  });
+
+  it('refuses a dangling ancestor without materializing its missing target', async () => {
+    const missing = join(outside, 'missing');
+    symlinkSync(missing, join(root, 'dangling'), 'dir');
+    await expect(
+      createFilesystemMediaWrite(root)('dangling/new/file.bin', BYTES),
+    ).rejects.toBeInstanceOf(MediaWriteError);
+    expect(() => readFileSync(join(missing, 'new/file.bin'))).toThrow();
+    // The shared helper must refuse the existing dangling entry, not climb to root and mkdir through it.
+    expect(() => readFileSync(join(root, 'dangling/new/file.bin'))).toThrow();
   });
 
   it('writes correctly when the scope root itself is reached via a symlink (realpath-normalized)', async () => {

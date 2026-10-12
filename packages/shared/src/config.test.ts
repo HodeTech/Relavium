@@ -306,6 +306,43 @@ describe('config schemas', () => {
     expect(ProjectConfigSchema.safeParse({ chat: { max_cost_microcents: 0 } }).success).toBe(true);
   });
 
+  it('preserves absent and empty filesystem selectors and admits relative selectors (ADR-0105)', () => {
+    expect(ProjectConfigSchema.parse({ chat: {} }).chat?.extra_roots).toBeUndefined();
+    expect(ProjectConfigSchema.parse({ chat: { extra_roots: [] } }).chat?.extra_roots).toEqual([]);
+    const selectors = ['../shared', 'nested/assets'];
+    expect(
+      ProjectConfigSchema.parse({ chat: { extra_roots: selectors } }).chat?.extra_roots,
+    ).toEqual(selectors);
+  });
+
+  it('bounds filesystem selectors to 16 entries and 4096 characters per entry (ADR-0105)', () => {
+    const atLimit = Array.from({ length: 16 }, () => 'x'.repeat(4096));
+    expect(ProjectConfigSchema.safeParse({ chat: { extra_roots: atLimit } }).success).toBe(true);
+    expect(
+      ProjectConfigSchema.safeParse({ chat: { extra_roots: [...atLimit, 'one-more'] } }).success,
+    ).toBe(false);
+    expect(
+      ProjectConfigSchema.safeParse({ chat: { extra_roots: ['x'.repeat(4097)] } }).success,
+    ).toBe(false);
+  });
+
+  it.each([null, '../shared', {}, [null], [1], [''], [' \t\n']])(
+    'rejects malformed filesystem selectors: %j (ADR-0105)',
+    (extra_roots) => {
+      expect(ProjectConfigSchema.safeParse({ chat: { extra_roots } }).success).toBe(false);
+    },
+  );
+
+  it('refuses filesystem roots in global config at every plausible location (ADR-0105)', () => {
+    for (const config of [
+      { extra_roots: ['/outside'] },
+      { preferences: { extra_roots: ['/outside'] } },
+      { chat: { extra_roots: ['/outside'] } },
+    ]) {
+      expect(GlobalConfigSchema.safeParse(config).success).toBe(false);
+    }
+  });
+
   it('accepts [chat].max_turns (the hard turn cap → SessionDeps.maxTurns) as a positive int only', () => {
     // max_turns is the surface-mapped hard session turn cap, DISTINCT from max_messages (history-trim).
     expect(ProjectConfigSchema.safeParse({ chat: { max_turns: 10 } }).success).toBe(true);

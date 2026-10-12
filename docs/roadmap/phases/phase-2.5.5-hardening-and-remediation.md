@@ -1059,6 +1059,8 @@ testing, error-handling, documentation and commit standards control the implemen
 Phase files own scope/acceptance; current.md owns ordering. This is a task-relevant
 audit, not a new claim to certify every historical ADR or every filesystem import.
 
+The following table records the preflight state before implementation. The later [Step 2 checkpoint](#step-2-implementation-checkpoint--2026-10-12) qualifies its filesystem/env/CAS rows without relabeling historical evidence.
+
 | Queue | Current disposition and action |
 |---|---|
 | Wave 2 items 1–2, G19/#202 and hostile MCP queue | Already closed in W4/PR #87. Reuse its accepted register/sitting and rerun direct regressions at final head; do not rebuild consent/transports. |
@@ -1273,6 +1275,33 @@ physical byte matching supports the reviewed implementation. It is not execution
 at the later committed head or new published GitHub evidence. The original Ubuntu
 pre-readiness starvation cause remains unproved. Native Windows gates, subsequent
 steps, four new security sittings and exact-head publication remain open.
+
+### Step 2 implementation checkpoint — 2026-10-12
+
+The current `development` changeset implements invocation-root admission, project-over-workspace narrowing selectors, original-canonical-workspace chat resume with fresh grants/current config, and the shared immutable policy used by clear/reseat and file/discovery consumers. It adds lexical/canonical credential floors and shared declared-env overrides, the injected ancestor resolver for tool fs/native `save_to`, catalog admission and physical CAS containment.
+
+[Canonical tool contracts](../../reference/shared-core/built-in-tools.md#filesystem-permission-tiers), [CLI options](../../reference/cli/commands.md#global-options), [selectors](../../reference/contracts/config-spec.md#chat-filesystem-root-selectors) and [session authority](../../reference/cli/chat-session.md#filesystem-authority-and-resume) describe the implementation scope and owner-controlled-path assumptions. The dated forward notes in affected ADRs retain their historical text.
+
+G21 removes unused automatic global tmp provisioning; existing directories are not deleted. The host-only exact private scratch descriptor/factory is a prerequisite, with POSIX private-directory checks and the existing Windows profile/ACL assumption. Ordinary chat has no production allocator; full 2.6.N isolation/join/cleanup/recovery remains open. These controls do not promise a hostile same-user parent-swap jail, race-free path checks or OS subprocess isolation.
+
+Physical CAS containment is Step 2 only. Own `put` ceiling, bounded fd delivery, cancellation, descriptor/media admission and temp-age/live-writer maintenance remain Step 6/ADR-0106. Unified independent cumulative Step 2 review, native platform evidence and required gates remain pending. This checkpoint is not acceptance or closure of any Step 2 queue item.
+
+**Pre-review verification:** full local `pnpm run ci` passes against `4668f65c` plus
+the Step 2 working-tree implementation: 516 package test files, 11,174 passing tests,
+11 established LLM capability skips and one Windows-only case on this macOS host.
+Lint, typechecks, build/format, dependency/seam/isolation guards and three offline
+smokes pass. Acceptance-tool guards pass 78/78; the four wire and 23 usage controls,
+including 429 permanent native/scale cases, remain complete. The new filesystem
+matrix passes all 20 fixed/red/restored mechanisms, with 1,020 assertion executions,
+39 expected named failures, identical inventories and byte-exact restoration.
+It checks current copied-source execution and unchanged developer/dependency bytes;
+the compact matrix complements the ordinary all-operation native suites. These are
+local results, not published exact-head or Windows evidence. Cumulative document
+validation covers 36 Markdown files and 2,181 relative links/anchors with no findings.
+
+**Publication dependency:** documentation PR #93 is now merged. The earlier plan's
+open-PR warning is historical; Wave 2 will receive its own PR after implementation
+and acceptance, without repurposing #93 or changing branches.
 
 ### Remaining gate
 

@@ -26,13 +26,23 @@ import {
   type FsScopeTier,
   type FsWriteOpts,
 } from '@relavium/core';
-import type { AbortSignalLike } from '@relavium/shared';
+import { deepestExistingReal, type AbortSignalLike } from '@relavium/shared';
 
 import {
   HostCapabilityError,
   HostDeniedError,
   throwIfAborted as throwIfAbortedShared,
 } from './errors.js';
+import {
+  assertFsPolicyPath,
+  createFsPathPolicy,
+  fsPolicyFloorPaths,
+  fsPolicyScopeRoots,
+  fsPolicyWorkspace,
+  FsPolicyError,
+  type FsPathPolicy,
+  type HostScratchRoot,
+} from './fs-policy.js';
 
 /**
  * The Node host **mechanism** half of the `ToolHost.fs` capability arm (2.5.A, [ADR-0055](../../../../../docs/decisions/0055-cli-host-capability-seam-tool-environment-factory.md);
@@ -43,8 +53,8 @@ import {
  * `..` traversal nor a symlinked component can escape the tier.
  *
  * Scope tiers ([built-in-tools.md](../../../../../docs/reference/shared-core/built-in-tools.md) §Filesystem
- * permission tiers): `sandboxed` ⇒ the workspace dir (+ an optional tmp root), `project` ⇒ the workspace plus
- * an explicit `extraRoots` allowlist, `full` ⇒ unjailed (the power-user opt-in). A relative tool path resolves
+ * permission tiers): `sandboxed` ⇒ the workspace dir (+ an optional host-issued scratch root), `project` ⇒ the workspace plus
+ * invocation-granted extra roots selected by config, `full` ⇒ unjailed (the power-user opt-in). A relative tool path resolves
  * against the workspace dir.
  *
  * **Read-only by profile (2.5.A).** `relavium chat`'s default profile constructs this with `readOnly: true`,
@@ -71,8 +81,10 @@ export interface NodeFsCapabilityConfig {
   readonly tier: FsScopeTier;
   /** The session/run working directory (absolute) — the jail anchor and the base for a relative tool path. */
   readonly workspaceDir: string;
-  /** An optional extra sandboxed root (e.g. `~/.relavium/tmp/`). Absent ⇒ workspace-only under `sandboxed`. */
-  readonly tmpDir?: string;
+  /** Host-issued exact private scratch descriptor; a plain tmp path cannot bypass a floor. */
+  readonly scratch?: HostScratchRoot;
+  /** Pre-admitted invocation policy; absent builds a trusted-host policy once at construction. */
+  readonly pathPolicy?: FsPathPolicy;
   /** The `project`-tier path allowlist (absolute). Ignored under `sandboxed` / `full`. */
   readonly extraRoots?: readonly string[];
   /** `true` ⇒ `write_file` fail-closes as `tool_unavailable` (the 2.5.A chat read-only profile). */
@@ -112,16 +124,34 @@ export class FsScopeDeniedError extends HostDeniedError {
  * Build a node-backed {@link FsCapability} jailed to `config`'s scope tier. The returned object is the value a
  * host wires onto `ToolHost.fs`; it holds no ambient state beyond the immutable config.
  */
-export function createNodeFsCapability(config: NodeFsCapabilityConfig): FsCapability {
-  const maxReadBytes = config.maxReadBytes ?? DEFAULT_MAX_READ_BYTES;
-  const maxGlobMatches = config.maxGlobMatches ?? DEFAULT_MAX_GLOB_MATCHES;
+export function createNodeFsCapability(input: NodeFsCapabilityConfig): FsCapability {
+  const snapshot = Object.freeze({
+    ...input,
+    extraRoots: Object.freeze([...(input.extraRoots ?? [])]),
+  });
+  let config: NodeFsCapabilityConfig | undefined;
+  let admissionError: FsPolicyError | undefined;
+  try {
+    const pathPolicy = snapshot.pathPolicy ?? createFsPathPolicy(snapshot);
+    fsPolicyScopeRoots(pathPolicy, snapshot.workspaceDir, snapshot.tier);
+    config = Object.freeze({ ...snapshot, pathPolicy });
+  } catch (error) {
+    admissionError = error instanceof FsPolicyError ? error : new FsPolicyError();
+  }
+  // Construction captures identity now. A failed admission stays failed; it is never re-authorized later.
+  const owned = (): NodeFsCapabilityConfig => {
+    if (config === undefined) throw admissionError ?? new FsPolicyError();
+    return config;
+  };
+  const maxReadBytes = snapshot.maxReadBytes ?? DEFAULT_MAX_READ_BYTES;
+  const maxGlobMatches = snapshot.maxGlobMatches ?? DEFAULT_MAX_GLOB_MATCHES;
   return {
     readFile: (path, opts, signal) =>
-      guarded(() => readOne(config, maxReadBytes, maxGlobMatches, path, opts, signal)),
+      guarded(() => readOne(owned(), maxReadBytes, maxGlobMatches, path, opts, signal)),
     writeFile: (path, data, opts, signal) =>
-      guarded(() => writeOne(config, path, data, opts, signal)),
+      guarded(() => writeOne(owned(), path, data, opts, signal)),
     listDirectory: (path, opts, signal) =>
-      guarded(() => listOne(config, maxGlobMatches, path, opts, signal)),
+      guarded(() => listOne(owned(), maxGlobMatches, path, opts, signal)),
   };
 }
 
@@ -202,13 +232,15 @@ async function readOne(
   if (opts.glob === true) {
     return readGlob(config, maxReadBytes, maxGlobMatches, path, signal);
   }
-  const inScope = await buildScopeChecker(config);
+  assertNotSensitiveReadPath(resolve(config.workspaceDir, path), config.pathPolicy);
+  const inScope = buildScopeChecker(config);
   const real = await jailExisting(config, inScope, path);
   // The confidentiality floor: refuse to read a secret/credential store (.ssh, .relavium, .git/config, the
   // credential dotfiles) in EVERY mode and tier — checked on the realpath'd target so a symlink/alias into one
   // is caught. Reads flow into the model's context (then to the provider), so this mirrors, on the read side,
   // the protected-paths WRITE floor's mode/tier independence (ADR-0057).
-  assertNotSensitiveReadPath(real);
+  assertNotSensitiveReadPath(lexicalTarget(config, path), config.pathPolicy);
+  assertNotSensitiveReadPath(real, config.pathPolicy);
   const result = await readJailedFile(real, maxReadBytes, rejectAliasedRead(config, real));
   if (result.kind === 'directory') {
     throw new FsCapabilityError('read_file: the path is a directory, not a file');
@@ -464,24 +496,26 @@ function foldPathComponent(name: string): string {
  * WITHOUT triggering the throw — the two share exactly one protected-paths definition.
  */
 export function isProtectedPath(absoluteTarget: string): boolean {
-  for (const segment of absoluteTarget.split(sep)) {
+  for (const segment of absoluteTarget.split(/[\\/]/)) {
     if (PROTECTED_DIR_SEGMENTS.has(foldPathComponent(segment))) return true;
   }
-  return PROTECTED_RC_BASENAMES.has(foldPathComponent(basename(absoluteTarget)));
+  const base = absoluteTarget.split(/[\\/]/).at(-1) ?? '';
+  return PROTECTED_RC_BASENAMES.has(foldPathComponent(base)) || isSensitiveReadPath(absoluteTarget);
 }
 
 /** Deny a write to a protected path (a `.git`/`.relavium`/`.ssh` directory, or a startup/config file). FATAL. */
-function assertNotProtectedPath(absoluteTarget: string): void {
-  if (!isProtectedPath(absoluteTarget)) return;
-  // Re-derive which class matched for a precise (still reason-only) message.
-  for (const segment of absoluteTarget.split(sep)) {
-    if (PROTECTED_DIR_SEGMENTS.has(foldPathComponent(segment))) {
-      throw new FsScopeDeniedError(
-        'write_file: refusing to write inside a protected directory (.git / .relavium / .ssh)',
-      );
-    }
+export function isProtectedPolicyPath(absoluteTarget: string, policy?: FsPathPolicy): boolean {
+  return (
+    policy === undefined ? [absoluteTarget] : fsPolicyFloorPaths(policy, absoluteTarget)
+  ).some(isProtectedPath);
+}
+
+function assertNotProtectedPath(absoluteTarget: string, policy?: FsPathPolicy): void {
+  if (isProtectedPolicyPath(absoluteTarget, policy)) {
+    throw new FsScopeDeniedError(
+      'write_file: refusing to write a protected directory, credential store or shell startup file',
+    );
   }
-  throw new FsScopeDeniedError('write_file: refusing to write a shell startup file');
 }
 
 /**
@@ -491,15 +525,18 @@ function assertNotProtectedPath(absoluteTarget: string): void {
  * concern that does not apply to a read) — reads leak CONFIDENTIALITY, so the read floor targets the
  * secret/credential stores specifically.
  *
- * NOTE (latent): `.relavium` also names this CLI's sanctioned scratch root `~/.relavium/tmp/` (the `tmpDir`
- * sandboxed root). Both this read floor AND the write {@link PROTECTED_DIR_SEGMENTS} would refuse that root — but
- * no call site wires `tmpDir` today, so the collision is inert. Resolve it (home-anchored match, or exclude the
- * wired tmp root) BEFORE any caller passes `tmpDir`. Tracked in docs/roadmap/deferred-tasks.md.
+ * Only a host-issued, identity-checked scratch descriptor may exempt its exact ancestor `.relavium`.
+ * Ordinary invocation roots never override this floor (ADR-0105).
  */
 const SENSITIVE_READ_DIR_SEGMENTS: ReadonlySet<string> = new Set([
   '.ssh',
   '.relavium',
   '.aws',
+  '.kube',
+  '.azure',
+  '.terraform.d',
+  'gcloud', // Unix XDG and Windows APPDATA stores include token databases and credential-bearing configurations.
+  'legacy_credentials',
   // `.env` as a DIRECTORY (some tooling stores per-environment secrets as `.env/production`, etc.) — the basename
   // check below only catches a `.env` FILE, so anything NESTED under a `.env/` dir needs the segment guard too.
   // Over-denying a rare `.env` virtualenv read is the safe direction for a confidentiality floor.
@@ -515,6 +552,8 @@ const SENSITIVE_READ_BASENAMES: ReadonlySet<string> = new Set([
   '.pgpass',
   '.envrc', // direnv — an in-repo shell file that routinely holds `export AWS_SECRET_ACCESS_KEY=…` (NOT a `.env*`)
   '.dockercfg', // legacy Docker registry auth (pre-`config.json`) — plaintext base64 `auth` credentials
+  'application_default_credentials.json',
+  'credentials.tfrc.json',
 ]);
 
 /**
@@ -528,11 +567,11 @@ const SENSITIVE_READ_BASENAMES: ReadonlySet<string> = new Set([
  * every surface.
  */
 export function isSensitiveReadPath(absoluteTarget: string): boolean {
-  const folded = absoluteTarget.split(sep).map(foldPathComponent);
+  const folded = absoluteTarget.split(/[\\/]/).map(foldPathComponent);
   for (const segment of folded) {
     if (SENSITIVE_READ_DIR_SEGMENTS.has(segment)) return true;
   }
-  const base = foldPathComponent(basename(absoluteTarget));
+  const base = folded.at(-1) ?? '';
   // dotenv secret files — `.env`, `.env.local`, `.env.production`, … (foldPathComponent strips a trailing dot, so
   // `.env.` folds to `.env`). The single most common in-repo secret store.
   if (base === '.env' || base.startsWith('.env.')) return true;
@@ -553,9 +592,25 @@ export function isSensitiveReadPath(absoluteTarget: string): boolean {
   return SENSITIVE_READ_BASENAMES.has(base);
 }
 
+/** Discovery prunes refused scratch descendants; explicit accesses still throw. Root identity is admitted separately. */
+function isSensitivePolicyReadPath(path: string, policy: FsPathPolicy | undefined): boolean {
+  try {
+    return (policy === undefined ? [path] : fsPolicyFloorPaths(policy, path)).some(
+      isSensitiveReadPath,
+    );
+  } catch (error) {
+    if (error instanceof FsPolicyError) return true;
+    throw error;
+  }
+}
+
 /** Deny a read of a secret/credential store (`.ssh`/`.relavium`, a git `config`, a credential dotfile). FATAL. */
-function assertNotSensitiveReadPath(absoluteTarget: string): void {
-  if (isSensitiveReadPath(absoluteTarget)) {
+function assertNotSensitiveReadPath(absoluteTarget: string, policy?: FsPathPolicy): void {
+  if (
+    (policy === undefined ? [absoluteTarget] : fsPolicyFloorPaths(policy, absoluteTarget)).some(
+      isSensitiveReadPath,
+    )
+  ) {
     throw new FsScopeDeniedError(
       'refusing to read a credential/secret store (.ssh / .relavium / .aws / .env or .env.* / .docker config / a git config or credential dotfile) — ask the user to share any needed content instead',
     );
@@ -578,8 +633,8 @@ async function writeOne(
   // Protected paths are denied in EVERY mode (auto included). Checked on the REQUESTED path before the jail
   // mkdir so a `createDirs` write cannot even create an empty `.git/`, then re-checked on the (realDir-)jailed
   // finalTarget so a parent symlink cannot resolve INTO a protected directory.
-  assertNotProtectedPath(resolve(config.workspaceDir, path));
-  const inScope = await buildScopeChecker(config);
+  assertNotProtectedPath(resolve(config.workspaceDir, path), config.pathPolicy);
+  const inScope = buildScopeChecker(config);
   const { realDir, finalTarget } = await jailWriteTarget(
     config,
     inScope,
@@ -587,13 +642,13 @@ async function writeOne(
     opts.createDirs === true,
   );
   await assertNotSymlink(finalTarget); // never write THROUGH an existing symlink at the final component
-  assertNotProtectedPath(finalTarget); // re-check the jailed target (parent realpath'd) against the fold
+  assertNotProtectedPath(finalTarget, config.pathPolicy); // re-check the jailed target against the floor
   // Belt-and-suspenders for Win32 final-component name-aliasing: `finalTarget` keeps the LEXICAL basename
   // (jailWriteTarget only realpath's the parent). If the target already EXISTS, its realpath is the canonical
   // long name, so a Win32 8.3 short-name alias (`GITCON~1` → `.gitconfig`) or an NTFS stream path that folds to
   // a non-protected basename is caught HERE. A not-yet-existing target has no alias, so the checks above suffice.
   const canonicalTarget = await realpath(finalTarget).catch(() => undefined);
-  if (canonicalTarget !== undefined) assertNotProtectedPath(canonicalTarget);
+  if (canonicalTarget !== undefined) assertNotProtectedPath(canonicalTarget, config.pathPolicy);
   throwIfAborted(signal);
   const bytes = Buffer.from(data, 'utf8');
   if (opts.append === true) {
@@ -690,11 +745,13 @@ async function listOne(
   signal: AbortSignalLike | undefined,
 ): Promise<DirListing> {
   throwIfAborted(signal);
-  const inScope = await buildScopeChecker(config);
+  assertNotSensitiveReadPath(resolve(config.workspaceDir, path), config.pathPolicy);
+  const inScope = buildScopeChecker(config);
   const realRoot = await jailExisting(config, inScope, path);
   // Refuse to enumerate a credential/secret store (recon of key/secret filenames) — the read-side confidentiality
   // floor, applied to the requested root and to each nested entry the recursive walk reaches below.
-  assertNotSensitiveReadPath(realRoot);
+  assertNotSensitiveReadPath(lexicalTarget(config, path), config.pathPolicy);
+  assertNotSensitiveReadPath(realRoot, config.pathPolicy);
   const rootInfo = await stat(realRoot);
   if (!rootInfo.isDirectory()) {
     throw new FsCapabilityError('list_directory: the path is not a directory');
@@ -702,25 +759,36 @@ async function listOne(
   const matcher = opts.glob === undefined ? undefined : compileGlob(opts.glob);
   const cap = Math.min(maxEntries, MAX_LIST_ENTRIES);
   const entries: DirEntry[] = [];
-  await walk(realRoot, opts.recursive === true, signal, inScope, async (real, rel, dirent) => {
-    if (entries.length >= cap) return false; // stop the walk once the listing cap is hit
-    if (matcher !== undefined && !matcher(rel)) return true;
-    // Sensitive-read floor on the RESOLVED target (mirrors collectGlobFiles): `walk` realpaths the parent DIR
-    // but not the entry, so a bare lexical check would let a symlink named innocuously slip a nested
-    // .ssh/.relavium/credential store into the listing. Fall back to the lexical path when realpath fails (a
-    // broken/vanished link) so a sensitively-NAMED entry is still filtered. The DISPLAYED name (`rel`) is unchanged.
-    const realResolved = await realpath(real).catch(() => undefined);
-    if (isSensitiveReadPath(realResolved ?? real)) return true;
-    const info = await lstat(real).catch(() => undefined);
-    if (info === undefined) return true; // a vanished/inaccessible entry is skipped, never fatal
-    entries.push({
-      name: rel,
-      type: dirent.isDirectory() ? 'directory' : 'file',
-      sizeBytes: info.size,
-      lastModified: info.mtime.toISOString(),
-    });
-    return true;
-  });
+  await walk(
+    realRoot,
+    opts.recursive === true,
+    signal,
+    inScope,
+    config.pathPolicy,
+    async (real, rel, dirent) => {
+      if (entries.length >= cap) return false; // stop the walk once the listing cap is hit
+      if (matcher !== undefined && !matcher(rel)) return true;
+      // Sensitive-read floor on the RESOLVED target (mirrors collectGlobFiles): `walk` realpaths the parent DIR
+      // but not the entry, so a bare lexical check would let a symlink named innocuously slip a nested
+      // .ssh/.relavium/credential store into the listing. Fall back to the lexical path when realpath fails (a
+      // broken/vanished link) so a sensitively-NAMED entry is still filtered. The DISPLAYED name (`rel`) is unchanged.
+      const realResolved = await realpath(real).catch(() => undefined);
+      if (
+        isSensitivePolicyReadPath(real, config.pathPolicy) ||
+        isSensitivePolicyReadPath(realResolved ?? real, config.pathPolicy)
+      )
+        return true;
+      const info = await lstat(real).catch(() => undefined);
+      if (info === undefined) return true; // a vanished/inaccessible entry is skipped, never fatal
+      entries.push({
+        name: rel,
+        type: dirent.isDirectory() ? 'directory' : 'file',
+        sizeBytes: info.size,
+        lastModified: info.mtime.toISOString(),
+      });
+      return true;
+    },
+  );
   return { entries };
 }
 
@@ -732,9 +800,9 @@ async function listOne(
 type ScopeChecker = (real: string) => boolean;
 
 /** Precompute the tier's realpath'd scope roots ONCE, returning a sync membership predicate. */
-async function buildScopeChecker(config: NodeFsCapabilityConfig): Promise<ScopeChecker> {
+function buildScopeChecker(config: NodeFsCapabilityConfig): ScopeChecker {
+  const roots = fsPolicyScopeRoots(config.pathPolicy, config.workspaceDir, config.tier);
   if (config.tier === 'full') return () => true;
-  const roots = await realScopeRoots(config);
   return (real) =>
     roots.some((root) => {
       // Normalize the boundary so a root ending in `sep` (the filesystem root) does not produce a doubled
@@ -742,16 +810,6 @@ async function buildScopeChecker(config: NodeFsCapabilityConfig): Promise<ScopeC
       const prefix = root.endsWith(sep) ? root : root + sep;
       return real === root || real.startsWith(prefix);
     });
-}
-
-/** The realpath'd scope roots for the tier (a non-existent / unresolvable root is dropped, not fatal). */
-async function realScopeRoots(config: NodeFsCapabilityConfig): Promise<string[]> {
-  const declared =
-    config.tier === 'sandboxed'
-      ? [config.workspaceDir, ...(config.tmpDir === undefined ? [] : [config.tmpDir])]
-      : [config.workspaceDir, ...(config.extraRoots ?? [])]; // project
-  const resolved = await Promise.all(declared.map((r) => realpath(r).catch(() => undefined)));
-  return resolved.filter((r): r is string => r !== undefined);
 }
 
 /** Resolve a tool path to its real (symlink-resolved) absolute path and verify it is in-jail. Must exist. */
@@ -765,6 +823,7 @@ async function jailExisting(
     throw new FsCapabilityError('the path does not exist or is not accessible');
   });
   assertInScope(inScope, real);
+  assertFsPolicyPath(config.pathPolicy, lexical, real);
   return real;
 }
 
@@ -782,10 +841,16 @@ async function jailWriteTarget(
   // short name like `GIT~1` → `.git`, which the lexical pre-check misses) — is caught before `mkdir` creates
   // even an empty subdir there. This closes the createDirs side-effect the realpath'd finalTarget check alone
   // would only catch AFTER the mkdir.
-  const deepestReal = await deepestExistingReal(targetDir);
+  const deepestReal = await deepestExistingReal(targetDir, {
+    realpath,
+    lstat,
+    dirname,
+    isMissing: (error) => errnoCode(error) === 'ENOENT',
+  });
   assertInScope(inScope, deepestReal);
-  assertNotProtectedPath(deepestReal);
-  if (createDirs) await mkdir(targetDir, { recursive: true });
+  assertFsPolicyPath(config.pathPolicy, lexical, deepestReal);
+  assertNotProtectedPath(deepestReal, config.pathPolicy);
+  if (createDirs) await mkdir(targetDir, { recursive: true, mode: 0o700 });
   // The parent must now exist (created above, or pre-existing) — re-resolve + re-check (tightens the window).
   const realDir = await realpath(targetDir).catch(() => {
     throw new FsCapabilityError(
@@ -793,6 +858,7 @@ async function jailWriteTarget(
     );
   });
   assertInScope(inScope, realDir);
+  assertFsPolicyPath(config.pathPolicy, lexical, join(realDir, basename(lexical)));
   return { realDir, finalTarget: join(realDir, basename(lexical)) };
 }
 
@@ -821,20 +887,6 @@ function lexicalTarget(config: NodeFsCapabilityConfig, path: string): string {
   return isAbsolute(path) ? resolve(path) : resolve(config.workspaceDir, path);
 }
 
-/** Resolve the deepest existing ancestor of `startDir` through `realpath` (walking up past missing dirs). */
-async function deepestExistingReal(startDir: string): Promise<string> {
-  let dir = startDir;
-  for (;;) {
-    const real = await realpath(dir).catch(() => undefined);
-    if (real !== undefined) return real;
-    const parent = dirname(dir);
-    if (parent === dir) {
-      throw new FsCapabilityError('no existing ancestor directory could be resolved');
-    }
-    dir = parent;
-  }
-}
-
 /** Refuse to write through an existing symlink at the final path; a missing path (ENOENT) is fine. */
 async function assertNotSymlink(target: string): Promise<void> {
   const info = await lstat(target).catch((error: unknown) => {
@@ -849,8 +901,8 @@ async function assertNotSymlink(target: string): Promise<void> {
 
 /** The path of an in-jail file, made workspace-relative for the model-facing result (never an absolute leak). */
 function relWorkspace(config: NodeFsCapabilityConfig, real: string): string {
-  const rel = relative(config.workspaceDir, real);
-  return rel === '' || rel.startsWith('..') ? basename(real) : rel;
+  const rel = relative(fsPolicyWorkspace(config.pathPolicy), real);
+  return isAbsolute(rel) ? real : rel || '.';
 }
 
 /* ------------------------------------------------------------------------------------------------ *
@@ -859,8 +911,8 @@ function relWorkspace(config: NodeFsCapabilityConfig, real: string): string {
 
 /**
  * Walk `root` (optionally recursive), invoking `visit(real, rel, dirent)`; `visit` returns false to stop. Each
- * queued directory is re-resolved (`realpath`) + scope-checked **immediately before** its `readdir` — closing the
- * TOCTOU between the time it was queued and the time it is read: a directory atomically swapped for an out-of-jail
+ * queued directory is re-resolved (`realpath`) + scope-checked **immediately before** its `readdir` — reducing the
+ * queue-to-read replacement window under owner-controlled storage: a directory atomically swapped for an out-of-jail
  * symlink in that window is dropped, and the read targets the freshly-resolved canonical path, not the stale one.
  * `root` is already a canonical in-scope path (the caller realpath'd it). A symlinked subdir is never followed
  * (`dirent.isDirectory()` is false for one), so the recursion stays inside the jail with no symlink loop.
@@ -870,6 +922,7 @@ async function walk(
   recursive: boolean,
   signal: AbortSignalLike | undefined,
   inScope: ScopeChecker,
+  policy: FsPathPolicy | undefined,
   visit: (real: string, rel: string, dirent: Dirent) => Promise<boolean>,
 ): Promise<void> {
   const stack: string[] = [root];
@@ -878,14 +931,17 @@ async function walk(
     const queued = stack.pop();
     if (queued === undefined) break;
     // Re-resolve + re-scope-check EVERY popped dir (including `root`, already canonical — a no-op resolve) right
-    // before its `readdir`, closing the queue→read TOCTOU; a dir swapped out-of-jail in that window drops here.
+    // before its `readdir`, reducing the queue→read replacement window; a dir swapped out-of-jail in that window drops here.
     const dir = await resolveInScope(queued, inScope);
     if (dir === undefined) continue; // swapped out-of-jail or vanished between queue and read — skip
+    if (isSensitivePolicyReadPath(queued, policy) || isSensitivePolicyReadPath(dir, policy))
+      continue;
     const dirents = await readdir(dir, { withFileTypes: true }).catch((): Dirent[] => []);
     for (const dirent of dirents) {
       const real = join(dir, dirent.name);
       if (!(await visit(real, posixRel(root, real), dirent))) return;
-      if (recursive && dirent.isDirectory()) stack.push(real); // re-resolved + re-checked when it is popped
+      if (recursive && dirent.isDirectory() && !isSensitivePolicyReadPath(real, policy))
+        stack.push(real);
     }
   }
 }
@@ -903,13 +959,18 @@ async function collectGlobFiles(
   pattern: string,
   signal: AbortSignalLike | undefined,
 ): Promise<{ real: string; rel: string; size: number; mtimeMs: number }[]> {
-  const inScope = await buildScopeChecker(config);
-  const base = await realpath(config.workspaceDir).catch(() => {
-    throw new FsCapabilityError('read_file: the workspace directory is not accessible');
-  });
-  const matcher = compileGlob(pattern);
+  const inScope = buildScopeChecker(config);
+  const portablePattern = process.platform === 'win32' ? pattern.replaceAll('\\', '/') : pattern;
+  const meta = portablePattern.search(/[*?]/);
+  const slash = meta < 0 ? -1 : portablePattern.lastIndexOf('/', meta);
+  // Keep the trailing separator: C:/ must not become the drive-relative C: spelling.
+  const prefix = slash < 0 ? '.' : portablePattern.slice(0, slash + 1);
+  assertNotSensitiveReadPath(lexicalTarget(config, prefix), config.pathPolicy);
+  const base = await jailExisting(config, inScope, prefix);
+  assertNotSensitiveReadPath(base, config.pathPolicy);
+  const matcher = compileGlob(slash < 0 ? portablePattern : portablePattern.slice(slash + 1));
   const out: { real: string; rel: string; size: number; mtimeMs: number }[] = [];
-  await walk(base, true, signal, inScope, async (real, rel, dirent) => {
+  await walk(base, true, signal, inScope, config.pathPolicy, async (real, rel, dirent) => {
     if (out.length >= maxMatches) return false;
     if (dirent.isDirectory() || !matcher(rel)) return true;
     // Defense in depth: a matched FILE is realpath-jailed (a symlinked file could still point outside scope).
@@ -917,12 +978,22 @@ async function collectGlobFiles(
     if (realResolved === undefined || !inScope(realResolved)) return true; // skip, never read out of scope
     // Never surface a credential/secret store through a glob (the sensitive-read floor); the per-fd hard-link
     // guard in readJailedFile then still refuses an aliased match the readGlob loop reaches.
-    if (isSensitiveReadPath(realResolved)) return true;
+    if (
+      isSensitivePolicyReadPath(real, config.pathPolicy) ||
+      isSensitivePolicyReadPath(realResolved, config.pathPolicy)
+    )
+      return true;
+    assertFsPolicyPath(config.pathPolicy, real, realResolved);
     // stat the RESOLVED target (not the walk path) so an in-scope symlink TO a regular file still reads — a
     // bare `lstat(real)` on a symlink reports `isFile() === false` and would wrongly drop a legitimate match.
     const info = await stat(realResolved).catch(() => undefined);
     if (info === undefined || !info.isFile()) return true;
-    out.push({ real: realResolved, rel, size: info.size, mtimeMs: info.mtimeMs });
+    out.push({
+      real: realResolved,
+      rel: relWorkspace(config, realResolved),
+      size: info.size,
+      mtimeMs: info.mtimeMs,
+    });
     return true;
   });
   return out;

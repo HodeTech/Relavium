@@ -119,10 +119,18 @@ it introduces machine-local boundaries that still matter:
   [desktop-architecture.md](desktop-architecture.md).
 - **Filesystem scope.** Agent file operations are confined by a configurable scope
   (sandboxed to the workspace by default; expanded scopes require explicit user
-  approval). This is enforced by Tauri's scoped FS plugin / capability system, not
-  by ad-hoc path checks.
+  approval). Desktop enforcement uses Tauri's scoped FS plugin/capabilities. The Node CLI
+  admits explicit invocation authority, narrowed by committed project/workspace selectors,
+  under a pinned host policy and credential/protected-write floors. Exact contracts live in
+  [built-in tools](../reference/shared-core/built-in-tools.md#filesystem-permission-tiers),
+  [CLI options](../reference/cli/commands.md#global-options) and
+  [config selectors](../reference/contracts/config-spec.md#chat-filesystem-root-selectors).
+  Storage assumes owner-controlled paths and cooperating hosts; path checks are not a
+  hostile same-user parent-swap jail. The future scratch producer remains with
+  [Phase 2.6.N](../roadmap/phases/phase-2.6-conversational-authoring.md#26n--child-session-foundation-catalog-spawn-standardized-io-lineage).
 - **Shell tool execution.** Tools that run commands use an explicit per-workflow
-  allowlist; unlisted commands are never executed. Built-in tools and their
+  allowlist; unlisted commands are never executed. File-tool scope does not constrain arbitrary
+  subprocess arguments or supply OS filesystem isolation. Built-in tools and their
   permission model are in
   [../reference/shared-core/built-in-tools.md](../reference/shared-core/built-in-tools.md).
 - **Prompt injection.** Because agents act on untrusted content (web pages, files,
