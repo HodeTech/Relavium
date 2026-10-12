@@ -214,6 +214,127 @@ describe('finite secret query names (#196)', () => {
     });
   }
 
+  // Enumerate the canonical normalizer's finite removed code-point sets independently of its
+  // regexes. Escape-sequence bodies are representative fixtures, not an exhaustive grammar.
+  const removedControls = [
+    ...Array.from({ length: 32 }, (_, value) => value)
+      .filter((value) => value !== 9 && value !== 10)
+      .map((value) => String.fromCodePoint(value)),
+    ...Array.from({ length: 33 }, (_, value) => String.fromCodePoint(127 + value)),
+    ...[
+      0x061c, 0x200e, 0x200f, 0x202a, 0x202b, 0x202c, 0x202d, 0x202e, 0x2066, 0x2067, 0x2068,
+      0x2069,
+    ].map((value) => String.fromCodePoint(value)),
+    '\x1b[31m',
+    '\x1b[1 q',
+    '\x1b]52;c;YWJj\x07',
+    '\x1b]0;fixture\x1b\\',
+    '\x1bPfixture\x07',
+    '\x1bPfixture\x1b\\',
+    '\x1b^fixture\x1b\\',
+    '\x1b_fixture\x1b\\',
+    '\x1bXfixture\x1b\\',
+    '\x1bM',
+    '\x1b]',
+  ];
+  const overlapSuffix = ['AbCdEf', '0123456789', 'xyzUVWXYZ'].join('');
+  const overlapShapes = [
+    {
+      shape: 'normalized key',
+      values: removedControls.flatMap((control) =>
+        [`sk-${control}ant-api03-`, `AI${control}zaSyA`].flatMap((prefix) =>
+          ['\n', '\t', ' \r\n\t '].map((whitespace) => `${prefix}${whitespace}${overlapSuffix}`),
+        ),
+      ),
+      suffix: overlapSuffix,
+    },
+    {
+      shape: 'URL userinfo',
+      values: ['\n', '\t', ' \r\n\t '].map(
+        (whitespace) => `https://u${whitespace}ser:opaque-userinfo-P8@provider.invalid/x`,
+      ),
+      suffix: 'opaque-userinfo-P8',
+    },
+    {
+      shape: 'Bearer',
+      values: ['\n', '\t', ' \r\n\t '].map((whitespace) => `Bearer${whitespace}opaque-header-Z29`),
+      suffix: 'opaque-header-Z29',
+    },
+    {
+      shape: 'Basic',
+      values: ['\n', '\t', ' \r\n\t '].map((whitespace) => `Basic${whitespace}dXNlcjpvcGFxdWU=`),
+      suffix: 'dXNlcjpvcGFxdWU=',
+    },
+  ];
+
+  function expectOverlapProtected(text: string, suffix: string): void {
+    const error = makeLlmError({ provider: 'openai', kind: 'auth', message: text, code: text });
+    for (const output of [scrubSecrets(text), error.message, error.code]) {
+      expect(output, 'SECRETS_CAUSAL_OVERLAP_ORDER').not.toContain(suffix);
+      expect(output, 'SECRETS_CAUSAL_OVERLAP_ORDER').toContain('[REDACTED]');
+    }
+  }
+
+  for (const name of families) {
+    for (const { shape, values, suffix } of overlapShapes) {
+      it(`SECRETS_CAUSAL_OVERLAP_ORDER protects ${name} ${shape} before query redaction`, () => {
+        for (const value of values) expectOverlapProtected(`?${name}=${value}`, suffix);
+      });
+    }
+  }
+
+  it('SECRETS_CAUSAL_OVERLAP_ORDER preserves nested key evidence before a header masks its prefix', () => {
+    const text = ['Bearer (', 'sk-', 'ant-api03-', '\n', overlapSuffix].join('');
+    expectOverlapProtected(text, overlapSuffix);
+  });
+
+  it('SECRETS_CAUSAL_OVERLAP_ORDER detects credentials revealed without joining header whitespace', () => {
+    for (const label of ['Bear\x01er', 'Bas\x01ic']) {
+      expectOverlapProtected(
+        `${label}\nopaque-normalized-header-N7`,
+        'opaque-normalized-header-N7',
+      );
+    }
+    for (const prefix of ['sk-\x01ant-api03-', 'AI\x01zaSyA']) {
+      expectOverlapProtected(`${prefix}${overlapSuffix}`, overlapSuffix);
+    }
+  });
+
+  it('SECRETS_CAUSAL_OVERLAP_ORDER preserves prose after every completely masked credential', () => {
+    for (const [credential, masked] of [
+      [['sk-', 'ant-api03-', overlapSuffix].join(''), '[REDACTED]'],
+      [['AI', 'zaSyA', overlapSuffix].join(''), '[REDACTED]'],
+      [
+        'https://user:opaque-userinfo-P8@provider.invalid/x',
+        'https://[REDACTED]@provider.invalid/x',
+      ],
+      ['Bearer opaque-header-Z29', 'Bearer [REDACTED]'],
+      ['Basic dXNlcjpvcGFxdWU=', 'Basic [REDACTED]'],
+    ]) {
+      const text = `${credential}\nrequest failed retry later`;
+      const expected = `${masked}\nrequest failed retry later`;
+      const error = makeLlmError({ provider: 'openai', kind: 'auth', message: text, code: text });
+      for (const output of [scrubSecrets(text), error.message, error.code]) {
+        expect(output, 'SECRETS_CAUSAL_OVERLAP_ORDER').toBe(expected);
+      }
+    }
+  });
+
+  it('SECRETS_CAUSAL_OVERLAP_ORDER keeps benign colored prose and opaque-query prose readable', () => {
+    for (const text of [
+      '\x1b[31mrequest failed\x1b[0m retry later',
+      '?client_secretary=ordinary\nrequest failed retry later',
+    ]) {
+      expect(scrubSecrets(text), 'SECRETS_CAUSAL_OVERLAP_ORDER').toBe(text);
+    }
+    for (const name of families) {
+      expect(
+        scrubSecrets(`?${name}=${opaque}\nrequest failed retry later`),
+        'SECRETS_CAUSAL_OVERLAP_ORDER',
+      ).toBe(`?${name}=[REDACTED]\nrequest failed retry later`);
+    }
+  });
+
   it('preserves following prose after an opaque query or a completely masked prefixed key', () => {
     const key = ['sk-', 'ant-', 'api03-', 'AbCdEf0123456789xyz'].join('');
     for (const name of families) {
