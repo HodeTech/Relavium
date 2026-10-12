@@ -1634,6 +1634,53 @@ runtime gates retain their earlier attribution; they were not needlessly rerun o
 relabelled as later-head execution. Two NEW clean complete cumulative rounds after
 this material correction remain required before Step 3 closes.
 
+#### Step 3 shared-prefix review correction — 2026-10-12
+
+The next complete cumulative round found a second verified disclosure blocker.
+A whitespace-split prefixed key used as a new query family's value lost its
+identifying prefix during query redaction, leaving the suffix visible. The root
+reproduced all eight families through both CLI sanitizers and all four actual
+human/JSON rendering modes at reviewed head `70ba7f2c`. The other two assigned
+review scopes were clean; this combined round is finding-bearing and cannot
+supply clean acceptance.
+
+The shared LLM scrubber now classifies whitespace-joined residual prefixed keys
+before other credential replacements can erase their prefix. Contiguous key
+masking and that probe share one private pattern authority; the finite query-name
+regex is unchanged. Redacted spans still separate probes, preserving benign prose
+after a fully masked key or opaque query. This also protects messages and codes
+already passed through `makeLlmError` before they reach CLI rendering. The finite
+key-pattern word boundaries and the existing ambiguity after an already completely
+masked prefix remain limits; this is not universal formatted-secret discovery.
+
+Eight new LLM family regressions failed before correction. The final source-backed
+focused workload passes **139 tests**: 62 LLM-error, 61 sanitizer and 16 actual
+renderer cases. It includes raw and pre-scrubbed query values, two prefix shapes,
+three whitespace separators and an isolated pre-scrubbed verbose stack with a
+benign primary message. The earlier CLI residual control now exercises split URL
+userinfo first, retaining its independent obligation after the upstream key fix.
+
+An eleventh secrets mechanism removes the shared prefix probe's whitespace join.
+Its **29** named assertion witnesses join the earlier 46. A selected diagnostic
+capture passed without claiming matrix completion. The complete **11-mechanism**
+matrix then passed **1,749 assertion executions / 156 expected semantic failures /
+75 required witnesses**. A separate read-only audit checks all 33 phases, identical
+complete inventories, strict assertion outcomes, actual target-body evaluations,
+current fixed-source hashes, exact restoration and removed scratch. Physical
+manifests pin 1,048 source files and 457 installed dependency packages at
+`70ba7f2c` plus this correction working tree.
+
+After the shared runtime correction, local workspace lint/typecheck/test and
+build/format gates pass. The workspace test gate accounts for **528 files / 11,499
+passing tests / 14 established skips**; unchanged shared/DB test tasks replay their
+valid Turbo cache, while LLM/core/MCP/CLI tests execute anew. The affected LLM and CLI
+suites respectively pass 2,257 and 3,748 tests. All 112 acceptance-tool tests,
+tooling checkJs, scoped lint and three offline smokes pass. Earlier filesystem,
+wire/usage and full-CI executions retain their own source attribution; this is not
+a new published-head CI, coverage or whole-wave security-sitting claim. No real
+keychain, user history or provider was accessed. Two NEW clean complete cumulative
+rounds after this material correction remain required before Step 3 closes.
+
 ### Remaining gate
 
 The maintainer approved the revised four-ADR decision package and eight-step plan
