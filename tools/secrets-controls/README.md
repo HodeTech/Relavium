@@ -1,11 +1,13 @@
 # Secrets causal controls
 
-`pnpm check:secrets-mutations` runs the complete Step 3 secrets foundation matrix
-on physical source copies. `--mechanism <declared-id>` supports diagnosis only;
-selected runs retain `complete: false`. Step 4's argv refusal, first-run parser,
-flag forwarding and persisted masking remain later obligations.
+`pnpm check:secrets-mutations` runs the declared Step 3 secrets foundation and
+Step 4 first-run input matrix on physical source copies. `--mechanism <declared-id>`
+supports diagnosis only; selected runs retain `complete: false`. The current manifest
+declares **24 independent controls and 242 required named assertion witnesses**.
+These counts describe the workload; a declaration is not evidence that its removal
+passed. Actual fixed/removal/restored results belong to the coordinator's summary.
 
-Thirteen independent controls cover the stdin aggregate/single-chunk cap, mutable
+The thirteen preserved Step 3 controls cover the stdin aggregate/single-chunk cap, mutable
 Buffer ownership, zero-byte retention, awaited iterator cleanup, fixed source-error
 normalization, each native keychain operation's fixed error and finite query-name
 scrubbing, the CLI diagnostic residual check, and three independent shared-scrubber
@@ -41,11 +43,54 @@ each finite non-query rule to inspect its own original diagnostic views before a
 other replacement erases its evidence, followed by the finite query replacement.
 The views include the canonical terminal-normalized text and a whitespace-joined
 residual view. The split literal query name remains an independent CLI obligation.
-Across all 13 controls, 191 named assertion witnesses are required. The shared
+Across the thirteen Step 3 controls, 191 named assertion witnesses are required. The shared
 overlap controls collect 259 tests across the LLM, CLI sanitizer and renderer files.
 When a long prefix was already completely masked, its following suffix remains an
 existing classification ambiguity; this adds no universal secret-detection claim or
 new deferral.
+
+The eleven Step 4 controls remove separate production mechanisms:
+
+| Control | Removal and required observation |
+| --- | --- |
+| `run-argv-secret-refusal` | Remove the explicit own-entry secret refusal; both empty and nonempty argv secrets must fail the named refusal assertion before the required-input loop. |
+| `run-action-stdin-forwarding` | Drop the registered Boolean from the actual Commander action's dispatch input. |
+| `run-dispatch-stdin-forwarding` | Discard the true Boolean at the typed dispatch builder while preserving its absent/false behavior. |
+| `run-lazy-native-services` | Restore eager native service construction in `executeRun`; malformed ordinary input must then violate the zero-key-factory assertion in all four output modes. |
+| `run-default-secret-reader` | Replace only the first-run default reader fallback with empty input; the real reader observation must fail before the command-outcome assertion. |
+| `run-consumed-stdin-prompt-authority` | Restore run prompt authority after stdin consumption; the actual MCP consent decision must call the forbidden prompt under deliberately stale TTY metadata. |
+| `gate-consumed-stdin-prompt-authority` | Restore gate-resume prompt authority after stdin consumption; the real reader/actual MCP consent witness must observe the forbidden prompt. |
+| `run-native-event-input-mask` | Return raw values from the engine's event-input mask; actual native `runs.input_json` must fail its exact mask assertion in all four output modes. |
+| `run-native-input-node-mask` | Bypass only the input-node handler's mask; actual native `step_executions.output_json` must fail independently in all four output modes. Expression-scope masking is untouched. |
+| `run-commander-diagnostic-projection` | Remove the run-local human-output and thrown-error projection while retaining Commander exception handling; all four parser-diagnostic modes must expose the opaque payload to their named assertion. |
+| `run-core-admission-before-services` | Remove the pure pre-service core admission while retaining final engine validation; secret length/pattern/format and ordinary min/max/enum failures must violate the native zero-key-factory assertion in all four output modes. |
+
+The Step 4 declarations require 51 additional named assertion witnesses. Every
+selected workload remains a complete test file: 33 input cases, 13 action-forwarding
+cases, 31 dispatch cases, 73 run-command cases, three run-consent cases, 61 gate cases,
+28 top-level parser cases, or 131 native integration cases, as declared per control.
+The coordinator independently enforces exact case counts, unique complete case
+identities and identical fixed/removal/restored inventories. It accepts only a
+completed `AssertionError` carrying the expected marker in each selected target;
+setup/import errors, thrown mock blockers or a failure elsewhere cannot substitute.
+
+The native suite keeps the actual top-level parser/dispatch, default stdin reader,
+engine, production history openers and SQLite persistence. It observes both the
+provider-registry and workflow-history opens, uses an owned temporary home, restores
+stdin's descriptor, and replaces the native credential accessor. The consent fixture
+replaces external transport only and keeps the real consent gate/manager; observation
+spies call through. Positive cases prove verbatim engine input, typed ordinary values,
+prototype-like own input names, optional omission, exact-cap delivery, faithful workflow
+snapshots and native masked inputs/node outputs/events/reconstructed state. A real
+pause, missing-resupply refusal and fresh-stdin resume retain the later-gate exit.
+
+Native input-only sentinels prove neither universal workflow-literal/tool-output
+redaction nor scrubbing of historical rows. The complete workflow snapshot is
+preserved. Real pipes naturally disable prompting; stale-TTY seam witnesses establish
+removal of the explicit consumed-stdin authority separately. Final engine validation
+remains present in the early-admission removal: its witness proves service ordering,
+not successful dispatch of invalid inputs. Commander controls protect the documented
+run input/option boundary, not every ordinary workflow/config path in argv.
 
 Native keychain suites mock `@napi-rs/keyring` before loading the production wrapper
 and verify the mock calls; these controls do not touch the user's keychain or certify

@@ -1,4 +1,4 @@
-/** Step 3's independent production mechanisms and completed named semantic witnesses. */
+/** Steps 3–4 independent production mechanisms and required named semantic witnesses. */
 const reader = 'apps/cli/src/secrets/read-secret.ts';
 const readerCases = ['apps/cli/src/secrets/read-secret.test.ts'];
 const llmError = 'packages/llm/src/llm-error.ts';
@@ -43,6 +43,11 @@ function overlapWitnesses(shape) {
     },
   ];
 }
+const nativeRunCases = ['apps/cli/src/run-secret-inputs.test.ts'];
+const nativeModes = ['human', '--verbose', '--json', '--json --verbose'];
+const nativeSuccess = (mode) =>
+  `delivers one verbatim default-stdin read through real engine start and persists only masks (${mode})`;
+
 export const mutations = [
   control(
     'stdin-cap',
@@ -275,5 +280,188 @@ export const mutations = [
       ),
       ...overlapWitnesses('Basic'),
     ],
+  ),
+  // ADR-0107: independent first-run, default-reader, prompt-authority and native persistence sites.
+  control(
+    'run-argv-secret-refusal',
+    'apps/cli/src/commands/inputs.ts',
+    `  for (const decl of declared) {
+    if (decl.type === 'secret' && Object.hasOwn(raw, decl.name)) {
+      throw new CliError(
+        'invalid_invocation',
+        'secret inputs cannot be supplied with --input; use --secret-inputs-stdin.',
+      );
+    }
+  }`,
+    '',
+    ['apps/cli/src/commands/inputs.test.ts'],
+    33,
+    'refuses every explicitly supplied argv secret before the required loop: ""',
+    'SECRETS_CAUSAL_ARGV_SECRET_REFUSAL',
+    [
+      {
+        target:
+          'refuses every explicitly supplied argv secret before the required loop: "opaqueArgumentValue"',
+        marker: 'SECRETS_CAUSAL_ARGV_SECRET_REFUSAL',
+      },
+    ],
+  ),
+  control(
+    'run-action-stdin-forwarding',
+    'apps/cli/src/commands/specs.ts',
+    '            secretInputsStdin: opts.secretInputsStdin,\n',
+    '',
+    ['apps/cli/src/commands/specs-forwarding.test.ts'],
+    13,
+    'SECRETS_CAUSAL_RUN_STDIN_FLAG_FORWARDED: run forwards the boolean through its real action',
+    'SECRETS_CAUSAL_RUN_STDIN_FLAG_FORWARDED',
+  ),
+  control(
+    'run-dispatch-stdin-forwarding',
+    'apps/cli/src/commands/dispatch.ts',
+    "    secretInputsStdin: boolFlag(input.options['secretInputsStdin']),",
+    '    secretInputsStdin: false,',
+    ['apps/cli/src/commands/dispatch.test.ts'],
+    31,
+    'run: required workflow + repeatable input (empty list when absent)',
+    'SECRETS_CAUSAL_RUN_DISPATCH_FORWARDING',
+  ),
+  control(
+    'run-lazy-native-services',
+    'apps/cli/src/commands/dispatch.ts',
+    `    // ADR-0107: construct native credential services only after complete input admission.
+    resolveKeys: () => keyResolvers(ctx),`,
+    '    ...keyResolvers(ctx),',
+    nativeRunCases,
+    131,
+    'refuses malformed ordinary input before native effects (human)',
+    'SECRETS_CAUSAL_NATIVE_LAZY_FACTORY',
+    nativeModes.slice(1).map((mode) => ({
+      target: `refuses malformed ordinary input before native effects (${mode})`,
+      marker: 'SECRETS_CAUSAL_NATIVE_LAZY_FACTORY',
+    })),
+  ),
+  control(
+    'run-default-secret-reader',
+    'apps/cli/src/commands/run.ts',
+    '  const raw = await (deps.readSecretInput?.() ?? readSecretFromStdin(RUN_SECRET_STDIN_CONTEXT));',
+    "  const raw = await (deps.readSecretInput?.() ?? Promise.resolve(''));",
+    ['apps/cli/src/commands/run.test.ts'],
+    73,
+    'uses the real default reader exactly once and suppresses even an injected gate selector',
+    'SECRETS_CAUSAL_RUN_DEFAULT_READER',
+  ),
+  control(
+    'run-consumed-stdin-prompt-authority',
+    'apps/cli/src/commands/run.ts',
+    '  const mayPrompt = args.secretInputsStdin !== true;',
+    '  const mayPrompt = true;',
+    ['apps/cli/src/commands/run-secret-consent.test.ts'],
+    3,
+    'refuses unapproved stdio without prompting or starting a client despite stale TTY metadata',
+    'SECRETS_CAUSAL_RUN_CONSUMED_STDIN_CONSENT',
+  ),
+  control(
+    'gate-consumed-stdin-prompt-authority',
+    'apps/cli/src/commands/gate.ts',
+    '    const mayPrompt = args.secretStdin !== true;',
+    '    const mayPrompt = true;',
+    ['apps/cli/src/commands/gate.test.ts'],
+    61,
+    'refuses unapproved stdio after a real read despite stale TTY, without prompting or writing a grant',
+    'SECRETS_CAUSAL_RESUME_CONSUMED_STDIN_CONSENT',
+  ),
+  control(
+    'run-native-event-input-mask',
+    'packages/core/src/engine/engine.ts',
+    `    masked[key] = secretNames.has(key)
+      ? ({ secret: true, ref: \`inputs.\${key}\` } satisfies MaskedSecret)
+      : value;`,
+    '    masked[key] = value;',
+    nativeRunCases,
+    131,
+    nativeSuccess('human'),
+    'SECRETS_CAUSAL_NATIVE_EVENT_MASK',
+    nativeModes.slice(1).map((mode) => ({
+      target: nativeSuccess(mode),
+      marker: 'SECRETS_CAUSAL_NATIVE_EVENT_MASK',
+    })),
+  ),
+  control(
+    'run-native-input-node-mask',
+    'packages/core/src/engine/node-handlers/io.ts',
+    "  return { kind: 'completed', output: maskSecretInputs(ctx.inputs, ctx.secretInputNames) };",
+    "  return { kind: 'completed', output: ctx.inputs };",
+    nativeRunCases,
+    131,
+    nativeSuccess('human'),
+    'SECRETS_CAUSAL_NATIVE_INPUT_NODE_MASK',
+    nativeModes.slice(1).map((mode) => ({
+      target: nativeSuccess(mode),
+      marker: 'SECRETS_CAUSAL_NATIVE_INPUT_NODE_MASK',
+    })),
+  ),
+  control(
+    'run-commander-diagnostic-projection',
+    'apps/cli/src/commands/specs.ts',
+    `    .configureOutput({
+      ...program.configureOutput(),
+      outputError: (_message, write) =>
+        write('error: invalid run arguments; use relavium run --help.\\n'),
+    })
+    .exitOverride((error) => {
+      if (error.exitCode === 0) throw error;
+      throw new CommanderError(
+        error.exitCode,
+        error.code,
+        'error: invalid run arguments; use relavium run --help.',
+      );
+    });`,
+    '    .exitOverride();',
+    ['apps/cli/src/run.test.ts'],
+    28,
+    'SECRETS_CAUSAL_RUN_COMMANDER_OPACITY: human keeps parser values opaque',
+    'SECRETS_CAUSAL_RUN_COMMANDER_OPACITY',
+    ['human verbose', 'JSON', 'JSON verbose'].map((mode) => ({
+      target: `SECRETS_CAUSAL_RUN_COMMANDER_OPACITY: ${mode} keeps parser values opaque`,
+      marker: 'SECRETS_CAUSAL_RUN_COMMANDER_OPACITY',
+    })),
+  ),
+  control(
+    'run-core-admission-before-services',
+    'apps/cli/src/commands/run.ts',
+    `  const admitted = resolveAndValidateWorkflowInputs(
+    def,
+    resolveInputs(def, rawInputs, secretInputs),
+  );
+  if (!admitted.ok) {
+    // Core owns every value contract; raw names were refused above. Never attach caller payload/cause.
+    throw new CliError(
+      'invalid_invocation',
+      'workflow inputs do not satisfy their declared contracts.',
+    );
+  }
+  const inputs = admitted.inputs;`,
+    '  const inputs = resolveInputs(def, rawInputs, secretInputs);',
+    nativeRunCases,
+    131,
+    'refuses secret minimum before native effects (human)',
+    'SECRETS_CAUSAL_NATIVE_LAZY_FACTORY',
+    [
+      'secret minimum',
+      'secret maximum',
+      'secret pattern',
+      'secret format',
+      'ordinary minimum',
+      'ordinary maximum',
+      'ordinary enum',
+    ].flatMap((contract) =>
+      nativeModes
+        .filter((mode) => contract !== 'secret minimum' || mode !== 'human')
+        .map((mode) => ({
+          target: `refuses ${contract} before native effects (${mode})`,
+          marker: 'SECRETS_CAUSAL_NATIVE_LAZY_FACTORY',
+        })),
+    ),
   ),
 ];
