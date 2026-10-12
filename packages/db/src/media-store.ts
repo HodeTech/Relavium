@@ -192,21 +192,22 @@ export class FilesystemMediaStore implements MediaStore {
       const opened = await file.stat().catch((error: unknown) => {
         throw this.#paths.error(error);
       });
-      if (opened.dev !== admitted.dev || opened.ino !== admitted.ino)
-        throw new MediaStoreFilesystemError('unsafe_path');
-      this.#paths.assertOwnedFile(path, opened);
+      if (opened.dev !== admitted.dev) throw new MediaStoreFilesystemError('unsafe_path');
+      // An idempotent publisher may replace the admitted inode before open, or unlink the opened
+      // inode afterwards. Validate the live pathname floor independently and hash only this fd.
+      this.#paths.assertReadableFile(path, opened);
       // Step 6 adds bounded fd delivery; physical containment and one-fd integrity are established here.
       const bytes = new Uint8Array(
         await file.readFile().catch((error: unknown) => {
           throw this.#paths.error(error);
         }),
       );
-      this.#paths.assertOwnedFile(
-        path,
-        await file.stat().catch((error: unknown) => {
-          throw this.#paths.error(error);
-        }),
-      );
+      const finished = await file.stat().catch((error: unknown) => {
+        throw this.#paths.error(error);
+      });
+      if (finished.dev !== opened.dev || finished.ino !== opened.ino)
+        throw new MediaStoreFilesystemError('unsafe_path');
+      this.#paths.assertReadableFile(path, finished);
       if (sha256Hex(bytes) !== digest)
         throw new Error('media bytes failed their content-address (sha256) integrity check');
       result = bytes;

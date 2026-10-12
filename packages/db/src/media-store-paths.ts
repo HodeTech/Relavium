@@ -178,6 +178,27 @@ export class MediaStorePaths {
     }
   }
 
+  /**
+   * Read from the opened descriptor, not from a durable association with its pathname.
+   * Cooperative atomic publication can replace that name before/after open or detach the fd's
+   * inode (nlink=0). Neither permits an additional hard link: the current entry must still be a
+   * regular single-link file, and the fd must have at most one link on the same filesystem.
+   * The caller must verify the bytes' content hash before delivery. This retains ADR-0105's
+   * owner-controlled-parent assumption; it is not a descriptor-relative parent-swap jail.
+   * Temporary-file ownership and destructive operations must not use this read-only check.
+   */
+  assertReadableFile(path: string, opened: Stats): void {
+    const current = this.file(path);
+    if (
+      !opened.isFile() ||
+      (opened.nlink !== 0 && opened.nlink !== 1) ||
+      current === undefined ||
+      current.dev !== opened.dev
+    ) {
+      throw new MediaStoreFilesystemError('unsafe_path');
+    }
+  }
+
   error(error: unknown): MediaStoreFilesystemError {
     return error instanceof MediaStoreFilesystemError
       ? error
