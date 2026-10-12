@@ -30,31 +30,107 @@ const API_KEY: StdinSecretContext = {
   emptyMessage: 'no API key was read from stdin (empty input).',
 };
 
-export async function readSecretFromStdin(context: StdinSecretContext = API_KEY): Promise<string> {
-  if (process.stdin.isTTY === true) {
-    throw new CliError('invalid_invocation', context.pipeHint);
+/** CLI-local source seam: no Node stream type crosses an engine/shared boundary. */
+export interface StdinSecretSource extends AsyncIterable<unknown> {
+  readonly isTTY?: boolean;
+}
+
+const MAX_SECRET_BYTES = 65_536;
+
+function readFailure(cause: unknown): CliError {
+  // Even a source-thrown CliError is foreign: never promote its message or stack.
+  return new CliError('invalid_invocation', 'could not read secret input from stdin.', { cause });
+}
+
+function limitFailure(): CliError {
+  return new CliError(
+    'invalid_invocation',
+    'secret input from stdin exceeds the 65536-byte limit.',
+  );
+}
+
+export async function readSecretFromStdin(
+  context: StdinSecretContext = API_KEY,
+  source?: StdinSecretSource,
+): Promise<string> {
+  let input: StdinSecretSource;
+  let isTTY: boolean | undefined;
+  try {
+    input = source ?? process.stdin;
+    isTTY = input.isTTY;
+  } catch (cause) {
+    throw readFailure(cause);
   }
+  if (isTTY === true) throw new CliError('invalid_invocation', context.pipeHint);
+
+  let iterator: AsyncIterator<unknown>;
+  try {
+    iterator = input[Symbol.asyncIterator]();
+  } catch (cause) {
+    throw readFailure(cause);
+  }
+  let finished = false;
   const chunks: Buffer[] = [];
-  for await (const chunk of process.stdin) {
-    // Narrow without an unsafe cast: an un-encoded stdin stream yields Buffer chunks; a string only if an
-    // encoding was set (it never is here). Any other shape is ignored rather than coerced.
-    if (Buffer.isBuffer(chunk)) {
-      chunks.push(chunk);
-    } else if (typeof chunk === 'string') {
-      chunks.push(Buffer.from(chunk, 'utf8'));
+  let totalBytes = 0;
+  try {
+    while (true) {
+      let done: boolean | undefined;
+      let chunk: unknown;
+      let size = 0;
+      try {
+        const result = await iterator.next();
+        if (typeof result !== 'object' || result === null)
+          throw new TypeError('invalid iterator result');
+        done = result.done;
+        if (!done) {
+          chunk = result.value;
+          // Inspect foreign chunks inside the source fence, including Buffer/proxy getters.
+          if (Buffer.isBuffer(chunk)) {
+            // Native TypedArray length cannot be forged by Buffer-owned length/byteLength getters.
+            const bytes: unknown = Reflect.get(Uint8Array.prototype, 'byteLength', chunk);
+            if (typeof bytes !== 'number') throw new TypeError('invalid Buffer byte length');
+            size = bytes;
+          } else if (typeof chunk === 'string') size = chunk.length;
+        }
+      } catch (cause) {
+        throw readFailure(cause);
+      }
+      if (done) {
+        finished = true;
+        break;
+      }
+      // UTF-8 bytes are at least the string's UTF-16 units: refuse huge strings before a scan.
+      const remaining = MAX_SECRET_BYTES - totalBytes;
+      if (size > remaining) throw limitFailure();
+      if (typeof chunk === 'string') size = Buffer.byteLength(chunk, 'utf8');
+      if (size > remaining) throw limitFailure();
+      // Every retained chunk consumes capacity; an unlimited empty stream cannot grow this array.
+      if (size === 0) continue;
+      let owned: Buffer;
+      try {
+        if (Buffer.isBuffer(chunk)) {
+          owned = Buffer.allocUnsafe(size);
+          // Native set reads the Buffer's internal bytes, never its iterator/valueOf/index getters.
+          Uint8Array.prototype.set.call(owned, chunk);
+        } else if (typeof chunk === 'string') owned = Buffer.from(chunk, 'utf8');
+        else continue;
+      } catch (cause) {
+        throw readFailure(cause);
+      }
+      chunks.push(owned);
+      totalBytes += size;
+    }
+  } finally {
+    if (!finished) {
+      try {
+        await iterator.return?.();
+      } catch {
+        // Best-effort release must not replace the primary refusal with foreign cleanup text.
+      }
     }
   }
-  // **Returned VERBATIM.** This used to `.trim()` the whole payload, which was right for the one-key
-  // `provider set-key` caller and silently wrong for the line-oriented `gate --secret-stdin` one: for the
-  // common single-line pipe it stripped a credential's trailing whitespace BEFORE `parseSecretLines` could
-  // preserve it — so `gate.ts`'s comment claiming that bug was fixed described a fix one layer below where
-  // the damage happened. A reader reads; a caller that wants its value trimmed trims it.
-  //
-  // The EMPTINESS check still uses the trimmed form: a pipe carrying only whitespace is empty in every sense
-  // a caller cares about, and refusing it here keeps both callers from having to.
-  const payload = Buffer.concat(chunks).toString('utf8');
-  if (payload.trim() === '') {
-    throw new CliError('invalid_invocation', context.emptyMessage);
-  }
+  // Decode once to preserve code points split across Buffer chunks; only callers may trim values.
+  const payload = Buffer.concat(chunks, totalBytes).toString('utf8');
+  if (payload.trim() === '') throw new CliError('invalid_invocation', context.emptyMessage);
   return payload;
 }

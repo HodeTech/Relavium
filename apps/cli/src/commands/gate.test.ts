@@ -26,7 +26,7 @@ import {
   type RunHistoryStore,
 } from '@relavium/db';
 import type { RunEvent } from '@relavium/shared';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { buildEngine, type BuildEngineOptions } from '../engine/build-engine.js';
 import { createRunLeasePort } from '@relavium/db';
@@ -368,6 +368,113 @@ describe('gateCommand', () => {
         Object.defineProperty(process.stdin, 'isTTY', { value: original, configurable: true });
       }
     });
+
+    it.each(['over-cap', 'TTY', 'source-fault'] as const)(
+      'the default reader refuses %s before keys, MCP or engine continuation',
+      async (mode) => {
+        const { runId } = await seedSecretRun();
+        const captured = captureIo();
+        const original = Object.getOwnPropertyDescriptor(process, 'stdin');
+        const close = vi.fn();
+        const resolveKeys = vi.fn(() => {
+          throw new Error('keys must not resolve');
+        });
+        const startMcpClient = vi.fn(() => {
+          throw new Error('MCP must not start');
+        });
+        const resume = vi.fn(() => {
+          throw new Error('engine must not resume');
+        });
+        const before = reader().loadRunEvents(runId);
+        let pulled = false;
+        const next = vi.fn(() => {
+          if (mode === 'source-fault') return Promise.reject(new Error('opaque-gate-stdin-fault'));
+          const done = pulled;
+          pulled = true;
+          return Promise.resolve({ done, value: 'api_key=' + 'x'.repeat(65_536) });
+        });
+        try {
+          Object.defineProperty(process, 'stdin', {
+            configurable: true,
+            value: {
+              isTTY: mode === 'TTY',
+              [Symbol.asyncIterator]: () => ({ next }),
+            },
+          });
+          const operation = gateCommand(
+            { runId, approve: true, secretStdin: true },
+            {
+              ...deps(captured.io),
+              openDb: () => ({ db, close }),
+              resolveKeys,
+              startMcpClient,
+              buildEngine: () => Promise.resolve(stubEngine(resume)),
+            },
+          );
+          if (mode === 'over-cap')
+            await expect(operation, 'secrets-gate-real-reader-cap').rejects.toThrow(
+              '65536-byte limit',
+            );
+          else if (mode === 'TTY') await expect(operation).rejects.toThrow('--secret-stdin');
+          else await expect(operation).rejects.toThrow('could not read secret input from stdin.');
+          if (mode === 'TTY') expect(next).not.toHaveBeenCalled();
+          expect(resolveKeys).not.toHaveBeenCalled();
+          expect(startMcpClient).not.toHaveBeenCalled();
+          expect(resume).not.toHaveBeenCalled();
+          expect(close).toHaveBeenCalledTimes(1);
+          expect(reader().loadRunEvents(runId)).toEqual(before);
+          expect(captured.out()).toBe('');
+          expect(captured.err()).not.toContain('opaque-gate-stdin-fault');
+        } finally {
+          if (original !== undefined) Object.defineProperty(process, 'stdin', original);
+        }
+      },
+    );
+
+    it.each([false, true])(
+      'the default reader and real line parser preserve spaces, equals signs and CRLF values (exact capacity: %s)',
+      async (exactCapacity) => {
+        const { runId } = await seedSecretRun();
+        const { io } = captureIo();
+        const original = Object.getOwnPropertyDescriptor(process, 'stdin');
+        let supplied: unknown;
+        const padding = exactCapacity
+          ? 'x'.repeat(65_536 - Buffer.byteLength(' api_key = value=with=equals  \r\n'))
+          : '';
+        const value = ` ${padding}value=with=equals  `;
+        try {
+          Object.defineProperty(process, 'stdin', {
+            configurable: true,
+            value: {
+              async *[Symbol.asyncIterator]() {
+                await Promise.resolve();
+                yield ` api_key =${value}\r\n`;
+              },
+            },
+          });
+          const code = await gateCommand(
+            { runId, approve: true, secretStdin: true },
+            {
+              ...deps(io),
+              buildEngine: async (options) => {
+                const engine = await buildEngine(options);
+                const resume = engine.resumeFromCheckpoint.bind(engine);
+                vi.spyOn(engine, 'resumeFromCheckpoint').mockImplementation((...args) => {
+                  supplied = args[0];
+                  return resume(...args);
+                });
+                return engine;
+              },
+            },
+          );
+          expect(code).toBe(EXIT_CODES.success);
+          expect(supplied).toMatchObject({ inputs: { api_key: value } });
+          expect(JSON.stringify(reader().loadRunEvents(runId))).not.toContain('value=with=equals');
+        } finally {
+          if (original !== undefined) Object.defineProperty(process, 'stdin', original);
+        }
+      },
+    );
 
     it('carries an input named `__proto__` through the merge (ADR-0083 §9.7, the CLI path)', async () => {
       // §9.7 requires `__proto__` / `constructor` / `toString` to round-trip as ordinary inputs "on the CLI

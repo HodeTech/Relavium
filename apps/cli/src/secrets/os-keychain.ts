@@ -20,7 +20,8 @@ export function createOsKeychainStore(service: string = SERVICE): KeychainStore 
       try {
         return entry(account).getPassword(); // `null` for an absent entry — not an error in @napi-rs/keyring
       } catch (err) {
-        throw new KeychainUnavailableError(`OS keychain is unavailable: ${errMessage(err)}`, {
+        // Native failures can contain credentials or have hostile accessors. Keep them private.
+        throw new KeychainUnavailableError('OS keychain is unavailable.', {
           cause: err,
         });
       }
@@ -29,26 +30,19 @@ export function createOsKeychainStore(service: string = SERVICE): KeychainStore 
       try {
         entry(account).setPassword(secret);
       } catch (err) {
-        throw new KeychainUnavailableError(
-          `could not write to the OS keychain: ${errMessage(err)}`,
-          {
-            cause: err,
-          },
-        );
+        throw new KeychainUnavailableError('could not write to the OS keychain.', {
+          cause: err,
+        });
       }
     },
     delete: (account) => {
       try {
         return entry(account).deletePassword();
       } catch (err) {
-        throw new KeychainUnavailableError(`could not access the OS keychain: ${errMessage(err)}`, {
+        throw new KeychainUnavailableError('could not access the OS keychain.', {
           cause: err,
         });
       }
     },
   };
-}
-
-function errMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }

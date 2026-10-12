@@ -40,6 +40,31 @@ function messageFromJson(value: unknown): string {
 }
 
 describe('renderError terminal projection', () => {
+  it.each([
+    { json: false, verbose: false },
+    { json: false, verbose: true },
+    { json: true, verbose: false },
+    { json: true, verbose: true },
+  ])('redacts new query-secret names in actual diagnostic output %j', (options) => {
+    const capture = captureIo();
+    const error = new CliError(
+      'invalid_invocation',
+      'request failed ?client_secret=opaque-value-Q7',
+    );
+    error.stack = 'safe outer frame ?refresh_token=opaque-stack-V9';
+    renderError(error, options, capture.io);
+    const output = capture.stderr();
+    expect(output).not.toContain('opaque-value-Q7');
+    expect(output).not.toContain('opaque-stack-V9');
+    expect(output).toContain('?client_secret=[REDACTED]');
+    if (options.json) {
+      expect(messageFromJson(JSON.parse(output))).toBe('request failed ?client_secret=[REDACTED]');
+      expect(output).not.toContain('safe outer frame');
+    } else if (options.verbose) {
+      expect(output).toContain('safe outer frame ?refresh_token=[REDACTED]');
+    }
+  });
+
   it('sanitizes the human diagnostic and its verbose stack without suppressing readable content (G34)', () => {
     const error = new CliError('invalid_invocation', `message visible${ATTACK}\nforged message`);
     error.stack = `stack visible${ATTACK}\nsecond stack line`;

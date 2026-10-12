@@ -82,6 +82,29 @@ describe('sanitizeUntrusted — the failure paths carry arbitrary text (#W15-8)'
       expect(sanitizeUntrusted(msg)).toBe(msg);
     }
   });
+
+  it.each([
+    'client_secret',
+    'refresh_token',
+    'id_token',
+    'auth_token',
+    'session_token',
+    'api_secret',
+    'access_key',
+    'secret_key',
+  ])('uses the finite query-name backstop for %s in both diagnostic sanitizers', (name) => {
+    const text = `request https://provider.invalid/?${name}=opaque-value-Q7&ordinary=kept`;
+    const expected = `request https://provider.invalid/?${name}=[REDACTED]&ordinary=kept`;
+    expect(sanitizeUntrusted(text)).toBe(expected);
+    expect(sanitizeUntrustedInline(text)).toBe(expected);
+  });
+
+  it('normalizes a removed control inside a query name before secret classification', () => {
+    const text = `request ?client_se${String.fromCharCode(1)}cret=opaque-value-Q7`;
+    expect(sanitizeUntrusted(text)).toBe('request ?client_secret=[REDACTED]');
+    expect(sanitizeUntrustedInline(text)).toBe('request ?client_secret=[REDACTED]');
+    expect(sanitizeUntrusted('?client_secret_hint=ordinary')).toBe('?client_secret_hint=ordinary');
+  });
 });
 
 /**
