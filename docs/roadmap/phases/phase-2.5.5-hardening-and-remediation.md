@@ -1681,6 +1681,60 @@ a new published-head CI, coverage or whole-wave security-sitting claim. No real
 keychain, user history or provider was accessed. Two NEW clean complete cumulative
 rounds after this material correction remain required before Step 3 closes.
 
+#### Step 3 overlapping-credential review correction — 2026-10-12
+
+The fourth complete cumulative round at `f2099c78` found one further disclosure
+family; two reviewers independently reproduced it. Query replacement could erase
+the identifying context of a control-split key, whitespace-split URL userinfo, or
+Bearer/Basic value before shared or CLI classification. Raw diagnostics and
+messages/codes already passed through `makeLlmError` were affected. The tooling
+scope was clean, but the combined round was finding-bearing and supplies no clean
+acceptance.
+
+Each existing non-query credential rule now probes the original diagnostic
+independently, using the existing shared terminal normalizer and a whitespace-joined
+residual view. The unjoined normalized comparison preserves required header
+whitespace. Complete masks separate only that rule's residual spans, so another
+credential family's replacement cannot erase evidence first. Each rule has one
+private pattern authority; the unchanged finite query replacement runs last. A
+candidate that merely reordered complete replacements was rejected because a
+Bearer match could still erase a nested split-key prefix. Benign coloured prose and
+ordinary text after a completely masked credential retain their prior output. The
+existing word-boundary and already-masked-prefix limits remain explicit; this is
+not universal secret discovery and adds no public API, dependency or decision.
+
+The source-backed focused cohort passes **259 tests**: 98 LLM-error, 125 sanitizer
+and 36 actual renderer cases. The LLM suite first produced **33 completed failures
+out of 98** before the runtime correction. Permanent cases cover all eight query
+families, both key prefixes, the canonical normalizer's finite removed code-point
+sets and representative escape sequences, three whitespace separators, URL
+userinfo, Bearer/Basic, raw and pre-scrubbed messages/codes, four rendering modes
+and isolated verbose stacks. A separate root probe over 86 normalizer fixtures and
+4,128 synthetic key inputs finds no disclosure in either the pre-Step-3 baseline
+or corrected source; its 82,560 rendered string evaluations are not additional
+Vitest cases. The independent CLI residual control now begins with a split literal
+query name, which the shared non-query probe deliberately does not classify.
+
+All **13 secrets mechanisms** pass their complete fixed/mutated/restored matrix:
+**4,023 assertion executions / 392 expected semantic failures / 191 required named
+witnesses**. The two new removals independently disable terminal normalization and
+reverse query-last composition; the existing whitespace-join removal also requires
+URL-userinfo witnesses. A read-only audit checks all 39 phases, complete identical
+inventories, strict named assertion outcomes, actual target-body evaluation, source
+hashes, exact restoration and scratch removal. The capture pins 1,048 source files
+and 457 installed dependency packages at `f2099c78` plus this correction working
+tree; no source, index, dependency or commit changed during capture.
+
+Workspace lint/typecheck/test and build/format gates pass: **528 files / 11,619
+passing tests / 14 established skips**, including 2,293 LLM and 3,832 CLI tests.
+Unchanged shared/DB tests retain their valid cache attribution; LLM/core/MCP/CLI
+tests execute anew. All 112 acceptance-tool tests, tooling checkJs, scoped lint and
+three offline smokes pass. Earlier filesystem/wire/usage and full-CI executions
+retain their own attribution; no new published-head CI, coverage or whole-wave
+security sitting is claimed. No real keychain, user history or provider was used.
+Two NEW clean complete cumulative rounds after this material correction remain
+required before Step 3 closes.
+
 ### Remaining gate
 
 The maintainer approved the revised four-ADR decision package and eight-step plan
