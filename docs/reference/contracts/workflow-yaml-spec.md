@@ -102,6 +102,16 @@ persist in run history; see [the event security boundary](sse-event-schema.md#se
 [the at-rest posture](../../decisions/0050-cli-history-db-at-rest-posture.md) and
 [the keychain/secret contract](../desktop/keychain-and-secrets.md).
 
+On the CLI, first-run `secret` values come from the bounded, non-TTY
+[`run --secret-inputs-stdin` transport](../cli/commands.md#relavium-run); explicitly passing one
+through ordinary `--input` is refused even when its value is empty. A paused run needs fresh
+stdin resupply through [`gate --secret-stdin`](../cli/commands.md#relavium-gate), because the
+durable masked slot identifies the input name, not the credential or its previous value. The
+CLI checks its fully merged input map with the pure core admission function before creating
+credential/provider/MCP/history services; the engine retains its own start-time admission.
+The workflow snapshot remains the faithful admitted definition, so an authored literal in
+another field is outside this input-slot masking guarantee.
+
 An input may carry an optional **`validation`** object the engine checks before a run starts; a violating input fails fast and the run never begins:
 
 ```yaml

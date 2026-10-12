@@ -1,6 +1,6 @@
 # CLI Command Reference (`relavium`)
 
-> Last updated: 2026-10-03
+> Last updated: 2026-10-12
 
 - **Status**: Reference (partial — surface defined, exact flags to be finalized as the CLI is built)
 - **Surface**: CLI (`relavium`)
@@ -123,7 +123,7 @@ The command set below is the confirmed surface. Commands ship **per workstream**
 
 | Command | Purpose |
 |---------|---------|
-| `relavium run <workflow> [--input k=v] [--allow-mcp-stdio <digest>]` | Execute a workflow. Streams progress; resolves with the workflow output. |
+| `relavium run <workflow> [--input k=v] [--secret-inputs-stdin] [--allow-mcp-stdio <digest>]` | Execute a workflow. Streams progress; resolves with the workflow output. |
 | `relavium chat [--agent <ref>]` | Start an interactive [agent session](../contracts/agent-session-spec.md) (the agent-first REPL). See [chat-session.md](chat-session.md). |
 | `relavium chat-resume <sessionId>` | Reload a persisted session from `history.db` and continue the conversation. |
 | `relavium chat-list` | List past agent sessions (id, agent, last activity), the way `relavium list` lists workflows. |
@@ -189,9 +189,15 @@ relavium run ./workflows/code-review.relavium.yaml --input file=./src/index.ts
 
 # CI: machine-readable event stream
 relavium run ./workflows/code-review.relavium.yaml --input file=./src/index.ts --json
+
+# A workflow with a declared secret input: supply it through a non-TTY pipe
+printf 'api_key=%s\n' "$API_KEY" | relavium run ./workflows/code-review.relavium.yaml --secret-inputs-stdin
 ```
 
-- `--input k=v` (repeatable, one distinct key per input) supplies typed workflow inputs (see the `inputs` block in [../contracts/workflow-yaml-spec.md](../contracts/workflow-yaml-spec.md)). Each value is coerced to the input's declared type; an unknown key, a repeated key, a missing required input, or a value that does not coerce is an invalid invocation (exit `2`).
+- `--input k=v` (repeatable, one distinct key per input) supplies **ordinary** typed workflow inputs (see [workflow inputs](../contracts/workflow-yaml-spec.md#inputs)). Values are coerced to their declared types. An unknown or repeated key, a missing required input, or an invalid value is an invocation fault (exit `2`). Every explicit `--input` for a declared `secret` is refused, **including `name=`**: argv can appear in process lists, shell history and CI logs. Raw malformed-input and run-parser diagnostics do not echo pasted argument values.
+- `--secret-inputs-stdin` reads declared `secret` inputs **once from non-TTY stdin**; TTY stdin is refused even if stdout is redirected. Supply one `name=value` line per secret. Blank lines are ignored, the name is trimmed, the value after the **first** `=` is preserved verbatim (including spaces and further `=`), and a carriage return at the end of a line is removed. Repeated names after trimming, malformed lines, unknown or non-secret names, and empty or whitespace-only values are refused with payload-free exit-`2` diagnostics. Names such as `__proto__`, `constructor` and `toString` work only when declared; accumulation uses own properties in a null-prototype map. Required secrets must be supplied; omitted optional secrets remain absent. The [common reader limit](#secret-stdin-limits) applies before line parsing. A workflow with no declared secrets refuses the flag without reading stdin.
+- Run admission rejects forbidden ordinary secret arguments before reading the secret pipe, constructing credential/provider resolvers, connecting MCP or opening run history. The CLI then coerces ordinary values, merges stdin secrets, and runs the pure core input contract (including length, format, pattern, enum and numeric bounds) before those effects. A rejected invocation creates no run. The engine validates again at start; admitted secret input slots and input-node results are [masked](../contracts/workflow-yaml-spec.md#inputs) in run events/history, while the authored workflow snapshot is kept faithful. This does not redact arbitrary authored literals, tool output or other content.
+- Consuming the secret pipe removes interactive prompt authority for this invocation. A later unresolved human gate pauses with exit `3` for a fresh `relavium gate` call; an unapproved local MCP program refuses instead of prompting. An existing exact consent grant or explicit `--allow-mcp-stdio <digest>` remains the authorization path. The flag itself grants no tool or transport authority.
 - `--json` switches to NDJSON [RunEvent](../contracts/sse-event-schema.md) output.
 - `Ctrl-C` (SIGINT) requests a cooperative cancel; the run drains to `run:cancelled` and exits non-zero (`1`). This is unchanged when the workflow declares `mcp_servers`: the spawned servers are torn down alongside the drain, and the MCP teardown deliberately does **not** take the exit code — a signalled run still records its terminal and releases its lease ([ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md) §1.3).
 - A missing API key for an inline agent's **primary** provider is caught **pre-flight** as an invalid invocation (exit `2`) naming the `RELAVIUM_<PROVIDER>_API_KEY` to set, before the run starts. The pre-flight is a strict subset of the keys a run may touch, so it never blocks a valid run: a `fallback_chain` provider's key (read only if the chain fails over to it) and a `$ref`-resolved external agent's key (until `$ref` resolution lands, 2.M–2.Q) are conditional and instead surface mid-run as a run failure (exit `1`).
@@ -282,10 +288,10 @@ printf 'api_key=%s\n' "$API_KEY" | relavium gate <runId> --approve --secret-stdi
 
 - Exactly **one** of `--approve` / `--reject` / `--input` is required and they are mutually exclusive; `--comment <text>` annotates an approve/reject rationale and is invalid with `--input` (which carries the payload). A bad combination is an invalid invocation (exit `2`).
 - `--input <value>` is parsed as **JSON when it parses** (`'{"k":1}'` / `'42'` / `'true'` → a structured payload), else kept as the **raw string** (`--input some-token` → `"some-token"`); the result becomes the gate node's output. (The interactive prompt for a `gate_type=input` gate takes the typed value as a raw string.)
-- **Do not pass secrets via `--input`.** The value reaches the durable event log (`human_gate:resumed.payload`) and the `--json` stream, and argv itself leaks into `ps` / shell history / CI logs — exactly the exposure `relavium provider set-key`'s stdin-only rule avoids. Use a non-secret gate input; supply secrets through the OS keychain / env (`RELAVIUM_<PROVIDER>_API_KEY`), never a gate payload.
+- **Do not pass secrets via `--input`.** The value reaches the durable event log (`human_gate:resumed.payload`) and the `--json` stream, and argv itself leaks into `ps` / shell history / CI logs — exactly the exposure `relavium provider set-key`'s stdin-only rule avoids. Use a non-secret gate input. Re-supply declared workflow secret inputs with `--secret-stdin`; provider API keys have their separate OS-keychain / `RELAVIUM_<PROVIDER>_API_KEY` resolution path.
 - `--gate <gateId>` selects **which** pending gate to resolve. The resume contract is `engine.resume(runId, gateId, decision)` — `gateId` is mandatory on the resume path (it is carried on the `human_gate:paused` event; see [sse-event-schema.md](../contracts/sse-event-schema.md) and `resume_run` in [ipc-contract.md](../contracts/ipc-contract.md)). `--gate` is **optional on the CLI**: when exactly one gate is pending the CLI fills it in automatically; when **more than one** gate is pending it is **required**, and omitting it is an invalid invocation (exit `2`) listing the pending `gateId`s.
 - Read the pending `runId` + `gateId` from the run's own output: the `human_gate:paused` event line under `--json`, or the `paused at gate <gateId> (<type>)` line the plain/TUI renderer prints. [`relavium gate list`](#relavium-gate-list), `relavium status`, and `relavium logs <runId>` (2.I) also surface them out-of-band.
-- **`--secret-stdin` re-supplies the run's `secret`-typed inputs** ([ADR-0083](../../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md) §6). A `secret` is never persisted — the durable record holds only a masked `{ secret: true, ref }` slot — so a secret-bearing run cannot resume without the value being handed back. Each is one **`name=value` line on stdin**; blank lines are ignored, and anything else is an invalid invocation (exit `2`).
+- **`--secret-stdin` re-supplies the run's `secret`-typed inputs** ([ADR-0083](../../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md) §6). The raw value is not persisted in the declared input slot — the durable record holds only a masked `{ secret: true, ref }` marker there — so a secret-bearing run cannot resume without the value being handed back. Each is one **`name=value` line on stdin**; blank lines are ignored, and anything else is an invalid invocation (exit `2`). The [shared reader limit](#secret-stdin-limits) applies.
   - **Values never travel through argv**, which is why this is a boolean flag and not `--secret <name=value>`: a credential on a command line leaks to `ps`, shell history and CI logs — the same rule `relavium provider set-key` follows. The *name* in the line is not a secret, and carrying it there rather than in a repeated flag removes the ordering dependency that would silently swap two credentials.
   - **Every masked slot must be supplied and nothing else may be.** A missing slot, a name the run has no slot for, a repeated name, and an **empty or all-whitespace value** are each exit `2`. A value may contain `=` (the split is on the first one); it may not contain a newline. The **name** is trimmed; the **value is taken verbatim** after the first `=`, so leading and trailing spaces are part of the credential — only a CRLF carriage return is removed. (An earlier version trimmed the whole line, which silently stripped a trailing space from a pasted key and surfaced hours later as an opaque `401`.)
   - **`--secret-stdin` makes the invocation non-interactive.** Reading the credential drains stdin, so a resumed run that reaches a *second* human gate cannot prompt: it exits `3` and is resolvable by another `relavium gate`, exactly as a `--json` or CI resume does.
@@ -481,7 +487,8 @@ relavium provider list --verify                         # + a live key-verificat
 
 ### Secret stdin limits
 
-The common reader used by `provider set-key`, `gate --secret-stdin` and budget resume
+The common reader used by `provider set-key`, `run --secret-inputs-stdin`,
+`gate --secret-stdin` and budget resume
 accepts at most **65,536 input bytes (64 KiB)** across all chunks, including whitespace.
 It refuses an oversized pipe rather than truncating it. String chunks count their UTF-8
 encoding; byte chunks are assembled before decoding, preserving split Unicode characters.
@@ -490,7 +497,7 @@ or line parsing.
 
 The reader refuses TTY stdin before reading; redirecting stdout does not enable terminal
 secret entry. It preserves admitted whitespace: `provider set-key` trims the key, while
-gate line parsing preserves values. Empty/whitespace-only input, over-limit input and
+run/gate line parsing preserves values. Empty/whitespace-only input, over-limit input and
 read failures produce payload-free exit-`2` diagnostics. Early refusal stops reading.
 This byte bound does not impose a deadline on a stalled pipe.
 

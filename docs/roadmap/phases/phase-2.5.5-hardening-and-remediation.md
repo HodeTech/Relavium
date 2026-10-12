@@ -1762,6 +1762,72 @@ finite limits. First-run #25, later steps, the four new security sittings, exact
 publication and whole-Wave-2 certification remain open. No real credential, provider
 capture, billing setup, new architectural decision or user action is pending.
 
+### Step 4 first-run secret inputs — implementation checkpoint, 2026-10-12
+
+**Implemented; independent acceptance remains open.** The approved
+ADR-0107 path adds `run --secret-inputs-stdin` through the actual Commander action
+and shared dispatch. Every explicit declared-secret ordinary argument, including
+an empty value, refuses before reading stdin or constructing credential, provider,
+MCP or history services. Run-local parser errors and raw input diagnostics are
+payload-free. Existing ordinary inputs, help, version and unrelated command
+routing retain their behavior.
+
+First-run and gate resupply use one CLI-local line parser and the already accepted
+65,536-byte reader. Names are trimmed, values after the first equals are verbatim,
+CRLF and blank lines are supported, and own prototype-like names are retained in
+null-prototype maps. Unknown/non-secret/duplicate/empty/missing required values
+refuse; omitted optional secrets stay absent. The public pure core input admission
+checks the merged map before lazy native key/provider services and both history
+open paths. Engine admission still validates at start.
+
+Consumed stdin removes prompt authority in first-run and resume MCP consent and
+later workflow gates, including stale TTY metadata and injected gate selectors.
+Existing exact stdio digests remain explicit invocation authority and append no
+grant. Gate resupply legitimately reads existing history to discover masked slots;
+the first-run zero-history refusal claim does not apply to that lookup.
+
+Root integration passes **10 source-aliased files / 389 tests / zero skips** at
+`f4ca477b` plus the Step 4 working changes. The native file contributes **131 cases**
+through real Commander/dispatch/default reader/engine and file-backed SQLite; the
+new gate companion controls run actual consent, real resupply and sequential gates.
+Synthetic input-only sentinels are absent from actual `runs.input_json`, input-node
+`step_executions.output_json`, all recorded rows/events and reconstructed checkpoint
+state. The faithful admitted workflow snapshot is preserved. This does not assert
+redaction of independent authored literals, arbitrary tool/model/user content or
+historical bytes. Temporary homes, stdin descriptors and mocked native key factories
+isolate these controls from user keys/history and external provider/transport work.
+
+The first complete secrets capture retained all thirteen prior controls, then
+correctly refused duplicated full case names in new parameterized input tests.
+Input and gate companion cases now have stable unique names without reducing
+case counts or weakening the coordinator's inventory gate. That partial capture
+is retained as a failed attempt, not complete Step 4 evidence. The line-parser
+reference also describes its existing trailing-line carriage-return handling
+precisely, without changing value parsing.
+
+The corrected complete secrets matrix passes **24 mechanisms / 72 phases / 6,321
+case executions**, with **563 failing removal cases** and all **242 required named
+assertion witnesses** present. Fixed and restored phases pass with identical unique
+inventories. A separate root audit checks every phase's completed outcome, target
+body/source hashes, all current fixed source bytes, exact restorations and scratch
+removal. Capture provenance is `f4ca477b` plus the corrected Step 4 working changes:
+**1,052 source/tool files and 457 installed dependency packages**. It is not relabelled
+as a later committed-head capture.
+
+Affected gates pass: `CI=true pnpm ci:workspaces` reports **531 files / 11,824 passed /
+14 existing skips**; the changed CLI executes **4,037 tests**, while unchanged engine
+packages use valid existing cache entries. Build/format passes seven tasks (five
+cached). All eighty causal/CI tool guards, configured tool typecheck/lint, seam and
+engine-dependency fences, bundle closure and three offline smokes pass. Cumulative
+document checks cover 41 Markdown files, 2,259 relative links/anchors and thirteen
+pre-existing append-only ADRs without findings. No live provider or paid operation
+was involved.
+
+Two NEW independent complete cumulative review rounds remain required. This
+checkpoint closes no item
+or security sitting, creates no new deferral, and introduces no new decision or
+runtime dependency. Subsequent steps proceed after independent Step 4 acceptance.
+
 ### Remaining gate
 
 The maintainer approved the revised four-ADR decision package and eight-step plan
