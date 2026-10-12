@@ -132,7 +132,7 @@ The command set below is the confirmed surface. Commands ship **per workstream**
 | `relavium list` | List discovered workflows (and, with a flag, agents) in the current project. |
 | `relavium create [--force]` | Scaffold a new agent or a minimal single-agent workflow YAML via an interactive wizard (schema-validated before write). |
 | `relavium import <path> [--force]` | Import an external `.relavium.yaml` / `.agent.yaml` into the project, validated + slug-deduplicated. |
-| `relavium export <id> [--out <path>] [--force]` | Export a workflow/agent to a portable, canonical YAML copy (re-serialized from the validated AST — no provider key by construction, comments dropped; MCP `env` secrets preserved faithfully, so author them as `{{secrets.*}}`). |
+| `relavium export <id> [--out <path>] [--force]` | Export a workflow/agent to a portable, canonical YAML copy. Serialization drops comments and preserves authored values, including sensitive literals; review before sharing. Configured provider keys use keychain references; author MCP `env` credentials as `{{secrets.*}}`. |
 | `relavium logs <runId>` | Print the persisted event/log stream for a past run. |
 | `relavium status` | Show active runs and their per-node status. |
 | `relavium gate <runId>` | Resolve a pending human gate (approve / reject / provide input). |

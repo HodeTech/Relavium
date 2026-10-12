@@ -1884,7 +1884,7 @@ claimed. The ten new causal controls retain all 24 prior mechanisms and require
 12 additional named assertion witnesses. The complete physical capture passes
 all **34 mechanisms / 102 fixed, removal and restored phases / 254 required named
 witnesses**, with 7,335 case executions and 585 expected assertion failures in
-the removal phases. The capture records `3f2b01af` plus the implementation working
+the removal phases. The final capture records `f3e09db9` plus the corrected working
 tree: 1,055 source/tool files and 457 installed dependency packages. The root
 audit verifies complete identical case inventories, source/evaluation hashes,
 current fixed-source correspondence, exact restoration and removed scratch
@@ -1917,6 +1917,19 @@ fail with their required markers; the declarations now use the exact collected
 names for both standalone and live human/JSON exports. This partial capture is
 also excluded. Outcome validation is unchanged, and every declared workload and
 witness is checked against a fresh collected inventory before full recapture.
+
+The first complete independent review round found two current-reference
+contradictions: the catalog-export summary and source comments still promised
+credential-free sharing, and the keychain table's heading contradicted its
+qualified authored-content row. The root verified both against the actual
+serialization path and corrected the claims without changing runtime behaviour.
+The security/authoring slice was clean; the other two reports were finding-bearing
+and do not count as a clean round. All three complete reports were read. The
+corrected source comment has a fresh complete passing capture at `f3e09db9` plus
+the corrected working tree, with the same 34/102/254 witness inventory and verified
+current source correspondence. The earlier successful capture remains historical
+evidence at `3f2b01af` plus its recorded working tree. Two NEW complete clean
+cumulative rounds follow the correction; neither earlier capture is relabelled.
 
 ### Remaining gate
 
