@@ -40,6 +40,7 @@ import {
   fsPolicyScopeRoots,
   fsPolicyWorkspace,
   FsPolicyError,
+  isWithinFsRoot,
   type FsPathPolicy,
   type HostScratchRoot,
 } from './fs-policy.js';
@@ -376,6 +377,14 @@ export async function readJailedFile(
   sizeLimit: number,
   rejectAliased = true,
 ): Promise<JailedRead> {
+  // Windows ignores O_NOFOLLOW. Refuse an already-planted final link explicitly there;
+  // this is a stable-path guard, not a promise to close same-user syscall races.
+  if (process.platform === 'win32') {
+    const entry = await lstat(real);
+    if (entry.isSymbolicLink())
+      throw new FsScopeDeniedError('read_file: refusing to read through a symlink');
+    if (entry.isDirectory()) return { kind: 'directory' };
+  }
   const handle = await open(
     real,
     constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
@@ -803,13 +812,9 @@ type ScopeChecker = (real: string) => boolean;
 function buildScopeChecker(config: NodeFsCapabilityConfig): ScopeChecker {
   const roots = fsPolicyScopeRoots(config.pathPolicy, config.workspaceDir, config.tier);
   if (config.tier === 'full') return () => true;
-  return (real) =>
-    roots.some((root) => {
-      // Normalize the boundary so a root ending in `sep` (the filesystem root) does not produce a doubled
-      // separator a valid child would fail to match (mirrors media-write `assertWithinRoot`).
-      const prefix = root.endsWith(sep) ? root : root + sep;
-      return real === root || real.startsWith(prefix);
-    });
+  // Native relative membership handles Windows drive/directory case returned differently
+  // by synchronous policy admission and asynchronous realpath, without admitting siblings.
+  return (real) => roots.some((root) => isWithinFsRoot(root, real));
 }
 
 /** Resolve a tool path to its real (symlink-resolved) absolute path and verify it is in-jail. Must exist. */

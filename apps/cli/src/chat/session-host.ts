@@ -56,6 +56,7 @@ import {
 } from '../engine/mcp-servers.js';
 import { createProviderResolver, type ProviderResolver } from '../engine/providers.js';
 import { assembleToolEnv, clampChatTier, wiredToolIds } from '../engine/tool-host/assemble.js';
+import { assertChatWorkspaceAdmission } from '../engine/tool-host/fs-admission.js';
 import {
   fsPolicyScopeRoots,
   fsPolicyWorkspace,
@@ -808,6 +809,7 @@ function assertSessionFsPolicy(
       );
     }
   }
+  assertChatWorkspaceAdmission(workspace, policy);
 }
 
 export async function buildChatSession(opts: BuildChatSessionOptions): Promise<BuiltChatSession> {

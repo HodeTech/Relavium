@@ -3,7 +3,9 @@ import {
   mkdirSync,
   mkdtempSync,
   realpathSync,
+  renameSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -375,8 +377,12 @@ it('revalidates a revoked policy before binding an agent or connecting MCP durin
     },
   );
   if (options === undefined) throw new Error('seed builder was not reached');
-  rmSync(outside, { recursive: true });
+  // Keep the admitted directory alive so Linux cannot recycle its inode for the replacement.
+  const original = statSync(outside);
+  renameSync(outside, `${outside}-old`);
   mkdirSync(outside);
+  const replacement = statSync(outside);
+  expect([replacement.dev, replacement.ino]).not.toEqual([original.dev, original.ino]);
   const startMcpClient = vi
     .fn<NonNullable<BuildChatSessionOptions['startMcpClient']>>()
     .mockRejectedValue(new Error('unexpected MCP connect'));

@@ -8,7 +8,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 
 import { createFilesystemMediaWrite } from '@relavium/db';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -26,7 +26,7 @@ vi.mock('node:fs/promises', async (original) => {
   return {
     ...native,
     realpath: (...args: Parameters<typeof native.realpath>) => {
-      if (String(args[0]) === injected.failure?.path)
+      if (injected.failure !== undefined && relative(String(args[0]), injected.failure.path) === '')
         return Promise.reject(
           Object.assign(new Error('private-path-sentinel'), { code: injected.failure.code }),
         );

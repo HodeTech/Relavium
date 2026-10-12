@@ -277,12 +277,14 @@ describe('createNodeFsCapability — read (jailed)', () => {
  * Direct coverage of the post-jail fd read guard (`readJailedFile`) — the IO boundary the jail's `realpath`
  * cannot reach in a black-box `readFile` test (it resolves any symlink to its target first). These pin the
  * TOCTOU-relevant properties: a symlink at the resolved path (a swap after validation) is refused at the fd
- * layer by `O_NOFOLLOW`, and the stat / binary probe / content all come from one open handle.
+ * layer by `O_NOFOLLOW` (or the explicit Windows stable-entry check), and the stat /
+ * binary probe / content all come from one open handle.
  */
 describe('readJailedFile — the post-jail fd read guard', () => {
-  it('refuses a final-component symlink at the fd layer (O_NOFOLLOW) — the swap-after-validation guard', async () => {
+  it('refuses a planted final-component symlink at the fd boundary on every platform', async () => {
     // A symlink at the path readJailedFile is handed (i.e. a swap of the post-realpath target) must fail closed
-    // — even though the link points IN-scope, the fd open never follows it (ELOOP/ENOTDIR → fatal tool_denied).
+    // — even though the link points IN-scope. Windows uses the stable-entry lstat guard;
+    // POSIX additionally refuses a swap at open through O_NOFOLLOW.
     await writeFile(join(workspace, 'inside.txt'), 'INSIDE');
     const link = join(workspace, 'swapped.txt');
     await symlink(join(workspace, 'inside.txt'), link);
@@ -362,7 +364,7 @@ describe('createNodeFsCapability — glob read', () => {
     expect(result.content).toContain('AAA');
     expect(result.content).toContain('BBB');
     expect(result.content).not.toContain('CCC');
-    expect(result.content).toContain('src/a.ts');
+    expect(result.content).toContain(join('src', 'a.ts'));
   });
 
   it('matches across directories with `**`', async () => {

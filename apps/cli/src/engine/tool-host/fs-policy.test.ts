@@ -24,6 +24,7 @@ import {
   admitInvocationFsGrants,
   createFsPathPolicy,
   FsPolicyError,
+  fsPolicyWorkspace,
   issueHostScratchRoot,
   selectInvocationFsPolicy,
   type FsPathPolicy,
@@ -168,7 +169,7 @@ describe('invocation authority and owned native identities', () => {
     expect(written.path).toBe(relative(workspace, join(grant, 'later.txt')));
     expect((await fs.readFile(written.path, {})).content).toBe('later');
     expect((await fs.readFile('../grant/*.txt', { glob: true })).content).toContain(
-      '../grant/ok.txt',
+      relative(workspace, join(grant, 'ok.txt')),
     );
     const mention = createMentionReader(fs);
     const candidate = (await mention.list('../grant')).find((entry) => entry.name === 'ok.txt');
@@ -361,6 +362,28 @@ it('never repairs a failed construction by later creating the missing workspace'
   await expect(fs.readFile('a.txt', {})).rejects.toThrow(/pinned identities/);
   expect(observed.open).not.toHaveBeenCalled();
 });
+
+it.runIf(process.platform === 'win32')(
+  'native Windows membership accepts drive and directory case without admitting siblings',
+  async () => {
+    mkdirSync(join(base, 'outside'));
+    writeFileSync(join(base, 'outside', 'ok.txt'), 'outside');
+    const policy = selectInvocationFsPolicy(
+      admitInvocationFsGrants([grant.toUpperCase()]),
+      workspace.toUpperCase(),
+      undefined,
+    );
+    const fs = createNodeFsCapability({
+      tier: 'project',
+      workspaceDir: fsPolicyWorkspace(policy),
+      pathPolicy: policy,
+      readOnly: false,
+    });
+    expect((await fs.readFile(join(grant, 'ok.txt'), {})).content).toBe('grant');
+    expect((await fs.readFile(join(workspace, 'ok.txt'), {})).content).toBe('workspace');
+    await expect(fs.readFile(join(base, 'outside', 'ok.txt'), {})).rejects.toThrow(/scope/);
+  },
+);
 
 it.runIf(process.platform === 'win32')(
   'native Windows glob spelling retains the authorised root',
