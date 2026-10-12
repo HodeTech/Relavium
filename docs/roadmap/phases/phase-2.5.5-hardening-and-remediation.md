@@ -2301,6 +2301,83 @@ rounds after these material repairs, and remaining publication/platform evidence
 are required. No further ADR approval, paid capture, keychain or user decision
 is pending. Steps 7–8 remain unstarted.
 
+### Step 6 third cumulative review and repairs — 2026-10-13
+
+Four independent reviewers completed all **151 cumulative paths** from accepted
+Step 5 `c6921be1` through `fba63e4b`: shared 29, stores 32, integration 52 and
+tooling/docs 38. Shared returned one High finding; the other three reports were
+clean within their assigned complete scopes. **This is not a clean acceptance
+round.** The fixed diagnostic path had still left the original genuine rejected
+Promise unobserved when its own `then` was replaced. Root independently reproduced
+the runtime unhandled rejection before repairing intrinsic observation. Two
+isolated child regressions each exercise thirteen joined scenarios, including
+cross-realm settlement and actual raw-store/de-inline consumers, without
+pre-catching the original rejection. Constructor/species sabotage remains outside
+the supported JavaScript boundary, as the canonical seam now makes explicit.
+
+The required native Windows job also exposed an inconsistent temporary-claim
+identity refusal. Its log contains no measured native identity values. An
+independent controlled production writer/reader probe reproduced unsafe Number
+encoding and radix round-trip failures. New exact-native v2 claims and conservative
+v1 compatibility repair that defect; the unchanged complete nineteen-case file
+now includes actual writer/interruption/recovery vectors and a distinct bigint
+collision that Number would erase. These portable vectors do not certify NTFS;
+a fresh native Windows run remains required.
+
+The remote secrets gate found a stale full-file case pin; fresh copied-source
+collection found one more. Both pins now match the complete fourteen- and
+thirty-two-case files, retaining every one of the 35 controls and their order.
+The usage gate separately found its permanent cohort had grown from 429 to 435
+cases: six new live-export cases in the complete chat file, with no removed case
+or other-file difference. Fresh full seventeen-file collection establishes the
+new exact pin; no semantic threshold or native-child bound changes. The required
+aggregate correctly refused these non-green prerequisite jobs.
+The remote filesystem job completed 46 restored controls before its whole-job
+twenty-minute timeout; this is an incomplete run, not a semantic-control failure
+or full-matrix evidence. Its total job allowance is now sixty minutes. The
+ninety-second phase, fifteen-second test/hook and output/retention bounds are
+unchanged.
+
+Nine selected physical diagnoses at **`fba63e4b`** separately passed **27 joined
+phases, 591 case executions and 42 expected named AssertionErrors**, with no
+collateral non-AssertionError. Root independently audited pins, complete case
+inventories, stdio, compressed receipts, native child/dependency records and exact
+restoration. Each export contains at most 26 files and 9,966,518 bytes, including
+its envelope. This evidence belongs to that earlier head and does not certify the
+new repairs or a complete matrix.
+
+The filesystem family now declares **95 controls**, preserving its earlier 93
+IDs/order and complete workloads. Fresh isolated copied-source collection checks
+all 95 filesystem and 35 secrets declarations against **49 complete files and
+1,345 case names**, with no count, exact-anchor or named-witness drift. It is
+collection evidence only. The unchanged full filesystem retention limit projects
+to exactly 2,000 files; measured-prefix byte projections remain below 64 MiB.
+Only a complete actual capture can certify both bounds.
+
+The repair working tree passes **17/17 uncached lint/typecheck tasks** and
+**11/11 test/dependency tasks**, with five dependency-build cache hits. All six
+test suites execute: **557 complete files, 12,224 passing cases and 13 established
+skips**. Build/format passes **7/7** with five cache hits; acceptance tooling
+passes **144/144**, and tools lint/typecheck pass. These author gates precede
+the repair commits and do not substitute for committed-head acceptance.
+DB sync, SDK fences, engine purity, bundle closure and actual built-workspace/CLI
+media packaging pass. The actual official Node **22.13.0** binary passes **seven
+complete files / 82 cases** on macOS. Its first run rejected only experimental
+type-stripping warnings in the new diagnostic child; the fixture now disables
+that warning category alone, preserving rejection diagnostics and its empty-stderr
+assertion. The new diagnostic tests, DB typecheck and scoped lint/format pass again
+after that launcher-only correction. The document audit checks **50 changed
+Markdown files, 2,633 relative links and 19 append-only ADRs**, without errors.
+The usage-cohort pin correction also passes its **3/3** workload units and tools
+lint/typecheck/format; its complete physical rerun remains required.
+
+**Step 6 remains unaccepted.** New committed-head physical diagnoses, the complete
+95-control filesystem and 35-control secrets matrices with independent export
+audit, two NEW clean complete cumulative review rounds after these repairs,
+and remaining publication/platform gates are required. Steps 7–8 remain
+unstarted. No ADR approval, provider capture, credential or user decision is
+pending.
+
 ### Remaining gate
 
 The maintainer approved the revised four-ADR decision package and eight-step plan

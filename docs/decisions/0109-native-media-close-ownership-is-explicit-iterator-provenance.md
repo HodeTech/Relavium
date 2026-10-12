@@ -214,3 +214,25 @@ The earlier conditional wording records the proposal history. Implementation,
 native and packaging evidence, the complete causal inventory and two NEW clean
 complete cumulative Step 6 review rounds remain required; approval does not
 accept Step 6 or close Wave 2.
+
+### Return-diagnostic observation correction — 2026-10-13
+
+The third complete cumulative implementation review reproduced a missed rejection:
+an ordinary genuine rejected Promise with a throwing own `then` accessor survived
+the former `Promise.resolve(returned).then(...)` path without any observer on the
+original Promise. The helper's foreign acknowledgement completed, but Node still
+reported the original private rejection. An overridden own method and a genuine
+cross-realm Promise require the same protection. This is an implementation defect
+against the existing observation obligation, not a change to ownership authority.
+
+The implementation now uses a captured intrinsic continuation for genuine Promise
+settlement and guarded normal assimilation for other thenables. Its supported
+JavaScript boundary retains ordinary constructor/species behaviour; it does not
+claim universal containment of deliberately sabotaged continuation construction
+or rejecting work independently created by caller code. The
+[canonical lifecycle contract](../reference/shared-core/llm-provider-seam.md#bounded-verified-media-publication-adr-0106)
+owns this qualification and exact mapping. Isolated diagnostic children exercise
+actual runtime unhandled-rejection observation, foreign/native acknowledgement,
+and real store/de-inline refusal without pre-catching the original rejection.
+Named assertion-based removal, exact restoration, fresh cumulative implementation
+reviews and complete publication gates remain Step 6 obligations.

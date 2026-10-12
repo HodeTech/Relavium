@@ -1096,6 +1096,12 @@ code. Foreign return is invoked once by the helper and its throw/rejection is ob
 joining it; native acknowledgement joins trusted retirement. Callers first clean their own
 resources, then await the acknowledgement. A primary verification, write or cancellation
 failure survives a secondary close failure; a close-only failure has the same fixed refusal.
+For genuine same-realm and cross-realm Promises, captured intrinsic continuation observes
+the original settlement without consulting a replaced own `then` getter or method. Ordinary
+constructor/species behaviour is a trusted JavaScript precondition; this does not intercept
+independently created rejecting work or arbitrary constructor/species sabotage. Non-Promise
+thenables use guarded normal assimilation. A fulfilled genuine Promise remains fulfilled
+despite a hostile own `then`; a rejected native return still maps to the fixed close refusal.
 The counted de-inline iterator remains foreign: its return only initiates source close, while
 the encompassing finally joins the same acknowledgement after store cleanup. Direct raw-store
 consumers use the same protocol. Direct return outside the helper is not deduplicated by it;

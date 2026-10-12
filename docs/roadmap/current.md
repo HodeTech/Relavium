@@ -128,9 +128,11 @@ two NEW clean complete cumulative rounds at `1be8731d`; its [acceptance checkpoi
 records snapshot warnings, narrow context analysis, export completion and actual Chat/Home
 render evidence. **Step 6, media bounds, admission, cancellation and temporary ownership,
 proceeds automatically.**
-Its first cumulative review found confirmed media alias/format, branch-admission and
-causal-worker evidence gaps; their ordinary repairs and selected causal controls are
-committed, while fresh complete implementation acceptance remains open. The lifecycle
+Its cumulative reviews found confirmed media alias/format, branch-admission,
+native-header, return-diagnostic and causal-evidence gaps. Their runtime repairs
+are committed; the [third review repair checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#step-6-third-cumulative-review-and-repairs--2026-10-13)
+records exact native temporary identities and the remaining complete-matrix,
+independent-review and platform gates. Step 6 acceptance remains open. The lifecycle
 repair implements Accepted [ADR-0109](../decisions/0109-native-media-close-ownership-is-explicit-iterator-provenance.md):
 explicit native iterator ownership must preserve real HTTP close joining while an
 arbitrary asynchronous return cannot block store cleanup. The

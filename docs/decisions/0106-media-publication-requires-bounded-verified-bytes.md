@@ -263,3 +263,24 @@ port. The [canonical seam](../reference/shared-core/llm-provider-seam.md#bounded
 owns the exact profile and compatibility details. Fragmentation, real-store and
 native HTTP regressions accompany separate causal removals. These corrections do
 not expand decoder guarantees, introduce a new media type or accept Step 6.
+
+### Exact temporary claim identity correction — 2026-10-13
+
+The native Windows gate returned a malformed-claim refusal where its unchanged
+replacement-file control required identity-change retention. The log did not
+record its native identity values. A separate controlled production writer/reader
+probe nevertheless reproduced a concrete inconsistency: numeric device/inode
+fields above the safe-integer ceiling could be written into a claim that recovery
+would permanently reject. Some large values also failed numeric radix round-trip.
+Treating that result as an acceptable test alternative would hide an orphan path.
+
+New claims use a distinct exact-native identity version; historical unsafe numeric
+claims remain conservatively retained. The
+[physical storage contract](../reference/shared-core/built-in-tools.md#physical-media-storage-and-limits)
+owns the version, bounds, compatibility and revalidation rules. The implementation
+preserves the producer/liveness/age/one-link/root floors and adds controlled actual
+writer-to-interruption-to-recovery tests, including distinct exact values that
+collapse to the same Number. These portable numerical controls do not assert a
+measured NTFS inode or replace the native Windows rerun. Causal removal, fresh
+cumulative review and publication gates remain open; this correction does not
+accept Step 6 or broaden the filesystem jail guarantee.

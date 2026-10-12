@@ -135,6 +135,14 @@ or stealing live claims. Recovery itself uses an exclusive claimant marker. Prod
 maintenance handshakes prevent a new writer from starting inside maintenance. This protocol is
 local-device cooperating storage, not a distributed lease or hostile same-user jail.
 
+New `media-claim-v2` records encode native bigint device/inode identities as bounded
+canonical unsigned 64-bit tokens. Claim creation, post-move admission and final recovery
+revalidation compare these exact identities without a Number conversion. Existing v1
+claims retain their safe-integer/canonical validation; an ambiguous unsafe historical
+token is retained, never promoted to deletion authority. Producer, maintenance and
+recovery-marker layouts are unchanged. This targeted identity check supplements the
+existing cooperative root/path floor; it does not upgrade that floor to a hostile-parent jail.
+
 `pruneLegacyTemporaries({ legacyOffline: true, force: true })` requires **both** strict boolean
 acknowledgements before mutation. It refuses the entire maintenance operation before any legacy
 deletion if a new producer is live or uncertain. It admits only the two historical ownerless
