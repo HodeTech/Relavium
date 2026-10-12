@@ -104,7 +104,7 @@ Earlier dated pending checkpoints in this page and the phase register are histor
 Resume the joint 2.5.5/2.6 [Wave 2 queue](#wave-2--shut-the-doors); this is separate from
 the already merged Phase 2.6.5 W2 liveness wave. Its hostile-MCP transport/config/definition
 work, including G19 and #202, already merged in W4/PR #87. The **unified filesystem
-jail** (#36/#39/#235 plus the pulled-forward 2.6.M/N path boundaries) is accepted. Next are the secrets foundation and first-run input transport,
+jail** (#36/#39/#235 plus the pulled-forward 2.6.M/N path boundaries) and the **secrets foundation** (#27/#31/#293/#196) are accepted. Next is first-run input transport,
 followed by config trust, persistence security and certification
 of the 2.5.5 exit criteria 1–3. Existing decision gates in that queue retain their authority.
 W9 is a historical grouping of harness items and approved deferrals, not a new open wave.
@@ -120,7 +120,10 @@ rounds and two NEW clean tooling/document rounds following its prose qualificati
 All eight [published CI jobs](https://github.com/HodeTech/Relavium/actions/runs/38246846580)
 pass at code head `aca351af`, including Windows and the forced Node floor. The
 [Step 2 acceptance](phases/phase-2.5.5-hardening-and-remediation.md#step-2-acceptance--2026-10-12)
-records exact attribution and limits. **Step 3, the secrets foundation, proceeds.**
+records exact attribution and limits. **Step 3 is accepted** after two NEW clean complete
+cumulative rounds at `8c44e2ec`; its [acceptance checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#step-3-acceptance--2026-10-12)
+records all review dispositions, affected gates and finite limits. **Step 4, first-run secret
+stdin and argv refusal, proceeds automatically.**
 The historical Ubuntu pre-readiness failure cause remains unproved; no whole-wave
 completion is inferred from these step acceptances.
 
