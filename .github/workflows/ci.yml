@@ -114,9 +114,38 @@ jobs:
           restore-keys: |
             turbo-${{ runner.os }}-
 
-      # The required gate: lint, typecheck, and test every workspace, then build.
+      - name: Initialize native DB scheduling diagnostics
+        env:
+          RELAVIUM_DB_NATIVE_DIAGNOSTICS: ${{ runner.temp }}/db-native-${{ github.run_id }}-${{ github.run_attempt }}/events.jsonl
+        run: |
+          node --input-type=module <<'NODE'
+          import { mkdirSync, writeFileSync } from 'node:fs';
+          import { dirname } from 'node:path';
+          import { availableParallelism } from 'node:os';
+          const destination = process.env.RELAVIUM_DB_NATIVE_DIAGNOSTICS;
+          mkdirSync(dirname(destination), { recursive: true });
+          writeFileSync(destination, JSON.stringify({
+            stage: 'ci-invocation', node: process.version, platform: process.platform,
+            arch: process.arch, availableParallelism: availableParallelism(),
+            workspaceTestConcurrency: 1,
+            expectedDbCache: 'miss: unique diagnostic path is hashed by DB test only',
+            executionEvidence: 'parent and child records; this setup record alone is not execution'
+          }) + '\n');
+          NODE
+          echo "RELAVIUM_DB_NATIVE_DIAGNOSTICS=$RELAVIUM_DB_NATIVE_DIAGNOSTICS" >> "$GITHUB_ENV"
+
+      # Match local CI: finish lint/typecheck before one workspace test task at a time.
+      # Every file/case and all native races inside each test retain their original bounds.
       - name: Lint, typecheck, test
-        run: pnpm turbo run lint typecheck test
+        run: pnpm ci:workspaces
+      - name: Preserve native DB scheduling diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: db-native-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/db-native-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 7
+          if-no-files-found: warn
       # Typecheck the root/tooling *.config.ts that sit outside every package's tsc program.
       - name: Typecheck tooling configs
         run: pnpm typecheck:tools
@@ -343,7 +372,10 @@ jobs:
         # `--force` = no cache READ (genuine Node-22 run, not a Node-24 replay); the job-level blanked
         # TURBO_TOKEN/TURBO_TEAM above = no cache WRITE (so `ci` never replays this Node-22 result). Both are
         # needed — see the job-level comment.
-        run: pnpm turbo run typecheck test build --force
+        run: |
+          pnpm turbo run typecheck --force
+          pnpm turbo run test --concurrency=1 --force
+          pnpm turbo run build --force
 
   # CI-only strict peer-dependency gate (.npmrc keeps this OFF for local installs so fresh
   # checkouts resolve while the surface packages' peers are not all in the tree yet). Catch
