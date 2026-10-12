@@ -48,6 +48,7 @@ vi.mock('node:fs/promises', async (original) => {
 });
 
 const bytes = Buffer.from('native descriptor content');
+const actualPlatform = process.platform;
 let base: string;
 let root: string;
 let target: string;
@@ -66,6 +67,7 @@ beforeEach(async () => {
   for (const hook of Object.values(boundary)) hook.mockClear();
 });
 afterEach(() => {
+  Object.defineProperty(process, 'platform', { value: actualPlatform });
   vi.restoreAllMocks();
   rmSync(base, { recursive: true, force: true });
 });
@@ -91,29 +93,54 @@ function fixtureRename(from: string, to: string): void {
   }
 }
 
-/** Assert an actual native Windows rename refusal, without claiming an inode replacement occurred. */
-function expectNativeRenameRefusal(error: unknown): void {
+/** Native fixtures record actual rename refusal; injected controls exercise the same assertions. */
+function expectWindowsRenameRefusal(error: unknown): void {
   expect(process.platform).toBe('win32');
   expect(replacementFailure?.syscall).toBe('rename');
   expect(['EPERM', 'EBUSY']).toContain(replacementFailure?.code);
   expect(error).toEqual(new MediaStoreFilesystemError('io'));
 }
 
+async function expectCooperativeRead(point: keyof typeof boundary): Promise<void> {
+  const result = await store.get(handle).then(
+    (value) => ({ value, error: undefined }),
+    (error: unknown) => ({ value: undefined, error }),
+  );
+  // Count the initial read before a refusal's positive recovery read invokes the hook again.
+  expect(boundary[point]).toHaveBeenCalledOnce();
+  if (replacementFailure === undefined) expect(result.value).toEqual(new Uint8Array(bytes));
+  else {
+    expectWindowsRenameRefusal(result.error);
+    expect(result.value).toBeUndefined();
+    expect(await store.get(handle)).toEqual(new Uint8Array(bytes));
+  }
+}
+
 it.each(['beforeOpen', 'afterOpen', 'afterRead'] as const)(
   'accepts a cooperative atomic replacement at %s with the same content address',
   async (point) => {
     boundary[point].mockImplementationOnce(() => replace(bytes));
-    const result = await store.get(handle).then(
-      (value) => ({ value, error: undefined }),
-      (error: unknown) => ({ value: undefined, error }),
-    );
-    if (replacementFailure === undefined) expect(result.value).toEqual(new Uint8Array(bytes));
-    else {
-      expectNativeRenameRefusal(result.error);
-      expect(result.value).toBeUndefined();
-      expect(await store.get(handle)).toEqual(new Uint8Array(bytes));
-    }
-    expect(boundary[point]).toHaveBeenCalledOnce();
+    await expectCooperativeRead(point);
+  },
+);
+
+it.each([
+  ['afterOpen', 'EPERM'],
+  ['afterOpen', 'EBUSY'],
+  ['afterRead', 'EPERM'],
+  ['afterRead', 'EBUSY'],
+] as const)(
+  'counts the initial %s hook separately from recovery after an injected Windows %s refusal',
+  async (point, code) => {
+    // Model the Windows refusal on every OS; the read/close/recovery still use native files.
+    // This is a fixture-control test, not evidence that this host refused a native rename.
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    boundary[point].mockImplementationOnce(() => {
+      replacementFailure = { code, syscall: 'rename' };
+      throw Object.assign(new Error('injected Windows rename refusal'), replacementFailure);
+    });
+    await expectCooperativeRead(point);
+    expect(boundary[point]).toHaveBeenCalledTimes(2);
   },
 );
 
@@ -130,7 +157,7 @@ it.each(['afterOpen', 'afterRead'] as const)(
       expect(result.value).toEqual(new Uint8Array(bytes));
       await expect(store.get(handle)).rejects.toThrow(/content-address/);
     } else {
-      expectNativeRenameRefusal(result.error);
+      expectWindowsRenameRefusal(result.error);
       expect(result.value).toBeUndefined();
       expect(await store.get(handle)).toEqual(new Uint8Array(bytes));
     }
@@ -201,7 +228,7 @@ it('still refuses a root replacement after reading', async () => {
   );
   if (replacementFailure === undefined) expect(error).toMatchObject({ reason: 'unsafe_path' });
   else {
-    expectNativeRenameRefusal(error);
+    expectWindowsRenameRefusal(error);
     expect(await store.get(handle)).toEqual(new Uint8Array(bytes));
   }
 });
