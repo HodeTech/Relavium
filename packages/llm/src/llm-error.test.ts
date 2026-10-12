@@ -160,6 +160,80 @@ describe('scrubSecrets — defense-in-depth secret backstop (no key/token/baseUR
   });
 });
 
+describe('finite secret query names (#196)', () => {
+  const families = [
+    'client_secret',
+    'refresh_token',
+    'id_token',
+    'auth_token',
+    'session_token',
+    'api_secret',
+    'access_key',
+    'secret_key',
+  ];
+  const names = families.flatMap((name) => [name, name.replace('_', '-'), name.replace('_', '')]);
+  const opaque = 'opaque-value-Q7';
+
+  it.each(names)('redacts the exact %s name in first/later positions and either case', (name) => {
+    for (const spelling of [name, name.toUpperCase()]) {
+      for (const prefix of ['?', '?ordinary=kept&']) {
+        const start = `GET https://provider.invalid/path${prefix}${spelling}=`;
+        expect(scrubSecrets(`${start}${opaque}&mode=fast#visible after`)).toBe(
+          `${start}[REDACTED]&mode=fast#visible after`,
+        );
+      }
+    }
+  });
+
+  it('SECRETS_CAUSAL_QUERY_NAMES masks each added family without another credential shape', () => {
+    for (const name of families) {
+      expect(scrubSecrets(`?${name}=${opaque}`), 'SECRETS_CAUSAL_QUERY_NAMES').toBe(
+        `?${name}=[REDACTED]`,
+      );
+    }
+  });
+
+  it.each([
+    'client_secretary',
+    'client_secret_hint',
+    'refresh_token_count',
+    'id_tokenizer',
+    'auth_token_hint',
+    'session_token_count',
+    'access_keyboard',
+    'secret_key_id',
+    'api_secret_hint',
+    'api_key_name',
+    'prefix_client_secret',
+  ])('preserves the benign near-name %s', (name) => {
+    const text = `GET https://provider.invalid/?${name}=${opaque}&mode=fast`;
+    expect(scrubSecrets(text)).toBe(text);
+  });
+
+  it('handles repeated names, encoded values and literal delimiters without consuming surroundings', () => {
+    const text = '?client_secret=opaque%2F%3D+punctuation:=value&refresh-token=next#kept';
+    expect(scrubSecrets(text)).toBe('?client_secret=[REDACTED]&refresh-token=[REDACTED]#kept');
+    expect(scrubSecrets('?id_token=first&id_token=second after')).toBe(
+      '?id_token=[REDACTED]&id_token=[REDACTED] after',
+    );
+    expect(scrubSecrets('?client_secret=&ordinary=kept')).toBe('?client_secret=&ordinary=kept');
+    // Literal-name classification is finite; it is not URL decoding or universal secret discovery.
+    expect(scrubSecrets(`?client%5fsecret=${opaque}`)).toBe(`?client%5fsecret=${opaque}`);
+  });
+
+  it('applies the same new-name backstop to both normalized error message and code', () => {
+    const error = makeLlmError({
+      provider: 'openai',
+      kind: 'auth',
+      message: `request failed ?client_secret=${opaque}&ordinary=kept`,
+      code: `?session_token=${opaque} auth_failed`,
+    });
+    expect(error.message).toBe('request failed ?client_secret=[REDACTED]&ordinary=kept');
+    expect(error.code).toBe('?session_token=[REDACTED] auth_failed');
+    expect(LlmErrorSchema.safeParse(error).success).toBe(true);
+  });
+});
+
 describe('retryAfterMsFromHeaders (#279)', () => {
   /** A minimal `Headers`-like container; only `.get` is used, so no vendor type crosses the seam. */
   const headers = (map: Record<string, string>) => ({
