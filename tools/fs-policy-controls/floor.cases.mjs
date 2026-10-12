@@ -75,7 +75,12 @@ const dirPaths = [
   'gcloud/configurations/config_default',
   'legacy_credentials/token',
 ];
-const basePaths = ['application_default_credentials.json', 'credentials.tfrc.json'];
+const basePaths = [
+  'application_default_credentials.json',
+  'credentials.tfrc.json',
+  '.terraformrc',
+  'terraform.rc',
+];
 for (const [kind, paths] of [
   ['DIR', dirPaths],
   ['BASENAME', basePaths],

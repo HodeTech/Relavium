@@ -141,7 +141,7 @@ mutations.push(
   control(
     'CREDENTIAL_BASENAME',
     'apps/cli/src/engine/tool-host/fs.ts',
-    "  'application_default_credentials.json',\n  'credentials.tfrc.json',",
+    "  'application_default_credentials.json',\n  'credentials.tfrc.json',\n  '.terraformrc', // Unix CLI config supports token-bearing credentials blocks.\n  'terraform.rc', // Windows CLI config in APPDATA supports the same credentials blocks.",
     '',
     'FS_CAUSAL_CREDENTIAL_BASENAME',
     floorCases,
@@ -220,7 +220,7 @@ for (const mutation of mutations) {
   const file = mutation.files[0];
   mutation.expectedTests =
     file === floorCases[0]
-      ? 9
+      ? 11
       : file === workspaceCases
         ? 8
         : file === cooperativeCases

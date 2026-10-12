@@ -30,7 +30,9 @@ separate control. They do not turn a simulated platform branch into Windows evid
 
 Native canonical-root selection has its own removal control: retaining a legacy
 synchronous alias spelling must break a real file read through the admitted policy.
-Its deterministic alias fixture complements native Windows short-name execution.
+Its deterministic alias fixture mocks the legacy resolver while retaining native
+canonicalization and file access. The Windows job separately exercises the original
+OS temporary-directory spelling; it does not guarantee an 8.3 alias is present.
 
 `RELAVIUM_ACCEPTANCE_EVIDENCE=/absolute/directory` retains bounded JSON/JSONL/log
 metadata under `filesystem/`, outside authored source. It excludes the copied graph,
