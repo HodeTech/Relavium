@@ -104,8 +104,7 @@ Earlier dated pending checkpoints in this page and the phase register are histor
 Resume the joint 2.5.5/2.6 [Wave 2 queue](#wave-2--shut-the-doors); this is separate from
 the already merged Phase 2.6.5 W2 liveness wave. Its hostile-MCP transport/config/definition
 work, including G19 and #202, already merged in W4/PR #87. The **unified filesystem
-jail** (#36/#39/#235 plus the pulled-forward 2.6.M/N path boundaries) and the **secrets foundation** (#27/#31/#293/#196) are accepted. First-run input transport (#25) is also accepted. Next are snapshot warnings and export completion,
-followed by media/config trust, persistence security and certification
+jail** (#36/#39/#235 plus the pulled-forward 2.6.M/N path boundaries) and the **secrets foundation** (#27/#31/#293/#196) are accepted. First-run input transport (#25), snapshot warnings and export completion are also accepted. Next are media bounds/admission/lifecycle and provider-config trust, followed by security certification
 of the 2.5.5 exit criteria 1–3. Existing decision gates in that queue retain their authority.
 W9 is a historical grouping of harness items and approved deferrals, not a new open wave.
 **2026-10-12:** task-relevant document/code preflight is complete. The
@@ -124,8 +123,11 @@ records exact attribution and limits. **Step 3 is accepted** after two NEW clean
 cumulative rounds at `8c44e2ec`; its [acceptance checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#step-3-acceptance--2026-10-12)
 records all review dispositions, affected gates and finite limits. **Step 4 is accepted**
 after two NEW clean complete cumulative rounds at `1757ccc5`; its [acceptance checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#step-4-acceptance--2026-10-12)
-records first-run transport and native masking evidence. **Step 5, snapshot warnings,
-narrow context analysis and export completion, proceeds automatically.**
+records first-run transport and native masking evidence. **Step 5 is accepted** after
+two NEW clean complete cumulative rounds at `1be8731d`; its [acceptance checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#step-5-acceptance--2026-10-12)
+records snapshot warnings, narrow context analysis, export completion and actual Chat/Home
+render evidence. **Step 6, media bounds, admission, cancellation and temporary ownership,
+proceeds automatically.**
 The historical Ubuntu pre-readiness failure cause remains unproved; no whole-wave
 completion is inferred from these step acceptances.
 

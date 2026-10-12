@@ -1,6 +1,6 @@
 # Phase 2.5.5 — Hardening and Remediation
 
-> Status: 🚧 **Open — Wave 2 Steps 1–4 accepted; Step 5 snapshot/export review in progress.** Live progress and execution order are canonical in
+> Status: 🚧 **Open — Wave 2 Steps 1–5 accepted; Step 6 media admission/lifecycle in progress.** Live progress and execution order are canonical in
 > [../current.md](../current.md#execution-order--phase-255--phase-26-temporary); this banner does not
 > restate them. A full-project multi-agent code review completed
 > 2026-07-19 at HEAD `f88b0e8` — 377 findings, 373 surviving two-lens adversarial
@@ -1040,7 +1040,7 @@ Raised by a reviewer, then disproved by both verifiers reading the code. Recorde
 ## Wave 2 preflight and proposed execution plan — 2026-10-12
 
 **Status: maintainer approved ADR-0105–0108 and the eight-step plan on 2026-10-12.
-Steps 1–4 are accepted after independent cumulative reviews and required gates; Step 5 proceeds.**
+Steps 1–5 are accepted after independent cumulative reviews and required gates; Step 6 proceeds.**
 Inspection baseline is `development` at `aaed7d593d72ea414b1fae42ddf20e148a5fce0f`.
 This is the joint Phase 2.5.5/2.6 Wave 2, not the closed core reliability W2/W8.
 All work stays on `development`. Detailed independent reports remain local/ignored;
@@ -1965,15 +1965,58 @@ Earlier unchanged DB/overflow/replay/DNS evidence retains its own recorded attri
 Two NEW complete clean cumulative review rounds remain required; the four NEW
 whole-wave security sittings, final coverage and exact published-head CI stay open.
 
+### Step 5 acceptance — 2026-10-12
+
+**Accepted on `development`; Step 6 proceeds automatically.** After the verified R2
+interactive delivery correction, two NEW complete cumulative rounds, R3 and R4,
+independently reviewed all 32 changed paths from `3f2b01af` through clean code head
+`1be8731d`. Each round has separate security/authoring and core/export reviewers
+(Codex Astra/high), plus tooling/documentation (Codex Sol/high). Root read all six
+complete reports and checked their findings, executions, provenance and limits.
+All six slices are clean. Earlier R1/R2 finding-bearing rounds and their clean
+sibling slices are not counted toward this acceptance.
+
+Fresh independent evidence includes actual mounted Chat and Home/RootApp Ink
+rendering over owned streams and file-backed SQLite, successful/refused exports
+with visible positive controls, reopened legacy args/result/signature refusal
+before output mutation, strict fresh-process snapshot/resume identity, and actual
+durable MCP-augmented execution/snapshot with masked runtime secret input. R3
+export ran 260 permanent cases plus five independent probes; R4 ran 260 plus seven.
+Security ran 108 permanent cases plus fourteen (R3) or sixteen (R4) independent
+probes; R4 additionally ran the complete 122-case chat file. Four native child
+resume checks remain separately counted. These overlapping review executions do
+not add tests to the workspace inventory or claim physical-terminal coverage.
+
+The full **35-mechanism / 105-phase / 256-witness** physical record and its
+**7,707 case executions / 587 expected removal failures** were independently
+audited again, including the separate interactive-routing removal with plain/JSON
+positives. Its source attribution remains `ff7d43e6` plus the corrected working
+tree, whose fixed source bytes match the reviewed code; it is not execution at a
+later commit. The preceding 368-case focused check, 533-file workspace gate,
+11,862 passing tests, fourteen established skips, cache attribution and build/tool
+gates retain the exact qualifications in the implementation checkpoint above.
+
+| Queue | Accepted Step 5 disposition |
+|---|---|
+| #30 | Bounded value-free create/import/run warnings and canonical retained-content documentation; faithful admitted augmented snapshot/resume identity remains. Silence is not a credential safety certificate. |
+| #80/#83 | Success-only continuity/review notice, visible in interactive Chat/Home and stderr in plain/JSON; deterministic bounded legal IDs with documented collision/transliteration limits. |
+| #81/#115, D14/D15 | Existing W7 strict structural tool-content rejection revalidated through producer/store/export and independent corrupted legacy rows; user/model/@/!/authored content remains sensitive and faithful. No raw-result opt-in or historical scrub. |
+| G22 | Unsupported direct `secrets.*` context references refused at parse, including unread values; legitimate secret-input→context propagation and text-sink checks remain. ADR-0060 stays Proposed. |
+| G31 | Existing non-abortable native DNS background-work follow-up reconciled and its 92-case caller-cancellation/late-connect regressions revalidated; no resolver or new deferral, and the existing residual stays open. |
+
+Step 6's media work, Step 7's interim provider-header gate and Step 8's whole-wave
+security sittings, full coverage and exact published-head CI remain open. This
+acceptance does not close Phase 2.5.5 A–I, later joint waves or approved CR limits.
+
 ### Remaining gate
 
 The maintainer approved the revised four-ADR decision package and eight-step plan
 on **2026-10-12**. ADR-0105–0108 are **Accepted** and dependent implementation is
 authorised on `development`; the earlier Proposed checkpoints remain historical
-records. Steps 1–4 have independent acceptance; **Step 5 proceeds automatically** with
-snapshot warnings, narrow context analysis and export completion. Subsequent runtime,
+records. Steps 1–5 have independent acceptance; **Step 6 proceeds automatically** with
+media bounds, verification, admission, cancellation and temporary lifecycle. Subsequent runtime,
 independent implementation reviews, security certification and final publication
-remain gates; approval and Steps 1–4 acceptance do not certify whole-wave completion.
+remain gates; approval and Steps 1–5 acceptance do not certify whole-wave completion.
 
 ---
 
