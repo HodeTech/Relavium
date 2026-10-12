@@ -1040,7 +1040,7 @@ Raised by a reviewer, then disproved by both verifiers reading the code. Recorde
 ## Wave 2 preflight and proposed execution plan — 2026-10-12
 
 **Status: maintainer approved ADR-0105–0108 and the eight-step plan on 2026-10-12.
-Steps 1–3 are accepted after independent cumulative reviews and required gates; Step 4 proceeds.**
+Steps 1–4 are accepted after independent cumulative reviews and required gates; Step 5 proceeds.**
 Inspection baseline is `development` at `aaed7d593d72ea414b1fae42ddf20e148a5fce0f`.
 This is the joint Phase 2.5.5/2.6 Wave 2, not the closed core reliability W2/W8.
 All work stays on `development`. Detailed independent reports remain local/ignored;
@@ -1828,15 +1828,41 @@ checkpoint closes no item
 or security sitting, creates no new deferral, and introduces no new decision or
 runtime dependency. Subsequent steps proceed after independent Step 4 acceptance.
 
+### Step 4 acceptance — 2026-10-12
+
+**Accepted on `development`; Step 5 proceeds automatically.** Two NEW complete
+cumulative rounds independently reviewed `f4ca477b..1757ccc5`, including all source,
+test, causal and canonical-document changes. Each round used fresh security,
+CLI/SQLite-boundary and tooling/document reviewers. All six reports are clean,
+cover all 24 changed paths and affected interfaces, and were read and reconciled
+by the root. Detailed reports remain local and ignored.
+
+R1 independently passes 298 source-backed security/interface cases, 269 boundary
+cases and fifteen additional Commander probes. R2 independently passes 251
+security/native cases, 269 boundary cases and eighty tooling guards. Both tooling
+reviews audit all 24 mechanisms, 72 phases and 242 required named witnesses,
+current source/dependency correspondence and exact restoration. Reviewers retain
+the corrected capture's actual `f4ca477b` plus working-tree provenance; they do not
+relabel it as execution at the later committed head. R1's corrected exploratory
+Commander probe was a mistaken probe expectation, not a production finding.
+
+This accepts #25 and ADR-0107's first-run transport, argv refusal, noninteractive
+approval policy and native masked-persistence implementation. The preceding
+checkpoint owns exact gate counts, cache attribution and finite limits. Faithful
+snapshots and independent sensitive authored/generated content remain distinct
+from declared input-slot masking. The four final security sittings, later steps,
+exact-head publication and whole-Wave-2 certification remain open. No new decision,
+credential, provider capture, billing setup or user action is pending.
+
 ### Remaining gate
 
 The maintainer approved the revised four-ADR decision package and eight-step plan
 on **2026-10-12**. ADR-0105–0108 are **Accepted** and dependent implementation is
 authorised on `development`; the earlier Proposed checkpoints remain historical
-records. Steps 1–3 have independent acceptance; **Step 4 proceeds automatically** with
-first-run secret stdin, argv refusal and actual masked persistence. Subsequent runtime,
+records. Steps 1–4 have independent acceptance; **Step 5 proceeds automatically** with
+snapshot warnings, narrow context analysis and export completion. Subsequent runtime,
 independent implementation reviews, security certification and final publication
-remain gates; approval and Steps 1–3 acceptance do not certify whole-wave completion.
+remain gates; approval and Steps 1–4 acceptance do not certify whole-wave completion.
 
 ---
 
