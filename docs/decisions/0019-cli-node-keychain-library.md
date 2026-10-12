@@ -37,3 +37,12 @@ Pinned version lives in [tech-stack.md](../tech-stack.md).
 
 - A native (N-API) dependency in the CLI: prebuilt-binary coverage per platform/arch must be verified in CI, and the headless/CI **encrypted-file fallback** ([ADR-0006](0006-os-keychain-for-api-keys.md)) remains the escape hatch where no keychain is available.
 - Three keychain accessors now sit behind the one interface (Rust `tauri-plugin-keychain` on desktop, `@napi-rs/keyring` in the CLI, `vscode.SecretStorage` in VS Code); acceptable because each is the platform-correct store and all honor the same naming.
+
+### Implementation qualification — 2026-10-12
+
+The statements above that an encrypted-file escape hatch “already exists” describe
+the earlier design, not a shipped implementation. It remains reserved under the
+canonical [keychain/secrets contract](../reference/desktop/keychain-and-secrets.md#encrypted-file-fallback--deferred-past-v10).
+The CLI runtime resolver's environment fallback is a different mechanism; the OS
+keychain write path still reports unavailability. This qualification changes no
+storage authority and does not authorize implementation of an encrypted-file store.

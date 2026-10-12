@@ -43,7 +43,7 @@ joins original whole-wave acceptance, maintainer corrections and final reviewed-
 PR/push CI and SonarCloud success. Published ordinary/enforced coverage records 511 files /
 11,026 passing tests / 12 established skips; all four wire and 23 usage mechanisms pass.
 CR-70/93, CR-95's long continuation and exact-capacity/scoped residuals remain approved deferrals.
-Next is the joint [Wave 2 — Shut the doors](docs/roadmap/current.md#wave-2--shut-the-doors),
+Next is the joint [Wave 2 — Shut the doors](docs/roadmap/current.md#next-work--wave-2--shut-the-doors),
 starting with the remaining unified filesystem jail; the MCP queue already merged in W4.
 Phase 2.5.5 and Phase 2.6 remain in progress. No W8 implementation or landing gate remains.
 **Post-closure corrections are independently accepted, 2026-10-10:** core, CLI/DB and tooling/docs
@@ -62,6 +62,11 @@ including four wire and 23 usage controls.
 Final reviewed head `3d4491df` passed PR/push CI and SonarCloud before PR #92 merged.
 No merge-commit execution or new whole-PR review is inferred. Two nonblocking Sonar complexity
 suggestions remain visible; no new deferral or decision is added.
+
+**Joint Wave 2 authorised — 2026-10-12:** the maintainer approved ADR-0105–0108 and
+the [eight-step plan](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#execution-steps-after-approval).
+The decisions are Accepted; Step 1 baseline repair proceeds on `development`.
+Implementation reviews and whole-wave acceptance remain open.
 
 See [docs/roadmap/current.md](docs/roadmap/current.md) for live status.
 

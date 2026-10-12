@@ -1,6 +1,6 @@
 # Phase 2.5.5 — Hardening and Remediation
 
-> Status: 🚧 **Open — Wave 0 in flight.** Live progress and execution order are canonical in
+> Status: 🚧 **Open — Wave 2 approved; Step 1 baseline repair in progress.** Live progress and execution order are canonical in
 > [../current.md](../current.md#execution-order--phase-255--phase-26-temporary); this banner does not
 > restate them. A full-project multi-agent code review completed
 > 2026-07-19 at HEAD `f88b0e8` — 377 findings, 373 surviving two-lens adversarial
@@ -211,7 +211,7 @@ reached.
 - **Correct three stale engine doc comments to match current code.** `checkpoint.ts`'s module doc (`packages/core/src/engine/checkpoint.ts`) claims a "runId+nodeId+retryCount idempotency key" bounds resumed side effects; no such key exists. `builtins.ts`'s top comment still says egress is "not wired yet"; it shipped. `workflow-yaml-spec.md` documents `workflow.version` as Semver-format-enforced; `WorkflowSpecSchema` enforces no format. One sweep correcting each. *(S · `packages/core/src/engine/checkpoint.ts`, `packages/core/src/tools/builtins.ts`, `docs/reference/*/workflow-yaml-spec.md` · #78, #97, #214)*
 - **Remove the dead `RunEventBusOptions.validate` escape hatch and replace `kahnOrder`'s full re-sort with a priority structure.** `RunEventBusOptions.validate` (`packages/core/src/engine/event-bus.ts`) is documented as a hot-path escape hatch but no caller ever sets it — dead config, negligible cost today. `kahnOrder` (`packages/core/src/dag.ts`) re-sorts the entire ready-list on every pop instead of using a priority queue, also negligible at today's node counts. Both essentially-free cleanups; batch into one pass and revisit priority-queueing only if 2.6.P's subworkflows push node counts up. *(S · `packages/core/src/engine/event-bus.ts`, `packages/core/src/dag.ts` · #274, #275)*
 - **Introduce a shared `RelaviumError` base class and migrate the 15 hand-rolled error classes onto it.** Error classes across `packages/core`, `packages/llm`, `packages/mcp`, and `apps/cli` (`BudgetExceededError`, `EngineStateError`, `RunLoopInvariantError`, and others) share no common base, each re-implementing its own conventions. `packages/shared` is the correct home. Introduce a minimal `RelaviumError` base class and migrate the existing classes onto it, preserving each class's existing `.code`/discriminant behavior. *(M · `packages/shared/src/*.ts` · #219)*
-- **Chat-to-workflow export hardening: continuity caveat, embedded-secret redaction, and non-ASCII slug fallback.** `sessionToWorkflow` (`packages/core/src/export/serializer.ts`) correctly implements the documented `agent-session-spec.md` contract, but neither the spec nor the CLI warns that the exported node chain does not preserve conversational continuity. Separately, chat-export embeds raw `tool_result` content verbatim into the exported `.relavium.yaml` — a credential a tool happened to read/cat is committed to the file, with only the narrow ADR-0029 secret-input claim as coverage. And `workflowIdFor`'s ASCII-only strip collapses non-Latin session titles (Turkish, German, French) to a static `'exported-session'` fallback. All three live in the same function family in the same file. **Blocked on a maintainer decision**: warn-only banner on chat-export vs. an opt-in redaction/omission flag for `tool_result` content vs. applying the full untrusted-content security discipline to exported transcripts. *(M · `packages/core/src/export/serializer.ts` · #80, #81, #83)*
+- **Chat-to-workflow export hardening: continuity caveat and non-ASCII slug fallback; certify existing tool-content exclusion.** W7/PR #90 and Accepted [ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) structurally exclude model-issued tool arguments/results from durable session rows and exported scaffolds. The earlier raw-tool-result export claim and its proposed opt-in/redaction decision are superseded by that contract; do not add a raw-content flag. Wave 2 still adds a clear continuity/review notice and deterministic ASCII title normalization with a session-identity fallback. Retained user/assistant text, `@` attachments and `!` output can remain sensitive: this is not universal transcript masking. Certify producer→SQLite→export rejection fixtures with #115; the [Wave 2 decision package](#decisions-presented-together-before-implementation) records D14/D15. *(M · `packages/core/src/export/serializer.ts` · #80, #81, #83)*
 - **Give `BudgetExceededError`/`BudgetPauseError` a `.code` field, blocked on a maintainer call.** These two errors (`packages/core/src/engine/budget-governor.ts`) expose no `.code`, unlike `EngineStateError`/`RunLoopInvariantError` in the same directory that `docs/standards/error-handling.md` names as the canonical model. Not a functional bug today. **Blocked on a maintainer decision**: should these errors adopt the `.code` convention, or is `instanceof`-narrowing an accepted exception for this pair? *(S · `packages/core/src/engine/budget-governor.ts` · G50)*
 - **Collapse two always-co-occurring branches in `engine.ts`'s `#dispatch` retry-sleep handling.** Purely cosmetic dead-code/maintenance-trap: two branches that always co-occur, one unreachable dead weight. No behavioral bug, but real, trivially-scheduled cleanup. *(S · `packages/core/src/engine/engine.ts` · #79)*
 
@@ -271,7 +271,7 @@ reached.
 - ✅ **DONE (Wave 1, PR #81, 2026-07-30 — G1 · guarded in `model-catalog-store.ts`).** **Guard the `deprecationDate` conversion in `model-catalog-view.ts` the same way the sibling `capabilities` column already is.** An unguarded `Date` conversion on a corrupted `deprecationDate` row can crash the entire `/models` catalog load; apply the same guarded-parse pattern already present for `capabilities` a few lines away. *(S · `apps/cli/src/engine/model-catalog-view.ts` · G1)*
 - **Decide whether the per-row corruption isolation `model-catalog-store.ts` already has is worth propagating to `session-store.ts`/`provider-store.ts`.** `packages/db/src/model-catalog-store.ts` has a typed error specifically so one corrupt row can be isolated during a list read; `session-store.ts`/`provider-store.ts` instead let one bad row abort the entire read, surfacing as a generic "internal error." *(M · `packages/db/src/session-store.ts` · #117)* — **blocked**: maintainer call on whether per-row isolation is worth adding now, or whether a fully-aborted list read on a corrupted row is an acceptable residual matching the "DB corruption is out of scope" posture applied elsewhere.
 - **Add a fixture-seeded-then-migrated test harness so `ALTER`-based migrations are actually exercised against pre-existing rows.** 9 of 13 migrations in `packages/db/drizzle` use `ALTER` and none is tested against real historic data — only against an empty schema. *(M · `packages/db/drizzle` · #291)*
-- **Add a secret-masking regression fixture for `session_messages.content_parts`/`tool_calls`, mirroring the one `run_events`/`runs` already have.** `packages/db/src/session-store.ts`'s `appendMessage` writes the CLI's never-pruned flagship artifact with no dedicated masked-placeholder fixture, unlike the structurally identical `run_events`/`runs`/`step_executions` columns. *(S · `packages/db/src/session-store.ts` · #115)* — **blocked**: maintainer call on whether secret masking is already guaranteed upstream of `appendMessage`, which determines whether a dedicated fixture (mirroring `run-history-store.test.ts`) is warranted at all.
+- **Certify session-message tool-content rejection and document retained content (#115).** W7/PR #90 already supplies strict session-row validation and producer→SQLite→export controls under Accepted [ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) and [ADR-0098](../../decisions/0098-a-session-effect-row-holds-no-result-and-never-replays.md). Reuse and revalidate these controls for Wave 2 instead of promising masked arbitrary user/assistant text or silently stripping legacy tool content. The canonical unsafe-column inventory already identifies `session_messages`; correct any residual wording and pin the structural refusal at actual persistence/export boundaries. The [Wave D15 reconciliation](#decisions-presented-together-before-implementation) replaces the earlier upstream-masking uncertainty without creating a historical scrub policy. *(S · `packages/db/src/session-store.ts` · #115)*
 
 **Acceptance:** a transient `history.db` write failure during chat no longer crashes the process — it retries and, on genuine exhaustion, surfaces through the `onListenerError` sink rather than an unhandled rejection; two processes racing `runMigrations` against a fresh `history.db` no longer crash either one, proven by a two-process regression test; `withBusyRetry` retries `SQLITE_BUSY_SNAPSHOT` and no longer blocks the event loop synchronously; two concurrent `chat-resume` processes on the same session fail with an actionable error instead of a raw UNIQUE-index crash; `loadMessages`/`loadFull` are bounded/paginated regardless of session age; the DB-open-failure-to-`CliError` mapping in `reader.ts`/`session-open.ts` is under direct test; `model_catalog.kind`/`media_surface`/`source` carry real DB-level CHECK constraints and the false ALTER-limitation doc claim is corrected; the DDL snapshot suite covers all 13 migrations and `time.ts` has a dedicated test; `createClient` throws a typed error and its JSDoc lists all four PRAGMAs; `index.ts`'s table-export asymmetry is resolved or documented; `history.db`'s machine-locality is documented; a fetched/declared media `mimeType` is verified against `Content-Type`/bytes at ingest and cross-checked against `modality` at store time, with the stale "not persisted" comment removed; the Windows drive-relative path form is rejected by `assertRelativePath`; the model-catalog upsert loops batch instead of running N+1; `/models refresh` is reentrancy-safe under rapid repeated calls; a corrupted `deprecationDate` row no longer crashes `/models`; `FilesystemMediaStore`/`InMemoryMediaStore` enforce a `put()` size ceiling, sweep aged orphaned `.tmp` files, and honor `AbortSignalLike` on `readRange`; `ALTER` migrations are tested against seeded pre-existing data. The three blocking items (retention policy, per-row isolation scope, session-message secret-masking-fixture necessity) are resolved by explicit maintainer ruling before their implementation lands; the ADR-0072 enrichment-field disposition is decided once 2.6.Q unblocks.
 
@@ -289,19 +289,19 @@ reached.
 - **Add realpath containment before `discoverCatalog` follows a symlink.** `discoverCatalog` (`apps/cli/src/workflows/catalog.ts:77`) explicitly admits symlinked dirents and `readEntry`'s `statSync` follows the link with only an `isFile()`/size check — no containment check that the resolved target stays inside `projectConfigDir`. Apply the same containment the media layer already uses: `fs.realpathSync` the entry and reject it (generic `valid:false`, matching the existing non-regular-file guard) unless the realpath's directory is `projectConfigDir`'s realpath or a descendant. *(M · `apps/cli/src/workflows/catalog.ts` · #1)*
 - ✅ **DONE (Wave 1, PR #81, 2026-07-30 — #28/#33 · `db/open.ts:62` chmods the db AND its `-wal`/`-shm` siblings unconditionally; `config/load.ts:141-145` re-asserts `0600` on every load).** **Make `history.db`'s 0600 self-heal unconditional; add the equivalent re-assert-on-load for `config.toml`.** `db/open.ts:27`'s `chmodSync(path, 0o600)` runs only after `runMigrations` succeeds, so a throwing migration (disk-full, partial/interrupted run) leaves the file at the process umask default — typically 644 (#28). `config.toml`'s 0600 (`config/write.ts:216`, `fchmodSync`) is write-time-only and never re-asserted by `loadConfigFile`/`loadResolvedConfig` on read, unlike the db's self-heal (#33). Move the db chmod ahead of `runMigrations` (or wrap open+migrate in try/finally), and add a cheap best-effort `chmodSync(target, 0o600)` inside `loadConfigFile` for consistency. *(M · `apps/cli/src/db/open.ts`, `apps/cli/src/config/write.ts` · #28, #33)*
 - **Warn on a project-layer MCP server name collision that can redirect a global secret.** `mergeMcpServers` (`apps/cli/src/config/resolve.ts:215`, called from `resolveConfig:129`) does `byName.set(server.name, server)` per layer in trust order global→workspace→project, so a project `[[mcp_servers]]` entry reusing an existing global `name` wins outright, wholesale-replacing `command`/`args`/`url`/`env` — and because `{{secrets.*}}` resolution is scoped only by name, an attacker-controlled `project.toml` can redirect a real provisioned secret straight into an attacker binary. Add a loud, actionable warning (or require explicit opt-in) at `resolveConfig` time when a lower-trust layer redeclares a name already present in a higher-trust layer with a different `command`/`url`/`env`. *(M · `apps/cli/src/config/resolve.ts` · G19)*
-- **Reject a secret-typed `run --input` at parse time instead of taking the raw argv value.** `coerce()` (`apps/cli/src/commands/inputs.ts:59`) treats a secret-typed workflow input identically to a plain string — the raw `--input` argv value is used verbatim, with no keychain resolution and no warning, unlike `gate --input`'s existing explicit stdin-only warning. A distinct code path from the already-shipped session-input rejection. Reject a declared secret-typed `--input` at parse time and direct the user to keychain-backed resolution. *(M · `apps/cli/src/commands/inputs.ts` · #25)*
+- **Reject a secret-typed `run --input` before execution instead of taking the raw argv value.** `coerce()` treats it identically to a plain string, exposing it through argv. Workflow secrets are caller-supplied, not automatically keychain-resolved (ADR-0083). The [Wave 2 proposal](#wave-2-preflight-and-proposed-execution-plan--2026-10-12) pairs refusal with first-run bounded stdin delivery; that additive surface requires ADR-0107 approval. *(M · `apps/cli/src/commands/inputs.ts` · #25)*
 - **Extract `deepestExistingReal`, a security-critical path-jail primitive, into one shared implementation.** The realpath-ancestor-walk helper is implemented independently — near-identical doc comment and loop body — in both `packages/db/src/media-write.ts:139` (backs `save_to`'s path-jail) and `apps/cli/src/engine/tool-host/fs.ts:824` (backs the tool-host fs jail), with no shared source of truth. Extract it into `packages/shared` (both packages already depend on it) and have both call sites import it. *(S · `packages/db/src/media-write.ts`, `apps/cli/src/engine/tool-host/fs.ts` · #235)*
-- **Test the `readSecretFromStdin` argv-vs-keychain guarantee across all three branches; cap the stdin buffer.** `read-secret.ts:13` implements the load-bearing "key is read from stdin, never argv" promise, yet its only test (`commands/provider.test.ts:527-545`, not colocated) covers exactly the TTY-guard rejection — the chunk-assembly read loop, `.trim()`, and the empty-input `CliError` are untested (found independently in two review rounds, #31 and #293). The accumulated `chunks.push(...)`/`Buffer.concat(chunks)` also has no upper size bound, unlike `config/load.ts`'s `MAX_CONFIG_BYTES`. Add a colocated `read-secret.test.ts` covering multi-chunk Buffer assembly + trim, the string-chunk fallback branch, and the empty-input error, plus a size ceiling with a clear error message. *(S · `apps/cli/src/secrets/read-secret.ts` · #31, #293)*
+- **Complete direct `readSecretFromStdin` coverage and cap its buffer.** Provider command tests already cover TTY refusal, a verbatim Buffer payload and whitespace-only rejection. The reader deliberately preserves whitespace; provider set-key trims at its own boundary and gate secret lines preserve values. Add colocated multi-chunk Buffer/string/Unicode/empty/size controls with an aggregate byte cap, retaining these caller-specific semantics. *(S · `apps/cli/src/secrets/read-secret.ts` · #31, #293)*
 - **Give MCP errors structured discriminant fields instead of baking context into `.message`.** `McpConnectError`/`McpHostUnavailableError` (`packages/mcp/src/errors.ts:23`, `:34`) and the ad-hoc `McpError` throws in `manager.ts` all string-interpolate identifying context (server id, tool name) into the message with no `.serverId`/`.toolId` property, violating `docs/standards/error-handling.md` and already causing test fragility (#203). `McpConnectError` additionally collapses every distinct connect-failure mode — ENOENT, network refusal, auth 401, protocol-version mismatch, timeout — into one identical message template, with `cause` deliberately stripped from the surfaced text (#204). Add `serverId`/`toolId` fields to the error classes, and give `McpConnectError` a `reason` discriminant derived from inspecting the caught error's shape at the catch site. *(S · `packages/mcp/src/errors.ts` · #203, #204)*
-- **Document and best-effort-lint the unredacted workflow snapshot written to `history.db`.** `definitionJson: JSON.stringify(workflow)` (`apps/cli/src/history/open.ts:42`) writes the full authored YAML — not just the ADR-0029-taint-tracked `{{secrets.*}}`/`type: secret` fields — into `runs.workflow_definition_snapshot` on every run, unredacted and unencrypted. The taint mechanism only stops a *declared* secret from reaching a prompt/tool call; it does nothing for a hardcoded credential literal sitting in an unrelated field. Document the data-classification implication in the run-history reference doc, and add a best-effort lint at `create`/`import`/`run` time flagging a suspiciously secret-shaped literal (`sk-`, `ghp_`, `AIza`, etc.). *(S · `apps/cli/src/history/open.ts` · #30)*
-- **Design and gate `llm_providers.default_headers` before it reaches a live write path.** `ProviderUpsert.defaultHeaders` (`packages/db/src/provider-store.ts:43`) round-trips a free-form `Record<string,string>` verbatim through `history.db`'s plaintext `default_headers` TEXT column, and ADR-0065 §5 already documents this column as destined to be sent as live wire headers once §3 wires the stored row to the adapter — exactly where a non-`Authorization` API key would go, in tension with CLAUDE.md rule 6. No live exploit today; the decision must be made before §3 ships. **Blocked** on a maintainer/design call: keychain-ref indirection per header key (mirroring `apiKeyKeychainRef`) vs. a taint/shape check rejecting bearer-token-shaped values at the store boundary. *(M · `packages/db/src/provider-store.ts` · G20 — blocked on maintainer decision, see acceptance)*
+- **Document and best-effort-lint the unredacted workflow snapshot written to `history.db`.** `definitionJson: JSON.stringify(workflow)` writes the full admitted, MCP-augmented workflow into `runs.workflow_definition_snapshot`, unredacted and unencrypted. Declared-input masking does not remove authored credential literals in unrelated fields. Complete the classification in [database-schema.md](../../reference/shared-core/database-schema.md#secrets-at-the-write-boundary), and add a value-free best-effort warning at `create`/`import`/`run` for suspicious literal shapes (`sk-`, `ghp_`, `AIza`, etc.). Preserve faithful snapshot/resume identity. *(S · `apps/cli/src/history/open.ts` · #30)*
+- **Design and gate `llm_providers.default_headers` before live header consumption.** `ProviderUpsert.defaultHeaders` round-trips free-form strings through plaintext SQLite. ADR-0065's custom base-URL factory wiring already ships; its dormant header consumption is the future gate. **Blocked** on approval of [ADR-0108](../../decisions/0108-provider-headers-stay-gated-until-keychain-custody.md): keychain custody for activation, with an interim refusal of every new nonempty map. Historical rows remain inert/sensitive, omission preserves and `{}` explicitly clears. No live header feature or automatic legacy migration is authorized by the Wave 2 design task. *(M · `packages/db/src/provider-store.ts` · G20/D13)*
 - **Fix two independent fail-loud violations in `packages/mcp` together.** `SdkConnection.callTool` (`packages/mcp/src/sdk-stdio.ts:137`) silently substitutes `undefined` for a non-object `args` payload instead of failing loud — meaningful because the schema compiler treats a bare `{}` tool schema as `z.unknown()`, so a non-object payload can slip through `parseArgs` entirely (#206); `closeAll` (`packages/mcp/src/manager.ts:126`) discards every teardown error via a bare `.catch(() => undefined)` with zero logging, unlike the rest of `manager.ts`, which carefully types and preserves failures — a real diagnosability loss when triaging orphaned-process bug reports (#207). Both are small, same-package instances of the identical defect class. Throw a typed `McpError` for the bad-args case; have `closeAll` return `PromiseSettledResult[]` (or accept an `onCloseError` callback) so a caller with a logger can surface teardown failures. *(S · `packages/mcp/src/sdk-stdio.ts`, `packages/mcp/src/manager.ts` · #206, #207)*
 - **Remove or properly harden the dead `~/.relavium/tmp/` directory.** `ensureGlobalConfigDir` (`apps/cli/src/config/paths.ts:27`) unconditionally creates `~/.relavium/tmp/`, but the following `chmodSync(dir, 0o700)` only chmods the parent — the `tmp` subdirectory never inherits the hardened mode. Nothing in the CLI currently writes into or reads from it. Remove the unused directory, or chmod it 0700 and add a one-line comment stating its intended future purpose. *(S · `apps/cli/src/config/paths.ts` · G21)*
 - **Add per-file error-path tests for the MCP transport adapters ADR-0053 is specifically about.** Package-level coverage aggregation for `packages/mcp` (93.7%/95.5%) is pulled up by larger, well-tested files while `sdk-http.ts`, `sdk-sse.ts`, and `sdk-websocket.ts` — the exact transport adapters ADR-0053's network-egress security discipline covers — sit far lower per-file. Add direct tests per adapter for a malformed `spec.url` throw and a transport-construction failure; consider a per-file coverage floor for this directory. *(S · `packages/mcp/src/sdk-http.ts`, `sdk-sse.ts`, `sdk-websocket.ts` · #297)*
 - **Track the `dns.promises.lookup` abort-follow-up as a documented low-priority item, not a bug.** `withEgressTimeout`'s own docstring (`packages/db/src/safe-egress.ts:199`) already discloses that an abort reaches the connection phase but not the DNS-resolution phase, since `dns.promises.lookup` isn't abortable — a deliberate, reasoned, already-documented tradeoff, not a live defect. Track the finding's own recommendation (a bounded custom resolver, or a `dns.setDefaultResultOrder`/threadpool-size note) as a filed low-priority follow-up rather than leaving it comment-only. *(S · `packages/db/src/safe-egress.ts` · G31)*
 - **Derive `CLIENT_INFO.version` from the real package version instead of a hand-maintained literal.** `const CLIENT_INFO = { name: 'relavium', version: '0.1.0' }` (`packages/mcp/src/sdk-stdio.ts:34`) is a static literal already stale relative to the shipped CLI version, reported to every connected MCP server's `initialize` handshake. Source it from `package.json` (or a build-time-injected constant). *(S · `packages/mcp/src/sdk-stdio.ts` · #208)*
 
-**Acceptance:** MCP tool descriptions/schemas are covered by the same untrusted-content boundary as call results, or the gap is explicitly documented in `mcp-integration.md`; a name-collision at the MCP config layer can no longer silently redirect a global secret without a loud warning; every MCP transport (stdio/SSE/WebSocket) has a real, configurable connect-phase timeout with per-transport defaults; a hostile MCP server cannot exhaust process memory via unbounded tool count, description length, embedded schema strings, or unbounded SSE/WebSocket frames, and this is proven by an adversarial test; `discoverCatalog` rejects a symlink resolving outside `projectConfigDir`; the sensitive-credential floor covers `.kube`/`.azure`/gcloud/terraform in both `SENSITIVE_READ_DIR_SEGMENTS` and `FORBIDDEN_DECLARED_ENV`; `history.db`'s 0600 self-heal survives a throwing migration and `config.toml`'s mode is re-asserted on load; `run --input` rejects a secret-typed value at parse time; `deepestExistingReal` has one shared implementation imported by both `packages/db` and `apps/cli`; `readSecretFromStdin`'s argv-vs-keychain guarantee has direct test coverage for all three branches plus a size ceiling; MCP error classes carry structured `serverId`/`reason` fields; the unredacted workflow snapshot's risk is documented and linted at authoring time; `os-keychain.ts` has direct tests mocking native-binding failure modes; the two `packages/mcp` fail-loud gaps throw/surface instead of silently swallowing; per-file MCP transport-adapter coverage no longer hides behind package aggregation. No new ADR is required for this workstream's own scope — `default_headers`'s plaintext risk is a blocked maintainer decision (keychain-ref indirection vs. taint/shape check) that must resolve before ADR-0065 §3 wires it to a live write path.
+**Acceptance:** MCP tool descriptions/schemas are covered by the same untrusted-content boundary as call results, or the gap is explicitly documented in `mcp-integration.md`; a name-collision at the MCP config layer can no longer silently redirect a global secret without a loud warning; every MCP transport (stdio/SSE/WebSocket) has a real, configurable connect-phase timeout with per-transport defaults; a hostile MCP server cannot exhaust process memory via unbounded tool count, description length, embedded schema strings, or unbounded SSE/WebSocket frames, and this is proven by an adversarial test; `discoverCatalog` rejects a symlink resolving outside `projectConfigDir`; the sensitive-credential floor covers `.kube`/`.azure`/gcloud/terraform in the host path floor and the existing shared declared-env predicate; `history.db`'s 0600 self-heal survives a throwing migration and `config.toml`'s mode is re-asserted on load; `run --input` rejects a secret-typed value before execution; `deepestExistingReal` has one shared platform-free implementation imported by both `packages/db` and `apps/cli`; `readSecretFromStdin`'s stdin-only guarantee has direct multi-branch coverage plus a byte ceiling, preserving verbatim values; MCP error classes carry structured `serverId`/`reason` fields; the unredacted workflow snapshot's risk is documented and linted at authoring time; `os-keychain.ts` has direct tests mocking native-binding failure modes; the two `packages/mcp` fail-loud gaps throw/surface instead of silently swallowing; per-file MCP transport-adapter coverage no longer hides behind package aggregation. The original repairs alone require no new ADR; the pulled-forward trust/public-API/lifecycle changes retain the standing ADR threshold. G20/D13 must settle and enforce the interim gate before calling D complete; future header consumption (unlike already shipped custom base URLs) stays prohibited pending the custody/migration prerequisites. G31's existing DNS background-resource limit must be filed explicitly, not certified as abortable.
 
 ### 2.5.5.E — CLI operator-safety net: signals, error boundaries, crash handling & startup performance
 
@@ -529,22 +529,28 @@ directly as a 2.6.A work item). **Intra-phase:** the five file overlaps recorded
 6. Every maintainer-decision item flagged **blocked** in the work breakdown has a recorded
    ruling before its implementation lands.
 7. The nine sub-streams' acceptance paragraphs (2.5.5.A–I above) each hold in full.
-8. **No new ADR is expected** — this is a remediation phase, not an architecture-change phase — but the
-   standing ADR threshold still applies unchanged: any item that introduces a new seam or port, moves a
+8. **Apply the standing ADR threshold.** The original remediation baseline expected no new ADR;
+   Wave 2 uses accepted ADR-0105–ADR-0108 for its trust/API/lifecycle decisions. Any item
+   that introduces a new seam or port, moves a
    trust boundary, defines a storage lifecycle, changes a public CLI / machine-output contract, or adds a
    runtime dependency mints an ADR on its own merits. Minting one is **not** a phase failure; skipping a
    genuine one is. (D33's `deleted_at` retention lifecycle and D20's flag rename are the closest calls.)
 
 ## Required ADRs
 
-None. This is a remediation phase: every sub-stream fixes or hardens an already-shipped
-design rather than introducing a new one. Two sub-streams say so explicitly —
-**2.5.5.D**'s acceptance states "no new ADR is required for this workstream's own scope,"
-and **2.5.5.E**'s acceptance states "Required ADR: none new." The maintainer-decision items
-scattered through the other seven sub-streams (retention policy, coverage-floor enforcement,
-the logging-standard disposition, and the rest named inline) are recorded as **amendments to
-existing conventions and standards**, not new architectural decisions — none proposes a new
-seam, a new package, or a reversal of a prior Accepted ADR.
+The original remediation baseline expected none: most items harden an existing
+design or amend a convention. That expectation does not waive the threshold in
+exit criterion 8, including for work pulled forward from Phase 2.6.
+
+**Wave 2 — 2026-10-12:** [ADR-0105](../../decisions/0105-filesystem-roots-are-invocation-grants-not-project-authority.md),
+[ADR-0106](../../decisions/0106-media-publication-requires-bounded-verified-bytes.md),
+[ADR-0107](../../decisions/0107-first-run-secret-inputs-use-bounded-stdin.md) and
+[ADR-0108](../../decisions/0108-provider-headers-stay-gated-until-keychain-custody.md)
+are **Accepted** following maintainer approval of the corrected decision package
+and execution plan on 2026-10-12. Dependent implementation is authorised.
+They cover filesystem authority, bounded media admission/lifecycle, first-run secret
+stdin and the provider-header custody gate. The [Wave 2 decision package](#decisions-presented-together-before-implementation)
+and execution plan record the scope; no new runtime dependency is proposed.
 
 ## Risks & mitigations
 
@@ -1028,6 +1034,170 @@ Raised by a reviewer, then disproved by both verifiers reading the code. Recorde
 | `#286` | `packages/llm/src/llm-error.ts:123` | LlmError.cause is fully specified but never populated by any shipped adapter |
 | `#289` | `apps/cli/src/engine/tool-host/fs.ts:668` | Windows parent-dir swap race on write is a documented residual, sign-off unverified |
 | `#319` | `eslint.config.mjs:246` | Engine-purity test exclusion doesn't match its own documented rationale for a benchmark file convention |
+
+---
+
+## Wave 2 preflight and proposed execution plan — 2026-10-12
+
+**Status: maintainer approved ADR-0105–0108 and the eight-step plan on 2026-10-12.
+Step 1 baseline repair is in progress; no implementation acceptance is claimed.**
+Inspection baseline is `development` at `aaed7d593d72ea414b1fae42ddf20e148a5fce0f`.
+This is the joint Phase 2.5.5/2.6 Wave 2, not the closed core reliability W2/W8.
+All work stays on `development`. Detailed independent reports remain local/ignored;
+this section records concise scope, decisions, evidence and remaining gates.
+
+### Document and source reconciliation
+
+Three independent preflight streams examined filesystem authority, secrets/config
+and persistence/certification. Relevant ADRs were checked with their later dated
+qualifications: 0003/0006/0019/0026/0027/0029/0031/0033/0037/0042–0044/0048–0050/
+0055/0057/0060/0061/0063/0065/0080/0083/0084/0088/0089/0095/0098/0102.
+The controlling references are the existing config, workflow, agent-session and
+SSE contracts; built-in tools, provider seam, database schema and MCP integration;
+CLI commands/agent fixtures and keychain/secrets. Architecture/security, TypeScript,
+testing, error-handling, documentation and commit standards control the implementation.
+Phase files own scope/acceptance; current.md owns ordering. This is a task-relevant
+audit, not a new claim to certify every historical ADR or every filesystem import.
+
+| Queue | Current disposition and action |
+|---|---|
+| Wave 2 items 1–2, G19/#202 and hostile MCP queue | Already closed in W4/PR #87. Reuse its accepted register/sitting and rerun direct regressions at final head; do not rebuild consent/transports. |
+| #36/#39 | Open. Cloud credential paths and overrides are missing. The env list already lives in shared under ADR-0084; expand that authority rather than the obsolete process-local list. |
+| #235, 2.6.M extra roots, 2.6.N floor, G21 | Open. Share the injected ancestor algorithm; implement host-granted roots/general floor and remove dead tmp provisioning under ADR-0105. Full child/artifact lifecycle stays with 2.6.N. |
+| Catalog #1 | Open. Native containment/regular-file admission must precede reading either catalog kind; preserve contained symlinks. |
+| #27/#31/#293/#25 | Open/partly covered. Test native bridge failures, stop opaque native error-message leakage, retain verbatim reader semantics, cap bytes, reject secret argv and provide approved stdin delivery. |
+| #30/#196 | Open. Warn on suspicious authored literals without mutating admitted snapshots; broaden query-name redaction with benign-name controls. Existing snapshot sensitivity documentation is partial, not absent. |
+| #113/#111/#108/#112/#107/#109/#110 | Open. Native probes reproduce drive-relative acceptance, ignored abort and oversize puts; CAS shard symlink also escapes physically. ADR-0105/0106 own the combined correction. |
+| #81/#115 and D14/D15 | W7's strict session rows and producer→SQLite→export fixtures subsume raw model-issued tool masking. No raw tool-result opt-in is permitted. Certify actual fixtures and retained user-data limits; do not invent universal masking. |
+| #80/#83 | Open. Add an explicit continuity/review notice and deterministic ASCII normalization with session-identity fallback, preserving scaffold semantics and machine stdout. |
+| G22 | Open. Refuse unsupported direct `secrets.*` context references at parse; retain permitted secret-input context propagation and transitive text-sink checks. Do not accept Proposed ADR-0060 as a side effect. |
+| G20/D13 | Design/admission gate in Wave 2 under ADR-0108; live header activation remains outside the original phase, prohibited until keychain custody and legacy recovery are implemented. Historical sensitive rows are not silently erased. |
+| G31 | File/reconcile the existing nonabortable native DNS background-work follow-up in deferred-tasks.md. Current caller cancellation/normalization and late-connect guards already ship; this task does not build a resolver or invent a new deferral. |
+
+Preflight ran **12 focused files / 277 tests**, all passing, and four synthetic native
+probes reproduced the named media/path gaps. These are baseline findings, not
+fixed-code controls or whole-wave acceptance. No credentials, real user history,
+provider requests, paid captures or production storage were used.
+
+The required ordinary CI for existing docs PR #93 is red in native DB process tests;
+the unchanged focused file passes **8/8** with `CI=true`. An independent actual-worker
+probe confirms the readiness timer kills an already-ready child after its spawn
+deadline. Separate pre-readiness CI starvation is suspected, not proved. Repair timer
+ownership and measure worker scheduling before treating the baseline as green;
+retries, skipped native tests and arbitrary timeout increases are not acceptance.
+
+### Decisions presented together before implementation
+
+| Decision | Approved ruling / authority |
+|---|---|
+| Root authority / D12 | [ADR-0105](../../decisions/0105-filesystem-roots-are-invocation-grants-not-project-authority.md): invocation-only `--allow-fs-root`, config selectors bounded by grants, resume reauthorization, general scratch descriptor/floor. Remove unused tmp creation; do not build child agents or a grant database. |
+| Media limits / verification / lifecycle | [ADR-0106](../../decisions/0106-media-publication-requires-bounded-verified-bytes.md): inline/25 MiB write and opened-fd read bounds; finite formats including current AAC/Opus/PCM, with raw PCM's structural-only evidence disclosed; required store validation and atomic metadata admission before durable append; host-hook compatibility change; recoverable ownership-aware 24-hour temp GC and explicit legacy offline maintenance. No total progressing-download timeout or runtime dependency. |
+| First-run secrets | [ADR-0107](../../decisions/0107-first-run-secret-inputs-use-bounded-stdin.md): `run --secret-inputs-stdin`, explicit TTY refusal, shared gate parser, 64 KiB aggregate byte cap, verbatim values, noninteractive approval policy after consumption. |
+| Provider headers / D13 | [ADR-0108](../../decisions/0108-provider-headers-stay-gated-until-keychain-custody.md): reject all new nonempty maps, omission preserves legacy, `{}` clears, no wire consumption; keychain refs and legacy recovery are mandatory before future activation. |
+| Export / D14 | Existing ADR-0095 governs: content-free model-tool structure, no `--include-tool-results`. Add continuity/review notice. Approved slug refinement: NFKD/combining-mark normalization, Turkish dotless i and German sharp-s mappings, legal ASCII title slug; otherwise `exported-session-<session-id>`. Do not promise universal transliteration or change conversational memory. |
+| Missing Wave D15 / #115 | Reconcile with existing ADR-0095/0098 fixtures and explicit user/assistant/@/! retained-content limits. No new masking or historical scrub policy. This D15 is distinct from historical media decisions with the same number. |
+| Snapshot lint and G22 | Value-free bounded best-effort warning at create/import/run; preserve faithful augmented snapshot and JSON stdout. G22 narrows only the unsupported namespace gap; legitimate input-secret propagation remains. |
+| Review organisation / D17 | Four new security sittings by fs/path-jail, secrets-at-rest, secrets-input, config-trust; reuse W4's hostile-MCP sitting. Each implementation step has independent cumulative review cycles as below. |
+
+No billing, provider capture, keychain credential, new runtime dependency, deferred
+core-reliability feature or user-managed secret is needed for this work. Approval of
+the proposals does not certify that their implementations already satisfy them.
+
+### Execution steps after approval
+
+| Step | Scope / primary owners | Meaningful acceptance before review |
+|---|---|---|
+| 1 | Clean baseline: DB worker readiness/lifetime separation and measured native-suite scheduling | Actual child survives the obsolete readiness callback after LOCKED, RELEASE exits normally; no-barrier timeout still rejects/kills/joins. Full ordinary CI and its native/causal inventories stay complete. |
+| 2 | Unified fs changeset: shared helper/env policy; CLI roots/floor/catalog; DB save_to/CAS containment | Native outside-I/O controls, lexical/canonical aliases, no protected descent, actual flag/config/session/resume forwarding and platform gates; approve ADR-0105 first. Keep one cumulative security review scope across these consumers. |
+| 3 | Secrets foundation: OS bridge tests/safe diagnostics, bounded reader, scrub query names | Mock native failures without real keychain, opaque-error sentinel absence, exact/+1 byte bounds and release, Unicode/whitespace preservation, broad names with benign negatives. |
+| 4 | First-run secret input transport and argv refusal | Commander→dispatch→engine/native history evidence, zero preflight side effects on bad input, masked persistence, later-gate/MCP noninteractive behaviour; ADR-0107. |
+| 5 | Snapshot lint/docs, narrow context analysis and export completion; G31 filing | Faithful snapshot/resume identity, value-free authoring warnings, retained credential-context positive control, strict legacy tool refusal, continuity notices and deterministic valid IDs. Correct remaining caller-supplied-input/reader-trimming/storage doc drift and reconcile the existing DNS residual. |
+| 6 | Media bounds, type evidence, mandatory descriptor/metadata admission, cancellation and temp ownership/maintenance | Independent byte fixtures and actual engine→admission→append→reference controls, handle-only/same-hash conflicts, existing provider audio compatibility, old-layout read bounds, real producer/sweeper crashes and live-writer controls, bounded streaming, CLI maintenance scope/JSON output; ADR-0106. |
+| 7 | Provider-header interim gate, typed refusal and dormant-wire/public projections | Real legacy-row preservation/explicit clear, zero plaintext new admission, canonical store/error contract, actual SDK request omits old header and human/JSON/diagnostic projections omit header sentinels while trusted get/list retains legacy data; ADR-0108. |
+| 8 | Whole-wave security certification, canonical landing and publication | Full required CI/coverage/build, mechanism-removal evidence, all four new threat sittings, W4 revalidation, every Wave 2 ID disposition and exit criteria 1–3 / D sign-off at the exact reviewed head. |
+
+For **each step**: implement meaningful permanent controls, run affected and required
+gates, commit, then start independent cumulative reviewers (critical security paths:
+Codex Astra/high; contract/tooling reviews: Codex Sol/high, adjusted to complexity).
+Validate findings against actual code/evidence, fix and commit them, then use **new
+reviewers**. Finish with two new clean complete cumulative rounds after the last
+material correction; a failed round is evidence to address, not an acceptance round.
+Proceed automatically to the next approved step. No forced review-file tracking,
+unchecked findings, speculative deferral or skipped required check counts as closure.
+
+Update canonical homes in the step that changes them; append dated ADR refinements
+without rewriting old bodies. Keep this register concise. The final certificate does
+not close all Phase 2.5.5 A–I, the later joint Waves 3–7 or approved CR deferrals.
+Existing open docs PR #93 must be reconciled before publishing a separate Wave 2 PR
+from the same `development` branch; local implementation does not require switching
+branches or silently repurposing that PR.
+
+### Proposal review checkpoint — 2026-10-12
+
+The first independent proposal round covered filesystem authority, media lifecycle,
+and secrets/config plus whole-plan traceability. Confirmed corrections are incorporated:
+
+- ADR-0105 distinguishes early invocation-grant validation from resumed selectors
+  that require an existing-history read; Windows cross-volume results use canonical
+  absolute paths where a workspace-relative path cannot represent the target.
+- ADR-0106 admits every handle occurrence before deduplication, separates mandatory
+  byte/tuple admission from best-effort post-append retention, preserves existing
+  AAC/Opus/PCM output paths with explicit PCM evidence limits, bounds legacy fd reads,
+  requires positive audio/video durations and recovers dead-sweeper claims.
+- G20 now distinguishes shipped custom base URLs from dormant header consumption;
+  G31 is routed to the existing DNS background-resource entry. Living export/input/
+  at-rest text and historical fallback-status notes are reconciled with shipped code.
+
+These are proposal corrections, not implementation acceptance. New independent
+cumulative filesystem and media/CAS rounds found no material findings in the revised
+decisions. The second secrets/document round identified two documentation errors
+(ADR-0095 link filenames and the old unqualified “Required ADRs: None”); both were
+corrected. A further **new complete cumulative** secrets/document round found no
+material findings. The revised package is ready for maintainer consideration; those
+reviews do not grant approval or certify unimplemented runtime behaviour.
+
+Checks at that proposal checkpoint covered **12 changed/new Markdown files, 699
+relative links and anchors, with no findings**; `git diff --check` passed. Detailed reports stay
+local/ignored; no full CI or new security sitting is claimed. The working tree
+contains documentation changes only, with no Wave 2 source implementation or commit.
+
+### Maintainer proposal review corrections — 2026-10-12
+
+The maintainer's ten-comment review was checked against actual input masking,
+provider-store writers/projections, stdin handling, shared media constants and the
+planned child-session artifact owner. At that checkpoint the proposals were **Proposed**; this is a
+source/document correction record, not approval or implementation acceptance.
+
+| Comment | Disposition in the revised proposal package |
+|---|---|
+| 1 — argv/history | ADR-0107 names argv, shell history and CI command logs. Declared secret-input slots already persist as masked references; unrelated authored literals remain #30. |
+| 2 — alleged header writers | ADR-0108 no longer assumes existing embedding callers. Current nonempty-map writers in the tree are fixtures; the exported-API tightening can affect potential external callers. |
+| 3 — typed-error home | ADR-0108 names the proposed ProviderHeaderPolicyError and @relavium/db structural guard. The existing database reference's llm_providers section will own admission, discriminant and projection details in Step 7; no implemented error/spec is claimed. |
+| 4 — ancestor-helper owner | ADR-0105 explicitly owns the platform-free helper in packages/shared, with Node operations in CLI/DB and the host/tool contract in the built-in-tools reference. |
+| 5 — Related ADRs | ADR-0105 links ADR-0054 for bare Home and ADR-0083 for existing resume-identity context; it does not transfer workflow identity semantics to chat. |
+| 6 — existing versus new media bounds | ADR-0106 distinguishes existing seam-inline/download constants from the new independent put/putStream store guards. |
+| 7 — TTY stdin | ADR-0107 explicitly requires the new run flag to refuse TTY stdin before reading/composition, even when stdout is redirected, with a non-TTY positive control. Provider/gate consumers retain the shared reader's TTY refusal without prohibiting gate resume's necessary prior history lookup. |
+| 8 — header-output evidence | ADR-0108 adds actual human/JSON/error/verbose projection controls with a seeded legacy sentinel and a causal unsafe-projection control; trusted store get/list preservation is separately pinned. |
+| 9 — future scratch owner | ADR-0105 names Phase 2.6.N's CLI artifact-store host as the planned consumer and owner of provisioning/isolation/join/cleanup/recovery. Wave 2 implements the pulled-forward floor prerequisite only. |
+| 10 — navigation | Both anchors exist: Next work is the live status entry; Wave 2 is the detailed queue. ADR-0105 and the agent guides now enter via the status heading, which explicitly links the queue. No broken anchor was found. |
+
+Two NEW independent complete cumulative proposal reviews checked all four revised
+ADRs, the eight-step plan and the ten dispositions against controlling source and
+contracts; neither reported a new material finding. Final documentation checks cover
+**14 changed/new Markdown files and 789 relative links and anchors, with no findings**;
+`git diff --check`, Proposed/index consistency and Accepted-ADR append-only checks pass.
+Detailed reports remain local. These are proposal checks, not implementation or
+security acceptance. No runtime source, paid/provider call, keychain access or
+implementation commit is part of this intake.
+
+### Remaining gate
+
+The maintainer approved the revised four-ADR decision package and eight-step plan
+on **2026-10-12**. ADR-0105–0108 are **Accepted** and dependent implementation is
+authorised on `development`; the earlier Proposed checkpoints remain historical
+records. Step 1 proceeds with permanent worker-timer controls and complete ordinary
+CI. Runtime, independent implementation reviews, security certification and final
+publication remain gates; no Wave 2 completion or green full CI is inferred from approval.
 
 ---
 

@@ -46,3 +46,13 @@ The encrypted-file fallback exists only for environments without a keychain (hea
 - The encrypted-file fallback adds a second secret path that must be kept equally safe (machine-secret derivation, passphrase-in-memory-only) and tested.
 - Because the master passphrase for the fallback is never stored, a forgotten passphrase means re-entering keys; this is an accepted security/usability trade-off for headless mode.
 - Phase-2 cloud execution introduces a separate secret model (provider keys injected into cloud workers from a server-side secret store); that is explicitly out of scope here and lives in [architecture/cloud-phase-2.md](../architecture/cloud-phase-2.md).
+
+### Implementation qualification — 2026-10-12
+
+The encrypted-file fallback described above is **reserved, not implemented** in the
+current product. The canonical [keychain/secrets contract](../reference/desktop/keychain-and-secrets.md#encrypted-file-fallback--deferred-past-v10)
+already records that limit. The CLI runtime resolver may use its documented environment
+fallback after keychain lookup; this is not an encrypted-file store. Keychain writes
+still fail when the OS store is unavailable. This note corrects implementation status,
+does not authorize a new file store or key-derivation scheme, and leaves the original
+decision body as historical context.

@@ -131,7 +131,7 @@ CR-70 (cross-turn tool-history carrying), CR-93 (tenant-scoped mutable state), C
 and existing exact-capacity/scoped residuals retain their approved limits in
 [deferred-tasks.md](docs/roadmap/deferred-tasks.md). No new deferral, provider capture, billing,
 credential or W8 user decision is pending. Next is the joint 2.5.5/2.6
-[Wave 2 — Shut the doors](docs/roadmap/current.md#wave-2--shut-the-doors), starting with the
+[Wave 2 — Shut the doors](docs/roadmap/current.md#next-work--wave-2--shut-the-doors), starting with the
 remaining unified filesystem jail; its MCP queue already merged in W4. This is separate from
 Phase 2.6.5's completed W2 liveness wave. Phase 2.5.5 and Phase 2.6 remain in progress.
 
@@ -152,6 +152,11 @@ passed at reviewed head `69ac80b0` before PR #90 merged. No W7 implementation, p
 billing, key or user decision is pending. The [merge checkpoint](docs/roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w7-merge-checkpoint--2026-10-10)
 records W7 closure. W8 subsequently merged in PR #92; the register is 49/51 on `main`.
 Existing approved limits are unchanged; W8 has no open implementation or landing gate.
+
+**Joint Wave 2 authorised — 2026-10-12:** the maintainer approved ADR-0105–0108 and
+the [eight-step plan](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#execution-steps-after-approval).
+The decisions are Accepted; Step 1 baseline repair proceeds on `development`.
+Implementation reviews and whole-wave acceptance remain open.
 
 For live status, per-PR history, milestone dates, and open obligations, see the canonical
 home [docs/roadmap/current.md](docs/roadmap/current.md);

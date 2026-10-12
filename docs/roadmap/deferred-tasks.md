@@ -77,14 +77,20 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   untrue in the one place a `host:port` policy is compared. Fix by canonicalizing once at admission and
   passing the canonical string down. Note the parse-time `z.string().url()` is a third reader of the same
   bytes. *(medium · apps/cli/src/engine/mcp-servers.ts; ADR-0088 §2.2)*
-- [ ] **The MCP hop does not go through `withEgressTimeout`.** `createMcpFetch` is the only `connectValidated`
-  caller that omits it — media egress, the tool-egress arm and the provider fetch all use it. Two
-  consequences: a raw resolver throw (`getaddrinfo ENOTFOUND <host>`) or a `TypeError [ERR_INVALID_URL]` whose
-  `.input` is the whole url can escape un-normalized, which breaks `safe-egress.ts`'s stated "reason only,
-  never the url" contract (contained today by `McpConnectError`'s cause-strip, but the shared mechanism is not
-  supposed to delegate that); and the DNS phase of a post-connect request — a session-terminate DELETE, a GET
-  stream reconnect — is unbounded, since `dns.promises.lookup` is not abortable. *(medium ·
-  apps/cli/src/engine/mcp-fetch.ts; ADR-0088 §2.1)*
+- [ ] **Native DNS work can outlive caller cancellation (G31; reconciled 2026-10-12).**
+  The earlier medium finding about unnormalized MCP resolver errors and unbounded caller wait no
+  longer describes the source: `createMcpFetch` now normalizes unknown failures to a fixed
+  `SafeEgressError`, races caller cancellation and checks cancellation before late connection entry;
+  its owning MCP operation supplies the deadline instead of a second nested fetch timer. The remaining
+  resource limit is Node's nonabortable `dns.promises.lookup`: background `getaddrinfo` can occupy a
+  libuv threadpool slot until the OS resolver times out, even after the caller's deadline rejects.
+  Retained-work ownership does not make that native resolver abortable. This is the existing low-priority
+  follow-up G31 asks to file, not a new waiver of MCP caller deadlines. Evaluate a bounded resolver
+  implementation or explicit host concurrency/resource controls when DNS background work is addressed;
+  preserve validated-IP connection and late-abort refusal. Wave 2 records this source-backed limitation
+  and reruns the existing caller-cancellation/error regressions; it does not implement a new resolver.
+  *(G31 · packages/db/src/safe-egress.ts; apps/cli/src/engine/mcp-fetch.ts; ADR-0088 §2.1;
+  [Wave 2 scope](phases/phase-2.5.5-hardening-and-remediation.md#wave-2-preflight-and-proposed-execution-plan--2026-10-12))*
 - [ ] **`allow_local_endpoint` may name a host whose RESOLUTION an attacker steers.**
   `isPrivateOrLocalHost` treats `*.local` / `*.internal` / `*.localhost` as local from the suffix alone, so
   `http://svc.local:4000` is an opt-in to whatever the LAN's mDNS responder claims. Since 2.6.5 `W4` the

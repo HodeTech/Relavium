@@ -108,7 +108,13 @@ is the **unified filesystem jail** (#36/#39/#235 plus the pulled-forward 2.6.M/N
 boundaries), followed by secrets/config trust, persistence security and certification
 of the 2.5.5 exit criteria 1–3. Existing decision gates in that queue retain their authority.
 W9 is a historical grouping of harness items and approved deferrals, not a new open wave.
-No Wave 2 code is started by this merge-status update.
+**2026-10-12:** task-relevant document/code preflight is complete. The
+[proposed execution plan](phases/phase-2.5.5-hardening-and-remediation.md#wave-2-preflight-and-proposed-execution-plan--2026-10-12)
+joins current findings, already shipped protections and all decisions needed before
+implementation. The maintainer approved ADR-0105–0108 and the eight-step plan on
+2026-10-12; Step 1 baseline repair is in progress. No Wave 2 implementation acceptance
+is claimed. Existing docs PR #93's required native DB CI failure is a baseline gate,
+not evidence that this documentation audit passed full CI.
 
 ## Historical W7 implementation checkpoints
 
@@ -1062,9 +1068,10 @@ secrets/config and persistence-security work, then certify while the reviews are
    `readSecretFromStdin` + stdin cap (#31, #293); secret-typed `run --input` rejection (#25); the unredacted
    workflow-snapshot doc + lint (#30); 2.5.5.B · `scrubSecrets` param-name broadening (#196).
 5. Persistence-security: 2.5.5.C · `assertRelativePath`'s Windows drive-relative form (#113), media-store
-   hardening (#111, #108, #112), media `mimeType` verification (#107, #109, #110), the masking fixture (#115,
-   after decision D15). 2.5.5.A · chat-export redaction (#80, #81, #83, after D14) and `analyzeSecretTaint`'s
-   context sites (G22). 2.5.5.D · `default_headers` (G20, after D13).
+   hardening (#111, #108, #112), media `mimeType` verification (#107, #109, #110), and certification of
+   W7's structural session/tool-content controls (#115, Wave D15). 2.5.5.A · chat-export continuity/slug
+   completion and existing tool-content exclusion (#80, #81, #83, D14), plus `analyzeSecretTaint`'s
+   context sites (G22). 2.5.5.D · the dormant `default_headers` admission/custody gate (G20, D13).
 6. **Certify 2.5.5 exit criteria 1, 2 and 3** + the sub-stream D acceptance sign-off. **Closes M2.5.5-2 (D half).**
 
 > Book **four security-review sittings by threat class** (fs/path-jail · secrets-at-rest · secrets-input ·
@@ -1234,9 +1241,10 @@ unanswered**; the remainder sit inline in their own phase-file bullet.
 | D7 | 0 | Publish v0.1.1 as-is, or supersede with v0.2.0? | v0.2.0 — ADR-0067's Node `>=22` bump is breaking for 0.x |
 | D8 | 1 | Do already-persisted approval previews need a scrub? | ✅ **Ruled 2026-07-30: NO scrub migration.** The recommendation had been "yes, migration 0013, same PR"; the ruling went the other way, so `0013` was left free by this ruling and is now taken by ADR-0074 §4's conservative money columns; the reservation ledger above shifts nothing — `0014` (#101) keeps its number. The forward fix shipped (#91: `previewFor` scrubs the display copy, `unredactedPreview` carries the in-process classification copy), so no NEW row can carry an unscrubbed preview; historical rows in a local `history.db` keep theirs. Recorded here because the shipped state contradicted this table for four days |
 | D10 | 1 | `BudgetExceededError`/`BudgetPauseError`: adopt `.code`? | ✅ **Ruled + executed 2026-07-30: adopt.** Both carry a stable `code` (`budget_exceeded` / `budget_paused`), with exported `isBudgetExceededError` / `isBudgetPauseError` guards — because `instanceof` is unsafe from a surface (the CLI bundles the engine, so two realizations of a class coexist and `instanceof` answers `false` at the boundary that must catch it). Same shape as `isCorruptRunEventError`. Precedes Wave 3's `RelaviumError` migration as required |
-| D12 | 2 | `~/.relavium/tmp/`: `tmp`-specific rule or the general home-anchored predicate? | **General predicate** — a `tmp`-only ruling leaves 2.6.N's real root refused and forces a second `fs.ts` review |
-| D13 | 2 | `default_headers`: keychain-ref indirection vs shape check? | Keychain-ref, shape check as belt-and-suspenders. **Gates work outside this phase** (ADR-0065 §3) |
-| D14 | 2 | chat-export `tool_result`: warn vs redact vs full discipline? | Redact by default + `--include-tool-results`; same reviewer as 2.6.B's write surface |
+| D12 | 2 | `~/.relavium/tmp/`: `tmp`-specific rule or the general home-anchored predicate? | General predicate accepted in [ADR-0105](../decisions/0105-filesystem-roots-are-invocation-grants-not-project-authority.md), with invocation authority and removal of unused tmp provisioning; approved 2026-10-12, implementation pending. |
+| D13 | 2 | `default_headers`: keychain-ref indirection vs shape check? | [ADR-0108](../decisions/0108-provider-headers-stay-gated-until-keychain-custody.md) accepts keychain custody plus an interim nonempty-map refusal. Live header activation remains outside this phase and prohibited pending its custody/migration prerequisites; approved 2026-10-12, implementation pending. |
+| D14 | 2 | chat-export `tool_result`: warn vs redact vs full discipline? | **Reconciled 2026-10-12:** Accepted ADR-0095 requires content-free structure, superseding the old raw-result opt-in recommendation. No `--include-tool-results`. Continuity/slug residuals and retained user text are recorded in the Wave 2 plan. |
+| D15 | 2 | What masking guarantee does the session fixture (#115) certify? | **Reconciled 2026-10-12:** ADR-0095/0098 supply structural refusal, not universal masking. Certify the actual producer/SQLite/export fixtures and retained-content limits. This repairs the missing Wave 2 decision row; it is unrelated to historical media D15. |
 | D17 | 2 | Book security reviews **by threat class**, not per PR? | Yes — five sittings; reviewer availability is the wave's critical path |
 | D18 | 3 | `chat-ink.tsx` (1,795 lines, in neither doc): decompose or decline? | **Decline** — hand it to 2.6.M's render-v2 in Wave 5a, where the palette sweep then runs once |
 | D19 | 3 | `--quiet`/`--verbose`/`RELAVIUM_DEBUG` precedence | `--quiet` < default < `--verbose`; `RELAVIUM_DEBUG=1` an alias, explicit flag wins; `--json` overrides for stream shape |
