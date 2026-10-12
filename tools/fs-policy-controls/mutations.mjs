@@ -282,10 +282,19 @@ const mediaMetadata = 'packages/db/src/media-reference-store.test.ts';
 const mediaMetadataProcess = 'packages/db/src/media-reference-store-process.e2e.test.ts';
 const mediaEngine = 'apps/cli/src/engine/media-publication.e2e.test.ts';
 const mediaSelector = 'packages/llm/src/adapters/media-output-selection.test.ts';
-function mediaControl(id, path, before, after, marker, file, target, expectedTests) {
+const nativeTemporary = {
+  parent: mediaTempCases,
+  program: 'packages/db/src/fixtures/media-temporary-worker.ts',
+};
+const nativeMetadata = {
+  parent: mediaMetadataProcess,
+  program: 'packages/db/src/fixtures/media-metadata-worker.ts',
+};
+function mediaControl(id, path, before, after, marker, file, target, expectedTests, nativeChild) {
   return {
     ...control(id, path, before, after, marker, [file], target),
     expectedTests,
+    ...(nativeChild === undefined ? {} : { nativeChild }),
   };
 }
 mutations.push(
@@ -418,6 +427,7 @@ mutations.push(
     mediaTempCases,
     'uses exclusive private owner records',
     19,
+    nativeTemporary,
   ),
   mediaControl(
     'MEDIA_TEMP_MINIMUM_AGE',
@@ -428,6 +438,7 @@ mutations.push(
     mediaTempCases,
     'retains young, future, reused PID',
     19,
+    nativeTemporary,
   ),
   mediaControl(
     'MEDIA_TEMP_CLAIM_IDENTITY',
@@ -438,6 +449,7 @@ mutations.push(
     mediaTempCases,
     'revalidates the exact original identity',
     19,
+    nativeTemporary,
   ),
   mediaControl(
     'MEDIA_TEMP_CLAIM_RECOVERY',
@@ -448,6 +460,7 @@ mutations.push(
     mediaTempCases,
     'recovers a killed claimant',
     19,
+    nativeTemporary,
   ),
   mediaControl(
     'MEDIA_HTTP_HEADER_AGREEMENT',
@@ -487,7 +500,7 @@ mutations.push(
     'media-handle-validation-required',
     mediaPublication,
     'validates handle-only media afresh',
-    12,
+    17,
   ),
   mediaControl(
     'MEDIA_FREE_GRAPH_OWNERSHIP',
@@ -497,7 +510,7 @@ mutations.push(
     'media-free-owned-before-await',
     mediaPublication,
     'owns media-free containers',
-    12,
+    17,
   ),
   mediaControl(
     'MEDIA_SAME_HASH_PREHOST',
@@ -507,7 +520,7 @@ mutations.push(
     'FS_CAUSAL_MEDIA_SAME_HASH_BEFORE_READ',
     mediaPublication,
     'rejects all original conflicts',
-    12,
+    17,
   ),
   mediaControl(
     'MEDIA_METADATA_ATOMIC_BATCH',
@@ -538,6 +551,7 @@ mutations.push(
     mediaMetadataProcess,
     'serializes incompatible native writers',
     1,
+    nativeMetadata,
   ),
   mediaControl(
     'MEDIA_METADATA_IMMEDIATE',
@@ -557,7 +571,7 @@ mutations.push(
     'FS_CAUSAL_MEDIA_PRESTATE_ADMISSION',
     mediaEngine,
     'refuses existing SQLite tuple conflict',
-    18,
+    21,
   ),
   mediaControl(
     'MEDIA_PORT_REQUIRED',
@@ -567,7 +581,7 @@ mutations.push(
     'FS_CAUSAL_MEDIA_HANDLE_EVIDENCE',
     mediaEngine,
     'refuses handle-only publication',
-    18,
+    21,
   ),
   mediaControl(
     'MEDIA_TERMINAL_REVALIDATION',
@@ -577,7 +591,7 @@ mutations.push(
     'FS_CAUSAL_MEDIA_TERMINAL_REVALIDATION',
     mediaEngine,
     'fresh terminal validation strips nested media',
-    18,
+    21,
   ),
   mediaControl(
     'MEDIA_PREAPPEND_METADATA',
@@ -587,7 +601,7 @@ mutations.push(
     'FS_CAUSAL_MEDIA_TERMINAL_METADATA_ADMISSION',
     mediaEngine,
     'fresh terminal metadata admission strips a tuple',
-    18,
+    21,
   ),
   mediaControl(
     'MEDIA_PROVIDER_NATIVE_SELECTOR',
@@ -642,7 +656,7 @@ mutations.push(
     'media-structure-count-bound',
     'packages/shared/src/media-verifier-invalid.test.ts',
     'PNG skips large ancillary chunks and bounds structure count',
-    17,
+    20,
   ),
   mediaControl(
     'MEDIA_BORROWED_CHUNK_OWNERSHIP',
@@ -652,7 +666,7 @@ mutations.push(
     'MEDIA_BORROWED_CHUNK_OWNERSHIP',
     mediaPublication,
     'owns reused borrowed stream chunks',
-    12,
+    17,
   ),
   mediaControl(
     'MEDIA_UPSTREAM_EARLY_CLOSE',
@@ -662,7 +676,7 @@ mutations.push(
     'media-stream-early-return-closes-source',
     mediaPublication,
     'closes a single acquired upstream',
-    12,
+    17,
   ),
   mediaControl(
     'MEDIA_HTTP_BODY_ABORT',
@@ -717,7 +731,7 @@ mutations.push(
     'media-webm-track-count-bound',
     'packages/shared/src/media-verifier-invalid.test.ts',
     'WebM bounds separately identified tracks and blocks',
-    17,
+    20,
   ),
   mediaControl(
     'MEDIA_WEBM_BLOCK_COUNT_BOUND',
@@ -727,7 +741,7 @@ mutations.push(
     'media-webm-block-count-bound',
     'packages/shared/src/media-verifier-invalid.test.ts',
     'WebM bounds separately identified tracks and blocks',
-    17,
+    20,
   ),
   mediaControl(
     'MEDIA_OGG_COMMENT_COUNT_BOUND',
@@ -737,7 +751,7 @@ mutations.push(
     'media-ogg-comment-count-bound',
     'packages/shared/src/media-verifier-invalid.test.ts',
     'Ogg comment count admits exactly 65536',
-    17,
+    20,
   ),
   mediaControl(
     'MEDIA_PDF_ID_HEX_BOUND',
@@ -747,6 +761,49 @@ mutations.push(
     'media-pdf-id-hex-bound',
     'packages/shared/src/media-verifier-invalid.test.ts',
     'PDF bounds an admitted trailer ID hex token',
+    20,
+  ),
+);
+
+// R1 ordinary regressions remove the exact ownership, format-profile and branch
+// publication guards while preserving every established full-file workload above.
+mutations.push(
+  mediaControl(
+    'MEDIA_SOURCE_ALIAS_PREFLIGHT',
+    'packages/shared/src/media-publication.ts',
+    'if (!countOnly && loose.some((item) => incoming.get(item) !== sourceEdges.get(item)))',
+    'if (!countOnly && loose.some((item) => sourceEdges.get(item) === undefined))',
+    'MEDIA_SOURCE_ALIAS_PREFLIGHT',
+    mediaPublication,
+    'refuses a base64 source aliased through record',
     17,
   ),
+  mediaControl(
+    'MEDIA_WEBM_ENCODING_REFUSAL',
+    'packages/shared/src/media-verifier-webm.ts',
+    '      } else if (id === 0x6d80) {\n        // ContentEncodings includes encryption and compression. Neither is in the untransformed\n        // WebM profile, so this known element must never fall through to unknown-element skipping.\n        fail();\n      } else if (',
+    '      } else if (',
+    'MEDIA_WEBM_ENCODING_REFUSAL',
+    'packages/shared/src/media-verifier-invalid.test.ts',
+    'refuses encrypted V_VP8 tracks',
+    20,
+  ),
+  {
+    ...mediaControl(
+      'MEDIA_BRANCH_PRESTATE',
+      'packages/core/src/engine/engine.ts',
+      "if (outcome.kind !== 'completed' && outcome.kind !== 'branch') {",
+      "if (outcome.kind !== 'completed') {",
+      'FS_CAUSAL_MEDIA_BRANCH_PRESTATE',
+      mediaEngine,
+      'pins branch media once before state',
+      21,
+    ),
+    witnesses: [
+      {
+        target: 'refuses 33 branch media parts before any source pull',
+        marker: 'FS_CAUSAL_MEDIA_BRANCH_BOUND',
+      },
+    ],
+  },
 );

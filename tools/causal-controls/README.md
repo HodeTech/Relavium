@@ -7,8 +7,10 @@ usage/wire runners are unchanged.
 
 Each control executes fixed, mutated and restored physical source with identical
 complete case inventories. An exact single-site anchor, named completed semantic
-`AssertionError` carrying the declared marker, copied target main-thread body
-evaluation and source/dependency fences are required. Setup/import failures, skips,
+`AssertionError` carrying the declared marker, copied target body evaluation and
+source/dependency fences are required. Native child targets additionally require
+their target and fixture body records in the same child PID, a parent-process link,
+and that child's pinned dependency-load receipts. Setup/import failures, skips,
 empty inventories, timeouts, signals, output overflow, plain marker-bearing runtime
 errors and unjoined children cannot establish removal. Additional consumer witnesses
 are declarative, including both ancestor ports and deletion GC.
@@ -26,10 +28,21 @@ new, deleted, changed or symlinked tooling entries refuse. Phase manifest, runti
 configuration and dependency metadata must remain unchanged. Every target needs
 real body evaluation, not just transformation.
 
-Evidence retains JSON/JSONL/log metadata only, excludes graph/cache/home and binary
+Evidence retains JSON/JSONL/log metadata plus lossless gzip archives of native and
+parent source/dependency evaluation JSONL. Each archive index retains every original
+receipt name, PID/thread/stage record byte, offset, length and digest. Its bounded
+verifier checks paths, segment continuity, counts, hashes, and decompression length;
+raw receipts also have independent 64 MiB input, 2,000-file and 1,024-byte relative
+path bounds before encoding. Receipt directory enumeration is streamed up to that
+file cap. Index entries have a running byte budget before the
+final JSON serialization. The standalone receipt verifier bounds its own index plus
+archive bytes; the exporter separately enforces the whole evidence-tree cap. Complete
+case inventories remain in each Vitest result and phase summary; the duplicate
+control-only `cases.json` is omitted. Export excludes graph/cache/home and binary
 files, and cannot overwrite an existing destination or enter the repository or
 scratch tree through a symlink. The bound includes the final export record: at most
-2,000 files and 64 MiB. Export and cleanup failures preserve the earlier failure.
+2,000 retained files and 64 MiB. Export and cleanup failures preserve the earlier
+failure.
 Selected runs never claim complete-matrix acceptance. Source HEAD and working-tree
 capture attribution describe the execution actually performed.
 

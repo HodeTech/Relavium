@@ -96,6 +96,8 @@ test(
         assert.equal(accepted.id, 'synthetic-success');
         assert.equal(accepted.fixed.tests, 2);
         assert.equal(accepted.mutated.failed.length, 1);
+        assert.match(child.stdout, /synthetic-success\/mutated: 1 passed; 1 failed cases/);
+        assert.doesNotMatch(child.stdout, /named semantic failures/);
         assert.equal(accepted.restored.tests, 2);
         assert.deepEqual(accepted.fixed.inventory, accepted.mutated.inventory);
         assert.deepEqual(accepted.fixed.inventory, accepted.restored.inventory);
@@ -128,6 +130,18 @@ test(
           const retained = JSON.parse(readFileSync(join(evidence, kind, 'summary.json'), 'utf8'));
           assert.deepEqual(retained, report);
           assert.equal(existsSync(join(evidence, kind, 'graph')), false);
+          for (const phase of ['fixed', 'mutated', 'restored']) {
+            const phaseRoot = join(evidence, kind, 'synthetic-success', phase);
+            assert.equal(existsSync(join(phaseRoot, 'cases.json')), false);
+            const vitest = JSON.parse(readFileSync(join(phaseRoot, 'vitest.json'), 'utf8'));
+            assert.equal(vitest.numTotalTests, accepted[phase].tests);
+            assert.deepEqual(
+              vitest.testResults
+                .flatMap((file) => file.assertionResults.map((entry) => entry.fullName))
+                .sort(),
+              accepted[phase].inventory.map((entry) => entry.split(':').at(-1)).sort(),
+            );
+          }
         }
       }
       assert.deepEqual(

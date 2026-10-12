@@ -93,6 +93,62 @@ test('target body, thread, source hash and physical evaluation path are independ
       );
   });
 });
+test('native child and target need same pinned child PID, parent link and dependency receipt', () => {
+  fixture(({ repo, graph }) => {
+    const parentPath = 'tools/causal-controls/parent.mjs',
+      programPath = 'tools/causal-controls/worker.mjs';
+    writeFileSync(join(repo, parentPath), 'parent');
+    writeFileSync(join(repo, programPath), 'worker');
+    const files = captureOwnedTools(repo, graph, roots),
+      target = files.find((entry) => entry.path === 'tools/causal-controls/helper.mjs');
+    assert.ok(target);
+    const body = (file, pid, ppid) => ({
+      relativePath: file.path,
+      rawSha256: file.sha256,
+      physicalPath: join(graph, file.path),
+      stage: 'module-body-entry',
+      threadId: 0,
+      pid,
+      ppid,
+    });
+    const parent = files.find((entry) => entry.path === parentPath),
+      program = files.find((entry) => entry.path === programPath);
+    assert.ok(parent && program);
+    const records = [
+      body(parent, 11, 1),
+      body(target, 11, 1),
+      body(target, 12, 11),
+      body(program, 12, 11),
+    ];
+    const pin = { path: '/pinned/compiler.js', sha256: 'pinned', bytes: 7 };
+    const native = {
+      parent: parentPath,
+      program: programPath,
+      dependencyRecords: [{ ...pin, pid: 12, stage: 'dependency-load-verification' }],
+      dependencies: { files: [pin] },
+    };
+    assert.doesNotThrow(() => assertEvaluations(records, { files }, target.path, graph, native));
+    for (const [candidate, options] of [
+      [records.filter((entry) => entry.relativePath !== programPath), native],
+      [
+        records.filter((entry) => !(entry.relativePath === target.path && entry.pid === 12)),
+        native,
+      ],
+      [
+        records.map((entry) =>
+          entry.relativePath === programPath ? { ...entry, ppid: 99 } : entry,
+        ),
+        native,
+      ],
+      [records, { ...native, dependencyRecords: [] }],
+      [
+        records,
+        { ...native, dependencyRecords: [{ ...native.dependencyRecords[0], sha256: 'wrong' }] },
+      ],
+    ])
+      assert.throws(() => assertEvaluations(candidate, { files }, target.path, graph, options));
+  });
+});
 test('unknown, ambiguous, empty and ineffective selection refuse before work', () => {
   const entry = { id: 'declared', before: 'old', after: 'new', expectedTests: 1 };
   assert.deepEqual(selectControls([entry], ['--mechanism', 'declared']), [entry]);

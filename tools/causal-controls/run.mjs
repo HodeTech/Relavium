@@ -124,7 +124,8 @@ export async function runControls({ repository, evidenceKind, mutations, toolRoo
       assert.equal(digest(readFileSync(entry.path)), entry.sha256, 'Phase metadata changed');
     const data = JSON.parse(readFileSync(report, 'utf8'));
     const { tests, failed } = assertPhaseOutcome(data, child, control, name, graph);
-    const records = readdirSync(evaluationDirectory)
+    const evaluationFiles = readdirSync(evaluationDirectory);
+    const records = evaluationFiles
       .filter((file) => !file.endsWith('.dependencies.jsonl'))
       .flatMap((file) =>
         readFileSync(join(evaluationDirectory, file), 'utf8')
@@ -133,11 +134,27 @@ export async function runControls({ repository, evidenceKind, mutations, toolRoo
           .filter(Boolean)
           .map((line) => JSON.parse(line)),
       );
-    assertEvaluations(records, current, control.path, graph);
+    const dependencyRecords = evaluationFiles
+      .filter((file) => file.endsWith('.dependencies.jsonl'))
+      .flatMap((file) =>
+        readFileSync(join(evaluationDirectory, file), 'utf8')
+          .trim()
+          .split('\n')
+          .filter(Boolean)
+          .map((line) => JSON.parse(line)),
+      );
+    assertEvaluations(
+      records,
+      current,
+      control.path,
+      graph,
+      control.nativeChild === undefined
+        ? undefined
+        : { ...control.nativeChild, dependencyRecords, dependencies },
+    );
     verifyFiles(graph, current.files);
-    json(join(output, 'cases.json'), tests);
     console.log(
-      `${control.id}/${name}: ${tests.length - failed.length} passed; ${failed.length} named semantic failures`,
+      `${control.id}/${name}: ${tests.length - failed.length} passed; ${failed.length} failed cases`,
     );
     return {
       tests: tests.length,

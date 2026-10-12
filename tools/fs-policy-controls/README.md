@@ -63,8 +63,14 @@ WebM track/block counts, Ogg comments and PDF ID hex length. Borrowed URL chunks
 early upstream close, body abort and native HTTP close have separate controls. Each new
 control runs an entire named regression file in fixed, removal and restored phases;
 native child fixtures are part of the physical source graph and must join before a
-phase completes. The mechanism inventory in `mutations.mjs` and a completed retained
-`export.json` are the evidence for a particular source head. An author-local fixed
+phase completes. Native fixtures that launch their own Node programs use the same
+source/dependency evaluation fence: their target and worker body records must share
+the child PID, and the worker's installed dependencies must match the pinned manifest.
+The complete per-PID evaluation receipts are retained byte-for-byte through bounded
+gzip archives and an offset/hash index; the verifier reconstructs and checks every
+original receipt without an unbounded decode. The mechanism inventory in
+`mutations.mjs` and a completed retained `export.json` are the evidence for a
+particular source head. An author-local fixed
 test run or selected `--mechanism` diagnosis does not certify the full matrix.
 
 The direct 4 KiB reader-request and 25 MiB skip exact/+1 cases pin helper contracts;
@@ -76,3 +82,9 @@ check remains a separate bound: a malformed over-tail input refuses even if that
 one check is removed, so ordinary rejection alone does not certify it. Inspection
 arena observation measures byte-array allocations, not the entire JavaScript heap;
 these controls make no full-decoder claim.
+
+R1 extends this same matrix with source-alias preflight, WebM ContentEncodings
+refusal, and branch-output prestate publication. The branch removal requires both
+its downstream first-byte witness and its independent 33-part pre-pull bound witness.
+All earlier controls run their enlarged complete regression files, including the
+new ordinary cases, in every phase.

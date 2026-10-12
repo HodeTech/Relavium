@@ -86,7 +86,7 @@ export function mergeFiles(source, tools) {
   );
   return files;
 }
-export function assertEvaluations(records, manifest, targetPath, graph) {
+export function assertEvaluations(records, manifest, targetPath, graph, native = undefined) {
   const target = manifest.files.find((entry) => entry.path === targetPath);
   assert.ok(target, 'Target absent from manifest');
   assert.ok(
@@ -107,6 +107,48 @@ export function assertEvaluations(records, manifest, targetPath, graph) {
       entry.physicalPath,
       realpathSync(join(graph, file.path)),
       'Evaluation borrowed developer/dist source',
+    );
+  }
+  if (native === undefined) return;
+  const { program, parent, dependencyRecords, dependencies } = native;
+  const parentPids = new Set(
+    records
+      .filter(
+        (entry) =>
+          entry.relativePath === parent &&
+          entry.stage === 'module-body-entry' &&
+          entry.threadId === 0,
+      )
+      .map((entry) => entry.pid),
+  );
+  const children = records.filter(
+    (entry) =>
+      entry.relativePath === program && entry.stage === 'module-body-entry' && entry.threadId === 0,
+  );
+  assert.ok(parentPids.size > 0 && children.length > 0, 'Native child body receipt missing');
+  const external = new Map(dependencies.files.map((entry) => [entry.path, entry]));
+  for (const receipt of dependencyRecords) {
+    const pin = external.get(receipt.path);
+    assert.ok(pin, 'Native dependency outside pinned manifest');
+    assert.equal(receipt.stage, 'dependency-load-verification');
+    assert.equal(receipt.sha256, pin.sha256, 'Native dependency hash differs');
+    assert.equal(receipt.bytes, pin.bytes, 'Native dependency size differs');
+  }
+  for (const child of children) {
+    assert.ok(parentPids.has(child.ppid) && child.pid !== child.ppid, 'Native child PID unlinked');
+    assert.ok(
+      records.some(
+        (entry) =>
+          entry.pid === child.pid &&
+          entry.relativePath === targetPath &&
+          entry.stage === 'module-body-entry' &&
+          entry.threadId === 0,
+      ),
+      'Native child target body receipt missing',
+    );
+    assert.ok(
+      dependencyRecords.some((entry) => entry.pid === child.pid),
+      'Native child dependency receipt missing',
     );
   }
 }
