@@ -100,3 +100,12 @@ per rule.
   credential/header fields, which is documented.
 
 > Amended 2026-10-12 by [ADR-0105](0105-filesystem-roots-are-invocation-grants-not-project-authority.md): The CLI now separates host invocation grants from committed narrowing selectors, with mode-independent credential/protected-write floors. Core command allowlist decisions remain intact. File-tool roots do not constrain arbitrary subprocess arguments or create an OS sandbox. Exact mechanisms are in the [tool filesystem contract](../reference/shared-core/built-in-tools.md#filesystem-permission-tiers), with [argv authority](../reference/cli/commands.md#global-options) and [config selectors](../reference/contracts/config-spec.md#chat-filesystem-root-selectors) in their canonical homes. Implementation review/gates remain open.
+
+### Wave 2 context admission refinement — 2026-10-12
+
+A direct `secrets.*` workflow-context reference is refused at parse time even when
+unread because that context has no named-secret resolver. This narrow G22 correction
+preserves caller-supplied secret-input propagation through intermediate contexts and
+its transitive model/human text-sink refusal. It does not activate Proposed ADR-0060
+or alter the separate MCP `env` resolver. The [workflow context contract](../reference/contracts/workflow-yaml-spec.md#context-and-interpolation)
+owns the rule. Step 5 implementation still requires independent acceptance.

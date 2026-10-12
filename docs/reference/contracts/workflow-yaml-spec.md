@@ -194,6 +194,8 @@ context:
     value: '{{inputs.file_path | read_file}}'   # pipe filters are supported
 ```
 
+A direct `{{secrets.<name>}}` reference in a workflow `context` value is refused at parse time, even when no later field reads it: that namespace has no workflow-context resolver. This does not activate Proposed [ADR-0060](../../decisions/0060-session-ctx-prompt-interpolation.md). A declared caller-supplied `secret` input may still propagate through `inputs` and intermediate `ctx` entries; the existing transitive taint rule refuses a read of that value by model/human text. MCP-server `env` named-secret resolution remains its separate credential boundary.
+
 Common interpolation namespaces:
 
 - `{{inputs.<name>}}` — declared workflow inputs.
@@ -656,6 +658,6 @@ workflow:
 - The file is parsed and validated against `WorkflowSchema` (Zod, in `@relavium/shared`) at load time; invalid files throw a `WorkflowValidationError` and never start a run.
 - `schema_version` is the migration anchor. The format is a public API: breaking changes require a new `schema_version` and a migration tool. Add new optional fields freely; never repurpose or remove an existing one within `'1.0'`.
 - Node `id`s must be unique within a workflow and are referenced by edges, conditions, templates, and `run.outputs`.
-- A **provider API key is never embedded in the file** — no schema field holds a key value (keys live in the OS keychain, resolved at run time); `secret` inputs are caller-supplied values admitted under [ADR-0083](../../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md), not automatic keychain lookups. MCP tool credentials use their separate named-secret resolver. MCP-server `env` secrets are referenced via `{{secrets.*}}` placeholders **by convention** — the `env` map (like `context[].value`) accepts arbitrary strings, so author placeholders, never inline a literal (see [../desktop/keychain-and-secrets.md](../desktop/keychain-and-secrets.md)).
+- Relavium resolves configured provider credentials from the OS keychain at call time and does not insert those values into YAML. Arbitrary authored strings can nevertheless contain credentials: schema validation is not content redaction. `secret` inputs are caller-supplied values admitted under [ADR-0083](../../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md), not automatic keychain lookups. MCP-server `env` uses its separate named-secret resolver; author `{{secrets.*}}` placeholders rather than literals. The CLI's [bounded authoring/snapshot review](../cli/commands.md#relavium-import--relavium-export) emits value-free notices at create/import/run and preserves the parsed document and admitted augmented snapshot faithfully. A clean review is not proof that the content is safe to share. See [key custody and content retention](../desktop/keychain-and-secrets.md).
 
 For the run-time event stream a workflow produces, see [sse-event-schema.md](sse-event-schema.md). For how a run is scheduled and executed, see [../../architecture/execution-model.md](../../architecture/execution-model.md).

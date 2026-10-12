@@ -369,8 +369,9 @@ mandatory guardrails (`run_command` allowlist; `git_commit` behind approval). Pe
 - a `secret`-typed value is **never interpolated** into a prompt or tool text;
 - `context.variables` (the `{{ctx.*}}` map) is **plaintext supplied by the surface** that is echoed
   **verbatim** in the `session:started` event payload and persisted in the session row — it **MUST NOT**
-  carry an API key or any secret. Route every secret through the keychain-backed `secret`-typed resolution
-  above, never through `{{ctx.*}}`;
+  carry an API key or any secret. Provider keys and MCP named credentials use their keychain-backed
+  resolvers. Workflow `secret` inputs have a separate [caller-supplied admission contract](workflow-yaml-spec.md#inputs);
+  this does not authorise putting resolved credentials in session `context.variables`;
 - `http_request` / MCP egress is subject to the same SSRF policy as a workflow.
 
 The user's own **conversational content** typed into a session is the user's data: it is persisted in
@@ -403,6 +404,14 @@ Per [ADR-0026](../../decisions/0026-session-export-to-workflow.md), a session ex
   contain sensitive content. Prompt interpolation neutralisation does not redact that text;
 - parallel / conditional / loop structure is **not** auto-inferred — the author adds it on the canvas.
 
+Successful CLI `chat-export` and live `/export` write a fixed continuity/review notice to stderr,
+including in JSON mode; the machine event stream is unchanged. A scaffold does not recreate the
+session's working context: summarised, trimmed or omitted context may not transfer, and no raw
+model-issued tool arguments/results are available to restore. Historical persisted turns and
+content-free tool structure are mapped as below. Retained user/assistant text, `@` attachments,
+`!` output and authored agent literals still require review before running or committing. The
+notice does not redact them, and there is no raw-tool-content export opt-in.
+
 The export **produces** the format owned by [workflow-yaml-spec.md](workflow-yaml-spec.md); the
 **mapping** (session turn → `agent` node, transcript → metadata) is the contract owned here. The
 desktop "Export to Canvas" affordance and the CLI `relavium chat-export` both drive this one contract.
@@ -424,9 +433,15 @@ reproducible and round-trips):
   user adds on the canvas, not replay fields.
 - **Edges** — a straight linear chain `input → turn-1 → … → turn-n → output` (just `{ from, to }`); when a
   session has no completed turn the chain is `input → output`. No parallel/conditional/loop edges (ADR-0026).
-- **Workflow `id`** — a deterministic kebab slug of the title (ASCII alphanumerics only, matching
-  `kebabIdSchema`; non-ASCII is stripped), falling back to `exported-session`. The scaffold's id is
-  human-reviewed and renameable on the canvas.
+- **Workflow `id`** — deterministic ASCII kebab-case, matching `kebabIdSchema`. The title undergoes
+  NFKD compatibility decomposition, combining-mark removal, lowercase and explicit dotless-i (`ı` → `i`)
+  and sharp-s (`ß` → `ss`) mappings; other non-ASCII runs become separators. The title slug is limited to
+  128 characters with no trailing separator. This is not universal transliteration. An absent or unusable
+  title uses `exported-session-<session-id>` when the session id is legal lowercase kebab-case and at most
+  111 characters (ordinary UUIDs survive unchanged). Other external ids use `exported-session-id-` plus
+  four-digit hexadecimal UTF-16 encoding of their first 24 code units. Generated workflow ids are bounded
+  and renameable, not guaranteed unique: normalisation and truncation can collide. Full original identity
+  stays in metadata; the default export filename still uses the session id, not the generated workflow id.
 - **`agents`** — the session's frozen `agentSnapshot` (an inline `Agent`) is emitted as the sole `agents[]`
   entry so `agent_ref` resolves; when no snapshot was captured, `agents` is omitted and `agent_ref` resolves
   against the workspace agent registry at author time (the file still parses — `agent_ref` resolution is the

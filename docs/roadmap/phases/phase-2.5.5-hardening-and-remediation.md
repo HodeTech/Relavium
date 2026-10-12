@@ -293,7 +293,7 @@ reached.
 - **Extract `deepestExistingReal`, a security-critical path-jail primitive, into one shared implementation.** The realpath-ancestor-walk helper is implemented independently — near-identical doc comment and loop body — in both `packages/db/src/media-write.ts:139` (backs `save_to`'s path-jail) and `apps/cli/src/engine/tool-host/fs.ts:824` (backs the tool-host fs jail), with no shared source of truth. Extract it into `packages/shared` (both packages already depend on it) and have both call sites import it. *(S · `packages/db/src/media-write.ts`, `apps/cli/src/engine/tool-host/fs.ts` · #235)*
 - ✅ **DONE on `development` (Step 3, reviewed at `8c44e2ec`; final Wave 2 certification remains open).** **Complete direct `readSecretFromStdin` coverage and cap its buffer.** Colocated reader controls and real-default-reader provider/gate tests verify byte bounds, owned chunks, Unicode/whitespace and cleanup; caller-specific trimming remains unchanged. The [command reference](../../reference/cli/commands.md#secret-stdin-limits) owns the contract and the [Step 3 acceptance](#step-3-acceptance--2026-10-12) joins evidence. First-run transport remains Step 4. *(S · `apps/cli/src/secrets/read-secret.ts` · #31, #293)*
 - **Give MCP errors structured discriminant fields instead of baking context into `.message`.** `McpConnectError`/`McpHostUnavailableError` (`packages/mcp/src/errors.ts:23`, `:34`) and the ad-hoc `McpError` throws in `manager.ts` all string-interpolate identifying context (server id, tool name) into the message with no `.serverId`/`.toolId` property, violating `docs/standards/error-handling.md` and already causing test fragility (#203). `McpConnectError` additionally collapses every distinct connect-failure mode — ENOENT, network refusal, auth 401, protocol-version mismatch, timeout — into one identical message template, with `cause` deliberately stripped from the surfaced text (#204). Add `serverId`/`toolId` fields to the error classes, and give `McpConnectError` a `reason` discriminant derived from inspecting the caught error's shape at the catch site. *(S · `packages/mcp/src/errors.ts` · #203, #204)*
-- **Document and best-effort-lint the unredacted workflow snapshot written to `history.db`.** `definitionJson: JSON.stringify(workflow)` writes the full admitted, MCP-augmented workflow into `runs.workflow_definition_snapshot`, unredacted and unencrypted. Declared-input masking does not remove authored credential literals in unrelated fields. Complete the classification in [database-schema.md](../../reference/shared-core/database-schema.md#secrets-at-the-write-boundary), and add a value-free best-effort warning at `create`/`import`/`run` for suspicious literal shapes (`sk-`, `ghp_`, `AIza`, etc.). Preserve faithful snapshot/resume identity. *(S · `apps/cli/src/history/open.ts` · #30)*
+- **Document and best-effort-lint the unredacted workflow snapshot written to `history.db`.** `definitionJson: JSON.stringify(workflow)` writes the full admitted, MCP-augmented workflow into `runs.workflow_definition_snapshot`, unredacted and unencrypted. Declared-input masking does not remove authored credential literals in unrelated fields. Complete the classification in [database-schema.md](../../reference/shared-core/database-schema.md#secrets-at-the-write-boundary), and add a value-free best-effort warning at `create`/`import`/`run` using the [existing finite detector policy](../../reference/cli/commands.md#relavium-import--relavium-export). Preserve faithful snapshot/resume identity; this is not a universal credential classifier. *(S · `apps/cli/src/history/open.ts` · #30)*
 - **Design and gate `llm_providers.default_headers` before live header consumption.** `ProviderUpsert.defaultHeaders` round-trips free-form strings through plaintext SQLite. ADR-0065's custom base-URL factory wiring already ships; its dormant header consumption is the future gate. **Approved** under [ADR-0108](../../decisions/0108-provider-headers-stay-gated-until-keychain-custody.md), with implementation pending in Step 7: keychain custody for activation, with an interim refusal of every new nonempty map. Historical rows remain inert/sensitive, omission preserves and `{}` explicitly clears. No live header feature or automatic legacy migration is authorized by the Wave 2 design task. *(M · `packages/db/src/provider-store.ts` · G20/D13)*
 - **Fix two independent fail-loud violations in `packages/mcp` together.** `SdkConnection.callTool` (`packages/mcp/src/sdk-stdio.ts:137`) silently substitutes `undefined` for a non-object `args` payload instead of failing loud — meaningful because the schema compiler treats a bare `{}` tool schema as `z.unknown()`, so a non-object payload can slip through `parseArgs` entirely (#206); `closeAll` (`packages/mcp/src/manager.ts:126`) discards every teardown error via a bare `.catch(() => undefined)` with zero logging, unlike the rest of `manager.ts`, which carefully types and preserves failures — a real diagnosability loss when triaging orphaned-process bug reports (#207). Both are small, same-package instances of the identical defect class. Throw a typed `McpError` for the bad-args case; have `closeAll` return `PromiseSettledResult[]` (or accept an `onCloseError` callback) so a caller with a logger can surface teardown failures. *(S · `packages/mcp/src/sdk-stdio.ts`, `packages/mcp/src/manager.ts` · #206, #207)*
 - **Remove or properly harden the dead `~/.relavium/tmp/` directory.** `ensureGlobalConfigDir` (`apps/cli/src/config/paths.ts:27`) unconditionally creates `~/.relavium/tmp/`, but the following `chmodSync(dir, 0o700)` only chmods the parent — the `tmp` subdirectory never inherits the hardened mode. Nothing in the CLI currently writes into or reads from it. Remove the unused directory, or chmod it 0700 and add a one-line comment stating its intended future purpose. *(S · `apps/cli/src/config/paths.ts` · G21)*
@@ -1853,6 +1853,70 @@ snapshots and independent sensitive authored/generated content remain distinct
 from declared input-slot masking. The four final security sittings, later steps,
 exact-head publication and whole-Wave-2 certification remain open. No new decision,
 credential, provider capture, billing setup or user action is pending.
+
+### Step 5 implementation checkpoint — 2026-10-12
+
+**Implemented; independent acceptance remains open.** Snapshot notices now run at
+the actual create/import/run entry points after parsing and, for run, complete
+input admission. They reuse the existing finite credential detector, disclose an
+incomplete bounded scan, write value-free stderr and preserve authored files,
+JSON stdout and the faithful augmented execution snapshot. The
+[CLI contract](../../reference/cli/commands.md#relavium-import--relavium-export) owns the finite
+limits and placeholder-probe behaviour; absence of a warning is not a secrecy
+certificate.
+
+The core parser refuses unsupported direct `secrets.*` references in workflow
+context even when unread. Legitimate caller-secret-input context propagation and
+existing transitive text-sink checks remain intact; ADR-0060 remains Proposed.
+Export IDs have deterministic ASCII title normalisation and bounded legal
+session-identity fallback. Both successful standalone and live session exports
+emit one fixed continuity/content-review notice on stderr, including JSON mode,
+without introducing raw tool-content export. The
+[canonical export mapping](../../reference/contracts/agent-session-spec.md#export-to-workflow)
+owns the identity rules and their explicit uniqueness limit.
+
+Permanent controls cover faithful actual authored files, augmented engine/store
+identity, strict raw legacy tool-content refusal, native SQLite snapshots and
+fresh-process strict resume. Existing DNS/caller-abort/late-connect tests pass
+**92 cases across three files**. G31's already recorded non-abortable native DNS
+background-work limit remains explicit; no resolver replacement or new waiver is
+claimed. The ten new causal controls retain all 24 prior mechanisms and require
+12 additional named assertion witnesses. The complete physical capture passes
+all **34 mechanisms / 102 fixed, removal and restored phases / 254 required named
+witnesses**, with 7,335 case executions and 585 expected assertion failures in
+the removal phases. The capture records `3f2b01af` plus the implementation working
+tree: 1,055 source/tool files and 457 installed dependency packages. The root
+audit verifies complete identical case inventories, source/evaluation hashes,
+current fixed-source correspondence, exact restoration and removed scratch
+trees. This is not relabelled as execution at a later committed head. Two NEW
+complete clean independent review rounds remain required before acceptance.
+
+Final source-backed checks pass 366 cases in thirteen files, including the native
+snapshot/resume test's four fresh-process child checks. The workspace gate passes
+**533 files / 11,860 tests**, with fourteen existing skips: lint/typecheck has
+17 successful tasks (nine cached), and tests have eleven successful tasks (eight
+cached). Affected core, MCP and CLI tests execute; unchanged shared, LLM and DB
+test results come from cache. The build passes seven tasks (five cached), including
+the actual core build and CLI bundle. Formatting, tools lint/typecheck, DB sync,
+112 tooling tests, seam/engine fences, bundle closure and offline CLI, overflow
+and replay smoke checks pass. Tools typecheck covers its declared TypeScript
+configuration; it is not a claim to typecheck every `.mjs` file. The cumulative
+document audit passes 45 changed Markdown files, 2,423 relative links/anchors and
+fifteen pre-existing append-only ADRs. Final whole-wave coverage, exact-head
+published CI and the four NEW security sittings remain open.
+
+The first full Step 5 capture correctly refused a stale 73-case declaration for
+the existing default-reader control after the run-command file grew to 76 cases.
+The declaration now follows the unchanged complete-file inventory. This failed
+partial capture remains excluded from complete acceptance evidence; the inventory
+gate and named-witness requirements are unchanged.
+
+A subsequent capture reached the export removals and rejected declared case
+names that omitted Vitest's quotes around parameter values. The assertions did
+fail with their required markers; the declarations now use the exact collected
+names for both standalone and live human/JSON exports. This partial capture is
+also excluded. Outcome validation is unchanged, and every declared workload and
+witness is checked against a fresh collected inventory before full recapture.
 
 ### Remaining gate
 

@@ -83,3 +83,13 @@ The approved W7 implementation and scoped independent reviews are complete. Fina
 acceptance, per-item causal evidence, canonical landing checks and approved residuals are joined in
 the [W7 closing register](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w7-closing-register--2026-10-10).
 This dated note preserves the earlier decision and status history; W8 and the phase remain open.
+
+### Wave 2 export refinement — 2026-10-12
+
+The approved Wave 2 plan refines title-derived scaffold identifiers with deterministic
+ASCII normalisation and a bounded session-identity fallback, and adds a value-free
+continuity/review notice on both CLI export surfaces. The exact mapping and retained
+content limits live in [the session contract](../reference/contracts/agent-session-spec.md#export-to-workflow);
+[CLI commands](../reference/cli/commands.md#relavium-chat-export) owns output behaviour.
+This does not reconstruct omitted working context, alter the archive or add raw tool
+content. Implementation is staged in Step 5; independent acceptance remains required.

@@ -176,7 +176,7 @@ A node may override the agent's `model`, `temperature`, and `max_tokens` for tha
 ## Validation and secrets
 
 - Validated against `AgentSchema` (Zod) at load; invalid agents fail fast.
-- Agents **never** contain API keys. Provider credentials are resolved from the secret store at call time and are never written to the agent file, logs, or event payloads. See [../desktop/keychain-and-secrets.md](../desktop/keychain-and-secrets.md).
+- Relavium resolves configured provider credentials from the OS keychain at call time and does not insert those values into the agent file. Arbitrary authored strings, including `system_prompt` and MCP `env`, can still contain pasted credentials or sensitive content; validation and faithful serialization do not redact them. Review the document before sharing. The CLI's [bounded authoring review](../cli/commands.md#relavium-import--relavium-export) supplies value-free notices without altering it. See [key custody and content retention](../desktop/keychain-and-secrets.md).
 
 ### W7 implementation landing — 2026-10-10
 
