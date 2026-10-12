@@ -82,8 +82,8 @@ export function discoverCatalog(opts: {
   let names: readonly string[];
   let root: string;
   try {
-    root = realpathSync(opts.projectConfigDir);
-    const realDir = realpathSync(dir);
+    root = realpathSync.native(opts.projectConfigDir);
+    const realDir = realpathSync.native(dir);
     if (!isWithinFsRoot(root, realDir)) throw new Error('outside catalog authority');
     names = readdirSync(realDir, { withFileTypes: true })
       // Include symlinks (a `.yaml` may be symlinked into the catalog) so `list` matches `run`, which
@@ -121,7 +121,7 @@ function readEntry(path: string, cwd: string, kind: CatalogKind, root: string): 
   const rel = relative(cwd, path);
   let yaml: string;
   try {
-    const canonical = realpathSync(path);
+    const canonical = realpathSync.native(path);
     if (!isWithinFsRoot(root, canonical))
       return invalidEntry(path, rel, 'outside the project catalog');
     const stats = statSync(canonical);

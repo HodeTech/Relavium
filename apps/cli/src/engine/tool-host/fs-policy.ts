@@ -56,7 +56,9 @@ export function isWithinFsRoot(root: string, target: string): boolean {
 function pinDirectory(path: string): DirectoryPin {
   try {
     const lexical = resolve(path);
-    const canonical = realpathSync(lexical);
+    // Match fs/promises.realpath's native canonicalization. The legacy synchronous
+    // walker preserves Windows 8.3 spellings, which are not equal to their long names.
+    const canonical = realpathSync.native(lexical);
     const stat = statSync(canonical);
     const entry = lstatSync(lexical);
     if (!stat.isDirectory()) throw new FsPolicyError();

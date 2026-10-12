@@ -74,7 +74,7 @@ let workspace: string;
 let outside: string;
 const argv = (...tokens: string[]) => ['node', 'relavium', ...tokens];
 beforeEach(() => {
-  base = realpathSync(mkdtempSync(join(tmpdir(), 'relavium-fs-invocation-')));
+  base = realpathSync.native(mkdtempSync(join(tmpdir(), 'relavium-fs-invocation-')));
   home = join(base, 'home');
   workspace = join(base, 'workspace');
   outside = join(base, 'outside');

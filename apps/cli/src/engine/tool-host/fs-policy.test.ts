@@ -47,10 +47,12 @@ vi.mock('node:fs/promises', async (original) => {
 });
 
 let base: string;
+let lexicalBase: string;
 let workspace: string;
 let grant: string;
 beforeEach(() => {
-  base = realpathSync(mkdtempSync(join(tmpdir(), 'relavium-fs-policy-')));
+  lexicalBase = mkdtempSync(join(tmpdir(), 'relavium-fs-policy-'));
+  base = realpathSync.native(lexicalBase);
   workspace = join(base, 'workspace');
   grant = join(base, 'grant');
   mkdirSync(workspace);
@@ -72,6 +74,27 @@ function capability(policy: FsPathPolicy, tier: FsScopeTier = 'project') {
 }
 
 describe('invocation authority and owned native identities', () => {
+  it('accepts the OS temporary-directory spelling through native root and tool resolution', async () => {
+    // Windows runners may expose RUNNER~1 in TEMP; keep that original spelling at
+    // admission rather than only exercising already-expanded canonical fixtures.
+    const lexicalWorkspace = join(lexicalBase, 'workspace');
+    const policy = selectInvocationFsPolicy(
+      admitInvocationFsGrants([join(lexicalBase, 'grant')]),
+      lexicalWorkspace,
+      undefined,
+    );
+    const fs = createNodeFsCapability({
+      tier: 'project',
+      workspaceDir: lexicalWorkspace,
+      readOnly: false,
+      pathPolicy: policy,
+    });
+    expect((await fs.readFile('ok.txt', {})).content).toBe('workspace');
+    expect((await fs.readFile('../grant/ok.txt', {})).content).toBe('grant');
+    const written = await fs.writeFile('../grant/new.txt', 'native', {});
+    expect((await fs.readFile(written.path, {})).content).toBe('native');
+  });
+
   it('distinguishes absent, empty and narrowing selectors without changing the tier', async () => {
     const nested = join(grant, 'nested');
     mkdirSync(nested);

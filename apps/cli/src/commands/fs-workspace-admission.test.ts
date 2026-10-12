@@ -46,7 +46,7 @@ let home: string;
 let workspace: string;
 let sensitiveAlias: string;
 beforeEach(() => {
-  base = realpathSync(mkdtempSync(join(tmpdir(), 'relavium-workspace-floor-')));
+  base = realpathSync.native(mkdtempSync(join(tmpdir(), 'relavium-workspace-floor-')));
   home = join(base, 'home');
   workspace = join(base, 'neutral-vault');
   for (const path of [home, workspace]) mkdirSync(path);

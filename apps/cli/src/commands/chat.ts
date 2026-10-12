@@ -806,7 +806,7 @@ export async function chatResumeCommand(
     }
     let canonicalCwd: string;
     try {
-      canonicalCwd = realpathSync(originalCwd);
+      canonicalCwd = realpathSync.native(originalCwd);
     } catch {
       throw new CliError('invalid_invocation', 'The original session workspace is unavailable.');
     }

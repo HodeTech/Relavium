@@ -18,18 +18,24 @@ import { createNodeFsCapability } from './fs.js';
 const injected = vi.hoisted(
   (): {
     failure: { path: string; code: string } | undefined;
+    failureSeen: ReturnType<typeof vi.fn>;
     mkdir: ReturnType<typeof vi.fn>;
-  } => ({ failure: undefined, mkdir: vi.fn() }),
+  } => ({ failure: undefined, failureSeen: vi.fn(), mkdir: vi.fn() }),
 );
 vi.mock('node:fs/promises', async (original) => {
   const native = await original<typeof import('node:fs/promises')>();
   return {
     ...native,
     realpath: (...args: Parameters<typeof native.realpath>) => {
-      if (injected.failure !== undefined && relative(String(args[0]), injected.failure.path) === '')
+      if (
+        injected.failure !== undefined &&
+        relative(String(args[0]), injected.failure.path) === ''
+      ) {
+        injected.failureSeen(injected.failure.code);
         return Promise.reject(
           Object.assign(new Error('private-path-sentinel'), { code: injected.failure.code }),
         );
+      }
       return native.realpath(...args);
     },
     mkdir: (...args: Parameters<typeof native.mkdir>) => {
@@ -41,8 +47,9 @@ vi.mock('node:fs/promises', async (original) => {
 
 let root: string;
 beforeEach(() => {
-  root = realpathSync(mkdtempSync(join(tmpdir(), 'relavium-ancestor-consumers-')));
+  root = realpathSync.native(mkdtempSync(join(tmpdir(), 'relavium-ancestor-consumers-')));
   injected.failure = undefined;
+  injected.failureSeen.mockClear();
   injected.mkdir.mockClear();
 });
 afterEach(() => rmSync(root, { recursive: true, force: true }));
@@ -66,6 +73,7 @@ describe.each(['tool', 'save_to'] as const)(
         await expect(write('not-yet-created/child/a.txt')).rejects.not.toThrow(
           /private-path-sentinel/,
         );
+        expect(injected.failureSeen).toHaveBeenCalledExactlyOnceWith(code);
         expect(injected.mkdir).not.toHaveBeenCalled();
         expect(existsSync(join(root, 'not-yet-created'))).toBe(false);
       },
