@@ -17,49 +17,80 @@ export function parseInputArgs(rawInputs: readonly string[]): Record<string, str
   for (const entry of rawInputs) {
     const eq = entry.indexOf('=');
     if (eq <= 0) {
-      throw new CliError('invalid_invocation', `--input must be key=value (got '${entry}').`);
+      throw new CliError('invalid_invocation', '--input must be key=value.');
     }
     const key = entry.slice(0, eq);
     // Reject a repeated key rather than silently last-wins — a duplicate `--input k=…` is a mistake
     // (each input is distinct), and the surface's posture is fail-fast on malformed invocation.
     if (Object.hasOwn(out, key)) {
-      throw new CliError('invalid_invocation', `--input '${key}' was given more than once.`);
+      throw new CliError('invalid_invocation', 'an --input key was given more than once.');
     }
     out[key] = entry.slice(eq + 1);
   }
   return out;
 }
 
+/** Reject raw names and every explicit argv secret before checking any required input. */
+export function assertOrdinaryInputsAllowed(
+  def: WorkflowDefinition,
+  raw: Readonly<Record<string, string>>,
+): void {
+  const declared = def.workflow.inputs ?? [];
+  const names = new Set(declared.map((decl) => decl.name));
+  for (const key of Object.keys(raw)) {
+    if (!names.has(key)) {
+      throw new CliError('invalid_invocation', 'unknown input in --input.');
+    }
+  }
+  for (const decl of declared) {
+    if (decl.type === 'secret' && Object.hasOwn(raw, decl.name)) {
+      throw new CliError(
+        'invalid_invocation',
+        'secret inputs cannot be supplied with --input; use --secret-inputs-stdin.',
+      );
+    }
+  }
+}
+
 /**
- * Coerce + validate the raw string inputs against the workflow's declared `inputs`: reject an
- * unknown key, require a non-defaulted required input, and coerce by declared type (since `--input`
- * always arrives as a string). Deep per-field validation (min/max/format) stays the engine's; this
- * is the surface's fail-fast on shape (exit 2). Returns the typed inputs for `WorkflowEngine.start`.
+ * Coerce ordinary argv inputs and merge parsed stdin secrets into a fresh map. The caller runs the
+ * public core admission on this result before constructing services, retaining one value validator.
  */
 export function resolveInputs(
   def: WorkflowDefinition,
   raw: Readonly<Record<string, string>>,
+  secrets: Readonly<Record<string, string>> = {},
 ): Record<string, unknown> {
+  assertOrdinaryInputsAllowed(def, raw);
   const declared = def.workflow.inputs ?? [];
-  const names = new Set(declared.map((decl) => decl.name));
-
-  for (const key of Object.keys(raw)) {
-    if (!names.has(key)) {
-      throw new CliError('invalid_invocation', `unknown input '${key}'.`);
+  const secretNames = new Set(
+    declared.filter((decl) => decl.type === 'secret').map((decl) => decl.name),
+  );
+  for (const key of Object.keys(secrets)) {
+    if (!secretNames.has(key)) {
+      throw new CliError('invalid_invocation', 'stdin contains an unknown or non-secret input.');
     }
   }
-
   const resolved: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
   for (const decl of declared) {
     // `Object.hasOwn` before the read, because `raw` is a caller's object here: a plain literal would answer
     // `raw['__proto__']` with `Object.prototype` rather than `undefined`, turning an omitted input into a
     // present one whose value is not a string.
-    const provided = Object.hasOwn(raw, decl.name) ? raw[decl.name] : undefined;
+    const source = decl.type === 'secret' ? secrets : raw;
+    const provided = Object.hasOwn(source, decl.name) ? source[decl.name] : undefined;
     if (provided === undefined) {
       if (decl.required === true && decl.default === undefined) {
-        throw new CliError('invalid_invocation', `missing required input '${decl.name}'.`);
+        throw new CliError(
+          'invalid_invocation',
+          decl.type === 'secret'
+            ? `missing required secret input '${decl.name}'; use --secret-inputs-stdin.`
+            : `missing required input '${decl.name}'.`,
+        );
       }
       continue; // omitted — the engine applies the declared default, if any
+    }
+    if (decl.type === 'secret' && provided.trim() === '') {
+      throw new CliError('invalid_invocation', 'stdin secret inputs must have non-empty values.');
     }
     resolved[decl.name] = coerce(decl.name, decl.type, provided);
   }
@@ -84,10 +115,7 @@ function coerce(name: string, type: InputDecl['type'], value: string): unknown {
       const isDecimalShape = [...trimmed].every((ch) => '0123456789.eE+-'.includes(ch));
       const parsed = isDecimalShape ? Number(trimmed) : Number.NaN;
       if (!Number.isFinite(parsed)) {
-        throw new CliError(
-          'invalid_invocation',
-          `input '${name}' must be a decimal number (got '${value}').`,
-        );
+        throw new CliError('invalid_invocation', `input '${name}' must be a decimal number.`);
       }
       return parsed;
     }

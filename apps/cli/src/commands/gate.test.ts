@@ -26,12 +26,15 @@ import {
   type RunHistoryStore,
 } from '@relavium/db';
 import type { RunEvent } from '@relavium/shared';
+import { startMcpClient as realStartMcpClient } from '@relavium/mcp';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { buildEngine, type BuildEngineOptions } from '../engine/build-engine.js';
 import { createRunLeasePort } from '@relavium/db';
 
 import { createCliHost } from '../engine/host.js';
+import { fingerprint, resolveStdioSpawn } from '../engine/mcp-consent.js';
+import { mcpConsentPath } from '../engine/mcp-consent-gate.js';
 import type { GatePrompter } from '../gate/prompter.js';
 import { isCliError, toUserFacing } from '../process/errors.js';
 import { EXIT_CODES } from '../process/exit-codes.js';
@@ -44,6 +47,11 @@ import {
   selectGate,
   type GateCommandDeps,
 } from './gate.js';
+
+const { consentPrompt } = vi.hoisted(() => ({
+  consentPrompt: vi.fn(() => Promise.resolve(false)),
+}));
+vi.mock('../mcp/consent-prompt.js', () => ({ createConsentPrompter: () => consentPrompt }));
 
 /**
  * A WorkflowEngine stub for the closed-handle / EngineStateError paths that the real engine can't be driven
@@ -504,6 +512,246 @@ describe('gateCommand', () => {
       const { runId } = await setupPausedRun();
       const { io } = captureIo();
       expect(await gateCommand({ runId, approve: true }, deps(io))).toBe(EXIT_CODES.success);
+    });
+  });
+
+  describe('shared secret parser and consumed stdin on resume (ADR-0107)', () => {
+    const opaque = 'opaqueResumeSentinelOtter';
+
+    it.each([
+      `api_key=${opaque}\n${opaque}=value`,
+      `api_key=${opaque}\nn=${opaque}`,
+      `api_key=${opaque}\n api_key =second`,
+    ])(
+      'refuses unexpected and duplicate source names without reflecting raw data: case %#',
+      async (payload) => {
+        const { runId } = await setupPausedRun(GATED_SECRET, { n: 7, api_key: opaque });
+        const captured = captureIo();
+        const before = reader().loadRunEvents(runId);
+        const resolveKeys = vi.fn(() => {
+          throw new Error('keys must not resolve');
+        });
+        const readSecretInput = vi.fn(() => Promise.resolve(payload));
+        let caught: unknown;
+        try {
+          await gateCommand(
+            { runId, approve: true, secretStdin: true },
+            {
+              ...deps(captured.io),
+              readSecretInput,
+              resolveKeys,
+            },
+          );
+        } catch (error) {
+          caught = error;
+        }
+        expect(isCliError(caught) && caught.code).toBe('invalid_invocation');
+        expect(
+          JSON.stringify(toUserFacing(caught)),
+          'SECRETS_CAUSAL_RESUME_SOURCE_NAME_OPACITY',
+        ).not.toContain(opaque);
+        expect(captured.out() + captured.err()).not.toContain(opaque);
+        expect(resolveKeys).not.toHaveBeenCalled();
+        expect(readSecretInput).toHaveBeenCalledOnce();
+        expect(reader().loadRunEvents(runId)).toEqual(before);
+      },
+    );
+
+    it('preserves blank lines, trimmed names, first equals and prototype-like secret slots through real resume', async () => {
+      const yaml = GATED_SECRET.replace(
+        '    - { name: api_key, type: secret }',
+        '    - { name: __proto__, type: secret }\n    - { name: constructor, type: secret }\n    - { name: toString, type: secret }',
+      );
+      const values = {
+        ['__proto__']: `  ${opaque}=suffix  `,
+        constructor: 'constructor-value',
+        toString: 'toString-value',
+      };
+      const { runId } = await setupPausedRun(yaml, { n: 7, ...values });
+      const captured = captureIo();
+      let supplied: Readonly<Record<string, unknown>> | undefined;
+      const readSecretInput = vi.fn(() =>
+        Promise.resolve(
+          `\r\n  \r\n __proto__ =${values['__proto__']}\r\nconstructor=constructor-value\r\ntoString=toString-value\n\n`,
+        ),
+      );
+      const code = await gateCommand(
+        { runId, approve: true, secretStdin: true },
+        {
+          ...deps(captured.io),
+          readSecretInput,
+          buildEngine: async (options) => {
+            const engine = await buildEngine(options);
+            const resume = engine.resumeFromCheckpoint.bind(engine);
+            vi.spyOn(engine, 'resumeFromCheckpoint').mockImplementation((params) => {
+              supplied = params.inputs;
+              return resume(params);
+            });
+            return engine;
+          },
+        },
+      );
+      expect(code).toBe(EXIT_CODES.success);
+      expect(readSecretInput).toHaveBeenCalledOnce();
+      expect(supplied).toEqual({ n: 7, ...values });
+      expect(Object.getPrototypeOf(supplied)).toBeNull();
+      expect(Object.hasOwn(supplied ?? {}, '__proto__')).toBe(true);
+      const serialized = JSON.stringify(reader().loadRunEvents(runId));
+      expect(serialized + captured.out() + captured.err()).not.toContain(opaque);
+      expect(serialized).toContain('inputs.__proto__');
+    });
+
+    it('pauses at a second sequential gate without re-reading or consulting even an injected selector', async () => {
+      const yaml = SEQ_GATES.replace(
+        '  nodes:',
+        '  inputs:\n    - { name: token, type: secret }\n  nodes:',
+      );
+      const { runId } = await setupPausedRun(yaml, { token: opaque });
+      const captured = captureIo();
+      const readSecretInput = vi.fn(() => Promise.resolve(`token=${opaque}`));
+      const prompt = vi.fn<GatePrompter['prompt']>(() =>
+        Promise.resolve({ decision: 'approved', decidedBy: 'fixture' }),
+      );
+      const selectGatePrompter = vi.fn(() => ({ prompt }));
+      const code = await gateCommand(
+        { runId, approve: true, secretStdin: true },
+        {
+          ...deps(captured.io),
+          readSecretInput,
+          selectGatePrompter,
+        },
+      );
+      expect(
+        selectGatePrompter,
+        'SECRETS_CAUSAL_RESUME_LATER_GATE_NO_PROMPT',
+      ).not.toHaveBeenCalled();
+      expect(prompt).not.toHaveBeenCalled();
+      expect(readSecretInput).toHaveBeenCalledOnce();
+      expect(code).toBe(EXIT_CODES.gatePaused);
+      const events = reader().loadRunEvents(runId);
+      expect(events.filter((event) => event.type === 'human_gate:resumed')).toHaveLength(1);
+      expect(events.some((event) => event.type === 'run:completed')).toBe(false);
+      expect(JSON.stringify(events)).not.toContain(opaque);
+    });
+
+    describe('actual MCP consent after secret stdin', () => {
+      beforeEach(() => {
+        consentPrompt.mockClear();
+      });
+
+      function mcpWorkflow(): string {
+        // No agent execution: the declared server still passes through the actual workflow MCP
+        // connector and consent gate. The external transport returns an empty discovery set.
+        return GATED_SECRET.replace(
+          '  nodes:',
+          `  agents:
+    - id: worker
+      model: claude-sonnet-4-6
+      provider: anthropic
+      system_prompt: synthetic
+      tools: []
+      mcp_servers:
+        - { id: local, transport: stdio, command: ${JSON.stringify(process.execPath)} }
+  nodes:`,
+        );
+      }
+
+      it('refuses unapproved stdio after a real read despite stale TTY, without prompting or writing a grant', async () => {
+        const { runId } = await setupPausedRun(mcpWorkflow(), { n: 7, api_key: opaque }, root);
+        const captured = captureIo();
+        const io = { ...captured.io, stdinIsTty: true, stdoutIsTty: true, env: {} };
+        const startMcpClient = vi.fn(() => realStartMcpClient([]));
+        const before = reader().loadRunEvents(runId);
+        const descriptor = Object.getOwnPropertyDescriptor(process, 'stdin');
+        const iterator = vi.fn(async function* () {
+          yield await Promise.resolve(`api_key=${opaque}`);
+        });
+        let caught: unknown;
+        try {
+          Object.defineProperty(process, 'stdin', {
+            configurable: true,
+            value: { isTTY: false, [Symbol.asyncIterator]: iterator },
+          });
+          try {
+            await gateCommand(
+              { runId, approve: true, secretStdin: true },
+              {
+                ...deps(io),
+                startMcpClient,
+                selectRenderer: () => ({ onEvent: () => {}, finalize: () => {} }),
+              },
+            );
+          } catch (error) {
+            caught = error;
+          }
+          expect(
+            consentPrompt,
+            'SECRETS_CAUSAL_RESUME_CONSUMED_STDIN_CONSENT',
+          ).not.toHaveBeenCalled();
+          expect(isCliError(caught) && caught.code).toBe('invalid_invocation');
+          expect(iterator).toHaveBeenCalledOnce();
+          expect(startMcpClient).not.toHaveBeenCalled();
+          expect(captured.err()).toMatch(/v1:[a-f0-9]{64}/);
+          expect(existsSync(mcpConsentPath(home))).toBe(false);
+          expect(reader().loadRunEvents(runId)).toEqual(before);
+        } finally {
+          if (descriptor !== undefined) Object.defineProperty(process, 'stdin', descriptor);
+        }
+      });
+
+      it('accepts only the exact explicit digest without a prompt or approval append and completes real resume', async () => {
+        const { runId } = await setupPausedRun(mcpWorkflow(), { n: 7, api_key: opaque }, root);
+        const captured = captureIo();
+        const io = { ...captured.io, stdinIsTty: true, stdoutIsTty: true, env: {} };
+        const startMcpClient = vi.fn(() => realStartMcpClient([]));
+        const spawn = await resolveStdioSpawn(
+          { serverId: 'local', command: process.execPath, provenance: { kind: 'inline' } },
+          root,
+        );
+        const digest = fingerprint(spawn);
+        const readSecretInput = vi.fn(() => Promise.resolve(`api_key=${opaque}`));
+        const commandDeps = {
+          ...deps(io),
+          startMcpClient,
+          readSecretInput,
+          selectRenderer: () => ({ onEvent: () => {}, finalize: () => {} }),
+        };
+        await expect(
+          gateCommand(
+            { runId, approve: true, secretStdin: true, allowMcpStdio: ['v1:' + '0'.repeat(64)] },
+            commandDeps,
+          ),
+        ).rejects.toMatchObject({ code: 'invalid_invocation' });
+        expect(startMcpClient).not.toHaveBeenCalled();
+        expect(consentPrompt).not.toHaveBeenCalled();
+        expect(
+          await gateCommand(
+            { runId, approve: true, secretStdin: true, allowMcpStdio: [digest] },
+            commandDeps,
+          ),
+        ).toBe(EXIT_CODES.success);
+        expect(startMcpClient).toHaveBeenCalledOnce();
+        expect(consentPrompt).not.toHaveBeenCalled();
+        expect(readSecretInput).toHaveBeenCalledTimes(2); // one fresh payload per invocation
+        expect(existsSync(mcpConsentPath(home))).toBe(false);
+        const events = reader().loadRunEvents(runId);
+        expect(events.some((event) => event.type === 'run:completed')).toBe(true);
+        expect(JSON.stringify(events) + captured.out() + captured.err()).not.toContain(opaque);
+      });
+
+      it('retains the ordinary interactive consent prompt when no secret pipe is consumed', async () => {
+        // Same real connector/gate, but omit the optional secret slot at start and use no stdin flag.
+        const { runId } = await setupPausedRun(mcpWorkflow(), { n: 7 }, root);
+        const captured = captureIo();
+        const io = { ...captured.io, stdinIsTty: true, stdoutIsTty: true, env: {} };
+        const startMcpClient = vi.fn(() => realStartMcpClient([]));
+        await expect(
+          gateCommand({ runId, approve: true }, { ...deps(io), startMcpClient }),
+        ).rejects.toMatchObject({ code: 'invalid_invocation' });
+        expect(consentPrompt).toHaveBeenCalledOnce();
+        expect(startMcpClient).not.toHaveBeenCalled();
+        expect(existsSync(mcpConsentPath(home))).toBe(false);
+      });
     });
   });
 

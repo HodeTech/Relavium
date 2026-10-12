@@ -45,6 +45,15 @@ function collectCommandNodes(command: Command, prefix: string): CommandNode[] {
 }
 
 describe('command manifest (ADR-0056)', () => {
+  it('advertises the run stdin transport as a boolean option', () => {
+    const stdin = MANIFEST_BY_ID.get('run')?.args?.find((arg) => arg.name === 'secretInputsStdin');
+    expect(stdin).toMatchObject({
+      name: 'secretInputsStdin',
+      type: 'boolean',
+      description: 'read declared secret inputs from non-TTY stdin',
+    });
+  });
+
   it('parses + deep-freezes at module load (no duplicate ids, schema-valid, immutable entries)', () => {
     expect(COMMAND_MANIFEST.length).toBeGreaterThan(0);
     expect(Object.isFrozen(COMMAND_MANIFEST)).toBe(true);

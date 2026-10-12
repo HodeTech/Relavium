@@ -83,9 +83,19 @@ describe('build*Args (argv → typed core args)', () => {
     expect(buildRunArgs(input(['wf'], { input: ['a=1', 'b=2'] }))).toEqual({
       workflow: 'wf',
       input: ['a=1', 'b=2'],
+      secretInputsStdin: false,
       allowMcpStdio: [],
     });
-    expect(buildRunArgs(input(['wf']))).toEqual({ workflow: 'wf', input: [], allowMcpStdio: [] });
+    expect(buildRunArgs(input(['wf']))).toEqual({
+      workflow: 'wf',
+      input: [],
+      secretInputsStdin: false,
+      allowMcpStdio: [],
+    });
+    expect(
+      buildRunArgs(input(['wf'], { secretInputsStdin: true })).secretInputsStdin,
+      'SECRETS_CAUSAL_RUN_DISPATCH_FORWARDING',
+    ).toBe(true);
   });
 
   describe('models pricing: the argv→args link the strict-cap remedy runs through (ADR-0089 §4)', () => {

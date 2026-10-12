@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import {
   type EffectCorrelation,
   parseWorkflow,
+  resolveAndValidateWorkflowInputs,
   type WorkflowDefinition,
   type WorkflowEngine,
   WorkflowParseError,
@@ -58,6 +59,8 @@ import type { GlobalOptions } from '../process/options.js';
 import type { RunRenderer } from '../render/renderer.js';
 import { selectRenderer } from '../render/select.js';
 import { createMcpSecretResolver, type McpSecretResolver } from '../secrets/mcp-secret.js';
+import { parseSecretLines } from '../secrets/parse-secret-lines.js';
+import { readSecretFromStdin, type StdinSecretContext } from '../secrets/read-secret.js';
 import { resolveWorkflowSource } from '../workflows/resolve.js';
 import {
   assertWorkflowCatalogValid,
@@ -65,11 +68,13 @@ import {
   isTerminalOutcome,
   outcomeToExitCode,
 } from './drive.js';
-import { parseInputArgs, resolveInputs } from './inputs.js';
+import { assertOrdinaryInputsAllowed, parseInputArgs, resolveInputs } from './inputs.js';
 
 export interface RunCommandArgs {
   readonly workflow: string;
   readonly input: readonly string[];
+  /** Read declared secret inputs once from bounded, non-TTY stdin (ADR-0107). */
+  readonly secretInputsStdin?: boolean;
   /**
    * `--allow-mcp-stdio <digest>`, repeatable
    * ([ADR-0084](../../../../docs/decisions/0084-consent-before-a-local-mcp-spawn.md) §6).
@@ -89,6 +94,13 @@ export interface RunCommandDeps {
   readonly buildEngine?: (options?: BuildEngineOptions) => Promise<WorkflowEngine>;
   /** Injectable provider seam (key pre-flight + the engine's resolver). Defaults to the env resolver. */
   readonly providers?: ProviderResolver;
+  /** Construct key/provider services only after complete pure input admission. */
+  readonly resolveKeys?: () => {
+    readonly providers: ProviderResolver;
+    readonly mcpSecretResolver: McpSecretResolver;
+  };
+  /** Narrow fixture seam; production uses the shared bounded stdin reader. */
+  readonly readSecretInput?: () => Promise<string>;
   /**
    * Production wires the durable SQLite run-history store (2.H) here, per workflow; the unit tests and the
    * 2.K harness omit it, keeping the in-memory `RunStore` so they never open `~/.relavium/history.db`.
@@ -159,8 +171,8 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
     );
   }
   const build = deps.buildEngine ?? defaultBuildEngine;
-  // One resolver shared by the key pre-flight and the engine, reading the CLI's env seam (io.env).
-  const providers = deps.providers ?? createProviderResolver(deps.io.env);
+  // Syntax faults do not need even configuration or workflow reads.
+  const rawInputs = parseInputArgs(args.input);
 
   // Config (2.B) — a malformed layer surfaces as exit 2; the project dir powers id/slug discovery,
   // homeDir locates `~/.relavium/history.db` (2.H).
@@ -172,7 +184,25 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
   const source = resolveWorkflowSource(args.workflow, { cwd: deps.global.cwd, projectConfigDir });
 
   const def = parseOrRefuse(source.yaml, sourceLabel(deps.global.cwd, source.path));
-  const inputs = resolveInputs(def, parseInputArgs(args.input));
+  assertOrdinaryInputsAllowed(def, rawInputs);
+  const secretInputs = await readRunSecrets(args, deps, def);
+  const admitted = resolveAndValidateWorkflowInputs(
+    def,
+    resolveInputs(def, rawInputs, secretInputs),
+  );
+  if (!admitted.ok) {
+    // Core owns every value contract; raw names were refused above. Never attach caller payload/cause.
+    throw new CliError(
+      'invalid_invocation',
+      'workflow inputs do not satisfy their declared contracts.',
+    );
+  }
+  const inputs = admitted.inputs;
+  const keys = deps.resolveKeys?.();
+  // Preserve injected precedence, sharing the admitted run's resolver with provider preflight.
+  const providers = deps.providers ?? keys?.providers ?? createProviderResolver(deps.io.env);
+  const mayPrompt = args.secretInputsStdin !== true;
+  const promptIo = mayPrompt ? deps.io : { ...deps.io, stdinIsTty: false };
 
   // Pre-flight provider keys: surface a missing key for an inline agent's PRIMARY provider as a clean
   // exit-2 invocation error (with the RELAVIUM_<PROVIDER>_API_KEY hint) BEFORE the engine starts, rather
@@ -229,7 +259,8 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
       cwd: deps.global.cwd,
       connectSignal: mcpConnectCancel.signal,
       work: mcpWork,
-      resolveSecret: deps.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env),
+      resolveSecret:
+        deps.mcpSecretResolver ?? keys?.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env),
       registrations: config.mcpServers,
       // The file that declared them, for the prompt — the imported-artifact case naming its own file (§7).
       artifact: source.path,
@@ -238,11 +269,11 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
       consentGate:
         deps.consentGate ??
         createConsentGate({
-          io: deps.io,
+          io: promptIo,
           global: deps.global,
           homeDir,
           allowedDigests: args.allowMcpStdio,
-          prompt: createConsentPrompter(),
+          prompt: mayPrompt ? createConsentPrompter() : undefined,
         }),
       ...(deps.startMcpClient === undefined ? {} : { startMcpClient: deps.startMcpClient }),
     });
@@ -416,7 +447,10 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
       engine,
       handle,
       makeRenderer: () => (deps.selectRenderer ?? selectRenderer)(deps.io, deps.global),
-      makeGatePrompter: () => (deps.selectGatePrompter ?? selectGatePrompter)(deps.io, deps.global),
+      makeGatePrompter: () =>
+        mayPrompt
+          ? (deps.selectGatePrompter ?? selectGatePrompter)(deps.io, deps.global)
+          : undefined,
       io: deps.io,
       json: deps.global.json,
     });
@@ -493,4 +527,28 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
       unguardMcp();
     }
   }
+}
+
+/** A fixed context: neither the workflow argument nor a pasted line belongs in a secret diagnostic. */
+const RUN_SECRET_STDIN_CONTEXT: StdinSecretContext = {
+  pipeHint:
+    'pipe NAME=value secret inputs on stdin to relavium run <workflow> --secret-inputs-stdin; secret inputs are never arguments.',
+  emptyMessage:
+    'no secret inputs were read from stdin for run --secret-inputs-stdin (empty input).',
+};
+
+async function readRunSecrets(
+  args: RunCommandArgs,
+  deps: RunCommandDeps,
+  def: WorkflowDefinition,
+): Promise<Readonly<Record<string, string>>> {
+  if (!args.secretInputsStdin) return {};
+  if (!(def.workflow.inputs ?? []).some((decl) => decl.type === 'secret')) {
+    throw new CliError(
+      'invalid_invocation',
+      '--secret-inputs-stdin requires a declared secret input.',
+    );
+  }
+  const raw = await (deps.readSecretInput?.() ?? readSecretFromStdin(RUN_SECRET_STDIN_CONTEXT));
+  return parseSecretLines(raw, 'run --secret-inputs-stdin');
 }

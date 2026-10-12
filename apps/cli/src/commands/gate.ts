@@ -71,6 +71,7 @@ import { createMcpSecretResolver, type McpSecretResolver } from '../secrets/mcp-
 import type { GatePrompter } from '../gate/prompter.js';
 import { selectGatePrompter } from '../gate/select-prompter.js';
 import { readSecretFromStdin, type StdinSecretContext } from '../secrets/read-secret.js';
+import { parseSecretLines } from '../secrets/parse-secret-lines.js';
 import { CliError } from '../process/errors.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
@@ -369,6 +370,9 @@ async function resumeGateCommand(
       deps,
       resumeInvocation,
     );
+    // Consuming stdin removes prompt authority for this invocation, even with stale TTY metadata.
+    const mayPrompt = args.secretStdin !== true;
+    const promptIo = mayPrompt ? deps.io : { ...deps.io, stdinIsTty: false };
     const keys =
       kind === 'budget' && decision.decision === 'rejected'
         ? undefined
@@ -425,11 +429,11 @@ async function resumeGateCommand(
         consentGate:
           deps.consentGate ??
           createConsentGate({
-            io: deps.io,
+            io: promptIo,
             global: deps.global,
             homeDir,
             allowedDigests: args.allowMcpStdio ?? [],
-            prompt: createConsentPrompter(),
+            prompt: mayPrompt ? createConsentPrompter() : undefined,
           }),
         ...(deps.startMcpClient === undefined ? {} : { startMcpClient: deps.startMcpClient }),
       });
@@ -530,17 +534,11 @@ async function resumeGateCommand(
       engine,
       handle,
       makeRenderer: () => (deps.selectRenderer ?? selectRenderer)(deps.io, deps.global),
-      // **`--secret-stdin` makes this invocation non-interactive, and the prompter must know.**
-      // `selectGatePrompter` decides on STDOUT alone, so a `printf … | relavium gate … --secret-stdin` run
-      // from a terminal still selects a `@clack/prompts` prompter — over a stdin that was drained to EOF to
-      // read the credential. If the resumed run hits a SECOND gate, clack is asked to read from a closed
-      // stream: it either resolves its cancel sentinel (the gate goes unresolved, exit 3) or throws on raw
-      // mode. Both are wrong, so the honest answer is the one this invocation actually has — no prompter,
-      // and a later gate exits 3 the way every other non-interactive resume does.
+      // A later gate cannot read the stdin stream already consumed for re-supplied secrets.
       makeGatePrompter: () =>
-        args.secretStdin === true
-          ? undefined
-          : (deps.selectGatePrompter ?? selectGatePrompter)(deps.io, deps.global),
+        mayPrompt
+          ? (deps.selectGatePrompter ?? selectGatePrompter)(promptIo, deps.global)
+          : undefined,
       io: deps.io,
       json: deps.global.json,
     });
@@ -772,8 +770,8 @@ const SECRET_STDIN_CONTEXT = (
  * `ps`, shell history and CI logs. The name in the line is not itself a secret, and carrying it there rather
  * than in a repeated flag removes the order dependency that would silently swap two credentials.
  *
- * Every masked slot must be supplied and nothing else may be: a name the run has no slot for is a mistake
- * worth naming rather than ignoring, and an empty value is refused explicitly rather than by omission — the
+ * Every masked slot must be supplied and nothing else may be. Unexpected source names are refused without
+ * reflecting their untrusted bytes, and an empty value is refused explicitly rather than by omission — the
  * engine would accept `''` as "re-supplied", and a blank line in a piped heredoc is the likeliest way to
  * produce one by accident.
  */
@@ -806,7 +804,7 @@ async function resolveSecretInputs(
     deps.readSecretInput ??
     ((): Promise<string> =>
       readSecretFromStdin(SECRET_STDIN_CONTEXT(args.runId, resumeInvocation)));
-  const supplied = parseSecretLines(await read(), args.runId);
+  const supplied = parseSecretLines(await read(), `run ${args.runId}`);
   const missing = masked.filter((name) => !Object.hasOwn(supplied, name));
   if (missing.length > 0) {
     throw new CliError(
@@ -818,7 +816,7 @@ async function resolveSecretInputs(
   if (unexpected.length > 0) {
     throw new CliError(
       'invalid_invocation',
-      `stdin supplied [${nameList(unexpected)}], which run ${args.runId} has no \`secret\` slot for.`,
+      `stdin supplied a name that run ${args.runId} has no \`secret\` slot for.`,
     );
   }
   // A fresh null-prototype map, filled from the restored inputs and then the re-supplied secrets — never a
@@ -828,45 +826,6 @@ async function resolveSecretInputs(
   for (const key of Object.keys(inputs)) merged[key] = inputs[key];
   for (const key of Object.keys(supplied)) merged[key] = supplied[key];
   return merged;
-}
-
-/**
- * Split stdin into `name=value` pairs. Blank lines are ignored; everything else must be a pair with a
- * non-empty name and value, so a malformed paste fails loudly instead of resuming with a wrong credential.
- *
- * A VALUE may contain `=` (the split is on the first one). It may not contain a newline — a credential that
- * does is outside what this transport can express, and saying so is better than truncating one silently.
- * No value is ever echoed, here or in any error below.
- */
-function parseSecretLines(raw: string, runId: string): Record<string, string> {
-  const out: Record<string, string> = Object.create(null) as Record<string, string>;
-  for (const line of raw.split('\n')) {
-    // Only the CRLF carriage return is stripped from the line. The NAME is trimmed; the VALUE is taken
-    // VERBATIM after the first `=`. A first version trimmed the whole line, which silently removed a
-    // credential's trailing whitespace while preserving its leading whitespace — an asymmetry that turns a
-    // pasted key into a different key and reports it as an opaque 401 from the provider hours later.
-    const stripped = line.endsWith('\r') ? line.slice(0, -1) : line;
-    if (stripped.trim() === '') continue;
-    const at = stripped.indexOf('=');
-    const name = at === -1 ? '' : stripped.slice(0, at).trim();
-    const value = at === -1 ? '' : stripped.slice(at + 1);
-    // An all-whitespace value is refused with the empty one: it is not a credential, and accepting it would
-    // hand the run a blank secret that fails somewhere far from here.
-    if (name === '' || value.trim() === '') {
-      throw new CliError(
-        'invalid_invocation',
-        `stdin for run ${runId} must be \`name=value\` lines with a non-empty value.`,
-      );
-    }
-    if (Object.hasOwn(out, name)) {
-      throw new CliError(
-        'invalid_invocation',
-        `stdin for run ${runId} supplied the same \`secret\` name twice.`,
-      );
-    }
-    out[name] = value;
-  }
-  return out;
 }
 
 /**

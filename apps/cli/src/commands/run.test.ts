@@ -1613,3 +1613,285 @@ workflow:
     expect(lastType).toBe('run:paused');
   });
 });
+
+/** A declared secret plus ordinary number; no provider or durable history is needed to complete. */
+const SECRET_RUN = HAPPY.replace(
+  '    - name: n\n      type: number',
+  '    - { name: n, type: number }\n    - { name: token, type: secret, required: true }\n    - { name: optional, type: secret }',
+);
+
+describe('first-run secret admission before service construction (ADR-0107)', () => {
+  const opaque = 'opaqueInputSentinelZebra';
+  it.each([
+    { label: 'malformed argv', input: [opaque], stdin: `token=${opaque}` },
+    { label: 'empty argv name', input: [`=${opaque}`], stdin: `token=${opaque}` },
+    {
+      label: 'duplicate argv name',
+      input: [`${opaque}=1`, `${opaque}=2`],
+      stdin: `token=${opaque}`,
+    },
+    { label: 'unknown argv name', input: [`${opaque}=1`], stdin: `token=${opaque}` },
+    { label: 'invalid number', input: [`n=${opaque}`], stdin: `token=${opaque}` },
+    {
+      label: 'explicit secret',
+      input: [`token=${opaque}`],
+      stdin: `token=${opaque}`,
+      noRead: true,
+    },
+    { label: 'explicit empty secret', input: ['token='], stdin: `token=${opaque}`, noRead: true },
+    { label: 'later explicit optional secret', input: ['optional='], stdin: '', noRead: true },
+    { label: 'malformed stdin', input: [], stdin: opaque },
+    { label: 'unknown stdin name', input: [], stdin: `${opaque}=value` },
+    { label: 'nonsecret stdin name', input: [], stdin: `n=${opaque}` },
+    { label: 'duplicate stdin', input: [], stdin: `token=${opaque}\n token =other` },
+    { label: 'empty stdin value', input: [], stdin: 'token=' },
+    { label: 'whitespace stdin value', input: [], stdin: 'token=  ' },
+    { label: 'missing required stdin', input: [], stdin: `optional=${opaque}` },
+  ])(
+    'refuses $label with opaque diagnostics and zero service effects',
+    async ({ input, stdin, noRead }) => {
+      const path = writeWorkflow('secret.relavium.yaml', SECRET_RUN);
+      const { io, out, err } = captureIo();
+      const providers = createProviderResolver({});
+      const keyFor = vi.spyOn(providers, 'keyFor');
+      const mcpSecretResolver = vi.fn(() => 'synthetic-mcp');
+      const resolveKeys = vi.fn(() => ({ providers, mcpSecretResolver }));
+      const readSecretInput = vi.fn(() => Promise.resolve(stdin));
+      const build = vi.fn(() => buildEngine({ host: createInMemoryHost() }));
+      const openRunStore = vi.fn<NonNullable<RunCommandDeps['openRunStore']>>();
+      const consentGate = vi.fn(PASS_CONSENT);
+      const startMcpClient = vi.fn<typeof realStartMcpClient>();
+      let caught: unknown;
+      try {
+        await runCommand(
+          { workflow: path, input, allowMcpStdio: [], secretInputsStdin: true },
+          deps(io, globalOptions({ verbosity: 'verbose' }), {
+            resolveKeys,
+            readSecretInput,
+            buildEngine: build,
+            openRunStore,
+            consentGate,
+            startMcpClient,
+          }),
+        );
+      } catch (error) {
+        caught = error;
+      }
+      expect(isCliError(caught) && caught.code).toBe('invalid_invocation');
+      expect(
+        [
+          resolveKeys.mock.calls.length,
+          keyFor.mock.calls.length,
+          mcpSecretResolver.mock.calls.length,
+          build.mock.calls.length,
+          openRunStore.mock.calls.length,
+          consentGate.mock.calls.length,
+          startMcpClient.mock.calls.length,
+        ],
+        'SECRETS_CAUSAL_RUN_ADMISSION_ZERO_EFFECTS',
+      ).toEqual([0, 0, 0, 0, 0, 0, 0]);
+      if (noRead) expect(readSecretInput).not.toHaveBeenCalled();
+      expect(
+        `${out()}${err()}${isCliError(caught) ? caught.message + (caught.stack ?? '') : ''}`,
+        'SECRETS_CAUSAL_RUN_INPUT_OPACITY',
+      ).not.toContain(opaque);
+    },
+  );
+
+  it.each([
+    { type: 'secret', validation: 'min_length: 25', value: opaque },
+    { type: 'secret', validation: 'max_length: 2', value: opaque },
+    { type: 'secret', validation: "pattern: '^allowed$'", value: opaque },
+    { type: 'secret', validation: 'format: email', value: opaque },
+    { type: 'number', validation: 'min: 2', value: '1' },
+    { type: 'number', validation: 'max: 2', value: '3' },
+    { type: 'string', validation: 'enum: [allowed]', value: opaque },
+    { type: 'string', validation: 'min_length: 25', value: opaque },
+    { type: 'string', validation: 'max_length: 2', value: opaque },
+    { type: 'string', validation: "pattern: '^allowed$'", value: opaque },
+    { type: 'string', validation: 'format: email', value: opaque },
+  ])(
+    'runs core admission before services for $type {$validation}',
+    async ({ type, validation, value }) => {
+      const yaml = SECRET_RUN.replace(
+        '{ name: token, type: secret, required: true }',
+        () => `{ name: token, type: ${type}, required: true, validation: { ${validation} } }`,
+      );
+      const path = writeWorkflow('contract.relavium.yaml', yaml);
+      const { io } = captureIo();
+      const resolveKeys = vi.fn(() => ({
+        providers: createProviderResolver({}),
+        mcpSecretResolver: () => 'synthetic-mcp',
+      }));
+      const build = vi.fn(() => buildEngine({ host: createInMemoryHost() }));
+      const openRunStore = vi.fn<NonNullable<RunCommandDeps['openRunStore']>>();
+      const consentGate = vi.fn(PASS_CONSENT);
+      const startMcpClient = vi.fn<typeof realStartMcpClient>();
+      await expect(
+        runCommand(
+          {
+            workflow: path,
+            input: type === 'secret' ? ['n=2'] : ['n=2', `token=${value}`],
+            allowMcpStdio: [],
+            secretInputsStdin: true,
+          },
+          deps(io, globalOptions(), {
+            readSecretInput: () =>
+              Promise.resolve(type === 'secret' ? `token=${value}` : 'optional=valid'),
+            resolveKeys,
+            buildEngine: build,
+            openRunStore,
+            consentGate,
+            startMcpClient,
+          }),
+        ),
+      ).rejects.toMatchObject({
+        code: 'invalid_invocation',
+        message: 'workflow inputs do not satisfy their declared contracts.',
+      });
+      expect(
+        [
+          resolveKeys.mock.calls.length,
+          build.mock.calls.length,
+          openRunStore.mock.calls.length,
+          consentGate.mock.calls.length,
+          startMcpClient.mock.calls.length,
+        ],
+        'SECRETS_CAUSAL_RUN_CORE_ADMISSION',
+      ).toEqual([0, 0, 0, 0, 0]);
+    },
+  );
+
+  it('refuses the stdin flag without declared secrets before a read', async () => {
+    const path = writeWorkflow('ordinary.relavium.yaml', HAPPY);
+    const { io } = captureIo();
+    const readSecretInput = vi.fn(() => Promise.resolve('n=3'));
+    await expect(
+      runCommand(
+        { workflow: path, input: [], allowMcpStdio: [], secretInputsStdin: true },
+        deps(io, globalOptions(), { readSecretInput }),
+      ),
+    ).rejects.toMatchObject({ code: 'invalid_invocation' });
+    expect(readSecretInput).not.toHaveBeenCalled();
+  });
+
+  it('admits valid contracts, preserves verbatim values, and retains injected provider precedence', async () => {
+    const path = writeWorkflow(
+      'valid-contract.relavium.yaml',
+      SECRET_RUN.replace(
+        '{ name: token, type: secret, required: true }',
+        '{ name: token, type: secret, required: true, validation: { min_length: 3, max_length: 50 } }',
+      ),
+    );
+    const { io } = captureIo();
+    const providers = createProviderResolver({});
+    const otherProviders = createProviderResolver({});
+    const resolveKeys = vi.fn(() => ({
+      providers: otherProviders,
+      mcpSecretResolver: () => 'synthetic-mcp',
+    }));
+    const engine = await buildEngine({ host: createInMemoryHost() });
+    const start = vi.spyOn(engine, 'start');
+    const build = vi.fn<(options?: BuildEngineOptions) => Promise<WorkflowEngine>>(() =>
+      Promise.resolve(engine),
+    );
+    expect(
+      await runCommand(
+        { workflow: path, input: ['n=-2'], allowMcpStdio: [], secretInputsStdin: true },
+        deps(io, globalOptions(), {
+          providers,
+          resolveKeys,
+          buildEngine: build,
+          readSecretInput: () => Promise.resolve(' token =  opaque=verbatim  \r\n\n'),
+        }),
+      ),
+    ).toBe(EXIT_CODES.success);
+    expect(resolveKeys).toHaveBeenCalledOnce();
+    expect(build.mock.calls[0]?.[0]?.providers).toBe(providers);
+    expect(start.mock.calls[0]?.[0].inputs).toEqual({ n: -2, token: '  opaque=verbatim  ' });
+    expect(Object.hasOwn(start.mock.calls[0]?.[0].inputs ?? {}, 'optional')).toBe(false);
+  });
+
+  it('uses the real default reader exactly once and suppresses even an injected gate selector', async () => {
+    const path = writeWorkflow(
+      'secret-gate.relavium.yaml',
+      GATED.replace(
+        '  nodes:',
+        '  inputs:\n    - { name: token, type: secret, required: true }\n  nodes:',
+      ),
+    );
+    const { io } = captureIo();
+    const descriptor = Object.getOwnPropertyDescriptor(process, 'stdin');
+    const iterator = vi.fn(async function* () {
+      yield await Promise.resolve(Buffer.from('token=  opaque=verbatim  \r\n'));
+    });
+    Object.defineProperty(process, 'stdin', {
+      configurable: true,
+      value: { isTTY: false, [Symbol.asyncIterator]: iterator },
+    });
+    const prompt = vi.fn<GatePrompter['prompt']>(() => Promise.resolve(null));
+    const selectGatePrompter = vi.fn(() => ({ prompt, dispose: () => {} }));
+    const engine = await buildEngine({ host: createInMemoryHost() });
+    const start = vi.spyOn(engine, 'start');
+    try {
+      let code: number | undefined;
+      let caught: unknown;
+      try {
+        code = await runCommand(
+          { workflow: path, input: [], allowMcpStdio: [], secretInputsStdin: true },
+          deps(io, globalOptions(), {
+            buildEngine: () => Promise.resolve(engine),
+            selectGatePrompter,
+          }),
+        );
+      } catch (error) {
+        caught = error;
+      }
+      expect(iterator, 'SECRETS_CAUSAL_RUN_DEFAULT_READER').toHaveBeenCalledOnce();
+      expect(start.mock.calls[0]?.[0].inputs, 'SECRETS_CAUSAL_RUN_DEFAULT_READER').toEqual({
+        token: '  opaque=verbatim  ',
+      });
+      expect(
+        selectGatePrompter,
+        'SECRETS_CAUSAL_RUN_GATE_PROMPT_SUPPRESSION',
+      ).not.toHaveBeenCalled();
+      expect(prompt).not.toHaveBeenCalled();
+      expect(caught).toBeUndefined();
+      expect(code).toBe(EXIT_CODES.gatePaused);
+    } finally {
+      if (descriptor !== undefined) Object.defineProperty(process, 'stdin', descriptor);
+    }
+  });
+
+  it.each([true, false])(
+    'the real default reader refuses TTY/oversize before services (TTY=%s)',
+    async (isTTY) => {
+      const path = writeWorkflow('reader-refusal.relavium.yaml', SECRET_RUN);
+      const { io } = captureIo();
+      const descriptor = Object.getOwnPropertyDescriptor(process, 'stdin');
+      const iterator = vi.fn(async function* () {
+        yield await Promise.resolve('token=' + 'x'.repeat(65_536));
+      });
+      Object.defineProperty(process, 'stdin', {
+        configurable: true,
+        value: { isTTY, [Symbol.asyncIterator]: iterator },
+      });
+      const resolveKeys = vi.fn(() => ({
+        providers: createProviderResolver({}),
+        mcpSecretResolver: () => 'synthetic-mcp',
+      }));
+      try {
+        await expect(
+          runCommand(
+            { workflow: path, input: [], allowMcpStdio: [], secretInputsStdin: true },
+            deps(io, globalOptions(), { resolveKeys }),
+          ),
+        ).rejects.toMatchObject({ code: 'invalid_invocation' });
+        expect(resolveKeys).not.toHaveBeenCalled();
+        expect(iterator).toHaveBeenCalledTimes(isTTY ? 0 : 1);
+      } finally {
+        if (descriptor !== undefined) Object.defineProperty(process, 'stdin', descriptor);
+      }
+    },
+  );
+});

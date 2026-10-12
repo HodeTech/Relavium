@@ -132,6 +132,7 @@ export function buildRunArgs(input: CommandInput): RunCommandArgs {
   return {
     workflow: reqPositional(input, 0, 'workflow'),
     input: stringList(input.options['input']),
+    secretInputsStdin: boolFlag(input.options['secretInputsStdin']),
     // ADR-0084 §6: authorizes THIS invocation and writes no grant. A definite list like `input`, so a
     // consumer never distinguishes "not asked for" from "asked for and empty".
     allowMcpStdio: stringList(input.options['allowMcpStdio']),
@@ -418,7 +419,8 @@ const executeRun: CommandExecutor = (input, ctx) =>
     io: ctx.io,
     global: ctx.global,
     openRunStore: openHistoryStore,
-    ...keyResolvers(ctx),
+    // ADR-0107: construct native credential services only after complete input admission.
+    resolveKeys: () => keyResolvers(ctx),
   });
 
 const executeChat: CommandExecutor = (input, ctx) =>
