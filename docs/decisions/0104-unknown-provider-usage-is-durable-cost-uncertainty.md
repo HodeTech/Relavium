@@ -736,3 +736,14 @@ second independently maintained dialect specification. Gross input without the r
 cache split remains partial, and neither missing evidence nor a non-applicable billing class
 is invented as a reported quantity. This correction does not change realized-money arithmetic,
 authorization, request ownership or the accepted uncertainty protocol.
+
+### W8 merge landing — 2026-10-11
+
+[PR #92](https://github.com/HodeTech/Relavium/pull/92) merged to `main` as `ef0ffa54`,
+including all eight ADR-0104 acceptance groups, CR-82 and the maintainer-review corrections.
+The [merge checkpoint](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w8-merge-checkpoint--2026-10-11)
+joins final reviewed-head `3d4491df` PR/push CI and SonarCloud success, independent
+acceptance and existing approved residuals. Earlier implementation/publication-pending
+notes describe their dated checkpoints; no W8 implementation or landing gate remains.
+Phase 2.6.5 is complete with approved deferrals, not an assertion that every residual
+is implemented. The decision, compatibility boundaries and existing limits are unchanged.

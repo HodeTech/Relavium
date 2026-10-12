@@ -295,3 +295,14 @@ reviews. Run/session consumption and departure controls retain their scoped acce
 Publication checks and maintainer review/merge gate landing on `main`. Both concurrent-readiness
 exact-capacity schedules remain the existing approved residual; this note neither introduces
 an emission permit nor strengthens that capacity claim.
+
+### W8 merge landing — 2026-10-11
+
+[PR #92](https://github.com/HodeTech/Relavium/pull/92) merged to `main` as `ef0ffa54`,
+including ADR-0087 §1 consumption modes and their scoped host/departure controls.
+The [merge checkpoint](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w8-merge-checkpoint--2026-10-11)
+joins final reviewed-head `3d4491df` PR/push CI and SonarCloud success, independent
+acceptance and existing approved residuals. Earlier implementation/publication-pending
+notes describe their dated checkpoints; no W8 implementation or landing gate remains.
+Phase 2.6.5 is complete with approved deferrals, not an assertion that every residual
+is implemented. The decision, compatibility boundaries and existing limits are unchanged.

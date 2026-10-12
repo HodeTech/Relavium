@@ -55,9 +55,9 @@ PR #75, 2026-07-13). The phase is a full-screen Home-managed CLI with conversati
 browsers, competitor-breadth tools, settings/theming/`en`+`tr` localization, and the
 run-ops resume follow-up.
 
-**An interlude is running between Wave 1 and Wave 2 of the remediation: Phase 2.6.5 (Core reliability),
-47 of 51 items closed on `main`; W7 closes `CR-96`/`CR-97` and restores the non-deferrable
-criterion** — `W0` (PR #82, 2026-08-11), `W1`, the eight P0 blockers plus `CR-92`, merged
+**The interlude between remediation Waves 1 and 2 is complete: Phase 2.6.5 (Core reliability),
+49 of 51 items closed on `main`, with approved CR-70/93 and scoped deferrals retained.
+W8 merged on 2026-10-11 as PR #92; W7 had restored the non-deferrable criterion** — `W0` (PR #82, 2026-08-11), `W1`, the eight P0 blockers plus `CR-92`, merged
 2026-08-24 (PR #83) behind [ADR-0078](docs/decisions/0078-ordered-durable-append-and-the-terminal-outbox.md)–[ADR-0084](docs/decisions/0084-consent-before-a-local-mcp-spawn.md):
 ordered durable append, cross-process run ownership, the durable effect journal, untrusted compaction summaries,
 the stream-grammar seam obligation, engine-side input admission and resume identity, and consent before a local
@@ -73,8 +73,8 @@ engine no longer retains every finished run. **It merged with a live blocker** �
 drops the terminal event, breaching ADR-0036's gap-free contract — plus nine verified findings, all recorded
 in the `W3` residuals of [deferred-tasks.md](docs/roadmap/deferred-tasks.md).
 [ADR-0087](docs/decisions/0087-consumed-streams-size-bounds-and-run-retention.md) records the fix and, after a
-review that refused acceptance until nine dated corrections existed, is **Accepted (2026-09-04) with its §1
-unimplemented** — so the blocker stands. Its §3 turned out to be implemented already, in `W5`. **`W4` — the hostile MCP boundary — merged 2026-09-01 (PR #87)
+review that refused acceptance until nine dated corrections existed, was **Accepted (2026-09-04) with its §1
+unimplemented**. That blocker is now closed by W8/PR #92. Its §3 turned out to be implemented already, in `W5`. **`W4` — the hostile MCP boundary — merged 2026-09-01 (PR #87)
 behind [ADR-0088](docs/decisions/0088-the-mcp-boundary-is-hostile.md)**: every MCP call is bounded and
 cancellable, `http`/`sse` connect by validated pinned IP, a redirect is refused, a remote `websocket` is
 refused at admission, a server's ingress is bounded at two levels, and its tool DEFINITIONS are treated as
@@ -115,29 +115,33 @@ refusing adapter satisfies too, so it passed either way — the finding under th
 [ADR-0087](docs/decisions/0087-consumed-streams-size-bounds-and-run-retention.md) was also **accepted
 (2026-09-04) with nine dated corrections** after a review refused it as written; §1 was still unimplemented
 at that checkpoint, while §3 turned out to have shipped in `W5` under a different item number.
-**Current W8 checkpoint — 2026-10-11:** All seven implementation/review steps are accepted on
-`development`, including ADR-0087 §1 and CR-81/82. The [closing register](docs/roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w8-closing-register--2026-10-11)
-joins scoped acceptance, actual full CI/bare and enforced coverage, three wire/21 usage controls
-and two NEW complete whole-wave review rounds. Those counts belong to the original attributed
-source checkpoint, not to the later maintainer corrections. The implementation register is **49/51**;
-`main` remains **47/51** until W8 merges. Publication checks and maintainer review/merge remain
-the landing gate. CR-70/93 and existing exact-capacity/scoped residuals retain their approved
-limits; no new deferral, provider capture, billing, credential or user decision is pending.
+**W8 merged to `main` on 2026-10-11 as PR #92 (`ef0ffa54`); Phase 2.6.5 is complete with approved deferrals.**
+All seven steps, CR-81/82 and ADR-0087 §1 are complete on `main`; the register is **49/51**.
+The [merge checkpoint](docs/roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w8-merge-checkpoint--2026-10-11)
+joins the original whole-wave acceptance, all maintainer-correction dispositions and final reviewed-head
+`3d4491df` PR/push CI plus SonarCloud success. The ordinary/enforced-coverage inventory is
+511 files / 11,026 passing tests / 12 established skips; four wire and 23 usage mechanisms pass.
+Every correction increment has two NEW independent complete clean cumulative rounds after its final fix;
+scoped correction reviews are not a new whole-PR certification. Fresh full local CI and bare/enforced
+coverage at `6139563e` retain their separate source attribution. No merge-commit execution is inferred.
+Two nonblocking Sonar complexity suggestions remain visible. Historical counts and pending states
+throughout the registers describe their original checkpoints.
 
-The [PR #92 maintainer corrections](docs/roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w8-pr-92-systematic-review-corrections--2026-10-11)
-have independent acceptance for all four increments, each after two NEW clean complete cumulative
-rounds. The subsequent eleven-path publication correction also has two NEW clean complete rounds.
-Fresh full CI and bare/enforced coverage pass at `6139563e`, including four wire and 23 usage
-controls. Exact published-head CI/Sonar and maintainer review/merge remain the landing gate; earlier
-checks do not certify that publication. The original closing evidence retains its source attribution.
+CR-70 (cross-turn tool-history carrying), CR-93 (tenant-scoped mutable state), CR-95's long continuation
+and existing exact-capacity/scoped residuals retain their approved limits in
+[deferred-tasks.md](docs/roadmap/deferred-tasks.md). No new deferral, provider capture, billing,
+credential or W8 user decision is pending. Next is the joint 2.5.5/2.6
+[Wave 2 — Shut the doors](docs/roadmap/current.md#wave-2--shut-the-doors), starting with the
+remaining unified filesystem jail; its MCP queue already merged in W4. This is separate from
+Phase 2.6.5's completed W2 liveness wave. Phase 2.5.5 and Phase 2.6 remain in progress.
 
 **W7 merged to `main` on 2026-10-10 as PR #90, including final whole-wave Step 12.**
 Steps 1–11, all five genuine overflow records, owned measured requests and consolidated provider/MCP/host
 lifetimes have independent acceptance. ADR-0095–ADR-0103 are Accepted. The six W7 register items are closed
-(47/51 closed); PR #90 is merged (`46a6a701`); W7 has no open implementation or review gate. The
+(47/51 at the W7 merge); PR #90 is merged (`46a6a701`); W7 has no open implementation or review gate. The
 [closing register](docs/roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w7-closing-register--2026-10-10)
 joins the accepted scopes, causal controls and systematic-review dispositions. Existing approved deferrals
-stay in [deferred-tasks.md](docs/roadmap/deferred-tasks.md); W8 and the phase remain open. No user decision,
+stay in [deferred-tasks.md](docs/roadmap/deferred-tasks.md); W8 subsequently merged in PR #92 and closed the phase with approved deferrals. No user decision,
 billing setup, credential or provider capture is pending.
 
 **Post-closure corrections are independently accepted, 2026-10-10:** core, CLI/DB and tooling/docs
@@ -146,9 +150,8 @@ correction also has two NEW complete clean rounds. The [post-closure register](d
 joins every report disposition, new permanent/causal evidence and current gates. Published-head checks
 passed at reviewed head `69ac80b0` before PR #90 merged. No W7 implementation, provider,
 billing, key or user decision is pending. The [merge checkpoint](docs/roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w7-merge-checkpoint--2026-10-10)
-records W7 closure. All seven W8 implementation/review steps are accepted on `development`,
-including CR-81/82 and ADR-0087 §1. The register is 49/51 there and 47/51 on `main` until W8
-merges. Publication checks and maintainer review/merge remain; existing approved limits are unchanged.
+records W7 closure. W8 subsequently merged in PR #92; the register is 49/51 on `main`.
+Existing approved limits are unchanged; W8 has no open implementation or landing gate.
 
 For live status, per-PR history, milestone dates, and open obligations, see the canonical
 home [docs/roadmap/current.md](docs/roadmap/current.md);
