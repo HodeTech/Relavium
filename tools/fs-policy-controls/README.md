@@ -28,6 +28,10 @@ concurrent-winner verification separately. Deterministic native-file/fault fixtu
 pin those branches on every CI OS; actual concurrent native publication remains a
 separate control. They do not turn a simulated platform branch into Windows evidence.
 
+Native canonical-root selection has its own removal control: retaining a legacy
+synchronous alias spelling must break a real file read through the admitted policy.
+Its deterministic alias fixture complements native Windows short-name execution.
+
 `RELAVIUM_ACCEPTANCE_EVIDENCE=/absolute/directory` retains bounded JSON/JSONL/log
 metadata under `filesystem/`, outside authored source. It excludes the copied graph,
 cache, native databases and dependency bytes. Scratch copies are removed even on

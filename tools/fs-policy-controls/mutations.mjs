@@ -187,7 +187,16 @@ mutations.push(
 );
 const windowsWinnerCases = 'packages/db/src/media-store-publication-contention.test.ts';
 const detachedEntryCases = 'packages/db/src/media-store-entry-snapshots.test.ts';
+const nativeRootCases = 'apps/cli/src/engine/tool-host/fs-policy-native-paths.test.ts';
 mutations.push(
+  control(
+    'NATIVE_CANONICAL_ROOT',
+    policy,
+    'const canonical = realpathSync.native(lexical);',
+    'const canonical = realpathSync(lexical);',
+    'FS_CAUSAL_NATIVE_CANONICAL_ROOT',
+    [nativeRootCases],
+  ),
   control(
     'CAS_WINDOWS_WINNER',
     'packages/db/src/media-store.ts',
@@ -220,5 +229,7 @@ for (const mutation of mutations) {
             ? 16
             : file === detachedEntryCases
               ? 8
-              : 19;
+              : file === nativeRootCases
+                ? 1
+                : 19;
 }
