@@ -57,6 +57,15 @@ export function assertPhaseOutcome(data, child, control, name, graph) {
       ),
       `${control.id}: missing declared named assertion ${control.marker}`,
     );
+    for (const witness of control.witnesses ?? [])
+      assert.ok(
+        failed.some(
+          (t) =>
+            t.id.includes(witness.target) &&
+            t.failures.some((message) => message.includes(witness.marker)),
+        ),
+        `${control.id}: missing additional named assertion ${witness.marker}`,
+      );
     if (control.id.startsWith('ancestor-'))
       for (const port of ['tool', 'save_to'])
         assert.ok(

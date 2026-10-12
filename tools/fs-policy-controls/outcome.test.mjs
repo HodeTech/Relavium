@@ -143,3 +143,24 @@ test('shared helper requires named evidence at both actual consumers', () => {
     /both actual consumers/,
   );
 });
+
+for (const additionalFails of [true, false])
+  test(`additional caller witness must fail independently: ${additionalFails}`, () => {
+    const { data, child } = sample();
+    const control = {
+      ...mechanism,
+      expectedTests: 2,
+      witnesses: [{ target: 'actual caller', marker: 'FS_CAUSAL_CALLER' }],
+    };
+    data.numTotalTests = 2;
+    data.numFailedTests = additionalFails ? 2 : 1;
+    data.numPassedTests = additionalFails ? 0 : 1;
+    data.testResults[0].assertionResults.push({
+      fullName: 'actual caller',
+      status: additionalFails ? 'failed' : 'passed',
+      failureMessages: additionalFails ? ['AssertionError: FS_CAUSAL_CALLER expected success'] : [],
+    });
+    const check = () => assertPhaseOutcome(data, child, control, 'mutated', '/graph');
+    if (additionalFails) assert.doesNotThrow(check);
+    else assert.throws(check, /missing additional named assertion FS_CAUSAL_CALLER/);
+  });

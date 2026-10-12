@@ -34,6 +34,12 @@ Its deterministic alias fixture mocks the legacy resolver while retaining native
 canonicalization and file access. The Windows job separately exercises the original
 OS temporary-directory spelling; it does not guarantee an 8.3 alias is present.
 
+Cooperating deletion has a separate removal control. A native unlink-entry barrier
+must break both admitted-delete idempotence and the actual host-GC caller's orphan
+phase continuation. Both named semantic failures are required; a failure in the
+store-only case cannot certify that caller witness. Strict path/ownership and
+non-missing I/O refusal controls remain in the same declared inventory.
+
 `RELAVIUM_ACCEPTANCE_EVIDENCE=/absolute/directory` retains bounded JSON/JSONL/log
 metadata under `filesystem/`, outside authored source. It excludes the copied graph,
 cache, native databases and dependency bytes. Scratch copies are removed even on

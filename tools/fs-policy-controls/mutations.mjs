@@ -188,7 +188,28 @@ mutations.push(
 const windowsWinnerCases = 'packages/db/src/media-store-publication-contention.test.ts';
 const detachedEntryCases = 'packages/db/src/media-store-entry-snapshots.test.ts';
 const nativeRootCases = 'apps/cli/src/engine/tool-host/fs-policy-native-paths.test.ts';
+const deleteCases = [
+  'packages/db/src/media-store-delete-races.test.ts',
+  'apps/cli/src/engine/media-gc-delete-races.test.ts',
+];
 mutations.push(
+  {
+    ...control(
+      'CAS_DELETE_IDEMPOTENT',
+      'packages/db/src/media-store.ts',
+      "if (failure.reason === 'missing') {",
+      'if (false) {',
+      'FS_CAUSAL_CAS_DELETE_IDEMPOTENT',
+      deleteCases,
+      'keeps two admitted cooperating deletes idempotent',
+    ),
+    witnesses: [
+      {
+        target: 'both cooperating grace collectors continue to the orphan phase',
+        marker: 'FS_CAUSAL_CAS_DELETE_GC_CONTINUATION',
+      },
+    ],
+  },
   control(
     'NATIVE_CANONICAL_ROOT',
     policy,
@@ -219,17 +240,19 @@ mutations.push(
 for (const mutation of mutations) {
   const file = mutation.files[0];
   mutation.expectedTests =
-    file === floorCases[0]
-      ? 11
-      : file === workspaceCases
-        ? 8
-        : file === cooperativeCases
-          ? 6
-          : file === windowsWinnerCases
-            ? 16
-            : file === detachedEntryCases
-              ? 8
-              : file === nativeRootCases
-                ? 1
-                : 19;
+    file === deleteCases[0]
+      ? 12
+      : file === floorCases[0]
+        ? 11
+        : file === workspaceCases
+          ? 8
+          : file === cooperativeCases
+            ? 6
+            : file === windowsWinnerCases
+              ? 16
+              : file === detachedEntryCases
+                ? 8
+                : file === nativeRootCases
+                  ? 1
+                  : 19;
 }
