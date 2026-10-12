@@ -83,3 +83,16 @@ new total deadline. Raw L16 needs explicit compatible HTTP type and aligned none
 with no detected-identity or rate-repair claim. Exact compatibility/error rules live in the
 [media publication contract](../reference/shared-core/llm-provider-seam.md#bounded-verified-media-publication-adr-0106).
 Implementation is present in the Step 6 working tree; cumulative independent acceptance is pending.
+
+### Native media close ownership — 2026-10-13
+
+Accepted [ADR-0109](0109-native-media-close-ownership-is-explicit-iterator-provenance.md)
+refines interruption at the media byte-consumer boundary. Exact private iterator
+provenance separates foreign return observation from trusted native retirement.
+Store-owned cleanup precedes native acknowledgement joining; counted wrappers
+initiate without blocking store cleanup and their enclosing scope joins afterward.
+Natural EOF, deliberate wrapper adoption and the single loaded-module boundary
+are explicit in the [canonical media lifecycle contract](../reference/shared-core/llm-provider-seam.md#bounded-verified-media-publication-adr-0106).
+Existing host work/receipt ownership and whole-buffer limits remain in force.
+Implementation, packaging and cumulative review gates remain separate from this
+decision approval; this note does not accept Step 6 or close Wave 2.

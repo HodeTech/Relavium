@@ -167,9 +167,10 @@ records first-run transport and native masking evidence. Step 5 has two NEW clea
 cumulative rounds at `1be8731d`; its [acceptance checkpoint](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#step-5-acceptance--2026-10-12)
 records snapshot warnings, narrow context analysis, export completion and actual Chat/Home
 render evidence. Steps 1–5 are accepted on `development`; Step 6 media admission/lifecycle
-ordinary R1 repairs are committed. Proposed ADR-0109 has two NEW clean complete
-cumulative proposal rounds and awaits explicit maintainer approval before its dependent
-native iterator ownership repair. Step 6 is not accepted; Steps 7–8 have not begun.
+ordinary R1 repairs are committed. ADR-0109 is Accepted after two NEW clean complete
+cumulative proposal rounds and explicit maintainer approval on 2026-10-13. Its dependent
+native iterator ownership repair and implementation validation proceed. Step 6 is not
+accepted; Steps 7–8 have not begun.
 The [clarification checkpoint](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#adr-0109-proposal-clarification--2026-10-13)
 records the distinction. Later and whole-wave gates remain open.
 

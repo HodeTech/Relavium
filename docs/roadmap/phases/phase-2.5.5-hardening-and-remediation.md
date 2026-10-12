@@ -2186,6 +2186,70 @@ ADR-0109 remains **Proposed** pending explicit maintainer approval; no dependent
 lifecycle protocol has been implemented. Step 6 remains unaccepted, and Steps 7–8
 remain unstarted.
 
+### ADR-0109 approval and implementation — 2026-10-13
+
+The maintainer explicitly approved the clarified ADR-0109 and its dependent
+implementation. The decision and index are now **Accepted**; earlier Proposed
+checkpoints remain historical. The shared exact-iterator ownership helper, lazy
+first-party registration, counted return initiation and store-local cleanup before
+native joining are implemented. Native lifecycle, built workspace and actual CLI
+packaging checks, the enlarged bounded causal inventory, full workspace gates and
+two NEW clean complete cumulative implementation review rounds remain gates.
+Approval and focused author tests do not accept Step 6 or close Wave 2.
+
+### ADR-0109 author validation — 2026-10-13
+
+The approved protocol is implemented across shared de-inlining, both actual stores
+and the lazy native stream constructor. The canonical seam and dated notes on
+ADR-0042/0043/0089/0103/0106 record its exact identity, trusted adoption, EOF,
+error precedence and loaded-module boundaries without replacing host-work ownership.
+
+The first complete workspace lint/typecheck/test run passes **23/23 uncached tasks**.
+After strengthening three diagnostic regressions, the final run passes **23/23**,
+with two cache hits. The six test suites total **553 complete files, 12,170 passing
+cases and 13 established skips**. Build/format passes **7/7**, with three cache hits;
+tools lint/typecheck, DB sync, SDK fences, engine purity and bundle closure pass.
+The actual official Node **22.13.0** binary executes all four new lifecycle files:
+**31/31 passing cases** on macOS. This is not native Windows evidence.
+
+The new required `smoke:media-packaging` runs built shared/core/db entry points and
+the untouched CLI bundle. Raw-store and engine de-inline consumers share native
+registration; a physical second shared copy stays foreign. The actual CLI workflow
+uses isolated synthetic history, real loopback HTTP and an actual temporary-file
+write failure: file/temp cleanup finishes while native destruction and command
+settlement stay held, then all resources join and the original failure survives.
+Its fixture transport redirection is packaging/lifetime evidence, not TLS or SSRF
+certification. Missing artifacts refuse rather than skip. Local and GitHub required
+CI invoke the same artifact check after build.
+
+Acceptance tooling passes **140/140**. The existing filesystem family now declares
+**89 controls**, retaining its previous 74 IDs/order and full-file workloads. The
+15 additions complete **45 joined phases and 381 case executions** in selected
+fixed/removal/restored diagnoses. Every required witness is a named AssertionError;
+four collateral failures in this first inventory are explicitly not causal witnesses
+(three foreign-diagnostic awaits and one natural-EOF error under the filesystem
+return-await removal). The diagnostic tests were subsequently made finite and the
+five full helper cohorts rerun: **15 phases, 195 executions, 13 AssertionErrors and
+zero non-AssertionErrors**. No process timeout, signal, output overflow or unjoined
+child occurred. The filesystem ordering removal's one collateral error remains
+qualified rather than relabelled as causal.
+
+Parent independently checked source/dependency hashes, complete case inventories,
+all retained stdio and compressed receipt bytes, same-child native body/dependency
+records, required named witnesses and byte-exact restoration. These selected runs
+capture `699c8335` plus the respective frozen working trees, **1,111 source files
+and 457 dependency packages**; they are **not** later-commit or full-matrix evidence.
+Each export contains 26 files and at most 9,902,401 bytes including its envelope.
+Per-phase stdio is losslessly packed into one length/hash-verified binary envelope;
+no receipts, cases or provenance fields are dropped. The 2,000-file / 64-MiB
+retention caps, 90-second phases and decoded-output bound remain unchanged.
+
+**Step 6 remains unaccepted.** A fresh complete 89-control capture at the committed
+implementation head, two NEW clean complete cumulative implementation review rounds
+and remaining publication/platform checks are still required. Proposal reviews,
+author gates and selected diagnoses do not substitute for them. Steps 7–8 remain
+unstarted; no paid provider, keychain, credential or new user decision is needed.
+
 ### Remaining gate
 
 The maintainer approved the revised four-ADR decision package and eight-step plan
@@ -2195,9 +2259,9 @@ records. Steps 1–5 have independent acceptance; **Step 6 proceeds automaticall
 media bounds, verification, admission, cancellation and temporary lifecycle. Subsequent runtime,
 independent implementation reviews, security certification and final publication
 remain gates; approval and Steps 1–5 acceptance do not certify whole-wave completion.
-The newly proposed ADR-0109 requires separate maintainer approval before its
-dependent lifecycle repair; approval of ADR-0105–0108 did not authorise that new
-exported ownership protocol.
+ADR-0109 and its dependent native ownership repair received separate explicit
+maintainer approval on **2026-10-13**. Its implementation validation and Step 6
+acceptance remain open; no further user approval is currently pending.
 
 ---
 

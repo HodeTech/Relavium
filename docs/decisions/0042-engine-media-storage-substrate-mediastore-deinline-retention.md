@@ -102,3 +102,16 @@ rules live in [database-schema.md](../reference/shared-core/database-schema.md#m
 [the media contract](../reference/shared-core/llm-provider-seam.md#bounded-verified-media-publication-adr-0106)
 owns host shapes and byte evidence. This supersedes the earlier Step 6 pending mechanism statement,
 not its historical review status. Implementation is undergoing cumulative independent review.
+
+### Native media close ownership — 2026-10-13
+
+Accepted [ADR-0109](0109-native-media-close-ownership-is-explicit-iterator-provenance.md)
+refines interruption at the media byte-consumer boundary. Exact private iterator
+provenance separates foreign return observation from trusted native retirement.
+Store-owned cleanup precedes native acknowledgement joining; counted wrappers
+initiate without blocking store cleanup and their enclosing scope joins afterward.
+Natural EOF, deliberate wrapper adoption and the single loaded-module boundary
+are explicit in the [canonical media lifecycle contract](../reference/shared-core/llm-provider-seam.md#bounded-verified-media-publication-adr-0106).
+Existing host work/receipt ownership and whole-buffer limits remain in force.
+Implementation, packaging and cumulative review gates remain separate from this
+decision approval; this note does not accept Step 6 or close Wave 2.

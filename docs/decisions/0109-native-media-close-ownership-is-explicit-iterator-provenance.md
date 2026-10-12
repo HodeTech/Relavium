@@ -1,6 +1,6 @@
 # ADR-0109: Native media close ownership is explicit iterator provenance
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Date**: 2026-10-13
 - **Related**: [ADR-0011](0011-internal-llm-abstraction.md), [ADR-0042](0042-engine-media-storage-substrate-mediastore-deinline-retention.md), [ADR-0043](0043-media-egress-failover-rematerialization-ssrf.md), [ADR-0051](0051-cli-distribution-thin-bundle-private-engine.md), [ADR-0085](0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md), [ADR-0089](0089-media-correctness-four-boundaries.md), [ADR-0102](0102-a-measured-request-owns-its-inert-data-through-egress.md), [ADR-0103](0103-a-paused-run-hands-off-its-local-producers-before-its-host-closes.md), [ADR-0106](0106-media-publication-requires-bounded-verified-bytes.md), [architectural principles](../standards/architectural-principles.md)
 
@@ -205,3 +205,12 @@ second native-work scheduler, platform import in shared/core or runtime dependen
   test shipped packaging and refuse unsupported interoperability claims.
 - Trusted owned work can legitimately delay retirement; retain existing cancellation
   and native lifecycle mechanisms without pretending to preempt host JavaScript.
+
+### Maintainer approval — 2026-10-13
+
+The maintainer explicitly approved this clarified decision and its dependent
+implementation after the two NEW clean complete cumulative proposal rounds.
+The earlier conditional wording records the proposal history. Implementation,
+native and packaging evidence, the complete causal inventory and two NEW clean
+complete cumulative Step 6 review rounds remain required; approval does not
+accept Step 6 or close Wave 2.

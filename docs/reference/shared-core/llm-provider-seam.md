@@ -1076,6 +1076,39 @@ and subsequently publishing a mutated graph. A source iterator is acquired once 
 early store return/failure; actual native host resources are joined, while an arbitrary hostile
 never-settling iterator return does not defeat the existing bounded-liveness contract.
 
+The media-specific shared lifecycle protocol ([ADR-0109](../../decisions/0109-native-media-close-ownership-is-explicit-iterator-provenance.md))
+uses `registerNativeMediaIterator<T extends AsyncIterator<Uint8Array>>(iterator: T): T`
+and `closeMediaIterator(iterator: AsyncIterator<Uint8Array>): Promise<void>`. A trusted
+constructor registers the **exact public iterator before escape and first pull**, capturing
+its original return operation and receiver in a private WeakMap. Duplicate registration,
+registration after close initiation and invalid return capture refuse with the existing fixed
+`MediaAdmissionError('source_failed')`. Already-running state cannot be introspected; construction
+before use is a trusted precondition. Registration is ownership, not a timer or work scheduler.
+
+Close initiation synchronously caches and returns one acknowledgement before invoking caller
+code. Foreign return is invoked once by the helper and its throw/rejection is observed without
+joining it; native acknowledgement joins trusted retirement. Callers first clean their own
+resources, then await the acknowledgement. A primary verification, write or cancellation
+failure survives a secondary close failure; a close-only failure has the same fixed refusal.
+The counted de-inline iterator remains foreign: its return only initiates source close, while
+the encompassing finally joins the same acknowledgement after store cleanup. Direct raw-store
+consumers use the same protocol. Direct return outside the helper is not deduplicated by it;
+trusted generators/wrappers must safely join previously initiated retirement.
+
+Native EOF must join retirement before `done: true`. Wrappers do not inherit ownership: an
+adopted finite view must deliberately join upstream close before EOF, even if upstream has
+more bytes. `streamMediaBytes` registers only the first-party native dependency instance, at
+factory call time while retaining lazy dispatch; injected dependency implementations remain
+foreign unless their trusted owner explicitly adopts the iterator. The whole-buffer twin
+retains its existing limits and native close joining. The protocol does not make a foreign
+pending `next()` finite or preempt synchronous JavaScript.
+
+Identity is local to **one loaded shared module**. Built workspace entry points and the actual
+CLI bundle must prove a common registration/consumption domain; a separate loaded copy is an
+unsupported cross-copy boundary, not an implicit native join. Future desktop/VS Code or other
+packaging graphs require their own proof. No public marker, global registry, request field,
+vendor type or new error code carries ownership across that boundary.
+
 Fetch receives the declared MIME. It normalizes the final Content-Type casing/parameters once;
 an explicit conflicting header refuses before body consumption. Missing/octet-stream headers
 require unambiguous self-describing byte evidence. **Raw `audio/L16` requires nonempty even
