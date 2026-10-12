@@ -2104,6 +2104,88 @@ gates. Native Windows execution and whole-wave certification remain separate ope
 obligations; the Windows workflow now includes the complete shared recognizer and
 CLI media lifecycle cohorts alongside its existing complete DB suite.
 
+### Step 6 first cumulative review and lifecycle decision — 2026-10-13
+
+**Not accepted.** Four independent complete cumulative partitions reviewed the
+Step 5 base `c6921be1` through Step 6 implementation head `bf409fd9`. Their shared,
+stores, integration and tooling/document scopes returned confirmed findings; they
+are not clean acceptance rounds. Local review records remain outside git under the
+approved review-record policy.
+
+The full pre-fix physical inventory completed all **71 mechanisms and 213 joined
+fixed/removal/restored phases**, with **3,747 case executions**, 320 unique cases
+across 22 complete files and byte-exact restoration of all mutations. All declared
+removal witnesses were named assertion failures. Six collateral failed cases across
+four removals were not assertion failures and do not serve as causal witnesses.
+Independent review also found that native fixture children lacked the same-child
+source/dependency execution fences: these outcome results therefore do **not**
+certify the complete required runtime provenance. The tooling repair and a new
+exact-head complete capture remain required; retained evidence caps stay unchanged.
+
+| Confirmed boundary | Action and remaining gate |
+| --- | --- |
+| Base64 source aliases | Count every incoming owned-graph edge against genuine media.source slots. Additional record/Map/Set aliases refuse before host entry; shared legitimate slots remain supported. Four new regressions failed before repair. |
+| WebM encoding | Refuse known ContentEncodings rather than skipping them as unknown. Three codec/fragmentation regressions failed before repair; real memory/filesystem stores also exercise encrypted refusal and a plain-video positive control. |
+| Branch output | Apply the same pre-state pin, metadata admission and rehost reservation as completed outcomes. Actual CAS/SQLite controls reproduced state/event divergence and excess downloads before repair, while preserving routing/tokens without media. |
+| Native causal children | Require current-source/runtime/dependency receipts in the actual native worker. Lossless bounded receipt export must preserve every PID/path/hash record within existing evidence limits. Independent review and fresh full capture remain pending. |
+| Foreign return versus native close | Awaiting arbitrary return can strand real-store temp cleanup; unconditional non-await can release actual HTTP resources prematurely. Proposed [ADR-0109](../../decisions/0109-native-media-close-ownership-is-explicit-iterator-provenance.md) supplies explicit trusted provenance and requires maintainer approval before dependent implementation. |
+
+After the ordinary shared and branch repairs, the seven complete shared media/index
+files pass **140 cases**, and eleven complete integration files pass **148 cases**
+against current-source aliases. These focused author checks do not replace the full
+workspace gate, physical inventory or two NEW clean complete cumulative review rounds
+after the final material fix. Native Windows certification and the original Step 7–8
+obligations remain open. No paid provider, credential or billing action is needed.
+
+The ordinary R1 repairs are committed as `bf38fc16` (shared alias/WebM plus real-store
+regressions), `323b14ff` (branch pre-state admission plus CLI integration) and
+`a703fdd6` (native causal execution fences, lossless bounded receipts and controls).
+The final workspace lint/typecheck/test gate passes **23/23 tasks**, with twenty
+cache hits; its aggregate inventory is 549 files, **12,139 passing cases and 13
+established skips**. The final CLI execution itself runs 241 complete files and
+4,122 passing cases with two established skips. Unchanged other-workspace results
+were executed in the preceding gate or reused from cache; this is not a claim of
+one fresh uncached execution of every case. Build and format checks pass **7/7
+tasks**, with five cache hits. These checks ran on `bf409fd9` plus the repaired
+working tree before the three commits; no post-commit re-execution is inferred.
+
+Acceptance-tool integration passes **130/130**. The same filesystem family now
+declares **74 mechanisms**, preserving the original 71 IDs/order and enlarging
+their affected complete files. Three selected physical diagnoses pass complete
+fixed/named-removal/restored cohorts: alias **17/4/17**, WebM **20/3/20**, and branch
+**21/2/21**. Both independent branch witnesses fail as named assertions on removal.
+Parent separately checked source/dependency pins, complete inventories, every
+compressed receipt byte/index and exact restoration. Each selected export has 29
+files and less than 10 MB including its envelope, under the unchanged 2,000-file /
+64-MiB bounds. Their source attribution is `bf409fd9` plus the frozen repaired
+working tree (1,103 source files, 457 dependency packages), not a later commit.
+They explicitly remain `complete: false`; no new full 74-control or lifecycle
+acceptance is claimed. A fresh exact-head complete capture remains required after
+the lifecycle implementation and its additional controls.
+
+### ADR-0109 proposal clarification — 2026-10-13
+
+The maintainer's proposal review is addressed before approval. Close initiation
+now synchronously caches/returns an acknowledgement; the caller owns the later
+join. An ordinary outer `streamMediaBytes` factory registers the exact public
+lazy generator before escape, while counted return only initiates and the
+encompassing finally joins. The established invocation/receipt callback alternative,
+standalone raw-store benefit and single-module packaging cost are explicit. The
+whole-buffer twin retains its existing limits. Duplicate/late registration,
+already-running registration as a trusted precondition, prior direct return,
+related decisions and the causal inventory are all clarified. Media-specific helper
+names remain intentional; the protocol is scoped to this byte-consumer boundary.
+
+After those clarifications, **two NEW complete cumulative proposal rounds, R5 and
+R6**, each contain separate independent lifecycle and architecture/contracts
+reviews. All four reports are clean on the same complete 207-line proposal,
+SHA-256 `21bff0896350b4b3aed7ffd8bc3fff98b666799f459e00dbe6d474826a04bb77`.
+Parent read every full report and verified its scope. These are static proposal
+reviews, not implementation/native/packaging evidence or Step 6 acceptance.
+ADR-0109 remains **Proposed** pending explicit maintainer approval; no dependent
+lifecycle protocol has been implemented. Step 6 remains unaccepted, and Steps 7–8
+remain unstarted.
+
 ### Remaining gate
 
 The maintainer approved the revised four-ADR decision package and eight-step plan
@@ -2113,6 +2195,9 @@ records. Steps 1–5 have independent acceptance; **Step 6 proceeds automaticall
 media bounds, verification, admission, cancellation and temporary lifecycle. Subsequent runtime,
 independent implementation reviews, security certification and final publication
 remain gates; approval and Steps 1–5 acceptance do not certify whole-wave completion.
+The newly proposed ADR-0109 requires separate maintainer approval before its
+dependent lifecycle repair; approval of ADR-0105–0108 did not authorise that new
+exported ownership protocol.
 
 ---
 

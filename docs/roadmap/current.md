@@ -128,6 +128,15 @@ two NEW clean complete cumulative rounds at `1be8731d`; its [acceptance checkpoi
 records snapshot warnings, narrow context analysis, export completion and actual Chat/Home
 render evidence. **Step 6, media bounds, admission, cancellation and temporary ownership,
 proceeds automatically.**
+Its first cumulative review found confirmed media alias/format, branch-admission and
+causal-worker evidence gaps; their ordinary repairs and selected causal controls are
+committed, while fresh complete implementation acceptance remains open. The lifecycle
+repair requires the proposed [ADR-0109](../decisions/0109-native-media-close-ownership-is-explicit-iterator-provenance.md):
+explicit native iterator ownership must preserve real HTTP close joining while an
+arbitrary asynchronous return cannot block store cleanup. The
+[clarified proposal](phases/phase-2.5.5-hardening-and-remediation.md#adr-0109-proposal-clarification--2026-10-13)
+has two NEW clean complete cumulative proposal rounds and awaits maintainer
+approval before dependent implementation; Steps 7–8 have not begun.
 The historical Ubuntu pre-readiness failure cause remains unproved; no whole-wave
 completion is inferred from these step acceptances.
 

@@ -152,6 +152,7 @@ flowchart TD
 | 0106 | [Media publication requires bounded verified bytes](0106-media-publication-requires-bounded-verified-bytes.md) | Accepted | 2026-10-12 |
 | 0107 | [First-run secret inputs use bounded stdin](0107-first-run-secret-inputs-use-bounded-stdin.md) | Accepted | 2026-10-12 |
 | 0108 | [Provider headers stay gated until keychain custody](0108-provider-headers-stay-gated-until-keychain-custody.md) | Accepted | 2026-10-12 |
+| 0109 | [Native media close ownership is explicit iterator provenance](0109-native-media-close-ownership-is-explicit-iterator-provenance.md) | Proposed | 2026-10-13 |
 
 ## Creating a new ADR
 

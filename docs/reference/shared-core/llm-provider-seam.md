@@ -1005,7 +1005,7 @@ payloads remain subject to the object bound; required structural evidence cannot
 | `audio/aac` | Complete ADTS 7/9-byte frames, legal frequency/channel fields, one raw-data block, stable ID/profile/rate/channels and nonempty payload. | Raw AAC, LATM/LOAS, channel configuration zero and multiblock ADTS refuse; codec CRC/payload are not decoded. [ADTS standard text](https://previewnorm.com/iso/ISO%20IEC%2014496%203-2005%20PDF.pdf), tables 1.A.6–7. |
 | `audio/L16` | Explicit protocol/declaration authority plus nonempty even sample-byte count. | Structural exception: no independent format signature, rate/endianness conversion or duration derivation. Fetched bytes require an explicit compatible HTTP header. |
 | `video/mp4` | Reviewed ftyp brands; one moov with video track, positive track ID/timescale/dimensions/data reference, visual sample description and nonempty mdat. avc1/avc3+avcC, hvc1/hev1+hvcC, vp09+vpcC or av01+av1C configuration framing required. Late moov and bounded extended box sizes supported. | Nonfragmented, unencrypted video only. Audio-only/unknown codecs refuse. Parameter sets/sample payloads, offsets, timing and complete presentation are not decoded. [Visual sample description](https://developer.apple.com/documentation/quicktime-file-format/video_sample_description), [registered brands](https://mp4ra.org/registered-types/brands), [VP9 binding](https://www.webmproject.org/vp9/mp4/), [AV1 binding](https://aomediacodec.github.io/av1-isobmff/). |
-| `video/webm` | EBML webm header, one known/unknown-size Segment, known-size children/clusters; up to 32 tracks; positive-dimension VP8/VP9/AV1 video track and an actual unlaced block referencing it. Late Tracks supported. | Unknown-size clusters, lacing, encryption, audio-only and unknown video codecs refuse. Timing, seeking, codec-private and compressed payload semantics are not decoded. [WebM container](https://www.webmproject.org/docs/container/), [EBML](https://www.rfc-editor.org/rfc/rfc8794.html). |
+| `video/webm` | EBML webm header, one known/unknown-size Segment, known-size children/clusters; up to 32 tracks; positive-dimension VP8/VP9/AV1 video track and an actual unlaced block referencing it. Late Tracks supported. | Unknown-size clusters, lacing, all ContentEncodings (including encryption/compression), audio-only and unknown video codecs refuse. Timing, seeking, codec-private and compressed payload semantics are not decoded. [WebM container](https://www.webmproject.org/docs/container/), [encryption](https://www.webmproject.org/docs/webm-encryption/), [EBML](https://www.rfc-editor.org/rfc/rfc8794.html). |
 | `application/pdf` | PDF 1.0–1.7/2.0 header, terminal startxref/EOF, classic xref within a 49152-byte rolling tail, bounded subsection entries and flat reviewed trailer keys with Root/Size consistency. | Xref streams, hybrid/encrypted/nested or unreviewed trailers refuse. Objects/pages, prior xref chains and live entry targets are not resolved; header 2.0 is admitted only within this classic profile. [ISO 32000-1](https://opensource.adobe.com/dc-acrobat-sdk-docs/standards/pdfstandards/pdf/PDF32000_2008.pdf). |
 
 One selected recognizer owns a reusable 4096-byte arena; Ogg additionally retains 287
@@ -1060,7 +1060,10 @@ De-inlining synchronously owns the supported inert graph before its first await,
 including source/hints, nested arrays/records and intrinsic Map/Set keys/values. It refuses
 accessors, unsupported carriers and inspection faults without invoking caller getters or overridden
 collection iterators. Transparent Proxy reflection can itself trap; thrown faults become fixed
-errors, without a claim of universally trap-free detection. Every occurrence is checked before
+errors, without a claim of universally trap-free detection. A base64 source may be shared by
+genuine media.source slots, but any additional
+record/array/Map/Set alias refuses before writing; replacing a media slot must not leave raw
+base64 elsewhere in the owned graph. Every occurrence is checked before
 handle deduplication and again against actual returned evidence. Same-hash canonical MIME,
 modality, known counts and known durations must agree. Missing stores refuse handle-only media
 as well as inline/URL media; text-only values need no store but also return the owned snapshot,
@@ -1083,6 +1086,9 @@ remain; a progressing download gains no new total deadline.
 
 The engine awaits a present `MediaReferencePort.admitProducedMedia(batch)` before media enters
 workflow state, `save_to`, durable sequence allocation, append or terminal outbox publication.
+Completed and branch outputs share this pre-state pin/admission and existing per-node/run
+rehost budget; branch selection and token accounting do not change. Downstream state and
+durable readers receive the same first-fetch handles.
 Absent reference ports are allowed after byte admission; present incomplete ports refuse.
 The [SQLite immutable batch contract](database-schema.md#media-metadata-admission) creates no
 read grants. After append ACK, reference mutation/reclaim remains best effort. Terminal
