@@ -845,6 +845,77 @@ describe('chatCommand', () => {
     expect(notices.some((t) => t.includes('budget warning'))).toBe(false); // not buried in an unrendered store
   });
 
+  it.each([
+    { mode: 'human', json: false },
+    { mode: 'json', json: true },
+  ])(
+    'reports fixed continuity and review notice on stderr after live $mode /export',
+    async ({ json }) => {
+      const { d, out, err } = deps([], [textTurn('PRIVATE_ASSISTANT_SENTINEL')]);
+      await chatCommand(
+        { agent: undefined },
+        {
+          ...d,
+          io: { ...d.io, stdin: Readable.from(['PRIVATE_USER_SENTINEL\n/export\n']) },
+          global: { ...d.global, json },
+          drive: json ? driveJson : drivePlain,
+        },
+      );
+      const notice = err()
+        .split('\n')
+        .filter((line) => line.startsWith('note: exported workflow'));
+      expect(notice, 'W2_EXPORT_LIVE_NOTICE').toHaveLength(1);
+      expect(notice[0], 'W2_EXPORT_LIVE_NOTICE').toContain(
+        'scaffold; conversation context is not reproduced',
+      );
+      expect(notice[0], 'W2_EXPORT_LIVE_NOTICE').toContain(
+        'Compaction summaries, trimming and omitted context may not transfer',
+      );
+      expect(notice[0], 'W2_EXPORT_LIVE_NOTICE').toContain(
+        'Review retained user/assistant text, @-attached files, !-shell output and authored agent literals before committing',
+      );
+      expect(err()).not.toContain('PRIVATE_');
+      expect(out()).not.toContain('note: exported workflow');
+      expect(existsSync(join(cwd, 'id-0.relavium.yaml'))).toBe(true);
+      if (json) {
+        const events = parseNdjson<{ type: string; workflowPath?: string }>(out());
+        expect(events.filter((event) => event.type === 'session:exported')).toEqual([
+          expect.objectContaining({ workflowPath: join(cwd, 'id-0.relavium.yaml') }),
+        ]);
+      } else {
+        expect(err()).toContain(`exported session to ${join(cwd, 'id-0.relavium.yaml')}`);
+      }
+    },
+  );
+
+  it.each([
+    { mode: 'human', json: false },
+    { mode: 'json', json: true },
+  ])(
+    'omits the live $mode continuity notice and exported event after a refused write',
+    async ({ json }) => {
+      const { d, out, err } = deps([], [textTurn('hi')]);
+      mkdirSync(join(cwd, 'id-0.relavium.yaml'));
+      await chatCommand(
+        { agent: undefined },
+        {
+          ...d,
+          io: { ...d.io, stdin: Readable.from(['hello\n/export\n']) },
+          global: { ...d.global, json },
+          drive: json ? driveJson : drivePlain,
+        },
+      );
+      expect(err()).toContain('export failed:');
+      expect(err(), 'W2_EXPORT_LIVE_SUCCESS_ONLY').not.toContain('note: exported workflow');
+      expect(out()).not.toContain('note: exported workflow');
+      if (json) {
+        expect(
+          parseNdjson<{ type: string }>(out()).some((event) => event.type === 'session:exported'),
+        ).toBe(false);
+      }
+    },
+  );
+
   it('exports the session-so-far to a scaffold on /export, continues, and does NOT mark the live row', async () => {
     // The filename is the session id ('id-0'). A custom drive snapshots the row status IMMEDIATELY after
     // /export (before the next turn's persist) — that is the only point that distinguishes "never marked"

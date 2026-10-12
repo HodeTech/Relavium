@@ -14,12 +14,17 @@ import { CliError } from '../process/errors.js';
  * nodes + the full transcript under `metadata.relaviumExport`) via the engine's `sessionToWorkflow` (1.Z) +
  * deterministic `serializeWorkflow`, and writes the file. It is **pure of side effects beyond the file write**:
  * it does NOT mark the session row (that is a caller policy — the command marks it `exported`; the live
- * `/export` does not, since a subsequent turn's persist would clobber the marker). No **Relavium-managed**
- * secret can appear: API keys live in the OS keychain and never enter a `SessionMessage`, and the frozen
- * `agentSnapshot` carries only a `{{secrets.*}}` placeholder, never a resolved key ([ADR-0006](../../../../docs/decisions/0006-os-keychain-for-api-keys.md)/[ADR-0029](../../../../docs/decisions/0029-tool-policy-hardening.md)).
- * The user's own conversational content is preserved **verbatim** (as `prompt_template` text + the full
- * transcript under `metadata.relaviumExport`) — that is the author's data to review before commit, by design.
+ * `/export` does not, since a subsequent turn's persist would clobber the marker). Provider credentials are
+ * not resolved for this export. The persisted transcript and frozen `agentSnapshot` can still contain
+ * sensitive user/assistant text, `@`-attached files, `!`-shell output and authored literals; those strings
+ * are retained for the author to review before commit. Strict session loading refuses legacy raw model-tool
+ * payloads and provider signatures. This scaffold does not reproduce conversational memory: compaction
+ * summaries, trimming and omitted context may not transfer into its executable nodes.
  */
+
+/** Fixed, value-free notice shared by both successful CLI export callers; write only to stderr. */
+export const SESSION_EXPORT_REVIEW_NOTICE =
+  'note: exported workflow is a scaffold; conversation context is not reproduced. Compaction summaries, trimming and omitted context may not transfer. Review retained user/assistant text, @-attached files, !-shell output and authored agent literals before committing.\n';
 
 export interface ExportSessionOptions {
   readonly store: SessionStore;

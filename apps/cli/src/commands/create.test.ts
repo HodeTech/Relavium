@@ -84,6 +84,21 @@ describe('createCommand (2.J)', () => {
     expect(def.workflow.nodes.map((n) => n.type)).toEqual(['input', 'agent', 'output']);
   });
 
+  it('warns value-free on created credential literals and preserves the actual authored file', async () => {
+    const literal = 'sk-createdSyntheticCredential123456789';
+    const { d, out, err } = deps(scriptedPrompter({ ...AGENT_SPEC, systemPrompt: literal }));
+    expect(await createCommand({ force: false }, d)).toBe(EXIT_CODES.success);
+    const written = parseAgent(
+      readFileSync(join(cwd, '.relavium', 'agents', 'code-reviewer.agent.yaml'), 'utf8'),
+    );
+    expect(err(), 'SNAPSHOT_CAUSAL_CREATE_CALLER').toContain(
+      '1 string(s) matching known credential shapes',
+    );
+    expect(written.system_prompt).toBe(literal);
+    expect(`${out()}${err()}`).not.toContain(literal);
+    expect(out()).not.toContain('Warning:');
+  });
+
   it('rejects a name with no usable id characters as a clean exit-2 CliError', async () => {
     const { d } = deps(scriptedPrompter({ ...AGENT_SPEC, name: '!!! ???' }));
     try {

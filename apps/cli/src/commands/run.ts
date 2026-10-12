@@ -12,6 +12,7 @@ import {
 import { liveMcpChildPids } from '@relavium/mcp';
 import type { MediaBilledModality } from '@relavium/shared';
 
+import { warnSnapshotLiterals } from '../authoring/snapshot-notice.js';
 import { loadResolvedConfig } from '../config/load.js';
 import {
   buildEngine as defaultBuildEngine,
@@ -198,6 +199,7 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
     );
   }
   const inputs = admitted.inputs;
+  warnSnapshotLiterals(def, deps.io);
   const keys = deps.resolveKeys?.();
   // Preserve injected precedence, sharing the admitted run's resolver with provider preflight.
   const providers = deps.providers ?? keys?.providers ?? createProviderResolver(deps.io.env);

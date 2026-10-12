@@ -23,10 +23,11 @@ import { discoverCatalog, type CatalogKind } from '../workflows/catalog.js';
  * **surface-agnostic** — it only reads/writes git-native YAML under a project `.relavium/`, never the keychain
  * or run state — and reuses the SAME strict core parsers (`parseWorkflow` / `parseAgent`) the `run`/`list` paths
  * use, so an authored file is exactly as valid as one a run would accept. A re-serialize from the validated AST
- * (`serializeWorkflow` / `serializeAgent`) is the share-safety guarantee: a provider key is never in the file by
- * construction (there is no schema field that holds a key value — keys live in the OS keychain), an MCP `env`
- * secret is referenced via a `{{secrets.*}}` placeholder by convention, and re-serializing faithfully drops any
- * authored comments where a stray secret might otherwise hide (it preserves placeholders; it does not scrub).
+ * (`serializeWorkflow` / `serializeAgent`) drops comments and preserves placeholders AND authored values.
+ * Although configured provider keys live in the OS keychain, arbitrary metadata, prompts, MCP environment
+ * values and ordinary input defaults can contain credential literals. Re-serialization does not redact them
+ * or make the document safe to share. The create/import/run notices are finite, bounded best-effort checks;
+ * authors must review the content that files and faithful run snapshots retain.
  */
 
 export type AuthoredKind = 'workflow' | 'agent';
@@ -58,7 +59,7 @@ export function catalogPath(projectConfigDir: string, kind: AuthoredKind, slug: 
   return join(projectConfigDir, KIND_DIR[kind], authoredFileName(kind, slug));
 }
 
-/** Re-serialize a parsed authored doc to canonical, share-safe YAML (drops comments; preserves placeholders). */
+/** Re-serialize canonical YAML, preserving authored literals and placeholders; this is not secret redaction. */
 export function serializeAuthored(doc: ParsedAuthored): string {
   return doc.kind === 'workflow'
     ? serializeWorkflow(doc.definition)

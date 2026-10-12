@@ -10,6 +10,7 @@ import {
   type CreatePrompter,
 } from '../authoring/authoring.js';
 import { createClackPrompter } from '../authoring/create-prompter.js';
+import { warnSnapshotLiterals } from '../authoring/snapshot-notice.js';
 import { CliError } from '../process/errors.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
@@ -83,6 +84,7 @@ export async function createCommand(
 
   const target = catalogPath(projectConfigDir, parsed.kind, parsed.slug);
   const targetDisplay = relative(cwd, target);
+  warnSnapshotLiterals(parsed.definition, deps.io);
   writeAuthoredFile(target, targetDisplay, serializeAuthored(parsed), args.force);
   deps.io.writeOut(`Created ${parsed.kind} '${parsed.slug}' at ${targetDisplay}\n`);
   return EXIT_CODES.success;

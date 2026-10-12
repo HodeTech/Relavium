@@ -17,7 +17,7 @@ import {
   type Memory,
   type ReasoningEffort,
 } from '@relavium/shared';
-import { exportSession } from '../chat/export.js';
+import { exportSession, SESSION_EXPORT_REVIEW_NOTICE } from '../chat/export.js';
 import { createConsentGate } from '../engine/mcp-consent-gate.js';
 import { createConsentPrompter } from '../mcp/consent-prompt.js';
 import { formatDoctorReport, runDoctorChecks, type DoctorProbes } from '../chat/doctor.js';
@@ -1286,6 +1286,7 @@ export function createChatLineHandler(
           // id, so `force` here can only ever clobber this session's prior export, never another session's.
           force: true,
         });
+        deps.io.writeErr(SESSION_EXPORT_REVIEW_NOTICE);
         if (deps.global.json) {
           // Machine mode (--json, 2.Q): emit `session:exported` THROUGH the session bus, so it rides the
           // live stream's monotonic per-session sequenceNumber (a DB-derived seq would jump backward and

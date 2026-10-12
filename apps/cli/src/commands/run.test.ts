@@ -6,6 +6,8 @@ import { join } from 'node:path';
 import {
   WorkflowEngine,
   createInMemoryHost,
+  parseWorkflow,
+  serializeWorkflow,
   type NodeExecutor,
   type NodeOutcome,
 } from '@relavium/core';
@@ -325,6 +327,143 @@ function makeStallingCancelEngine(): {
 }
 
 describe('runCommand', () => {
+  it('warns after admission before services and preserves the actual augmented frozen workflow', async () => {
+    const authoredLiteral = 'sk-runAuthoredSyntheticCredential123456789';
+    const stdinLiteral = 'sk-runStdinSyntheticCredential987654321';
+    const base = parseWorkflow(MCP_WF);
+    const definition = {
+      ...base,
+      workflow: {
+        ...base.workflow,
+        metadata: { privateSnapshotProperty: authoredLiteral },
+        inputs: [{ name: 'token', type: 'secret' as const, required: true }],
+      },
+    };
+    const path = writeWorkflow('notice.relavium.yaml', serializeWorkflow(definition));
+    const { io, out, err } = captureIo();
+    const order: string[] = [];
+    const noticeIo: CliIo = {
+      ...io,
+      writeErr: (text) => {
+        if (text.startsWith('Warning: authored')) order.push('notice');
+        io.writeErr(text);
+      },
+    };
+    const providers = scriptedResolver([toolUseTurn('c1', 'mcp_fs_read'), textTurn('done')]);
+    const client = createClient(':memory:');
+    runMigrations(client.db);
+    let frozen: unknown;
+    let started: unknown;
+    let startInputs: unknown;
+    const calls: string[] = [];
+    const conn: McpConnection = {
+      listTools: () => Promise.resolve([{ name: 'read', inputSchema: { type: 'object' } }]),
+      callTool: (name) => {
+        calls.push(name);
+        return Promise.resolve({
+          content: [{ type: 'text', text: 'synthetic result' }],
+          isError: false,
+        });
+      },
+      close: () => Promise.resolve(),
+    };
+    try {
+      const code = await runCommand(
+        { workflow: path, input: [], allowMcpStdio: [], secretInputsStdin: true },
+        deps(noticeIo, globalOptions({ json: true }), {
+          readSecretInput: () => {
+            order.push('stdin');
+            return Promise.resolve(`token=${stdinLiteral}`);
+          },
+          resolveKeys: () => {
+            order.push('keys');
+            return { providers, mcpSecretResolver: () => 'unused-synthetic-secret' };
+          },
+          consentGate: PASS_CONSENT,
+          startMcpClient: () => {
+            order.push('mcp');
+            return realStartMcpClient([{ id: 'fs', open: () => Promise.resolve(conn) }]);
+          },
+          openRunStore: (workflow, homeDir, cwd) => {
+            order.push('history');
+            frozen = JSON.parse(JSON.stringify(workflow));
+            return historyOpenRunStore(client.db)(workflow, homeDir, cwd);
+          },
+          buildEngine: async (opts) => {
+            const engine = await buildEngine({
+              ...opts,
+              host: createInMemoryHost(),
+              effectJournal: (correlation) => createInMemoryEffectJournal(correlation),
+            });
+            const start = engine.start.bind(engine);
+            vi.spyOn(engine, 'start').mockImplementation((input) => {
+              started = input.workflow;
+              startInputs = input.inputs;
+              return start(input);
+            });
+            return engine;
+          },
+        }),
+      );
+      expect(code).toBe(EXIT_CODES.success);
+      expect(err(), 'SNAPSHOT_CAUSAL_RUN_CALLER').toContain(
+        '1 string(s) matching known credential shapes',
+      );
+      expect(order).toEqual(['stdin', 'notice', 'keys', 'mcp', 'history']);
+      expect(frozen).toEqual(started);
+      expect(frozen).toMatchObject({
+        workflow: {
+          metadata: definition.workflow.metadata,
+          agents: [{ tools: ['read_file', 'mcp_fs_read'] }],
+        },
+      });
+      expect(startInputs).toEqual({ token: stdinLiteral });
+      expect(calls).toEqual(['read']);
+      expect(`${out()}${err()}`).not.toContain(authoredLiteral);
+      expect(`${out()}${err()}`).not.toContain(stdinLiteral);
+      expect(err()).not.toContain('privateSnapshotProperty');
+      const events = out()
+        .trim()
+        .split('\n')
+        .map((line) => RunEventSchema.parse(JSON.parse(line)));
+      expect(events.at(-1)?.type).toBe('run:completed');
+    } finally {
+      client.sqlite.close();
+    }
+  });
+
+  it('does not warn about credential-shaped stdin secret values absent from authored content', async () => {
+    const path = writeWorkflow('stdin-only.relavium.yaml', SECRET_RUN);
+    const { io, err } = captureIo();
+    expect(
+      await runCommand(
+        { workflow: path, input: ['n=2'], allowMcpStdio: [], secretInputsStdin: true },
+        deps(io, globalOptions(), {
+          readSecretInput: () => Promise.resolve('token=sk-onlyStdinSyntheticCredential123456789'),
+        }),
+      ),
+    ).toBe(EXIT_CODES.success);
+    expect(err()).not.toContain('Warning: authored');
+  });
+
+  it('does not scan authored literals before complete input admission succeeds', async () => {
+    const path = writeWorkflow(
+      'refused-notice.relavium.yaml',
+      HAPPY.replace(
+        '  id: cli-run-happy',
+        '  id: cli-run-happy\n  metadata: { private: sk-refusedSyntheticCredential123456789 }',
+      ),
+    );
+    const { io, err } = captureIo();
+    await expect(
+      runCommand(
+        { workflow: path, input: ['n=invalid'], allowMcpStdio: [] },
+        deps(io, globalOptions()),
+      ),
+    ).rejects.toMatchObject({ code: 'invalid_invocation' });
+    expect(err()).toBe('');
+  });
+
   it('runs a workflow to completion and exits 0, rendering the lifecycle (plain)', async () => {
     const path = writeWorkflow('happy.relavium.yaml', HAPPY);
     const { io, out } = captureIo();

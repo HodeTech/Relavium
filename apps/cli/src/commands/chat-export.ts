@@ -1,6 +1,6 @@
 import { SessionExportedEventSchema } from '@relavium/shared';
 
-import { exportSession } from '../chat/export.js';
+import { exportSession, SESSION_EXPORT_REVIEW_NOTICE } from '../chat/export.js';
 import { loadResolvedConfig } from '../config/load.js';
 import { openSessionStore, type OpenedSessionStore } from '../history/session-open.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
@@ -52,6 +52,8 @@ export function chatExportCommand(
       ...(args.out === undefined ? {} : { outPath: args.out }),
       force: args.force,
     });
+
+    deps.io.writeErr(SESSION_EXPORT_REVIEW_NOTICE);
 
     // A session with no captured `agentSnapshot` exports an `agents:`-less scaffold (the CLI persister always
     // captures one, so this only bites a NULL-snapshot row from another surface/migration): warn that its
