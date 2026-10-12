@@ -1415,6 +1415,38 @@ and developer sources remain unchanged. Its 1,034-file / 457-dependency manifest
 identifies `5c95857d` plus the correction working tree, not the later commit. Fresh
 published platform gates and two NEW complete clean cumulative rounds remain open.
 
+**Sixth-round cooperative-delete correction:** round 5's three new complete
+cumulative scopes were clean at `b7d0997f`. Round 6 independently reproduced one
+Medium maintenance regression: two stores could admit the same blob for deletion,
+then the second unlink reported ENOENT after its peer had already removed it.
+The actual host-GC caller consequently skipped its orphan phase. A deterministic
+native unlink-entry barrier reproduces baseline success and the regression without
+injecting a missing-file error or using sleeps. The CLI/shared and tooling/document
+slices found no additional issue, but combined R6 is **not clean**. The correction
+must preserve strict path admission and non-missing failures; two NEW complete clean
+cumulative rounds and fresh current-source gates follow the final fix. Earlier
+clean slices do not certify that correction or close Step 2.
+
+**Sixth-correction local gates:** full `pnpm run ci` passes with **524 package
+files / 11,263 passing tests / 13 established skips**, including lint/typecheck,
+build/format, isolation/seam/dependency checks, three offline smokes and 80 acceptance
+tool guards. Four wire and 23 usage mechanisms pass; the complete filesystem matrix
+passes **26 mechanisms / 1,197 assertion executions / 67 expected semantic
+failures**. Both deletion regressions fail when the narrow missing-unlink recovery
+is removed; its other ten cases remain green. Fixed/restored inventories match and
+developer sources remain unchanged. The 1,036-file / 457-dependency manifest names
+`b7d0997f` plus the correction working tree, not a later commit.
+
+**Published native gate remains open:** required Ubuntu CI at exact `b7d0997f`
+fails six native session-usage readiness cases; its seven other jobs pass. These
+are genuine pre-readiness expiries, distinct from Step 1's corrected obsolete
+callback. The failing Node 24.21 lane and successful Node 22.13 floor have different
+runtime and task schedules; their logs do not establish the historical cause.
+The next correction budgets overlapping workspace test processes and retains
+native startup diagnostics, preserving the five-second bound and every native
+case. The local deletion gates do not clear that published failure. Fresh platform
+gates and two NEW complete clean cumulative rounds still precede Step 2 acceptance.
+
 ### Remaining gate
 
 The maintainer approved the revised four-ADR decision package and eight-step plan

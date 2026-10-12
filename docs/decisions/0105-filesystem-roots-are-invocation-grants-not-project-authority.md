@@ -232,3 +232,14 @@ ordinary Terraform source and similarly named non-credential files remain usable
 The [canonical filesystem contract](../reference/shared-core/built-in-tools.md#cli-authority-and-floors)
 owns the file list. Permanent native controls and the existing basename-removal
 mechanism require the correction; the finding-bearing review is not a clean round.
+
+### Cooperative deletion correction — 2026-10-12
+
+The sixth cumulative implementation round reproduced an idempotence regression:
+two cooperating stores admitted one blob, then the already-completed peer unlink
+caused a missing-file refusal in the other. Its host-GC pass stopped before orphan
+enumeration. Missing after admitted deletion is an already-reclaimed outcome;
+strict root/shard/final admission and other I/O failures remain distinct. The
+[canonical CAS contract](../reference/shared-core/built-in-tools.md#physical-media-storage-and-limits)
+owns the behaviour. Native barrier and actual caller controls must fail under
+removal; fresh independent cumulative reviews follow the correction.
