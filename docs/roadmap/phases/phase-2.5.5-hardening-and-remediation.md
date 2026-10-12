@@ -1,6 +1,6 @@
 # Phase 2.5.5 — Hardening and Remediation
 
-> Status: 🚧 **Open — Wave 2 approved; Step 1 baseline repair in progress.** Live progress and execution order are canonical in
+> Status: 🚧 **Open — Wave 2 Step 1 accepted; Step 2 unified filesystem changeset in progress.** Live progress and execution order are canonical in
 > [../current.md](../current.md#execution-order--phase-255--phase-26-temporary); this banner does not
 > restate them. A full-project multi-agent code review completed
 > 2026-07-19 at HEAD `f88b0e8` — 377 findings, 373 surviving two-lens adversarial
@@ -1040,7 +1040,7 @@ Raised by a reviewer, then disproved by both verifiers reading the code. Recorde
 ## Wave 2 preflight and proposed execution plan — 2026-10-12
 
 **Status: maintainer approved ADR-0105–0108 and the eight-step plan on 2026-10-12.
-Step 1 baseline repair is in progress; no implementation acceptance is claimed.**
+Step 1 is accepted after two new clean complete cumulative rounds; Step 2 proceeds.**
 Inspection baseline is `development` at `aaed7d593d72ea414b1fae42ddf20e148a5fce0f`.
 This is the joint Phase 2.5.5/2.6 Wave 2, not the closed core reliability W2/W8.
 All work stays on `development`. Detailed independent reports remain local/ignored;
@@ -1251,14 +1251,39 @@ obtained approval and Step 7 implementation gate; the adjacent ADR-0107 task als
 states its approved Step 4 gate. Fresh complete cumulative clean rounds follow
 this documentation correction; neither finding-bearing round is counted as clean.
 
+### Step 1 acceptance — 2026-10-12
+
+Two NEW independent complete cumulative rounds, each with separate lifecycle and
+auditor reviewers, found **zero findings** after the last correction. Both covered
+all **21 changed paths** from inspection baseline `aaed7d59` through reviewed head
+`8c13675f`, including the decision package, native worker, acceptance tools and
+documentation. Finding-bearing rounds 1–2 do not count as clean; rounds 3–4 do.
+Step 1 is **accepted**. Detailed reports remain local/ignored.
+
+Required local CI passed with **511 ordinary files / 11,028 passes / 12 existing
+skips**, **60 tool tests**, four wire controls, **23 usage mechanisms** and **429
+permanent cases / 71 joined native children / one actual readiness timeout**.
+Reviewers independently matched all **1,010 physical source files** to retained
+execution evidence and rechecked the intended semantic removal failures. Focused
+native tests pass **10/10**, workload controls **3/3**, and cumulative documentation
+checks cover **16 Markdown files / 1,096 relative links and anchors / no findings**.
+
+The retained full run captured `56bdba93` plus the then-working-tree source fix;
+physical byte matching supports the reviewed implementation. It is not execution
+at the later committed head or new published GitHub evidence. The original Ubuntu
+pre-readiness starvation cause remains unproved. Native Windows gates, subsequent
+steps, four new security sittings and exact-head publication remain open.
+
 ### Remaining gate
 
 The maintainer approved the revised four-ADR decision package and eight-step plan
 on **2026-10-12**. ADR-0105–0108 are **Accepted** and dependent implementation is
 authorised on `development`; the earlier Proposed checkpoints remain historical
-records. Step 1 proceeds with permanent worker-timer controls and complete ordinary
-CI. Runtime, independent implementation reviews, security certification and final
-publication remain gates; no Wave 2 completion or green full CI is inferred from approval.
+records. Step 1 has independent acceptance; **Step 2 proceeds automatically** with
+one cumulative filesystem security scope across CLI roots/config/session consumers,
+the shared ancestor/env rules and DB save_to/CAS containment. Subsequent runtime,
+independent implementation reviews, security certification and final publication
+remain gates; approval and Step 1 acceptance do not certify whole-wave completion.
 
 ---
 

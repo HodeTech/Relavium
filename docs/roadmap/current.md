@@ -112,9 +112,12 @@ W9 is a historical grouping of harness items and approved deferrals, not a new o
 [proposed execution plan](phases/phase-2.5.5-hardening-and-remediation.md#wave-2-preflight-and-proposed-execution-plan--2026-10-12)
 joins current findings, already shipped protections and all decisions needed before
 implementation. The maintainer approved ADR-0105–0108 and the eight-step plan on
-2026-10-12; Step 1 baseline repair is in progress. No Wave 2 implementation acceptance
-is claimed. Existing docs PR #93's required native DB CI failure is a baseline gate,
-not evidence that this documentation audit passed full CI.
+2026-10-12. **Step 1 is accepted** after two new clean complete cumulative rounds at
+`8c13675f`, with full local CI and complete causal/native inventories; the
+[acceptance checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#step-1-acceptance--2026-10-12)
+records evidence and limits. **Step 2, the unified filesystem changeset, proceeds.**
+The original Ubuntu pre-readiness failure cause remains unproved; no new published
+GitHub result or whole-wave completion is inferred from local Step 1 acceptance.
 
 ## Historical W7 implementation checkpoints
 
