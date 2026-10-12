@@ -105,6 +105,55 @@ describe('sanitizeUntrusted — the failure paths carry arbitrary text (#W15-8)'
     expect(sanitizeUntrustedInline(text)).toBe('request ?client_secret=[REDACTED]');
     expect(sanitizeUntrusted('?client_secret_hint=ordinary')).toBe('?client_secret_hint=ordinary');
   });
+
+  const queryNames = [
+    'client_secret',
+    'refresh_token',
+    'id_token',
+    'auth_token',
+    'session_token',
+    'api_secret',
+    'access_key',
+    'secret_key',
+  ];
+  it.each(
+    queryNames.flatMap((name) => [
+      { name, label: 'multiline', sanitize: sanitizeUntrusted },
+      { name, label: 'inline', sanitize: sanitizeUntrustedInline },
+    ]),
+  )(
+    'SECRETS_CAUSAL_RESIDUAL_SCRUB protects $name beside a split credential: $label',
+    ({ name, sanitize }) => {
+      for (const separator of ['\n', '\t', ' \n\t ']) {
+        const split = join('sk-', 'ant-', 'api03-', separator, 'AbCdEf0123456789xyz');
+        const query = `?${name}=opaque-query-value&ordinary=kept`;
+        for (const text of [`${query}; key: ${split}`, `key: ${split}; ${query}`]) {
+          expect(sanitize(text), 'SECRETS_CAUSAL_RESIDUAL_SCRUB').toBe('[REDACTED]');
+        }
+      }
+    },
+  );
+
+  it.each(queryNames)('preserves ordinary prose after an in-place %s redaction', (name) => {
+    const text = `request ?${name}=opaque-query-value\nretrying after 30s`;
+    expect(sanitizeUntrusted(text)).toBe(`request ?${name}=[REDACTED]\nretrying after 30s`);
+    expect(sanitizeUntrustedInline(text)).toBe(`request ?${name}=[REDACTED] retrying after 30s`);
+  });
+
+  it('checks residual split keys beside other credential shapes without discarding benign prose', () => {
+    const split = join('sk-', 'ant-', 'api03-', '\n', 'AbCdEf0123456789xyz');
+    for (const [credential, redacted] of [
+      ['Authorization: Bearer opaque-value', 'Authorization: Bearer [REDACTED]'],
+      ['Authorization: Basic dXNlcjpwYXNz', 'Authorization: Basic [REDACTED]'],
+      ['https://user:opaque-value@host/x', 'https://[REDACTED]@host/x'],
+      [join('AI', 'za', 'SyA1234567890abcdefghijklmnopqrstuv'), '[REDACTED]'],
+    ]) {
+      for (const sanitize of [sanitizeUntrusted, sanitizeUntrustedInline]) {
+        expect(sanitize(`${credential}; key: ${split}`)).toBe('[REDACTED]');
+        expect(sanitize(`${credential} retry after 30s`)).toBe(`${redacted} retry after 30s`);
+      }
+    }
+  });
 });
 
 /**
