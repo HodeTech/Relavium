@@ -29,12 +29,13 @@ export interface ExportCommandDeps {
 }
 
 /**
- * `relavium export <id>` (2.J) — write a portable, **share-safe** copy of a project workflow or agent. It
+ * `relavium export <id>` (2.J) — write a portable, canonical copy of a project workflow or agent. It
  * resolves `<id>` across BOTH catalogs, **re-serializes from the validated AST** (`serializeWorkflow` /
- * `serializeAgent`) so the output drops any authored comments and re-serializes faithfully: a provider key is
- * never in the file by construction (no schema field holds a key value; keys live in the OS keychain), and MCP
- * `env` secrets are referenced via `{{secrets.*}}` placeholders by convention — preserved as authored, not
- * scrubbed ([keychain-and-secrets.md](../../../../docs/reference/desktop/keychain-and-secrets.md)).
+ * `serializeAgent`) so the output drops authored comments and preserves authored values. Relavium does not
+ * insert resolved provider keys, but arbitrary authored strings may contain pasted credentials or other
+ * sensitive content. Review the copy before sharing. MCP `env` credentials should use `{{secrets.*}}`
+ * placeholders; serialization does not scrub literals
+ * ([keychain-and-secrets.md](../../../../docs/reference/desktop/keychain-and-secrets.md)).
  * The default target is `<id>.<suffix>` in cwd; `--out` overrides, `--force` overwrites. **Surface-agnostic**:
  * pure YAML I/O, never the keychain or run state. An unknown/ambiguous id, an invalid source file, or an
  * existing target without `--force` is a clean exit-2 {@link CliError}.
@@ -46,8 +47,8 @@ export function exportCommand(args: ExportCommandArgs, deps: ExportCommandDeps):
 
   const displayPath = relative(cwd, path);
   const yaml = readAuthoredFile(path, displayPath);
-  // Re-validate the source (it was valid at the catalog scan) to get the AST — and reject a now-invalid/leaky
-  // file before writing a share-able copy. The basename hint picks the matching parser for a precise error.
+  // Re-validate the source (it was valid at the catalog scan) to get the AST before canonical serialization.
+  // This validates structure, not secrecy. The basename hint picks the parser for a precise error.
   const parsed = detectAndParse(yaml, displayPath, basename(path));
 
   const target =
