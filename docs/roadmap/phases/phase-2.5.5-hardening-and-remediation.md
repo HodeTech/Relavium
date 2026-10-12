@@ -1527,6 +1527,75 @@ or OS subprocess jail guarantee. No user decision, key, provider or billing acti
 is pending. Steps 3–8, four final security sittings, full 2.6.N lifecycle and whole-wave
 publication remain open; no approved CR deferral is closed by this increment.
 
+### Step 3 implementation checkpoint — 2026-10-12
+
+**Implemented; required gates and independent acceptance remain open.** The CLI
+native bridge now preserves private causes while publishing fixed get/set/delete
+diagnostics, without inspecting foreign error messages or coercion hooks. Fifty
+direct mocked-native cases and 34 actual command/render cases cover constructor
+and operation faults, human/JSON output, verbose diagnostics and successful
+forwarding. These mocks do not certify a real locked keychain or native-module
+loading failure; no user keychain or provider was accessed.
+
+The common secret reader now bounds incoming UTF-8 bytes at 65,536 before copying
+or retaining chunks, owns admitted Buffer bytes, assembles Unicode before decoding,
+preserves whitespace and joins available iterator cleanup on early refusal. Its
+31 dedicated cases cover aggregate/single-chunk limits, mutable and hostile Buffer
+shapes, zero-byte retention, source failures and cleanup. Actual provider dispatch
+and gate/default-reader controls verify their existing consumers; their necessary
+prior database opening is not a zero-history first-run claim. The reader does not
+provide a deadline for a stalled source. Step 4's run transport remains open.
+
+The pure LLM scrubber adds eight finite literal query-name families, with a 52-case
+LLM-error workload and adjacent CLI diagnostic controls. Opaque-value positives and
+benign near-name negatives distinguish this mechanism from prefix-based masking;
+encoded parameter names and arbitrary content are not claimed to be covered.
+
+Filesystem and secrets causal entry points share one physical-source coordinator,
+with finite family/tool-root authority, complete unique inventories, named semantic
+failures, target-body evaluation, source/dependency fences, exact restoration and
+bounded metadata retention. The existing 26 filesystem declarations are retained;
+nine secrets mechanisms are added. Dedicated required CI aggregation and local CI
+include the full secrets matrix. Selected runs alone do not certify the matrix.
+
+An initial cleanup capture correctly refused an ambiguous inventory before mutation
+(31 cases but 29 unique names); concise parameter labels correct it. This refusal
+is not counted as successful removal evidence. Source, tooling and installed
+dependencies will remain frozen during final captures. Detailed checks and reports
+remain local; no Step 3, security-sitting or whole-wave acceptance is inferred here.
+
+#### Step 3 gates and causal-authority correction — 2026-10-12
+
+Full `CI=true pnpm run ci` passed at `7833c08` plus the implementation working
+tree: **528 package files / 11,438 passing tests / 14 established platform or
+capability skips**, lint/typecheck/build/format, isolation/seam/dependency/schema/
+bundle checks, three offline smokes, **106 acceptance-tool tests**, four wire and
+23 usage mechanisms, and complete filesystem/secrets matrices. The usage cohort
+retains all 429 permanent cases and 71 joined native children, including its actual
+readiness-timeout control. This is local execution, not published-head CI.
+
+A read-only probe then confirmed an inherited evidence gap: a plain runtime
+`Error` carrying a marker could certify a removal. The shared authority now requires
+an `AssertionError` carrying that marker for every required named witness. Six new
+tool guards reject misleading runtime-error markers and pin the additional-witness
+rule. Secrets declarations require every aggregate/single-chunk cap shape, all nine
+foreign-source boundaries, and constructor plus method witnesses for each native
+operation. The decoded-output limit is documented in UTF-16 code units, matching
+the unchanged process implementation.
+
+After that tooling-only correction, **112 acceptance-tool tests**, scoped tooling
+lint/checkJs and the complete **26-mechanism filesystem / nine-mechanism secrets**
+matrices passed. Filesystem records **1,197 assertion executions / 67 expected
+semantic failures**; secrets records **1,071 / 104**. Required witnesses, identical
+complete unique inventories, target-body evaluation and exact restoration were
+independently checked; both scratch trees were removed. Physical manifests cover
+1,054 filesystem / 1,048 secrets source files and 457 installed dependency packages,
+at `7833c08` plus the correction working tree. The earlier unchanged runtime/wire/
+usage gates retain their own source attribution; they are not relabelled as later
+head execution. Relative-document checks cover 41 Markdown files / 2,241 links and
+anchors with zero findings; `git diff --check` passes. Implementation commits and
+two NEW clean complete cumulative review rounds remain the Step 3 acceptance gate.
+
 ### Remaining gate
 
 The maintainer approved the revised four-ADR decision package and eight-step plan

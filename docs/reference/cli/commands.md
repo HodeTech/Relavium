@@ -465,7 +465,8 @@ relavium provider list --verify                         # + a live key-verificat
 
 - **`set-key` reads the key from stdin**, never a CLI argument (argv leaks into `ps`, shell history, and CI
   logs); pipe it or use a heredoc. The key is stored in the OS keychain under the canonical entry-naming
-  scheme ([keychain-and-secrets.md](../desktop/keychain-and-secrets.md#entry-naming)).
+  scheme ([keychain-and-secrets.md](../desktop/keychain-and-secrets.md#entry-naming)). The
+  [common secret-stdin limit](#secret-stdin-limits) applies before key storage.
 - **`list`** shows each registered provider, its base URL, and whether a key is set — a fast, **offline** read (no
   key is read; the status is derived from the stored keychain ref). **`--verify`** (2.5.G S11, [ADR-0065](../../decisions/0065-provider-economics-and-extensibility.md) §6) additionally runs a **bounded, key-redacted live probe** per provider — the SAME `validateProviderKey` seam `provider test` + `/doctor --deep` use — and reports `verified` / `failed — <redacted reason>` / `no key` in the status column. A provider with **no resolvable key** (keychain → env both empty) is reported `no key` and **never probed** (so `--verify` never hangs on a keyless provider); the key is **never** echoed. `list` honors **`--json`** ([ADR-0049](../../decisions/0049-cli-machine-output-contract.md)): one key-free NDJSON record per provider — `{ name, baseUrl, keySet, verified, verifyDetail }`, where `verified` is `null` without `--verify` (else `true`/`false`) and `verifyDetail` is a short reason — a **redacted** failure message, or `"no key"` when a probed provider has no resolvable key, else `null` (so a `verified: null` record with `verifyDetail: "no key"` is a probed-keyless provider, distinct from the un-probed `verifyDetail: null`). The `--verify` probes run **concurrently** (each timeout-bounded), so verifying N providers costs one timeout, not N.
 - **`add` / `set-key`** auto-register the provider row. `--base-url <url>` on `add` records a custom endpoint that **is now actually used at request routing** (2.5.G S9, [ADR-0065](../../decisions/0065-provider-economics-and-extensibility.md) §3–4 — the earlier "dead-config" gap is closed): the resolver rebinds that provider's adapter to the custom endpoint and routes **all** its egress (streaming `generate`/`stream` + the `models.list` refresh) through the shared **SSRF-validated** hop (`connectValidated` — HTTPS-only, no embedded credentials, every resolved IP range-blocked, connect pinned to the validated IP for DNS-rebinding safety). Custom endpoints are **OpenAI-compatible only** this round (`openai` / `deepseek`); a `--base-url` on `anthropic` / `gemini` is **refused** with a clear message (exit `2`), as is a non-HTTPS / private-loopback / credential-bearing URL, or one carrying **terminal-control / bidirectional characters** (fail-fast at `add`, so the stored value is terminal-safe on every surface). The provider-id set stays **closed** — a custom endpoint reuses the `openai` / `deepseek` id (ADR-0065 §6).
@@ -474,8 +475,24 @@ relavium provider list --verify                         # + a live key-verificat
   key fails cleanly (exit `2`) without echoing the key.
 - **Key resolution** (used by `run` + `test`): **OS keychain → `RELAVIUM_<PROVIDER>_API_KEY` env var → error**.
   The env var is the headless/CI source; the `secrets.enc` encrypted-file fallback is deferred past v1.0
-  ([keychain-and-secrets.md](../desktop/keychain-and-secrets.md)). An unavailable keychain (locked / no Linux
-  Secret Service) surfaces a clean error — never a silent plaintext fallback.
+  ([keychain-and-secrets.md](../desktop/keychain-and-secrets.md)). Keychain writes and deletion surface a
+  fixed operation-specific error when unavailable (locked / no Linux Secret Service). Runtime resolution
+  may still use the documented environment source; it never creates a plaintext fallback file.
+
+### Secret stdin limits
+
+The common reader used by `provider set-key`, `gate --secret-stdin` and budget resume
+accepts at most **65,536 input bytes (64 KiB)** across all chunks, including whitespace.
+It refuses an oversized pipe rather than truncating it. String chunks count their UTF-8
+encoding; byte chunks are assembled before decoding, preserving split Unicode characters.
+This compatibility limit applies to the incoming pipe, before caller-specific trimming
+or line parsing.
+
+The reader refuses TTY stdin before reading; redirecting stdout does not enable terminal
+secret entry. It preserves admitted whitespace: `provider set-key` trims the key, while
+gate line parsing preserves values. Empty/whitespace-only input, over-limit input and
+read failures produce payload-free exit-`2` diagnostics. Early refusal stops reading.
+This byte bound does not impose a deadline on a stalled pipe.
 
 ### Local MCP servers need consent
 
