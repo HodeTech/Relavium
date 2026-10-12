@@ -61,3 +61,4 @@ export type { CanonicalMediaMimeType, MediaAdmissionErrorCode } from './media-ad
 export { createMediaVerifier } from './media-verifier.js';
 export type { MediaVerifier } from './media-verifier.js';
 export { collectMediaForAdmission } from './media-publication.js';
+export { registerNativeMediaIterator, closeMediaIterator } from './media-iterator.js';

@@ -1,6 +1,7 @@
 import {
   canonicalMediaMimeType,
   createMediaVerifier,
+  registerNativeMediaIterator,
   mediaMimeTypesCompatible,
   MediaAdmissionError,
   type AbortSignalLike,
@@ -178,14 +179,24 @@ function admitResponseHeader(response: HopResponse, declared: string): string | 
  * downloaded whole and then rejected. This is the function the media path uses; the whole-buffer twin stays
  * for a caller that already knows its body is sub-ceiling.
  *
- * It is an async GENERATOR rather than a `Promise<AsyncIterable>` so the connect happens on first pull: a
+ * It constructs a lazy async generator so the connect happens on first pull: a
  * consumer that never iterates never opens a socket, and the timeout window starts when the body is wanted.
  */
-export async function* streamMediaBytes(
+export function streamMediaBytes(
   url: string,
   options: FetchMediaBytesOptions,
   deps: EgressDeps = nodeEgressDeps,
 ): AsyncIterable<Uint8Array> {
+  const iterator = streamMediaBytesLazy(url, options, deps);
+  // Capture the exact public iterator before it escapes, without entering its lazy body.
+  return deps === nodeEgressDeps ? registerNativeMediaIterator(iterator) : iterator;
+}
+
+async function* streamMediaBytesLazy(
+  url: string,
+  options: FetchMediaBytesOptions,
+  deps: EgressDeps,
+): AsyncGenerator<Uint8Array> {
   options = { ...options };
   const declared = canonicalMediaMimeType(options.mimeType);
   const nativeClosures = new Set<Promise<unknown>>();

@@ -18,6 +18,7 @@ import {
   admitMediaDescriptor,
   canonicalMediaMimeType,
   createMediaVerifier,
+  closeMediaIterator,
   type AbortSignalLike,
   type DurableMediaMeta,
   validateByteRange,
@@ -103,6 +104,18 @@ function validatedDescriptor(
   return admitMediaDescriptor({ ...snapshot.meta, ...evidence });
 }
 
+/** Join owned retirement without replacing the primary verification/write/cancellation failure. */
+async function closeMediaIteratorPreservingFailure(
+  iterator: AsyncIterator<Uint8Array>,
+  failed: boolean,
+): Promise<void> {
+  try {
+    await closeMediaIterator(iterator);
+  } catch {
+    if (!failed) throw new MediaAdmissionError('source_failed');
+  }
+}
+
 /** sha256 hex of the bytes — the content address that forms the handle. */
 function sha256Hex(bytes: Uint8Array): string {
   return createHash('sha256').update(bytes).digest('hex');
@@ -185,24 +198,41 @@ export class FilesystemMediaStore implements MediaStore {
   /** Count before every copy/hash/write; EOF verification precedes publication. */
   async putStream(chunks: AsyncIterable<Uint8Array>, mimeType: string): Promise<string> {
     const verifier = createMediaVerifier(mimeType);
-    return this.#publish(async (file) => {
-      const hash = createHash('sha256');
-      let total = 0;
-      for await (const chunk of chunks) {
-        if (inputByteLength(chunk) > MAX_MEDIA_OBJECT_BYTES - total)
-          throw new MediaAdmissionError('object_limit');
-        const owned = new Uint8Array(chunk);
-        verifier.push(owned);
-        total += owned.length;
-        hash.update(owned);
-        const { bytesWritten } = await file.write(owned).catch((error: unknown) => {
-          throw this.#paths.error(error);
-        });
-        if (bytesWritten !== owned.length) throw new MediaStoreFilesystemError('io');
-      }
-      verifier.finish();
-      return HANDLE_PREFIX + hash.digest('hex');
-    }, mimeType);
+    const iterator = chunks[Symbol.asyncIterator]();
+    let ended = false;
+    let failed = false;
+    try {
+      // #publish retires its own file and temporary before this outer finally joins the source.
+      return await this.#publish(async (file) => {
+        const hash = createHash('sha256');
+        let total = 0;
+        for (;;) {
+          const step = await iterator.next();
+          if (step.done === true) {
+            ended = true;
+            break;
+          }
+          const chunk = step.value;
+          if (inputByteLength(chunk) > MAX_MEDIA_OBJECT_BYTES - total)
+            throw new MediaAdmissionError('object_limit');
+          const owned = new Uint8Array(chunk);
+          verifier.push(owned);
+          total += owned.length;
+          hash.update(owned);
+          const { bytesWritten } = await file.write(owned).catch((error: unknown) => {
+            throw this.#paths.error(error);
+          });
+          if (bytesWritten !== owned.length) throw new MediaStoreFilesystemError('io');
+        }
+        verifier.finish();
+        return HANDLE_PREFIX + hash.digest('hex');
+      }, mimeType);
+    } catch (error) {
+      failed = true;
+      throw error;
+    } finally {
+      if (!ended) await closeMediaIteratorPreservingFailure(iterator, failed);
+    }
   }
 
   async #publish(write: (file: FileHandle) => Promise<string>, mimeType: string): Promise<string> {
@@ -403,36 +433,55 @@ export class InMemoryMediaStore implements MediaStore {
     let block: Uint8Array | undefined;
     let used = 0;
     let total = 0;
-    for await (const chunk of chunks) {
-      if (inputByteLength(chunk) > MAX_MEDIA_OBJECT_BYTES - total)
-        throw new MediaAdmissionError('object_limit');
-      const owned = new Uint8Array(chunk);
-      verifier.push(owned);
-      let offset = 0;
-      while (offset < owned.length) {
-        if (block === undefined || used === block.length) {
-          block = new Uint8Array(64 * 1024);
-          collected.push(block);
-          used = 0;
+    const iterator = chunks[Symbol.asyncIterator]();
+    let ended = false;
+    let failed = false;
+    try {
+      for (;;) {
+        const step = await iterator.next();
+        if (step.done === true) {
+          ended = true;
+          break;
         }
-        const count = Math.min(block.length - used, owned.length - offset);
-        block.set(owned.subarray(offset, offset + count), used);
-        used += count;
-        offset += count;
+        const chunk = step.value;
+        if (inputByteLength(chunk) > MAX_MEDIA_OBJECT_BYTES - total)
+          throw new MediaAdmissionError('object_limit');
+        const owned = new Uint8Array(chunk);
+        verifier.push(owned);
+        let offset = 0;
+        while (offset < owned.length) {
+          if (block === undefined || used === block.length) {
+            block = new Uint8Array(64 * 1024);
+            collected.push(block);
+            used = 0;
+          }
+          const count = Math.min(block.length - used, owned.length - offset);
+          block.set(owned.subarray(offset, offset + count), used);
+          used += count;
+          offset += count;
+        }
+        total += owned.length;
       }
-      total += owned.length;
+      verifier.finish();
+      const bytes = new Uint8Array(total);
+      let at = 0;
+      for (const chunk of collected) {
+        const count = Math.min(chunk.length, total - at);
+        bytes.set(chunk.subarray(0, count), at);
+        at += count;
+      }
+      const handle = handleOf(bytes);
+      this.#blobs.set(handle, bytes);
+      return handle;
+    } catch (error) {
+      failed = true;
+      throw error;
+    } finally {
+      // Drop unpublished collection before an owned native acknowledgement can suspend retirement.
+      collected.length = 0;
+      block = undefined;
+      if (!ended) await closeMediaIteratorPreservingFailure(iterator, failed);
     }
-    verifier.finish();
-    const bytes = new Uint8Array(total);
-    let at = 0;
-    for (const chunk of collected) {
-      const count = Math.min(chunk.length, total - at);
-      bytes.set(chunk.subarray(0, count), at);
-      at += count;
-    }
-    const handle = handleOf(bytes);
-    this.#blobs.set(handle, bytes);
-    return Promise.resolve(handle);
   }
 
   async get(handle: string): Promise<Uint8Array> {

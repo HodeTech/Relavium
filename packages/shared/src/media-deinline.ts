@@ -20,6 +20,7 @@ import {
   reconcileMediaDescriptors,
 } from './media-admission.js';
 import { snapshotMediaValue } from './media-publication.js';
+import { closeMediaIterator } from './media-iterator.js';
 interface Occurrence {
   readonly node: Record<string, unknown>;
   readonly source: Record<string, unknown>;
@@ -202,16 +203,7 @@ async function storeStream(
   const iterator = source[Symbol.asyncIterator]();
   let byteLength = 0,
     drained = false,
-    closed = false;
-  const close = (): Promise<unknown> => {
-    if (closed || drained) return Promise.resolve();
-    closed = true;
-    try {
-      return Promise.resolve(iterator.return?.());
-    } catch {
-      return Promise.reject(new MediaAdmissionError('source_failed'));
-    }
-  };
+    failed = false;
   let acquired = false;
   const counted: AsyncIterable<Uint8Array> = {
     [Symbol.asyncIterator]() {
@@ -231,9 +223,10 @@ async function storeStream(
           byteLength += length;
           return { done: false, value: ownMediaBytes(chunk, length) };
         },
-        async return() {
-          await close();
-          return { done: true, value: undefined };
+        return(): Promise<IteratorResult<Uint8Array>> {
+          // The store must retire its file/temp first. The encompassing finally joins native ACK.
+          void closeMediaIterator(iterator).catch(() => undefined);
+          return Promise.resolve({ done: true, value: undefined });
         },
       };
     },
@@ -243,11 +236,16 @@ async function storeStream(
     const handle = await store.putStream(counted, mimeType);
     if (!drained) throw new MediaAdmissionError('stream_incomplete');
     return { handle, byteLength };
+  } catch (error) {
+    failed = true;
+    throw error;
   } finally {
-    // Native egress owns and joins actual close through host-work. Arbitrary iterator.return may
-    // never settle: observe it without holding the caller forever (ADR-0085/0103 liveness).
-    const cleanup = close();
-    void cleanup.catch(() => undefined);
+    if (!drained) {
+      await closeMediaIterator(iterator).catch(() => {
+        // Preserve a primary store/refusal error; a close-only fault remains typed.
+        if (!failed) throw new MediaAdmissionError('source_failed');
+      });
+    }
   }
 }
 /** Safe compatibility count; handle occurrences do not spend the existing rehost budget. */
