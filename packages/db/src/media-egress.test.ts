@@ -679,6 +679,7 @@ interface CapturedHttpsOptions {
 type FakeIncoming = AsyncIterable<Uint8Array> & {
   readonly statusCode: number;
   readonly headers: { readonly location?: string };
+  readonly rawHeaders: readonly string[];
   readonly destroy: () => void;
 };
 
@@ -687,7 +688,12 @@ function fakeIncoming(status: number, chunks: readonly Uint8Array[] = []): FakeI
     await Promise.resolve();
     for (const chunk of chunks) yield chunk;
   })();
-  return Object.assign(stream, { statusCode: status, headers: {}, destroy: () => undefined });
+  return Object.assign(stream, {
+    statusCode: status,
+    headers: {},
+    rawHeaders: [],
+    destroy: () => undefined,
+  });
 }
 
 /**

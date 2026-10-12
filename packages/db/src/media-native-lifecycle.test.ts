@@ -30,7 +30,7 @@ it.each([
         fileURLToPath(new URL('./fixtures/media-native-lifecycle-worker.ts', import.meta.url)),
         mode,
       ],
-      { timeout: 15_000, maxBuffer: 64 * 1024 },
+      { timeout: 10_000, maxBuffer: 64 * 1024 },
     );
     const report: unknown = JSON.parse(result.stdout);
     expect(report).toMatchObject({ mode, joined: true });
@@ -45,5 +45,5 @@ it.each([
             : 'FS_CAUSAL_MEDIA_NATIVE_CLOSE_JOIN',
     ).toMatchObject({ witnessFailure: null });
   },
-  20_000,
+  15_000,
 );

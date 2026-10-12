@@ -134,4 +134,4 @@ it('serializes incompatible native writers and rolls back the contender batch af
     client.sqlite.close();
     await rm(root, { recursive: true, force: true });
   }
-}, 30_000);
+}, 15_000);

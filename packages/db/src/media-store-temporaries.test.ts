@@ -23,7 +23,7 @@ import { MediaTemporaryMaintenanceError } from './media-store-temporaries.js';
 
 // Several native process starts and explicit IPC barriers belong to one case. Their joined
 // lifecycle needs a case budget separate from Vitest's five-second single-operation default.
-vi.setConfig({ testTimeout: 30_000, hookTimeout: 15_000 });
+vi.setConfig({ testTimeout: 15_000, hookTimeout: 15_000 });
 
 interface Worker {
   readonly child: ChildProcess;

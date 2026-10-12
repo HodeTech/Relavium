@@ -94,8 +94,10 @@ export interface HopRequest {
 /** One redirect-free HTTP response the caller inspects (status + headers + Location + a body stream). */
 export interface HopResponse {
   readonly status: number;
-  /** Response headers — populated by the Node deps; a media fake may omit them (the byte path ignores them). */
+  /** Normalized response headers. Media admission checks declared type before consuming the body. */
   readonly headers?: Readonly<Record<string, string>> | undefined;
+  /** Original Content-Type field values before Node's normalized headers discard duplicates. */
+  readonly contentTypeValues?: readonly string[];
   readonly location: string | undefined;
   readonly body: AsyncIterable<Uint8Array>;
   /** Abort the underlying socket — called when we stop reading early (a redirect, an error, an over-size body). */
@@ -614,6 +616,7 @@ export const nodeEgressDeps: EgressDeps = {
             resolveResponse({
               status: incoming.statusCode ?? 0,
               headers: flattenHeaders(incoming.headers),
+              contentTypeValues: originalContentTypeValues(incoming.rawHeaders),
               location: typeof location === 'string' ? location : undefined,
               body: incoming,
               dispose: () => {
@@ -661,6 +664,17 @@ export const nodeEgressDeps: EgressDeps = {
     return response;
   },
 };
+
+/** Preserve media header multiplicity without changing normalized headers for other consumers. */
+function originalContentTypeValues(rawHeaders: readonly string[]): string[] {
+  const values: string[] = [];
+  for (let index = 0; index < rawHeaders.length; index += 2) {
+    const name = rawHeaders[index];
+    const value = rawHeaders[index + 1];
+    if (name?.toLowerCase() === 'content-type' && value !== undefined) values.push(value);
+  }
+  return values;
+}
 
 /** Flatten Node's `IncomingHttpHeaders` (string | string[] | undefined) to a plain string record. */
 function flattenHeaders(

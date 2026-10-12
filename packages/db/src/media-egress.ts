@@ -145,8 +145,9 @@ function admitResponseHeader(response: HopResponse, declared: string): string | 
   const entries = Object.entries(response.headers ?? {}).filter(
     ([name]) => name.toLowerCase() === 'content-type',
   );
-  if (entries.length > 1) throw new MediaAdmissionError('descriptor_conflict');
-  const raw = entries[0]?.[1];
+  const values = response.contentTypeValues ?? entries.map(([, value]) => value);
+  if (entries.length > 1 || values.length > 1) throw new MediaAdmissionError('descriptor_conflict');
+  const raw = values[0];
   const bare = raw?.split(';', 1)[0]?.trim().toLowerCase();
   if (
     raw !== undefined &&
