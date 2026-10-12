@@ -1303,6 +1303,40 @@ validation covers 36 Markdown files and 2,181 relative links/anchors with no fin
 open-PR warning is historical; Wave 2 will receive its own PR after implementation
 and acceptance, without repurposing #93 or changing branches.
 
+**First-review and platform corrections:** independent cumulative round 1 at
+`fc097b2e` found a native cooperative CAS regression: same-hash atomic republishing
+replaced an inode that readers incorrectly required the pathname to retain. Read
+validation now separates the current physical path floor from the owned descriptor
+and verifies that descriptor's bytes against the handle; temporary/destructive
+ownership remains strict. Permanent native controls exercise both publication
+methods against get, range and egress readers, plus planted-link and hash failures.
+The round also identified a POSIX-only glob expectation in the Windows suite.
+Published Windows execution additionally exposed case-sensitive raw-prefix
+membership and the ignored Windows `O_NOFOLLOW`; native membership and an explicit
+stable-entry check address those without claiming hostile same-user race isolation.
+Test injection and result expectations use native path semantics. Linux published
+filesystem, floor and coverage jobs shared one inode-reuse fixture failure: the
+replacement control now retains the old directory and proves distinct identity.
+The secure-default workspace check refuses sensitive lexical/canonical chat roots
+before canonical persistence can erase their floor. Benign aliases remain supported;
+no historical grant provenance or legacy repair is inferred. These corrections
+still require fresh gates and two NEW complete clean cumulative rounds.
+
+**Post-correction local verification:** `pnpm run ci` passes with **519 package
+files / 11,205 passing tests / 13 skips** (11 established LLM capability cases and
+two Windows-only cases on macOS). The build, lint/typechecks, format, dependency,
+seam/isolation guards, three offline smokes and 78 acceptance-tool guards pass.
+Four wire controls, 23 usage mechanisms and 429 permanent native/scale cases retain
+their complete inventories. The expanded filesystem matrix passes **22 mechanisms,
+1,062 assertion executions and 52 expected semantic failures**, with identical
+fixed/red/restored inventories and byte-exact restoration. Its copied-source proof
+covers 1,031 physical source files and 457 dependency packages; developer sources
+remain unchanged. Execution records identify `fc097b2e` plus the correction working
+tree, not a later committed head. The ordinary run preceded the final assertion
+markers, two added filesystem mutation declarations and Windows-only test setup
+refinement; focused tests and the expanded matrix verify those deltas. Published
+native Windows and two NEW clean complete cumulative review rounds remain required.
+
 ### Remaining gate
 
 The maintainer approved the revised four-ADR decision package and eight-step plan

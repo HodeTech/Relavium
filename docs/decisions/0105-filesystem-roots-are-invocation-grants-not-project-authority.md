@@ -185,3 +185,17 @@ this decision does not certify unimplemented mechanisms or close the wave.
 ### Implementation-scope checkpoint — 2026-10-12
 
 Step 2 code and canonical documentation are being reconciled on `development` against this accepted decision. The [owning checkpoint](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#step-2-implementation-checkpoint--2026-10-12) distinguishes the scratch prerequisite from its future producer and CAS physical containment from Step 6 bounds/cancellation/maintenance. Unified independent implementation review and required gates remain pending; decision acceptance is not implementation acceptance.
+
+### First implementation review and platform correction — 2026-10-12
+
+The first cumulative round reproduced valid CAS readers failing during cooperative
+same-hash atomic publication. Read-only descriptor validation now tolerates that
+replacement while retaining current physical-floor checks and verifying the
+descriptor's bytes against the requested hash; destructive and temporary ownership
+checks remain strict. Published platform checks also exposed Windows path-case and
+no-follow assumptions, and a Linux inode-reuse test fixture. The
+[implementation checkpoint](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#step-2-implementation-checkpoint--2026-10-12)
+records their corrections and pending independent acceptance. Chat admission also
+refuses a credential/secret-store workspace before canonical persistence can erase
+its lexical floor. This is restrictive admission under the existing floor, not a
+durable grant/provenance store or a canonical registry of machine credential roots.
