@@ -1596,6 +1596,44 @@ head execution. Relative-document checks cover 41 Markdown files / 2,241 links a
 anchors with zero findings; `git diff --check` passes. Implementation commits and
 two NEW clean complete cumulative review rounds remain the Step 3 acceptance gate.
 
+#### Step 3 independent-review correction — 2026-10-12
+
+The first complete cumulative round was clean. The second found one verified
+secret-disclosure blocker: matching a new query name caused the CLI sanitizer to
+return before checking a second credential split across whitespace. An independent
+source-based reproduction exercised all eight families through human/JSON and
+normal/verbose rendering. The other two assigned second-round scopes were clean;
+the combined finding-bearing round is not counted as clean acceptance.
+
+The sanitizer now checks each remaining unredacted segment after every in-place
+pass. Redacted spans separate those probes, preserving ordinary prose after a
+masked query instead of creating a false match by joining through its marker.
+Permanent cases cover both sanitizer functions, both credential orders, whitespace
+separators, all eight query families, other credential shapes and actual diagnostic
+rendering, including an isolated verbose stack with a benign message. Before the
+fix, **22 of 56** focused cases failed; after it, all 56 pass. The complete affected
+CLI suite passes **232 files / 3,727 tests / three established skips**, with CLI
+lint/typecheck/build and scoped formatting also passing.
+
+A tenth independent secrets control restores the unsafe early return. All **21**
+new named assertion witnesses are required: both helpers for eight families, four
+human/JSON rendering modes and the separate verbose-stack boundary. A first capture
+correctly refused a declaration whose parameterized case names omitted the quotes
+Vitest actually reports; its restoration and cleanup completed, and that incomplete
+capture is not acceptance evidence. Correcting those exact names preserves the
+strict assertion authority and all nine earlier declarations.
+
+The complete corrected **ten-mechanism** secrets matrix passes **1,239 assertion
+executions / 126 expected semantic failures / 46 required witnesses**, with identical
+complete inventories, actual target-body evaluation and exact restoration. Its
+physical capture pins 1,048 source files and 457 installed dependency packages at
+`75b4e562` plus this correction working tree. An independent read-only audit checks
+every phase, current source hashes and scratch removal. The 112 tooling guards,
+scoped lint/checkJs and formatting pass. Unchanged filesystem/wire/usage and broad
+runtime gates retain their earlier attribution; they were not needlessly rerun or
+relabelled as later-head execution. Two NEW clean complete cumulative rounds after
+this material correction remain required before Step 3 closes.
+
 ### Remaining gate
 
 The maintainer approved the revised four-ADR decision package and eight-step plan
