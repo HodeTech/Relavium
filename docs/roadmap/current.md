@@ -103,9 +103,9 @@ Earlier dated pending checkpoints in this page and the phase register are histor
 
 Resume the joint 2.5.5/2.6 [Wave 2 queue](#wave-2--shut-the-doors); this is separate from
 the already merged Phase 2.6.5 W2 liveness wave. Its hostile-MCP transport/config/definition
-work, including G19 and #202, already merged in W4/PR #87. The first remaining change set
-is the **unified filesystem jail** (#36/#39/#235 plus the pulled-forward 2.6.M/N path
-boundaries), followed by secrets/config trust, persistence security and certification
+work, including G19 and #202, already merged in W4/PR #87. The **unified filesystem
+jail** (#36/#39/#235 plus the pulled-forward 2.6.M/N path boundaries) is accepted. Next are the secrets foundation and first-run input transport,
+followed by config trust, persistence security and certification
 of the 2.5.5 exit criteria 1–3. Existing decision gates in that queue retain their authority.
 W9 is a historical grouping of harness items and approved deferrals, not a new open wave.
 **2026-10-12:** task-relevant document/code preflight is complete. The
@@ -115,9 +115,14 @@ implementation. The maintainer approved ADR-0105–0108 and the eight-step plan 
 2026-10-12. **Step 1 is accepted** after two new clean complete cumulative rounds at
 `8c13675f`, with full local CI and complete causal/native inventories; the
 [acceptance checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#step-1-acceptance--2026-10-12)
-records evidence and limits. **Step 2, the unified filesystem changeset, proceeds.**
-The original Ubuntu pre-readiness failure cause remains unproved; no new published
-GitHub result or whole-wave completion is inferred from local Step 1 acceptance.
+records evidence and limits. **Step 2 is also accepted** after two NEW clean runtime
+rounds and two NEW clean tooling/document rounds following its prose qualification.
+All eight [published CI jobs](https://github.com/HodeTech/Relavium/actions/runs/38246846580)
+pass at code head `aca351af`, including Windows and the forced Node floor. The
+[Step 2 acceptance](phases/phase-2.5.5-hardening-and-remediation.md#step-2-acceptance--2026-10-12)
+records exact attribution and limits. **Step 3, the secrets foundation, proceeds.**
+The historical Ubuntu pre-readiness failure cause remains unproved; no whole-wave
+completion is inferred from these step acceptances.
 
 ## Historical W7 implementation checkpoints
 
@@ -1063,11 +1068,11 @@ secrets/config and persistence-security work, then certify while the reviews are
    certify from there in step 6 below; the *work* happens in 2.6.5 alongside `CR-16` (consent before a stdio
    spawn) and `CR-41` (the DNS/redirect SSRF hole), because they are the same code and the same security
    sitting. Splitting them across two phases would book the hostile-MCP reviewer twice.
-3. **The fs jail, ONE reviewed change set** — 2.5.5.D · sensitive-credential floor for `.kube`/`.azure`/gcloud
+3. ✅ **The fs jail, ONE reviewed change set — accepted on `development`, 2026-10-12** — 2.5.5.D · sensitive-credential floor for `.kube`/`.azure`/gcloud
    (#36, #39) → extract `deepestExistingReal` to `packages/shared` (#235) → **2.6.M's `project`-tier
    `extraRoots`** and **2.6.N's fs-floor home-anchoring**, both *pulled forward*. `~/.relavium/tmp/` (G21)
    is resolved under the same general predicate (decision D12) — otherwise `fs.ts` takes two security reviews.
-4. `discoverCatalog` realpath containment (#1); the secrets-layer test pair — OS-keychain bridge (#27) and
+4. `discoverCatalog` realpath containment (#1, accepted in Step 2); the secrets-layer test pair — OS-keychain bridge (#27) and
    `readSecretFromStdin` + stdin cap (#31, #293); secret-typed `run --input` rejection (#25); the unredacted
    workflow-snapshot doc + lint (#30); 2.5.5.B · `scrubSecrets` param-name broadening (#196).
 5. Persistence-security: 2.5.5.C · `assertRelativePath`'s Windows drive-relative form (#113), media-store

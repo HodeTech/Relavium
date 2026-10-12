@@ -65,9 +65,12 @@ suggestions remain visible; no new deferral or decision is added.
 
 **Joint Wave 2 authorised — 2026-10-12:** the maintainer approved ADR-0105–0108 and
 the [eight-step plan](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#execution-steps-after-approval).
-The decisions are Accepted; Step 1 is independently accepted after two new clean
-complete cumulative review rounds at `8c13675f`. Step 2's unified filesystem
-changeset proceeds on `development`; later implementation and whole-wave gates remain open.
+The decisions are Accepted; Steps 1–2 are independently accepted. Step 2's runtime
+reviews are clean in R7–R8 at `aca351af`; its prose qualification has two NEW clean
+tooling/document rounds at `d4f54619`. All eight published CI jobs pass at the code
+head `aca351af`. The [Step 2 acceptance](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#step-2-acceptance--2026-10-12)
+records scope and evidence limits. Step 3's secrets foundation proceeds on `development`;
+later implementation and whole-wave gates remain open.
 
 See [docs/roadmap/current.md](docs/roadmap/current.md) for live status.
 

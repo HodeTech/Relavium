@@ -1,6 +1,6 @@
 # Phase 2.5.5 — Hardening and Remediation
 
-> Status: 🚧 **Open — Wave 2 Step 1 accepted; Step 2 unified filesystem changeset in progress.** Live progress and execution order are canonical in
+> Status: 🚧 **Open — Wave 2 Steps 1–2 accepted; Step 3 secrets foundation in progress.** Live progress and execution order are canonical in
 > [../current.md](../current.md#execution-order--phase-255--phase-26-temporary); this banner does not
 > restate them. A full-project multi-agent code review completed
 > 2026-07-19 at HEAD `f88b0e8` — 377 findings, 373 surviving two-lens adversarial
@@ -1040,7 +1040,7 @@ Raised by a reviewer, then disproved by both verifiers reading the code. Recorde
 ## Wave 2 preflight and proposed execution plan — 2026-10-12
 
 **Status: maintainer approved ADR-0105–0108 and the eight-step plan on 2026-10-12.
-Step 1 is accepted after two new clean complete cumulative rounds; Step 2 proceeds.**
+Steps 1–2 are accepted after independent cumulative reviews and required gates; Step 3 proceeds.**
 Inspection baseline is `development` at `aaed7d593d72ea414b1fae42ddf20e148a5fce0f`.
 This is the joint Phase 2.5.5/2.6 Wave 2, not the closed core reliability W2/W8.
 All work stays on `development`. Detailed independent reports remain local/ignored;
@@ -1481,16 +1481,61 @@ counted as clean. Current published native Windows and Node 22.13 floor jobs pas
 the required aggregation is still running. Step 2 remains open until those reviews
 and published gates complete.
 
+### Step 2 acceptance — 2026-10-12
+
+**Accepted on `development`; Step 3 proceeds.** The complete cumulative CLI/shared
+and DB/CAS scopes have two NEW clean rounds (R7–R8) at `aca351af` after the last
+runtime correction. The R8 tooling/document scope found one Low consumer-attribution
+error; its append-only qualification changed prose only. Two NEW complete cumulative
+tooling/document rounds (R9–R10) at `d4f54619` are clean. The finding-bearing scope is
+not counted as clean, and earlier clean rounds do not certify later corrections.
+
+| Step 2 obligation | Disposition |
+| --- | --- |
+| #36/#39 credential paths and declared-env overrides | Closed for tool read/write/discovery and shared declaration admission across tiers, including Terraform's standard credential files. |
+| #235 shared ancestor and #113 Windows drive-relative `save_to` | Closed; both actual tool/native host consumers are pinned. CAS retains separate physical identity checks. |
+| Pulled-forward 2.6.M extra roots and 2.6.N floor prerequisite | Accepted: invocation-only grants, narrowing selectors, fresh resume admission and common policy consumers. Full M/N workstreams are not closed. |
+| G21 unused global tmp and host-only scratch floor | Closed for removal of unused provisioning and the exact private descriptor prerequisite. Existing directories are not erased; ordinary chat has no production allocator. |
+| #1 workflow/agent catalog containment | Closed with pre-enumeration and opened-file admission, contained-alias positives and bounded regular-file reads. |
+| CAS physical containment | Accepted, including cooperating publication/read, native Windows winner validation and idempotent concurrent deletion through actual host GC. Step 6's media limits, descriptor admission, cancellation and temp lifecycle remain open. |
+
+The retained full local gate passes **524 package files / 11,263 tests / 13 established
+skips**, 84 tooling guards, four wire controls, 23 usage controls and the complete
+**26-mechanism filesystem matrix / 1,197 assertions / 67 expected semantic failures**.
+Its physical captured implementation matches the reviewed source; the manifest names
+`cc23b1d2` plus the scheduling working tree, not a later committed-head execution.
+
+[Published CI at exact code head `aca351af`](https://github.com/HodeTech/Relavium/actions/runs/38246846580)
+passes all eight jobs, including required lint/typecheck/test, enforced coverage,
+Node 22.13 floor, native Windows and all three causal jobs. The required and forced
+floor runs each pass **524 files / 11,262 tests / 14 established platform/capability
+skips**. Actual Windows DB passes **728 tests**, including all ten native readiness
+cases and eleven deletion controls; its separate CLI filesystem and CAS cohorts,
+shared controls, build and headless smoke also pass. These are `aca351af` executions;
+`d4f54619` adds only the reviewed prose qualification.
+
+The retained required-job diagnostic records actual Linux x64 / Node 24.21 / four
+available CPUs, ten joined children, nine observed barriers at **658–945 ms**, and
+one actual **5,005 ms** readiness expiry with SIGKILL joined at **5,022 ms**. Every
+child has actual import/open stages. The five-second readiness, 20-second case and
+15-minute job budgets remain unchanged. The earlier `b7d0997f` failures remain real;
+this successful schedule and diagnostic record do not prove their historical cause.
+
+Canonical tool/config/CLI/session contracts retain the owner-controlled/cooperating
+filesystem assumptions, Windows profile/ACL limit and absence of a hostile same-user
+or OS subprocess jail guarantee. No user decision, key, provider or billing action
+is pending. Steps 3–8, four final security sittings, full 2.6.N lifecycle and whole-wave
+publication remain open; no approved CR deferral is closed by this increment.
+
 ### Remaining gate
 
 The maintainer approved the revised four-ADR decision package and eight-step plan
 on **2026-10-12**. ADR-0105–0108 are **Accepted** and dependent implementation is
 authorised on `development`; the earlier Proposed checkpoints remain historical
-records. Step 1 has independent acceptance; **Step 2 proceeds automatically** with
-one cumulative filesystem security scope across CLI roots/config/session consumers,
-the shared ancestor/env rules and DB save_to/CAS containment. Subsequent runtime,
+records. Steps 1–2 have independent acceptance; **Step 3 proceeds automatically** with
+OS-keychain bridge diagnostics, bounded stdin and finite secret-query names. Subsequent runtime,
 independent implementation reviews, security certification and final publication
-remain gates; approval and Step 1 acceptance do not certify whole-wave completion.
+remain gates; approval and Steps 1–2 acceptance do not certify whole-wave completion.
 
 ---
 
