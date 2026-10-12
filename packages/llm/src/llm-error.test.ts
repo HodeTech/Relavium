@@ -193,6 +193,63 @@ describe('finite secret query names (#196)', () => {
     }
   });
 
+  for (const name of families) {
+    it(`SECRETS_CAUSAL_PREFIX_ORDER protects ${name} before overlapping query redaction`, () => {
+      const keys = [['sk-', 'ant-', 'api03-'].join(''), ['AI', 'za', 'SyA'].join('')];
+      const suffix = ['AbCdEf', '0123456789', 'xyzUVWXYZ'].join('');
+      for (const prefix of keys) {
+        for (const whitespace of ['\n', '\t', ' \r\n\t ']) {
+          const text = `?${name}=${prefix}${whitespace}${suffix}`;
+          expect(scrubSecrets(text), 'SECRETS_CAUSAL_PREFIX_ORDER').toBe('[REDACTED]');
+          const error = makeLlmError({
+            provider: 'openai',
+            kind: 'auth',
+            message: text,
+            code: text,
+          });
+          expect(error.message, 'SECRETS_CAUSAL_PREFIX_ORDER').toBe('[REDACTED]');
+          expect(error.code, 'SECRETS_CAUSAL_PREFIX_ORDER').toBe('[REDACTED]');
+        }
+      }
+    });
+  }
+
+  it('preserves following prose after an opaque query or a completely masked prefixed key', () => {
+    const key = ['sk-', 'ant-', 'api03-', 'AbCdEf0123456789xyz'].join('');
+    for (const name of families) {
+      expect(scrubSecrets(`?${name}=${opaque} request failed retry later`)).toBe(
+        `?${name}=[REDACTED] request failed retry later`,
+      );
+      expect(scrubSecrets(`?${name}=${key} request failed retry later`)).toBe(
+        `?${name}=[REDACTED] request failed retry later`,
+      );
+    }
+    expect(scrubSecrets(`key ${key}\nrequest failed retry later`)).toBe(
+      'key [REDACTED]\nrequest failed retry later',
+    );
+    const alreadyMasked = '?client_secret=[REDACTED]\nrequest failed retry later';
+    expect(scrubSecrets(alreadyMasked)).toBe(alreadyMasked);
+  });
+
+  it('checks an overlapping query despite separate Bearer, Basic or URL credentials', () => {
+    const splitKey = ['sk-', 'ant-', 'api03-', '\n', 'AbCdEf0123456789xyz'].join('');
+    for (const credentials of [
+      'Authorization: Bearer opaque-header-value',
+      'Authorization: Basic dXNlcjpwYXNz',
+      'https://user:opaque-password@provider.invalid/',
+    ]) {
+      for (const text of [
+        `${credentials} ?client_secret=${splitKey}`,
+        `?client_secret=${splitKey} ${credentials}`,
+      ]) {
+        expect(scrubSecrets(text)).toBe('[REDACTED]');
+        const error = makeLlmError({ provider: 'openai', kind: 'auth', message: text, code: text });
+        expect(error.message).toBe('[REDACTED]');
+        expect(error.code).toBe('[REDACTED]');
+      }
+    }
+  });
+
   it.each([
     'client_secretary',
     'client_secret_hint',
