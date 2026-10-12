@@ -129,6 +129,10 @@ export function* webm(): MediaParser {
       } else if (id === 0xe0) {
         if (context !== 'track' || track === undefined) fail();
         yield* elements(stop, 'video', depth + 1, track);
+      } else if (id === 0x6d80) {
+        // ContentEncodings includes encryption and compression. Neither is in the untransformed
+        // WebM profile, so this known element must never fall through to unknown-element skipping.
+        fail();
       } else if (
         track !== undefined &&
         ((context === 'track' && [0xd7, 0x83, 0x86].includes(id)) ||

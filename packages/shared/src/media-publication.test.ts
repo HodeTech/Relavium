@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { countUnpinnedMedia, deInlineMedia } from './media-deinline.js';
 import { admitMediaDescriptor, MediaAdmissionError } from './media-admission.js';
+import { containsDurableUnsafeMedia } from './content.js';
+import { collectMediaForAdmission } from './media-publication.js';
 import type { MediaStore } from './content.js';
 const handle = `media://sha256-${'a'.repeat(64)}`;
 const media = () => ({
@@ -29,6 +31,50 @@ function deferred() {
   return { promise, resolve };
 }
 describe('owned media publication', () => {
+  it.each(['record', 'map-key', 'map-value', 'set'] as const)(
+    'MEDIA_SOURCE_ALIAS_PREFLIGHT: refuses a base64 source aliased through %s before reservation or writes',
+    async (position) => {
+      const source = { kind: 'base64', data: 'AAA=' };
+      const part = { type: 'media', mimeType: 'audio/L16', source };
+      const alias =
+        position === 'record'
+          ? source
+          : position === 'map-key'
+            ? new Map([[source, 'value']])
+            : position === 'map-value'
+              ? new Map([['key', source]])
+              : new Set([source]);
+      const s = store();
+      let writes = 0,
+        reservations = 0;
+      s.put = () => {
+        writes++;
+        return Promise.resolve(handle);
+      };
+      const [result] = await Promise.allSettled([
+        deInlineMedia({ part, alias }, s, undefined, () => reservations++),
+      ]);
+      expect(result, 'MEDIA_SOURCE_ALIAS_PREFLIGHT').toMatchObject({
+        status: 'rejected',
+        reason: { code: 'unsafe_value' },
+      });
+      expect([writes, reservations], 'MEDIA_SOURCE_ALIAS_PREFLIGHT').toEqual([0, 0]);
+    },
+  );
+  it('permits two media nodes sharing one source without leaving loose bytes', async () => {
+    const source = { kind: 'base64', data: 'AAA=' };
+    const result = await deInlineMedia(
+      [
+        { type: 'media', mimeType: 'audio/L16', source },
+        { type: 'media', mimeType: 'audio/L16', source },
+      ],
+      store(),
+    );
+    expect(containsDurableUnsafeMedia(result)).toBe(false);
+    expect(collectMediaForAdmission(result)).toEqual([
+      { handle, mimeType: 'audio/L16', modality: 'audio', byteLength: 2 },
+    ]);
+  });
   it('checks actual streamed view capacity before copying despite dishonest length and slice', async () => {
     const s = store();
     let delivered = 0,

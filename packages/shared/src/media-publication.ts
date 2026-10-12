@@ -14,10 +14,11 @@ function record(value: unknown): value is Record<string, unknown> {
 }
 /** Own the inert graph in this synchronous call. Transparent Proxy reflection may trap; faults refuse. */
 export function snapshotMediaValue(value: unknown, countOnly = false): MediaSnapshot {
-  const memo = new Map<object, unknown>(),
+  const memo = new Map<object, object>(),
     pending: { source: object; clone: object }[] = [],
     nodes: Record<string, unknown>[] = [],
-    sources = new Set<object>(),
+    incoming = new Map<object, number>(),
+    sourceEdges = new Map<object, number>(),
     loose: object[] = [];
   const copy = (item: unknown): unknown => {
     if (typeof item === 'string') {
@@ -33,7 +34,11 @@ export function snapshotMediaValue(value: unknown, countOnly = false): MediaSnap
       if (!countOnly) throw new MediaAdmissionError('unsafe_value');
       return item;
     }
-    if (memo.has(item)) return memo.get(item);
+    const prior = memo.get(item);
+    if (prior !== undefined) {
+      incoming.set(prior, (incoming.get(prior) ?? 0) + 1);
+      return prior;
+    }
     const proto: unknown = Object.getPrototypeOf(item);
     let clone: object;
     if (Array.isArray(item)) clone = [];
@@ -45,6 +50,7 @@ export function snapshotMediaValue(value: unknown, countOnly = false): MediaSnap
       clone = {};
     }
     memo.set(item, clone);
+    incoming.set(clone, 1);
     pending.push({ source: item, clone });
     return clone;
   };
@@ -85,12 +91,16 @@ export function snapshotMediaValue(value: unknown, countOnly = false): MediaSnap
       if (record(clone)) {
         if (clone['type'] === 'media') {
           nodes.push(clone);
-          if (record(clone['source'])) sources.add(clone['source']);
+          const source = clone['source'];
+          if (record(source)) sourceEdges.set(source, (sourceEdges.get(source) ?? 0) + 1);
         }
         if (clone['kind'] === 'base64') loose.push(clone);
       }
     }
-    if (!countOnly && loose.some((item) => !sources.has(item)))
+    // Replacing media.source cannot remove an alias elsewhere in the owned graph. Every incoming
+    // edge of a base64 source must therefore be an original media.source slot, including Map/Set
+    // contents; multiple genuine media nodes may still share one source.
+    if (!countOnly && loose.some((item) => incoming.get(item) !== sourceEdges.get(item)))
       throw new MediaAdmissionError('unsafe_value');
     return { value: owned, nodes };
   } catch (error) {

@@ -170,15 +170,22 @@ function ebml(id: string, payload: Uint8Array): Uint8Array {
   else size = new Uint8Array([32 + (n >> 16), (n >> 8) & 255, n & 255]);
   return join(hex(id), size, payload);
 }
-export function webmVideo(padding = 1): Uint8Array {
+export function webmVideo(
+  padding = 1,
+  options: {
+    readonly codec?: 'V_VP8' | 'V_VP9' | 'V_AV1';
+    readonly contentEncodings?: Uint8Array;
+  } = {},
+): Uint8Array {
   const header = ebml('1a45dfa3', ebml('4282', textBytes('webm')));
   const track = ebml(
     'ae',
     join(
       ebml('d7', hex('01')),
       ebml('83', hex('01')),
-      ebml('86', textBytes('V_VP8')),
+      ebml('86', textBytes(options.codec ?? 'V_VP8')),
       ebml('e0', join(ebml('b0', hex('01')), ebml('ba', hex('01')))),
+      ...(options.contentEncodings === undefined ? [] : [ebml('6d80', options.contentEncodings)]),
     ),
   );
   const cluster = ebml('1f43b675', ebml('a3', join(hex('81000080'), new Uint8Array(padding))));

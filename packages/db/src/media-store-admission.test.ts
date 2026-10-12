@@ -76,9 +76,52 @@ function png(size: number): Uint8Array {
   return Buffer.concat(fixed);
 }
 
+// Independent one-pixel VP8 EBML framing. The second vector declares AES-CTR ContentEncryption;
+// both contain a nonempty unlaced block, so a codec/track-only check would wrongly accept both.
+const webmPlain = Uint8Array.from(
+  Buffer.from(
+    '1a45dfa3874282847765626d18538067b11654ae6b97ae95d781018381018685565f565038e086b08101ba81011f43b67590a38e8100008001010203040506070800',
+    'hex',
+  ),
+);
+const webmEncrypted = Uint8Array.from(
+  Buffer.from(
+    '1a45dfa3874282847765626d18538067d81654ae6bbeaebcd781018381018685565f565038e086b08101ba81016d80a46240a150318100503281015033810150359247e1810547e2840102030447e78447e881011f43b67590a38e8100008001010203040506070800',
+    'hex',
+  ),
+);
+
 describe.each(['memory', 'filesystem'] as const)('%s independent byte admission', (kind) => {
   const store = (): InMemoryMediaStore | FilesystemMediaStore =>
     kind === 'memory' ? new InMemoryMediaStore() : new FilesystemMediaStore(root);
+  it('refuses encrypted WebM without publishing it while admitting an unencoded video control', async () => {
+    const target = store();
+    const admitted = await target.putStream(
+      chunks(...Array.from(webmPlain, (byte) => new Uint8Array([byte]))),
+      'video/webm',
+    );
+    expect(
+      await target.validateMedia(admitted, { mimeType: 'video/webm', modality: 'video' }),
+    ).toMatchObject({ byteLength: webmPlain.length });
+    const [refused] = await Promise.allSettled([
+      target.putStream(
+        chunks(...Array.from(webmEncrypted, (byte) => new Uint8Array([byte]))),
+        'video/webm',
+      ),
+    ]);
+    expect(refused, 'MEDIA_STORE_WEBM_ENCODING_REFUSAL').toMatchObject({
+      status: 'rejected',
+      reason: { code: 'invalid_format' },
+    });
+    const refusedHandle =
+      'media://sha256-' + createHash('sha256').update(webmEncrypted).digest('hex');
+    const [missing] = await Promise.allSettled([target.get(refusedHandle)]);
+    expect(missing, 'MEDIA_STORE_WEBM_ENCODING_REFUSAL').toMatchObject({ status: 'rejected' });
+    if (target instanceof FilesystemMediaStore) {
+      expect((await target.listHandles()).map((entry) => entry.handle)).toEqual([admitted]);
+      expect(readdirSync(root).some((name) => name.endsWith('.tmp'))).toBe(false);
+    }
+  });
   it('admits inline exact capacity and refuses +1 before format inspection', async () => {
     const target = store();
     const handle = await target.put(new Uint8Array(256 * 1024), 'audio/L16');

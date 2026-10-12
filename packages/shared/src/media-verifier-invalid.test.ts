@@ -130,6 +130,33 @@ function opusWithCommentCount(count: number): Uint8Array {
   return join(...pages);
 }
 describe('independent malformed-format controls', () => {
+  it.each(['V_VP8', 'V_VP9', 'V_AV1'] as const)(
+    'MEDIA_WEBM_ENCODING_REFUSAL: refuses encrypted %s tracks at every input split',
+    (codec) => {
+      accepts('video/webm', webmVideo(9, { codec }));
+      // WebM encryption: ContentEncodingType=1, AES=5, a key ID and CTR cipher mode=1.
+      // https://www.webmproject.org/docs/webm-encryption/#43-supported-matroska-encryption-elements
+      const bytes = webmVideo(9, {
+        codec,
+        contentEncodings: hex(
+          '6240a150318100503281015033810150359247e1810547e2840102030447e78447e88101',
+        ),
+      });
+      for (let split = 0; split <= bytes.length; split++) {
+        let failure: unknown;
+        try {
+          const verifier = createMediaVerifier('video/webm');
+          verifier.push(bytes.subarray(0, split));
+          verifier.push(bytes.subarray(split));
+          verifier.finish();
+        } catch (error) {
+          failure = error;
+        }
+        expect(failure, 'MEDIA_WEBM_ENCODING_REFUSAL').toBeInstanceOf(MediaAdmissionError);
+        expect(failure, 'MEDIA_WEBM_ENCODING_REFUSAL').toMatchObject({ code: 'invalid_format' });
+      }
+    },
+  );
   it('PNG checks CRC, critical identity, IHDR fields, animation refusal and exact terminal', () => {
     accepts('image/png', PNG);
     refuses('image/png', changed(PNG, 29, 0), 'media-png-checksum');
