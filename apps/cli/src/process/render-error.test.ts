@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { makeLlmError } from '@relavium/llm';
 
 import { CliError } from './errors.js';
 import type { CliIo } from './io.js';
@@ -99,20 +100,30 @@ describe('renderError terminal projection', () => {
         'access_key',
         'secret_key',
       ]) {
-        const split = ['sk-', 'ant-', 'api03-', '\n', 'AbCdEf0123456789xyz'].join('');
         const query = `?${name}=opaque-query-value&ordinary=kept`;
-        for (const text of [`${query}; key: ${split}`, `key: ${split}; ${query}`]) {
-          const capture = captureIo();
-          const error = new CliError('invalid_invocation', text);
-          error.stack = `outer stack ${text}`;
-          renderError(error, options, capture.io);
-          const output = capture.stderr();
-          expect(output, 'SECRETS_CAUSAL_RESIDUAL_SCRUB').not.toContain('AbCdEf0123456789xyz');
-          expect(output).not.toContain('opaque-query-value');
-          expect(output).toContain('[REDACTED]');
-          if (options.json) {
-            expect(messageFromJson(JSON.parse(output))).toBe('[REDACTED]');
-            expect(output).not.toContain('outer stack');
+        for (const { split, secret } of [
+          {
+            split: 'https://u\nser:opaque-userinfo-P8@provider.invalid/x',
+            secret: 'opaque-userinfo-P8',
+          },
+          {
+            split: ['sk-', 'ant-', 'api03-', '\n', 'AbCdEf0123456789xyz'].join(''),
+            secret: 'AbCdEf0123456789xyz',
+          },
+        ]) {
+          for (const text of [`${query}; credential: ${split}`, `credential: ${split}; ${query}`]) {
+            const capture = captureIo();
+            const error = new CliError('invalid_invocation', text);
+            error.stack = `outer stack ${text}`;
+            renderError(error, options, capture.io);
+            const output = capture.stderr();
+            expect(output, 'SECRETS_CAUSAL_RESIDUAL_SCRUB').not.toContain(secret);
+            expect(output).not.toContain('opaque-query-value');
+            expect(output).toContain('[REDACTED]');
+            if (options.json) {
+              expect(messageFromJson(JSON.parse(output))).toBe('[REDACTED]');
+              expect(output).not.toContain('outer stack');
+            }
           }
         }
       }
@@ -122,12 +133,68 @@ describe('renderError terminal projection', () => {
   it('SECRETS_CAUSAL_RESIDUAL_SCRUB protects a mixed-credential verbose stack with a benign message', () => {
     const capture = captureIo();
     const error = new CliError('invalid_invocation', 'request failed; retry after 30s');
-    const split = ['sk-', 'ant-', 'api03-', '\n', 'AbCdEf0123456789xyz'].join('');
+    const split = 'https://u\nser:opaque-userinfo-P8@provider.invalid/x';
     error.stack = `outer stack ?refresh_token=opaque-stack-value&ordinary=kept; key: ${split}`;
     renderError(error, { json: false, verbose: true }, capture.io);
     const output = capture.stderr();
-    expect(output, 'SECRETS_CAUSAL_RESIDUAL_SCRUB').not.toContain('AbCdEf0123456789xyz');
+    expect(output, 'SECRETS_CAUSAL_RESIDUAL_SCRUB').not.toContain('opaque-userinfo-P8');
     expect(output).not.toContain('opaque-stack-value');
+    expect(output).toContain('request failed; retry after 30s');
+    expect(output).toContain('[REDACTED]');
+  });
+
+  it.each([
+    { label: 'human', json: false, verbose: false },
+    { label: 'human verbose', json: false, verbose: true },
+    { label: 'JSON', json: true, verbose: false },
+    { label: 'JSON verbose', json: true, verbose: true },
+  ])(
+    'SECRETS_CAUSAL_PREFIX_ORDER protects overlapping query values in $label diagnostics',
+    (options) => {
+      const suffix = 'AbCdEf0123456789xyzUVWXYZ';
+      for (const name of [
+        'client_secret',
+        'refresh_token',
+        'id_token',
+        'auth_token',
+        'session_token',
+        'api_secret',
+        'access_key',
+        'secret_key',
+      ]) {
+        for (const prefix of [['sk-', 'ant-', 'api03-'].join(''), ['AI', 'za', 'SyA'].join('')]) {
+          for (const separator of ['\n', '\t', ' \r\n\t ']) {
+            const text = `?${name}=${prefix}${separator}${suffix}`;
+            const llmError = makeLlmError({ provider: 'openai', kind: 'auth', message: text });
+            for (const projection of [text, llmError.message]) {
+              const capture = captureIo();
+              const error = new CliError('invalid_invocation', projection);
+              error.stack = `outer stack ${projection}`;
+              renderError(error, options, capture.io);
+              const output = capture.stderr();
+              expect(output, 'SECRETS_CAUSAL_PREFIX_ORDER').not.toContain(suffix);
+              expect(output).toContain('[REDACTED]');
+              if (options.json) {
+                expect(messageFromJson(JSON.parse(output))).toBe('[REDACTED]');
+                expect(output).not.toContain('outer stack');
+              }
+            }
+          }
+        }
+      }
+    },
+  );
+
+  it('SECRETS_CAUSAL_PREFIX_ORDER protects a pre-scrubbed overlapping query in a verbose stack', () => {
+    const suffix = 'AbCdEf0123456789xyzUVWXYZ';
+    const query = `?refresh_token=${['sk-', 'ant-', 'api03-', '\n', suffix].join('')}`;
+    const llmError = makeLlmError({ provider: 'openai', kind: 'auth', message: query });
+    const error = new CliError('invalid_invocation', 'request failed; retry after 30s');
+    error.stack = `outer stack ${llmError.message}`;
+    const capture = captureIo();
+    renderError(error, { json: false, verbose: true }, capture.io);
+    const output = capture.stderr();
+    expect(output, 'SECRETS_CAUSAL_PREFIX_ORDER').not.toContain(suffix);
     expect(output).toContain('request failed; retry after 30s');
     expect(output).toContain('[REDACTED]');
   });
