@@ -23,6 +23,11 @@ strict CAS pathname/inode coupling. Real argv pre-composition witnesses and nati
 concurrent publishers/readers must then fail their named assertions. These guard
 both confidentiality and the availability of legitimate cooperative storage use.
 
+Additional controls remove zero-link pathname-snapshot admission and Windows
+concurrent-winner verification separately. Deterministic native-file/fault fixtures
+pin those branches on every CI OS; actual concurrent native publication remains a
+separate control. They do not turn a simulated platform branch into Windows evidence.
+
 `RELAVIUM_ACCEPTANCE_EVIDENCE=/absolute/directory` retains bounded JSON/JSONL/log
 metadata under `filesystem/`, outside authored source. It excludes the copied graph,
 cache, native databases and dependency bytes. Scratch copies are removed even on

@@ -443,18 +443,27 @@ jobs:
       # The two-process concurrency e2e spawns children that import the BUILT @relavium/db (by file:// URL),
       # so the dist must exist before the tests run.
       - name: Build
+        id: windows-build
         run: pnpm turbo run build
+      # These checks are independent after build. Retain every native result even if an earlier
+      # suite fails; the job still fails on any failure (no continue-on-error or skipped gate).
       - name: DB concurrency suite (BEGIN IMMEDIATE + SQLITE_BUSY retry + WAL behave identically on Windows)
+        if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
         run: pnpm --filter @relavium/db test
       - name: CLI concurrency + query-shape harness (cross-process spawn + EXPLAIN plans on Windows)
+        if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
         run: pnpm --filter relavium exec vitest run concurrency perf-budget session-chain
       - name: Native CLI filesystem admission, containment, catalog and config (ADR-0105)
+        if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
         run: pnpm --filter relavium exec vitest run src/config/paths.test.ts src/engine/tool-host/fs-policy.test.ts src/engine/tool-host/fs-ancestor-consumers.test.ts src/engine/tool-host/fs.test.ts src/commands/fs-invocation.test.ts src/commands/fs-workspace-admission.test.ts src/workflows/catalog.test.ts src/config/resolve.test.ts
       - name: Native CAS and save_to containment (ADR-0105)
-        run: pnpm --filter @relavium/db exec vitest run src/media-store-paths.test.ts src/media-store-concurrency.test.ts src/media-store-read-races.test.ts src/media-store.test.ts src/media-write.test.ts
+        if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
+        run: pnpm --filter @relavium/db exec vitest run src/media-store-paths.test.ts src/media-store-concurrency.test.ts src/media-store-read-races.test.ts src/media-store-entry-snapshots.test.ts src/media-store-publication-contention.test.ts src/media-store.test.ts src/media-write.test.ts
       - name: Shared filesystem ancestor algorithm and selector schema (ADR-0105)
+        if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
         run: pnpm --filter @relavium/shared exec vitest run src/existing-ancestor.test.ts src/config.test.ts
       - name: Headless no-TTY smoke (the bundle loads; a piped chat picks the plain driver and exits cleanly)
+        if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
         shell: bash
         run: |
           set -euo pipefail

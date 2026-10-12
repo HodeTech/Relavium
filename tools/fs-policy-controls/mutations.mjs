@@ -64,7 +64,7 @@ export const mutations = [
   control(
     'CAS_FINAL',
     paths,
-    'if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1)',
+    'if (!info.isFile() || info.isSymbolicLink() || (info.nlink !== 0 && info.nlink !== 1))',
     'if (info.isFile() && info.isSymbolicLink())',
     'FS_CAUSAL_CAS_final',
     [cases],
@@ -73,7 +73,7 @@ export const mutations = [
   control(
     'CAS_NLINK',
     paths,
-    'if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1)',
+    'if (!info.isFile() || info.isSymbolicLink() || (info.nlink !== 0 && info.nlink !== 1))',
     'if (!info.isFile() || info.isSymbolicLink())',
     'FS_CAUSAL_CAS_hardlink',
     [cases],
@@ -178,15 +178,47 @@ mutations.push(
   control(
     'CAS_COOPERATIVE_READ',
     paths,
-    '  assertReadableFile(path: string, opened: Stats): void {\n    const current = this.file(path);',
-    '  assertReadableFile(path: string, opened: Stats): void {\n    this.assertOwnedFile(path, opened);\n    const current = this.file(path);',
+    '  assertReadableFile(path: string, opened: Stats): void {\n    const current = this.fileSnapshot(path);',
+    '  assertReadableFile(path: string, opened: Stats): void {\n    this.assertOwnedFile(path, opened);\n    const current = this.fileSnapshot(path);',
     'FS_CAUSAL_CAS_COOPERATIVE_READ',
     [cooperativeCases],
     'preserves native',
   ),
 );
+const windowsWinnerCases = 'packages/db/src/media-store-publication-contention.test.ts';
+const detachedEntryCases = 'packages/db/src/media-store-entry-snapshots.test.ts';
+mutations.push(
+  control(
+    'CAS_WINDOWS_WINNER',
+    'packages/db/src/media-store.ts',
+    'if (!isWindowsRenameContention(error))',
+    'if (true)',
+    'FS_CAUSAL_CAS_WINDOWS_WINNER',
+    [windowsWinnerCases],
+    'verifies a concurrent winner',
+  ),
+  control(
+    'CAS_DETACHED_ENTRY',
+    paths,
+    '(info.nlink !== 0 && info.nlink !== 1)',
+    'info.nlink !== 1',
+    'FS_CAUSAL_CAS_DETACHED_ENTRY',
+    [detachedEntryCases],
+    'admits a detached final-entry snapshot',
+  ),
+);
 for (const mutation of mutations) {
   const file = mutation.files[0];
   mutation.expectedTests =
-    file === floorCases[0] ? 9 : file === workspaceCases ? 8 : file === cooperativeCases ? 6 : 19;
+    file === floorCases[0]
+      ? 9
+      : file === workspaceCases
+        ? 8
+        : file === cooperativeCases
+          ? 6
+          : file === windowsWinnerCases
+            ? 16
+            : file === detachedEntryCases
+              ? 8
+              : 19;
 }
