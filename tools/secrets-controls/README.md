@@ -4,7 +4,7 @@
 Step 4 first-run input matrix and Step 5 snapshot/export controls on physical source
 copies. `--mechanism <declared-id>`
 supports diagnosis only; selected runs retain `complete: false`. The current manifest
-declares **34 independent controls and 254 required named assertion witnesses**.
+declares **35 independent controls and 256 required named assertion witnesses**.
 These counts describe the workload; a declaration is not evidence that its removal
 passed. Actual fixed/removal/restored results belong to the coordinator's summary.
 
@@ -97,7 +97,7 @@ Native keychain suites mock `@napi-rs/keyring` before loading the production wra
 and verify the mock calls; these controls do not touch the user's keychain or certify
 a real locked store.
 
-The ten Step 5 controls require 12 named assertion witnesses. Four remove independent
+The eleven Step 5 controls require 14 named assertion witnesses. Four remove independent
 parse/export mechanisms: direct unsupported `secrets.*` context refusal, title NFKD
 normalization, session-identity fallback for an unusable title, and bounded legal
 encoding for an odd external session id. The context removal must fail an unread
@@ -108,8 +108,13 @@ and deterministic parse/serialize behavior. These controls do not certify univer
 transliteration or uniqueness of generated IDs.
 
 Two independent CLI notice controls remove the successful standalone command and
-live `/export` stderr notice sites. Each requires named human and JSON witnesses in
-the complete 15-case command-export or 120-case chat file. The tests use actual
+live `/export` notice sites. Each requires named human and JSON witnesses in
+the complete 15-case command-export or 122-case chat file. The live control also
+requires its actual interactive transcript/Ink-frame witness. A third control
+restores raw stderr delivery only for the live notice: human/JSON positive cases
+still pass, while the interactive witness must fail with its named assertion marker.
+The mounted installed Ink component uses owned TTY streams and file-backed SQLite;
+a separate visible transcript notice proves the renderer is active. The tests use actual
 export writes, retain exactly one export event on stdout in JSON mode, and check the fixed
 compaction/context and retained-content review clauses. Refused writes have separate
 permanent negative cases; no notice is produced before a successful export.
