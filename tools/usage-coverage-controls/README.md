@@ -49,6 +49,12 @@ invalidates the run. Child commands own a POSIX process group so timeout cleanup
 and awaits close; Windows follows the existing single-child best-effort cleanup convention.
 Native crash controls additionally require the actual invoked CUT, SIGKILL and joined close,
 plus worker, database and mechanism module-body records from that child's PID.
+The permanent cohort also pins exactly one loaded-but-unready startup control. It must
+record spawn → WAITING (not a readiness barrier) → readiness timeout → joined SIGKILL
+close in that order, with the same child/caller identity and actual DB/worker source-body
+witnesses. Only that declared control may omit CUT/LOCKED; ordinary children still
+require their real barrier. Direct negative controls reject missing/reordered/foreign
+records, a normal exit or an undeclared child trying to use the exception.
 
 The [frozen replay driver](../budget-replay-compat/README.md) independently owns its current and
 predecessor source/dependency boundaries. Current producer bytes join this runner's manifest;
@@ -63,9 +69,10 @@ shared 100,000-case scale files run separately from repeated small mutation coho
 crash, lock, receipt and scale tests remain part of ordinary package CI.
 
 Each ordinary phase retains its five-minute outer watchdog. The one complete permanent
-cohort pins 427 cases and 69 joined native children. Its outer watchdog is calculated from
-the existing five-minute setup/general allowance, 69 existing 20-second native-case bounds
-and the existing ten-minute DB scale bound (38 minutes total). Individual test/readiness
+cohort pins 429 cases and 71 joined native children, including Wave 2's two DB readiness
+controls. Its outer watchdog is calculated from the existing five-minute setup/general
+allowance, 71 existing 20-second native-case bounds and the existing ten-minute DB scale
+bound (38 minutes 40 seconds total). Individual test/readiness
 bounds, both full 100,000-case scale controls and process-group cleanup remain in force.
 The watchdog and exact case/native counts are recorded and checked; an incomplete or
 shortened cohort cannot pass. The TypeScript compiler is physically verified on its first

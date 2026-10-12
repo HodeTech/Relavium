@@ -1190,6 +1190,37 @@ Detailed reports remain local. These are proposal checks, not implementation or
 security acceptance. No runtime source, paid/provider call, keychain access or
 implementation commit is part of this intake.
 
+### Step 1 implementation checkpoint — 2026-10-12
+
+The native DB worker's five-second deadline now owns **readiness only**: a real
+`CUT`/`LOCKED` barrier disarms it, and an already-queued obsolete callback cannot
+kill a ready child. Each test retains ownership of post-barrier release/kill/join.
+Two permanent native controls cover obsolete-callback survival through `RELEASE`
+and a loaded-but-unready worker's rejection, kill and joined close. Removing the
+disarm or the late-callback state guard independently makes the survival regression
+fail at its intended assertion; both source mutations were restored byte-for-byte.
+
+The acceptance auditor recognises exactly one declared no-readiness control, with
+the ordered `spawn → WAITING → timeout → SIGKILL close` lifecycle. Every ordinary
+child still requires its real barrier and every child retains physical source/PID
+witnesses. Inventory is now **429 cases / 71 joined native children**, with exactly
+one timeout control; the watchdog derives from this inventory without changing the
+five-second readiness or twenty-second native-case deadlines. The first full run
+correctly refused the new no-barrier control under the old universal-barrier rule;
+the narrowly specified auditor correction and its negative tests address that result.
+
+Corrected `CI=true pnpm run ci` passed: ordinary suites **511 files / 11,028 passed /
+12 existing skips**, lint/typecheck/build/format, isolation/fence/dependency/schema/
+bundle checks, all three offline smokes, **60 tool-acceptance tests**, four wire
+mutation controls, **23 usage mechanism controls** and the complete **429-case**
+native/scale cohort. That instrumented cohort measured the nine DB readiness
+barriers at **823–976 ms** locally. This does not establish the cause of the earlier
+Ubuntu pre-readiness failures or claim a new published-head GitHub result. No retry,
+skip, scheduling relaxation, provider call or real user storage was introduced.
+
+Implementation is ready for two new independent complete cumulative review rounds;
+Step 1 and whole-wave acceptance are not yet claimed. Raw reports remain local.
+
 ### Remaining gate
 
 The maintainer approved the revised four-ADR decision package and eight-step plan

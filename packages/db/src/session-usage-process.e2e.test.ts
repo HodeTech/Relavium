@@ -28,18 +28,30 @@ interface Worker {
   readonly closed: Promise<{ code: number | null; signal: NodeJS.Signals | null; error: string }>;
 }
 
-function startWorker(path: string, mode: string): Worker {
+type ReadinessDeadline = (callback: () => void, delay: number) => () => void;
+
+const armReadinessDeadline: ReadinessDeadline = (callback, delay) => {
+  const timer = setTimeout(callback, delay);
+  return () => clearTimeout(timer);
+};
+
+function startWorker(
+  path: string,
+  mode: string,
+  armDeadline: ReadinessDeadline = armReadinessDeadline,
+): Worker {
   if (!existsSync(fileURLToPath(entry)))
     throw new Error('Build @relavium/db before its native session-usage tests.');
   const child = spawn(process.execPath, [worker, entry.href, path, mode], {
     stdio: ['pipe', 'pipe', 'pipe'],
   });
+  const started = performance.now();
   const record = (value: object): void => {
     const destination = process.env['RELAVIUM_USAGE_NATIVE_EVENTS'];
     if (destination !== undefined)
       appendFileSync(
         destination,
-        `${JSON.stringify({ callerPid: process.pid, pid: child.pid, mode, ...value })}\n`,
+        `${JSON.stringify({ callerPid: process.pid, pid: child.pid, mode, elapsedMs: Math.round(performance.now() - started), ...value })}\n`,
       );
   };
   record({ stage: 'spawn' });
@@ -51,33 +63,50 @@ function startWorker(path: string, mode: string): Worker {
   });
   let output = '';
   let error = '';
-  let announced = false;
+  let state: 'waiting' | 'ready' | 'failed' = 'waiting';
+  let cancelDeadline: (() => void) | undefined;
+  const disarm = (): void => {
+    const cancel = cancelDeadline;
+    cancelDeadline = undefined;
+    cancel?.();
+  };
   child.stdout.setEncoding('utf8').on('data', (text: string) => {
     output += text;
-    if (output.includes('CUT\n') || output.includes('LOCKED\n')) {
-      if (!announced)
-        record({ stage: 'barrier', kind: output.includes('CUT\n') ? 'CUT' : 'LOCKED' });
-      announced = true;
+    if (mode === 'readiness-timeout-control' && output === 'WAITING\n')
+      record({ stage: 'not-ready', kind: 'WAITING' });
+    if (state === 'waiting' && (output.includes('CUT\n') || output.includes('LOCKED\n'))) {
+      state = 'ready';
+      disarm();
+      record({ stage: 'barrier', kind: output.includes('CUT\n') ? 'CUT' : 'LOCKED' });
       resolveReady();
     }
   });
   child.stderr.setEncoding('utf8').on('data', (text: string) => {
     error += text;
   });
-  const timeout = setTimeout(() => {
+  cancelDeadline = armDeadline(() => {
+    // Clearing a timer does not make an already-queued callback authoritative again.
+    if (state !== 'waiting') return;
+    state = 'failed';
+    disarm();
+    record({ stage: 'readiness-timeout' });
     rejectReady(new Error('session usage worker readiness deadline'));
     child.kill('SIGKILL');
   }, 5_000);
   const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null; error: string }>(
     (resolve) => {
       child.once('error', (fault) => {
+        state = 'failed';
+        disarm();
         rejectReady(fault);
       });
       child.once('close', (code, signal) => {
         record({ stage: 'close', code, signal });
-        clearTimeout(timeout);
-        if (!announced)
+        disarm();
+        if (state === 'waiting') {
+          state = 'failed';
           rejectReady(new Error(`session usage worker closed before readiness: ${error}`));
+        }
         resolve({ code, signal, error });
       });
     },
@@ -96,8 +125,72 @@ function seed(client: DbClient): void {
 }
 
 // Match the isolated acceptance runner's case budget for seed, child, reopen and cleanup.
-// The worker's five-second readiness/lifetime guard remains independent and unchanged.
+// The five-second startup deadline ends at the barrier; each test owns post-barrier lifetime.
 describe('native session usage transaction crash and contention', () => {
+  it('disarms readiness at LOCKED and ignores an obsolete callback before RELEASE', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'relavium-session-usage-readiness-'));
+    const client = createClient(join(root, 'history.db'));
+    let run: Worker | undefined;
+    let expire: (() => void) | undefined;
+    const cancel = vi.fn();
+    try {
+      seed(client);
+      run = startWorker(client.path, 'lock-release', (callback, delay) => {
+        expect(delay).toBe(5_000);
+        expire = callback;
+        return cancel;
+      });
+      await run.ready;
+      expect(cancel).toHaveBeenCalledTimes(1);
+      if (expire === undefined) throw new Error('missing readiness callback');
+      expire();
+      expect(run.child.killed).toBe(false);
+      expect(run.child.signalCode).toBeNull();
+      run.child.stdin.end('RELEASE\n');
+      const result = await run.closed;
+      expect(result, result.error).toMatchObject({ code: 0, signal: null });
+      expect(cancel).toHaveBeenCalledTimes(1);
+    } finally {
+      run?.child.kill('SIGKILL');
+      await run?.closed;
+      client.sqlite.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  it('rejects and joins a killed native child when readiness never arrives', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'relavium-session-usage-no-readiness-'));
+    const client = createClient(join(root, 'history.db'));
+    let run: Worker | undefined;
+    let expire: (() => void) | undefined;
+    const cancel = vi.fn();
+    try {
+      seed(client);
+      run = startWorker(client.path, 'readiness-timeout-control', (callback) => {
+        expire = callback;
+        return cancel;
+      });
+      const refusal = expect(run.ready).rejects.toThrow('session usage worker readiness deadline');
+      let output = '';
+      run.child.stdout.on('data', (text: string) => {
+        output += text;
+        if (output.includes('WAITING\n')) {
+          if (expire === undefined) throw new Error('missing readiness callback');
+          expire();
+        }
+      });
+      await refusal;
+      const result = await run.closed;
+      expect(result, result.error).toMatchObject({ code: null, signal: 'SIGKILL' });
+      expect(cancel).toHaveBeenCalledTimes(1);
+    } finally {
+      run?.child.kill('SIGKILL');
+      await run?.closed;
+      client.sqlite.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 20_000);
+
   it.each(['pending-before-ack', 'pending-after-ack', 'pending-after-commit'])(
     'pending marker survives only outer commit at native process cut %s',
     async (mode) => {

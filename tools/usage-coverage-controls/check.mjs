@@ -31,6 +31,7 @@ import { exportAcceptanceEvidence } from '../acceptance-evidence/export.mjs';
 import { causalWitnesses } from './causal-witnesses.mjs';
 import { checkOutcome } from './outcome.mjs';
 import {
+  assertNativeReadiness,
   assertPermanentWorkload,
   ordinaryPhaseTimeoutMs,
   permanentPhaseTimeoutMs,
@@ -240,10 +241,7 @@ function auditRuntime(directory, graph, manifest, manifestSha256, mechanism, pha
   if (mechanism.nativeChildren)
     assert.equal(native.length, 4, 'Expected four actual invoked crash children');
   for (const child of native) {
-    assert.ok(
-      children.some((r) => r.pid === child.pid && r.stage === 'barrier'),
-      'Native child did not reach real barrier',
-    );
+    assertNativeReadiness(child, children);
     assert.ok(
       children.some((r) => r.pid === child.pid && r.stage === 'close'),
       'Native child close was not joined',
@@ -285,6 +283,7 @@ function auditRuntime(directory, graph, manifest, manifestSha256, mechanism, pha
     runtimePids: [...new Set(evaluations.map((r) => r.pid))],
     dependencyFiles: new Set(dependencies.map((r) => r.path)).size,
     nativeChildren: native.length,
+    readinessTimeoutChildren: native.filter((r) => r.mode === 'readiness-timeout-control').length,
   };
 }
 function inventory(data, graph) {

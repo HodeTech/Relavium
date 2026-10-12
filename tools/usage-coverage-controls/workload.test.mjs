@@ -15,6 +15,7 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { digest, instrument } from './source-graph.mjs';
 import {
+  assertNativeReadiness,
   assertPermanentWorkload,
   ordinaryPhaseTimeoutMs,
   permanentPhaseTimeoutMs,
@@ -22,21 +23,72 @@ import {
 
 test('the complete native/scale workload has its own calculated bound and exact inventory', () => {
   assert.equal(ordinaryPhaseTimeoutMs, 300_000);
-  assert.equal(permanentPhaseTimeoutMs, 300_000 + 69 * 20_000 + 600_000);
-  const result = { tests: Array.from({ length: 427 }), runtime: { nativeChildren: 69 } };
+  assert.equal(permanentPhaseTimeoutMs, 300_000 + 71 * 20_000 + 600_000);
+  const result = {
+    tests: Array.from({ length: 429 }),
+    runtime: { nativeChildren: 71, readinessTimeoutChildren: 1 },
+  };
   assert.doesNotThrow(() => assertPermanentWorkload(result));
-  for (const count of [0, 426, 428]) {
+  for (const count of [0, 427, 428, 430]) {
     assert.throws(
       () => assertPermanentWorkload({ ...result, tests: Array.from({ length: count }) }),
       /Permanent case inventory drift/,
     );
   }
-  for (const count of [0, 68, 70]) {
+  for (const count of [0, 69, 70, 72]) {
     assert.throws(
-      () => assertPermanentWorkload({ ...result, runtime: { nativeChildren: count } }),
+      () =>
+        assertPermanentWorkload({
+          ...result,
+          runtime: { ...result.runtime, nativeChildren: count },
+        }),
       /Permanent native-child inventory drift/,
     );
   }
+  for (const count of [0, 2])
+    assert.throws(
+      () =>
+        assertPermanentWorkload({
+          ...result,
+          runtime: { ...result.runtime, readinessTimeoutChildren: count },
+        }),
+      /Missing\/extra native timeout control/,
+    );
+});
+
+test('only the loaded-but-unready timeout control may omit a real readiness barrier', () => {
+  const child = { pid: 123, callerPid: 456, mode: 'readiness-timeout-control', stage: 'spawn' };
+  const records = [
+    child,
+    { ...child, stage: 'not-ready', kind: 'WAITING' },
+    { ...child, stage: 'readiness-timeout' },
+    { ...child, stage: 'close', signal: 'SIGKILL', code: null },
+  ];
+  assert.doesNotThrow(() => assertNativeReadiness(child, records));
+  for (let index = 0; index < records.length; index++)
+    assert.throws(() =>
+      assertNativeReadiness(
+        child,
+        records.filter((_, i) => i !== index),
+      ),
+    );
+  for (const changed of [
+    records.map((r) => (r.stage === 'not-ready' ? { ...r, kind: 'CUT' } : r)),
+    records.map((r) => (r.stage === 'close' ? { ...r, signal: null, code: 0 } : r)),
+    records.map((r) => (r.stage === 'readiness-timeout' ? { ...r, pid: 124 } : r)),
+    records.map((r) => (r.stage === 'not-ready' ? { ...r, callerPid: 457 } : r)),
+    [...records, { ...child, stage: 'barrier', kind: 'CUT' }],
+    [records[0], records[2], records[1], records[3]],
+  ])
+    assert.throws(() => assertNativeReadiness(child, changed));
+  const ordinary = { ...child, mode: 'lock-release' };
+  assert.throws(
+    () => assertNativeReadiness(ordinary, records),
+    /Native child did not reach real barrier/,
+  );
+  assert.doesNotThrow(() =>
+    assertNativeReadiness(ordinary, [{ ...ordinary, stage: 'barrier', kind: 'LOCKED' }]),
+  );
 });
 
 test('compiler reuse is state-local and never bypasses physical source or compiler admission', () => {

@@ -8,6 +8,13 @@ const [, , distUrl, dbPath, mode] = process.argv;
 const { createClient, createSessionStore, createSessionUsageStore } = await import(distUrl);
 const client = createClient(dbPath);
 try {
+  if (mode === 'readiness-timeout-control') {
+    // The parent proves a loaded native worker can remain unready, then kills and joins it.
+    // This is deliberately NOT a CUT/LOCKED readiness barrier.
+    process.stdin.resume();
+    writeSync(1, 'WAITING\n');
+    await new Promise(() => {});
+  }
   if (mode === 'lock-release' || mode === 'lock-hold') {
     client.sqlite.exec(
       "BEGIN IMMEDIATE; UPDATE agent_sessions SET title = 'old-lock-writer' WHERE id = 's1'",
