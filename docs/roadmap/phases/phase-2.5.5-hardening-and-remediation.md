@@ -1337,6 +1337,38 @@ markers, two added filesystem mutation declarations and Windows-only test setup
 refinement; focused tests and the expanded matrix verify those deltas. Published
 native Windows and two NEW clean complete cumulative review rounds remain required.
 
+**Second-round platform discovery:** published head `9d718981` passes the wire,
+usage, filesystem causal and enforced-coverage jobs, but Windows native DB execution
+fails 11 cases and Node 22.13 fails one cooperative CAS case. The Windows suite
+fails before subsequent CLI checks, so no result is inferred for those. Independent
+macOS review slices found no issue; the audit incorporates the published failure,
+therefore this cumulative round is **not clean**. Linux reproduction using the actual
+unchanged store confirms regular pathname-stat snapshots with `nlink=0` during atomic
+replacement, including both publication admission and reads. An instrumented native
+100-round workload reports 29 refusals before correction, all with that observed
+snapshot, and zero across the same 3,000 operations after correction (Node 22.23.2;
+not the exact Node 22.13 floor). Windows replacement contention now requires one
+independent verified winner; owned temps and destructive checks remain strict.
+Permanent deterministic controls cover both cases, and the forced-rename fixtures
+distinguish actual replacement from native Windows refusal while closing owned fds.
+Independent Windows checks now all execute after successful build even if another
+suite fails, retaining failures without `continue-on-error`. New exact-head/platform
+gates and two NEW complete clean cumulative rounds follow these corrections.
+
+**Second-correction local gates:** ordinary lint/typecheck/test and build pass with
+**521 package files / 11,229 passing tests / 13 established platform/capability skips**;
+the full DB suite is 39 files / 713 passing tests. Tool lint, formatting, relative
+documentation links and `git diff --check` pass. The expanded filesystem matrix
+passes all **24 mechanisms** with complete fixed/red/restored inventories and
+byte-exact restoration across 1,033 source files and 457 dependency packages.
+The initial new Windows control correctly failed its workload but Vitest's promise
+rejection diagnostic omitted the named assertion marker; settled-result assertions
+now make that causal witness explicit. The successful rerun retains its own source
+manifest (`9d718981` plus this correction working tree); no later-head execution is
+inferred. The predecessor's required CI job also passed; its two native platform
+failures remain historical failures, not waived acceptance. New published platform
+execution and two NEW cumulative review rounds remain required.
+
 ### Remaining gate
 
 The maintainer approved the revised four-ADR decision package and eight-step plan

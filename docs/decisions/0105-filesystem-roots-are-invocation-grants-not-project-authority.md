@@ -199,3 +199,15 @@ records their corrections and pending independent acceptance. Chat admission als
 refuses a credential/secret-store workspace before canonical persistence can erase
 its lexical floor. This is restrictive admission under the existing floor, not a
 durable grant/provenance store or a canonical registry of machine credential roots.
+
+### Native cooperative-publication correction — 2026-10-12
+
+Published Windows and Node-floor execution exposed two further cooperative-storage
+cases after the first correction. Windows can refuse replacement of an open file;
+Linux pathname stat can observe the just-detached regular inode with zero links.
+Non-owning final-entry admission now distinguishes that snapshot from temporary or
+destructive authority. Windows replacement contention is resolved only by independent
+verification of an existing matching content address, with owned-temp cleanup and no
+rename retry. The [canonical CAS contract](../reference/shared-core/built-in-tools.md#physical-media-storage-and-limits)
+owns the exact behaviour. Native fault/cooperation controls and new independent
+reviews are required; the preceding clean macOS slices do not certify these changes.
