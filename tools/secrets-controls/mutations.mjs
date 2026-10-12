@@ -1,8 +1,47 @@
 /** Step 3's independent production mechanisms and completed named semantic witnesses. */
 const reader = 'apps/cli/src/secrets/read-secret.ts';
 const readerCases = ['apps/cli/src/secrets/read-secret.test.ts'];
+const llmError = 'packages/llm/src/llm-error.ts';
+const overlapFiles = [
+  'packages/llm/src/llm-error.test.ts',
+  'apps/cli/src/render/sanitize.test.ts',
+  'apps/cli/src/process/render-error.test.ts',
+];
+const overlapNames = [
+  'client_secret',
+  'refresh_token',
+  'id_token',
+  'auth_token',
+  'session_token',
+  'api_secret',
+  'access_key',
+  'secret_key',
+];
+const overlapMarker = 'SECRETS_CAUSAL_OVERLAP_ORDER';
 function control(id, path, before, after, files, expectedTests, target, marker, witnesses = []) {
   return { id, path, before, after, files, expectedTests, target, marker, witnesses };
+}
+function overlapWitnesses(shape) {
+  return [
+    ...overlapNames.map((name) => ({
+      target: `${overlapMarker} protects ${name} ${shape} before query redaction`,
+      marker: overlapMarker,
+    })),
+    ...overlapNames.flatMap((name) =>
+      ['multiline', 'inline'].map((label) => ({
+        target: `${overlapMarker} protects '${name}' '${shape}' query values: '${label}'`,
+        marker: overlapMarker,
+      })),
+    ),
+    ...['human', 'human verbose', 'JSON', 'JSON verbose'].map((label) => ({
+      target: `${overlapMarker} protects '${shape}' query values in '${label}' diagnostics`,
+      marker: overlapMarker,
+    })),
+    {
+      target: `${overlapMarker} protects a pre-scrubbed ${shape} in a verbose stack`,
+      marker: overlapMarker,
+    },
+  ];
 }
 export const mutations = [
   control(
@@ -108,7 +147,7 @@ export const mutations = [
     String.raw`/([?&](?:(?:x[-_])?api[-_]?key|api[-_]?secret|(?:access|secret)[-_]?key|(?:access|refresh|id|auth|session)[-_]?token|client[-_]?secret|key|token|auth|password|secret)=)[^&\s#]+/gi`,
     String.raw`/([?&](?:(?:x[-_])?api[-_]?key|key|token|access[-_]?token|auth|password|secret)=)[^&\s#]+/gi`,
     ['packages/llm/src/llm-error.test.ts'],
-    62,
+    98,
     'SECRETS_CAUSAL_QUERY_NAMES masks each added family without another credential shape',
     'SECRETS_CAUSAL_QUERY_NAMES',
   ),
@@ -119,7 +158,7 @@ export const mutations = [
     `  const scrubbed = scrubSecrets(normalized);
   if (scrubbed !== normalized) return scrubbed;`,
     ['apps/cli/src/render/sanitize.test.ts', 'apps/cli/src/process/render-error.test.ts'],
-    77,
+    161,
     "SECRETS_CAUSAL_RESIDUAL_SCRUB protects 'client_secret' beside a split credential: 'multiline'",
     'SECRETS_CAUSAL_RESIDUAL_SCRUB',
     [
@@ -161,7 +200,7 @@ export const mutations = [
       'apps/cli/src/render/sanitize.test.ts',
       'apps/cli/src/process/render-error.test.ts',
     ],
-    139,
+    259,
     'SECRETS_CAUSAL_PREFIX_ORDER protects client_secret before overlapping query redaction',
     'SECRETS_CAUSAL_PREFIX_ORDER',
     [
@@ -201,6 +240,40 @@ export const mutations = [
           'SECRETS_CAUSAL_PREFIX_ORDER protects a pre-scrubbed overlapping query in a verbose stack',
         marker: 'SECRETS_CAUSAL_PREFIX_ORDER',
       },
+      ...overlapWitnesses('URL userinfo'),
+    ],
+  ),
+  control(
+    'normalized-secret-probe',
+    llmError,
+    '  return stripTerminalControls(text);',
+    '  return text;',
+    overlapFiles,
+    259,
+    `${overlapMarker} protects client_secret normalized key before query redaction`,
+    overlapMarker,
+    overlapWitnesses('normalized key').filter(
+      (witness) =>
+        witness.target !==
+        `${overlapMarker} protects client_secret normalized key before query redaction`,
+    ),
+  ),
+  control(
+    'non-query-before-query',
+    llmError,
+    '  return scrubQuerySecrets(scrubNonQuerySecrets(text));',
+    '  return scrubNonQuerySecrets(scrubQuerySecrets(text));',
+    overlapFiles,
+    259,
+    `${overlapMarker} protects client_secret Bearer before query redaction`,
+    overlapMarker,
+    [
+      ...overlapWitnesses('Bearer').filter(
+        (witness) =>
+          witness.target !==
+          `${overlapMarker} protects client_secret Bearer before query redaction`,
+      ),
+      ...overlapWitnesses('Basic'),
     ],
   ),
 ];
