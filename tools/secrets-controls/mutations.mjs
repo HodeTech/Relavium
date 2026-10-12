@@ -108,7 +108,7 @@ export const mutations = [
     String.raw`/([?&](?:(?:x[-_])?api[-_]?key|api[-_]?secret|(?:access|secret)[-_]?key|(?:access|refresh|id|auth|session)[-_]?token|client[-_]?secret|key|token|auth|password|secret)=)[^&\s#]+/gi`,
     String.raw`/([?&](?:(?:x[-_])?api[-_]?key|key|token|access[-_]?token|auth|password|secret)=)[^&\s#]+/gi`,
     ['packages/llm/src/llm-error.test.ts'],
-    52,
+    62,
     'SECRETS_CAUSAL_QUERY_NAMES masks each added family without another credential shape',
     'SECRETS_CAUSAL_QUERY_NAMES',
   ),
@@ -119,7 +119,7 @@ export const mutations = [
     `  const scrubbed = scrubSecrets(normalized);
   if (scrubbed !== normalized) return scrubbed;`,
     ['apps/cli/src/render/sanitize.test.ts', 'apps/cli/src/process/render-error.test.ts'],
-    56,
+    77,
     "SECRETS_CAUSAL_RESIDUAL_SCRUB protects 'client_secret' beside a split credential: 'multiline'",
     'SECRETS_CAUSAL_RESIDUAL_SCRUB',
     [
@@ -148,6 +148,58 @@ export const mutations = [
         target:
           'SECRETS_CAUSAL_RESIDUAL_SCRUB protects a mixed-credential verbose stack with a benign message',
         marker: 'SECRETS_CAUSAL_RESIDUAL_SCRUB',
+      },
+    ],
+  ),
+  control(
+    'prefix-before-redaction',
+    'packages/llm/src/llm-error.ts',
+    "    const joined = remaining.replace(/\\s+/g, '');",
+    '    const joined = remaining;',
+    [
+      'packages/llm/src/llm-error.test.ts',
+      'apps/cli/src/render/sanitize.test.ts',
+      'apps/cli/src/process/render-error.test.ts',
+    ],
+    139,
+    'SECRETS_CAUSAL_PREFIX_ORDER protects client_secret before overlapping query redaction',
+    'SECRETS_CAUSAL_PREFIX_ORDER',
+    [
+      ...[
+        'refresh_token',
+        'id_token',
+        'auth_token',
+        'session_token',
+        'api_secret',
+        'access_key',
+        'secret_key',
+      ].map((name) => ({
+        target: `SECRETS_CAUSAL_PREFIX_ORDER protects ${name} before overlapping query redaction`,
+        marker: 'SECRETS_CAUSAL_PREFIX_ORDER',
+      })),
+      ...[
+        'client_secret',
+        'refresh_token',
+        'id_token',
+        'auth_token',
+        'session_token',
+        'api_secret',
+        'access_key',
+        'secret_key',
+      ].flatMap((name) =>
+        ['multiline', 'inline'].map((label) => ({
+          target: `SECRETS_CAUSAL_PREFIX_ORDER protects '${name}' query values: '${label}'`,
+          marker: 'SECRETS_CAUSAL_PREFIX_ORDER',
+        })),
+      ),
+      ...['human', 'human verbose', 'JSON', 'JSON verbose'].map((label) => ({
+        target: `SECRETS_CAUSAL_PREFIX_ORDER protects overlapping query values in '${label}' diagnostics`,
+        marker: 'SECRETS_CAUSAL_PREFIX_ORDER',
+      })),
+      {
+        target:
+          'SECRETS_CAUSAL_PREFIX_ORDER protects a pre-scrubbed overlapping query in a verbose stack',
+        marker: 'SECRETS_CAUSAL_PREFIX_ORDER',
       },
     ],
   ),
