@@ -113,7 +113,24 @@ admission failures; source/dependency receipts identify the launched worker.
 The coordinator now checks every selected source anchor before the first fixed
 phase and rejects effective case or configured hook timeouts above 15 seconds.
 
-The 93-control declaration is not acceptance evidence by itself. The complete
+R3 appends one observer control without changing the earlier 93 IDs. It replaces
+the complete captured-intrinsic observation block with the former own-`then`
+assimilation expression. A source-aliased native worker runs foreign and registered
+iterators through thirteen joined direct/store/de-inline scenarios per parent case.
+Both complete parent cases must fail their named assertion when an original
+rejected Promise becomes unhandled; fixture cleanup observes it only after the
+diagnostic checkpoint. This is a finite Promise-constructor/species precondition,
+not a universal interception claim.
+
+The Windows temporary-claim repair adds a 95th control after that observer. It
+removes exact native v2 claim-identity comparison by passing both sides through
+Number's precision ceiling. The complete 19-case temporary regression requires a
+different bigint inode with the same Number value to remain present and report
+`identity_changed`; legacy v1 safe-token recovery and unsafe-token retention stay
+in that complete workload. This controlled numeric collision is portable evidence,
+not a measurement of a particular NTFS identity.
+
+The 95-control declaration is not acceptance evidence by itself. The complete
 matrix still requires a stable committed head, all fixed/removal/restored phases,
 named semantic witnesses, child source/dependency receipts, byte-exact restoration,
 the retained-evidence caps, and independent cumulative review.

@@ -67,8 +67,8 @@ The eleven Step 4 controls remove separate production mechanisms:
 | `run-core-admission-before-services` | Remove the pure pre-service core admission while retaining final engine validation; secret length/pattern/format and ordinary min/max/enum failures must violate the native zero-key-factory assertion in all four output modes. |
 
 The Step 4 declarations require 51 additional named assertion witnesses. Every
-selected workload remains a complete test file: 33 input cases, 13 action-forwarding
-cases, 31 dispatch cases, 76 run-command cases, three run-consent cases, 61 gate cases,
+selected workload remains a complete test file: 33 input cases, 14 action-forwarding
+cases, 32 dispatch cases, 76 run-command cases, three run-consent cases, 61 gate cases,
 28 top-level parser cases, or 131 native integration cases, as declared per control.
 The coordinator independently enforces exact case counts, unique complete case
 identities and identical fixed/removal/restored inventories. It accepts only a

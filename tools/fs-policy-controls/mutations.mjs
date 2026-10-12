@@ -443,7 +443,7 @@ mutations.push(
   mediaControl(
     'MEDIA_TEMP_CLAIM_IDENTITY',
     mediaTemp,
-    'if (moved === undefined || !same(moved, info))',
+    "if (\n        moved === undefined ||\n        !same(moved, info) ||\n        !sameNative(this.nativeFile(join(dir, 'blob'), moved), original)\n      )",
     'if (moved === undefined)',
     'MEDIA_TEMP_INITIAL_CLAIM_IDENTITY',
     mediaTempCases,
@@ -1083,4 +1083,47 @@ mutations.push(
     ),
     witnesses: [{ target: nativeHeaderStoreTarget, marker: 'MEDIA_NATIVE_HEADER_MULTIPLICITY' }],
   },
+);
+
+// R3: a rejected genuine Promise returned by an iterator may poison its own
+// `then`; the observer must use the captured intrinsic in both dispatch paths.
+const mediaReturnDiagnosticsCases = 'packages/db/src/media-return-diagnostics.test.ts';
+mutations.push({
+  ...mediaControl(
+    'MEDIA_RETURN_ORIGINAL_REJECTION_OBSERVED',
+    mediaIterator,
+    '    try {\n      // Native Promise branding crosses realms. Its own replaceable `then` cannot hide a\n      // rejection; normal constructor/species behaviour remains a trusted JS precondition.\n      void Reflect.apply(promiseThen, returned, [complete, failed]);\n    } catch {\n      // Non-Promise thenables still use normal assimilation, including fixed getter failures.\n      void Reflect.apply(promiseThen, resolvePromise(returned), [complete, failed]);\n    }',
+    '    void Promise.resolve(returned).then(complete, failed);',
+    'MEDIA_RETURN_DIAGNOSTICS_OBSERVED',
+    mediaReturnDiagnosticsCases,
+    'foreign iterator return observes the original rejection without leaking host diagnostics',
+    2,
+    {
+      parent: mediaReturnDiagnosticsCases,
+      program: 'packages/db/src/fixtures/media-return-diagnostics-worker.ts',
+    },
+  ),
+  witnesses: [
+    {
+      target:
+        'registered iterator return observes the original rejection without leaking host diagnostics',
+      marker: 'MEDIA_RETURN_DIAGNOSTICS_OBSERVED',
+    },
+  ],
+});
+
+// R3: v2 recovery must compare native claim identities without passing through
+// Number's precision ceiling. The collision case keeps both exact values distinct.
+mutations.push(
+  mediaControl(
+    'MEDIA_TEMP_NATIVE_IDENTITY_PRECISION',
+    mediaTemp,
+    "if (original.dev !== device || original.ino !== inode) return 'identity_changed';",
+    "if (Number.parseInt(original.dev, 36) !== Number.parseInt(device, 36) || Number.parseInt(original.ino, 36) !== Number.parseInt(inode, 36)) return 'identity_changed';",
+    'MEDIA_TEMP_NATIVE_IDENTITY_PRECISION',
+    mediaTempCases,
+    'retains a mismatched claimed file identity and corrupt claim children',
+    19,
+    nativeTemporary,
+  ),
 );
