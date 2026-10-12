@@ -16,6 +16,7 @@ import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawnJoined } from './process.mjs';
 import { ownedTools } from './provenance.mjs';
+import { verifyRetainedStdio } from './retention.mjs';
 import { sourceState, digest } from '../usage-coverage-controls/source-graph.mjs';
 const repository = realpathSync(fileURLToPath(new URL('../../', import.meta.url)));
 const target = 'tools/causal-controls/fixture.mjs';
@@ -130,9 +131,20 @@ test(
           const retained = JSON.parse(readFileSync(join(evidence, kind, 'summary.json'), 'utf8'));
           assert.deepEqual(retained, report);
           assert.equal(existsSync(join(evidence, kind, 'graph')), false);
+          const stdio = verifyRetainedStdio(join(evidence, kind));
+          const acceptedStdio = stdio.filter(({ control }) => control === 'synthetic-success');
+          assert.equal(acceptedStdio.length, 3);
+          assert.deepEqual(acceptedStdio.map(({ phase }) => phase).sort(), [
+            'fixed',
+            'mutated',
+            'restored',
+          ]);
           for (const phase of ['fixed', 'mutated', 'restored']) {
             const phaseRoot = join(evidence, kind, 'synthetic-success', phase);
             assert.equal(existsSync(join(phaseRoot, 'cases.json')), false);
+            assert.equal(existsSync(join(phaseRoot, 'stdout.log')), false);
+            assert.equal(existsSync(join(phaseRoot, 'stderr.log')), false);
+            assert.equal(existsSync(join(phaseRoot, 'stdio.bin')), true);
             const vitest = JSON.parse(readFileSync(join(phaseRoot, 'vitest.json'), 'utf8'));
             assert.equal(vitest.numTotalTests, accepted[phase].tests);
             assert.deepEqual(

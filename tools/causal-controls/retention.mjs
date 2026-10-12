@@ -15,10 +15,134 @@ import {
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { gunzipSync, gzipSync } from 'node:zlib';
 import { digest, json } from '../usage-coverage-controls/source-graph.mjs';
+import { maxProcessOutputUnits } from './process.mjs';
 const maxFiles = 2000,
   maxBytes = 64 * 1024 * 1024,
   maxReceiptPathBytes = 1024;
+// UTF-8 takes at most three bytes per UTF-16 code unit. The process cap remains
+// exactly 8,388,608 decoded code units.
+const maxStdioBytes = 8 + 3 * maxProcessOutputUnits;
 const receiptName = /^(\d+)(?:-(\d+))?(?:\.(loader-preparation|dependencies))?\.jsonl$/;
+
+/** One byte-exact, independently bounded envelope replaces two per-phase log files. */
+export function encodePhaseStdio(stdout, stderr) {
+  assert.ok(
+    typeof stdout === 'string' &&
+      typeof stderr === 'string' &&
+      stdout.length + stderr.length <= maxProcessOutputUnits,
+    'Process output bound',
+  );
+  const out = Buffer.from(stdout, 'utf8'),
+    err = Buffer.from(stderr, 'utf8');
+  assert.ok(out.length + err.length + 8 <= maxStdioBytes, 'Stdio envelope bound');
+  const bytes = Buffer.allocUnsafe(8 + out.length + err.length);
+  bytes.writeUInt32BE(out.length, 0);
+  bytes.writeUInt32BE(err.length, 4);
+  out.copy(bytes, 8);
+  err.copy(bytes, 8 + out.length);
+  return {
+    bytes,
+    index: {
+      version: 1,
+      stdout: { bytes: out.length, sha256: digest(out) },
+      stderr: { bytes: err.length, sha256: digest(err) },
+    },
+  };
+}
+
+/** Reconstruct both original log byte streams and refuse malformed or expanded envelopes. */
+export function decodePhaseStdio(bytes, index) {
+  assert.ok(Buffer.isBuffer(bytes) && bytes.length >= 8 && bytes.length <= maxStdioBytes);
+  assert.equal(index?.version, 1);
+  for (const stream of ['stdout', 'stderr']) {
+    assert.ok(Number.isSafeInteger(index[stream]?.bytes) && index[stream].bytes >= 0);
+    assert.match(index[stream]?.sha256, /^[a-f0-9]{64}$/);
+  }
+  const outLength = bytes.readUInt32BE(0),
+    errLength = bytes.readUInt32BE(4);
+  assert.equal(outLength, index.stdout.bytes, 'Stdio stdout length differs');
+  assert.equal(errLength, index.stderr.bytes, 'Stdio stderr length differs');
+  assert.equal(bytes.length, 8 + outLength + errLength, 'Stdio envelope length differs');
+  const out = bytes.subarray(8, 8 + outLength),
+    err = bytes.subarray(8 + outLength);
+  assert.equal(digest(out), index.stdout.sha256, 'Stdio stdout digest differs');
+  assert.equal(digest(err), index.stderr.sha256, 'Stdio stderr digest differs');
+  const stdout = out.toString('utf8'),
+    stderr = err.toString('utf8');
+  assert.ok(
+    stdout.length + stderr.length <= maxProcessOutputUnits &&
+      Buffer.from(stdout, 'utf8').equals(out) &&
+      Buffer.from(stderr, 'utf8').equals(err),
+    'Stdio decoded process bound',
+  );
+  return { stdout, stderr };
+}
+
+function* boundedDirectoryEntries(path) {
+  const directory = opendirSync(path);
+  let count = 0;
+  try {
+    for (;;) {
+      const entry = directory.readSync();
+      if (entry === null) break;
+      assert.ok(++count <= maxFiles, 'Retained stdio directory bound');
+      yield entry;
+    }
+  } finally {
+    directory.closeSync();
+  }
+}
+
+/** Standalone verifier for all retained phase stdout/stderr bytes. */
+export function verifyRetainedStdio(destination) {
+  const root = realpathSync(destination);
+  const reconstructed = [];
+  let retainedFiles = 0,
+    retainedBytes = 0;
+  function countRetained(path, bound) {
+    const info = lstatSync(path);
+    assert.ok(info.isFile() && !info.isSymbolicLink() && realpathSync(path) === path);
+    assert.ok(info.size <= bound, 'Retained stdio input bound');
+    retainedFiles++;
+    retainedBytes += info.size;
+    assert.ok(retainedFiles <= maxFiles && retainedBytes <= maxBytes, 'Retained stdio total bound');
+  }
+  for (const control of boundedDirectoryEntries(root)) {
+    assert.ok(!control.isSymbolicLink(), 'Retained control path redirected');
+    if (!control.isDirectory()) continue;
+    const controlPath = join(root, control.name);
+    for (const phase of boundedDirectoryEntries(controlPath)) {
+      if (!['fixed', 'mutated', 'restored'].includes(phase.name)) continue;
+      assert.ok(phase.isDirectory() && !phase.isSymbolicLink(), 'Retained phase path redirected');
+      const phasePath = join(controlPath, phase.name);
+      const names = new Set([...boundedDirectoryEntries(phasePath)].map((entry) => entry.name));
+      const hasProcess = names.has('process.json'),
+        hasStdio = names.has('stdio.bin');
+      assert.equal(hasProcess, hasStdio, 'Retained process/stdio pair incomplete');
+      if (!hasProcess) continue; // A failed pre-spawn phase has neither completed artifact.
+      const processPath = join(phasePath, 'process.json'),
+        stdioPath = join(phasePath, 'stdio.bin');
+      countRetained(processPath, maxStdioBytes);
+      countRetained(stdioPath, maxStdioBytes);
+      const report = JSON.parse(readFileSync(processPath, 'utf8'));
+      const streams = decodePhaseStdio(readFileSync(stdioPath), report.stdio);
+      reconstructed.push({ control: control.name, phase: phase.name, ...streams });
+    }
+  }
+  const summaryPath = join(root, 'summary.json');
+  countRetained(summaryPath, maxBytes);
+  const summary = JSON.parse(readFileSync(summaryPath, 'utf8'));
+  if (summary.mechanisms !== undefined) {
+    assert.ok(Array.isArray(summary.mechanisms) && summary.mechanisms.length <= maxFiles);
+    const phases = new Set(reconstructed.map(({ control, phase }) => `${control}/${phase}`));
+    for (const mechanism of summary.mechanisms) {
+      assert.ok(typeof mechanism.id === 'string' && mechanism.id.length <= 1024);
+      for (const phase of ['fixed', 'mutated', 'restored'])
+        assert.ok(phases.has(`${mechanism.id}/${phase}`), 'Completed phase stdio missing');
+    }
+  }
+  return reconstructed;
+}
 function receiptIdentity(name, kind) {
   const match = receiptName.exec(name);
   assert.ok(match, 'Unknown evaluation receipt');
@@ -152,7 +276,11 @@ export function exportMetadata({ directory, scratch, repository, evidenceKind, s
       )
         collectEvaluations(source, path);
       else if (entry.isDirectory()) collect(source, path);
-      else if (entry.isFile() && /\.(json|jsonl|log)$/.test(entry.name)) {
+      else if (
+        entry.isFile() &&
+        (/\.(json|jsonl|log)$/.test(entry.name) ||
+          (entry.name === 'stdio.bin' && /(?:^|[/\\])(?:fixed|mutated|restored)$/.test(rel)))
+      ) {
         const size = lstatSync(source).size;
         assert.ok(size <= maxBytes - bytes, 'Metadata export bound');
         const content = readFileSync(source);
@@ -179,6 +307,7 @@ export function exportMetadata({ directory, scratch, repository, evidenceKind, s
   }
   writeFileSync(join(destination, 'export.json'), metadata, { flag: 'wx' });
   if (aggregates.length > 0) verifyRetainedEvaluations(destination);
+  verifyRetainedStdio(destination);
 }
 /** Verify every original per-PID receipt without unbounded gzip expansion. */
 export function verifyRetainedEvaluations(destination) {

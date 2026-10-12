@@ -34,7 +34,7 @@ import {
   exactReplacement,
   assertInventories,
 } from './provenance.mjs';
-import { finish } from './retention.mjs';
+import { encodePhaseStdio, finish } from './retention.mjs';
 
 export async function runControls({ repository, evidenceKind, mutations, toolRoots }) {
   assert.ok(['filesystem', 'secrets'].includes(evidenceKind), 'Unknown evidence family');
@@ -116,9 +116,14 @@ export async function runControls({ repository, evidenceKind, mutations, toolRoo
         env: phaseEnvironment(evidenceKind, runtime, scratch),
       },
     );
-    writeFileSync(join(output, 'stdout.log'), child.stdout ?? '');
-    writeFileSync(join(output, 'stderr.log'), child.stderr ?? '');
-    json(join(output, 'process.json'), { ...child, stdout: undefined, stderr: undefined });
+    const stdio = encodePhaseStdio(child.stdout ?? '', child.stderr ?? '');
+    writeFileSync(join(output, 'stdio.bin'), stdio.bytes, { flag: 'wx' });
+    json(join(output, 'process.json'), {
+      ...child,
+      stdout: undefined,
+      stderr: undefined,
+      stdio: stdio.index,
+    });
     assert.ok(existsSync(report), `${control.id}/${name}: missing completed report`);
     for (const entry of infrastructure)
       assert.equal(digest(readFileSync(entry.path)), entry.sha256, 'Phase metadata changed');

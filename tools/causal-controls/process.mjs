@@ -1,6 +1,8 @@
 import { spawn } from 'node:child_process';
 import { setTimeout, clearTimeout } from 'node:timers';
 
+export const maxProcessOutputUnits = 8 * 1024 * 1024;
+
 /** Join the runner's close after bounded output/time enforcement and kill its owned POSIX worker group. */
 export function spawnJoined(command, args, options, timeoutMs = 90000) {
   return new Promise((resolve) => {
@@ -34,7 +36,7 @@ export function spawnJoined(command, args, options, timeoutMs = 90000) {
       spawnError = { name: error.name, message: error.message };
     });
     function append(value, stream) {
-      if (stdout.length + stderr.length + value.length > 8 * 1024 * 1024) {
+      if (stdout.length + stderr.length + value.length > maxProcessOutputUnits) {
         outputExceeded = true;
         killOwned();
         return;

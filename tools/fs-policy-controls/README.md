@@ -88,3 +88,33 @@ refusal, and branch-output prestate publication. The branch removal requires bot
 its downstream first-byte witness and its independent 33-part pre-pull bound witness.
 All earlier controls run their enlarged complete regression files, including the
 new ordinary cases, in every phase.
+
+ADR-0109 adds fifteen declared removal controls in this same family, retaining the
+original 74 IDs and workloads. Shared helper controls distinguish prompt foreign
+observation, cached native acknowledgement before re-entry, captured original
+return/receiver, duplicate registration before a getter read, and late promotion
+after getter re-entry. De-inline controls distinguish a prompt counted return from
+the encompassing native join. Each real store has separate foreign-finite and
+native-join removals; filesystem storage also requires local file/temp cleanup
+before its source close. Native construction controls cover exact first-party
+public-iterator registration and refusal to classify injected dependencies as
+native. The finite adopted-EOF removal is explicitly a **trusted fixture-contract**
+check, not a shipped product guard. Private memory block release before the join
+is checked by source and ordinary behavior; no deterministic external removal
+witness is claimed for that private storage reference. Built CLI packaging checks
+are separate positive artifact evidence, not source-aliased removal controls.
+
+The 89-control declaration is not acceptance evidence by itself. The complete
+matrix still requires a stable committed head, all fixed/removal/restored phases,
+named semantic witnesses, child source/dependency receipts, byte-exact restoration,
+the retained-evidence caps, and independent cumulative review.
+
+`pnpm smoke:media-packaging` executes freshly built shared/core/db entry points and
+the untouched CLI bundle in the required local and GitHub CI gates after build.
+The workspace witness proves exact identity through raw store and engine de-inline
+consumption; a physical second shared copy remains foreign, demonstrating the
+unsupported cross-copy boundary. The CLI witness uses synthetic history and real
+loopback HTTP/CAS failure with controlled native retirement. Its exact fixture HTTPS
+dispatch is redirected at the native transport edge; it is packaging/lifetime proof,
+not TLS or SSRF evidence. Missing artifacts refuse rather than skip. These artifact
+checks are separate from source-aliased mechanism-removal certification.

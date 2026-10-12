@@ -807,3 +807,197 @@ mutations.push(
     ],
   },
 );
+
+// ADR-0109 keeps the same physical family. These removals distinguish prompt
+// foreign observation, exact native ownership, and cleanup-before-native-join.
+// The adopted finite EOF row is a trusted-fixture contract, not a shipped guard.
+const mediaIterator = 'packages/shared/src/media-iterator.ts';
+const mediaIteratorCases = 'packages/shared/src/media-iterator.test.ts';
+const mediaDeinline = 'packages/shared/src/media-deinline.ts';
+const mediaDeinlineCases = 'packages/shared/src/media-deinline-lifecycle.test.ts';
+const mediaIteratorStoreCases = 'packages/db/src/media-iterator-store.test.ts';
+const mediaNativeLifecycleCases = 'packages/db/src/media-native-lifecycle.test.ts';
+const mediaNativeLifecycleWorker = 'packages/db/src/fixtures/media-native-lifecycle-worker.ts';
+const nativeLifecycle = {
+  parent: mediaNativeLifecycleCases,
+  program: mediaNativeLifecycleWorker,
+};
+mutations.push(
+  {
+    ...mediaControl(
+      'MEDIA_ITERATOR_FOREIGN_ACK',
+      mediaIterator,
+      '  if (!state.native) complete();',
+      '  if (false) complete();',
+      'MEDIA_ITERATOR_FOREIGN_ACK',
+      mediaIteratorCases,
+      'observes foreign pending return once without joining it',
+      13,
+    ),
+    witnesses: ['throw', 'reject', 'then-getter'].map((kind) => ({
+      target: `discards foreign ${kind} diagnostics`,
+      marker: 'MEDIA_ITERATOR_FOREIGN_DIAGNOSTIC_FINITE',
+    })),
+  },
+  mediaControl(
+    'MEDIA_ITERATOR_REENTRY_CACHE',
+    mediaIterator,
+    '  state.acknowledgement = acknowledgement;',
+    '  state.acknowledgement = Promise.resolve();',
+    'MEDIA_ITERATOR_REENTRY_CACHE',
+    mediaIteratorCases,
+    'caches native acknowledgement before re-entrant return',
+    13,
+  ),
+  mediaControl(
+    'MEDIA_ITERATOR_CAPTURED_RETURN',
+    mediaIterator,
+    'invoke: (): unknown => Reflect.apply(operation, iterator, []),',
+    'invoke: (): unknown => iterator.return?.(),',
+    'MEDIA_ITERATOR_CAPTURED_RETURN',
+    mediaIteratorCases,
+    'captures the original native return and receiver',
+    13,
+  ),
+  mediaControl(
+    'MEDIA_ITERATOR_DUPLICATE_PREFLIGHT',
+    mediaIterator,
+    "    if (closes.has(iterator)) throw new MediaAdmissionError('source_failed');\n    const operation: unknown = Reflect.get(iterator, 'return');",
+    "    if (false) throw new MediaAdmissionError('source_failed');\n    const operation: unknown = Reflect.get(iterator, 'return');",
+    'MEDIA_ITERATOR_DUPLICATE_PREFLIGHT',
+    mediaIteratorCases,
+    'refuses duplicate registration before reading a replaced return getter',
+    13,
+  ),
+  mediaControl(
+    'MEDIA_ITERATOR_LATE_PROMOTION',
+    mediaIterator,
+    "    if (closes.has(iterator)) throw new MediaAdmissionError('source_failed');\n    closes.set(iterator, {",
+    "    if (false) throw new MediaAdmissionError('source_failed');\n    closes.set(iterator, {",
+    'MEDIA_ITERATOR_LATE_PROMOTION',
+    mediaIteratorCases,
+    'refuses late promotion when return capture re-enters a foreign close',
+    13,
+  ),
+  mediaControl(
+    'MEDIA_COUNTED_RETURN_PROMPT',
+    mediaDeinline,
+    '          void closeMediaIterator(iterator).catch(() => undefined);\n          return Promise.resolve({ done: true, value: undefined });',
+    '          void closeMediaIterator(iterator).catch(() => undefined);\n          return closeMediaIterator(iterator).then((): IteratorResult<Uint8Array> => ({ done: true, value: undefined }));',
+    'MEDIA_COUNTED_RETURN_PROMPT',
+    mediaDeinlineCases,
+    'lets the counted consumer clean before joining native resolve',
+    4,
+  ),
+  mediaControl(
+    'MEDIA_DEINLINE_NATIVE_JOIN',
+    mediaDeinline,
+    '      await closeMediaIterator(iterator).catch(() => {',
+    '      void closeMediaIterator(iterator).catch(() => {',
+    'MEDIA_DEINLINE_NATIVE_JOIN',
+    mediaDeinlineCases,
+    'lets the counted consumer clean before joining native resolve',
+    4,
+  ),
+);
+
+// Both stores have independently meaningful foreign-finishing and native-join
+// sites; the filesystem return-await additionally enforces local temp/fd order.
+const fsStoreClose =
+  '    } finally {\n      if (!ended) await closeMediaIteratorPreservingFailure(iterator, failed);\n    }\n  }\n\n  async #publish';
+const memoryStoreClose =
+  '      block = undefined;\n      if (!ended) await closeMediaIteratorPreservingFailure(iterator, failed);';
+mutations.push(
+  mediaControl(
+    'MEDIA_FS_STORE_FOREIGN_FINITE',
+    mediaStore,
+    fsStoreClose,
+    '    } finally {\n      if (!ended) await iterator.return?.();\n    }\n  }\n\n  async #publish',
+    'MEDIA_STORE_FOREIGN_CLOSE_FINITE',
+    mediaIteratorStoreCases,
+    'filesystem iterator retirement retires owned storage despite a foreign pending return',
+    6,
+  ),
+  mediaControl(
+    'MEDIA_FS_STORE_NATIVE_JOIN',
+    mediaStore,
+    fsStoreClose,
+    '    } finally {\n      if (!ended) void closeMediaIterator(iterator).catch(() => undefined);\n    }\n  }\n\n  async #publish',
+    'MEDIA_STORE_NATIVE_CLOSE_JOIN',
+    mediaIteratorStoreCases,
+    'filesystem iterator retirement cleans owned storage before joining registered return',
+    6,
+  ),
+  mediaControl(
+    'MEDIA_MEMORY_STORE_FOREIGN_FINITE',
+    mediaStore,
+    memoryStoreClose,
+    '      block = undefined;\n      if (!ended) await iterator.return?.();',
+    'MEDIA_STORE_FOREIGN_CLOSE_FINITE',
+    mediaIteratorStoreCases,
+    'memory iterator retirement retires owned storage despite a foreign pending return',
+    6,
+  ),
+  mediaControl(
+    'MEDIA_MEMORY_STORE_NATIVE_JOIN',
+    mediaStore,
+    memoryStoreClose,
+    '      block = undefined;\n      if (!ended) void closeMediaIterator(iterator).catch(() => undefined);',
+    'MEDIA_STORE_NATIVE_CLOSE_JOIN',
+    mediaIteratorStoreCases,
+    'memory iterator retirement cleans owned storage before joining registered return',
+    6,
+  ),
+  mediaControl(
+    'MEDIA_FS_STORE_LOCAL_FIRST',
+    mediaStore,
+    '      return await this.#publish(async (file) => {',
+    '      return this.#publish(async (file) => {',
+    'MEDIA_STORE_LOCAL_CLEANUP_BEFORE_CLOSE',
+    mediaIteratorStoreCases,
+    'filesystem iterator retirement cleans owned storage before joining registered return',
+    6,
+  ),
+  {
+    ...mediaControl(
+      'MEDIA_NATIVE_PUBLIC_ADOPTION',
+      mediaEgress,
+      'return deps === nodeEgressDeps ? registerNativeMediaIterator(iterator) : iterator;',
+      'return iterator;',
+      'MEDIA_NATIVE_CONSTRUCTOR_REGISTERED',
+      mediaNativeLifecycleCases,
+      'lazy: exact public native registration precedes the lazy first pull',
+      8,
+      nativeLifecycle,
+    ),
+    witnesses: [
+      {
+        target:
+          'deinline-eio: de-inline EIO cleans the real temporary before joining actual native close',
+        marker: 'FS_CAUSAL_MEDIA_NATIVE_CLOSE_JOIN',
+      },
+    ],
+  },
+  mediaControl(
+    'MEDIA_NATIVE_DEPS_EXACT',
+    mediaEgress,
+    'return deps === nodeEgressDeps ? registerNativeMediaIterator(iterator) : iterator;',
+    'return registerNativeMediaIterator(iterator);',
+    'MEDIA_NATIVE_INJECTED_FOREIGN',
+    mediaNativeLifecycleCases,
+    'injected-foreign: injected dependencies remain foreign until explicit trusted adoption',
+    8,
+    nativeLifecycle,
+  ),
+  mediaControl(
+    'MEDIA_ADOPTED_FINITE_EOF_FIXTURE_CONTRACT',
+    mediaNativeLifecycleWorker,
+    '        // A finite view must join upstream before *natural* EOF, as well as return.\n        await closeMediaIterator(upstream);\n        eofReported = true;',
+    '        // A finite view must join upstream before *natural* EOF, as well as return.\n        void closeMediaIterator(upstream).catch(() => undefined);\n        eofReported = true;',
+    'FS_CAUSAL_MEDIA_ADOPTED_EOF_JOIN',
+    mediaNativeLifecycleCases,
+    'adopted-eof: an adopted finite view joins real native close before EOF and publication',
+    8,
+    nativeLifecycle,
+  ),
+);

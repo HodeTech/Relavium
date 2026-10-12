@@ -28,8 +28,15 @@ new, deleted, changed or symlinked tooling entries refuse. Phase manifest, runti
 configuration and dependency metadata must remain unchanged. Every target needs
 real body evaluation, not just transformation.
 
-Evidence retains JSON/JSONL/log metadata plus lossless gzip archives of native and
-parent source/dependency evaluation JSONL. Each archive index retains every original
+Evidence retains JSON/JSONL metadata, one bounded binary `stdio.bin` per completed
+phase, and lossless gzip archives of native and parent source/dependency evaluation
+JSONL. The stdio envelope contains two 32-bit byte lengths followed by the exact
+original UTF-8 stdout and stderr log bytes; `process.json` retains each stream's byte
+length and SHA-256. The standalone verifier reconstructs both streams, checks the
+lengths, hashes and decoded process-output bound, and refuses a missing, redirected,
+truncated or overlong envelope. This replaces two per-phase log files without
+diluting the unchanged 2,000-file or 64-MiB retained ceilings. Each evaluation
+archive index retains every original
 receipt name, PID/thread/stage record byte, offset, length and digest. Its bounded
 verifier checks paths, segment continuity, counts, hashes, and decompression length;
 raw receipts also have independent 64 MiB input, 2,000-file and 1,024-byte relative
@@ -38,8 +45,9 @@ file cap. Index entries have a running byte budget before the
 final JSON serialization. The standalone receipt verifier bounds its own index plus
 archive bytes; the exporter separately enforces the whole evidence-tree cap. Complete
 case inventories remain in each Vitest result and phase summary; the duplicate
-control-only `cases.json` is omitted. Export excludes graph/cache/home and binary
-files, and cannot overwrite an existing destination or enter the repository or
+control-only `cases.json` is omitted. Export excludes graph/cache/home and unrelated
+binary files; only the bounded evaluation archives and exact per-phase `stdio.bin`
+are retained. It cannot overwrite an existing destination or enter the repository or
 scratch tree through a symlink. The bound includes the final export record: at most
 2,000 retained files and 64 MiB. Export and cleanup failures preserve the earlier
 failure.

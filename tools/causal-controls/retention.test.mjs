@@ -16,7 +16,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gunzipSync, gzipSync } from 'node:zlib';
 import { digest } from '../usage-coverage-controls/source-graph.mjs';
-import { exportMetadata, finish, verifyRetainedEvaluations } from './retention.mjs';
+import {
+  decodePhaseStdio,
+  encodePhaseStdio,
+  exportMetadata,
+  finish,
+  verifyRetainedEvaluations,
+  verifyRetainedStdio,
+} from './retention.mjs';
 function fixture(fn) {
   const root = mkdtempSync(join(tmpdir(), 'causal-retention-'));
   try {
@@ -46,6 +53,7 @@ test('exports only bounded own-family metadata, excluding graph/cache/home/nativ
     }
     writeFileSync(join(options.scratch, 'native.db'), 'excluded');
     writeFileSync(join(options.scratch, 'library.node'), 'excluded');
+    writeFileSync(join(options.scratch, 'other.bin'), 'excluded');
     exportMetadata(options);
     assert.deepEqual(readdirSync(join(options.directory, 'secrets')).sort(), [
       'export.json',
@@ -59,6 +67,101 @@ test('exports only bounded own-family metadata, excluding graph/cache/home/nativ
     assert.equal(exported.bytes, readFileSync(join(options.scratch, 'summary.json')).length);
     assert.throws(() => exportMetadata(options), /already exists/);
   });
+});
+test('retains exact bounded stdout and stderr in one independently verifiable phase envelope', () => {
+  fixture((options) => {
+    const phase = join(options.scratch, 'example-control', 'fixed');
+    mkdirSync(phase, { recursive: true });
+    const stdout = 'first\nλ\n',
+      stderr = 'refusal\n';
+    const stdio = encodePhaseStdio(stdout, stderr);
+    writeFileSync(join(phase, 'stdio.bin'), stdio.bytes);
+    writeFileSync(
+      join(phase, 'process.json'),
+      JSON.stringify({ joined: true, stdio: stdio.index }),
+    );
+    exportMetadata(options);
+    const retained = join(options.directory, 'secrets');
+    const records = verifyRetainedStdio(retained);
+    assert.deepEqual(records, [{ control: 'example-control', phase: 'fixed', stdout, stderr }]);
+    assert.deepEqual(readdirSync(join(retained, 'example-control', 'fixed')).sort(), [
+      'process.json',
+      'stdio.bin',
+    ]);
+    assert.deepEqual(decodePhaseStdio(stdio.bytes, stdio.index), { stdout, stderr });
+    const envelope = JSON.parse(readFileSync(join(retained, 'export.json'), 'utf8'));
+    assert.equal(envelope.files, 3); // summary, process, and exact combined stdio
+  });
+});
+for (const mode of [
+  'truncate',
+  'length',
+  'digest',
+  'missing-pair',
+  'redirect',
+  'encoding',
+  'overlong',
+])
+  test(`retained stdio verifier refuses ${mode}`, () => {
+    fixture((options) => {
+      const phase = join(options.scratch, 'example-control', 'fixed');
+      mkdirSync(phase, { recursive: true });
+      const stdio = encodePhaseStdio('valid', 'diagnostic');
+      writeFileSync(join(phase, 'stdio.bin'), stdio.bytes);
+      writeFileSync(join(phase, 'process.json'), JSON.stringify({ stdio: stdio.index }));
+      exportMetadata(options);
+      const retained = join(options.directory, 'secrets', 'example-control', 'fixed');
+      const path = join(retained, 'stdio.bin');
+      if (mode === 'truncate') truncateSync(path, stdio.bytes.length - 1);
+      else if (mode === 'length') {
+        const bytes = readFileSync(path);
+        bytes.writeUInt32BE(1, 0);
+        writeFileSync(path, bytes);
+      } else if (mode === 'digest') {
+        const processPath = join(retained, 'process.json');
+        const report = JSON.parse(readFileSync(processPath, 'utf8'));
+        report.stdio.stdout.sha256 = '0'.repeat(64);
+        writeFileSync(processPath, JSON.stringify(report));
+      } else if (mode === 'missing-pair') rmSync(path);
+      else if (mode === 'redirect') {
+        rmSync(path);
+        symlinkSync(join(options.scratch, 'summary.json'), path);
+      } else if (mode === 'overlong') {
+        truncateSync(path, 8 + 3 * 8 * 1024 * 1024 + 1);
+      } else {
+        const processPath = join(retained, 'process.json');
+        const report = JSON.parse(readFileSync(processPath, 'utf8'));
+        const bytes = readFileSync(path);
+        bytes[8] = 0xff;
+        report.stdio.stdout.sha256 = digest(bytes.subarray(8, 13));
+        writeFileSync(path, bytes);
+        writeFileSync(processPath, JSON.stringify(report));
+      }
+      assert.throws(() => verifyRetainedStdio(join(options.directory, 'secrets')));
+    });
+  });
+test('standalone stdio verifier requires every completed mechanism phase', () => {
+  fixture((options) => {
+    const phase = join(options.scratch, 'example-control', 'fixed');
+    mkdirSync(phase, { recursive: true });
+    const stdio = encodePhaseStdio('out', 'err');
+    writeFileSync(join(phase, 'stdio.bin'), stdio.bytes);
+    writeFileSync(join(phase, 'process.json'), JSON.stringify({ stdio: stdio.index }));
+    writeFileSync(
+      join(options.scratch, 'summary.json'),
+      JSON.stringify({ complete: false, mechanisms: [{ id: 'example-control' }] }),
+    );
+    assert.throws(() => exportMetadata(options), /Completed phase stdio missing/);
+  });
+});
+test('stdio encoder and decoder enforce the unchanged process-output authority', () => {
+  assert.throws(
+    () => encodePhaseStdio('x'.repeat(8 * 1024 * 1024 + 1), ''),
+    /Process output bound/,
+  );
+  const stdio = encodePhaseStdio('', '');
+  const widened = { ...stdio.index, stdout: { ...stdio.index.stdout, bytes: 1 } };
+  assert.throws(() => decodePhaseStdio(stdio.bytes, widened), /length differs/);
 });
 test('native per-PID receipts retain every exact body/dependency byte in bounded archives', () => {
   fixture((options) => {

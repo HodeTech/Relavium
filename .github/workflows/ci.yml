@@ -214,6 +214,10 @@ jobs:
       - name: Smoke the compiled binary
         run: pnpm smoke:cli
 
+      # ADR-0109 exact module identity must hold in actual artifacts, separately from source controls.
+      - name: Smoke built workspace and bundled CLI media ownership (offline)
+        run: pnpm smoke:media-packaging
+
       # The maintainer capture command handles real credentials and paid egress. Exercise its stdin/file/
       # cancellation boundary offline, through the same script as the local required gate.
       - name: Smoke the overflow capture command (offline)
