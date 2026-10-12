@@ -24,6 +24,7 @@ import {
 } from '../usage-coverage-controls/source-graph.mjs';
 import { spawnJoined } from './process.mjs';
 import { assertPhaseOutcome } from './outcome.mjs';
+import { assertDeclaredHookTimeouts } from './timeout-policy.mjs';
 import {
   captureOwnedTools,
   verifyOwnedTools,
@@ -32,6 +33,7 @@ import {
   selectControls,
   phaseEnvironment,
   exactReplacement,
+  assertSelectedAnchors,
   assertInventories,
 } from './provenance.mjs';
 import { encodePhaseStdio, finish } from './retention.mjs';
@@ -75,7 +77,7 @@ export async function runControls({ repository, evidenceKind, mutations, toolRoo
     const config = join(output, 'vitest.config.mjs');
     writeFileSync(
       config,
-      `import { sourcePlugin } from ${JSON.stringify(toUrl(join(graph, 'tools/usage-coverage-controls/source-graph.mjs')))};\nexport default { root:${JSON.stringify(graph)}, cacheDir:${JSON.stringify(join(output, 'cache'))}, plugins:[sourcePlugin()], test:{ environment:'node', cache:false, pool:'forks', maxWorkers:1, fileParallelism:false, include:${JSON.stringify(control.files)}, passWithNoTests:false, testTimeout:15000, hookTimeout:15000 } };\n`,
+      `import { sourcePlugin } from ${JSON.stringify(toUrl(join(graph, 'tools/usage-coverage-controls/source-graph.mjs')))};\nexport default { root:${JSON.stringify(graph)}, cacheDir:${JSON.stringify(join(output, 'cache'))}, plugins:[sourcePlugin()], test:{ environment:'node', cache:false, pool:'forks', maxWorkers:1, fileParallelism:false, include:${JSON.stringify(control.files)}, setupFiles:[${JSON.stringify(join(graph, 'tools/causal-controls/timeout-setup.mjs'))}], passWithNoTests:false, testTimeout:15000, hookTimeout:15000 } };\n`,
     );
     const runtime = join(output, 'runtime.json');
     json(runtime, {
@@ -170,16 +172,22 @@ export async function runControls({ repository, evidenceKind, mutations, toolRoo
   }
   try {
     source = captureSource(repository, graph);
+    summary.sourceHead = source.head;
     for (const file of source.files)
       assert.equal(
         realpathSync(join(repository, file.path)),
         resolve(repository, file.path),
         'Owned source path redirected',
       );
-    dependencies = captureDependencies(repository);
-    linkDependencies(repository, graph);
     ownFiles = captureOwnedTools(repository, graph, toolRoots);
     manifest = { ...source, files: mergeFiles(source.files, ownFiles) };
+    assertSelectedAnchors(selected, graph, manifest.files);
+    dependencies = captureDependencies(repository);
+    linkDependencies(repository, graph);
+    assertDeclaredHookTimeouts(
+      graph,
+      selected.flatMap((control) => control.files),
+    );
     json(join(scratch, 'developer-source.json'), manifest);
     json(join(scratch, 'installed-dependencies.json'), dependencies);
     summary.sourceHead = source.head;

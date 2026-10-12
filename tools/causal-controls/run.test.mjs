@@ -171,3 +171,105 @@ test(
     }
   },
 );
+
+test('a stale later anchor stops every selected control before any fixed phase', async () => {
+  const directory = realpathSync(mkdtempSync(join(tmpdir(), 'causal-anchor-preflight-')));
+  const before = sourceState(repository),
+    scratches = scratchNames();
+  try {
+    const entry = join(directory, 'run.mjs');
+    const good = {
+      id: 'first-valid',
+      path: target,
+      before: 'export const admitted = true;',
+      after: 'export const admitted = false;',
+      files,
+      expectedTests: 2,
+      target: 'CAUSAL_SYNTHETIC_DECLARED',
+      marker: 'CAUSAL_SYNTHETIC_DECLARED',
+    };
+    writeFileSync(
+      entry,
+      `import { runControls } from ${JSON.stringify(pathToFileURL(join(repository, 'tools/causal-controls/run.mjs')).href)};\nawait runControls(${JSON.stringify({ repository, evidenceKind: 'filesystem', toolRoots: ['tools/causal-controls', 'tools/fs-policy-controls'], mutations: [good, { ...good, id: 'later-stale', before: 'absent anchor' }] })});\n`,
+    );
+    const evidence = join(directory, 'evidence');
+    mkdirSync(evidence);
+    const child = await spawnJoined(
+      process.execPath,
+      [entry],
+      {
+        cwd: repository,
+        env: { ...process.env, RELAVIUM_ACCEPTANCE_EVIDENCE: evidence },
+      },
+      30000,
+    );
+    assert.equal(child.joined, true);
+    assert.equal(child.timedOut, false);
+    assert.equal(child.code, 1);
+    const retained = JSON.parse(readFileSync(join(evidence, 'filesystem', 'summary.json'), 'utf8'));
+    assert.equal(retained.complete, false);
+    assert.deepEqual(retained.mechanisms, []);
+    assert.deepEqual(retained.restorations, []);
+    assert.match(retained.failure.message, /later-stale: exact source anchor drift/);
+    assert.equal(existsSync(join(evidence, 'filesystem', 'first-valid')), false);
+    assert.deepEqual(scratchNames(), scratches);
+    assert.deepEqual(sourceState(repository), before);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test(
+  'physical phases refuse effective case and configured hook overrides above fifteen seconds',
+  { timeout: 90000 },
+  async () => {
+    const directory = realpathSync(mkdtempSync(join(tmpdir(), 'causal-timeout-phase-')));
+    const before = sourceState(repository);
+    try {
+      for (const mode of ['case', 'config']) {
+        const entry = join(directory, `${mode}.mjs`);
+        const control = {
+          id: `timeout-${mode}`,
+          path: target,
+          before: 'export const admitted = true;',
+          after: 'export const admitted = false;',
+          files: ['tools/causal-controls/timeout.cases.mjs'],
+          expectedTests: 1,
+          target: 'never-certify',
+          marker: 'never-certify',
+        };
+        writeFileSync(
+          entry,
+          `import { runControls } from ${JSON.stringify(pathToFileURL(join(repository, 'tools/causal-controls/run.mjs')).href)};\nawait runControls(${JSON.stringify({ repository, evidenceKind: 'filesystem', toolRoots: ['tools/causal-controls', 'tools/fs-policy-controls'], mutations: [control] })});\n`,
+        );
+        const evidence = join(directory, mode);
+        mkdirSync(evidence);
+        const child = await spawnJoined(
+          process.execPath,
+          [entry],
+          {
+            cwd: repository,
+            env: {
+              ...process.env,
+              RELAVIUM_ACCEPTANCE_EVIDENCE: evidence,
+              RELAVIUM_CAUSAL_TIMEOUT_FIXTURE: mode,
+            },
+          },
+          30000,
+        );
+        assert.equal(child.joined, true);
+        assert.equal(child.timedOut, false);
+        assert.equal(child.code, 1);
+        const root = join(evidence, 'filesystem');
+        const summary = JSON.parse(readFileSync(join(root, 'summary.json'), 'utf8'));
+        assert.equal(summary.complete, false);
+        assert.deepEqual(summary.mechanisms, []);
+        const report = readFileSync(join(root, control.id, 'fixed', 'vitest.json'), 'utf8');
+        assert.match(report, /CAUSAL_TIMEOUT_BUDGET/);
+        assert.deepEqual(sourceState(repository), before);
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  },
+);

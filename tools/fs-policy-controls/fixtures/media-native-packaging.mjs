@@ -15,8 +15,9 @@ import http from 'node:http';
 import https from 'node:https';
 import { syncBuiltinESMExports } from 'node:module';
 import os from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { clearTimeout, setImmediate, setTimeout } from 'node:timers';
+import { fileURLToPath } from 'node:url';
 
 const entry = new URL('../../../apps/cli/dist/index.js', import.meta.url);
 await access(entry).catch(() => {
@@ -144,8 +145,13 @@ workflow:
   };
   fs.promises.open = async (...args) => {
     const path = String(args[0]);
-    if (path.includes('media-v1.'))
-      assert.ok(path.startsWith(scratch + '/'), 'Only a synthetic-home CAS may be written');
+    if (path.includes('media-v1.')) {
+      const child = relative(scratch, path);
+      assert.ok(
+        child !== '' && child !== '..' && !child.startsWith(`..${sep}`) && !isAbsolute(child),
+        'Only a synthetic-home CAS may be written',
+      );
+    }
     const file = await original.open(...args);
     if (path.includes('media-v1.')) {
       file.write = () => {
@@ -163,7 +169,15 @@ workflow:
   };
   syncBuiltinESMExports();
   process.chdir(scratch);
-  process.argv = [process.execPath, entry.pathname, 'run', workflow, '--json', '--cwd', scratch];
+  process.argv = [
+    process.execPath,
+    fileURLToPath(entry),
+    'run',
+    workflow,
+    '--json',
+    '--cwd',
+    scratch,
+  ];
   watchdog = setTimeout(() => fail.release(), 15_000);
   // Observe failure immediately; only the checkpoint assertions define the witness.
   // eslint-disable-next-line no-restricted-syntax -- exact local untouched CLI dist entry proves its shipped ownership domain; never a provider module

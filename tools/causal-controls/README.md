@@ -14,9 +14,19 @@ and that child's pinned dependency-load receipts. Setup/import failures, skips,
 empty inventories, timeouts, signals, output overflow, plain marker-bearing runtime
 errors and unjoined children cannot establish removal. Additional consumer witnesses
 are declarative, including both ancestor ports and deletion GC.
+Before the first fixed phase, the coordinator checks every selected anchor against
+the copied, pinned source graph. A stale later declaration therefore stops the
+whole selection without completing earlier mechanisms; mutation-time exact checks
+remain in place as a second integrity check.
 
 Each phase retains the existing 90-second joined process and 15-second case/hook
 bounds, one fork and a combined decoded-output limit of 8,388,608 UTF-16 code units.
+An owned Vitest setup hook checks each collected case's effective timeout and
+refuses `vi.setConfig` test/hook overrides above 15 seconds. A copied-source
+TypeScript syntax preflight refuses over-budget or dynamic direct hook timeouts,
+which Vitest does not expose through the test context. These are admission checks
+on the selected cohorts; arbitrary hook registration through unreviewed aliases
+is outside the structural check. Phase timeout and process join remain separate.
 POSIX process groups are owned and killed/joined. Windows retains the existing
 limitation: child-process closure is joined but descendant tree ownership is not
 asserted.
@@ -61,3 +71,6 @@ hashes, main-thread body evaluations, complete identical inventories, removed
 scratch and unchanged developer bytes/HEAD/index. The synthetic target/cases are
 owned tooling fixtures selected only by this guard, outside product/workspace
 inventories. Failure restoration receipts remain in the coordinator summary.
+Additional bounded negative captures prove that a stale second anchor starts no
+phase and that both effective case and configured hook overrides above 15 seconds
+fail before they can be treated as causal evidence.

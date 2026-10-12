@@ -104,7 +104,16 @@ is checked by source and ordinary behavior; no deterministic external removal
 witness is claimed for that private storage reference. Built CLI packaging checks
 are separate positive artifact evidence, not source-aliased removal controls.
 
-The 89-control declaration is not acceptance evidence by itself. The complete
+R2 appends four controls without changing the prior 89 IDs or complete workloads:
+WebM and MP4 each lose only their repeated singleton-identity refusal, while
+native HTTP separately loses raw `Content-Type` field preservation and the
+post-normalization multiplicity check. The native header cases execute real
+loopback responses and require both whole-buffer and filesystem-store named
+admission failures; source/dependency receipts identify the launched worker.
+The coordinator now checks every selected source anchor before the first fixed
+phase and rejects effective case or configured hook timeouts above 15 seconds.
+
+The 93-control declaration is not acceptance evidence by itself. The complete
 matrix still requires a stable committed head, all fixed/removal/restored phases,
 named semantic witnesses, child source/dependency receipts, byte-exact restoration,
 the retained-evidence caps, and independent cumulative review.

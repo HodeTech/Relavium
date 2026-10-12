@@ -177,6 +177,23 @@ export function exactReplacement(original, control) {
   assert.equal(text.split(control.before).length, 2, `${control.id}: exact source anchor drift`);
   return text.replace(control.before, control.after);
 }
+/** Refuse every stale selected anchor before spending any fixed/removal phase. */
+export function assertSelectedAnchors(controls, graph, sourceFiles) {
+  const pins = new Map(sourceFiles.map((entry) => [entry.path, entry]));
+  const drift = [];
+  for (const control of controls) {
+    const pin = pins.get(control.path);
+    if (pin === undefined) {
+      drift.push(`${control.id}: target outside source closure`);
+      continue;
+    }
+    const original = readFileSync(join(graph, control.path));
+    assert.equal(digest(original), pin.sha256, `${control.id}: copied target changed`);
+    if (original.toString('utf8').split(control.before).length !== 2)
+      drift.push(`${control.id}: exact source anchor drift`);
+  }
+  assert.deepEqual(drift, [], `Selected source anchor preflight failed: ${drift.join(', ')}`);
+}
 export function assertInventories(fixed, mutated, restored) {
   assert.deepEqual(mutated.inventory, fixed.inventory, 'Mutated workload changed');
   assert.deepEqual(restored.inventory, fixed.inventory, 'Restored workload changed');

@@ -13,6 +13,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { digest } from '../usage-coverage-controls/source-graph.mjs';
 import {
   captureOwnedTools,
   verifyOwnedTools,
@@ -21,6 +22,7 @@ import {
   selectControls,
   phaseEnvironment,
   exactReplacement,
+  assertSelectedAnchors,
   assertInventories,
 } from './provenance.mjs';
 const roots = ['tools/causal-controls', 'tools/secrets-controls'];
@@ -219,4 +221,34 @@ test('exact mutation rejects absent/ambiguous anchors and full phase inventories
     () => assertInventories(fixed, fixed, { inventory: ['suite:changed', 'suite:positive'] }),
     /Restored workload/,
   );
+});
+test('selected anchor preflight audits every copied target before a phase', () => {
+  fixture(({ repo, graph }) => {
+    const files = captureOwnedTools(repo, graph, roots);
+    const controls = files.map((entry, index) => ({
+      id: `anchor-${index}`,
+      path: entry.path,
+      before: 'original',
+    }));
+    assert.doesNotThrow(() => assertSelectedAnchors(controls, graph, files));
+    assert.throws(
+      () =>
+        assertSelectedAnchors([{ ...controls[0], before: 'missing' }, controls[1]], graph, files),
+      /anchor-0: exact source anchor drift/,
+    );
+    writeFileSync(join(graph, controls[1].path), 'original original');
+    const duplicateFiles = files.map((entry) =>
+      entry.path === controls[1].path
+        ? { ...entry, bytes: 17, sha256: digest(Buffer.from('original original')) }
+        : entry,
+    );
+    assert.throws(
+      () => assertSelectedAnchors(controls, graph, duplicateFiles),
+      /anchor-1: exact source anchor drift/,
+    );
+    assert.throws(
+      () => assertSelectedAnchors([{ ...controls[0], path: 'outside.ts' }], graph, files),
+      /target outside source closure/,
+    );
+  });
 });

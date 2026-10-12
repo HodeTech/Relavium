@@ -306,7 +306,7 @@ mutations.push(
     'MEDIA_STORE_IMAGE_INLINE_BOUND',
     mediaAdmission,
     'admits a structurally complete image',
-    19,
+    21,
   ),
   mediaControl(
     'MEDIA_MEMORY_INLINE_BOUND',
@@ -316,47 +316,47 @@ mutations.push(
     'MEDIA_STORE_IMAGE_INLINE_BOUND',
     mediaAdmission,
     'admits a structurally complete image',
-    19,
+    21,
   ),
   mediaControl(
     'MEDIA_FS_STREAM_BOUND',
     mediaStore,
-    "const hash = createHash('sha256');\n      let total = 0;\n      for await (const chunk of chunks) {\n        if (inputByteLength(chunk) > MAX_MEDIA_OBJECT_BYTES - total)\n          throw new MediaAdmissionError('object_limit');",
-    "const hash = createHash('sha256');\n      let total = 0;\n      for await (const chunk of chunks) {\n        void total;",
+    "          if (inputByteLength(chunk) > MAX_MEDIA_OBJECT_BYTES - total)\n            throw new MediaAdmissionError('object_limit');\n          const owned = new Uint8Array(chunk);\n          verifier.push(owned);\n          total += owned.length;\n          hash.update(owned);",
+    '          void total;\n          const owned = new Uint8Array(chunk);\n          verifier.push(owned);\n          total += owned.length;\n          hash.update(owned);',
     'MEDIA_STORE_STREAM_PRECOPY_BOUND',
     mediaAdmission,
     'refuses an oversized source chunk',
-    19,
+    21,
   ),
   mediaControl(
     'MEDIA_MEMORY_STREAM_BOUND',
     mediaStore,
-    "let used = 0;\n    let total = 0;\n    for await (const chunk of chunks) {\n      if (inputByteLength(chunk) > MAX_MEDIA_OBJECT_BYTES - total)\n        throw new MediaAdmissionError('object_limit');",
-    'let used = 0;\n    let total = 0;\n    for await (const chunk of chunks) {\n      void total;',
+    "        if (inputByteLength(chunk) > MAX_MEDIA_OBJECT_BYTES - total)\n          throw new MediaAdmissionError('object_limit');\n        const owned = new Uint8Array(chunk);\n        verifier.push(owned);\n        let offset = 0;",
+    '        void total;\n        const owned = new Uint8Array(chunk);\n        verifier.push(owned);\n        let offset = 0;',
     'MEDIA_STORE_STREAM_PRECOPY_BOUND',
     mediaAdmission,
     'refuses an oversized source chunk',
-    19,
+    21,
   ),
   mediaControl(
     'MEDIA_FS_FINISH',
     mediaStore,
-    "      verifier.finish();\n      return HANDLE_PREFIX + hash.digest('hex');",
-    "      void verifier;\n      return HANDLE_PREFIX + hash.digest('hex');",
+    "        verifier.finish();\n        return HANDLE_PREFIX + hash.digest('hex');",
+    "        void verifier;\n        return HANDLE_PREFIX + hash.digest('hex');",
     'MEDIA_STORE_VERIFIER_FINISH',
     mediaAdmission,
     'requires finish and independent declared format',
-    19,
+    21,
   ),
   mediaControl(
     'MEDIA_MEMORY_FINISH',
     mediaStore,
-    '    verifier.finish();\n    const bytes = new Uint8Array(total);',
-    '    void verifier;\n    const bytes = new Uint8Array(total);',
+    '      verifier.finish();\n      const bytes = new Uint8Array(total);',
+    '      void verifier;\n      const bytes = new Uint8Array(total);',
     'MEDIA_STORE_VERIFIER_FINISH',
     mediaAdmission,
     'requires finish and independent declared format',
-    19,
+    21,
   ),
   mediaControl(
     'MEDIA_FS_BYTE_VALIDATION',
@@ -366,7 +366,7 @@ mutations.push(
     'FS_CAUSAL_MEDIA_FS_BYTE_VALIDATION',
     mediaAdmission,
     'incremental validation never calls whole-object get',
-    19,
+    21,
   ),
   mediaControl(
     'MEDIA_MEMORY_BYTE_VALIDATION',
@@ -376,7 +376,7 @@ mutations.push(
     'FS_CAUSAL_MEDIA_MEMORY_BYTE_VALIDATION',
     mediaAdmission,
     'requires finish and independent declared format',
-    19,
+    21,
   ),
   mediaControl(
     'MEDIA_FD_PREALLOCATION',
@@ -416,7 +416,7 @@ mutations.push(
     'FS_CAUSAL_MEDIA_MEMORY_RANGE_SIGNAL',
     mediaAdmission,
     'checks pre-abort and abort after awaiting resident delivery',
-    19,
+    21,
   ),
   mediaControl(
     'MEDIA_TEMP_OWNER_ABSENCE',
@@ -671,8 +671,8 @@ mutations.push(
   mediaControl(
     'MEDIA_UPSTREAM_EARLY_CLOSE',
     'packages/shared/src/media-deinline.ts',
-    'const cleanup = close();',
-    'const cleanup = Promise.resolve();',
+    "    if (!drained) {\n      await closeMediaIterator(iterator).catch(() => {\n        // Preserve a primary store/refusal error; a close-only fault remains typed.\n        if (!failed) throw new MediaAdmissionError('source_failed');\n      });\n    }",
+    '    if (!drained) {\n      void failed;\n    }',
     'media-stream-early-return-closes-source',
     mediaPublication,
     'closes a single acquired upstream',
@@ -1000,4 +1000,87 @@ mutations.push(
     8,
     nativeLifecycle,
   ),
+);
+
+// R2 closes ambiguous video singleton identities and preserves raw native response
+// header multiplicity. These four rows retain the original 89 IDs and workloads.
+const mediaIdentityCases = 'packages/shared/src/media-verifier-identity.test.ts';
+const mediaNativeHeadersCases = 'packages/db/src/media-native-headers.test.ts';
+const nativeHeaders = {
+  parent: mediaNativeHeadersCases,
+  program: 'packages/db/src/fixtures/media-native-headers-worker.ts',
+};
+const nativeHeaderTarget =
+  'whole-buffer native Content-Type admission identical retains original field multiplicity before body consumption';
+const nativeHeaderStoreTarget =
+  'filesystem-store native Content-Type admission identical retains original field multiplicity before body consumption';
+mutations.push(
+  {
+    ...mediaControl(
+      'MEDIA_WEBM_SINGULAR_IDENTITY',
+      'packages/shared/src/media-verifier-webm.ts',
+      '        if (seen.has(id)) fail();',
+      '        if (false) fail();',
+      'MEDIA_WEBM_SINGULAR_IDENTITY',
+      mediaIdentityCases,
+      'WebM unknown then supported codec',
+      30,
+    ),
+    witnesses: [
+      {
+        target: 'WebM two supported codecs reversed',
+        marker: 'MEDIA_WEBM_SINGULAR_IDENTITY',
+      },
+    ],
+  },
+  {
+    ...mediaControl(
+      'MEDIA_MP4_SINGULAR_IDENTITY',
+      'packages/shared/src/media-verifier-mp4.ts',
+      '        if (track.seen.has(identity)) fail();',
+      '        if (false) fail();',
+      'MEDIA_MP4_SINGULAR_IDENTITY',
+      mediaIdentityCases,
+      'MP4 repeated handler soun-vide',
+      30,
+    ),
+    witnesses: [
+      {
+        target: 'MP4 repeated handler vide-vide',
+        marker: 'MEDIA_MP4_SINGULAR_IDENTITY',
+      },
+      {
+        target: 'MP4 undeclared extra sample entry bef',
+        marker: 'MEDIA_MP4_SINGULAR_IDENTITY',
+      },
+    ],
+  },
+  {
+    ...mediaControl(
+      'MEDIA_NATIVE_HEADER_PRESERVATION',
+      'packages/db/src/safe-egress.ts',
+      '              contentTypeValues: originalContentTypeValues(incoming.rawHeaders),',
+      '',
+      'MEDIA_NATIVE_HEADER_MULTIPLICITY',
+      mediaNativeHeadersCases,
+      nativeHeaderTarget,
+      18,
+      nativeHeaders,
+    ),
+    witnesses: [{ target: nativeHeaderStoreTarget, marker: 'MEDIA_NATIVE_HEADER_MULTIPLICITY' }],
+  },
+  {
+    ...mediaControl(
+      'MEDIA_NATIVE_HEADER_ADMISSION',
+      mediaEgress,
+      "  if (entries.length > 1 || values.length > 1) throw new MediaAdmissionError('descriptor_conflict');",
+      "  if (entries.length > 1) throw new MediaAdmissionError('descriptor_conflict');",
+      'MEDIA_NATIVE_HEADER_MULTIPLICITY',
+      mediaNativeHeadersCases,
+      nativeHeaderTarget,
+      18,
+      nativeHeaders,
+    ),
+    witnesses: [{ target: nativeHeaderStoreTarget, marker: 'MEDIA_NATIVE_HEADER_MULTIPLICITY' }],
+  },
 );

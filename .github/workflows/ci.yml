@@ -232,7 +232,7 @@ jobs:
   # ADR-0105 isolated, current-source removal/restoration evidence, required through ci.needs.
   fs-mutations:
     name: Wave 2 filesystem causal controls
-    # ADR-0106 expands 26 controls to 71 complete fixed/removal/restored workloads.
+    # ADR-0106/0109 extend the original 26 controls with complete media/lifetime workloads.
     # The per-phase 90-second deadline and output/evidence ceilings remain unchanged.
     timeout-minutes: 20
     runs-on: ubuntu-latest
@@ -537,7 +537,10 @@ jobs:
         run: pnpm --filter @relavium/shared exec vitest run src/existing-ancestor.test.ts src/config.test.ts
       - name: Shared media byte verification and publication (ADR-0106)
         if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
-        run: pnpm --filter @relavium/shared exec vitest run src/media-admission.test.ts src/media-deinline.test.ts src/media-publication.test.ts src/media-verifier.test.ts src/media-verifier-invalid.test.ts src/media-verifier-variants.test.ts
+        run: pnpm --filter @relavium/shared exec vitest run src/media-admission.test.ts src/media-deinline.test.ts src/media-deinline-lifecycle.test.ts src/media-iterator.test.ts src/media-publication.test.ts src/media-verifier.test.ts src/media-verifier-invalid.test.ts src/media-verifier-variants.test.ts src/media-verifier-identity.test.ts
+      - name: Built workspace and bundled CLI native media ownership (ADR-0109)
+        if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
+        run: pnpm smoke:media-packaging
       - name: Native CLI media publication and offline temporary maintenance (ADR-0106)
         if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
         run: pnpm --filter relavium exec vitest run src/engine/media-paid-publication.test.ts src/engine/media-provider-admission.test.ts src/engine/media-publication.e2e.test.ts src/engine/media-retention-ack.test.ts src/engine/media-gc.test.ts src/engine/media-gc-delete-races.test.ts src/run-media-prune.test.ts

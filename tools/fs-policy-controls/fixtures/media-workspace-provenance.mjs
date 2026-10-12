@@ -4,7 +4,7 @@ import { cp, mkdtemp, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setImmediate, setTimeout } from 'node:timers/promises';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 // These imports intentionally exercise built entry points, never source aliases.
 import {
   createInMemoryHost,
@@ -144,7 +144,7 @@ try {
   });
   await writeFile(join(separate, 'package.json'), '{"type":"module"}');
   await symlink(
-    new URL('../../../packages/shared/node_modules', import.meta.url).pathname,
+    fileURLToPath(new URL('../../../packages/shared/node_modules', import.meta.url)),
     join(separate, 'node_modules'),
     'junction',
   );
