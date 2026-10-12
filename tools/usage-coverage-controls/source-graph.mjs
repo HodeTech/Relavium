@@ -129,7 +129,7 @@ export function captureDependencies(repository) {
       throw new Error(`External dependency is not installed physical package: ${root}`);
     if (roots.has(root)) return;
     const packageBytes = readFileSync(join(root, 'package.json'));
-    const info = JSON.parse(packageBytes);
+    const info = JSON.parse(packageBytes.toString('utf8'));
     const pin = {
       root,
       name: info.name,
@@ -203,7 +203,7 @@ export function runtimeState() {
   assert.ok(controlPath, 'RELAVIUM_USAGE_RUNTIME is required');
   const control = JSON.parse(readFileSync(controlPath, 'utf8'));
   const manifestBytes = readFileSync(control.manifestPath);
-  const manifest = JSON.parse(manifestBytes);
+  const manifest = JSON.parse(manifestBytes.toString('utf8'));
   assert.equal(digest(manifestBytes), control.manifestSha256, 'Source manifest changed');
   const dependencyBytes = readFileSync(control.dependencyManifestPath);
   assert.equal(
@@ -211,7 +211,7 @@ export function runtimeState() {
     control.dependencyManifestSha256,
     'Dependency manifest changed',
   );
-  const dependencies = JSON.parse(dependencyBytes);
+  const dependencies = JSON.parse(dependencyBytes.toString('utf8'));
   const files = new Map(manifest.files.map((f) => [join(manifest.sourceRoot, f.path), f]));
   const external = new Map(dependencies.files.map((f) => [f.path, f]));
   const infrastructure = new Map(control.infrastructure.map((f) => [f.path, f]));

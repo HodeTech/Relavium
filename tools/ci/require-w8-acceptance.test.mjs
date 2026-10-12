@@ -36,7 +36,12 @@ test('the actual required workflow joins both full offline controls and checks t
     readFileSync(new URL('../../.github/workflows/ci.yml', import.meta.url), 'utf8'),
   );
   const ci = workflow.jobs.ci;
-  assert.deepEqual(ci.needs, ['wire-mutations', 'usage-mutations', 'fs-mutations']);
+  assert.deepEqual(ci.needs, [
+    'wire-mutations',
+    'usage-mutations',
+    'fs-mutations',
+    'secrets-mutations',
+  ]);
   const fsGuard = ci.steps.find(
     (step) => step.name === 'Require complete filesystem causal controls',
   );
@@ -65,6 +70,33 @@ test('the actual required workflow joins both full offline controls and checks t
     assert.equal(artifact.if, '${{ always() }}');
     assert.equal(artifact.with['retention-days'], 7);
   }
+  const secretsGuard = ci.steps.find(
+    (step) => step.name === 'Require complete secrets causal controls',
+  );
+  assert.equal(secretsGuard.env.SECRETS_CONTROLS_RESULT, '${{ needs.secrets-mutations.result }}');
+  assert.equal(
+    secretsGuard.run,
+    "node -e \"require('node:assert/strict').equal(process.env.SECRETS_CONTROLS_RESULT, 'success')\"",
+  );
+  assert.equal(secretsGuard.if, undefined);
+  assert.equal(secretsGuard['continue-on-error'], undefined);
+  for (const kind of ['secrets']) {
+    const job = workflow.jobs[`${kind}-mutations`];
+    assert.equal(job['continue-on-error'], undefined);
+    assert.equal(job.if, undefined);
+    assert.ok(job['timeout-minutes'] > 0 && job['timeout-minutes'] <= 10);
+    assert.ok(job.steps.some((step) => step.run === 'pnpm install --frozen-lockfile'));
+    assert.ok(job.steps.some((step) => step.run === 'pnpm test:acceptance-tools'));
+    assert.ok(job.steps.some((step) => step.with?.['node-version-file'] === '.nvmrc'));
+    const command = job.steps.find((step) => step.run === `pnpm check:${kind}-mutations`);
+    assert.equal(command['continue-on-error'], undefined);
+    assert.equal(command.if, undefined);
+    assert.equal(command.env.RELAVIUM_ACCEPTANCE_EVIDENCE, '${{ runner.temp }}/wave2-acceptance');
+    const artifact = job.steps.find((step) => step.uses?.startsWith('actions/upload-artifact@'));
+    assert.equal(artifact.if, '${{ always() }}');
+    assert.equal(artifact.with.path, '${{ runner.temp }}/wave2-acceptance/secrets');
+    assert.equal(artifact.with['retention-days'], 7);
+  }
   const filesystem = workflow.jobs['fs-mutations'];
   assert.equal(filesystem['continue-on-error'], undefined);
   assert.equal(filesystem.if, undefined);
@@ -86,6 +118,10 @@ test('the actual required workflow joins both full offline controls and checks t
     packageJson.scripts['check:fs-mutations'],
     'node tools/fs-policy-controls/check.mjs',
   );
-  for (const kind of ['wire', 'usage', 'fs'])
+  assert.equal(
+    packageJson.scripts['check:secrets-mutations'],
+    'node tools/secrets-controls/check.mjs',
+  );
+  for (const kind of ['wire', 'usage', 'fs', 'secrets'])
     assert.ok(packageJson.scripts.ci.split(' && ').includes(`pnpm check:${kind}-mutations`));
 });

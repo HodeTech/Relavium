@@ -45,3 +45,11 @@ metadata under `filesystem/`, outside authored source. It excludes the copied gr
 cache, native databases and dependency bytes. Scratch copies are removed even on
 failure. A passing matrix supplies causal evidence; independent implementation
 review and the full required gates remain separate obligations.
+
+The coordinator, process join and semantic outcome authority now live once in
+[causal-controls](../causal-controls/README.md). This entry point remains a thin
+filesystem wrapper with the same 26 mechanisms, workloads, artifact directory,
+process bounds and inherited filesystem environment. Both directories are included
+in the physical source closure. Ancestor tool/save_to and delete/GC requirements
+are explicit declarative witnesses, with no family special case in the authority.
+This extraction does not relabel historical execution evidence.

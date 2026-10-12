@@ -256,3 +256,11 @@ for (const mutation of mutations) {
                   ? 1
                   : 19;
 }
+
+// Both real consumers are mandatory for each shared-ancestor mechanism.
+for (const mutation of mutations.filter((entry) => entry.id.startsWith('ancestor-'))) {
+  mutation.witnesses = ['tool', 'save_to'].map((port) => ({
+    target: `${mutation.target} ${port}`,
+    marker: mutation.marker,
+  }));
+}

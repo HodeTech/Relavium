@@ -1,0 +1,166 @@
+import assert from 'node:assert/strict';
+import { Buffer } from 'node:buffer';
+import { test } from 'node:test';
+import {
+  mkdtempSync,
+  realpathSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+  rmSync,
+  symlinkSync,
+  unlinkSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import {
+  captureOwnedTools,
+  verifyOwnedTools,
+  mergeFiles,
+  assertEvaluations,
+  selectControls,
+  phaseEnvironment,
+  exactReplacement,
+  assertInventories,
+} from './provenance.mjs';
+const roots = ['tools/causal-controls', 'tools/secrets-controls'];
+function fixture(fn) {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'causal-provenance-')));
+  try {
+    const repo = join(root, 'repo'),
+      graph = join(root, 'graph');
+    for (const path of roots) {
+      mkdirSync(join(repo, path), { recursive: true });
+      writeFileSync(join(repo, path, 'helper.mjs'), 'original');
+    }
+    return fn({ root, repo, graph });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+test('physical capture closes both own roots and refuses missing/added/deleted/changed helpers', () => {
+  fixture(({ repo, graph }) => {
+    const files = captureOwnedTools(repo, graph, roots);
+    assert.equal(files.length, 2);
+    assert.doesNotThrow(() => verifyOwnedTools(graph, roots, files));
+    for (const root of roots) {
+      const helper = join(graph, root, 'helper.mjs');
+      writeFileSync(helper, 'drift');
+      assert.throws(() => verifyOwnedTools(graph, roots, files));
+      writeFileSync(helper, 'original');
+      const added = join(graph, root, 'new.mjs');
+      writeFileSync(added, 'added');
+      assert.throws(() => verifyOwnedTools(graph, roots, files));
+      unlinkSync(added);
+      unlinkSync(helper);
+      assert.throws(() => verifyOwnedTools(graph, roots, files));
+      writeFileSync(helper, 'original');
+    }
+    assert.throws(() => mergeFiles(files, files), /Duplicate/);
+  });
+});
+test('owned helpers and redirected root directories cannot be symlinked', () => {
+  fixture(({ root, repo, graph }) => {
+    const helper = join(repo, roots[0], 'helper.mjs');
+    unlinkSync(helper);
+    writeFileSync(join(root, 'foreign.mjs'), 'borrowed');
+    symlinkSync(join(root, 'foreign.mjs'), helper);
+    assert.throws(() => captureOwnedTools(repo, graph, roots), /physical/);
+  });
+});
+test('target body, thread, source hash and physical evaluation path are independent requirements', () => {
+  fixture(({ repo, graph }) => {
+    const files = captureOwnedTools(repo, graph, roots),
+      target = files[0];
+    const entry = {
+      relativePath: target.path,
+      rawSha256: target.sha256,
+      physicalPath: join(graph, target.path),
+      stage: 'module-body-entry',
+      threadId: 0,
+    };
+    assert.doesNotThrow(() => assertEvaluations([entry], { files }, target.path, graph));
+    for (const change of [
+      { stage: 'transform' },
+      { threadId: 1 },
+      { rawSha256: 'wrong' },
+      { physicalPath: join(repo, target.path) },
+      { physicalPath: join(repo, 'dist/index.js') },
+      { relativePath: 'foreign.mjs' },
+    ])
+      assert.throws(() =>
+        assertEvaluations([{ ...entry, ...change }], { files }, target.path, graph),
+      );
+  });
+});
+test('unknown, ambiguous, empty and ineffective selection refuse before work', () => {
+  const entry = { id: 'declared', before: 'old', after: 'new', expectedTests: 1 };
+  assert.deepEqual(selectControls([entry], ['--mechanism', 'declared']), [entry]);
+  for (const [entries, args] of [
+    [[entry], ['--mechanism', 'unknown']],
+    [[entry], ['--mechanism']],
+    [[], []],
+    [[entry, entry], []],
+    [[{ ...entry, before: '' }], []],
+    [[{ ...entry, after: 'old' }], []],
+    [[{ ...entry, expectedTests: 0 }], []],
+  ])
+    assert.throws(() => selectControls(entries, args));
+});
+test('secrets child excludes ambient credentials, node injection and operator home; filesystem stays equivalent', () => {
+  fixture(({ root }) => {
+    const previous = process.env.RELAVIUM_CAUSAL_TEST_SECRET;
+    process.env.RELAVIUM_CAUSAL_TEST_SECRET = 'opaque';
+    try {
+      const env = phaseEnvironment('secrets', '/owned/runtime.json', root);
+      assert.equal(env.RELAVIUM_CAUSAL_TEST_SECRET, undefined);
+      assert.equal(env.NODE_OPTIONS, undefined);
+      assert.equal(env.HOME, join(root, 'home'));
+      assert.equal(env.RELAVIUM_USAGE_RUNTIME, '/owned/runtime.json');
+      const actual = phaseEnvironment('filesystem', '/owned/runtime.json', root);
+      const expected = {
+        ...process.env,
+        CI: 'true',
+        NO_COLOR: '1',
+        RELAVIUM_USAGE_RUNTIME: '/owned/runtime.json',
+      };
+      // A failed equivalence guard must never print inherited operational/credential values.
+      assert.equal(Object.keys(actual).sort().join('\n'), Object.keys(expected).sort().join('\n'));
+      assert.equal(
+        Object.keys(expected).every((name) => actual[name] === expected[name]),
+        true,
+      );
+    } finally {
+      if (previous === undefined) delete process.env.RELAVIUM_CAUSAL_TEST_SECRET;
+      else process.env.RELAVIUM_CAUSAL_TEST_SECRET = previous;
+    }
+  });
+});
+test('both family wrappers select the same shared runner with exact closure roots', () => {
+  for (const [family, kind] of [
+    ['fs-policy-controls', 'filesystem'],
+    ['secrets-controls', 'secrets'],
+  ]) {
+    const text = readFileSync(new URL(`../${family}/check.mjs`, import.meta.url), 'utf8');
+    assert.ok(text.includes("import { runControls } from '../causal-controls/run.mjs'"));
+    assert.ok(text.includes(`evidenceKind: '${kind}'`));
+    assert.ok(text.includes(`toolRoots: ['tools/causal-controls', 'tools/${family}']`));
+  }
+});
+
+test('exact mutation rejects absent/ambiguous anchors and full phase inventories must remain identical', () => {
+  const control = { id: 'sample', before: 'old', after: 'new' };
+  assert.equal(exactReplacement(Buffer.from('prefix old suffix'), control), 'prefix new suffix');
+  for (const text of ['absent', 'old old'])
+    assert.throws(() => exactReplacement(Buffer.from(text), control), /anchor drift/);
+  const fixed = { inventory: ['suite:negative', 'suite:positive'] };
+  assert.doesNotThrow(() => assertInventories(fixed, { ...fixed }, { ...fixed }));
+  assert.throws(
+    () => assertInventories(fixed, { inventory: ['suite:negative'] }, fixed),
+    /Mutated workload/,
+  );
+  assert.throws(
+    () => assertInventories(fixed, fixed, { inventory: ['suite:changed', 'suite:positive'] }),
+    /Restored workload/,
+  );
+});

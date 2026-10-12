@@ -4,7 +4,7 @@
 # Turborepo cache, plus the formatting check and the no-vendor-type-across-the-seam fence.
 #
 # Branch protection (set in the GitHub repo settings, not here): `ci` and `coverage` are the REQUIRED
-# status checks to merge into `main`. Wire, usage and filesystem mutation jobs feed `ci` through an explicit
+# status checks to merge into `main`. Wire, usage, filesystem and secrets mutation jobs feed `ci` through an explicit
 # success-only aggregation; they cannot silently skip or fail while `ci` stays green. The other jobs
 # self-label `(advisory)` — `floor-check`, `peer-dep-gate` and `windows-concurrency`.
 #
@@ -57,7 +57,7 @@ env:
 
 jobs:
   ci:
-    needs: [wire-mutations, usage-mutations, fs-mutations]
+    needs: [wire-mutations, usage-mutations, fs-mutations, secrets-mutations]
     if: ${{ always() }}
     name: lint · typecheck · test
     runs-on: ubuntu-latest
@@ -88,6 +88,11 @@ jobs:
         env:
           FS_CONTROLS_RESULT: ${{ needs.fs-mutations.result }}
         run: node -e "require('node:assert/strict').equal(process.env.FS_CONTROLS_RESULT, 'success')"
+
+      - name: Require complete secrets causal controls
+        env:
+          SECRETS_CONTROLS_RESULT: ${{ needs.secrets-mutations.result }}
+        run: node -e "require('node:assert/strict').equal(process.env.SECRETS_CONTROLS_RESULT, 'success')"
 
       # A squash/main-based checkout need not contain development's immutable predecessor object.
       # Fetch only this canonical pin during CI setup; the acceptance harness itself stays offline.
@@ -248,6 +253,36 @@ jobs:
         with:
           name: wave2-filesystem-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/wave2-acceptance/filesystem
+          if-no-files-found: warn
+          retention-days: 7
+
+  secrets-mutations:
+    name: Wave 2 secrets causal controls
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - name: Install (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+      - name: Verify causal outcome and worker lifecycle guards
+        run: pnpm test:acceptance-tools
+      - name: Run secrets removal and restoration controls
+        env:
+          RELAVIUM_ACCEPTANCE_EVIDENCE: ${{ runner.temp }}/wave2-acceptance
+        run: pnpm check:secrets-mutations
+      - name: Retain bounded secrets control metadata
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: wave2-secrets-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/wave2-acceptance/secrets
           if-no-files-found: warn
           retention-days: 7
 
