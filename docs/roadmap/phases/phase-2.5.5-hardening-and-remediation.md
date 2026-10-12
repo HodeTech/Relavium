@@ -1470,6 +1470,17 @@ names **`cc23b1d2` plus the scheduling correction working tree**, with 1,037 phy
 files and 457 dependency packages; it is not a later committed-head execution.
 Published platform gates and two NEW complete clean cumulative rounds remain open.
 
+**Post-correction rounds 7–8:** all three complete cumulative R7 scopes are clean at
+`aca351af`. Both complete runtime scopes are also clean in R8; its tooling/document
+scope found one Low attribution error in ADR-0105's positive consequences. A dated
+qualification now distinguishes the shared tool-fs/`save_to` helper from CAS's
+separate identity checks, matching the existing Decision and acceptance criteria.
+No runtime, test or tooling bytes changed. Two new complete cumulative tooling/
+document reviews follow this prose correction; the finding-bearing R8 scope is not
+counted as clean. Current published native Windows and Node 22.13 floor jobs pass;
+the required aggregation is still running. Step 2 remains open until those reviews
+and published gates complete.
+
 ### Remaining gate
 
 The maintainer approved the revised four-ADR decision package and eight-step plan

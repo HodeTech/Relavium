@@ -243,3 +243,13 @@ strict root/shard/final admission and other I/O failures remain distinct. The
 [canonical CAS contract](../reference/shared-core/built-in-tools.md#physical-media-storage-and-limits)
 owns the behaviour. Native barrier and actual caller controls must fail under
 removal; fresh independent cumulative reviews follow the correction.
+
+### Shared-helper consumer qualification — 2026-10-12
+
+The positive consequence above overstates the shared ancestor helper's consumers.
+Tool filesystem operations and native `save_to` use the injected shared helper;
+CAS uses its separate pinned root/shard/final identity checks. They share the
+containment obligation, not one ancestor implementation or permission authority.
+The Decision and acceptance obligation 5 already distinguish these mechanisms.
+Their [canonical filesystem and CAS contracts](../reference/shared-core/built-in-tools.md#physical-media-storage-and-limits)
+remain controlling. This documentary correction does not change runtime behaviour.
