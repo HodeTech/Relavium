@@ -2250,6 +2250,57 @@ and remaining publication/platform checks are still required. Proposal reviews,
 author gates and selected diagnoses do not substitute for them. Steps 7–8 remain
 unstarted; no paid provider, keychain, credential or new user decision is needed.
 
+### Step 6 second cumulative review and repairs — 2026-10-13
+
+Four independent reviewers completed all **140 assigned cumulative paths** from
+accepted Step 5 `c6921be1` through `fc4934fd`: shared 27, stores 27, integration
+52 and tooling/docs 34. Shared and stores each returned one High finding;
+tooling/docs returned one High and two Medium findings. Integration returned no
+finding. This is **not a clean acceptance round**. Root independently reproduced
+the ambiguous video identities and native HTTP header loss before repairing them.
+
+| Confirmed finding | Implemented disposition |
+| --- | --- |
+| WebM/MP4 last-write-wins identity | Refuse repeated identity fields, owning containers and undeclared extra MP4 sample entries. Twenty-eight independently assembled ambiguous vectors run at every two-chunk split, with two unchanged late-container positive controls. Both actual stores refuse representative stream publication; the separate video inline refusal remains intact. |
+| Native duplicate Content-Type disappears | Preserve original individual fields through the native transport and reject multiplicity before normalization/body iteration. Eighteen actual loopback HTTP cases cover both orders, identical fields, parameters and mixed casing through whole-buffer fetch and filesystem-store streaming, with native close barriers and no-publication assertions. |
+| Nine stale case counts and five stale mutation anchors | Retain all prior 89 IDs, order and complete workloads; pin the measured 21-case admission file and relocate only the equivalent single-site removals. Preflight every selected copied-source anchor before any phase. |
+| Case/hook overrides exceed the claimed 15 seconds | Normalize the selected native cohorts, enforce effective case/configured hook budgets through owned setup and check direct hook declarations through the TypeScript parser. Actual negative coordinator fixtures refuse over-budget cases/configuration; no phase/output/retention cap is raised. |
+| Packaging fixtures assume POSIX URL/path syntax | Use native relative containment and file URL conversion. Extend native Windows CI to the new shared lifecycle/identity cohort and actual built-workspace/CLI packaging check. Local success does not establish native Windows execution. |
+
+The exact-head full-89 capture at `fc4934fd` is **incomplete**. The original
+26 controls completed 78 accepted phases and 1,197 case executions; the next
+fixed phase stopped on **21 observed versus 19 declared cases**. Root audited
+the complete failed export, including the envelope: **558 files / 23,956,427
+bytes**, all retained stdio and compressed receipts. Sixty-six expected removal
+failures and two collateral non-AssertionErrors are qualified; neither the prefix
+nor the failure is full-matrix acceptance. Missing completion flags were not
+inferred. The failed export remains historical evidence.
+
+Four new separate removals cover WebM/MP4 uniqueness and native header
+preservation/admission. The declaration now contains **93 controls**. Fresh
+isolated copied-source collection reports **28 complete files / 412 cases**,
+with no count, anchor or named-witness drift. This is collection rather than
+physical fixed/removal/restored execution. Generic units pass **10/10** and
+actual coordinator integration passes **3/3**. Official Node **22.13.0** on
+macOS passes **6 complete files / 80 cases**, including the new real-native
+header matrix and normalized native lifetime/temporary/metadata cohorts.
+
+The repair working tree passes **17/17 uncached lint/typecheck tasks** and
+**11/11 test/dependency tasks** (five dependency-build cache hits). All six
+test suites execute: **556 files, 12,222 passing cases and 13 established skips**.
+Build/format passes **7/7** with five cache hits; acceptance tooling passes
+**144/144**. Tools lint/typecheck, DB sync, SDK fences, engine dependency purity,
+bundle closure and actual built-workspace/CLI media packaging pass. The document
+audit checks **50 changed Markdown files, 2,630 relative links and 19 existing
+append-only ADRs**, without errors. These author gates do not replace the
+committed-head physical controls or independent acceptance rounds below.
+
+**Step 6 remains unaccepted.** Whole-workspace gates, committed-head physical
+controls and independent export audit, two NEW clean complete cumulative review
+rounds after these material repairs, and remaining publication/platform evidence
+are required. No further ADR approval, paid capture, keychain or user decision
+is pending. Steps 7–8 remain unstarted.
+
 ### Remaining gate
 
 The maintainer approved the revised four-ADR decision package and eight-step plan

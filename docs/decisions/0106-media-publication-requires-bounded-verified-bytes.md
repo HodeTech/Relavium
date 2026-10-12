@@ -251,3 +251,15 @@ are explicit in the [canonical media lifecycle contract](../reference/shared-cor
 Existing host work/receipt ownership and whole-buffer limits remain in force.
 Implementation, packaging and cumulative review gates remain separate from this
 decision approval; this note does not accept Step 6 or close Wave 2.
+
+### Second cumulative implementation review — 2026-10-13
+
+Independent review reproduced two violations of the accepted identity/agreement
+contract: later WebM/MP4 declarations could replace contradictory identity, and
+Node's normalized HTTP headers discarded duplicate Content-Type fields before
+media admission. Implementation now refuses repeated identity declarations within
+their owners and preserves original Content-Type multiplicity through the native
+port. The [canonical seam](../reference/shared-core/llm-provider-seam.md#bounded-verified-media-publication-adr-0106)
+owns the exact profile and compatibility details. Fragmentation, real-store and
+native HTTP regressions accompany separate causal removals. These corrections do
+not expand decoder guarantees, introduce a new media type or accept Step 6.

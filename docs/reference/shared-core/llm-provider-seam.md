@@ -1022,6 +1022,12 @@ effective native chat selectors. Unknown explicit output selectors refuse before
 ordinary Gemini text `application/json` remains a text response format. These are offline
 synthetic compatibility controls, not paid-provider captures or decoded audio evidence.
 
+Video identity declarations are singular within their owning structures. WebM refuses
+repeated Tracks, TrackNumber, TrackType, CodecID, Video, dimensions and EBML header fields;
+MP4 refuses repeated track identity/container boxes and more than the one declared sample
+entry. Identical repetitions also refuse. A later supported value cannot replace an earlier
+unsupported or conflicting value. Supported single-identity late Tracks/moov remain admitted.
+
 ```ts
 interface HostMediaRequest {
   readonly url: string;
@@ -1116,6 +1122,12 @@ sample bytes and an explicit compatible HTTP header**; native provider PCM inste
 explicit protocol type. This does not detect PCM identity, convert sample rate/endianness or
 repair existing provider representation limitations. Connect/body-idle deadlines and cancellation
 remain; a progressing download gains no new total deadline.
+
+Native HTTP preserves individual original Content-Type field values before Node header
+normalization. More than one field refuses before parameter stripping or body iteration,
+including identical fields and either conflicting order. Normalized headers for other
+consumers are unchanged. The owned `HopResponse.contentTypeValues?` array carries this
+multiplicity; older injected ports without it retain the normalized-record check.
 
 The engine awaits a present `MediaReferencePort.admitProducedMedia(batch)` before media enters
 workflow state, `save_to`, durable sequence allocation, append or terminal outbox publication.
