@@ -1369,6 +1369,27 @@ inferred. The predecessor's required CI job also passed; its two native platform
 failures remain historical failures, not waived acceptance. New published platform
 execution and two NEW cumulative review rounds remain required.
 
+**Third-round platform discovery:** exact-head execution at `962c6a54` passes the
+Node 22.13 floor and 24-mechanism filesystem job. Windows runs every independent
+check and exposes 25 CLI failures plus two DB fixture-count failures (repeated by
+the focused CAS suite). Native CAS cooperation and its new production-branch
+controls pass. The fixture count included a successful follow-up read; the initial
+read is now counted before that recovery, with deterministic refusal controls.
+CLI root admission mixed legacy synchronous short-name resolution with native
+asynchronous long-name resolution. Native canonical roots and faithful fault-fixture
+anchors correct that mismatch without widening authority. These are new corrections;
+the otherwise clean scoped R3 reviews do not constitute a clean complete round.
+
+**Third-correction local gates:** lint/typecheck/test and build pass with **522
+files / 11,235 passing tests / 13 established skips**. DB's 39 files / 717 tests
+include four new deterministic fixture-order controls. Tool lint, formatting and
+37 changed Markdown files / 2,184 relative links and anchors pass. The complete
+filesystem matrix passes **25 mechanisms / 1,137 assertion executions / 63 expected
+semantic failures**, with identical per-mechanism inventories, exact restoration
+and unchanged developer sources. Its 1,034-file / 457-dependency manifest attributes
+execution to `962c6a54` plus this correction working tree. Fresh published native
+execution and two NEW clean complete cumulative rounds still gate Step 2 acceptance.
+
 ### Remaining gate
 
 The maintainer approved the revised four-ADR decision package and eight-step plan

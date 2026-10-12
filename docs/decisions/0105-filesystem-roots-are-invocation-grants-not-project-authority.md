@@ -211,3 +211,13 @@ verification of an existing matching content address, with owned-temp cleanup an
 rename retry. The [canonical CAS contract](../reference/shared-core/built-in-tools.md#physical-media-storage-and-limits)
 owns the exact behaviour. Native fault/cooperation controls and new independent
 reviews are required; the preceding clean macOS slices do not certify these changes.
+
+### Windows canonical-root correction — 2026-10-12
+
+Independent later Windows checks exposed a root-representation mismatch: the legacy
+synchronous resolver retained a short-name spelling while asynchronous operations
+used its native long name. Native canonical resolution now joins root admission,
+session-anchor validation and catalog containment, retaining original lexical pins.
+The [canonical filesystem contract](../reference/shared-core/built-in-tools.md#cli-authority-and-floors)
+owns that join. A deterministic real-file control removes native root selection;
+new native execution and fresh cumulative reviews still gate implementation acceptance.
