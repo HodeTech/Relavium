@@ -1447,6 +1447,29 @@ native startup diagnostics, preserving the five-second bound and every native
 case. The local deletion gates do not clear that published failure. Fresh platform
 gates and two NEW complete clean cumulative rounds still precede Step 2 acceptance.
 
+**Native workspace scheduling correction:** the common
+[`pnpm ci:workspaces` gate](../../standards/testing.md#ci-gate) finishes lint/typecheck
+before running all workspace test tasks one at a time. Its task union is identical
+to the previous 23-task required graph. The exact Node floor likewise retains its
+18-task union, forced execution and isolated remote credentials. No native race,
+case, five-second readiness bound, 20-second case budget or 15-minute job budget
+is removed or extended. Required CI hashes a unique DB-task-only diagnostic path
+and retains synthetic parent/child startup stages separately from cache results.
+Four new guards exercise actual command ordering, failure propagation and workflow
+setup. Focused native execution passes **10/10**, including nine observed barriers
+and the real timeout with joined SIGKILL; this is local evidence, not Ubuntu proof.
+
+**Scheduling-correction local gates:** full `pnpm run ci` passes with **524 package
+files / 11,263 passing tests / 13 established skips**, 84 acceptance-tool guards,
+all workspace checks, build/format, three offline smokes, four wire mechanisms and
+23 usage mechanisms. The permanent usage cohort retains **429 cases / 71 joined
+native children / one actual readiness timeout**. All **26 filesystem mechanisms /
+1,197 assertion executions / 67 expected semantic failures** pass with identical
+fixed/restored inventories and unchanged developer sources. The filesystem manifest
+names **`cc23b1d2` plus the scheduling correction working tree**, with 1,037 physical
+files and 457 dependency packages; it is not a later committed-head execution.
+Published platform gates and two NEW complete clean cumulative rounds remain open.
+
 ### Remaining gate
 
 The maintainer approved the revised four-ADR decision package and eight-step plan

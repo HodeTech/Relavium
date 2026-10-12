@@ -170,6 +170,16 @@ PRs must pass: typecheck, lint ([code-style-typescript.md](code-style-typescript
 unit tests, and the fixture-mode conformance suite. The live conformance suite and the
 desktop e2e suite run nightly and on release branches. A red required check blocks merge.
 
+`pnpm ci:workspaces` is the common local/required-CI workspace gate. It completes
+lint and typecheck before running all workspace test tasks with one Turbo task at
+a time. Each package retains its Vitest pool and its tests' native child-process
+races; no test is filtered and no readiness or case deadline is extended. This
+prevents independent package pools from multiplying the same CPU budget while
+linters and typecheckers also run. Required CI retains synthetic native-worker
+timings separately from cached task results; a local or advisory pass does not
+clear a failed required run. The full `pnpm run ci` adds the remaining build,
+formatting, isolation, smoke and causal checks.
+
 **Test isolation is part of that gate** (`pnpm lint:test-isolation`,
 [tools/test-isolation/check.mjs](../../tools/test-isolation/check.mjs)). A root run must
 collect this repo's tests and nothing else. A second checkout of the repo inside the working tree — an agent
