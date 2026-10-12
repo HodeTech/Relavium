@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { appendFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { availableParallelism, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -45,6 +45,34 @@ function startWorker(path: string, mode: string, observer: ReadinessObserver = {
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   const started = performance.now();
+  const initialCpu = process.cpuUsage();
+  const destination = process.env['RELAVIUM_DB_NATIVE_DIAGNOSTICS'];
+  let diagnosticFailed = false;
+  const diagnose = (stage: string, detail: object = {}): void => {
+    if (destination === undefined || diagnosticFailed) return;
+    const cpu = process.cpuUsage(initialCpu);
+    try {
+      appendFileSync(
+        destination,
+        `${JSON.stringify({
+          source: 'parent',
+          stage,
+          callerPid: process.pid,
+          pid: child.pid,
+          mode,
+          elapsedMs: Math.round(performance.now() - started),
+          atMs: Date.now(),
+          cpuUserMs: cpu.user / 1000,
+          cpuSystemMs: cpu.system / 1000,
+          ...detail,
+        })}\n`,
+      );
+    } catch {
+      // Diagnostics must not interrupt expiry/kill/join or replace the actual test outcome.
+      diagnosticFailed = true;
+      console.error('Native DB diagnostic journal unavailable.');
+    }
+  };
   const record = (value: object): void => {
     const destination = process.env['RELAVIUM_USAGE_NATIVE_EVENTS'];
     if (destination !== undefined)
@@ -73,18 +101,21 @@ function startWorker(path: string, mode: string, observer: ReadinessObserver = {
     }
   };
   child.stdout.setEncoding('utf8').on('data', (text: string) => {
-    output += text;
+    output = (output + text).slice(0, 4_096);
     if (mode === 'readiness-timeout-control' && output === 'WAITING\n')
       record({ stage: 'not-ready', kind: 'WAITING' });
+    if (mode === 'readiness-timeout-control' && output === 'WAITING\n')
+      diagnose('not-ready', { kind: 'WAITING' });
     if (state === 'waiting' && (output.includes('CUT\n') || output.includes('LOCKED\n'))) {
       state = 'ready';
       disarm();
       record({ stage: 'barrier', kind: output.includes('CUT\n') ? 'CUT' : 'LOCKED' });
       resolveReady();
+      diagnose('barrier', { kind: output.includes('CUT\n') ? 'CUT' : 'LOCKED' });
     }
   });
   child.stderr.setEncoding('utf8').on('data', (text: string) => {
-    error += text;
+    error = (error + text).slice(0, 4_096);
   });
   const expire = (): void => {
     // Clearing a timer does not make an already-queued callback authoritative again.
@@ -94,6 +125,10 @@ function startWorker(path: string, mode: string, observer: ReadinessObserver = {
     record({ stage: 'readiness-timeout' });
     rejectReady(new Error('session usage worker readiness deadline'));
     child.kill('SIGKILL');
+    diagnose('readiness-timeout', {
+      stdoutCharacters: output.length,
+      stderrCharacters: error.length,
+    });
   };
   // Tests may observe cancellation or invoke an obsolete callback, never replace the real bound.
   cancelDeadline = armReadinessDeadline(expire, 5_000);
@@ -104,6 +139,7 @@ function startWorker(path: string, mode: string, observer: ReadinessObserver = {
         state = 'failed';
         disarm();
         rejectReady(fault);
+        diagnose('spawn-error', { name: fault.name.slice(0, 64) });
       });
       child.once('close', (code, signal) => {
         record({ stage: 'close', code, signal });
@@ -113,9 +149,23 @@ function startWorker(path: string, mode: string, observer: ReadinessObserver = {
           rejectReady(new Error(`session usage worker closed before readiness: ${error}`));
         }
         resolve({ code, signal, error });
+        diagnose('close', {
+          code,
+          signal,
+          state,
+          stdoutCharacters: output.length,
+          stderrCharacters: error.length,
+        });
       });
     },
   );
+  diagnose('spawn', {
+    node: process.version,
+    platform: process.platform,
+    arch: process.arch,
+    availableParallelism: availableParallelism(),
+    readinessDeadlineMs: 5_000,
+  });
   return { child, ready, closed };
 }
 
