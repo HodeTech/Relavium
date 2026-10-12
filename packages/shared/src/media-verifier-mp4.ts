@@ -11,6 +11,7 @@ import {
   type ReadStep,
 } from './media-verifier-reader.js';
 interface Track {
+  readonly seen: Set<string>;
   handler: boolean;
   sample: boolean;
   header: boolean;
@@ -174,6 +175,16 @@ export function* mp4(): MediaParser {
       if (size < header || size > 25 * 1024 * 1024 || start + size > end) fail();
       const stop = start + size,
         payload = size - header;
+      if (
+        track !== undefined &&
+        (['mdia', 'minf', 'stbl', 'tkhd', 'mdhd', 'hdlr', 'stsd'].includes(type) ||
+          context === 'stsd')
+      ) {
+        // The declared one-entry stsd and each track identity/container own exactly one value.
+        const identity = context === 'stsd' ? 'sample-entry' : type;
+        if (track.seen.has(identity)) fail();
+        track.seen.add(identity);
+      }
       if (type === 'ftyp') {
         if (context !== 'root' || ftyp || payload < 8 || payload % 4 !== 0) fail();
         const major = ascii(yield* take(4));
@@ -205,7 +216,13 @@ export function* mp4(): MediaParser {
         yield* boxes(stop, 'moov', depth + 1);
       } else if (type === 'trak') {
         if (context !== 'moov') fail();
-        const next: Track = { handler: false, sample: false, header: false, mediaHeader: false };
+        const next: Track = {
+          seen: new Set<string>(),
+          handler: false,
+          sample: false,
+          header: false,
+          mediaHeader: false,
+        };
         yield* boxes(stop, 'trak', depth + 1, next);
         if (next.handler) {
           if (!next.sample || !next.header || !next.mediaHeader) fail();

@@ -119,7 +119,7 @@ export const VORBIS = join(
   page(textBytes('\x05vorbis\x01'), 2, 0),
   page(hex('00'), 3, 4),
 );
-function box(name: string, ...payload: readonly Uint8Array[]): Uint8Array {
+export function box(name: string, ...payload: readonly Uint8Array[]): Uint8Array {
   const body = join(...payload);
   return join(uint32(8 + body.length), textBytes(name), body);
 }
@@ -162,7 +162,7 @@ export function mp4Video(
     box('moov', track),
   );
 }
-function ebml(id: string, payload: Uint8Array): Uint8Array {
+export function ebml(id: string, payload: Uint8Array): Uint8Array {
   const n = payload.length;
   let size: Uint8Array;
   if (n < 127) size = new Uint8Array([128 + n]);

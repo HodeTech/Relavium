@@ -74,6 +74,7 @@ export function* webm(): MediaParser {
     track?: Track,
   ): Generator<ReadStep, void, Uint8Array> {
     if (depth > 16) fail('inspection_limit');
+    const seen = new Set<number>();
     while (offset < end) {
       const id = yield* vint(true, end === Infinity);
       if (id === -2) return;
@@ -82,6 +83,16 @@ export function* webm(): MediaParser {
       if (length < 0 && id !== 0x18538067) fail();
       const stop = length < 0 ? Infinity : offset + length;
       if (stop > end || length > 25 * 1024 * 1024) fail();
+      // Identity is singular within its owner; later fields cannot replace earlier evidence.
+      const singleton =
+        context === 'header' ||
+        (context === 'segment' && id === 0x1654ae6b) ||
+        (context === 'track' && [0xd7, 0x83, 0x86, 0xe0].includes(id)) ||
+        (context === 'video' && [0xb0, 0xba].includes(id));
+      if (singleton) {
+        if (seen.has(id)) fail();
+        seen.add(id);
+      }
       if (id === 0x1a45dfa3) {
         if (context !== 'root' || header) fail();
         header = true;
