@@ -28,18 +28,17 @@ interface Worker {
   readonly closed: Promise<{ code: number | null; signal: NodeJS.Signals | null; error: string }>;
 }
 
-type ReadinessDeadline = (callback: () => void, delay: number) => () => void;
+interface ReadinessObserver {
+  readonly armed?: (callback: () => void, delay: number) => void;
+  readonly disarmed?: () => void;
+}
 
-const armReadinessDeadline: ReadinessDeadline = (callback, delay) => {
+function armReadinessDeadline(callback: () => void, delay: number): () => void {
   const timer = setTimeout(callback, delay);
   return () => clearTimeout(timer);
-};
+}
 
-function startWorker(
-  path: string,
-  mode: string,
-  armDeadline: ReadinessDeadline = armReadinessDeadline,
-): Worker {
+function startWorker(path: string, mode: string, observer: ReadinessObserver = {}): Worker {
   if (!existsSync(fileURLToPath(entry)))
     throw new Error('Build @relavium/db before its native session-usage tests.');
   const child = spawn(process.execPath, [worker, entry.href, path, mode], {
@@ -68,7 +67,10 @@ function startWorker(
   const disarm = (): void => {
     const cancel = cancelDeadline;
     cancelDeadline = undefined;
-    cancel?.();
+    if (cancel !== undefined) {
+      cancel();
+      observer.disarmed?.();
+    }
   };
   child.stdout.setEncoding('utf8').on('data', (text: string) => {
     output += text;
@@ -84,7 +86,7 @@ function startWorker(
   child.stderr.setEncoding('utf8').on('data', (text: string) => {
     error += text;
   });
-  cancelDeadline = armDeadline(() => {
+  const expire = (): void => {
     // Clearing a timer does not make an already-queued callback authoritative again.
     if (state !== 'waiting') return;
     state = 'failed';
@@ -92,7 +94,10 @@ function startWorker(
     record({ stage: 'readiness-timeout' });
     rejectReady(new Error('session usage worker readiness deadline'));
     child.kill('SIGKILL');
-  }, 5_000);
+  };
+  // Tests may observe cancellation or invoke an obsolete callback, never replace the real bound.
+  cancelDeadline = armReadinessDeadline(expire, 5_000);
+  observer.armed?.(expire, 5_000);
   const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null; error: string }>(
     (resolve) => {
       child.once('error', (fault) => {
@@ -135,10 +140,12 @@ describe('native session usage transaction crash and contention', () => {
     const cancel = vi.fn();
     try {
       seed(client);
-      run = startWorker(client.path, 'lock-release', (callback, delay) => {
-        expect(delay).toBe(5_000);
-        expire = callback;
-        return cancel;
+      run = startWorker(client.path, 'lock-release', {
+        armed: (callback, delay) => {
+          expect(delay).toBe(5_000);
+          expire = callback;
+        },
+        disarmed: cancel,
       });
       await run.ready;
       expect(cancel).toHaveBeenCalledTimes(1);
@@ -162,24 +169,11 @@ describe('native session usage transaction crash and contention', () => {
     const root = mkdtempSync(join(tmpdir(), 'relavium-session-usage-no-readiness-'));
     const client = createClient(join(root, 'history.db'));
     let run: Worker | undefined;
-    let expire: (() => void) | undefined;
     const cancel = vi.fn();
     try {
       seed(client);
-      run = startWorker(client.path, 'readiness-timeout-control', (callback) => {
-        expire = callback;
-        return cancel;
-      });
-      const refusal = expect(run.ready).rejects.toThrow('session usage worker readiness deadline');
-      let output = '';
-      run.child.stdout.on('data', (text: string) => {
-        output += text;
-        if (output.includes('WAITING\n')) {
-          if (expire === undefined) throw new Error('missing readiness callback');
-          expire();
-        }
-      });
-      await refusal;
+      run = startWorker(client.path, 'readiness-timeout-control', { disarmed: cancel });
+      await expect(run.ready).rejects.toThrow('session usage worker readiness deadline');
       const result = await run.closed;
       expect(result, result.error).toMatchObject({ code: null, signal: 'SIGKILL' });
       expect(cancel).toHaveBeenCalledTimes(1);

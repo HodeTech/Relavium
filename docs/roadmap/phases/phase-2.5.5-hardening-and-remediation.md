@@ -1221,6 +1221,29 @@ skip, scheduling relaxation, provider call or real user storage was introduced.
 Implementation is ready for two new independent complete cumulative review rounds;
 Step 1 and whole-wave acceptance are not yet claimed. Raw reports remain local.
 
+#### Step 1 first review correction — 2026-10-12
+
+Two independent complete cumulative reviewers corroborated one High finding in the
+new controls: their capture-only scheduler replaced the actual readiness timer.
+A withheld-startup native probe survived Vitest's twenty-second timeout without
+entering the test's `finally`. The initial green run did not exercise that failure.
+The helper now always arms its real five-second timer; tests can only observe it
+and invoke an obsolete callback, never substitute its arming/cancellation. The
+no-readiness control waits for actual expiry. The same withheld-startup probe now
+rejects, kills, joins and completes cleanup in approximately five seconds; focused
+native tests pass **10/10**. These finding-bearing reviews do not count as clean
+acceptance rounds. Required gates and new complete cumulative reviews follow.
+
+Post-correction `CI=true pnpm run ci` passed with the same complete ordinary and
+causal inventories: **60 tool tests**, four wire controls, **23 usage controls**,
+**429 permanent cases / 71 joined children / one timeout control**. The complete
+instrumented cohort records actual timeout at **5,001 ms** and joined SIGKILL close
+at **5,016 ms**. Both mechanism-removal regressions were rerun and failed at their
+intended assertions before byte-exact restoration. Documentation checks cover the
+complete cumulative change, including the separate CR-81/CR-82 merge-status commit:
+**16 Markdown files / 1,096 relative links and anchors / no findings**. New complete
+cumulative review rounds remain the next acceptance gate.
+
 ### Remaining gate
 
 The maintainer approved the revised four-ADR decision package and eight-step plan
