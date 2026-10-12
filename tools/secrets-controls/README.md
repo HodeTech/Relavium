@@ -1,9 +1,10 @@
 # Secrets causal controls
 
-`pnpm check:secrets-mutations` runs the declared Step 3 secrets foundation and
-Step 4 first-run input matrix on physical source copies. `--mechanism <declared-id>`
+`pnpm check:secrets-mutations` runs the declared Step 3 secrets foundation,
+Step 4 first-run input matrix and Step 5 snapshot/export controls on physical source
+copies. `--mechanism <declared-id>`
 supports diagnosis only; selected runs retain `complete: false`. The current manifest
-declares **24 independent controls and 242 required named assertion witnesses**.
+declares **34 independent controls and 254 required named assertion witnesses**.
 These counts describe the workload; a declaration is not evidence that its removal
 passed. Actual fixed/removal/restored results belong to the coordinator's summary.
 
@@ -67,7 +68,7 @@ The eleven Step 4 controls remove separate production mechanisms:
 
 The Step 4 declarations require 51 additional named assertion witnesses. Every
 selected workload remains a complete test file: 33 input cases, 13 action-forwarding
-cases, 31 dispatch cases, 73 run-command cases, three run-consent cases, 61 gate cases,
+cases, 31 dispatch cases, 76 run-command cases, three run-consent cases, 61 gate cases,
 28 top-level parser cases, or 131 native integration cases, as declared per control.
 The coordinator independently enforces exact case counts, unique complete case
 identities and identical fixed/removal/restored inventories. It accepts only a
@@ -95,6 +96,33 @@ run input/option boundary, not every ordinary workflow/config path in argv.
 Native keychain suites mock `@napi-rs/keyring` before loading the production wrapper
 and verify the mock calls; these controls do not touch the user's keychain or certify
 a real locked store.
+
+The ten Step 5 controls require 12 named assertion witnesses. Four remove independent
+parse/export mechanisms: direct unsupported `secrets.*` context refusal, title NFKD
+normalization, session-identity fallback for an unusable title, and bounded legal
+encoding for an odd external session id. The context removal must fail an unread
+direct-reference parser case; the complete analysis file has 22 cases. Each export-ID
+removal must fail its own serializer assertion in the complete 24-case file. Separate
+positive tests retain legitimate secret-input context propagation, faithful metadata,
+and deterministic parse/serialize behavior. These controls do not certify universal
+transliteration or uniqueness of generated IDs.
+
+Two independent CLI notice controls remove the successful standalone command and
+live `/export` stderr notice sites. Each requires named human and JSON witnesses in
+the complete 15-case command-export or 120-case chat file. The tests use actual
+export writes, retain exactly one export event on stdout in JSON mode, and check the fixed
+compaction/context and retained-content review clauses. Refused writes have separate
+permanent negative cases; no notice is produced before a successful export.
+
+Four snapshot controls remove the finite scrubber detection site and the actual
+`create`, `import`, and `run` warning calls. Each has a named value-free assertion in
+its complete 10-case detector, 10-case create, 10-case import or 76-case run file.
+The adjacent tests check preserved authored files and admitted run snapshots, JSON
+stdout, and scan-budget/incomplete notices. These controls certify warning delivery
+for the planted supported shapes at these entry points, not universal secret
+detection, redaction, historical rows, or the user's native keychain. The separate
+native run/resume snapshot suite is permanent integration coverage but is not a
+declared mutation workload here.
 
 The thin entry point uses the same coordinator, outcome and bounded process join
 as the filesystem family in [causal-controls](../causal-controls/README.md).
