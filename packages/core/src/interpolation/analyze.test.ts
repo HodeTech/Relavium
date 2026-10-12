@@ -118,7 +118,7 @@ workflow:
     });
   });
 
-  it('launders a `secrets.*` reference through a context value into text (via the secret store)', () => {
+  it('rejects a direct secret-store context read before its downstream text sink', () => {
     const err = expectLeak(`schema_version: '1.0'
 workflow:
   id: w
@@ -132,11 +132,34 @@ ${AGENT}
       agent_ref: ag
       prompt_template: 'auth {{ctx.creds}}'
   edges: []`);
-    expect(err.leaks[0]).toEqual({
-      location: 'node `n`.prompt_template',
-      secret: 'ctx.creds',
-      via: 'secrets.token',
-    });
+    expect(err.leaks).toEqual([
+      { location: 'context `creds`.value', secret: 'secrets.token' },
+      { location: 'node `n`.prompt_template', secret: 'ctx.creds', via: 'secrets.token' },
+    ]);
+  });
+
+  it('refuses an unread direct secret-store context reference with value-free parser diagnostics', () => {
+    const yaml = `schema_version: '1.0'
+workflow:
+  id: w
+  context:
+    - key: credentials
+      value: 'PRIVATE_CONTEXT_LITERAL {{secrets.token}} PRIVATE_CONTEXT_SUFFIX'
+  nodes:
+    - id: n
+      type: input
+  edges: []`;
+    expect(() => parseWorkflow(yaml), 'WAVE2_G22_UNREAD_CONTEXT_REFUSAL').toThrow(
+      WorkflowSecretLeakError,
+    );
+    const err = expectLeak(yaml);
+    expect(err.leaks).toEqual([
+      { location: 'context `credentials`.value', secret: 'secrets.token' },
+    ]);
+    expect(err.code).toBe('secret_interpolation');
+    expect(err.message).not.toContain('PRIVATE_CONTEXT_LITERAL');
+    expect(err.message).not.toContain('PRIVATE_CONTEXT_SUFFIX');
+    expect(JSON.stringify(err)).not.toContain('PRIVATE_CONTEXT_');
   });
 
   it('a `secrets.*` reference in an input default is rejected one step EARLIER', () => {
@@ -327,6 +350,31 @@ workflow:
       type: input
   edges: []`);
     expect(analyzeSecretTaint(wf)).toEqual([]);
+  });
+
+  it('retains unused credential input-to-context-to-context propagation', () => {
+    const yaml = `schema_version: '1.0'
+workflow:
+  id: w
+  inputs:
+    - name: api_key
+      type: secret
+  context:
+    - key: header
+      value: 'Bearer {{ctx.credentials}}'
+    - key: credentials
+      value: '{{inputs.api_key}}'
+  nodes:
+    - id: n
+      type: input
+  edges: []`;
+    expect(() => parseWorkflow(yaml), 'WAVE2_G22_CREDENTIAL_CONTEXT_ALLOWED').not.toThrow();
+    const wf = parseWorkflow(yaml);
+    expect(analyzeSecretTaint(wf)).toEqual([]);
+    expect(wf.workflow.context).toEqual([
+      { key: 'header', value: 'Bearer {{ctx.credentials}}' },
+      { key: 'credentials', value: '{{inputs.api_key}}' },
+    ]);
   });
 
   it('a STRUCTURED input default carrying a nested {{secrets.x}} is now REJECTED', () => {

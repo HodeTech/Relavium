@@ -37,8 +37,8 @@ type AgentNode = Extract<WorkflowNode, { type: 'agent' }>;
 /**
  * Emit a {@link WorkflowDefinition} as YAML. Map keys are sorted alphabetically and array element order is
  * preserved, so the output is deterministic and `parse(serialize(def))` followed by another serialize is
- * byte-stable. Faithful: it serializes exactly what it is given — the secret/signature exclusion is upheld
- * by the durable types that feed it (see {@link sessionToWorkflow}), not by scrubbing here.
+ * byte-stable. Faithful: it serializes exactly what it is given. Durable session types exclude structural
+ * tool values/signatures (see {@link sessionToWorkflow}); authored text/config may still be sensitive.
  */
 export function serializeWorkflow(workflow: WorkflowDefinition): string {
   return stringifyYaml(workflow, { sortMapEntries: true });
@@ -46,12 +46,11 @@ export function serializeWorkflow(workflow: WorkflowDefinition): string {
 
 /**
  * Emit an {@link AgentDefinition} as deterministic YAML (map keys sorted alphabetically, array order preserved),
- * so `parse(serialize(agent))` is byte-stable — the `.agent.yaml` counterpart of {@link serializeWorkflow}. An
- * agent document is plain config (model / provider / system_prompt / tools / mcp_servers) that carries **no
- * secret VALUES** by construction — provider keys live in the OS keychain and are never schema-representable, and
- * an MCP server's `env` references a secret only by `{{secrets.*}}` placeholder ([ADR-0006](../../../../docs/decisions/0006-os-keychain-for-api-keys.md)/[ADR-0029](../../../../docs/decisions/0029-tool-policy-hardening.md))
- * — so the emitted file is share-safe, and re-serializing from the *validated* AST additionally drops any
- * authored comments. Used by `relavium create` / `import` / `export` (2.J authoring).
+ * so `parse(serialize(agent))` is byte-stable — the `.agent.yaml` counterpart of {@link serializeWorkflow}.
+ * Re-serializing the validated AST drops authored comments, but faithfully retains its values: prompts,
+ * descriptions and other authored config can contain sensitive literals. Keychain custody and MCP secret
+ * placeholders do not make the whole document safe to share. Review before sharing; no scrubbing occurs
+ * here. Used by `relavium create` / `import` / `export` (2.J authoring).
  */
 export function serializeAgent(agent: AgentDefinition): string {
   return stringifyYaml(agent, { sortMapEntries: true });
@@ -89,24 +88,49 @@ function neutralizeInterpolation(text: string): string {
   return text.replace(/\{(?=\{)/g, '{ ');
 }
 
+const MAX_WORKFLOW_ID_LENGTH = 128;
+const SESSION_ID_PREFIX = 'exported-session-';
+const MAX_ENCODED_SESSION_UNITS = 24;
+
 /**
- * A kebab-case workflow id derived deterministically from the session (its title, else a fixed default).
- * Built by splitting on non-alphanumeric runs and rejoining with single dashes — identical output to a
- * collapse-then-trim, but with no anchored-alternation regex (the only pattern left is one bounded char
- * class, which is linear), so it avoids the false-positive ReDoS hotspot Sonar raises on `/^-+|-+$/`.
- *
- * Only ASCII alphanumerics survive — `kebabIdSchema` (the id's contract) is ASCII, so a non-ASCII title is
- * stripped to its ASCII run(s) (e.g. Turkish "İstanbul Sohbeti" → "stanbul-sohbeti") or falls back to
- * `exported-session` when nothing ASCII remains. Unicode slugs are a separate future concern; the scaffold's
- * id is human-reviewed and renameable on the canvas.
+ * Preserve ordinary session ids (including production UUIDs) verbatim. The public session schema also
+ * accepts arbitrary nonempty strings: encode the first 24 UTF-16 units as fixed-width lowercase hex
+ * when the id is not already a bounded kebab id. This is deterministic and platform-free, including
+ * lone surrogates, but truncation and title normalization can collide. No uniqueness is promised;
+ * the complete original session id remains in export metadata.
+ */
+function fallbackWorkflowId(sessionId: string): string {
+  if (
+    sessionId.length <= MAX_WORKFLOW_ID_LENGTH - SESSION_ID_PREFIX.length &&
+    /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(sessionId)
+  ) {
+    return `${SESSION_ID_PREFIX}${sessionId}`;
+  }
+  let encoded = '';
+  for (let index = 0; index < Math.min(sessionId.length, MAX_ENCODED_SESSION_UNITS); index += 1) {
+    encoded += sessionId.charCodeAt(index).toString(16).padStart(4, '0');
+  }
+  return `${SESSION_ID_PREFIX}id-${encoded}`;
+}
+
+/**
+ * Normalize a title to a bounded ASCII kebab id: compatibility decomposition, combining-mark removal,
+ * lowercase, and explicit dotless-i/sharp-s mappings. This is not universal transliteration. An absent
+ * or unusable title falls back to session identity; the human-reviewed scaffold id remains renameable.
  */
 function workflowIdFor(record: AgentSessionRecord): string {
   const slug = (record.title ?? '')
+    .normalize('NFKD')
+    .replace(/\p{M}+/gu, '')
     .toLowerCase()
+    .replace(/ı/g, 'i')
+    .replace(/ß/g, 'ss')
     .split(/[^a-z0-9]+/)
     .filter((segment) => segment.length > 0)
-    .join('-');
-  return slug.length > 0 ? slug : 'exported-session';
+    .join('-')
+    .slice(0, MAX_WORKFLOW_ID_LENGTH)
+    .replace(/-$/, '');
+  return slug.length > 0 ? slug : fallbackWorkflowId(record.id);
 }
 
 /**

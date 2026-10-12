@@ -1,5 +1,6 @@
 import {
   AgentSchema,
+  AgentSessionSchema,
   SessionContextSchema,
   type AgentSessionRecord,
   type SessionMessage,
@@ -214,7 +215,98 @@ describe('sessionToWorkflow (1.Z) — linear-chain scaffold', () => {
     expect(sessionToWorkflow(session({ title: '  Hello -- World!  ' }), []).workflow.id).toBe(
       'hello-world',
     );
-    expect(sessionToWorkflow(session({ title: '???' }), []).workflow.id).toBe('exported-session');
+    expect(sessionToWorkflow(session({ title: '???' }), []).workflow.id).toBe(
+      'exported-session-sess-1',
+    );
+  });
+
+  it('normalizes supported Unicode title forms into deterministic ASCII IDs that round-trip', () => {
+    const examples = [
+      ['İstanbul Sohbeti', 'istanbul-sohbeti'],
+      ['IŞIK ıslak', 'isik-islak'],
+      ['Straße GROẞ', 'strasse-gross'],
+      ['Café déjà vu', 'cafe-deja-vu'],
+      ['Cafe\u0301 de\u0301ja\u0300 vu', 'cafe-deja-vu'],
+      ['Ｆｕｌｌ １２３ ﬃ', 'full-123-ffi'],
+      ['  Hello -- World!  ', 'hello-world'],
+      ['東京 Launch 🚀', 'launch'],
+    ];
+    for (const [title, expected] of examples) {
+      const record = AgentSessionSchema.parse(session({ title }));
+      const def = sessionToWorkflow(record, []);
+      expect(def.workflow.id, 'WAVE2_EXPORT_ASCII_NORMALIZATION').toBe(expected);
+      expect(def.workflow.name).toBe(title);
+      const yaml = serializeWorkflow(def);
+      expect(serializeWorkflow(sessionToWorkflow(record, []))).toBe(yaml);
+      expect(serializeWorkflow(parseWorkflow(yaml))).toBe(yaml);
+    }
+  });
+
+  it('uses exact session identity for absent or unusable titles and preserves production UUIDs', () => {
+    const ids = ['0195f389-9217-7890-aabc-0123456789ab', '0195f389-9217-7890-aabc-0123456789ac'];
+    for (const id of ids) {
+      for (const title of [undefined, '???', '東京', '🚀', '\u0301\u0308', '   ']) {
+        const record = AgentSessionSchema.parse(session({ id, title }));
+        const def = sessionToWorkflow(record, []);
+        expect(def.workflow.id, 'WAVE2_EXPORT_IDENTITY_FALLBACK').toBe(`exported-session-${id}`);
+        expect(def.workflow.metadata).toMatchObject({ relaviumExport: { sessionId: id } });
+        const yaml = serializeWorkflow(def);
+        expect(serializeWorkflow(parseWorkflow(yaml))).toBe(yaml);
+        expect(serializeWorkflow(sessionToWorkflow(record, []))).toBe(yaml);
+      }
+    }
+  });
+
+  it('bounds odd external session identities with deterministic legal encoding and faithful metadata', () => {
+    const examples = [
+      ['sess-1', 'exported-session-sess-1'],
+      ['a'.repeat(111), `exported-session-${'a'.repeat(111)}`],
+      ['a'.repeat(112), `exported-session-id-${'0061'.repeat(24)}`],
+      ['A/B', 'exported-session-id-0041002f0042'],
+      ['!!!', 'exported-session-id-002100210021'],
+      ['東京', 'exported-session-id-67714eac'],
+      ['🚀', 'exported-session-id-d83dde80'],
+      ['\ud800', 'exported-session-id-d800'],
+      ['\u0000', 'exported-session-id-0000'],
+      ['x'.repeat(10_000), `exported-session-id-${'0078'.repeat(24)}`],
+    ];
+    for (const [id, expected] of examples) {
+      const record = AgentSessionSchema.parse({ ...session({ title: '???' }), id });
+      const def = sessionToWorkflow(record, []);
+      expect(def.workflow.id, 'WAVE2_EXPORT_EXTERNAL_ID_FALLBACK').toBe(expected);
+      expect(def.workflow.id).toMatch(/^[a-z0-9]+(?:-[a-z0-9]+)*$/);
+      expect(def.workflow.id.length).toBeLessThanOrEqual(128);
+      expect(def.workflow.metadata).toMatchObject({ relaviumExport: { sessionId: id } });
+      const yaml = serializeWorkflow(def);
+      expect(serializeWorkflow(parseWorkflow(yaml))).toBe(yaml);
+      expect(serializeWorkflow(sessionToWorkflow(record, []))).toBe(yaml);
+    }
+  });
+
+  it('bounds long normalized titles without a trailing separator and retains the full title', () => {
+    for (const title of ['a'.repeat(10_000), `${'a'.repeat(127)} b`, 'ß'.repeat(100)]) {
+      const def = sessionToWorkflow(session({ title }), []);
+      expect(def.workflow.id.length).toBeLessThanOrEqual(128);
+      expect(def.workflow.id).toMatch(/^[a-z0-9]+(?:-[a-z0-9]+)*$/);
+      expect(def.workflow.name).toBe(title);
+      const yaml = serializeWorkflow(def);
+      expect(serializeWorkflow(parseWorkflow(yaml))).toBe(yaml);
+    }
+    expect(sessionToWorkflow(session({ title: `${'a'.repeat(127)} b` }), []).workflow.id).toBe(
+      'a'.repeat(127),
+    );
+  });
+
+  it('does not promise unique IDs for normalized titles or truncated external identities', () => {
+    const first = sessionToWorkflow(session({ id: 'one', title: 'Café' }), []);
+    const second = sessionToWorkflow(session({ id: 'two', title: 'Cafe' }), []);
+    expect(first.workflow.id).toBe('cafe');
+    expect(second.workflow.id).toBe(first.workflow.id);
+    expect(first.workflow.metadata).not.toEqual(second.workflow.metadata);
+    const prefix = 'X'.repeat(24);
+    expect(sessionToWorkflow(session({ id: `${prefix}one`, title: '???' }), []).workflow.id).toBe(
+      sessionToWorkflow(session({ id: `${prefix}two`, title: '???' }), []).workflow.id,
+    );
   });
 
   it('omits a trailing interrupted tool-loop turn from the node chain, keeping it in metadata (matches resume)', () => {
@@ -264,7 +356,7 @@ describe('serializeWorkflow (1.Z) — deterministic, round-trippable YAML emitte
     expect(yaml.indexOf('schema_version')).toBeLessThan(yaml.indexOf('workflow:'));
   });
 
-  it('serializes no reasoning signature and no secret (the durable transcript is structurally clean)', () => {
+  it('serializes reasoning text without structural reasoning signatures or MaskedSecret values', () => {
     const yaml = serializeWorkflow(
       sessionToWorkflow(session(), [
         msg(0, 'user', [{ type: 'text', text: 'think about it' }]),
@@ -318,7 +410,7 @@ tools: [read_file]
   it('is deterministic (sorted keys) and drops authored comments (re-serializing from the validated AST)', () => {
     const yaml = serializeAgent(parseAgent(AGENT));
     expect(serializeAgent(parseAgent(AGENT))).toBe(yaml); // stable across repeated emits
-    expect(yaml).not.toContain('this comment is dropped'); // comments are gone (share-safety)
+    expect(yaml).not.toContain('this comment is dropped'); // comments are not part of the AST
     // sorted map keys: `id` precedes `model` precedes `provider` precedes `system_prompt`
     expect(yaml.indexOf('id:')).toBeLessThan(yaml.indexOf('model:'));
     expect(yaml.indexOf('model:')).toBeLessThan(yaml.indexOf('provider:'));
@@ -330,6 +422,15 @@ tools: [read_file]
         `id: gh\nprovider: anthropic\nmodel: claude-sonnet-4-6\nsystem_prompt: go\nmcp_servers:\n  - id: github\n    transport: stdio\n    command: gh-mcp\n    env: { TOKEN: '{{secrets.gh}}' }\n`,
       ),
     );
-    expect(yaml).toContain('{{secrets.gh}}'); // the placeholder survives — it is share-safe by design
+    expect(yaml).toContain('{{secrets.gh}}'); // the placeholder survives without keychain resolution
+  });
+
+  it('faithfully retains sensitive authored literals instead of claiming whole-document scrubbing', () => {
+    const literal = 'sk-authored-sensitive-literal-12345678901234567890';
+    const agent = parseAgent(`${AGENT}\ndescription: ${literal}\n`);
+    agent.system_prompt = `Review this sensitive text: ${literal}`;
+    const yaml = serializeAgent(agent);
+    expect(yaml).toContain(literal);
+    expect(parseAgent(yaml)).toEqual(agent);
   });
 });

@@ -5,6 +5,8 @@
  *  - `analyzeSecretTaint` enforces ADR-0029(c): a `secret`-typed input — or anything transitively
  *    derived from one through a `context` entry — must never reach agent/human text. An input's *type*
  *    alone seeds the taint, so the whole check runs before any secret value is fetched.
+ *    Direct `secrets.*` context reads are also refused, even when unread: that namespace is not
+ *    supported by context resolution. Input-secret → context → context propagation remains allowed.
  *  - `analyzePreRunReferences` enforces the eager-resolution rule (workflow-yaml-spec.md
  *    §Context-and-interpolation): a value resolved **before any node runs** — a `context` value — may read
  *    `{{inputs.*}}`/`{{ctx.*}}` but not `{{run.outputs[…]}}`.
@@ -46,20 +48,25 @@ interface TaintSets {
 }
 
 /**
- * Find every place a secret reaches agent/human text. Empty when the workflow is clean; the parser
- * turns a non-empty result into a `WorkflowSecretLeakError` (rejected at parse).
+ * Find secret flow into agent/human text and unsupported direct `secrets.*` context reads. Empty
+ * when clean; the parser turns a non-empty result into a `WorkflowSecretLeakError` (rejected at parse).
  */
 export function analyzeSecretTaint(workflow: Workflow): readonly SecretLeak[] {
   const taint = computeTaint(workflow.workflow);
 
   const leaks: SecretLeak[] = [];
   for (const site of collectReferences(workflow)) {
-    // Only model/human-visible text is a leak; context values and input defaults are where taint
-    // legitimately propagates (closed over by `computeTaint`), never themselves a model-bound site.
-    if (site.category === 'context-value' || site.category === 'input-default') {
+    // Defaults cannot contain references through the parser (ADR-0083). Keep the object-only
+    // taint propagation below without treating a default as model/human-visible text.
+    if (site.category === 'input-default') {
       continue;
     }
     for (const ref of site.references) {
+      // G22: context has no secret-store resolver. Reject that unsupported namespace at parse,
+      // but retain legitimate secret-input/ctx propagation for credential consumers.
+      if (site.category === 'context-value' && ref.kind !== 'secrets') {
+        continue;
+      }
       const reason = taintReason(ref, taint);
       if (reason !== undefined) {
         leaks.push(toLeak(site.location, reason, taint));
