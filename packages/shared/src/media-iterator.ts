@@ -8,6 +8,8 @@ interface CloseState {
 
 // Exact private identity, scoped to this loaded shared module. Not a pending-work scheduler.
 const closes = new WeakMap<object, CloseState>();
+const promiseThen: unknown = Reflect.get(Promise.prototype, 'then');
+const resolvePromise = Promise.resolve.bind(Promise);
 
 /**
  * Adopt the exact public iterator before exposure/first pull (ADR-0109). A trusted constructor
@@ -58,6 +60,7 @@ export function closeMediaIterator(iterator: AsyncIterator<Uint8Array>): Promise
     if (state.native) refuse(new MediaAdmissionError('source_failed'));
   };
   try {
+    if (typeof promiseThen !== 'function') throw new MediaAdmissionError('source_failed');
     let returned: unknown;
     if (state.native) {
       if (state.invoke === undefined) throw new MediaAdmissionError('source_failed');
@@ -67,7 +70,14 @@ export function closeMediaIterator(iterator: AsyncIterator<Uint8Array>): Promise
       if (typeof operation !== 'function') return acknowledgement;
       returned = Reflect.apply(operation, iterator, []);
     }
-    void Promise.resolve(returned).then(complete, failed);
+    try {
+      // Native Promise branding crosses realms. Its own replaceable `then` cannot hide a
+      // rejection; normal constructor/species behaviour remains a trusted JS precondition.
+      void Reflect.apply(promiseThen, returned, [complete, failed]);
+    } catch {
+      // Non-Promise thenables still use normal assimilation, including fixed getter failures.
+      void Reflect.apply(promiseThen, resolvePromise(returned), [complete, failed]);
+    }
   } catch {
     failed();
   }
