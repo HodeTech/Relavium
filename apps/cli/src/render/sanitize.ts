@@ -75,9 +75,10 @@ export function sanitizeUntrustedInline(text: string): string {
  * through them could turn a masked query value and following ordinary prose into a false new query match.
  * Coarse on purpose: a boolean cannot locate the
  * span, and this function's whole posture (see {@link sanitizeUntrusted}) is that the cost of a false
- * positive is a `[REDACTED]` in a diagnostic, while the cost of a miss is a printed key. It stays out of the
- * shared `scrubSecrets`, which every surface depends on and where the same broadening would put ordinary
- * output at risk.
+ * positive is a `[REDACTED]` in a diagnostic, while the cost of a miss is a printed key. This broader CLI
+ * probe also checks split literal query names. The shared `scrubSecrets` separately protects its finite
+ * non-query credential shapes before query masking can destroy their identifying context; it does not
+ * join query names or ordinary query prose.
  */
 function redactIncludingAcrossSeparators(normalized: string): string {
   const scrubbed = scrubSecrets(normalized);

@@ -8,6 +8,54 @@ import {
   stripTerminalControls,
 } from './sanitize.js';
 
+const overlapShapes = ['normalized key', 'URL userinfo', 'Bearer', 'Basic'] as const;
+type OverlapShape = (typeof overlapShapes)[number];
+
+/** Synthetic independent values for actual raw and already-normalized diagnostic paths. */
+function overlapValues(shape: OverlapShape): { readonly value: string; readonly secret: string }[] {
+  const separators = ['\n', '\t', ' \r\n\t '];
+  if (shape === 'normalized key') {
+    const controls = [
+      '\u0001',
+      '\u007f',
+      '\u0085',
+      '\u202e',
+      '\u2066',
+      '\x1b[31m',
+      '\x1b[1 q',
+      '\x1b]52;c;YWJj\x07',
+      '\x1b]0;fixture\x1b\\',
+      '\x1bPfixture\x07',
+      '\x1bPfixture\x1b\\',
+      '\x1b^fixture\x1b\\',
+      '\x1b_fixture\x1b\\',
+      '\x1bXfixture\x1b\\',
+      '\x1bM',
+      '\x1b]',
+    ];
+    const secret = 'AbCdEf0123456789xyzUVWXYZ';
+    return controls.flatMap((control) =>
+      [['sk-', control, 'ant-', 'api03-'].join(''), ['AI', control, 'za', 'SyA'].join('')].flatMap(
+        (prefix) =>
+          separators.map((separator) => ({ value: `${prefix}${separator}${secret}`, secret })),
+      ),
+    );
+  }
+  const secret =
+    shape === 'URL userinfo'
+      ? 'opaque-userinfo-P8'
+      : shape === 'Bearer'
+        ? 'opaque-header-Z29'
+        : 'dXNlcjpvcGFxdWU=';
+  return separators.map((separator) => ({
+    value:
+      shape === 'URL userinfo'
+        ? `https://u${separator}ser:${secret}@provider.invalid/x`
+        : `${shape}${separator}${secret}`,
+    secret,
+  }));
+}
+
 /**
  * The redacting sanitizer for text this process did NOT author (#W15-8) — a rejection message, a provider
  * response body, an MCP error, a tool result, a stack trace. Terminal-control sanitization alone printed
@@ -128,6 +176,7 @@ describe('sanitizeUntrusted — the failure paths carry arbitrary text (#W15-8)'
       for (const separator of ['\n', '\t', ' \n\t ']) {
         const query = `?${name}=opaque-query-value&ordinary=kept`;
         for (const split of [
+          `?api_${separator}key=opaque-residual-query-P8`,
           `https://u${separator}ser:opaque-userinfo-P8@provider.invalid/x`,
           join('sk-', 'ant-', 'api03-', separator, 'AbCdEf0123456789xyz'),
         ]) {
@@ -157,6 +206,28 @@ describe('sanitizeUntrusted — the failure paths carry arbitrary text (#W15-8)'
       }
     }
   });
+
+  it.each(
+    queryNames.flatMap((name) =>
+      overlapShapes.flatMap((shape) => [
+        { name, shape, label: 'multiline', sanitize: sanitizeUntrusted },
+        { name, shape, label: 'inline', sanitize: sanitizeUntrustedInline },
+      ]),
+    ),
+  )(
+    'SECRETS_CAUSAL_OVERLAP_ORDER protects $name $shape query values: $label',
+    ({ name, shape, sanitize }) => {
+      for (const { value, secret } of overlapValues(shape)) {
+        const text = `?${name}=${value}`;
+        const error = makeLlmError({ provider: 'openai', kind: 'auth', message: text, code: text });
+        for (const projection of [text, error.message, error.code ?? '']) {
+          const output = sanitize(projection);
+          expect(output, 'SECRETS_CAUSAL_OVERLAP_ORDER').not.toContain(secret);
+          expect(output).toContain('[REDACTED]');
+        }
+      }
+    },
+  );
 
   it.each(queryNames)('preserves ordinary prose after an in-place %s redaction', (name) => {
     const text = `request ?${name}=opaque-query-value\nretrying after 30s`;
