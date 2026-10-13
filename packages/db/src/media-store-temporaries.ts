@@ -471,7 +471,10 @@ export class MediaStoreTemporaries {
     } finally {
       try {
         const removed = await this.cleanupRecovery(root, name, identity, marker, markerInfo);
-        if (!removed && completed && outcome === undefined) outcome = 'claimant_live';
+        // A peer can delete the blob after we retained its live marker. The one actual
+        // directory-removal winner accounts for the whole claim, including that schedule.
+        if (completed && removed) outcome = undefined;
+        else if (completed && outcome === undefined) outcome = 'claimant_live';
       } catch (error) {
         cleanupError = this.paths.error(error);
       }
@@ -490,14 +493,20 @@ export class MediaStoreTemporaries {
     if (own === undefined || !same(own, markerInfo))
       throw new MediaStoreFilesystemError('unsafe_path');
     await unlink(join(root, name, marker));
-    this.directory(root, name, identity);
-    const dir = join(root, name);
-    if (this.entries(dir).length !== 0) return false;
     try {
+      this.directory(root, name, identity);
+      const dir = join(root, name);
+      if (this.entries(dir).length !== 0) return false;
       await rmdir(dir);
       return true;
     } catch (error) {
-      if (code(error) === 'ENOTEMPTY' || code(error) === 'EEXIST') return false;
+      // After our own identity-checked marker removal, a cooperating peer may win
+      // directory cleanup. Absence never bypasses the pinned-root or earlier guards.
+      this.paths.root(false);
+      const missing =
+        code(error) === 'ENOENT' ||
+        (error instanceof MediaStoreFilesystemError && error.reason === 'missing');
+      if (missing || code(error) === 'ENOTEMPTY' || code(error) === 'EEXIST') return false;
       throw this.paths.error(error);
     }
   }

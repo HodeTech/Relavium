@@ -343,3 +343,24 @@ joins the per-item disposition, two NEW clean complete whole-wave review rounds,
 security sittings, exact-source gates and preserved limits. Earlier dated pending
 checkpoints remain historical. This landing does not claim a merge, future header
 activation, full M/N lifecycle or removal of approved residuals.
+
+### Recovery cleanup accounting correction — 2026-10-13
+
+The first post-publication push at `84a2fddb` exposed a real cooperating-recovery
+accounting race. A recovery that retained a live peer could win the final empty
+claim-directory removal yet report retention; its peer could classify the resulting
+absence as I/O. The whole claim was gone with neither process counting removal.
+The original native concurrency assertion correctly refused this result.
+
+The existing one-candidate reporting contract is implemented at the successful
+final directory removal. A normally completed recovery that wins that operation
+counts the claim once; only after its own identity-checked marker removal may a
+losing recovery classify raw or normalized missing-directory evidence as contention.
+Pinned-root revocation, earlier ownership checks and substantive I/O failures remain
+refusals. No new deletion authority, liveness rule or minimum age is introduced.
+The [canonical maintenance contract](../reference/shared-core/built-in-tools.md#physical-media-storage-and-limits)
+owns these reporting semantics. Two deterministic native-process schedules cover
+loss before directory validation and at rmdir; listing tests separately distinguish
+normalized absence from I/O. Two independent mechanism removals require both race
+witnesses and complete restoration. Independent correction review and exact-head
+publication gates remain separate from the earlier whole-wave evidence.

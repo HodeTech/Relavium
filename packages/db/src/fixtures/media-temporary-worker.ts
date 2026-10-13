@@ -12,16 +12,24 @@ let release = (): void => {
 const released = new Promise<void>((resolve) => {
   release = resolve;
 });
+const stageReleases = new Map<string, () => void>();
 process.on('message', (message: unknown) => {
-  if (message === 'release') release();
+  if (message === 'release') {
+    release();
+    for (const resume of stageReleases.values()) resume();
+  }
 });
 function report(value: unknown): void {
   process.send?.(value);
 }
 async function barrier(name: string): Promise<void> {
-  if (stage !== name) return;
+  if (!stage?.split(',').includes(name)) return;
+  const resumed = new Promise<void>((resolve) => {
+    stageReleases.set(name, resolve);
+  });
   report({ stage: name, pid: process.pid });
-  await released;
+  await resumed;
+  stageReleases.delete(name);
 }
 const nativeRename = fs.promises.rename;
 fs.promises.rename = async (from, to) => {
@@ -33,6 +41,13 @@ const nativeUnlink = fs.promises.unlink;
 fs.promises.unlink = async (path) => {
   await nativeUnlink(path);
   if (basename(String(path)) === 'blob') await barrier('postunlink');
+  if (basename(String(path)).startsWith('recovery-v1.')) await barrier('marker-removed');
+};
+const nativeRmdir = fs.promises.rmdir;
+fs.promises.rmdir = async (path, ...args) => {
+  if (basename(String(path)).startsWith('media-claim-')) await barrier('claim-remove');
+  await nativeRmdir(path, ...args);
+  if (basename(String(path)).startsWith('media-claim-')) await barrier('claim-removed');
 };
 const nativeOpen = fs.promises.open;
 fs.promises.open = async (path, ...args) => {

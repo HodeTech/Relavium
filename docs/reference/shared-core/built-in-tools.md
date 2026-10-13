@@ -154,7 +154,12 @@ destination; absence reports zero without provisioning it or opening config/hist
 Normal temporary sweeping is independent of published-object reference GC and active run filters.
 
 Both maintenance methods return `{ removed, retained, reasons }`, counting a claim plus its blob
-as one candidate. Retained reason counts sum to `retained`. Fixed reasons are `too_young`,
+as one candidate. For concurrent dead-claim recovery, the successful final claim-directory
+removal accounts for that candidate, even when that recovery first retained a live peer's
+marker and the peer subsequently removed the blob. After identity-checked removal of its
+own marker, a losing recovery treats the peer's directory removal as contention rather than
+I/O failure. Earlier marker/identity admission, pinned-root revocation and non-missing I/O
+errors retain their refusal semantics. Retained reason counts sum to `retained`. Fixed reasons are `too_young`,
 `future_timestamp`, `owner_live`, `owner_unknown`, `claimant_live`, `claimant_unknown`, `malformed`,
 `unsafe_entry`, `identity_changed`, `legacy_offline_required`, `maintenance_active`, `io`.
 Arbitrary unrelated strays and published blobs are not candidates. `MediaTemporaryMaintenanceError`

@@ -426,7 +426,7 @@ mutations.push(
     'MEDIA_TEMP_OWNER_ABSENCE',
     mediaTempCases,
     'uses exclusive private owner records',
-    19,
+    23,
     nativeTemporary,
   ),
   mediaControl(
@@ -437,7 +437,7 @@ mutations.push(
     'MEDIA_TEMP_MINIMUM_AGE',
     mediaTempCases,
     'retains young, future, reused PID',
-    19,
+    23,
     nativeTemporary,
   ),
   mediaControl(
@@ -448,7 +448,7 @@ mutations.push(
     'MEDIA_TEMP_INITIAL_CLAIM_IDENTITY',
     mediaTempCases,
     'revalidates the exact original identity',
-    19,
+    23,
     nativeTemporary,
   ),
   mediaControl(
@@ -459,7 +459,7 @@ mutations.push(
     'MEDIA_TEMP_DEAD_CLAIM_RECOVERY',
     mediaTempCases,
     'recovers a killed claimant',
-    19,
+    23,
     nativeTemporary,
   ),
   mediaControl(
@@ -1123,7 +1123,7 @@ mutations.push(
     'MEDIA_TEMP_NATIVE_IDENTITY_PRECISION',
     mediaTempCases,
     'retains a mismatched claimed file identity and corrupt claim children',
-    19,
+    23,
     nativeTemporary,
   ),
 );
@@ -1220,3 +1220,44 @@ mutations.push({
     },
   ],
 });
+
+mutations.push(
+  {
+    ...mediaControl(
+      'MEDIA_TEMP_CLEANUP_WINNER',
+      mediaTemp,
+      'if (completed && removed) outcome = undefined;',
+      'if (false) outcome = undefined;',
+      'MEDIA_TEMP_RECOVERY_CLEANUP_WINNER',
+      mediaTempCases,
+      'counts the final recovery cleanup winner when its peer loses at directory',
+      23,
+      nativeTemporary,
+    ),
+    witnesses: [
+      {
+        marker: 'MEDIA_TEMP_RECOVERY_CLEANUP_WINNER',
+        target: 'counts the final recovery cleanup winner when its peer loses at rmdir',
+      },
+    ],
+  },
+  {
+    ...mediaControl(
+      'MEDIA_TEMP_CLEANUP_ABSENCE',
+      mediaTemp,
+      "if (missing || code(error) === 'ENOTEMPTY' || code(error) === 'EEXIST')",
+      "if (code(error) === 'ENOTEMPTY' || code(error) === 'EEXIST')",
+      'MEDIA_TEMP_RECOVERY_CLEANUP_WINNER',
+      mediaTempCases,
+      'counts the final recovery cleanup winner when its peer loses at directory',
+      23,
+      nativeTemporary,
+    ),
+    witnesses: [
+      {
+        marker: 'MEDIA_TEMP_RECOVERY_CLEANUP_WINNER',
+        target: 'counts the final recovery cleanup winner when its peer loses at rmdir',
+      },
+    ],
+  },
+);

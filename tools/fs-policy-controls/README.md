@@ -1,5 +1,14 @@
 # Filesystem policy causal controls
 
+The post-publication recovery correction appends two controls to the earlier 99:
+`media-temp-cleanup-winner` and `media-temp-cleanup-absence`. Both require the
+directory-validation and native-rmdir race witnesses in the complete 23-case
+temporary suite. The five existing temporary controls also run that enlarged
+suite. The two processes use explicit native IPC barriers; ordinary I/O refusal
+and normalized missing-directory disposition have separate listing cases. A
+successful final rmdir counts one whole claim, while its losing peer reports
+contention. Prior artifact counts retain their original source attribution.
+
 `pnpm check:fs-mutations` runs the bounded ADR-0105 mechanism-removal matrix on
 physical byte copies outside the checkout. `--mechanism <declared-id>` supports
 local diagnosis and never reports whole-matrix completion.

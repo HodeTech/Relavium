@@ -3049,3 +3049,32 @@ No ADR approval, billing, key, provider capture or user decision is pending for
 this wave. The next engineering work is [Wave 3 — Clear the ground](../current.md#wave-3--clear-the-ground),
 starting with its serialized multi-file queue and a fresh decision/document preflight.
 This acceptance does not authorize implementing that next wave within this change.
+
+### Post-publication recovery accounting correction — 2026-10-13
+
+The first `84a2fddb` push [filesystem job](https://github.com/HodeTech/Relavium/actions/runs/38345819360/job/115126866456)
+refused the restored native recovery concurrency case. The parallel PR matrix
+passing does not clear that failure. A deterministic native-filesystem witness
+and two explicit multi-process schedules establish a production reporting race:
+a recovery can win the final empty claim-directory removal after retaining a live
+peer, while both processes report zero removals. The original test is retained.
+
+The correction implements the existing one-claim reporting contract at the final
+native rmdir winner. The losing recovery recognizes raw or normalized directory
+absence only after its own identity-checked marker removal; pinned-root revocation,
+earlier ownership admission and substantive I/O still refuse. Two deterministic
+process cases and two listing-disposition cases enlarge the complete temporary
+suite from nineteen to twenty-three. Separate winner-accounting and absence
+removals require both native race witnesses. The five existing temporary controls
+run the enlarged suite; the declared filesystem matrix is now **101 controls /
+303 phases / 5,313 case executions**. These are declared workloads, not a claim
+that an earlier 99-control artifact executed the additional cases.
+
+The [canonical maintenance contract](../../reference/shared-core/built-in-tools.md#physical-media-storage-and-limits)
+and dated [ADR-0106 correction](../../decisions/0106-media-publication-requires-bounded-verified-bytes.md#recovery-cleanup-accounting-correction--2026-10-13)
+record the behavior without new deletion authority, minimum age or dependency.
+The correction requires two NEW independent complete clean cumulative correction
+review rounds and exact-head publication gates. Their [PR #94 publication record](https://github.com/HodeTech/Relavium/pull/94)
+retains their separate source attribution; scoped correction reviews do not
+relabel earlier whole-wave rounds or artifacts as fresh executions. The closing
+register's `a75209ad`/`cfae361a` evidence remains its historical checkpoint.

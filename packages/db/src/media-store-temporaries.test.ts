@@ -580,6 +580,96 @@ it('recovers a killed recovery owner after it unlinked the claimed blob', async 
   });
 });
 
+it.each(['directory', 'rmdir'])(
+  'counts the final recovery cleanup winner when its peer loses at %s',
+  async (losingOperation) => {
+    await deadProducer();
+    const claimant = worker('sweep', 'moved');
+    await claimant.wait('moved');
+    await claimant.stop();
+    const lastStage = losingOperation === 'directory' ? 'claim-removed' : 'claim-remove';
+    const retaining = worker('sweep', `recovery,marker-removed,${lastStage}`);
+    await retaining.wait('recovery');
+    const deleting = worker(
+      'sweep',
+      `recovery,postunlink,marker-removed${losingOperation === 'rmdir' ? ',claim-remove' : ''}`,
+    );
+    await deleting.wait('recovery');
+
+    // The first process observes its live peer and retains, then removes only its own marker.
+    retaining.release();
+    await retaining.wait('marker-removed');
+    deleting.release();
+    await deleting.wait('postunlink');
+    deleting.release();
+    await deleting.wait('marker-removed');
+
+    // Both markers and the blob are gone. The retaining process wins the final native rmdir;
+    // the deleting process resumes either before directory validation or after it, at rmdir.
+    retaining.release();
+    await retaining.wait(lastStage);
+    if (losingOperation === 'rmdir') {
+      deleting.release();
+      await deleting.wait('claim-remove');
+    }
+    retaining.release();
+    const winner = await retaining.wait('done');
+    await retaining.exited;
+    deleting.release();
+    const loser = await deleting.wait('done');
+    await deleting.exited;
+    expect(
+      { winner: winner['result'], loser: loser['result'], remaining: readdirSync(root) },
+      'MEDIA_TEMP_RECOVERY_CLEANUP_WINNER',
+    ).toEqual({
+      winner: { removed: 1, retained: 0, reasons: {} },
+      loser: { removed: 0, retained: 1, reasons: { claimant_live: 1 } },
+      remaining: [],
+    });
+  },
+);
+
+it.each(['ENOENT', 'EIO'])(
+  'classifies recovery directory-listing %s only after its own marker removal',
+  async (errorCode) => {
+    await deadProducer();
+    const claimant = worker('sweep', 'moved');
+    await claimant.wait('moved');
+    await claimant.stop();
+    const nativeReaddir = fs.readdirSync;
+    let entered = false;
+    const read = (...args: Parameters<typeof nativeReaddir>): ReturnType<typeof nativeReaddir> => {
+      const path = String(args[0]);
+      if (basename(path).startsWith('media-claim-') && nativeReaddir(path).length === 0) {
+        entered = true;
+        if (errorCode === 'ENOENT') fs.rmdirSync(path);
+        else throw Object.assign(new Error('synthetic cleanup I/O failure'), { code: errorCode });
+      }
+      return nativeReaddir(...args);
+    };
+    Object.defineProperty(fs, 'readdirSync', { value: read });
+    syncBuiltinESMExports();
+    try {
+      const result = await new FilesystemMediaStore(root).sweepTemporaries();
+      expect(
+        { entered, result, remaining: nativeReaddir(root).length },
+        'MEDIA_TEMP_RECOVERY_LISTING_DISPOSITION',
+      ).toEqual({
+        entered: true,
+        result: {
+          removed: 0,
+          retained: 1,
+          reasons: errorCode === 'ENOENT' ? { claimant_live: 1 } : { io: 1 },
+        },
+        remaining: errorCode === 'ENOENT' ? 0 : 1,
+      });
+    } finally {
+      Object.defineProperty(fs, 'readdirSync', { value: nativeReaddir });
+      syncBuiltinESMExports();
+    }
+  },
+);
+
 it('refuses invalid injected clocks before deletion or root provisioning', async () => {
   const candidate = await deadProducer();
   const store = new FilesystemMediaStore(root);
