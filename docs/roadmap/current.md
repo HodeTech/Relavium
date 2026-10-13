@@ -133,7 +133,10 @@ native-header, return-diagnostic and causal-evidence gaps. Their runtime repairs
 are committed. A fourth cumulative review found an omitted native video selector;
 the [fourth review repair checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#step-6-fourth-cumulative-review-and-repairs--2026-10-13)
 records its correction, exact native temporary identities and the remaining complete-matrix,
-independent-review and platform gates. Step 6 acceptance remains open. The lifecycle
+independent-review and platform gates. The fifth complete cumulative review then
+reproduced whole-buffer Buffer reuse; its [repair checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#step-6-fifth-cumulative-review-and-repairs--2026-10-13)
+records the owned-copy correction and resets the new clean-review requirement.
+Step 6 acceptance remains open. The lifecycle
 repair implements Accepted [ADR-0109](../decisions/0109-native-media-close-ownership-is-explicit-iterator-provenance.md):
 explicit native iterator ownership must preserve real HTTP close joining while an
 arbitrary asynchronous return cannot block store cleanup. The

@@ -296,3 +296,17 @@ modality, preserving the unspecified format and supported size controls. The
 owns the exact refusal boundary. Named regression failures precede the repair;
 the separate physical removal and fresh cumulative acceptance rounds remain gates.
 This fulfils the existing decision without extending the admitted media profiles.
+
+### Whole-buffer borrowed-byte ownership correction — 2026-10-13
+
+The fifth cumulative implementation review independently reproduced ordinary
+Buffer reuse in the supported injected whole-buffer transport. Its subtype
+`slice` retained an alias, so later producer reuse changed already admitted bytes
+before aggregation. The whole-buffer collector now takes an intrinsic typed-array
+copy before the next pull. A plain typed-array control and separate Buffer/subclass
+regressions preserve the exact original bytes, independent final recognition and
+disposal. The [canonical seam](../reference/shared-core/llm-provider-seam.md#bounded-verified-media-publication-adr-0106)
+owns this existing ownership obligation. The default Node HTTP implementation was
+not observed reusing chunks; this correction covers the supported injected port
+without asserting universal hostile-JavaScript containment. Physical removal,
+fresh cumulative reviews and publication gates remain required for Step 6.

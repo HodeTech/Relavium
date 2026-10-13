@@ -979,6 +979,10 @@ counts at most **25 MiB**, before excess hashing, copying or writing. It never f
 the filesystem implementation consumes them incrementally. Recognizers retain at most
 **64 KiB inspection scratch**, with bounded structural depth/count and safe lengths.
 Required tails, checksums and track identity complete before publication.
+The whole-buffer egress helper also owns each admitted borrowed chunk before requesting
+the next one. Its copy ignores producer `slice` and iterator overrides, including the
+aliasing behaviour of Node `Buffer.slice`; subsequent producer reuse cannot change the
+retained bytes.
 
 The exact initial canonical MIME set is `image/png`, `image/jpeg`, `image/gif`, `image/webp`,
 `audio/wav`, `audio/mpeg`, `audio/flac`, `audio/ogg`, `audio/opus`, `audio/aac`, `audio/L16`,

@@ -2474,3 +2474,65 @@ acceptance remain open; no further user approval is currently pending.
 ---
 
 Part of [roadmap/](../README.md).
+
+### Step 6 fifth cumulative review and repairs — 2026-10-13
+
+Four NEW independent reviewers read all **158 cumulative paths** from accepted
+Step 5 `c6921be1` through **`24e39c1e`**: shared 29, stores 34, integration 52
+and tools/docs 43. Stores returned one High finding; the other three partitions
+were clean. **This is not a clean acceptance round.** Root independently reproduced
+the same finite injected-transport observation: a valid AAC Buffer was admitted,
+then reused by its producer at the next pull. Subtype `slice` had retained an alias,
+so whole-buffer fetch returned zeroed bytes that a fresh verifier refused. Ordinary
+Uint8Array retained the original bytes. The current native Node HTTP implementation
+was not observed reusing its chunks; the supported injected API still owed ownership.
+
+Whole-buffer collection now uses an intrinsic typed-array copy and its owned length.
+The new complete three-case regression retains the ordinary Uint8Array control,
+Buffer reuse and an overridden typed-array subclass. Before repair, exactly the two
+named Buffer/subclass assertions fail; after repair all **53** focused egress cases
+pass. The checks prove source reuse occurred, exact returned bytes, independent
+recognition, disposal and absence of producer slice/iterator calls. They use no socket,
+provider, credential or user history. The new **97th filesystem control** removes
+only the owned-copy expression and requires both named witnesses. Every earlier
+control ID, order and complete workload remains. The unchanged retention limits
+project **1,753 files** for a complete97 export; that arithmetic is not a capture.
+
+At the preceding exact committed head **`24e39c1e`**, three selected physical
+controls pass **nine joined phases / 159 case executions / nine expected named
+AssertionErrors**, with zero collateral failures. Root and the independent tools
+reviewer decode their exact packed manifests, stdio and evaluation receipts; every
+export is an incomplete selection, with 25 files and at most 9,612,186 bytes.
+They establish the corrected foreign acknowledgement, native chat selector and
+video selector, without claiming the later whole-buffer repair or a full matrix.
+
+The same remote head passes native Windows, official Node 22.13, strict peers,
+LLM/MCP coverage, wire and usage jobs. Its complete secrets export independently
+passes Root's retained-evidence audit: **35 controls / 105 phases / 7,713 case
+executions**, 586 expected semantic failures (584 ordinary AssertionErrors and two
+Vitest rejection-expectation assertions), zero collateral failures, **637 files /
+23,166,557 bytes** including the envelope. Exact packed manifests and executed
+loader receipts join 1,114 source files, 458 dependency packages and 21,013 dependency
+file pins. Root rehashes local source bytes and verifies retained remote dependency
+pins/loader receipts; remote installed bytes are not locally accessible or rehashed.
+The filesystem capture and aggregate CI are still pending at this checkpoint.
+These preceding-head successes do not certify the subsequent repair.
+
+The repair working tree passes **17/17 uncached lint/typecheck tasks**, then
+**11/11 uncached test/dependency tasks**: six suites, **558 files / 12,232 passing
+cases / 13 established skips**. Build passes **6/6 uncached tasks**, whole-repository
+formatting its one uncached task, and acceptance tooling **172/172**. Tools lint/types,
+DB sync, SDK fences, engine purity, bundle closure, compiled CLI, actual built-workspace
+and untouched CLI media packaging, offline overflow and budget replay smoke pass.
+The copied-source collection checks **97 filesystem / 35 secrets declarations**
+against **50 complete files / 1,353 names**, without count, anchor or witness drift.
+That collection captures the repair working tree and is not physical phase execution.
+The documentation audit checks 50 Markdown files, 2,636 relative links and nineteen
+pre-existing append-only ADRs without errors. These author gates do not substitute
+for committed-head physical evidence or new independent acceptance rounds.
+
+**Step 6 remains unaccepted.** The whole-buffer physical removal, complete current-head
+matrices, independent artifact audits, two NEW clean complete cumulative implementation
+rounds after this repair and remaining publication gates are required. Steps 7–8
+remain unstarted. No ADR approval, provider capture, credential or user decision
+is pending.
