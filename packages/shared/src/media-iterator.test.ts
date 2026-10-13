@@ -43,6 +43,8 @@ describe('exact media iterator ownership', () => {
     'discards foreign %s diagnostics',
     async (kind) => {
       const sentinel = new Error('private foreign diagnostic');
+      const held = gate();
+      let returnRetired: Promise<void> | undefined;
       const iterator: AsyncIterator<Uint8Array> = {
         next: () => Promise.resolve(done()),
         return: () => {
@@ -52,7 +54,10 @@ describe('exact media iterator ownership', () => {
             void rejected.catch(() => undefined);
             return rejected;
           }
-          const result = Promise.resolve(done());
+          // Keep the genuine Promise pending through the checkpoint so its fulfillment
+          // cannot substitute for the prompt foreign ACK. Capture cleanup before poisoning.
+          const result = held.promise.then(done);
+          returnRetired = result.then(() => undefined);
           void Object.defineProperty(result, 'then', {
             get: () => {
               throw sentinel;
@@ -68,10 +73,15 @@ describe('exact media iterator ownership', () => {
       );
       // The checkpoint proves completion independently of the foreign diagnostic.
       // Under removal, a broken helper ACK owns no native work; never hang the test on it.
-      expect(
-        await Promise.race([observed, setImmediate().then(() => ({ kind: 'pending' }))]),
-        'MEDIA_ITERATOR_FOREIGN_DIAGNOSTIC_FINITE',
-      ).toEqual({ kind: 'complete' });
+      try {
+        expect(
+          await Promise.race([observed, setImmediate().then(() => ({ kind: 'pending' }))]),
+          'MEDIA_ITERATOR_FOREIGN_DIAGNOSTIC_FINITE',
+        ).toEqual({ kind: 'complete' });
+      } finally {
+        held.release();
+        await returnRetired;
+      }
     },
   );
 
