@@ -107,6 +107,88 @@ describe('ADR-0106 owned native output selection', () => {
     expect(fetch, 'MEDIA_GENERATOR_PREENTRY').toHaveBeenCalledTimes(0);
   });
 
+  it.each(['format', 'output_format', 'response_format'] as const)(
+    'MEDIA_VIDEO_SELECTOR_PREENTRY: unsupported native %s refuses before SDK entry',
+    async (field) => {
+      const fetch = vi.fn<typeof globalThis.fetch>(() =>
+        Promise.resolve(
+          new Response(JSON.stringify({ id: 'synthetic-video-job', status: 'queued' }), {
+            headers: { 'content-type': 'application/json' },
+          }),
+        ),
+      );
+      const nativeInvocationStarted = vi.fn();
+      const adapter = createOpenAiAdapter({ fetch });
+      if (adapter.generateMedia === undefined) throw new Error('Expected media generator');
+      const [result] = await Promise.allSettled([
+        adapter.generateMedia(
+          {
+            model: 'sora-2',
+            modality: 'video',
+            prompt: 'synthetic fixture',
+            providerOptions: { video: { [field]: 'secret-unsupported-sentinel' } },
+          },
+          key,
+          { nativeInvocationStarted, retainWork: (factory) => factory() },
+        ),
+      ]);
+      expect(result, 'MEDIA_VIDEO_SELECTOR_PREENTRY').toMatchObject({
+        status: 'rejected',
+        reason: {
+          llmError: { kind: 'bad_request', message: 'Unsupported media output format' },
+        },
+      });
+      expect(fetch, 'MEDIA_VIDEO_SELECTOR_PREENTRY').toHaveBeenCalledTimes(0);
+      expect(nativeInvocationStarted, 'MEDIA_VIDEO_SELECTOR_PREENTRY').toHaveBeenCalledTimes(0);
+    },
+  );
+
+  it.each([undefined, '720x1280'] as const)(
+    'MEDIA_VIDEO_SELECTOR_DEFAULT: unspecified format preserves native video size=%s',
+    async (size) => {
+      const posts: { url: string; method: string | undefined; body: unknown }[] = [];
+      const fetch = vi.fn<typeof globalThis.fetch>((url, init) => {
+        // The installed SDK can probe local FormData support with a data URL.
+        const nativeUrl = typeof url === 'string' ? url : url instanceof URL ? url.href : url.url;
+        if (nativeUrl.startsWith('data:')) return Promise.resolve(new Response());
+        posts.push({
+          url: nativeUrl,
+          method: init?.method,
+          body: init?.body instanceof FormData ? Object.fromEntries(init.body.entries()) : null,
+        });
+        return Promise.resolve(
+          new Response(JSON.stringify({ id: 'synthetic-video-job', status: 'queued' }), {
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      });
+      const adapter = createOpenAiAdapter({ fetch });
+      if (adapter.generateMedia === undefined) throw new Error('Expected media generator');
+      const result = await adapter.generateMedia(
+        {
+          model: 'sora-2',
+          modality: 'video',
+          prompt: 'synthetic fixture',
+          ...(size === undefined ? {} : { providerOptions: { video: { size } } }),
+        },
+        key,
+      );
+      expect(result.jobId, 'MEDIA_VIDEO_SELECTOR_DEFAULT').toEqual(expect.any(String));
+      expect(posts, 'MEDIA_VIDEO_SELECTOR_DEFAULT').toEqual([
+        {
+          url: 'https://api.openai.com/v1/videos',
+          method: 'POST',
+          body: {
+            model: 'sora-2',
+            prompt: 'synthetic fixture',
+            seconds: '4',
+            ...(size === undefined ? {} : { size }),
+          },
+        },
+      ]);
+    },
+  );
+
   it('MEDIA_GEMINI_IMAGEN_SELECTOR: installed SDK lowers canonical MIME and refuses unsupported native MIME', async () => {
     const fetch = vi.fn<typeof globalThis.fetch>(() =>
       Promise.resolve(

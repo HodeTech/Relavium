@@ -1675,9 +1675,7 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
       )
         throw unsupportedOutputFormat();
       const native = req.providerOptions;
-      const nested = isRecord(native)
-        ? native[req.modality === 'image' ? 'image' : 'audio']
-        : undefined;
+      const nested = isRecord(native) ? native[req.modality] : undefined;
       if (
         (isRecord(native) &&
           (native['output_format'] !== undefined || native['response_format'] !== undefined)) ||
