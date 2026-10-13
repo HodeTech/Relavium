@@ -121,7 +121,7 @@ permanent negative cases; no notice is produced before a successful export.
 
 Four snapshot controls remove the finite scrubber detection site and the actual
 `create`, `import`, and `run` warning calls. Each has a named value-free assertion in
-its complete 10-case detector, 10-case create, 10-case import or 76-case run file.
+its complete 10-case detector, 11-case create, 11-case import or 76-case run file.
 The adjacent tests check preserved authored files and admitted run snapshots, JSON
 stdout, and scan-budget/incomplete notices. These controls certify warning delivery
 for the planted supported shapes at these entry points, not universal secret

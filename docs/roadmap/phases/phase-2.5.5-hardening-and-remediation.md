@@ -3289,3 +3289,22 @@ unchanged. The canonical [media contract](../../reference/shared-core/llm-provid
 Review records remain local and ignored. No new ADR approval, provider call, key,
 billing action or user decision is required. Wave 3 remains subsequent work;
 PR #94 and Wave 2 publication are separate from merge and full phase closure.
+
+The final `77faa460` publication attempt exposed two stale secrets-cohort counts:
+the new failed-write regressions made both create/import files eleven cases, while
+their unchanged declarations still expected ten. Both remote secrets jobs correctly
+refused the first enlarged cohort. The declarations and adjacent README now retain
+the complete eleven-case files; neither a case nor a named witness is removed.
+This confirmed cross-family finding invalidates that head's final clean acceptance.
+Two NEW complete clean cumulative source rounds and fresh final gates are required
+after the correction. The local full-CI attempt was stopped through its proven
+owned Vitest worker; its coordinator joined and removed its scratch. Its completed
+wire/usage and partial filesystem stages remain attributed to `77faa460`.
+
+At the same head, the push Windows job passed, but the PR Windows job timed out
+in two native CLI filesystem cases at their unchanged five-second limits. This
+establishes a failed platform attempt, not a demonstrated product fault or a
+successful rerun. The nine-file Windows CLI filesystem task now runs files serially
+with one worker to reduce file-level contention; its exact file/case inventory,
+individual deadlines and job bound remain unchanged. The actual workflow command
+has a scheduling guard, and new native Windows runs remain the acceptance evidence.

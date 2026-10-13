@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -132,4 +132,43 @@ test('required and local CI share all workspace tasks and uncached per-invocatio
     'pnpm turbo run build --force',
   ]);
   assert.equal(floorCommand['continue-on-error'], undefined);
+});
+
+test('Windows native CLI filesystem cohort runs serially with all nine physical files', () => {
+  const require = createRequire(new URL('apps/cli/package.json', root));
+  const { parse } = require('yaml');
+  const workflow = parse(readFileSync(new URL('.github/workflows/ci.yml', root), 'utf8'));
+  const job = workflow.jobs['windows-concurrency'];
+  assert.equal(job['timeout-minutes'], 25);
+  const step = job.steps.find(
+    (candidate) =>
+      candidate.name ===
+      'Native CLI filesystem admission, containment, catalog and config (ADR-0105)',
+  );
+  assert.ok(step);
+  assert.equal(step['continue-on-error'], undefined);
+  const files = [
+    'src/config/paths.test.ts',
+    'src/engine/tool-host/fs-policy.test.ts',
+    'src/engine/tool-host/fs-policy-native-paths.test.ts',
+    'src/engine/tool-host/fs-ancestor-consumers.test.ts',
+    'src/engine/tool-host/fs.test.ts',
+    'src/commands/fs-invocation.test.ts',
+    'src/commands/fs-workspace-admission.test.ts',
+    'src/workflows/catalog.test.ts',
+    'src/config/resolve.test.ts',
+  ];
+  assert.equal(files.length, 9);
+  for (const file of files) assert.ok(existsSync(new URL(`apps/cli/${file}`, root)), file);
+  assert.deepEqual(step.run.trim().split(/\s+/), [
+    'pnpm',
+    '--filter',
+    'relavium',
+    'exec',
+    'vitest',
+    'run',
+    '--no-file-parallelism',
+    '--maxWorkers=1',
+    ...files,
+  ]);
 });

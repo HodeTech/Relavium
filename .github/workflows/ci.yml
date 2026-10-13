@@ -531,7 +531,7 @@ jobs:
         run: pnpm --filter relavium exec vitest run concurrency perf-budget session-chain
       - name: Native CLI filesystem admission, containment, catalog and config (ADR-0105)
         if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
-        run: pnpm --filter relavium exec vitest run src/config/paths.test.ts src/engine/tool-host/fs-policy.test.ts src/engine/tool-host/fs-policy-native-paths.test.ts src/engine/tool-host/fs-ancestor-consumers.test.ts src/engine/tool-host/fs.test.ts src/commands/fs-invocation.test.ts src/commands/fs-workspace-admission.test.ts src/workflows/catalog.test.ts src/config/resolve.test.ts
+        run: pnpm --filter relavium exec vitest run --no-file-parallelism --maxWorkers=1 src/config/paths.test.ts src/engine/tool-host/fs-policy.test.ts src/engine/tool-host/fs-policy-native-paths.test.ts src/engine/tool-host/fs-ancestor-consumers.test.ts src/engine/tool-host/fs.test.ts src/commands/fs-invocation.test.ts src/commands/fs-workspace-admission.test.ts src/workflows/catalog.test.ts src/config/resolve.test.ts
       - name: Native CAS and save_to containment (ADR-0105)
         if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
         run: pnpm --filter @relavium/db exec vitest run src/media-store-paths.test.ts src/media-store-concurrency.test.ts src/media-store-read-races.test.ts src/media-store-entry-snapshots.test.ts src/media-store-publication-contention.test.ts src/media-store.test.ts src/media-write.test.ts
