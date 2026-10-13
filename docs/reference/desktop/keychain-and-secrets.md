@@ -1,6 +1,6 @@
 # Desktop Keychain & Secrets
 
-> Last updated: 2026-10-12
+> Last updated: 2026-10-13
 
 - **Status**: Reference
 - **Surface**: Desktop (Tauri v2)
@@ -53,7 +53,7 @@ The built-in web-search tool stores its key the same way under `account = search
 
 A `{{secrets.<name>}}` placeholder in an MCP server's `env` resolves **only** within this `mcp-secret:*` namespace (keychain → env var → fail-closed) and is injected **only** into the spawned server's child environment — never a committed YAML, a log, an event, or a `--json` line. The isolation is load-bearing: `{{secrets.*}}` can **never** reach a provider-key account (`{providerId}:{keyId}`) or `search-provider`, so a hostile imported workflow naming a *provider* key resolves an unrelated (normally-empty) `mcp-secret:*` account instead of the real key — closing the exfiltration path under the "a shared/imported workflow is the invite" distribution model.
 
-The `llm_providers` table stores only an `api_key_keychain_ref` (the `account` identifier) — **never the key value** (see [database-schema.md](../shared-core/database-schema.md)).
+The `llm_providers` table stores an `api_key_keychain_ref` (the `account` identifier) for the provider API key — **never its resolved value**. Historical arbitrary header values remain sensitive and inert under the [canonical provider-header policy](../shared-core/database-schema.md#interim-provider-header-policy). [ADR-0108](../../decisions/0108-provider-headers-stay-gated-until-keychain-custody.md) requires keychain-reference custody before future header activation; the interim gate implements no header-reference namespace or keychain migration.
 
 ## Encrypted-file fallback — deferred past v1.0
 

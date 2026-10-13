@@ -201,3 +201,18 @@ Only complete provider quantities enter realized token pricing. Partial observat
 
 See [ADR-0104](0104-unknown-provider-usage-is-durable-cost-uncertainty.md) and the
 [canonical usage contract](../reference/shared-core/llm-provider-seam.md#6-usage).
+
+### Provider-header custody refinement — 2026-10-13
+
+> Amended 2026-10-13: [ADR-0108](0108-provider-headers-stay-gated-until-keychain-custody.md)
+> gates the future header activation described in §5. Custom endpoint routing stays
+> live; stored headers remain inert.
+
+The Step 7 implementation tightens nonempty-map admission at the provider store,
+preserves historical rows on ordinary updates and retains an explicit logical clear.
+The exact write/error/read/projection contract now lives in the
+[canonical provider-header policy](../reference/shared-core/database-schema.md#interim-provider-header-policy).
+Legacy values remain sensitive in the unencrypted CLI database; no historical
+erasure or working keychain-reference header feature is claimed. Source/test gates
+and independent implementation reviews remain pending at this authoring checkpoint;
+the accepted design does not itself certify Step 7 or the whole wave.

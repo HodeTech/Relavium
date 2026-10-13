@@ -82,8 +82,8 @@ cumulative rounds (R7–R8) across all 160 paths at `0b025416`, complete indepen
 The [Step 6 acceptance](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#step-6-acceptance--2026-10-13)
 records exact physical evidence and limits. ADR-0109 is Accepted after independent proposal
 review and explicit maintainer approval; its native ownership implementation is included.
-Step 7's approved provider-header interim gate proceeds automatically. Step 8 whole-wave
-certification/publication remains open; no approval, provider, credential or user decision is pending.
+Step 7's approved provider-header interim gate is implemented, pending author gates and
+two NEW complete cumulative review rounds. Step 8 whole-wave certification/publication remains open; no approval, provider, credential or user decision is pending.
 
 See [docs/roadmap/current.md](docs/roadmap/current.md) for live status.
 

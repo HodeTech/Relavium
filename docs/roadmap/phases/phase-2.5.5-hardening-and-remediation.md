@@ -294,7 +294,7 @@ reached.
 - ✅ **DONE on `development` (Step 3, reviewed at `8c44e2ec`; final Wave 2 certification remains open).** **Complete direct `readSecretFromStdin` coverage and cap its buffer.** Colocated reader controls and real-default-reader provider/gate tests verify byte bounds, owned chunks, Unicode/whitespace and cleanup; caller-specific trimming remains unchanged. The [command reference](../../reference/cli/commands.md#secret-stdin-limits) owns the contract and the [Step 3 acceptance](#step-3-acceptance--2026-10-12) joins evidence. First-run transport remains Step 4. *(S · `apps/cli/src/secrets/read-secret.ts` · #31, #293)*
 - **Give MCP errors structured discriminant fields instead of baking context into `.message`.** `McpConnectError`/`McpHostUnavailableError` (`packages/mcp/src/errors.ts:23`, `:34`) and the ad-hoc `McpError` throws in `manager.ts` all string-interpolate identifying context (server id, tool name) into the message with no `.serverId`/`.toolId` property, violating `docs/standards/error-handling.md` and already causing test fragility (#203). `McpConnectError` additionally collapses every distinct connect-failure mode — ENOENT, network refusal, auth 401, protocol-version mismatch, timeout — into one identical message template, with `cause` deliberately stripped from the surfaced text (#204). Add `serverId`/`toolId` fields to the error classes, and give `McpConnectError` a `reason` discriminant derived from inspecting the caught error's shape at the catch site. *(S · `packages/mcp/src/errors.ts` · #203, #204)*
 - **Document and best-effort-lint the unredacted workflow snapshot written to `history.db`.** `definitionJson: JSON.stringify(workflow)` writes the full admitted, MCP-augmented workflow into `runs.workflow_definition_snapshot`, unredacted and unencrypted. Declared-input masking does not remove authored credential literals in unrelated fields. Complete the classification in [database-schema.md](../../reference/shared-core/database-schema.md#secrets-at-the-write-boundary), and add a value-free best-effort warning at `create`/`import`/`run` using the [existing finite detector policy](../../reference/cli/commands.md#relavium-import--relavium-export). Preserve faithful snapshot/resume identity; this is not a universal credential classifier. *(S · `apps/cli/src/history/open.ts` · #30)*
-- **Design and gate `llm_providers.default_headers` before live header consumption.** `ProviderUpsert.defaultHeaders` round-trips free-form strings through plaintext SQLite. ADR-0065's custom base-URL factory wiring already ships; its dormant header consumption is the future gate. **Approved** under [ADR-0108](../../decisions/0108-provider-headers-stay-gated-until-keychain-custody.md), with implementation pending in Step 7: keychain custody for activation, with an interim refusal of every new nonempty map. Historical rows remain inert/sensitive, omission preserves and `{}` explicitly clears. No live header feature or automatic legacy migration is authorized by the Wave 2 design task. *(M · `packages/db/src/provider-store.ts` · G20/D13)*
+- **Design and gate `llm_providers.default_headers` before live header consumption.** `ProviderUpsert.defaultHeaders` round-trips free-form strings through plaintext SQLite. ADR-0065's custom base-URL factory wiring already ships; its dormant header consumption is the future gate. **Implemented, pending Step 7 acceptance** under [ADR-0108](../../decisions/0108-provider-headers-stay-gated-until-keychain-custody.md): keychain custody for activation, with an interim refusal of every new nonempty map. Historical rows remain inert/sensitive, omission preserves and `{}` explicitly clears. No live header feature or automatic legacy migration is authorized by the Wave 2 design task. *(M · `packages/db/src/provider-store.ts` · G20/D13)*
 - **Fix two independent fail-loud violations in `packages/mcp` together.** `SdkConnection.callTool` (`packages/mcp/src/sdk-stdio.ts:137`) silently substitutes `undefined` for a non-object `args` payload instead of failing loud — meaningful because the schema compiler treats a bare `{}` tool schema as `z.unknown()`, so a non-object payload can slip through `parseArgs` entirely (#206); `closeAll` (`packages/mcp/src/manager.ts:126`) discards every teardown error via a bare `.catch(() => undefined)` with zero logging, unlike the rest of `manager.ts`, which carefully types and preserves failures — a real diagnosability loss when triaging orphaned-process bug reports (#207). Both are small, same-package instances of the identical defect class. Throw a typed `McpError` for the bad-args case; have `closeAll` return `PromiseSettledResult[]` (or accept an `onCloseError` callback) so a caller with a logger can surface teardown failures. *(S · `packages/mcp/src/sdk-stdio.ts`, `packages/mcp/src/manager.ts` · #206, #207)*
 - **Remove or properly harden the dead `~/.relavium/tmp/` directory.** `ensureGlobalConfigDir` (`apps/cli/src/config/paths.ts:27`) unconditionally creates `~/.relavium/tmp/`, but the following `chmodSync(dir, 0o700)` only chmods the parent — the `tmp` subdirectory never inherits the hardened mode. Nothing in the CLI currently writes into or reads from it. Remove the unused directory, or chmod it 0700 and add a one-line comment stating its intended future purpose. *(S · `apps/cli/src/config/paths.ts` · G21)*
 - **Add per-file error-path tests for the MCP transport adapters ADR-0053 is specifically about.** Package-level coverage aggregation for `packages/mcp` (93.7%/95.5%) is pulled up by larger, well-tested files while `sdk-http.ts`, `sdk-sse.ts`, and `sdk-websocket.ts` — the exact transport adapters ADR-0053's network-egress security discipline covers — sit far lower per-file. Add direct tests per adapter for a malformed `spec.url` throw and a transport-construction failure; consider a per-file coverage floor for this directory. *(S · `packages/mcp/src/sdk-http.ts`, `sdk-sse.ts`, `sdk-websocket.ts` · #297)*
@@ -2648,3 +2648,41 @@ hostile same-user filesystem isolation, arbitrary JavaScript containment or cros
 ownership. **Steps 1–6 are accepted; Steps 7–8 and whole-wave certification remain
 open.** No new ADR approval, provider request, credential, billing or user decision
 is pending.
+
+
+### Step 7 implementation checkpoint — 2026-10-13
+
+The approved [provider-header interim gate](../../reference/shared-core/database-schema.md#llm_providers)
+is implemented, with independent cumulative review and acceptance still open. Every
+new nonempty map is refused before clock, ID, retry or transaction entry. Omission
+and explicit own `undefined` preserve exact legacy JSON; an explicit empty ordinary
+or null-prototype map clears it transactionally. New rows use canonical empty JSON.
+Trusted store reads preserve genuine legacy maps; actual provider HTTP requests and
+public human/JSON projections exclude them. Read corruption remains loud through
+a fixed content-free diagnostic, including verbose rendering.
+
+The new DB regression file first ran against the ungated writer: **18 passed /
+38 failed**, all intended assertion failures, before the fix. After the fix its
+**56 cases**, the existing **11 store cases**, **18 actual-SDK HTTP cases** and
+**47 command/mapper cases** pass. Six declared causal controls extend the existing
+secrets family to **41 controls / 276 required named witnesses**, preserving the
+previous 35 declarations and workloads. Declaration and focused tests are not
+physical mutation acceptance; full author gates, fixed/removal/restored execution
+and two NEW complete clean cumulative review rounds remain required.
+
+No migration, automatic legacy scrub, keychain copy, new clear command or live
+header feature is introduced. `remove-key` does not clear headers. Logical empty-map
+clearing does not establish physical erasure from SQLite/WAL/backups. Future header
+activation remains gated by ADR-0108's custody, schema, precedence and recovery
+prerequisites. No new ADR approval, provider capture, credential or user decision
+is pending; Step 8 whole-wave certification remains open.
+
+**Pre-review author gates:** uncached lint/types pass all 17 tasks; ordinary tests
+pass all 11 tasks (**562 files / 12,365 passes / 13 existing skips** on macOS).
+All six uncached builds, formatting, tooling types/lint, DB sync, isolation, SDK
+fence, engine dependency and bundle closure checks pass. Compiled CLI/media
+packaging, overflow and replay smokes pass; replay retains 16 refusal prefixes,
+two legacy positive controls and zero fetches. All 185 acceptance-tool tests pass.
+Cumulative document checks cover 51 Markdown files and 2,695 relative links/anchors
+with no findings; 20 pre-existing ADRs remain append-only. Physical matrices and
+independent cumulative implementation reviews follow the committed snapshot.

@@ -1,6 +1,6 @@
 # Database Schema (Local SQLite)
 
-> Last updated: 2026-10-10
+> Last updated: 2026-10-13
 
 - **Status**: Reference
 - **Surface**: Shared — Desktop (Tauri v2, `tauri-plugin-sql`/SQLCipher), CLI (`better-sqlite3`, [ADR-0021](../../decisions/0021-node-sqlite-driver-better-sqlite3.md)/[ADR-0050](../../decisions/0050-cli-history-db-at-rest-posture.md)), and VS Code (a wasm SQLite build). One schema, three drivers — see [Concurrency & transaction behavior](#concurrency--transaction-behavior) and [Encryption at rest](#encryption-at-rest) for the per-surface divergences.
@@ -236,7 +236,7 @@ erDiagram
 
 #### `llm_providers`
 
-Registered LLM providers. The actual API key never lives here — only a reference; the key is stored in the OS keychain (see [keychain-and-secrets.md](../desktop/keychain-and-secrets.md)).
+Registered LLM providers. The dedicated provider API-key field holds only a reference; the resolved key is stored in the OS keychain (see [keychain-and-secrets.md](../desktop/keychain-and-secrets.md)). Historical `default_headers` values may contain credentials and remain sensitive, as specified below.
 
 | Column | Type | Constraints |
 |--------|------|-------------|
@@ -256,6 +256,78 @@ Registered LLM providers. The actual API key never lives here — only a referen
 ```sql
 CREATE UNIQUE INDEX idx_llm_providers_name ON llm_providers (name) WHERE deleted_at IS NULL;
 ```
+
+##### Interim provider-header policy
+
+[ADR-0108](../../decisions/0108-provider-headers-stay-gated-until-keychain-custody.md)
+tightens the exported `ProviderStore.upsert` API without changing the column or
+activating HTTP headers. The store captures one `defaultHeaders` admission branch
+before its clock callback, UUID allocation, SQL or retry work:
+
+| Supplied field | Result |
+|----------------|--------|
+| No own or inherited `defaultHeaders` property | Preserve existing raw JSON exactly. |
+| Own data property whose value is `undefined` | Preserve existing raw JSON exactly. |
+| Own data property containing an empty ordinary (`Object.prototype`) or null-prototype object | Explicitly clear to canonical `'{}'`. |
+| Any other shape | Refuse with `ProviderHeaderPolicyError`. |
+
+Every nonempty map is refused, including benign-looking literals. Empty arrays,
+custom instances, primitives, null, own accessors and inherited fields are refused.
+Any own key, including a symbol or non-enumerable key, makes a map nonempty. The
+field's descriptor and map prototype/own keys are inspected without invoking a
+field getter or caller serializer; reflection failures become the same fixed
+refusal. This narrow field gate does not own the rest of `ProviderUpsert` or sandbox
+JavaScript reflection traps. The captured branch is not reread after callbacks.
+
+An admitted new row always writes `'{}'`. An existing row preserves its exact
+stored JSON bytes on omission/own `undefined`, inside the existing IMMEDIATE
+transaction; explicit clearing writes the constant `'{}'` without serializing the
+caller object. Later ordinary updates preserve the cleared value. This is a
+logical clear: SQLite pages, WAL files and backups are not certified erased.
+There is no automatic rewrite, scrub, migration or keychain copy. The existing
+`provider remove-key` command deletes the keychain key and clears its reference;
+`clearKeychainRef` clears only that reference. Neither clears headers. This step
+adds no header-clear CLI command. A trusted store caller can explicitly clear through `upsert({ ...providerFields, defaultHeaders: {} })`.
+
+`@relavium/db` exports `ProviderHeaderPolicyError` and
+`isProviderHeaderPolicyError` from its public barrel. A newly constructed refusal
+has these fixed own data fields and no cause:
+
+| Field | Value |
+|-------|-------|
+| `code` | `provider_header_policy` |
+| `name` | `ProviderHeaderPolicyError` |
+| `message` | `Provider headers are disabled until keychain custody is implemented.` |
+
+The guard accepts an `Error` with those exact own data discriminants, including a
+compatible error from another bundle; it does not require this class's identity.
+Accessors do not qualify, and inspection faults return false. The CLI maps a
+recognized refusal to `invalid_invocation` (exit 2) using the fixed message rather
+than an incoming diagnostic. Header names, values and caller inspection causes are
+not retained by the store refusal.
+
+Trusted `get`, `list` and `upsert` results still expose the validated legacy map in
+`ProviderRecord.defaultHeaders`; this compatibility field is sensitive, not a public
+projection. Stored JSON must be an object with string members; malformed JSON,
+arrays, null and non-string members throw a content-free `TypeError` with message
+`Stored provider headers are invalid.` and no original parse cause. Valid own keys,
+including `__proto__`, remain own data without mutating the output prototype. These
+corruption errors remain unexpected CLI `internal` failures (exit 1), not policy
+refusals or silent empty maps.
+
+The provider-list human and NDJSON paths, with or without `--verify`, omit the
+header map and its names/values. Diagnostic projections must also omit them. The
+first-party host factory does not consume either new or legacy maps as HTTP
+headers, on default or custom endpoints. These output/wire limits do not remove
+the trusted store API data. The CLI database remains unencrypted under
+[ADR-0050](../../decisions/0050-cli-history-db-at-rest-posture.md)'s sensitive-history
+posture; retained header credentials share that limit.
+
+Future activation remains outside this wave and requires the keychain-reference
+schema, trusted-host egress resolution, header precedence/validation, content-free
+reference failures, safe projections and reviewed legacy migration/recovery policy
+specified by [ADR-0108](../../decisions/0108-provider-headers-stay-gated-until-keychain-custody.md#decision).
+The interim gate does not implement keychain-backed headers or historical cleanup.
 
 #### `model_catalog`
 

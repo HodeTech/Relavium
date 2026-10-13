@@ -442,6 +442,13 @@ owns CR-82 acceptance.
 > desktop egress wiring is in
 > [../contracts/ipc-contract.md](../contracts/ipc-contract.md#rust-delegated-llm-egress).
 
+Stored provider headers do not cross this seam into first-party adapter construction
+or HTTP requests. The [canonical provider-header policy](database-schema.md#interim-provider-header-policy)
+owns the interim admission/error contract and sensitive legacy retention.
+[ADR-0108](../../decisions/0108-provider-headers-stay-gated-until-keychain-custody.md)
+gates future activation on keychain-reference custody and reviewed egress/migration
+semantics; it does not activate custom headers alongside custom endpoint routing.
+
 The interface exposes a capability-gated common-path surface: text + tools +
 streaming + usage, plus the canonical **reasoning channel** (ADR-0030) and the
 canonical **media shapes** (ADR-0031 — shape landed at 1.AD, behavior wired

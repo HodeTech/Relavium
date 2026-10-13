@@ -110,3 +110,20 @@ The maintainer approved the revised decision and the eight-step Wave 2 execution
 plan after the ten-comment intake and two fresh independent cumulative proposal
 reviews. Dependent implementation is authorised on `development`; acceptance of
 this decision does not certify unimplemented mechanisms or close the wave.
+
+### Step 7 implementation checkpoint — 2026-10-13
+
+The working-tree implementation adds the approved interim store admission gate,
+public refusal/guard and fixed CLI error projection. The
+[canonical provider-header policy](../reference/shared-core/database-schema.md#interim-provider-header-policy)
+now specifies the omission/own-undefined preservation branch, explicit empty-object
+clear, legacy read validation and public/wire limits. This fulfils the planned
+reference authoring; the decision's earlier “does not exist yet” wording describes
+its proposal checkpoint.
+
+Existing trusted store results retain legacy headers for compatibility. The clear
+is logical only; no automatic migration, keychain copy, historical scrub, new clear
+command or live-header activation is included. Future activation prerequisites
+remain those in this decision. Source/test gates and independent implementation
+reviews remain pending; this checkpoint makes no Step 7 or whole-wave acceptance
+claim.
