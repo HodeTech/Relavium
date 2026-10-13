@@ -6,7 +6,11 @@ import {
   WorkflowSyntaxError,
   WorkflowValidationError,
 } from '@relavium/core';
-import { CorruptRunEventError, UnreadableRunEventLogError } from '@relavium/db';
+import {
+  CorruptRunEventError,
+  ProviderHeaderPolicyError,
+  UnreadableRunEventLogError,
+} from '@relavium/db';
 import { describe, expect, it } from 'vitest';
 
 import { CliError, isCliError, toUserFacing } from './errors.js';
@@ -61,6 +65,34 @@ describe('CliError', () => {
 });
 
 describe('toUserFacing', () => {
+  it('maps a provider-header policy refusal to the fixed invocation diagnostic (ADR-0108)', () => {
+    expect(toUserFacing(new ProviderHeaderPolicyError())).toEqual({
+      code: 'invalid_invocation',
+      message: 'Provider headers are disabled until keychain custody is implemented.',
+      exitCode: EXIT_CODES.invalidInvocation,
+    });
+  });
+
+  it('uses the structural DB guard for another bundle and refuses altered lookalikes', () => {
+    const compatible = new Error(
+      'Provider headers are disabled until keychain custody is implemented.',
+    );
+    Object.defineProperty(compatible, 'code', { value: 'provider_header_policy' });
+    compatible.name = 'ProviderHeaderPolicyError';
+    expect(toUserFacing(compatible)).toEqual({
+      code: 'invalid_invocation',
+      message: 'Provider headers are disabled until keychain custody is implemented.',
+      exitCode: EXIT_CODES.invalidInvocation,
+    });
+    expect(toUserFacing({ code: 'provider_header_policy' }).code).toBe('internal');
+    compatible.message = 'opaque compatibility payload';
+    expect(toUserFacing(compatible)).toEqual({
+      code: 'internal',
+      message: 'An unexpected internal error occurred.',
+      exitCode: EXIT_CODES.workflowFailed,
+    });
+  });
+
   it('passes a CliError through verbatim', () => {
     expect(toUserFacing(new CliError('invalid_invocation', 'name it'))).toEqual({
       code: 'invalid_invocation',

@@ -4,7 +4,11 @@ import {
   isTransientEngineStateError,
   WorkflowParseError,
 } from '@relavium/core';
-import { isCorruptRunEventError, isUnreadableRunEventLogError } from '@relavium/db';
+import {
+  isCorruptRunEventError,
+  isProviderHeaderPolicyError,
+  isUnreadableRunEventLogError,
+} from '@relavium/db';
 
 import { EXIT_CODES, type ExitCode } from './exit-codes.js';
 
@@ -75,6 +79,15 @@ export interface UserFacingError {
 export function toUserFacing(value: unknown): UserFacingError {
   if (isCliError(value)) {
     return { code: value.code, message: value.message, exitCode: value.exitCode };
+  }
+  // ADR-0108: the disabled header field is an invocation refusal. Keep this projection fixed rather than
+  // promoting the incoming message: structurally compatible errors can originate from another bundle.
+  if (isProviderHeaderPolicyError(value)) {
+    return {
+      code: 'invalid_invocation',
+      message: 'Provider headers are disabled until keychain custody is implemented.',
+      exitCode: EXIT_CODES.invalidInvocation,
+    };
   }
   // A damaged `run_events` row (ADR-0074 §5 / ADR-0050). The generic fallback below would report a corrupt row
   // out of a 4,000-event log as `An unexpected internal error occurred.` — no run, no row, no next step. The
