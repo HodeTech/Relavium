@@ -50,6 +50,7 @@ export function spawnJoined(command, args, options, timeoutMs = 90000) {
       clearTimeout(timer);
       killOwned();
       resolve({
+        pid: child.pid,
         code,
         signal,
         spawnError,

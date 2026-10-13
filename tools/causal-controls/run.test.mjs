@@ -16,7 +16,12 @@ import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawnJoined } from './process.mjs';
 import { ownedTools } from './provenance.mjs';
-import { verifyRetainedSourceManifests, verifyRetainedStdio } from './retention.mjs';
+import {
+  verifyRetainedSourceManifests,
+  verifyRetainedStdio,
+  verifyRetainedRuntimeReceipts,
+} from './retention.mjs';
+import { decodeRuntimeReceipt, runtimeReceiptIdentity } from './runtime-receipt.mjs';
 import { sourceState, digest } from '../usage-coverage-controls/source-graph.mjs';
 const repository = realpathSync(fileURLToPath(new URL('../../', import.meta.url)));
 const target = 'tools/causal-controls/fixture.mjs';
@@ -25,6 +30,119 @@ const scratchNames = () =>
   readdirSync(realpathSync(tmpdir()))
     .filter((name) => /^relavium-(?:filesystem|secrets)-controls-/.test(name))
     .sort();
+
+for (const [kind, background] of [
+  ['rejection', "void Promise.reject(new Error('CAUSAL_BACKGROUND_REJECTION'));"],
+  ['exception', "setImmediate(() => { throw new Error('CAUSAL_BACKGROUND_EXCEPTION'); });"],
+  ['teardown-rejection', 'export const teardownError = true;'],
+])
+  test(
+    `actual coordinator refuses semantic removal with an independent unhandled ${kind}`,
+    { timeout: 90000 },
+    async () => {
+      const directory = realpathSync(mkdtempSync(join(tmpdir(), 'causal-runtime-error-')));
+      const before = sourceState(repository);
+      const tooling = ownedTools(repository, ['tools/causal-controls', 'tools/fs-policy-controls']);
+      const scratches = scratchNames();
+      try {
+        const success = {
+          id: 'clean-semantic-removal',
+          path: target,
+          before: 'export const admitted = true;',
+          after: 'export const admitted = false;',
+          files: ['tools/causal-controls/runtime-error.cases.mjs'],
+          expectedTests: 2,
+          target: 'CAUSAL_SYNTHETIC_DECLARED',
+          marker: 'CAUSAL_SYNTHETIC_DECLARED',
+        };
+        const contaminated = {
+          ...success,
+          id: `background-${kind}`,
+          after: `${success.after}\n${background}`,
+        };
+        const entry = join(directory, 'run.mjs');
+        writeFileSync(
+          entry,
+          `import { runControls } from ${JSON.stringify(pathToFileURL(join(repository, 'tools/causal-controls/run.mjs')).href)};\nawait runControls(${JSON.stringify({ repository, evidenceKind: 'filesystem', toolRoots: ['tools/causal-controls', 'tools/fs-policy-controls'], mutations: [success, contaminated] })});\n`,
+        );
+        const evidence = join(directory, 'evidence');
+        mkdirSync(evidence);
+        const child = await spawnJoined(process.execPath, [entry], {
+          cwd: repository,
+          env: { ...process.env, RELAVIUM_ACCEPTANCE_EVIDENCE: evidence },
+        });
+        assert.equal(child.joined, true);
+        assert.equal(child.timedOut, false);
+        const root = join(evidence, 'filesystem');
+        const summary = JSON.parse(readFileSync(join(root, 'summary.json'), 'utf8'));
+        const removal = JSON.parse(
+          readFileSync(join(root, contaminated.id, 'mutated', 'vitest.json'), 'utf8'),
+        );
+        assert.equal(removal.numTotalTests, 2);
+        assert.equal(removal.numFailedTests, 1);
+        assert.match(
+          removal.testResults[0].assertionResults[0].failureMessages[0],
+          /^AssertionError: CAUSAL_SYNTHETIC_DECLARED/,
+        );
+        assert.equal(child.code, 1, 'A real background error must refuse the complete coordinator');
+        assert.equal(summary.complete, false);
+        assert.deepEqual(
+          summary.mechanisms.map(({ id }) => id),
+          [success.id],
+        );
+        assert.match(summary.failure.message, /Unhandled runtime error/);
+        assert.equal(summary.restorations.length, 2);
+        for (const restored of summary.restorations)
+          assert.equal(restored.fixedSha256, restored.restoredSha256);
+        const accepted = summary.mechanisms[0];
+        assert.deepEqual(accepted.fixed.inventory, accepted.mutated.inventory);
+        assert.deepEqual(accepted.fixed.inventory, accepted.restored.inventory);
+        assert.equal(accepted.fixed.tests, 2);
+        assert.equal(accepted.restored.tests, 2);
+        assert.equal(accepted.mutated.failed.length, 1);
+        const verified = verifyRetainedRuntimeReceipts(root);
+        assert.equal(verified.length, 3);
+        for (const { phase, receipt } of verified) {
+          assert.equal(receipt.unhandledErrors, 0);
+          assert.equal(receipt.reason, phase === 'mutated' ? 'failed' : 'passed');
+          assert.equal(
+            existsSync(join(root, success.id, phase, 'runner-completion.receipt')),
+            false,
+          );
+        }
+        const manifests = verifyRetainedSourceManifests(root);
+        const phaseRoot = join(root, contaminated.id, 'mutated');
+        const processRecord = JSON.parse(readFileSync(join(phaseRoot, 'process.json'), 'utf8'));
+        const identity = runtimeReceiptIdentity(
+          readFileSync(join(phaseRoot, 'runtime.json')),
+          JSON.parse(
+            manifests.get(`${contaminated.id}/mutated/source-manifest.json`).toString('utf8'),
+          ),
+          processRecord.pid,
+        );
+        const receipt = decodeRuntimeReceipt(processRecord.runnerReceipt, identity);
+        assert.equal(receipt.unhandledErrors, 1);
+        assert.equal(receipt.reason, 'failed');
+        const streams = verifyRetainedStdio(root).find(
+          ({ control, phase }) => control === contaminated.id && phase === 'mutated',
+        );
+        assert.ok(streams);
+        assert.equal(
+          streams.stderr,
+          '',
+          'JSON-only runtime diagnostics remain absent; the structured receipt must refuse',
+        );
+        assert.deepEqual(sourceState(repository), before);
+        assert.deepEqual(
+          ownedTools(repository, ['tools/causal-controls', 'tools/fs-policy-controls']),
+          tooling,
+        );
+        assert.deepEqual(scratchNames(), scratches);
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
+    },
+  );
 
 test(
   'actual shared coordinators preserve inventory/hash restoration and clean scratch after assertion/import/export failures',

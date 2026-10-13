@@ -16,6 +16,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { gunzipSync, gzipSync, inflateRawSync } from 'node:zlib';
 import { digest, json } from '../usage-coverage-controls/source-graph.mjs';
 import { maxProcessOutputUnits } from './process.mjs';
+import { decodeRuntimeReceipt, runtimeReceiptIdentity } from './runtime-receipt.mjs';
 const maxFiles = 2000,
   // Packed PID/thread journals are input segments, not retained physical files.
   // The full native cohort exceeds the old shared 2,000-file count; byte caps stay fixed.
@@ -456,8 +457,48 @@ export function exportMetadata({ directory, scratch, repository, evidenceKind, s
   }
   writeFileSync(join(destination, 'export.json'), metadata, { flag: 'wx' });
   if (aggregates.length > 0) verifyRetainedEvaluations(destination);
-  verifyRetainedSourceManifests(destination);
+  verifyRetainedRuntimeReceipts(destination);
   verifyRetainedStdio(destination);
+}
+
+/** Accepted phases require source-joined, completed zero-error runtime receipts. */
+export function verifyRetainedRuntimeReceipts(destination) {
+  const manifests = verifyRetainedSourceManifests(destination);
+  const root = realpathSync(destination);
+  const summaryPath = join(root, 'summary.json');
+  let bytes = physicalFile(summaryPath, maxBytes),
+    files = 1;
+  const summary = JSON.parse(readFileSync(summaryPath, 'utf8'));
+  const verified = [];
+  for (const mechanism of summary.mechanisms ?? []) {
+    for (const phase of ['fixed', 'mutated', 'restored']) {
+      const phasePath = join(root, mechanism.id, phase);
+      const runtimePath = join(phasePath, 'runtime.json');
+      const processPath = join(phasePath, 'process.json');
+      for (const path of [runtimePath, processPath]) {
+        bytes += physicalFile(path, maxBytes);
+        assert.ok(++files <= maxFiles && bytes <= maxBytes, 'Runner receipt retained bound');
+      }
+      const runtimeBytes = readFileSync(runtimePath);
+      const manifest = JSON.parse(
+        manifests.get(`${mechanism.id}/${phase}/source-manifest.json`).toString('utf8'),
+      );
+      const process = JSON.parse(readFileSync(processPath, 'utf8'));
+      assert.equal(process.runnerReceiptFailure, undefined, 'Runner receipt read failed');
+      const identity = runtimeReceiptIdentity(runtimeBytes, manifest, process.pid);
+      assert.equal(identity.phase, phase, 'Runner receipt runtime phase differs');
+      assert.equal(identity.mutationId, mechanism.id, 'Runner receipt runtime control differs');
+      const receipt = decodeRuntimeReceipt(process.runnerReceipt, identity);
+      assert.equal(receipt.unhandledErrors, 0, 'Unhandled runtime error in accepted phase');
+      assert.equal(
+        receipt.reason,
+        phase === 'mutated' ? 'failed' : 'passed',
+        'Runner completion reason differs',
+      );
+      verified.push({ control: mechanism.id, phase, receipt });
+    }
+  }
+  return verified;
 }
 /** Verify every original per-PID receipt without unbounded gzip expansion. */
 export function verifyRetainedEvaluations(destination) {

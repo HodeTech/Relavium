@@ -24,6 +24,11 @@ import {
 } from '../usage-coverage-controls/source-graph.mjs';
 import { spawnJoined } from './process.mjs';
 import { assertPhaseOutcome } from './outcome.mjs';
+import {
+  readRuntimeReceipt,
+  runtimeReceiptIdentity,
+  runtimeReporterPath,
+} from './runtime-receipt.mjs';
 import { assertDeclaredHookTimeouts } from './timeout-policy.mjs';
 import {
   captureOwnedTools,
@@ -89,9 +94,11 @@ export async function runControls({ repository, evidenceKind, mutations, toolRoo
       evaluationHelper: toUrl(join(graph, 'tools/usage-coverage-controls/evaluation.mjs')),
       phase: name,
       mutationId: control.id,
-      infrastructure: [
-        { path: config, bytes: readFileSync(config).length, sha256: digest(readFileSync(config)) },
-      ],
+      infrastructure: [config, join(graph, runtimeReporterPath)].map((path) => ({
+        path,
+        bytes: readFileSync(path).length,
+        sha256: digest(readFileSync(path)),
+      })),
     });
     const infrastructure = [
       manifestPath,
@@ -110,6 +117,7 @@ export async function runControls({ repository, evidenceKind, mutations, toolRoo
         '--configLoader',
         'native',
         '--reporter=json',
+        `--reporter=${join(graph, runtimeReporterPath)}`,
         '--outputFile',
         report,
       ],
@@ -120,17 +128,37 @@ export async function runControls({ repository, evidenceKind, mutations, toolRoo
     );
     const stdio = encodePhaseStdio(child.stdout ?? '', child.stderr ?? '');
     writeFileSync(join(output, 'stdio.bin'), stdio.bytes, { flag: 'wx' });
+    let runnerReceipt, receiptFailure;
+    try {
+      runnerReceipt = readRuntimeReceipt(join(output, 'runner-completion.receipt'));
+    } catch (error) {
+      receiptFailure = error;
+    }
     json(join(output, 'process.json'), {
       ...child,
       stdout: undefined,
       stderr: undefined,
       stdio: stdio.index,
+      runnerReceipt,
+      ...(receiptFailure
+        ? { runnerReceiptFailure: { name: receiptFailure.name, message: receiptFailure.message } }
+        : {}),
     });
     assert.ok(existsSync(report), `${control.id}/${name}: missing completed report`);
     for (const entry of infrastructure)
       assert.equal(digest(readFileSync(entry.path)), entry.sha256, 'Phase metadata changed');
     const data = JSON.parse(readFileSync(report, 'utf8'));
-    const { tests, failed } = assertPhaseOutcome(data, child, control, name, graph);
+    if (receiptFailure) throw receiptFailure;
+    const receiptIdentity = runtimeReceiptIdentity(readFileSync(runtime), current, child.pid);
+    const { tests, failed } = assertPhaseOutcome(
+      data,
+      child,
+      control,
+      name,
+      graph,
+      runnerReceipt,
+      receiptIdentity,
+    );
     const evaluationFiles = readdirSync(evaluationDirectory);
     const records = evaluationFiles
       .filter((file) => !file.endsWith('.dependencies.jsonl'))

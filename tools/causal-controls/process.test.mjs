@@ -9,6 +9,7 @@ test('joins a normal process with complete output', async () => {
     5000,
   );
   assert.equal(result.code, 0);
+  assert.ok(Number.isSafeInteger(result.pid) && result.pid > 0);
   assert.equal(result.signal, null);
   assert.equal(result.stdout, 'complete');
   assert.equal(result.joined, true);

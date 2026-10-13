@@ -1,12 +1,28 @@
 import assert from 'node:assert/strict';
 import { relative } from 'node:path';
+import { decodeRuntimeReceipt } from './runtime-receipt.mjs';
 /** Reject infrastructure failures and incomplete inventories before considering semantic witnesses. */
-export function assertPhaseOutcome(data, child, control, name, graph) {
+export function assertPhaseOutcome(
+  data,
+  child,
+  control,
+  name,
+  graph,
+  runnerReceipt,
+  receiptIdentity,
+) {
   assert.equal(child.spawnError, undefined, 'Runner spawn failure');
   assert.equal(child.signal, null, 'Runner signaled');
   assert.equal(child.timedOut, false, 'Runner timed out');
   assert.equal(child.outputExceeded, false, 'Runner output overflow');
   assert.equal(child.joined, true, 'Runner not joined');
+  const receipt = decodeRuntimeReceipt(runnerReceipt, {
+    ...receiptIdentity,
+    phase: name,
+    mutationId: control.id,
+    pid: child.pid,
+  });
+  assert.equal(receipt.unhandledErrors, 0, 'Unhandled runtime error');
   assert.ok(
     !/Unhandled Errors|Unhandled Error|Unhandled Rejection/i.test(child.stderr),
     'Unhandled runtime error',
@@ -50,6 +66,7 @@ export function assertPhaseOutcome(data, child, control, name, graph) {
     'Infrastructure/setup/timeout cannot certify removal',
   );
   if (name === 'mutated') {
+    assert.equal(receipt.reason, 'failed', 'Runner completion reason differs from removal');
     assert.equal(child.code, 1, `${control.id}: removal survived`);
     assert.ok(
       failed.some(
@@ -77,6 +94,11 @@ export function assertPhaseOutcome(data, child, control, name, graph) {
         `${control.id}: missing additional named assertion ${witness.marker}`,
       );
   } else {
+    assert.equal(
+      receipt.reason,
+      'passed',
+      'Runner completion reason differs from baseline/restoration',
+    );
     assert.equal(child.code, 0, `${control.id}/${name}: baseline/restoration failed`);
     assert.equal(failed.length, 0);
     assert.equal(data.numPassedTests, tests.length);

@@ -3104,3 +3104,31 @@ earlier two recovery-review rounds certify their original source scope only.
 This additional tooling correction requires two NEW complete clean cumulative
 correction rounds and fresh published gates/artifact inspection; their separate
 source attribution belongs in the [PR #94 publication record](https://github.com/HodeTech/Relavium/pull/94).
+
+### PR #94 systematic review corrections — 2026-10-13
+
+The maintainer's complete review of `395fbf95980aa1fd41e56156c93b9c2db120348c`
+against `664336c2794622c2b940be823966eddc9d61423d` requests three corrections.
+PR #94 is draft while they are implemented and independently accepted. Original
+eight-step and publication records retain their checkpoint attribution; physical
+artifact consistency does not establish the runner-error guarantee under review.
+
+| Increment | Confirmed finding | Required correction and evidence | State |
+| --- | --- | --- | --- |
+| 1 — R94-1 (High) | JSON-only Vitest reporting omits unhandled runner errors, so a named removal assertion can coexist with an invisible background failure. | Own a structured completed runner-error receipt, require zero errors before phase acceptance, and permanently exercise the real coordinator with a designated assertion plus a genuine unhandled rejection/exception. Refresh affected complete controls; old artifacts do not certify this repair. | Implementation and two NEW clean complete cumulative review rounds pending. |
+| 2 — R94-2 (High) | Valid OpusTags padding is refused after otherwise supported provider generation. | Consume the permitted bounded Opus tail after complete comment framing; preserve Vorbis framing. Pin fragmented packet/page positives, malformed negatives and actual store/installed-SDK publication. | Implementation and two NEW clean complete cumulative review rounds pending. |
+| 3 — R94-3 (Medium) | FLAC nonfinal minimum and fixed block-size consistency are not enforced. | Validate the previous frame once a successor establishes that it is nonfinal; retain the legal shorter final frame. Pin fragmented verifier and actual-store refusal/acceptance pairs. | Implementation and two NEW clean complete cumulative review rounds pending. |
+
+Each increment follows implement/regression/commit, independent review/fix/commit,
+then a NEW complete cumulative review round. A material correction restarts the
+two-clean-round requirement. Final correction acceptance additionally requires
+current broad author/coverage/platform gates and independently inspected complete
+filesystem/secrets evidence. Report counts and source pins remain attributed to
+the head that actually executed them. Review records remain local/ignored.
+
+These are repairs to accepted admission, structural-media and test-evidence
+contracts, not new format profiles or policies. No new ADR, runtime dependency,
+live provider request, credential, billing action or deferral is required. The
+[canonical media profile](../../reference/shared-core/llm-provider-seam.md#bounded-verified-media-publication-adr-0106)
+and [causal runner contract](../../../tools/causal-controls/README.md) own the
+implementation details. Wave 3 remains subsequent work.

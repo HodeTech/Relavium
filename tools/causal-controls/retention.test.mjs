@@ -16,6 +16,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gunzipSync, gzipSync } from 'node:zlib';
 import { digest } from '../usage-coverage-controls/source-graph.mjs';
+import { runtimeReceiptIdentity, runtimeReporterPath } from './runtime-receipt.mjs';
 import {
   decodePhaseStdio,
   encodePhaseStdio,
@@ -24,6 +25,7 @@ import {
   verifyRetainedEvaluations,
   verifyRetainedSourceManifests,
   verifyRetainedStdio,
+  verifyRetainedRuntimeReceipts,
 } from './retention.mjs';
 function addManifest(scratch, control, phase, content, runtime = true) {
   const directory = join(scratch, control, phase);
@@ -33,17 +35,42 @@ function addManifest(scratch, control, phase, content, runtime = true) {
   if (runtime)
     writeFileSync(
       join(directory, 'runtime.json'),
-      JSON.stringify({ manifestSha256: digest(bytes) }),
+      JSON.stringify({
+        phase,
+        mutationId: control,
+        manifestSha256: digest(bytes),
+        infrastructure: [
+          { path: join('/physical/graph', runtimeReporterPath), bytes: 1, sha256: 'b'.repeat(64) },
+        ],
+      }),
     );
   return bytes;
 }
 const sourceManifest = (space = '') =>
-  `{${space}"sourceRoot":"/physical/graph","files":[{"path":"source.ts","bytes":1,"sha256":"${'a'.repeat(64)}"}]${space}}\n`;
+  `{${space}"sourceRoot":"/physical/graph","files":[{"path":"source.ts","bytes":1,"sha256":"${'a'.repeat(64)}"},{"path":"${runtimeReporterPath}","bytes":1,"sha256":"${'b'.repeat(64)}"}]${space}}\n`;
 function addPhaseStdio(scratch, control, phase) {
   const directory = join(scratch, control, phase);
   const stdio = encodePhaseStdio('', '');
   writeFileSync(join(directory, 'stdio.bin'), stdio.bytes);
-  writeFileSync(join(directory, 'process.json'), JSON.stringify({ stdio: stdio.index }));
+  const identity = runtimeReceiptIdentity(
+    readFileSync(join(directory, 'runtime.json')),
+    JSON.parse(readFileSync(join(directory, 'source-manifest.json'), 'utf8')),
+    123,
+  );
+  const runnerReceipt =
+    JSON.stringify({
+      version: 1,
+      event: 'onTestRunEnd',
+      complete: true,
+      ...identity,
+      reporter: runtimeReporterPath,
+      unhandledErrors: 0,
+      reason: phase === 'mutated' ? 'failed' : 'passed',
+    }) + '\n';
+  writeFileSync(
+    join(directory, 'process.json'),
+    JSON.stringify({ pid: 123, stdio: stdio.index, runnerReceipt }),
+  );
 }
 function prefixCapture(options, plans, summary) {
   for (const [control, phases] of plans)
@@ -124,12 +151,8 @@ test('phase source manifests retain each exact byte stream with runtime and comp
         `example-control/${phase}/source-manifest.json`,
         addManifest(options.scratch, 'example-control', phase, sourceManifest(whitespace)),
       );
-    for (const phase of ['fixed', 'mutated', 'restored']) {
-      const directory = join(options.scratch, 'example-control', phase);
-      const stdio = encodePhaseStdio('', '');
-      writeFileSync(join(directory, 'stdio.bin'), stdio.bytes);
-      writeFileSync(join(directory, 'process.json'), JSON.stringify({ stdio: stdio.index }));
-    }
+    for (const phase of ['fixed', 'mutated', 'restored'])
+      addPhaseStdio(options.scratch, 'example-control', phase);
     writeFileSync(
       join(options.scratch, 'summary.json'),
       JSON.stringify({ complete: true, mechanisms: [{ id: 'example-control' }] }),
@@ -848,3 +871,69 @@ test('export failure becomes primary and scratch still closes when no earlier fa
     assert.equal(existsSync(options.scratch), false);
   });
 });
+
+for (const phase of ['fixed', 'mutated', 'restored'])
+  for (const defect of [
+    'missing',
+    'malformed',
+    'incomplete',
+    'errors',
+    'wrong-phase',
+    'wrong-runtime',
+    'wrong-source',
+    'wrong-process',
+    'wrong-reason',
+    'runtime-phase',
+    'reporter-unowned',
+    'read-failure',
+  ])
+    test(`retained acceptance refuses ${defect} runtime receipt at ${phase}`, () => {
+      fixture((options) => {
+        const capture = prefixCapture(
+          options,
+          [
+            [
+              'accepted',
+              [
+                ['fixed', true],
+                ['mutated', true],
+                ['restored', true],
+              ],
+            ],
+          ],
+          { complete: true, mechanisms: [{ id: 'accepted' }] },
+        );
+        exportMetadata(capture);
+        const root = join(options.directory, 'secrets');
+        assert.equal(verifyRetainedRuntimeReceipts(root).length, 3);
+        const processPath = join(root, 'accepted', phase, 'process.json');
+        const report = JSON.parse(readFileSync(processPath, 'utf8'));
+        const receipt = JSON.parse(report.runnerReceipt);
+        if (defect === 'incomplete') receipt.complete = false;
+        if (defect === 'errors') receipt.unhandledErrors = 1;
+        if (defect === 'wrong-phase') receipt.phase = 'other';
+        if (defect === 'wrong-runtime') receipt.runtimeSha256 = 'c'.repeat(64);
+        if (defect === 'wrong-source') receipt.reporterSha256 = 'c'.repeat(64);
+        if (defect === 'wrong-process') receipt.pid = 321;
+        if (defect === 'wrong-reason') receipt.reason = 'interrupted';
+        report.runnerReceipt = `${JSON.stringify(receipt)}\n`;
+        if (defect === 'missing') delete report.runnerReceipt;
+        if (defect === 'malformed') report.runnerReceipt = '{';
+        if (defect === 'read-failure') report.runnerReceiptFailure = { message: 'read failed' };
+        if (defect === 'runtime-phase' || defect === 'reporter-unowned') {
+          const runtimePath = join(root, 'accepted', phase, 'runtime.json');
+          const runtime = JSON.parse(readFileSync(runtimePath, 'utf8'));
+          if (defect === 'runtime-phase') runtime.phase = 'other';
+          else runtime.infrastructure = [];
+          const raw = JSON.stringify(runtime);
+          writeFileSync(runtimePath, raw);
+          receipt.runtimeSha256 = digest(raw);
+          report.runnerReceipt = `${JSON.stringify(receipt)}\n`;
+        }
+        writeFileSync(processPath, JSON.stringify(report));
+        assert.throws(
+          () => verifyRetainedRuntimeReceipts(root),
+          /receipt|runtime|reporter|completion|JSON|property/i,
+        );
+      });
+    });

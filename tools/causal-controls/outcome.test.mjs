@@ -1,6 +1,25 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { assertPhaseOutcome } from './outcome.mjs';
+import {
+  decodeRuntimeReceipt,
+  readRuntimeReceipt,
+  runtimeReporterPath,
+} from './runtime-receipt.mjs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { digest } from '../usage-coverage-controls/source-graph.mjs';
+import RuntimeReporter from './runtime-reporter.mjs';
 const mechanism = {
   id: 'boundary',
   target: 'named regression',
@@ -11,6 +30,7 @@ const mechanism = {
 function sample() {
   return {
     child: {
+      pid: 123,
       code: 1,
       signal: null,
       spawnError: undefined,
@@ -41,16 +61,43 @@ function sample() {
     },
   };
 }
+const receiptIdentity = { runtimeSha256: 'a'.repeat(64), reporterSha256: 'b'.repeat(64) };
+function receiptFor(control = mechanism, phase = 'mutated', pid = 123) {
+  return {
+    version: 1,
+    event: 'onTestRunEnd',
+    complete: true,
+    phase,
+    mutationId: control.id,
+    ...receiptIdentity,
+    reporter: runtimeReporterPath,
+    pid,
+    unhandledErrors: 0,
+    reason: phase === 'mutated' ? 'failed' : 'passed',
+  };
+}
+function checkOutcome(data, child, control, phase, graph) {
+  return assertPhaseOutcome(
+    data,
+    child,
+    control,
+    phase,
+    graph,
+    `${JSON.stringify(receiptFor(control, phase, child.pid))}\n`,
+    receiptIdentity,
+  );
+}
+
 test('complete named assertion failure certifies its specific removal', () => {
   const { data, child } = sample();
-  assert.doesNotThrow(() => assertPhaseOutcome(data, child, mechanism, 'mutated', '/graph'));
+  assert.doesNotThrow(() => checkOutcome(data, child, mechanism, 'mutated', '/graph'));
 });
 test('a native assertion prefix retains the same named semantic authority', () => {
   const { data, child } = sample();
   data.testResults[0].assertionResults[0].failureMessages = [
     'AssertionError [ERR_ASSERTION]: FS_CAUSAL_BOUNDARY expected refusal',
   ];
-  assert.doesNotThrow(() => assertPhaseOutcome(data, child, mechanism, 'mutated', '/graph'));
+  assert.doesNotThrow(() => checkOutcome(data, child, mechanism, 'mutated', '/graph'));
 });
 for (const messages of [
   ['Error: FS_CAUSAL_BOUNDARY'],
@@ -62,7 +109,7 @@ for (const messages of [
     const { data, child } = sample();
     data.testResults[0].assertionResults[0].failureMessages = messages;
     assert.throws(
-      () => assertPhaseOutcome(data, child, mechanism, 'mutated', '/graph'),
+      () => checkOutcome(data, child, mechanism, 'mutated', '/graph'),
       /missing declared named assertion/,
     );
   });
@@ -149,13 +196,11 @@ for (const [name, change] of [
     assert.equal(typeof change, 'function');
     if (typeof change !== 'function') throw new Error('Invalid refusal fixture');
     change(value);
-    assert.throws(() =>
-      assertPhaseOutcome(value.data, value.child, mechanism, 'mutated', '/graph'),
-    );
+    assert.throws(() => checkOutcome(value.data, value.child, mechanism, 'mutated', '/graph'));
   });
 test('a red restoration cannot be treated as an accepted removal', () => {
   const { data, child } = sample();
-  assert.throws(() => assertPhaseOutcome(data, child, mechanism, 'restored', '/graph'));
+  assert.throws(() => checkOutcome(data, child, mechanism, 'restored', '/graph'));
 });
 test('shared helper requires named evidence at both actual consumers', () => {
   const { data, child } = sample();
@@ -169,7 +214,7 @@ test('shared helper requires named evidence at both actual consumers', () => {
   };
   data.testResults[0].assertionResults[0].fullName = 'named regression tool';
   assert.throws(
-    () => assertPhaseOutcome(data, child, control, 'mutated', '/graph'),
+    () => checkOutcome(data, child, control, 'mutated', '/graph'),
     /missing additional named assertion/,
   );
 });
@@ -190,7 +235,7 @@ for (const additionalFails of [true, false])
       status: additionalFails ? 'failed' : 'passed',
       failureMessages: additionalFails ? ['AssertionError: FS_CAUSAL_CALLER expected success'] : [],
     });
-    const check = () => assertPhaseOutcome(data, child, control, 'mutated', '/graph');
+    const check = () => checkOutcome(data, child, control, 'mutated', '/graph');
     if (additionalFails) assert.doesNotThrow(check);
     else assert.throws(check, /missing additional named assertion FS_CAUSAL_CALLER/);
   });
@@ -210,7 +255,7 @@ test('an additional witness needs its own assertion rather than a marker-bearing
     failureMessages: ['Error: FS_CAUSAL_CALLER'],
   });
   assert.throws(
-    () => assertPhaseOutcome(data, child, control, 'mutated', '/graph'),
+    () => checkOutcome(data, child, control, 'mutated', '/graph'),
     /missing additional named assertion FS_CAUSAL_CALLER/,
   );
 });
@@ -227,7 +272,7 @@ for (const port of ['tool', 'save_to'])
     };
     data.testResults[0].assertionResults[0].fullName = `named regression ${port}`;
     assert.throws(
-      () => assertPhaseOutcome(data, child, control, 'mutated', '/graph'),
+      () => checkOutcome(data, child, control, 'mutated', '/graph'),
       /additional named assertion/,
     );
   });
@@ -242,10 +287,7 @@ test('real delete declaration cannot certify a store red without GC continuation
   ]);
   const { data, child } = sample();
   const control = { ...mechanism, witnesses: deletion.witnesses };
-  assert.throws(
-    () => assertPhaseOutcome(data, child, control, 'mutated', '/graph'),
-    /GC_CONTINUATION/,
-  );
+  assert.throws(() => checkOutcome(data, child, control, 'mutated', '/graph'), /GC_CONTINUATION/);
 });
 for (const kind of ['todo', 'duplicate', 'spawn-error'])
   test(`additional incomplete evidence refusal: ${kind}`, () => {
@@ -260,7 +302,7 @@ for (const kind of ['todo', 'duplicate', 'spawn-error'])
     }
     if (kind === 'spawn-error') child.spawnError = { message: 'spawn refused' };
     assert.throws(() =>
-      assertPhaseOutcome(
+      checkOutcome(
         data,
         child,
         { ...mechanism, expectedTests: kind === 'duplicate' ? 2 : 1 },
@@ -268,4 +310,279 @@ for (const kind of ['todo', 'duplicate', 'spawn-error'])
         '/graph',
       ),
     );
+  });
+
+for (const [label, change] of [
+  [
+    'nonzero runner errors',
+    (receipt) => {
+      receipt.unhandledErrors = 1;
+    },
+  ],
+  [
+    'negative count',
+    (receipt) => {
+      receipt.unhandledErrors = -1;
+    },
+  ],
+  [
+    'fractional count',
+    (receipt) => {
+      receipt.unhandledErrors = 0.5;
+    },
+  ],
+  [
+    'string count',
+    (receipt) => {
+      receipt.unhandledErrors = '0';
+    },
+  ],
+  [
+    'null count',
+    (receipt) => {
+      receipt.unhandledErrors = null;
+    },
+  ],
+  [
+    'missing count',
+    (receipt) => {
+      delete receipt.unhandledErrors;
+    },
+  ],
+  [
+    'incomplete callback',
+    (receipt) => {
+      receipt.complete = false;
+    },
+  ],
+  [
+    'wrong phase',
+    (receipt) => {
+      receipt.phase = 'fixed';
+    },
+  ],
+  [
+    'wrong control',
+    (receipt) => {
+      receipt.mutationId = 'other';
+    },
+  ],
+  [
+    'wrong process',
+    (receipt) => {
+      receipt.pid = 321;
+    },
+  ],
+  [
+    'wrong runtime',
+    (receipt) => {
+      receipt.runtimeSha256 = 'c'.repeat(64);
+    },
+  ],
+  [
+    'wrong source',
+    (receipt) => {
+      receipt.reporterSha256 = 'c'.repeat(64);
+    },
+  ],
+  [
+    'wrong reporter',
+    (receipt) => {
+      receipt.reporter = 'borrowed.mjs';
+    },
+  ],
+  [
+    'wrong callback',
+    (receipt) => {
+      receipt.event = 'onFinished';
+    },
+  ],
+  [
+    'wrong version',
+    (receipt) => {
+      receipt.version = 2;
+    },
+  ],
+  [
+    'interrupted completion',
+    (receipt) => {
+      receipt.reason = 'interrupted';
+    },
+  ],
+  [
+    'nonterminal reason',
+    (receipt) => {
+      receipt.reason = 'running';
+    },
+  ],
+  [
+    'inconsistent reason',
+    (receipt) => {
+      receipt.reason = 'passed';
+    },
+  ],
+  [
+    'additional field',
+    (receipt) => {
+      receipt.extra = true;
+    },
+  ],
+])
+  test(`structured runner receipt refuses ${label}`, () => {
+    const { data, child } = sample();
+    const receipt = receiptFor();
+    change(receipt);
+    assert.throws(() =>
+      assertPhaseOutcome(
+        data,
+        child,
+        mechanism,
+        'mutated',
+        '/graph',
+        `${JSON.stringify(receipt)}\n`,
+        receiptIdentity,
+      ),
+    );
+  });
+for (const raw of [
+  undefined,
+  null,
+  '',
+  '{',
+  '{}',
+  'null',
+  '[]',
+  JSON.stringify(receiptFor()),
+  JSON.stringify(receiptFor()).replace(
+    '"unhandledErrors":0',
+    '"unhandledErrors":1,"unhandledErrors":0',
+  ) + '\n',
+  JSON.stringify(receiptFor()) + JSON.stringify(receiptFor()),
+  ' '.repeat(4097),
+])
+  test(`structured runner receipt refuses absent/malformed bytes ${String(raw).slice(0, 40)}`, () => {
+    const { data, child } = sample();
+    assert.throws(() =>
+      assertPhaseOutcome(data, child, mechanism, 'mutated', '/graph', raw, receiptIdentity),
+    );
+  });
+
+test('structured zero-error receipts retain fixed/restored positive authority', () => {
+  for (const phase of ['fixed', 'restored']) {
+    const { data, child } = sample();
+    child.code = 0;
+    data.numPassedTests = 1;
+    data.numFailedTests = 0;
+    data.testResults[0].assertionResults[0].status = 'passed';
+    data.testResults[0].assertionResults[0].failureMessages = [];
+    assert.doesNotThrow(() => checkOutcome(data, child, mechanism, phase, '/graph'));
+    const receipt = receiptFor(mechanism, phase);
+    receipt.unhandledErrors = 1;
+    assert.throws(
+      () =>
+        assertPhaseOutcome(
+          data,
+          child,
+          mechanism,
+          phase,
+          '/graph',
+          `${JSON.stringify(receipt)}\n`,
+          receiptIdentity,
+        ),
+      /Unhandled runtime error/,
+    );
+  }
+});
+
+test('runtime receipt reads require bounded physical UTF-8 bytes', () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'causal-receipt-')));
+  try {
+    const path = join(root, 'receipt');
+    assert.throws(() => readRuntimeReceipt(path));
+    const raw = `${JSON.stringify(receiptFor())}\n`;
+    writeFileSync(path, raw);
+    assert.equal(readRuntimeReceipt(path), raw);
+    const redirected = join(root, 'redirected');
+    symlinkSync(path, redirected);
+    assert.throws(() => readRuntimeReceipt(redirected), /redirected/);
+    writeFileSync(path, ' '.repeat(4097));
+    assert.throws(() => readRuntimeReceipt(path), /byte bound/);
+    writeFileSync(path, new Uint8Array([255]));
+    assert.throws(() => readRuntimeReceipt(path), /UTF-8/);
+    assert.throws(
+      () =>
+        decodeRuntimeReceipt(raw, {
+          ...receiptIdentity,
+          phase: 'mutated',
+          mutationId: mechanism.id,
+          pid: 321,
+        }),
+      /wrong process/,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+for (const defect of [
+  'never-started',
+  'duplicate-end',
+  'duplicate-start',
+  'invalid-errors',
+  'invalid-reason',
+  'changed-runtime',
+  'write-failure',
+])
+  test(`owned reporter cannot retain a stale success after ${defect}`, () => {
+    const directory = realpathSync(mkdtempSync(join(tmpdir(), 'causal-reporter-lifecycle-')));
+    const previous = process.env.RELAVIUM_USAGE_RUNTIME;
+    try {
+      const sourceRoot = realpathSync(fileURLToPath(new URL('../../', import.meta.url)));
+      const source = readFileSync(join(sourceRoot, runtimeReporterPath));
+      const manifestPath = join(directory, 'manifest.json');
+      const manifest = JSON.stringify({
+        sourceRoot,
+        files: [{ path: runtimeReporterPath, bytes: source.length, sha256: digest(source) }],
+      });
+      writeFileSync(manifestPath, manifest);
+      const runtimePath = join(directory, 'runtime.json');
+      writeFileSync(
+        runtimePath,
+        JSON.stringify({
+          phase: 'mutated',
+          mutationId: mechanism.id,
+          manifestPath,
+          manifestSha256: digest(manifest),
+        }),
+      );
+      process.env.RELAVIUM_USAGE_RUNTIME = runtimePath;
+      const reporter = new RuntimeReporter();
+      reporter.onInit();
+      const receiptPath = join(directory, 'runner-completion.receipt');
+      if (defect !== 'never-started') reporter.onTestRunStart();
+      if (defect.startsWith('duplicate')) {
+        reporter.onTestRunEnd([], [], 'failed');
+        assert.equal(JSON.parse(readRuntimeReceipt(receiptPath)).complete, true);
+      }
+      if (defect === 'changed-runtime') writeFileSync(runtimePath, '{}');
+      if (defect === 'write-failure') {
+        rmSync(receiptPath);
+        mkdirSync(receiptPath);
+      }
+      assert.throws(() =>
+        defect === 'duplicate-start'
+          ? reporter.onTestRunStart()
+          : reporter.onTestRunEnd(
+              [],
+              defect === 'invalid-errors' ? undefined : [],
+              defect === 'invalid-reason' ? 'running' : 'failed',
+            ),
+      );
+      if (defect === 'write-failure') assert.throws(() => readRuntimeReceipt(receiptPath));
+      else assert.deepEqual(JSON.parse(readRuntimeReceipt(receiptPath)), { complete: false });
+    } finally {
+      if (previous === undefined) delete process.env.RELAVIUM_USAGE_RUNTIME;
+      else process.env.RELAVIUM_USAGE_RUNTIME = previous;
+      rmSync(directory, { recursive: true, force: true });
+    }
   });

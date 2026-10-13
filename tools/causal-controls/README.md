@@ -14,6 +14,28 @@ and that child's pinned dependency-load receipts. Setup/import failures, skips,
 empty inventories, timeouts, signals, output overflow, plain marker-bearing runtime
 errors and unjoined children cannot establish removal. Additional consumer witnesses
 are declarative, including both ancestor ports and deletion GC.
+Each phase also requires a completed, zero-error receipt from the owned
+[runtime reporter](runtime-reporter.mjs). It uses installed Vitest 3.2.6's
+`onTestRunEnd(testModules, unhandledErrors, reason)` callback; the JSON reporter
+alone omits runner-level errors. The receipt's exact fields are `version: 1`,
+`event: "onTestRunEnd"`, `complete: true`, `phase`, `mutationId`, `runtimeSha256`,
+`reporter`, `reporterSha256`, `pid`, `unhandledErrors` (a nonnegative safe integer),
+and `reason`. Acceptance requires count zero and reason `passed` for fixed/restored
+or `failed` for removal, alongside every existing semantic witness. A missing,
+malformed, incomplete, oversized, interrupted or mismatched receipt refuses.
+The reporter runs from the copied graph, checks its own source pin, and is named
+in both the source manifest and runtime infrastructure. Its receipt joins the
+exact runtime bytes, phase/control, reporter source and spawned Vitest PID.
+Stderr checks remain additional diagnostics; they supply no zero-error authority.
+
+The reporter creates an incomplete receipt before the run and invalidates it before
+each lifecycle transition. Its synchronous terminal write is the final callback
+operation; a duplicate completion, failed check or incomplete write cannot become
+completed evidence. This records Vitest's runner error list after its awaited worker
+tests, hooks and environment teardown. The generated configuration has no global
+setup, custom environment or coverage reporter. The receipt does not claim to
+observe arbitrary errors after Vitest's callback during subsequent server/process
+close; the existing process join, timeout, signal and stderr checks still apply.
 Before the first fixed phase, the coordinator checks every selected anchor against
 the copied, pinned source graph. A stale later declaration therefore stops the
 whole selection without completing earlier mechanisms; mutation-time exact checks
@@ -45,7 +67,18 @@ original UTF-8 stdout and stderr log bytes; `process.json` retains each stream's
 length and SHA-256. The standalone verifier reconstructs both streams, checks the
 lengths, hashes and decoded process-output bound, and refuses a missing, redirected,
 truncated or overlong envelope. This replaces two per-phase log files without
-diluting the unchanged 2,000-file or 64-MiB retained ceilings. Each evaluation
+diluting the unchanged 2,000-file or 64-MiB retained ceilings.
+The runner receipt has a separate 4,096-byte physical UTF-8 input cap. Its exact
+text is embedded as `runnerReceipt` in the existing `process.json`; a read failure
+is retained there as `runnerReceiptFailure` and refuses the live phase. The transient
+`runner-completion.receipt` is excluded from export, adding no retained file per
+phase. `verifyRetainedRuntimeReceipts` reconstructs the source manifests and checks
+every accepted fixed/removal/restored receipt against its runtime/source/PID,
+requiring zero errors and the matching terminal reason. Export invokes this verifier.
+A refused phase can retain a nonzero or invalid receipt for diagnosis without being
+included in accepted mechanisms. Older artifacts without receipts cannot satisfy this
+verification and are not relabeled as corrected captures.
+Each evaluation
 archive index retains every original
 receipt name, PID/thread/stage record byte, offset, length and digest. Its bounded
 verifier checks paths, segment continuity, counts, hashes, and decompression length;
@@ -103,6 +136,13 @@ owned tooling fixtures selected only by this guard, outside product/workspace
 inventories. A third secrets capture forces export refusal after the import failure
 and verifies primary-failure precedence, scratch cleanup and source restoration.
 Failure restoration receipts remain in the coordinator summary.
+Three further real coordinator captures each accept a clean semantic
+fixed/removal/restored control, then refuse the same named assertion contaminated
+by an independent unhandled Promise rejection, uncaught exception, or `afterAll`
+rejection. These fixtures install no custom process error listener. They verify the
+contaminated runner count, retained accepted receipts, source restoration and scratch
+cleanup. Receipt unit controls separately refuse absent/corrupt/incomplete records,
+identity drift, invalid counts/reasons, and invalid reporter lifecycle transitions.
 Additional bounded negative captures prove that a stale second anchor starts no
 phase and that both effective case and configured hook overrides above 15 seconds
 fail before they can be treated as causal evidence.
