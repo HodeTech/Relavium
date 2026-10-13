@@ -570,7 +570,7 @@ const SENSITIVE_READ_BASENAMES: ReadonlySet<string> = new Set([
 /**
  * Whether an absolute path is a secret/credential store that must never be read into the model's context (and
  * thence to the provider): under a `.ssh`/`.relavium`/`.aws` segment, a `.env` / `.env.*` dotenv file, a
- * `.docker/config.json` (registry auth), a repo-local `.git/config` (embeds remote-URL credentials), or a
+ * `.docker/config.json` (registry auth), a repo-local `.git/config` or `config.worktree` (remote-URL credentials), or a
  * credential dotfile. The read-side confidentiality analogue of {@link isProtectedPath}; exported for direct
  * testing. Folds each component like the write floor (NTFS ADS / case / trailing dot-space). This floor is the
  * one control the CLI `@`-mention read (2.5.D / [ADR-0061](../../../../../docs/decisions/0061-cli-input-layer-file-injection-and-shell-escape.md))
@@ -588,11 +588,11 @@ export function isSensitiveReadPath(absoluteTarget: string): boolean {
   if (base === '.env' || base.startsWith('.env.')) return true;
   // Docker registry auth (`~/.docker/config.json` or a project `.docker/config.json`) — base64-embedded creds.
   if (base === 'config.json' && folded.includes('.docker')) return true;
-  // A git `config` embeds remote-URL credentials: catch it under a `.git` dir (repo / submodule `.git/modules/*`
-  // / worktree) AND under a bare-repo dir (`myrepo.git/config`) — any segment ENDING in `.git` with a `config`
-  // basename. Over-denying a stray `x.git/config` that isn't a repo is the safe direction for a read floor.
+  // Git `config` and `config.worktree` can embed remote-URL credentials: catch either under a `.git` dir
+  // (repo / submodule / linked worktree) or a bare-repo dir. Over-denying a stray `x.git/config.worktree`
+  // that isn't a repo is the safe direction for a read floor.
   if (
-    base === 'config' &&
+    (base === 'config' || base === 'config.worktree') &&
     folded.some((segment) => segment === '.git' || segment.endsWith('.git'))
   ) {
     return true;
@@ -906,7 +906,7 @@ async function assertNotSymlink(target: string): Promise<void> {
   }
 }
 
-/** The path of an in-jail file, made workspace-relative for the model-facing result (never an absolute leak). */
+/** A permitted file's workspace-relative path, or its canonical absolute path across Windows drives. */
 function relWorkspace(config: NodeFsCapabilityConfig, real: string): string {
   const rel = relative(fsPolicyWorkspace(config.pathPolicy), real);
   return isAbsolute(rel) ? real : rel || '.';

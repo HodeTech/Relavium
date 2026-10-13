@@ -721,7 +721,14 @@ describe('createNodeFsCapability — sensitive-read floor (credential/secret sto
   });
 
   it('refuses a `.git/config` — repo-local, a submodule `.git/modules/*/config`, and a bare `*.git/config`', async () => {
-    for (const rel of ['.git/config', '.git/modules/sub/config', 'myrepo.git/config']) {
+    for (const rel of [
+      '.git/config',
+      '.git/modules/sub/config',
+      'myrepo.git/config',
+      '.git/config.worktree',
+      '.git/worktrees/linked/config.worktree',
+      'myrepo.git/config.worktree',
+    ]) {
       await mkdir(join(workspace, dirname(rel)), { recursive: true });
       await writeFile(join(workspace, rel), '[remote]\n url = https://u:tok@h/r');
       await expect(sandboxed().readFile(rel, {})).rejects.toBeInstanceOf(FsScopeDeniedError);
@@ -729,6 +736,10 @@ describe('createNodeFsCapability — sensitive-read floor (credential/secret sto
     // A file named `config` NOT under any git dir is not a credential store — read is allowed.
     await writeFile(join(workspace, 'config'), 'plain-config');
     expect((await sandboxed().readFile('config', {})).content).toBe('plain-config');
+    for (const rel of ['config.worktree', '.git/config.worktree.txt']) {
+      await writeFile(join(workspace, rel), 'ordinary-config');
+      expect((await sandboxed().readFile(rel, {})).content).toBe('ordinary-config');
+    }
   });
 
   it('refuses every credential dotfile (.gitconfig / .git-credentials / .netrc / .npmrc / .pypirc / .pgpass / .envrc / .dockercfg) and `.relavium/`', async () => {

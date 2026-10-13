@@ -345,6 +345,68 @@ it.each([
   expect(isProtectedPath(path)).toBe(true);
 });
 
+describe.each([
+  { tier: 'sandboxed', location: 'workspace' },
+  { tier: 'project', location: 'workspace' },
+  { tier: 'full', location: 'workspace' },
+  { tier: 'project', location: 'grant' },
+  { tier: 'full', location: 'grant' },
+] as const)('git worktree credential floor in $tier/$location', ({ tier, location }) => {
+  it('refuses direct and aliased reads, mentions and discovery before credential byte I/O', async () => {
+    const anchor = location === 'workspace' ? workspace : grant;
+    const secret = join(anchor, '.git', 'worktrees', 'linked', 'config.worktree');
+    const canonicalAlias = join(anchor, 'ordinary-link.txt');
+    const lexicalAlias = join(anchor, '.git', 'config.worktree');
+    const benign = join(anchor, 'config.worktree');
+    mkdirSync(dirname(secret), { recursive: true });
+    writeFileSync(secret, 'synthetic-worktree-credential');
+    writeFileSync(benign, 'ordinary config');
+    symlinkSync(secret, canonicalAlias, 'file');
+    symlinkSync(benign, lexicalAlias, 'file');
+    const fs = capability(
+      selectInvocationFsPolicy(admitInvocationFsGrants([grant]), workspace, undefined),
+      tier,
+    );
+    const mention = createMentionReader(fs);
+    for (const path of [secret, canonicalAlias, lexicalAlias]) {
+      await expect(fs.readFile(path, {})).rejects.toThrow(/credential/);
+      await expect(mention.read(path)).rejects.toThrow(/credential/);
+      await expect(fs.writeFile(path, 'replacement', {})).rejects.toThrow(
+        /protected|credential|symlink/,
+      );
+    }
+    expect(observed.open).not.toHaveBeenCalled();
+    const names = (await fs.listDirectory(anchor, { recursive: true })).entries.map(
+      (entry) => entry.name,
+    );
+    for (const path of [
+      '.git/worktrees/linked/config.worktree',
+      'ordinary-link.txt',
+      '.git/config.worktree',
+    ])
+      expect(names).not.toContain(path);
+    expect(names).toContain('config.worktree');
+    expect((await mention.list(anchor)).map((entry) => entry.name)).not.toContain(
+      'ordinary-link.txt',
+    );
+    expect((await fs.readFile(join(anchor, '**', '*'), { glob: true })).content).not.toContain(
+      'synthetic-worktree-credential',
+    );
+    expect(observed.open.mock.calls.map(([path]) => String(path))).not.toContain(secret);
+    expect((await fs.readFile(benign, {})).content).toBe('ordinary config');
+    expect(readFileSync(secret, 'utf8')).toBe('synthetic-worktree-credential');
+  });
+});
+
+it.each([
+  'C:\\repo\\.GIT\\CONFIG.WORKTREE',
+  'C:\\repo\\.git\\config.worktree. ',
+  'C:\\repo\\.git\\config.worktree::$DATA',
+  'C:\\repo.git\\worktrees\\linked\\config.worktree',
+])('folds git worktree credential spelling: %s', (path) => {
+  expect(isSensitiveReadPath(path)).toBe(true);
+});
+
 describe('exact private host scratch descriptors (no production allocator)', () => {
   it.each(['tmp', 'artifacts'])(
     'permits only the issued %s tree through both jailed factory tiers',

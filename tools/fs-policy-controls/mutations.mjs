@@ -37,7 +37,7 @@ export const mutations = [
   control(
     'ENV',
     'packages/shared/src/declared-env.ts',
-    "  'KUBECONFIG',\n  'AWS_CONFIG_FILE',\n  'AWS_SHARED_CREDENTIALS_FILE',\n  'AWS_PROFILE',\n  'GOOGLE_APPLICATION_CREDENTIALS',\n  'AZURE_CONFIG_DIR',\n  'AZURE_AUTH_LOCATION',\n  'CLOUDSDK_CONFIG',\n  'CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE',\n  'TF_CLI_CONFIG_FILE',",
+    "  'KUBECONFIG',\n  'AWS_CONFIG_FILE',\n  'AWS_SHARED_CREDENTIALS_FILE',\n  'AWS_PROFILE',\n  'AWS_DEFAULT_PROFILE',\n  'DOCKER_CONFIG',\n  'GOOGLE_APPLICATION_CREDENTIALS',\n  'AZURE_CONFIG_DIR',\n  'AZURE_AUTH_LOCATION',\n  'CLOUDSDK_CONFIG',\n  'CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE',\n  'TF_CLI_CONFIG_FILE',",
     '',
   ),
   control(
@@ -130,6 +130,14 @@ mutations.push(
 
 const floorCases = ['tools/fs-policy-controls/floor.cases.mjs'];
 mutations.push(
+  control(
+    'GIT_WORKTREE_CONFIG',
+    'apps/cli/src/engine/tool-host/fs.ts',
+    "(base === 'config' || base === 'config.worktree') &&",
+    "base === 'config' &&",
+    'FS_CAUSAL_GIT_WORKTREE_CONFIG',
+    floorCases,
+  ),
   control(
     'CREDENTIAL_DIR',
     'apps/cli/src/engine/tool-host/fs.ts',
@@ -243,7 +251,7 @@ for (const mutation of mutations) {
     file === deleteCases[0]
       ? 12
       : file === floorCases[0]
-        ? 11
+        ? 14
         : file === workspaceCases
           ? 8
           : file === cooperativeCases
@@ -254,7 +262,9 @@ for (const mutation of mutations) {
                 ? 8
                 : file === nativeRootCases
                   ? 1
-                  : 19;
+                  : file === cases
+                    ? 21
+                    : 19;
 }
 
 // Both real consumers are mandatory for each shared-ancestor mechanism.

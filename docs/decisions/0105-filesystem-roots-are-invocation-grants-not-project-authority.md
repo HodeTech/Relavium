@@ -263,3 +263,16 @@ joins the per-item disposition, two NEW clean complete whole-wave review rounds,
 security sittings, exact-source gates and preserved limits. Earlier dated pending
 checkpoints remain historical. This landing does not claim a merge, future header
 activation, full M/N lifecycle or removal of approved residuals.
+
+### Git worktree and identity-selector floor correction — 2026-10-13
+
+The subsequent PR #94 review found equivalent credential/configuration selectors
+missing from the existing shared floor. The
+[canonical filesystem contract](../reference/shared-core/built-in-tools.md#cli-authority-and-floors)
+now includes Git worktree configuration alongside repository configuration, while
+the one shared declared-environment predicate includes the additional AWS and Docker
+selectors. This restores the accepted credential-selection boundary without widening
+invocation authority or refusing unrelated filename prefixes. Permanent native and
+folded-path controls distinguish credential targets from ordinary lookalikes; a
+dedicated worktree-config removal and the shared environment removal require the
+new refusals. Source review and current-head publication remain separate gates.

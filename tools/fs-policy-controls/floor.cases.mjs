@@ -122,6 +122,33 @@ for (const [kind, paths] of [
     expect(readFileSync(secret, 'utf8')).toBe('synthetic-private');
   });
 }
+it.each([
+  '.git/config.worktree',
+  '.git/worktrees/linked/config.worktree',
+  'bare.git/config.worktree',
+])('FS_CAUSAL_GIT_WORKTREE_CONFIG %s', async (path) => {
+  const secret = join(root, path);
+  mkdirSync(dirname(secret), { recursive: true });
+  writeFileSync(secret, 'synthetic-worktree-private');
+  writeFileSync(join(root, 'config.worktree'), 'ordinary');
+  const host = createNodeFsCapability({ tier: 'full', workspaceDir: root, readOnly: false });
+  await refuse(host.readFile(path, {}), 'FS_CAUSAL_GIT_WORKTREE_CONFIG');
+  await refuse(createMentionReader(host).read(path), 'FS_CAUSAL_GIT_WORKTREE_CONFIG');
+  expect(
+    (await host.listDirectory('.', { recursive: true })).entries.map((entry) => entry.name),
+    'FS_CAUSAL_GIT_WORKTREE_CONFIG',
+  ).not.toContain(path);
+  expect(
+    (await host.readFile('**/*', { glob: true })).content,
+    'FS_CAUSAL_GIT_WORKTREE_CONFIG',
+  ).not.toContain('synthetic-worktree-private');
+  expect(
+    state.open.mock.calls.map(([target]) => String(target)),
+    'FS_CAUSAL_GIT_WORKTREE_CONFIG',
+  ).not.toContain(secret);
+  expect((await host.readFile('config.worktree', {})).content).toBe('ordinary');
+});
+
 it('FS_CAUSAL_SAVE_DRIVE_PREFIX', async () => {
   await refuse(
     createFilesystemMediaWrite(root)('C:relative.txt', Buffer.from('x')),

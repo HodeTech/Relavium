@@ -64,7 +64,7 @@ describe('isForbiddenDeclaredEnvKey', () => {
       expect(isForbiddenDeclaredEnvKey(`${prefix}ANYTHING`), prefix).toBe(true);
     }
     // The counts are the part that makes a DELETION red rather than merely unasserted.
-    expect(forbiddenDeclaredEnvNames()).toHaveLength(41);
+    expect(forbiddenDeclaredEnvNames()).toHaveLength(43);
     expect(forbiddenDeclaredEnvPrefixes()).toHaveLength(6);
   });
 
@@ -114,6 +114,8 @@ describe('cloud credential redirection uses the existing shared authority (ADR-0
     'AWS_CONFIG_FILE',
     'AWS_SHARED_CREDENTIALS_FILE',
     'AWS_PROFILE',
+    'AWS_DEFAULT_PROFILE',
+    'DOCKER_CONFIG',
     'GOOGLE_APPLICATION_CREDENTIALS',
     'AZURE_CONFIG_DIR',
     'AZURE_AUTH_LOCATION',
