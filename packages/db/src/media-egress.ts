@@ -124,8 +124,11 @@ export async function fetchMediaBytes(
       { ...options, signal: controller.signal },
       deps,
     )) {
-      chunks.push(chunk.slice());
-      length += chunk.length;
+      // Typed-array construction owns the bytes without calling Buffer.slice or
+      // a producer's slice/iterator hooks before the next pull can reuse them.
+      const owned = new Uint8Array(chunk);
+      chunks.push(owned);
+      length += owned.length;
     }
     const bytes = new Uint8Array(length);
     let offset = 0;
