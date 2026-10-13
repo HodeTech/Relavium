@@ -22,8 +22,8 @@ Turborepo + pnpm monorepo (`packages/shared`, `packages/llm`, `packages/core`,
 **cloud** (BYOK-central, Phase 2), and **managed** (Relavium's own keys via a metered egress
 gateway; engine stays local, Phase 2) — split across build phase 5 (managed inference) and
 phase 6 (cloud execution + portal); the engine is identical across all three (ADR-0012..0015).
-**Status: Phase 1 is complete; Phase 2 (CLI) is feature-complete (v0.1.1 release cut, publish
-pending); Phase 2.5 (CLI Consolidation) is complete (M2.5-4, 2026-07-08); Phase 2.6
+**Status: Phase 1 is complete; Phase 2 (CLI) is feature-complete (published as v0.1.1);
+Phase 2.5 (CLI Consolidation) is complete (M2.5-4, 2026-07-08); Phase 2.6
 (Conversational Authoring and the First-Class CLI) is in progress, with an interlude —
 Phase 2.6.5 (Core reliability remediation) — completed between remediation Waves 1 and 2:
 49 of 51 items closed on `main`, with approved deferrals retained; W8 merged 2026-10-11 in PR #92 (`CR-96` and `CR-97` were opened 2026-09-14, `CR-98` on 2026-09-18; `W7` merged to `main` on 2026-10-10 (PR #90), with ADR-0095–ADR-0103
@@ -84,6 +84,16 @@ joins source acceptance; [PR #94](https://github.com/HodeTech/Relavium/pull/94)
 records current corrected-head full CI/coverage/platform and complete physical
 controls separately. Their actual success is required before merge. Original
 `395fbf95` artifacts retain their historical scope. Wave 3 is subsequent work.
+
+**PR #94 lower-priority corrections — 2026-10-13:** all twelve verified Low
+items from the subsequent 305-path review are implemented in three increments.
+The [lower-priority correction register](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#pr-94-lower-priority-review-corrections--2026-10-13)
+records every disposition and separately attributes selected controls, broad gates
+and historical captures. Each increment requires two NEW complete clean cumulative
+source rounds after its final fix; PR #94 owns the actual final reviewed-head
+acceptance and refreshed CI/coverage/platform/physical-evidence publication.
+No new ADR, deferral, provider request, key, billing action or user decision is
+introduced. Wave 3 follows these corrections; publication remains separate from merge.
 
 See [docs/roadmap/current.md](docs/roadmap/current.md) for live status.
 

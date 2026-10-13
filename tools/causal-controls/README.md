@@ -112,9 +112,12 @@ or its exact declaration inventory; independent acceptance audit still supplies
 those joins. Raw manifest input,
 index assembly and decompression have independent 64-MiB, 2,000-file and
 1,024-byte-path bounds; the unchanged whole-export 2,000-file/64-MiB limit also
-counts the archive, index and final `export.json`. A complete 99-control filesystem
-matrix projects 1,789 retained files: 99 × 21 + 5 minus 297 individual manifests
-plus two archive records. This is capacity arithmetic, not a completed capture.
+counts the archive, index and final `export.json`. The historical 99-control
+filesystem projection was 1,789 retained files: 99 × 21 + 5 minus 297 individual
+manifests plus two archive records. The current 109-control /327-phase declaration
+projects 1,969 files: 109 × 18 + 7, with unchanged physical limits. These are
+capacity calculations, not measured exports or completed captures; actual source
+heads, inventories and byte counts belong to each retained evidence record.
 Complete
 case inventories remain in each Vitest result and phase summary; the duplicate
 control-only `cases.json` is omitted. Export excludes graph/cache/home and unrelated

@@ -3154,8 +3154,10 @@ Root independently joins every phase's source/runtime/process/reporter records,
 restoration, installed dependency bytes and unchanged physical bounds. Each new
 integration reviewer covers the entire same cumulative delta and independently
 probes legal and malformed continued-packet boundaries. Full product lint/typecheck,
-workspace tests and build pass at `0269a78a`; five of eleven test tasks and five
-of six build tasks are cache hits, not new executions. Their scope is source
+workspace tests and build pass at `0269a78a`; all six actual test tasks execute
+freshly. The five cache hits among eleven tasks in that test graph are prerequisite
+builds already executed in its preceding zero-cache lint/typecheck/build graph.
+The separate final build graph reports five of six tasks cached. Their scope is source
 acceptance; final corrected-head full-family/coverage/platform evidence is separate.
 
 R94-3 adds 54 permanent cases: 25 verifier, 24 actual-store and five engine/CLI
@@ -3236,3 +3238,54 @@ related foreign-close assertion, with three completed zero-error runner receipts
 It is not complete-family acceptance. Two NEW independent complete cumulative
 correction rounds and fresh final publication gates, including the entire
 filesystem matrix, must join at the final source head in PR #94.
+
+#### PR #94 lower-priority review corrections — 2026-10-13
+
+The subsequent systematic review covers all 305 paths at `798192f2` against
+`664336c2` and reports twelve Low findings plus three informational notes. Every
+verified Low is addressed in three increments; none is deferred. The original
+review scope and its remote-evidence limits are retained, rather than treating
+that review as a new execution of the previously published CI artifacts.
+
+| Increment | Report items | Correction and permanent evidence |
+| --- | --- | --- |
+| 1 — security floor and CLI refusals | 1, 2, 3, 9, 10 | Extend the existing Git credential floor to exact `config.worktree` and the shared declared-environment floor to AWS/Docker configuration aliases; correct the Windows path-display comment. Fixed session-persistence exit-2 diagnostics preserve row privacy and refuse before resume/export construction. Create/import notices follow successful writes. Real dirty-row and failed-write controls, lexical/canonical/discovery controls and separate worktree/environment removals pin the boundaries. |
+| 2 — media conformance and reachable contracts | 4, 5, 6, 7 | Refuse FLAC partition equality and mandatory metadata violations, with independent fixed/LPC/Rice/escape/wasted-bit vectors and the published RFC Appendix D.2.1 fixture. The complete 138-case cohort reaches verifier, both real stores, legacy revalidation and engine/CLI publication. Remove only the unreachable retention variant and consumer cleanup branches; preserve the shared helper's native close-only failure. Installed-SDK selector tests pin 67 cases and the canonical contract states exactly which defined overrides refuse. |
+| 3 — CI and live documentation | 11, 12, 14 | Distinguish historical 99-control capacity arithmetic from the current 109-control /327-phase declaration and 1,969-file projection under unchanged bounds. The Windows headless smoke requires the canonical EOF exit code as well as absence of raw-mode failures; permanent controls execute its actual workflow body. Root guides and the live roadmap agree with the already published npm v0.1.1. |
+
+Increment 1 is source-accepted at `d98e18c2` after two NEW complete clean cumulative
+rounds over 19 paths /33 hunks. Increment 2 is source-accepted at `70eafa12` after
+two NEW complete clean cumulative rounds over 32 paths /80 hunks. These scoped
+reviews cover the entire correction delta from `798192f2`; they are not another
+whole-PR review. Increment 3 and the final combined source receive the same
+commit/review/fix discipline. The PR #94 publication record owns their actual
+reviewed-head acceptance and fresh final broad/platform/physical-evidence gates.
+No earlier-head success, selected control or capacity projection substitutes for
+those gates.
+
+The first Step 2 cache-removal capture correctly refused an introduced test-cleanup
+error: a failing identity assertion could abandon the new fixture's rejecting
+native acknowledgement. `70eafa12` observes that acknowledgement before assertions
+and joins it in `finally`. No product mechanism, test inventory or zero-error gate
+was weakened. All eighteen affected selected mechanisms then passed 54 phases /
+2,847 executions with 54 completed zero-error receipts at that head. They remain
+selected evidence (`complete: false`), separate from the final complete family.
+
+The Step 1/2 author logs execute all six actual workspace test tasks freshly. Their
+five cache hits in the eleven-task test graph are prerequisite builds already
+executed in the preceding zero-cache lint/typecheck/build graph; the final CLI
+build also executes freshly. Step 2's broad 569-file /12,635-pass /13-skip run
+precedes the final test-only acknowledgement correction; focused tests and selected
+controls verify the latter, and final broad gates retain their own exact head.
+
+Informational item 8 is a pre-existing narrowing revalidated by the event bus;
+item 13 proposes coordinated CI-guard removal without demonstrating a defect;
+item 15 is the accepted ADR-0108 interim legacy-read/runtime-write-refusal design.
+They add no new implementation or deferral. Accepted decisions, format profiles,
+permission authority, dependencies, timeouts and retained-evidence ceilings are
+unchanged. The canonical [media contract](../../reference/shared-core/llm-provider-seam.md#bounded-verified-media-publication-adr-0106),
+[CLI contract](../../reference/cli/commands.md), and
+[causal runner contract](../../../tools/causal-controls/README.md) own the details.
+Review records remain local and ignored. No new ADR approval, provider call, key,
+billing action or user decision is required. Wave 3 remains subsequent work;
+PR #94 and Wave 2 publication are separate from merge and full phase closure.

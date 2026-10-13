@@ -41,7 +41,7 @@ and [docs/architecture/managed-inference.md](docs/architecture/managed-inference
 
 **Status: Phase 1 is complete** (2026-06-21) — the engine runs end-to-end behind the
 `LLMProvider` seam with all three adapters, `AgentSession`, multimodal I/O, and the full
-run-loop. **Phase 2 (CLI) is feature-complete** (v0.1.1 release cut, publish pending):
+run-loop. **Phase 2 (CLI) is feature-complete** (published as v0.1.1):
 `relavium chat` / `chat-resume` / `agent run`, `relavium run` with `--json`, the
 inbound MCP client, and the full YAML lifecycle (`create`/`import`/`export`).
 **Phase 2.5 (CLI Consolidation) is complete** (M2.5-4, PR #69, 2026-07-08): the bare-invocation
@@ -173,6 +173,16 @@ joins source acceptance; [PR #94](https://github.com/HodeTech/Relavium/pull/94)
 records current corrected-head full CI/coverage/platform and complete physical
 controls separately. Their actual success is required before merge. Original
 `395fbf95` artifacts retain their historical scope. Wave 3 is subsequent work.
+
+**PR #94 lower-priority corrections — 2026-10-13:** all twelve verified Low
+items from the subsequent 305-path review are implemented in three increments.
+The [lower-priority correction register](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#pr-94-lower-priority-review-corrections--2026-10-13)
+records every disposition and separately attributes selected controls, broad gates
+and historical captures. Each increment requires two NEW complete clean cumulative
+source rounds after its final fix; PR #94 owns the actual final reviewed-head
+acceptance and refreshed CI/coverage/platform/physical-evidence publication.
+No new ADR, deferral, provider request, key, billing action or user decision is
+introduced. Wave 3 follows these corrections; publication remains separate from merge.
 
 For live status, per-PR history, milestone dates, and open obligations, see the canonical
 home [docs/roadmap/current.md](docs/roadmap/current.md);

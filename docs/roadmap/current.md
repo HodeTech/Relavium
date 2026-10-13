@@ -1316,14 +1316,16 @@ plumbing + inline & async output generation + generative adapters, 1.m6, 1.AD–
 [Phase 1 detail](phases/phase-1-engine-and-llm.md), the [decision index](../decisions/),
 and the [reference specs](../reference/).
 
-> **Live maintainer obligations:** (1) ✅ **done 2026-07-26** — the CI `ci` job is now a **required check**
-> under branch protection on `main` (PR required, force-push/deletion blocked), alongside a `v*` tag ruleset
-> limiting tag creation to maintain/admin; the optional `TURBO_TOKEN`/`TURBO_TEAM` secrets for the
-> cross-runner remote cache are still unset; (2) now that **2.L** has landed (PR #49) and **v0.1.1** has been cut, add the
-> **`NPM_TOKEN`** repo secret + npm 2FA so the tag-triggered `Release CLI` workflow can publish — **still pending
-> for the v0.1.1 tag** (the actual `npm publish` is maintainer-gated,
+> **Repository checkpoint (recorded 2026-07-26; publication status corrected 2026-10-13):**
+> (1) The CI `ci` job became a required check under `main` branch protection, alongside a
+> `v*` tag ruleset limiting tag creation to maintain/admin. The optional `TURBO_TOKEN`/
+> `TURBO_TEAM` secrets for cross-runner remote cache were recorded as unset at that checkpoint;
+> this does not assert their current configuration. (2) The former v0.1.1 publish-pending note
+> was stale: the [npm registry](https://registry.npmjs.org/relavium) records `relavium@0.1.1`
+> published on 2026-06-28. This resolves the package-publication status, without asserting the
+> current `NPM_TOKEN`, npm 2FA or GitHub release-workflow state. The release procedure remains
 > [ADR-0051](../decisions/0051-cli-distribution-thin-bundle-private-engine.md) /
-> [release-a-surface.md](../runbooks/release-a-surface.md)).
+> [release-a-surface.md](../runbooks/release-a-surface.md).
 
 ## What is active now
 
