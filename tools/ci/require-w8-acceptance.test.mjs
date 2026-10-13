@@ -84,7 +84,7 @@ test('the actual required workflow joins both full offline controls and checks t
     const job = workflow.jobs[`${kind}-mutations`];
     assert.equal(job['continue-on-error'], undefined);
     assert.equal(job.if, undefined);
-    assert.ok(job['timeout-minutes'] > 0 && job['timeout-minutes'] <= 10);
+    assert.equal(job['timeout-minutes'], 30);
     assert.ok(job.steps.some((step) => step.run === 'pnpm install --frozen-lockfile'));
     assert.ok(job.steps.some((step) => step.run === 'pnpm test:acceptance-tools'));
     assert.ok(job.steps.some((step) => step.with?.['node-version-file'] === '.nvmrc'));

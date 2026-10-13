@@ -22,8 +22,23 @@ import {
   exportMetadata,
   finish,
   verifyRetainedEvaluations,
+  verifyRetainedSourceManifests,
   verifyRetainedStdio,
 } from './retention.mjs';
+function addManifest(scratch, control, phase, content, runtime = true) {
+  const directory = join(scratch, control, phase);
+  mkdirSync(directory, { recursive: true });
+  const bytes = Buffer.from(content);
+  writeFileSync(join(directory, 'source-manifest.json'), bytes);
+  if (runtime)
+    writeFileSync(
+      join(directory, 'runtime.json'),
+      JSON.stringify({ manifestSha256: digest(bytes) }),
+    );
+  return bytes;
+}
+const sourceManifest = (space = '') =>
+  `{${space}"sourceRoot":"/physical/graph","files":[{"path":"source.ts","bytes":1,"sha256":"${'a'.repeat(64)}"}]${space}}\n`;
 function fixture(fn) {
   const root = mkdtempSync(join(tmpdir(), 'causal-retention-'));
   try {
@@ -68,6 +83,208 @@ test('exports only bounded own-family metadata, excluding graph/cache/home/nativ
     assert.throws(() => exportMetadata(options), /already exists/);
   });
 });
+test('a JSON file named source-manifest outside a phase retains ordinary metadata treatment', () => {
+  fixture((options) => {
+    const other = join(options.scratch, 'other');
+    mkdirSync(other);
+    writeFileSync(join(other, 'source-manifest.json'), '{"note":"ordinary metadata"}\n');
+    exportMetadata(options);
+    const retained = join(options.directory, 'secrets');
+    assert.equal(
+      readFileSync(join(retained, 'other', 'source-manifest.json'), 'utf8'),
+      '{"note":"ordinary metadata"}\n',
+    );
+    assert.equal(existsSync(join(retained, 'source-manifest-index.json')), false);
+  });
+});
+test('phase source manifests retain each exact byte stream with runtime and complete-summary joins', () => {
+  fixture((options) => {
+    const originals = new Map();
+    for (const [phase, whitespace] of [
+      ['fixed', ''],
+      ['mutated', ' '],
+      ['restored', '\n'],
+    ])
+      originals.set(
+        `example-control/${phase}/source-manifest.json`,
+        addManifest(options.scratch, 'example-control', phase, sourceManifest(whitespace)),
+      );
+    for (const phase of ['fixed', 'mutated', 'restored']) {
+      const directory = join(options.scratch, 'example-control', phase);
+      const stdio = encodePhaseStdio('', '');
+      writeFileSync(join(directory, 'stdio.bin'), stdio.bytes);
+      writeFileSync(join(directory, 'process.json'), JSON.stringify({ stdio: stdio.index }));
+    }
+    writeFileSync(
+      join(options.scratch, 'summary.json'),
+      JSON.stringify({ complete: true, mechanisms: [{ id: 'example-control' }] }),
+    );
+    exportMetadata(options);
+    const retained = join(options.directory, 'secrets');
+    const decoded = verifyRetainedSourceManifests(retained);
+    assert.equal(decoded.size, 3);
+    for (const [source, content] of originals) {
+      assert.ok(decoded.get(source).equals(content));
+      assert.equal(existsSync(join(retained, source)), false);
+    }
+    const envelope = JSON.parse(readFileSync(join(retained, 'export.json'), 'utf8'));
+    assert.equal(envelope.files, 12); // summary, three runtimes/processes/stdio, archive and index
+    assert.deepEqual(
+      readdirSync(retained)
+        .filter((name) => name.startsWith('source-manifest'))
+        .sort(),
+      ['source-manifest-index.json', 'source-manifests.json.gz'],
+    );
+  });
+});
+test('incomplete pre-runtime phase retains its original manifest without inventing a phase directory', () => {
+  fixture((options) => {
+    const original = addManifest(
+      options.scratch,
+      'example-control',
+      'fixed',
+      sourceManifest(),
+      false,
+    );
+    exportMetadata(options);
+    const retained = join(options.directory, 'secrets');
+    assert.equal(existsSync(join(retained, 'example-control', 'fixed')), false);
+    assert.ok(
+      verifyRetainedSourceManifests(retained)
+        .get('example-control/fixed/source-manifest.json')
+        .equals(original),
+    );
+  });
+});
+test('a completed summary requires physical runtime evidence for each indexed phase', () => {
+  fixture((options) => {
+    for (const phase of ['fixed', 'mutated', 'restored'])
+      addManifest(options.scratch, 'example-control', phase, sourceManifest());
+    exportMetadata(options);
+    const root = join(options.directory, 'secrets');
+    writeFileSync(
+      join(root, 'summary.json'),
+      JSON.stringify({ complete: true, mechanisms: [{ id: 'example-control' }] }),
+    );
+    rmSync(join(root, 'example-control', 'restored', 'runtime.json'));
+    assert.throws(() => verifyRetainedSourceManifests(root), /Completed phase/);
+  });
+});
+test('raw phase manifest byte bound refuses before evidence destination creation', () => {
+  fixture((options) => {
+    const path = join(options.scratch, 'example-control', 'fixed', 'source-manifest.json');
+    mkdirSync(join(options.scratch, 'example-control', 'fixed'), { recursive: true });
+    writeFileSync(path, 'x');
+    truncateSync(path, 64 * 1024 * 1024 + 1);
+    assert.throws(() => exportMetadata(options), /Raw phase manifest bound/);
+    assert.equal(existsSync(join(options.directory, 'secrets')), false);
+  });
+});
+test('raw phase manifest file count refuses before archive or destination creation', () => {
+  fixture((options) => {
+    for (let index = 0; index <= 2000; index++)
+      addManifest(options.scratch, `control-${index}`, 'fixed', sourceManifest(), false);
+    assert.throws(() => exportMetadata(options), /Raw phase manifest file bound/);
+    assert.equal(existsSync(join(options.directory, 'secrets')), false);
+  });
+});
+for (const mode of [
+  'missing-archive',
+  'missing-index',
+  'missing-both-with-runtime',
+  'truncated',
+  'archive-digest',
+  'raw-length',
+  'raw-digest',
+  'expansion',
+  'escape',
+  'backslash',
+  'duplicate',
+  'gap',
+  'overlap',
+  'segment-length',
+  'runtime-digest',
+  'completed-segment',
+  'archive-symlink',
+  'phase-symlink',
+  'overlong-source-path',
+  'missing-runtime-segment',
+  'extra-raw-byte',
+  'second-gzip-member',
+])
+  test(`phase source manifest verifier rejects ${mode}`, () => {
+    fixture((options) => {
+      addManifest(options.scratch, 'example-control', 'fixed', sourceManifest());
+      exportMetadata(options);
+      const root = join(options.directory, 'secrets');
+      const archivePath = join(root, 'source-manifests.json.gz');
+      const indexPath = join(root, 'source-manifest-index.json');
+      const index = JSON.parse(readFileSync(indexPath, 'utf8'));
+      if (mode === 'missing-archive') rmSync(archivePath);
+      else if (mode === 'missing-index') rmSync(indexPath);
+      else if (mode === 'missing-both-with-runtime') {
+        rmSync(archivePath);
+        rmSync(indexPath);
+      } else if (mode === 'truncated') truncateSync(archivePath, 2);
+      else if (mode === 'archive-symlink') {
+        rmSync(archivePath);
+        symlinkSync(join(options.scratch, 'summary.json'), archivePath);
+      } else if (mode === 'phase-symlink') {
+        const directory = join(root, 'example-control', 'fixed');
+        rmSync(directory, { recursive: true });
+        symlinkSync(join(options.scratch, 'example-control', 'fixed'), directory);
+      } else {
+        if (mode === 'archive-digest') index.archive.compressedSha256 = '0'.repeat(64);
+        if (mode === 'raw-length' || mode === 'expansion') {
+          index.rawBytes = 1;
+          index.archive.bytes = 1;
+        }
+        if (mode === 'raw-digest') index.archive.sha256 = '0'.repeat(64);
+        if (mode === 'escape') index.segments[0].source = '../fixed/source-manifest.json';
+        if (mode === 'backslash')
+          index.segments[0].source = 'example-control\\fixed\\source-manifest.json';
+        if (mode === 'duplicate') index.segments.push({ ...index.segments[0] });
+        if (mode === 'overlong-source-path')
+          index.segments[0].source = `${'a'.repeat(1025)}/fixed/source-manifest.json`;
+        if (mode === 'gap') index.segments[0].offset = 1;
+        if (mode === 'overlap')
+          index.segments.push({
+            ...index.segments[0],
+            source: 'second/fixed/source-manifest.json',
+          });
+        if (mode === 'segment-length') index.segments[0].bytes -= 1;
+        if (mode === 'runtime-digest')
+          writeFileSync(
+            join(root, 'example-control', 'fixed', 'runtime.json'),
+            JSON.stringify({ manifestSha256: '0'.repeat(64) }),
+          );
+        if (mode === 'completed-segment')
+          writeFileSync(
+            join(root, 'summary.json'),
+            JSON.stringify({ complete: true, mechanisms: [{ id: 'example-control' }] }),
+          );
+        if (mode === 'missing-runtime-segment') index.segments = [];
+        if (mode === 'extra-raw-byte') {
+          const expanded = Buffer.concat([gunzipSync(readFileSync(archivePath)), Buffer.from('x')]);
+          const zipped = gzipSync(expanded);
+          writeFileSync(archivePath, zipped);
+          index.rawBytes = expanded.length;
+          index.archive.bytes = expanded.length;
+          index.archive.sha256 = digest(expanded);
+          index.archive.compressedBytes = zipped.length;
+          index.archive.compressedSha256 = digest(zipped);
+        }
+        if (mode === 'second-gzip-member') {
+          const zipped = Buffer.concat([readFileSync(archivePath), gzipSync(Buffer.alloc(0))]);
+          writeFileSync(archivePath, zipped);
+          index.archive.compressedBytes = zipped.length;
+          index.archive.compressedSha256 = digest(zipped);
+        }
+        writeFileSync(indexPath, JSON.stringify(index));
+      }
+      assert.throws(() => verifyRetainedSourceManifests(root));
+    });
+  });
 test('retains exact bounded stdout and stderr in one independently verifiable phase envelope', () => {
   fixture((options) => {
     const phase = join(options.scratch, 'example-control', 'fixed');
@@ -147,11 +364,13 @@ test('standalone stdio verifier requires every completed mechanism phase', () =>
     const stdio = encodePhaseStdio('out', 'err');
     writeFileSync(join(phase, 'stdio.bin'), stdio.bytes);
     writeFileSync(join(phase, 'process.json'), JSON.stringify({ stdio: stdio.index }));
+    exportMetadata(options);
+    const retained = join(options.directory, 'secrets');
     writeFileSync(
-      join(options.scratch, 'summary.json'),
+      join(retained, 'summary.json'),
       JSON.stringify({ complete: false, mechanisms: [{ id: 'example-control' }] }),
     );
-    assert.throws(() => exportMetadata(options), /Completed phase stdio missing/);
+    assert.throws(() => verifyRetainedStdio(retained), /Completed phase stdio missing/);
   });
 });
 test('stdio encoder and decoder enforce the unchanged process-output authority', () => {

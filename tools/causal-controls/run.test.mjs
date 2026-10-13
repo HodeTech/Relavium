@@ -16,7 +16,7 @@ import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawnJoined } from './process.mjs';
 import { ownedTools } from './provenance.mjs';
-import { verifyRetainedStdio } from './retention.mjs';
+import { verifyRetainedSourceManifests, verifyRetainedStdio } from './retention.mjs';
 import { sourceState, digest } from '../usage-coverage-controls/source-graph.mjs';
 const repository = realpathSync(fileURLToPath(new URL('../../', import.meta.url)));
 const target = 'tools/causal-controls/fixture.mjs';
@@ -37,9 +37,10 @@ test(
     const tooling = ownedTools(repository, roots);
     const scratches = scratchNames();
     try {
-      for (const [kind, failure] of [
-        ['filesystem', 'assertion'],
-        ['secrets', 'import'],
+      for (const [kind, failure, exportRefused] of [
+        ['filesystem', 'assertion', false],
+        ['secrets', 'import', false],
+        ['secrets', 'import', true],
       ]) {
         const family = kind === 'filesystem' ? 'fs-policy-controls' : 'secrets-controls';
         const success = {
@@ -62,14 +63,13 @@ test(
                   "throw new Error('synthetic fixture import refused');\nexport const admitted = false;",
               }),
         };
-        const entry = join(directory, `${kind}.mjs`);
+        const entry = join(directory, `${kind}-${exportRefused ? 'refused' : 'retained'}.mjs`);
         writeFileSync(
           entry,
           `import { runControls } from ${JSON.stringify(pathToFileURL(join(repository, 'tools/causal-controls/run.mjs')).href)};\nawait runControls(${JSON.stringify({ repository, evidenceKind: kind, toolRoots: ['tools/causal-controls', `tools/${family}`], mutations: [success, refusal] })});\n`,
         );
-        const evidence = join(directory, 'evidence');
+        const evidence = join(directory, `${kind}-${exportRefused ? 'refused' : 'retained'}`);
         mkdirSync(evidence, { recursive: true });
-        // The import run also forces export refusal, proving that it cannot mask the earlier error.
         const child = await spawnJoined(
           process.execPath,
           [entry],
@@ -77,7 +77,7 @@ test(
             cwd: repository,
             env: {
               ...process.env,
-              RELAVIUM_ACCEPTANCE_EVIDENCE: failure === 'import' ? repository : evidence,
+              RELAVIUM_ACCEPTANCE_EVIDENCE: exportRefused ? repository : evidence,
             },
           },
           90000,
@@ -127,11 +127,29 @@ test(
         );
         assert.deepEqual(scratchNames(), scratches, 'Actual coordinator leaked scratch');
         assert.equal(digest(readFileSync(join(repository, target))), sourceHash);
+        if (exportRefused) {
+          assert.equal(existsSync(join(evidence, kind)), false);
+          continue;
+        }
+        const retainedRoot = join(evidence, kind);
+        const retained = JSON.parse(readFileSync(join(retainedRoot, 'summary.json'), 'utf8'));
+        assert.deepEqual(retained, report);
+        assert.equal(existsSync(join(retainedRoot, 'graph')), false);
+        const manifests = verifyRetainedSourceManifests(retainedRoot);
+        for (const phase of ['fixed', 'mutated', 'restored']) {
+          const source = `synthetic-success/${phase}/source-manifest.json`;
+          assert.ok(manifests.has(source));
+          assert.equal(existsSync(join(retainedRoot, source)), false);
+          const runtime = JSON.parse(
+            readFileSync(join(retainedRoot, 'synthetic-success', phase, 'runtime.json'), 'utf8'),
+          );
+          assert.equal(digest(manifests.get(source)), runtime.manifestSha256);
+        }
+        assert.ok(manifests.has(`synthetic-${failure}/fixed/source-manifest.json`));
+        assert.equal(manifests.has(`synthetic-${failure}/restored/source-manifest.json`), false);
+        assert.equal(manifests.size, 5);
         if (failure === 'assertion') {
-          const retained = JSON.parse(readFileSync(join(evidence, kind, 'summary.json'), 'utf8'));
-          assert.deepEqual(retained, report);
-          assert.equal(existsSync(join(evidence, kind, 'graph')), false);
-          const stdio = verifyRetainedStdio(join(evidence, kind));
+          const stdio = verifyRetainedStdio(retainedRoot);
           const acceptedStdio = stdio.filter(({ control }) => control === 'synthetic-success');
           assert.equal(acceptedStdio.length, 3);
           assert.deepEqual(acceptedStdio.map(({ phase }) => phase).sort(), [

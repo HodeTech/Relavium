@@ -130,7 +130,19 @@ different bigint inode with the same Number value to remain present and report
 in that complete workload. This controlled numeric collision is portable evidence,
 not a measurement of a particular NTFS identity.
 
-The 95-control declaration is not acceptance evidence by itself. The complete
+R4 appends a 96th selector control after the original 95. Its one-site removal
+restores the prior image-else-audio nested OpenAI lookup for video. The complete
+20-case provider selection file must produce named pre-entry failures for nested
+`format`, `output_format` and `response_format`, with the installed SDK video call
+and invocation-start signal still at zero in the fixed phase. The earlier native
+selector control retains its full enlarged file. Exact per-phase source manifests
+are now packed into one bounded gzip archive and offset/hash index only at export;
+each runtime hash and the original manifest bytes remain independently verifiable.
+The unchanged 2,000-file ceiling admits a projected 1,735 files for all 96
+completed controls, subject to an actual complete export and the unchanged 64-MiB
+byte ceiling.
+
+The 96-control declaration is not acceptance evidence by itself. The complete
 matrix still requires a stable committed head, all fixed/removal/restored phases,
 named semantic witnesses, child source/dependency receipts, byte-exact restoration,
 the retained-evidence caps, and independent cumulative review.

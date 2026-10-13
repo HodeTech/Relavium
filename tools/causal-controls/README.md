@@ -40,7 +40,7 @@ real body evaluation, not just transformation.
 
 Evidence retains JSON/JSONL metadata, one bounded binary `stdio.bin` per completed
 phase, and lossless gzip archives of native and parent source/dependency evaluation
-JSONL. The stdio envelope contains two 32-bit byte lengths followed by the exact
+JSONL and exact phase source manifests. The stdio envelope contains two 32-bit byte lengths followed by the exact
 original UTF-8 stdout and stderr log bytes; `process.json` retains each stream's byte
 length and SHA-256. The standalone verifier reconstructs both streams, checks the
 lengths, hashes and decoded process-output bound, and refuses a missing, redirected,
@@ -54,6 +54,20 @@ path bounds before encoding. Receipt directory enumeration is streamed up to tha
 file cap. Index entries have a running byte budget before the
 final JSON serialization. The standalone receipt verifier bounds its own index plus
 archive bytes; the exporter separately enforces the whole evidence-tree cap. Complete
+phase manifests are packed only during export into `source-manifests.json.gz` and
+`source-manifest-index.json`. The latter records each original portable phase path,
+contiguous offset, byte length and SHA-256, plus archive raw/compressed lengths and
+hashes. The standalone decoder reconstructs the exact original JSON bytes, checks
+every source pin, joins each retained runtime hash and completed-summary phase, and
+rejects trailing gzip data or a second member. A completed phase requires its
+physical runtime record; only an incomplete pre-runtime manifest may lack one.
+The decoder accepts only the actual finite prefix of an incomplete capture. Raw manifest input,
+index assembly and decompression have independent 64-MiB, 2,000-file and
+1,024-byte-path bounds; the unchanged whole-export 2,000-file/64-MiB limit also
+counts the archive, index and final `export.json`. A complete 96-control filesystem
+matrix projects 1,735 retained files: 96 × 21 + 5 minus 288 individual manifests
+plus two archive records. This is capacity arithmetic, not a completed capture.
+Complete
 case inventories remain in each Vitest result and phase summary; the duplicate
 control-only `cases.json` is omitted. Export excludes graph/cache/home and unrelated
 binary files; only the bounded evaluation archives and exact per-phase `stdio.bin`
@@ -64,13 +78,16 @@ failure.
 Selected runs never claim complete-matrix acceptance. Source HEAD and working-tree
 capture attribution describe the execution actually performed.
 
-The permanent coordinator integration guard runs two bounded actual captures.
+The permanent coordinator integration guard runs three bounded actual captures.
 Each family proves synthetic fixed/red/restored execution before a real assertion
-or import failure; the import run also refuses export. It checks actual restored
+or import failure. Both failed-prefix exports retain and decode every created phase
+manifest with its original bytes and runtime hash. The integration checks actual restored
 hashes, main-thread body evaluations, complete identical inventories, removed
 scratch and unchanged developer bytes/HEAD/index. The synthetic target/cases are
 owned tooling fixtures selected only by this guard, outside product/workspace
-inventories. Failure restoration receipts remain in the coordinator summary.
+inventories. A third secrets capture forces export refusal after the import failure
+and verifies primary-failure precedence, scratch cleanup and source restoration.
+Failure restoration receipts remain in the coordinator summary.
 Additional bounded negative captures prove that a stale second anchor starts no
 phase and that both effective case and configured hook overrides above 15 seconds
 fail before they can be treated as causal evidence.

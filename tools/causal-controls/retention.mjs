@@ -13,7 +13,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { gunzipSync, gzipSync } from 'node:zlib';
+import { gunzipSync, gzipSync, inflateRawSync } from 'node:zlib';
 import { digest, json } from '../usage-coverage-controls/source-graph.mjs';
 import { maxProcessOutputUnits } from './process.mjs';
 const maxFiles = 2000,
@@ -23,6 +23,49 @@ const maxFiles = 2000,
 // exactly 8,388,608 decoded code units.
 const maxStdioBytes = 8 + 3 * maxProcessOutputUnits;
 const receiptName = /^(\d+)(?:-(\d+))?(?:\.(loader-preparation|dependencies))?\.jsonl$/;
+const phaseManifestName =
+  /^([a-z0-9]+(?:-[a-z0-9]+)*)\/(fixed|mutated|restored)\/source-manifest\.json$/;
+const manifestArchiveName = 'source-manifests.json.gz';
+const manifestIndexName = 'source-manifest-index.json';
+const sha256Name = /^[a-f0-9]{64}$/;
+
+function portableManifestPath(path) {
+  assert.ok(typeof path === 'string' && Buffer.byteLength(path) <= maxReceiptPathBytes);
+  assert.match(path, phaseManifestName, 'Invalid phase manifest path');
+  return path;
+}
+
+function physicalFile(path, bound) {
+  const info = lstatSync(path);
+  assert.ok(info.isFile() && !info.isSymbolicLink() && realpathSync(path) === path);
+  assert.ok(info.size <= bound, 'Retained input bound');
+  return info.size;
+}
+
+function exactKeys(value, keys) {
+  assert.ok(value !== null && typeof value === 'object' && !Array.isArray(value));
+  assert.deepEqual(Object.keys(value).sort(), [...keys].sort());
+}
+
+function verifyRuntimeManifestJoins(root, decoded) {
+  for (const control of boundedDirectoryEntries(root)) {
+    assert.ok(!control.isSymbolicLink(), 'Phase manifest control directory redirected');
+    if (!control.isDirectory()) continue;
+    for (const phase of boundedDirectoryEntries(join(root, control.name))) {
+      if (!['fixed', 'mutated', 'restored'].includes(phase.name)) continue;
+      assert.ok(
+        phase.isDirectory() && !phase.isSymbolicLink(),
+        'Phase manifest directory redirected',
+      );
+      const runtimePath = join(root, control.name, phase.name, 'runtime.json');
+      if (lstatSync(runtimePath, { throwIfNoEntry: false }))
+        assert.ok(
+          decoded.has(`${control.name}/${phase.name}/source-manifest.json`),
+          'Phase runtime manifest missing',
+        );
+    }
+  }
+}
 
 /** One byte-exact, independently bounded envelope replaces two per-phase log files. */
 export function encodePhaseStdio(stdout, stderr) {
@@ -185,6 +228,10 @@ export function exportMetadata({ directory, scratch, repository, evidenceKind, s
   let indexBytes = 1024; // fixed JSON keys, punctuation and counters
   const aggregates = [];
   const segments = [];
+  const manifests = [];
+  const manifestPaths = new Set();
+  let rawManifestBytes = 0;
+  let manifestIndexBytes = 1024;
   function indexEntry(entry) {
     indexBytes += Buffer.byteLength(JSON.stringify(entry)) + 1;
     assert.ok(indexBytes <= maxBytes, 'Evaluation index bound');
@@ -282,14 +329,56 @@ export function exportMetadata({ directory, scratch, repository, evidenceKind, s
           (entry.name === 'stdio.bin' && /(?:^|[/\\])(?:fixed|mutated|restored)$/.test(rel)))
       ) {
         const size = lstatSync(source).size;
-        assert.ok(size <= maxBytes - bytes, 'Metadata export bound');
+        const portable = path.split(sep).join('/');
+        const manifest = entry.name === 'source-manifest.json' && phaseManifestName.test(portable);
+        if (manifest) {
+          portableManifestPath(portable);
+          assert.ok(!manifestPaths.has(portable), 'Duplicate phase manifest');
+          manifestPaths.add(portable);
+          assert.ok(manifests.length < maxFiles, 'Raw phase manifest file bound');
+          assert.ok(size > 0 && size <= maxBytes - rawManifestBytes, 'Raw phase manifest bound');
+          manifestIndexBytes += Buffer.byteLength(portable) + 180;
+          assert.ok(manifestIndexBytes <= maxBytes, 'Phase manifest index bound');
+        } else assert.ok(size <= maxBytes - bytes, 'Metadata export bound');
         const content = readFileSync(source);
         assert.equal(content.length, size, 'Metadata changed during export');
-        add(path, content);
+        if (manifest) {
+          rawManifestBytes += size;
+          manifests.push({ source: path.split(sep).join('/'), content });
+        } else add(path, content);
       }
     }
   }
   collect(scratch);
+  if (manifests.length > 0) {
+    manifests.sort((a, b) => a.source.localeCompare(b.source));
+    let offset = 0;
+    const sourceSegments = manifests.map(({ source, content }) => {
+      const segment = { source, offset, bytes: content.length, sha256: digest(content) };
+      offset += content.length;
+      return segment;
+    });
+    assert.equal(offset, rawManifestBytes);
+    const raw = Buffer.concat(
+      manifests.map(({ content }) => content),
+      rawManifestBytes,
+    );
+    const compressed = gzipSync(raw, { level: 9, mtime: 0 });
+    assert.ok(compressed.length <= maxBytes, 'Phase manifest archive bound');
+    const archive = {
+      retained: manifestArchiveName,
+      bytes: raw.length,
+      sha256: digest(raw),
+      compressedBytes: compressed.length,
+      compressedSha256: digest(compressed),
+    };
+    const index = Buffer.from(
+      `${JSON.stringify({ version: 1, rawBytes: raw.length, archive, segments: sourceSegments })}\n`,
+    );
+    assert.ok(index.length <= maxBytes, 'Phase manifest index bound');
+    add(manifestArchiveName, compressed);
+    add(manifestIndexName, index);
+  }
   if (aggregates.length > 0)
     add(
       'evaluation-index.json',
@@ -307,6 +396,7 @@ export function exportMetadata({ directory, scratch, repository, evidenceKind, s
   }
   writeFileSync(join(destination, 'export.json'), metadata, { flag: 'wx' });
   if (aggregates.length > 0) verifyRetainedEvaluations(destination);
+  verifyRetainedSourceManifests(destination);
   verifyRetainedStdio(destination);
 }
 /** Verify every original per-PID receipt without unbounded gzip expansion. */
@@ -437,6 +527,187 @@ export function verifyRetainedEvaluations(destination) {
   assert.equal(segmentTotal, rawTotal);
   assert.equal(segmentTotal, index.rawReceiptBytes);
   return index;
+}
+/** Reconstruct every original phase source manifest, including incomplete prefixes. */
+export function verifyRetainedSourceManifests(destination) {
+  const rootInfo = lstatSync(destination);
+  assert.ok(rootInfo.isDirectory() && !rootInfo.isSymbolicLink(), 'Evidence root redirected');
+  const root = realpathSync(destination);
+  const archivePath = join(root, manifestArchiveName);
+  const indexPath = join(root, manifestIndexName);
+  const archiveInfo = lstatSync(archivePath, { throwIfNoEntry: false });
+  const indexInfo = lstatSync(indexPath, { throwIfNoEntry: false });
+  assert.equal(
+    Boolean(archiveInfo),
+    Boolean(indexInfo),
+    'Phase manifest archive/index pair incomplete',
+  );
+  if (!indexInfo) {
+    const summaryPath = join(root, 'summary.json');
+    physicalFile(summaryPath, maxBytes);
+    const summary = JSON.parse(readFileSync(summaryPath, 'utf8'));
+    assert.ok(!summary.mechanisms?.length, 'Completed phase manifest missing');
+    verifyRuntimeManifestJoins(root, new Map());
+    return new Map();
+  }
+  physicalFile(indexPath, maxBytes);
+  physicalFile(archivePath, maxBytes);
+  assert.ok(indexInfo.size + archiveInfo.size <= maxBytes, 'Retained phase manifest pair bound');
+  const indexContent = readFileSync(indexPath);
+  assert.equal(indexContent.length, indexInfo.size);
+  const indexText = indexContent.toString('utf8');
+  assert.ok(Buffer.from(indexText, 'utf8').equals(indexContent), 'Phase manifest index UTF-8');
+  const index = JSON.parse(indexText);
+  exactKeys(index, ['version', 'rawBytes', 'archive', 'segments']);
+  assert.equal(index.version, 1);
+  assert.ok(
+    Number.isSafeInteger(index.rawBytes) && index.rawBytes > 0 && index.rawBytes <= maxBytes,
+    'Phase manifest raw bound',
+  );
+  assert.ok(
+    Array.isArray(index.segments) && index.segments.length > 0 && index.segments.length <= maxFiles,
+    'Phase manifest count bound',
+  );
+  const archive = index.archive;
+  exactKeys(archive, ['retained', 'bytes', 'sha256', 'compressedBytes', 'compressedSha256']);
+  assert.equal(archive.retained, manifestArchiveName);
+  assert.equal(archive.bytes, index.rawBytes);
+  assert.ok(
+    Number.isSafeInteger(archive.compressedBytes) &&
+      archive.compressedBytes > 0 &&
+      archive.compressedBytes <= maxBytes,
+    'Phase manifest archive bound',
+  );
+  assert.match(archive.sha256, sha256Name);
+  assert.match(archive.compressedSha256, sha256Name);
+  assert.equal(archiveInfo.size, archive.compressedBytes);
+  const compressed = readFileSync(archivePath);
+  assert.equal(compressed.length, archiveInfo.size);
+  assert.equal(digest(compressed), archive.compressedSha256);
+  assert.ok(
+    compressed.length >= 18 &&
+      compressed[0] === 0x1f &&
+      compressed[1] === 0x8b &&
+      compressed[2] === 8 &&
+      compressed[3] === 0,
+    'Phase manifest gzip header',
+  );
+  const singleMember = inflateRawSync(compressed.subarray(10), {
+    info: true,
+    maxOutputLength: index.rawBytes,
+  });
+  assert.equal(
+    10 + singleMember.engine.bytesWritten + 8,
+    compressed.length,
+    'Phase manifest gzip trailing data/member',
+  );
+  const raw = gunzipSync(compressed, { maxOutputLength: index.rawBytes });
+  assert.equal(raw.length, index.rawBytes);
+  assert.ok(singleMember.buffer.equals(raw), 'Phase manifest deflate/gzip disagreement');
+  assert.equal(digest(raw), archive.sha256);
+  const decoded = new Map();
+  let offset = 0;
+  for (const segment of index.segments) {
+    exactKeys(segment, ['source', 'offset', 'bytes', 'sha256']);
+    const source = portableManifestPath(segment.source);
+    assert.ok(!decoded.has(source), 'Duplicate phase manifest');
+    assert.ok(
+      Number.isSafeInteger(segment.offset) &&
+        Number.isSafeInteger(segment.bytes) &&
+        segment.bytes > 0 &&
+        segment.offset === offset &&
+        segment.bytes <= raw.length - offset,
+      'Phase manifest gap/overlap/out-of-order',
+    );
+    assert.match(segment.sha256, sha256Name);
+    const original = raw.subarray(offset, offset + segment.bytes);
+    assert.equal(digest(original), segment.sha256);
+    offset += segment.bytes;
+    const sourceText = original.toString('utf8');
+    assert.ok(Buffer.from(sourceText, 'utf8').equals(original), 'Phase manifest UTF-8');
+    const manifest = JSON.parse(sourceText);
+    exactKeys(manifest, ['sourceRoot', 'files']);
+    assert.ok(typeof manifest.sourceRoot === 'string' && isAbsolute(manifest.sourceRoot));
+    assert.ok(Array.isArray(manifest.files) && manifest.files.length <= maxFiles);
+    const sourceFiles = new Set();
+    for (const file of manifest.files) {
+      exactKeys(file, ['path', 'bytes', 'sha256']);
+      assert.ok(
+        typeof file.path === 'string' &&
+          file.path.length > 0 &&
+          Buffer.byteLength(file.path) <= maxReceiptPathBytes &&
+          !isAbsolute(file.path) &&
+          !file.path.includes('\\') &&
+          file.path.split('/').every((part) => part !== '' && part !== '.' && part !== '..') &&
+          !sourceFiles.has(file.path),
+        'Phase source path bound',
+      );
+      sourceFiles.add(file.path);
+      assert.ok(Number.isSafeInteger(file.bytes) && file.bytes >= 0);
+      assert.match(file.sha256, sha256Name);
+    }
+    const phaseDirectory = join(root, dirname(source));
+    const controlDirectory = dirname(phaseDirectory);
+    const controlInfo = lstatSync(controlDirectory, { throwIfNoEntry: false });
+    if (controlInfo)
+      assert.ok(
+        controlInfo.isDirectory() &&
+          !controlInfo.isSymbolicLink() &&
+          realpathSync(controlDirectory) === controlDirectory,
+        'Phase manifest control directory redirected',
+      );
+    const phaseInfo = lstatSync(phaseDirectory, { throwIfNoEntry: false });
+    if (phaseInfo) {
+      assert.ok(
+        phaseInfo.isDirectory() &&
+          !phaseInfo.isSymbolicLink() &&
+          realpathSync(phaseDirectory) === phaseDirectory,
+        'Phase manifest directory redirected',
+      );
+      const runtimePath = join(phaseDirectory, 'runtime.json');
+      const runtimeInfo = lstatSync(runtimePath, { throwIfNoEntry: false });
+      if (runtimeInfo) {
+        physicalFile(runtimePath, maxBytes);
+        const runtime = JSON.parse(readFileSync(runtimePath, 'utf8'));
+        assert.equal(runtime.manifestSha256, segment.sha256, 'Phase runtime manifest differs');
+      }
+    }
+    decoded.set(source, Buffer.from(original));
+  }
+  assert.equal(offset, raw.length, 'Unused phase manifest archive bytes');
+  verifyRuntimeManifestJoins(root, decoded);
+  const summaryPath = join(root, 'summary.json');
+  physicalFile(summaryPath, maxBytes);
+  const summary = JSON.parse(readFileSync(summaryPath, 'utf8'));
+  if (summary.mechanisms !== undefined) {
+    assert.ok(Array.isArray(summary.mechanisms) && summary.mechanisms.length <= maxFiles);
+    for (const mechanism of summary.mechanisms) {
+      assert.ok(
+        typeof mechanism.id === 'string' &&
+          phaseManifestName.test(`${mechanism.id}/fixed/source-manifest.json`),
+      );
+      for (const phase of ['fixed', 'mutated', 'restored'])
+        assert.ok(
+          decoded.has(`${mechanism.id}/${phase}/source-manifest.json`),
+          'Completed phase manifest missing',
+        );
+      for (const phase of ['fixed', 'mutated', 'restored']) {
+        const phaseDirectory = join(root, mechanism.id, phase);
+        const info = lstatSync(phaseDirectory, { throwIfNoEntry: false });
+        assert.ok(
+          info?.isDirectory() && !info.isSymbolicLink(),
+          'Completed phase directory missing',
+        );
+        const runtimePath = join(phaseDirectory, 'runtime.json');
+        assert.ok(
+          lstatSync(runtimePath, { throwIfNoEntry: false }),
+          'Completed phase runtime missing',
+        );
+        physicalFile(runtimePath, maxBytes);
+      }
+    }
+  }
+  return decoded;
 }
 export function finish({ scratch, summary, primaryFailure, directory, repository, evidenceKind }) {
   try {

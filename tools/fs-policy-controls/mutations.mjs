@@ -611,7 +611,7 @@ mutations.push(
     'MEDIA_SELECTOR_PREENTRY',
     mediaSelector,
     'MEDIA_SELECTOR_PREENTRY: unsupported chat format refuses',
-    15,
+    20,
   ),
 );
 
@@ -1127,3 +1127,29 @@ mutations.push(
     nativeTemporary,
   ),
 );
+
+// R4: every nested video selector spelling must refuse before the installed SDK entry.
+mutations.push({
+  ...mediaControl(
+    'MEDIA_VIDEO_SELECTOR_PREENTRY',
+    'packages/llm/src/adapters/openai.ts',
+    'native[req.modality]',
+    "native[req.modality === 'image' ? 'image' : 'audio']",
+    'MEDIA_VIDEO_SELECTOR_PREENTRY',
+    mediaSelector,
+    'MEDIA_VIDEO_SELECTOR_PREENTRY: unsupported native format refuses before SDK entry',
+    20,
+  ),
+  witnesses: [
+    {
+      target:
+        'MEDIA_VIDEO_SELECTOR_PREENTRY: unsupported native output_format refuses before SDK entry',
+      marker: 'MEDIA_VIDEO_SELECTOR_PREENTRY',
+    },
+    {
+      target:
+        'MEDIA_VIDEO_SELECTOR_PREENTRY: unsupported native response_format refuses before SDK entry',
+      marker: 'MEDIA_VIDEO_SELECTOR_PREENTRY',
+    },
+  ],
+});
