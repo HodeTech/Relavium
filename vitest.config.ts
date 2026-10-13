@@ -28,12 +28,14 @@ import { defaultExclude, defineConfig } from 'vitest/config';
  * sources from coverage.
  */
 // W7 preflight also found partial CR-94 prototypes here, with no nested workspace marker. They are private
-// analysis artifacts, not product tests/sources. Root-anchor this entry so package collection stays intact.
+// analysis artifacts, not product tests/sources. Ignored local review reproductions have the same boundary.
+// Root-anchor both entries so package collection stays intact.
 export const REPO_LOCAL_CHECKOUTS = [
   '**/.claude/**',
   '**/.worktrees/**',
   'worktrees/**',
   'docs/analysis/private/**',
+  'docs/reviews/**',
 ];
 
 /**

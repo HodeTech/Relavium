@@ -3176,9 +3176,27 @@ The three final source controls are selected captures, not complete-family evide
 The causal source graph excludes `docs/**`; documentation acceptance uses separate
 Git/hash inventories. The final two source rounds cover the complete correction
 range `395fbf95` → `f4ca3c53`, not a new review of all 292 original PR paths. The
-following documentation-only closure preserves those runtime bytes. Final full CI,
+`193c4649` documentation-only closure preserves those runtime bytes. Final full CI,
 bare/enforced coverage, native Windows/Node-floor results and complete filesystem/
 secrets physical audits must be executed at the corrected publication head and
 recorded in PR #94 before it is ready for maintainer review. A selected capture,
 capacity projection, cached task or prior-head success cannot substitute for those
 gates. No new decision, provider capture, credential or billing action is pending.
+
+#### Corrected-head local review isolation — 2026-10-13
+
+The first final bare coverage run at `193c4649` collected an intentional failing
+review reproduction from ignored `docs/reviews/`: the 567 product files passed
+12,454 tests with 13 established skips, but the extra reproduction failed and
+raised its deliberate background rejection. That run is failed evidence, not a
+coverage pass. Review files remain untouched. The root-anchored local-artifact
+exclusion now reaches both test discovery and coverage, with an unconditional
+marker-free probe and permanent removal/ownership controls; every real
+source-adjacent test must still be collected in root and package modes. Coverage
+thresholds, product includes and all existing exclusions remain unchanged.
+
+This publication correction requires two NEW complete clean cumulative rounds
+covering its configuration/guard changes and the final documentation closure,
+plus fresh bare/enforced coverage and corrected-head full publication gates.
+Their actual source pins and results belong to the PR #94 publication record;
+this requirement does not upgrade the failed run or earlier selected captures.

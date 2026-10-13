@@ -41,8 +41,9 @@ function tests(dir) {
     return entry.isDirectory() ? tests(path) : entry.name === 'probe.test.ts' ? [{file:path}] : [];
   });
 }
-const excluded=readFileSync(join(process.cwd(),'vitest.config.ts'),'utf8').includes("'docs/analysis/private/**'");
-process.stdout.write(JSON.stringify(excluded ? [] : tests(join(process.cwd(),'docs/analysis/private'))));`;
+const config=readFileSync(join(process.cwd(),'vitest.config.ts'),'utf8');
+const leaked=['docs/analysis/private','docs/reviews'].filter(dir=>!config.includes("'"+dir+"/**'"));
+process.stdout.write(JSON.stringify(leaked.flatMap(dir=>tests(join(process.cwd(),dir)))));`;
 
 function fixture(config, collectorText = collector) {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'relavium-guard-ownership-')));
@@ -63,6 +64,7 @@ const preserved = fixture(configText);
 try {
   const sentinels = [
     'docs/analysis/private/__test_isolation_fixture__/prior-analysis.txt',
+    'docs/reviews/__test_isolation_fixture__/prior-review.txt',
     '__test_isolation_detector_probe__/prior-analysis.txt',
   ];
   for (const path of sentinels) {
@@ -85,6 +87,25 @@ try {
   }
 } finally {
   rmSync(preserved, { recursive: true, force: true });
+}
+
+// This location is marker-free and always probed even if its configured entry disappears.
+// Derived probes alone would disappear with the exclusion and falsely pass a clean CI checkout.
+const brokenReviewsConfig = configText.replace("  'docs/reviews/**',\n", '');
+assert.notEqual(brokenReviewsConfig, configText, 'review exclusion mutation did not apply');
+const reviews = fixture(brokenReviewsConfig);
+try {
+  const result = spawnSync(process.execPath, [join(reviews, 'tools/test-isolation/check.mjs')], {
+    cwd: reviews,
+    encoding: 'utf8',
+    timeout: 45000,
+  });
+  assert.equal(result.signal, null, 'review probe exceeded its deadline');
+  assert.equal(result.status, 1, 'missing marker-free review exclusion falsely passed');
+  assert.ok(result.stderr.includes('docs/reviews'), result.stderr);
+  console.log('✓ marker-free review probes remain effective without their configured exclusion.');
+} finally {
+  rmSync(reviews, { recursive: true, force: true });
 }
 
 const brokenConfig = configText.replace("  'docs/analysis/private/**',\n", '');
@@ -220,7 +241,13 @@ try {
     assert.equal(result.signal, null, 'passing/starting probe exceeded its deadline');
     assert.equal(result.code, 0, result.stderr);
   }
-  for (const parent of ['.claude', '.worktrees', 'worktrees', 'docs/analysis/private']) {
+  for (const parent of [
+    '.claude',
+    '.worktrees',
+    'worktrees',
+    'docs/analysis/private',
+    'docs/reviews',
+  ]) {
     const path = join(cleanup, parent);
     assert.ok(
       !existsSync(path) ||
