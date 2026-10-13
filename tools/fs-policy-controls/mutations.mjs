@@ -1261,3 +1261,44 @@ mutations.push(
     ],
   },
 );
+
+// PR #94 R94-2: restore only the obsolete OpusTags-tail refusal. Every file runs
+// completely; the independent verifier, both real stores and installed SDK publication
+// must each produce their own named AssertionError rather than an uncaught format error.
+mutations.push({
+  ...control(
+    'MEDIA_OPUS_TAGS_TAIL',
+    'packages/shared/src/media-verifier-ogg.ts',
+    "              if (codec === 'audio/ogg') {\n                if (commentFrame || b !== 1) fail();\n                commentFrame = true;\n              }",
+    "              if (codec !== 'audio/ogg' || commentFrame || b !== 1) fail();\n              commentFrame = true;",
+    'MEDIA_OPUS_TAGS_TAIL',
+    [
+      'packages/shared/src/media-verifier-opus.test.ts',
+      'packages/db/src/media-opus-admission.test.ts',
+      'apps/cli/src/engine/media-provider-admission.test.ts',
+    ],
+    'MEDIA_OPUS_TAGS_TAIL: binary first 1 survives',
+  ),
+  expectedTests: 42,
+  witnesses: [
+    { target: 'MEDIA_OPUS_TAGS_TAIL: one zero survives', marker: 'MEDIA_OPUS_TAGS_TAIL' },
+    {
+      target: 'MEDIA_OPUS_TAGS_CONTINUATION: 70000-byte packet',
+      marker: 'MEDIA_OPUS_TAGS_CONTINUATION',
+    },
+    ...['memory', 'filesystem'].flatMap((store) =>
+      ['put', 'putStream'].map((method) => ({
+        target: `${store} Opus byte admission MEDIA_OPUS_STORE_TAIL: ${method} preserves`,
+        marker: 'MEDIA_OPUS_STORE_TAIL',
+      })),
+    ),
+    ...[true, false].map((canonical) => ({
+      target: `OpenAI opus padded canonical=${canonical} SDK HTTP`,
+      marker: 'MEDIA_PROVIDER_ADMISSION_BEFORE_APPEND',
+    })),
+    {
+      target: 'OpenAI opus padded SDK binary HTTP',
+      marker: 'MEDIA_PROVIDER_ADMISSION_BEFORE_APPEND',
+    },
+  ],
+});

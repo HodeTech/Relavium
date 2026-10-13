@@ -111,8 +111,12 @@ export function* ogg(memory = new MediaInspectionMemory()): MediaParser {
             comments = new Comments();
           } else if (packetSize > header) {
             if (comments?.done) {
-              if (codec !== 'audio/ogg' || commentFrame || b !== 1) fail();
-              commentFrame = true;
+              // RFC 7845 §5.2 permits arbitrary OpusTags tails after the comment list.
+              // Only Vorbis requires exactly one final framing byte; neither retains a tail.
+              if (codec === 'audio/ogg') {
+                if (commentFrame || b !== 1) fail();
+                commentFrame = true;
+              }
             } else comments?.push(b);
           }
         }

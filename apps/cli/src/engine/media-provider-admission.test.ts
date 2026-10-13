@@ -83,13 +83,14 @@ async function publish(
   }
 }
 
-for (const [format, mimeType, bytes] of [
-  ['aac', 'audio/aac', PROVIDER_MEDIA_BYTES.aac],
-  ['opus', 'audio/opus', PROVIDER_MEDIA_BYTES.opus],
-  ['pcm16', 'audio/L16', PROVIDER_MEDIA_BYTES.pcm],
+for (const [format, mimeType, bytes, variant] of [
+  ['aac', 'audio/aac', PROVIDER_MEDIA_BYTES.aac, 'ordinary'],
+  ['opus', 'audio/opus', PROVIDER_MEDIA_BYTES.opus, 'ordinary'],
+  ['opus', 'audio/opus', PROVIDER_MEDIA_BYTES.paddedOpus, 'padded'],
+  ['pcm16', 'audio/L16', PROVIDER_MEDIA_BYTES.pcm, 'ordinary'],
 ] as const) {
   for (const canonical of [true, false]) {
-    it(`MEDIA_PROVIDER_NATIVE_CHAT: OpenAI ${format} canonical=${canonical} SDK HTTP through CAS and SQLite`, async () => {
+    it(`MEDIA_PROVIDER_NATIVE_CHAT: OpenAI ${format} ${variant} canonical=${canonical} SDK HTTP through CAS and SQLite`, async () => {
       const fetch = vi.fn<typeof globalThis.fetch>((_url, init) => {
         expect(parseWire(init?.body)).toMatchObject({
           modalities: ['text', 'audio'],
@@ -143,7 +144,7 @@ for (const [format, mimeType, bytes] of [
       expect(fetch).toHaveBeenCalledTimes(1);
     });
   }
-  it(`MEDIA_PROVIDER_NATIVE_TTS: OpenAI ${format} SDK binary HTTP through CAS and SQLite`, async () => {
+  it(`MEDIA_PROVIDER_NATIVE_TTS: OpenAI ${format} ${variant} SDK binary HTTP through CAS and SQLite`, async () => {
     const fetch = vi.fn<typeof globalThis.fetch>((_url, init) => {
       expect(parseWire(init?.body)).toMatchObject({
         response_format: format === 'pcm16' ? 'pcm' : format,

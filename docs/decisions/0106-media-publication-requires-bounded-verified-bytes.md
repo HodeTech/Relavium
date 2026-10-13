@@ -364,3 +364,21 @@ loss before directory validation and at rmdir; listing tests separately distingu
 normalized absence from I/O. Two independent mechanism removals require both race
 witnesses and complete restoration. Independent correction review and exact-head
 publication gates remain separate from the earlier whole-wave evidence.
+
+### OpusTags compatibility correction — 2026-10-13
+
+Maintainer review of PR #94 at `395fbf95` reproduced rejection of otherwise valid
+OpusTags padding through the recognizer, store and installed OpenAI SDK publication
+path. The accepted bounded Opus profile follows RFC 7845 §5.2: after the required
+vendor/count/comment fields are complete, padding and arbitrary binary tails are
+legal. Their editor-preservation bit does not change ingestion validity. This
+restores the existing profile rather than adding a codec or mapping family.
+
+The [canonical media profile](../reference/shared-core/llm-provider-seam.md#bounded-verified-media-publication-adr-0106)
+owns the exact framing and limits. CRC, continuation, packet/object/count limits,
+EOS, MIME agreement and Vorbis framing remain required. Fragmented byte/page,
+both-store exact-byte and actual installed-SDK/CAS/SQLite publication controls
+must distinguish legal tails from malformed required fields. The
+[PR #94 correction register](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#pr-94-systematic-review-corrections--2026-10-13)
+owns independent correction acceptance and fresh publication evidence; earlier
+checkpoint checks do not certify this repair.

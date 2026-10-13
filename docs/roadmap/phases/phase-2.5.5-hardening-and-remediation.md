@@ -3115,8 +3115,8 @@ artifact consistency does not establish the runner-error guarantee under review.
 
 | Increment | Confirmed finding | Required correction and evidence | State |
 | --- | --- | --- | --- |
-| 1 — R94-1 (High) | JSON-only Vitest reporting omits unhandled runner errors, so a named removal assertion can coexist with an invisible background failure. | Own a structured completed runner-error receipt, require zero errors before phase acceptance, and permanently exercise the real coordinator with a designated assertion plus a genuine unhandled rejection/exception. Refresh affected complete controls; old artifacts do not certify this repair. | Implementation and two NEW clean complete cumulative review rounds pending. |
-| 2 — R94-2 (High) | Valid OpusTags padding is refused after otherwise supported provider generation. | Consume the permitted bounded Opus tail after complete comment framing; preserve Vorbis framing. Pin fragmented packet/page positives, malformed negatives and actual store/installed-SDK publication. | Implementation and two NEW clean complete cumulative review rounds pending. |
+| 1 — R94-1 (High) | JSON-only Vitest reporting omits unhandled runner errors, so a named removal assertion can coexist with an invisible background failure. | Own a structured completed runner-error receipt, require zero errors before phase acceptance, and permanently exercise the real coordinator with a designated assertion plus a genuine unhandled rejection/exception. Refresh affected complete controls; old artifacts do not certify this repair. | Source accepted at `9664b7cc` after two NEW clean complete cumulative rounds (14 paths / 48 hunks each); final corrected-head controls/publication pending. |
+| 2 — R94-2 (High) | Valid OpusTags padding is refused after otherwise supported provider generation. | Consume the permitted bounded Opus tail after complete comment framing; preserve Vorbis framing. Pin fragmented packet/page positives, malformed negatives and actual store/installed-SDK publication. | Implemented with permanent regressions and a targeted removal control; two NEW clean complete cumulative review rounds pending. |
 | 3 — R94-3 (Medium) | FLAC nonfinal minimum and fixed block-size consistency are not enforced. | Validate the previous frame once a successor establishes that it is nonfinal; retain the legal shorter final frame. Pin fragmented verifier and actual-store refusal/acceptance pairs. | Implementation and two NEW clean complete cumulative review rounds pending. |
 
 Each increment follows implement/regression/commit, independent review/fix/commit,
@@ -3132,3 +3132,12 @@ live provider request, credential, billing action or deferral is required. The
 [canonical media profile](../../reference/shared-core/llm-provider-seam.md#bounded-verified-media-publication-adr-0106)
 and [causal runner contract](../../../tools/causal-controls/README.md) own the
 implementation details. Wave 3 remains subsequent work.
+
+R94-1's author gate passed 269 acceptance-tool tests at its corrected bytes. Each
+new runtime review independently passed all 202 causal-tool tests, including real
+coordinator rejection, exception and hook contamination; separate evidence reviews
+covered the entire same delta and adversarial raw/retained receipt boundaries.
+Selected native-child fixed/removal/restored captures retained three completed
+zero-error receipts each, independently joined to exact source/runtime/process
+records. These scoped source gates do not replace the pending full-family refresh
+or certify all original PR files again. R94-2 and R94-3 remain separate increments.

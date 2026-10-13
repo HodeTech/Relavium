@@ -1,3 +1,5 @@
+import { paddedOpus } from '../../../../packages/shared/src/media-opus-vectors.js';
+
 /** Offline format vectors: ADTS AAC-LC 44.1kHz stereo silent raw-data block; RFC 7845
  * stereo mapping-family 0 Ogg Opus pages with RFC 6716 silence packet and independent Ogg CRCs.
  * PCM is eight literal sample bytes; no rate/endianness correction is implied. */
@@ -9,5 +11,6 @@ export const PROVIDER_MEDIA_BYTES = {
       'hex',
     ),
   ),
+  paddedOpus: paddedOpus(new Uint8Array([1, 255, 0, 128, ...new Uint8Array(512)])),
   pcm: new Uint8Array([0, 0, 1, 0, 255, 255, 0, 128]),
 } as const;
