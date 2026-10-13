@@ -2686,3 +2686,23 @@ two legacy positive controls and zero fetches. All 185 acceptance-tool tests pas
 Cumulative document checks cover 51 Markdown files and 2,695 relative links/anchors
 with no findings; 20 pre-existing ADRs remain append-only. Physical matrices and
 independent cumulative implementation reviews follow the committed snapshot.
+
+
+#### Step 7 first review correction — 2026-10-13
+
+Three independent complete cumulative reviewers inspect all 20 changed paths at
+`01259d12`. They corroborate one living-status error: the Step 7 header progress
+was attached to D12 (filesystem) rather than D13 (provider headers). D12 now links
+its accepted Step 2 implementation; D13 states the implemented interim gate with
+review/acceptance pending. No runtime/security defect is verified. Independent
+focused executions pass 132 and 194 overlapping cases; a separate tooling reviewer
+passes 114 cases and verifies all previous 35 declarations unchanged. These
+finding-bearing reviews are not clean acceptance rounds.
+
+The complete local secrets matrix passes **41 controls / 123 phases / 8,445
+executions / 653 reported removal failures**, with unchanged developer bytes,
+identical inventories and byte-exact restoration. The six new controls contribute
+732 executions and 66 failures. This invocation did not export raw physical
+artifacts; its summary is not an independent artifact audit. The current-head
+GitHub run exports that evidence for separate verification. Two NEW complete clean
+cumulative review rounds and published gates remain required.
