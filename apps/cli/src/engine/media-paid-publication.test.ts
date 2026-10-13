@@ -25,6 +25,10 @@ import { collectDurableMediaHandles, type RunEvent } from '@relavium/shared';
 import { expect, it, vi } from 'vitest';
 import { createCliHost } from './host.js';
 
+// Each case joins fresh file-backed SQLite migrations, installed synthetic SDK transport,
+// actual CAS admission/readback and cleanup within the existing causal-control budget.
+vi.setConfig({ testTimeout: 15_000, hookTimeout: 15_000 });
+
 // Independently stated RIFF/WAVE PCM: mono, 8kHz, 16-bit, two sample words.
 // Agent workflow requests expose output_modalities, so the actual adapter chooses its WAV default.
 const bytes = Uint8Array.from(

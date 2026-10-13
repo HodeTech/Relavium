@@ -10,6 +10,10 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { createCliHost } from './host.js';
 import { PROVIDER_MEDIA_BYTES } from './media-provider-fixtures.js';
 
+// Each case joins fresh file-backed SQLite migrations, installed synthetic SDK transport,
+// actual CAS admission/readback and cleanup within the existing causal-control budget.
+vi.setConfig({ testTimeout: 15_000, hookTimeout: 15_000 });
+
 afterEach(() => vi.unstubAllGlobals());
 const key = 'synthetic-offline-key';
 const workflow = parseWorkflow(
