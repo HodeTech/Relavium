@@ -107,13 +107,9 @@ function validatedDescriptor(
 /** Join owned retirement without replacing the primary verification/write/cancellation failure. */
 async function closeMediaIteratorPreservingFailure(
   iterator: AsyncIterator<Uint8Array>,
-  failed: boolean,
 ): Promise<void> {
-  try {
-    await closeMediaIterator(iterator);
-  } catch {
-    if (!failed) throw new MediaAdmissionError('source_failed');
-  }
+  // Both callers can leave their read loop before EOF only by throwing a primary failure.
+  await closeMediaIterator(iterator).catch(() => undefined);
 }
 
 /** sha256 hex of the bytes — the content address that forms the handle. */
@@ -200,7 +196,6 @@ export class FilesystemMediaStore implements MediaStore {
     const verifier = createMediaVerifier(mimeType);
     const iterator = chunks[Symbol.asyncIterator]();
     let ended = false;
-    let failed = false;
     try {
       // #publish retires its own file and temporary before this outer finally joins the source.
       return await this.#publish(async (file) => {
@@ -227,11 +222,8 @@ export class FilesystemMediaStore implements MediaStore {
         verifier.finish();
         return HANDLE_PREFIX + hash.digest('hex');
       }, mimeType);
-    } catch (error) {
-      failed = true;
-      throw error;
     } finally {
-      if (!ended) await closeMediaIteratorPreservingFailure(iterator, failed);
+      if (!ended) await closeMediaIteratorPreservingFailure(iterator);
     }
   }
 
@@ -435,7 +427,6 @@ export class InMemoryMediaStore implements MediaStore {
     let total = 0;
     const iterator = chunks[Symbol.asyncIterator]();
     let ended = false;
-    let failed = false;
     try {
       for (;;) {
         const step = await iterator.next();
@@ -473,14 +464,11 @@ export class InMemoryMediaStore implements MediaStore {
       const handle = handleOf(bytes);
       this.#blobs.set(handle, bytes);
       return handle;
-    } catch (error) {
-      failed = true;
-      throw error;
     } finally {
       // Drop unpublished collection before an owned native acknowledgement can suspend retirement.
       collected.length = 0;
       block = undefined;
-      if (!ended) await closeMediaIteratorPreservingFailure(iterator, failed);
+      if (!ended) await closeMediaIteratorPreservingFailure(iterator);
     }
   }
 

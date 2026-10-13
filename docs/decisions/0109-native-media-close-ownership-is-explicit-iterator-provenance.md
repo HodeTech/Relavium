@@ -255,3 +255,15 @@ joins the per-item disposition, two NEW clean complete whole-wave review rounds,
 security sittings, exact-source gates and preserved limits. Earlier dated pending
 checkpoints remain historical. This landing does not claim a merge, future header
 activation, full M/N lifecycle or removal of approved residuals.
+
+### Failure-only consumer cleanup clarification — 2026-10-13
+
+The subsequent PR #94 review found redundant close-only branches in the de-inline
+and reference-store consumers. They can interrupt before EOF only after a primary
+failure; simplifying their failure-preserving cleanup does not change the native
+acknowledgement or local-cleanup ordering. The shared helper still refuses a native
+close-only failure, including a yielding generator whose finally throws on return.
+The [canonical lifecycle contract](../reference/shared-core/llm-provider-seam.md#bounded-verified-media-publication-adr-0106)
+distinguishes these reachable cases. Existing foreign-finite, native-join and
+cleanup-order removal controls retain their witnesses; this clarification neither
+weakens the accepted guarantee nor claims current-head publication acceptance.

@@ -202,8 +202,7 @@ async function storeStream(
   // Acquire once, even if the store never pulls. A generator's unstarted finally would not close it.
   const iterator = source[Symbol.asyncIterator]();
   let byteLength = 0,
-    drained = false,
-    failed = false;
+    drained = false;
   let acquired = false;
   const counted: AsyncIterable<Uint8Array> = {
     [Symbol.asyncIterator]() {
@@ -236,15 +235,10 @@ async function storeStream(
     const handle = await store.putStream(counted, mimeType);
     if (!drained) throw new MediaAdmissionError('stream_incomplete');
     return { handle, byteLength };
-  } catch (error) {
-    failed = true;
-    throw error;
   } finally {
     if (!drained) {
-      await closeMediaIterator(iterator).catch(() => {
-        // Preserve a primary store/refusal error; a close-only fault remains typed.
-        if (!failed) throw new MediaAdmissionError('source_failed');
-      });
+      // Success requires EOF above, so an incomplete stream already has a primary refusal.
+      await closeMediaIterator(iterator).catch(() => undefined);
     }
   }
 }

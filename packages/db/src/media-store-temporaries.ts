@@ -16,7 +16,6 @@ export type MediaTemporaryRetentionReason =
   | 'unsafe_entry'
   | 'identity_changed'
   | 'legacy_offline_required'
-  | 'maintenance_active'
   | 'io';
 export interface MediaTemporarySweepResult {
   readonly removed: number;

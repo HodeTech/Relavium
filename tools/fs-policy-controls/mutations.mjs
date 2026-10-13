@@ -681,8 +681,8 @@ mutations.push(
   mediaControl(
     'MEDIA_UPSTREAM_EARLY_CLOSE',
     'packages/shared/src/media-deinline.ts',
-    "    if (!drained) {\n      await closeMediaIterator(iterator).catch(() => {\n        // Preserve a primary store/refusal error; a close-only fault remains typed.\n        if (!failed) throw new MediaAdmissionError('source_failed');\n      });\n    }",
-    '    if (!drained) {\n      void failed;\n    }',
+    '    if (!drained) {\n      // Success requires EOF above, so an incomplete stream already has a primary refusal.\n      await closeMediaIterator(iterator).catch(() => undefined);\n    }',
+    '    if (!drained) {\n      void drained;\n    }',
     'media-stream-early-return-closes-source',
     mediaPublication,
     'closes a single acquired upstream',
@@ -842,7 +842,7 @@ mutations.push(
       'MEDIA_ITERATOR_FOREIGN_ACK',
       mediaIteratorCases,
       'observes foreign pending return once without joining it',
-      13,
+      14,
     ),
     witnesses: ['throw', 'reject', 'then-getter'].map((kind) => ({
       target: `discards foreign ${kind} diagnostics`,
@@ -857,7 +857,7 @@ mutations.push(
     'MEDIA_ITERATOR_REENTRY_CACHE',
     mediaIteratorCases,
     'caches native acknowledgement before re-entrant return',
-    13,
+    14,
   ),
   mediaControl(
     'MEDIA_ITERATOR_CAPTURED_RETURN',
@@ -867,7 +867,7 @@ mutations.push(
     'MEDIA_ITERATOR_CAPTURED_RETURN',
     mediaIteratorCases,
     'captures the original native return and receiver',
-    13,
+    14,
   ),
   mediaControl(
     'MEDIA_ITERATOR_DUPLICATE_PREFLIGHT',
@@ -877,7 +877,7 @@ mutations.push(
     'MEDIA_ITERATOR_DUPLICATE_PREFLIGHT',
     mediaIteratorCases,
     'refuses duplicate registration before reading a replaced return getter',
-    13,
+    14,
   ),
   mediaControl(
     'MEDIA_ITERATOR_LATE_PROMOTION',
@@ -887,7 +887,7 @@ mutations.push(
     'MEDIA_ITERATOR_LATE_PROMOTION',
     mediaIteratorCases,
     'refuses late promotion when return capture re-enters a foreign close',
-    13,
+    14,
   ),
   mediaControl(
     'MEDIA_COUNTED_RETURN_PROMPT',
@@ -902,8 +902,8 @@ mutations.push(
   mediaControl(
     'MEDIA_DEINLINE_NATIVE_JOIN',
     mediaDeinline,
-    '      await closeMediaIterator(iterator).catch(() => {',
-    '      void closeMediaIterator(iterator).catch(() => {',
+    '      await closeMediaIterator(iterator).catch(() => undefined);',
+    '      void closeMediaIterator(iterator).catch(() => undefined);',
     'MEDIA_DEINLINE_NATIVE_JOIN',
     mediaDeinlineCases,
     'lets the counted consumer clean before joining native resolve',
@@ -914,9 +914,9 @@ mutations.push(
 // Both stores have independently meaningful foreign-finishing and native-join
 // sites; the filesystem return-await additionally enforces local temp/fd order.
 const fsStoreClose =
-  '    } finally {\n      if (!ended) await closeMediaIteratorPreservingFailure(iterator, failed);\n    }\n  }\n\n  async #publish';
+  '    } finally {\n      if (!ended) await closeMediaIteratorPreservingFailure(iterator);\n    }\n  }\n\n  async #publish';
 const memoryStoreClose =
-  '      block = undefined;\n      if (!ended) await closeMediaIteratorPreservingFailure(iterator, failed);';
+  '      block = undefined;\n      if (!ended) await closeMediaIteratorPreservingFailure(iterator);';
 mutations.push(
   mediaControl(
     'MEDIA_FS_STORE_FOREIGN_FINITE',
@@ -962,7 +962,7 @@ mutations.push(
     'MEDIA_FS_STORE_LOCAL_FIRST',
     mediaStore,
     '          const owned = new Uint8Array(chunk);\n          verifier.push(owned);\n          total += owned.length;\n          hash.update(owned);',
-    '          const owned = new Uint8Array(chunk);\n          try {\n            verifier.push(owned);\n          } catch (error) {\n            await closeMediaIteratorPreservingFailure(iterator, true);\n            throw error;\n          }\n          total += owned.length;\n          hash.update(owned);',
+    '          const owned = new Uint8Array(chunk);\n          try {\n            verifier.push(owned);\n          } catch (error) {\n            await closeMediaIteratorPreservingFailure(iterator);\n            throw error;\n          }\n          total += owned.length;\n          hash.update(owned);',
     'MEDIA_STORE_LOCAL_CLEANUP_BEFORE_CLOSE',
     mediaIteratorStoreCases,
     'filesystem iterator retirement cleans owned storage before joining registered return',
@@ -1347,7 +1347,7 @@ mutations.push(
       flacBlockFiles,
       'MEDIA_FLAC_MINIMUM_FIXED: refuses independently',
     ),
-    expectedTests: 54,
+    expectedTests: 138,
     witnesses: [
       {
         target: 'MEDIA_FLAC_MINIMUM_VARIABLE: refuses independently',
@@ -1367,7 +1367,7 @@ mutations.push(
       flacBlockFiles,
       'MEDIA_FLAC_FIXED_NONFINAL: refuses independently',
     ),
-    expectedTests: 54,
+    expectedTests: 138,
     witnesses: flacBlockWitnesses('FIXED_NONFINAL'),
   },
   {
@@ -1380,7 +1380,37 @@ mutations.push(
       flacBlockFiles,
       'MEDIA_FLAC_FIXED_FINAL_GROWTH: refuses independently',
     ),
-    expectedTests: 54,
+    expectedTests: 138,
     witnesses: flacBlockWitnesses('FIXED_FINAL_GROWTH'),
   },
 );
+
+// Subsequent PR #94 review: independently CRC-valid predictor/metadata fixtures
+// pin each mandatory field without conflating it with the older block rules.
+for (const [rule, before, after] of [
+  [
+    'PARTITION_EQUALITY',
+    'if (block % partitions !== 0 || block / partitions <= order) fail();',
+    'if (block % partitions !== 0 || block / partitions < order) fail();',
+  ],
+  [
+    'PADDING_ZERO',
+    'for (const value of bytes) if (value !== 0) fail();',
+    'for (const value of bytes) void value;',
+  ],
+  ['APPLICATION_MINIMUM', 'if (type === 2 && length < 4) fail();', 'void type;'],
+]) {
+  mutations.push({
+    ...control(
+      `MEDIA_FLAC_${rule}`,
+      'packages/shared/src/media-verifier-flac.ts',
+      before,
+      after,
+      `MEDIA_FLAC_${rule}`,
+      flacBlockFiles,
+      `MEDIA_FLAC_${rule}: refuses an independently checksummed structural violation`,
+    ),
+    expectedTests: 138,
+    witnesses: flacBlockWitnesses(rule),
+  });
+}

@@ -404,3 +404,22 @@ single-site removals cover minimum, fixed nonfinal equality and fixed final grow
 so one guard cannot hide another's absence. The
 [PR #94 correction register](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#pr-94-systematic-review-corrections--2026-10-13)
 owns the new independent review and final corrected-source publication gates.
+
+### Predictor framing and media-contract clarification — 2026-10-13
+
+The subsequent PR #94 review found a residual-partition equality gap and missing
+permanent predictor/residual coverage. Independent fixed/LPC/Rice/escape byte vectors
+and immutable published examples now distinguish legal framing from malformed
+partition geometry. The same review exposed missing mandatory PADDING/APPLICATION
+structure checks. These restore the accepted structural-consistency boundary;
+opaque metadata payloads and decoded samples remain outside its guarantees. The
+[canonical media profile](../reference/shared-core/llm-provider-seam.md#bounded-verified-media-publication-adr-0106)
+owns the exact supported framing and limits. Each new guard requires its own
+named removal witness, with real-store and durable-publication controls.
+
+The canonical contract also now states the existing separate-endpoint native
+selector refusal precisely, including recognized values and explicit undefined,
+and lists only retention reasons actually produced by automatic sweeping. No
+format override authority, codec, buffer ceiling or maintenance-error reason
+changes. Independent cumulative review and current-head publication remain
+separate gates; earlier acceptance does not certify these corrections.

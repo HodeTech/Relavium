@@ -4,7 +4,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MediaAdmissionError } from '@relavium/shared';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { FLAC_BLOCK_REFUSALS, flacBlocks } from '../../shared/src/media-flac-vectors.js';
+import {
+  FLAC_BLOCK_REFUSALS,
+  FLAC_STRUCTURE_ACCEPTANCES,
+  FLAC_STRUCTURE_REFUSALS,
+  flacBlocks,
+} from '../../shared/src/media-flac-vectors.js';
 import { FilesystemMediaStore, InMemoryMediaStore } from './media-store.js';
 
 let root: string;
@@ -58,7 +63,38 @@ describe.each(['memory', 'filesystem'] as const)('%s FLAC byte admission', (kind
       }
     });
 
-    it.each(FLAC_BLOCK_REFUSALS)(
+    it.each(FLAC_STRUCTURE_ACCEPTANCES)(
+      `MEDIA_FLAC_STORE_VALID_%s: ${method} preserves predictor and metadata bytes`,
+      async (rule, bytes) => {
+        const marker = `MEDIA_FLAC_STORE_VALID_${rule}`;
+        const store = kind === 'memory' ? new InMemoryMediaStore() : new FilesystemMediaStore(root);
+        const handle = handleOf(bytes);
+        expect(
+          await (method === 'put'
+            ? store.put(bytes, 'audio/flac')
+            : store.putStream(fragmented(bytes), 'audio/flac')),
+          marker,
+        ).toBe(handle);
+        expect(await store.get(handle), marker).toEqual(bytes);
+        expect(
+          await store.validateMedia(handle, {
+            mimeType: 'audio/flac',
+            modality: 'audio',
+            byteLength: bytes.length,
+          }),
+          marker,
+        ).toEqual({ handle, mimeType: 'audio/flac', modality: 'audio', byteLength: bytes.length });
+        if (store instanceof FilesystemMediaStore) {
+          expect(
+            (await store.listHandles()).map((entry) => entry.handle),
+            marker,
+          ).toEqual([handle]);
+          noTemporaries();
+        }
+      },
+    );
+
+    it.each([...FLAC_BLOCK_REFUSALS, ...FLAC_STRUCTURE_REFUSALS])(
       `MEDIA_FLAC_STORE_%s: ${method} refuses before hash publication`,
       async (rule, bytes) => {
         const marker = `MEDIA_FLAC_STORE_${rule}`;
@@ -84,7 +120,7 @@ describe.each(['memory', 'filesystem'] as const)('%s FLAC byte admission', (kind
   }
 });
 
-it.each(FLAC_BLOCK_REFUSALS)(
+it.each([...FLAC_BLOCK_REFUSALS, ...FLAC_STRUCTURE_REFUSALS])(
   'MEDIA_FLAC_LEGACY_%s: revalidation refuses without deleting bytes',
   async (rule, bytes) => {
     const digest = createHash('sha256').update(bytes).digest('hex');

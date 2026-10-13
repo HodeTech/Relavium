@@ -161,7 +161,7 @@ own marker, a losing recovery treats the peer's directory removal as contention 
 I/O failure. Earlier marker/identity admission, pinned-root revocation and non-missing I/O
 errors retain their refusal semantics. Retained reason counts sum to `retained`. Fixed reasons are `too_young`,
 `future_timestamp`, `owner_live`, `owner_unknown`, `claimant_live`, `claimant_unknown`, `malformed`,
-`unsafe_entry`, `identity_changed`, `legacy_offline_required`, `maintenance_active`, `io`.
+`unsafe_entry`, `identity_changed`, `legacy_offline_required`, `io`.
 Arbitrary unrelated strays and published blobs are not candidates. `MediaTemporaryMaintenanceError`
 has fixed `flags_required`, `producer_active`, `owner_unknown` or `maintenance_active` reasons;
 physical root failures remain `MediaStoreFilesystemError`. No path, bytes or native error detail

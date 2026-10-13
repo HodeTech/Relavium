@@ -64,7 +64,8 @@ function* residual(
   const method = yield* bits.bits(2);
   if (method > 1) fail();
   const partitions = 2 ** (yield* bits.bits(4));
-  if (block % partitions !== 0 || block / partitions < order) fail();
+  // RFC 9639 §9.2.7 requires at least one residual sample in the first partition.
+  if (block % partitions !== 0 || block / partitions <= order) fail();
   for (let p = 0; p < partitions; p++) {
     const parameter = yield* bits.bits(method + 4),
       samples = block / partitions - (p === 0 ? order : 0);
@@ -75,6 +76,14 @@ function* residual(
         yield* bits.unary();
         yield* bits.discard(parameter);
       }
+  }
+}
+/** RFC 9639 §8.3: inspect required zero padding through the existing bounded arena. */
+function* padding(length: number): Generator<ReadStep, void, Uint8Array> {
+  for (let remaining = length; remaining > 0; ) {
+    const bytes = yield* read(Math.min(remaining, 4096));
+    for (const value of bytes) if (value !== 0) fail();
+    remaining -= bytes.length;
   }
 }
 export function* flac(): MediaParser {
@@ -109,7 +118,10 @@ export function* flac(): MediaParser {
       if (minBlock < 16 || maxBlock < minBlock || !rate || depth < 4 || depth > 32) fail();
     } else {
       if (type === 0 || type === 127) fail();
-      yield* skip(length);
+      // APPLICATION always carries a 32-bit identifier; its payload remains opaque.
+      if (type === 2 && length < 4) fail();
+      if (type === 1) yield* padding(length);
+      else yield* skip(length);
     }
   }
   let frames = 0,

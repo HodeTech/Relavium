@@ -16,6 +16,8 @@ import { collectDurableMediaHandles, type RunEvent } from '@relavium/shared';
 import { expect, it } from 'vitest';
 import {
   FLAC_BLOCK_REFUSALS,
+  FLAC_STRUCTURE_ACCEPTANCES,
+  FLAC_STRUCTURE_REFUSALS,
   flacBlocks,
 } from '../../../../packages/shared/src/media-flac-vectors.js';
 import { createCliHost } from './host.js';
@@ -123,9 +125,13 @@ async function publish(bytes: Uint8Array, valid: boolean, marker: string): Promi
   }
 }
 
-it.each(FLAC_BLOCK_REFUSALS)(
+it.each([...FLAC_BLOCK_REFUSALS, ...FLAC_STRUCTURE_REFUSALS])(
   'MEDIA_FLAC_PUBLICATION_%s: refuses before append, metadata or grant',
   (rule, bytes) => publish(bytes, false, `MEDIA_FLAC_PUBLICATION_${rule}`),
 );
 it('MEDIA_FLAC_PUBLICATION_SHORT_FINAL: preserves the admitted bytes and ACK ordering', () =>
   publish(flacBlocks([32, 32, 1]), true, 'MEDIA_FLAC_PUBLICATION_SHORT_FINAL'));
+it.each(FLAC_STRUCTURE_ACCEPTANCES)(
+  'MEDIA_FLAC_PUBLICATION_VALID_%s: preserves predictor and metadata bytes and ACK ordering',
+  (rule, bytes) => publish(bytes, true, `MEDIA_FLAC_PUBLICATION_VALID_${rule}`),
+);

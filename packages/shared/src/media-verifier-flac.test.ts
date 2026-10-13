@@ -2,8 +2,13 @@ import { describe, expect, it } from 'vitest';
 import { MediaAdmissionError } from './media-admission.js';
 import {
   FLAC_BLOCK_REFUSALS,
+  FLAC_RFC_PREDICTOR,
+  FLAC_STRUCTURE_ACCEPTANCES,
+  FLAC_STRUCTURE_REFUSALS,
   flacBlocks,
   flacFrame,
+  flacMetadata,
+  flacPredictor,
   flacStream,
   type FlacStrategy,
 } from './media-flac-vectors.js';
@@ -125,4 +130,157 @@ it('a block-rule refusal poisons subsequent pushes and finish', () => {
   expect(() => verifier.push(flacBlocks([32, 16, 32]))).toThrow(MediaAdmissionError);
   expect(() => verifier.push(new Uint8Array())).toThrow(MediaAdmissionError);
   expect(() => verifier.finish()).toThrow(MediaAdmissionError);
+});
+
+it.each(FLAC_STRUCTURE_REFUSALS)(
+  'MEDIA_FLAC_%s: refuses an independently checksummed structural violation',
+  (rule, bytes) => refuses(bytes, `MEDIA_FLAC_${rule}`),
+);
+it.each(FLAC_STRUCTURE_ACCEPTANCES)(
+  'MEDIA_FLAC_VALID_%s: preserves adjacent legal framing across every byte split',
+  (_rule, bytes) => accepts(bytes),
+);
+
+describe('FLAC predictor and residual grammar', () => {
+  it.each([0, 1, 2, 3, 4])('accepts fixed predictor order %i', (order) => {
+    accepts(flacPredictor({ order }));
+  });
+  it.each([1, 2, 32])(
+    'accepts LPC order %i with independent coefficients and residuals',
+    (order) => {
+      accepts(flacPredictor({ kind: 'lpc', order, block: 64 }));
+    },
+  );
+  it.each([0, 14])('accepts LPC coefficient precision-minus-one %i', (precision) => {
+    accepts(flacPredictor({ kind: 'lpc', precision, shift: 15 }));
+  });
+  it.each([1, 15])('accepts %i wasted bits before warm-up samples', (wastedBits) => {
+    // Zero residuals keep decoded samples representable even at the one-bit depth boundary.
+    accepts(flacPredictor({ wastedBits, partitions: [{ escape: 0 }] }));
+  });
+  it('uses the fifth parameter bit for Rice method 1', () => {
+    accepts(flacPredictor({ method: 1, partitions: [{ rice: 16 }] }));
+  });
+  it.each([0, 1])('accepts zero-width and nonzero escaped partitions for method %i', (method) => {
+    accepts(flacPredictor({ method, partitions: [{ escape: 0 }] }));
+    accepts(flacPredictor({ method, partitions: [{ escape: 3 }] }));
+  });
+  it('subtracts warm-up samples only from the first of four mixed partitions', () => {
+    const options = {
+      block: 32,
+      order: 2,
+      method: 1,
+      partitionOrder: 2,
+      partitions: [{ rice: 0 }, { escape: 0 }, { rice: 16 }, { escape: 3 }],
+    };
+    accepts(flacPredictor(options));
+    refuses(
+      flacPredictor({ ...options, subtractWarmupEveryPartition: true }),
+      'MEDIA_FLAC_FIRST_PARTITION_WARMUP',
+    );
+  });
+  it.each([
+    { order: 1, block: 16, partitionOrder: 4 },
+    { order: 2, block: 16, partitionOrder: 3 },
+    { order: 3, block: 24, partitionOrder: 3 },
+    { order: 4, block: 16, partitionOrder: 2 },
+  ])('requires positive first-partition residual count for fixed order $order', (options) => {
+    refuses(flacPredictor(options), 'MEDIA_FLAC_PARTITION_EQUALITY');
+    accepts(flacPredictor({ ...options, partitionOrder: options.partitionOrder - 1 }));
+  });
+  it('requires positive first-partition residual count for LPC', () => {
+    refuses(flacPredictor({ kind: 'lpc', order: 16 }), 'MEDIA_FLAC_PARTITION_EQUALITY');
+    accepts(flacPredictor({ kind: 'lpc', order: 15 }));
+  });
+  it.each([
+    { method: 2 },
+    { method: 3 },
+    { kind: 'lpc', precision: 15 },
+    { kind: 'lpc', shift: -1 },
+    { wastedBits: 16 },
+    { wastedBits: 18 },
+    { block: 17, partitionOrder: 1 },
+    { block: 3, order: 4 },
+    { alignmentBit: 1 },
+  ] as const)('refuses reserved or inconsistent predictor fields %#', (options) => {
+    refuses(flacPredictor(options), 'MEDIA_FLAC_PREDICTOR_FRAMING');
+  });
+  it('refuses every truncated predictor body and footer', () => {
+    for (const bytes of [
+      FLAC_RFC_PREDICTOR,
+      flacPredictor({ kind: 'lpc', method: 1, partitions: [{ rice: 16 }] }),
+      flacPredictor({ partitions: [{ escape: 3 }] }),
+    ]) {
+      for (let end = 42; end < bytes.length; end++) {
+        const partial = bytes.subarray(0, end);
+        expect(verify([partial]), 'MEDIA_FLAC_PREDICTOR_TRUNCATION').toMatchObject({
+          status: 'rejected',
+          reason: { code: 'invalid_format' },
+        });
+        expect(
+          verify(Array.from(partial, (value) => new Uint8Array([value]))),
+          'MEDIA_FLAC_PREDICTOR_TRUNCATION',
+        ).toMatchObject({ status: 'rejected', reason: { code: 'invalid_format' } });
+      }
+    }
+  });
+});
+
+describe('FLAC bounded metadata grammar', () => {
+  it('accepts empty/repeated padding and opaque application data', () => {
+    accepts(
+      flacMetadata([
+        { type: 1, bytes: new Uint8Array() },
+        { type: 1, bytes: new Uint8Array(8) },
+        { type: 2, bytes: hex('6162636400ff0080') },
+      ]),
+    );
+  });
+  it('checks padding across arena boundaries in fragmented deliveries', () => {
+    const padding = new Uint8Array(8193);
+    const good = flacMetadata([{ type: 1, bytes: padding }]);
+    padding[8192] = 1;
+    const bad = flacMetadata([{ type: 1, bytes: padding }]);
+    for (const size of [1, 4095, 4096, 4097]) {
+      const fragments = (bytes: Uint8Array): Uint8Array[] =>
+        Array.from({ length: Math.ceil(bytes.length / size) }, (_, index) =>
+          bytes.subarray(index * size, (index + 1) * size),
+        );
+      expect(verify(fragments(good)), 'MEDIA_FLAC_PADDING_ZERO').toMatchObject({
+        status: 'fulfilled',
+      });
+      expect(verify(fragments(bad)), 'MEDIA_FLAC_PADDING_ZERO').toMatchObject({
+        status: 'rejected',
+        reason: { code: 'invalid_format' },
+      });
+    }
+  });
+  it.each([0, 1, 2, 3])('requires all four APPLICATION identifier bytes, length %i', (length) => {
+    refuses(
+      flacMetadata([{ type: 2, bytes: new Uint8Array(length) }]),
+      'MEDIA_FLAC_APPLICATION_MINIMUM',
+    );
+  });
+  it('keeps unrelated metadata opaque, including reserved skippable types', () => {
+    accepts(
+      flacMetadata([
+        { type: 3, bytes: hex('ff') },
+        { type: 7, bytes: hex('0080ff') },
+        { type: 126, bytes: new Uint8Array() },
+      ]),
+    );
+  });
+  it('retains metadata-chain forbidden type, duplicate STREAMINFO and truncation refusals', () => {
+    for (const type of [0, 127])
+      refuses(flacMetadata([{ type, bytes: new Uint8Array(34) }]), 'MEDIA_FLAC_METADATA_CHAIN');
+    for (const type of [1, 2]) {
+      const bytes = flacMetadata([{ type, bytes: new Uint8Array(8) }]);
+      for (let end = 42; end < 54; end++)
+        refuses(bytes.subarray(0, end), 'MEDIA_FLAC_METADATA_TRUNCATION');
+      refuses(
+        flacMetadata([{ type, bytes: new Uint8Array(8), length: 100 }]),
+        'MEDIA_FLAC_METADATA_TRUNCATION',
+      );
+    }
+  });
 });

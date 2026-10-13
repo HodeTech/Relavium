@@ -197,6 +197,38 @@ describe('exact media iterator ownership', () => {
     },
   );
 
+  it('maps an actual yielded native generator finally failure without a primary failure', async () => {
+    const privateFailure = new Error('private generator retirement sentinel');
+    let retirements = 0;
+    const iterator = registerNativeMediaIterator(
+      (async function* () {
+        try {
+          yield new Uint8Array([1, 2]);
+        } finally {
+          retirements++;
+          await Promise.resolve();
+          // eslint-disable-next-line no-unsafe-finally -- intentional close-only failure regression; no primary throwable exists
+          throw privateFailure;
+        }
+      })(),
+    );
+    expect(await iterator.next()).toEqual({ done: false, value: new Uint8Array([1, 2]) });
+    const acknowledgement = closeMediaIterator(iterator);
+    expect(closeMediaIterator(iterator), 'MEDIA_ITERATOR_NATIVE_GENERATOR_CLOSE_FAILURE').toBe(
+      acknowledgement,
+    );
+    await expect(acknowledgement, 'MEDIA_ITERATOR_NATIVE_GENERATOR_CLOSE_FAILURE').rejects.toEqual(
+      new MediaAdmissionError('source_failed'),
+    );
+    expect(closeMediaIterator(iterator), 'MEDIA_ITERATOR_NATIVE_GENERATOR_CLOSE_FAILURE').toBe(
+      acknowledgement,
+    );
+    await expect(closeMediaIterator(iterator)).rejects.toEqual(
+      new MediaAdmissionError('source_failed'),
+    );
+    expect(retirements, 'MEDIA_ITERATOR_NATIVE_GENERATOR_CLOSE_FAILURE').toBe(1);
+  });
+
   it('does not inherit native ownership through a different iterator or copied prototype', async () => {
     const held = gate();
     const returned = held.promise.then(done);
