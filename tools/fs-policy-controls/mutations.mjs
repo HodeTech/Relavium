@@ -1302,3 +1302,75 @@ mutations.push({
     },
   ],
 });
+
+// PR #94 R94-3: remove one scalar block rule at a time. Each CRC-valid fixture
+// isolates that rule: [1,1] fixed/[1,16] variable minimum, [32,16,32] equality,
+// and [16,32] at EOF for final growth. Complete files keep their valid pairs.
+const flacBlockFiles = [
+  'packages/shared/src/media-verifier-flac.test.ts',
+  'packages/db/src/media-flac-admission.test.ts',
+  'apps/cli/src/engine/media-flac-publication.test.ts',
+];
+function flacBlockWitnesses(rule) {
+  return [
+    ...['memory', 'filesystem'].flatMap((store) =>
+      ['put', 'putStream'].map((method) => ({
+        target: `${store} FLAC byte admission MEDIA_FLAC_STORE_${rule}: ${method} refuses`,
+        marker: `MEDIA_FLAC_STORE_${rule}`,
+      })),
+    ),
+    { target: `MEDIA_FLAC_LEGACY_${rule}: revalidation`, marker: `MEDIA_FLAC_LEGACY_${rule}` },
+    {
+      target: `MEDIA_FLAC_PUBLICATION_${rule}: refuses`,
+      marker: `MEDIA_FLAC_PUBLICATION_${rule}`,
+    },
+  ];
+}
+mutations.push(
+  {
+    ...control(
+      'MEDIA_FLAC_NONFINAL_MINIMUM',
+      'packages/shared/src/media-verifier-flac.ts',
+      'if (previousBlock < minBlock) fail();',
+      'void minBlock;',
+      'MEDIA_FLAC_MINIMUM_FIXED',
+      flacBlockFiles,
+      'MEDIA_FLAC_MINIMUM_FIXED: refuses independently',
+    ),
+    expectedTests: 54,
+    witnesses: [
+      {
+        target: 'MEDIA_FLAC_MINIMUM_VARIABLE: refuses independently',
+        marker: 'MEDIA_FLAC_MINIMUM_VARIABLE',
+      },
+      ...flacBlockWitnesses('MINIMUM_FIXED'),
+      ...flacBlockWitnesses('MINIMUM_VARIABLE'),
+    ],
+  },
+  {
+    ...control(
+      'MEDIA_FLAC_FIXED_NONFINAL',
+      'packages/shared/src/media-verifier-flac.ts',
+      'else if (previousBlock !== fixedBlock) fail();',
+      'else void previousBlock;',
+      'MEDIA_FLAC_FIXED_NONFINAL',
+      flacBlockFiles,
+      'MEDIA_FLAC_FIXED_NONFINAL: refuses independently',
+    ),
+    expectedTests: 54,
+    witnesses: flacBlockWitnesses('FIXED_NONFINAL'),
+  },
+  {
+    ...control(
+      'MEDIA_FLAC_FIXED_FINAL_GROWTH',
+      'packages/shared/src/media-verifier-flac.ts',
+      'if (strategy === 0 && fixedBlock !== 0 && block > fixedBlock) fail();',
+      'void fixedBlock;',
+      'MEDIA_FLAC_FIXED_FINAL_GROWTH',
+      flacBlockFiles,
+      'MEDIA_FLAC_FIXED_FINAL_GROWTH: refuses independently',
+    ),
+    expectedTests: 54,
+    witnesses: flacBlockWitnesses('FIXED_FINAL_GROWTH'),
+  },
+);

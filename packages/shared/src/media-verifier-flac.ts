@@ -85,6 +85,7 @@ export function* flac(): MediaParser {
     depth = 0,
     rate = 0,
     total = 0,
+    minBlock = 0,
     maxBlock = 0;
   while (!last) {
     metadata = countStructure(metadata);
@@ -95,7 +96,7 @@ export function* flac(): MediaParser {
     if (metadata === 1) {
       if (type !== 0 || length !== 34) fail();
       const s = yield* read(34);
-      const min = be16(s);
+      minBlock = be16(s);
       maxBlock = be16(s, 2);
       rate = byte(s, 10) * 4096 + byte(s, 11) * 16 + (byte(s, 12) >> 4);
       channels = ((byte(s, 12) >> 1) & 7) + 1;
@@ -105,7 +106,7 @@ export function* flac(): MediaParser {
         byte(s, 14) * 16777216 +
         byte(s, 15) * 65536 +
         be16(s, 16);
-      if (min < 16 || maxBlock < min || !rate || depth < 4 || depth > 32) fail();
+      if (minBlock < 16 || maxBlock < minBlock || !rate || depth < 4 || depth > 32) fail();
     } else {
       if (type === 0 || type === 127) fail();
       yield* skip(length);
@@ -113,7 +114,9 @@ export function* flac(): MediaParser {
   }
   let frames = 0,
     samples = 0,
-    strategy = -1;
+    strategy = -1,
+    previousBlock = 0,
+    fixedBlock = 0;
   for (;;) {
     const h = yield* read(4, true);
     if (h.length === 0) {
@@ -138,6 +141,15 @@ export function* flac(): MediaParser {
     const currentStrategy = b1 & 1;
     if (strategy !== -1 && strategy !== currentStrategy) fail();
     strategy = currentStrategy;
+    // RFC 9639 §§8.2/9.1: only a successor proves the CRC-complete prior frame
+    // nonfinal. Keep the final/singleton minimum exception, including blocks 1..15.
+    if (previousBlock !== 0) {
+      if (previousBlock < minBlock) fail();
+      if (strategy === 0) {
+        if (fixedBlock === 0) fixedBlock = previousBlock;
+        else if (previousBlock !== fixedBlock) fail();
+      }
+    }
     const bits = new FrameBits();
     let crc8 = 0;
     for (const b of h) {
@@ -196,6 +208,9 @@ export function* flac(): MediaParser {
       frameChannels !== channels
     )
       fail();
+    // A fixed final block may be shorter, never larger; a successor will also
+    // require this candidate to equal the nominal size if it proves nonfinal.
+    if (strategy === 0 && fixedBlock !== 0 && block > fixedBlock) fail();
     const stored = byte(yield* read(1), 0);
     if (stored !== crc8) fail();
     bits.add(stored);
@@ -229,6 +244,7 @@ export function* flac(): MediaParser {
     }
     yield* bits.align();
     if (be16(yield* read(2)) !== bits.crc) fail();
+    previousBlock = block;
     samples += block;
     frames = countStructure(frames, 1048576);
   }

@@ -382,3 +382,25 @@ must distinguish legal tails from malformed required fields. The
 [PR #94 correction register](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#pr-94-systematic-review-corrections--2026-10-13)
 owns independent correction acceptance and fresh publication evidence; earlier
 checkpoint checks do not certify this repair.
+
+### FLAC inter-frame consistency correction — 2026-10-13
+
+Maintainer review of PR #94 at `395fbf95` reproduced publication of CRC-valid,
+correctly numbered FLAC with a nonfinal block below the STREAMINFO minimum and
+with inconsistent fixed-strategy block sizes. These are framing constraints,
+independent of decoding samples or checking STREAMINFO MD5. Their enforcement
+restores the accepted structural-consistency guarantee.
+
+The [canonical media profile](../reference/shared-core/llm-provider-seam.md#bounded-verified-media-publication-adr-0106)
+owns the exact nonfinal/final distinction. A successor makes the previous completed
+frame nonfinal; bounded scalar state can then enforce minimum and fixed-size
+consistency while preserving a legal shorter final frame and singleton. Variable
+strategy remains distinct. This adds no decoder, buffering, codec or unrelated
+requirement that declared bounds be attained.
+
+Fragmented, independently checksummed refusal/acceptance pairs and real-store
+publication controls must distinguish each guard from the other checks. Separate
+single-site removals cover minimum, fixed nonfinal equality and fixed final growth
+so one guard cannot hide another's absence. The
+[PR #94 correction register](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#pr-94-systematic-review-corrections--2026-10-13)
+owns the new independent review and final corrected-source publication gates.

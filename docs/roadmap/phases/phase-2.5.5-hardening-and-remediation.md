@@ -3116,8 +3116,8 @@ artifact consistency does not establish the runner-error guarantee under review.
 | Increment | Confirmed finding | Required correction and evidence | State |
 | --- | --- | --- | --- |
 | 1 — R94-1 (High) | JSON-only Vitest reporting omits unhandled runner errors, so a named removal assertion can coexist with an invisible background failure. | Own a structured completed runner-error receipt, require zero errors before phase acceptance, and permanently exercise the real coordinator with a designated assertion plus a genuine unhandled rejection/exception. Refresh affected complete controls; old artifacts do not certify this repair. | Source accepted at `9664b7cc` after two NEW clean complete cumulative rounds (14 paths / 48 hunks each); final corrected-head controls/publication pending. |
-| 2 — R94-2 (High) | Valid OpusTags padding is refused after otherwise supported provider generation. | Consume the permitted bounded Opus tail after complete comment framing; preserve Vorbis framing. Pin fragmented packet/page positives, malformed negatives and actual store/installed-SDK publication. | Implemented with permanent regressions and a targeted removal control; two NEW clean complete cumulative review rounds pending. |
-| 3 — R94-3 (Medium) | FLAC nonfinal minimum and fixed block-size consistency are not enforced. | Validate the previous frame once a successor establishes that it is nonfinal; retain the legal shorter final frame. Pin fragmented verifier and actual-store refusal/acceptance pairs. | Implementation and two NEW clean complete cumulative review rounds pending. |
+| 2 — R94-2 (High) | Valid OpusTags padding is refused after otherwise supported provider generation. | Consume the permitted bounded Opus tail after complete comment framing; preserve Vorbis framing. Pin fragmented packet/page positives, malformed negatives and actual store/installed-SDK publication. | Source accepted at `0269a78a` after two NEW clean complete cumulative rounds (23 paths / 61 hunks each); final corrected-head controls/publication pending. |
+| 3 — R94-3 (Medium) | FLAC nonfinal minimum and fixed block-size consistency are not enforced. | Validate the previous frame once a successor establishes that it is nonfinal; retain the legal shorter final frame. Pin fragmented verifier and actual-store refusal/acceptance pairs. | Implemented with 54 permanent cases and three isolated removal controls; two NEW clean complete cumulative review rounds pending. |
 
 Each increment follows implement/regression/commit, independent review/fix/commit,
 then a NEW complete cumulative review round. A material correction restarts the
@@ -3141,3 +3141,15 @@ Selected native-child fixed/removal/restored captures retained three completed
 zero-error receipts each, independently joined to exact source/runtime/process
 records. These scoped source gates do not replace the pending full-family refresh
 or certify all original PR files again. R94-2 and R94-3 remain separate increments.
+
+R94-2's final affected cohort passes 42 tests: 24 verifier, four real-store and
+14 installed-SDK publication cases. Both new runtime rounds independently execute
+the selected exact-commit control: 42 fixed pass, 17 named removal assertions,
+42 restored pass, with all ten required witnesses and three zero-error receipts.
+Root independently joins every phase's source/runtime/process/reporter records,
+restoration, installed dependency bytes and unchanged physical bounds. Each new
+integration reviewer covers the entire same cumulative delta and independently
+probes legal and malformed continued-packet boundaries. Full product lint/typecheck,
+workspace tests and build pass at `0269a78a`; five of eleven test tasks and five
+of six build tasks are cache hits, not new executions. These source gates leave
+FLAC and final full-family/coverage/platform/publication acceptance open.

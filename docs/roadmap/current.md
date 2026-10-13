@@ -118,6 +118,9 @@ owns their disposition and acceptance gates. PR #94 is draft while these existin
 contract repairs, new independent cumulative reviews and corrected-head controls
 are completed. Earlier green checks retain their original source attribution;
 they do not establish the clean-runtime guarantee challenged by this review.
+The runner and Opus source corrections have each completed two NEW clean complete
+cumulative review rounds; FLAC source review and final corrected-head acceptance
+remain open in the register.
 Complete these corrections before beginning Wave 3.
 
 Completed work covers invocation-authorized filesystem boundaries, bounded secret
