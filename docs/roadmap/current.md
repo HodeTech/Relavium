@@ -136,6 +136,9 @@ records its correction, exact native temporary identities and the remaining comp
 independent-review and platform gates. The fifth complete cumulative review then
 reproduced whole-buffer Buffer reuse; its [repair checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#step-6-fifth-cumulative-review-and-repairs--2026-10-13)
 records the owned-copy correction and resets the new clean-review requirement.
+The sixth complete round independently reproduced configured byte-limit and
+incomplete-evidence phase-prefix gaps; the [sixth repair checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#step-6-sixth-cumulative-review-and-repairs--2026-10-13)
+records their corrections and retains the new complete-review and publication gates.
 Step 6 acceptance remains open. The lifecycle
 repair implements Accepted [ADR-0109](../decisions/0109-native-media-close-ownership-is-explicit-iterator-provenance.md):
 explicit native iterator ownership must preserve real HTTP close joining while an

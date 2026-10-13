@@ -983,6 +983,12 @@ The whole-buffer egress helper also owns each admitted borrowed chunk before req
 the next one. Its copy ignores producer `slice` and iterator overrides, including the
 aliasing behaviour of Node `Buffer.slice`; subsequent producer reuse cannot change the
 retained bytes.
+The shared host-side response reader also enforces each caller's configured byte
+limit using the intrinsic typed-array byte count, before copying or yielding an
+overflowing chunk. Own `length`/`byteLength` properties cannot lower that count;
+the buffered text reader owns admitted chunks before another pull, while the
+streaming reader retains no chunk. This per-response limit remains separate from
+the stores' independent media-object ceiling.
 
 The exact initial canonical MIME set is `image/png`, `image/jpeg`, `image/gif`, `image/webp`,
 `audio/wav`, `audio/mpeg`, `audio/flac`, `audio/ogg`, `audio/opus`, `audio/aac`, `audio/L16`,

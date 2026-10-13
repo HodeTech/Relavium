@@ -2536,3 +2536,47 @@ matrices, independent artifact audits, two NEW clean complete cumulative impleme
 rounds after this repair and remaining publication gates are required. Steps 7–8
 remain unstarted. No ADR approval, provider capture, credential or user decision
 is pending.
+
+### Step 6 sixth cumulative review and repairs — 2026-10-13
+
+Four NEW complete cumulative reviews cover all **159 paths**, accepted Step 5 base
+`c6921be1` through committed head `85e4b0c1`. Shared and integration are clean;
+stores and tooling each return one independently reproduced **Medium** finding.
+This is a changes-requested round, not one of the required clean rounds.
+
+| Confirmed gap | Correction and permanent evidence |
+| --- | --- |
+| A genuine injected byte view with an inert own `length: 0` bypasses a lower configured response limit | Both shared host readers count intrinsic bytes before copying/yielding. Exact capacity, cumulative overflow, Buffer/Uint8Array overrides, getter non-evaluation and both public media fetch paths are pinned. The independent 25 MiB media ceiling was intact. No ordinary native HTTP shadowing is claimed. |
+| An incomplete standalone evidence archive accepts restored-only/gapped phases or two unfinished controls | Completed IDs are unique and retain all three physical runtime records; incomplete captures allow one contiguous attempted phase prefix, with every predecessor's runtime/hash join. Complete captures allow no unreported tail. External cohort membership/order remains an independent acceptance audit. |
+
+A follow-on Root probe also reproduced producer reuse changing the buffered text
+reader's returned bytes. That reader now owns admitted chunks before another pull;
+the streaming twin remains borrowed and retains no chunk. The initial 20-case DB
+regression produces fourteen named AssertionErrors before repair. Its expanded
+**28-case** permanent file and all **115** focused egress cases pass afterwards.
+Two appended filesystem controls separately remove intrinsic counting and buffered
+ownership, preserving all original **97 IDs, order and complete workloads**.
+The **99-control** export projects **1,789 files** under unchanged retention caps;
+this arithmetic is not physical acceptance evidence.
+
+The evidence repair's six new negative regressions fail before the fix with ordinary
+missing-exception assertions; seven genuine-prefix controls remain positive. All
+**76 retention tests**, including the original 63, pass afterwards. Zero phases,
+selected completed controls, interruption at each phase with/without final runtime,
+full unreported failed tails and primary failure precedence remain supported.
+
+The repair working tree passes **17/17 uncached lint/typecheck tasks**, **11/11
+uncached test/dependency tasks**, **559 files / 12,260 passing tests / 13 established
+skips**, six uncached builds and the uncached whole-repository formatting task. All
+**185 acceptance-tool tests**, configured tools lint/types, isolation, DB sync, SDK
+fences, engine purity, bundle closure, compiled CLI, actual workspace/untouched CLI
+media packaging, offline overflow and budget replay checks pass. The copied-source
+collection validates **99 filesystem / 35 secrets controls**, **51 complete files /
+1,381 names**, with no anchor/count/witness drift. It captures the repair working
+tree on `85e4b0c1`, not committed-head physical phase execution. The document audit
+checks fifty Markdown files, 2,638 relative links and nineteen append-only ADRs.
+
+**Step 6 remains unaccepted.** Current committed-head physical controls, complete
+matrices and artifact audits, required gates, and two NEW clean complete cumulative
+implementation rounds after these repairs remain required. Steps 7–8 are unstarted.
+No new ADR, approval, provider capture, credential or user decision is pending.

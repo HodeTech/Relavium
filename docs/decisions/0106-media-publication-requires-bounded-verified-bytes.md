@@ -310,3 +310,17 @@ owns this existing ownership obligation. The default Node HTTP implementation wa
 not observed reusing chunks; this correction covers the supported injected port
 without asserting universal hostile-JavaScript containment. Physical removal,
 fresh cumulative reviews and publication gates remain required for Step 6.
+
+### Configured response-byte accounting correction — 2026-10-13
+
+The sixth cumulative implementation review reproduced a lower configured download
+limit bypass through genuine injected Uint8Array/Buffer chunks with an inert own
+`length` property. The independent media-object ceiling remained intact. The
+shared host reader now counts intrinsic bytes before copying or yielding; its
+buffered twin also owns admitted chunks before producer reuse. This fulfils the
+existing per-response bound and ownership obligation, whose canonical description
+is in the [seam](../reference/shared-core/llm-provider-seam.md#bounded-verified-media-publication-adr-0106).
+Exact-capacity, cumulative-overflow, non-evaluated getter, borrowed-byte and public
+media-path regressions are retained. It does not assert that ordinary native HTTP
+chunks override their length, or extend the approved JavaScript containment scope.
+Named removal controls and new complete cumulative reviews remain acceptance gates.
