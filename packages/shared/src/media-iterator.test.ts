@@ -214,19 +214,25 @@ describe('exact media iterator ownership', () => {
     );
     expect(await iterator.next()).toEqual({ done: false, value: new Uint8Array([1, 2]) });
     const acknowledgement = closeMediaIterator(iterator);
-    expect(closeMediaIterator(iterator), 'MEDIA_ITERATOR_NATIVE_GENERATOR_CLOSE_FAILURE').toBe(
-      acknowledgement,
-    );
-    await expect(acknowledgement, 'MEDIA_ITERATOR_NATIVE_GENERATOR_CLOSE_FAILURE').rejects.toEqual(
-      new MediaAdmissionError('source_failed'),
-    );
-    expect(closeMediaIterator(iterator), 'MEDIA_ITERATOR_NATIVE_GENERATOR_CLOSE_FAILURE').toBe(
-      acknowledgement,
-    );
-    await expect(closeMediaIterator(iterator)).rejects.toEqual(
-      new MediaAdmissionError('source_failed'),
-    );
-    expect(retirements, 'MEDIA_ITERATOR_NATIVE_GENERATOR_CLOSE_FAILURE').toBe(1);
+    // Observe before any assertion can fail; a removed cache must not orphan the original rejection.
+    const settled = Promise.allSettled([acknowledgement]);
+    try {
+      expect(closeMediaIterator(iterator), 'MEDIA_ITERATOR_NATIVE_GENERATOR_CLOSE_FAILURE').toBe(
+        acknowledgement,
+      );
+      expect(await settled, 'MEDIA_ITERATOR_NATIVE_GENERATOR_CLOSE_FAILURE').toEqual([
+        { status: 'rejected', reason: new MediaAdmissionError('source_failed') },
+      ]);
+      expect(closeMediaIterator(iterator), 'MEDIA_ITERATOR_NATIVE_GENERATOR_CLOSE_FAILURE').toBe(
+        acknowledgement,
+      );
+      await expect(closeMediaIterator(iterator)).rejects.toEqual(
+        new MediaAdmissionError('source_failed'),
+      );
+      expect(retirements, 'MEDIA_ITERATOR_NATIVE_GENERATOR_CLOSE_FAILURE').toBe(1);
+    } finally {
+      await settled;
+    }
   });
 
   it('does not inherit native ownership through a different iterator or copied prototype', async () => {
