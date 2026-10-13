@@ -1,4 +1,12 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -97,6 +105,17 @@ describe('createCommand (2.J)', () => {
     expect(written.system_prompt).toBe(literal);
     expect(`${out()}${err()}`).not.toContain(literal);
     expect(out()).not.toContain('Warning:');
+  });
+
+  it('does not warn about a credential when the final YAML target cannot be written', async () => {
+    const literal = 'sk-createdSyntheticCredential123456789';
+    const target = join(cwd, '.relavium', 'agents', 'code-reviewer.agent.yaml');
+    mkdirSync(target, { recursive: true });
+    const { d, out, err } = deps(scriptedPrompter({ ...AGENT_SPEC, systemPrompt: literal }));
+    await expect(createCommand({ force: true }, d)).rejects.toThrow();
+    expect(out()).toBe('');
+    expect(err()).toBe('');
+    expect(statSync(target).isDirectory()).toBe(true);
   });
 
   it('rejects a name with no usable id characters as a clean exit-2 CliError', async () => {

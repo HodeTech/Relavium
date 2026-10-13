@@ -9,6 +9,7 @@ import {
 import {
   CorruptRunEventError,
   ProviderHeaderPolicyError,
+  SessionMessageBoundaryError,
   UnreadableRunEventLogError,
 } from '@relavium/db';
 import { describe, expect, it } from 'vitest';
@@ -65,6 +66,22 @@ describe('CliError', () => {
 });
 
 describe('toUserFacing', () => {
+  it.each(['message_invalid', 'metadata_invalid'] as const)(
+    'maps a %s session boundary refusal to a fixed, value-free invocation diagnostic',
+    (code) => {
+      const error = new SessionMessageBoundaryError(code);
+      error.message = 'PRIVATE_SESSION_BODY_AND_PROPERTY';
+      const projected = toUserFacing(error);
+      expect(projected).toEqual({
+        code: 'invalid_invocation',
+        message:
+          'A session message has an invalid persistence format. Restore a safe history backup or start a new session.',
+        exitCode: EXIT_CODES.invalidInvocation,
+      });
+      expect(JSON.stringify(projected)).not.toContain('PRIVATE_SESSION_BODY_AND_PROPERTY');
+    },
+  );
+
   it('maps a provider-header policy refusal to the fixed invocation diagnostic (ADR-0108)', () => {
     expect(toUserFacing(new ProviderHeaderPolicyError())).toEqual({
       code: 'invalid_invocation',

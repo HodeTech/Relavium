@@ -8,6 +8,7 @@ import {
   isCorruptRunEventError,
   isProviderHeaderPolicyError,
   isUnreadableRunEventLogError,
+  SessionMessageBoundaryError,
 } from '@relavium/db';
 
 import { EXIT_CODES, type ExitCode } from './exit-codes.js';
@@ -86,6 +87,17 @@ export function toUserFacing(value: unknown): UserFacingError {
     return {
       code: 'invalid_invocation',
       message: 'Provider headers are disabled until keychain custody is implemented.',
+      exitCode: EXIT_CODES.invalidInvocation,
+    };
+  }
+  // SessionMessageBoundaryError is raised by both read and write validation. The DB type has no
+  // session id, and its cause/message must never become a transcript diagnostic. A refused read can
+  // be recovered from a safe history backup; a refused write must not claim the row was persisted.
+  if (value instanceof SessionMessageBoundaryError) {
+    return {
+      code: 'invalid_invocation',
+      message:
+        'A session message has an invalid persistence format. Restore a safe history backup or start a new session.',
       exitCode: EXIT_CODES.invalidInvocation,
     };
   }

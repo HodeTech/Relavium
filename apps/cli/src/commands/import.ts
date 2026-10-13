@@ -57,8 +57,8 @@ export function importCommand(args: ImportCommandArgs, deps: ImportCommandDeps):
 
   const target = catalogPath(projectConfigDir, parsed.kind, parsed.slug);
   const rel = relative(cwd, target);
-  warnSnapshotLiterals(parsed.definition, deps.io);
   writeAuthoredFile(target, rel, serializeAuthored(parsed), args.force);
+  warnSnapshotLiterals(parsed.definition, deps.io);
 
   if (deps.global.json) {
     deps.io.writeOut(`${stringifyJsonLine({ id: parsed.slug, kind: parsed.kind, path: rel })}\n`);

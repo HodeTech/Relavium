@@ -112,6 +112,17 @@ describe('importCommand (2.J)', () => {
     expect(err()).not.toContain('privateMetadataProperty');
   });
 
+  it('does not warn about a credential when the final YAML target cannot be written', () => {
+    const literal = 'sk-importedSyntheticCredential123456789';
+    seed('incoming.agent.yaml', AGENT.replace('Review the code.', literal));
+    const target = join(cwd, '.relavium', 'agents', 'reviewer.agent.yaml');
+    mkdirSync(target, { recursive: true });
+    const { d, out, err } = deps(true);
+    expect(() => importCommand({ path: 'incoming.agent.yaml', force: true }, d)).toThrow();
+    expect(out()).toBe('');
+    expect(err()).toBe('');
+  });
+
   it('preserves imported literal MCP environment values and secret placeholders', () => {
     const literal = 'AIzaImportedSyntheticCredential123456789';
     const authored = `${AGENT}mcp_servers:\n  - id: example\n    transport: stdio\n    command: synthetic\n    env: { LITERAL: '${literal}', TOKEN: '{{secrets.gh}}' }\n`;
