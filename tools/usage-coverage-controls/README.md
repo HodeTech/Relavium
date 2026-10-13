@@ -23,7 +23,8 @@ frozen replay bytes are never mutated. Keep the source stable while running this
 Each entry in [mutations.mjs](mutations.mjs) removes one declared accounting mechanism in the
 copy. Its fixed, mutated and byte-exact restored phases run the same whole files in fresh
 processes with independent caches and reports. The runner retains complete case identities,
-statuses and diagnostics. A nonzero exit alone never establishes causality: the declared
+statuses and diagnostics. Every phase, including the permanent baseline, refuses duplicate
+`(file, case identity)` pairs; equal case names in different files remain distinct. A nonzero exit alone never establishes causality: the declared
 semantic assertion must fail at its predeclared whole-file case identity and fixed signature in
 [causal-witnesses.mjs](causal-witnesses.mjs). An unrelated assertion, even in the same file, cannot
 certify removal. Negative orchestration controls reject unrelated markers/cases, runtime failures,
