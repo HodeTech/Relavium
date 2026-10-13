@@ -73,8 +73,13 @@ describe('createProviderStore', () => {
       name: 'openai',
       displayName: 'OpenAI',
       baseUrl: 'https://api.openai.com/v1',
-      defaultHeaders: { 'x-org': 'acme', 'x-beta': 'on' },
     });
+    // Historical/direct SQLite data remains readable; new nonempty maps are refused by ADR-0108.
+    client.db
+      .update(llmProviders)
+      .set({ defaultHeaders: JSON.stringify({ 'x-org': 'acme', 'x-beta': 'on' }) })
+      .where(eq(llmProviders.name, 'openai'))
+      .run();
     // An update that omits defaultHeaders must keep the stored object — never drop it, never re-encode
     // the already-JSON string into a `"{...}"` string (the regression fixed in 8ae794c).
     const b = store.upsert({
@@ -154,7 +159,7 @@ describe('createProviderStore', () => {
       .set({ defaultHeaders: '["not","an","object"]' })
       .where(eq(llmProviders.name, 'openai'))
       .run();
-    expect(() => store.get('openai')).toThrowError(/not a JSON object/);
+    expect(() => store.get('openai')).toThrowError('Stored provider headers are invalid.');
   });
 
   it('records and clears the keychain ref — and NEVER stores a key value', () => {

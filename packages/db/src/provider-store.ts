@@ -16,7 +16,7 @@ import { epochMsToIso } from './time.js';
  * OS keychain (the CLI accessor is `apps/cli/src/secrets/keychain.ts`, `@napi-rs/keyring` per ADR-0019).
  */
 
-/** A registered provider — the non-secret row, with ISO timestamps. `apiKeyKeychainRef` is the keychain ref, never the key. */
+/** A trusted provider row with ISO timestamps. API keys are refs only; legacy headers remain sensitive. */
 export interface ProviderRecord {
   readonly id: string;
   readonly name: string;
@@ -24,6 +24,7 @@ export interface ProviderRecord {
   readonly baseUrl: string;
   /** The OS-keychain `account` holding this provider's key, or `undefined` when no key is set. NEVER the key. */
   readonly apiKeyKeychainRef?: string;
+  /** Sensitive legacy data for trusted readers only; never consumed as HTTP headers or publicly projected. */
   readonly defaultHeaders: Record<string, string>;
   /** The provider's protocol `kind` (ADR-0065 §5) — a custom OpenAI-compatible `base_url` reuses it. `undefined`
    *  when unset (the host derives it from the closed provider id) or a foreign stored value (fail-closed to unset). */
@@ -40,6 +41,7 @@ export interface ProviderUpsert {
   readonly name: string;
   readonly displayName: string;
   readonly baseUrl: string;
+  /** Omission preserves legacy bytes; an explicitly empty map clears them. Nonempty maps are refused. */
   readonly defaultHeaders?: Record<string, string>;
   readonly kind?: ProviderKind;
   readonly pricingReferenceUrl?: string;
@@ -55,12 +57,63 @@ export interface ProviderStore {
   list: () => ProviderRecord[];
   /** One provider by its unique `name`, or `undefined`. */
   get: (name: string) => ProviderRecord | undefined;
-  /** Create or update (by `name`) the non-secret provider row; returns the resulting record. */
+  /** Create/update by name. New nonempty headers are refused; trusted returned legacy headers remain sensitive. */
   upsert: (input: ProviderUpsert) => ProviderRecord;
   /** Record that a key is stored (the keychain `account` ref) — never the key value. */
   setKeychainRef: (name: string, ref: string) => void;
   /** Clear the keychain ref (the key was removed); the provider row stays registered. */
   clearKeychainRef: (name: string) => void;
+}
+
+const HEADER_POLICY_MESSAGE =
+  'Provider headers are disabled until keychain custody is implemented.';
+const INVALID_STORED_HEADERS = 'Stored provider headers are invalid.';
+
+/** Content-free interim admission refusal (ADR-0108); never retain the supplied map or a foreign cause. */
+export class ProviderHeaderPolicyError extends Error {
+  readonly code = 'provider_header_policy';
+
+  constructor() {
+    super(HEADER_POLICY_MESSAGE);
+    this.name = 'ProviderHeaderPolicyError';
+  }
+}
+
+/** Own data discriminants, rather than bundled class identity; accessors/reflection faults never qualify. */
+export function isProviderHeaderPolicyError(value: unknown): value is ProviderHeaderPolicyError {
+  try {
+    if (!(value instanceof Error)) return false;
+    return (
+      Object.getOwnPropertyDescriptor(value, 'code')?.value === 'provider_header_policy' &&
+      Object.getOwnPropertyDescriptor(value, 'name')?.value === 'ProviderHeaderPolicyError' &&
+      Object.getOwnPropertyDescriptor(value, 'message')?.value === HEADER_POLICY_MESSAGE
+    );
+  } catch {
+    // A predicate over foreign values refuses uninspectable objects without evaluating their fields.
+    return false;
+  }
+}
+
+/** Capture only the admitted field branch before clock callbacks, retries or SQL can run. */
+function captureHeaderWrite(input: ProviderUpsert): 'preserve' | 'clear' {
+  try {
+    const field = Object.getOwnPropertyDescriptor(input, 'defaultHeaders');
+    if (field === undefined) {
+      if (Reflect.has(input, 'defaultHeaders')) throw new ProviderHeaderPolicyError();
+      return 'preserve';
+    }
+    if (!('value' in field)) throw new ProviderHeaderPolicyError();
+    const headers: unknown = field.value;
+    if (headers === undefined) return 'preserve';
+    if (headers === null || typeof headers !== 'object') throw new ProviderHeaderPolicyError();
+    const prototype: unknown = Object.getPrototypeOf(headers);
+    if (prototype !== null && prototype !== Object.prototype) throw new ProviderHeaderPolicyError();
+    if (Reflect.ownKeys(headers).length !== 0) throw new ProviderHeaderPolicyError();
+    return 'clear';
+  } catch {
+    // Normalize foreign reflection faults without retaining the map, key/value or payload-bearing cause.
+    throw new ProviderHeaderPolicyError();
+  }
 }
 
 /**
@@ -70,16 +123,27 @@ export interface ProviderStore {
  * loudly rather than propagating a wrongly-typed value, mirroring the sibling stores' `JSON.parse` posture.
  */
 function parseStringRecord(json: string): Record<string, string> {
-  const parsed: unknown = JSON.parse(json);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    // Native SyntaxError diagnostics may include the stored payload. Keep corruption loud and content-free.
+    throw new TypeError(INVALID_STORED_HEADERS);
+  }
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new TypeError('llm_providers.default_headers is not a JSON object');
+    throw new TypeError(INVALID_STORED_HEADERS);
   }
   const out: Record<string, string> = {};
   for (const [key, value] of Object.entries(parsed)) {
     if (typeof value !== 'string') {
-      throw new TypeError(`llm_providers.default_headers['${key}'] is not a string`);
+      throw new TypeError(INVALID_STORED_HEADERS);
     }
-    out[key] = value;
+    Object.defineProperty(out, key, {
+      value,
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    });
   }
   return out;
 }
@@ -137,6 +201,7 @@ export function createProviderStore(db: Db, deps: ProviderStoreDeps): ProviderSt
     },
 
     upsert: (input) => {
+      const headerWrite = captureHeaderWrite(input);
       const t = deps.now();
       // Read-then-write upsert under ONE IMMEDIATE transaction: two concurrent `provider add` (or a refresh)
       // writers must not both read `existing === undefined` and double-insert, nor race a DEFERRED read→write
@@ -152,7 +217,7 @@ export function createProviderStore(db: Db, deps: ProviderStoreDeps): ProviderSt
                 name: input.name,
                 displayName: input.displayName,
                 baseUrl: input.baseUrl,
-                defaultHeaders: JSON.stringify(input.defaultHeaders ?? {}),
+                defaultHeaders: '{}',
                 ...(input.kind === undefined ? {} : { kind: input.kind }),
                 ...(input.pricingReferenceUrl === undefined
                   ? {}
@@ -166,12 +231,9 @@ export function createProviderStore(db: Db, deps: ProviderStoreDeps): ProviderSt
                 .set({
                   displayName: input.displayName,
                   baseUrl: input.baseUrl,
-                  // `existing.defaultHeaders` is already the stored JSON STRING — keep it verbatim when the caller
-                  // supplies none; stringify only a fresh value. (Re-stringifying the string would double-encode it.)
-                  defaultHeaders:
-                    input.defaultHeaders === undefined
-                      ? existing.defaultHeaders
-                      : JSON.stringify(input.defaultHeaders),
+                  // Preserve exact legacy JSON on omission; the sole explicit write is canonical empty JSON.
+                  // Never serialize or reread the caller's map after admission.
+                  defaultHeaders: headerWrite === 'preserve' ? existing.defaultHeaders : '{}',
                   // Preserve an existing kind / pricing URL when the caller omits it (like defaultHeaders).
                   ...(input.kind === undefined ? {} : { kind: input.kind }),
                   ...(input.pricingReferenceUrl === undefined
