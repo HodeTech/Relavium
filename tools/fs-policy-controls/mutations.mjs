@@ -1153,3 +1153,23 @@ mutations.push({
     },
   ],
 });
+
+// R5: whole-buffer collection must own borrowed Buffer/subclass bytes before another pull.
+mutations.push({
+  ...mediaControl(
+    'MEDIA_WHOLE_BUFFER_OWNERSHIP',
+    mediaEgress,
+    'const owned = new Uint8Array(chunk);',
+    'const owned = chunk.slice();',
+    'MEDIA_WHOLE_BUFFER_OWNERSHIP',
+    'packages/db/src/media-egress-ownership.test.ts',
+    'MEDIA_WHOLE_BUFFER_OWNERSHIP: owns reused Buffer before the next pull',
+    3,
+  ),
+  witnesses: [
+    {
+      target: 'MEDIA_WHOLE_BUFFER_OWNERSHIP: owns reused subclass before the next pull',
+      marker: 'MEDIA_WHOLE_BUFFER_OWNERSHIP',
+    },
+  ],
+});

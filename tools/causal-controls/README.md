@@ -64,8 +64,8 @@ physical runtime record; only an incomplete pre-runtime manifest may lack one.
 The decoder accepts only the actual finite prefix of an incomplete capture. Raw manifest input,
 index assembly and decompression have independent 64-MiB, 2,000-file and
 1,024-byte-path bounds; the unchanged whole-export 2,000-file/64-MiB limit also
-counts the archive, index and final `export.json`. A complete 96-control filesystem
-matrix projects 1,735 retained files: 96 × 21 + 5 minus 288 individual manifests
+counts the archive, index and final `export.json`. A complete 97-control filesystem
+matrix projects 1,753 retained files: 97 × 21 + 5 minus 291 individual manifests
 plus two archive records. This is capacity arithmetic, not a completed capture.
 Complete
 case inventories remain in each Vitest result and phase summary; the duplicate

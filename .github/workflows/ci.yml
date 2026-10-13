@@ -233,7 +233,7 @@ jobs:
   fs-mutations:
     name: Wave 2 filesystem causal controls
     # ADR-0106/0109 extend the original 26 controls with complete media/lifetime workloads.
-    # The 20-minute job reached only 46 of 93 controls; provision the full 96-control cohort.
+    # The 20-minute job reached only 46 of 93 controls; provision the full 97-control cohort.
     # Per-phase 90-second/test 15-second deadlines and output/evidence ceilings remain unchanged.
     timeout-minutes: 60
     runs-on: ubuntu-latest

@@ -138,11 +138,18 @@ and invocation-start signal still at zero in the fixed phase. The earlier native
 selector control retains its full enlarged file. Exact per-phase source manifests
 are now packed into one bounded gzip archive and offset/hash index only at export;
 each runtime hash and the original manifest bytes remain independently verifiable.
-The unchanged 2,000-file ceiling admits a projected 1,735 files for all 96
+R5 appends a 97th control for whole-buffer chunk ownership. A finite producer
+reuses its admitted AAC bytes on the next pull; both a Node Buffer and a typed-array
+subclass must retain the original returned bytes without invoking producer slice
+or iterator hooks. Removing only the intrinsic typed-array copy breaks both named
+cases; the ordinary Uint8Array control remains in the complete three-case workload.
+No earlier ID, order or complete workload is removed.
+
+The unchanged 2,000-file ceiling admits a projected 1,753 files for all 97
 completed controls, subject to an actual complete export and the unchanged 64-MiB
 byte ceiling.
 
-The 96-control declaration is not acceptance evidence by itself. The complete
+The 97-control declaration is not acceptance evidence by itself. The complete
 matrix still requires a stable committed head, all fixed/removal/restored phases,
 named semantic witnesses, child source/dependency receipts, byte-exact restoration,
 the retained-evidence caps, and independent cumulative review.
