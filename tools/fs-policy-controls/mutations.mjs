@@ -1173,3 +1173,50 @@ mutations.push({
     },
   ],
 });
+
+// R6: configured response limits count intrinsic bytes in both buffering and streaming paths.
+const egressByteCases = 'packages/db/src/safe-egress-bytes.test.ts';
+mutations.push({
+  ...mediaControl(
+    'EGRESS_INTRINSIC_BOUND',
+    'packages/db/src/safe-egress.ts',
+    'const length: unknown = byteLengthDescriptor.get.call(chunk);',
+    'const length: unknown = chunk.length;',
+    'EGRESS_INTRINSIC_BOUND',
+    egressByteCases,
+    "EGRESS_INTRINSIC_BOUND: 'stream' 'shadowed' at limit 3",
+    28,
+  ),
+  witnesses: [
+    {
+      target: "EGRESS_INTRINSIC_BOUND: 'read' 'shadowed' at limit 3",
+      marker: 'EGRESS_INTRINSIC_BOUND',
+    },
+    {
+      target: "EGRESS_INTRINSIC_BOUND: media 'read' refuses oversized 'Buffer' before delivery",
+      marker: 'EGRESS_INTRINSIC_BOUND',
+    },
+    {
+      target: "EGRESS_INTRINSIC_BOUND: media 'stream' refuses oversized 'Buffer' before delivery",
+      marker: 'EGRESS_INTRINSIC_BOUND',
+    },
+  ],
+});
+mutations.push({
+  ...mediaControl(
+    'EGRESS_BUFFER_OWNERSHIP',
+    'packages/db/src/safe-egress.ts',
+    'chunks.push(new Uint8Array(chunk));',
+    'chunks.push(chunk);',
+    'EGRESS_BUFFER_OWNERSHIP',
+    egressByteCases,
+    'EGRESS_BUFFER_OWNERSHIP: owns reused ordinary before another pull',
+    28,
+  ),
+  witnesses: [
+    {
+      target: 'EGRESS_BUFFER_OWNERSHIP: owns reused Buffer before another pull',
+      marker: 'EGRESS_BUFFER_OWNERSHIP',
+    },
+  ],
+});

@@ -145,11 +145,19 @@ or iterator hooks. Removing only the intrinsic typed-array copy breaks both name
 cases; the ordinary Uint8Array control remains in the complete three-case workload.
 No earlier ID, order or complete workload is removed.
 
-The unchanged 2,000-file ceiling admits a projected 1,753 files for all 97
+R6 adds two controls for intrinsic configured-response byte accounting and buffered
+chunk ownership. The complete 28-case file covers exact capacity, cumulative
+overflow, inert length overrides on Uint8Array/Buffer, accessor non-evaluation,
+producer reuse and both public media fetch paths. The first removal restores
+replaceable length accounting and requires named direct and media refusals; the
+second removes only the buffered copy and requires both reuse witnesses.
+All original 97 declarations retain their IDs, order and complete workloads.
+
+The unchanged 2,000-file ceiling admits a projected 1,789 files for all 99
 completed controls, subject to an actual complete export and the unchanged 64-MiB
 byte ceiling.
 
-The 97-control declaration is not acceptance evidence by itself. The complete
+The 99-control declaration is not acceptance evidence by itself. The complete
 matrix still requires a stable committed head, all fixed/removal/restored phases,
 named semantic witnesses, child source/dependency receipts, byte-exact restoration,
 the retained-evidence caps, and independent cumulative review.

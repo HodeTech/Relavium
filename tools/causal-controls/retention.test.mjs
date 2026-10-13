@@ -39,6 +39,21 @@ function addManifest(scratch, control, phase, content, runtime = true) {
 }
 const sourceManifest = (space = '') =>
   `{${space}"sourceRoot":"/physical/graph","files":[{"path":"source.ts","bytes":1,"sha256":"${'a'.repeat(64)}"}]${space}}\n`;
+function addPhaseStdio(scratch, control, phase) {
+  const directory = join(scratch, control, phase);
+  const stdio = encodePhaseStdio('', '');
+  writeFileSync(join(directory, 'stdio.bin'), stdio.bytes);
+  writeFileSync(join(directory, 'process.json'), JSON.stringify({ stdio: stdio.index }));
+}
+function prefixCapture(options, plans, summary) {
+  for (const [control, phases] of plans)
+    for (const [phase, runtime] of phases) {
+      addManifest(options.scratch, control, phase, sourceManifest(), runtime);
+      if (runtime) addPhaseStdio(options.scratch, control, phase);
+    }
+  writeFileSync(join(options.scratch, 'summary.json'), JSON.stringify(summary));
+  return { ...options, summary };
+}
 function fixture(fn) {
   const root = mkdtempSync(join(tmpdir(), 'causal-retention-'));
   try {
@@ -158,16 +173,147 @@ test('incomplete pre-runtime phase retains its original manifest without inventi
 });
 test('a completed summary requires physical runtime evidence for each indexed phase', () => {
   fixture((options) => {
-    for (const phase of ['fixed', 'mutated', 'restored'])
+    for (const phase of ['fixed', 'mutated', 'restored']) {
       addManifest(options.scratch, 'example-control', phase, sourceManifest());
-    exportMetadata(options);
-    const root = join(options.directory, 'secrets');
+      addPhaseStdio(options.scratch, 'example-control', phase);
+    }
     writeFileSync(
-      join(root, 'summary.json'),
+      join(options.scratch, 'summary.json'),
       JSON.stringify({ complete: true, mechanisms: [{ id: 'example-control' }] }),
     );
+    exportMetadata(options);
+    const root = join(options.directory, 'secrets');
     rmSync(join(root, 'example-control', 'restored', 'runtime.json'));
     assert.throws(() => verifyRetainedSourceManifests(root), /Completed phase/);
+  });
+});
+for (const [label, plans, summary, diagnostic] of [
+  [
+    'restored-only tail',
+    [['pending', [['restored', false]]]],
+    { complete: false, mechanisms: [] },
+    /Phase manifest prefix/,
+  ],
+  [
+    'fixed/restored gap',
+    [
+      [
+        'pending',
+        [
+          ['fixed', true],
+          ['restored', false],
+        ],
+      ],
+    ],
+    { complete: false, mechanisms: [] },
+    /Phase manifest prefix/,
+  ],
+  [
+    'two unfinished controls',
+    [
+      ['first', [['fixed', false]]],
+      ['second', [['fixed', false]]],
+    ],
+    { complete: false, mechanisms: [] },
+    /Phase manifest unfinished control/,
+  ],
+  [
+    'missing predecessor runtime',
+    [
+      [
+        'pending',
+        [
+          ['fixed', false],
+          ['mutated', true],
+          ['restored', false],
+        ],
+      ],
+    ],
+    { complete: false, mechanisms: [] },
+    /Phase manifest predecessor runtime/,
+  ],
+  [
+    'unreported tail in complete capture',
+    [['pending', [['fixed', true]]]],
+    { complete: true, mechanisms: [] },
+    /Phase manifest unreported tail/,
+  ],
+  [
+    'duplicate completed mechanism IDs',
+    [
+      [
+        'completed',
+        [
+          ['fixed', true],
+          ['mutated', true],
+          ['restored', true],
+        ],
+      ],
+    ],
+    { complete: true, mechanisms: [{ id: 'completed' }, { id: 'completed' }] },
+    /Phase manifest duplicate completed control/,
+  ],
+])
+  test(`phase manifest prefix verifier rejects ${label}`, () => {
+    fixture((options) => {
+      const capture = prefixCapture(options, plans, summary);
+      assert.throws(() => exportMetadata(capture), diagnostic);
+      // Final export validation uses the same standalone verifier; neither may
+      // certify the invalid physical subset merely because the bytes are intact.
+      assert.throws(
+        () => verifyRetainedSourceManifests(join(options.directory, 'secrets')),
+        diagnostic,
+      );
+    });
+  });
+for (const finalPhase of ['fixed', 'mutated', 'restored'])
+  for (const lastRuntime of [false, true])
+    test(`phase manifest prefix admits interruption at ${finalPhase} with last runtime ${lastRuntime}`, () => {
+      fixture((options) => {
+        const names = ['fixed', 'mutated', 'restored'];
+        const phases = names
+          .slice(0, names.indexOf(finalPhase) + 1)
+          .map((phase) => [phase, phase !== finalPhase || lastRuntime]);
+        const capture = prefixCapture(options, [['pending', phases]], {
+          complete: false,
+          mechanisms: [],
+        });
+        exportMetadata(capture);
+        const decoded = verifyRetainedSourceManifests(join(options.directory, 'secrets'));
+        assert.deepEqual(
+          [...decoded.keys()].sort(),
+          phases.map(([phase]) => `pending/${phase}/source-manifest.json`).sort(),
+        );
+        if (!lastRuntime)
+          assert.equal(
+            existsSync(join(options.directory, 'secrets', 'pending', finalPhase, 'runtime.json')),
+            false,
+          );
+      });
+    });
+test('phase manifest prefix admits zero phases and a complete selected control', () => {
+  fixture((options) => {
+    const capture = prefixCapture(options, [], { complete: false, mechanisms: [] });
+    exportMetadata(capture);
+    assert.equal(verifyRetainedSourceManifests(join(options.directory, 'secrets')).size, 0);
+  });
+  fixture((options) => {
+    const capture = prefixCapture(
+      options,
+      [
+        [
+          'selected',
+          [
+            ['fixed', true],
+            ['mutated', true],
+            ['restored', true],
+          ],
+        ],
+      ],
+      { complete: false, mechanisms: [{ id: 'selected' }] },
+    );
+    exportMetadata(capture);
+    assert.equal(verifyRetainedSourceManifests(join(options.directory, 'secrets')).size, 3);
   });
 });
 test('raw phase manifest byte bound refuses before evidence destination creation', () => {

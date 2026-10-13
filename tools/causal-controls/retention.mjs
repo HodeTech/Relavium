@@ -67,6 +67,63 @@ function verifyRuntimeManifestJoins(root, decoded) {
   }
 }
 
+/** Check phase membership without claiming the external cohort's declaration order. */
+function verifyManifestPhasePrefix(root, decoded, summary) {
+  const mechanisms = summary.mechanisms === undefined ? [] : summary.mechanisms;
+  assert.ok(Array.isArray(mechanisms) && mechanisms.length <= maxFiles);
+  const completed = new Set();
+  const phases = ['fixed', 'mutated', 'restored'];
+  for (const mechanism of mechanisms) {
+    assert.ok(
+      typeof mechanism.id === 'string' &&
+        phaseManifestName.test(`${mechanism.id}/fixed/source-manifest.json`),
+    );
+    assert.ok(!completed.has(mechanism.id), 'Phase manifest duplicate completed control');
+    completed.add(mechanism.id);
+  }
+  function requireRuntime(control, phase, diagnostic) {
+    const directory = join(root, control, phase);
+    const info = lstatSync(directory, { throwIfNoEntry: false });
+    assert.ok(info?.isDirectory() && !info.isSymbolicLink(), `${diagnostic} directory missing`);
+    const runtime = join(directory, 'runtime.json');
+    assert.ok(lstatSync(runtime, { throwIfNoEntry: false }), `${diagnostic} missing`);
+    physicalFile(runtime, maxBytes);
+  }
+  for (const control of completed)
+    for (const phase of phases) {
+      assert.ok(
+        decoded.has(`${control}/${phase}/source-manifest.json`),
+        'Completed phase manifest missing',
+      );
+      requireRuntime(control, phase, 'Completed phase runtime');
+    }
+  const unfinished = new Map();
+  for (const source of decoded.keys()) {
+    const match = phaseManifestName.exec(source);
+    assert.ok(match, 'Invalid phase manifest path');
+    const [, control, phase] = match;
+    if (completed.has(control)) continue;
+    if (!unfinished.has(control)) unfinished.set(control, new Set());
+    unfinished.get(control).add(phase);
+  }
+  assert.ok(
+    summary.complete !== true || unfinished.size === 0,
+    'Phase manifest unreported tail in complete capture',
+  );
+  assert.ok(unfinished.size <= 1, 'Phase manifest unfinished control count');
+  for (const [control, present] of unfinished) {
+    const prefix = phases.slice(0, present.size);
+    assert.ok(
+      prefix.every((phase) => present.has(phase)),
+      'Phase manifest prefix gap or missing fixed phase',
+    );
+    // A failed restored phase can leave all three manifests before the coordinator
+    // records the mechanism. Only the last attempted phase may precede runtime creation.
+    for (const phase of prefix.slice(0, -1))
+      requireRuntime(control, phase, 'Phase manifest predecessor runtime');
+  }
+}
+
 /** One byte-exact, independently bounded envelope replaces two per-phase log files. */
 export function encodePhaseStdio(stdout, stderr) {
   assert.ok(
@@ -533,6 +590,9 @@ export function verifyRetainedSourceManifests(destination) {
   const rootInfo = lstatSync(destination);
   assert.ok(rootInfo.isDirectory() && !rootInfo.isSymbolicLink(), 'Evidence root redirected');
   const root = realpathSync(destination);
+  const summaryPath = join(root, 'summary.json');
+  physicalFile(summaryPath, maxBytes);
+  const summary = JSON.parse(readFileSync(summaryPath, 'utf8'));
   const archivePath = join(root, manifestArchiveName);
   const indexPath = join(root, manifestIndexName);
   const archiveInfo = lstatSync(archivePath, { throwIfNoEntry: false });
@@ -543,12 +603,10 @@ export function verifyRetainedSourceManifests(destination) {
     'Phase manifest archive/index pair incomplete',
   );
   if (!indexInfo) {
-    const summaryPath = join(root, 'summary.json');
-    physicalFile(summaryPath, maxBytes);
-    const summary = JSON.parse(readFileSync(summaryPath, 'utf8'));
-    assert.ok(!summary.mechanisms?.length, 'Completed phase manifest missing');
-    verifyRuntimeManifestJoins(root, new Map());
-    return new Map();
+    const decoded = new Map();
+    verifyManifestPhasePrefix(root, decoded, summary);
+    verifyRuntimeManifestJoins(root, decoded);
+    return decoded;
   }
   physicalFile(indexPath, maxBytes);
   physicalFile(archivePath, maxBytes);
@@ -676,37 +734,7 @@ export function verifyRetainedSourceManifests(destination) {
   }
   assert.equal(offset, raw.length, 'Unused phase manifest archive bytes');
   verifyRuntimeManifestJoins(root, decoded);
-  const summaryPath = join(root, 'summary.json');
-  physicalFile(summaryPath, maxBytes);
-  const summary = JSON.parse(readFileSync(summaryPath, 'utf8'));
-  if (summary.mechanisms !== undefined) {
-    assert.ok(Array.isArray(summary.mechanisms) && summary.mechanisms.length <= maxFiles);
-    for (const mechanism of summary.mechanisms) {
-      assert.ok(
-        typeof mechanism.id === 'string' &&
-          phaseManifestName.test(`${mechanism.id}/fixed/source-manifest.json`),
-      );
-      for (const phase of ['fixed', 'mutated', 'restored'])
-        assert.ok(
-          decoded.has(`${mechanism.id}/${phase}/source-manifest.json`),
-          'Completed phase manifest missing',
-        );
-      for (const phase of ['fixed', 'mutated', 'restored']) {
-        const phaseDirectory = join(root, mechanism.id, phase);
-        const info = lstatSync(phaseDirectory, { throwIfNoEntry: false });
-        assert.ok(
-          info?.isDirectory() && !info.isSymbolicLink(),
-          'Completed phase directory missing',
-        );
-        const runtimePath = join(phaseDirectory, 'runtime.json');
-        assert.ok(
-          lstatSync(runtimePath, { throwIfNoEntry: false }),
-          'Completed phase runtime missing',
-        );
-        physicalFile(runtimePath, maxBytes);
-      }
-    }
-  }
+  verifyManifestPhasePrefix(root, decoded, summary);
   return decoded;
 }
 export function finish({ scratch, summary, primaryFailure, directory, repository, evidenceKind }) {

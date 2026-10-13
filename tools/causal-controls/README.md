@@ -59,13 +59,20 @@ phase manifests are packed only during export into `source-manifests.json.gz` an
 contiguous offset, byte length and SHA-256, plus archive raw/compressed lengths and
 hashes. The standalone decoder reconstructs the exact original JSON bytes, checks
 every source pin, joins each retained runtime hash and completed-summary phase, and
-rejects trailing gzip data or a second member. A completed phase requires its
-physical runtime record; only an incomplete pre-runtime manifest may lack one.
-The decoder accepts only the actual finite prefix of an incomplete capture. Raw manifest input,
+rejects trailing gzip data or a second member. Completed summary IDs must be unique
+and have all three physical, hash-joined runtime records. A complete summary permits
+no unreported phase tail. An incomplete summary may contain at most one additional
+control, whose indexed phases form a contiguous fixed → mutated → restored prefix.
+Every predecessor needs its physical, hash-joined runtime; only the last attempted
+phase may lack one after interruption before runtime creation. All three attempted
+phases may remain unreported if failure precedes the completed-mechanism record.
+This checks local phase structure, not the external cohort's natural control order
+or its exact declaration inventory; independent acceptance audit still supplies
+those joins. Raw manifest input,
 index assembly and decompression have independent 64-MiB, 2,000-file and
 1,024-byte-path bounds; the unchanged whole-export 2,000-file/64-MiB limit also
-counts the archive, index and final `export.json`. A complete 97-control filesystem
-matrix projects 1,753 retained files: 97 × 21 + 5 minus 291 individual manifests
+counts the archive, index and final `export.json`. A complete 99-control filesystem
+matrix projects 1,789 retained files: 99 × 21 + 5 minus 297 individual manifests
 plus two archive records. This is capacity arithmetic, not a completed capture.
 Complete
 case inventories remain in each Vitest result and phase summary; the duplicate
