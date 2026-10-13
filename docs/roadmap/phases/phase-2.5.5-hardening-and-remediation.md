@@ -3108,16 +3108,19 @@ source attribution belongs in the [PR #94 publication record](https://github.com
 ### PR #94 systematic review corrections — 2026-10-13
 
 The maintainer's complete review of `395fbf95980aa1fd41e56156c93b9c2db120348c`
-against `664336c2794622c2b940be823966eddc9d61423d` requests three corrections.
-PR #94 is draft while they are implemented and independently accepted. Original
-eight-step and publication records retain their checkpoint attribution; physical
-artifact consistency does not establish the runner-error guarantee under review.
+against `664336c2794622c2b940be823966eddc9d61423d` requested three corrections.
+All three source repairs are now independently accepted. Original eight-step and
+publication records retain their checkpoint attribution; the old artifacts'
+physical consistency does not establish the repaired runner-error guarantee.
+Current corrected-head publication evidence belongs to the
+[PR #94 publication record](https://github.com/HodeTech/Relavium/pull/94), separately
+from source acceptance and maintainer merge review.
 
 | Increment | Confirmed finding | Required correction and evidence | State |
 | --- | --- | --- | --- |
-| 1 — R94-1 (High) | JSON-only Vitest reporting omits unhandled runner errors, so a named removal assertion can coexist with an invisible background failure. | Own a structured completed runner-error receipt, require zero errors before phase acceptance, and permanently exercise the real coordinator with a designated assertion plus a genuine unhandled rejection/exception. Refresh affected complete controls; old artifacts do not certify this repair. | Source accepted at `9664b7cc` after two NEW clean complete cumulative rounds (14 paths / 48 hunks each); final corrected-head controls/publication pending. |
-| 2 — R94-2 (High) | Valid OpusTags padding is refused after otherwise supported provider generation. | Consume the permitted bounded Opus tail after complete comment framing; preserve Vorbis framing. Pin fragmented packet/page positives, malformed negatives and actual store/installed-SDK publication. | Source accepted at `0269a78a` after two NEW clean complete cumulative rounds (23 paths / 61 hunks each); final corrected-head controls/publication pending. |
-| 3 — R94-3 (Medium) | FLAC nonfinal minimum and fixed block-size consistency are not enforced. | Validate the previous frame once a successor establishes that it is nonfinal; retain the legal shorter final frame. Pin fragmented verifier and actual-store refusal/acceptance pairs. | Implemented with 54 permanent cases and three isolated removal controls; two NEW clean complete cumulative review rounds pending. |
+| 1 — R94-1 (High) | JSON-only Vitest reporting omits unhandled runner errors, so a named removal assertion can coexist with an invisible background failure. | Own a structured completed runner-error receipt, require zero errors before phase acceptance, and permanently exercise the real coordinator with a designated assertion plus a genuine unhandled rejection/exception. Refresh affected complete controls; old artifacts do not certify this repair. | Source accepted at `9664b7cc` after two NEW clean complete cumulative rounds (14 paths / 48 hunks each); final publication gates are owned by the PR #94 record. |
+| 2 — R94-2 (High) | Valid OpusTags padding is refused after otherwise supported provider generation. | Consume the permitted bounded Opus tail after complete comment framing; preserve Vorbis framing. Pin fragmented packet/page positives, malformed negatives and actual store/installed-SDK publication. | Source accepted at `0269a78a` after two NEW clean complete cumulative rounds (23 paths / 61 hunks each); final publication gates are owned by the PR #94 record. |
+| 3 — R94-3 (Medium) | FLAC nonfinal minimum and fixed block-size consistency are not enforced. | Validate the previous frame once a successor establishes that it is nonfinal; retain the legal shorter final frame. Pin fragmented verifier and actual-store refusal/acceptance pairs. | Source accepted at `f4ca3c53` after two NEW clean complete cumulative rounds (28 paths / 72 hunks each); 54 permanent cases and three isolated removal controls; final publication gates are owned by the PR #94 record. |
 
 Each increment follows implement/regression/commit, independent review/fix/commit,
 then a NEW complete cumulative review round. A material correction restarts the
@@ -3139,8 +3142,9 @@ coordinator rejection, exception and hook contamination; separate evidence revie
 covered the entire same delta and adversarial raw/retained receipt boundaries.
 Selected native-child fixed/removal/restored captures retained three completed
 zero-error receipts each, independently joined to exact source/runtime/process
-records. These scoped source gates do not replace the pending full-family refresh
-or certify all original PR files again. R94-2 and R94-3 remain separate increments.
+records. These scoped source gates do not replace the required corrected-head
+full-family refresh or certify all original PR files again. R94-2 and R94-3 remain
+separate increments.
 
 R94-2's final affected cohort passes 42 tests: 24 verifier, four real-store and
 14 installed-SDK publication cases. Both new runtime rounds independently execute
@@ -3151,5 +3155,30 @@ restoration, installed dependency bytes and unchanged physical bounds. Each new
 integration reviewer covers the entire same cumulative delta and independently
 probes legal and malformed continued-packet boundaries. Full product lint/typecheck,
 workspace tests and build pass at `0269a78a`; five of eleven test tasks and five
-of six build tasks are cache hits, not new executions. These source gates leave
-FLAC and final full-family/coverage/platform/publication acceptance open.
+of six build tasks are cache hits, not new executions. Their scope is source
+acceptance; final corrected-head full-family/coverage/platform evidence is separate.
+
+R94-3 adds 54 permanent cases: 25 verifier, 24 actual-store and five engine/CLI
+publication cases. Minimum, fixed nonfinal equality and fixed final growth each
+have an isolated removal control over the same complete 54-case cohort. Both NEW
+runtime rounds execute all three at clean `f4ca3c53`: 54 fixed pass, respectively
+18/9/8 named removal assertion failures, and 54 restored pass. Each round has nine
+completed zero-error runner receipts. Root independently joins exact Git source,
+raw runtime/reporter/PID evidence, all required witnesses, unchanged inventories,
+restoration, installed dependency bytes and physical bounds. Each NEW integration
+reviewer covers the entire same 28-path /72-hunk cumulative correction. Legal short
+final frames and variable-size positive controls remain accepted; actual stores
+and the engine/CLI metadata-before-append/grants-after-ACK path refuse malformed
+streams. Event persistence in that CLI cohort is InMemoryRunStore; only metadata
+is file-backed SQLite.
+
+The three final source controls are selected captures, not complete-family evidence.
+The causal source graph excludes `docs/**`; documentation acceptance uses separate
+Git/hash inventories. The final two source rounds cover the complete correction
+range `395fbf95` → `f4ca3c53`, not a new review of all 292 original PR paths. The
+following documentation-only closure preserves those runtime bytes. Final full CI,
+bare/enforced coverage, native Windows/Node-floor results and complete filesystem/
+secrets physical audits must be executed at the corrected publication head and
+recorded in PR #94 before it is ready for maintainer review. A selected capture,
+capacity projection, cached task or prior-head success cannot substitute for those
+gates. No new decision, provider capture, credential or billing action is pending.

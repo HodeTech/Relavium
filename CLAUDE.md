@@ -164,6 +164,16 @@ decision is pending for Wave 2. Next engineering work is
 starting with its serialized multi-file queue and a fresh decision preflight.
 Full M/N lifecycle and existing approved deferrals retain their canonical homes.
 
+**PR #94 maintainer source corrections accepted — 2026-10-13:** runner-level
+unhandled-error rejection, legal OpusTags tails and FLAC nonfinal block consistency
+each have two NEW independent clean complete cumulative correction rounds. Final
+source rounds at `f4ca3c53` cover all 28 correction paths / 72 hunks; these are not a
+new review of all original PR paths. The [correction register](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#pr-94-systematic-review-corrections--2026-10-13)
+joins source acceptance; [PR #94](https://github.com/HodeTech/Relavium/pull/94)
+records current corrected-head full CI/coverage/platform and complete physical
+controls separately. Their actual success is required before merge. Original
+`395fbf95` artifacts retain their historical scope. Wave 3 is subsequent work.
+
 For live status, per-PR history, milestone dates, and open obligations, see the canonical
 home [docs/roadmap/current.md](docs/roadmap/current.md);
 [README.md](README.md) is the public overview;

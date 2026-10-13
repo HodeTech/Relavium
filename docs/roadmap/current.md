@@ -110,18 +110,20 @@ joins all forty item dispositions, four new threat sittings plus W4 revalidation
 two NEW complete clean cumulative whole-wave review rounds and exact-source author,
 coverage, native Windows/Node-floor and full physical causal evidence.
 
-**PR #94 maintainer corrections are open — 2026-10-13.** Systematic review of
-`395fbf95` confirmed a runner-level unhandled-error blind spot, refusal of valid
-OpusTags padding and missing nonfinal FLAC block-size consistency. The
+**PR #94's three maintainer source corrections are accepted — 2026-10-13.**
+Systematic review of `395fbf95` confirmed a runner-level unhandled-error blind spot,
+refusal of valid OpusTags padding and missing nonfinal FLAC block-size consistency.
+All three repairs have permanent regressions and two NEW independent clean complete
+cumulative rounds after each final source correction. The final source rounds at
+`f4ca3c53` cover all 28 correction paths / 72 hunks. The
 [correction register](phases/phase-2.5.5-hardening-and-remediation.md#pr-94-systematic-review-corrections--2026-10-13)
-owns their disposition and acceptance gates. PR #94 is draft while these existing
-contract repairs, new independent cumulative reviews and corrected-head controls
-are completed. Earlier green checks retain their original source attribution;
-they do not establish the clean-runtime guarantee challenged by this review.
-The runner and Opus source corrections have each completed two NEW clean complete
-cumulative review rounds; FLAC source review and final corrected-head acceptance
-remain open in the register.
-Complete these corrections before beginning Wave 3.
+joins their separate acceptance scopes. Corrected-head full CI, coverage, platform
+results and independently inspected complete controls belong to the
+[PR #94 publication record](https://github.com/HodeTech/Relavium/pull/94) and must
+pass before merge. Earlier green checks retain their original source attribution;
+the original `395fbf95` artifacts do not establish the repaired runner-error
+guarantee. Publication and maintainer review precede merge; Wave 3 remains
+subsequent work.
 
 Completed work covers invocation-authorized filesystem boundaries, bounded secret
 input and bridge diagnostics, faithful-snapshot warnings and structural session
