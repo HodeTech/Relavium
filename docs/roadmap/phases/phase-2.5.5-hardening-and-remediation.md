@@ -3200,3 +3200,21 @@ covering its configuration/guard changes and the final documentation closure,
 plus fresh bare/enforced coverage and corrected-head full publication gates.
 Their actual source pins and results belong to the PR #94 publication record;
 this requirement does not upgrade the failed run or earlier selected captures.
+
+#### Publication field-membership clarification — 2026-10-13
+
+SonarCloud classified the two default string sorts in the receipt field-name
+comparison as reliability bugs. The accepted operation is exact field-set equality,
+not alphabetic or numeric ordering. Expressing it directly with Set equality
+preserves the existing acceptance set and removes the irrelevant sorting operation.
+A permanent regression accepts reordered valid fields and refuses a same-size
+lookalike replacement of every field; existing missing/extra/duplicate field,
+identity, completion, zero-error and coordinator contamination controls remain.
+No receipt field or protocol version changes.
+
+The local `3cfa2b7e` full-CI attempt was deliberately stopped through its owned
+worker after this publication feedback; its coordinator joined and removed its
+scratch. Its successful partial stages and earlier coverage remain attributed to
+that head, not promoted to a complete CI pass. The final publication record must
+join two NEW complete clean cumulative publication rounds, fresh current-head
+local/remote gates and complete affected physical controls after this clarification.

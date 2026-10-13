@@ -467,6 +467,26 @@ for (const raw of [
     );
   });
 
+test('runner receipt field membership is order-independent and refuses same-size lookalikes', () => {
+  const receipt = receiptFor();
+  const expected = {
+    ...receiptIdentity,
+    phase: receipt.phase,
+    mutationId: receipt.mutationId,
+    pid: receipt.pid,
+  };
+  const entries = Object.entries(receipt).reverse();
+  const encode = (items) => `${JSON.stringify(Object.fromEntries(items))}\n`;
+  assert.deepEqual(decodeRuntimeReceipt(encode(entries), expected), receipt);
+  for (let index = 0; index < entries.length; index++) {
+    const lookalike = entries.map(([key, value], position) => [
+      position === index ? `${key}\u200b` : key,
+      value,
+    ]);
+    assert.throws(() => decodeRuntimeReceipt(encode(lookalike), expected), /Runner receipt fields/);
+  }
+});
+
 test('structured zero-error receipts retain fixed/restored positive authority', () => {
   for (const phase of ['fixed', 'restored']) {
     const { data, child } = sample();

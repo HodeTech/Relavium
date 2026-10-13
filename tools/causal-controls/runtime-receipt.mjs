@@ -41,8 +41,8 @@ export function decodeRuntimeReceipt(raw, expected) {
     'Malformed runner receipt',
   );
   assert.deepEqual(
-    Object.keys(receipt).sort(),
-    [
+    new Set(Object.keys(receipt)),
+    new Set([
       'version',
       'event',
       'complete',
@@ -54,7 +54,7 @@ export function decodeRuntimeReceipt(raw, expected) {
       'pid',
       'unhandledErrors',
       'reason',
-    ].sort(),
+    ]),
     'Runner receipt fields',
   );
   assert.equal(receipt.version, 1, 'Runner receipt version');
