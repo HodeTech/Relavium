@@ -76,15 +76,16 @@ cumulative rounds at `1757ccc5`; its [acceptance checkpoint](docs/roadmap/phases
 records first-run transport and native masking evidence. Step 5 has two NEW clean complete
 cumulative rounds at `1be8731d`; its [acceptance checkpoint](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#step-5-acceptance--2026-10-12)
 records snapshot warnings, narrow context analysis, export completion and actual Chat/Home
-render evidence. **Steps 1–6 are accepted on `development`.** Step 6 has two NEW clean complete
+render evidence. **Steps 1–7 are accepted on `development`.** Step 6 has two NEW clean complete
 cumulative rounds (R7–R8) across all 160 paths at `0b025416`, complete independently audited
 99-control filesystem / 35-control secrets matrices, and all nine CI jobs green at that head.
 The [Step 6 acceptance](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#step-6-acceptance--2026-10-13)
 records exact physical evidence and limits. ADR-0109 is Accepted after independent proposal
 review and explicit maintainer approval; its native ownership implementation is included.
-Step 7's provider-header interim gate has two NEW clean complete cumulative review rounds;
-its required published aggregate remains pending. Step 8's four new threat sittings are clean;
-whole-wave author gates, cumulative reviews and publication remain open; no approval, provider, credential or user decision is pending.
+Step 7's provider-header interim gate is accepted after two NEW clean complete cumulative
+rounds and all nine published jobs at `01259d12`; see the [Step 7 acceptance](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#step-7-acceptance--2026-10-13).
+Step 8's four new threat sittings are clean; its finding-bearing first whole-wave review
+corrected three living prerequisite statuses. Two NEW clean whole-wave rounds and publication remain open; no approval, provider, credential or user decision is pending.
 
 See [docs/roadmap/current.md](docs/roadmap/current.md) for live status.
 

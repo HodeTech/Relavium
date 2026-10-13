@@ -1,7 +1,7 @@
 # Current state
 
 > Status: Living
-> Last updated: 2026-10-11
+> Last updated: 2026-10-13
 
 - **Related**: [README.md](README.md), [phases/phase-2.5-cli-consolidation.md](phases/phase-2.5-cli-consolidation.md), [phases/phase-2.5.5-hardening-and-remediation.md](phases/phase-2.5.5-hardening-and-remediation.md), [phases/phase-2-cli.md](phases/phase-2-cli.md), [deferred-tasks.md](deferred-tasks.md), [../project-structure.md](../project-structure.md), [../tech-stack.md](../tech-stack.md)
 
@@ -104,8 +104,8 @@ Earlier dated pending checkpoints in this page and the phase register are histor
 Resume the joint 2.5.5/2.6 [Wave 2 queue](#wave-2--shut-the-doors); this is separate from
 the already merged Phase 2.6.5 W2 liveness wave. Its hostile-MCP transport/config/definition
 work, including G19 and #202, already merged in W4/PR #87. The **unified filesystem
-jail** (#36/#39/#235 plus the pulled-forward 2.6.M/N path boundaries) and the **secrets foundation** (#27/#31/#293/#196) are accepted. First-run input transport (#25), snapshot warnings and export completion are also accepted. Media bounds/admission/lifecycle are also accepted. Next is provider-config trust, followed by security certification
-of the 2.5.5 exit criteria 1–3. Existing decision gates in that queue retain their authority.
+jail** (#36/#39/#235 plus the pulled-forward 2.6.M/N path boundaries) and the **secrets foundation** (#27/#31/#293/#196) are accepted. First-run input transport (#25), snapshot warnings and export completion are also accepted. Media bounds/admission/lifecycle and the provider-header interim gate are also accepted. Whole-wave security certification now evaluates
+the 2.5.5 exit criteria 1–3. Existing decision gates in that queue retain their authority.
 W9 is a historical grouping of harness items and approved deferrals, not a new open wave.
 **2026-10-12:** task-relevant document/code preflight is complete. The
 [proposed execution plan](phases/phase-2.5.5-hardening-and-remediation.md#wave-2-preflight-and-proposed-execution-plan--2026-10-12)
@@ -134,10 +134,11 @@ including Windows and official Node 22.13. The
 [Step 6 acceptance](phases/phase-2.5.5-hardening-and-remediation.md#step-6-acceptance--2026-10-13)
 records every confirmed repair, exact evidence and structural/native ownership limits.
 It includes the approved [ADR-0109](../decisions/0109-native-media-close-ownership-is-explicit-iterator-provenance.md)
-implementation. **Steps 1–6 are accepted on `development`; Step 7 has two NEW clean
-complete cumulative rounds, with its required published aggregate pending. Step 8's
-four new threat sittings are clean; final author gates, cumulative whole-wave review
-and publication remain open.** See the [certification checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#step-8-certification-checkpoint--2026-10-13).
+implementation. **Steps 1–7 are accepted on `development`.** Step 7 has two NEW clean
+complete cumulative rounds and all nine published jobs at `01259d12`; its [acceptance](phases/phase-2.5.5-hardening-and-remediation.md#step-7-acceptance--2026-10-13) records the interim header limits.
+Step 8's four new threat sittings are clean; its first finding-bearing cumulative
+round corrected three live prerequisite statuses. **Two NEW clean complete whole-wave
+rounds and publication remain open.** See the [certification checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#step-8-certification-checkpoint--2026-10-13).
 No ADR approval, provider capture, credential, billing or user decision is pending.
 The historical Ubuntu pre-readiness failure cause remains unproved; no whole-wave
 completion is inferred from these step acceptances.
@@ -1268,7 +1269,7 @@ unanswered**; the remainder sit inline in their own phase-file bullet.
 | D8 | 1 | Do already-persisted approval previews need a scrub? | ✅ **Ruled 2026-07-30: NO scrub migration.** The recommendation had been "yes, migration 0013, same PR"; the ruling went the other way, so `0013` was left free by this ruling and is now taken by ADR-0074 §4's conservative money columns; the reservation ledger above shifts nothing — `0014` (#101) keeps its number. The forward fix shipped (#91: `previewFor` scrubs the display copy, `unredactedPreview` carries the in-process classification copy), so no NEW row can carry an unscrubbed preview; historical rows in a local `history.db` keep theirs. Recorded here because the shipped state contradicted this table for four days |
 | D10 | 1 | `BudgetExceededError`/`BudgetPauseError`: adopt `.code`? | ✅ **Ruled + executed 2026-07-30: adopt.** Both carry a stable `code` (`budget_exceeded` / `budget_paused`), with exported `isBudgetExceededError` / `isBudgetPauseError` guards — because `instanceof` is unsafe from a surface (the CLI bundles the engine, so two realizations of a class coexist and `instanceof` answers `false` at the boundary that must catch it). Same shape as `isCorruptRunEventError`. Precedes Wave 3's `RelaviumError` migration as required |
 | D12 | 2 | `~/.relavium/tmp/`: `tmp`-specific rule or the general home-anchored predicate? | General predicate accepted in [ADR-0105](../decisions/0105-filesystem-roots-are-invocation-grants-not-project-authority.md), with invocation authority and removal of unused tmp provisioning; approved 2026-10-12; implementation accepted in [Step 2](phases/phase-2.5.5-hardening-and-remediation.md#step-2-acceptance--2026-10-12). Full child/scratch lifecycle remains with Phase 2.6.N. |
-| D13 | 2 | `default_headers`: keychain-ref indirection vs shape check? | [ADR-0108](../decisions/0108-provider-headers-stay-gated-until-keychain-custody.md) accepts keychain custody plus an interim nonempty-map refusal. Live header activation remains outside this phase and prohibited pending its custody/migration prerequisites; approved 2026-10-12; interim gate reviews complete; published acceptance pending. |
+| D13 | 2 | `default_headers`: keychain-ref indirection vs shape check? | [ADR-0108](../decisions/0108-provider-headers-stay-gated-until-keychain-custody.md) accepts keychain custody plus an interim nonempty-map refusal. Live header activation remains outside this phase and prohibited pending its custody/migration prerequisites; approved 2026-10-12; interim gate accepted in [Step 7](phases/phase-2.5.5-hardening-and-remediation.md#step-7-acceptance--2026-10-13). |
 | D14 | 2 | chat-export `tool_result`: warn vs redact vs full discipline? | **Reconciled 2026-10-12:** Accepted ADR-0095 requires content-free structure, superseding the old raw-result opt-in recommendation. No `--include-tool-results`. Continuity/slug residuals and retained user text are recorded in the Wave 2 plan. |
 | D15 | 2 | What masking guarantee does the session fixture (#115) certify? | **Reconciled 2026-10-12:** ADR-0095/0098 supply structural refusal, not universal masking. Certify the actual producer/SQLite/export fixtures and retained-content limits. This repairs the missing Wave 2 decision row; it is unrelated to historical media D15. |
 | D17 | 2 | Book security reviews **by threat class**, not per PR? | Yes — five sittings; reviewer availability is the wave's critical path |

@@ -127,3 +127,13 @@ command or live-header activation is included. Future activation prerequisites
 remain those in this decision. Source/test gates and independent implementation
 reviews remain pending; this checkpoint makes no Step 7 or whole-wave acceptance
 claim.
+
+
+### Step 7 implementation acceptance — 2026-10-13
+
+The dependent interim gate is independently accepted on `development`: two NEW
+clean complete cumulative rounds and all nine published jobs at implementation
+head `01259d12`. The [Step 7 acceptance register](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#step-7-acceptance--2026-10-13)
+joins actual store/SDK/CLI controls and complete physical evidence. Future live
+header activation, legacy migration/recovery and physical erasure remain outside
+this gate. Whole-wave Step 8 acceptance remains separate.
