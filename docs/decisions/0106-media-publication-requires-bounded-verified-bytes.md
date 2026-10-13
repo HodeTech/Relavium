@@ -324,3 +324,12 @@ Exact-capacity, cumulative-overflow, non-evaluated getter, borrowed-byte and pub
 media-path regressions are retained. It does not assert that ordinary native HTTP
 chunks override their length, or extend the approved JavaScript containment scope.
 Named removal controls and new complete cumulative reviews remain acceptance gates.
+
+### Step 6 implementation acceptance — 2026-10-13
+
+The dependent implementation is independently accepted on `development` at
+`0b025416`: two NEW clean complete cumulative rounds, current physical evidence
+and all nine published CI jobs pass. The
+[Step 6 acceptance register](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#step-6-acceptance--2026-10-13)
+joins the repairs, evidence and finite ownership/profile limits. Step 7 and Step 8
+whole-wave certification/publication remain separate; this note does not close Wave 2.

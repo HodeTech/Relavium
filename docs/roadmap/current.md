@@ -104,7 +104,7 @@ Earlier dated pending checkpoints in this page and the phase register are histor
 Resume the joint 2.5.5/2.6 [Wave 2 queue](#wave-2--shut-the-doors); this is separate from
 the already merged Phase 2.6.5 W2 liveness wave. Its hostile-MCP transport/config/definition
 work, including G19 and #202, already merged in W4/PR #87. The **unified filesystem
-jail** (#36/#39/#235 plus the pulled-forward 2.6.M/N path boundaries) and the **secrets foundation** (#27/#31/#293/#196) are accepted. First-run input transport (#25), snapshot warnings and export completion are also accepted. Next are media bounds/admission/lifecycle and provider-config trust, followed by security certification
+jail** (#36/#39/#235 plus the pulled-forward 2.6.M/N path boundaries) and the **secrets foundation** (#27/#31/#293/#196) are accepted. First-run input transport (#25), snapshot warnings and export completion are also accepted. Media bounds/admission/lifecycle are also accepted. Next is provider-config trust, followed by security certification
 of the 2.5.5 exit criteria 1–3. Existing decision gates in that queue retain their authority.
 W9 is a historical grouping of harness items and approved deferrals, not a new open wave.
 **2026-10-12:** task-relevant document/code preflight is complete. The
@@ -126,27 +126,17 @@ after two NEW clean complete cumulative rounds at `1757ccc5`; its [acceptance ch
 records first-run transport and native masking evidence. **Step 5 is accepted** after
 two NEW clean complete cumulative rounds at `1be8731d`; its [acceptance checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#step-5-acceptance--2026-10-12)
 records snapshot warnings, narrow context analysis, export completion and actual Chat/Home
-render evidence. **Step 6, media bounds, admission, cancellation and temporary ownership,
-proceeds automatically.**
-Its cumulative reviews found confirmed media alias/format, branch-admission,
-native-header, return-diagnostic and causal-evidence gaps. Their runtime repairs
-are committed. A fourth cumulative review found an omitted native video selector;
-the [fourth review repair checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#step-6-fourth-cumulative-review-and-repairs--2026-10-13)
-records its correction, exact native temporary identities and the remaining complete-matrix,
-independent-review and platform gates. The fifth complete cumulative review then
-reproduced whole-buffer Buffer reuse; its [repair checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#step-6-fifth-cumulative-review-and-repairs--2026-10-13)
-records the owned-copy correction and resets the new clean-review requirement.
-The sixth complete round independently reproduced configured byte-limit and
-incomplete-evidence phase-prefix gaps; the [sixth repair checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#step-6-sixth-cumulative-review-and-repairs--2026-10-13)
-records their corrections and retains the new complete-review and publication gates.
-Step 6 acceptance remains open. The lifecycle
-repair implements Accepted [ADR-0109](../decisions/0109-native-media-close-ownership-is-explicit-iterator-provenance.md):
-explicit native iterator ownership must preserve real HTTP close joining while an
-arbitrary asynchronous return cannot block store cleanup. The
-[clarified proposal](phases/phase-2.5.5-hardening-and-remediation.md#adr-0109-proposal-clarification--2026-10-13)
-has two NEW clean complete cumulative proposal rounds. The maintainer explicitly approved
-ADR-0109 and its dependent implementation on 2026-10-13; native lifecycle, packaging and
-causal validation now proceed. Step 6 remains unaccepted; Steps 7–8 have not begun.
+render evidence. **Step 6 is accepted** after two NEW clean complete cumulative rounds
+(R7–R8) across all 160 paths at `0b025416`. Complete reviewed-head filesystem/secrets,
+wire/usage artifacts are independently audited; all nine
+[published CI jobs](https://github.com/HodeTech/Relavium/actions/runs/38330334716) pass,
+including Windows and official Node 22.13. The
+[Step 6 acceptance](phases/phase-2.5.5-hardening-and-remediation.md#step-6-acceptance--2026-10-13)
+records every confirmed repair, exact evidence and structural/native ownership limits.
+It includes the approved [ADR-0109](../decisions/0109-native-media-close-ownership-is-explicit-iterator-provenance.md)
+implementation. **Steps 1–6 are accepted on `development`; Step 7's provider-header
+interim gate proceeds automatically. Step 8 whole-wave certification remains open.**
+No ADR approval, provider capture, credential, billing or user decision is pending.
 The historical Ubuntu pre-readiness failure cause remains unproved; no whole-wave
 completion is inferred from these step acceptances.
 

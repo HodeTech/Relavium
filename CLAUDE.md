@@ -166,13 +166,14 @@ cumulative rounds at `1757ccc5`; its [acceptance checkpoint](docs/roadmap/phases
 records first-run transport and native masking evidence. Step 5 has two NEW clean complete
 cumulative rounds at `1be8731d`; its [acceptance checkpoint](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#step-5-acceptance--2026-10-12)
 records snapshot warnings, narrow context analysis, export completion and actual Chat/Home
-render evidence. Steps 1–5 are accepted on `development`; Step 6 media admission/lifecycle
-ordinary R1 repairs are committed. ADR-0109 is Accepted after two NEW clean complete
-cumulative proposal rounds and explicit maintainer approval on 2026-10-13. Its dependent
-native iterator ownership repair and implementation validation proceed. Step 6 is not
-accepted; Steps 7–8 have not begun.
-The [clarification checkpoint](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#adr-0109-proposal-clarification--2026-10-13)
-records the distinction. Later and whole-wave gates remain open.
+render evidence. **Steps 1–6 are accepted on `development`.** Step 6 has two NEW clean complete
+cumulative rounds (R7–R8) across all 160 paths at `0b025416`, complete independently audited
+99-control filesystem / 35-control secrets matrices, and all nine CI jobs green at that head.
+The [Step 6 acceptance](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#step-6-acceptance--2026-10-13)
+records exact physical evidence and limits. ADR-0109 is Accepted after independent proposal
+review and explicit maintainer approval; its native ownership implementation is included.
+Step 7's approved provider-header interim gate proceeds automatically. Step 8 whole-wave
+certification/publication remains open; no approval, provider, credential or user decision is pending.
 
 For live status, per-PR history, milestone dates, and open obligations, see the canonical
 home [docs/roadmap/current.md](docs/roadmap/current.md);

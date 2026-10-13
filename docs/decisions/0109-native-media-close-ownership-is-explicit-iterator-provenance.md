@@ -236,3 +236,12 @@ actual runtime unhandled-rejection observation, foreign/native acknowledgement,
 and real store/de-inline refusal without pre-catching the original rejection.
 Named assertion-based removal, exact restoration, fresh cumulative implementation
 reviews and complete publication gates remain Step 6 obligations.
+
+### Step 6 implementation acceptance — 2026-10-13
+
+The dependent implementation is independently accepted on `development` at
+`0b025416`: two NEW clean complete cumulative rounds, current physical evidence
+and all nine published CI jobs pass. The
+[Step 6 acceptance register](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#step-6-acceptance--2026-10-13)
+joins the repairs, evidence and finite ownership/profile limits. Step 7 and Step 8
+whole-wave certification/publication remain separate; this note does not close Wave 2.

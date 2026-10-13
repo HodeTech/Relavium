@@ -1,6 +1,6 @@
 # Phase 2.5.5 — Hardening and Remediation
 
-> Status: 🚧 **Open — Wave 2 Steps 1–5 accepted; Step 6 media admission/lifecycle in progress.** Live progress and execution order are canonical in
+> Status: 🚧 **Open — Wave 2 Steps 1–6 accepted; Step 7 provider-header interim gate proceeds.** Live progress and execution order are canonical in
 > [../current.md](../current.md#execution-order--phase-255--phase-26-temporary); this banner does not
 > restate them. A full-project multi-agent code review completed
 > 2026-07-19 at HEAD `f88b0e8` — 377 findings, 373 surviving two-lens adversarial
@@ -1040,7 +1040,7 @@ Raised by a reviewer, then disproved by both verifiers reading the code. Recorde
 ## Wave 2 preflight and proposed execution plan — 2026-10-12
 
 **Status: maintainer approved ADR-0105–0108 and the eight-step plan on 2026-10-12.
-Steps 1–5 are accepted after independent cumulative reviews and required gates; Step 6 proceeds.**
+Steps 1–6 are accepted after independent cumulative reviews and required gates; Step 7 proceeds.**
 Inspection baseline is `development` at `aaed7d593d72ea414b1fae42ddf20e148a5fce0f`.
 This is the joint Phase 2.5.5/2.6 Wave 2, not the closed core reliability W2/W8.
 All work stays on `development`. Detailed independent reports remain local/ignored;
@@ -2580,3 +2580,71 @@ checks fifty Markdown files, 2,638 relative links and nineteen append-only ADRs.
 matrices and artifact audits, required gates, and two NEW clean complete cumulative
 implementation rounds after these repairs remain required. Steps 7–8 are unstarted.
 No new ADR, approval, provider capture, credential or user decision is pending.
+
+### Step 6 acceptance — 2026-10-13
+
+**Accepted on `development` at implementation head `0b025416`; Step 7 proceeds
+automatically.** After the sixth-round corrections, two NEW complete cumulative
+rounds (R7 and R8) independently review all **160 paths** from accepted Step 5 base
+`c6921be1`. Each round has separate shared, stores, integration and tooling/document
+reviewers; all eight reports are clean. Root reads every full report and joins the
+scoped checks. Independent focused executions total 513 cases in R7 and 462 in R8;
+these overlapping executions are not a unique-test or whole-suite count.
+
+The acceptance retains the canonical [finite media profiles and ownership contract](../../reference/shared-core/llm-provider-seam.md#bounded-verified-media-publication-adr-0106),
+[metadata admission](../../reference/shared-core/database-schema.md#media-metadata-admission),
+[physical storage limits](../../reference/shared-core/built-in-tools.md#physical-media-storage-and-limits)
+and [offline maintenance command](../../reference/cli/commands.md#relavium-media-prune-temporaries).
+It includes all confirmed R1–R6 corrections, Accepted ADR-0109 native ownership,
+pre-publication admission, old-layout read bounds, borrowed-byte ownership, exact
+native temporary identity and finite evidence-prefix validation. The final caller
+comment distinguishes mandatory admission on a **present** reference port from
+optional port absence and best-effort post-ACK retention; it changes no runtime.
+
+At the exact reviewed head, [CI run 38330334716](https://github.com/HodeTech/Relavium/actions/runs/38330334716)
+passes all **nine jobs**, including the success-only required aggregate. Its lint,
+types, tests, build, formatting, tooling, isolation, DB sync, SDK/engine fences,
+bundle closure and compiled CLI/media packaging/overflow/replay smoke checks pass.
+Root downloads and independently decodes the actual current-head artifacts:
+
+| Family | Complete physical evidence |
+| --- | --- |
+| Filesystem | **99 controls / 297 phases / 5,115 executions**, 255 removal failures: 248 ordinary AssertionErrors, four Vitest rejection-expectation assertions and three separately traced secondary removal effects. All required named semantic witnesses and full fixed/removal/restored inventories pass; 1,789 retained files / 32,500,649 bytes including envelope. |
+| Secrets | **35 controls / 105 phases / 7,713 executions**, 584 ordinary AssertionErrors and two Vitest rejection-expectation assertions; no collateral failure. 637 retained files / 23,174,544 bytes including envelope. |
+| Wire | **Four controls / nine phases including shared baseline / 216 executions** over the same 24-case inventory. All 36 primary semantic assertions fail as intended; fourteen secondary assertions and six normalized provider refusals are individually qualified. Exact installed SDK byte inventories match independent local capture; a different local shared build is not substituted for the remote artifact. |
+| Usage | **23 mechanisms / 3,738 executions / 227 semantic failures**, plus **435 permanent cases / 71 native children / one intentional readiness-timeout control**. Complete ordered inventories and multiplicities pass. Three inherited query-title pairs remain duplicated; Step 8 must distinguish them and rerun the full final inventory. Both original bodies remain executed; no unique-label claim is made here. |
+
+The filesystem secondary effects are a source-failed error from premature native
+return in the natural-EOF regression, a rejected reverse Ogg claim after body
+evidence is removed, and a recovery worker exiting
+before an intentionally removed unlink stage. The last is not its post-unlink
+semantic assertion and is not counted as a designated causal witness. Every control
+still has its separate required named AssertionError and green complete fixed/restored
+suites. These are explained removal consequences, not unrelated setup/timeout failures.
+
+Packed manifests, exact stdio, source and dependency loader receipts, native
+parent/child joins, restoration and unchanged caps are checked. Filesystem source
+pins equal exact reviewed Git blobs; its 297 packed manifests join 1,124 source
+files, 458 dependency packages and 21,013 dependency-file pins. Standalone production
+manifest/evaluation/stdio validators also pass. Remote installed dependency bytes
+are not locally accessible or rehashed; retained pins and executed receipts are
+verified instead. Earlier cancelled or selected captures are not acceptance evidence.
+
+Native Windows passes the full DB suite, concurrency, filesystem/CAS/shared-media,
+publication/GC/prune, actual workspace and untouched CLI packaging, and headless
+smoke. The official Node 22.13 floor passes uncached types/tests/build. Both that
+Linux test run and the enforced LLM/MCP coverage run execute **559 files / 12,259
+passing tests / 14 established skips**. Eleven skips are existing LLM capability
+cases, two are Windows-only filesystem cases on Linux, and one is the existing
+CI-only benchmark exclusion. Windows retains sixteen established POSIX-only
+filesystem skips. No Step 6 test is newly skipped. Core coverage is measured here,
+not claimed as formally enforced; Step 8 still requires bare and enforced coverage.
+
+The current broad local author gates and all 185 acceptance-tool tests are green
+as recorded in the preceding repair checkpoint. Acceptance is limited to the
+approved structural formats, cooperating filesystem ownership and explicit native
+iterator domain/EOF/adoption obligations. It does not certify decoding/playback,
+hostile same-user filesystem isolation, arbitrary JavaScript containment or cross-copy
+ownership. **Steps 1–6 are accepted; Steps 7–8 and whole-wave certification remain
+open.** No new ADR approval, provider request, credential, billing or user decision
+is pending.
