@@ -96,3 +96,13 @@ are explicit in the [canonical media lifecycle contract](../reference/shared-cor
 Existing host work/receipt ownership and whole-buffer limits remain in force.
 Implementation, packaging and cumulative review gates remain separate from this
 decision approval; this note does not accept Step 6 or close Wave 2.
+
+
+### Wave 2 implementation landing — 2026-10-13
+
+The applicable Wave 2 implementation is accepted on `development`. The
+[closing register](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-2-closing-register--2026-10-13)
+joins the per-item disposition, two NEW clean complete whole-wave review rounds,
+security sittings, exact-source gates and preserved limits. Earlier dated pending
+checkpoints remain historical. This landing does not claim a merge, future header
+activation, full M/N lifecycle or removal of approved residuals.

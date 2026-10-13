@@ -46,3 +46,13 @@ canonical [keychain/secrets contract](../reference/desktop/keychain-and-secrets.
 The CLI runtime resolver's environment fallback is a different mechanism; the OS
 keychain write path still reports unavailability. This qualification changes no
 storage authority and does not authorize implementation of an encrypted-file store.
+
+
+### Wave 2 implementation landing — 2026-10-13
+
+The applicable Wave 2 implementation is accepted on `development`. The
+[closing register](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-2-closing-register--2026-10-13)
+joins the per-item disposition, two NEW clean complete whole-wave review rounds,
+security sittings, exact-source gates and preserved limits. Earlier dated pending
+checkpoints remain historical. This landing does not claim a merge, future header
+activation, full M/N lifecycle or removal of approved residuals.

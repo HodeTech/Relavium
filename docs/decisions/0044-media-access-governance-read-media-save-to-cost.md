@@ -91,3 +91,13 @@ creates no reference or read grant. Bounded cancellable fd delivery preserves wh
 backing (CR-53), and `read_media` activation retains its separately owned residual. Existing
 realized-money rules and post-ACK best-effort lifetime semantics are unchanged. Step 6 independent
 implementation review and whole-wave gates remain open at this checkpoint.
+
+
+### Wave 2 implementation landing — 2026-10-13
+
+The applicable Wave 2 implementation is accepted on `development`. The
+[closing register](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-2-closing-register--2026-10-13)
+joins the per-item disposition, two NEW clean complete whole-wave review rounds,
+security sittings, exact-source gates and preserved limits. Earlier dated pending
+checkpoints remain historical. This landing does not claim a merge, future header
+activation, full M/N lifecycle or removal of approved residuals.

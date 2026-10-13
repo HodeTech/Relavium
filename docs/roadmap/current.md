@@ -99,49 +99,32 @@ claim. ADR-0087 §1 is outside the denominator. Phase closure does not claim 51 
 implemented items or an empty debt backlog. Phase 2.5.5 and Phase 2.6 remain in progress.
 Earlier dated pending checkpoints in this page and the phase register are historical.
 
-## Next work — Wave 2 — Shut the doors
+<a id="next-work--wave-2--shut-the-doors"></a>
 
-Resume the joint 2.5.5/2.6 [Wave 2 queue](#wave-2--shut-the-doors); this is separate from
-the already merged Phase 2.6.5 W2 liveness wave. Its hostile-MCP transport/config/definition
-work, including G19 and #202, already merged in W4/PR #87. The **unified filesystem
-jail** (#36/#39/#235 plus the pulled-forward 2.6.M/N path boundaries) and the **secrets foundation** (#27/#31/#293/#196) are accepted. First-run input transport (#25), snapshot warnings and export completion are also accepted. Media bounds/admission/lifecycle and the provider-header interim gate are also accepted. Whole-wave security certification now evaluates
-the 2.5.5 exit criteria 1–3. Existing decision gates in that queue retain their authority.
-W9 is a historical grouping of harness items and approved deferrals, not a new open wave.
-**2026-10-12:** task-relevant document/code preflight is complete. The
-[proposed execution plan](phases/phase-2.5.5-hardening-and-remediation.md#wave-2-preflight-and-proposed-execution-plan--2026-10-12)
-joins current findings, already shipped protections and all decisions needed before
-implementation. The maintainer approved ADR-0105–0108 and the eight-step plan on
-2026-10-12. **Step 1 is accepted** after two new clean complete cumulative rounds at
-`8c13675f`, with full local CI and complete causal/native inventories; the
-[acceptance checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#step-1-acceptance--2026-10-12)
-records evidence and limits. **Step 2 is also accepted** after two NEW clean runtime
-rounds and two NEW clean tooling/document rounds following its prose qualification.
-All eight [published CI jobs](https://github.com/HodeTech/Relavium/actions/runs/38246846580)
-pass at code head `aca351af`, including Windows and the forced Node floor. The
-[Step 2 acceptance](phases/phase-2.5.5-hardening-and-remediation.md#step-2-acceptance--2026-10-12)
-records exact attribution and limits. **Step 3 is accepted** after two NEW clean complete
-cumulative rounds at `8c44e2ec`; its [acceptance checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#step-3-acceptance--2026-10-12)
-records all review dispositions, affected gates and finite limits. **Step 4 is accepted**
-after two NEW clean complete cumulative rounds at `1757ccc5`; its [acceptance checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#step-4-acceptance--2026-10-12)
-records first-run transport and native masking evidence. **Step 5 is accepted** after
-two NEW clean complete cumulative rounds at `1be8731d`; its [acceptance checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#step-5-acceptance--2026-10-12)
-records snapshot warnings, narrow context analysis, export completion and actual Chat/Home
-render evidence. **Step 6 is accepted** after two NEW clean complete cumulative rounds
-(R7–R8) across all 160 paths at `0b025416`. Complete reviewed-head filesystem/secrets,
-wire/usage artifacts are independently audited; all nine
-[published CI jobs](https://github.com/HodeTech/Relavium/actions/runs/38330334716) pass,
-including Windows and official Node 22.13. The
-[Step 6 acceptance](phases/phase-2.5.5-hardening-and-remediation.md#step-6-acceptance--2026-10-13)
-records every confirmed repair, exact evidence and structural/native ownership limits.
-It includes the approved [ADR-0109](../decisions/0109-native-media-close-ownership-is-explicit-iterator-provenance.md)
-implementation. **Steps 1–7 are accepted on `development`.** Step 7 has two NEW clean
-complete cumulative rounds and all nine published jobs at `01259d12`; its [acceptance](phases/phase-2.5.5-hardening-and-remediation.md#step-7-acceptance--2026-10-13) records the interim header limits.
-Step 8's four new threat sittings are clean; its first finding-bearing cumulative
-round corrected three live prerequisite statuses. **Two NEW clean complete whole-wave
-rounds and publication remain open.** See the [certification checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#step-8-certification-checkpoint--2026-10-13).
-No ADR approval, provider capture, credential, billing or user decision is pending.
-The historical Ubuntu pre-readiness failure cause remains unproved; no whole-wave
-completion is inferred from these step acceptances.
+## Wave 2 accepted — Shut the doors
+
+**Wave 2's eight steps are accepted on `development`, 2026-10-13.** This existing
+navigation anchor is retained for incoming decision links; implementation is
+complete and publication is separate from merge. The [closing register](phases/phase-2.5.5-hardening-and-remediation.md#wave-2-closing-register--2026-10-13)
+joins all forty item dispositions, four new threat sittings plus W4 revalidation,
+two NEW complete clean cumulative whole-wave review rounds and exact-source author,
+coverage, native Windows/Node-floor and full physical causal evidence.
+
+Completed work covers invocation-authorized filesystem boundaries, bounded secret
+input and bridge diagnostics, faithful-snapshot warnings and structural session
+privacy, export completion, verified bounded media/CAS/native lifecycles, and the
+interim provider-header gate. Exit criteria 1–3 and sub-stream D are signed off.
+M2.5.5-2's I half, full Phase 2.5.5/2.6, M/N production lifecycle, future live headers
+and existing approved residuals remain open. There is no pending ADR approval,
+provider capture, credential, billing or user decision for this wave.
+
+## Next work — Wave 3 — Clear the ground
+
+The next engineering work is [Wave 3 — Clear the ground](#wave-3--clear-the-ground).
+Its serialized multi-file queue starts with shared close handling, safe path
+presentation and exhaustiveness guards, before hot-file decomposition and the
+remaining CLI/process work. Start with current documents/code and its own decision
+preflight; Wave 2 does not silently approve the next wave's unresolved decisions.
 
 ## Historical W7 implementation checkpoints
 
@@ -1072,8 +1055,7 @@ an ESLint selector rather than a list.
 
 ### Wave 2 — Shut the doors
 
-The hostile-MCP holes are closed in W4/PR #87. Complete the unified filesystem jail and the remaining
-secrets/config and persistence-security work, then certify while the reviews are still booked.
+**Accepted on `development`, 2026-10-13; merge remains separate.** The [closing register](phases/phase-2.5.5-hardening-and-remediation.md#wave-2-closing-register--2026-10-13) joins all forty queue IDs and the exit/D sign-off. Hostile-MCP work is reused from W4/PR #87; the remaining filesystem, secrets/config, persistence and media work is complete within its recorded limits. The queue below preserves scope and traceability.
 
 1. ✅ **Completed in W4/PR #87:** 2.5.5.D · project-layer MCP name collision redirecting a global secret
    (G19) and MCP tool-definition poisoning (#202); see the
@@ -1272,7 +1254,7 @@ unanswered**; the remainder sit inline in their own phase-file bullet.
 | D13 | 2 | `default_headers`: keychain-ref indirection vs shape check? | [ADR-0108](../decisions/0108-provider-headers-stay-gated-until-keychain-custody.md) accepts keychain custody plus an interim nonempty-map refusal. Live header activation remains outside this phase and prohibited pending its custody/migration prerequisites; approved 2026-10-12; interim gate accepted in [Step 7](phases/phase-2.5.5-hardening-and-remediation.md#step-7-acceptance--2026-10-13). |
 | D14 | 2 | chat-export `tool_result`: warn vs redact vs full discipline? | **Reconciled 2026-10-12:** Accepted ADR-0095 requires content-free structure, superseding the old raw-result opt-in recommendation. No `--include-tool-results`. Continuity/slug residuals and retained user text are recorded in the Wave 2 plan. |
 | D15 | 2 | What masking guarantee does the session fixture (#115) certify? | **Reconciled 2026-10-12:** ADR-0095/0098 supply structural refusal, not universal masking. Certify the actual producer/SQLite/export fixtures and retained-content limits. This repairs the missing Wave 2 decision row; it is unrelated to historical media D15. |
-| D17 | 2 | Book security reviews **by threat class**, not per PR? | Yes — five sittings; reviewer availability is the wave's critical path |
+| D17 | 2 | Book security reviews **by threat class**, not per PR? | **Accepted 2026-10-13:** four new sittings (filesystem, secret input, secrets at rest, config trust), plus W4 hostile-MCP sitting/current regression revalidation. [Closing evidence](phases/phase-2.5.5-hardening-and-remediation.md#wave-2-closing-register--2026-10-13). |
 | D18 | 3 | `chat-ink.tsx` (1,795 lines, in neither doc): decompose or decline? | **Decline** — hand it to 2.6.M's render-v2 in Wave 5a, where the palette sweep then runs once |
 | D19 | 3 | `--quiet`/`--verbose`/`RELAVIUM_DEBUG` precedence | `--quiet` < default < `--verbose`; `RELAVIUM_DEBUG=1` an alias, explicit flag wins; `--json` overrides for stream shape |
 | D20 | 3 | `--input`'s four-way collision: rename or document? | Rename `models pricing` to `--input-price`/`--output-price`, old spellings deprecated aliases |

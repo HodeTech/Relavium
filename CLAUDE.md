@@ -130,10 +130,9 @@ throughout the registers describe their original checkpoints.
 CR-70 (cross-turn tool-history carrying), CR-93 (tenant-scoped mutable state), CR-95's long continuation
 and existing exact-capacity/scoped residuals retain their approved limits in
 [deferred-tasks.md](docs/roadmap/deferred-tasks.md). No new deferral, provider capture, billing,
-credential or W8 user decision is pending. Next is the joint 2.5.5/2.6
-[Wave 2 — Shut the doors](docs/roadmap/current.md#next-work--wave-2--shut-the-doors), starting with the
-remaining unified filesystem jail; its MCP queue already merged in W4. This is separate from
-Phase 2.6.5's completed W2 liveness wave. Phase 2.5.5 and Phase 2.6 remain in progress.
+credential or W8 user decision is pending. The joint [Wave 2 — Shut the doors](docs/roadmap/current.md#next-work--wave-2--shut-the-doors) is now accepted on `development`;
+next is [Wave 3 — Clear the ground](docs/roadmap/current.md#wave-3--clear-the-ground).
+Phase 2.5.5 and Phase 2.6 remain in progress.
 
 **W7 merged to `main` on 2026-10-10 as PR #90, including final whole-wave Step 12.**
 Steps 1–11, all five genuine overflow records, owned measured requests and consolidated provider/MCP/host
@@ -153,29 +152,17 @@ billing, key or user decision is pending. The [merge checkpoint](docs/roadmap/ph
 records W7 closure. W8 subsequently merged in PR #92; the register is 49/51 on `main`.
 Existing approved limits are unchanged; W8 has no open implementation or landing gate.
 
-**Joint Wave 2 authorised — 2026-10-12:** the maintainer approved ADR-0105–0108 and
-the [eight-step plan](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#execution-steps-after-approval).
-The decisions are Accepted; Steps 1–5 are independently accepted. Step 2's runtime
-reviews are clean in R7–R8 at `aca351af`; its prose qualification has two NEW clean
-tooling/document rounds at `d4f54619`. All eight published CI jobs pass at the code
-head `aca351af`. The [Step 2 acceptance](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#step-2-acceptance--2026-10-12)
-records scope and evidence limits. Step 3 has two NEW clean complete cumulative rounds
-at `8c44e2ec`; its [acceptance checkpoint](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#step-3-acceptance--2026-10-12)
-records the secrets foundation's evidence and finite limits. Step 4 has two NEW clean complete
-cumulative rounds at `1757ccc5`; its [acceptance checkpoint](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#step-4-acceptance--2026-10-12)
-records first-run transport and native masking evidence. Step 5 has two NEW clean complete
-cumulative rounds at `1be8731d`; its [acceptance checkpoint](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#step-5-acceptance--2026-10-12)
-records snapshot warnings, narrow context analysis, export completion and actual Chat/Home
-render evidence. **Steps 1–7 are accepted on `development`.** Step 6 has two NEW clean complete
-cumulative rounds (R7–R8) across all 160 paths at `0b025416`, complete independently audited
-99-control filesystem / 35-control secrets matrices, and all nine CI jobs green at that head.
-The [Step 6 acceptance](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#step-6-acceptance--2026-10-13)
-records exact physical evidence and limits. ADR-0109 is Accepted after independent proposal
-review and explicit maintainer approval; its native ownership implementation is included.
-Step 7's provider-header interim gate is accepted after two NEW clean complete cumulative
-rounds and all nine published jobs at `01259d12`; see the [Step 7 acceptance](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#step-7-acceptance--2026-10-13).
-Step 8's four new threat sittings are clean; its finding-bearing first whole-wave review
-corrected three living prerequisite statuses. Two NEW clean whole-wave rounds and publication remain open; no approval, provider, credential or user decision is pending.
+**Joint Wave 2 accepted on `development` — 2026-10-13:** all eight implementation
+steps are complete under approved ADR-0105–0109. The [closing register](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-2-closing-register--2026-10-13)
+joins forty individual dispositions, four new security sittings plus W4 revalidation,
+two NEW complete clean cumulative whole-wave rounds, broad author/coverage gates
+and exact-source published causal/platform evidence. Exit criteria 1–3 and the D
+half of M2.5.5-2 are accepted; the I half and full phases remain open. Publication
+is separate from merge. No ADR approval, provider capture, key, billing or user
+decision is pending for Wave 2. Next engineering work is
+[Wave 3 — Clear the ground](docs/roadmap/current.md#wave-3--clear-the-ground),
+starting with its serialized multi-file queue and a fresh decision preflight.
+Full M/N lifecycle and existing approved deferrals retain their canonical homes.
 
 For live status, per-PR history, milestone dates, and open obligations, see the canonical
 home [docs/roadmap/current.md](docs/roadmap/current.md);

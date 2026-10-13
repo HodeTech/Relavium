@@ -137,3 +137,13 @@ head `01259d12`. The [Step 7 acceptance register](../roadmap/phases/phase-2.5.5-
 joins actual store/SDK/CLI controls and complete physical evidence. Future live
 header activation, legacy migration/recovery and physical erasure remain outside
 this gate. Whole-wave Step 8 acceptance remains separate.
+
+
+### Wave 2 implementation landing — 2026-10-13
+
+The applicable Wave 2 implementation is accepted on `development`. The
+[closing register](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-2-closing-register--2026-10-13)
+joins the per-item disposition, two NEW clean complete whole-wave review rounds,
+security sittings, exact-source gates and preserved limits. Earlier dated pending
+checkpoints remain historical. This landing does not claim a merge, future header
+activation, full M/N lifecycle or removal of approved residuals.

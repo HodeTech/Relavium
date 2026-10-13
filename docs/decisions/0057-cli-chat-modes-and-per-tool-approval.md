@@ -206,3 +206,13 @@ read-only `ask` and no mode escapes protected-paths + the jail).
   does not depend on it.
 
 > Amended 2026-10-12 by [ADR-0105](0105-filesystem-roots-are-invocation-grants-not-project-authority.md): The mode-independent floor gains only a contextual exemption for the ancestor `.relavium` component of an exact host-issued scratch descriptor. Nested credentials/protected components, project metadata and home config/history remain denied, including auto. Ordinary chat has no production scratch producer. Project chat may use invocation-authorized selected roots; full still clamps to project. Exact mechanisms are in the [tool filesystem contract](../reference/shared-core/built-in-tools.md#filesystem-permission-tiers), with [argv authority](../reference/cli/commands.md#global-options) and [config selectors](../reference/contracts/config-spec.md#chat-filesystem-root-selectors) in their canonical homes. Implementation review/gates remain open.
+
+
+### Wave 2 implementation landing — 2026-10-13
+
+The applicable Wave 2 implementation is accepted on `development`. The
+[closing register](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-2-closing-register--2026-10-13)
+joins the per-item disposition, two NEW clean complete whole-wave review rounds,
+security sittings, exact-source gates and preserved limits. Earlier dated pending
+checkpoints remain historical. This landing does not claim a merge, future header
+activation, full M/N lifecycle or removal of approved residuals.

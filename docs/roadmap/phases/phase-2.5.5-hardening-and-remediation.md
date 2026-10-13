@@ -1,6 +1,6 @@
 # Phase 2.5.5 — Hardening and Remediation
 
-> Status: 🚧 **Open — Wave 2 Steps 1–7 accepted; Step 8 certification proceeds.** Live progress and execution order are canonical in
+> Status: 🚧 **Open — Wave 2 Steps 1–8 accepted on development; publication and later waves remain separate.** Live progress and execution order are canonical in
 > [../current.md](../current.md#execution-order--phase-255--phase-26-temporary); this banner does not
 > restate them. A full-project multi-agent code review completed
 > 2026-07-19 at HEAD `f88b0e8` — 377 findings, 373 surviving two-lens adversarial
@@ -448,7 +448,7 @@ This substream is the development-process substrate itself — `.github/workflow
 | In-phase | Completed by | Outcome |
 |----------|--------------|---------|
 | ✅ M2.5.5-1 Safety-critical propagation fixes *(met 2026-07-30, PR #81 — its two CRITICALs, #91 and #228, are closed. ADR-0074 §1 was open at that date and CLOSED on 2026-08-09 with `/cost --release`; the "Wave 1.5" framing this note used was retracted — that work was PR #81's own closing list, not a later wave. See [current.md](../current.md).)* | 2.5.5.A + 2.5.5.C | Two of the three CRITICAL findings closed (`#91` the unredacted approval-preview secret leak; `#228` the chat-persister unhandled-rejection crash — the third, `#56`, lands with 2.5.5.I under M2.5.5-2); the budget governor's concurrency gap and the two-process migration race are fixed |
-| M2.5.5-2 Security-surface hardening | 2.5.5.D + 2.5.5.I | MCP tool-poisoning/config-secret-hijack gaps closed; the third CRITICAL (`#56`) closed as terminal-control sanitization reaches `relavium run`, the error boundary, and the approval card; `chat.ts`/`home-controller.ts` decomposed ahead of 2.6.E/2.6.G |
+| M2.5.5-2 Security-surface hardening — D accepted, I open ([Wave 2 sign-off](#wave-2-closing-register--2026-10-13)) | 2.5.5.D + 2.5.5.I | MCP tool-poisoning/config-secret-hijack gaps closed; the third CRITICAL (`#56`) closed as terminal-control sanitization reaches `relavium run`, the error boundary, and the approval card; `chat.ts`/`home-controller.ts` decomposed ahead of 2.6.E/2.6.G |
 | M2.5.5-3 CLI operator-safety net | 2.5.5.E | The outermost crash/signal/error boundary behaves uniformly across every command; `--version`/`--help` startup tax closed |
 | M2.5.5-4 Money-safety & process substrate | 2.5.5.B + 2.5.5.H | The three LLM adapters share guard/classification parity and `FallbackChain` is the sole retry authority; CI actually executes the compiled binary and the coverage/dependency/logging gates match what they claim to enforce |
 | M2.5.5-5 Documentation & hygiene close-out | 2.5.5.F + 2.5.5.G | No canonical doc names a retired data source or an unbuilt surface as shipped; the naming/duplication/dead-code sweep is closed |
@@ -512,6 +512,8 @@ directly as a 2.6.A work item). **Intra-phase:** the five file overlaps recorded
   rest of that sub-stream's independent items.
 
 ## Exit criteria
+
+**Wave 2 disposition — 2026-10-13:** criteria 1–3 are accepted on `development`; the [closing register](#wave-2-closing-register--2026-10-13) joins their direct regressions and threat sittings. Whole-phase criteria 4–8 remain open.
 
 1. All three CRITICAL findings (`#91` the `previewFor()` secret leak; `#228` the chat-persister
    unhandled rejection; `#56` the unsanitized `relavium run` TUI) are closed and regression-tested.
@@ -1038,6 +1040,8 @@ Raised by a reviewer, then disproved by both verifiers reading the code. Recorde
 ---
 
 ## Wave 2 preflight and proposed execution plan — 2026-10-12
+
+> Current disposition — 2026-10-13: all eight steps are accepted on `development`; the [closing register](#wave-2-closing-register--2026-10-13) controls current acceptance. The dated preflight/checkpoint states below remain historical.
 
 **Status: maintainer approved ADR-0105–0108 and the eight-step plan on 2026-10-12.
 Steps 1–6 are accepted after independent cumulative reviews and required gates; Step 7 proceeds.**
@@ -2758,13 +2762,15 @@ later Waves 3–7 and existing approved deferrals remain open. This checkpoint c
 no new deferral and claims neither Wave 2 acceptance nor merge.
 
 
-#### Wave 2 individual dispositions — certification in progress
+<a id="wave-2-individual-dispositions--certification-in-progress"></a>
 
-All **forty distinct queue IDs** are assigned below. Steps 1–6 have independent
-acceptance, Step 7's implementation rounds are clean, and current W4 regressions
-pass. Final Step 8 gates still control the wave/exit sign-off; this inventory does
-not substitute a status label for evidence. Earlier checkpoint statements of open
-work remain historical.
+#### Wave 2 individual dispositions — accepted
+
+All **forty distinct queue IDs** are accepted within their recorded limits.
+The [closing register](#wave-2-closing-register--2026-10-13) joins all eight steps,
+current W4 revalidation and final Step 8 review/gates to the wave/exit sign-off.
+Earlier checkpoint statements of open work remain historical; this inventory
+retains each implementation and residual's canonical home.
 
 | ID | Owner / accepted implementation home | Verified disposition and limit |
 | --- | --- | --- |
@@ -2892,3 +2898,154 @@ independently audited. Their final counts and family-specific qualifications bel
 to the closing register; the success-only aggregate is still pending at this
 checkpoint. No code changes are made to obtain this documentation correction.
 Two NEW clean complete cumulative whole-wave rounds remain required.
+
+
+### Wave 2 closing register — 2026-10-13
+
+**Steps 1–8 are accepted on `development`; publication is separate from merge.**
+This is the joint Phase 2.5.5/2.6 “Shut the doors” wave. It does not reopen the
+merged Phase 2.6.5 W2/W8 interlude or close all of Phase 2.5.5/2.6.
+
+The [forty-ID disposition ledger](#wave-2-individual-dispositions--certification-in-progress)
+joins each queue item to its accepted implementation or reused W4 controls. The
+four new [threat sittings](../../standards/security-review.md#wave-2-sittings--filesystem-secrets-and-config-2026-10-13)
+cover filesystem boundaries, secrets input, secrets at rest and config trust.
+W4's hostile-MCP sitting is reused with current direct and actual-SDK regressions.
+There are four new sittings, not five new reviews of the same class.
+
+| Step | Accepted result and controlling evidence |
+| --- | --- |
+| 1 | Corrected canonical trust contracts and finite causal-control foundations; [acceptance](#step-1-acceptance--2026-10-12). |
+| 2 | Invocation-authorized filesystem roots/selectors, shared ancestor walk, credential floor, catalog containment and scratch-floor prerequisite; [acceptance](#step-2-acceptance--2026-10-12). Full M/N lifecycle remains open. |
+| 3 | Bounded owned secret stdin, native-bridge failure privacy and finite URL-query scrubbing; [acceptance](#step-3-acceptance--2026-10-12). |
+| 4 | Secret argv refusal and bounded first-run stdin delivery, native masked history and resume resupply; [acceptance](#step-4-acceptance--2026-10-12). |
+| 5 | Faithful-snapshot warnings, structural session/tool-content refusal, context secret analysis and export continuity/slug/notice delivery; [acceptance](#step-5-acceptance--2026-10-12). |
+| 6 | Bounded structural media verification, descriptor/admission authority, CAS/temp/native lifecycle and explicit iterator ownership; [acceptance](#step-6-acceptance--2026-10-13). |
+| 7 | Interim refusal of new nonempty provider headers, legacy preservation, explicit logical clear and SDK/public-output exclusion; [acceptance](#step-7-acceptance--2026-10-13). |
+| 8 | Four new security sittings, W4 revalidation, per-ID/exit/D sign-off, fresh broad author and published physical controls, and two NEW clean complete cumulative rounds after the R1 correction; evidence below. |
+
+#### Final independent cumulative review
+
+R2 and R3 are two NEW complete clean cumulative whole-wave rounds at
+`cfae361adebfadf7e354b79907330758275e64e5`, after the R1 live-status correction.
+Each round uses three new independent reviewers: contracts/stores (110 paths),
+CLI/security (91), and tooling/docs (90), covering all **291 distinct cumulative
+paths** against `664336c2794622c2b940be823966eddc9d61423d`. Critical partitions use
+`gpt-6-astra`/high; tooling/docs uses `gpt-6.1-sol`/high. Root reads all six full
+reports and reconciles disjoint manifests, actual inspected ranges and exact hashes.
+Every cumulative hunk, complete new/security primitive module and relevant
+contract/caller is covered; unrelated unchanged historical test bodies/registers
+are not recertified. No verified actionable finding remains.
+
+Fresh scoped R2 evidence includes five native/source workers, all fifty assigned
+CLI files (1,292 passes, two established Windows-only skips, with two temporary
+alias collection faults corrected and completed separately), and 178 tool tests.
+R3 independently passes 29 source/native files (613 tests, zero skips), sixteen
+CLI files (572 passes, two Windows-only skips) and 181 tooling tests. R2/R3 tools
+reviewers also independently inspect retained physical artifact joins. These
+focused cohorts overlap other executions and are not added to whole-project
+unique counts. R1 remains finding-bearing; failed probe/setup invocations retain
+their disclosed limits rather than being promoted to passing evidence.
+
+Detailed reports remain ignored/local. Final publication metadata is reviewed
+separately; it does not replace these complete product rounds or relabel prior
+CI execution as a new run at a Markdown-only successor.
+
+The R1 live deferred-status finding is corrected: accepted invocation-root and
+scratch-floor prerequisites no longer appear pending. Full Phase 2.6.M/N and
+production allocation/isolation/join/cleanup/recovery remain open. Earlier dated
+checkpoint statements describe their original state; new landing notes in all
+25 affected ADRs point to this register without rewriting the decisions.
+
+#### Exact-source author and publication evidence
+
+At exact committed source head `a75209ad`, all three author commands pass:
+`pnpm run ci`, bare `pnpm coverage` and `pnpm coverage:enforced`. Ordinary tests
+and both fresh coverage executions retain **562 files / 12,364 passes / 14
+established skips** under `CI=true`. Turbo lint/types, test/dependency and
+build/format groups contain respectively 12/17, 9/11 and 5/7 cache hits; they are
+not described as uncached. Bare coverage enforces the core/LLM/MCP line/branch
+floors: core 96.62/90.74, LLM 97.69/95.51 and MCP 96.17/90.53. The separate enforced
+command retains its documented LLM/MCP enforcement, with core measured.
+
+All 188 acceptance-tool tests, source/dependency fences, isolation, DB sync,
+formatting, bundle closure and compiled CLI/media packaging/overflow/replay smokes
+pass. Budget replay retains sixteen refusal prefixes, two legacy positive controls
+and zero fetches. Complete local filesystem/secrets matrices retain 99/297/5,115
+and 41/123/8,445 controls/phases/cases; their 255 and 653 reported removal failures
+remain local summary-only evidence.
+
+At that same head, [published CI run 38338972257](https://github.com/HodeTech/Relavium/actions/runs/38338972257)
+passes all **nine jobs**, including the success-only required aggregate, all four
+complete causal families, native Windows, official Node 22.13 and coverage/peer
+checks. The forced floor and published enforced coverage retain the same
+562/12,364/14 inventory. Windows executes the native DB/concurrency/filesystem/CAS/
+media/packaging/headless suites with sixteen established POSIX-only filesystem
+skips; no unsupported-platform execution is inferred.
+
+Root downloads and independently audits all four actual published artifact families
+from `a75209ad`; no predecessor artifact is substituted:
+
+| Family | Complete physical result |
+| --- | --- |
+| Filesystem | 99 controls / 297 phases / 5,115 case executions; 255 removal failures = 248 ordinary assertions, four Vitest rejection-expectation assertions and three separately traced secondary effects. Required semantic witnesses and complete fixed/restored inventories pass. 1,789 files / 32,560,048 retained bytes including envelope. |
+| Secrets | 41 controls / 123 phases / 8,445 case executions; 652 removal failures = 650 ordinary assertions and two Vitest rejection-expectation assertions, zero collateral failures. All 276 required named witnesses pass. 745 files / 25,002,129 retained bytes including envelope. The local 653 count is separate. |
+| Wire | Four controls / nine phases including shared baseline / 216 executions over the same 24-case inventory. All 36 primary semantic assertions fail as intended; fourteen secondary assertions and six normalized provider refusals are individually qualified. 12 files / 143,985 retained bytes. |
+| Usage | 23 mechanisms / 3,303 mechanism-phase executions plus 435 permanent cases = 3,738 total executions; 227 semantic failures. The permanent cohort joins 71 native children and one intentional readiness-timeout control. All phase/permanent identities are unique. 1,209 files / 96,604,425 retained bytes including envelope. |
+
+Filesystem source pins join 1,128 exact Git blobs, 297 packed manifests, 458
+installed dependency packages and 21,013 dependency-file pins; secrets joins
+1,120 source blobs and 123 packed manifests. Usage independently verifies all
+1,100 source pins against Git and seventy exact process-record joins. The bounded
+artifact sizes are physical audits, not declaration projections.
+
+The earlier Step 6 usage summary's “plus 435 permanent cases” describes the
+permanent cohort already included in its 3,738 total; it is not 435 additional
+executions. The exact arithmetic is 3,303 mechanism-phase + 435 permanent = 3,738.
+
+Each physical family retains its own exact source-head attribution. Current
+usage phase/permanent `(file, case)` identities are unique, including both bodies
+of the three inherited query-title pairs. Fixed/restored suites are complete and
+green; removal failures require their declared semantic witnesses. The three
+filesystem secondary effects and the wire normalized refusals are qualified
+consequences, not substituted for the required witnesses. Previous selected,
+interrupted or cancelled runs do not certify the complete matrix.
+
+Source pins are checked against exact Git blobs. Packed manifests, loader/body
+receipts, process/native joins, complete inventories and restoration are checked;
+filesystem/secrets stdio digests are reconstructed. Usage retains bounded UTF-8
+stdio and exact process-record joins without claiming an independent remote
+stdio digest. Remote installed dependency bytes are not locally rehashed; their
+captured pins and executed loader receipts are verified. Wire installed SDK byte
+inventories match an independent local capture; a differing local shared build
+is not substituted for the remote build. Documentation-only successor commits
+are not relabeled as new execution at a different head.
+
+#### Exit criteria 1–3 and sub-stream D sign-off
+
+| Obligation | Accepted disposition |
+| --- | --- |
+| Phase exit 1 | All three critical findings are closed and directly regression-tested: #91 actual preview redaction, #228 persister failure/atomic history, #56 real Ink `RunApp` sanitization. W1/W7/W8 fixes are revalidated rather than reimplemented. |
+| Phase exit 2 | All four human boundaries are exercised: workflow TUI, persisted run summary, universal error presentation and human-gate card. Machine JSON preserves ordinary content through escaping, with its documented lossy error exception; there is no universal content-scrubbing claim. |
+| Phase exit 3 | MCP tool-definition sanitation/provenance and config name-collision **refusal** are verified, including actual model-visible tool mapping, shared schema boundaries and current config/consent regressions. |
+| D acceptance | The complete 2.5.5.D paragraph holds under its approved refinements: bounded startup/catalog/ingress/results; structured errors; credential/env floor; all filesystem/selector/catalog consumers; current permission self-heal; secret argv/stdin controls; faithful snapshot warning; interim header gate; direct network-adapter tests and actual version handshake. #297 does not claim a new per-file coverage floor. G31 is filed with its bounded DNS-cancellation residual, not silently presented as fixed. |
+| M2.5.5-2 | The **D half** is accepted. Its I half, decomposition work, later Waves 3–7 and formal whole-phase exit criteria 4–8 remain open. |
+
+No new deferral is created. Existing CR-70/CR-93/CR-94/CR-95, W3 capacity,
+W4 DNS, media range/heap/format and other approved residuals retain their severity,
+triggers and canonical [deferred homes](../deferred-tasks.md).
+Filesystem guarantees assume cooperating owner-controlled storage; there is no
+hostile same-user isolation or OS subprocess jail. The scratch descriptor/floor
+is not a production allocator. Media profiles are finite structural checks;
+PCM is qualified, and playback/full decoding/malware inspection are unclaimed.
+Native iterator ownership is exact-object/private-module provenance: explicit
+wrapper adoption, one loaded shared domain and trusted EOF/Promise obligations
+remain binding; foreign iterators do not inherit native authority. Secrets scans
+are finite; retained user/model/attachment/shell/run/snapshot content and legacy
+header rows can be sensitive. Logical clearing is not SQLite/WAL/backup erasure.
+Future live headers require custody/schema/egress/precedence/recovery work.
+
+No ADR approval, billing, key, provider capture or user decision is pending for
+this wave. The next engineering work is [Wave 3 — Clear the ground](../current.md#wave-3--clear-the-ground),
+starting with its serialized multi-file queue and a fresh decision/document preflight.
+This acceptance does not authorize implementing that next wave within this change.
