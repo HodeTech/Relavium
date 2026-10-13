@@ -557,7 +557,14 @@ jobs:
           # here, the driver-selection gate picks the PLAIN driver (ink/setRawMode is never entered), and the
           # plain driver must exit cleanly on EOF — never crash. A regression routing to ink without a TTY would
           # throw "Raw mode is not supported…", which this catches.
-          out="$(printf '' | node apps/cli/dist/index.js chat 2>&1 || true)"
+          if out="$(printf '' | node apps/cli/dist/index.js chat 2>&1)"; then
+            chat_status=0
+          else
+            chat_status=$?
+          fi
+          if [[ "$chat_status" -ne 4 ]]; then
+            echo "::error::headless chat exited $chat_status (expected 4 on EOF)"; exit 1
+          fi
           if printf '%s' "$out" | grep -qiE 'setRawMode|raw mode'; then
             echo "::error::chat entered raw mode without a TTY (the driver-selection gate regressed)"; exit 1
           fi
