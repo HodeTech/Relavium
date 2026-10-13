@@ -202,8 +202,11 @@ for (const operation of ['select', 'update', 'delete'] as const) {
       expect(counts(receipt)).toEqual({ n: 1 });
     });
   }
-  for (const suffix of [' or 1 = 1', ' and exists (select 1 from "session_usage_invocations")']) {
-    it(`${operation}: refuses expanded/subquery predicates`, () => {
+  for (const { kind, suffix } of [
+    { kind: 'expanded', suffix: ' or 1 = 1' },
+    { kind: 'subquery', suffix: ' and exists (select 1 from "session_usage_invocations")' },
+  ]) {
+    it(`${operation}: refuses ${kind} predicates`, () => {
       const { guard, receipt, withReceipt } = setup();
       const prefix =
         operation === 'select'
