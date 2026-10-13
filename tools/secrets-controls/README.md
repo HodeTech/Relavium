@@ -1,10 +1,10 @@
 # Secrets causal controls
 
 `pnpm check:secrets-mutations` runs the declared Step 3 secrets foundation,
-Step 4 first-run input matrix and Step 5 snapshot/export controls on physical source
+Step 4 first-run input matrix, Step 5 snapshot/export and Step 7 provider-header controls on physical source
 copies. `--mechanism <declared-id>`
 supports diagnosis only; selected runs retain `complete: false`. The current manifest
-declares **35 independent controls and 256 required named assertion witnesses**.
+declares **41 independent controls and 276 required named assertion witnesses**.
 These counts describe the workload; a declaration is not evidence that its removal
 passed. Actual fixed/removal/restored results belong to the coordinator's summary.
 
@@ -128,6 +128,41 @@ for the planted supported shapes at these entry points, not universal secret
 detection, redaction, historical rows, or the user's native keychain. The separate
 native run/resume snapshot suite is permanent integration coverage but is not a
 declared mutation workload here.
+
+The six Step 7 controls implement the interim gate in
+[ADR-0108](../../docs/decisions/0108-provider-headers-stay-gated-until-keychain-custody.md).
+They retain all 35 earlier declarations, workloads and their order. Twenty new
+named semantic witnesses cover the independent mechanisms below; every phase runs
+the indicated complete file, without case filtering or skips.
+
+| Control | Removal and required observation | Complete workload |
+| --- | --- | --- |
+| `provider-header-admission` | Replace the captured admission branch with constant preservation before clock/SQL entry. New and existing rows with opaque and benign nonempty maps must each violate `PROVIDER_HEADERS_NO_PLAINTEXT`. | 56 DB cases |
+| `provider-header-omission-preservation` | Write canonical empty JSON in place of the preservation/clear expression. Omitted and explicit-undefined updates must each violate `PROVIDER_HEADERS_PRESERVE_LEGACY` on exact stored bytes and retained trusted maps. | 56 DB cases |
+| `provider-header-explicit-clear` | Keep the existing raw column instead of the preservation/clear expression. Both ordinary and null-prototype empty maps must violate `PROVIDER_HEADERS_EXPLICIT_CLEAR`. | 56 DB cases |
+| `provider-header-dormant-wire` | At the actual custom-adapter fetch site, merge stored headers into a native Request and forward it to the actual fetch. All six OpenAI/DeepSeek generate, fully drained stream and listModels cases must violate `FS_CAUSAL_PROVIDER_HEADER_WIRE` after installed-SDK HTTP capture. | 18 host/SDK cases |
+| `provider-header-public-projection` | Spread the full trusted row into the actual provider-list JSON record. Offline, successful verify, refused verify and unavailable-key NDJSON cases must violate `FS_CAUSAL_PROVIDER_HEADER_PUBLIC`. | 29 command/factory/renderer cases |
+| `provider-header-read-diagnostic` | Restore the stored member name in the parser's nonstring-member error. Actual command-read and eager factory-read human verbose cases must violate `FS_CAUSAL_PROVIDER_HEADER_DIAGNOSTIC` on rendered stderr. | 29 command/factory/renderer cases |
+
+The admission removal retains canonical empty serialization: it proves refusal and
+the pre-effect barrier, not that this mutation writes plaintext headers. The wire
+removal changes the production consumption point rather than adding an ignored SDK
+option. Its full native header recorder precedes the separate W8 redacted exchange
+projection, and positive protocol outcomes prove that the installed SDK reached the
+recorder. Twelve default-provider cases separately require exactly one asserted
+HTTP 400 request with ordinary authentication/protocol headers and no legacy data;
+the wire removal targets custom adapters only. All captures use synthetic credentials,
+isolated SDK environment, in-memory legacy SQLite seeds and offline transports.
+
+Trusted get/list preservation is a positive prerequisite for public/wire exclusion.
+The JSON spread removal certifies the JSON projection; the complete suite separately
+pins human output. Diagnostic witnesses render a positive verbose stack before
+checking opaque sentinel exclusion, so an earlier fixed-message assertion cannot
+substitute for observing the actual rendered failure. Other diagnostic modes retain
+their fixed-error and own-property checks. These controls cover factory composition,
+command core and rendering, not full top-level parser/native composition. Legacy
+plaintext remains sensitive in SQLite/WAL/backups; logical empty-map clearing proves
+neither physical erasure nor functional keychain-reference headers.
 
 The thin entry point uses the same coordinator, outcome and bounded process join
 as the filesystem family in [causal-controls](../causal-controls/README.md).

@@ -1,4 +1,4 @@
-/** Steps 3–5 independent production mechanisms and required named semantic witnesses. */
+/** Steps 3–5 and 7 independent production mechanisms and required named semantic witnesses. */
 const reader = 'apps/cli/src/secrets/read-secret.ts';
 const readerCases = ['apps/cli/src/secrets/read-secret.test.ts'];
 const llmError = 'packages/llm/src/llm-error.ts';
@@ -592,5 +592,122 @@ export const mutations = [
     76,
     'warns after admission before services and preserves the actual augmented frozen workflow',
     'SNAPSHOT_CAUSAL_RUN_CALLER',
+  ),
+  // ADR-0108: interim admission, exact legacy preservation/clear and dormant/public/error consumers.
+  control(
+    'provider-header-admission',
+    'packages/db/src/provider-store.ts',
+    '      const headerWrite = captureHeaderWrite(input);',
+    "      const headerWrite = 'preserve';",
+    ['packages/db/src/provider-store-headers.test.ts'],
+    56,
+    'new provider header admission refuses opaque before clock, id or transaction entry',
+    'PROVIDER_HEADERS_NO_PLAINTEXT',
+    [
+      ...['new', 'existing'].flatMap((state) =>
+        ['opaque', 'benign']
+          .filter((shape) => state !== 'new' || shape !== 'opaque')
+          .map((shape) => ({
+            target: `${state} provider header admission refuses ${shape} before clock, id or transaction entry`,
+            marker: 'PROVIDER_HEADERS_NO_PLAINTEXT',
+          })),
+      ),
+    ],
+  ),
+  control(
+    'provider-header-omission-preservation',
+    'packages/db/src/provider-store.ts',
+    "headerWrite === 'preserve' ? existing.defaultHeaders : '{}'",
+    "'{}'",
+    ['packages/db/src/provider-store-headers.test.ts'],
+    56,
+    'preserves exact legacy JSON for omitted updates',
+    'PROVIDER_HEADERS_PRESERVE_LEGACY',
+    [
+      {
+        target: 'preserves exact legacy JSON for undefined updates',
+        marker: 'PROVIDER_HEADERS_PRESERVE_LEGACY',
+      },
+    ],
+  ),
+  control(
+    'provider-header-explicit-clear',
+    'packages/db/src/provider-store.ts',
+    "headerWrite === 'preserve' ? existing.defaultHeaders : '{}'",
+    'existing.defaultHeaders',
+    ['packages/db/src/provider-store-headers.test.ts'],
+    56,
+    'explicit plain empty map clears legacy headers transactionally',
+    'PROVIDER_HEADERS_EXPLICIT_CLEAR',
+    [
+      {
+        target: 'explicit null prototype empty map clears legacy headers transactionally',
+        marker: 'PROVIDER_HEADERS_EXPLICIT_CLEAR',
+      },
+    ],
+  ),
+  control(
+    'provider-header-dormant-wire',
+    'apps/cli/src/engine/providers.ts',
+    '      fetch: getValidatedFetch(),',
+    `      fetch: async (input, init, options) => {
+        const request = new Request(input, init);
+        for (const [name, value] of Object.entries(row.defaultHeaders)) {
+          request.headers.set(name, value);
+        }
+        return getValidatedFetch()(request, undefined, options);
+      },`,
+    ['apps/cli/src/engine/provider-headers.test.ts'],
+    18,
+    'custom openai generate: FS_CAUSAL_PROVIDER_HEADER_WIRE keeps legacy maps inert with a positive protocol outcome',
+    'FS_CAUSAL_PROVIDER_HEADER_WIRE',
+    ['openai', 'deepseek'].flatMap((provider) =>
+      ['generate', 'stream', 'listModels']
+        .filter((operation) => provider !== 'openai' || operation !== 'generate')
+        .map((operation) => ({
+          target: `custom ${provider} ${operation}: FS_CAUSAL_PROVIDER_HEADER_WIRE keeps legacy maps inert with a positive protocol outcome`,
+          marker: 'FS_CAUSAL_PROVIDER_HEADER_WIRE',
+        })),
+    ),
+  ),
+  control(
+    'provider-header-public-projection',
+    'apps/cli/src/commands/provider.ts',
+    `        const outcome = outcomes.get(p.name);
+        return {
+          name: p.name,`,
+    `        const outcome = outcomes.get(p.name);
+        return {
+          ...p,
+          name: p.name,`,
+    ['apps/cli/src/commands/provider-headers.test.ts'],
+    29,
+    'FS_CAUSAL_PROVIDER_HEADER_PUBLIC NDJSON list preserves public fields with offline',
+    'FS_CAUSAL_PROVIDER_HEADER_PUBLIC',
+    ['success', 'refusal', 'no-key'].map((outcome) => ({
+      target: `FS_CAUSAL_PROVIDER_HEADER_PUBLIC NDJSON list preserves public fields with ${outcome}`,
+      marker: 'FS_CAUSAL_PROVIDER_HEADER_PUBLIC',
+    })),
+  ),
+  control(
+    'provider-header-read-diagnostic',
+    'packages/db/src/provider-store.ts',
+    `    if (typeof value !== 'string') {
+      throw new TypeError(INVALID_STORED_HEADERS);
+    }`,
+    `    if (typeof value !== 'string') {
+      throw new TypeError(\`llm_providers.default_headers['\${key}'] is not a string\`);
+    }`,
+    ['apps/cli/src/commands/provider-headers.test.ts'],
+    29,
+    'FS_CAUSAL_PROVIDER_HEADER_DIAGNOSTIC nonstring-command human verbose=true stays loud and content-free',
+    'FS_CAUSAL_PROVIDER_HEADER_DIAGNOSTIC',
+    [
+      {
+        target:
+          'FS_CAUSAL_PROVIDER_HEADER_DIAGNOSTIC nonstring-factory human verbose=true stays loud and content-free',
+        marker: 'FS_CAUSAL_PROVIDER_HEADER_DIAGNOSTIC',
+      },
+    ],
   ),
 ];
