@@ -2378,6 +2378,86 @@ and remaining publication/platform gates are required. Steps 7–8 remain
 unstarted. No ADR approval, provider capture, credential or user decision is
 pending.
 
+### Step 6 fourth cumulative review and repairs — 2026-10-13
+
+Four independent reviewers completed all **158 cumulative paths** from accepted
+Step 5 `c6921be1` through **`4e63344c`**: shared 29, stores 34, integration 52
+and tools/docs 43. Integration returned one High finding; the other three complete
+partitions were clean. **This is not a clean acceptance round.** A nested OpenAI
+video format selector was checked under the audio namespace and silently omitted
+from the native request. Root independently reproduced all three unsupported
+fields reaching an installed-SDK synthetic video-job POST. The corrected check
+uses the actual modality before any SDK entry. All three named regressions fail
+before the repair; two positive controls preserve the unspecified video format
+and supported native size. No paid request, credential or user history is used.
+
+Three physical diagnoses at **`4e63344c`** separately pass **nine joined phases,
+120 case executions and four expected named AssertionErrors**, with no collateral
+non-AssertionError. Root and the independent tools reviewer each reconstruct all
+retained stdio and compressed evaluation receipts, complete source manifests,
+dependency pins, same-child native records, inventories and exact restorations.
+Each selected export contains **26 files**, at most **9,989,797 bytes**, including
+its envelope, and captures **1,122 source files / 457 dependency packages**.
+All three explicitly remain incomplete selections; they certify neither the
+later video correction nor a complete matrix.
+
+At that same head, native Windows passes the complete DB **50-file / 844-case**
+cohort, including all nineteen temporary-protocol cases. The later complete CLI
+cohort fails nine cases on its default five-second budget; the identical fourteen
+cases passed at the preceding head. Passing no-provider fixture cases also slow
+down, but the exact expensive stage is unmeasured. Both affected integration files
+now use the existing fifteen-second case/hook fence without removing a variant or
+assertion or changing product/global timeouts. A fresh complete native Windows
+rerun is required; local success does not certify it.
+
+The remote filesystem capture also stops after 74 completed controls: the
+foreign-return removal no longer breaks its fulfilled-Promise getter witness
+after the correct intrinsic-observation repair. The retained thirteen-case report
+has four ordinary AssertionErrors, including the throw/reject witnesses, with
+no timeout or diagnostic leak; the third required witness passes. This is a
+real causal-evidence gap, not a product regression or complete capture. The test
+now holds that genuine Promise pending through the finite checkpoint, then
+releases and joins its cleanup observer. All thirteen cases and required witness
+markers remain; a fresh physical removal/restoration run is required.
+
+The same remote secrets job reaches its ten-minute aggregate timeout during the
+last restored cohort, without exporting a complete artifact. Its job allowance
+becomes thirty minutes; per-phase, case/hook, output and retention limits stay
+unchanged. The prior timeout is not full-matrix or semantic-failure evidence.
+
+The new video removal requires a **96th filesystem control**. The previous
+95-control retained-file projection exactly exhausted the unchanged 2,000-file
+cap. Export-only lossless source-manifest packing preserves the original bytes,
+phase/runtime hashes and inspectable pins in one bounded archive/index pair.
+An independent 64-MiB raw-input/decode bound supplements the unchanged whole-export
+64-MiB / 2,000-file caps. Complete96 projects **1,735 retained files**; actual
+complete capture, measured bytes and independent decoding remain required.
+No prior control, complete workload, provenance field or limit is removed.
+
+The repair working tree passes **17/17 uncached lint/typecheck tasks** and
+**11/11 uncached test/dependency tasks**. The six suites execute **557 complete
+files, 12,229 passing cases and 13 established skips**. The final strengthened
+thirteen-case shared fixture also passes focused tests, lint and ordinary/purity
+typechecks. The video selector and complete OpenAI adapter cohort pass **132/132**
+with package/seam typechecks and scoped lint. Build passes **6/6 uncached tasks**;
+whole-repository formatting passes its one uncached task. Acceptance tooling
+passes **172/172**, including three actual coordinator captures preserving both
+archived failed prefixes and primary failure under forced export refusal.
+All **63** retention cases also pass under the actual official Node **22.13.0**
+binary on macOS. Tools lint/typecheck, DB sync, SDK fences, engine purity, bundle
+closure, compiled CLI, actual built-workspace/CLI media packaging and offline
+overflow smoke pass. These are author gates; no committed-head complete matrix,
+native Windows rerun or independent acceptance is inferred from them.
+Fresh isolated copied-source collection checks all **96 filesystem / 35 secrets**
+declarations against **49 complete files / 1,350 case names**, with no count,
+exact-anchor or named-witness drift. This is collection, not physical execution.
+
+**Step 6 remains unaccepted.** The corrected committed-head physical matrices,
+independent artifact audits, two NEW clean complete cumulative implementation
+review rounds and remaining platform/publication gates are required. Steps 7–8
+remain unstarted. No ADR approval, provider capture, credential or user decision
+is pending.
+
 ### Remaining gate
 
 The maintainer approved the revised four-ADR decision package and eight-step plan

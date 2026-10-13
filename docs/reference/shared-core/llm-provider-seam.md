@@ -1018,7 +1018,9 @@ not total V8 heap, decoded base64, store-owned object memory or decoder validity
 
 The provider compatibility controls exercise installed SDK HTTP bodies through actual CAS
 and SQLite admission: OpenAI chat and TTS AAC/Opus/PCM, plus Gemini inline PCM, including
-effective native chat selectors. Unknown explicit output selectors refuse before SDK entry;
+effective native chat selectors. Unknown explicit output selectors refuse before SDK entry,
+including nested OpenAI video `format`, `output_format` and `response_format` fields.
+An unspecified video format retains the MP4 default and supported native size selection;
 ordinary Gemini text `application/json` remains a text response format. These are offline
 synthetic compatibility controls, not paid-provider captures or decoded audio evidence.
 

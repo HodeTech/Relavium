@@ -130,8 +130,9 @@ render evidence. **Step 6, media bounds, admission, cancellation and temporary o
 proceeds automatically.**
 Its cumulative reviews found confirmed media alias/format, branch-admission,
 native-header, return-diagnostic and causal-evidence gaps. Their runtime repairs
-are committed; the [third review repair checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#step-6-third-cumulative-review-and-repairs--2026-10-13)
-records exact native temporary identities and the remaining complete-matrix,
+are committed. A fourth cumulative review found an omitted native video selector;
+the [fourth review repair checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#step-6-fourth-cumulative-review-and-repairs--2026-10-13)
+records its correction, exact native temporary identities and the remaining complete-matrix,
 independent-review and platform gates. Step 6 acceptance remains open. The lifecycle
 repair implements Accepted [ADR-0109](../decisions/0109-native-media-close-ownership-is-explicit-iterator-provenance.md):
 explicit native iterator ownership must preserve real HTTP close joining while an

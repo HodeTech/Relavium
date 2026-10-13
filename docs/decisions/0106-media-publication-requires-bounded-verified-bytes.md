@@ -284,3 +284,15 @@ collapse to the same Number. These portable numerical controls do not assert a
 measured NTFS inode or replace the native Windows rerun. Causal removal, fresh
 cumulative review and publication gates remain open; this correction does not
 accept Step 6 or broaden the filesystem jail guarantee.
+
+### Native video output selector correction — 2026-10-13
+
+The fourth cumulative implementation review reproduced an omitted video namespace
+in the shared separate-endpoint output-selector check. Three unsupported native
+video fields reached the installed SDK's synthetic job-creation POST instead of
+refusing before entry. The selector check now inspects the request's actual
+modality, preserving the unspecified format and supported size controls. The
+[canonical seam](../reference/shared-core/llm-provider-seam.md#bounded-verified-media-publication-adr-0106)
+owns the exact refusal boundary. Named regression failures precede the repair;
+the separate physical removal and fresh cumulative acceptance rounds remain gates.
+This fulfils the existing decision without extending the admitted media profiles.
