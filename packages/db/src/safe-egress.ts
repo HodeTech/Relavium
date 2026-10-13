@@ -390,7 +390,27 @@ function sanitizeHopHeaders(
   return out;
 }
 
-/** Consume a body stream, aborting the moment it exceeds `maxBytes`; concat the bounded chunks. */
+const typedArrayPrototype: unknown = Object.getPrototypeOf(Uint8Array.prototype);
+const byteLengthDescriptor =
+  typeof typedArrayPrototype === 'object' && typedArrayPrototype !== null
+    ? Object.getOwnPropertyDescriptor(typedArrayPrototype, 'byteLength')
+    : undefined;
+
+/** Count the actual borrowed view before copying or yielding; public lengths are replaceable. */
+function chunkByteLength(chunk: Uint8Array): number {
+  try {
+    if (!(chunk instanceof Uint8Array) || byteLengthDescriptor?.get === undefined)
+      throw new Error();
+    const length: unknown = byteLengthDescriptor.get.call(chunk);
+    if (typeof length !== 'number' || !Number.isSafeInteger(length) || length < 0)
+      throw new Error();
+    return length;
+  } catch {
+    throw new SafeEgressError('network', 'egress response contained an invalid byte view');
+  }
+}
+
+/** Consume a body stream, aborting the moment it exceeds `maxBytes`; concat owned bounded chunks. */
 export async function readBounded(
   body: AsyncIterable<Uint8Array>,
   maxBytes: number,
@@ -400,11 +420,12 @@ export async function readBounded(
   let total = 0;
   try {
     for await (const chunk of body) {
-      total += chunk.length;
+      total += chunkByteLength(chunk);
       if (total > maxBytes) {
         throw new SafeEgressError('too_large', 'egress response exceeded the maximum size');
       }
-      chunks.push(chunk);
+      // A producer may reuse its Uint8Array/Buffer on the next pull. Own this admitted view now.
+      chunks.push(new Uint8Array(chunk));
     }
   } finally {
     dispose(); // abort the socket (harmless if the body already ended)
@@ -442,7 +463,7 @@ export async function* streamBounded(
   let total = 0;
   try {
     for await (const chunk of body) {
-      total += chunk.length;
+      total += chunkByteLength(chunk);
       if (total > maxBytes) {
         throw new SafeEgressError('too_large', 'egress response exceeded the maximum size');
       }
