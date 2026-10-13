@@ -1,6 +1,6 @@
 # Phase 2.5.5 — Hardening and Remediation
 
-> Status: 🚧 **Open — Wave 2 Steps 1–6 accepted; Step 7 provider-header interim gate proceeds.** Live progress and execution order are canonical in
+> Status: 🚧 **Open — Wave 2 Steps 1–6 accepted; Step 7 reviews complete; Step 8 certification proceeds.** Live progress and execution order are canonical in
 > [../current.md](../current.md#execution-order--phase-255--phase-26-temporary); this banner does not
 > restate them. A full-project multi-agent code review completed
 > 2026-07-19 at HEAD `f88b0e8` — 377 findings, 373 surviving two-lens adversarial
@@ -2706,3 +2706,127 @@ identical inventories and byte-exact restoration. The six new controls contribut
 artifacts; its summary is not an independent artifact audit. The current-head
 GitHub run exports that evidence for separate verification. Two NEW complete clean
 cumulative review rounds and published gates remain required.
+
+
+### Step 7 review completion — 2026-10-13
+
+After the D12/D13 correction, two NEW complete cumulative rounds (R2 and R3)
+independently inspect all twenty paths from Step 6 acceptance metadata `e405a5dd`
+through `3a6f3cc4`. Trust, consumer and tooling/document partitions are clean in
+both rounds. Root reads all six full reports. The second tooling round repeats its
+unchanged failed scratch-inventory test after the competing capture joins; that
+isolated rerun passes, without calling the earlier full invocation green. The third
+round passes all 121 then-current acceptance-tool tests in its scoped invocation.
+
+At exact runtime/document head `01259d12`, Root and independent reviewers decode
+the full exported secrets evidence from CI run 38335121918: **41 controls / 123
+phases / 8,445 executions**, 650 ordinary assertion failures plus two Vitest
+rejection-expectation assertions, zero collateral failures. All twenty new required
+witnesses pass; the six new controls contribute 732 executions and 66 intended
+assertion failures. The retained 745 files / 25,003,046 bytes include exact packed
+manifests, loader receipts, stdio, native joins and restoration. Source pins match
+Git; remote installed dependency bytes are verified through retained pins/receipts,
+not locally rehashed. The local matrix's 653 failures are a separately attributed
+platform result, not substituted for the remote 652.
+
+`01259d12` to `3a6f3cc4` changes only two roadmap documents. Subsequent Step 8
+hygiene distinguishes three inherited query-title pairs and rejects duplicate
+(file, case) evidence identities, preserving every case body. Step 7 implementation
+reviews are complete; its published required aggregate and final whole-wave gates
+remain separately pending. No new approval, provider or credential is required.
+
+### Step 8 certification checkpoint — 2026-10-13
+
+Four new [security sittings](../../standards/security-review.md#wave-2-sittings--filesystem-secrets-and-config-2026-10-13)
+are clean; W4's hostile-MCP sitting is reused with fresh direct regressions. Their
+focused executions and unchanged-scope revalidation do not replace exact-head CI
+or physical evidence. Root also revalidates critical preview/persister/TUI controls
+and all four display boundaries. Existing approved residuals retain their homes.
+
+The inherited usage-query label pairs now distinguish expanded and subquery
+predicates. Before the tooling repair, three negative duplicate-identity probes
+fail with missing expected exceptions; afterwards all 21 outcome controls and 21
+query tests pass. Read-only collection finds 885 distinct (file, case) identities
+across 31 usage files. Collection is not physical execution. The permanent evidence
+checker now rejects duplicates in every phase; neither original body is removed.
+
+Fresh full `pnpm run ci`, bare `pnpm coverage`, `pnpm coverage:enforced`, native
+Windows/floor jobs, exact-head complete causal audits and two NEW independent whole-
+wave cumulative review rounds remain required. Exit criteria 1–3 and the D sign-off
+will be scored after those gates. Full Phase 2.5.5, M2.5.5-2's I half, Phase 2.6 M/N,
+later Waves 3–7 and existing approved deferrals remain open. This checkpoint creates
+no new deferral and claims neither Wave 2 acceptance nor merge.
+
+
+#### Wave 2 individual dispositions — certification in progress
+
+All **forty distinct queue IDs** are assigned below. Steps 1–6 have independent
+acceptance, Step 7's implementation rounds are clean, and current W4 regressions
+pass. Final Step 8 gates still control the wave/exit sign-off; this inventory does
+not substitute a status label for evidence. Earlier checkpoint statements of open
+work remain historical.
+
+| ID | Owner / accepted implementation home | Verified disposition and limit |
+| --- | --- | --- |
+| G19 | D; W4 reused, S8 revalidation | Prior closed W4/PR87: same/cross-layer name collision refuses. Re-run actual resolve tests; no downgrade to warning-only. |
+| #202 | D; W4 reused, S8 revalidation | W4 accepted; current regressions pass: definitions sanitized including schema presentation, semantic controls refuse, model-visible provenance. tool-mapping + actual agent-session request witnesses. |
+| #35 | D; W4 reused, S8 revalidation | W4 accepted; current regressions pass: whole connect window, authored connect timeout, cancellation. deadlines/agent/config controls. |
+| G32 | D; W4 reused, S8 revalidation | W4 accepted; current regressions pass: bounded network transport startup; do not certify remote websocket support. |
+| #205 | D; W4 reused, S8 revalidation | W4 accepted; current regressions pass: bounded/configurable stdio startup, not SDK fixed-default-only. |
+| G33 | D; W4 reused, S8 revalidation | W4 accepted; current regressions pass: transport/discovery ingress bounds; mcp-fetch + ingress-bounds controls. |
+| #201 | D; W4 reused, S8 revalidation | W4 accepted; current regressions pass: aggregate tool/count/description bounds, paging stops, adversarial 50k catalog. |
+| #209 | D; W4 reused, S8 revalidation | W4 accepted; current regressions pass: schema embedded string bounds; compiler moved to shared later—exercise current consumer. |
+| #288 | D; W4 reused, S8 revalidation | W4 accepted; current regressions pass: result text bounded at hostile boundary; no upstream-only assertion. |
+| #203 | D; W4 reused, S8 revalidation | W4 accepted; current regressions pass: structured server/tool fields; actual errors/taxonomy controls. |
+| #204 | D; W4 reused, S8 revalidation | W4 accepted; current regressions pass: shape-derived reason covers every egress code. |
+| #206 | D; W4 reused, S8 revalidation | W4 accepted; current regressions pass: bad args fail loud rather than substitute undefined. |
+| #207 | D; W4 reused, S8 revalidation | W4 accepted; current regressions pass: actual rejecting adapter close reaches onCloseError; no swallowed error. |
+| #297 | D; W4 reused, S8 revalidation | Direct per-adapter tests satisfy incidentally. W4 explicitly leaves a per-file coverage-threshold question unclaimed; do not assert a new threshold. Record actual direct coverage/tests and this qualification. |
+| #208 | D; W4 reused, S8 revalidation | W4 accepted; current regressions pass: host-supplied version, real server handshake in network-adapters.test.ts. errors.test.ts was the historical incorrect attribution. |
+| #36 | D; S2 shared/CLI | Accepted S2 credential read/write/discovery floor in all tiers; lexical/canonical aliases, prune before descent, Terraform standard credentials included. |
+| #39 | D; S2 shared/CLI | Accepted S2 shared declared-env floor across process and MCP declarations; no duplicate host list. |
+| #235 | D; S2 shared + CLI/DB | Accepted S2 injected platform-free ancestor helper through tool fs and native save_to. CAS uses separate physical identity checks; do not claim it calls this helper. |
+| #113 | C; S2 DB | Accepted S2 drive-relative rejection before save_to I/O, including C:relative, with native/platform evidence. |
+| G21 | D; S2 CLI | Accepted S2 removes dead global tmp provisioning and supplies exact host scratch descriptor prerequisite. Existing directories not deleted; no shipping ordinary-chat allocator. |
+| #1 | D; S2 CLI | Accepted S2 workflow AND agent catalogs: pre-enumeration/opened-file containment, regular/bounded files, contained aliases positive. |
+| #27 | D; S3 CLI secrets | Step 3 accepted: direct native-binding mocks, get/set/delete constructor/operation faults, private cause preserved, fixed public errors/human/JSON/verbose sentinel absence. No real locked-keychain or native-load claim. |
+| #31 | D; S3 CLI secrets | Step 3 accepted: aggregate 65536-byte reader cap before retention/copy, exact/+1 and single oversized chunks; faithful split Unicode/whitespace; iterator cleanup. |
+| #293 | D; S3 CLI secrets | Same S3 reader plus actual provider/gate consumer tests; trimming belongs to provider boundary. Gate/provider may need prior DB open; no zero-history claim for these consumers. |
+| #196 | B; S3 LLM/CLI | Step 3 accepted: finite query-name families, opaque sentinels and benign near-name controls; fixed surfaced errors. Encoded names/arbitrary content not covered. |
+| #25 | D; S4 CLI run/core/DB evidence | Implementation reviewed: reject every explicit secret-typed --input (even empty), add boolean --secret-inputs-stdin, share gate parser, no invalid-input key/provider/history/MCP side effects, masked persisted slots; ADR0107. |
+| #30 | D; S5 CLI/history/docs | Implementation reviewed: bounded value-free best-effort literal warnings at create/import/run; faithful admitted MCP-augmented snapshot retained; classify sensitive plaintext in canonical database reference. |
+| #80 | A; S5 core export + CLI | Implementation reviewed: explicit continuity/review notice on real export surfaces, preserve scaffold semantics and machine stdout. |
+| #81 | A; S5 reuse W7 + S8 certify | Existing ADR0095 content-free model-tool structure controls; producer→SQLite→export actual refusal, no raw result opt-in and no universal transcript masking. |
+| #83 | A; S5 core export | Implementation reviewed: deterministic NFKD/combining mark normalization, dotless-i/sharp-s mappings, legal ASCII slug or exported-session-<session-id>; no universal transliteration claim. |
+| #115 | C; S5 reuse W7 + S8 certify | Strict session rows and producer→SQLite→export rejection; document user/assistant/@/! retained content and legacy refusal; no silent scrub migration. |
+| G22 | A; S5 core analysis | Implementation reviewed: reject unsupported direct secrets.* context references at parse while preserving legitimate secret-input→credential context and transitive text-sink restrictions. Not blanket ban on secret context, no acceptance of Proposed ADR0060. |
+| G31 | D; S5 filing + S8 revalidation | Existing DNS background-work follow-up now explicitly filed in deferred-tasks.md (80–93). Verify caller cancellation/fixed error/late-connect guards; no new resolver, no native DNS abortability claim. |
+| #111 | C; S6 DB both stores | Implementation reviewed: independent inline put limits (256KiB image/audio; no video/document), cumulative 25MiB putStream, exact/+1 before excess copy/hash/write. |
+| #108 | C; S6 DB + CLI | Implementation reviewed: ownership-aware 24h temp GC, crash/claim recovery/live-writer/PID uncertainty/two sweepers; explicit narrow legacy-offline maintenance. |
+| #112 | C; S6 DB both stores | Implementation reviewed: pre-abort and in-I/O readRange cancellation; bounded opened-fd legacy reads; no streaming delivery claim. |
+| #107 | C; S6 fetch/store | Implementation reviewed: declared/header/independent body evidence, finite reviewed formats/aliases and compatibility; missing/octet-stream excludes PCM. |
+| #109 | C; S6 DB/core ports | Implementation reviewed: independent descriptor/recordObject checks; every occurrence and handle-only admission before dedup; immutable tuples/durations and transactional pre-append metadata admission. |
+| #110 | C; S6 docs/code | Implementation reviewed: remove stale non-persisted-MIME comment in same verified media change; canonical references match real metadata. |
+| G20 | D; S7 DB/provider/CLI | Implementation reviewed: all new nonempty maps refuse before SQL, omission preserves genuine legacy, {} clears, no resurrection; typed content-free structural-guard error; inert wire/public projections. This closes design/interim gate only. |
+
+D12's general filesystem predicate is accepted with invocation authority and the
+scratch-floor prerequisite; complete M/N child lifecycle remains open. D13 uses
+the approved interim gate, with live header activation prohibited pending custody
+and migration prerequisites. D14 and Wave D15 use ADR-0095/0098 structural tool
+content, not a raw-result export opt-in or universal masking. D17 is four new
+sittings plus reused W4. No new user decision or deferred item is introduced.
+
+Exit 1 revalidation covers #91's redacted approval preview/real dispatch positive,
+#228's atomic persister and surfaced background failure, and #56's real Ink hostile
+frame. Exit 2 covers actual run TUI, final summary, universal error renderer and
+human-gate card, preserving machine escaping and the documented error exception.
+Exit 3 reuses W4's definition/config trust boundary with current complete tests.
+The D acceptance is traced in full: untrusted definitions/results, collision
+**refusal**, bounded configurable connect/discovery/frames, catalog containment,
+shared credential/env floor, existing permission self-heal, bounded faithful input
+and first-run argv refusal, shared ancestor use in tool fs/save-to (CAS has separate
+identity checks), structured diagnostics, snapshot lint, native-bridge mocks,
+fail-loud args/teardown, direct adapter controls with #297's unclaimed floor, G20's
+interim enforcement and G31's explicit residual filing. Formal sign-off waits for
+final author gates and both NEW complete whole-wave rounds. M2.5.5-2's **D half**
+is the relevant milestone slice; its I half and phase exit criteria 4–8 remain open.

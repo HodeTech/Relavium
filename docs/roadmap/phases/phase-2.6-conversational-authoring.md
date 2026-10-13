@@ -898,7 +898,7 @@ sensitive-read floors).
   approval prompt even renders, defeating the ADR-0057 approval-floor investment. Wire an `allowed_domains`
   config path alongside the credential-resolver activation above — the same fix pattern.
   *(S · `apps/cli/src/chat/session-host.ts` (`chatToolPolicy`); G30)*
-- **`extra_roots`** *(pulled forward, 2026-10-12)*: invocation grants and committed narrowing selectors are implemented in the [Wave 2 Step 2 checkpoint](phase-2.5.5-hardening-and-remediation.md#step-2-implementation-checkpoint--2026-10-12), pending unified independent review/gates. Config never grants authority.
+- **`extra_roots`** *(pulled forward, 2026-10-12)*: invocation grants and committed narrowing selectors are accepted in [Wave 2 Step 2](phase-2.5.5-hardening-and-remediation.md#step-2-acceptance--2026-10-12). Config never grants authority.
 - **Tool-call rendering v2** (with 2.6.F's renderer): keep the collapsed one-line annotation as the
   default, add a **details view** (a `/details` toggle or transcript overlay) revealing *sanitized,
   bounded* target/arg previews and result summaries, and **diff rendering** (width-adaptive stacked /
@@ -1001,7 +1001,7 @@ before implementation.
     defines an **artifact-store port** (write/read/list/cleanup keyed by `parentSessionId`); the **CLI
     host** implements it against the central root, injected like the `MediaStore` / `Checkpointer` ports.
     "Relavium-core's central dir" is therefore a host-provided port, not an engine path.
-  - **fs-floor prerequisite (L605; pulled forward 2026-10-12):** the [Wave 2 Step 2 checkpoint](phase-2.5.5-hardening-and-remediation.md#step-2-implementation-checkpoint--2026-10-12) implements an exact host-issued private scratch descriptor/factory and removes automatic global tmp provisioning. It replaces the historical inert `FsHostConfig.tmpDir` prerequisite; no basename or general home-anchor exemption is granted. Lexical/canonical containment, pinned identities, POSIX private-directory checks and nested floors apply; Windows retains the owner-controlled profile/ACL assumption. Unified review/gates are pending. This supplies no ordinary-chat allocator or child lifecycle: production provisioning, per-parent isolation, join, cleanup and recovery remain 2.6.N obligations.
+  - **fs-floor prerequisite (L605; pulled forward 2026-10-12):** the [Wave 2 Step 2 acceptance](phase-2.5.5-hardening-and-remediation.md#step-2-acceptance--2026-10-12) records the exact host-issued private scratch descriptor/factory and removes automatic global tmp provisioning. It replaces the historical inert `FsHostConfig.tmpDir` prerequisite; no basename or general home-anchor exemption is granted. Lexical/canonical containment, pinned identities, POSIX private-directory checks and nested floors apply; Windows retains the owner-controlled profile/ACL assumption. Independent Step 2 review and platform gates are accepted. This supplies no ordinary-chat allocator or child lifecycle: production provisioning, per-parent isolation, join, cleanup and recovery remain 2.6.N obligations.
 
 - **Chat UX for sub-agent spawn (foundation)**:
   - **Model-driven spawn**: the agent autonomously calls `invoke_agent` — the transcript shows an inline
@@ -1250,15 +1250,15 @@ workstreams — each stays checked off **only** in the PR that lands it:
 | Content-level workflow-identity guard on resume | 2.6.H |
 | Run-submission idempotency / double-submit dedup | 2.6.H |
 | MCP tool-list cache · network header auth (§6) · mid-call abort | 2.6.I |
-| `relavium budget resume` command (documented, unimplemented) | Phase 2.6.5 `W7` (moved from 2.6.K, 2026-09-18) |
+| `relavium budget resume` command — implemented and merged in PR #90 | Phase 2.6.5 `W7` (moved from 2.6.K, 2026-09-18) |
 | Re-provide `secret`-typed inputs on cross-process resume | 2.6.K |
 | Re-arm a still-pending gate's timeout on rehydration | ~~2.6.K~~ → 2.6.5 (closed in 2.6.5 `CR-22`, 2026-08-27) |
 | `run:paused` gate-park vs media-park exit distinction | 2.6.K |
 | Session budget pause/resume (EA4 ride; 1.V follow-up) | 2.6.K |
 | i18n CI key-parity + data/code separation standard | 2.6.L |
 | Live `web_search`/`http_request` egress credential resolver | 2.6.M |
-| `project`-tier invocation roots/config selectors — implemented, review pending | [Wave 2 Step 2 checkpoint](phase-2.5.5-hardening-and-remediation.md#step-2-implementation-checkpoint--2026-10-12) |
-| Exact host-issued scratch floor prerequisite — implemented, review pending; production lifecycle remains 2.6.N | [Wave 2 Step 2 checkpoint](phase-2.5.5-hardening-and-remediation.md#step-2-implementation-checkpoint--2026-10-12) / 2.6.N |
+| `project`-tier invocation roots/config selectors — accepted | [Wave 2 Step 2 acceptance](phase-2.5.5-hardening-and-remediation.md#step-2-acceptance--2026-10-12) |
+| Exact host-issued scratch floor prerequisite — accepted; production lifecycle remains 2.6.N | [Wave 2 Step 2 acceptance](phase-2.5.5-hardening-and-remediation.md#step-2-acceptance--2026-10-12) / 2.6.N |
 | Target-scoped approval cache + structured MCP preview | 2.6.M |
 | Approval-consent-line zero-width hardening · shared `[c]` reducer | 2.6.M (with render v2) |
 

@@ -456,6 +456,65 @@ Independent native late-settlement/actual-database-close, byte-erasure, high-wat
 atomic-sweep probes pass. Command teardown is guaranteed independently of the inherited native stdio drain
 that can delay natural bin exit. Step 4 is closed; whole-wave closure remains pending.
 
+### Wave 2 sittings — filesystem, secrets and config (2026-10-13)
+
+Four **new** STRIDE-lite sittings review product bytes at `3a6f3cc4`, with the
+reviewed scope revalidated unchanged at `474b42f3`. The existing
+[hostile-MCP sitting](#sitting-the-hostile-mcp-boundary--cr-40cr-42-2026-09-06)
+is reused as the fifth threat class, with fresh current regressions. These are
+threat reviews; final whole-wave gates have separate attribution in the
+[Wave 2 certification checkpoint](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#step-8-certification-checkpoint--2026-10-13).
+
+**Filesystem/path jail: clean.** The review traced invocation-only root authority,
+narrowing selectors, credential discovery pruning, shared ancestor/environment
+policy, actual catalog pre-open containment, native save-to/CAS operations,
+bounded media fd reads and temporary/native iterator ownership. Forty-two complete
+files passed **775 tests**, with two existing Windows-only skips on macOS. Separate
+source-alias executions overlap and are not added to that total. Host checks assume
+cooperating, owner-controlled storage; they provide neither hostile same-user
+parent-swap isolation nor an OS subprocess jail. Windows retains its profile/ACL
+assumption. The scratch descriptor is a prerequisite, not a shipping ordinary-chat
+allocator or completion of Phase 2.6.N. Structural format recognition is not
+playback, malware inspection or general media-read activation.
+
+**Secrets input: clean.** Sixteen complete files passed **768 tests**, zero skips:
+fixed native-bridge diagnostics with private causes, the 65,536-byte owned-chunk
+reader, actual provider/run/gate consumers, Boolean flag forwarding, pre-service
+typed admission, native SQLite masked slots, fresh stdin resupply, consumed-pipe
+consent refusal and finite opaque-query scrubbing at actual human/JSON/verbose
+renderers. Mock Entry failures do not certify a real locked/native-load keychain.
+Stalled reads/returns have no deadline; provider/gate prior-history prerequisites
+differ from first-run admission. Snapshot literals, arbitrary retained content and
+finite scrub limitations remain explicit.
+
+**Secrets at rest: clean.** Direct-source execution passed **770 tests in thirty
+complete files**, zero skips: 764 permanent cases plus six independent native legacy
+export/permission probes. The review followed faithful augmented snapshots and
+value-free warnings, declared input masking, producer→SQLite→export structural
+refusal, session-effect disclosure/retention, native metadata admission, temp
+recovery and dormant header projections. It independently audited the complete
+41-control remote secrets artifact at `01259d12`. History remains unencrypted;
+user/assistant text, attachments, shell output, snapshots and run results may hold
+secrets. Logical header clearing is not physical erasure. Existing post-upgrade
+secure-delete/checkpoint and busy-reader/pre-upgrade byte limits remain unchanged.
+
+**Config trust: clean.** Two fresh complete-file cohorts passed **647 tests in
+thirty files** and **233 in five files**, zero skips. They cover invocation/config
+separation, shared declared-env controls, collision refusal, MCP consent, taint
+context positives, all seventeen current MCP test files, actual SDK handshake and
+owned-process teardown, plus approval-preview secrecy (#91), atomic persister
+failure (#228) and actual run TUI injection (#56). The four display boundaries—run
+TUI, final summary, universal error renderer and human-gate card—have hostile and
+benign controls. Human sanitization and machine escaping remain distinct, with the
+documented lossy error projection. Reused W4 coverage does not claim a new per-file
+adapter threshold. G31's native DNS resource limit is filed, not repaired; redirect,
+remote-WebSocket and local-name/canonicalization qualifications remain recorded.
+
+Focused counts overlap other reviews; ordinary built imports retain their earlier
+author-build attribution. No provider/keychain/user-history access or paid request
+was used. These sittings do not substitute for final fresh build, CI, native Windows,
+bare/enforced coverage, physical mechanism evidence or independent whole-wave rounds.
+
 ## Sandbox and tool policy (`run_command`, node tools, secret inputs)
 
 This is the **binding home** for the tool-policy rules; the rationale is
