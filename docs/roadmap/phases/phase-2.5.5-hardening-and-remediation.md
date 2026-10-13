@@ -3078,3 +3078,29 @@ review rounds and exact-head publication gates. Their [PR #94 publication record
 retains their separate source attribution; scoped correction reviews do not
 relabel earlier whole-wave rounds or artifacts as fresh executions. The closing
 register's `a75209ad`/`cfae361a` evidence remains its historical checkpoint.
+
+### Native evidence journal capacity correction — 2026-10-13
+
+Both `5021bc59` publication runs reported all 303 filesystem phases, including
+the two new recovery removals and their restored 23-case suites. Export then
+refused `Raw evaluation receipt file bound`; no filesystem artifact was retained,
+and the required aggregate correctly refused publication. Passing phase log lines
+do not substitute for the missing independently auditable artifact.
+
+The former 99-control artifact already contained 1,969 raw process journals.
+The enlarged native workload exceeded the 2,000-journal input count, which had
+incorrectly shared the retained physical-file ceiling. The correction separates
+the raw journal/segment count at 4,096 from the unchanged 2,000 physical output
+files. Raw input, index/archive and retained evidence remain bounded by their
+existing 64-MiB ceilings; paths, semantic witnesses, process/source joins,
+phase inventories and timeouts are unchanged. Every original journal remains
+losslessly indexed. The [tooling contract](../../../tools/causal-controls/README.md)
+owns these independent limits.
+
+Permanent boundary controls reconstruct all 4,096 synthetic PID/thread journals,
+refuse 4,097 at both exporter and standalone verifier, and test physical output
+exactly at 2,000 files and one file over, counting summary and envelope. The
+earlier two recovery-review rounds certify their original source scope only.
+This additional tooling correction requires two NEW complete clean cumulative
+correction rounds and fresh published gates/artifact inspection; their separate
+source attribution belongs in the [PR #94 publication record](https://github.com/HodeTech/Relavium/pull/94).

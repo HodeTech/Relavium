@@ -49,9 +49,17 @@ diluting the unchanged 2,000-file or 64-MiB retained ceilings. Each evaluation
 archive index retains every original
 receipt name, PID/thread/stage record byte, offset, length and digest. Its bounded
 verifier checks paths, segment continuity, counts, hashes, and decompression length;
-raw receipts also have independent 64 MiB input, 2,000-file and 1,024-byte relative
+raw receipts also have independent 64 MiB input, 4,096-journal and 1,024-byte relative
 path bounds before encoding. Receipt directory enumeration is streamed up to that
-file cap. Index entries have a running byte budget before the
+file cap. The raw-journal and standalone segment-count limits are separate from
+the unchanged 2,000 retained physical-file ceiling. The 99-control published cohort
+already used 1,969 raw journals; the enlarged native workload at 101 controls
+exceeded that former shared input count after all 303 phases passed. The independent
+4,096-journal cap admits that input without dropping any receipt, changing the
+64-MiB raw/retained byte bounds or relaxing semantic, process or source joins.
+Boundary tests retain and reconstruct all 4,096 synthetic PID/thread journals,
+refuse 4,097 before destination creation or archive decoding, and keep the 2,000 physical-file
+ceiling independently enforced. Index entries have a running byte budget before the
 final JSON serialization. The standalone receipt verifier bounds its own index plus
 archive bytes; the exporter separately enforces the whole evidence-tree cap. Complete
 phase manifests are packed only during export into `source-manifests.json.gz` and

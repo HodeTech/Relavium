@@ -709,7 +709,7 @@ test('raw receipt file count refuses before index assembly or destination creati
   fixture((options) => {
     const source = join(options.scratch, 'native', 'fixed', 'evaluation');
     mkdirSync(source, { recursive: true });
-    for (let pid = 1; pid <= 2001; pid += 1)
+    for (let pid = 1; pid <= 4097; pid += 1)
       writeFileSync(
         join(source, `${pid}-0.jsonl`),
         `{"pid":${pid},"threadId":0,"stage":"module-body-entry"}\n`,
@@ -718,6 +718,73 @@ test('raw receipt file count refuses before index assembly or destination creati
     assert.equal(existsSync(join(options.directory, 'secrets')), false);
   });
 });
+test('4096 synthetic PID/thread journals retain every source and dependency receipt', () => {
+  fixture((options) => {
+    const source = join(options.scratch, 'native', 'fixed', 'evaluation');
+    mkdirSync(source, { recursive: true });
+    const originals = new Map();
+    for (let index = 0; index < 4096; index += 1) {
+      const pid = Math.floor(index / 3) + 1;
+      const kind = index % 3;
+      const name =
+        kind === 1
+          ? `${pid}.dependencies.jsonl`
+          : `${pid}-${kind === 2 ? 1 : 0}${kind === 2 ? '.loader-preparation' : ''}.jsonl`;
+      const record =
+        kind === 1
+          ? { pid, stage: 'dependency-load-verification' }
+          : {
+              pid,
+              threadId: kind === 2 ? 1 : 0,
+              stage: kind === 2 ? 'loader-helper-body-entry' : 'module-body-entry',
+            };
+      const content = Buffer.from(`${JSON.stringify(record)}\n`);
+      originals.set(name, content);
+      writeFileSync(join(source, name), content);
+    }
+    exportMetadata(options);
+    const retained = join(options.directory, 'secrets');
+    const index = verifyRetainedEvaluations(retained);
+    assert.equal(index.segments.length, originals.size);
+    const decoded = new Map(
+      index.aggregates.map((aggregate) => [
+        aggregate.retained,
+        gunzipSync(readFileSync(join(retained, aggregate.retained))),
+      ]),
+    );
+    for (const segment of index.segments) {
+      const original = originals.get(segment.source.split('/').at(-1));
+      const raw = decoded.get(segment.retained);
+      assert.ok(original && raw);
+      assert.equal(segment.sha256, digest(original));
+      assert.deepEqual(raw.subarray(segment.offset, segment.offset + segment.bytes), original);
+    }
+    assert.equal(JSON.parse(readFileSync(join(retained, 'export.json'), 'utf8')).files, 4);
+    const indexPath = join(retained, 'evaluation-index.json');
+    index.segments.push(index.segments[0]);
+    writeFileSync(indexPath, JSON.stringify(index));
+    assert.throws(() => verifyRetainedEvaluations(retained), /Evaluation index count bound/);
+  });
+});
+for (const files of [1998, 1999])
+  test(`physical retained file ceiling includes summary and envelope: ${files} data files`, () => {
+    fixture((options) => {
+      for (let index = 0; index < files; index += 1)
+        writeFileSync(join(options.scratch, `${index}.json`), '{}');
+      const destination = join(options.directory, 'secrets');
+      if (files === 1999) {
+        assert.throws(() => exportMetadata(options), /Metadata export bound/);
+        assert.equal(existsSync(destination), false);
+      } else {
+        exportMetadata(options);
+        assert.equal(readdirSync(destination).length, 2000);
+        assert.equal(
+          JSON.parse(readFileSync(join(destination, 'export.json'), 'utf8')).files,
+          1999,
+        );
+      }
+    });
+  });
 test('overlong receipt path in retained index refuses before decode', () => {
   fixture((options) => {
     const source = join(options.scratch, 'native', 'fixed', 'evaluation');

@@ -17,6 +17,9 @@ import { gunzipSync, gzipSync, inflateRawSync } from 'node:zlib';
 import { digest, json } from '../usage-coverage-controls/source-graph.mjs';
 import { maxProcessOutputUnits } from './process.mjs';
 const maxFiles = 2000,
+  // Packed PID/thread journals are input segments, not retained physical files.
+  // The full native cohort exceeds the old shared 2,000-file count; byte caps stay fixed.
+  maxRawReceiptFiles = 4096,
   maxBytes = 64 * 1024 * 1024,
   maxReceiptPathBytes = 1024;
 // UTF-8 takes at most three bytes per UTF-16 code unit. The process cap remains
@@ -315,7 +318,7 @@ export function exportMetadata({ directory, scratch, repository, evidenceKind, s
         );
         const kind = entry.name.endsWith('.dependencies.jsonl') ? 'dependencies' : 'source';
         receiptIdentity(entry.name, kind);
-        assert.ok(++rawReceiptFiles <= maxFiles, 'Raw evaluation receipt file bound');
+        assert.ok(++rawReceiptFiles <= maxRawReceiptFiles, 'Raw evaluation receipt file bound');
         const size = lstatSync(source).size;
         assert.ok(size <= maxBytes - rawReceiptBytes, 'Raw evaluation receipt bound');
         const content = readFileSync(source);
@@ -469,7 +472,7 @@ export function verifyRetainedEvaluations(destination) {
     index.aggregates.length > 0 &&
       index.aggregates.length <= maxFiles &&
       index.segments.length > 0 &&
-      index.segments.length <= maxFiles,
+      index.segments.length <= maxRawReceiptFiles,
     'Evaluation index count bound',
   );
   assert.ok(
