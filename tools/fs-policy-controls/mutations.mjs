@@ -951,8 +951,8 @@ mutations.push(
   mediaControl(
     'MEDIA_FS_STORE_LOCAL_FIRST',
     mediaStore,
-    '      return await this.#publish(async (file) => {',
-    '      return this.#publish(async (file) => {',
+    '          const owned = new Uint8Array(chunk);\n          verifier.push(owned);\n          total += owned.length;\n          hash.update(owned);',
+    '          const owned = new Uint8Array(chunk);\n          try {\n            verifier.push(owned);\n          } catch (error) {\n            await closeMediaIteratorPreservingFailure(iterator, true);\n            throw error;\n          }\n          total += owned.length;\n          hash.update(owned);',
     'MEDIA_STORE_LOCAL_CLEANUP_BEFORE_CLOSE',
     mediaIteratorStoreCases,
     'filesystem iterator retirement cleans owned storage before joining registered return',

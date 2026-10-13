@@ -113,6 +113,14 @@ is checked by source and ordinary behavior; no deterministic external removal
 witness is claimed for that private storage reference. Built CLI packaging checks
 are separate positive artifact evidence, not source-aliased removal controls.
 
+The filesystem local-first control moves the source-close join into the producer's
+verification-failure path, before publisher cleanup. The publisher remains awaited,
+the original byte failure remains primary, and the complete six-case store cohort
+must produce its named cleanup-order assertion with zero runner errors. The former
+`return await` removal also abandoned the publisher Promise and broke natural EOF;
+the corrected runner refuses that contaminated removal. Its historical capture is
+not accepted as current evidence.
+
 R2 appends four controls without changing the prior 89 IDs or complete workloads:
 WebM and MP4 each lose only their repeated singleton-identity refusal, while
 native HTTP separately loses raw `Content-Type` field preservation and the

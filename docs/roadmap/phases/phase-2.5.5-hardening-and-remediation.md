@@ -3218,3 +3218,21 @@ scratch. Its successful partial stages and earlier coverage remain attributed to
 that head, not promoted to a complete CI pass. The final publication record must
 join two NEW complete clean cumulative publication rounds, fresh current-head
 local/remote gates and complete affected physical controls after this clarification.
+
+#### Local cleanup-order control correction — 2026-10-13
+
+The new runner authority refused `media-fs-store-local-first` during both Linux
+publication jobs and local full CI at `9299e3fd`: its removal produced two
+unhandled errors. Those failed, incomplete runs remain diagnostic evidence. The
+old removal dropped the publisher await, accidentally abandoning its Promise and
+also breaking natural EOF. The corrected control moves the source-close join
+into the producer's verification-failure path before publisher cleanup, while
+keeping the publisher awaited and preserving the primary byte failure. No
+production behavior, case inventory, deadline or zero-error requirement changes.
+
+The selected author capture runs the same six cases in all three phases: fixed
+and restored pass; removal produces the named cleanup-order assertion plus the
+related foreign-close assertion, with three completed zero-error runner receipts.
+It is not complete-family acceptance. Two NEW independent complete cumulative
+correction rounds and fresh final publication gates, including the entire
+filesystem matrix, must join at the final source head in PR #94.
