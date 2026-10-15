@@ -119,8 +119,8 @@ const BASE64_PATTERN = /^[A-Za-z0-9+/]+={0,2}$/;
  * The decoded byte count of a base64 string, or `undefined` when the string is not valid padded
  * base64. The ceiling/caps bound **decoded** bytes (a 256 KB ceiling is ~341 KB of base64 string),
  * so every cap comparison goes through this one accounting. Runs an O(n) regex validation over the
- * whole string before the arithmetic. Callers bound the encoded length first: request input uses its
- * inline ceiling, while generated-result publication uses the independent media-object ceiling.
+ * whole string before the arithmetic. Generated-result publication prechecks encoded length against
+ * its object ceiling; request ingress compares the decoded count with its inline ceiling afterward.
  */
 export function decodedBase64ByteLength(data: string): number | undefined {
   if (data.length === 0 || data.length % 4 !== 0 || !BASE64_PATTERN.test(data)) {
