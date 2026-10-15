@@ -3586,8 +3586,9 @@ This merge-status update starts no Wave 3 implementation and changes no release 
 **Source baseline:** `development` at `702cdc9c59c688a48a240c2961bbf16b491e0ace`.
 Wave 2 is merged; this is its documentation successor. Wave 3 is in document/decision
 preflight, with no implementation accepted or started by this entry. The current
-[Wave 3 queue](../current.md#wave-3--clear-the-ground) owns execution order; A/E/G/I
-above retain scope and acceptance. No release, new provider capture, credential or
+[Wave 3 queue](../current.md#wave-3--clear-the-ground) owns scope groupings and
+later-wave boundaries; the numbered increments below own proposed execution order
+and review gates. A/E/G/I above retain scope and acceptance. No release, new provider capture, credential or
 paid test is required. Detailed working reports stay local and Git-ignored.
 
 Three independently scoped agents examined CLI/process, shared/core and chat/Home/
@@ -4040,3 +4041,23 @@ reports were read in full. After this material correction two NEW independent
 complete cumulative clean proposal rounds are required before requesting approval.
 All four ADRs remain Proposed and production/release/provider/key/billing work
 remains outside this preflight.
+
+#### Live roadmap scheduling correction — 2026-10-16
+
+Two NEW independent complete cumulative reviews at effab2ac (gpt-6-astra/high and
+gpt-6-sol/high) confirm omitted-input absence parity and independently verify one
+shared Medium: current.md still permits the post-first queues and tails in “any
+order”, while the proposed nineteen-increment plan requires serial gated advance.
+Both reports are nonclean and have been read in full; neither counts toward final
+readiness.
+
+The live roadmap now labels its original groups as scope/dependency inventory and
+links the numbered increments as the sole proposed execution/review authority.
+The phase introduction no longer delegates execution back to those groups. Source-
+corrected preservation dispositions, viewport coalescing, pending formal #61
+record and later full-I ownership remain explicit; no work is silently closed or
+newly deferred. This is a planning consistency correction, not a change to the
+already proposed nineteen-step sequence or any product source.
+
+Two NEW independent complete cumulative clean rounds at the corrected source are
+required. ADR-0110–0113 remain Proposed, and maintainer approval precedes code.

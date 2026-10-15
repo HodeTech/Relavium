@@ -1117,8 +1117,16 @@ has started. The nineteen-increment plan now assigns these mechanisms explicitly
 Archive method is already selected; production recipient/recovery belongs to
 actual Wave 4b release. No provider capture, key access, billing or upload is needed.
 
-Decompose, guard and normalize every hot file a 2.6 workstream is about to land on. **The multi-file queue
-runs first and is serialized against the rest**; the remaining queues are file-disjoint, any order.
+Decompose, guard and normalize every hot file a 2.6 workstream is about to land on.
+**The multi-file queue is Step 1 and runs first.** The proposed
+[nineteen-increment execution plan](phases/phase-2.5.5-hardening-and-remediation.md#proposed-implementation-increments)
+owns the full order and review gates: finish each increment and its fresh reviews
+before advancing; no parallel edits of shared hot files.
+
+The groups below retain the original scope inventory and within-file dependency
+arrows, not independent scheduling permission or current completion claims. The
+[source-corrected preflight dispositions](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-preflight-and-proposed-execution-plan--2026-10-15)
+own whether/how each original finding needs implementation or preservation.
 
 Two orderings here are not this plan's invention — they are the intra-phase serializations
 [2.5.5 records under Positioning](phases/phase-2.5.5-hardening-and-remediation.md#positioning): **E before I**
@@ -1143,9 +1151,10 @@ on `home-controller.ts`/`chat-ink.tsx` (the decomposition moves already-guarded 
   min-terminal-size guard (#63), and hand restructuring to 2.6.M's render-v2 in Wave 5a.
 - **Viewport (strict)** — 2.5.5.I · share the ADR-0069 grapheme segmenter (#58, #62, G40, G51) →
   2.5.5.G · tab expansion before width measurement (#65) → per-cluster width cache + resize debounce
-  (#64, #66). Alt-screen word-wrap (#61) is **formally re-deferred**.
-- **`packages/shared` (strict)** — the `.code` ruling (G50, D10) → `findDuplicates`/`superRefine` at all seven
-  remaining schema sites (#89, #90, G16, G17, G18, #210, #211, #212) → `BaseEventSchema` disposition (#213) →
+  (#64, #66), refined to frame coalescing in the proposed plan. Alt-screen word-wrap
+  (#61) retains Wave 5a ownership; its formal disposition follows plan approval.
+- **`packages/shared` (strict)** — the `.code` ruling (G50, D10) → `findDuplicates`/`superRefine` implementation or preservation at the
+  schema dispositions (#89, #90, G16, G17, G18, #210, #211, #212) → `BaseEventSchema` disposition (#213) →
   the `RelaviumError` base class (#219). *The ruling must precede the base class, or it is baked in permanently.*
 - **`registry.ts` / `builtins.ts` / `engine.ts`** — declared-source context repair and honest unsupported-mapping disposition (#92/Proposed ADR-0113) → `ctx.fsScope` (#93) →
   `ok`/`success` (#216, #221) → identifier-sort `localeCompare` pinning (#258, #259) → the `git_commit`
@@ -1157,8 +1166,10 @@ on `home-controller.ts`/`chat-ink.tsx` (the decomposition moves already-guarded 
   #265, #268), the exit-code and `--help --json` rulings (G35, #13), durable-only logs preservation (G15 refuted), the `--input`
   namespace ruling (#18, #310). **`openLocalDb` wrap-and-redact (#278, #280) lands LAST** — it touches 8+
   call sites the other queues are still moving.
-- Then the tails of 2.5.5.A, E, G and I in any order; sub-stream **A, E and G acceptance sign-offs**;
-  and record the **EXIT:4 reading** (decision D22). **Closes M2.5.5-3.**
+- The numbered plan assigns the remaining 2.5.5.A/E/G/I tails and keeps the central
+  DB refactor last before whole-wave acceptance. Step 19 owns sub-stream **A, E
+  and G sign-offs**, the reconciled **EXIT:4 reading** (D22), and **M2.5.5-3**
+  closure. Full I acceptance remains in Wave 5a.
 
 ### Wave 4a — The spine
 
