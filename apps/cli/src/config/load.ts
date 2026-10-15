@@ -216,9 +216,13 @@ function safeIssueReason(issue: ZodIssue): string {
     case 'invalid_enum_value':
       return `must be one of: ${issue.options.map(String).join(', ')}`;
     case 'too_small':
-      return 'value is too small';
+      return issue.type === 'number'
+        ? `must be ${issue.inclusive ? '>=' : '>'} ${String(issue.minimum)}`
+        : 'value is too small';
     case 'too_big':
-      return 'value is too large';
+      return issue.type === 'number'
+        ? `must be ${issue.inclusive ? '<=' : '<'} ${String(issue.maximum)}`
+        : 'value is too large';
     case 'invalid_string':
       return 'value is not a valid string';
     default:
