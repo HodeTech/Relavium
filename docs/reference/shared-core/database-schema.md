@@ -723,6 +723,11 @@ share a shape family but must not be merged, because a session and a run have di
 
 One row per chat session. `context_json` freezes the `SessionContext` (active file, selection,
 session variables); `agent_snapshot` freezes the agent config the session ran against.
+Its `AgentSnapshotSchema` retains the existing structural and MCP-identity checks.
+Fresh [agent authoring](../contracts/agent-yaml-spec.md#retry-vs-fallback) additionally
+rejects duplicate fallback model/provider tuples through `AgentSchema`; that new
+rule does not invalidate historical snapshots. History loading and session updates
+preserve their ordered fallback entries and attempt budgets without deduplication.
 
 | Column | Type | Constraints |
 |--------|------|-------------|

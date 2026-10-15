@@ -4219,3 +4219,32 @@ cases are not platform skips. This is not full CI/coverage/platform or whole-wav
 acceptance. **Independent complete cumulative review is pending**; obtain two NEW
 clean rounds after the final material fix before Step 3. Working logs remain local
 and Git-ignored.
+
+
+### Wave 3 Step 2 review correction — 2026-10-16
+
+The first complete cumulative review at `7912c5e7` reports one verified High:
+AgentSessionSchema embedded the newly tightened AgentSchema, so a historically
+valid duplicate fallback snapshot failed loadSession, listSessions and loadFull.
+The parent reads the full report and confirms the real SQLite reproduction and
+baseline-positive control. The author candidate's reader-preservation claim was
+therefore premature; this round is not clean and does not permit Step 3.
+
+AgentSnapshotSchema now owns the historical structural/MCP checks, while
+AgentSchema composes the fresh-authoring fallback uniqueness refinement.
+AgentSessionSchema uses the snapshot contract: history reads and session updates
+retain ordered entries and their different attempt budgets, without deduplicating
+or rewriting them. Fresh standalone/inline authoring still refuses duplicate
+model/provider tuples. The canonical database reference names that boundary.
+
+Permanent shared and real SQLite regressions cover fresh rejection, legacy
+load/list/full reads, unchanged snapshot bytes after a session update, and retained
+structural/MCP rejection. Removing the snapshot separation breaks both designated
+regressions; exact byte restoration passes both. Seven focused files / 294 tests
+also pass. Final author gates pass at the corrected source: all workspace
+lint/typecheck, 591 files / 13,103 passing tests / 20 established skips and six
+build tasks. Source formatting, fences, whitespace and 3,337 relative links pass.
+These remain local author gates, not full CI/coverage/native-platform certification.
+Two NEW complete cumulative clean rounds after this material fix are required;
+no earlier round is counted as acceptance. Detailed reports/logs remain local and
+Git-ignored.
