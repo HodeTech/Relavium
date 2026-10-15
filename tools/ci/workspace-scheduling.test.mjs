@@ -5,6 +5,7 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 const root = new URL('../../', import.meta.url);
 const packageJson = JSON.parse(readFileSync(new URL('package.json', root), 'utf8'));
@@ -92,11 +93,22 @@ test('required and local CI share all workspace tasks and uncached per-invocatio
   assert.equal(initialize.env[variable], `${directory}/events.jsonl`);
   assert.ok(initialize.run.includes('>> "$GITHUB_ENV"'));
   assert.ok(ci.steps.indexOf(initialize) < ci.steps.indexOf(workspace));
+  const validate = ci.steps.find((step) => step.name === 'Require native DB execution diagnostics');
+  assert.equal(validate.run, 'node tools/ci/require-native-db-diagnostics.mjs');
+  assert.equal(validate.if, undefined);
+  assert.equal(validate['continue-on-error'], undefined);
+  assert.ok(ci.steps.indexOf(workspace) < ci.steps.indexOf(validate));
+  assert.ok(
+    packageJson.scripts['test:acceptance-tools']
+      .split(' ')
+      .includes('tools/ci/require-native-db-diagnostics.test.mjs'),
+  );
   const artifact = ci.steps.find(
     (step) => step.name === 'Preserve native DB scheduling diagnostics',
   );
   assert.equal(artifact.if, '${{ always() }}');
   assert.equal(artifact.with.path, directory);
+  assert.ok(ci.steps.indexOf(validate) < ci.steps.indexOf(artifact));
   const temporary = mkdtempSync(join(tmpdir(), 'relavium-ci-diagnostic-setup-'));
   try {
     const destination = join(temporary, 'diagnostic', 'events.jsonl');
@@ -116,6 +128,17 @@ test('required and local CI share all workspace tasks and uncached per-invocatio
     const context = JSON.parse(lines[0]);
     assert.equal(context.stage, 'ci-invocation');
     assert.equal(context.workspaceTestConcurrency, 1);
+    // Execute the real required validator against the real setup output: setup is never execution.
+    const validation = spawnSync(process.execPath, ['tools/ci/require-native-db-diagnostics.mjs'], {
+      cwd: fileURLToPath(root),
+      env: { ...process.env, [variable]: destination },
+      encoding: 'utf8',
+      timeout: 10_000,
+    });
+    assert.equal(validation.error, undefined);
+    assert.equal(validation.status, 1);
+    assert.equal(validation.stdout, '');
+    assert.equal(validation.stderr, 'Native DB execution diagnostics are missing or invalid.\n');
     assert.ok(initialize.run.includes(`echo "${variable}=$${variable}" >> "$GITHUB_ENV"`));
   } finally {
     rmSync(temporary, { recursive: true, force: true });

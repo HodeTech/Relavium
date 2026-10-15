@@ -226,3 +226,12 @@ joins the per-item disposition, two NEW clean complete whole-wave review rounds,
 security sittings, exact-source gates and preserved limits. Earlier dated pending
 checkpoints remain historical. This landing does not claim a merge, future header
 activation, full M/N lifecycle or removal of approved residuals.
+
+
+### Provider-header refinement cross-reference correction — 2026-10-15
+
+> Amended 2026-10-15: the 2026-10-13 custody refinement above refers to §5.
+> The future header consumption it gates is described in §3; §5 owns pricing-reference
+> capture and the `kind` column. [ADR-0108](0108-provider-headers-stay-gated-until-keychain-custody.md)
+> remains the governing custody and activation gate. The earlier dated note is retained
+> as history; this correction changes no decision or implementation boundary.

@@ -356,19 +356,37 @@ describe('serializeWorkflow (1.Z) — deterministic, round-trippable YAML emitte
     expect(yaml.indexOf('schema_version')).toBeLessThan(yaml.indexOf('workflow:'));
   });
 
-  it('serializes reasoning text without structural reasoning signatures or MaskedSecret values', () => {
+  it('preserves reasoning text literally; structural ephemeral fields are excluded upstream', () => {
     const yaml = serializeWorkflow(
       sessionToWorkflow(session(), [
         msg(0, 'user', [{ type: 'text', text: 'think about it' }]),
         msg(1, 'assistant', [
-          { type: 'reasoning', text: 'internal reasoning here' },
+          { type: 'reasoning', text: 'internal reasoning here; signature: literal; secret: true' },
           { type: 'text', text: 'the answer' },
         ]),
       ]),
     );
-    expect(yaml).toContain('internal reasoning here'); // reasoning TEXT is preserved in the transcript
-    expect(yaml).not.toContain('signature'); // …but the ephemeral signature never is (ADR-0030)
-    expect(yaml).not.toMatch(/secret:\s*true/); // no MaskedSecret value (ADR-0029)
+    // The serializer faithfully emits a valid durable transcript. SessionMessage's upstream boundary
+    // excludes structural signatures/MaskedSecret carriers; this text emitter does not filter keywords.
+    const reparsed = parseWorkflow(yaml);
+    expect(reparsed.workflow.metadata).toMatchObject({
+      relaviumExport: {
+        messages: [
+          { role: 'user' },
+          {
+            role: 'assistant',
+            content: [
+              {
+                type: 'reasoning',
+                text: 'internal reasoning here; signature: literal; secret: true',
+              },
+              { type: 'text', text: 'the answer' },
+            ],
+          },
+        ],
+      },
+    });
+    expect(serializeWorkflow(reparsed)).toBe(yaml);
   });
 
   it('neutralizes interpolation syntax a user typed, so the export still parses + round-trips', () => {

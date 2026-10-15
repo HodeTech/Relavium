@@ -3323,8 +3323,8 @@ certify the newly demonstrated scenarios. The PR is draft while these repairs la
 | --- | --- | --- |
 | 1 | Generated-result object preflight, bounded streaming and optional small-host compatibility; actual SDK/executor/engine/both-store publication. | Accepted source at `51140d48`: two NEW clean complete cumulative rounds, each covering 17 paths / 29 hunks with independently joined hashes. The selected current-head control has 3 phases / 54 executions and zero runner errors; full-family publication remains separate. |
 | 2 | Vorbis setup bit framing, bounded structural traversal, allocation-free header CRC, extended MP4 sizes and unknown FLAC totals. | Accepted source at `ef256157`: two NEW clean complete cumulative rounds, each covering all 14 paths / 34 hunks. The 113 new regressions pass; original-source control has 15 expected assertion failures and one adjacent positive among 16 selected cases. Existing selected comment-count and Opus-tail controls pass 60 and 126 executions respectively (`complete: false`); corrected-head full publication remains separate. |
-| 3 | Scratch-policy pin composition, rooted literal glob, complete write floor and exact-owned maintenance/recovery marker cleanup. | Author gates pass after the round-1 UNC correction: 115 new cases pass locally, with seven Windows-only cases disabled. The affected DB/CLI graph passes 307 files / 5,341 cases with ten explicit platform/CI skips. Two NEW clean complete cumulative source rounds after that material fix remain required; unknown-owner retention is unchanged. |
-| 4 | Snapshot own-property preservation and supported-domain evidence, safe input diagnostics, concrete CI/evidence and document corrections. | Preflight; source-confirmed defects are distinguished from existing limits and style suggestions. |
+| 3 | Scratch-policy pin composition, rooted literal glob, complete write floor and exact-owned maintenance/recovery marker cleanup. | Accepted source at `e9717319`: two NEW clean complete cumulative rounds after the UNC repair, each covering all 15 paths / 47 hunks and five full new regression files with independently joined hashes. The 115 local passes / seven Windows-only disables and 307-file / 5,341-pass / ten-skip affected graph remain scoped author evidence; unknown-owner retention is unchanged. |
+| 4 | Snapshot own-property preservation and supported-domain evidence, safe input diagnostics, concrete CI/evidence and document corrections. | Implemented with author gates: 152 focused passes; affected shared/LLM/DB/core/CLI graph 569 files / 12,745 passes / 20 explicit skips; all five test tasks fresh. Two NEW complete clean cumulative source rounds and final corrected-head publication remain open. |
 
 The [canonical publication contract](../../reference/shared-core/llm-provider-seam.md#bounded-verified-media-publication-adr-0106)
 owns result bounds and finite format evidence. Request-message and direct-put
@@ -3375,8 +3375,8 @@ are prerequisite builds. The five selected existing controls at `eee9ca53` pass
 that historical head. They do not replace corrected-head whole-family publication.
 
 Unsupported noninert publication values already refuse under the current canonical
-contract; this correction will document and pin that compatibility limit rather
-than silently invoking caller serializers. Unknown maintenance ownership remains
+contract; increment 4 documents and pins that compatibility limit without invoking
+caller serializers. Unknown maintenance ownership remains
 conservative: recognizing no current owner is not deletion or maintenance authority.
 Automatic unknown-owner discard would require an explicit approved decision.
 MCP registration credentials remain runtime connection configuration; the augmented
@@ -3389,3 +3389,49 @@ full CI, bare/enforced coverage, platform and physical-evidence gates remain ope
 [PR #94](https://github.com/HodeTech/Relavium/pull/94) owns their actual execution
 publication and merge status. No new ADR, provider capture, key or billing action
 is required for these existing-contract repairs. Wave 3 remains subsequent work.
+
+Increment 4 preserves collection own data, nested media and alias accounting after
+intrinsic Map/Set entries. Only array length receives the intrinsic descriptor rule.
+The synchronous admission scan owns frozen primitive descriptors without cloning the
+whole enclosing graph again; the held engine metadata-port control preserves the
+existing ownership barrier, without claiming a measured allocation benchmark.
+Reflection faults and compatible foreign admission exceptions cannot contribute
+private diagnostic text: fixed local messages and closed own-data codes govern
+classification, with cancellation first and native-iterator ownership unchanged.
+
+The original runtime with six changed regression paths reports 135 cases: 94 pass
+and 41 fail. Of those failures, 26 are named assertion failures and 15 are test-body
+errors (including expected-own-data, rejected-promise and reflection witnesses),
+not an assertion-only causal receipt or a runner-level zero-error certificate.
+After repair, the eight focused files report 152 passes. The broad five-package
+run reports 569 files / 12,745 passes / 20 explicit established/platform skips;
+all five test tasks execute freshly and five prerequisite builds are cached.
+The initial lint refusal of a control-character regex in a new test is retained;
+explicit string checks preserve the case and its terminal-control expectations.
+Lint/typecheck, build, isolation, tooling and seam/dependency gates subsequently pass.
+
+CLI admission keeps unknown/duplicate raw argv keys and values opaque under
+ADR-0107. Already-declared core input faults now show bounded sanitized labels and
+structural value-free reasons before services start. A name grammar or finite
+scrubber is not proof an arbitrary unknown key contains no credential. Provider
+policy diagnostics use the canonical error constructor's own fixed message.
+Serializer controls now prove literal transcript preservation and attribute the
+structural signature/secret exclusion to its upstream boundary.
+
+The new required post-workspace CI validator demands the actual bounded native DB
+journal, matching parent/child identities, all ten workers/nine modes, original
+readiness deadlines, transaction barriers and joined outcomes. Root's separate
+local execution of the existing native fixture passes ten cases and produces 97
+records (31 parent, 65 child, one setup), accepted by the real validator. Forty-six
+Node diagnostics/physical-selection controls pass. This is actual macOS evidence,
+not native Windows or remote CI certification. Historical filesystem/secrets budget
+comments, the ADR-0065 dated section reference and CLI command freshness are corrected.
+
+Other report hypotheses retain explicit dispositions: unknown maintenance ownership
+remains conservatively blocking under its accepted contract; the zero-error reporter
+has its documented finite completion window; total retained-file/byte caps are
+verified at export; native child/source/dependency pins retain their cooperating-host
+scope. Workspace serialization and physical packaging/source joins are intentional.
+Published historical attribution, condensed guide numbering and ADR section style
+are not rewritten. The separate pre-existing transcript-persistence observation is
+not claimed repaired. These dispositions add no approved deferral or new decision.
