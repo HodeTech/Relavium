@@ -294,3 +294,19 @@ Permanent factory, revocation, lexical-provenance, glob and floor controls accom
 these existing-contract repairs. Native Windows selections include the new files;
 selection is not execution. Independent source rounds and current-head publication
 remain separate gates, with no new allocator, public API or permission authority.
+
+### Raw UNC glob admission correction — 2026-10-15
+
+The first cumulative review of scratch/literal-glob repairs identified a lexical
+floor interaction: Windows separator normalization erased the raw UNC spelling
+before glob-parent admission. Wildcards already had the hole; literal-parent
+support made it reachable for literal globs too. Raw pattern admission now precedes
+normalization, and the common Windows guard covers equivalent slash/mixed spellings.
+POSIX double-slash semantics and ordinary local Windows drive paths are preserved.
+
+Permanent literal/wildcard controls require fixed fatal refusal with no asynchronous
+path lookup, enumeration or byte access in project and full tiers. The existing
+native Windows cohort selects the equivalent-separator cases; local source/control
+proof is not native Windows execution or a network-share fixture. The material fix
+requires two NEW clean complete cumulative rounds; prior selected controls at
+`eee9ca53` remain historical until corrected-head publication.

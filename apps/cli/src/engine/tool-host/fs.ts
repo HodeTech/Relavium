@@ -890,7 +890,7 @@ function lexicalTarget(config: NodeFsCapabilityConfig, path: string): string {
   if (path === '') {
     throw new FsCapabilityError('the path is empty');
   }
-  if (path.startsWith('\\\\')) {
+  if (path.startsWith('\\\\') || (process.platform === 'win32' && /^[\\/]{2}/.test(path))) {
     throw new FsScopeDeniedError('a UNC path is not allowed'); // `\\server\share`
   }
   // An absolute tool path is allowed (it is jail-checked after realpath); a relative one anchors at the
@@ -970,6 +970,8 @@ async function collectGlobFiles(
   pattern: string,
   signal: AbortSignalLike | undefined,
 ): Promise<{ real: string; rel: string; size: number; mtimeMs: number }[]> {
+  // Refuse the original UNC spelling before portable glob separators erase its provenance.
+  lexicalTarget(config, pattern);
   const inScope = buildScopeChecker(config);
   const portablePattern = process.platform === 'win32' ? pattern.replaceAll('\\', '/') : pattern;
   const meta = portablePattern.search(/[*?]/);

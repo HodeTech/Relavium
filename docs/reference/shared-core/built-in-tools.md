@@ -81,6 +81,11 @@ The CLI owns an immutable, process-local policy with pinned lexical/canonical di
 
 Synchronous root admission uses native canonical resolution, matching asynchronous file operations. Windows short-name and long-name spellings must resolve to the same canonical authority; lexical spellings remain separately pinned for provenance and confidentiality checks. Native path membership alone cannot equate two unresolved aliases.
 
+Raw UNC tool paths refuse before asynchronous path resolution, enumeration or byte I/O,
+including literal and wildcard globs before separator normalization. On Windows the
+equivalent forward-slash and mixed-separator UNC prefixes also refuse; this does not
+change POSIX double-slash absolute-path semantics. A full tier does not bypass this floor.
+
 The read floor refuses `.ssh/`, `.relavium/`, `.aws/`, `.env/`, `.kube/`, `.azure/`, `.terraform.d/`, `gcloud/` and `legacy_credentials/`; dotenv files `.env`/`.env.*`; `.docker/config.json`; repository `.git/config` / `.git/config.worktree` (including linked worktrees and bare `*.git` repositories) and git's XDG `credentials`; and credential basenames `.gitconfig`, `.git-credentials`, `.netrc`, `.npmrc`, `.pypirc`, `.pgpass`, `.envrc`, `.dockercfg`, `application_default_credentials.json`, `credentials.tfrc.json`, `.terraformrc` and `terraform.rc`. The write floor inherits the entire sensitive-read credential set above and additionally refuses whole `.git/` directories and shell-startup files; `.relavium/` and `.ssh/` are already included in that inherited set. Components are folded for Windows case, trailing dot/space and alternate-stream aliases. The shared [declared-env predicate](../../../packages/shared/src/declared-env.ts) refuses credential/config redirects for subprocesses; it is not a filesystem grant.
 
 Chat uses the full-capability `chat-read-write` host with writes/egress/os gated by the per-tool approval floor: default ask denies governed actions. Credential/protected-path refusals remain mode-independent. `read_file` still fails closed on binary/media until its durable-handle host path is wired. Existing tool-fs bounded fd reads and hard-link controls remain, including the scoped [pnpm virtual-store read residual](../../roadmap/deferred-tasks.md). That exemption does not apply to CAS.

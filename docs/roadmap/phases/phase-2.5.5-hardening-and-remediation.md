@@ -3323,7 +3323,7 @@ certify the newly demonstrated scenarios. The PR is draft while these repairs la
 | --- | --- | --- |
 | 1 | Generated-result object preflight, bounded streaming and optional small-host compatibility; actual SDK/executor/engine/both-store publication. | Accepted source at `51140d48`: two NEW clean complete cumulative rounds, each covering 17 paths / 29 hunks with independently joined hashes. The selected current-head control has 3 phases / 54 executions and zero runner errors; full-family publication remains separate. |
 | 2 | Vorbis setup bit framing, bounded structural traversal, allocation-free header CRC, extended MP4 sizes and unknown FLAC totals. | Accepted source at `ef256157`: two NEW clean complete cumulative rounds, each covering all 14 paths / 34 hunks. The 113 new regressions pass; original-source control has 15 expected assertion failures and one adjacent positive among 16 selected cases. Existing selected comment-count and Opus-tail controls pass 60 and 126 executions respectively (`complete: false`); corrected-head full publication remains separate. |
-| 3 | Scratch-policy pin composition, rooted literal glob, complete write floor and exact-owned maintenance/recovery marker cleanup. | Author gates pass: 112 new cases pass locally, with one Windows-only case disabled. Thirteen selected permanent cases fail with assertion errors on original runtime. The affected DB/CLI graph passes 307 files / 5,338 cases with four explicit platform/CI skips. Two NEW clean complete cumulative source rounds remain required; unknown-owner retention is unchanged. |
+| 3 | Scratch-policy pin composition, rooted literal glob, complete write floor and exact-owned maintenance/recovery marker cleanup. | Author gates pass after the round-1 UNC correction: 115 new cases pass locally, with seven Windows-only cases disabled. The affected DB/CLI graph passes 307 files / 5,341 cases with ten explicit platform/CI skips. Two NEW clean complete cumulative source rounds after that material fix remain required; unknown-owner retention is unchanged. |
 | 4 | Snapshot own-property preservation and supported-domain evidence, safe input diagnostics, concrete CI/evidence and document corrections. | Preflight; source-confirmed defects are distinguished from existing limits and style suggestions. |
 
 The [canonical publication contract](../../reference/shared-core/llm-provider-seam.md#bounded-verified-media-publication-adr-0106)
@@ -3351,7 +3351,7 @@ roots remain conservative. Fixed read cancellation adds no caller-provided cause
 The Windows cohorts include the new filesystem and earlier media regressions; the
 full DB cohort remains selected. These selections are not native Windows execution.
 
-The increment 3 DB and CLI test tasks execute freshly under `CI=true`; the five
+The increment 3 pre-UNC `eee9ca53` DB and CLI test tasks execute freshly under `CI=true`; the five
 successful cache hits in their seven-task graph are prerequisite builds. Its four
 skips comprise the existing Windows-specific and local-only scale guards plus the
 new Windows literal-path case. Lint/typecheck, build, isolation, tooling, fences,
@@ -3359,6 +3359,20 @@ formatting and document checks pass. The initial lint refusal of an unsafe Vites
 matcher assignment is retained; removing that redundant pre-read matcher keeps
 the original fulfilled-versus-rejected witness and actual content/path assertions.
 These author results do not certify a native Windows run or final whole-project CI.
+
+The first complete cumulative increment 3 review found the raw-UNC glob floor
+interaction: Windows separator normalization bypassed the original lexical denial.
+Literal parent support made the inherited wildcard hole reachable for literal paths.
+The repair admits the raw spelling before normalization, covers equivalent native
+Windows separators and preserves POSIX double-slash paths. Two original-`eee9ca53`
+raw-UNC cases fail at their named assertion before this repair; the earlier thirteen
+original-runtime failures retain their separate scope. New tests assert fixed fatal
+refusal with zero asynchronous lookup, enumeration or byte access. Windows controls
+remain selected rather than locally executed. The updated CLI test task runs freshly;
+the unchanged DB test task reuses its successful cache. Five additional cache hits
+are prerequisite builds. The five selected existing controls at `eee9ca53` pass
+15 phases / 327 executions with zero runner errors (`complete: false`), and retain
+that historical head. They do not replace corrected-head whole-family publication.
 
 Unsupported noninert publication values already refuse under the current canonical
 contract; this correction will document and pin that compatibility limit rather

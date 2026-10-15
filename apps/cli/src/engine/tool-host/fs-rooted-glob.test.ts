@@ -15,8 +15,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { assembleToolEnv } from './assemble.js';
 import { FsPolicyError, admitInvocationFsGrants, selectInvocationFsPolicy } from './fs-policy.js';
+import { createNodeFsCapability } from './fs.js';
 
-const observed = vi.hoisted(() => ({ open: vi.fn(), readdir: vi.fn() }));
+const observed = vi.hoisted(() => ({ open: vi.fn(), readdir: vi.fn(), realpath: vi.fn() }));
 vi.mock('node:fs/promises', async (original) => {
   const native = await original<typeof import('node:fs/promises')>();
   return {
@@ -28,6 +29,10 @@ vi.mock('node:fs/promises', async (original) => {
     readdir: (...args: Parameters<typeof native.readdir>) => {
       observed.readdir(args[0]);
       return native.readdir(...args);
+    },
+    realpath: (...args: Parameters<typeof native.realpath>) => {
+      observed.realpath(args[0]);
+      return native.realpath(...args);
     },
   };
 });
@@ -54,6 +59,7 @@ beforeEach(() => {
   writeFileSync(join(outside, 'outside.txt'), 'outside sentinel');
   observed.open.mockClear();
   observed.readdir.mockClear();
+  observed.realpath.mockClear();
 });
 afterEach(() => rmSync(base, { recursive: true, force: true }));
 
@@ -218,6 +224,57 @@ it.runIf(process.platform === 'win32')(
   async () => {
     const fs = capability();
     for (const pattern of [join(grant, 'ok.txt'), join(grant, '*.txt')]) {
+      expect((await fs.readFile(pattern, { glob: true })).content).toContain('grant text');
+    }
+  },
+);
+
+async function assertUncRefusal(pattern: string): Promise<void> {
+  for (const tier of ['project', 'full'] as const) {
+    const fs = createNodeFsCapability({
+      tier,
+      workspaceDir: workspace,
+      readOnly: false,
+      pathPolicy: selectInvocationFsPolicy(admitInvocationFsGrants([grant]), workspace, undefined),
+    });
+    // No network-share fixture: prove the lexical boundary before native path lookup.
+    for (const glob of [true, false]) {
+      const [outcome] = await Promise.allSettled([fs.readFile(pattern, { glob })]);
+      expect(outcome, 'FS_ROOTED_GLOB_UNC_REFUSED_BEFORE_IO').toMatchObject({
+        status: 'rejected',
+        reason: {
+          name: 'FsScopeDeniedError',
+          code: 'tool_denied',
+          recoverable: false,
+          message: 'a UNC path is not allowed',
+        },
+      });
+      expect(observed.realpath).not.toHaveBeenCalled();
+      expect(observed.readdir).not.toHaveBeenCalled();
+      expect(observed.open).not.toHaveBeenCalled();
+    }
+  }
+}
+
+it.each(['\\\\server\\share\\file.txt', '\\\\server\\share\\*.txt'])(
+  'refuses raw UNC literal/wildcard before path normalization: %s',
+  assertUncRefusal,
+);
+
+it
+  .runIf(process.platform === 'win32')
+  .each(
+    ['//', '/' + String.fromCharCode(92), String.fromCharCode(92) + '/'].flatMap((prefix) => [
+      prefix + 'server/share/file.txt',
+      prefix + 'server/share/*.txt',
+    ]),
+  )('refuses equivalent native UNC separators before any path I/O: %s', assertUncRefusal);
+
+it.runIf(process.platform !== 'win32')(
+  'preserves POSIX double-slash absolute literal and wildcard paths',
+  async () => {
+    const fs = capability();
+    for (const pattern of [`/${join(grant, 'ok.txt')}`, `/${join(grant, '*.txt')}`]) {
       expect((await fs.readFile(pattern, { glob: true })).content).toContain('grant text');
     }
   },
