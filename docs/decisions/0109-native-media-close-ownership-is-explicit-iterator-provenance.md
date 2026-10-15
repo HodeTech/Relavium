@@ -267,3 +267,12 @@ The [canonical lifecycle contract](../reference/shared-core/llm-provider-seam.md
 distinguishes these reachable cases. Existing foreign-finite, native-join and
 cleanup-order removal controls retain their witnesses; this clarification neither
 weakens the accepted guarantee nor claims current-head publication acceptance.
+
+
+### Wave 2 merge landing — 2026-10-15
+
+The applicable Wave 2 implementation and maintainer corrections merged to `main`
+as PR #94 (`ab08209e`). The [merge checkpoint](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-2-merge-checkpoint--2026-10-15)
+joins final reviewed source `4cdfe011`, review scopes, execution evidence and preserved
+limits. Earlier pending/unmerged notes are historical; this landing adds no decision,
+future feature, deferral or claim of merge-commit execution.

@@ -2,6 +2,7 @@
 
 > Status: **In progress** — **2.6.F** (platform floor + full-screen TUI, PR #74) and **2.6.C** (reseat
 > transcript-carry + `/cost`, PR #75) are ✅ **Done**, and **2.6.Q P1–P5** landed with PR #76 (2026-07-26).
+> Joint Wave 2 prerequisites and corrections merged in PR #94 (2026-10-15); the [merge checkpoint](phase-2.5.5-hardening-and-remediation.md#wave-2-merge-checkpoint--2026-10-15) records their exact scope. Full M/N lifecycle and remaining workstreams stay open.
 > Live progress is canonical in [../current.md](../current.md); the rest of the phase follows. Depends on the Phase 2.5
 > spine (the wired tool-environment and the per-tool approval / mode system), which is **complete** (M2.5-4,
 > PR #69, 2026-07-08), so this phase is unblocked.
@@ -1257,8 +1258,8 @@ workstreams — each stays checked off **only** in the PR that lands it:
 | Session budget pause/resume (EA4 ride; 1.V follow-up) | 2.6.K |
 | i18n CI key-parity + data/code separation standard | 2.6.L |
 | Live `web_search`/`http_request` egress credential resolver | 2.6.M |
-| `project`-tier invocation roots/config selectors — accepted | [Wave 2 Step 2 acceptance](phase-2.5.5-hardening-and-remediation.md#step-2-acceptance--2026-10-12) |
-| Exact host-issued scratch floor prerequisite — accepted; production lifecycle remains 2.6.N | [Wave 2 Step 2 acceptance](phase-2.5.5-hardening-and-remediation.md#step-2-acceptance--2026-10-12) / 2.6.N |
+| `project`-tier invocation roots/config selectors — complete on main (PR #94) | [Wave 2 Step 2 acceptance](phase-2.5.5-hardening-and-remediation.md#step-2-acceptance--2026-10-12) |
+| Exact host-issued scratch floor prerequisite — complete on main (PR #94); production lifecycle remains 2.6.N | [Wave 2 Step 2 acceptance](phase-2.5.5-hardening-and-remediation.md#step-2-acceptance--2026-10-12) / 2.6.N |
 | Target-scoped approval cache + structured MCP preview | 2.6.M |
 | Approval-consent-line zero-width hardening · shared `[c]` reducer | 2.6.M (with render v2) |
 

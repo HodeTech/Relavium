@@ -1,6 +1,6 @@
 # Phase 2.5.5 — Hardening and Remediation
 
-> Status: 🚧 **Open — Wave 2 Steps 1–8 accepted on development; publication and later waves remain separate.** Live progress and execution order are canonical in
+> Status: 🚧 **Open — Wave 2 Steps 1–8 and review corrections merged to main as PR #94 (2026-10-15); later waves remain open.** Live progress and execution order are canonical in
 > [../current.md](../current.md#execution-order--phase-255--phase-26-temporary); this banner does not
 > restate them. A full-project multi-agent code review completed
 > 2026-07-19 at HEAD `f88b0e8` — 377 findings, 373 surviving two-lens adversarial
@@ -448,7 +448,7 @@ This substream is the development-process substrate itself — `.github/workflow
 | In-phase | Completed by | Outcome |
 |----------|--------------|---------|
 | ✅ M2.5.5-1 Safety-critical propagation fixes *(met 2026-07-30, PR #81 — its two CRITICALs, #91 and #228, are closed. ADR-0074 §1 was open at that date and CLOSED on 2026-08-09 with `/cost --release`; the "Wave 1.5" framing this note used was retracted — that work was PR #81's own closing list, not a later wave. See [current.md](../current.md).)* | 2.5.5.A + 2.5.5.C | Two of the three CRITICAL findings closed (`#91` the unredacted approval-preview secret leak; `#228` the chat-persister unhandled-rejection crash — the third, `#56`, lands with 2.5.5.I under M2.5.5-2); the budget governor's concurrency gap and the two-process migration race are fixed |
-| M2.5.5-2 Security-surface hardening — D accepted, I open ([Wave 2 sign-off](#wave-2-closing-register--2026-10-13)) | 2.5.5.D + 2.5.5.I | MCP tool-poisoning/config-secret-hijack gaps closed; the third CRITICAL (`#56`) closed as terminal-control sanitization reaches `relavium run`, the error boundary, and the approval card; `chat.ts`/`home-controller.ts` decomposed ahead of 2.6.E/2.6.G |
+| M2.5.5-2 Security-surface hardening — D complete on main (PR #94), I open ([merge checkpoint](#wave-2-merge-checkpoint--2026-10-15)) | 2.5.5.D + 2.5.5.I | MCP tool-poisoning/config-secret-hijack gaps closed; the third CRITICAL (`#56`) closed as terminal-control sanitization reaches `relavium run`, the error boundary, and the approval card; `chat.ts`/`home-controller.ts` decomposed ahead of 2.6.E/2.6.G |
 | M2.5.5-3 CLI operator-safety net | 2.5.5.E | The outermost crash/signal/error boundary behaves uniformly across every command; `--version`/`--help` startup tax closed |
 | M2.5.5-4 Money-safety & process substrate | 2.5.5.B + 2.5.5.H | The three LLM adapters share guard/classification parity and `FallbackChain` is the sole retry authority; CI actually executes the compiled binary and the coverage/dependency/logging gates match what they claim to enforce |
 | M2.5.5-5 Documentation & hygiene close-out | 2.5.5.F + 2.5.5.G | No canonical doc names a retired data source or an unbuilt surface as shipped; the naming/duplication/dead-code sweep is closed |
@@ -513,7 +513,7 @@ directly as a 2.6.A work item). **Intra-phase:** the five file overlaps recorded
 
 ## Exit criteria
 
-**Wave 2 disposition — 2026-10-13:** criteria 1–3 are accepted on `development`; the [closing register](#wave-2-closing-register--2026-10-13) joins their direct regressions and threat sittings. Whole-phase criteria 4–8 remain open.
+**Wave 2 disposition — 2026-10-15:** criteria 1–3 are satisfied on `main` following the merge of PR #94; the [merge checkpoint](#wave-2-merge-checkpoint--2026-10-15) joins their direct regressions, threat sittings and final corrections. Whole-phase criteria 4–8 remain open.
 
 1. All three CRITICAL findings (`#91` the `previewFor()` secret leak; `#228` the chat-persister
    unhandled rejection; `#56` the unsanitized `relavium run` TUI) are closed and regression-tested.
@@ -1041,7 +1041,7 @@ Raised by a reviewer, then disproved by both verifiers reading the code. Recorde
 
 ## Wave 2 preflight and proposed execution plan — 2026-10-12
 
-> Current disposition — 2026-10-13: all eight steps are accepted on `development`; the [closing register](#wave-2-closing-register--2026-10-13) controls current acceptance. The dated preflight/checkpoint states below remain historical.
+> Current disposition — 2026-10-15: all eight steps and review corrections merged to `main` as PR #94; the [merge checkpoint](#wave-2-merge-checkpoint--2026-10-15) controls current completion. The dated preflight/checkpoint states below remain historical.
 
 **Status: maintainer approved ADR-0105–0108 and the eight-step plan on 2026-10-12.
 Steps 1–6 are accepted after independent cumulative reviews and required gates; Step 7 proceeds.**
@@ -2902,7 +2902,9 @@ Two NEW clean complete cumulative whole-wave rounds remain required.
 
 ### Wave 2 closing register — 2026-10-13
 
-**Steps 1–8 are accepted on `development`; publication is separate from merge.**
+> Current disposition — 2026-10-15: Steps 1–8 and maintainer corrections are complete on `main` after PR #94 merged. The [merge checkpoint](#wave-2-merge-checkpoint--2026-10-15) joins final source reviews and execution; the dated evidence below retains its original scope.
+
+**Original acceptance — 2026-10-13: Steps 1–8 accepted on `development`, before merge.**
 This is the joint Phase 2.5.5/2.6 “Shut the doors” wave. It does not reopen the
 merged Phase 2.6.5 W2/W8 interlude or close all of Phase 2.5.5/2.6.
 
@@ -3481,3 +3483,100 @@ together, including the entire increment-4 diff. PR #94 owns their actual verdic
 and the required final CI/coverage/platform/physical-evidence publication; the old
 nonclean round contributes no clean acceptance. No new ADR, deferral or user action
 is introduced, and Wave 3 remains subsequent work.
+
+### Wave 2 merge checkpoint — 2026-10-15
+
+[PR #94](https://github.com/HodeTech/Relavium/pull/94) merged to `main` at
+**17:50:23 UTC (20:50:23 Europe/Istanbul)**, merge commit
+`ab08209ea0fd4681a9ed760811c6b1acfc6501b9`. Its final reviewed head is
+`4cdfe011fc62841e6daba3b39391d0d1e540c4dc`; the merge tree is byte-identical
+to that source. **All eight Wave 2 steps and the maintainer corrections are
+complete on `main`.** ADR-0105–0109 remain Accepted. The forty-ID
+[disposition ledger](#wave-2-individual-dispositions--certification-in-progress),
+[original closing register](#wave-2-closing-register--2026-10-13),
+[first corrections](#pr-94-systematic-review-corrections--2026-10-13),
+[lower-priority corrections](#pr-94-lower-priority-review-corrections--2026-10-13)
+and [additional corrections](#pr-94-additional-systematic-review--2026-10-15)
+retain their exact source scopes and historical receipts.
+
+#### Completed scope
+
+| Area | Complete on `main` |
+| --- | --- |
+| Filesystem authority | Invocation-only grants and narrowing selectors, credential floors, shared ancestor walk, catalog containment, exact scratch-floor prerequisite and composition, literal glob admission. |
+| Secrets and config trust | Bounded owned stdin, first-run secret delivery and argv refusal, native bridge failure privacy, finite scrubbing and faithful-snapshot warnings. |
+| Persistence and export | Revalidated structural session/tool-content refusal, secret-taint context sites, export continuity/slug and completion notices. |
+| Media and native lifecycle | Verified bounded bytes before publication, CAS/temp ownership and recovery, explicit iterator provenance, generated-result streaming and valid Opus/Vorbis/FLAC handling. |
+| Provider-header gate | Nonempty-map refusal, inert legacy rows, explicit logical clear and SDK/public-projection exclusion; live header activation remains gated. |
+| Review corrections and evidence | Runner-error rejection, finite immutable node-bound pin diagnostics, safe declared-input reasons, native DB journal validation, all 151 filesystem/secrets anchors and complete refreshed controls. |
+
+The four implementation increments from the 2026-10-15 review, including the
+pin-error followup and final removal-anchor synchronization, have **two NEW
+independent complete clean cumulative correction rounds** at `4cdfe011`. Each
+round covers all **67 correction paths / 188 hunks / 24 complete new files**,
+including the entire increment-4 subset (34 paths / 94 hunks / 11 new files).
+These are scoped correction reviews, not a new review of every original PR path.
+Original whole-wave acceptance and earlier correction rounds retain their separate
+attribution. Root joined the complete reports and file/blob/diff inventories;
+detailed review records remain local and Git-ignored.
+
+#### Final reviewed-source execution
+
+Full local `pnpm run ci`, ordinary coverage and enforced coverage pass at
+`4cdfe011`. Both local coverage commands execute freshly and record **588 files /
+12,983 passing tests / 20 explicit skips**. Published CI coverage records
+**12,982 passes / 21 skips**, with the established additional CI-only skip;
+thresholds are unchanged. Matching workspace/build/lint cache reuse is recorded
+separately and is not described as fresh execution.
+
+All nine jobs in each [push CI](https://github.com/HodeTech/Relavium/actions/runs/38771189079)
+and [PR CI](https://github.com/HodeTech/Relavium/actions/runs/38771197426) pass,
+including the required aggregate, Node 22.13.0 floor, native Windows and acceptance
+jobs. SonarCloud succeeds with quality gate OK; demonstrated false positives have
+individual reasons, with no rule/gate weakening. Other nonblocking maintainability
+suggestions remain visible. PR checkout `24f66e27` has the same Git tree; literal-head
+physical evidence comes from push CI. These results do not claim new execution
+of the merge commit or this documentation-only successor.
+
+Selected native Windows evidence includes DB 58 files / 1,031 passes, filesystem
+12 files / 323 passes / 18 platform skips, and shared/CLI media 14/8 files /
+399/87 passes, plus CAS, packaging and headless EOF4 controls. This is not whole-repository
+Windows coverage. The required native DB journal contains 97 records, ten workers
+and nine modes; actual identities, stages, original readiness bounds and joined
+outcomes pass independent validation. All 321 acceptance-tool tests pass.
+
+Complete local and literal-head push exports were independently inspected:
+
+| Family | Controls | Phase records / case executions | Outcome authority |
+| --- | ---: | --- | --- |
+| Filesystem | 110 | 330 / 8,148 | 330 completed runner receipts, zero runner errors. |
+| Secrets | 41 | 123 / 8,451 | 123 completed runner receipts, zero runner errors. |
+| Wire | 4 | 9 / 216 | Same 24-case installed-SDK HTTP inventory. |
+| Usage | 23 | 70 / 3,738 | Includes 435 permanent cases and 71 native children. |
+
+Frozen Git blobs, exact removal bytes, complete inventories, named semantic
+witnesses, restoration, process/runtime joins and retained bounds pass. Qualified
+secondary removal effects cannot replace causal witnesses. Filesystem/secrets
+retain their 2,000-file/64-MiB bounds; usage/wire retain their separate existing
+20,000-file/256-MiB bounds and outcome authorities. Remote dependency pins/loader
+receipts are joined without claiming local rehashing of remote installed bytes.
+Earlier partial, failed, selected or prior-head runs do not count as final acceptance.
+
+#### Exit status and next work
+
+**Phase 2.5.5 exit criteria 1–3 and sub-stream D acceptance are satisfied on `main`
+by PR #94.** M2.5.5-2's D half is complete; its I half remains open. Whole-phase
+exit criteria 4–8, later Waves 3–7 and full Phase 2.5.5/2.6 remain open.
+Full M/N production lifecycle, future live headers and existing approved limits
+retain their [canonical deferred homes](../deferred-tasks.md); closure creates no
+new deferral or architectural decision. Finite structural media verification,
+cooperating-host filesystem assumptions, one loaded shared-module iterator domain
+and sensitive retained content remain explicit.
+
+Wave 2 has no remaining implementation, review, publication, ADR approval, provider
+capture, key, billing or user-decision gate. Next is [Wave 3 — Clear the ground](../current.md#wave-3--clear-the-ground),
+starting with its fresh document/decision preflight and serialized multi-file queue:
+shared close handling, safe path presentation and exhaustiveness guards. The
+remaining decomposition, viewport, shared-schema and CLI/process queues follow
+their existing order; Wave 3's unresolved recommendations are not approvals.
+This merge-status update starts no Wave 3 implementation and changes no release version.

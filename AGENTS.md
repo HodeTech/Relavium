@@ -43,7 +43,7 @@ joins original whole-wave acceptance, maintainer corrections and final reviewed-
 PR/push CI and SonarCloud success. Published ordinary/enforced coverage records 511 files /
 11,026 passing tests / 12 established skips; all four wire and 23 usage mechanisms pass.
 CR-70/93, CR-95's long continuation and exact-capacity/scoped residuals remain approved deferrals.
-The joint [Wave 2 — Shut the doors](docs/roadmap/current.md#next-work--wave-2--shut-the-doors) is now accepted on `development`;
+The joint [Wave 2 — Shut the doors](docs/roadmap/current.md#next-work--wave-2--shut-the-doors) merged to `main` on 2026-10-15 as PR #94;
 next is [Wave 3 — Clear the ground](docs/roadmap/current.md#wave-3--clear-the-ground).
 Phase 2.5.5 and Phase 2.6 remain in progress. No W8 implementation or landing gate remains.
 **Post-closure corrections are independently accepted, 2026-10-10:** core, CLI/DB and tooling/docs
@@ -63,50 +63,25 @@ Final reviewed head `3d4491df` passed PR/push CI and SonarCloud before PR #92 me
 No merge-commit execution or new whole-PR review is inferred. Two nonblocking Sonar complexity
 suggestions remain visible; no new deferral or decision is added.
 
-**Joint Wave 2 accepted on `development` — 2026-10-13:** all eight implementation
-steps are complete under approved ADR-0105–0109. The [closing register](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-2-closing-register--2026-10-13)
-joins forty individual dispositions, four new security sittings plus W4 revalidation,
-two NEW complete clean cumulative whole-wave rounds, broad author/coverage gates
-and exact-source published causal/platform evidence. Exit criteria 1–3 and the D
-half of M2.5.5-2 are accepted; the I half and full phases remain open. Publication
-is separate from merge. No ADR approval, provider capture, key, billing or user
-decision is pending for Wave 2. Next engineering work is
-[Wave 3 — Clear the ground](docs/roadmap/current.md#wave-3--clear-the-ground),
-starting with its serialized multi-file queue and a fresh decision preflight.
-Full M/N lifecycle and existing approved deferrals retain their canonical homes.
+**Joint Wave 2 merged to `main` — 2026-10-15, PR #94 (`ab08209e`).**
+All eight implementation steps and the maintainer corrections are complete on `main`
+under Accepted ADR-0105–0109. The [merge checkpoint](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-2-merge-checkpoint--2026-10-15)
+joins forty item dispositions, security sittings, the final reviewed source `4cdfe011`,
+two NEW clean complete cumulative correction rounds and successful PR/push CI,
+coverage, native-platform and independently inspected physical controls. Earlier
+whole-wave and correction reviews retain their exact source scopes; no new whole-PR
+review or merge-commit execution is inferred. Detailed review records remain local
+and Git-ignored.
 
-**PR #94 maintainer source corrections accepted — 2026-10-13:** runner-level
-unhandled-error rejection, legal OpusTags tails and FLAC nonfinal block consistency
-each have two NEW independent clean complete cumulative correction rounds. Final
-source rounds at `f4ca3c53` cover all 28 correction paths / 72 hunks; these are not a
-new review of all original PR paths. The [correction register](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#pr-94-systematic-review-corrections--2026-10-13)
-joins source acceptance; [PR #94](https://github.com/HodeTech/Relavium/pull/94)
-records current corrected-head full CI/coverage/platform and complete physical
-controls separately. Their actual success is required before merge. Original
-`395fbf95` artifacts retain their historical scope. Wave 3 is subsequent work.
-
-**PR #94 lower-priority corrections — 2026-10-13:** all twelve verified Low
-items from the subsequent 305-path review are implemented in three increments.
-The [lower-priority correction register](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#pr-94-lower-priority-review-corrections--2026-10-13)
-records every disposition and separately attributes selected controls, broad gates
-and historical captures. Each increment requires two NEW complete clean cumulative
-source rounds after its final fix; PR #94 owns the actual final reviewed-head
-acceptance and refreshed CI/coverage/platform/physical-evidence publication.
-No new ADR, deferral, provider request, key, billing action or user decision is
-introduced. Wave 3 follows these corrections; publication remains separate from merge.
+Exit criteria 1–3 and the D half of M2.5.5-2 are satisfied on `main`. The I half,
+whole Phase 2.5.5/2.6, full M/N production lifecycle, future live provider headers
+and existing approved deferrals remain open in their canonical homes. No Wave 2
+implementation, review, publication, ADR approval, provider capture, credential,
+billing or user-decision gate remains. Next is [Wave 3 — Clear the ground](docs/roadmap/current.md#wave-3--clear-the-ground),
+starting with a fresh document/decision preflight and its serialized multi-file queue.
+Wave 3 implementation has not started in this closure update.
 
 See [docs/roadmap/current.md](docs/roadmap/current.md) for live status.
-
-**PR #94 additional corrections implemented — 2026-10-15:** review of `992e6dab`
-reproduced generated-result publication, Vorbis framing and host-boundary defects.
-All four repair increments, including the subsequent finite pin-error capture, are
-implemented. The [additional correction register](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#pr-94-additional-systematic-review--2026-10-15)
-owns their scope and checkpoint receipts; [PR #94](https://github.com/HodeTech/Relavium/pull/94)
-owns actual current-source review, execution and ready/merge status. Two NEW clean
-complete cumulative rounds after the final material fix and actual corrected-source
-CI/coverage/platform/physical controls are required before merge. Earlier acceptance
-and green captures retain their historical scope. Wave 3 follows corrected PR acceptance.
-No provider, credential, billing or new ADR approval is pending.
 
 ## The non-negotiable rules
 

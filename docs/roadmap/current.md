@@ -101,51 +101,43 @@ Earlier dated pending checkpoints in this page and the phase register are histor
 
 <a id="next-work--wave-2--shut-the-doors"></a>
 
-## Wave 2 accepted — Shut the doors
+<a id="wave-2-accepted--shut-the-doors"></a>
 
-**PR #94 additional corrections implemented — 2026-10-15.** Review of `992e6dab`
-reproduced two High valid-media failures and further host-boundary defects. All four
-repair increments, including the followup finite pin-error capture, are implemented.
-The [additional correction register](phases/phase-2.5.5-hardening-and-remediation.md#pr-94-additional-systematic-review--2026-10-15)
-tracks their scope and checkpoint evidence. [PR #94](https://github.com/HodeTech/Relavium/pull/94)
-owns actual current-source cumulative review, execution and ready/merge status;
-two NEW complete clean rounds after the final fix and actual required gates must
-succeed before merge. The acceptance checkpoints below retain their original scopes.
-Wave 3 follows corrected PR acceptance; no provider, credential or user decision is pending.
+## Wave 2 merged — Shut the doors
 
-**Wave 2's eight steps are accepted on `development`, 2026-10-13.** This existing
-navigation anchor is retained for incoming decision links; implementation is
-complete and publication is separate from merge. The [closing register](phases/phase-2.5.5-hardening-and-remediation.md#wave-2-closing-register--2026-10-13)
-joins all forty item dispositions, four new threat sittings plus W4 revalidation,
-two NEW complete clean cumulative whole-wave review rounds and exact-source author,
-coverage, native Windows/Node-floor and full physical causal evidence.
+**Wave 2 merged to `main` on 2026-10-15 as [PR #94](https://github.com/HodeTech/Relavium/pull/94),
+merge commit `ab08209e`. All eight steps and the maintainer corrections are complete.**
+The [merge checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#wave-2-merge-checkpoint--2026-10-15)
+joins the forty item dispositions, four new security sittings plus W4 revalidation,
+original whole-wave acceptance and all subsequent correction scopes. Existing incoming
+navigation anchors are retained; dated implementation checkpoints remain historical.
 
-**PR #94's three maintainer source corrections are accepted — 2026-10-13.**
-Systematic review of `395fbf95` confirmed a runner-level unhandled-error blind spot,
-refusal of valid OpusTags padding and missing nonfinal FLAC block-size consistency.
-All three repairs have permanent regressions and two NEW independent clean complete
-cumulative rounds after each final source correction. The final source rounds at
-`f4ca3c53` cover all 28 correction paths / 72 hunks. The
-[correction register](phases/phase-2.5.5-hardening-and-remediation.md#pr-94-systematic-review-corrections--2026-10-13)
-joins their separate acceptance scopes. Corrected-head full CI, coverage, platform
-results and independently inspected complete controls belong to the
-[PR #94 publication record](https://github.com/HodeTech/Relavium/pull/94) and must
-pass before merge. Earlier green checks retain their original source attribution;
-the original `395fbf95` artifacts do not establish the repaired runner-error
-guarantee. Publication and maintainer review precede merge; Wave 3 remains
-subsequent work.
+Completed work covers invocation-authorized filesystem boundaries and scratch-policy
+composition; bounded secret stdin, early admission and private bridge diagnostics;
+faithful-snapshot warnings, structural session privacy and export completion; verified
+bounded media/CAS/native lifecycles; and the interim provider-header gate. Maintainer
+corrections include runner-level error rejection, valid Opus/Vorbis publication,
+FLAC structural consistency, generated-result streaming and finite pin-error provenance.
 
-Completed work covers invocation-authorized filesystem boundaries, bounded secret
-input and bridge diagnostics, faithful-snapshot warnings and structural session
-privacy, export completion, verified bounded media/CAS/native lifecycles, and the
-interim provider-header gate. Exit criteria 1–3 and sub-stream D are signed off.
-M2.5.5-2's I half, full Phase 2.5.5/2.6, M/N production lifecycle, future live headers
-and existing approved residuals remain open. There is no pending ADR approval,
-provider capture, credential, billing or user decision for this wave.
+Final reviewed correction source `4cdfe011` has two NEW independent complete clean
+cumulative rounds covering all 67 correction paths / 188 hunks / 24 complete new files.
+These scoped rounds do not claim a new review of every original PR path. Full local
+CI, ordinary/enforced coverage and all nine jobs in each PR/push CI workflow pass;
+SonarCloud and selected native Windows/Node-floor controls pass. Local coverage records
+588 files / 12,983 passing tests / 20 explicit skips; CI records 12,982 / 21 with its
+established extra CI-only skip. Complete physical controls are independently inspected.
+The merge tree matches the reviewed source; no new merge-commit execution is inferred.
+
+**Satisfied on `main`:** Phase 2.5.5 exit criteria 1–3 and sub-stream D acceptance.
+**Still open:** M2.5.5-2's I half, whole Phase 2.5.5/2.6, M/N production lifecycle,
+future live headers and existing approved residuals. Wave 2 has no remaining implementation,
+review, publication, ADR approval, provider capture, credential, billing or user-decision gate.
+The [deferred register](deferred-tasks.md) retains its existing limits; closure adds no deferral.
 
 ## Next work — Wave 3 — Clear the ground
 
-The next engineering work is [Wave 3 — Clear the ground](#wave-3--clear-the-ground).
+The next engineering work is [Wave 3 — Clear the ground](#wave-3--clear-the-ground);
+its implementation has not started in this closure update.
 Its serialized multi-file queue starts with shared close handling, safe path
 presentation and exhaustiveness guards, before hot-file decomposition and the
 remaining CLI/process work. Start with current documents/code and its own decision
@@ -524,7 +516,7 @@ flowchart TD
     W1["Wave 1 — Stop the bleeding ✅<br/>3 CRITICALs · cost cap · ADR-0074"]
     LEDGER["#W15-1 — realized-cost ledger ✅<br/>ADR-0076 + ADR-0077"]
     P265["Phase 2.6.5 — Core reliability<br/>51 CR items · 8 P0 blockers behind ADR-0078–0084<br/>W0–W8 complete · W3 blocker closed in W8<br/>W4 merged — the hostile-MCP class, ADR-0088<br/>W5 merged — media correctness, ADR-0089+0090<br/>W6 merged — authoring correctness, ADR-0091–0094<br/>W7 merged — PR #90 · W8 merged — PR #92<br/>49/51 closed · approved deferrals retained"]
-    W2["Wave 2 — Shut the doors<br/>fs jail · secrets · config trust<br/>certifies 2.5.5 EXIT 1–3"]
+    W2["Wave 2 — Shut the doors ✅<br/>PR #94 merged · fs jail · secrets · config trust<br/>2.5.5 EXIT 1–3 satisfied"]
     W3["Wave 3 — Clear the ground<br/>god-file decomposition · CLI net"]
     W4a["Wave 4a — The spine<br/>2.6.A/D/H/K + 2 ADRs"]
     W4b["Wave 4b — Money floor & close-out<br/>2.5.5.B/C/F/H drain · v0.2.0"]
@@ -1080,7 +1072,7 @@ an ESLint selector rather than a list.
 
 ### Wave 2 — Shut the doors
 
-**Accepted on `development`, 2026-10-13; merge remains separate.** The [closing register](phases/phase-2.5.5-hardening-and-remediation.md#wave-2-closing-register--2026-10-13) joins all forty queue IDs and the exit/D sign-off. Hostile-MCP work is reused from W4/PR #87; the remaining filesystem, secrets/config, persistence and media work is complete within its recorded limits. The queue below preserves scope and traceability.
+**Complete on `main`, 2026-10-15, merged as PR #94 (`ab08209e`).** The [merge checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#wave-2-merge-checkpoint--2026-10-15) joins all forty queue IDs, the exit/D sign-off and final correction evidence. Hostile-MCP work is reused from W4/PR #87; the remaining filesystem, secrets/config, persistence and media work is complete within its recorded limits. The queue below preserves scope and traceability.
 
 1. ✅ **Completed in W4/PR #87:** 2.5.5.D · project-layer MCP name collision redirecting a global secret
    (G19) and MCP tool-definition poisoning (#202); see the
@@ -1094,19 +1086,19 @@ an ESLint selector rather than a list.
    certify from there in step 6 below; the *work* happens in 2.6.5 alongside `CR-16` (consent before a stdio
    spawn) and `CR-41` (the DNS/redirect SSRF hole), because they are the same code and the same security
    sitting. Splitting them across two phases would book the hostile-MCP reviewer twice.
-3. ✅ **The fs jail, ONE reviewed change set — accepted on `development`, 2026-10-12** — 2.5.5.D · sensitive-credential floor for `.kube`/`.azure`/gcloud
+3. ✅ **The fs jail, ONE reviewed change set — complete on `main`, PR #94** — 2.5.5.D · sensitive-credential floor for `.kube`/`.azure`/gcloud
    (#36, #39) → extract `deepestExistingReal` to `packages/shared` (#235) → **2.6.M's `project`-tier
    `extraRoots`** and **2.6.N's fs-floor home-anchoring**, both *pulled forward*. `~/.relavium/tmp/` (G21)
    is resolved under the same general predicate (decision D12) — otherwise `fs.ts` takes two security reviews.
-4. `discoverCatalog` realpath containment (#1, accepted in Step 2); the secrets-layer test pair — OS-keychain bridge (#27) and
+4. ✅ `discoverCatalog` realpath containment (#1, accepted in Step 2); the secrets-layer test pair — OS-keychain bridge (#27) and
    `readSecretFromStdin` + stdin cap (#31, #293); secret-typed `run --input` rejection (#25); the unredacted
    workflow-snapshot doc + lint (#30); 2.5.5.B · `scrubSecrets` param-name broadening (#196).
-5. Persistence-security: 2.5.5.C · `assertRelativePath`'s Windows drive-relative form (#113), media-store
+5. ✅ Persistence-security: 2.5.5.C · `assertRelativePath`'s Windows drive-relative form (#113), media-store
    hardening (#111, #108, #112), media `mimeType` verification (#107, #109, #110), and certification of
    W7's structural session/tool-content controls (#115, Wave D15). 2.5.5.A · chat-export continuity/slug
    completion and existing tool-content exclusion (#80, #81, #83, D14), plus `analyzeSecretTaint`'s
    context sites (G22). 2.5.5.D · the dormant `default_headers` admission/custody gate (G20, D13).
-6. **Certify 2.5.5 exit criteria 1, 2 and 3** + the sub-stream D acceptance sign-off. **Closes M2.5.5-2 (D half).**
+6. ✅ **Phase 2.5.5 exit criteria 1, 2 and 3 and sub-stream D acceptance are satisfied on `main` by PR #94.** The D half of M2.5.5-2 is complete; the I half remains open.
 
 > Book **four security-review sittings by threat class** (fs/path-jail · secrets-at-rest · secrets-input ·
 > config-trust), not ~30 per-PR passes. The **hostile-MCP** sitting moved to Phase 2.6.5 with the queue-2 work;

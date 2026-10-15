@@ -538,3 +538,12 @@ New actual-engine host/executor and internal-helper controls accompany the repai
 The earlier source round is not clean; two NEW complete cumulative source rounds
 and corrected-head publication are required after this fix. Their actual verdicts
 and execution remain owned by PR #94 and its correction register.
+
+
+### Wave 2 merge landing — 2026-10-15
+
+The applicable Wave 2 implementation and maintainer corrections merged to `main`
+as PR #94 (`ab08209e`). The [merge checkpoint](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-2-merge-checkpoint--2026-10-15)
+joins final reviewed source `4cdfe011`, review scopes, execution evidence and preserved
+limits. Earlier pending/unmerged notes are historical; this landing adds no decision,
+future feature, deferral or claim of merge-commit execution.
