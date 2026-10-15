@@ -13,7 +13,10 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { digest } from '../usage-coverage-controls/source-graph.mjs';
+import { mutations as filesystemControls } from '../fs-policy-controls/mutations.mjs';
+import { mutations as secretsControls } from '../secrets-controls/mutations.mjs';
 import {
   captureOwnedTools,
   verifyOwnedTools,
@@ -251,4 +254,14 @@ test('selected anchor preflight audits every copied target before a phase', () =
       /target outside source closure/,
     );
   });
+});
+test('every declared filesystem and secrets anchor matches current production source', () => {
+  const repository = fileURLToPath(new URL('../../', import.meta.url));
+  for (const controls of [filesystemControls, secretsControls]) {
+    const files = [...new Set(controls.map((control) => control.path))].map((path) => {
+      const bytes = readFileSync(join(repository, path));
+      return { path, bytes: bytes.length, sha256: digest(bytes) };
+    });
+    assertSelectedAnchors(controls, repository, files);
+  }
 });

@@ -436,10 +436,7 @@ export const mutations = [
   );
   if (!admitted.ok) {
     // Core owns every value contract; raw names were refused above. Never attach caller payload/cause.
-    throw new CliError(
-      'invalid_invocation',
-      'workflow inputs do not satisfy their declared contracts.',
-    );
+    throw new CliError('invalid_invocation', inputAdmissionMessage(admitted.issues));
   }
   const inputs = admitted.inputs;`,
     '  const inputs = resolveInputs(def, rawInputs, secretInputs);',
