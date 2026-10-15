@@ -1021,20 +1021,13 @@ class RunExecution {
 
   /** The shared snapshot owns the counted graph before this callback runs, with no preceding await. */
   #reserveMediaParts(unpinned: number, nodeId: string): void {
-    if (unpinned > ADMISSION_CEILINGS.mediaPartsPerNodeOutput) {
-      throw new NodeMediaPinError(
-        `node \`${nodeId}\` produced ${unpinned} media parts to re-host, over its limit of ${ADMISSION_CEILINGS.mediaPartsPerNodeOutput}`,
-        'validation',
-      );
-    }
     // The RUN-level backstop. The per-node ceiling bounds one output; a 50-wide `fan_out` at 32 parts each
     // is ~1,600 fetches in one graph layer, which is the multiplication ADR-0086 §4 exists to catch.
-    if (this.#pinnedMediaParts + unpinned > ADMISSION_CEILINGS.mediaPartsPerRun) {
-      throw new NodeMediaPinError(
-        `this run has re-hosted ${this.#pinnedMediaParts} media parts and node \`${nodeId}\` adds ${unpinned}, over the run limit of ${ADMISSION_CEILINGS.mediaPartsPerRun}`,
-        'validation',
-      );
-    }
+    if (
+      unpinned > ADMISSION_CEILINGS.mediaPartsPerNodeOutput ||
+      this.#pinnedMediaParts + unpinned > ADMISSION_CEILINGS.mediaPartsPerRun
+    )
+      throw NodeMediaPinError.partsExceeded(nodeId, unpinned, this.#pinnedMediaParts);
     this.#pinnedMediaParts += unpinned;
   }
 
@@ -3163,8 +3156,9 @@ class RunExecution {
       // catch-all below it became `internal` / "the node handler threw an unexpected error", which is the
       // wrong shape twice over: a provider CDN hiccup is not an engine defect, and a transient failure
       // reported as non-retryable never gets the retry it deserves.
-      if (error instanceof NodeMediaPinError) {
-        return { kind: 'failed', error: error.failure };
+      const pinFailure = NodeMediaPinError.failureOf(error, vertex.id);
+      if (pinFailure !== undefined) {
+        return { kind: 'failed', error: pinFailure };
       }
       // The catch-all: any uncaught throw from a node handler maps to a single internal failure
       // (a tool handler classifies its own failures as tool_failed; a sandbox throw as sandbox_error).

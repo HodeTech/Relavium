@@ -3315,16 +3315,17 @@ The maintainer's review of `992e6dab` independently reproduced two High valid-me
 publication failures, a Medium scratch-policy composition defect, a Low exact-owned
 marker cleanup defect and a qualified rooted-literal glob inconsistency. A second
 report adds lower-priority compatibility, diagnostics and contract hypotheses.
-These findings reopen correction acceptance for PR #94. Earlier clean source rounds,
+These findings reopened correction acceptance for PR #94. Earlier clean source rounds,
 CI/Sonar success and physical captures retain their historical heads; they do not
-certify the newly demonstrated scenarios. The PR is draft while these repairs land.
+certify the newly demonstrated scenarios. The following implementation checkpoints
+retain their dates; PR #94 owns the actual current source, execution and ready/merge status.
 
 | Increment | Scope | Current gate |
 | --- | --- | --- |
 | 1 | Generated-result object preflight, bounded streaming and optional small-host compatibility; actual SDK/executor/engine/both-store publication. | Accepted source at `51140d48`: two NEW clean complete cumulative rounds, each covering 17 paths / 29 hunks with independently joined hashes. The selected current-head control has 3 phases / 54 executions and zero runner errors; full-family publication remains separate. |
 | 2 | Vorbis setup bit framing, bounded structural traversal, allocation-free header CRC, extended MP4 sizes and unknown FLAC totals. | Accepted source at `ef256157`: two NEW clean complete cumulative rounds, each covering all 14 paths / 34 hunks. The 113 new regressions pass; original-source control has 15 expected assertion failures and one adjacent positive among 16 selected cases. Existing selected comment-count and Opus-tail controls pass 60 and 126 executions respectively (`complete: false`); corrected-head full publication remains separate. |
 | 3 | Scratch-policy pin composition, rooted literal glob, complete write floor and exact-owned maintenance/recovery marker cleanup. | Accepted source at `e9717319`: two NEW clean complete cumulative rounds after the UNC repair, each covering all 15 paths / 47 hunks and five full new regression files with independently joined hashes. The 115 local passes / seven Windows-only disables and 307-file / 5,341-pass / ten-skip affected graph remain scoped author evidence; unknown-owner retention is unchanged. |
-| 4 | Snapshot own-property preservation and supported-domain evidence, safe input diagnostics, concrete CI/evidence and document corrections. | Implemented with author gates: 152 focused passes; affected shared/LLM/DB/core/CLI graph 569 files / 12,745 passes / 20 explicit skips; all five test tasks fresh. Two NEW complete clean cumulative source rounds and final corrected-head publication remain open. |
+| 4 | Snapshot own-property preservation and supported-domain evidence, safe input diagnostics, concrete CI/evidence and document corrections. | Implementation complete, including the finite pin-error followup below. The first `b87462d2` round remains nonclean history. Two NEW clean complete cumulative rounds after the final material fix and actual corrected-source gates are required; PR #94 owns their current verdicts and execution. |
 
 The [canonical publication contract](../../reference/shared-core/llm-provider-seam.md#bounded-verified-media-publication-adr-0106)
 owns result bounds and finite format evidence. Request-message and direct-put
@@ -3384,10 +3385,11 @@ workflow snapshot adds discovered tool grants, not resolved registration secrets
 The authored-definition notice retains its documented best-effort scope.
 
 All four increments require committed regressions and two NEW independent complete
-clean cumulative source rounds after their final material fix. Final corrected-head
-full CI, bare/enforced coverage, platform and physical-evidence gates remain open.
-[PR #94](https://github.com/HodeTech/Relavium/pull/94) owns their actual execution
-publication and merge status. No new ADR, provider capture, key or billing action
+clean cumulative source rounds after their final material fix. Actual corrected-source
+full CI, bare/enforced coverage, platform and physical-evidence gates are required
+before merge. [PR #94](https://github.com/HodeTech/Relavium/pull/94) owns their current
+source verdicts, execution publication and ready/merge status. The receipts below are
+attributed implementation checkpoints, not a substitute for those actual outcomes. No new ADR, provider capture, key or billing action
 is required for these existing-contract repairs. Wave 3 remains subsequent work.
 
 Increment 4 preserves collection own data, nested media and alias accounting after
@@ -3435,3 +3437,47 @@ scope. Workspace serialization and physical packaging/source joins are intention
 Published historical attribution, condensed guide numbering and ADR section style
 are not rewritten. The separate pre-existing transcript-persistence observation is
 not claimed repaired. These dispositions add no approved deferral or new decision.
+
+
+### Increment 4 pin-error followup — 2026-10-15
+
+Both independent increment-4 reviewers and the separate complete correction reviewer
+confirmed the same remaining `NodeMediaPinError` prototype pass-through at `b87462d2`.
+Their independently reported High/Low severities retain their original scopes; Root
+reproduced the defect through the actual compiled engine and in-memory durable port.
+A synthetic private message reached both delivered and persisted failures. No live
+provider, user credential/history or native SQLite claim follows from that probe.
+
+The repair records only finite engine-authored failures in a private immutable
+node-bound capture. Prototype/constructor shapes and mutable public fields provide
+no capture; wrong-node reuse refuses before external-field fallback. The dispatch
+catch independently queries the capture. Existing per-node/run limit messages and
+ceilings remain, all pin failures stay nonretryable, and cancellation remains first.
+
+Four selected original-runtime controls fail at named assertions: the class capture
+case and three real engine host/executor cases. The latter execute the synthetic
+node three times under forged retry policy, instead of the expected one. The
+reference host's work timers are driven explicitly after arming, without wall-clock
+sleep. A preceding attempt with undriven manual timers timed out and is not causal
+acceptance; an earlier title selector selected only the unit case. Those attempts
+retain their limited scopes. Fixed controls report 52 passes across four files,
+including finite factory/capture and direct JavaScript constructor-bypass controls.
+The initial followup lint refusal of an unsafe reflection return and unknown Promise
+rejection reasons in tests is retained; explicit unknown data and actual Error
+fixture types correct those tests without changing the behavioral witness.
+
+Followup author gates under `CI=true` pass core/CLI lint/typecheck, build, isolation
+and architecture fences. Both test tasks execute freshly: 401 files / 7,979 passes /
+ten explicit platform/CI skips; five successful cache hits are prerequisite builds.
+The prior five-package and native-journal author receipts remain attributed to their
+recorded working source. They do not certify this correction's final publication.
+
+The initial `b87462d2` full local CI was stopped at an owned usage-control Vitest
+worker after the finding. The coordinator and pipeline joined, and no owned worker
+remained; retained failed-attempt diagnostics are not a completed family. Earlier
+completed stages and remote runs keep their original source, without final acceptance.
+Two NEW complete clean cumulative rounds now cover all four correction increments
+together, including the entire increment-4 diff. PR #94 owns their actual verdicts
+and the required final CI/coverage/platform/physical-evidence publication; the old
+nonclean round contributes no clean acceptance. No new ADR, deferral or user action
+is introduced, and Wave 3 remains subsequent work.

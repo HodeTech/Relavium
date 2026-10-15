@@ -175,9 +175,24 @@ describe('media pin inert error classification', () => {
     expect(calls).toBe(0);
   });
 
-  it('retains an existing local pin failure after the cancellation gate', () => {
-    const error = new NodeMediaPinError('fixed existing pin failure', 'validation');
-    expect(NodeMediaPinError.from(error, 'work', false)).toBe(error);
+  it('reconstructs a registered pin failure from its immutable exact-node capture', () => {
+    const error = NodeMediaPinError.from(new MediaAdmissionError('invalid_format'), 'work', false);
+    Object.defineProperty(error, 'message', { value: privateMessage });
+    Object.defineProperty(error, 'failure', {
+      value: { code: 'validation', message: privateMessage, retryable: true },
+    });
+    const reconstructed = NodeMediaPinError.from(error, 'work', false);
+    expect(reconstructed).not.toBe(error);
+    expect(reconstructed.failure).toEqual({
+      code: 'validation',
+      message: fixedFormatMessage,
+      retryable: false,
+    });
+    expect(NodeMediaPinError.from(error, 'other', false).failure).toEqual({
+      code: 'internal',
+      message: 'node `other` produced media that could not be re-hosted (internal)',
+      retryable: false,
+    });
     expect(NodeMediaPinError.from(error, 'work', true).failure.code).toBe('cancelled');
   });
 });

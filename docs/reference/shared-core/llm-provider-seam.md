@@ -1208,6 +1208,11 @@ native-iterator ownership. Publication inspection faults always produce a fresh
 `unsafe_value` error; only pure descriptor and reconciliation failures retain their
 specific reason after complete safety preflight.
 
+The engine preserves its own finite pin diagnostics only through an immutable,
+node-bound private capture. Host-thrown prototype lookalikes, direct constructor
+calls and mutable public failure fields cannot supply durable failure text or
+retry policy. Wrong-node rethrows refuse, and cancellation retains precedence.
+
 `MediaAdmissionError` has fixed content-free diagnostics and these closed reasons:
 `unsupported_mime`, `invalid_descriptor`, `descriptor_conflict`, `invalid_format`,
 `inspection_limit`, `object_limit`, `inline_limit`, `unsafe_value`, `store_unavailable`,

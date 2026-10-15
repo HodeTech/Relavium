@@ -517,3 +517,24 @@ pin classifier similarly reads inert own egress codes under a reflection guard,
 keeps cancellation first, and contains prototype faults with fixed internal wording.
 These corrections preserve the existing error codes and iterator constraints;
 new regression execution and independent source review remain separate gates.
+
+### Engine-local pin-error capture correction — 2026-10-15
+
+The first cumulative increment-4 review found a remaining prototype-only
+`NodeMediaPinError` pass-through. Root reproduced host-supplied private text in
+actual delivered and in-memory persisted engine failures; a forged retryable
+policy also repeated a synthetic node under its authored retry configuration.
+These probes do not claim paid provider, native SQLite or remote-JSON execution.
+
+Only finite engine-authored diagnostic factories now register immutable failure
+fields in a private weak map, bound to the originating node. Constructor calls,
+prototype shapes and mutable public fields grant no capture. Reconstruction and
+the dispatch catch read that private capture; a wrong-node rethrow refuses without
+reinterpreting mutable fields. Existing part-limit messages and ceilings remain,
+and all classified pin failures are nonretryable. Cancellation still wins first.
+This is diagnostic classification, without changing media or iterator authority.
+
+New actual-engine host/executor and internal-helper controls accompany the repair.
+The earlier source round is not clean; two NEW complete cumulative source rounds
+and corrected-head publication are required after this fix. Their actual verdicts
+and execution remain owned by PR #94 and its correction register.

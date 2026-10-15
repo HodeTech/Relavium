@@ -103,12 +103,15 @@ Earlier dated pending checkpoints in this page and the phase register are histor
 
 ## Wave 2 accepted — Shut the doors
 
-**PR #94 correction gate reopened — 2026-10-15.** The new review of `992e6dab`
-reproduced two High valid-media failures and further host-boundary defects. The
-[additional correction register](phases/phase-2.5.5-hardening-and-remediation.md#pr-94-additional-systematic-review--2026-10-15)
-tracks the four repair increments, two new clean cumulative rounds per increment
-and corrected-head execution gates. PR #94 is draft. The acceptance checkpoints
-below retain their original scopes; Wave 3 follows these corrections.
+**PR #94 additional corrections implemented — 2026-10-15.** Review of `992e6dab`
+reproduced two High valid-media failures and further host-boundary defects. All four
+repair increments, including the followup finite pin-error capture, are implemented.
+The [additional correction register](phases/phase-2.5.5-hardening-and-remediation.md#pr-94-additional-systematic-review--2026-10-15)
+tracks their scope and checkpoint evidence. [PR #94](https://github.com/HodeTech/Relavium/pull/94)
+owns actual current-source cumulative review, execution and ready/merge status;
+two NEW complete clean rounds after the final fix and actual required gates must
+succeed before merge. The acceptance checkpoints below retain their original scopes.
+Wave 3 follows corrected PR acceptance; no provider, credential or user decision is pending.
 
 **Wave 2's eight steps are accepted on `development`, 2026-10-13.** This existing
 navigation anchor is retained for incoming decision links; implementation is

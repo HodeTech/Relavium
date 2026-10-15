@@ -97,12 +97,16 @@ introduced. Wave 3 follows these corrections; publication remains separate from 
 
 See [docs/roadmap/current.md](docs/roadmap/current.md) for live status.
 
-**PR #94 additional corrections in progress — 2026-10-15:** a new review of
-`992e6dab` reproduced large generated-result publication and Vorbis framing failures,
-plus scratch/marker and lower-priority contract defects. The [additional correction register](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#pr-94-additional-systematic-review--2026-10-15)
-tracks four increments and their new review/execution gates. PR #94 is draft; earlier
-acceptance and green captures retain their historical scope. Wave 3 follows corrected
-PR acceptance. No provider, credential, billing or new ADR approval is pending.
+**PR #94 additional corrections implemented — 2026-10-15:** review of `992e6dab`
+reproduced generated-result publication, Vorbis framing and host-boundary defects.
+All four repair increments, including the subsequent finite pin-error capture, are
+implemented. The [additional correction register](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#pr-94-additional-systematic-review--2026-10-15)
+owns their scope and checkpoint receipts; [PR #94](https://github.com/HodeTech/Relavium/pull/94)
+owns actual current-source review, execution and ready/merge status. Two NEW clean
+complete cumulative rounds after the final material fix and actual corrected-source
+CI/coverage/platform/physical controls are required before merge. Earlier acceptance
+and green captures retain their historical scope. Wave 3 follows corrected PR acceptance.
+No provider, credential, billing or new ADR approval is pending.
 
 ## The non-negotiable rules
 
