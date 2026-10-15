@@ -48,11 +48,13 @@ export function crc32(crc: number, b: Uint8Array): number {
   }
   return crc >>> 0;
 }
+export function oggCrcByte(crc: number, value: number): number {
+  crc ^= value << 24;
+  for (let i = 0; i < 8; i++) crc = (crc << 1) ^ (crc & 0x80000000 ? 0x04c11db7 : 0);
+  return crc >>> 0;
+}
 export function oggCrc(crc: number, b: Uint8Array): number {
-  for (const value of b) {
-    crc ^= value << 24;
-    for (let i = 0; i < 8; i++) crc = (crc << 1) ^ (crc & 0x80000000 ? 0x04c11db7 : 0);
-  }
+  for (const value of b) crc = oggCrcByte(crc, value);
   return crc >>> 0;
 }
 export function countStructure(value: number, maximum = 65536): number {

@@ -437,3 +437,21 @@ small-only host compatibility is retained without retrying a failed stream throu
 a whole-buffer fallback. Regressions cover actual installed SDK/executor/engine
 publication through both stores; their review and execution acceptance is recorded
 separately from this correction.
+
+### Vorbis bit-framing integration correction — 2026-10-15
+
+The maintainer supplied an independently native-decodable Vorbis body that the
+final-byte low-bit heuristic refused. Setup framing is bit-packed: locating that
+flag requires bounded structural traversal, rather than assuming byte alignment.
+The existing finite-format decision now reaches the actual flag while retaining
+packet, page CRC, continuation, EOF and object bounds. The
+[canonical format profile](../reference/shared-core/llm-provider-seam.md#bounded-verified-media-publication-adr-0106)
+owns the exact traversal, retained-memory and decoder limitations. No new codec,
+decoder, public API or dependency is introduced.
+
+Independent fixtures pin all eight framing-bit positions to freshly native-decoded
+bodies and exercise both real stores' put, streaming and de-inline paths. Separate
+controls reject an extended MP4 size zero while preserving the original EOF size
+form; FLAC's already-admitted unknown sample total is stated accurately. These
+repairs do not claim decoded samples for arbitrary classified media. New source
+review and corrected-head execution remain separate acceptance gates.

@@ -1,4 +1,5 @@
 import { MediaInspectionMemory } from './media-inspection-memory.js';
+import { VorbisSetup } from './media-verifier-vorbis.js';
 import { type CanonicalMediaMimeType } from './media-admission.js';
 import {
   ascii,
@@ -7,6 +8,7 @@ import {
   fail,
   le32,
   oggCrc,
+  oggCrcByte,
   read,
   type MediaParser,
 } from './media-verifier-reader.js';
@@ -60,7 +62,8 @@ export function* ogg(memory = new MediaInspectionMemory()): MediaParser {
   let codec: CanonicalMediaMimeType | undefined;
   const prefix = memory.allocate(32);
   const lacing = memory.allocate(255);
-  let last = 0;
+  let vorbisChannels = 0;
+  let vorbisSetup: VorbisSetup | undefined;
   let comments: Comments | undefined;
   let commentFrame = false;
   for (;;) {
@@ -89,7 +92,7 @@ export function* ogg(memory = new MediaInspectionMemory()): MediaParser {
     let crc = 0;
     for (let i = 0; i < 27; i++) {
       const b = i >= 22 && i <= 25 ? 0 : byte(h, i);
-      crc = oggCrc(crc, new Uint8Array([b]));
+      crc = oggCrcByte(crc, b);
     }
     // Capped page lacing is the only copied table; arena views cannot survive the next read.
     lacing.set(yield* read(segments));
@@ -100,9 +103,14 @@ export function* ogg(memory = new MediaInspectionMemory()): MediaParser {
       crc = oggCrc(crc, data);
       for (const b of data) {
         if (packetSize < 32) prefix[packetSize] = b;
-        last = b;
         packetSize++;
         if (packetSize > 25 * 1024 * 1024) fail();
+        if (packetIndex === 2 && codec === 'audio/ogg') {
+          if (packetSize === 7) {
+            if (ascii(prefix, 0, 7) !== '\x05vorbis') fail();
+            vorbisSetup = new VorbisSetup(vorbisChannels, memory);
+          } else if (packetSize > 7) vorbisSetup?.push(b);
+        }
         if (packetIndex === 1 && codec !== undefined) {
           const header = codec === 'audio/opus' ? 8 : 7;
           if (packetSize === header) {
@@ -145,16 +153,19 @@ export function* ogg(memory = new MediaInspectionMemory()): MediaParser {
             )
               fail();
             codec = 'audio/ogg';
+            vorbisChannels = byte(prefix, 11);
           } else fail();
         } else if (packetIndex === 1) {
           if (!comments?.done || (codec === 'audio/ogg' && !commentFrame)) fail();
         } else if (packetIndex === 2 && codec === 'audio/ogg') {
-          if (packetSize < 8 || ascii(prefix, 0, 7) !== '\x05vorbis' || (last & 1) !== 1) fail();
+          if (vorbisSetup === undefined) fail();
+          vorbisSetup.finish();
         } else {
           if (packetSize === 0 || (codec === 'audio/ogg' && (byte(prefix, 0) & 1) !== 0)) fail();
         }
         packetIndex = countStructure(packetIndex, 1048576);
         packetSize = 0;
+        vorbisSetup = undefined;
         comments = undefined;
         commentFrame = false;
       }

@@ -3321,8 +3321,8 @@ certify the newly demonstrated scenarios. The PR is draft while these repairs la
 
 | Increment | Scope | Current gate |
 | --- | --- | --- |
-| 1 | Generated-result object preflight, bounded streaming and optional small-host compatibility; actual SDK/executor/engine/both-store publication. | Author implementation and regressions; two NEW complete clean cumulative rounds and committed-head causal control pending. |
-| 2 | Vorbis setup bit framing, bounded structural traversal, allocation-free header CRC, extended MP4 sizes and unknown FLAC totals. | Planned; independent native-valid fixture and official setup grammar reviewed. |
+| 1 | Generated-result object preflight, bounded streaming and optional small-host compatibility; actual SDK/executor/engine/both-store publication. | Accepted source at `51140d48`: two NEW clean complete cumulative rounds, each covering 17 paths / 29 hunks with independently joined hashes. The selected current-head control has 3 phases / 54 executions and zero runner errors; full-family publication remains separate. |
+| 2 | Vorbis setup bit framing, bounded structural traversal, allocation-free header CRC, extended MP4 sizes and unknown FLAC totals. | Author gates pass, including 113 new regressions. The original-source control has 15 expected assertion failures and one adjacent positive among 16 selected native, real-store and MP4 cases; two NEW clean rounds and corrected-head publication remain pending. |
 | 3 | Scratch-policy pin composition, rooted literal glob, complete write floor and exact-owned maintenance/recovery marker cleanup. | Planned; existing authority/revocation and uncertain-owner retention remain acceptance constraints. |
 | 4 | Snapshot own-property preservation and supported-domain evidence, safe input diagnostics, concrete CI/evidence and document corrections. | Preflight; source-confirmed defects are distinguished from existing limits and style suggestions. |
 
@@ -3332,6 +3332,14 @@ ceilings remain separate. The generated PNG regression reconstructs the retained
 3,147,775-byte review fixture independently; macOS native decoding is separate
 local evidence. Default TTS MPEG and Sora MP4 fixtures establish the declared finite
 structural profile, without claiming decoded audio/video or paid-provider execution.
+
+Increment 2's affected-workspace gate covers shared, LLM, DB, core and CLI: 557
+files / 12,554 passing tests / 13 established skips. Its successful graph reuses
+three unchanged test-task caches; core and CLI rerun after three legacy fixture
+barriers were moved from direct put to the selected stream write. The same 162
+engine cases and their original deadlines remain intact. Lint/typecheck, CLI
+build, seam/dependency fences, formatting and relative-document checks pass.
+These author gates are not final whole-project or platform publication.
 
 Unsupported noninert publication values already refuse under the current canonical
 contract; this correction will document and pin that compatibility limit rather

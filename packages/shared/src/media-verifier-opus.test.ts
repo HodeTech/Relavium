@@ -9,6 +9,7 @@ import {
   paddedOpus,
 } from './media-opus-vectors.js';
 import { hex, join, textBytes, uint32, VORBIS } from './media-test-vectors.js';
+import { vorbisSetup } from './media-vorbis-vectors.js';
 import { createMediaVerifier } from './media-verifier.js';
 import { ogg } from './media-verifier-ogg.js';
 import { ParserReader } from './media-verifier-reader.js';
@@ -145,10 +146,11 @@ it.each([hex(''), hex('00'), hex('0100')])(
   (framing) => {
     const identification = hex('01766f72626973000000000144ac0000000000000000000000000000b801');
     const comments = join(textBytes('\x03vorbis'), new Uint8Array(8), framing);
+    const setup = vorbisSetup().packet;
     const bytes = join(
       oggFixturePage(identification, [identification.length], 0, 2),
       oggFixturePage(comments, [comments.length], 1, 0),
-      oggFixturePage(textBytes('\x05vorbis\x01'), [8], 2, 0),
+      oggFixturePage(setup, [setup.length], 2, 0),
       oggFixturePage(hex('00'), [1], 3, 4),
     );
     expect(verify(fragments(bytes, [1]), 'audio/ogg'), 'MEDIA_VORBIS_COMMENT_FRAME').toMatchObject({

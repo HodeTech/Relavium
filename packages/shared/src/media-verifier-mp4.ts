@@ -156,7 +156,9 @@ export function* mp4(): MediaParser {
         const wide = yield* take(8);
         const high = be32(wide),
           low = be32(wide, 4);
-        if (high !== 0) fail();
+        // Only the original 32-bit size zero denotes an extent through EOF.
+        // An extended size is an actual byte extent, including its 16-byte header.
+        if (high !== 0 || low < 16) fail();
         size = low;
         header = 16;
       }

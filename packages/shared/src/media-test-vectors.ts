@@ -116,7 +116,14 @@ export function opus(commentBytes = 0): Uint8Array {
 export const VORBIS = join(
   page(join(hex('01766f72626973000000000144ac0000000000000000000000000000b801')), 0, 2),
   page(join(textBytes('\x03vorbis'), new Uint8Array(8), hex('01')), 1, 0),
-  page(textBytes('\x05vorbis\x01'), 2, 0),
+  // Independent minimal setup from the 2026-10-15 native-valid review vector.
+  page(
+    hex(
+      '05766f726269730042435601000100000000000080000000000000000000000000000000000000000000000000000000000008',
+    ),
+    2,
+    0,
+  ),
   page(hex('00'), 3, 4),
 );
 export function box(name: string, ...payload: readonly Uint8Array[]): Uint8Array {

@@ -215,8 +215,12 @@ const MEDIA_PART = {
   source: { kind: 'base64' as const, data: 'aGVsbG8=' }, // "hello"
 };
 
-/** A pure fake-digest in-memory MediaStore (no crypto) — content-addressed enough for the tests. */
-function stubMediaStore(): { store: MediaStore; puts: { handle: string; bytes: Uint8Array }[] } {
+type StreamingFixtureMediaStore = MediaStore & Required<Pick<MediaStore, 'putStream'>>;
+/** A pure fake-digest streaming MediaStore (no crypto) — content-addressed enough for the tests. */
+function stubMediaStore(): {
+  store: StreamingFixtureMediaStore;
+  puts: { handle: string; bytes: Uint8Array }[];
+} {
   const puts: { handle: string; bytes: Uint8Array }[] = [];
   const digest = (bytes: Uint8Array): string => {
     let hex = '';
@@ -227,7 +231,7 @@ function stubMediaStore(): { store: MediaStore; puts: { handle: string; bytes: U
     }
     return hex;
   };
-  const store: MediaStore = {
+  const store: StreamingFixtureMediaStore = {
     put: (bytes) => {
       const handle = `media://sha256-${digest(bytes)}`;
       puts.push({ handle, bytes });
@@ -720,10 +724,10 @@ describe('WorkflowEngine — media de-inline at the emit choke point (1.AF, ADR-
       // all pass through it. It is the longest window the pin can hold, so it is the one to test.
       const mediaStore: MediaStore = {
         ...inner,
-        put: (bytes, mimeType) =>
+        putStream: (chunks, mimeType) =>
           new Promise((resolve) => {
             releaseFetch = (): void => {
-              resolve(inner.put(bytes, mimeType));
+              resolve(inner.putStream(chunks, mimeType));
             };
           }),
       };
@@ -2021,11 +2025,11 @@ describe('WorkflowEngine — human gate suspend/resume', () => {
       const original = stubMediaStore().store;
       const mediaStore: MediaStore = {
         ...original,
-        put: async (bytes, mimeType) => {
+        putStream: async (chunks, mimeType) => {
           entered();
           await held;
           if (failPin) throw new Error('offline media pin fault');
-          return original.put(bytes, mimeType);
+          return original.putStream(chunks, mimeType);
         },
       };
       const host = createInMemoryHost({ mediaStore });
@@ -6340,11 +6344,11 @@ describe('ordinary gate media lifecycle cutoff (ADR-0085)', () => {
       const cas = stubMediaStore().store;
       const mediaStore: MediaStore = {
         ...cas,
-        put: async (bytes, mimeType) => {
+        putStream: async (chunks, mimeType) => {
           entered();
           await held;
           if (ending === 'late-pin-rejection') throw new Error('synthetic private pin failure');
-          return cas.put(bytes, mimeType);
+          return cas.putStream(chunks, mimeType);
         },
       };
       const activeRefs = new Set<string>();
