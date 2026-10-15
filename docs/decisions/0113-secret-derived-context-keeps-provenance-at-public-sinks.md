@@ -71,7 +71,11 @@ stays local to the resolver/projection cut rather than a second executor authori
 
 Expression scopes contain clean context/input values and explicit denied-name
 metadata, never raw secret-input or tainted-context values. Direct secret inputs
-now use the same denied accessors as context. This deliberately replaces the
+when present use the same denied accessors as context. Omitted optional secret
+inputs stay absent/undefined under all ordinary own-property observations: no
+value exists to withhold. Public-template references remain declaration-based
+refusals; secret defaults stay forbidden and required admission is unchanged.
+This deliberately replaces the
 expression-input marker rule in ADR-0027/0083; run-start/input-node/display markers
 remain data under their existing contract. No universal rejection of marker-shaped
 objects or arbitrary secret-looking user/model text is claimed.
@@ -164,7 +168,9 @@ benefit, without weakening raw-value exclusion.
    separately pin caught pre-accessor resource failure without claiming a denial.
    Verify no raw newly projected value in VM input/error detail. Pin single
    result serialization, stateful toJSON, exact current primitive/result parity and
-   context/input key order/presence. Independently successful clean workflows must
+   context/input key order/presence, including omitted optional inputs under
+   reflection and direct undefined reads. Pair with supplied-secret denial and
+   unchanged required/default admission. Independently successful clean workflows must
    complete with exact expected outputs; no vacuous negative-only test.
 2. Actual SQLite hosts scan `run_events.payload_json`,
    `step_executions.output_json` and `runs.output_json`, plus public events and

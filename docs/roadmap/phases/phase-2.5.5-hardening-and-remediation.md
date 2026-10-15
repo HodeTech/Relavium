@@ -4015,3 +4015,28 @@ reviews of all fourteen paths at the wording-corrected source. Neither round 1�
 three Mediums nor round 2’s optional cautions are hidden or relabeled zero issues.
 All four ADRs remain Proposed; code, platform, production custody and whole-wave
 acceptance are still future implementation gates.
+
+#### Final proposal rounds reopened omitted-input presence — 2026-10-16
+
+Two NEW independent complete cumulative reviews at c6166331 (gpt-6-astra/high and
+gpt-6.1-sol/high) independently verify one shared Medium. Non-enumerable denied
+accessors for omitted optional secret inputs still change hasOwn/in, own-property
+names/descriptors and direct reads. They contradict the promised own-presence
+parity. Both rounds are nonclean; the authority report's initial clean assessment
+was superseded by its independently verified addendum and is not counted.
+
+The corrected proposal creates **no property/accessor for an omitted optional
+secret input**. VM denial applies to present admitted secret values; absence
+retains undefined and all ordinary reflective observations. Public-template
+secret references still use declaration-based refusal before filters/defaults.
+Secret defaults remain forbidden, and missing-required/nonsecret-default admission
+is not changed. Actual implementation controls must pair supplied-secret denial
+with omitted-input hasOwn/in/keys/descriptors/Reflect (where supported)/undefined
+parity. The earlier non-enumerable proposal notes above are historical, superseded
+by this correction rather than used as current authority.
+
+No product code or new confidentiality guarantee is introduced. Both complete
+reports were read in full. After this material correction two NEW independent
+complete cumulative clean proposal rounds are required before requesting approval.
+All four ADRs remain Proposed and production/release/provider/key/billing work
+remains outside this preflight.

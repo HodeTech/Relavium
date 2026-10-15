@@ -298,14 +298,18 @@ that same authority, rather than recomputing a mutable set at resume.
   deniedInputNames; clean embeddings provide explicit empty metadata. Scope
   construction omits raw secret inputs and supplies clean values plus denied
   names. Preserve actual input own-key order/presence: present denied keys use
-  private null placeholders which become accessors before author code; absent
-  declared-secret keys get non-enumerable denied accessors. Never create an
-  enumerable missing input or reorder unrelated clean keys. Placeholders are
+  private null placeholders which become accessors before author code. For an
+  omitted optional secret input, create **no property/accessor**: ordinary
+  undefined, hasOwn/in and all own-key/descriptor observations retain baseline
+  absence. Compute VM denied keys as present admitted keys intersected with owned
+  secret membership; public-template refusal still uses declaration membership.
+  Never introduce secret defaults or relax required-input admission. Placeholders are
   transport data, never readable expression values or display markers. Trusted
   NodeExecContext.inputs
   remains raw; input-node/public display continues using maskSecretInputs.
 - QuickJS rebuilds frozen null-prototype scope records and denied accessors with
-  the present/absent enumerability specified above. Clean values and key-only enumeration remain
+  only the present denied input keys specified above; context uses its full
+  ordered projection. Clean values and key-only enumeration remain
   usable. Scope metadata validation precedes serialization; no newly projected
   raw denied input/context bytes enter the VM.
 
@@ -370,6 +374,10 @@ For object results, preserve nested omission/null/boxed behavior and the existin
 null-result exception; successful JSON serialization alone does not override the
 original VM type checks. Pin stateful toJSON call count and no second author
 serialization, numeric tags and every result arm in real installed QuickJS tests.
+For omitted optional secret inputs also pin Object.keys, own-property names and
+descriptors, hasOwn/in, Reflect.ownKeys where supported, and direct undefined
+comparison. A supplied secret must actually trigger denial; declared-secret text
+references still refuse. Do not certify absence by enumerable keys alone.
 Changes needed beyond this parity require an explicit decision, not an accidental
 transport side effect.
 
