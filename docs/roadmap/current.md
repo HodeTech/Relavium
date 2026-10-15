@@ -1106,6 +1106,14 @@ an ESLint selector rather than a list.
 
 ### Wave 3 — Clear the ground
 
+**Preflight in progress — 2026-10-15.** The original queue below is reconciled against
+current source in the [Wave 3 preflight and proposed execution plan](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-preflight-and-proposed-execution-plan--2026-10-15).
+It records already-satisfied items, concrete compatibility/security decisions and
+seventeen proposed increments. ADR-0110–0113 are Proposed; implementation has not
+started and dependent code awaits maintainer approval. Historical finding descriptions
+are not new assertions about current source. The existing Wave 5a renderer/word-wrap
+ownership is preserved, not newly approved by this preflight.
+
 Decompose, guard and normalize every hot file a 2.6 workstream is about to land on. **The multi-file queue
 runs first and is serialized against the rest**; the remaining queues are file-disjoint, any order.
 
@@ -1123,9 +1131,11 @@ on `home-controller.ts`/`chat-ink.tsx` (the decomposition moves already-guarded 
   chat gap (G30)**, pulled forward into `session-host.ts`.
 - **`home-controller.ts` (strict)** — 2.5.5.E · `selectGatePrompter` test (G37) → the swallowed palette
   rejection (#281) → **2.5.5.I · decompose `createHomeController` + the overlay discriminated union**
-  (#215, #243) → 2.5.5.G · the `Capability`/`Port` vocabulary split (#217, #222) → 2.5.5.F · Home's
-  `showCost` no-op (#125, after D26).
-- **`chat-ink.tsx`** — 1,795 lines, larger than `home-controller.ts`, decomposed by **neither** phase doc.
+  (#215, #243) → 2.5.5.G · the `Capability`/`Port` vocabulary split (#217, #222).
+  Settle #125/D26 before decomposition: the preflight proposes certifying the real
+  in-Home-chat cost path and retaining chat-only scope. If a new bare-Home cost
+  surface is selected, wire its explicit session target before decomposition.
+- **`chat-ink.tsx`** — 1,906 lines at preflight (the original queue recorded 1,795), decomposed by **neither** phase doc.
   **Recommendation: decline** a new decomposition (decision D18); take only the exhaustiveness guard and the
   min-terminal-size guard (#63), and hand restructuring to 2.6.M's render-v2 in Wave 5a.
 - **Viewport (strict)** — 2.5.5.I · share the ADR-0069 grapheme segmenter (#58, #62, G40, G51) →
@@ -1276,6 +1286,7 @@ unanswered**; the remainder sit inline in their own phase-file bullet.
 | D19 | 3 | `--quiet`/`--verbose`/`RELAVIUM_DEBUG` precedence | `--quiet` < default < `--verbose`; `RELAVIUM_DEBUG=1` an alias, explicit flag wins; `--json` overrides for stream shape |
 | D20 | 3 | `--input`'s four-way collision: rename or document? | Rename `models pricing` to `--input-price`/`--output-price`, old spellings deprecated aliases |
 | D22 | 3 | Read EXIT:4 as "no **breaking** change"? | Yes — with the additive exit code and the noun-verb aliases as the two sanctioned, documented exceptions |
+| D26 | 3 | Which session would bare Home's `showCost` target? | **Proposed preflight disposition:** keep `/cost` chat-only; certify both live chat surfaces. Bare Home currently cannot invoke the no-op. Past-session selection remains 2.6.G; no implicit cost release. See the [Wave 3 plan](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-preflight-and-proposed-execution-plan--2026-10-15). |
 | D28/D29 | 4a | Flip ADR-0058 and ADR-0060 to Accepted | Yes; 0060's taint model is the cited precedent for Wave 7's generation-security ADR |
 | D31 | 4a | Strike 2.6.H's chat-persister atomicity sub-part as a duplicate? | Yes — owned by Wave 1; record the closure |
 | D33 | 4b | Retention policy (the phase's largest single item) | Default bound 50 + `--limit`/`--tail`; ship `chat delete` writing the dead `deleted_at` columns; never auto-hard-delete |

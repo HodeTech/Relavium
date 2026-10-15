@@ -3580,3 +3580,124 @@ shared close handling, safe path presentation and exhaustiveness guards. The
 remaining decomposition, viewport, shared-schema and CLI/process queues follow
 their existing order; Wave 3's unresolved recommendations are not approvals.
 This merge-status update starts no Wave 3 implementation and changes no release version.
+
+### Wave 3 preflight and proposed execution plan — 2026-10-15
+
+**Source baseline:** `development` at `702cdc9c59c688a48a240c2961bbf16b491e0ace`.
+Wave 2 is merged; this is its documentation successor. Wave 3 is in document/decision
+preflight, with no implementation accepted or started by this entry. The current
+[Wave 3 queue](../current.md#wave-3--clear-the-ground) owns execution order; A/E/G/I
+above retain scope and acceptance. No release, new provider capture, credential or
+paid test is required. Detailed working reports stay local and Git-ignored.
+
+Three independently scoped agents examined CLI/process, shared/core and chat/Home/
+viewport documents and actual sources/tests. The parent read their complete reports
+and independently reran the source/QuickJS context-taint probe. Existing focused
+checks passed 8 files / 260 tests (shared/core) and 5 files / 59 tests (CLI), with
+no full CI, coverage, platform run or implementation acceptance inferred. These
+preflight agents are not either of the two fresh implementation review rounds.
+
+#### Preflight corrections and already-satisfied work
+
+| Finding(s) | Current evidence and disposition |
+|---|---|
+| D10/G50, G38/G39/G47/G49, #91 | Existing typed budget guards, reservation/warning and redacted preview controls remain accepted; preserve, do not reimplement. |
+| #75 | W2/CR-22 already derives remaining run deadlines. Preserve actual clock/cancel semantics. |
+| #77/G48 | W8 closes the original stream-consumption blocker. Preserve ADR-0087's actual contract and approved exact-capacity residuals. |
+| #211, G16 | ADR-0083 already validates input defaults/enums; W7 already enforces compaction-role/structural session rows on read and write. No legacy reader tightening. |
+| #89/parallel half of #212 | Full WorkflowSchema rejects duplicate parallel members; exported leaf/union schema still needs consistent enforcement. Centralize without duplicate diagnostics. |
+| G22, #80/#81/#83 | Wave 2 context namespace refusal and W7/Wave 2 structural export/caveat/slug work are complete. The new context-to-JavaScript leak is distinct. |
+| #78, #280 DB half | Checkpoint comments already name the tiered journal; DbOpenError already has fixed path-free messages. Remaining CLI open/error wrapping lands last. |
+| #21 MCP half, #42 rejection half | W4 already reaps MCP and #228 already installs the recoverable rejection net. Remaining active-session abort and fatal/EPIPE/process-group work remain. |
+| G36/G37/G46, #20 | Direct verbose and selector tests exist. Idempotent gate JSON routing exists but needs direct regressions. Revalidate, do not claim absent code. |
+| G34/G44/#56/#57, G0/#50 | Wave 1 terminal sanitization and job-control/onboarding ordering are closed and preserved by Wave 2. |
+| #93 | ADR-0105 already decides immutable host filesystem authority. Clarify descriptive dispatch tier; no per-turn grant expansion. |
+| #216 | Remaining `success` is canonical event data, not an internal competing result shape. Keep the wire exception; no event rename. |
+| #303/#304 | Exact catalog round-trip fixture already exists; revalidate it. Compiler assertion sites moved from MCP to shared in W6. |
+| #125/D26 | Bare Home cannot invoke `/cost`; live in-Home chat uses the real shared DB-backed implementation. Proposed disposition is chat-only plus parity regression, not selection of an arbitrary historical session. |
+| #274/#239 | Tested exported `validate:false` and the adapters subpath are public surfaces, not proven dead APIs. Proposed compatibility disposition retains/document them. Local dead exports #240/#241 can be removed after consumer audit. |
+
+The old E paragraph's “Required ADR: none new” does not authorize changed public
+CLI contracts, trust boundaries or distribution/storage decisions. The phase's
+current exit criterion 8 applies. The old shared count of “seven remaining” and
+the old god-file sizes are historical: current chat/Home/chat-ink are 2,822/1,604/
+1,906 lines. The correct existing identifier comparator is shared `byCodeUnit`;
+the token heuristic is now in LLM `request-estimator`, not an adapter module.
+
+#### Decisions presented together before implementation
+
+All entries below are **proposed**, not maintainer rulings. Approval covers the
+concrete public/API/secrets plan as well as the new ADRs. No proposed choice silently
+changes a currently Accepted ADR or a canonical reference before approval.
+
+| Decision | Recommended choice and compatibility boundary |
+|---|---|
+| ADR-0110: D19/D20/D22, #13/#19/#309, G15/G35 | [Explicit CLI compatibility](../../decisions/0110-cli-diagnostics-and-discovery-have-explicit-compatibility.md): retain quiet+verbose conflict; exact DEBUG=1 alias; preserve JSON/safety data; internal exit 9; versioned explicit JSON help; alias-preserving pricing/chat syntax; key-delete consent; bounded human log coalescing. Genuine run outcomes and exits 3–8/signals keep their contracts. D22's old two-exception shorthand must be reconciled to this explicit enumerated scope. |
+| ADR-0111: #43/#44/#46/#271 | [Lazy packaged runtime](../../decisions/0111-cli-meta-operations-use-a-lazy-packaged-runtime.md): lightweight descriptor-only meta graph; engine-inlined finite chunks, complete closure guard and packed platform controls; exact-byte private sourcemaps. Archive method is awaiting the maintainer's choice; public plaintext artifacts are prohibited. |
+| ADR-0112: G30/#34/#49/#52/#55 | [Operator-owned chat policy and preferences](../../decisions/0112-chat-network-grants-and-onboarding-state-are-operator-owned.md): global-only domain authority, exact DNS/deny-all/approval/SSRF floors; explicit unavailable-keychain acknowledgement with current-state recheck; truthful model-write recovery; refuse intentional config symlink replacement. |
+| ADR-0113: #92 and reproduced leak | [Declared-source context provenance](../../decisions/0113-secret-derived-context-keeps-provenance-at-public-sinks.md): reuse existing linear taint graph, preserve trusted raw resolution, mask tainted sandbox/public sinks and make low-level provenance mandatory. Record unsupported future tool mappings honestly rather than fabricate a producer. |
+| D18, D26/#125, #311 | Keep chat-ink restructuring with Wave 5a; keep cost chat-only with both real surfaces tested; preserve unknown-command non-echo and add static help. These are explicit dispositions, not new features or undisclosed deferrals. |
+| #89/#90/G18/#210/G17 | Apply missing duplicate/cross-field guards at leaf and full boundaries. Condition equality is typed (`true` differs from `'true'`; 0 equals -0). Duplicate fallback tuples are provider+model within the fallback list; do not forbid equality with the primary. Timeout without action retains default reject; action without timeout refuses. |
+| G17 RunSchema detail | Preserve optional legacy timestamps and outputs. Reject completedAt on nonterminal states, startedAt on pending, and error outside failed; retain temporal checks. Terminal records need not invent timestamps/error fields. Do not adopt a stricter logical schema as a DB reader or migrate historical rows. Existing tests accepting contradictory present fields must change deliberately. |
+| #213/#219, #217/#222/#239/#274 | Retain named event exports while sharing the actual exactly-one-correlation envelope validation without payload stripping. Add a minimal shared error base, preserving constructor/name/code/kind/reason/context/cause/guards and existing structural boundary checks; inventory current classes, not historical 15. Add ModelFeature with deprecated Capability alias; retain Accepted ToolHost *Capability names, use Port for new orchestration interfaces. Retain documented adapters/validate compatibility surfaces. |
+| #95 tool input caps | UTF-8 byte limits: write content 8 MiB, HTTP body 1 MiB, git message 16 KiB; run args ≤256, each ≤16 KiB and aggregate ≤64 KiB. Add cheap length prechecks, real byte refinement and accurate model metadata. These are proposed new limits, not promises of OS command-line capacity. Refuse before approval/effect/host work. |
+| #87/#82/#275 | Document system_prompt_append as literal, preserving taint scans and intentional brace text; do not activate Proposed ADR-0060 or interpolate instructions. Decode quoted argument quote/backslash escapes without eval or blanket Windows-path reinterpretation. Use an in-house priority structure preserving Kahn's authored-index order, with equivalence tests. |
+| G4/#65/#64/#66/#63 | Bound input history to 500 and width memoization to 1,024 entries; 8-cell tabs before wrapping; latest-size frame coalescing with immediate narrowing safety, not stale-width debounce. Both chat surfaces enforce 80×24 and disable hidden affirmative approvals while retaining reject/abort/resize. No transcript trimming or new Unicode table. |
+
+The live synthetic security reproduction is a declared secret input → context alias
+→ bare JS transform → output. Three events expose the canary while run:started is
+correctly masked. It is not covered by an approved deferral. The owning permanent
+regressions and a dedicated secret-flow sitting must accompany its correction.
+No credential values or request captures belong in tracked evidence.
+
+#### Proposed implementation increments
+
+| Step | Scope, finding IDs and principal verification |
+|---|---|
+| 1 | **Serialized multi-file queue first:** shared close handling #22 (four named siblings plus newer owned journal sites) → safe source labels #4/G11 → exhaustive session/picker/run switches #300/#301/G3 and actual reasoning rendering. Preserve primary outcomes and host-safe-close ownership; native error and mounted output regressions. |
+| 2 | **Shared admission and diagnostics:** #89/#90/#212/G18/#210/G17, certify #211/G16; shared parser reason helper #85/#86 and config numeric bounds #32. Approved status/duplicate matrices, direct leaf/full parse tests and no value-bearing diagnostics. |
+| 3 | **Secret provenance:** ADR-0113/#92, fresh/resume/preparation/condition/transform/merge paths, source-to-event negative controls and clean trusted-resolution positives. Dedicated security sitting, no future mapping implementation. |
+| 4 | **Error/envelope substrate:** #213/#219, actual migrated-class inventory and cross-bundle structural guards. Preserve exported names/discriminants, constructor/cause behaviour and event payloads. Convert only supported error classes, not vendor errors or plain seam unions. |
+| 5 | **Tools and engine tails:** #93/#95/#96/#98/#97/#214/#221/#258/#259/#308, #94/#82/#87/#76/G9/#79/#274/#275. Bounds before effects, model-visible semantics, existing ordinal helper, path-local cycle guards, cancellation race and deterministic plan equivalence; certify #75/#78/#216 instead of rewriting them. |
+| 6 | **Process head:** #40/#41/#42/#224/#269 under ADR-0110. Fatal/EPIPE/owned process and DB/MCP lifetimes; preserve recoverable #228 keepalive and W4 signal contracts. Native child/grandchild, broken-sink and receipt-join controls. |
+| 7 | **Lazy startup and release substrate:** #43/#44/#46/#271 under ADR-0111. Descriptor/runtime graph, early meta routing, catalog timing, finite chunks, exact pack closure, minimum-Node/platform and private archive tests. Actual archive configuration status is separate from fixture proof. |
+| 8 | **CLI contracts:** #45/#264/#265/#268/G35/#13/#17/G15/#18/#310/#309/#19 under ADR-0110. Category-aware flags, explicit help JSON, pricing/chat aliases, human coalescing and deletion consent; byte-preserving JSON/old-alias integration. |
+| 9 | **Chat normalization and abort:** #236/#237/#242/#307 → #218 → #21/#23. Canonical token/money source with approved additive LLM export, preserved two-decimal cap formatting and real immediate abort while a turn is blocked. Audit Home's imports. |
+| 10 | **Chat decomposition:** #220/#244 after preceding chat fixes. Split lifecycle/drivers, line handler, printers and reseat/clear ownership. Preserve compatibility entry points, W7/W8 receipts, unknown-usage, full-screen bounds, disclosure activation and cancellation. |
+| 11 | **Chat domain policy:** G30/ADR-0112 after decomposition, all fresh/resume/Home/agent/rebuild paths. Real host-policy dispatch and no-authority/SSRF/approval controls; separate egress/config-trust security sitting. |
+| 12 | **Home controller:** certify G37, fix #281, record/test #125/D26 before #215/#243 decomposition; then #217/#222 scoped naming. Overlay discriminated union, subcontrollers, stale async work/focus/approval invariants and both live cost surfaces. |
+| 13 | **Viewport/input:** #58/#62/G40/G51 → #65 → #64/#66, then #63/#69/G4/G55. Grapheme-correct editing/truncation, tabs, bounded caches, safe resizing, TERM=dumb and both small-terminal surfaces, input history and mouse bounds. CJK measurement and real emitted rows. |
+| 14 | **Onboarding and overlays:** #49/#52/#51/#53/#55/G5/G52/G41/G53 and #34 under ADR-0112. Real next-model binding, recoverable persistence, explicit acknowledgement, current keyless nudge, hidden-approval safety, color-off mounts and native symlink preservation; keychain/config security sitting. |
+| 15 | **Remaining CLI/hygiene:** #24/#26/G43/G2/#12/#54/G14/#11/#47/#48/#240/#241/#311/G54/#303/#304; certify #20/G36/G46. One-shot coverage-aware cost/banner, actual-host doctor, typed faults, no silent missing-dist skip, guard misuse, attachment estimate and compiler checks. #239 remains the approved documented compatibility surface. |
+| 16 | **openLocalDb LAST:** #278/#280 across every moved caller. Central fixed safe error wrapping, attempt-all secondary cleanup, preserved causes, privacy/checkpoint notices and exact writer lifetimes. Actual command-family failure probes; no duplicate wrapper left behind. |
+| 17 | **Whole-wave acceptance and publication:** every item disposition; A/E/G and M2.5.5-3 evidence; ordinary/enforced coverage and required CI/build/fences/smokes/causal/platform checks at attributed source; evaluate/promote core coverage floor as testing.md requires after Wave 3 coverage work. Two new whole-wave cumulative reviews, canonical doc/ADR landings and PR. I/whole phases/later product waves stay open. |
+
+Steps are dependency-safe increments, not permission to parallel-edit shared hot
+files. Within each row, arrows remain strict. Step 1 completes before all other
+code. Home cost is disposed or implemented before its decomposition; viewport
+geometry work never races editor/cache work. If review exposes a necessary smaller
+increment, split it with unchanged ID coverage and record the split before proceeding.
+
+For **every** increment: implement with meaningful regressions, run required author
+checks, commit; perform a new independent complete cumulative review, verify/fix
+findings and commit; perform a second new independent complete cumulative review.
+A material fix invalidates preceding clean rounds: obtain two new clean complete
+rounds after the final fix. Only then advance automatically. Review agent models
+and effort follow criticality; neither this preflight nor an old agent round is
+implementation acceptance. Final publication does not infer merge or execution at
+an untested successor revision.
+
+#### Existing later-wave ownership and approval gate
+
+The renderer restructuring decision D18 and character-wrap #61 retain Wave 5a
+ownership. #61 needs a formal linked deferral record when this proposed disposition
+is approved; it is not permission to silently relax I's final acceptance. Picker
+position #60 and full I sign-off remain Wave 5a. Full M/N tools/child lifecycle,
+CR-70/93, CR-95 continuation, exact-capacity residuals, Wave 4b retention/release
+and the remaining whole-phase criteria retain their current canonical owners.
+
+**Gate:** maintainer approval of ADR-0110–0113 and this concrete plan, plus archive
+method selection. No dependent code is authorized merely by a recommendation,
+preflight test pass or a clean proposal review. Approval is requested because the
+user explicitly requires it for new ADRs and implement-task step 3 requires it for
+public API/Accepted-decision/secrets changes. No product step is complete yet.

@@ -153,6 +153,10 @@ flowchart TD
 | 0107 | [First-run secret inputs use bounded stdin](0107-first-run-secret-inputs-use-bounded-stdin.md) | Accepted | 2026-10-12 |
 | 0108 | [Provider headers stay gated until keychain custody](0108-provider-headers-stay-gated-until-keychain-custody.md) | Accepted | 2026-10-12 |
 | 0109 | [Native media close ownership is explicit iterator provenance](0109-native-media-close-ownership-is-explicit-iterator-provenance.md) | Accepted | 2026-10-13 |
+| 0110 | [CLI diagnostics and discovery have explicit compatibility](0110-cli-diagnostics-and-discovery-have-explicit-compatibility.md) | Proposed | 2026-10-15 |
+| 0111 | [CLI meta-operations use a lazy packaged runtime](0111-cli-meta-operations-use-a-lazy-packaged-runtime.md) | Proposed | 2026-10-15 |
+| 0112 | [Chat network grants and onboarding state are operator-owned](0112-chat-network-grants-and-onboarding-state-are-operator-owned.md) | Proposed | 2026-10-15 |
+| 0113 | [Secret-derived context keeps provenance at public sinks](0113-secret-derived-context-keeps-provenance-at-public-sinks.md) | Proposed | 2026-10-15 |
 
 ## Creating a new ADR
 
