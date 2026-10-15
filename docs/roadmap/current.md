@@ -1106,16 +1106,18 @@ an ESLint selector rather than a list.
 
 ### Wave 3 — Clear the ground
 
-**Proposal reopened by maintainer rereview — 2026-10-16.**
-[Current corrections and limits](phases/phase-2.5.5-hardening-and-remediation.md#second-maintainer-rereview-and-proposal-corrections--2026-10-16)
-supersede the a8708a65/49ba03ee readiness claim. Source audits confirm missing
-session-health authority, MCP PID/group distinction, release discovery/finalization
-permissions, Home build-first revocation and finite VM denial. Revised ADR-0110–0113
-and their explicitly unshipped canonical contracts remain **Proposed**. New complete
-cumulative proposal reviews and maintainer approval are required; no product code
-has started. The nineteen-increment plan now assigns these mechanisms explicitly.
-Archive method is already selected; production recipient/recovery belongs to
-actual Wave 4b release. No provider capture, key access, billing or upload is needed.
+**Revised proposal reviewed; maintainer approval pending — 2026-10-16.**
+[Final rereview readiness and approval scope](phases/phase-2.5.5-hardening-and-remediation.md#second-maintainer-rereview-final-proposal-readiness--2026-10-16)
+records two NEW independent complete cumulative clean reviews at 76065d2d across
+all fourteen proposal paths, four full ADRs and nineteen increments, after every
+material correction. Earlier nonclean/superseded verdicts remain history. The
+source-corrected contracts cover real CLI/native ownership, exact encrypted
+candidate recovery, live Home HTTP narrowing and finite secret-access semantics
+with value/key/absence parity. ADR-0110–0113 remain **Proposed and unshipped**;
+no product code has started. Approval of those ADRs/contracts/plan precedes Step 1.
+Archive method is already selected; actual production recipient/recovery belongs
+to Wave 4b release preparation. No provider capture, key, billing or upload is
+required for this proposal review.
 
 Decompose, guard and normalize every hot file a 2.6 workstream is about to land on.
 **The multi-file queue is Step 1 and runs first.** The proposed

@@ -4061,3 +4061,52 @@ already proposed nineteen-step sequence or any product source.
 
 Two NEW independent complete cumulative clean rounds at the corrected source are
 required. ADR-0110–0113 remain Proposed, and maintainer approval precedes code.
+
+#### Second maintainer rereview final proposal readiness — 2026-10-16
+
+Two NEW independent COMPLETE cumulative reviews are clean at exact source
+76065d2d12f53b728fc40954eceb2d58f2efd7ff: authority (gpt-6-astra/high) and
+compatibility (gpt-6.1-sol/high). Each independently covers all fourteen proposal
+paths, all four full ADRs, all nineteen increments and the relevant actual source/
+Accepted contracts. Both report zero verified findings; the parent reads both
+full reports. They follow the last material scheduling correction, not merely its
+two changed files. No earlier nonclean or superseded verdict counts toward them.
+
+The complete rounds at 86ff88a8, c6166331 and effab2ac remain nonclean history;
+741d0db4’s two optional Low cautions were corrected before these final rounds.
+The c6166331 authority report’s initial clean verdict was explicitly superseded
+and is not counted. Earlier a8708a65/49ba03ee readiness remains superseded.
+
+Current proposal decisions now consistently specify distinct CLI output/internal
+9 with actual run-only health precedence and owner-kind teardown; exact originating
+map evidence and permissioned reservation/retry/finalization; invocation-live HTTP
+narrowing across failed Home builds; and owned context/input exclusion with one
+result serialization, finite observed-access diagnosis and exact value/key/absence
+parity. Declared-secret template refusal, forbidden secret defaults, legacy-output
+limits and unsupported tool-mapping scope stay explicit. The numbered plan owns
+execution, while original roadmap groups are scope inventory.
+
+Actual final-round validation includes diff whitespace, independent relative-file
+checks and unchanged product/old ADR inventories. Compatibility additionally runs
+nine existing schema/manifest/options/source-label/viewport suites: 255 tests pass
+at 76065d2d, with no skips. These are unchanged-source preservation/preflight tests,
+not tests of future implementation. Prettier skips ignored Markdown and is not
+formatting evidence. Parent link/anchor validation covers 61 changed Markdown
+files and 3,037 relative links/anchors with zero errors; all 109 earlier numbered
+ADRs remain byte-identical to baseline 702cdc9c and four new ADRs remain Proposed.
+No full CI/coverage, native teardown/Windows, actual product pack/map/GPG release,
+security-sitting, provider/key/billing or production-custody acceptance is inferred.
+Detailed review/probe records remain local and Git-ignored.
+
+**Ready for maintainer review and explicit approval of ADR-0110–0113, their
+unshipped canonical contracts and the nineteen-increment plan.** No product code
+has started. The selected encrypted archive method persists; actual production
+recipient/recovery configuration belongs to Wave 4b, not this approval. Approval
+is still required by the user’s new-ADR instruction and implement-task plan gate.
+
+This receipt/current-status update changes no reviewed decision, mechanism or
+implementation step. After approval, update new ADR statuses/index and append
+clause-specific Accepted-ADR notes before dependent code, then start Step 1 and
+its implementation/commit/two-new-clean-review loop. Later increments advance
+automatically after their gates. Whole-wave acceptance and PR remain Step 19;
+full I/whole phases and existing approved later-wave scope are not closed here.
