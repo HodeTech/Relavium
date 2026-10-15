@@ -4185,3 +4185,37 @@ claim of whole-wave CI, coverage, platform or successor execution.
 Next is Step 2: shared admission/diagnostics and preserved existing guards.
 No user decision or review fix is pending for Step 1. Detailed reports and local
 removal logs remain Git-ignored; Step 19 retains whole-wave acceptance/publication.
+
+### Wave 3 Step 2 author candidate — 2026-10-16
+
+Shared authored admission now rejects duplicate parallel members, typed condition
+matches and fallback model/provider tuples (#89/#90/#212/G18). One human-gate
+cross-field authority validates both the exported leaf and NodeSchema union
+(#210); timeout without action retains default rejection. Full workflow admission
+no longer reports parallel duplicates twice. Primary-equal fallback entries and
+different provider/model tuples remain permitted. Logical RunSchema refuses only
+contradictory present lifecycle fields (G17), retaining missing legacy fields,
+optional outputs and the existing temporal checks. No persisted-row reader or
+migration is tightened. Existing input-default/enum and compaction-role guards
+(#211/G16) are preserved and revalidated by their actual shared/DB suites.
+
+The two core parsers share schema-derived reasons (#85/#86), including expected
+schema literals and useful standalone agent reasons with unchanged fields/code.
+Duplicate MCP reasons no longer reflect registration identities; strict unknown-
+key diagnostics remain linear. Config range diagnostics report their real bound
+and inclusion rule (#32), through the existing loader/writer formatter. Canonical
+authored/config/logical-run references are updated; no dependency or event code is
+added. The old ceiling fixture now uses distinct fallback identities so it still
+isolates chain length and every entry's attempt ceiling rather than failing the
+new earlier duplicate guard.
+
+Required author gates pass: 591 files / 13,101 passing tests / 20 established
+skips, all workspace lint/typecheck and six builds. Formatting, seam fence,
+test-isolation (591 files / six workspaces), whitespace and relative links pass.
+Six local removal controls break 25/3/9/3/3/6 intended regressions for node, agent,
+run, literal, standalone reasons and config-bound mechanisms; source bytes are
+restored exactly before the complete passing author suite. Filtered unselected
+cases are not platform skips. This is not full CI/coverage/platform or whole-wave
+acceptance. **Independent complete cumulative review is pending**; obtain two NEW
+clean rounds after the final material fix before Step 3. Working logs remain local
+and Git-ignored.
