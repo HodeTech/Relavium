@@ -57,8 +57,14 @@ version, actual toolchain and every JavaScript/map digest. Published JavaScript 
 no sourceMappingURL, and npm contains neither maps, metafiles, source trees nor the
 private manifest. A pack inspection is required, not just a files-list assumption.
 
-The proposed CI archive is authenticated encrypted material for a maintainer-owned
-public recipient key, using vetted tooling rather than in-house cryptography.
+The maintainer selected public-recipient encrypted CI archival on 2026-10-15;
+this method selection does not approve the remaining ADR or implementation plan.
+Use vetted [GnuPG recipient encryption](https://gnupg.org/documentation/manuals/gnupg/Operational-GPG-Commands.html)
+as release tooling, not a CLI runtime dependency or in-house cryptographic protocol.
+Use an isolated public-only keyring and an explicitly pinned maintainer-confirmed
+recipient fingerprint, without ambient keyring/config or automatic key discovery.
+An exact-source archive receipt establishes build provenance; encryption alone
+does not authenticate who created an archive.
 The private decryption key never enters this repository or CI. Public artifact
 storage is permitted only for ciphertext; fixed diagnostics never print map
 contents or key material. The recipient and retention destination must be explicitly
@@ -66,14 +72,23 @@ configured and verified before a release can claim private archival. A local
 owner-only archive is available for development and custody tests; it does not
 claim that CI release archival happened.
 
-The maintainer is being asked to choose encrypted CI archival, an existing private
-archive, or local-only custody. Until that choice and this ADR are approved, no
-archive backend is considered settled. Implementation may use synthetic recipient
-keys for offline encryption/decryption controls, never manufacture a production
-recipient or upload plaintext to complete a gate. The first actual release belongs
-to Wave 4b; it must fail closed if its approved private archival prerequisite is
-absent. Wave 3 must implement and test the complete selected archival path and
-record its real configuration status without presenting a fixture as production custody.
+CI stages ciphertext as its workflow artifact. Because [workflow artifacts expire](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/remove-workflow-artifacts),
+actual publication also retains that exact ciphertext as a per-version
+[Release asset](https://docs.github.com/en/rest/releases/assets), verified by digest
+before npm publication. Retain it for every supported release; this wave adds no
+automatic deletion. Never replace an existing version's different ciphertext
+silently. Public storage remains ciphertext-only; this does not make the repository
+or artifact access private. Release uploads use only the existing trusted main/tag
+path with least required permissions, never a PR/fork or help invocation.
+
+Implementation may use synthetic recipient keys for offline encryption/decryption
+controls, never manufacture a production recipient or upload plaintext to complete
+a gate. Do not publish proprietary maps encrypted to a publicly available fixture
+private key. Production recipient configuration and actual storage remain separate
+release prerequisites; no key material is requested for this proposal review.
+The first actual release belongs to Wave 4b and fails closed if private archival
+is absent. Wave 3 implements/tests the complete selected path and records its real
+configuration status without presenting a fixture as production custody.
 
 Considered retaining a single file and deferring only Home: rejected because
 external imports remain eager through the rest of the graph. Considered publishing

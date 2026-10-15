@@ -3633,7 +3633,7 @@ changes a currently Accepted ADR or a canonical reference before approval.
 | Decision | Recommended choice and compatibility boundary |
 |---|---|
 | ADR-0110: D19/D20/D22, #13/#19/#309, G15/G35 | [Explicit CLI compatibility](../../decisions/0110-cli-diagnostics-and-discovery-have-explicit-compatibility.md): retain quiet+verbose conflict; exact DEBUG=1 alias; preserve JSON/safety data; internal exit 9; versioned explicit JSON help; alias-preserving pricing/chat syntax; key-delete consent; bounded human log coalescing. Genuine run outcomes and exits 3–8/signals keep their contracts. D22's old two-exception shorthand must be reconciled to this explicit enumerated scope. |
-| ADR-0111: #43/#44/#46/#271 | [Lazy packaged runtime](../../decisions/0111-cli-meta-operations-use-a-lazy-packaged-runtime.md): lightweight descriptor-only meta graph; engine-inlined finite chunks, complete closure guard and packed platform controls; exact-byte private sourcemaps. Archive method is awaiting the maintainer's choice; public plaintext artifacts are prohibited. |
+| ADR-0111: #43/#44/#46/#271 | [Lazy packaged runtime](../../decisions/0111-cli-meta-operations-use-a-lazy-packaged-runtime.md): lightweight descriptor-only meta graph; engine-inlined finite chunks, complete closure guard and packed platform controls; exact-byte private sourcemaps. The maintainer selected public-recipient encrypted CI archival; GnuPG, pinned recipient and per-version ciphertext retention are proposed mechanics. Public plaintext artifacts are prohibited. |
 | ADR-0112: G30/#34/#49/#52/#55 | [Operator-owned chat policy and preferences](../../decisions/0112-chat-network-grants-and-onboarding-state-are-operator-owned.md): global-only domain authority, exact DNS/deny-all/approval/SSRF floors; explicit unavailable-keychain acknowledgement with current-state recheck; truthful model-write recovery; refuse intentional config symlink replacement. |
 | ADR-0113: #92 and reproduced leak | [Declared-source context provenance](../../decisions/0113-secret-derived-context-keeps-provenance-at-public-sinks.md): reuse existing linear taint graph, preserve trusted raw resolution, mask tainted sandbox/public sinks and make low-level provenance mandatory. Record unsupported future tool mappings honestly rather than fabricate a producer. |
 | D18, D26/#125, #311 | Keep chat-ink restructuring with Wave 5a; keep cost chat-only with both real surfaces tested; preserve unknown-command non-echo and add static help. These are explicit dispositions, not new features or undisclosed deferrals. |
@@ -3696,8 +3696,10 @@ position #60 and full I sign-off remain Wave 5a. Full M/N tools/child lifecycle,
 CR-70/93, CR-95 continuation, exact-capacity residuals, Wave 4b retention/release
 and the remaining whole-phase criteria retain their current canonical owners.
 
-**Gate:** maintainer approval of ADR-0110–0113 and this concrete plan, plus archive
-method selection. No dependent code is authorized merely by a recommendation,
+**Gate:** maintainer approval of ADR-0110–0113 and this concrete plan. Archive-method
+selection is complete; production recipient/storage setup is a separate actual-release
+prerequisite, not an approval or credential needed to review these proposals.
+No dependent code is authorized merely by a recommendation,
 preflight test pass or a clean proposal review. Approval is requested because the
 user explicitly requires it for new ADRs and implement-task step 3 requires it for
 public API/Accepted-decision/secrets changes. No product step is complete yet.
@@ -3714,3 +3716,10 @@ coverage promotion without an optional close-out interpretation.
 The four ADR proposals have no additional verified round-1 finding. This correction
 requires fresh complete cumulative proposal review; it is not maintainer approval,
 implementation acceptance or a clean implementation round.
+
+The fresh complete cumulative round-2 review at `6f47c13b` is clean across all seven
+paths and all four ADRs. The maintainer then selected public-recipient encrypted CI
+archival as the method only. ADR-0111 now specifies isolated GnuPG tooling, pinned
+recipient identity and exact ciphertext retention beyond expiring workflow artifacts;
+no plaintext map, production key setup, upload, ADR acceptance or code implementation
+is inferred. Fresh complete cumulative reviews of this final proposal are required.
