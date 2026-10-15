@@ -1,3 +1,4 @@
+import { schemaIssueReason } from './schema-issue.js';
 /**
  * `parseAgent` — the standalone `.agent.yaml` parser, the agent sibling of {@link ./parser.ts}'s
  * `parseWorkflow`. It loads an agent-document **string**, decodes it through the one hardened YAML profile
@@ -145,26 +146,27 @@ export function parseAgent(yamlText: string, opts?: ParseAgentOptions): AgentDef
 
   const result = AgentSchema.safeParse(raw);
   if (!result.success) {
-    // Field PATHS only (key names / indices) — never an authored value, so the message stays secret-free. For
+    // Field paths and schema-derived reasons only — never a rejected authored value. For
     // an `unrecognized_keys` issue Zod puts the unknown key NAMES in `issue.keys` (not the path), so name those
     // — prefixed with the parent path for a NESTED `.strict()` object (`retry`, `mcp_servers[i]`, memory) so the
     // context isn't lost, and bare at the root (empty path) — mirroring parser.ts's field locator.
-    const fields = [
-      ...new Set(
-        result.error.issues.flatMap((issue: ZodIssue) => {
-          if (issue.code === 'unrecognized_keys') {
-            const prefix = issue.path.length > 0 ? `${issue.path.map(String).join('.')}.` : '';
-            return issue.keys.map((key) => `${prefix}${key}`);
-          }
-          return [issue.path.map(String).join('.') || 'agent'];
-        }),
-      ),
-    ];
-    throw new AgentParseError(
-      'agent_validation',
-      `invalid agent${label}: ${fields.join(', ')}`,
-      fields,
-    );
+    const diagnostics = result.error.issues.map((issue: ZodIssue) => {
+      const paths =
+        issue.code === 'unrecognized_keys'
+          ? issue.keys.map(
+              (key) =>
+                `${issue.path.length > 0 ? `${issue.path.map(String).join('.')}.` : ''}${key}`,
+            )
+          : [issue.path.map(String).join('.') || 'agent'];
+      return { paths, reason: schemaIssueReason(issue) };
+    });
+    const fields = [...new Set(diagnostics.flatMap(({ paths }) => paths))];
+    // One reason per issue, not per unknown key: a strict-object refusal stays linear in its key count.
+    const detail = diagnostics
+      .map(({ paths, reason }) => `${paths.join(', ')}: ${reason}`)
+      .join('; ');
+
+    throw new AgentParseError('agent_validation', `invalid agent${label}: ${detail}`, fields);
   }
   // **`output_schema` is compiled HERE too** (ADR-0092 §3). A standalone agent never reaches a DAG build —
   // `AgentSession` (`relavium chat`, `agent run`) has no plan — so plan-build was the one place this could
