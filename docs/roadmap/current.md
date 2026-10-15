@@ -1109,8 +1109,9 @@ an ESLint selector rather than a list.
 **Approved for implementation — 2026-10-16.** The maintainer approved
 ADR-0110–0113, their linked unshipped contracts and the nineteen-increment plan.
 The [approval checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-maintainer-approval-and-implementation-checkpoint--2026-10-16)
-records completed decision gates and staged implementation. Step 1 is active;
-no implementation acceptance is claimed. The
+records completed decision gates and staged implementation.
+[Step 1 is accepted](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-1-acceptance--2026-10-16)
+after two NEW independent complete clean reviews; Step 2 is active. The
 [final proposal reviews](phases/phase-2.5.5-hardening-and-remediation.md#second-maintainer-rereview-final-proposal-readiness--2026-10-16)
 remain proposal evidence, not implementation review. The selected encrypted archive
 method persists; production recipient/recovery belongs to Wave 4b release setup.
@@ -1132,7 +1133,7 @@ Two orderings here are not this plan's invention — they are the intra-phase se
 on `home-controller.ts`/`chat-ink.tsx` (the decomposition moves already-guarded code), and **C before E** on
 `packages/db/src/client.ts` (C types the error path in Wave 1; E's `openLocalDb` rewrite lands last, here).
 
-- **Multi-file (strict, first)** — 2.5.5.E · `closeQuietly()` to its four siblings (#22) → `displayPath`
+- ✅ **Multi-file Step 1 accepted — 2026-10-16** ([evidence](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-1-acceptance--2026-10-16)) — 2.5.5.E · `closeQuietly()` to its four siblings (#22) → `displayPath`
   discipline to `resolve.ts`/`catalog.ts`/`chat-export.ts` (#4, G11) → `const exhaustive: never` across the
   six sites (#300, #301, G3, which also makes `relavium run` render `agent:reasoning`).
 - **`chat.ts` (strict)** — 2.5.5.G · the four money/token reimplementations (#236, #237, #242, #307) →
