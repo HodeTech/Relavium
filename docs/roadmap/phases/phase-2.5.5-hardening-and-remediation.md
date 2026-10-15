@@ -3606,7 +3606,7 @@ preflight agents are not either of the two fresh implementation review rounds.
 | #77/G48 | W8 closes the original stream-consumption blocker. Preserve ADR-0087's actual contract and approved exact-capacity residuals. |
 | #211, G16 | ADR-0083 already validates input defaults/enums; W7 already enforces compaction-role/structural session rows on read and write. No legacy reader tightening. |
 | #89/parallel half of #212 | Full WorkflowSchema rejects duplicate parallel members; exported leaf/union schema still needs consistent enforcement. Centralize without duplicate diagnostics. |
-| G22, #80/#81/#83 | Wave 2 context namespace refusal and W7/Wave 2 structural export/caveat/slug work are complete. The new context-to-JavaScript leak is distinct. |
+| G22, #80/#81/#83/#115 | Wave 2 context namespace refusal and W7/Wave 2 structural persistence/export/caveat/slug work are complete. The new context-to-JavaScript leak is distinct. |
 | #78, #280 DB half | Checkpoint comments already name the tiered journal; DbOpenError already has fixed path-free messages. Remaining CLI open/error wrapping lands last. |
 | #21 MCP half, #42 rejection half | W4 already reaps MCP and #228 already installs the recoverable rejection net. Remaining active-session abort and fatal/EPIPE/process-group work remain. |
 | G36/G37/G46, #20 | Direct verbose and selector tests exist. Idempotent gate JSON routing exists but needs direct regressions. Revalidate, do not claim absent code. |
@@ -3654,14 +3654,14 @@ No credential values or request captures belong in tracked evidence.
 
 | Step | Scope, finding IDs and principal verification |
 |---|---|
-| 1 | **Serialized multi-file queue first:** shared close handling #22 (four named siblings plus newer owned journal sites) → safe source labels #4/G11 → exhaustive session/picker/run switches #300/#301/G3 and actual reasoning rendering. Preserve primary outcomes and host-safe-close ownership; native error and mounted output regressions. |
+| 1 | **Serialized multi-file queue first:** shared close handling #22 (four named siblings plus newer owned journal sites) → safe source labels #4/G11 plus #3's UTF-8 source admission parity → exhaustive session/picker/run switches #300/#301/G3 and actual reasoning rendering. Preserve primary outcomes and host-safe-close ownership. For #3, use the sibling 4× byte precheck plus authoritative parser character bound; test a dense multibyte source above the old byte cap but below the character cap, ASCII character overflow and true byte overflow. Add native error and mounted output regressions. |
 | 2 | **Shared admission and diagnostics:** #89/#90/#212/G18/#210/G17, certify #211/G16; shared parser reason helper #85/#86 and config numeric bounds #32. Approved status/duplicate matrices, direct leaf/full parse tests and no value-bearing diagnostics. |
 | 3 | **Secret provenance:** ADR-0113/#92, fresh/resume/preparation/condition/transform/merge paths, source-to-event negative controls and clean trusted-resolution positives. Dedicated security sitting, no future mapping implementation. |
 | 4 | **Error/envelope substrate:** #213/#219, actual migrated-class inventory and cross-bundle structural guards. Preserve exported names/discriminants, constructor/cause behaviour and event payloads. Convert only supported error classes, not vendor errors or plain seam unions. |
 | 5 | **Tools and engine tails:** #93/#95/#96/#98/#97/#214/#221/#258/#259/#308, #94/#82/#87/#76/G9/#79/#274/#275. Bounds before effects, model-visible semantics, existing ordinal helper, path-local cycle guards, cancellation race and deterministic plan equivalence; certify #75/#78/#216 instead of rewriting them. |
-| 6 | **Process head:** #40/#41/#42/#224/#269 under ADR-0110. Fatal/EPIPE/owned process and DB/MCP lifetimes; preserve recoverable #228 keepalive and W4 signal contracts. Native child/grandchild, broken-sink and receipt-join controls. |
+| 6 | **Process head:** #40/#41/#42/#224/#269/G35 under ADR-0110. Land internal exit 9 with its fatal/EPIPE consumers; preserve genuine workflow and specific safety outcomes. Fatal/EPIPE/owned process and DB/MCP lifetimes retain recoverable #228 keepalive and W4 signal contracts. Native child/grandchild, broken-sink and receipt-join controls. |
 | 7 | **Lazy startup and release substrate:** #43/#44/#46/#271 under ADR-0111. Descriptor/runtime graph, early meta routing, catalog timing, finite chunks, exact pack closure, minimum-Node/platform and private archive tests. Actual archive configuration status is separate from fixture proof. |
-| 8 | **CLI contracts:** #45/#264/#265/#268/G35/#13/#17/G15/#18/#310/#309/#19 under ADR-0110. Category-aware flags, explicit help JSON, pricing/chat aliases, human coalescing and deletion consent; byte-preserving JSON/old-alias integration. |
+| 8 | **CLI contracts:** #45/#264/#265/#268/#13/#17/G15/#18/#310/#309/#19 under ADR-0110, consuming Step 6's G35 exit distinction. Category-aware flags, explicit help JSON, pricing/chat aliases, human coalescing and deletion consent; byte-preserving JSON/old-alias integration. |
 | 9 | **Chat normalization and abort:** #236/#237/#242/#307 → #218 → #21/#23. Canonical token/money source with approved additive LLM export, preserved two-decimal cap formatting and real immediate abort while a turn is blocked. Audit Home's imports. |
 | 10 | **Chat decomposition:** #220/#244 after preceding chat fixes. Split lifecycle/drivers, line handler, printers and reseat/clear ownership. Preserve compatibility entry points, W7/W8 receipts, unknown-usage, full-screen bounds, disclosure activation and cancellation. |
 | 11 | **Chat domain policy:** G30/ADR-0112 after decomposition, all fresh/resume/Home/agent/rebuild paths. Real host-policy dispatch and no-authority/SSRF/approval controls; separate egress/config-trust security sitting. |
@@ -3670,7 +3670,7 @@ No credential values or request captures belong in tracked evidence.
 | 14 | **Onboarding and overlays:** #49/#52/#51/#53/#55/G5/G52/G41/G53 and #34 under ADR-0112. Real next-model binding, recoverable persistence, explicit acknowledgement, current keyless nudge, hidden-approval safety, color-off mounts and native symlink preservation; keychain/config security sitting. |
 | 15 | **Remaining CLI/hygiene:** #24/#26/G43/G2/#12/#54/G14/#11/#47/#48/#240/#241/#311/G54/#303/#304; certify #20/G36/G46. One-shot coverage-aware cost/banner, actual-host doctor, typed faults, no silent missing-dist skip, guard misuse, attachment estimate and compiler checks. #239 remains the approved documented compatibility surface. |
 | 16 | **openLocalDb LAST:** #278/#280 across every moved caller. Central fixed safe error wrapping, attempt-all secondary cleanup, preserved causes, privacy/checkpoint notices and exact writer lifetimes. Actual command-family failure probes; no duplicate wrapper left behind. |
-| 17 | **Whole-wave acceptance and publication:** every item disposition; A/E/G and M2.5.5-3 evidence; ordinary/enforced coverage and required CI/build/fences/smokes/causal/platform checks at attributed source; evaluate/promote core coverage floor as testing.md requires after Wave 3 coverage work. Two new whole-wave cumulative reviews, canonical doc/ADR landings and PR. I/whole phases/later product waves stay open. |
+| 17 | **Whole-wave acceptance and publication:** every item disposition; A/E/G and M2.5.5-3 evidence; ordinary/enforced coverage and required CI/build/fences/smokes/causal/platform checks at attributed source; measure and promote core's ≥90% line/branch floor to required CI as testing.md requires after Wave 3 coverage work, fixing meaningful missing coverage before closure. Two new whole-wave cumulative reviews, canonical doc/ADR landings and PR. I/whole phases/later product waves stay open. |
 
 Steps are dependency-safe increments, not permission to parallel-edit shared hot
 files. Within each row, arrows remain strict. Step 1 completes before all other
@@ -3701,3 +3701,16 @@ method selection. No dependent code is authorized merely by a recommendation,
 preflight test pass or a clean proposal review. Approval is requested because the
 user explicitly requires it for new ADRs and implement-task step 3 requires it for
 public API/Accepted-decision/secrets changes. No product step is complete yet.
+
+#### Proposal review disposition — 2026-10-15
+
+Two new independent complete cumulative round-1 reviews of all seven proposal paths
+at `bd1da978` independently verify one Medium: the still-open E #3 UTF-8 resolver
+byte-cap correction was not assigned. Step 1 now owns it with multibyte, character-
+overflow and byte-overflow controls; it is neither deferred nor silently closed.
+The parent also makes #115's existing Wave 2 certification explicit, places G35's
+exit definition with its first process consumers, and states the required core
+coverage promotion without an optional close-out interpretation.
+The four ADR proposals have no additional verified round-1 finding. This correction
+requires fresh complete cumulative proposal review; it is not maintainer approval,
+implementation acceptance or a clean implementation round.
