@@ -2,8 +2,7 @@
 
 - **Status**: Proposed
 - **Date**: 2026-10-15
-- **Supersedes (partial)**: [ADR-0047](0047-cli-framework-commander-ink-clack.md) and [ADR-0051](0051-cli-distribution-thin-bundle-private-engine.md), single-output packaging constraint
-- **Related**: [ADR-0056](0056-cli-in-app-slash-command-system-and-manifest.md), [ADR-0067](0067-node-supported-floor-22-reaffirm-better-sqlite3.md), [ADR-0071](0071-models-dev-as-the-model-metadata-source.md), [ADR-0072](0072-model-metadata-in-the-db-behind-a-generated-offline-floor.md), [ADR-0103](0103-a-paused-run-hands-off-its-local-producers-before-its-host-closes.md), [ADR-0109](0109-native-media-close-ownership-is-explicit-iterator-provenance.md), [ADR-0110](0110-cli-diagnostics-and-discovery-have-explicit-compatibility.md), [Wave 3](../roadmap/current.md#wave-3--clear-the-ground)
+- **Related**: [ADR-0047](0047-cli-framework-commander-ink-clack.md), [ADR-0051](0051-cli-distribution-thin-bundle-private-engine.md) (single-output constraint partially replaced), [ADR-0105](0105-filesystem-roots-are-invocation-grants-not-project-authority.md), [ADR-0056](0056-cli-in-app-slash-command-system-and-manifest.md), [ADR-0067](0067-node-supported-floor-22-reaffirm-better-sqlite3.md), [ADR-0071](0071-models-dev-as-the-model-metadata-source.md), [ADR-0072](0072-model-metadata-in-the-db-behind-a-generated-offline-floor.md), [ADR-0103](0103-a-paused-run-hands-off-its-local-producers-before-its-host-closes.md), [ADR-0109](0109-native-media-close-ownership-is-explicit-iterator-provenance.md), [ADR-0110](0110-cli-diagnostics-and-discovery-have-explicit-compatibility.md), [Wave 3](../roadmap/current.md#wave-3--clear-the-ground)
 
 ## Context
 
@@ -50,16 +49,21 @@ authority-bearing module state. Do not treat tree shaking as source proof.
 
 Meta help/version/bare noninteractive help reads no config/cache, admits no
 filesystem grants and opens no DB/keychain/MCP/provider/TUI. Validate grammar
-without a second argv parser. New JSON-help integration lands after the descriptor
+without a second argv parser. Skipping directory existence/link/permission admission
+for meta operations is a deliberate ADR-0105 refinement: an absent root no longer
+blocks help, while pure syntax/count/size checks remain. No grant is minted.
+New JSON-help integration lands after the descriptor
 and lazy graph; the earlier increment only certifies implemented meta operations.
 
 For execution distinguish **filesystem grant admission** from model/cost admission.
-Preserve current order: filesystem admission, once-only cache fallback seed where
-needed, current DB catalog overlay at its owner, then first capability/quote/
+Preserve current order: filesystem admission, one invocation-owned
+`seedFileCatalogOnce()` gate for commands needing pricing, current DB catalog
+overlay at its owner, then first capability/quote/
 budget/egress read. A late file seed must never replace authoritative DB long-tail
 prices. Preserve ADR-0072's offline floor, empty-DB non-erasure and no-startup-fetch
 rules and media maintenance's no-config/cache/DB exception. Home/slash/resume
-transitions cannot reinstall an older file overlay.
+transitions share that owner and cannot reinstall an older file overlay. The
+canonical owner inventory includes quote-only opens and offline fixture exceptions.
 
 Inspect every emitted JS output and its static/dynamic imports. Closure rejects
 missing/escaping chunks, unbundled internal packages and undeclared externals;
@@ -71,7 +75,9 @@ OSes and the declared minimum runtime, then release CI reuses that mechanism.
 
 Emit external upstream TypeScript maps only in a fresh isolated, uncached
 candidate build, without embedded sources. Ordinary workspace builds remain
-map-free. No Actions/Turbo/remote build-cache read/write or later broad cache
+map-free. The canonical contract gives executable dependency-build overrides,
+prepack map selection/finalization and an entry-only shebang/mode inventory.
+No Actions/Turbo/remote build-cache read/write or later broad cache
 capture may include upstream/final maps, private manifests or staging. The final bundler chains them to original TypeScript; do not substitute
 source aliases or claim a decrypt test proves engine symbolication.
 
@@ -97,18 +103,25 @@ promoted after its maps are discarded. A trusted tag creates its own original
 release candidate once, requiring production encryption in that originating pack
 job before handoff; missing custody cannot downgrade to test mode.
 
-Before retrying a release, retrieve and verify original staged or Release assets. Reuse
-exact matching bytes, fill only missing assets from a recoverable candidate and
-refuse conflicts. Expired staging without a complete candidate fails with recovery
-instructions; re-encryption cannot manufacture identical custody. Never make
-encryption deterministic, overwrite conflicts or silently swap a version's bytes.
+Use one explicit trusted-tag custody graph: admission → permissioned candidate
+discovery/reservation → fresh pack or exact reuse → smoke → archive → npm publish
+→ Release finalization. Discovery precedes **every** product build, including an
+all-jobs rerun. It can see drafts and originating run/attempt artifacts; permission,
+pagination or missing-history uncertainty is not “fresh”. Reserve a draft candidate
+identity before its first build; interrupted/lost staging cannot become permission
+to create different same-version bytes. Recover original tarball/ciphertext/receipt,
+fill only absent matching assets and refuse conflicts or unrecoverable expiry.
+Never make encryption deterministic or re-encrypt to imitate prior custody.
 
-A dedicated archive job retains ciphertext, tarball and binding receipt as
-per-version Release assets beyond Actions expiry, verifies downloaded digests,
-and gates npm publication of that same tarball. Only real trusted pushed tags
-with version/main-ancestry checks can mutate Releases/publish. Manual dispatch,
-including an off-main override or dispatch targeting a tag, remains dry-run.
-Only the archive job gets Contents write; npm retains its provenance permission.
+The canonical contract assigns each job, token capability, durable state and rerun
+mode. Only discovery, archive and finalization get narrowly scoped Contents write;
+cross-run retrieval gets Actions read in discovery. Builds do not receive Release
+write or npm credentials. Publish retains only read plus existing provenance
+permission and consumes verified staged tarball/archive receipt; finalization is
+a separate post-publish writer. Workflow defaults deny unspecified permissions.
+Only real trusted pushed tags with version/main-ancestry checks can mutate Releases
+or publish. Manual dispatch, even against a tag, remains dry-run with separate
+concurrency. Existing repository Release immutability is not assumed.
 
 A dedicated crypto/recipient/CI-custody security sitting validates this path.
 Fixture-key controls use synthetic maps only; do not upload product maps under a
@@ -125,7 +138,10 @@ distribution boundary. Considered public source-free maps: technically possible
 for this public repo, but contrary to the selected archive policy, **not** because
 public source names would become newly secret. Considered deterministic encryption
 or rebuilding on retry: rejected because cryptographic randomness and exact-byte
-release identity must be preserved.
+release identity must be preserved. The selected archive protects distribution/
+custody, not secret source. Its release-availability cost is explicit; reconsider
+proportionality with the maintainer if this policy or release/debugging needs change,
+not by silently weakening a failed release gate.
 
 ### Acceptance and landing
 
@@ -134,6 +150,9 @@ release identity must be preserved.
    the same current baseline; historical ~400 ms is not a fresh threshold.
 2. Required packed platform/minimum-runtime controls cover real run/chat fixtures,
    native loading, migrations, MCP version, CAS and shared iterator/registry identity.
+   The required aggregate rejects missing/skipped/cancelled platform legs. Actual
+   installed chat uses an external test transport, not a fictitious chat fixture flag
+   or replaced inlined session implementation.
    Catalog order tests include file-only, empty/torn DB, authoritative DB tail,
    repeated Home/resume and media exceptions before first capability/budget read.
 3. Missing/escaping chunks, external engine imports and undeclared dependencies
@@ -144,12 +163,16 @@ release identity must be preserved.
    and a post-receipt rebuild fail; sourcesContent is absent throughout.
 5. Synthetic GPG and archive/API controls cover recipient isolation/expiry/rotation,
    encryption failure, retry/partial upload/conflict/expired staging and archive
-   before publish. No plaintext fallback or false production-custody claim.
+   before publish, finalization, all-jobs/failed-jobs/cross-run reruns and exact
+   npm-already-published bytes. The same state controller uses permission-enforcing
+   fake API controls; no live release/tag is needed for Wave 3. No plaintext fallback
+   or false production-custody claim.
 6. Split lazy graph, fatal integration and archival into distinct reviewed
    increments. Rerun affected packed gates after later CLI/DB edits and at final
    whole-wave head. Two new independent complete cumulative clean rounds follow
    each final material fix. At acceptance append partial-replacement notes to
-   ADR-0047/0051 and refinements to ADR-0056/0071/0072/0103/0109 before code; land
+   ADR-0047/0051, their Status/index partial annotations, and refinements to
+   ADR-0056/0071/0072/0103/0105/0109 before code; land
    canonical references/runbook and actual configuration status separately.
 
 ## Consequences

@@ -1106,18 +1106,16 @@ an ESLint selector rather than a list.
 
 ### Wave 3 — Clear the ground
 
-**Source-corrected proposal reviewed; maintainer approval pending — 2026-10-15.**
-[Revised readiness and approval scope](phases/phase-2.5.5-hardening-and-remediation.md#revised-proposal-readiness-after-source-corrections--2026-10-15)
-records two NEW independent complete cumulative clean reviews at 49ba03ee across
-all fourteen proposal paths/four ADRs and the nineteen-increment plan. The
-[reopened source dispositions](phases/phase-2.5.5-hardening-and-remediation.md#maintainer-review-reopened-the-proposal--2026-10-15)
-correct G15, process/lazy dependencies, exact-byte archive/cache/retry modes,
-HTTP revocation and secret-context consumers. Earlier nonclean/insufficient
-proposal rounds remain historical and are not acceptance. ADR-0110–0113 and
-their canonical proposal sections remain unshipped/Proposed. No product code
-has started; explicit approval is the current gate. Archive method is selected;
-production recipient/recovery setup belongs to actual Wave 4b release.
-No provider capture, key access, billing or upload is required for this review.
+**Proposal reopened by maintainer rereview — 2026-10-16.**
+[Current corrections and limits](phases/phase-2.5.5-hardening-and-remediation.md#second-maintainer-rereview-and-proposal-corrections--2026-10-16)
+supersede the a8708a65/49ba03ee readiness claim. Source audits confirm missing
+session-health authority, MCP PID/group distinction, release discovery/finalization
+permissions, Home build-first revocation and finite VM denial. Revised ADR-0110–0113
+and their explicitly unshipped canonical contracts remain **Proposed**. New complete
+cumulative proposal reviews and maintainer approval are required; no product code
+has started. The nineteen-increment plan now assigns these mechanisms explicitly.
+Archive method is already selected; production recipient/recovery belongs to
+actual Wave 4b release. No provider capture, key access, billing or upload is needed.
 
 Decompose, guard and normalize every hot file a 2.6 workstream is about to land on. **The multi-file queue
 runs first and is serialized against the rest**; the remaining queues are file-disjoint, any order.

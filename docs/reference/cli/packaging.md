@@ -21,13 +21,27 @@ or escaping tar entries, unbundled internal imports, undeclared external package
 and unanalyzable runtime loading unless explicitly reviewed/allowlisted.
 Chunk layout must preserve real installed `../drizzle` resolution. Runtime files,
 migrations, package metadata and existing documented license/changelog assets
-form an explicit public allowlist. No source TS/tree, map, private inventory,
+form an explicit public allowlist. Only the entry has its source hashbang and executable mode 0755; runtime chunks
+have no hashbang and mode 0644. Remove the global tsup banner before emission,
+not a first-line rewrite after mapping. Validate tar modes and every output.
+No source TS/tree, map, private inventory,
 build metafile or sourceMappingURL may enter npm.
 
 The lightweight entry imports only pure flag/descriptor/diagnostic/owner substrate.
 Runtime modules load under the early fault boundary. Native witnesses and static
 reachability prove meta operations do not touch config/cache/DB/keychain/MCP/UI.
+Meta parsing retains pure grammar/count/size/absolute-root checks, but does not
+stat/admit root directories: `--help --allow-fs-root <absent-absolute-root>` now
+succeeds without granting authority. Real execution still admits first.
 Descriptor grammar and JSON help belong to [commands.md](commands.md#proposed-wave-3-cli-compatibility).
+The lazy dispatcher owns one invocation-local `seedFileCatalogOnce()` gate after
+filesystem admission and before first pricing/model access. Its callers share the
+same guard across Home/new/resume/clear/reseat. Preserve current DB overlays in
+run, gate quote/execution, chat fresh/resume/clear/reseat, Home fresh/resume,
+standalone agent and models; these eleven current call sites are an audit
+inventory, not eleven new seeds. Empty/torn DB cannot erase fallback, current DB
+tail wins, offline agent fixture and media no-cache exceptions remain.
+
 One registry instance passes through the chunk graph; no global-symbol bridge
 silently replaces existing private-module provenance.
 
@@ -37,15 +51,28 @@ silently replaces existing private-module provenance.
    TypeScript maps and no inline source contents. Ordinary workspace builds stay
    map-free. Disable build-cache read **and write**, including Turbo local/remote,
    Actions build caches and later broad capture; force alone is insufficient.
-   Build via existing dependency-ordered scripts in that private stage; do not accept stale incremental/cache output missing maps.
+   In the owned fresh checkout, clean dependency dist/incremental files, then run
+   installed tsc with `--sourceMap true --inlineSources false --incremental false`
+   against each existing tsconfig.build.json in order shared → llm → core → db →
+   mcp. For example `pnpm --dir packages/shared exec tsc -p tsconfig.build.json
+   --sourceMap true --inlineSources false --incremental false`, then the remaining
+   packages in that order. This bypasses Turbo cache entirely; do not alter ordinary
+   map-free scripts/config defaults or install a different compiler/bundler.
    Keep current package exports, engine purity and SDK seam.
 2. Invoke `pnpm pack` once. Prepack owns the sole final CLI build, clean output,
    minification, splitting, migration copy, map chaining and closure checks.
-   Release must build dependencies beforehand, not build CLI then rebuild in prepack.
-3. Before any receipt, remove only tsup's expected final map-link trailers and
-   move maps/metafile to owner-only staging outside the npm package. Assert maps
-   have repository-relative original TS sources and absent sourcesContent.
-   No transform/banner/minifier/JS write is permitted after finalization.
+   Candidate-mode prepack explicitly enables tsup sourcemap/splitting with external
+   maps and sourcesContent=false; force-running a map-free config is insufficient.
+   Release builds dependencies beforehand, not CLI then CLI again in prepack.
+3. One finalizer inside prepack inventories consumed upstream JS/maps and every
+   emitted JS/map. Refuse missing/malformed upstream maps: bundler success may
+   otherwise silently map engine frames to compiled JS. Validate and rewrite map
+   source paths to repository-relative original TS identities; reject unsupported
+   sourceRoot/absolute/URL/escaping paths and preserve mappings/names. Assert absent
+   sourcesContent. Remove only expected final tsup map-link trailers without moving
+   executable code lines. Stage maps/metafile owner-only outside npm, verify closure
+   and public file/mode inventory, then hash. No transform/banner/minifier/JS write
+   is permitted afterward.
 4. Inspect the produced tarball. Compare each packed JS byte digest and migration
    inventory with finalized files; reject prohibited entries independently of the
    package files-list. Only now seal its private map manifest.
@@ -119,59 +146,117 @@ maps are discarded. A trusted-tag release makes its own fresh candidate once,
 then obeys no-rebuild/no-re-encryption retry rules. This is a distinct release
 build identity, not a replacement for an existing same-version release candidate.
 
-**Release mode** runs only for the real trusted pushed tag. First retrieve any
-matching original release candidate for retry. If none exists, require confirmed
-production recipient in the originating isolated pack job, build/pack/maps once,
-and encrypt there **before any job handoff**. Private bytes never enter shared
-staging. Its public binding receipt has mode release plus the fields above in
-the release-receipt contract. If required custody is unavailable, fail the release;
-do not downgrade to package-test mode or use a fixture key for product maps.
-
-Both modes run the same exact-tarball smoke implementation and local map checks.
-Only release mode can enter the archive/publish DAG. Mode, trusted trigger/source
-and receipt digest are validated by consumers; a flag or self-declared receipt
-does not confer trusted release authority.
+**Release mode** runs only for the real trusted pushed tag. A permissioned discovery
+job first retrieves original candidates and reserves a fresh identity as described
+below. Only a verified `fresh` route enters build/pack/encryption with the confirmed
+production recipient in the isolated originating job **before any handoff**.
+`reuse` downloads exact prior bytes and invokes no build, pack, finalizer or GPG.
+Required custody failure never downgrades to package-test mode or fixture keys.
+Both modes run the same tarball smoke and local map checks. Self-declared mode or
+receipt strings do not confer release authority.
 
 ## Archive, retry and publication
 
-Release workflow staging contains only tarball, ciphertext and release receipt.
-A dedicated archive job after pack/smoke creates or reuses a draft Release for the
-real pushed version tag, uploads those three assets, downloads/verifies them, then
-permits npm publication of **that exact tarball**. A successfully published package
-can finalize its matching Release; a failed npm step leaves an identifiable draft
-candidate for recovery. Existing conflicting Release/tag/assets refuse.
+Top-level workflow permissions are `{}`; each job lists its minimum capabilities.
+Release jobs require real pushed `v*` tag, package-version equality and main ancestry.
+PR/fork/manual workflow_dispatch, even against a tag or off-main override, cannot
+mutate Releases or publish. Use separate dry-run concurrency; release-candidate
+writers serialize by version, never run/attempt ID, and recheck remote identity
+immediately before mutation. Repository defaults or immutable Release settings are
+not relied on; the workflow enforces no overwrite even when immutability is off.
 
-Archive and npm both require real pushed `v*` tag, package-version equality and
-main ancestry. Manual workflow_dispatch, including a tag ref or off-main override,
-is build/smoke only: no Release mutation or npm publish. Archive alone gets
-Contents write; npm keeps its separate provenance permission. PR/fork runs never
-upload release assets. Configure version concurrency to prevent competing candidate
-writers and recheck before upload; do not rely only on asset names.
+| Job in strict dependency order | Permission / responsibility |
+|---|---|
+| Admission | Contents read; validate actual event/tag/source/version/main ancestry |
+| Discovery/reservation | Contents write for draft visibility/reservation, Actions read for cross-run artifact retrieval; no install/build/npm credentials |
+| Pack or reuse | Contents read; fresh alone builds/packs/encrypts once; reuse consumes discovery's verified staged original bytes |
+| Exact-tarball smoke | Contents read; every required OS/minimum-runtime leg uses the chosen digest |
+| Archive | Contents write after smoke; verify candidate, upload absent matching assets only, download/verify all three |
+| npm publish | Contents read plus existing id-token provenance permission; needs smoke **and archive**, consumes verified tarball/public archive receipt; never edits Releases |
+| Release finalization | Contents write after successful or verified already-complete npm publication; recheck assets/npm identity, then publish matching draft |
+
+Discovery paginates drafts/published Releases and originating trusted release
+workflow runs/attempts/artifacts. Draft lookup must use its authorized API/listing;
+a read-only tag lookup's 404 is not proof of absence. Verify source/run/attempt
+against GitHub metadata and the trusted tag-only workflow source. Artifact names
+and receipt fields alone are insufficient. API permission/transient/pagination or
+history uncertainty returns failure/recovery_required, never fresh. Cross-run
+retrieval occurs in this Actions-read job; pass only verified public candidate
+assets onward. Retain original origin identity on retry.
+
+The [Releases API](https://docs.github.com/en/rest/releases/releases#list-releases)
+limits draft listings to push-capable callers;
+[cross-run artifact API access](https://docs.github.com/en/rest/actions/artifacts)
+requires Actions read. These API capabilities are explicit job requirements,
+not authority inferred from public repository visibility.
+
+Before first build, discovery creates a draft reservation for version/source and
+originating candidate attempt. No prior Release/reservation or candidate-producing
+attempt may exist for the fresh route. This small public durable record makes an
+interrupted build or expired staging distinguishable from a fresh version. An
+incomplete reservation with no recoverable complete candidate requires explicit
+manual recovery; the same job rerun does not silently build again. Collision,
+inaccessible/ambiguous/deleted history or an unrelated existing Release refuses.
+No production reservation/mutation occurs in Wave 3's offline controls.
+
+After smoke, archive stores exact tarball, original ciphertext and release binding
+receipt as per-version Release assets, downloading to verify all digests. It passes
+tarball plus public archive receipt (version/source/three digests/Release identity)
+to publish, so the read-only publish job need not retrieve a hidden draft. Publish
+rechecks that binding and npm version integrity: equal existing bytes mean
+publication complete, different bytes refuse. Finalization owns the later draft
+transition; it cannot run on publication failure. Failed npm leaves the draft
+candidate recoverable; failed finalization retries without publication/build/GPG.
 
 | Durable state | Permitted action |
 |---|---|
-| No prior release candidate | Build/pack/encrypt once, stage original candidate |
-| Trusted candidate staging exists | Retrieve/verify and reuse exact bytes, rerun smoke if needed |
-| Complete matching Release assets exist | Retrieve/verify; no rebuild, re-encryption or overwrite |
-| Partial upload, trusted full staged candidate recoverable | Verify present assets against it; add only absent matching assets |
-| Conflict or expired staging without complete recoverable candidate | Fail with explicit manual recovery; never invent replacement matching ciphertext |
+| Proven absent history/candidate, new reservation recorded | One fresh build/pack/encryption for its original attempt |
+| Complete trusted original staging | Retrieve/verify and reuse; rerun smoke, no rebuild or encryption |
+| Complete matching draft/published assets | Retrieve/verify; no build/encryption/overwrite |
+| Partial assets plus trusted complete original staging | Verify present assets; add only absent matching bytes |
+| npm already contains equal candidate | Verified publication completion; finalize matching Release if needed |
+| npm publication failed or finalizer failed | Resume the applicable downstream jobs using the same complete candidate |
+| Incomplete reservation, missing asset/ciphertext, expired/inaccessible staging, conflicting bytes or ambiguous origin | Fail with manual recovery; never manufacture a replacement candidate |
 
-Retain exact tarball as well as ciphertext/receipt for every supported release:
-Actions retention can expire even when npm publication failed. Release is not
-private storage; only ciphertext protects debugging material. Do not automatically
-delete or replace per-version assets. Before npm retry, detect existing version
-and compare package integrity; different bytes refuse, equal published bytes
-count as completed publication rather than republishing.
+Support failed-jobs, all-jobs and cross-run retries through that same discovery
+route **before any build step**. A missing source artifact cannot be compensated by
+re-encryption. Retain tarball/ciphertext/receipt for every supported release beyond
+Actions expiry, including npm failures. No automatic asset deletion/replacement.
+Public Release is not private storage; only ciphertext restricts debugging payload.
+
+Test the same state controller behind injected GitHub/npm API ports with synthetic
+identities and a permission-enforcing fake service. Cover read-only hidden draft,
+Actions-read denial, pagination, 403 versus 404, reservation/interruption, all durable
+states, every rerun mode and npm timeout-after-success. Assert build/pack/GPG/npm
+call counts and unchanged conflicting bytes. Static workflow controls verify
+predicates, permission minima, concurrency, dependency graph and required CI
+aggregation. A dispatch dry-run cannot substitute for these release-mode controls.
+No live tag/upload/publication or production key is required for Wave 3; real
+production token/custody configuration remains separately attributed Wave 4b work.
 
 Required PR/push gates pack once and all supported OS consumers install that same
-digest. Include a packed runtime consumer at **Node 22.0.0**, separate from the
+digest. Add the packed aggregate to required ci.needs **and** its success checks
+under always(); missing/skipped/cancelled pack or platform legs fail the gate.
+Include a packed runtime consumer at **Node 22.0.0**, separate from the
 workspace install floor at 22.13, plus current .nvmrc on macOS/Linux/Windows.
 If the pinned runtime closure fails the public floor, resolve the compatibility
 decision explicitly before acceptance. Reuse the same smoke in release CI.
 Controls cover actual run/chat/migrations/native load/MCP version/CAS/iterator
-identity and early import failure without keychain/provider calls.
+identity and early import failure without real keychain/provider calls. A real
+installed chat control drives prompt → AgentSession turn → assistant output →
+SQLite persistence → clean end/resume using an external test transport hook and
+throw witnesses for network/keychain. Assert actual dispatch count and persisted/
+output markers. Do not invent a shipped chat --fixture flag, replace the inlined
+implementation under test or call an empty EOF run chat acceptance. Hook feasibility
+and cross-platform execution must be proven during implementation.
 
 Wave 3 implements this path with offline/API-fake controls and a dedicated
 crypto/CI-custody security sitting. Actual production configuration/publication
 belongs to Wave 4b and fails closed if custody is missing. Required final whole-wave
 checks repeat exact-artifact evidence after later CLI/DB changes.
+
+At Step 9 landing update the release runbook's currently accurate single-bundle
+procedure to this graph, modes/recovery and symbolication; do not relabel historical
+single-bundle evidence as testing this design. Before whole-wave acceptance merge
+this Proposed contract into implemented reference status and remove stale proposal
+banners only for actually accepted mechanisms.

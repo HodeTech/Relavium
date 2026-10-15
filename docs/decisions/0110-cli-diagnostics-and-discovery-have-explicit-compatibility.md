@@ -2,8 +2,7 @@
 
 - **Status**: Proposed
 - **Date**: 2026-10-15
-- **Supersedes (partial)**: [ADR-0049](0049-cli-machine-output-contract.md) §6, for explicit help with JSON
-- **Related**: [ADR-0047](0047-cli-framework-commander-ink-clack.md), [ADR-0056](0056-cli-in-app-slash-command-system-and-manifest.md), [ADR-0088](0088-the-mcp-boundary-is-hostile.md), [ADR-0103](0103-a-paused-run-hands-off-its-local-producers-before-its-host-closes.md), [ADR-0111](0111-cli-meta-operations-use-a-lazy-packaged-runtime.md), [Wave 3](../roadmap/current.md#wave-3--clear-the-ground)
+- **Related**: [ADR-0049](0049-cli-machine-output-contract.md) (partial replacement of explicit JSON-help exception), [ADR-0047](0047-cli-framework-commander-ink-clack.md), [ADR-0056](0056-cli-in-app-slash-command-system-and-manifest.md), [ADR-0088](0088-the-mcp-boundary-is-hostile.md), [ADR-0103](0103-a-paused-run-hands-off-its-local-producers-before-its-host-closes.md), [ADR-0111](0111-cli-meta-operations-use-a-lazy-packaged-runtime.md), [Wave 3](../roadmap/current.md#wave-3--clear-the-ground)
 
 ## Context
 
@@ -44,44 +43,59 @@ never arbitrary error messages, cause trees or raw stack headers. Pattern
 redaction is defence in depth, not proof that arbitrary text is secret-free.
 JSON diagnostics, including #269's last resort, remain structured stderr records.
 
-Reserve exit 9 for unexpected CLI infrastructure failures on every surface,
-independently of the existing broad `internal` code. Known history, departure,
-ownership, receipt and operational refusals retain their exit/remedy. The canonical
-surface table explicitly covers Home, chat, one-shot agents, workflow/resume and
-management/meta commands. Genuine run/turn outcomes and deliberate session end
-remain distinct; an unknown CLI failure cannot become Home success or chat end.
+Reserve exit 9 for CLI infrastructure failure on every surface: unexpected faults
+use the distinct CLI diagnostic `cli_internal`; classified failed-output/EPIPE
+uses `output_unavailable`. Output failure deliberately moves from the earlier
+proposal's exit 1 to 9: it does not mean the workflow failed, even if its result
+could not be delivered. Known history/departure and operational failures retain
+their stated disposition; do not remap the existing broad `internal` code.
+Classify actual storage-boundary failures before native integration, rather than
+waiting for the final DB refactor. The canonical surface/site table owns details.
+An ordinary failed chat turn leaves the REPL alive; one-shot agent outcomes are
+0/1. Unknown catches inside slash/rebuild/one-shot paths cannot silently turn an
+infrastructure fault into a successful Home/REPL end.
 
 Create one lightweight invocation-owned shutdown registry in the CLI process layer,
-with no engine/native/UI service imports. Owners register stop, join, final-health
-and owned-native-reap callbacks before admitting work; unregister only after actual
-settlement. Normal, fatal and output-failure paths share those registrations.
-ADR-0111's chunks retain one instance. Ambient PID scanning is not ownership proof.
+with no engine/native/UI service imports. Owners register kind-specific stop/join,
+terminal-restore and native-reap callbacks before admitting work; only workflow
+owners expose existing RunHandle health. AgentSession has no run-departure or 5–8
+channel: join its existing host lifetime, retain publication failure and give
+inspect-before-repeat advice without inventing a health DTO or acknowledgement.
+Unregister only after actual settlement. Normal, fatal and output-failure paths
+share those registrations. ADR-0111's chunks retain one instance. Ambient PID
+scanning is not ownership proof.
 
 Install early diagnostic flag extraction and the registry before dynamic runtime
 imports. Recoverable background rejection keeps the process alive, reports safely,
 and upgrades only an otherwise clean success; existing nonzero outcomes remain.
 Fatal exception/top-level rejection stops admission and exits without resuming
-business logic. Best-effort cooperative joining has a three-second **fatal process
-termination** budget; afterward only explicitly owned native resources may be
-synchronously reaped. This is not an ADR-0103 receipt deadline, acknowledgement or
-safe-close permission. An exit callback cannot await; re-entry and broken sinks
-are guarded. Normal/recoverable cleanup still joins actual owners.
+business logic. One absolute three-second **fatal process termination** budget
+includes stop/join, native reap, terminal restoration and diagnostic flush; no
+owner/helper receives a fresh budget or starts unbounded work after expiry. This
+is not an ADR-0103 receipt deadline, acknowledgement or safe-close permission.
+Restore raw/alternate-screen/render custody before final stderr diagnosis so it
+is not erased. Diagnostic text never falls back to stdout. An exit callback cannot
+await; re-entry and broken sinks are guarded. Normal/recoverable cleanup still
+joins actual owners. The first termination request owns cleanup; later observed
+faults can upgrade disposition, never restart cleanup or extend its deadline.
 
-Known final money/effect/durability/ownership health takes precedence on **return
-and throw** paths. Unavailable health remains uncertain, with inspection before
-retry; no terminal or acknowledgement is fabricated. Native teardown uses owned
-POSIX groups and the trusted absolute Windows taskkill facility with fixed
-owned-root tree arguments, never PATH lookup or foreign PID scanning. The
-canonical contract limits this to live registered roots/current descendants;
-root-exit, escape/reparenting and same-user PID reuse are not race-free contained.
-A request is not close ACK. Full job-object/native containment is not claimed or
-silently deferred as a completed Wave 3 guarantee; existing M/N ownership remains.
+Actual workflow health takes precedence on **return and throw** paths, followed
+by fatal/output infrastructure failure, actual terminating signal, then ordinary
+outcome; the canonical contract defines the total order and distinct recoverable
+background-rejection rule. Unavailable/session health remains uncertain, with
+inspection before retry; no terminal or acknowledgement is fabricated. Native
+teardown follows creation ownership: run_command owns a POSIX process group,
+SDK-backed MCP owns a PID, not a detached group. Windows uses the verified absolute
+taskkill facility for a still-owned live root. Never infer PGID from an MCP PID,
+search PATH or scan foreign processes. Root-exit, escape/reparenting and same-user
+PID/PGID reuse are not race-free contained. A request is not close ACK. Full native
+containment is not claimed; existing M/N lifecycle ownership remains.
 
-EPIPE is a classified output-unavailable operational failure, not an unclassified
-exception. Stop/join producers, preserve stronger safety exits and use at most one
-fixed diagnostic on an independent usable sink. A failed sink cannot acknowledge
-itself. No automatic repetition of paid/effectful work follows an output or fatal
-failure; the canonical exit-9 remedy explicitly says this.
+EPIPE is a classified infrastructure output failure, not an unknown exception.
+Stop/join producers, preserve actual stronger workflow safety exits and use at
+most one fixed stderr diagnostic if that sink is usable. A failed sink cannot
+acknowledge itself. The exit-9 remedy covers both output and unexpected failures:
+no automatic repetition of paid/effectful work; inspect existing work first.
 
 ### Discovery and compatibility
 
@@ -109,18 +123,27 @@ Key deletion requires interactive consent or explicit automation force. Canonica
 eligibility/decline/interruption rules and every existing deletion example must
 agree. G15 closes as a refuted current defect with preservation evidence.
 
-At **acceptance**, append ADR-0049/0056 forward notes and ADR-0088/0103 refinements
-before dependent code. Reconcile D19's old precedence ladder, D22's two-exception
-shorthand, E's “Required ADR: none new” and phase exit criterion 4's blanket
-machine-contract prohibition to this enumerated scope. Accepted historical bodies
-stay intact. Proposed reference sections are explicitly unshipped.
+At **acceptance**, record ADR-0049's clause-specific partial replacement in its
+Status/index and dated forward note, append ADR-0056's realization note and
+ADR-0088/0103 refinements before dependent code. Reconcile D19's old precedence
+ladder, D22's two-exception shorthand, E's “Required ADR: none new” and phase exit
+criterion 4's blanket machine-contract prohibition to this enumerated scope.
+Accepted historical bodies stay intact. Use the existing Status/Date/Related
+metadata convention. Proposed reference sections stay unshipped until their
+implementing increment lands; the plan owns promotion/removal and overlapping
+current-text reconciliation.
 
 Considered verbose winning over quiet: rejected to preserve conflict refusal.
 Considered remapping every internal error: rejected because known refusals use it.
 Considered sanitized raw stacks: rejected because pattern matching cannot prove
 confidentiality. Considered coalescing invented token rows: rejected as a false
 premise. Considered every rejection fatal: rejected because the persister
-backstop's accepted keepalive policy is distinct from process exceptions.
+backstop's keepalive policy is distinct. Considered output failure remaining
+exit 1: rejected because it confuses output delivery with workflow outcome.
+Considered uniform process-group/session-health abstractions: rejected because
+shipping owners do not supply them. Windows facility admission protects finite
+best-effort cleanup; reconsider its availability cost when platform/owner support
+changes, rather than claiming universal containment.
 
 ### Acceptance and landing
 
@@ -129,7 +152,9 @@ backstop's accepted keepalive policy is distinct from process exceptions.
    and warnings; arbitrary canaries in messages/causes/stack headers never render.
 2. Native children test early import failure, background rejection, fatal/repeated
    fault, both broken sinks, owned children/grandchildren and Windows teardown.
-   Joined health wins on return and throw; timeout never certifies safe store close.
+   Actual workflow health wins on return and throw; session joins never fabricate
+   it. Include competing signal/faults, caught command failures and terminal-restore
+   ordering; timeout never certifies safe store close.
 3. Test every surface's exit classification, typed history/departure refusals and
    existing 0–8/signal outcomes. Distinguish Node's pre-bootstrap exits.
 4. Commander-to-dispatch and packed tests cover root/subtree discovery, globals,
@@ -144,7 +169,8 @@ backstop's accepted keepalive policy is distinct from process exceptions.
 
 ### Positive
 
-- Scripts distinguish unexpected CLI faults from outcomes across surfaces.
+- Scripts distinguish unexpected/output infrastructure faults from outcomes
+  across surfaces; known operational failures retain their explicit table.
 - Discovery describes real grammar; diagnostics preserve data, consent and safety.
 
 ### Negative
@@ -153,3 +179,5 @@ backstop's accepted keepalive policy is distinct from process exceptions.
   public behaviour. Explicit compatibility tables and aliases bound the change.
 - Fatal cleanup cannot promise crash-safe receipts or universal descendant containment. Inspect before repeating paid
   or effectful work; a failed cleanup must not be reported acknowledged.
+- Windows subprocess admission refuses if its verified teardown facility is
+  unavailable; POSIX MCP cleanup cannot promise reaping its descendants.

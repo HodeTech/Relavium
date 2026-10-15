@@ -3632,10 +3632,10 @@ changes a currently Accepted ADR or a canonical reference before approval.
 
 | Decision | Recommended choice and compatibility boundary |
 |---|---|
-| ADR-0110: D19/D20/D22, #13/#19/#309, G15/G35 | [Explicit CLI compatibility](../../decisions/0110-cli-diagnostics-and-discovery-have-explicit-compatibility.md): retain quiet+verbose conflict; exact DEBUG=1 alias; preserve JSON/safety data; internal exit 9; versioned explicit JSON help; alias-preserving pricing/chat syntax; key-delete consent; G15 refuted with durable-only replay preservation. Genuine run outcomes and exits 3–8/signals keep their contracts. D22's old two-exception shorthand must be reconciled to this explicit enumerated scope. |
+| ADR-0110: D19/D20/D22, #13/#19/#309, G15/G35 | [Explicit CLI compatibility](../../decisions/0110-cli-diagnostics-and-discovery-have-explicit-compatibility.md): retain quiet+verbose conflict; exact DEBUG=1 alias; preserve JSON/safety data; unexpected/output infrastructure exit 9 with distinct diagnostics; versioned explicit JSON help; alias-preserving pricing/chat syntax; key-delete consent; G15 refuted with durable-only replay preservation. Genuine run outcomes and exits 3–8/signals keep their contracts. D22's old two-exception shorthand must be reconciled to this explicit enumerated scope. |
 | ADR-0111: #43/#44/#46/#271 | [Lazy packaged runtime](../../decisions/0111-cli-meta-operations-use-a-lazy-packaged-runtime.md): lightweight descriptor-only meta graph; engine-inlined finite chunks, complete closure guard and packed platform controls; exact-byte private sourcemaps. The maintainer selected public-recipient encrypted CI archival; GnuPG, pinned recipient and per-version ciphertext retention are proposed mechanics. Public plaintext artifacts are prohibited. |
-| ADR-0112: G30/#34/#49/#52/#55 | [Operator-owned chat policy and preferences](../../decisions/0112-chat-network-grants-and-onboarding-state-are-operator-owned.md): global-only domain authority, exact DNS/deny-all/approval/SSRF floors; explicit unavailable-keychain acknowledgement with current-state recheck; truthful model-write recovery; non-retryable final-component link refusal and honest recovery; monotonically narrowing global HTTP grants. |
-| ADR-0113: #92 and reproduced leak | [Declared-source context provenance](../../decisions/0113-secret-derived-context-keeps-provenance-at-public-sinks.md): reuse existing linear taint graph, preserve trusted raw resolution, qualify context before executor/preparation and fail loudly on denied VM/template reads; required owned projection. Record unsupported future tool mappings honestly rather than fabricate a producer. |
+| ADR-0112: G30/#34/#49/#52/#55 | [Operator-owned chat policy and preferences](../../decisions/0112-chat-network-grants-and-onboarding-state-are-operator-owned.md): global-only domain authority, exact DNS/deny-all/approval/SSRF floors; explicit unavailable-keychain acknowledgement with current-state recheck; truthful model-write recovery; non-retryable final-component link refusal and honest recovery; live monotonically narrowing invocation HTTP authority even after failed Home replacement. |
+| ADR-0113: #92 and reproduced leak | [Declared-source context provenance](../../decisions/0113-secret-derived-context-keeps-provenance-at-public-sinks.md): reuse existing linear taint graph, preserve trusted raw resolution, qualify context/input provenance before executor/preparation; remove raw denied values, refuse templates and diagnose executed VM denied access with an explicitly finite latch; required owned projection. Record unsupported future tool mappings honestly rather than fabricate a producer. |
 | D18, D26/#125, #311 | Keep chat-ink restructuring with Wave 5a; keep cost chat-only with both real surfaces tested; correct Commander parser-path token echo and add static help; preserve dispatcher privacy. These are explicit dispositions, not new features or undisclosed deferrals. |
 | #89/#90/G18/#210/G17 | Apply missing duplicate/cross-field guards at leaf and full boundaries. Condition equality is typed (`true` differs from `'true'`; 0 equals -0). Duplicate fallback tuples are provider+model within the fallback list; do not forbid equality with the primary. Timeout without action retains default reject; action without timeout refuses. |
 | G17 RunSchema detail | Preserve optional legacy timestamps and outputs. Reject completedAt on nonterminal states, startedAt on pending, and error outside failed; retain temporal checks. Terminal records need not invent timestamps/error fields. Do not adopt a stricter logical schema as a DB reader or migrate historical rows. Existing tests accepting contradictory present fields must change deliberately. |
@@ -3656,22 +3656,22 @@ No credential values or request captures belong in tracked evidence.
 |---|---|
 | 1 | **Serialized multi-file queue first:** shared close handling #22 (four named siblings plus newer owned journal sites) → safe source labels #4/G11 plus #3's UTF-8 source admission parity → exhaustive session/picker/run switches #300/#301/G3 and actual reasoning rendering. Preserve primary outcomes and host-safe-close ownership. For #3, use the sibling 4× byte precheck plus authoritative parser character bound; test a dense multibyte source above the old byte cap but below the character cap, ASCII character overflow and true byte overflow. Add native error and mounted output regressions. |
 | 2 | **Shared admission and diagnostics:** #89/#90/#212/G18/#210/G17, certify #211/G16; shared parser reason helper #85/#86 and config numeric bounds #32. Approved status/duplicate matrices, direct leaf/full parse tests and no value-bearing diagnostics. |
-| 3 | **Secret provenance:** ADR-0113/#92, fresh/resume/preparation/condition/transform/merge paths, engine-owned projection and actual VM/template consumers, fail-loud denial, real SQLite columns and positive completed/persisted controls. Dedicated security sitting, no future mapping implementation. |
+| 3 | **Secret provenance:** ADR-0113/#92, fresh/resume/preparation/condition/transform/merge paths, engine-owned context/input provenance and actual VM/template consumers; direct secret-input marker compatibility, finite denial latch and single serialized payload with exact result parity. Real SQLite columns, clean positives and historical-output limitation. Dedicated security sitting, no future mapping implementation. |
 | 4 | **Error/envelope substrate:** #213/#219, actual migrated-class inventory and cross-bundle structural guards. Preserve exported names/discriminants, constructor/cause behaviour and event payloads. Convert only supported error classes, not vendor errors or plain seam unions. |
 | 5 | **Tools and engine tails:** #93/#95/#96/#98/#97/#214/#221/#258/#259/#308, #94/#82/#87/#76/G9/#79/#274/#275. Bounds before effects, model-visible semantics, existing ordinal helper, path-local cycle guards, cancellation race and deterministic plan equivalence; certify #75/#78/#216 instead of rewriting them. |
-| 6 | **Pure process/discovery substrate:** ADR-0110 categories, shared early flag grammar, explicit exit/site inventory, enriched descriptor registry with legacy/model and new CLI projections, lightweight local errors and invocation owner registry. Contracts precede consumers. Unit/source checks do not claim fatal/native or JSON-help integration complete. |
-| 7 | **Lazy runtime and package graph:** #43/#44/#271/ADR-0111, consuming Step 6. Guard dynamic imports from a lightweight entry; defer classifier/sanitizer/service barrels and MCP wiring; preserve filesystem → fallback cache → DB catalog → model/cost ordering and media exception. Finite flat chunks, all-output closure, real packed existing meta/run/chat/migration/identity and minimum-Node/platform controls. New JSON help waits for Step 10. |
-| 8 | **Native process integration:** #40/#41/#42/#224/#269/G35 under ADR-0110, after the early graph can catch import failures. Wire registered owners, classified EPIPE, generic exit 9 and throw-path final-health precedence. Preserve known history/departure refusals, recoverable #228 and signals; native child/grandchild/Windows, both sinks and externally watched fatal-budget controls. No false host-safe-close ACK. |
-| 9 | **Release map/custody substrate:** #46/ADR-0111, independently reviewed after the finite graph. Upstream TS maps, sole prepack final build, pre-hash trailer removal/staging, exact tarball/CLI+engine symbolication, encrypt-once candidate and retry/partial-upload/conflict controls, archive-before-npm DAG and required artifact/platform gates. Dedicated archive/crypto security sitting. Fixture proof never claims production recipient/custody configuration. |
+| 6 | **Pure process/discovery substrate:** ADR-0110 categories, shared early flag grammar, explicit exit/site inventory, enriched descriptor registry with legacy/model and new CLI projections, one closed CLI code/origin authority, storage-boundary classification inventory and kind-specific invocation owner registry. Include caught/forced-exit owners and total observation priority. Contracts precede consumers. Unit/source checks do not claim fatal/native or JSON-help integration complete. |
+| 7 | **Lazy runtime and package graph:** #43/#44/#271/ADR-0111, consuming Step 6. Guard dynamic imports from a lightweight entry; defer classifier/sanitizer/service barrels and MCP wiring; preserve filesystem → one seedFileCatalogOnce owner → DB catalog → model/cost ordering and media exception; explicitly test meta-only admission refinement. Finite flat chunks, all-output closure, real packed existing meta/run/chat/migration/identity and minimum-Node/platform controls. New JSON help waits for Step 10. |
+| 8 | **Native process integration:** #40/#41/#42/#224/#269/G35 under ADR-0110, after the early graph can catch import failures. Wire kind-specific owners, output_unavailable/cli_internal 9, known storage/history/departure classification, run-only health precedence and session join uncertainty. Preserve recoverable #228/signals; MCP PID versus tool PGID/Windows, terminal restore before stderr, total remaining fatal budget, competing faults and both sinks. Minimal I/O adapters land here; central DB refactor stays last. No false host-safe-close ACK. |
+| 9 | **Release map/custody substrate:** #46/ADR-0111, independently reviewed after the finite graph. Upstream TS maps, sole prepack final build, pre-hash trailer removal/staging, exact tarball/CLI+engine symbolication, encrypt-once candidate with permissioned prebuild discovery/reservation → pack/reuse → smoke → archive → npm → finalization. Required artifact/platform aggregation, all rerun modes, lost-staging refusal and permission-enforcing offline API controls. Dedicated archive/crypto security sitting. Fixture proof never claims production recipient/custody configuration. |
 | 10 | **CLI behaviour/discovery integration:** #45/#264/#265/#268/#13/#17/#18/#310/#309/#19 under ADR-0110, consuming Steps 6–9. Production owner category matrix, real root/subtree JSON help, pricing/chat aliases, non-echoing Commander refusal and signal-safe deletion consent. G15 is refuted and receives real engine/store/log preservation evidence, with no invented token coalescing. Repeat affected packed gates. |
 | 11 | **Chat normalization and abort:** #236/#237/#242/#307 → #218 → #21/#23. Canonical token/money source with approved additive LLM export, preserved two-decimal cap formatting and real immediate abort while a turn is blocked. Audit Home's imports. |
 | 12 | **Chat decomposition:** #220/#244 after preceding chat fixes. Split lifecycle/drivers, line handler, printers and reseat/clear ownership. Preserve compatibility entry points, W7/W8 receipts, unknown-usage, full-screen bounds, disclosure activation and cancellation. |
-| 13 | **Chat domain policy:** G30/ADR-0112 after decomposition, all fresh/resume/Home/agent/rebuild paths. Real host-policy dispatch and no-authority/SSRF/approval controls; separate egress/config-trust security sitting. |
+| 13 | **Chat domain policy:** G30/ADR-0112 after decomposition, all fresh/resume/Home/agent/rebuild paths. Invocation-live policy owner shared by old/pending hosts, post-approval/post-prepare target guard, pinned global selection, suspension/recovery and latest-only build publication. Actual failed/overlapping Home rebuild and approval-race controls, alongside no-authority/SSRF/ports; separate egress/config-trust security sitting. |
 | 14 | **Home controller:** certify G37, fix #281, record/test #125/D26 before #215/#243 decomposition; then #217/#222 scoped naming. Overlay discriminated union, subcontrollers, stale async work/focus/approval invariants and both live cost surfaces. |
 | 15 | **Viewport/input:** #58/#62/G40/G51 → #65 → #64/#66, then #63/#69/G4/G55. Grapheme-correct editing/truncation, tabs, bounded caches, safe resizing, TERM=dumb and both small-terminal surfaces, input history and mouse bounds. CJK measurement and real emitted rows. |
-| 16 | **Onboarding and overlays:** #49/#52/#51/#53/#55/G5/G52/G41/G53 and #34 under ADR-0112. Real next-model binding, recoverable persistence, explicit acknowledgement, current keyless nudge, hidden-approval safety, color-off mounts and native symlink preservation; keychain/config security sitting. |
+| 16 | **Onboarding and overlays:** #49/#52/#51/#53/#55/G5/G52/G41/G53 and #34 under ADR-0112. Real next-model/ephemeral invocation binding across clear/reseat, recoverable persistence, explicit acknowledgement/current keyless nudge, shared pre-read writer symlink refusal, surfaced typed recovery and deterministic existing-file comment-loss notices. Hidden-approval safety/color-off; keychain/config security sitting. |
 | 17 | **Remaining CLI/hygiene:** #24/#26/G43/G2/#12/#54/G14/#11/#47/#48/#240/#241/#311/G54/#303/#304; certify #20/G36/G46. One-shot coverage-aware cost/banner, actual-host doctor, typed faults, no silent missing-dist skip, guard misuse, attachment estimate and compiler checks. #239 remains the approved documented compatibility surface. |
-| 18 | **openLocalDb LAST:** #278/#280 across every moved caller. Central fixed safe error wrapping, attempt-all secondary cleanup, preserved causes, privacy/checkpoint notices and exact writer lifetimes. Actual command-family failure probes; no duplicate wrapper left behind. |
+| 18 | **openLocalDb LAST:** #278/#280 across every moved caller. Centralize the already-integrated classification/wrapping with fixed safe errors, attempt-all secondary cleanup, preserved causes, privacy/checkpoint notices and exact writer lifetimes. Actual command-family failure probes; no duplicate wrapper left behind. |
 | 19 | **Whole-wave acceptance and publication:** every item disposition; A/E/G and M2.5.5-3 evidence; ordinary/enforced coverage and required CI/build/fences/smokes/causal/platform checks at attributed source; measure and promote core's ≥90% line/branch floor to required CI as testing.md requires after Wave 3 coverage work, fixing meaningful missing coverage before closure. Two new whole-wave cumulative reviews, canonical doc/ADR landings and PR. I/whole phases/later product waves stay open. |
 
 Steps are dependency-safe increments, not permission to parallel-edit shared hot
@@ -3849,6 +3849,10 @@ cumulative clean proposal rounds at its corrected head before approval is reques
 
 #### Revised proposal readiness after source corrections — 2026-10-15
 
+> **Historical readiness superseded — 2026-10-16.** The maintainer rereview below
+> demonstrates source/contract gaps present at this checkpoint. Its reported clean
+> rounds are retained as history, not current readiness or implementation approval.
+
 Two NEW independent COMPLETE cumulative reviews are clean at exact reviewed source
 49ba03eecf9856e3d6f0bda6528f4a48d94a34e8: round 3 (gpt-6.1-sol, high) and round 4
 (gpt-6-sol, high). Each covers all fourteen proposal paths, all four ADRs, the
@@ -3884,3 +3888,89 @@ notes before dependent code, then start serialized Step 1 and its required revie
 loop. Production recipient/recovery configuration remains an actual Wave 4b release
 prerequisite; no production key, provider capture, billing or upload is needed for
 the current approval. Detailed reports remain local and Git-ignored.
+
+#### Second maintainer rereview and proposal corrections — 2026-10-16
+
+**Current status: revised Proposed decisions; source preflight reopened, no product
+implementation.** The two submitted rereviews show that the a8708a65/49ba03ee clean
+proposal records did not establish adequate source coverage. Those readiness claims
+are superseded, not counted toward the corrected proposal. No assertion that all
+old partial findings became implemented fixes is made. The four decisions and
+nineteen-step plan still require new complete cumulative reviews and maintainer
+approval before code.
+
+Three scoped source intakes (CLI, packaging, chat/context) and parent verification
+support the dispositions below. They are not full clean proposal rounds. The
+chat/context agent supplied source observations and retained synthetic evidence,
+then its turn was stopped by automatic cybersecurity review; it produced no final
+clean review. It is not counted as completed or retried to evade that restriction.
+The parent can continue normal documentation work using inspected source/evidence.
+No release/API mutation, paid call, key access, provider capture or product edit
+occurred. The chosen encrypted archive method is retained.
+
+| Submitted concern | Revised proposal or verified disposition; implementation owner |
+|---|---|
+| A: EPIPE 1 versus workflow failure | Classified output infrastructure now uses output_unavailable/9; unexpected uses cli_internal/9. Known operational 1 remains explicitly scoped. Commands owns the table/remedy; Steps 6/8/10. |
+| Chat/Home/agent fictitious joined 5–8 | Run-only RunHandle health; session cancel/join/publication failure, no new session-health DTO. Failed chat turns keep REPL live, unknown caught faults reach coordinator. Steps 6/8/11/12/14. |
+| POSIX MCP group / root-exit semantics | Creation-specific tool PGID versus SDK MCP PID, narrow actual lifetime adapter and explicit PID/PGID uncertainty. Windows verified taskkill only for still-owned live root. Steps 6/8; no SDK transport rewrite or universal containment claim. |
+| Fatal race, budget, stderr and catches | Sticky total observation order, one cleanup/deadline including taskkill/restore/flush, terminal restore before stderr, never diagnostic stdout. Existing total budget text was already present; synchronous-after-expiry ambiguity is corrected. Inventory slash/rebuild/one-shot/forced-exit catches and unknown origin. Steps 6/8. |
+| DB failure classification before final refactor | Native typed DbOpenError/owned errno operational mapping and minimal adapters precede native integration; invalid schema remains 2, import/ABI fault 9. Existing wrappers' runtime-IO 2→1 change is explicit. Step 18 only centralizes the already-required contract. |
+| Pricing binding and own remedies | Legacy model/executor input/output bindings remain; canonical shell spellings track source presence before conflicts. Update every generated hint/example so it does not recommend deprecated pricing/chat aliases. Step 10. |
+| Release retry permissions / final writer | Concrete admission→draft-visible Actions-read discovery/reservation→fresh pack or reuse→smoke→archive→npm→finalize graph; only custody jobs get Contents write, top-level deny default, read-only publish consumes verified tarball/receipt. All reruns discover before build. Step 9. |
+| Lost candidate / randomized encryption | Reserve original version/source/attempt before first build; incomplete/lost candidate requires recovery, never new encryption/replacement. Retain all three assets beyond Actions expiry. Permission-enforcing fake service tests actual state controller and call counts; no live tag needed. Step 9. |
+| Maps / finalizer / chunks / public floor | Installed compiler overrides and concrete dependency order, prepack map enable, missing-upstream refusal and repository-relative finalization, entry-only hashbang/modes, exact-tarball required aggregate on supported OSes and Node 22.0.0. Steps 7/9 and final repeat. |
+| Help admission / catalog | Missing directory no longer blocks meta once pure grammar passes: explicit ADR-0105 refinement. One invocation seed owner and eleven current DB-overlay sites, including quote/fixture/media exceptions. Step 7. |
+| Public-source encryption proportionality / settings | Preserve selected distribution/custody policy, acknowledge availability cost and revisit only with maintainer policy change. Current repository defaults/immutability are not protection; explicit workflow permissions/concurrency/no-overwrite are required. Step 9; production setup remains Wave 4b. |
+| Home build-first / failed and overlapping rebuilds | One live narrowing owner shared by all hosts; post-approval/post-prepare check uses owned PolicyTarget. A validated removal survives failed replacement; stale build cannot restore policy/selection. Step 13 before later Home decomposition acceptance. |
+| Policy source / errors / widening / IP aliases | Pin lexical global selection/home once, initial missing versus transient error distinctions, suspend rather than falsely revoke on read fault, no startup fallback, fixed ignored-widening notice. ASCII validation before fold and alternate IP rejection; workflow policy stays separate. Step 13. |
+| Ephemeral selection / UX acknowledgement / shared writer | Invocation binding survives clear/reseat and latest-only publication; current key state outranks portable UX preference. Shared lstat refusal before read/chmod for all writers, actionable Home/wizard diagnostics, existing-file comment-loss notice, old-binary rollback cannot promise new meta behavior. Steps 13/16. |
+| B: direct secret marker asymmetry | Deliberately replace direct expression-input markers with the same denied-value contract as ctx; public templates also refuse direct secret inputs even for hand-constructed workflows. Display/input-node markers remain. Step 3, requiring approval of this explicit compatibility change. |
+| C/F: accessor rationale / error identity | ADR-0093 before-money ordering stays; runtime privacy excludes raw values, latch diagnoses executed denied reads. Existing sandbox_error gains fixed secret_context reason, not a new engine ErrorCode. Step 3. |
+| Latch resource bypass / serialization | Document caught pre-accessor stack failure as finite semantic limit, not confidentiality failure. One authored payload serialization before latch check; outer primitive-only envelope cannot run author serialization again. Actual numeric/boxed/object parity and bounded transport are required. Step 3. |
+| Mutable secret Set / actual producer inventory | One owned mutation-incapable membership facade plus immutable array; fresh, budget preparation and cross-process resume plus all low-level scope/test producers migrate. Correct stale scope/error comments and private-detail claims. Step 3. |
+| Old durable outputs / tool provenance | No automatic historical scrubbing or claim legacy run.outputs is secret-free. Land at-rest/recovery guidance. Optional external tool provenance remains explicitly unverified; nonexistent mapping producer not fabricated. Actual repaired exposure and #92 limitation stay distinct. Step 3. |
+| D/E/G: metadata / partial index / Proposed references | Standard Status/Date/Related only. At approval add clause-specific partial Status/index/forward notes; promote each exact reference only at implementing increment acceptance, not ADR acceptance. Explicit landing checklist below. |
+| Claimed broken Wave 2 anchors | Refuted: explicit HTML alias wave-2-individual-dispositions--certification-in-progress exists and preserves both links. Do not manufacture a repair/deferral. |
+
+**Evidence scope.** Source remains product-identical to 702cdc9c. Installed synthetic
+TypeScript/tsup/esbuild controls verify map chaining, silent missing-upstream fallback
+and entry/chunk mode behavior; these are not actual packed product/release controls.
+Existing actual-engine intake confirms direct-input marker comparison completes
+false and hand-built human-template input can expose the synthetic canary. Installed
+QuickJS emulation reproduces caught pre-accessor stack failure in eight of eight
+intake cases without raw values in the VM. Parent additionally executes 36 actual
+baseline sandbox result cases across condition/transform/merge: top-level NaN,
+±Infinity and -0 stay numbers, boxed primitive is rejected, Map/Set is {}, and
+cycle/nonserializable results refuse. Those observations constrain the proposal;
+no new implementation or final VM mechanism is certified. No full CI/coverage,
+Windows, actual product tarball, GPG/production custody or published API validation
+is inferred. Working reports/probes remain local and ignored.
+
+**Canonical landing checklist (required, not a future unowned debt):**
+
+1. At explicit approval: change only new ADR statuses/index, append old clause-specific
+   notes and partial Accepted/index annotations for ADR-0047/0049/0051. Append the
+   listed refinements, including ADR-0105 meta admission and ADR-0027/0083 direct-input
+   compatibility/ADR-0093 rationale. Reconcile D19/D22, E no-new-ADR statement and
+   phase criterion 4 before dependent code. Keep historical bodies intact.
+2. Step 3: merge actual secret-boundary/producer behavior into expression-sandbox,
+   agent-runner, workflow/tool contracts; replace both contradictory tool provenance
+   passages and stale source comments. Update at-rest/recovery guidance. Preserve
+   unimplemented remainder as explicitly Proposed.
+3. Steps 6–10: promote implemented commands, groups/flags/pricing remedies, errors/
+   exits and packaging sections; reconcile phase CLI acceptance plus chat-session.md,
+   home.md and current command text. Step 9 updates release-a-surface.md for exact
+   graph/map/modes/recovery. No shipped claim for a merely approved mechanism.
+4. Steps 13/16: promote exact config/tool/chat/Home policy, selection and writer
+   sections as their code is accepted, including rollback and surfaced remedies.
+5. Step 19: inventory all Proposed sections in commands.md, packaging.md,
+   config-spec.md, tool-registry.md, expression-sandbox-spec.md and agent-runner.md.
+   Merge/remove every completed proposal section/banner and reconcile overlapping
+   old current text; any genuine unimplemented scope stays visibly open. Repeat
+   link/anchor, append-only and exact-head source/evidence checks. No blanket
+   “all references describe shipping code” claim before this inventory passes.
+
+These edits need fresh complete cumulative source-based proposal reviews. No
+implementation is authorized by prior clean reports or source feasibility probes.
+The maintainer must approve the revised four ADRs/contracts/plan before Step 1;
+archive method selection is already complete, and no production key is requested.

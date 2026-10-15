@@ -513,6 +513,23 @@ connection, redirect/time/size floors still apply. Chat's global policy is defin
 only in [config-spec.md](../contracts/config-spec.md#proposed-wave-3-chat-policy-and-preferences);
 workflow policy and independent command/MCP/provider egress are not expanded here.
 
+Chat HTTP authority uses one invocation-owned live narrowing view. Extend the
+existing beforeDispatch callback additively to receive tool ID and the existing
+PolicyTarget. Immediately after admitArgs, copy/freeze its known command/url/path
+fields once, before any await, and use that same target for approval/policy and
+post-prepare dispatch. The CLI session-host wrapper checks HTTP against current
+non-suspended authority at this post-approval/post-effect-prepare cut, then invokes
+the existing journal callback. Refusal discards any prepared effect under the
+existing protocol. A static host allowlist remains an earlier ceiling, never a
+replacement for this current check. Do not decorate shared fetch/search/MCP or
+invent a policyTarget function in model arguments. Existing callbacks ignoring
+new parameters remain compatible; migrate every invocation/forwarding site.
+
+Live authority changes only at explicit rebuild/refresh, not file watching. Old
+and pending hosts share it, so failed replacement cannot restore a grant. A
+request admitted before narrowing may finish. Workflow domains remain separately
+owned and are not switched to global chat policy.
+
 At implementation landing correct both the dispatch-context secret-argument
 comment and Guardrail enforcement's “1.O/1.V producer” claim. No live authored
 tool-input mapping producer exists; agent/session config is empty. The optional

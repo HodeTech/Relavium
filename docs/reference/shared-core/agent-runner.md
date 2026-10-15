@@ -372,21 +372,30 @@ second synchronous cleanup error is not claimed for the current built-in governo
 
 ## Proposed Wave 3 qualified context consumers
 
-**Proposed, unshipped — 2026-10-15.** [ADR-0113](../../decisions/0113-secret-derived-context-keeps-provenance-at-public-sinks.md)
-requires approval. The exact projection, VM and refusal contract belongs to the
+**Proposed, unshipped — 2026-10-16.** [ADR-0113](../../decisions/0113-secret-derived-context-keeps-provenance-at-public-sinks.md)
+requires approval. Exact projection, VM/input compatibility, result transport and
+finite refusal scope belong to the
 [expression specification](expression-sandbox-spec.md#proposed-wave-3-secret-context-boundary).
 
-WorkflowEngine qualifies raw resolveContext output once at fresh start/resume and
-standalone cross-process budget preparation, before storing or invoking callbacks.
-NodeExecContext and NodePreparationContext carry the same required projection.
-The preparation Pick must actually include it. resolvePrompt/public-template
-lowering consumes denied keys before filter/default resolution; preparation has
-no expression sandbox and no unused VM-only metadata. Execution scope consumes
-the projection for condition/transform/merge, and agent/human text uses the same
-public template path. Test each producer and consumer with a witness.
+WorkflowEngine qualifies raw resolveContext output at fresh start/resume and
+standalone cross-process budget preparation before storing or invoking callbacks.
+NodeExecContext and NodePreparationContext carry the same required projection and
+owned immutable secret-input membership. The preparation Pick must actually include
+it. Public prompt/agent/human lowering rejects denied context and direct secret
+inputs before filters/defaults, including hand-constructed workflows. Preparation
+has no sandbox or unused VM-only field. Condition/transform/merge scope omits raw
+secret inputs and supplies required deniedInputNames; direct expression-input
+markers deliberately change, while input-node/display masking stays.
 
-Embedding migration replaces raw ctx records with the factory-owned projection
-from the admitted workflow; clean embeddings explicitly construct an empty-denial
-projection. No implicit absent metadata. Existing raw secret NodeExecContext.inputs
-remain the trusted-host contract and continue to be masked at public/sandbox
-boundaries. This context repair is not a universal custom-executor secrecy claim.
+Migrate all actual engine producers (fresh execution, budgetPreparationContext and
+cross-process resumePreparation.context), the exported scope interface and every
+co-located double. Derive/copy secret names once per admitted workflow; no exposed
+live mutable Set or resume-time second derivation. Witness each producer and actual
+VM/template consumer. Reject absent metadata; clean embeddings explicitly create
+empty-denial projections. Trusted raw NodeExecContext.inputs and the raw resolver
+remain host APIs, not a universal custom-executor confidentiality boundary.
+
+Update the stale buildExpressionScope/maskSecretInputs and sandbox/error-detail
+comments with their actual split duties. Existing historical persisted outputs
+remain outside the new projection guarantee and receive at-rest/recovery guidance,
+not silent rewriting. Optional tool provenance is its separate canonical boundary.

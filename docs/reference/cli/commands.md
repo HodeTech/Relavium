@@ -687,71 +687,127 @@ syntactically valid frame paths as negative controls.
 
 ### Failure classification and remedies
 
+These are CLI dispositions, separate from engine ErrorCode. One closed
+`CliErrorCode`/classification authority in the pure process layer owns the new
+`cli_internal`, `output_unavailable`, `storage_unavailable` and
+`config_write_refused` codes; ADR-0112 does not create a parallel error union.
+
 | Surface / origin | Proposed disposition |
 |---|---|
-| Workflow run/gate/budget resume: actual terminal or pause | Existing 0/1/3; actual joined 8, then 7, then terminal uncertainty 5 or fencing 6 take priority |
-| Chat/chat resume: actual failed turn or deliberate end | Existing 1 or 4; joined receipt/effect health takes priority |
-| Home: clean shell end, nested chat end, external signal | Existing 0; consumes nested 4; preserves 128+signo for actual signal termination |
-| Standalone agent: actual turn outcome / external signal | Existing outcome 0/1; actual signal 128+signo |
-| Management/meta: successful result or known operational failure | Existing 0 or classified 1; invalid invocation/config remains 2 |
-| Typed corrupt/unreadable history, known departure-unacknowledged | Preserve known operational 1 unless actual joined 8/7/5/6 overrides; do not infer acknowledgement |
-| Classified output-unavailable/EPIPE/failed write acknowledgement | CLI-only `output_unavailable`, exit 1 unless actual stronger safety health overrides; never raw stack |
-| Unexpected CLI throw/invariant/wiring failure on **any** surface | Fixed `internal` diagnostic, exit 9 unless actual stronger safety health overrides; never chat-end 4/Home success |
+| Workflow run/gate/budget resume: actual terminal or pause | Existing 0/1/3; actual RunHandle health has the precedence below |
+| Chat/chat resume: classified failed turn / deliberate end | Failed turn stays in the REPL; deliberate end is 4. No invented session 5–8 health channel |
+| Home: clean shell end / nested chat end / terminating external signal | Existing 0; consumes nested 4; actual signal 128+signo absent stronger observed disposition |
+| Standalone agent: actual turn outcome / terminating external signal | Existing 0/1; actual signal 128+signo absent stronger observed disposition |
+| Management/meta success / known operational failure | Existing 0 or classified 1; invalid invocation/schema remains 2 |
+| Typed corrupt/unreadable history or known departure-unacknowledged | Existing known operational 1/remedy, unless actual workflow health overrides |
+| Owned storage boundary: typed DbOpenError or filesystem EACCES/EPERM/ENOSPC/EROFS | Fixed `storage_unavailable`, operational 1; correct permissions/capacity before retry. No arbitrary cause text |
+| Failed-output/EPIPE/write acknowledgement on any surface | Fixed `output_unavailable`, exit 9 unless actual stronger workflow health overrides |
+| Unexpected CLI throw, invariant, native import/ABI or wiring failure on any surface | Fixed `cli_internal`, exit 9 unless actual stronger workflow health overrides; never chat-end 4/Home success |
 | Recoverable unhandled background rejection | Keepalive; upgrade only otherwise clean 0 to 9, preserve established nonzero outcomes |
-| Fatal exception / rejected invocation | Stop admission, one bounded fatal shutdown; generic 9 with observed stronger safety health retained |
+| Fatal exception / rejected invocation | Stop admission and enter one bounded fatal shutdown; compute disposition from actual observations |
 
-Do not change the broad `CliErrorCode.internal` table alone: inventory and classify
-every existing constructor site independently, retaining known operational codes.
-Engine terminal `error.code=internal` still denotes a genuine failed run/turn.
+Do not remap broad `CliErrorCode.internal` wholesale. Inventory each constructor,
+catch and direct forced-exit site before integration: workflow/gate departure,
+agent-run catch, chat slash/export/workflows/cost/doctor/compact and rebuild catches,
+Home initial/submit/clear/reseat arms, persister backstop and signal/force-quit
+paths. Known operational refusal stays inline where supported; unexpected faults
+must reach the invocation coordinator even if a balanced internal turn event was
+emitted first. That engine event alone cannot convert an escaping CLI fault to
+an ordinary turn outcome. Programmer-invalid DB URI is not a normal CLI
+storage-open failure; preserve its API validation boundary.
 
-Exit **9** means the CLI could not complete reliably. After admitted paid/effectful
-work, **do not automatically repeat it**: inspect logs/ledger and external targets
-before recovery. It certifies neither absence of work nor receipt durability.
-Exit 1 due to unavailable output has the same inspect-before-retry limitation.
-If both sinks fail, no diagnostic delivery is claimed. Node may itself exit 9
-for invalid runtime arguments **before this entry runs**; the CLI diagnostic
-distinguishes the handled case, not the numeric value alone
-([Node exit codes](https://nodejs.org/docs/latest-v22.x/api/process.html#exit-codes)).
+Classify native storage errno only at the actual owned I/O boundary, not by
+examining arbitrary provider/plugin objects or private cause trees. Recognize
+actual typed DbOpenError without importing DB through the lightweight entry.
+The lazy runtime adapter supplies its classification. Existing CLI open wrappers
+that label runtime permission/capacity failures invalid invocation/2 deliberately
+move to operational 1. Step 6 defines this mapping and Step 8 installs minimal
+boundary adapters; Step 18 centralizes them after all callers have moved.
 
-The fatal budget is three seconds from the first fault, including attempted
-diagnostic flush. It is a responsive-event-loop backstop, not preemption of blocked
-JavaScript/native work; native tests need an external watchdog. Normal receipt
-joining remains unbounded by this fatal policy. A timer never acknowledges an owner
-or allows an unjoined store to close. Register owners before work, stop all even
-if one callback throws, release only after actual joins, reap only owned native
-resources on fallback and guard handler re-entry.
+A sticky observation record computes this total priority on return **and throw**:
+actual workflow health **8 > 7 > 5 > 6**, then fatal/output infrastructure **9**,
+then an actually terminating external signal **128+signo**, then ordinary outcome.
+5 and 6 remain the existing terminal-uncertainty versus fencing dispositions, not
+new session statuses. First workflow SIGINT remains cooperative run cancellation
+(normally 1); raw-mode chat Ctrl-C remains deliberate end 4. The recoverable
+background net is the separate keepalive rule in the table.
+
+The first termination request latches admission-stop and one cleanup operation.
+Later observed faults may upgrade the final disposition, never duplicate cleanup,
+renew a deadline or downgrade 9 to a signal/session-end result. A fault first
+observed after synchronous process exit cannot be included retrospectively.
+
+Exit **9** means CLI infrastructure could not complete reliably, including output
+delivery. It does not say the workflow failed. `cli_internal` and
+`output_unavailable` distinguish unexpected failure from classified broken output.
+After admitted paid/effectful work, **do not automatically repeat it**: inspect
+logs/ledger and external targets before recovery. It certifies neither absence of
+work nor receipt durability. Session surfaces expose stop/join and retained
+publication failures, not RunDeparture health; their 9 remedy carries the same
+uncertainty. If stderr fails, no diagnostic delivery is claimed; stdout is never a
+fallback diagnostic sink. Node may itself exit 9 for invalid runtime arguments
+before this entry runs; a CLI diagnostic distinguishes the handled case, not its
+numeric value alone ([Node exit codes](https://nodejs.org/docs/latest-v22.x/api/process.html#exit-codes)).
+
+### Invocation owners and fatal ordering
+
+One invocation-owned lightweight registry is installed before dynamic imports.
+Owners register before admitting work and unregister only after actual settlement.
+Callbacks expose facts/capabilities specific to their owner, not a generic false
+health object:
+
+| Owner | Available observations / actions |
+|---|---|
+| Workflow | RunHandle departure/durability/terminal error; actual host joins and owned producer teardown |
+| Chat/Home/standalone AgentSession | Cancel/stop and existing whenHostSafeToClose join; retain rejection/publication failure. No invented RunDeparture, 5–8 or healthy receipt inference |
+| Terminal renderer/input | Stop redraw/input and SIGCONT reclaim; restore raw/paste/mouse/cursor/alternate-screen custody |
+| Native tool/MCP | Exact creation-specific registration, stop/join and the finite reap authority below |
+
+Stop every owner even if one callback fails, before awaiting one of them. Release
+terminal custody before the final fixed stderr diagnostic and its acknowledgement;
+otherwise alternate-screen restoration can erase it. Restoration control bytes use
+the existing terminal control sink, not diagnostic stdout. Keep host/DB close
+behind actual joins; fatal process termination does not grant safe store close.
+
+The fatal deadline is three seconds from the first infrastructure fault, including
+join, native helper/reap, restore and flush. Every callback/helper receives only the
+remaining common monotonic budget; no serial per-owner renewal. An already earlier
+bounded signal teardown can shorten it, never extend it. It is a responsive-event-
+loop backstop, not preemption of blocked JS/native work; native tests require an
+external watchdog. Normal receipt joins retain their actual protocol. A timer
+never acknowledges an owner. After expiry no unbounded async helper starts;
+finite nonawaited exit cleanup cannot certify native closure.
 
 ### Native crash teardown scope
 
-On POSIX, terminate only registered owned process groups/children. On Windows,
-use the OS [taskkill](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/taskkill)
-facility with fixed `/PID <owned-live-root> /T /F` arguments, shell=false and no
-image-name/remote/wildcard selectors. Resolve its absolute System32 location from
-the invocation's trusted OS installation root, canonicalize and verify that fixed
-regular executable there before any tool/MCP spawn; never search workspace/PATH,
-or accept a workflow/model-supplied executable/root. A missing/invalid facility
-refuses subprocess admission; it cannot silently degrade to claimed tree cleanup.
-The OS installation root is trusted host environment, not a security boundary
-against an already hostile launching user/process.
+| Creation owner / platform | Permitted finite teardown |
+|---|---|
+| POSIX run_command | Its explicitly detached owned process group; retain the group token through bounded final reap even if the leader closes |
+| POSIX SDK-backed MCP | Its owned live PID only; SDK spawn is not detached. Never cast PID to negative PGID or kill the CLI's group; descendants are unclaimed |
+| Other POSIX child | Only the creation-specific PID/group authority actually registered; no ambient scan |
+| Windows supported child/MCP | Verified absolute taskkill with fixed `/PID <owned-live-root> /T /F`, shell=false; no cached closed root or image/remote/wildcard selectors |
 
-Register exact ChildProcess ownership before exposing work; retain it until close.
-Do not kill a stale PID after the owned root has closed. Bound taskkill completion
-within the responsive fatal budget, attempt all registered owners, and join actual
-native close separately; termination-request success is not acknowledgement.
+Resolve [taskkill](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/taskkill)
+from the trusted OS installation root, canonicalize/verify that fixed regular
+executable before tool/MCP spawn; never use workspace/PATH or model-supplied roots.
+Missing/invalid facility refuses Windows subprocess admission, with a fixed
+remedy. The OS root is trusted launching environment, not protection against an
+already hostile launching user/process. The helper is itself owned and its runtime
+fits the same remaining deadline; a successful request is not target close ACK.
 
-**Finite guarantee:** best-effort cleanup of the live registered root/current
-descendants on Windows and owned process group on POSIX. Already exited roots,
-escaped/reparented/detached descendants and same-user PID-reuse races are not
-race-free contained by these primitives. Do not scan ambient processes or claim
-no orphan can ever remain. Retain uncertainty/remedy when membership/closure is
-unknown. This explicitly bounded crash mechanism is the proposed Wave 3 scope;
-full M/N child isolation/containment remains with its existing owner, not silently
-certified here. Full Windows job-object containment would require a separately
-approved native-helper/dependency decision; no such dependency is authorized.
+Use actual owner close observations. MCP's latched live PID list alone is not a
+ChildProcess handle or race-free liveness proof: a narrow owner adapter must expose
+its known-close/lifetime state, gate fallback on current ownership and perform a
+best-effort immediate liveness check. Preserve PID-reuse uncertainty. A closed
+Windows root cannot be used for `/T`; an explicitly created POSIX group may still
+need final reap after leader close, but bounded PGID retention is not reuse-proof.
+Escaped/reparented/detached descendants and PID/PGID races are uncontained; do not
+claim universal no-orphan behavior. Existing M/N isolation remains its own work.
 
-Required native Windows controls cover hostile PATH, invalid OS-root facility,
-live descendants, root-exit/stale registration, refusal, timeout and actual close.
-POSIX tests cover owned groups and the same uncertainty distinctions.
+Required native controls distinguish POSIX group versus MCP PID, leader/root exit,
+actual close versus request, competing faults/signals, hostile Windows PATH,
+invalid facility, timeout and both failed sinks. Full Windows job-object/native
+containment would require a separate approved decision; none is added here.
 
 ### Discovery DTO and one descriptor authority
 
@@ -780,8 +836,11 @@ Canonical paths are `chat resume`, `chat list`, `chat export`; flat aliases keep
 working. Canonical pricing flags are `--input-price` and `--output-price`, with
 old `--input`/`--output` deprecated. Preserve separate source-spelling presence
 until conflict checks; both spellings for one quantity refuse even when equal.
-Only then normalize to existing executor args/decimal parsing. Workflow input,
+Only then normalize to stable executor/model binding keys `input` and `output`
+and existing decimal parsing. Model DTO calls are not shell alias usage. Workflow input,
 reserved standalone-agent input and gate payload meanings stay command-scoped.
+All product-generated remedies/examples use canonical pricing/chat spellings;
+retained aliases do not cause the product to recommend its own deprecated syntax.
 
 Explicit `--help --json` (including `-h`) prints one DTO and exits 0, without
 services. Resolve known command/subcommand/alias grammar and `--` terminator;

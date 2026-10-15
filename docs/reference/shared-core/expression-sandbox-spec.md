@@ -259,65 +259,113 @@ error, cap-trip classification, determinism over shuffled `run.outputs` key orde
 
 ## Proposed Wave 3 secret context boundary
 
-**Proposed, unshipped — 2026-10-15.** [ADR-0113](../../decisions/0113-secret-derived-context-keeps-provenance-at-public-sinks.md)
-requires maintainer approval; existing direct-input marker behaviour is preserved.
+**Proposed, unshipped — 2026-10-16.** [ADR-0113](../../decisions/0113-secret-derived-context-keeps-provenance-at-public-sinks.md)
+requires maintainer approval, including deliberate replacement of direct secret-input
+expression markers. Display/run-start/input-node markers remain unchanged.
 
-The one `WorkflowContextProjection` owns `values: Readonly<Record<string, string>>`
-(clean keys only) and `deniedKeys: readonly string[]`. Copy/freeze both, detach
-record prototypes, and reject duplicate/overlapping or malformed keys. One pure
-factory qualifies resolved context against the admitted workflow's existing linear
-taint result. It contains names, never raw tainted bytes. The low-level execution/
-preparation `ctx` field becomes this required projection; raw resolver return
-remains available only under its trusted public contract. No second raw context
-is passed to an executor. Missing/malformed projection refuses with existing
-validation ErrorCode and a fixed message, never defaults clean. Trusted host
-dishonesty is outside this shape/ownership guarantee.
+### Owned provenance and consumers
 
-Actual consumers:
+One WorkflowContextProjection owns values: Readonly<Record<string, string>> (clean
+keys only) and deniedKeys: readonly string[]. Copy/freeze both, detach record
+prototypes, reject duplicate/overlapping/malformed keys, and order clean/denied keys
+by shared byCodeUnit. One pure factory qualifies resolved context using the existing
+linear taint graph. Required execution/preparation ctx becomes this projection;
+the exported trusted raw resolver contract stays unchanged. Missing/malformed
+projection uses existing validation ErrorCode with fixed content-free message,
+never an implicit clean default. Shape checks do not detect a dishonest embedding.
 
-- Preparation and agent/human text lowering use `resolvePublicTemplate`, reading
-  clean values and rejecting denied context references **before filters/defaults**.
-  Use the existing reference lexer, not a new scanner. A fixed
-  `InterpolationError` reason `secret_reference` maps to non-retryable validation.
-- Expression scope construction keeps masking direct inputs and supplies this
-  projection. Before raw scope serialization validate metadata; no denied bytes
-  are serialized. Low-level evaluate calls require explicit projection (owned
-  empty deniedKeys is the clean migration), not an omitted VM-only field.
-- In QuickJS, denied keys are enumerable frozen accessors with a private sticky
-  attempted-access latch. Raw denied values do not exist in the VM. Author code
-  runs in a separate strict lexical environment receiving only a frozen public scope pack, outside the latch/serializer closure.
-  Bind inputs/ctx/run/branches as local const names inside that function (ordinary
-  mutable parameters would change existing semantics). Capture required intrinsics first.
-- Serialize/marshal the result once inside the trusted wrapper, then test the latch
-  before accepting the type/result. Author catch, returned ctx/nested getter/toJSON,
-  eval/name guessing, Object.prototype.toJSON envelope poisoning or intrinsic mutation cannot produce successful denial.
-  Keep current primitive, condition, nonserializable/cycle and lossy JSON rules;
-  JSON-normalizing first must not conceal a forbidden result type.
-- The final private control envelope has a null prototype and is serialized with
-  captured intrinsics **inside** that closure, returned as a primitive string.
-  The host checks VM typeof, extracts with getString, host-parses and strictly
-  validates closed success/failure/denial arms. Never dump a prototype-bearing VM
-  object after checking denial: inherited toJSON can forge that final observation.
-  Author results remain nested payload, never the control arm. Bound the transport.
-  Preserve primitive/condition/boxed/cycle semantics explicitly rather than
-  JSON-normalizing all values indiscriminately.
+Derive secret-input membership once from that same admitted workflow. Own its
+backing data; expose a ReadonlySet-compatible membership/iteration facade without
+Set mutation methods and an immutable ordered denied-name array from the same
+factory. Copy caller-provided names at embedding entry: Object.freeze(new Set())
+or a live caller Set is insufficient. Every fresh/resume/preparation producer uses
+that same authority, rather than recomputing a mutable set at resume.
 
-Denied access yields `SandboxError.reason: 'secret_context'`, existing
-`code: 'sandbox_error'`, retryable=false, fixed message
-“secret-derived context is unavailable to expressions”, with no source/value
-detail or cause. The host trusts only its private wrapper outcome envelope, never
-an authored throw's name/message. A denial overrides authored success/failure;
-actual abort/timeout still has its existing cancellation/resource disposition,
-with no false successful output.
+- resolvePublicTemplate uses the existing reference lexer, rejecting denied ctx
+  **and direct secret input** references before filters/defaults. Existing
+  InterpolationError reason secret_reference maps to non-retryable validation.
+  This is required for manually constructed workflow objects as well as parsed
+  YAML; parser refusal alone is insufficient. Agent/human text and budget prompt
+  preparation use this same consumer; preparation has no VM-only metadata.
+- ExpressionScope requires the context projection and explicit immutable
+  deniedInputNames; clean embeddings provide explicit empty metadata. Scope
+  construction omits raw secret inputs and supplies only clean values plus denied
+  names. No marker substitution in expression inputs. Trusted NodeExecContext.inputs
+  remains raw; input-node/public display continues using maskSecretInputs.
+- QuickJS rebuilds frozen null-prototype scope records and enumerable denied
+  accessors for both namespaces. Clean values and key-only enumeration remain
+  usable. Scope metadata validation precedes serialization; no newly projected
+  raw denied input/context bytes enter the VM.
 
-Clean value reads and key-only enumeration are allowed even when unrelated keys
-are denied. Reading a denied value fails; it never becomes a false comparison,
-marker success or output-schema pass. Existing direct-input marker semantics are
-unchanged. `SandboxError.detail` for other arbitrary authored errors is internal,
-may carry sensitive text and must not be rendered or called universally secret-free.
+### Private evaluation and finite denial
+
+Author code runs in a separate strict lexical function receiving only the frozen
+public pack. Bind inputs/ctx/run/branches as const, outside the private latch and
+captured serializer closure. Capture needed intrinsics before authored execution.
+When a denied accessor body runs it sets the private sticky latch before throwing.
+Perform all authored result serialization before the final latch check; ordinary
+caught access, getters and toJSON cannot clear an already-set latch.
+
+This is **not** universal attempted-access detection. A stack/resource exception
+before the accessor body may be caught without setting the latch; the installed
+QuickJS intake reproduces it. Successful clean fallback then carries no raw denied
+value because none was supplied. Pin that finite semantic limitation separately
+from ordinary caught-read denial. Uncaught resource/abort/timeout retains its
+existing disposition; do not mislabel it successful denial. Confidentiality rests
+on raw-value exclusion, not on the latch.
+
+Observed denial yields SandboxError.reason secret_context under existing
+code sandbox_error, retryable=false, fixed message “secret-derived values are
+unavailable to expressions”, with no source/value detail or cause. Only this
+private denial arm is independent of authored error name/message; existing ordinary
+error classification remains. Historical/arbitrary authored SandboxError.detail
+is private potentially sensitive text, never a universally safe diagnostic.
+
+ADR-0093's alternative (b) concerned before-money-spent dependency ordering and
+keeps its literal parse scan. These accessors address runtime privacy/semantic
+diagnosis; they do not reverse that ordering choice or add a host function.
+
+### Primitive transport and result parity
+
+Versioned private control arms are success, failure or denied. The success arm
+contains trusted original VM typeof, a primitive payloadJson string, and a closed
+number tag where needed; no authored object is embedded in the outer envelope.
+Serialize the author result at most once, finish any author-controlled access,
+then check the latch. Serialize the null-prototype control envelope using captured
+intrinsics and return it as a primitive string. Later envelope serialization must
+not call another authored toJSON/getter. Host checks VM typeof, extracts getString,
+parses/strictly validates the private arm and decodes the payload. Never dump a
+prototype-bearing VM object after latch validation. Author values cannot select an
+outer arm. Malformed transport is fixed sandbox failure, not success or secret proof.
+
+Bound the full transport's UTF-8 bytes by the evaluation's active memoryBytes,
+with cheap length precheck before the bounded byte count; default resource limits
+remain those above. No independent unbounded host parse/dump is permitted. An
+oversized transport is a fixed non-retryable resource failure, not truncated data.
+
+Preserve actual evaluate/validateResult semantics, separately from eventual JSON
+persistence. Installed baseline controls confirm:
+
+| Result | condition | transform / merge_fn |
+|---|---|---|
+| Boolean/string/finite number | Preserve exact value | Preserve exact value |
+| Top-level NaN, ±Infinity, -0 | Preserve numeric value/sign with private nan/positive_infinity/negative_infinity/negative_zero tags | Same; later JSON persistence keeps its existing normalization |
+| Object/array/null, including Map/Set | result_type failure | Existing JSON object semantics; Map/Set becomes {}; cycles fail |
+| Boxed primitive or object whose toJSON becomes non-null scalar | result_type failure | Existing non_serializable failure; do not silently accept JSON-normalized scalar |
+| Undefined/function/symbol/bigint | result_type failure | non_serializable failure |
+
+For object results, preserve nested omission/null/boxed behavior and the existing
+null-result exception; successful JSON serialization alone does not override the
+original VM type checks. Pin stateful toJSON call count and no second author
+serialization, numeric tags and every result arm in real installed QuickJS tests.
+Changes needed beyond this parity require an explicit decision, not an accidental
+transport side effect.
 
 The [runner](agent-runner.md#proposed-wave-3-qualified-context-consumers) owns
 producer migration; [tool provenance](tool-registry.md#proposed-wave-3-http-authority-and-secret-provenance)
-records the separate unsupported mapping boundary. Actual engine/store tests cover
+records unsupported mapping separately. Actual engine/SQLite controls scan
 run_events.payload_json, step_executions.output_json and runs.output_json with
-positive completed/persisted controls, not only failure-path absence assertions.
+successful clean persisted positives. Previously stored outputs/detail can contain
+sensitive data and may be replayed; this change neither scrubs history nor certifies
+legacy run.outputs secret-free. Update current at-rest/recovery guidance and three
+stale scope/error comments during landing, without rewriting Accepted ADR history.

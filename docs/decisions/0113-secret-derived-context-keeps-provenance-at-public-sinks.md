@@ -25,8 +25,9 @@ a secret-free trust domain.
 
 The earlier proposal to inject markers would silently turn a secret comparison
 into a false branch or let a marker satisfy an output schema. Its additional
-preparation field had no VM consumer. Both mechanisms are replaced below, while
-the existing direct-input marker contract stays unchanged.
+preparation field had no VM consumer. Both mechanisms are replaced below, and the same silent comparison exists for direct secret-input markers. The revised
+proposal applies denied-value access uniformly to both expression namespaces;
+display/input-node masking remains unchanged.
 
 All decisions remain Proposed. Exact interfaces and error behaviour belong in
 [expression-sandbox-spec.md](../reference/shared-core/expression-sandbox-spec.md#proposed-wave-3-secret-context-boundary)
@@ -40,8 +41,10 @@ credential sink or tool-mapping feature is authorized.
 Reuse the existing linear declared-source taint graph for input/default/context
 relationships. One pure authority computes provenance; no value scanning, second
 expression scanner or argument-name heuristic is introduced. Derive immutable
-arrays once from the same admitted workflow, copying before freezing; freezing a
-Set would not prevent mutation.
+arrays and a real immutable secret-input membership view once from the same
+admitted workflow. Copy the backing data; freezing a Set does not prevent mutation.
+Share this one authority through fresh/resume/preparation paths, not caller-owned
+live Sets or separately derived lists.
 
 Keep the exported trusted resolver's raw result contract. Immediately qualify its
 result inside the engine, before storing or handing context to execution or
@@ -54,42 +57,57 @@ workflow/input provenance; shape validation cannot detect a deliberate lie.
 
 Execution and preparation consume the **same** projection. Preparation uses a
 public-template resolver which rejects denied references before filters/defaults;
-this is a real template consumer, not a fictitious preparation sandbox. Clean
+this is a real template consumer, not a fictitious preparation sandbox. It also
+refuses direct secret-input references using that owned membership view, including
+hand-constructed workflows that bypass parser checks. Clean
 templates work unchanged. Fresh, same-process resume and cross-process budget
 preparation cannot reconstruct raw unqualified context. Trusted raw resolution
 stays local to the resolver/projection cut rather than a second executor authority.
 
-### Denied access fails loudly
+### Remove denied values; report observed denied access
 
-Expression scopes serialize only clean context and denied-key metadata. Inside
-QuickJS, create frozen context accessors for denied keys with an inaccessible
-sticky denial latch. Evaluate authored code in a separate lexical environment
-receiving a frozen public pack and binding its public names as const; a guessed
-wrapper-local name or eval cannot reset the latch. Capture required intrinsic
-operations before author execution.
-After evaluation **and result serialization**, check the latch before accepting a
-condition, transform or custom merge. Return the final null-prototype control
-envelope as a primitive string through captured serialization; host typeof/getString,
-parse and strict arm validation replace prototype-sensitive object dump. Author
-results cannot select an outer control arm. This covers caught access, returned ctx,
-nested outputs, getters and toJSON, not just literal property reads.
+Expression scopes contain clean context/input values and explicit denied-name
+metadata, never raw secret-input or tainted-context values. Direct secret inputs
+now use the same denied accessors as context. This deliberately replaces the
+expression-input marker rule in ADR-0027/0083; run-start/input-node/display markers
+remain data under their existing contract. No universal rejection of marker-shaped
+objects or arbitrary secret-looking user/model text is claimed.
 
-Any denied value access produces the fixed non-retryable secret-context sandbox
-failure specified in the canonical contract, even if authored code catches the
-accessor's exception. It cannot become a false condition, generic TypeError,
-successful marker or output-schema success. No raw value enters the VM or its
-error detail. Clean context reads and key-only enumeration remain usable. Preserve
-existing condition/output serialization rules; prototype/intrinsic mutation cannot
-replace the trusted result check. This mechanism requires real VM causal controls,
-not only a host Proxy or wrapper mock.
+Inside QuickJS create frozen denied accessors with a private sticky latch. Evaluate
+authored code in a separate strict lexical environment receiving only the frozen
+public pack with const bindings; capture trusted intrinsics first. Serialize the
+authored result once to a primitive payload string **before** the final latch
+check. The outer null-prototype control envelope contains only trusted primitive
+metadata and that string; no authored object/getter/toJSON executes during its
+later serialization. Host typeof/getString/parse/strict validation replaces
+prototype-sensitive object dump. Preserve current result semantics through the
+canonical tagged transport rather than indiscriminate JSON normalization.
 
-The initial ordinary-object feasibility wrapper was forgeable through inherited
-toJSON at host dump, despite its private latch. A revised primitive-transport
-probe closes that schedule and preserves const binding refusal. Both are design
-evidence, not product implementation.
-Permanent actual-engine/store tests below must establish the final mechanism.
-Existing direct-input markers remain their Accepted contract; extending this
-fail-loud rule to them is not silently included.
+When a denied accessor body executes, denial wins even if author code catches its
+exception or triggers it during result serialization. Use the existing
+sandbox_error code with fixed non-retryable secret_context reason, not a new
+engine ErrorCode or an authored error-name test. No raw denied value/detail enters
+the VM. Clean reads and key-only enumeration remain available.
+
+**Finite semantic guarantee:** resource failure before the accessor body can be
+caught without setting the latch; the installed QuickJS intake reproduces this.
+Do not promise detection of every attempted access or universal fail-loud behavior.
+Raw-value exclusion still protects confidentiality in that case. An uncaught
+resource failure keeps its existing classification. Latch purpose is preventing
+silent false branching after an actually observed denied read, not supplying the
+privacy boundary. Required tests pin the documented limitation and ordinary
+caught-read denial; neither is disguised as full attempted-access detection.
+
+ADR-0093 considered VM accessors for out-of-closure reads but preferred parse-time
+refusal to retain before-money-spent ordering. This decision addresses runtime
+secret-value exclusion and semantic diagnosis, not that scheduling guarantee; its
+existing literal dependency scan remains. No host function is introduced.
+
+The original ordinary-object wrapper allowed inherited-toJSON envelope forgery.
+Primitive transport closes that path, but is not itself proof of complete latch
+coverage or integrated result compatibility. Product engine/store acceptance
+below remains required. Existing ordinary sandbox error classification is retained;
+only the private secret-denial arm is independent of authored name/message.
 
 ### Tool provenance scope
 
@@ -112,15 +130,26 @@ documented limitation; the actual context leak is repaired separately.
 This does not mask arbitrary user/model text or encrypt history. ADR-0050/0095
 retain their precise scopes. Existing historical SandboxError.detail may contain
 sensitive authored text; do not call it universally secret-free or render it.
-New denied-context errors contain fixed diagnostics without source/value text.
+New denied-value errors contain fixed diagnostics without source/value text.
+Previously persisted event/step/run output or error detail can still contain
+sensitive content: this change does not rewrite history, value-scan replayed
+outputs or certify legacy resume data secret-free. Document that at-rest/recovery
+limit with ADR-0050; never auto-render private error detail.
 
 Considered handler-only marker projection: rejected for silent branching/schema
 changes and repeating the second-gate defect. Considered qualifying once at engine
 construction: selected for raw-value removal, with actual VM/template consumers
-for loud refusal. Considered rejecting all expressions when any context is tainted:
+for loud refusal. Considered rejecting all expressions when any input/context is tainted:
 rejected because unrelated clean expressions must work. Static literal scanning
 alone cannot close computed/whole-context access. Full dynamic output taint and
 fabricated empty tool metadata add unsupported claims without repairing the sink.
+Considered keeping direct-input markers: rejected because they reproduce silent
+false branching. Considered a host-function latch: rejected to preserve ADR-0027’s
+zero-host-function boundary. Considered static literals plus throwing accessors:
+insufficient for computed/caught reads. Considered no latch: simpler privacy, but
+loses ordinary caught-read diagnosis. The private latch is chosen for that bounded
+semantic benefit; revisit if its implementation cost exceeds the demonstrated
+benefit, without weakening raw-value exclusion.
 
 ### Acceptance and landing
 
@@ -128,36 +157,45 @@ fabricated empty tool metadata add unsupported claims without repairing the sink
    direct/computed/serialized/transitive/nested/custom merge, caught access,
    condition oracle, returned ctx/getters/toJSON, final-envelope prototype poisoning,
    const reassignment and intrinsic/latch tampering.
-   Assert the expected typed failed outcome, no branch/output-schema success and
-   no raw VM input/error detail. Independently successful clean workflows must
+   For executed accessors assert typed denial and no branch/output-schema success;
+   separately pin caught pre-accessor resource failure without claiming a denial.
+   Verify no raw newly projected value in VM input/error detail. Pin single
+   result serialization, stateful toJSON and exact current primitive/result parity. Independently successful clean workflows must
    complete with exact expected outputs; no vacuous negative-only test.
 2. Actual SQLite hosts scan `run_events.payload_json`,
    `step_executions.output_json` and `runs.output_json`, plus public events and
    downstream human gate messages. Clean positive rows prove persistence occurred;
    leak fixtures prove the baseline fails the confidentiality assertion.
 3. Every fresh/resume/preparation producer supplies the owned projection.
-   Missing metadata and mutation controls exercise actual VM and public-template
+   Missing metadata and mutation controls (including attempted live-Set clear)
+   exercise actual VM and public-template
    consumers. Removing engine qualification, template refusal or VM latch breaks
    its corresponding regression with exact restoration.
-4. Direct/transitive parser model/human refusal, trusted raw resolver, direct-input
-   markers and external tool guard retain their existing behaviour. Label already
-   passing controls as preservation; no nonexistent mapping producer is certified.
+4. Direct/transitive parser model/human refusal, trusted raw resolver, display/
+   input-node markers and external tool guard remain preservation controls. New
+   direct-input VM/template refusals include hand-constructed workflows with
+   successful clean positives. No nonexistent mapping producer is certified.
 5. Dedicated secret-flow security sitting, required gates and two new independent
    complete cumulative clean rounds precede implementation acceptance. At ADR
    acceptance append ADR-0027/0029/0037/0083/0093 forward notes before dependent
-   code. Land canonical workflow, runner, expression and both tool passages and
-   register actual #92 limitation separately from repaired exposure.
+   code. Reconcile expression-input marker compatibility and ADR-0093 rationale.
+   Land canonical workflow, runner, expression, both tool passages, stale scope/
+   error comments and at-rest/recovery notices; register actual #92 tool-mapping
+   limitation separately from repaired exposure and finite latch semantics.
 
 ## Consequences
 
 ### Positive
 
 - Raw derived context no longer reaches executor/preparation or expression scopes.
-- Denied expressions fail explicitly, including computed and caught accesses.
+- Executed denied reads fail explicitly, including ordinary computed/caught reads;
+  privacy does not depend on a universal attempted-access detector.
 
 ### Negative
 
 - Expressions previously reading leaked context now fail deliberately. This is
-  an explicit security compatibility change; clean and direct-input behaviour stays pinned.
+  an explicit compatibility change, including direct secret-input expression reads.
+  Clean behaviour and display masking stay pinned; resource-before-accessor
+  detection and legacy persisted data are explicitly outside the new guarantee.
 - Low-level embeddings migrate to a required owned projection and template/VM
   consumers. A trusted host's fabricated provenance remains outside the guarantee.

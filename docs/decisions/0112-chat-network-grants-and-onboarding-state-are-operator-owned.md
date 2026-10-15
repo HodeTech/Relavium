@@ -2,7 +2,7 @@
 
 - **Status**: Proposed
 - **Date**: 2026-10-15
-- **Related**: [ADR-0006](0006-os-keychain-for-api-keys.md), [ADR-0029](0029-tool-policy-hardening.md), [ADR-0033](0033-strict-config-files-amends-0023.md), [ADR-0037](0037-engine-tool-execution-boundary.md), [ADR-0054](0054-cli-bare-invocation-interactive-home.md), [ADR-0055](0055-cli-host-capability-seam-tool-environment-factory.md), [ADR-0057](0057-cli-chat-modes-and-per-tool-approval.md), [ADR-0059](0059-cli-mid-session-model-reseat.md), [ADR-0063](0063-cli-config-write-contract.md), [ADR-0105](0105-filesystem-roots-are-invocation-grants-not-project-authority.md), [Wave 3](../roadmap/current.md#wave-3--clear-the-ground)
+- **Related**: [ADR-0006](0006-os-keychain-for-api-keys.md), [ADR-0029](0029-tool-policy-hardening.md), [ADR-0033](0033-strict-config-files-amends-0023.md), [ADR-0037](0037-engine-tool-execution-boundary.md), [ADR-0054](0054-cli-bare-invocation-interactive-home.md), [ADR-0055](0055-cli-host-capability-seam-tool-environment-factory.md), [ADR-0057](0057-cli-chat-modes-and-per-tool-approval.md), [ADR-0059](0059-cli-mid-session-model-reseat.md), [ADR-0063](0063-cli-config-write-contract.md), [ADR-0105](0105-filesystem-roots-are-invocation-grants-not-project-authority.md), [ADR-0110](0110-cli-diagnostics-and-discovery-have-explicit-compatibility.md), [Wave 3](../roadmap/current.md#wave-3--clear-the-ground)
 
 ## Context
 
@@ -19,7 +19,9 @@ tools; a workspace-local selection may be writable.
 
 Clear/reseat currently reuse startup chat options; Home refreshes model/provider
 and can fall back on read error. Those paths cannot provide policy revocation
-without new global-only reads and an invocation ceiling. Dispatch also compares
+without new global-only reads and an invocation ceiling. Home is build-first: a
+failed replacement preserves the old host. Merely narrowing a new snapshot or
+promising stop-before-build therefore cannot revoke its old authority. Dispatch also compares
 `allowed.includes(parsed.host)` privately, without normalizing the allowlist.
 The proposed shared comparison is a correction, not an existing public helper.
 
@@ -52,16 +54,27 @@ do not silently make it 443-only. DNS/range validation, pinned connection, redir
 refusal and response bounds remain independent. Auto mode is still an authority
 to send permitted tool data to a permitted host/port; provider keys are not attached.
 
-Capture an owned invocation ceiling before building the first host. Every host
-construction reads **only current global HTTP policy**, intersects it with that
-ceiling and the last accepted effective policy, and retains the narrowed result
-across Home chats, clear, reseat and resume. No rebuild widens authority; a fresh
-CLI invocation is required to add or restore a grant. Never reuse captured startup
-chat policy or Home's model-read fallback for this read. Read/schema failure
-refuses the new build with a fixed actionable diagnostic; it does not restore
-old policy or reset the ceiling. Stop the old turn/host before replacing it.
-An active host retains its immutable snapshot until cancellation/rebuild; there
-is no live watcher. Persisted session policy never revives authority.
+Pin the selected global file identity lexically once per invocation, then capture
+an owned initial ceiling before the first host/key/MCP build. One invocation-owned
+**live narrowing authority** is shared by old, pending and replacement hosts.
+Every fresh/resume/clear/reseat/Home build rereads only global HTTP policy and
+synchronously intersects the accepted authority before later asynchronous work.
+A validated removal remains effective even when that build fails; build-first
+recovery may keep the old host, but cannot keep its broader HTTP authority.
+Use the existing post-approval/post-effect-prepare beforeDispatch seam with an
+owned immutable admitted PolicyTarget to check the live authority immediately
+before HTTP dispatch. Do not decorate all egress or introduce a new model field.
+
+Build generation/selection publication is latest-only; dispose stale hosts and
+never restore a previous authority snapshot. A read/schema failure suspends HTTP
+admission and refuses the new build with a fixed actionable diagnostic. It does
+not silently fall back, reset the ceiling or permanently interpret transient I/O
+failure as a validated removal; a subsequent successful refresh still intersects
+the last accepted authority. Additions/restoration require a new invocation and
+produce a fixed ignored-widening notice. There is no file watcher: changes take
+effect at explicit refresh/rebuild. Already admitted requests may complete; the
+post-prepare check is the admission linearization point, not network recall.
+Persisted session policy never revives authority.
 
 Forward only that list to existing tool dispatch, keeping model tool grants,
 approval modes and SSRF as separate gates. Test each surface's actual behaviour:
@@ -78,11 +91,17 @@ every startup rechecks current key availability; a working key suppresses setup,
 and a still-keyless acknowledged failure gets a reminder and explicit retry.
 Missing key, cancellation, authentication and unrelated DB errors do not set it.
 Persist only a boolean through the secret-incapable writer; failures stay visible.
+Its portability cannot confer access because current key/backend state always
+wins. A DB-owned acknowledgement was considered but adds a second mutable store
+for UX-only state without replacing that check.
 
 After storing a key but failing to persist defaults, retain the key and truthfully
 offer recoverable retry or explicitly chosen ephemeral defaults. Never say
 “Connected”/saved default when persistence failed. Project precedence is not
-silently overwritten. Propagate color choice without changing process environment.
+silently overwritten. Keep explicitly chosen ephemeral provider/model selection
+in an invocation-owned binding reused by later rebuilds, including clear. Publish
+that binding only with the latest successful build; never confuse it with a saved
+project/global default. Propagate color choice without changing process environment.
 
 Refuse an existing **final-component symlink** for preference writes, with a
 fixed path-free `ConfigWriteRefusedError` and `reason: symlink_target`; mark it
@@ -94,9 +113,15 @@ policy, not a claim that same-owner link targets have a different authority.
 Ancestor links remain under the existing owner-controlled-directory assumption;
 atomic rename replaces one hardlink entry rather than editing all aliases.
 An lstat precheck is not an atomic no-follow replace against a hostile same-user
-race. Regular writes keep verified schema round-trip, permissions and durability.
+race. The shared preference-writer primitive performs this check before loader/read/
+chmod side effects; current and future settings callers use it, not picker-only
+checks. Regular writes keep verified schema round-trip, permissions and durability.
 Existing TOML reserialization loses comments/order; document that tradeoff before
-writing a hand-edited policy and preserve all policy values, never broaden them.
+every existing-file preference rewrite, rather than guessing whether the operator
+hand-edited it. Preserve all policy values, never broaden them. New-file creation
+needs no comment-loss notice. Shared error identities belong to ADR-0110’s one
+closed CLI classification authority; Home/wizard arms must actually surface known
+actionable refusals rather than discard their classification.
 
 Considered project domains: rejected for this capability because explicit operator
 authority is preferable to implicit imported authority. Considered invocation
@@ -117,9 +142,12 @@ These choices do not establish a universal no-project-egress guarantee.
    Home non-advertisement, agent ask denial, approval refusal and SSRF/ports.
    Clear/reseat/resume/repeated Home builds reread global policy: remove, re-add,
    attempted widen, malformed/unreadable file and startup fallback all exercise
-   the persistent invocation ceiling. No live/paid provider is required.
+   the live invocation ceiling. Include failed Home replacement, overlapping build
+   completion, approval/effect-prepare races and transient read recovery; an old
+   host must not admit a revoked request. No live/paid provider is required.
 3. First-chat tests verify model/provider selection, retained key, truthful
    write failure, typed acknowledgement, current keyless reminder and retry/cancel.
+   Ephemeral provider/model survives clear/reseat; stale builds cannot publish it.
    New strict keys have concrete old-binary removal/exit instructions.
 4. Native symlink controls preserve link/referent and prove no Retry/success lie;
    ancestor-link/hardlink controls state the actual scope. Regular writes retain
@@ -141,7 +169,9 @@ These choices do not establish a universal no-project-egress guarantee.
 
 - Strict new keys break old-binary config reads until removed, even on unrelated
   commands. The canonical rollback instructions make the recovery explicit.
-- Revocation requires cancellation/rebuild and widening requires a new invocation.
-  An active snapshot is not instantaneous revocation.
+- Revocation takes effect at explicit refresh/rebuild, including failed replacement;
+  in-flight requests are not recalled. Widening requires a new invocation.
+- Policy read failure temporarily suspends HTTP even on an otherwise retained host.
+  Final-link refusal applies to every preference writer, including future settings.
 - Symlink writes require manual action or ephemeral continuation. Non-retryable
   diagnostics avoid a wizard loop; comments/order remain a known writer tradeoff.
