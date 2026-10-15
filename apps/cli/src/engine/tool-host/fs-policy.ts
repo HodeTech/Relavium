@@ -228,6 +228,25 @@ function policyData(policy: FsPathPolicy | undefined): PolicyData {
   return data;
 }
 
+/** Attach host-owned scratch without replacing any previously admitted authority or lexical pin. */
+export function composeFsPathPolicyScratch(
+  policy: FsPathPolicy,
+  scratch: HostScratchRoot | undefined,
+): FsPathPolicy {
+  const data = policyData(policy);
+  if (scratch === undefined) return policy;
+  const attached = scratches.get(scratch);
+  if (attached === undefined) throw new FsPolicyError();
+  if (data.scratch === attached) return policy;
+  if (data.scratch !== undefined) throw new FsPolicyError();
+  const descriptor: FsPathPolicy = Object.freeze({ kind: 'owned-fs-policy' });
+  // Reuse the original workspace, selected roots and invocation grants verbatim.
+  // Reconstructing from canonical strings would discard lexical provenance or
+  // silently authorize a replacement that appeared after original admission.
+  policies.set(descriptor, Object.freeze({ ...data, scratch: attached }));
+  return descriptor;
+}
+
 /** Validate current root identities before every capability operation; no silent replacement grant. */
 export function fsPolicyScopeRoots(
   policy: FsPathPolicy | undefined,

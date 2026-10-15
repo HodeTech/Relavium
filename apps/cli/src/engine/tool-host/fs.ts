@@ -35,6 +35,7 @@ import {
 } from './errors.js';
 import {
   assertFsPolicyPath,
+  composeFsPathPolicyScratch,
   createFsPathPolicy,
   fsPolicyFloorPaths,
   fsPolicyScopeRoots,
@@ -86,7 +87,7 @@ export interface NodeFsCapabilityConfig {
   readonly scratch?: HostScratchRoot;
   /** Pre-admitted invocation policy; absent builds a trusted-host policy once at construction. */
   readonly pathPolicy?: FsPathPolicy;
-  /** The `project`-tier path allowlist (absolute). Ignored under `sandboxed` / `full`. */
+  /** Trusted-host project roots (absolute); an owned `pathPolicy` takes precedence over these strings. */
   readonly extraRoots?: readonly string[];
   /** `true` ⇒ `write_file` fail-closes as `tool_unavailable` (the 2.5.A chat read-only profile). */
   readonly readOnly: boolean;
@@ -133,7 +134,10 @@ export function createNodeFsCapability(input: NodeFsCapabilityConfig): FsCapabil
   let config: NodeFsCapabilityConfig | undefined;
   let admissionError: FsPolicyError | undefined;
   try {
-    const pathPolicy = snapshot.pathPolicy ?? createFsPathPolicy(snapshot);
+    const pathPolicy =
+      snapshot.pathPolicy === undefined
+        ? createFsPathPolicy(snapshot)
+        : composeFsPathPolicyScratch(snapshot.pathPolicy, snapshot.scratch);
     fsPolicyScopeRoots(pathPolicy, snapshot.workspaceDir, snapshot.tier);
     config = Object.freeze({ ...snapshot, pathPolicy });
   } catch (error) {
@@ -969,7 +973,7 @@ async function collectGlobFiles(
   const inScope = buildScopeChecker(config);
   const portablePattern = process.platform === 'win32' ? pattern.replaceAll('\\', '/') : pattern;
   const meta = portablePattern.search(/[*?]/);
-  const slash = meta < 0 ? -1 : portablePattern.lastIndexOf('/', meta);
+  const slash = portablePattern.lastIndexOf('/', meta < 0 ? portablePattern.length : meta);
   // Keep the trailing separator: C:/ must not become the drive-relative C: spelling.
   const prefix = slash < 0 ? '.' : portablePattern.slice(0, slash + 1);
   assertNotSensitiveReadPath(lexicalTarget(config, prefix), config.pathPolicy);

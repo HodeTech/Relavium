@@ -276,3 +276,21 @@ invocation authority or refusing unrelated filename prefixes. Permanent native a
 folded-path controls distinguish credential targets from ordinary lookalikes; a
 dedicated worktree-config removal and the shared environment removal require the
 new refusals. Source review and current-head publication remain separate gates.
+
+### Scratch composition and literal glob correction — 2026-10-15
+
+Maintainer review demonstrated that a host-issued scratch descriptor was ignored
+when the same factory invocation carried an admitted filesystem policy. Composition
+now retains that policy's exact workspace, selected-root and invocation-grant pins
+and attaches only the independently owned scratch descriptor. It neither re-pins
+canonical strings nor grants subordinate string roots. Forged or conflicting
+descriptors refuse, and reattaching the same authority is idempotent.
+
+Literal glob reads now admit their actual parent directory, preserving the same
+root, credential and symlink floors as wildcard neighbours. The
+[canonical filesystem contract](../reference/shared-core/built-in-tools.md#cli-authority-and-floors)
+also states that the existing write floor inherits the entire sensitive-read set.
+Permanent factory, revocation, lexical-provenance, glob and floor controls accompany
+these existing-contract repairs. Native Windows selections include the new files;
+selection is not execution. Independent source rounds and current-head publication
+remain separate gates, with no new allocator, public API or permission authority.
