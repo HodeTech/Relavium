@@ -1106,16 +1106,18 @@ an ESLint selector rather than a list.
 
 ### Wave 3 — Clear the ground
 
-**Proposal reopened after maintainer source review — 2026-10-15.**
-[Source dispositions and revised plan](phases/phase-2.5.5-hardening-and-remediation.md#maintainer-review-reopened-the-proposal--2026-10-15)
-correct G15's false token-persistence premise, fatal/lazy build dependencies,
-exact-byte archive mechanics, HTTP rebuild revocation and secret-context consumers.
-Nineteen proposed increments retain the serialized first queue. ADR-0110–0113
-and their explicitly unshipped canonical sections remain Proposed; no code has
-started. Earlier clean proposal reviews retain historical scope and no longer
-establish readiness. Fresh cumulative proposal reviews and maintainer approval
-are required. The encrypted archive method is selected; no production key,
-provider capture, billing or upload is needed for this review.
+**Source-corrected proposal reviewed; maintainer approval pending — 2026-10-15.**
+[Revised readiness and approval scope](phases/phase-2.5.5-hardening-and-remediation.md#revised-proposal-readiness-after-source-corrections--2026-10-15)
+records two NEW independent complete cumulative clean reviews at 49ba03ee across
+all fourteen proposal paths/four ADRs and the nineteen-increment plan. The
+[reopened source dispositions](phases/phase-2.5.5-hardening-and-remediation.md#maintainer-review-reopened-the-proposal--2026-10-15)
+correct G15, process/lazy dependencies, exact-byte archive/cache/retry modes,
+HTTP revocation and secret-context consumers. Earlier nonclean/insufficient
+proposal rounds remain historical and are not acceptance. ADR-0110–0113 and
+their canonical proposal sections remain unshipped/Proposed. No product code
+has started; explicit approval is the current gate. Archive method is selected;
+production recipient/recovery setup belongs to actual Wave 4b release.
+No provider capture, key access, billing or upload is required for this review.
 
 Decompose, guard and normalize every hot file a 2.6 workstream is about to land on. **The multi-file queue
 runs first and is serialized against the rest**; the remaining queues are file-disjoint, any order.

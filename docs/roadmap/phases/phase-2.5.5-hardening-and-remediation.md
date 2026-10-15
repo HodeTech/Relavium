@@ -3846,3 +3846,41 @@ The focused 127-test pass, actual engine/SQLite probe and six primitive-envelope
 controls retain that review's exact 35935273 attribution; no product fix/CI/Windows
 execution is claimed. This material clarification requires two NEW complete
 cumulative clean proposal rounds at its corrected head before approval is requested.
+
+#### Revised proposal readiness after source corrections — 2026-10-15
+
+Two NEW independent COMPLETE cumulative reviews are clean at exact reviewed source
+49ba03eecf9856e3d6f0bda6528f4a48d94a34e8: round 3 (gpt-6.1-sol, high) and round 4
+(gpt-6-sol, high). Each covers all fourteen proposal paths, all four ADRs, the
+nineteen-increment plan and related actual source/Accepted contracts, rather than
+only the most recent correction. Each records zero verified material findings.
+The parent reads both complete reports. Nonclean rounds at 86400811 and 35935273
+remain historical and are not counted as clean; the old 39967075 readiness claim
+is superseded by this source-corrected proposal.
+
+Exact-head six-control installed-QuickJS primitive-envelope feasibility passes
+in both final rounds; round 3 also reruns actual engine/standard-executor/SQLite
+positive and negative intake. These reproduce the **existing unfixed** exposure,
+not a product correction. The prior 7-suite/127-test and synthetic TS-map-chain
+results keep their actual execution attribution. Source inventory proves only
+documentation changed, all 109 prior numbered ADRs remain byte-identical to
+702cdc9c, and ADR-0110–0113 remain Proposed. Parent doc validation resolves 3,033
+relative links/anchors across the 61 Markdown files changed since the older
+Wave 2 base; final reviewer scope remains fourteen proposal paths. Diff whitespace
+passes. No full CI, coverage, native Windows, exact pack/release or provider/key/
+billing execution is inferred.
+
+This final receipt and current-status update add no mechanism or step to the
+reviewed proposal. **Ready for maintainer approval of the four Proposed ADRs,
+their explicitly unshipped canonical contracts and nineteen-increment plan.**
+Approval includes the fail-loud qualified context boundary, monotonically narrowing
+HTTP rebuild authority, non-retryable intentional-link write refusal, explicit
+CLI compatibility and finite native teardown scope, and separated package-test/
+encrypted-release custody modes. The selected archive method remains unchanged.
+
+No implementation is authorized by a clean proposal review. After explicit
+approval, update ADR statuses/index and append the specified Accepted-ADR forward
+notes before dependent code, then start serialized Step 1 and its required review
+loop. Production recipient/recovery configuration remains an actual Wave 4b release
+prerequisite; no production key, provider capture, billing or upload is needed for
+the current approval. Detailed reports remain local and Git-ignored.
