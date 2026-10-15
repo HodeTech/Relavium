@@ -25,7 +25,7 @@ import { sourceLabel } from '../process/source-label.js';
 
 /** Fixed, value-free successful-export notice: interactive transcript or plain/JSON stderr. */
 export const SESSION_EXPORT_REVIEW_NOTICE =
-  'note: exported workflow is a scaffold; conversation context is not reproduced. Compaction summaries, trimming and omitted context may not transfer. Review retained user/assistant text, @-attached files, !-shell output and authored agent literals before committing.\n';
+  'note: exported workflow is a scaffold; conversation context is not reproduced. Compaction summaries, trimming and omitted context may not transfer. Review retained user/assistant text, @-attached files, !-shell output and authored agent literals before committing. Historical agent snapshots may require edits to pass current validation before running.\n';
 
 export interface ExportSessionOptions {
   readonly store: SessionStore;

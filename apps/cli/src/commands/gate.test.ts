@@ -9,6 +9,7 @@ import {
   parseWorkflow,
   type CheckpointState,
   type RunHandle,
+  type WorkflowDefinition,
   type WorkflowEngine,
 } from '@relavium/core';
 import {
@@ -25,7 +26,7 @@ import {
   type DbClient,
   type RunHistoryStore,
 } from '@relavium/db';
-import type { RunEvent } from '@relavium/shared';
+import { WorkflowSchema, WorkflowSnapshotSchema, type RunEvent } from '@relavium/shared';
 import { startMcpClient as realStartMcpClient } from '@relavium/mcp';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -254,6 +255,15 @@ describe('gateCommand', () => {
     projectRoot?: string,
   ): Promise<{ runId: string; gateIds: string[] }> {
     const def = parseWorkflow(yaml, { source: 'gate.test' });
+    return setupPausedWorkflow(def, inputs, projectRoot);
+  }
+
+  /** Historical runs enter with their already-admitted definition, never through fresh YAML admission. */
+  async function setupPausedWorkflow(
+    def: WorkflowDefinition,
+    inputs: Record<string, unknown>,
+    projectRoot?: string,
+  ): Promise<{ runId: string; gateIds: string[] }> {
     const store = createRunHistoryStore(db, {
       uuid: () => randomUUID(),
       now: () => Date.now(),
@@ -277,6 +287,129 @@ describe('gateCommand', () => {
     }
     return { runId, gateIds };
   }
+
+  it.each([
+    {
+      label: 'an inline agent with repeated fallback model/provider entries',
+      freshError: /duplicate fallback_chain/,
+      skippedNodeId: undefined,
+      historical: (base: WorkflowDefinition) => ({
+        ...base,
+        workflow: {
+          ...base.workflow,
+          // Unused by this deterministic workflow: retaining its ordered attempt budgets needs no key.
+          agents: [
+            {
+              id: 'unused',
+              model: 'gpt-4o',
+              provider: 'openai',
+              system_prompt: 'Keep the historical fallback order.',
+              fallback_chain: [
+                { model: 'gpt-4o-mini', provider: 'openai', max_attempts: 1 },
+                { model: 'gpt-4o-mini', provider: 'openai', max_attempts: 2 },
+              ],
+            },
+          ],
+        },
+      }),
+    },
+    {
+      label: 'a condition with repeated matching values and first-declared routing',
+      freshError: /duplicate branch when/,
+      skippedNodeId: 'shadow',
+      historical: (base: WorkflowDefinition) => ({
+        ...base,
+        workflow: {
+          ...base.workflow,
+          nodes: [
+            ...base.workflow.nodes,
+            {
+              id: 'route',
+              type: 'condition',
+              expression: 'inputs.n',
+              branches: [
+                { when: 7, target_node: 'double' },
+                { when: 7, target_node: 'shadow' },
+              ],
+            },
+            { id: 'shadow', type: 'transform', transform: '({ d: 999 })' },
+          ],
+          edges: [
+            { from: 'start', to: 'g' },
+            { from: 'g', to: 'route' },
+            { from: 'double', to: 'out' },
+            { from: 'shadow', to: 'out' },
+          ],
+        },
+      }),
+    },
+    {
+      label: 'a gate with an inactive timeout action and no timeout duration',
+      freshError: /timeout_action requires timeout_ms/,
+      skippedNodeId: undefined,
+      historical: (base: WorkflowDefinition) => ({
+        ...base,
+        workflow: {
+          ...base.workflow,
+          nodes: base.workflow.nodes.map((node) =>
+            node.id === 'g' ? { ...node, timeout_action: 'reject' } : node,
+          ),
+        },
+      }),
+    },
+  ])('resumes historical $label without rewriting its frozen definition', async (historical) => {
+    const original = historical.historical(parseWorkflow(GATED, { source: 'gate.test' }));
+    // New authoring rejects each shape, while an already-admitted run retains its original semantics.
+    expect(() => WorkflowSchema.parse(original)).toThrow(historical.freshError);
+    expect(() => parseWorkflow(JSON.stringify(original), { source: 'gate.test' })).toThrow(
+      historical.freshError,
+    );
+    const definition = WorkflowSnapshotSchema.parse(original);
+    expect(definition).toEqual(original);
+
+    const { runId, gateIds } = await setupPausedWorkflow(definition, { n: 7 });
+    expect(runId).not.toBe('');
+    expect(gateIds).toHaveLength(1);
+    expect(reader().loadRun(runId)?.status).toBe('paused');
+    const before = reader().loadRunEvents(runId);
+    const paused = before.find((event) => event.type === 'human_gate:paused');
+    expect(paused).toMatchObject({ nodeId: 'g', gateId: gateIds[0] });
+    // Even the historical timeout_action alone never armed a timer or applied a timeout decision.
+    expect(paused).not.toHaveProperty('timeoutMs');
+    expect(paused).not.toHaveProperty('timeoutAction');
+    expect(paused).not.toHaveProperty('expiresAt');
+    expect(before.some((event) => event.type === 'run:completed')).toBe(false);
+    const snapshot = loadRunSnapshot(db, runId)?.workflowDefinitionSnapshot;
+    expect(snapshot).toBe(JSON.stringify(definition));
+
+    const { io } = captureIo();
+    expect(await gateCommand({ runId, approve: true }, deps(io))).toBe(EXIT_CODES.success);
+    const events = reader().loadRunEvents(runId);
+    expect(reader().loadRun(runId)?.status).toBe('completed');
+    expect(events.filter((event) => event.type === 'run:started')).toHaveLength(1);
+    expect(events.filter((event) => event.type === 'run:completed')).toEqual([
+      expect.objectContaining({ runId, outputs: { out: { d: 14 } } }),
+    ]);
+    expect(events.filter((event) => event.type === 'human_gate:resumed')).toEqual([
+      expect.objectContaining({ runId, nodeId: 'g', decision: 'approved', decidedBy: 'cli' }),
+    ]);
+    expect(events.slice(0, before.length)).toEqual(before);
+    expect(loadRunSnapshot(db, runId)?.workflowDefinitionSnapshot).toBe(snapshot);
+    if (historical.skippedNodeId !== undefined) {
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          type: 'node:skipped',
+          nodeId: historical.skippedNodeId,
+          reason: 'branch_not_taken',
+        }),
+      );
+      expect(
+        events.some(
+          (event) => event.type === 'node:started' && event.nodeId === historical.skippedNodeId,
+        ),
+      ).toBe(false);
+    }
+  });
 
   describe('secret re-supply (ADR-0083 §6)', () => {
     const SECRET = 'sk-live-not-in-the-log';
@@ -1025,6 +1158,25 @@ workflow:
         client.sqlite
           .prepare('UPDATE runs SET workflow_definition_snapshot = ? WHERE id = ?')
           .run('{"workflow":{}}', runId),
+    },
+    {
+      label: 'a historical snapshot with already-invalid duplicate parallel members',
+      corrupt: (runId: string) => {
+        const definition = parseWorkflow(GATED, { source: 'gate.test' });
+        const invalid = {
+          ...definition,
+          workflow: {
+            ...definition.workflow,
+            nodes: [
+              ...definition.workflow.nodes,
+              { id: 'fan', type: 'parallel', parallel_of: ['double', 'double'] },
+            ],
+          },
+        };
+        client.sqlite
+          .prepare('UPDATE runs SET workflow_definition_snapshot = ? WHERE id = ?')
+          .run(JSON.stringify(invalid), runId);
+      },
     },
     {
       label: 'a snapshot but no event log (no resumable state)',

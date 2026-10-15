@@ -25,7 +25,7 @@ import {
 } from '@relavium/db';
 import {
   MaskedSecretSchema,
-  WorkflowSchema,
+  WorkflowSnapshotSchema,
   type GateDecision,
   type RunStatus,
 } from '@relavium/shared';
@@ -681,10 +681,10 @@ function pendingList(pending: readonly { readonly gateId: string }[]): string {
   return pending.length === 0 ? '' : ` (pending: ${pending.map((gate) => gate.gateId).join(', ')})`;
 }
 
-/** Re-validate the frozen snapshot JSON against the shared schema — a corrupt snapshot is an exit-2 fault. */
+/** Validate frozen JSON against the historical contract; new author-only rules never rewrite a parked run. */
 function parseSnapshot(snapshotJson: string, runId: string): WorkflowDefinition {
   try {
-    return WorkflowSchema.parse(JSON.parse(snapshotJson));
+    return WorkflowSnapshotSchema.parse(JSON.parse(snapshotJson));
   } catch (err) {
     throw new CliError(
       'invalid_invocation',

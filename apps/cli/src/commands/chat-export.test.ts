@@ -103,6 +103,9 @@ describe('chatExportCommand (2.P)', () => {
       );
       expect(notice.trim().split('\n')).toHaveLength(1);
       expect(`${out()}${notice}`).not.toContain('PRIVATE_');
+      expect(err()).toContain(
+        'Historical agent snapshots may require edits to pass current validation before running.',
+      );
       expect(out()).not.toContain('scaffold;');
       expect(readFileSync(join(cwd, 's1.relavium.yaml'), 'utf8')).toContain(
         'PRIVATE_USER_SENTINEL',
