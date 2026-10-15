@@ -12,13 +12,18 @@ import {
 
 import { MediaStoreFilesystemError, MediaStorePaths } from './media-store-paths.js';
 
+/** Internal typed cancellation; caller-provided abort reasons never become diagnostics. */
+class MediaReadCancelledError extends Error {
+  readonly code = 'media_read_cancelled';
+  constructor() {
+    super('media read was cancelled');
+    this.name = 'AbortError';
+  }
+}
+
 /** Cancellation stays content-free, including when a caller supplied a private abort reason. */
 export function assertMediaNotAborted(signal?: AbortSignalLike): void {
-  if (signal?.aborted === true) {
-    const error = new Error('media read was cancelled');
-    error.name = 'AbortError';
-    throw error;
-  }
+  if (signal?.aborted === true) throw new MediaReadCancelledError();
 }
 
 interface MediaScanResult {
@@ -45,11 +50,7 @@ export async function scanMediaFile(
     aborted = true;
   };
   const checkAbort = (): void => {
-    if (aborted) {
-      const error = new Error('media read was cancelled');
-      error.name = 'AbortError';
-      throw error;
-    }
+    if (aborted) throw new MediaReadCancelledError();
     assertMediaNotAborted(signal);
   };
   signal?.addEventListener('abort', onAbort);

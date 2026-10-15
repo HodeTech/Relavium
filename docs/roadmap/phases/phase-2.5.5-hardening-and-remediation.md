@@ -3322,8 +3322,8 @@ certify the newly demonstrated scenarios. The PR is draft while these repairs la
 | Increment | Scope | Current gate |
 | --- | --- | --- |
 | 1 | Generated-result object preflight, bounded streaming and optional small-host compatibility; actual SDK/executor/engine/both-store publication. | Accepted source at `51140d48`: two NEW clean complete cumulative rounds, each covering 17 paths / 29 hunks with independently joined hashes. The selected current-head control has 3 phases / 54 executions and zero runner errors; full-family publication remains separate. |
-| 2 | Vorbis setup bit framing, bounded structural traversal, allocation-free header CRC, extended MP4 sizes and unknown FLAC totals. | Author gates pass, including 113 new regressions. The original-source control has 15 expected assertion failures and one adjacent positive among 16 selected native, real-store and MP4 cases; two NEW clean rounds and corrected-head publication remain pending. |
-| 3 | Scratch-policy pin composition, rooted literal glob, complete write floor and exact-owned maintenance/recovery marker cleanup. | Planned; existing authority/revocation and uncertain-owner retention remain acceptance constraints. |
+| 2 | Vorbis setup bit framing, bounded structural traversal, allocation-free header CRC, extended MP4 sizes and unknown FLAC totals. | Accepted source at `ef256157`: two NEW clean complete cumulative rounds, each covering all 14 paths / 34 hunks. The 113 new regressions pass; original-source control has 15 expected assertion failures and one adjacent positive among 16 selected cases. Existing selected comment-count and Opus-tail controls pass 60 and 126 executions respectively (`complete: false`); corrected-head full publication remains separate. |
+| 3 | Scratch-policy pin composition, rooted literal glob, complete write floor and exact-owned maintenance/recovery marker cleanup. | Author gates pass: 112 new cases pass locally, with one Windows-only case disabled. Thirteen selected permanent cases fail with assertion errors on original runtime. The affected DB/CLI graph passes 307 files / 5,338 cases with four explicit platform/CI skips. Two NEW clean complete cumulative source rounds remain required; unknown-owner retention is unchanged. |
 | 4 | Snapshot own-property preservation and supported-domain evidence, safe input diagnostics, concrete CI/evidence and document corrections. | Preflight; source-confirmed defects are distinguished from existing limits and style suggestions. |
 
 The [canonical publication contract](../../reference/shared-core/llm-provider-seam.md#bounded-verified-media-publication-adr-0106)
@@ -3340,6 +3340,25 @@ barriers were moved from direct put to the selected stream write. The same 162
 engine cases and their original deadlines remain intact. Lint/typecheck, CLI
 build, seam/dependency fences, formatting and relative-document checks pass.
 These author gates are not final whole-project or platform publication.
+
+Increment 3 retains the original opaque workspace, selected-root and invocation-grant
+pins when attaching host-issued scratch. Forged/conflicting descriptors refuse;
+lexical provenance and identity revocation remain authoritative. Literal globs now
+admit their real parent directory. Marker acquisition keeps its native fd identity
+through close, retires only its exact owned marker on failure and leaves recovery
+directory counting to normal cleanup. Unknown ownership, replacement and revoked
+roots remain conservative. Fixed read cancellation adds no caller-provided cause.
+The Windows cohorts include the new filesystem and earlier media regressions; the
+full DB cohort remains selected. These selections are not native Windows execution.
+
+The increment 3 DB and CLI test tasks execute freshly under `CI=true`; the five
+successful cache hits in their seven-task graph are prerequisite builds. Its four
+skips comprise the existing Windows-specific and local-only scale guards plus the
+new Windows literal-path case. Lint/typecheck, build, isolation, tooling, fences,
+formatting and document checks pass. The initial lint refusal of an unsafe Vitest
+matcher assignment is retained; removing that redundant pre-read matcher keeps
+the original fulfilled-versus-rejected witness and actual content/path assertions.
+These author results do not certify a native Windows run or final whole-project CI.
 
 Unsupported noninert publication values already refuse under the current canonical
 contract; this correction will document and pin that compatibility limit rather

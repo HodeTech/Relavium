@@ -455,3 +455,22 @@ controls reject an extended MP4 size zero while preserving the original EOF size
 form; FLAC's already-admitted unknown sample total is stated accurately. These
 repairs do not claim decoded samples for arbitrary classified media. New source
 review and corrected-head execution remain separate acceptance gates.
+
+### Exact-owned marker acquisition cleanup — 2026-10-15
+
+Maintainer review reproduced a native-close failure after marker fstat that lost
+the acquired identity and left a live maintenance marker behind. Maintenance and
+recovery acquisition now retain the captured identity through close and post-close
+admission. Failure cleanup retires only the known original regular one-link marker
+under its original pinned root; recovery also requires its exact claim directory.
+An unsuccessful recovery acquisition leaves directory removal and its count to a
+later normal recovery. Unknown identities, replacements and revoked roots remain
+conservative, and secondary cleanup failure cannot replace the primary diagnosis.
+
+The [canonical storage contract](../reference/shared-core/built-in-tools.md#physical-media-storage-and-limits)
+owns those conditions and the unchanged fail-closed treatment of unknown maintenance
+prefixes. Native-fd controls inject failure only after actual close, distinguish
+foreign/replaced ownership and verify subsequent publication/recovery. Fixed typed
+read cancellation preserves native read/close acknowledgement and content-free
+diagnostics. No automatic unknown-owner recovery or broader deletion authority is
+introduced; source review and final execution remain separate acceptance gates.

@@ -531,7 +531,7 @@ jobs:
         run: pnpm --filter relavium exec vitest run concurrency perf-budget session-chain
       - name: Native CLI filesystem admission, containment, catalog and config (ADR-0105)
         if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
-        run: pnpm --filter relavium exec vitest run --no-file-parallelism --maxWorkers=1 src/config/paths.test.ts src/engine/tool-host/fs-policy.test.ts src/engine/tool-host/fs-policy-native-paths.test.ts src/engine/tool-host/fs-ancestor-consumers.test.ts src/engine/tool-host/fs.test.ts src/commands/fs-invocation.test.ts src/commands/fs-workspace-admission.test.ts src/workflows/catalog.test.ts src/config/resolve.test.ts
+        run: pnpm --filter relavium exec vitest run --no-file-parallelism --maxWorkers=1 src/config/paths.test.ts src/engine/tool-host/fs-policy.test.ts src/engine/tool-host/fs-policy-native-paths.test.ts src/engine/tool-host/fs-ancestor-consumers.test.ts src/engine/tool-host/fs.test.ts src/commands/fs-invocation.test.ts src/commands/fs-workspace-admission.test.ts src/workflows/catalog.test.ts src/config/resolve.test.ts src/engine/tool-host/fs-policy-scratch-composition.test.ts src/engine/tool-host/fs-rooted-glob.test.ts src/engine/tool-host/fs-write-floor-contract.test.ts
       - name: Native CAS and save_to containment (ADR-0105)
         if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
         run: pnpm --filter @relavium/db exec vitest run src/media-store-paths.test.ts src/media-store-concurrency.test.ts src/media-store-read-races.test.ts src/media-store-entry-snapshots.test.ts src/media-store-publication-contention.test.ts src/media-store.test.ts src/media-write.test.ts
@@ -540,13 +540,13 @@ jobs:
         run: pnpm --filter @relavium/shared exec vitest run src/existing-ancestor.test.ts src/config.test.ts
       - name: Shared media byte verification and publication (ADR-0106)
         if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
-        run: pnpm --filter @relavium/shared exec vitest run src/media-admission.test.ts src/media-deinline.test.ts src/media-deinline-lifecycle.test.ts src/media-iterator.test.ts src/media-publication.test.ts src/media-verifier.test.ts src/media-verifier-invalid.test.ts src/media-verifier-variants.test.ts src/media-verifier-identity.test.ts
+        run: pnpm --filter @relavium/shared exec vitest run src/media-admission.test.ts src/media-deinline.test.ts src/media-deinline-lifecycle.test.ts src/media-iterator.test.ts src/media-publication.test.ts src/media-verifier.test.ts src/media-verifier-invalid.test.ts src/media-verifier-variants.test.ts src/media-verifier-identity.test.ts src/media-generated-result.test.ts src/media-verifier-vorbis.test.ts src/media-verifier-box-size.test.ts src/media-verifier-opus.test.ts src/media-verifier-flac.test.ts
       - name: Built workspace and bundled CLI native media ownership (ADR-0109)
         if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
         run: pnpm smoke:media-packaging
       - name: Native CLI media publication and offline temporary maintenance (ADR-0106)
         if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
-        run: pnpm --filter relavium exec vitest run src/engine/media-paid-publication.test.ts src/engine/media-provider-admission.test.ts src/engine/media-publication.e2e.test.ts src/engine/media-retention-ack.test.ts src/engine/media-gc.test.ts src/engine/media-gc-delete-races.test.ts src/run-media-prune.test.ts
+        run: pnpm --filter relavium exec vitest run src/engine/media-paid-publication.test.ts src/engine/media-provider-admission.test.ts src/engine/media-publication.e2e.test.ts src/engine/media-retention-ack.test.ts src/engine/media-gc.test.ts src/engine/media-gc-delete-races.test.ts src/run-media-prune.test.ts src/engine/media-generated-publication.test.ts
       - name: Headless no-TTY smoke (the bundle loads; a piped chat picks the plain driver and exits cleanly)
         if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
         shell: bash

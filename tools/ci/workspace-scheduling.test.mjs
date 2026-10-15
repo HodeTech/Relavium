@@ -134,7 +134,7 @@ test('required and local CI share all workspace tasks and uncached per-invocatio
   assert.equal(floorCommand['continue-on-error'], undefined);
 });
 
-test('Windows native CLI filesystem cohort runs serially with all nine physical files', () => {
+test('Windows cohorts retain twelve serial filesystem files and media cases', () => {
   const require = createRequire(new URL('apps/cli/package.json', root));
   const { parse } = require('yaml');
   const workflow = parse(readFileSync(new URL('.github/workflows/ci.yml', root), 'utf8'));
@@ -147,6 +147,7 @@ test('Windows native CLI filesystem cohort runs serially with all nine physical 
   );
   assert.ok(step);
   assert.equal(step['continue-on-error'], undefined);
+  assert.equal(step.if, "${{ !cancelled() && steps.windows-build.outcome == 'success' }}");
   const files = [
     'src/config/paths.test.ts',
     'src/engine/tool-host/fs-policy.test.ts',
@@ -157,8 +158,11 @@ test('Windows native CLI filesystem cohort runs serially with all nine physical 
     'src/commands/fs-workspace-admission.test.ts',
     'src/workflows/catalog.test.ts',
     'src/config/resolve.test.ts',
+    'src/engine/tool-host/fs-policy-scratch-composition.test.ts',
+    'src/engine/tool-host/fs-rooted-glob.test.ts',
+    'src/engine/tool-host/fs-write-floor-contract.test.ts',
   ];
-  assert.equal(files.length, 9);
+  assert.equal(files.length, 12);
   for (const file of files) assert.ok(existsSync(new URL(`apps/cli/${file}`, root)), file);
   assert.deepEqual(step.run.trim().split(/\s+/), [
     'pnpm',
@@ -171,4 +175,68 @@ test('Windows native CLI filesystem cohort runs serially with all nine physical 
     '--maxWorkers=1',
     ...files,
   ]);
+  const cohorts = [
+    {
+      name: 'Shared media byte verification and publication (ADR-0106)',
+      workspace: '@relavium/shared',
+      directory: 'packages/shared',
+      files: [
+        'src/media-admission.test.ts',
+        'src/media-deinline.test.ts',
+        'src/media-deinline-lifecycle.test.ts',
+        'src/media-iterator.test.ts',
+        'src/media-publication.test.ts',
+        'src/media-verifier.test.ts',
+        'src/media-verifier-invalid.test.ts',
+        'src/media-verifier-variants.test.ts',
+        'src/media-verifier-identity.test.ts',
+        'src/media-generated-result.test.ts',
+        'src/media-verifier-vorbis.test.ts',
+        'src/media-verifier-box-size.test.ts',
+        'src/media-verifier-opus.test.ts',
+        'src/media-verifier-flac.test.ts',
+      ],
+    },
+    {
+      name: 'Native CLI media publication and offline temporary maintenance (ADR-0106)',
+      workspace: 'relavium',
+      directory: 'apps/cli',
+      files: [
+        'src/engine/media-paid-publication.test.ts',
+        'src/engine/media-provider-admission.test.ts',
+        'src/engine/media-publication.e2e.test.ts',
+        'src/engine/media-retention-ack.test.ts',
+        'src/engine/media-gc.test.ts',
+        'src/engine/media-gc-delete-races.test.ts',
+        'src/run-media-prune.test.ts',
+        'src/engine/media-generated-publication.test.ts',
+      ],
+    },
+  ];
+  for (const cohort of cohorts) {
+    const selected = job.steps.find((candidate) => candidate.name === cohort.name);
+    assert.ok(selected);
+    assert.equal(selected.if, "${{ !cancelled() && steps.windows-build.outcome == 'success' }}");
+    assert.equal(selected['continue-on-error'], undefined);
+    for (const file of cohort.files)
+      assert.ok(existsSync(new URL(`${cohort.directory}/${file}`, root)), file);
+    assert.deepEqual(selected.run.trim().split(/\s+/), [
+      'pnpm',
+      '--filter',
+      cohort.workspace,
+      'exec',
+      'vitest',
+      'run',
+      ...cohort.files,
+    ]);
+  }
+  const db = job.steps.find(
+    (candidate) =>
+      candidate.name ===
+      'DB concurrency suite (BEGIN IMMEDIATE + SQLITE_BUSY retry + WAL behave identically on Windows)',
+  );
+  assert.ok(db);
+  assert.equal(db.if, "${{ !cancelled() && steps.windows-build.outcome == 'success' }}");
+  assert.equal(db['continue-on-error'], undefined);
+  assert.equal(db.run, 'pnpm --filter @relavium/db test');
 });

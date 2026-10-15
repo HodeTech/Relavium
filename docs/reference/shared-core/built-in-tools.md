@@ -135,6 +135,14 @@ or stealing live claims. Recovery itself uses an exclusive claimant marker. Prod
 maintenance handshakes prevent a new writer from starting inside maintenance. This protocol is
 local-device cooperating storage, not a distributed lease or hostile same-user jail.
 
+Marker acquisition retains its captured descriptor identity through joined native close and
+post-close ownership admission. A caught acquisition failure removes only its original known
+regular one-link marker under the original pinned root; recovery additionally requires the exact
+original claim-directory identity. Failed recovery acquisition leaves the claim directory for a
+later normal sweep, so claim removal is counted only by successful directory cleanup. Unknown
+identity, a replaced entry or revoked root is retained. Secondary cleanup failure cannot replace
+the fixed primary acquisition error or expose native diagnostics.
+
 New `media-claim-v2` records encode native bigint device/inode identities as bounded
 canonical unsigned 64-bit tokens. Claim creation, post-move admission and final recovery
 revalidation compare these exact identities without a Number conversion. Existing v1
@@ -147,8 +155,11 @@ existing cooperative root/path floor; it does not upgrade that floor to a hostil
 acknowledgements before mutation. It refuses the entire maintenance operation before any legacy
 deletion if a new producer is live or uncertain. It admits only the two historical ownerless
 grammars: root `stream.<UUID>.tmp` and one two-hex shard containing `<62-lowercase-hex>.<UUID>.tmp`.
-Other suffix matches, symlinks and special entries do not acquire authority. The flags acknowledge
-that old binaries, which have no producer records, are stopped. The
+Other suffix matches, symlinks and special entries do not acquire authority. An unrecognized
+`media-maintenance-` prefix is not an unrelated stray: producer admission refuses it with
+`maintenance_active`, offline maintenance refuses it with `owner_unknown`, and normal sweeping
+retains it as `malformed`. An unknown owner or future protocol never acquires automatic deletion
+authority. The flags acknowledge that old binaries, which have no producer records, are stopped. The
 [CLI maintenance command](../cli/commands.md#relavium-media-prune-temporaries) fixes the global CAS
 destination; absence reports zero without provisioning it or opening config/history/key services.
 Normal temporary sweeping is independent of published-object reference GC and active run filters.

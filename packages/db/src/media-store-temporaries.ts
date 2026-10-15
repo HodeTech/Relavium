@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { constants, lstatSync, readdirSync, realpathSync, type Stats } from 'node:fs';
-import { mkdir, open, rename, rmdir, unlink, type FileHandle } from 'node:fs/promises';
+import { mkdir, open, rename, rmdir, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { MediaStoreFilesystemError, MediaStorePaths } from './media-store-paths.js';
@@ -261,6 +261,18 @@ export class MediaStoreTemporaries {
   }
   private async createMarker(path: string): Promise<Stats> {
     this.paths.assertParent(path);
+    return this.acquireMarker(
+      path,
+      (identity) => this.paths.assertOwnedFile(path, identity),
+      (identity) => this.removeOwned(path, identity),
+    );
+  }
+  /** Keep captured fd identity available when close or the post-close ownership check fails. */
+  private async acquireMarker(
+    path: string,
+    assertOwned: (identity: Stats) => void,
+    cleanup: (identity: Stats) => Promise<void>,
+  ): Promise<Stats> {
     const file = await open(
       path,
       constants.O_WRONLY |
@@ -272,26 +284,43 @@ export class MediaStoreTemporaries {
     ).catch((error: unknown) => {
       throw this.paths.error(error);
     });
-    const info = await this.closeMarker(file);
-    this.paths.assertOwnedFile(path, info);
-    return info;
-  }
-  private async closeMarker(file: FileHandle): Promise<Stats> {
-    let info: Stats;
+    let identity: Stats | undefined;
+    let acquired = false;
     let cleanupError: MediaStoreFilesystemError | undefined;
     try {
-      info = await file.stat().catch((error: unknown) => {
-        throw this.paths.error(error);
-      });
-    } finally {
       try {
-        await file.close();
+        identity = await file.stat().catch((error: unknown) => {
+          throw this.paths.error(error);
+        });
+      } finally {
+        try {
+          await file.close();
+        } catch (error) {
+          cleanupError = this.paths.error(error);
+        }
+      }
+      if (cleanupError !== undefined) throw cleanupError;
+      // Only a known regular one-link marker can acquire deletion authority. The caller
+      // supplies either the root-file floor or the original claim-directory identity floor.
+      if (identity === undefined) throw new MediaStoreFilesystemError('io');
+      try {
+        assertOwned(identity);
       } catch (error) {
-        cleanupError = this.paths.error(error);
+        throw this.paths.error(error);
+      }
+      acquired = true;
+      return identity;
+    } finally {
+      if (!acquired && identity !== undefined) {
+        try {
+          await cleanup(identity);
+        } catch (error) {
+          // A primary acquisition failure is already propagating. Ownership uncertainty or
+          // secondary I/O retains the entry; cleanup cannot replace that primary diagnosis.
+          cleanupError ??= this.paths.error(error);
+        }
       }
     }
-    if (cleanupError !== undefined) throw cleanupError;
-    return info;
   }
   private async removeOwned(path: string, identity: Stats): Promise<void> {
     this.paths.assertOwnedFile(path, identity);
@@ -419,16 +448,11 @@ export class MediaStoreTemporaries {
     const markerPath = join(dir, marker);
     // Reserve a distinct marker. Every recovery checks other markers after its own is visible:
     // simultaneous starts may both retain, but cannot both enter the destructive phase.
-    const file = await open(
+    const markerInfo = await this.acquireMarker(
       markerPath,
-      constants.O_WRONLY |
-        constants.O_CREAT |
-        constants.O_EXCL |
-        constants.O_NOFOLLOW |
-        constants.O_NONBLOCK,
-      0o600,
+      (opened) => this.assertRecoveryMarker(root, name, identity, marker, opened),
+      (opened) => this.removeRecoveryMarker(root, name, identity, marker, opened),
     );
-    const markerInfo = await this.closeMarker(file);
     let outcome: MediaTemporaryRetentionReason | undefined;
     let completed = false;
     let cleanupError: MediaStoreFilesystemError | undefined;
@@ -481,6 +505,33 @@ export class MediaStoreTemporaries {
     if (cleanupError !== undefined) throw cleanupError;
     return outcome;
   }
+  private assertRecoveryMarker(
+    root: string,
+    name: string,
+    identity: Stats,
+    marker: string,
+    markerInfo: Stats,
+  ): void {
+    const own = this.child(root, name, identity, marker);
+    if (
+      !markerInfo.isFile() ||
+      markerInfo.nlink !== 1 ||
+      own === undefined ||
+      !same(own, markerInfo)
+    )
+      throw new MediaStoreFilesystemError('unsafe_path');
+  }
+  /** Acquisition failure retires only its marker; normal recovery owns directory removal/counting. */
+  private async removeRecoveryMarker(
+    root: string,
+    name: string,
+    identity: Stats,
+    marker: string,
+    markerInfo: Stats,
+  ): Promise<void> {
+    this.assertRecoveryMarker(root, name, identity, marker, markerInfo);
+    await unlink(join(root, name, marker));
+  }
   private async cleanupRecovery(
     root: string,
     name: string,
@@ -488,10 +539,7 @@ export class MediaStoreTemporaries {
     marker: string,
     markerInfo: Stats,
   ): Promise<boolean> {
-    const own = this.child(root, name, identity, marker);
-    if (own === undefined || !same(own, markerInfo))
-      throw new MediaStoreFilesystemError('unsafe_path');
-    await unlink(join(root, name, marker));
+    await this.removeRecoveryMarker(root, name, identity, marker, markerInfo);
     try {
       this.directory(root, name, identity);
       const dir = join(root, name);
