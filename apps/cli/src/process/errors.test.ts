@@ -85,20 +85,18 @@ describe('toUserFacing', () => {
   it('maps a provider-header policy refusal to the fixed invocation diagnostic (ADR-0108)', () => {
     expect(toUserFacing(new ProviderHeaderPolicyError())).toEqual({
       code: 'invalid_invocation',
-      message: 'Provider headers are disabled until keychain custody is implemented.',
+      message: new ProviderHeaderPolicyError().message,
       exitCode: EXIT_CODES.invalidInvocation,
     });
   });
 
   it('uses the structural DB guard for another bundle and refuses altered lookalikes', () => {
-    const compatible = new Error(
-      'Provider headers are disabled until keychain custody is implemented.',
-    );
+    const compatible = new Error(new ProviderHeaderPolicyError().message);
     Object.defineProperty(compatible, 'code', { value: 'provider_header_policy' });
     compatible.name = 'ProviderHeaderPolicyError';
     expect(toUserFacing(compatible)).toEqual({
       code: 'invalid_invocation',
-      message: 'Provider headers are disabled until keychain custody is implemented.',
+      message: new ProviderHeaderPolicyError().message,
       exitCode: EXIT_CODES.invalidInvocation,
     });
     expect(toUserFacing({ code: 'provider_header_policy' }).code).toBe('internal');

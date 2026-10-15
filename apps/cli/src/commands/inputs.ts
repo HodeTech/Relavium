@@ -1,8 +1,31 @@
-import type { WorkflowDefinition } from '@relavium/core';
+import type { InputAdmissionIssue, WorkflowDefinition } from '@relavium/core';
+import { isReferenceableInputName } from '@relavium/shared';
 
 import { CliError } from '../process/errors.js';
+import { sanitizeUntrustedInline } from '../render/sanitize.js';
 
 type InputDecl = NonNullable<WorkflowDefinition['workflow']['inputs']>[number];
+
+/** Names can carry credentials even when they satisfy the input-name grammar. */
+function inputLabel(name: string | undefined): string {
+  if (name === undefined || name.length > 128 || !isReferenceableInputName(name)) return 'input';
+  return `input '${sanitizeUntrustedInline(name)}'`;
+}
+
+/**
+ * Only used after CLI unknown-key refusal: core supplies structural, value-free reasons for declared
+ * inputs. Cap the surface's list and every displayed field; never format raw argv keys with this helper.
+ */
+export function inputAdmissionMessage(issues: readonly InputAdmissionIssue[]): string {
+  const details = issues
+    .slice(0, 8)
+    .map(
+      (issue) =>
+        `${inputLabel(issue.name)}: ${sanitizeUntrustedInline(issue.message).slice(0, 256)}`,
+    );
+  if (issues.length > details.length) details.push('further input issues omitted');
+  return `workflow inputs do not satisfy their declared contracts. ${details.join('; ')}.`;
+}
 
 /** Parse repeatable `--input key=value` tokens into a raw string map. */
 export function parseInputArgs(rawInputs: readonly string[]): Record<string, string> {

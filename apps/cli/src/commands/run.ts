@@ -69,7 +69,12 @@ import {
   isTerminalOutcome,
   outcomeToExitCode,
 } from './drive.js';
-import { assertOrdinaryInputsAllowed, parseInputArgs, resolveInputs } from './inputs.js';
+import {
+  assertOrdinaryInputsAllowed,
+  inputAdmissionMessage,
+  parseInputArgs,
+  resolveInputs,
+} from './inputs.js';
 
 export interface RunCommandArgs {
   readonly workflow: string;
@@ -193,10 +198,7 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
   );
   if (!admitted.ok) {
     // Core owns every value contract; raw names were refused above. Never attach caller payload/cause.
-    throw new CliError(
-      'invalid_invocation',
-      'workflow inputs do not satisfy their declared contracts.',
-    );
+    throw new CliError('invalid_invocation', inputAdmissionMessage(admitted.issues));
   }
   const inputs = admitted.inputs;
   warnSnapshotLiterals(def, deps.io);

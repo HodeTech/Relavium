@@ -8,6 +8,7 @@ import {
   isCorruptRunEventError,
   isProviderHeaderPolicyError,
   isUnreadableRunEventLogError,
+  ProviderHeaderPolicyError,
   SessionMessageBoundaryError,
 } from '@relavium/db';
 
@@ -86,7 +87,7 @@ export function toUserFacing(value: unknown): UserFacingError {
   if (isProviderHeaderPolicyError(value)) {
     return {
       code: 'invalid_invocation',
-      message: 'Provider headers are disabled until keychain custody is implemented.',
+      message: new ProviderHeaderPolicyError().message,
       exitCode: EXIT_CODES.invalidInvocation,
     };
   }

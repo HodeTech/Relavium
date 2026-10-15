@@ -1838,20 +1838,75 @@ describe('first-run secret admission before service construction (ADR-0107)', ()
   );
 
   it.each([
-    { type: 'secret', validation: 'min_length: 25', value: opaque },
-    { type: 'secret', validation: 'max_length: 2', value: opaque },
-    { type: 'secret', validation: "pattern: '^allowed$'", value: opaque },
-    { type: 'secret', validation: 'format: email', value: opaque },
-    { type: 'number', validation: 'min: 2', value: '1' },
-    { type: 'number', validation: 'max: 2', value: '3' },
-    { type: 'string', validation: 'enum: [allowed]', value: opaque },
-    { type: 'string', validation: 'min_length: 25', value: opaque },
-    { type: 'string', validation: 'max_length: 2', value: opaque },
-    { type: 'string', validation: "pattern: '^allowed$'", value: opaque },
-    { type: 'string', validation: 'format: email', value: opaque },
+    {
+      type: 'secret',
+      validation: 'min_length: 25',
+      value: opaque,
+      reason: 'value is shorter than min_length',
+    },
+    {
+      type: 'secret',
+      validation: 'max_length: 2',
+      value: opaque,
+      reason: 'value is longer than max_length',
+    },
+    {
+      type: 'secret',
+      validation: "pattern: '^allowed$'",
+      value: opaque,
+      reason: 'value does not match the declared pattern',
+    },
+    {
+      type: 'secret',
+      validation: 'format: email',
+      value: opaque,
+      reason: 'value is not a valid email',
+    },
+    {
+      type: 'number',
+      validation: 'min: 2',
+      value: '1',
+      reason: 'value is below the declared minimum',
+    },
+    {
+      type: 'number',
+      validation: 'max: 2',
+      value: '3',
+      reason: 'value is above the declared maximum',
+    },
+    {
+      type: 'string',
+      validation: 'enum: [allowed]',
+      value: opaque,
+      reason: 'value is not one of the allowed enum members',
+    },
+    {
+      type: 'string',
+      validation: 'min_length: 25',
+      value: opaque,
+      reason: 'value is shorter than min_length',
+    },
+    {
+      type: 'string',
+      validation: 'max_length: 2',
+      value: opaque,
+      reason: 'value is longer than max_length',
+    },
+    {
+      type: 'string',
+      validation: "pattern: '^allowed$'",
+      value: opaque,
+      reason: 'value does not match the declared pattern',
+    },
+    {
+      type: 'string',
+      validation: 'format: email',
+      value: opaque,
+      reason: 'value is not a valid email',
+    },
   ])(
     'runs core admission before services for $type {$validation}',
-    async ({ type, validation, value }) => {
+    async ({ type, validation, value, reason }) => {
       const yaml = SECRET_RUN.replace(
         '{ name: token, type: secret, required: true }',
         () => `{ name: token, type: ${type}, required: true, validation: { ${validation} } }`,
@@ -1886,7 +1941,8 @@ describe('first-run secret admission before service construction (ADR-0107)', ()
         ),
       ).rejects.toMatchObject({
         code: 'invalid_invocation',
-        message: 'workflow inputs do not satisfy their declared contracts.',
+        exitCode: 2,
+        message: `workflow inputs do not satisfy their declared contracts. input 'token': ${reason}.`,
       });
       expect(
         [
