@@ -44,8 +44,57 @@ describe('AgentSchema', () => {
     ).toBe(false);
   });
 
+  it('rejects a repeated fallback model/provider even when attempt budgets differ, without echoing model values', () => {
+    const model = 'private-model-sentinel';
+    const result = AgentSchema.safeParse({
+      ...summarizer,
+      fallback_chain: [
+        { model, provider: 'openai', max_attempts: 1 },
+        { model: 'other', provider: 'gemini', max_attempts: 1 },
+        { model, provider: 'openai', max_attempts: 3 },
+      ],
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues).toEqual([expect.objectContaining({ path: ['fallback_chain'] })]);
+      expect(result.error.issues[0]?.message).toContain('duplicate');
+      expect(result.error.message).not.toContain(model);
+    }
+  });
+
+  it('preserves ordered fallback tuples sharing a model or provider and allows the primary once in the list', () => {
+    const agent = {
+      ...summarizer,
+      fallback_chain: [
+        { model: summarizer.model, provider: summarizer.provider, max_attempts: 2 },
+        { model: summarizer.model, provider: 'openai', max_attempts: 1 },
+        { model: 'different-model', provider: summarizer.provider, max_attempts: 1 },
+      ],
+    };
+    expect(AgentSchema.parse(agent)).toEqual(agent);
+    expect(AgentSchema.safeParse({ ...summarizer, fallback_chain: [] }).success).toBe(true);
+  });
+
   it('rejects an empty system_prompt', () => {
     expect(AgentSchema.safeParse({ ...summarizer, system_prompt: '' }).success).toBe(false);
+  });
+
+  it('reports duplicate MCP registrations without reflecting their identity values', () => {
+    const identity = 'private-registration-sentinel';
+    const result = AgentSchema.safeParse({
+      ...summarizer,
+      mcp_servers: [{ ref: identity }, { ref: identity }],
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues).toEqual([
+        expect.objectContaining({
+          path: ['mcp_servers'],
+          message: 'duplicate mcp_servers identity',
+        }),
+      ]);
+      expect(result.error.message).not.toContain(identity);
+    }
   });
 
   it('rejects duplicate mcp_servers ids within an agent', () => {

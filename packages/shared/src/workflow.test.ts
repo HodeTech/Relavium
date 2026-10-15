@@ -271,6 +271,163 @@ describe('WorkflowSchema', () => {
     ).toBe(false);
   });
 
+  it('reports exactly one value-free full-document duplicate parallel diagnostic', () => {
+    const result = WorkflowSchema.safeParse(
+      withWorkflow({
+        nodes: base.workflow.nodes.map((node) =>
+          node.id === 'fan-out'
+            ? {
+                ...node,
+                parallel_of: ['security-scan-node', 'style-review-node', 'style-review-node'],
+              }
+            : node,
+        ),
+      }),
+    );
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues).toEqual([
+        expect.objectContaining({ path: ['workflow', 'nodes', 1, 'parallel_of'] }),
+      ]);
+      expect(result.error.issues[0]?.message).toContain('duplicate');
+      expect(result.error.message).not.toContain('style-review-node');
+      expect(result.error.message).not.toContain('fan-out');
+    }
+  });
+
+  it.each([true, 'private-branch-value', 0, -0])(
+    'rejects repeated condition matches in a complete workflow (%s)',
+    (when) => {
+      const result = WorkflowSchema.safeParse(
+        withWorkflow({
+          nodes: base.workflow.nodes.map((node) =>
+            node.id === 'severity-gate'
+              ? {
+                  ...node,
+                  branches: [
+                    { when, target_node: 'human-approval' },
+                    { when, target_node: 'synthesize-report' },
+                  ],
+                }
+              : node,
+          ),
+        }),
+      );
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.issues).toEqual([
+          expect.objectContaining({ path: ['workflow', 'nodes', 5, 'branches'] }),
+        ]);
+        expect(result.error.issues[0]?.message).toContain('duplicate');
+        expect(result.error.message).not.toContain('private-branch-value');
+      }
+    },
+  );
+
+  it('preserves typed distinct condition matches at the full-document boundary', () => {
+    const node = {
+      id: 'choice',
+      type: 'condition',
+      expression: 'inputs.choice',
+      branches: [
+        { when: true, target_node: 'done' },
+        { when: 'true', target_node: 'done' },
+        { when: 0, target_node: 'done' },
+        { when: '0', target_node: 'done' },
+      ],
+    };
+    const doc = {
+      schema_version: '1.0',
+      workflow: { id: 'typed-choice', nodes: [node, { id: 'done', type: 'output' }], edges: [] },
+    };
+    expect(WorkflowSchema.parse(doc)).toEqual(doc);
+  });
+
+  it.each(['approve', 'reject'])(
+    'rejects an orphan gate action %s in a full document',
+    (timeout_action) => {
+      const result = WorkflowSchema.safeParse({
+        schema_version: '1.0',
+        workflow: {
+          id: 'untimed',
+          nodes: [{ id: 'approval', type: 'human_gate', gate_type: 'approval', timeout_action }],
+          edges: [],
+        },
+      });
+      expect(result.success).toBe(false);
+      if (!result.success)
+        expect(result.error.issues).toEqual([
+          expect.objectContaining({
+            path: ['workflow', 'nodes', 0, 'timeout_action'],
+            message: 'timeout_action requires timeout_ms',
+          }),
+        ]);
+    },
+  );
+
+  it.each([
+    { label: 'untimed', fields: {} },
+    { label: 'default timeout action', fields: { timeout_ms: 1 } },
+    { label: 'timed approval', fields: { timeout_ms: 1, timeout_action: 'approve' } },
+    { label: 'timed rejection', fields: { timeout_ms: 1, timeout_action: 'reject' } },
+  ])('preserves a $label gate in a complete document', ({ fields }) => {
+    const doc = {
+      schema_version: '1.0',
+      workflow: {
+        id: 'gate-contract',
+        nodes: [{ id: 'approval', type: 'human_gate', gate_type: 'approval', ...fields }],
+        edges: [],
+      },
+    };
+    expect(WorkflowSchema.parse(doc)).toEqual(doc);
+  });
+
+  it('rejects duplicate inline-agent fallback tuples without echoing their model', () => {
+    const model = 'PRIVATE_FALLBACK_SENTINEL';
+    const result = WorkflowSchema.safeParse(
+      withWorkflow({
+        agents: [
+          {
+            ...base.workflow.agents[0],
+            fallback_chain: [
+              { model, provider: 'openai', max_attempts: 1 },
+              { model, provider: 'openai', max_attempts: 2 },
+            ],
+          },
+          ...base.workflow.agents.slice(1),
+        ],
+      }),
+    );
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues).toEqual([
+        expect.objectContaining({ path: ['workflow', 'agents', 0, 'fallback_chain'] }),
+      ]);
+      expect(result.error.issues[0]?.message).toContain('duplicate');
+      expect(result.error.message).not.toContain(model);
+    }
+  });
+
+  it('accepts an inline agent fallback equal to its primary alongside distinct model/provider tuples', () => {
+    expect(
+      accepts(
+        withWorkflow({
+          agents: [
+            {
+              ...base.workflow.agents[0],
+              fallback_chain: [
+                { model: 'claude-sonnet-4-6', provider: 'anthropic', max_attempts: 1 },
+                { model: 'claude-sonnet-4-6', provider: 'openai', max_attempts: 1 },
+                { model: 'other', provider: 'anthropic', max_attempts: 1 },
+              ],
+            },
+            ...base.workflow.agents.slice(1),
+          ],
+        }),
+      ),
+    ).toBe(true);
+  });
+
   it('rejects a trigger type whose required payload is absent', () => {
     expect(accepts(withWorkflow({ trigger: { type: 'webhook' } }))).toBe(false);
     expect(accepts(withWorkflow({ trigger: { type: 'file_change' } }))).toBe(false);

@@ -70,6 +70,32 @@ export const RunSchema = z
     updatedAt: nonNegativeInt,
   })
   .superRefine((run, ctx) => {
+    // The logical view permits missing legacy timestamps/error/output fields. Contradictory
+    // present fields are refused; this schema is not the persisted RunRow reader.
+    const terminal =
+      run.status === 'completed' || run.status === 'failed' || run.status === 'cancelled';
+    if (run.completedAt !== undefined && !terminal) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['completedAt'],
+        message: 'completedAt requires a terminal status',
+      });
+    }
+    if (run.startedAt !== undefined && run.status === 'pending') {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['startedAt'],
+        message: 'startedAt is not permitted while pending',
+      });
+    }
+    if (run.error !== undefined && run.status !== 'failed') {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['error'],
+        message: 'error requires failed status',
+      });
+    }
+
     // Temporal invariants: a run cannot finish before it starts, or be updated before it was created.
     if (
       run.startedAt !== undefined &&

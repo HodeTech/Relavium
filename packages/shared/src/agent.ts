@@ -311,6 +311,19 @@ export const AgentSchema = z
   })
   .strict()
   .superRefine((agent, ctx) => {
+    // Identity is the model/provider pair within the fallback list, not the attempt count.
+    // Equality with the primary is permitted; tuple encoding avoids delimiter collisions.
+    const fallbacks = (agent.fallback_chain ?? []).map(({ model, provider }) =>
+      JSON.stringify([model, provider]),
+    );
+    if (findDuplicates(fallbacks).length > 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['fallback_chain'],
+        message: 'duplicate fallback_chain model/provider pair(s)',
+      });
+    }
+
     // MCP server identities must be unique within an agent (they namespace the registered tools). The identity
     // here is the EXACT inline `id` or by-name `ref` registration name. This catches the common exact-duplicate
     // case at parse; a host-side *sanitization* collision (two distinct free-form registration names that map to
@@ -324,7 +337,7 @@ export const AgentSchema = z
     if (duplicates.length > 0) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: `duplicate mcp_servers id(s): ${duplicates.join(', ')}`,
+        message: 'duplicate mcp_servers identity',
         path: ['mcp_servers'],
       });
     }
