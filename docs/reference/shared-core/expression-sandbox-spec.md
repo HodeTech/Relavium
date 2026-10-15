@@ -266,9 +266,13 @@ expression markers. Display/run-start/input-node markers remain unchanged.
 ### Owned provenance and consumers
 
 One WorkflowContextProjection owns values: Readonly<Record<string, string>> (clean
-keys only) and deniedKeys: readonly string[]. Copy/freeze both, detach record
-prototypes, reject duplicate/overlapping/malformed keys, and order clean/denied keys
-by shared byCodeUnit. One pure factory qualifies resolved context using the existing
+keys only), deniedKeys: readonly string[] and orderedKeys: readonly string[].
+Copy/freeze all three and detach record prototypes. orderedKeys is the original
+Object.keys(resolved) order, not a new lexical sort. Validate unique well-formed
+keys and that orderedKeys is exactly the disjoint union of clean and denied keys.
+Reconstruct scope data/accessors in this full order, preserving existing context
+declaration order and ECMAScript integer-key enumeration. Separate clean/denied
+lists alone cannot recover their original interleaving. One pure factory qualifies resolved context using the existing
 linear taint graph. Required execution/preparation ctx becomes this projection;
 the exported trusted raw resolver contract stays unchanged. Missing/malformed
 projection uses existing validation ErrorCode with fixed content-free message,
@@ -277,7 +281,8 @@ never an implicit clean default. Shape checks do not detect a dishonest embeddin
 Derive secret-input membership once from that same admitted workflow. Own its
 backing data; expose a ReadonlySet-compatible membership/iteration facade without
 Set mutation methods and an immutable ordered denied-name array from the same
-factory. Copy caller-provided names at embedding entry: Object.freeze(new Set())
+factory. Facade callbacks/iterators must never expose the mutable backing Set
+(including forEach’s third argument). Copy caller-provided names at embedding entry: Object.freeze(new Set())
 or a live caller Set is insufficient. Every fresh/resume/preparation producer uses
 that same authority, rather than recomputing a mutable set at resume.
 
@@ -289,8 +294,12 @@ that same authority, rather than recomputing a mutable set at resume.
   preparation use this same consumer; preparation has no VM-only metadata.
 - ExpressionScope requires the context projection and explicit immutable
   deniedInputNames; clean embeddings provide explicit empty metadata. Scope
-  construction omits raw secret inputs and supplies only clean values plus denied
-  names. No marker substitution in expression inputs. Trusted NodeExecContext.inputs
+  construction omits raw secret inputs and supplies clean values plus denied
+  names. Preserve actual input own-key order/presence: present denied keys use
+  private null placeholders which become accessors before author code; absent
+  declared-secret keys get non-enumerable denied accessors. Never create an
+  enumerable missing input or reorder unrelated clean keys. Placeholders are
+  transport data, never readable expression values or display markers. Trusted NodeExecContext.inputs
   remains raw; input-node/public display continues using maskSecretInputs.
 - QuickJS rebuilds frozen null-prototype scope records and enumerable denied
   accessors for both namespaces. Clean values and key-only enumeration remain

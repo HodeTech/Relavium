@@ -97,8 +97,8 @@ No host absolute paths, credentials or embedded source are stored.
 
 The **public binding receipt** is versioned JSON beside ciphertext: source SHA,
 package version, tarball/ciphertext SHA-256, recipient primary and encryption-subkey
-fingerprints, toolchain/config/lock identity, and originating trusted workflow/run/
-attempt identity. It contains neither maps nor private per-source inventory.
+fingerprints, toolchain/config/lock identity, nonsecret originating map-check completion status,
+and originating trusted workflow/run/attempt identity. It contains neither maps nor private per-source inventory.
 Use SHA-256 for file identity, not a homemade signature/provenance protocol.
 Check originating identity against the trusted CI service/run and real tag/source;
 a self-declared JSON field alone does not authenticate its producer.
@@ -152,8 +152,12 @@ below. Only a verified `fresh` route enters build/pack/encryption with the confi
 production recipient in the isolated originating job **before any handoff**.
 `reuse` downloads exact prior bytes and invokes no build, pack, finalizer or GPG.
 Required custody failure never downgrades to package-test mode or fixture keys.
-Both modes run the same tarball smoke and local map checks. Self-declared mode or
-receipt strings do not confer release authority.
+Fresh originating builds in both modes run local map/symbolication checks before
+sealing their receipt. Release reuse has no plaintext maps or decryption key: it
+validates the original trusted successful pack identity, map-check completion
+evidence and exact candidate digests, and reruns tarball smoke. It does not claim
+fresh symbolication. Missing original map-check evidence refuses; self-declared
+receipt fields alone do not prove it.
 
 ## Archive, retry and publication
 
@@ -218,9 +222,25 @@ candidate recoverable; failed finalization retries without publication/build/GPG
 | npm publication failed or finalizer failed | Resume the applicable downstream jobs using the same complete candidate |
 | Incomplete reservation, missing asset/ciphertext, expired/inaccessible staging, conflicting bytes or ambiguous origin | Fail with manual recovery; never manufacture a replacement candidate |
 
-Support failed-jobs, all-jobs and cross-run retries through that same discovery
-route **before any build step**. A missing source artifact cannot be compensated by
-re-encryption. Retain tarball/ciphertext/receipt for every supported release beyond
+Every fresh build requires successful permissioned discovery/reservation in the
+**same current run attempt**. A native failed-jobs rerun skips successful upstream
+jobs: therefore pack must compare the discovery attempt with its current attempt
+before any fresh build. Stale fresh output refuses without building, packing or
+encrypting, with rerun-all/manual-recovery instructions. Do not assume GitHub
+automatically reruns discovery or give pack Release-write authority.
+
+| Retry mode | Supported route |
+|---|---|
+| Failed jobs downstream of a successful pack | Revalidate original complete candidate/binding and resume smoke/archive/publish/finalize; no fresh build or local map-check claim |
+| Failed pack with a prior reuse route | Retrieve/verify the same original candidate; no build/GPG; missing staging refuses |
+| Failed pack with stale fresh output | Refuse before build; rerun-all reaches discovery, and incomplete reservation still requires manual recovery |
+| All jobs or new trusted release run | Re-execute permissioned discovery before pack; reuse complete original bytes or refuse lost/incomplete reservation |
+
+Same-run transfer may use Actions' existing artifact runtime capability; cross-run
+retrieval remains in the Actions-read discovery owner. Archive/finalize recheck
+remote state with their own custody permissions on every retry. No downstream job
+can interpret stale fresh output as authority to rebuild. A missing source artifact
+cannot be compensated by re-encryption. Retain tarball/ciphertext/receipt for every supported release beyond
 Actions expiry, including npm failures. No automatic asset deletion/replacement.
 Public Release is not private storage; only ciphertext restricts debugging payload.
 

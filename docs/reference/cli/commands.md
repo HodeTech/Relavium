@@ -714,7 +714,10 @@ paths. Known operational refusal stays inline where supported; unexpected faults
 must reach the invocation coordinator even if a balanced internal turn event was
 emitted first. That engine event alone cannot convert an escaping CLI fault to
 an ordinary turn outcome. Programmer-invalid DB URI is not a normal CLI
-storage-open failure; preserve its API validation boundary.
+storage-open failure; preserve its API validation boundary. Operational 1 after
+admitted work (including session publication/join failure) does not prove absence
+of paid/effectful work: retain inspect-before-repeat advice before correcting the
+storage issue. No healthy session receipt is inferred from its numeric exit.
 
 Classify native storage errno only at the actual owned I/O boundary, not by
 examining arbitrary provider/plugin objects or private cause trees. Recognize

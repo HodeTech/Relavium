@@ -25,7 +25,8 @@ a secret-free trust domain.
 
 The earlier proposal to inject markers would silently turn a secret comparison
 into a false branch or let a marker satisfy an output schema. Its additional
-preparation field had no VM consumer. Both mechanisms are replaced below, and the same silent comparison exists for direct secret-input markers. The revised
+preparation field had no VM consumer. Both mechanisms are replaced below; the
+same silent comparison exists for direct secret-input markers. The revised
 proposal applies denied-value access uniformly to both expression namespaces;
 display/input-node masking remains unchanged.
 
@@ -49,7 +50,9 @@ live Sets or separately derived lists.
 Keep the exported trusted resolver's raw result contract. Immediately qualify its
 result inside the engine, before storing or handing context to execution or
 budget preparation. The one owned projection contains only clean context strings
-and denied-key metadata, never raw tainted strings. Replace the low-level context
+and denied-key metadata plus the original full key order, never raw tainted
+strings. Preserve existing context/input key enumeration rather than introducing
+a lexical reorder or changing absent-input presence. Replace the low-level context
 field with this required projection and migrate every actual producer/double.
 Missing projection refuses with a fixed typed validation failure; there is no
 implicit clean default. Trusted hosts remain responsible for honest admitted
@@ -59,8 +62,8 @@ Execution and preparation consume the **same** projection. Preparation uses a
 public-template resolver which rejects denied references before filters/defaults;
 this is a real template consumer, not a fictitious preparation sandbox. It also
 refuses direct secret-input references using that owned membership view, including
-hand-constructed workflows that bypass parser checks. Clean
-templates work unchanged. Fresh, same-process resume and cross-process budget
+hand-constructed workflows that bypass parser checks. Clean templates work
+unchanged. Fresh, same-process resume and cross-process budget
 preparation cannot reconstruct raw unqualified context. Trusted raw resolution
 stays local to the resolver/projection cut rather than a second executor authority.
 
@@ -91,7 +94,7 @@ the VM. Clean reads and key-only enumeration remain available.
 
 **Finite semantic guarantee:** resource failure before the accessor body can be
 caught without setting the latch; the installed QuickJS intake reproduces this.
-Do not promise detection of every attempted access or universal fail-loud behavior.
+Do not promise detection of every attempted access or universal fail-loud behaviour.
 Raw-value exclusion still protects confidentiality in that case. An uncaught
 resource failure keeps its existing classification. Latch purpose is preventing
 silent false branching after an actually observed denied read, not supplying the
@@ -160,7 +163,8 @@ benefit, without weakening raw-value exclusion.
    For executed accessors assert typed denial and no branch/output-schema success;
    separately pin caught pre-accessor resource failure without claiming a denial.
    Verify no raw newly projected value in VM input/error detail. Pin single
-   result serialization, stateful toJSON and exact current primitive/result parity. Independently successful clean workflows must
+   result serialization, stateful toJSON, exact current primitive/result parity and
+   context/input key order/presence. Independently successful clean workflows must
    complete with exact expected outputs; no vacuous negative-only test.
 2. Actual SQLite hosts scan `run_events.payload_json`,
    `step_executions.output_json` and `runs.output_json`, plus public events and
@@ -168,8 +172,7 @@ benefit, without weakening raw-value exclusion.
    leak fixtures prove the baseline fails the confidentiality assertion.
 3. Every fresh/resume/preparation producer supplies the owned projection.
    Missing metadata and mutation controls (including attempted live-Set clear)
-   exercise actual VM and public-template
-   consumers. Removing engine qualification, template refusal or VM latch breaks
+   exercise actual VM and public-template consumers. Removing engine qualification, template refusal or VM latch breaks
    its corresponding regression with exact restoration.
 4. Direct/transitive parser model/human refusal, trusted raw resolver, display/
    input-node markers and external tool guard remain preservation controls. New

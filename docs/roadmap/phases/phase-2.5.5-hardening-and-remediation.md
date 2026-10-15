@@ -3974,3 +3974,27 @@ These edits need fresh complete cumulative source-based proposal reviews. No
 implementation is authorized by prior clean reports or source feasibility probes.
 The maintainer must approve the revised four ADRs/contracts/plan before Step 1;
 archive method selection is already complete, and no production key is requested.
+
+#### Second rereview proposal round 1 corrections — 2026-10-16
+
+The NEW complete cumulative source review at 86ff88a8 covers all fourteen proposal
+paths and verifies three Medium findings. They are corrected in the proposal:
+
+- Native failed-jobs rerun skips successful discovery. Fresh pack now requires a
+  same-current-attempt discovery/reservation; stale fresh output refuses before
+  build. Explicit retry matrix separates exact reuse/downstream retries from
+  rerun-all discovery and unrecoverable incomplete reservations.
+- Reuse has encrypted maps only and cannot rerun plaintext map/symbolication
+  checks. Those checks belong to the fresh originating pack; retry verifies its
+  trusted successful identity/completion evidence and exact digests, then reruns
+  tarball smoke. No CI private key or fictitious fresh symbolication is added.
+- Lexically sorting context changes clean expression results and loses clean/
+  denied interleaving. Owned orderedKeys preserves actual resolved own-key order;
+  input presence/enumeration also stays intact. Mutation controls include facade
+  callback back-references, not only missing Set.clear on the wrapper.
+
+Canonical operational-1 recovery also carries inspection advice after admitted
+work, consistent with the existing ADR uncertainty rule. These are documentation
+corrections, not fixes to running product code. ADRs remain Proposed. The nonclean
+round is retained; two NEW complete cumulative clean proposal rounds are required
+after this final material correction before asking for approval.

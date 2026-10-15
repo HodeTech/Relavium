@@ -106,7 +106,9 @@ job before handoff; missing custody cannot downgrade to test mode.
 Use one explicit trusted-tag custody graph: admission → permissioned candidate
 discovery/reservation → fresh pack or exact reuse → smoke → archive → npm publish
 → Release finalization. Discovery precedes **every** product build, including an
-all-jobs rerun. It can see drafts and originating run/attempt artifacts; permission,
+all-jobs rerun. A native failed-jobs rerun cannot reuse stale fresh discovery
+output to build: same-attempt admission refuses it. Reuse/downstream retries verify
+the complete original candidate, not new map checks. It can see drafts and originating run/attempt artifacts; permission,
 pagination or missing-history uncertainty is not “fresh”. Reserve a draft candidate
 identity before its first build; interrupted/lost staging cannot become permission
 to create different same-version bytes. Recover original tarball/ciphertext/receipt,
