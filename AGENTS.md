@@ -97,6 +97,13 @@ introduced. Wave 3 follows these corrections; publication remains separate from 
 
 See [docs/roadmap/current.md](docs/roadmap/current.md) for live status.
 
+**PR #94 additional corrections in progress — 2026-10-15:** a new review of
+`992e6dab` reproduced large generated-result publication and Vorbis framing failures,
+plus scratch/marker and lower-priority contract defects. The [additional correction register](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#pr-94-additional-systematic-review--2026-10-15)
+tracks four increments and their new review/execution gates. PR #94 is draft; earlier
+acceptance and green captures retain their historical scope. Wave 3 follows corrected
+PR acceptance. No provider, credential, billing or new ADR approval is pending.
+
 ## The non-negotiable rules
 
 1. **TypeScript-first, strict.** No `any`, no unsafe `as`.

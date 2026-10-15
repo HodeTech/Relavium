@@ -392,3 +392,14 @@ joins the per-item disposition, two NEW clean complete whole-wave review rounds,
 security sittings, exact-source gates and preserved limits. Earlier dated pending
 checkpoints remain historical. This landing does not claim a merge, future header
 activation, full M/N lifecycle or removal of approved residuals.
+
+### Generated base64 is a result carrier — 2026-10-15
+
+PR #94 incorrectly reused request-input ceilings for generated base64 content.
+The result exception predates this decision; a generated result exceeding the
+inline-input bound must use the existing bounded streaming publication path.
+The [canonical seam](../reference/shared-core/llm-provider-seam.md#bounded-verified-media-publication-adr-0106)
+fixes the exact object bound and port compatibility. URL streaming, direct small
+put bounds, byte verification and persist-before-deliver are preserved; a storage
+refusal never repeats already billed generation. This note does not certify the
+new implementation or execution evidence.

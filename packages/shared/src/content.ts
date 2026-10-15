@@ -119,7 +119,8 @@ const BASE64_PATTERN = /^[A-Za-z0-9+/]+={0,2}$/;
  * The decoded byte count of a base64 string, or `undefined` when the string is not valid padded
  * base64. The ceiling/caps bound **decoded** bytes (a 256 KB ceiling is ~341 KB of base64 string),
  * so every cap comparison goes through this one accounting. Runs an O(n) regex validation over the
- * whole string before the arithmetic (bounded by the inline-media ceiling, so the worst case is small).
+ * whole string before the arithmetic. Callers bound the encoded length first: request input uses its
+ * inline ceiling, while generated-result publication uses the independent media-object ceiling.
  */
 export function decodedBase64ByteLength(data: string): number | undefined {
   if (data.length === 0 || data.length % 4 !== 0 || !BASE64_PATTERN.test(data)) {
@@ -827,7 +828,7 @@ export interface MediaStore {
   /**
    * Content-address `bytes` and return the canonical `media://sha256-<64hex>` handle.
    *
-   * **For a body already known to be under {@link INLINE_MEDIA_CEILING}** — a base64 carrier, a small
+   * **For a body already known to be under {@link INLINE_MEDIA_CEILING}** — a small base64 carrier or
    * generated image ([ADR-0089](../../../docs/decisions/0089-media-correctness-four-boundaries.md) §2). It is
    * NOT the general fallback for {@link putStream}: taking a whole `Uint8Array` is precisely the shape that
    * makes "never fully buffered" impossible, so the large-media path must not reach it.

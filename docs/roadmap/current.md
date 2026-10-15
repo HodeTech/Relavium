@@ -1,7 +1,7 @@
 # Current state
 
 > Status: Living
-> Last updated: 2026-10-13
+> Last updated: 2026-10-15
 
 - **Related**: [README.md](README.md), [phases/phase-2.5-cli-consolidation.md](phases/phase-2.5-cli-consolidation.md), [phases/phase-2.5.5-hardening-and-remediation.md](phases/phase-2.5.5-hardening-and-remediation.md), [phases/phase-2-cli.md](phases/phase-2-cli.md), [deferred-tasks.md](deferred-tasks.md), [../project-structure.md](../project-structure.md), [../tech-stack.md](../tech-stack.md)
 
@@ -102,6 +102,13 @@ Earlier dated pending checkpoints in this page and the phase register are histor
 <a id="next-work--wave-2--shut-the-doors"></a>
 
 ## Wave 2 accepted — Shut the doors
+
+**PR #94 correction gate reopened — 2026-10-15.** The new review of `992e6dab`
+reproduced two High valid-media failures and further host-boundary defects. The
+[additional correction register](phases/phase-2.5.5-hardening-and-remediation.md#pr-94-additional-systematic-review--2026-10-15)
+tracks the four repair increments, two new clean cumulative rounds per increment
+and corrected-head execution gates. PR #94 is draft. The acceptance checkpoints
+below retain their original scopes; Wave 3 follows these corrections.
 
 **Wave 2's eight steps are accepted on `development`, 2026-10-13.** This existing
 navigation anchor is retained for incoming decision links; implementation is

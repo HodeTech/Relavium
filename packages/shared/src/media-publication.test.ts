@@ -285,7 +285,7 @@ describe('owned media publication', () => {
       reason: { code: 'descriptor_conflict' },
     });
   });
-  it('predecode inline cap and finite MIME refuse before host entry', async () => {
+  it('absent streaming and finite MIME refuse before host entry', async () => {
     let calls = 0;
     const s = store();
     s.put = () => {
@@ -300,8 +300,11 @@ describe('owned media publication', () => {
       },
       { type: 'media', mimeType: 'video/mp4', source: { kind: 'base64', data: 'AAA=' } },
     ])
-      await expect(deInlineMedia(value, s), 'media-inline-predecode-bound').rejects.toMatchObject({
-        code: 'inline_limit',
+      await expect(
+        deInlineMedia(value, s),
+        'media-generated-stream-required',
+      ).rejects.toMatchObject({
+        code: 'source_unavailable',
       });
     await expect(
       deInlineMedia(

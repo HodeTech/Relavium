@@ -170,11 +170,16 @@ replaceable length accounting and requires named direct and media refusals; the
 second removes only the buffered copy and requires both reuse witnesses.
 All original 97 declarations retain their IDs, order and complete workloads.
 
-The earlier 99-control cohort projected 1,789 retained files. The current
-declaration in `mutations.mjs` contains 109 controls /327 phases, projecting
-1,969 retained files (109 × 18 + 7) under the unchanged 2,000-file /64-MiB
-ceilings. This is capacity arithmetic, not a measured export or completed capture;
-historical captures retain their own source heads and actual counts.
+The earlier 99-control cohort projected 1,789 retained files. The subsequent
+109-control /327-phase declaration projected 1,969 files; its completed exports
+retain their original source attribution. The generated-result correction adds
+one object-preflight control: removing both encoded/exact decoded guards must
+break the capacity +1 and +3 pre-reservation witnesses in the complete 18-case
+generated-result suite. Request-input and direct-store ceilings remain separate.
+The current declaration in `mutations.mjs` contains 110 controls /330 phases,
+projecting 1,987 retained files (110 × 18 + 7) under the unchanged
+2,000-file /64-MiB ceilings. This is capacity arithmetic, not a measured export or
+completed capture; historical captures retain their own source heads and actual counts.
 
 The declaration is not acceptance evidence by itself. The complete matrix
 still requires a stable committed head, all fixed/removal/restored phases,

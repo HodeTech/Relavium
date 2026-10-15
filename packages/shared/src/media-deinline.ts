@@ -24,6 +24,7 @@ import { closeMediaIterator } from './media-iterator.js';
 interface Occurrence {
   readonly node: Record<string, unknown>;
   readonly source: Record<string, unknown>;
+  readonly decodedByteLength: number | undefined;
   readonly descriptor: Omit<DurableMediaMeta, 'handle' | 'byteLength'> & {
     readonly byteLength?: number;
   };
@@ -54,25 +55,29 @@ function prepare(node: Record<string, unknown>): Occurrence {
   )
     throw new MediaAdmissionError('invalid_descriptor');
   const kind = source['kind'];
+  let decodedByteLength: number | undefined;
   if (kind === 'handle') {
     if (typeof source['ref'] !== 'string' || !MEDIA_HANDLE_PATTERN.test(source['ref']))
       throw new MediaAdmissionError('invalid_descriptor');
   } else if (kind === 'base64') {
     if (typeof source['data'] !== 'string') throw new MediaAdmissionError('invalid_descriptor');
-    const cap = INLINE_MEDIA_CEILING[modality];
-    if (cap === 0 || source['data'].length > 4 * Math.ceil(cap / 3))
-      throw new MediaAdmissionError('inline_limit');
+    // Generated results are not request inputs. Bound their encoded length before scanning,
+    // then their exact decoded length before allocating even the first output chunk.
+    if (source['data'].length > 4 * Math.ceil(MAX_MEDIA_OBJECT_BYTES / 3))
+      throw new MediaAdmissionError('object_limit');
     const n = decodedBase64ByteLength(source['data']);
     if (n === undefined) throw new MediaAdmissionError('invalid_descriptor');
-    if (n > cap) throw new MediaAdmissionError('inline_limit');
+    if (n > MAX_MEDIA_OBJECT_BYTES) throw new MediaAdmissionError('object_limit');
     if (byteLength !== undefined && n !== byteLength)
       throw new MediaAdmissionError('descriptor_conflict');
+    decodedByteLength = n;
   } else if (kind === 'url') {
     if (typeof source['url'] !== 'string') throw new MediaAdmissionError('invalid_descriptor');
   } else throw new MediaAdmissionError('invalid_descriptor');
   return {
     node,
     source,
+    decodedByteLength,
     descriptor: Object.freeze({
       mimeType,
       modality,
@@ -146,11 +151,24 @@ export async function deInlineMedia(
       actualCount = item.descriptor.byteLength;
     if (item.source['kind'] === 'base64') {
       const data = item.source['data'];
-      if (typeof data !== 'string') throw new MediaAdmissionError('invalid_descriptor');
-      const bytes = decodeBase64(data);
-      if (bytes === undefined) throw new MediaAdmissionError('invalid_descriptor');
-      actualCount = bytes.length;
-      handle = await store.put(bytes, item.descriptor.mimeType);
+      if (typeof data !== 'string' || item.decodedByteLength === undefined)
+        throw new MediaAdmissionError('invalid_descriptor');
+      if (typeof store.putStream === 'function') {
+        const stored = await storeStream(base64Chunks(data), store, item.descriptor.mimeType);
+        handle = stored.handle;
+        actualCount = stored.byteLength;
+        if (actualCount !== item.decodedByteLength) throw new MediaAdmissionError('store_contract');
+      } else {
+        // Preserve the optional-stream host contract for the existing tiny inline tier only.
+        // This choice precedes entry; a failed streaming write never falls back to put.
+        const cap = INLINE_MEDIA_CEILING[item.descriptor.modality];
+        if (cap === 0 || item.decodedByteLength > cap)
+          throw new MediaAdmissionError('source_unavailable');
+        const bytes = decodeBase64(data);
+        if (bytes === undefined) throw new MediaAdmissionError('invalid_descriptor');
+        actualCount = bytes.length;
+        handle = await store.put(bytes, item.descriptor.mimeType);
+      }
     } else if (item.source['kind'] === 'url') {
       const url = item.source['url'];
       if (typeof url !== 'string') throw new MediaAdmissionError('invalid_descriptor');
@@ -193,6 +211,25 @@ export async function deInlineMedia(
   }
   reconcileMediaDescriptors(admitted);
   return snapshot.value;
+}
+/** Quartet-aligned slices decode to at most 48 KiB; the full string passed preflight above. */
+function base64Chunks(data: string): AsyncIterable<Uint8Array> {
+  const encodedChunkSize = 64 * 1024;
+  return {
+    [Symbol.asyncIterator]() {
+      let offset = 0;
+      return {
+        next(): Promise<IteratorResult<Uint8Array>> {
+          if (offset === data.length) return Promise.resolve({ done: true, value: undefined });
+          const end = Math.min(offset + encodedChunkSize, data.length);
+          const bytes = decodeBase64(data.slice(offset, end));
+          if (bytes === undefined) throw new MediaAdmissionError('invalid_descriptor');
+          offset = end;
+          return Promise.resolve({ done: false, value: bytes });
+        },
+      };
+    },
+  };
 }
 async function storeStream(
   source: AsyncIterable<Uint8Array>,

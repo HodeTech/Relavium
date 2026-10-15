@@ -3308,3 +3308,43 @@ successful rerun. The nine-file Windows CLI filesystem task now runs files seria
 with one worker to reduce file-level contention; its exact file/case inventory,
 individual deadlines and job bound remain unchanged. The actual workflow command
 has a scheduling guard, and new native Windows runs remain the acceptance evidence.
+
+### PR #94 additional systematic review — 2026-10-15
+
+The maintainer's review of `992e6dab` independently reproduced two High valid-media
+publication failures, a Medium scratch-policy composition defect, a Low exact-owned
+marker cleanup defect and a qualified rooted-literal glob inconsistency. A second
+report adds lower-priority compatibility, diagnostics and contract hypotheses.
+These findings reopen correction acceptance for PR #94. Earlier clean source rounds,
+CI/Sonar success and physical captures retain their historical heads; they do not
+certify the newly demonstrated scenarios. The PR is draft while these repairs land.
+
+| Increment | Scope | Current gate |
+| --- | --- | --- |
+| 1 | Generated-result object preflight, bounded streaming and optional small-host compatibility; actual SDK/executor/engine/both-store publication. | Author implementation and regressions; two NEW complete clean cumulative rounds and committed-head causal control pending. |
+| 2 | Vorbis setup bit framing, bounded structural traversal, allocation-free header CRC, extended MP4 sizes and unknown FLAC totals. | Planned; independent native-valid fixture and official setup grammar reviewed. |
+| 3 | Scratch-policy pin composition, rooted literal glob, complete write floor and exact-owned maintenance/recovery marker cleanup. | Planned; existing authority/revocation and uncertain-owner retention remain acceptance constraints. |
+| 4 | Snapshot own-property preservation and supported-domain evidence, safe input diagnostics, concrete CI/evidence and document corrections. | Preflight; source-confirmed defects are distinguished from existing limits and style suggestions. |
+
+The [canonical publication contract](../../reference/shared-core/llm-provider-seam.md#bounded-verified-media-publication-adr-0106)
+owns result bounds and finite format evidence. Request-message and direct-put
+ceilings remain separate. The generated PNG regression reconstructs the retained
+3,147,775-byte review fixture independently; macOS native decoding is separate
+local evidence. Default TTS MPEG and Sora MP4 fixtures establish the declared finite
+structural profile, without claiming decoded audio/video or paid-provider execution.
+
+Unsupported noninert publication values already refuse under the current canonical
+contract; this correction will document and pin that compatibility limit rather
+than silently invoking caller serializers. Unknown maintenance ownership remains
+conservative: recognizing no current owner is not deletion or maintenance authority.
+Automatic unknown-owner discard would require an explicit approved decision.
+MCP registration credentials remain runtime connection configuration; the augmented
+workflow snapshot adds discovered tool grants, not resolved registration secrets.
+The authored-definition notice retains its documented best-effort scope.
+
+All four increments require committed regressions and two NEW independent complete
+clean cumulative source rounds after their final material fix. Final corrected-head
+full CI, bare/enforced coverage, platform and physical-evidence gates remain open.
+[PR #94](https://github.com/HodeTech/Relavium/pull/94) owns their actual execution
+publication and merge status. No new ADR, provider capture, key or billing action
+is required for these existing-contract repairs. Wave 3 remains subsequent work.

@@ -1414,3 +1414,23 @@ for (const [rule, before, after] of [
     witnesses: flacBlockWitnesses(rule),
   });
 }
+
+// Generated-result publication keeps the object bound before decoding and reservation.
+mutations.push({
+  ...mediaControl(
+    'MEDIA_GENERATED_OBJECT_PREFLIGHT',
+    'packages/shared/src/media-deinline.ts',
+    "    if (source['data'].length > 4 * Math.ceil(MAX_MEDIA_OBJECT_BYTES / 3))\n      throw new MediaAdmissionError('object_limit');\n    const n = decodedBase64ByteLength(source['data']);\n    if (n === undefined) throw new MediaAdmissionError('invalid_descriptor');\n    if (n > MAX_MEDIA_OBJECT_BYTES) throw new MediaAdmissionError('object_limit');",
+    "    const n = decodedBase64ByteLength(source['data']);\n    if (n === undefined) throw new MediaAdmissionError('invalid_descriptor');",
+    'MEDIA_GENERATED_OBJECT_PREFLIGHT',
+    'packages/shared/src/media-generated-result.test.ts',
+    'MEDIA_GENERATED_OBJECT_PREFLIGHT: rejects object capacity +1',
+    18,
+  ),
+  witnesses: [
+    {
+      target: 'MEDIA_GENERATED_OBJECT_PREFLIGHT: rejects object capacity +3',
+      marker: 'MEDIA_GENERATED_OBJECT_PREFLIGHT',
+    },
+  ],
+});

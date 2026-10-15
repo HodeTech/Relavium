@@ -190,6 +190,13 @@ home [docs/roadmap/current.md](docs/roadmap/current.md);
 [docs/roadmap/phases/phase-2.6-conversational-authoring.md](docs/roadmap/phases/phase-2.6-conversational-authoring.md)
 has the full Phase 2.6 plan.
 
+**PR #94 additional corrections in progress — 2026-10-15:** a new review of
+`992e6dab` reproduced large generated-result publication and Vorbis framing failures,
+plus scratch/marker and lower-priority contract defects. The [additional correction register](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#pr-94-additional-systematic-review--2026-10-15)
+tracks four increments and their new review/execution gates. PR #94 is draft; earlier
+acceptance and green captures retain their historical scope. Wave 3 follows corrected
+PR acceptance. No provider, credential, billing or new ADR approval is pending.
+
 ## Non-negotiable rules for AI agents
 
 These apply to every AI agent in this repo, regardless of model, runner, or tool.

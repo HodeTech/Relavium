@@ -125,3 +125,14 @@ joins the per-item disposition, two NEW clean complete whole-wave review rounds,
 security sittings, exact-source gates and preserved limits. Earlier dated pending
 checkpoints remain historical. This landing does not claim a merge, future header
 activation, full M/N lifecycle or removal of approved residuals.
+
+### Generated-result publication correction — 2026-10-15
+
+The PR #94 review reproduced successful generated base64 results being rejected
+by request-input inline ceilings. The generated-result exception is retained;
+publication uses the existing independently bounded streaming port for larger
+results, with verified handle-only admission before state and durable append.
+The [canonical carrier contract](../reference/shared-core/llm-provider-seam.md#bounded-verified-media-publication-adr-0106)
+owns routing and optional-host compatibility. This corrects integration of
+ADR-0089/0106 without changing ingress bounds, retention or realized accounting.
+Source review and corrected-head execution acceptance remain separate.

@@ -961,14 +961,19 @@ The publication and host API refinements are specified [below](#bounded-verified
 [ADR-0089](../../decisions/0089-media-correctness-four-boundaries.md) §2 adds a fifth
 method, optional **`putStream?(bytes: AsyncIterable<Uint8Array>, mimeType)`**, plus
 **`MediaUrlStream`** — the streaming sibling of `MediaUrlFetch` — so a media body is never
-materialized whole between the network and the store. The two are not interchangeable and
-the **carrier decides**: a decoded `base64` body is already whole and already bounded by
-`INLINE_MEDIA_CEILING`, so it takes `put`; a `url` is the UNBOUNDED carrier (its size is
-unknown until fetched) so it takes the streaming pair, and a host offering only the
-whole-buffer form has its `url` sources **refused** rather than quietly buffered — an
-optional guarantee with a buffering fallback is not a guarantee. The bound is enforced as
-the stream is consumed, so an over-size body is aborted mid-flight instead of downloaded
-and then rejected.
+materialized whole between the network and the store. Request-input ceilings do not
+limit generated result content. Publication preflights every base64 result's exact decoded
+length against the **25 MiB object ceiling before decoding**, then decodes quartet-aligned
+bounded chunks through `putStream` when that port is present. This supports large generated
+image/audio and completed video/document carriers without a whole decoded-body allocation.
+A host lacking `putStream` retains the small image/audio path through `put` only when the
+result fits the existing decoded inline ceiling; every larger result and every video/document
+result requires streaming. This compatibility branch is selected before storage begins:
+stream failure never retries through `put`. A `url` always requires the streaming pair;
+a host offering only whole-buffer fetch/write has its URL sources **refused** rather than
+quietly buffered. Stream consumption independently counts the object ceiling, so an
+over-size fetched body is aborted mid-flight. Request-message caps and direct `put` guards
+remain unchanged.
 
 ### Bounded verified media publication (ADR-0106)
 

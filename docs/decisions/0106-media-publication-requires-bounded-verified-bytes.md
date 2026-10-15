@@ -423,3 +423,17 @@ and lists only retention reasons actually produced by automatic sweeping. No
 format override authority, codec, buffer ceiling or maintenance-error reason
 changes. Independent cumulative review and current-head publication remain
 separate gates; earlier acceptance does not certify these corrections.
+
+### Generated-result bound integration correction — 2026-10-15
+
+The maintainer reproduced large valid generated images and completed base64 video
+being refused after successful provider work. Applying request-input ceilings to
+all result carriers contradicted the existing generated-result exception and the
+separate streaming path chosen above. The [canonical publication contract](../reference/shared-core/llm-provider-seam.md#bounded-verified-media-publication-adr-0106)
+and [carrier contract](../reference/shared-core/llm-provider-seam.md#bounded-verified-media-publication-adr-0106)
+now distinguish ingress/direct-put limits from bounded generated-result storage.
+No format, object ceiling, host authority or money rule is expanded. Optional
+small-only host compatibility is retained without retrying a failed stream through
+a whole-buffer fallback. Regressions cover actual installed SDK/executor/engine
+publication through both stores; their review and execution acceptance is recorded
+separately from this correction.

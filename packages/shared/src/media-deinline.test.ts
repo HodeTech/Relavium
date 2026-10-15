@@ -273,13 +273,11 @@ describe('deInlineMedia (1.AF, ADR-0042 §2 — flight→durable transform)', ()
     expect(puts).toHaveLength(0);
   });
 
-  it('takes putStream for a url and put for base64 — the carrier decides the method', async () => {
-    // The two are not interchangeable. `put` stays correct for a decoded base64 body (already whole, already
-    // bounded); routing a url through it is the defect. Asserted by WHICH method each carrier reached.
+  it('prefers putStream for both generated base64 and a url when the host supplies it', async () => {
     const { store, streamPuts } = makeStubStore();
     const streamUrl = (): AsyncIterable<Uint8Array> => asyncChunks([PNG]);
     await deInlineMedia([base64MediaPart], store, { streamUrl });
-    expect(streamPuts).toHaveLength(0); // base64 → put
+    expect(streamPuts, 'MEDIA_GENERATED_STREAM_PREFERRED').toHaveLength(1);
 
     await deInlineMedia(
       [
@@ -292,7 +290,7 @@ describe('deInlineMedia (1.AF, ADR-0042 §2 — flight→durable transform)', ()
       store,
       { streamUrl },
     );
-    expect(streamPuts).toHaveLength(1); // url → putStream
+    expect(streamPuts).toHaveLength(2);
   });
 
   it('REFUSES a store that returns a handle without draining the stream', async () => {
