@@ -498,3 +498,30 @@ whole registry unit-testable with zero real side effects (the engine coverage ba
 holds every registered `ToolDef`, but a dispatch is authorized only by `ctx.grantedToolIds`, so adding a
 tool to the catalog never widens what a given node may call. An MCP or media tool is an additive
 `ToolDef` + `ToolHost` capability later (2.R / 1.AF), not a shape change here.
+
+## Proposed Wave 3 HTTP authority and secret provenance
+
+**Proposed, unshipped — 2026-10-15.** [ADR-0112](../../decisions/0112-chat-network-grants-and-onboarding-state-are-operator-owned.md)
+and [ADR-0113](../../decisions/0113-secret-derived-context-keeps-provenance-at-public-sinks.md)
+require maintainer approval.
+
+HTTP policy compares canonical **hostname**, not URL host-with-port. Reuse the
+shared HTTPS authority parser and one pure DNS normalizer/comparator for both
+request and allowlist. Permission is exact, with no suffix/subdomain match;
+existing HTTPS ports remain allowed, not 443-only. Native DNS/range, pinned
+connection, redirect/time/size floors still apply. Chat's global policy is defined
+only in [config-spec.md](../contracts/config-spec.md#proposed-wave-3-chat-policy-and-preferences);
+workflow policy and independent command/MCP/provider egress are not expanded here.
+
+At implementation landing correct both the dispatch-context secret-argument
+comment and Guardrail enforcement's “1.O/1.V producer” claim. No live authored
+tool-input mapping producer exists; agent/session config is empty. The optional
+external `secretArgKeys` is unverified when absent, not a verified clean result.
+Nonempty tainted effective arguments continue to refuse before approvals/effects.
+
+Any future mapped path must fail closed on absent provenance and project taint
+after final model/mapping/config precedence to top-level keys, including nested
+parents, before approval persistence or dispatch. Marker serialization cannot
+clear provenance. This is a prerequisite for activating that feature, not a claim
+that this wave implemented or exercised it. Actual expression-context repair and
+#92's documented mapping limitation receive separate dispositions.

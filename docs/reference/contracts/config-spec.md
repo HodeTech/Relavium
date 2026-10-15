@@ -259,3 +259,68 @@ This is covered in full in [../desktop/keychain-and-secrets.md](../desktop/keych
 ## Schema versioning
 
 The workflow and agent files inside `.relavium/` carry their own `schema_version` (see [workflow-yaml-spec.md](workflow-yaml-spec.md)). Because the entire `.relavium/` directory is committed and shared, both the config files and the workflow/agent files are treated as stable, versioned, public formats — breaking changes require a migration path, never a silent reinterpretation of existing keys.
+
+## Proposed Wave 3 chat policy and preferences
+
+**Proposed, unshipped — 2026-10-15.** [ADR-0112](../../decisions/0112-chat-network-grants-and-onboarding-state-are-operator-owned.md)
+requires maintainer approval. These additions do not change current schema until
+implementation landing.
+
+- Global-only `[chat_http].allowed_domains: string[]`, optional, absent/empty deny-all.
+  At most 128 entries, each at most 253 characters after an optional terminal
+  root-dot is removed. Canonical ASCII DNS: labels 1–63 characters with alphanumeric
+  ends and internal hyphens, at least two labels; case-fold/root-dot normalize and
+  deduplicate. IDNs require explicit punycode. Reject URLs, ports, paths, credentials,
+  wildcards, suffix grants, IP literals, single-label names, and names equal to or ending in .localhost or .local. Existing
+  shared URL/authority extraction supplies request hostname normalization; use one
+  pure DNS-name validator/comparator for config and dispatch, not another URL parser.
+- Global-only `[preferences].keychain_unavailable_acknowledged: boolean`, optional,
+  absent=false. It is reminder state, not credential state. Only a typed backend
+  unavailable result plus explicit user choice may set it; no startup auto-write.
+
+Project/workspace/agent/session/environment layers cannot supply or override either
+field. Read normal global config or explicitly selected `--config` only. Invalid
+fields/values refuse with `config_error`, exit 2, fixed value/path-free diagnostic
+naming the known setting and recovery action. Extend the safe issue formatter for
+these rules; do not emit raw Zod/TOML messages or generic “value is invalid” alone.
+Standard protected global storage and arbitrary operator-selected paths have
+different filesystem guarantees; explicit selection is not proof of model
+unwritability. Other network capabilities retain their own contracts.
+
+The invocation captures initial ceiling I and accepted ceiling A=I. Before **every**
+host creation (including Home's later chats, resume, clear and reseat), reread only
+global HTTP policy G and set A=A∩G before later build effects. A validated removal
+remains effective even if the rest of that build fails. Never reset A or use captured
+startup chat/model-read fallback on failure. Read/parse failure refuses creation;
+it does not supply previous authority. Widening/restoring a removed grant requires
+a fresh CLI invocation. An active host owns its snapshot until cancelled/rebuilt;
+cancel/retire it before replacement. No session row persists this authority.
+
+This permits only built-in `http_request` to exact allowed hostnames at existing
+HTTPS ports; it does not enable the tool grant, a missing confirmer, search, MCP,
+provider traffic or shell egress. See the
+[tool comparison contract](../shared-core/tool-registry.md#proposed-wave-3-http-authority-and-secret-provenance).
+
+Expose a typed, value-free current key-availability observation before Home's UX
+choice: usable key (including env fallback), missing entry, or unavailable backend.
+Do not infer backend failure from absence or native error strings. Acknowledgement
+is used only with actual current unavailable+keyless state; a usable key always
+suppresses setup. Retry setup is explicit; ordinary missing-key/auth/DB failures
+are not relabelled keychain unavailable. Preference write failure stays visible.
+
+For mutation, final-component symlink (including dangling link) refuses with
+`ConfigWriteRefusedError`, code `config_write_refused`, reason `symlink_target`,
+non-retryable, fixed path-free message and exit 2. Read-side links remain supported.
+Offer manual edit/regular-file replacement and honest compatible ephemeral setup,
+not Retry or saved-success. Ancestor links remain owner-controlled; hardlinks get
+atomic replacement of the chosen entry, not all aliases. No lstat+rename race-free
+claim. Regular writes retain schema round-trip/0600/temp/fsync/atomic rename.
+TOML comments/order are lost as in ADR-0063; preserve every validated policy value
+and tell the operator this before writing a hand-edited policy.
+
+**Rollback to an older strict binary:** back up the non-secret TOML; remove the
+entire `[chat_http]` table and the `keychain_unavailable_acknowledged` entry from
+`[preferences]`, leaving other preferences intact. Then run the older binary.
+Without removal, executing commands reject unknown keys with config error/exit 2;
+meta operations remain config-free under ADR-0111. Provider keys stay in OS
+keychain. For an intentional link, edit the operator-chosen referent manually.

@@ -6,132 +6,142 @@
 
 ## Context
 
-Wave 3 pulls G30 forward: chat can advertise `http_request`, but its policy has no
-configuration path for `allowedDomains`, so dispatch always denies. Simply copying
-a project-owned allowlist would turn a cloned artifact into network authority.
-ADR-0105 makes this distinction explicit for filesystem grants; this proposal makes
-a separate decision for chat egress rather than pretending that ADR already governs it.
+G30 exposes a missing chat HTTP policy path. Advertising `http_request` does not
+supply its domain authority. Default Home agents do not grant that tool; standalone
+agent execution is ask-mode without a confirmer. A successful request is therefore
+not a valid acceptance expectation on every current surface.
 
-Onboarding also treats a missing key and an unavailable keychain as the same reason
-to repeat full setup. It can announce success after model-default persistence fails.
-The global config writer silently replaces intentional symlinks. These changes share
-one trust boundary: operator-owned non-secret configuration, mutated only by explicit
-user actions through a typed writer.
+A global-only policy is an explicit new choice for this capability. It is not a
+claim that projects confer no network authority today: approved commands such as
+curl, project MCP and workflow tool policy have separate contracts. Nor is any
+operator-selected `--config` file necessarily protected from model filesystem
+tools; a workspace-local selection may be writable.
 
-Approval is required before the new shared config fields or keychain/config paths
-change. Exact keys, precedence and validation belong in the
-[config specification](../reference/contracts/config-spec.md), not a second schema here.
+Clear/reseat currently reuse startup chat options; Home refreshes model/provider
+and can fall back on read error. Those paths cannot provide policy revocation
+without new global-only reads and an invocation ceiling. Dispatch also compares
+`allowed.includes(parsed.host)` privately, without normalizing the allowlist.
+The proposed shared comparison is a correction, not an existing public helper.
+
+Onboarding confuses unavailable keychain with missing key and can announce success
+after default persistence fails. The config loader follows intentional links;
+the atomic writer replaces their final directory entry. Read permission and write
+permission must be stated separately, not justified by a fictitious owner change.
+
+All choices remain Proposed. Exact keys, limits, diagnostics, transition and
+rollback rules have one home in
+[config-spec.md](../reference/contracts/config-spec.md#proposed-wave-3-chat-policy-and-preferences).
 
 ## Decision
 
-We will use operator-owned global policy for chat HTTP grants and explicit,
-non-authoritative preferences for onboarding acknowledgements.
-
 ### Chat HTTP authority
 
-Add a global-only `[chat_egress].allowed_domains` setting, read from the normal
-global config or the file explicitly selected as global by `--config`. A project,
-workspace, agent definition, persisted session, model output or environment variable
-cannot add or replace this authority. Loading a project must not promote its file
-to global configuration. Selecting an explicit global file is the operator's choice.
+Use global-only operator configuration for the built-in chat HTTP tool. The
+normal global file or an explicitly selected global file is the authority;
+projects, agents, sessions and environment overlays cannot supply this field.
+Selecting an explicit file is a deliberate trust choice, not proof it is immutable.
+The setting's name describes HTTP-tool policy, not all chat egress.
 
-An absent/empty list remains deny-all. Limit it to 128 entries, each at most 253
-characters, canonical ASCII DNS names; IDNs use explicit punycode spelling.
-Reject URLs, credentials, paths, query strings, ports, wildcards, literal IPs and
-single-label/local host forms. Normalize case and any accepted terminal root-dot
-form through the same host comparison used by dispatch; do not add a second URL
-parser or silently introduce suffix/subdomain permission. Deduplicate canonical names.
-Exact host authority retains the existing HTTPS-port semantics; it does not mean
-port 443 only. DNS/range checks remain necessary even for an allowed hostname.
+Absent/empty authority denies all. Use bounded canonical ASCII DNS hostnames,
+explicit punycode and one pure hostname normalizer/comparator shared by validation
+and dispatch. Preserve exact-host permission with no suffix/subdomain grant.
+The current `parsed.host` is a hostname, not URL host-with-port; the host transport
+allows arbitrary HTTPS ports. State this authority explicitly in the
+[tool contract](../reference/shared-core/tool-registry.md#proposed-wave-3-http-authority-and-secret-provenance);
+do not silently make it 443-only. DNS/range validation, pinned connection, redirect
+refusal and response bounds remain independent. Auto mode is still an authority
+to send permitted tool data to a permitted host/port; provider keys are not attached.
 
-Resolve an owned policy on every fresh/resumed/reseated/cleared host build, including
-Home chat and `agent run`. A prior persisted policy cannot revive a removed grant.
-An already-built host owns its immutable snapshot until it is rebuilt; this is not
-a live revocation watcher. Original-workspace resume discovery remains ADR-0105's
-filesystem rule and cannot replace the current operator global egress setting.
+Capture an owned invocation ceiling before building the first host. Every host
+construction reads **only current global HTTP policy**, intersects it with that
+ceiling and the last accepted effective policy, and retains the narrowed result
+across Home chats, clear, reseat and resume. No rebuild widens authority; a fresh
+CLI invocation is required to add or restore a grant. Never reuse captured startup
+chat policy or Home's model-read fallback for this read. Read/schema failure
+refuses the new build with a fixed actionable diagnostic; it does not restore
+old policy or reset the ceiling. Stop the old turn/host before replacing it.
+An active host retains its immutable snapshot until cancellation/rebuild; there
+is no live watcher. Persisted session policy never revives authority.
 
-Forward only the approved domain list to the existing engine tool policy. Preserve
-exact-host checking before dispatch, per-tool modes/approval, HTTPS-only SSRF/DNS
-validation, pinned connection, no redirects and response size/time bounds. `auto`
-does not bypass missing domain permission. Loading policy performs no request and
-attaches no provider key. This does not activate search credentials, live provider
-headers, workflow-run egress or a new tool. Workflow-authored policy remains its
-separate execution contract. Advertise filtering is helpful but dispatch is authoritative.
+Forward only that list to existing tool dispatch, keeping model tool grants,
+approval modes and SSRF as separate gates. Test each surface's actual behaviour:
+a custom chat agent granting HTTP can succeed in an allowed approval mode;
+default Home and confirmer-less ask paths still deny or do not advertise it.
+Do not add a tool grant or confirmer merely to obtain a green positive test.
+This does not activate search, provider headers, workflow egress or MCP policy.
 
 ### Onboarding and mutation
 
-Add a typed global-only `keychain_unavailable_acknowledged` preference. Set it only
-after a genuine typed unavailable-keychain outcome and an explicit user choice to
-use a short reminder next time. Cancel, missing key, auth failure or unrelated DB
-failure must not set it. Store only a boolean, never a key, hint, error text or
-backend/path identity. Use the existing strict, atomic, secret-incapable writer;
-no new generic key-value store or automatic startup write is authorized.
+Keep an explicit, typed, global-only acknowledgement preference for a genuine
+unavailable-keychain outcome and deliberate user choice. It is only UX state:
+every startup rechecks current key availability; a working key suppresses setup,
+and a still-keyless acknowledged failure gets a reminder and explicit retry.
+Missing key, cancellation, authentication and unrelated DB errors do not set it.
+Persist only a boolean through the secret-incapable writer; failures stay visible.
 
-Every Home startup still checks actual current key resolvability. A working env or
-keychain key suppresses setup as today. Otherwise an acknowledged backend problem
-shows a short keyless reminder with an explicit retry-setup action instead of
-automatically repeating full setup/provider validation. The acknowledgement neither
-claims permanent lock nor conceals the current missing-key state. A failed preference
-write is visible and recoverable and cannot be reported saved.
+After storing a key but failing to persist defaults, retain the key and truthfully
+offer recoverable retry or explicitly chosen ephemeral defaults. Never say
+“Connected”/saved default when persistence failed. Project precedence is not
+silently overwritten. Propagate color choice without changing process environment.
 
-After a key is stored but model/provider defaults fail to persist, preserve the key
-and offer Retry or an honest incomplete-setup continuation. The next chat must choose
-a compatible model explicitly or use an explicitly chosen ephemeral model/provider;
-never announce a persisted default that failed. Higher-precedence project defaults
-are not overwritten implicitly. Thread the resolved color choice to actual prompts
-without process-global environment mutation.
+Refuse an existing **final-component symlink** for preference writes, with a
+fixed path-free `ConfigWriteRefusedError` and `reason: symlink_target`; mark it
+non-retryable in the wizard/picker. Keep reads through intentional links.
+Preserve link and referent, explain manual edit/regular-file replacement outside
+the wizard, and offer honest ephemeral continuation; no endless Retry loop.
+Ordinary write failures can still offer Retry. This is an entry-preservation
+policy, not a claim that same-owner link targets have a different authority.
+Ancestor links remain under the existing owner-controlled-directory assumption;
+atomic rename replaces one hardlink entry rather than editing all aliases.
+An lstat precheck is not an atomic no-follow replace against a hostile same-user
+race. Regular writes keep verified schema round-trip, permissions and durability.
+Existing TOML reserialization loses comments/order; document that tradeoff before
+writing a hand-edited policy and preserve all policy values, never broaden them.
 
-Refuse a pre-existing symlink at the global preference write target, preserving its
-link and referent. Do not follow it into a different authority or warn only after
-replacing it. Regular-file writes retain schema round-trip, owner-only temp file,
-atomic rename and existing durability guarantees. A malicious same-user process
-swapping a target between checks and rename is outside the existing owner-controlled
-filesystem assumption; a preflight lstat must not be described as an atomic no-follow
-replace primitive. The fixed diagnostic explains how to edit the intentional link
-manually without echoing its path or content.
-
-Considered project-granted domains: rejected because imported config would confer
-machine authority. Considered another invocation flag plus project selectors:
-viable, but larger than G30 needs; the operator global setting supports project-less
-chat without implementing a durable permission store. Considered allowing every
-domain once a user approves a tool: rejected because approval and network policy
-are independent gates. Considered treating acknowledgement as credential state or
-silently writing through config links: rejected because either hides current truth
-or changes write authority.
+Considered project domains: rejected for this capability because explicit operator
+authority is preferable to implicit imported authority. Considered invocation
+flags: viable but unnecessary for project-less G30. Considered stateless keychain
+status alone: needed for truth but insufficient for #55's explicit remembered
+acknowledgement. Considered same-owner symlink referent writes: rejected because
+it changes the existing atomic entry-replacement protocol and recovery boundary;
+manual editing preserves intentional links without introducing that writer.
+These choices do not establish a universal no-project-egress guarantee.
 
 ### Acceptance and landing
 
-1. Strict schema/resolver tests cover global/explicit-file authority, project and
-   workspace attempts to widen it, canonical hostname validation and empty deny-all.
-   Invalid policy causes no session creation, provider/key access or MCP connection
-   beyond the explicitly necessary existing-history read for resume.
-2. Actual session-host-to-tool dispatch controls cover all chat surfaces, rebuilds,
-   revoked-on-rebuild grants, allowed requests, no-domain denial, approval refusal
-   and unchanged workflow/search/MCP separation. Native SSRF controls prove the
-   existing DNS/connect/redirect floor still applies. No paid/live provider test is needed.
-3. First-chat integration proves chosen non-default provider/model binding, failed
-   config-write recovery and precedence. Current keyless state, explicit acknowledgement,
-   retry, cancellation and write-failure tests prove no false setup/credential claim.
-4. Native symlink tests preserve link/referent bytes on refusal; regular-file
-   positive controls keep atomicity, permissions and error confidentiality. Real
-   prompt output respects color-off. Separate config-trust/egress and keychain-path
-   security review sittings plus two fresh cumulative rounds are required.
-5. Update canonical config, chat, Home, CLI and built-in tool references, append
-   dated refinements to related Accepted ADRs, and register actual acceptance in
-   Wave 3. This proposal itself establishes no permission, saved setting or completion.
+1. Strict global schema/resolver controls verify exact hostname grammar, actual
+   global/project merge precedence, no project authority and empty deny-all.
+   Loader failures are fixed, actionable and value/path-free. Test actual merge
+   bypass attempts, not only unknown-key rejection.
+2. Native actual host/dispatch controls exercise permitted custom chat, default
+   Home non-advertisement, agent ask denial, approval refusal and SSRF/ports.
+   Clear/reseat/resume/repeated Home builds reread global policy: remove, re-add,
+   attempted widen, malformed/unreadable file and startup fallback all exercise
+   the persistent invocation ceiling. No live/paid provider is required.
+3. First-chat tests verify model/provider selection, retained key, truthful
+   write failure, typed acknowledgement, current keyless reminder and retry/cancel.
+   New strict keys have concrete old-binary removal/exit instructions.
+4. Native symlink controls preserve link/referent and prove no Retry/success lie;
+   ancestor-link/hardlink controls state the actual scope. Regular writes retain
+   atomicity, mode, policy values and confidentiality; prompts respect color-off.
+5. Separate config/egress and keychain-path security sittings and two fresh
+   cumulative clean rounds precede acceptance. At ADR acceptance add forward
+   notes to affected Accepted decisions; implementation lands canonical config,
+   tool, chat/Home references and actual Wave 3 evidence without claiming other
+   egress capabilities were governed.
 
 ## Consequences
 
 ### Positive
 
-- An existing chat tool becomes usable under explicit operator authority without
-  weakening default deny, approvals or SSRF controls.
-- Setup tells the truth about key availability and persisted defaults, while an
-  intentional config symlink is preserved.
+- Existing chat HTTP becomes usable under explicit, bounded operator authority.
+- Rebuilds revoke grants monotonically; setup and intentional config links stay honest.
 
 ### Negative
 
-- New strict global keys require a new enough binary; older binaries reject them
-  under ADR-0033. Document rollback/removal of these non-secret keys.
-- Domain changes take effect at host rebuild, not instantaneously. An operator
-  needing immediate revocation cancels the active turn and rebuilds the host.
+- Strict new keys break old-binary config reads until removed, even on unrelated
+  commands. The canonical rollback instructions make the recovery explicit.
+- Revocation requires cancellation/rebuild and widening requires a new invocation.
+  An active snapshot is not instantaneous revocation.
+- Symlink writes require manual action or ephemeral continuation. Non-retryable
+  diagnostics avoid a wizard loop; comments/order remain a known writer tradeoff.

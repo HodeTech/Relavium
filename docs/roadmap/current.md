@@ -1106,14 +1106,16 @@ an ESLint selector rather than a list.
 
 ### Wave 3 — Clear the ground
 
-**Preflight reviewed; maintainer approval pending — 2026-10-15.** The original queue below is reconciled against
-current source in the [Wave 3 preflight and proposed execution plan](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-preflight-and-proposed-execution-plan--2026-10-15).
-It records already-satisfied items, concrete compatibility/security decisions and
-seventeen proposed increments. Two new independent complete cumulative final
-proposal reviews at `39967075` are clean. ADR-0110–0113 are Proposed; implementation has not
-started and dependent code awaits maintainer approval. Historical finding descriptions
-are not new assertions about current source. The existing Wave 5a renderer/word-wrap
-ownership is preserved, not newly approved by this preflight.
+**Proposal reopened after maintainer source review — 2026-10-15.**
+[Source dispositions and revised plan](phases/phase-2.5.5-hardening-and-remediation.md#maintainer-review-reopened-the-proposal--2026-10-15)
+correct G15's false token-persistence premise, fatal/lazy build dependencies,
+exact-byte archive mechanics, HTTP rebuild revocation and secret-context consumers.
+Nineteen proposed increments retain the serialized first queue. ADR-0110–0113
+and their explicitly unshipped canonical sections remain Proposed; no code has
+started. Earlier clean proposal reviews retain historical scope and no longer
+establish readiness. Fresh cumulative proposal reviews and maintainer approval
+are required. The encrypted archive method is selected; no production key,
+provider capture, billing or upload is needed for this review.
 
 Decompose, guard and normalize every hot file a 2.6 workstream is about to land on. **The multi-file queue
 runs first and is serialized against the rest**; the remaining queues are file-disjoint, any order.
@@ -1145,14 +1147,14 @@ on `home-controller.ts`/`chat-ink.tsx` (the decomposition moves already-guarded 
 - **`packages/shared` (strict)** — the `.code` ruling (G50, D10) → `findDuplicates`/`superRefine` at all seven
   remaining schema sites (#89, #90, G16, G17, G18, #210, #211, #212) → `BaseEventSchema` disposition (#213) →
   the `RelaviumError` base class (#219). *The ruling must precede the base class, or it is baked in permanently.*
-- **`registry.ts` / `builtins.ts` / `engine.ts`** — `ctx.secretArgKeys` producer (#92) → `ctx.fsScope` (#93) →
+- **`registry.ts` / `builtins.ts` / `engine.ts`** — declared-source context repair and honest unsupported-mapping disposition (#92/Proposed ADR-0113) → `ctx.fsScope` (#93) →
   `ok`/`success` (#216, #221) → identifier-sort `localeCompare` pinning (#258, #259) → the `git_commit`
   denial copy (#308); then the four schema length caps (#95), the `llmVisibleParams` rewrite (#96, #98),
   stale doc comments (#78, #97, #214); then `#armRunTimeout` (#75), `#dispatch` dead branch (#79),
   `AbortSignal` into `resolvePrompt` + the human-gate recheck (#76, G9).
-- **Process/CLI boundary (strict head)** — 2.5.5.E · the five crash/signal net gaps (#40, #41, #42, #224,
-  #269) → the `--help`/`--version` ~400 ms tax (#43, #44, #271); then the flag-system ruling (#45, #264,
-  #265, #268), the exit-code and `--help --json` rulings (G35, #13), `logs` coalescing (G15), the `--input`
+- **Process/CLI boundary (strict head)** — the revised plan serializes pure flag/descriptor/owner substrate → lazy guarded runtime graph → native crash integration → map/archive custody → command behaviour. It covers 2.5.5.E · the five crash/signal net gaps (#40, #41, #42, #224,
+  #269), the `--help`/`--version` historical ~400 ms tax (#43, #44, #271), and the flag-system ruling (#45, #264,
+  #265, #268), the exit-code and `--help --json` rulings (G35, #13), durable-only logs preservation (G15 refuted), the `--input`
   namespace ruling (#18, #310). **`openLocalDb` wrap-and-redact (#278, #280) lands LAST** — it touches 8+
   call sites the other queues are still moving.
 - Then the tails of 2.5.5.A, E, G and I in any order; sub-stream **A, E and G acceptance sign-offs**;
@@ -1284,9 +1286,9 @@ unanswered**; the remainder sit inline in their own phase-file bullet.
 | D15 | 2 | What masking guarantee does the session fixture (#115) certify? | **Reconciled 2026-10-12:** ADR-0095/0098 supply structural refusal, not universal masking. Certify the actual producer/SQLite/export fixtures and retained-content limits. This repairs the missing Wave 2 decision row; it is unrelated to historical media D15. |
 | D17 | 2 | Book security reviews **by threat class**, not per PR? | **Accepted 2026-10-13:** four new sittings (filesystem, secret input, secrets at rest, config trust), plus W4 hostile-MCP sitting/current regression revalidation. [Closing evidence](phases/phase-2.5.5-hardening-and-remediation.md#wave-2-closing-register--2026-10-13). |
 | D18 | 3 | `chat-ink.tsx` (1,795 lines, in neither doc): decompose or decline? | **Decline** — hand it to 2.6.M's render-v2 in Wave 5a, where the palette sweep then runs once |
-| D19 | 3 | `--quiet`/`--verbose`/`RELAVIUM_DEBUG` precedence | `--quiet` < default < `--verbose`; `RELAVIUM_DEBUG=1` an alias, explicit flag wins; `--json` overrides for stream shape |
+| D19 | 3 | `--quiet`/`--verbose`/`RELAVIUM_DEBUG` precedence | **Proposed ADR-0110:** retain quiet+verbose conflict; either explicit flag overrides exact DEBUG=1. This replaces the earlier recommended precedence ladder; approval pending. JSON remains independent. |
 | D20 | 3 | `--input`'s four-way collision: rename or document? | Rename `models pricing` to `--input-price`/`--output-price`, old spellings deprecated aliases |
-| D22 | 3 | Read EXIT:4 as "no **breaking** change"? | Yes — with the additive exit code and the noun-verb aliases as the two sanctioned, documented exceptions |
+| D22 | 3 | Read EXIT:4 as "no **breaking** change"? | **Proposed ADR-0110:** no unrecorded break; its enumerated compatibility scope replaces the old two-exception recommendation. Reconcile phase exit criterion 4 and E no-new-ADR wording at acceptance, with ADR-0049/0056 forward notes before code. Approval pending. |
 | D26 | 3 | Which session would bare Home's `showCost` target? | **Proposed preflight disposition:** keep `/cost` chat-only; certify both live chat surfaces. Bare Home currently cannot invoke the no-op. Past-session selection remains 2.6.G; no implicit cost release. See the [Wave 3 plan](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-preflight-and-proposed-execution-plan--2026-10-15). |
 | D28/D29 | 4a | Flip ADR-0058 and ADR-0060 to Accepted | Yes; 0060's taint model is the cited precedent for Wave 7's generation-security ADR |
 | D31 | 4a | Strike 2.6.H's chat-persister atomicity sub-part as a duplicate? | Yes — owned by Wave 1; record the closure |

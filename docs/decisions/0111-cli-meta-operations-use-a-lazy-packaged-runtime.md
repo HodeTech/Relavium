@@ -2,129 +2,156 @@
 
 - **Status**: Proposed
 - **Date**: 2026-10-15
-- **Related**: [ADR-0047](0047-cli-framework-commander-ink-clack.md), [ADR-0051](0051-cli-distribution-thin-bundle-private-engine.md), [ADR-0056](0056-cli-in-app-slash-command-system-and-manifest.md), [ADR-0067](0067-node-supported-floor-22-reaffirm-better-sqlite3.md), [ADR-0071](0071-models-dev-as-the-model-metadata-source.md), [ADR-0110](0110-cli-diagnostics-and-discovery-have-explicit-compatibility.md), [Wave 3](../roadmap/current.md#wave-3--clear-the-ground)
+- **Supersedes (partial)**: [ADR-0047](0047-cli-framework-commander-ink-clack.md) and [ADR-0051](0051-cli-distribution-thin-bundle-private-engine.md), single-output packaging constraint
+- **Related**: [ADR-0056](0056-cli-in-app-slash-command-system-and-manifest.md), [ADR-0067](0067-node-supported-floor-22-reaffirm-better-sqlite3.md), [ADR-0071](0071-models-dev-as-the-model-metadata-source.md), [ADR-0072](0072-model-metadata-in-the-db-behind-a-generated-offline-floor.md), [ADR-0103](0103-a-paused-run-hands-off-its-local-producers-before-its-host-closes.md), [ADR-0109](0109-native-media-close-ownership-is-explicit-iterator-provenance.md), [ADR-0110](0110-cli-diagnostics-and-discovery-have-explicit-compatibility.md), [Wave 3](../roadmap/current.md#wave-3--clear-the-ground)
 
 ## Context
 
-Wave 3 #43/#44/#271 concerns eager service imports and cached catalog reads on
-help/version. At `702cdc9c`, deferring `driveHome` alone is insufficient:
-`program` → `specs` → `dispatch` imports command implementations and their
-DB/provider/TUI dependencies. The entry also imports MCP, and diagnostic helpers
-reach engine dependency barrels. This requires a dependency-graph correction,
-not just moving one function call.
+At baseline `702cdc9c`, program → specs → dispatch imports native/DB/provider/TUI
+implementations, while errors and sanitization reach engine barrels. Deferring
+Home alone cannot make help/version lightweight. #43/#44/#271 require correcting
+the actual graph, including early crash handling. The single-output guard blocks
+real deferred ESM chunks.
 
-ADR-0051's single ESM bundle and the closure guard's single-output assertion prevent
-a genuine lightweight entry with deferred implementation chunks. The engine must
-still be inlined and third-party dependencies externalized. Wave 3 #46 also needs
-release sourcemaps, while ADR-0051 prohibits their publication. The GitHub repository
-was verified public during preflight; an ordinary Actions artifact is not a private
-archive merely because it is absent from npm.
+#46 requires useful release symbolication. All five engine packages currently
+compile with sourceMap false and their exports point to compiled JS. A final CLI
+map alone cannot map engine frames to TypeScript. Release also builds the CLI
+before pnpm pack; prepack rebuilds it with clean output. tsup adds map-link trailers
+even when esbuild is told to emit external maps. The prior abstract no-rebuild
+rule therefore lacked an executable packing path.
 
-This proposal requires approval before bundler, startup or release-policy changes.
-No dependency version bump, new runtime dependency or package publication is authorized.
+The repository is public. Its source layout and symbol names are not secret;
+ADR-0051 expressly relies on licensing/obfuscation rather than secrecy. The
+maintainer selected encrypted CI archival on 2026-10-15 as a **distribution and
+custody policy**: release debugging material stays out of npm and public plaintext
+artifacts. This neither hides public source nor requires making the repo private.
+
+All mechanisms remain Proposed. Exact artifact shapes and operational states live
+in [CLI packaging](../reference/cli/packaging.md), with release procedures in the
+[release runbook](../runbooks/release-a-surface.md). No runtime dependency/version
+bump, production recipient, upload or publication is authorized.
 
 ## Decision
 
-We will package one executable ESM entry plus its finite, explicitly packaged ESM
-runtime chunks. This replaces ADR-0051's **single-output-file** constraint only;
-all proprietary engine code remains inlined into the CLI artifact, every third-party
-runtime dependency remains external and declared, and the engine packages remain private.
+### Lazy graph and catalog authority
 
-The entry, flag grammar, version and command descriptors form a lightweight graph.
-Meta-operations resolve descriptors without reading config or cached catalogs,
-admitting native filesystem grants, opening history/migrations/keychain, connecting
-MCP or constructing providers/TUI. Runtime validation still owns normal command
-execution; invalid option grammar is not silently accepted by the meta path.
-Defer command executor imports, Home, native services and MCP version wiring to
-their actual owners. Seed the cached catalog once before an executing command's
-first price/capability read, retaining the shipped offline floor and no-startup-fetch
-rule. Never move seeding after admission or budget pricing.
+Package one executable ESM entry plus a finite flat set of ESM runtime chunks.
+Only the single-output constraint changes: engine code stays inlined, engine
+packages private, third-party runtime dependencies external and declared.
 
-The bundle guard must inspect **every** emitted JavaScript output and its static
-and dynamic imports, verify the complete declared dependency closure, and reject
-unbundled `@relavium/*`, missing/escaping chunks and undeclared external packages.
-The packed artifact, not a source checkout, is the cross-platform smoke subject.
-Chunk-relative migration paths, native iterator/shared-module identity and lazy
-initialization must be tested together; splitting must not create independent
-copies of authority-bearing module state.
+Use ADR-0110's single pure descriptor/grammar authority. Early flag policy,
+local error class/exits and invocation-owned shutdown registry import no runtime
+classifier, native service or engine barrel. Extract/share minimal sanitization
+through a supported pure module rather than duplicate or weaken redaction.
+Runtime classification and command executors load dynamically under the early
+failure boundary; MCP version wiring moves before actual client construction.
+Splitting must not duplicate the registry, media iterator WeakMap or other
+authority-bearing module state. Do not treat tree shaking as source proof.
 
-### Private source-map custody
+Meta help/version/bare noninteractive help reads no config/cache, admits no
+filesystem grants and opens no DB/keychain/MCP/provider/TUI. Validate grammar
+without a second argv parser. New JSON-help integration lands after the descriptor
+and lazy graph; the earlier increment only certifies implemented meta operations.
 
-Generate private sourcemaps for the **exact final minified JavaScript bytes** that
-are packed, with `sourcesContent: false`. Do not rebuild the shipping JavaScript
-after its map receipt is recorded. A private manifest binds source commit, package
-version, actual toolchain and every JavaScript/map digest. Published JavaScript has
-no sourceMappingURL, and npm contains neither maps, metafiles, source trees nor the
-private manifest. A pack inspection is required, not just a files-list assumption.
+For execution distinguish **filesystem grant admission** from model/cost admission.
+Preserve current order: filesystem admission, once-only cache fallback seed where
+needed, current DB catalog overlay at its owner, then first capability/quote/
+budget/egress read. A late file seed must never replace authoritative DB long-tail
+prices. Preserve ADR-0072's offline floor, empty-DB non-erasure and no-startup-fetch
+rules and media maintenance's no-config/cache/DB exception. Home/slash/resume
+transitions cannot reinstall an older file overlay.
 
-The maintainer selected public-recipient encrypted CI archival on 2026-10-15;
-this method selection does not approve the remaining ADR or implementation plan.
-Use vetted [GnuPG recipient encryption](https://gnupg.org/documentation/manuals/gnupg/Operational-GPG-Commands.html)
-as release tooling, not a CLI runtime dependency or in-house cryptographic protocol.
-Use an isolated public-only keyring and an explicitly pinned maintainer-confirmed
-recipient fingerprint, without ambient keyring/config or automatic key discovery.
-An exact-source archive receipt establishes build provenance; encryption alone
-does not authenticate who created an archive.
-The private decryption key never enters this repository or CI. Public artifact
-storage is permitted only for ciphertext; fixed diagnostics never print map
-contents or key material. The recipient and retention destination must be explicitly
-configured and verified before a release can claim private archival. A local
-owner-only archive is available for development and custody tests; it does not
-claim that CI release archival happened.
+Inspect every emitted JS output and its static/dynamic imports. Closure rejects
+missing/escaping chunks, unbundled internal packages and undeclared externals;
+shipped and emitted finite graphs must agree. Flat layout preserves migration
+relative paths. Required PR/push CI installs the exact same tarball on supported
+OSes and the declared minimum runtime, then release CI reuses that mechanism.
 
-CI stages ciphertext as its workflow artifact. Because [workflow artifacts expire](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/remove-workflow-artifacts),
-actual publication also retains that exact ciphertext as a per-version
-[Release asset](https://docs.github.com/en/rest/releases/assets), verified by digest
-before npm publication. Retain it for every supported release; this wave adds no
-automatic deletion. Never replace an existing version's different ciphertext
-silently. Public storage remains ciphertext-only; this does not make the repository
-or artifact access private. Release uploads use only the existing trusted main/tag
-path with least required permissions, never a PR/fork or help invocation.
+### One build, exact maps and retryable custody
 
-Implementation may use synthetic recipient keys for offline encryption/decryption
-controls, never manufacture a production recipient or upload plaintext to complete
-a gate. Do not publish proprietary maps encrypted to a publicly available fixture
-private key. Production recipient configuration and actual storage remain separate
-release prerequisites; no key material is requested for this proposal review.
-The first actual release belongs to Wave 4b and fails closed if private archival
-is absent. Wave 3 implements/tests the complete selected path and records its real
-configuration status without presenting a fixture as production custody.
+Enable external upstream TypeScript maps for inlined packages, without embedded
+sources. The final bundler chains them to original TypeScript; do not substitute
+source aliases or claim a decrypt test proves engine symbolication.
 
-Considered retaining a single file and deferring only Home: rejected because
-external imports remain eager through the rest of the graph. Considered publishing
-engine packages separately: rejected by the proprietary bundle boundary.
-Considered publishing source-free maps openly: rejected because symbol names and
-source layout remain private even without embedded TypeScript. Considered ordinary
-public Actions artifacts or Release attachments: rejected as private custody.
+Make **prepack the sole final CLI build** after dependency builds. Finalize tsup
+output before hashing: remove only its known trailing map links, move maps/build
+metadata outside the public package, verify complete closure and retain exact JS.
+Then inspect the actual tarball against finalized bytes and seal the private map
+manifest. Never build, rewrite or pack again as a retry for that candidate.
+
+Use vetted GnuPG recipient encryption as release tooling. The selected public key,
+primary/subkey fingerprints, validity, isolation and rotation policy are explicit;
+private keys never enter CI/repo. Encryption is randomized and does not authenticate
+the producer. Encrypt once and retain the original ciphertext, tarball and small
+nonsecret binding receipt. The private per-source manifest stays inside ciphertext.
+Public source/build identity and hashes are allowed in the binding receipt;
+maps, source content and private per-source inventories are not.
+
+Before retrying, retrieve and verify original staged or Release assets. Reuse
+exact matching bytes, fill only missing assets from a recoverable candidate and
+refuse conflicts. Expired staging without a complete candidate fails with recovery
+instructions; re-encryption cannot manufacture identical custody. Never make
+encryption deterministic, overwrite conflicts or silently swap a version's bytes.
+
+A dedicated archive job retains ciphertext, tarball and binding receipt as
+per-version Release assets beyond Actions expiry, verifies downloaded digests,
+and gates npm publication of that same tarball. Only real trusted pushed tags
+with version/main-ancestry checks can mutate Releases/publish. Manual dispatch,
+including an off-main override or dispatch targeting a tag, remains dry-run.
+Only the archive job gets Contents write; npm retains its provenance permission.
+
+A dedicated crypto/recipient/CI-custody security sitting validates this path.
+Fixture-key controls use synthetic maps only; do not upload product maps under a
+public test private key. Production recipient/backup/retention configuration is
+an actual-release prerequisite in Wave 4b, not a credential needed for proposal
+review. Future releases fail closed without it. Rotation applies prospectively;
+supported old archives require retained offline decryption capability, and public
+ciphertext cannot be recalled by revoking a key. No automatic archive deletion
+is introduced.
+
+Considered retaining one file and deferring only Home: rejected because the graph
+remains eager. Considered separate published engine packages: rejected by the
+distribution boundary. Considered public source-free maps: technically possible
+for this public repo, but contrary to the selected archive policy, **not** because
+public source names would become newly secret. Considered deterministic encryption
+or rebuilding on retry: rejected because cryptographic randomness and exact-byte
+release identity must be preserved.
 
 ### Acceptance and landing
 
-1. Native packed help/version/root-help/JSON-help executions install throwing
-   service-boundary witnesses and prove no service initialization or cached-config
-   I/O. Record cold-start measurements against the same current baseline; the
-   historical approximately 400 ms figure is not a fresh measurement or threshold.
-2. Real packed run/chat fixture, DB migrations, MCP version, CAS and native iterator
-   identity controls pass on supported platforms, including the minimum Node floor.
-3. Deliberately missing/escaping chunks, external engine imports and an undeclared
-   dependency break the complete closure/pack guard. Every required chunk is shipped.
-4. Map-to-JavaScript receipts survive packing byte-for-byte; a planted original source,
-   map, manifest or metafile fails public-artifact inspection. Actual private archive
-   round-trip controls use test keys, and failure cannot fall back to public plaintext.
-5. Update the [release runbook](../runbooks/release-a-surface.md), packaging reference
-   and canonical CLI docs, and append a dated partial-replacement note to ADR-0051
-   plus refinements to ADR-0047/0056/0071. Required CI, packed smokes and two fresh
-   independent cumulative reviews must pass before implementation acceptance.
+1. Packed existing meta operations have static reachability plus native throwing
+   service witnesses, including early diagnostics/sanitization. Measure against
+   the same current baseline; historical ~400 ms is not a fresh threshold.
+2. Required packed platform/minimum-runtime controls cover real run/chat fixtures,
+   native loading, migrations, MCP version, CAS and shared iterator/registry identity.
+   Catalog order tests include file-only, empty/torn DB, authoritative DB tail,
+   repeated Home/resume and media exceptions before first capability/budget read.
+3. Missing/escaping chunks, external engine imports and undeclared dependencies
+   break closure. Actual tarball inspection rejects public maps/source/metafiles/
+   manifests/map links and compares every packed JS digest with finalized outputs.
+4. Exact packed CLI **and engine** frames map to the expected original TS locations
+   using the matching source revision. Wrong map/JS/source, an upstream missing map
+   and a post-receipt rebuild fail; sourcesContent is absent throughout.
+5. Synthetic GPG and archive/API controls cover recipient isolation/expiry/rotation,
+   encryption failure, retry/partial upload/conflict/expired staging and archive
+   before publish. No plaintext fallback or false production-custody claim.
+6. Split lazy graph, fatal integration and archival into distinct reviewed
+   increments. Rerun affected packed gates after later CLI/DB edits and at final
+   whole-wave head. Two new independent complete cumulative clean rounds follow
+   each final material fix. At acceptance append partial-replacement notes to
+   ADR-0047/0051 and refinements to ADR-0056/0071/0072/0103/0109 before code; land
+   canonical references/runbook and actual configuration status separately.
 
 ## Consequences
 
 ### Positive
 
-- Help/version avoid initializing unrelated native/network/UI subsystems by construction.
-- Exact release bytes can be symbolicated without publishing proprietary source metadata.
+- Meta operations avoid unrelated services by construction and retain one grammar.
+- Exact published bytes can be symbolicated to original public-source revisions.
 
 ### Negative
 
-- Multiple packaged files replace a single-file assumption. Complete closure checks,
-  shared-state identity controls and exact-tarball platform smokes become mandatory.
-- Private archival adds a release custody prerequisite. Its configuration is explicit;
-  absence blocks the archival claim/release instead of leaking maps or silently skipping it.
+- Multiple files require complete graph, identity and exact-tarball platform gates.
+- Encrypted archive policy adds a release availability dependency despite public
+  source. Explicit backup/rotation/retry and recovery rules bound that tradeoff;
+  missing production custody blocks release, not document review.

@@ -644,3 +644,122 @@ For a complete walkthrough (key handling, gates, artifacts, exit-code checks), s
 ## Qualified usage and cost totals
 
 Numeric cost totals are known realized sums. Human totals qualify unverified history, pending invocations, unknown usage and missing prices; machine records expose usageCoverage and independent price information. Unknown usage at a numeric zero is never free. The /cost panel includes models with uncertainty but no realized-money row; estimate release leaves usage uncertainty intact. Resumed/reseated views seed the existing durable coverage instead of a fresh zero. Compaction notices distinguish known observed tokens from complete summary usage. See the [seam](../shared-core/llm-provider-seam.md#6-usage), [event contract](../contracts/sse-event-schema.md), and [database contract](../shared-core/database-schema.md).
+
+## Proposed Wave 3 CLI compatibility
+
+**Proposed, unshipped — 2026-10-15.** [ADR-0110](../../decisions/0110-cli-diagnostics-and-discovery-have-explicit-compatibility.md)
+requires maintainer approval. This section owns the proposed exact contract;
+earlier sections describe current behaviour until implementation landing.
+
+### Diagnostic policy
+
+Resolve one policy before runtime imports. `--quiet` plus `--verbose` is exit 2.
+Either explicit flag wins over the environment; absent flags use verbose only
+for exact `RELAVIUM_DEBUG=1`, otherwise normal. The older any-defined predicate
+is intentionally narrowed. JSON selects representation independently; CI/TTY
+select interactivity, never implicitly JSON.
+
+| Output category | Quiet human mode | JSON mode |
+|---|---|---|
+| Requested result, assistant answer, help/version, log/list/output data | Preserve | Preserve every contractual record |
+| Final outcome/cost/usage/estimate/unpriced qualifications; approval, warning, denial, receipt/effect/ownership disclosure and remedy | Preserve | Preserve existing data/structured stderr diagnostic |
+| Decorative banner/spinner/progress and optional informational notice | Suppress at owner | Never remove actual events; optional noncontractual notices may be suppressed |
+| Deprecated alias | One bounded compatibility warning, preserved | One structured stderr notice, no extra stdout record |
+| Verbose detail | Quiet disables it | Bounded safe structured detail, never a human stack dump |
+
+Every production write/render owner needs an explicit category. Do not globally
+filter IO or implicitly approve a prompt. Reasoning follows its existing content
+control. Verbose exposes only owned fixed classifications and bounded validated
+frame locations, with no stack first-line message, arbitrary cause/detail, argv,
+request or credential text. Unknown throws, projection/getter faults and broken
+sinks fall back to a fixed message; do not coerce arbitrary objects. The ordinary
+generic failure points to `--verbose`.
+
+### Failure classification and remedies
+
+| Surface / origin | Proposed disposition |
+|---|---|
+| Workflow run/gate/budget resume: actual terminal or pause | Existing 0/1/3; actual joined 8, then 7, then terminal uncertainty 5 or fencing 6 take priority |
+| Chat/chat resume: actual failed turn or deliberate end | Existing 1 or 4; joined receipt/effect health takes priority |
+| Home: clean shell end, nested chat end, external signal | Existing 0; consumes nested 4; preserves 128+signo for actual signal termination |
+| Standalone agent: actual turn outcome / external signal | Existing outcome 0/1; actual signal 128+signo |
+| Management/meta: successful result or known operational failure | Existing 0 or classified 1; invalid invocation/config remains 2 |
+| Typed corrupt/unreadable history, known departure-unacknowledged | Preserve known operational 1 unless actual joined 8/7/5/6 overrides; do not infer acknowledgement |
+| Classified output-unavailable/EPIPE/failed write acknowledgement | CLI-only `output_unavailable`, exit 1 unless actual stronger safety health overrides; never raw stack |
+| Unexpected CLI throw/invariant/wiring failure on **any** surface | Fixed `internal` diagnostic, exit 9 unless actual stronger safety health overrides; never chat-end 4/Home success |
+| Recoverable unhandled background rejection | Keepalive; upgrade only otherwise clean 0 to 9, preserve established nonzero outcomes |
+| Fatal exception / rejected invocation | Stop admission, one bounded fatal shutdown; generic 9 with observed stronger safety health retained |
+
+Do not change the broad `CliErrorCode.internal` table alone: inventory and classify
+every existing constructor site independently, retaining known operational codes.
+Engine terminal `error.code=internal` still denotes a genuine failed run/turn.
+
+Exit **9** means the CLI could not complete reliably. After admitted paid/effectful
+work, **do not automatically repeat it**: inspect logs/ledger and external targets
+before recovery. It certifies neither absence of work nor receipt durability.
+Exit 1 due to unavailable output has the same inspect-before-retry limitation.
+If both sinks fail, no diagnostic delivery is claimed. Node may itself exit 9
+for invalid runtime arguments **before this entry runs**; the CLI diagnostic
+distinguishes the handled case, not the numeric value alone
+([Node exit codes](https://nodejs.org/docs/latest-v22.x/api/process.html#exit-codes)).
+
+The fatal budget is three seconds from the first fault, including attempted
+diagnostic flush. It is a responsive-event-loop backstop, not preemption of blocked
+JavaScript/native work; native tests need an external watchdog. Normal receipt
+joining remains unbounded by this fatal policy. A timer never acknowledges an owner
+or allows an unjoined store to close. Register owners before work, stop all even
+if one callback throws, release only after actual joins, reap only owned native
+resources on fallback and guard handler re-entry.
+
+### Discovery DTO and one descriptor authority
+
+The new CLI-only DTO is `{ type: 'command_manifest', version: 1, path: string[],
+globalOptions: OptionDescriptor[], commands: CommandDescriptor[] }`. Root uses
+an empty path; command help resolves aliases then returns the canonical selected
+subtree including its executable/group root and descendants. Authored descriptor
+order is stable. No internal executor loader paths or functions are serialized.
+
+| Descriptor | Required contract |
+|---|---|
+| Command | Canonical `path: string[]`, description, existing effect/label metadata, `availability: 'implemented' \| 'not_implemented'`, aliases, ordered positionals/options, and optional stable `executorId` |
+| Alias | Explicit token `path`, `deprecated: boolean`; canonical and flat paths register separately |
+| Positional | Name/binding key, scalar value type, required, variadic, description |
+| Option | Binding key, canonical flag spelling(s), deprecated spellings, arity (none/required/optional), placeholder/type where applicable, repetition (single/repeatable/variadic), negation, description, existing default where applicable and conflict bindings |
+| Global option | Same grammar plus position-independent scope; include help/version and extraction-owned flags |
+
+A container can also execute, as chat/gate/models do. Optional executor binding
+does not force a leaf/group exclusive union. One enriched descriptor registry
+derives Commander grammar, this DTO, help and legacy `COMMAND_MANIFEST`; the
+legacy strict alias-free model projection and stable IDs remain compatible.
+Finite lazy executor bindings are checked both ways against descriptors.
+No second authored list of commands/arguments is permitted.
+
+Canonical paths are `chat resume`, `chat list`, `chat export`; flat aliases keep
+working. Canonical pricing flags are `--input-price` and `--output-price`, with
+old `--input`/`--output` deprecated. Preserve separate source-spelling presence
+until conflict checks; both spellings for one quantity refuse even when equal.
+Only then normalize to existing executor args/decimal parsing. Workflow input,
+reserved standalone-agent input and gate payload meanings stay command-scoped.
+
+Explicit `--help --json` (including `-h`) prints one DTO and exits 0, without
+services. Resolve known command/subcommand/alias grammar and `--` terminator;
+help may omit required values/positionals but cannot excuse unknown grammar.
+`--version --json` and bare `--json` remain human meta output. Unknown
+commands/options/excess args/value errors use fixed stderr hints, no arbitrary
+token echo or Commander suggestions. JSON last-resort errors are structured too.
+
+### Key removal and durable log preservation
+
+`provider remove-key` prompts only when stdin **and** stdout are TTY, JSON is
+off and CI is off. Prompt defaults no; `--force` skips it. Headless without force
+refuses with exit 2 **before DB/keychain construction**, and direct command-core
+calls enforce consent as well. Decline/Esc/prompt cancellation exits 0 without
+deletion; actual process signals retain their contract. Check abort/admission
+again after awaited consent immediately before synchronous delete. Preserve
+keychain-first/reference-clear order and truthful absent-key result, without
+claiming a cross-store transaction. Never read the credential for confirmation.
+
+G15 is refuted as a current shipping defect. Preserve human durable-event replay
+and actual JSON stored sequence/gaps. The engine/store/log regression must prove
+live fragments are emitted live but absent from durable history; no token
+coalescer or new persistence is authorized by that historical finding.

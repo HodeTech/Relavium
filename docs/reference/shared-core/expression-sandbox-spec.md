@@ -256,3 +256,59 @@ VM because the `Eval` intrinsic must stay on for `evalCode` to compile, yet reac
 forbidden capability — `Date`/`Math.random`/`Promise` absent, secret-in-scope yields a secret-free
 error, cap-trip classification, determinism over shuffled `run.outputs` key order) are a binding part of 1.AB per
 [testing.md](../../standards/testing.md#security-critical-primitive-tests-direct-negative-case).
+
+## Proposed Wave 3 secret context boundary
+
+**Proposed, unshipped — 2026-10-15.** [ADR-0113](../../decisions/0113-secret-derived-context-keeps-provenance-at-public-sinks.md)
+requires maintainer approval; existing direct-input marker behaviour is preserved.
+
+The one `WorkflowContextProjection` owns `values: Readonly<Record<string, string>>`
+(clean keys only) and `deniedKeys: readonly string[]`. Copy/freeze both, detach
+record prototypes, and reject duplicate/overlapping or malformed keys. One pure
+factory qualifies resolved context against the admitted workflow's existing linear
+taint result. It contains names, never raw tainted bytes. The low-level execution/
+preparation `ctx` field becomes this required projection; raw resolver return
+remains available only under its trusted public contract. No second raw context
+is passed to an executor. Missing/malformed projection refuses with existing
+validation ErrorCode and a fixed message, never defaults clean. Trusted host
+dishonesty is outside this shape/ownership guarantee.
+
+Actual consumers:
+
+- Preparation and agent/human text lowering use `resolvePublicTemplate`, reading
+  clean values and rejecting denied context references **before filters/defaults**.
+  Use the existing reference lexer, not a new scanner. A fixed
+  `InterpolationError` reason `secret_reference` maps to non-retryable validation.
+- Expression scope construction keeps masking direct inputs and supplies this
+  projection. Before raw scope serialization validate metadata; no denied bytes
+  are serialized. Low-level evaluate calls require explicit projection (owned
+  empty deniedKeys is the clean migration), not an omitted VM-only field.
+- In QuickJS, denied keys are enumerable frozen accessors with a private sticky
+  attempted-access latch. Raw denied values do not exist in the VM. Author code
+  runs in a separate strict lexical environment receiving only the public bindings,
+  outside the latch/serializer closure. Capture required intrinsics first.
+- Serialize/marshal the result once inside the trusted wrapper, then test the latch
+  before accepting the type/result. Author catch, returned ctx/nested getter/toJSON,
+  eval/name guessing or intrinsic mutation cannot produce successful denial.
+  Keep current primitive, condition, nonserializable/cycle and lossy JSON rules;
+  JSON-normalizing first must not conceal a forbidden result type.
+
+Denied access yields `SandboxError.reason: 'secret_context'`, existing
+`code: 'sandbox_error'`, retryable=false, fixed message
+“secret-derived context is unavailable to expressions”, with no source/value
+detail or cause. The host trusts only its private wrapper outcome envelope, never
+an authored throw's name/message. A denial overrides authored success/failure;
+actual abort/timeout still has its existing cancellation/resource disposition,
+with no false successful output.
+
+Clean value reads and key-only enumeration are allowed even when unrelated keys
+are denied. Reading a denied value fails; it never becomes a false comparison,
+marker success or output-schema pass. Existing direct-input marker semantics are
+unchanged. `SandboxError.detail` for other arbitrary authored errors is internal,
+may carry sensitive text and must not be rendered or called universally secret-free.
+
+The [runner](agent-runner.md#proposed-wave-3-qualified-context-consumers) owns
+producer migration; [tool provenance](tool-registry.md#proposed-wave-3-http-authority-and-secret-provenance)
+records the separate unsupported mapping boundary. Actual engine/store tests cover
+run_events.payload_json, step_executions.output_json and runs.output_json with
+positive completed/persisted controls, not only failure-path absence assertions.

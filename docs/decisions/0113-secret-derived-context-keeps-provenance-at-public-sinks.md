@@ -6,127 +6,151 @@
 
 ## Context
 
-Wave 3 #92 observes that `ToolDispatchContext.secretArgKeys` has no live producer.
-The existing parser already computes transitive declared-source taint, but bare
-JavaScript expression scopes are a separate consumer from interpolation templates.
-At baseline `702cdc9c`, a synthetic workflow with a secret input, a derived context
-entry and a `transform: ctx.derived` is accepted and exposes its canary in two
-`node:completed` events and `run:completed`. `run:started` correctly masks the input.
-The parent independently reran this source/QuickJS/in-memory-host probe. No real
-credential, provider or network was used.
+At `702cdc9c`, actual WorkflowEngine + standard executor + QuickJS accepts secret
+input → context alias → JavaScript transform. Direct, computed, serialized,
+transitive/nested and custom-merge reads expose the canary in node/run completion.
+A condition can select a branch using its raw value. Actual SQLite history stores
+the leak in run events, step outputs and run outputs. A downstream human gate can
+display the escaped transform output. Direct model/human templates already refuse
+tainted context at parse; these are preservation controls, not absent defences.
+SandboxError's private detail can also contain the canary although its public
+message and JSON do not.
 
-`resolveContext` is a public trusted resolver and intentionally retains declared
-secret-input values for governed credential use. The canonical workflow contract
-allows this intermediate propagation while forbidding public model/human text.
-Masking all inputs before resolution would close the probe by changing that
-contract. Conversely, adding an empty `secretArgKeys` set would leave the leak and
-falsely claim a producer. Neither is an adequate repair.
+The public trusted `resolveContext` contract allows raw intermediate secret
+resolution. That does not require passing raw derived strings into every executor:
+there is no shipping workflow tool-mapping consumer needing them. Node inputs
+still have the existing trusted-host raw contract and must remain masked before
+sandbox/public output. Qualifying context does not make arbitrary executors
+a secret-free trust domain.
 
-This proposal refines enforcement of existing ADR-0027/0029 secrecy, not universal
-redaction of conversational content. Approval is required before changing the
-execution/preparation context or provenance interfaces. No new runtime dependency,
-platform import, persisted secret, model request field or general mapping feature
-is authorized.
+The earlier proposal to inject markers would silently turn a secret comparison
+into a false branch or let a marker satisfy an output schema. Its additional
+preparation field had no VM consumer. Both mechanisms are replaced below, while
+the existing direct-input marker contract stays unchanged.
+
+All decisions remain Proposed. Exact interfaces and error behaviour belong in
+[expression-sandbox-spec.md](../reference/shared-core/expression-sandbox-spec.md#proposed-wave-3-secret-context-boundary)
+and its linked runner/tool contracts. No new dependency, engine ErrorCode,
+credential sink or tool-mapping feature is authorized.
 
 ## Decision
 
-We will carry trusted declared-source provenance to every consuming boundary,
-preserve raw values only inside their existing trusted resolution domain, and keep
-secret-derived context out of expression/model/human public sinks.
+### Qualify once at the engine boundary
 
-Reuse the existing linear `computeTaint` dependency graph for declared secret input
-names and transitive `ctx` references. Expose its provenance result through one
-pure internal authority, shared by parser checks and execution/preparation. Do not
-add a second scanner, scan raw secret values, or guess secrecy from argument names.
-Metadata contains source/key relationships only, never credential bytes, and is
-owned against mutation by the consumer's execution context.
+Reuse the existing linear declared-source taint graph for input/default/context
+relationships. One pure authority computes provenance; no value scanning, second
+expression scanner or argument-name heuristic is introduced. Derive immutable
+arrays once from the same admitted workflow, copying before freezing; freezing a
+Set would not prevent mutation.
 
-For every `condition`, `transform` and `merge_fn`, build the sandbox context with
-the existing secret marker for each tainted key, just as declared secret inputs
-are masked today. No raw derived string enters QuickJS, including computed access
-such as `ctx[name]`, enumeration or JSON serialization of the context. Public
-outputs may carry the inert marker but never the raw value. This preserves the
-trusted resolver's raw return contract and clean-context expressions. Static
-model/human text checks use the same transitive provenance; preparation, resume,
-branching and merge paths must not reconstruct an unqualified context.
+Keep the exported trusted resolver's raw result contract. Immediately qualify its
+result inside the engine, before storing or handing context to execution or
+budget preparation. The one owned projection contains only clean context strings
+and denied-key metadata, never raw tainted strings. Replace the low-level context
+field with this required projection and migrate every actual producer/double.
+Missing projection refuses with a fixed typed validation failure; there is no
+implicit clean default. Trusted hosts remain responsible for honest admitted
+workflow/input provenance; shape validation cannot detect a deliberate lie.
 
-The engine supplies provenance on all actual producer paths, computed from the
-same admitted workflow used for trusted context resolution. Add a required frozen
-list of secret-derived context names to both execution and preparation contexts;
-empty is an explicit clean result, never the default for absent metadata. Migrate
-all repository context producers and doubles together. A direct low-level caller
-missing this field refuses before sandbox entry; a JavaScript caller that lies
-about its inputs/provenance violates the trusted-host contract, just as lying about
-existing `secretInputNames` does today. Do not claim to detect that lie by inspecting
-credential bytes. Define the public embedding migration in
-[agent-runner.md](../reference/shared-core/agent-runner.md) and
-[expression-sandbox-spec.md](../reference/shared-core/expression-sandbox-spec.md).
-The required field is an explicitly approved low-level API change; existing
-no-secret doubles migrate by supplying an owned empty list.
+Execution and preparation consume the **same** projection. Preparation uses a
+public-template resolver which rejects denied references before filters/defaults;
+this is a real template consumer, not a fictitious preparation sandbox. Clean
+templates work unchanged. Fresh, same-process resume and cross-process budget
+preparation cannot reconstruct raw unqualified context. Trusted raw resolution
+stays local to the resolver/projection cut rather than a second executor authority.
 
-Keep `ToolDispatchContext.secretArgKeys` as the explicit external provenance guard.
-There is no live tool-input-mapping producer: current agent/session producers pass
-empty config, and JSON chosen by a model cannot retain declared-input provenance.
-Record this limitation honestly, as #92's permitted ADR disposition; do not
-implement an unrelated mapping feature or invent a nonempty producer from string
-matching to close a checkbox. A future mapping producer must derive tainted final
-top-level argument names **after** model/mapping/config precedence, with nested
-taint marking its parent, before dispatch or approval persistence. It may not
-launder a marker by serializing it to a normal string. Ordinary tool text never
-receives raw marked values; credential references retain their separate host-only
-resolution path. Existing external nonempty-set refusal controls must remain causal.
+### Denied access fails loudly
 
-This is not a claim that user/model free text, attachments or tool results are
-universally free of sensitive content, or that the CLI database is encrypted.
-ADR-0050/0095 retain their exact at-rest and structural scopes. No secret-value
-search, request capture or provider-key plumbing is added to core.
+Expression scopes serialize only clean context and denied-key metadata. Inside
+QuickJS, create frozen context accessors for denied keys with an inaccessible
+sticky denial latch. Evaluate authored code in a separate lexical environment
+receiving only the public bindings; a guessed wrapper-local name or eval cannot
+reset the latch. Capture required intrinsic operations before author execution.
+After evaluation **and result serialization**, check the latch before accepting a
+condition, transform or custom merge. This covers caught access, returned ctx,
+nested outputs, getters and toJSON, not just literal property reads.
 
-Considered masking every input before trusted context resolution: rejected because
-it changes legitimate trusted resolution rather than qualifying the sink.
-Considered static literal-expression analysis alone: rejected because computed key
-access and whole-context serialization bypass it. Considered blanket name/value
-heuristics or a fabricated empty metadata producer: rejected because neither proves
-provenance. Considered full dynamic output taint propagation: unnecessary for this
-repair when raw secret values never enter the sandbox; future sources require their
-own explicit boundary, not an unverified general claim.
+Any denied value access produces the fixed non-retryable secret-context sandbox
+failure specified in the canonical contract, even if authored code catches the
+accessor's exception. It cannot become a false condition, generic TypeError,
+successful marker or output-schema success. No raw value enters the VM or its
+error detail. Clean context reads and key-only enumeration remain usable. Preserve
+existing condition/output serialization rules; prototype/intrinsic mutation cannot
+replace the trusted result check. This mechanism requires real VM causal controls,
+not only a host Proxy or wrapper mock.
+
+A synthetic probe on the installed QuickJS supports private lexical latch,
+caught-read and serialization feasibility; it is not product implementation.
+Permanent actual-engine/store tests below must establish the final mechanism.
+Existing direct-input markers remain their Accepted contract; extending this
+fail-loud rule to them is not silently included.
+
+### Tool provenance scope
+
+Retain the external `secretArgKeys` guard without inventing a tool-mapping producer.
+Current agent/session dispatches supply empty config and model JSON has no
+declared-input provenance. Absence is a documented **unverified** external
+provenance state, not proof of clean arguments; the compatibility interface remains
+optional and is not a universal secrecy guarantee. A mapped path must refuse
+missing provenance before approval/effect dispatch. This wave neither enables such
+a path nor falsely certifies it. The nonempty external guard's current refusal
+remains a preservation/causal control.
+
+Explicitly reconcile both contradictory passages in
+[tool-registry.md](../reference/shared-core/tool-registry.md#proposed-wave-3-http-authority-and-secret-provenance):
+the dispatch-context secret-args comment and Guardrail enforcement's claimed
+1.O/1.V nested-path producer. Record no current producer and the future mandatory
+final-argument obligation once in that canonical home. #92 receives an honest
+documented limitation; the actual context leak is repaired separately.
+
+This does not mask arbitrary user/model text or encrypt history. ADR-0050/0095
+retain their precise scopes. Existing historical SandboxError.detail may contain
+sensitive authored text; do not call it universally secret-free or render it.
+New denied-context errors contain fixed diagnostics without source/value text.
+
+Considered handler-only marker projection: rejected for silent branching/schema
+changes and repeating the second-gate defect. Considered qualifying once at engine
+construction: selected for raw-value removal, with actual VM/template consumers
+for loud refusal. Considered rejecting all expressions when any context is tainted:
+rejected because unrelated clean expressions must work. Static literal scanning
+alone cannot close computed/whole-context access. Full dynamic output taint and
+fabricated empty tool metadata add unsupported claims without repairing the sink.
 
 ### Acceptance and landing
 
-1. Permanent actual-engine/QuickJS tests reproduce the baseline canary and prove
-   absence from every event/output, raw sandbox input and surfaced error after the
-   fix. Cover direct/transitive/reordered context graphs and computed/enumerated
-   access in condition/transform/custom merge. Clean inputs/context are positive controls.
-2. Fresh/resumed/prepared executions carry owned provenance without a parallel
-   mutable authority. Missing low-level metadata refuses before sandbox entry;
-   mutation of a source list cannot alter the engine-owned list. Clean and tainted
-   lists derive from actual admitted workflows; hostile trusted-host forgery is
-   explicitly outside this boundary, not falsely certified by a shape guard.
-3. Actual parser-to-model/human tests preserve transitive refusal and the trusted
-   resolver's raw intermediate contract. Credential references stay opaque and are
-   resolved only by the already-governed host; no new credential sink is introduced.
-4. Real external tool-dispatch tests prove nonempty top-level taint refusal before
-   host effects/approval persistence and preserve clean-call behaviour. Nested-parent
-   projection remains the documented obligation of a future mapping producer;
-   do not claim that a nonexistent producer was exercised. No test labels arbitrary
-   model JSON as declared-input provenance.
-5. Removing context masking, source propagation or tool refusal breaks its specific
-   regression, with exact restoration. A dedicated secret-flow security sitting,
-   required gates and two new independent cumulative clean reviews precede acceptance.
-   Update the canonical workflow/expression/tool contracts and append dated forward
-   notes to ADR-0027/0029/0037/0083/0093; register the #92 limitation and actual repaired
-   leak separately, never as universal secret redaction or a completed mapping feature.
+1. Actual WorkflowEngine + createStandardNodeExecutor + QuickJS controls cover
+   direct/computed/serialized/transitive/nested/custom merge, caught access,
+   condition oracle, returned ctx/getters/toJSON and intrinsic/latch tampering.
+   Assert the expected typed failed outcome, no branch/output-schema success and
+   no raw VM input/error detail. Independently successful clean workflows must
+   complete with exact expected outputs; no vacuous negative-only test.
+2. Actual SQLite hosts scan `run_events.payload_json`,
+   `step_executions.output_json` and `runs.output_json`, plus public events and
+   downstream human gate messages. Clean positive rows prove persistence occurred;
+   leak fixtures prove the baseline fails the confidentiality assertion.
+3. Every fresh/resume/preparation producer supplies the owned projection.
+   Missing metadata and mutation controls exercise actual VM and public-template
+   consumers. Removing engine qualification, template refusal or VM latch breaks
+   its corresponding regression with exact restoration.
+4. Direct/transitive parser model/human refusal, trusted raw resolver, direct-input
+   markers and external tool guard retain their existing behaviour. Label already
+   passing controls as preservation; no nonexistent mapping producer is certified.
+5. Dedicated secret-flow security sitting, required gates and two new independent
+   complete cumulative clean rounds precede implementation acceptance. At ADR
+   acceptance append ADR-0027/0029/0037/0083/0093 forward notes before dependent
+   code. Land canonical workflow, runner, expression and both tool passages and
+   register actual #92 limitation separately from repaired exposure.
 
 ## Consequences
 
 ### Positive
 
-- An existing accepted no-secret-sandbox guarantee covers context aliases as well
-  as direct inputs, including dynamically selected keys.
-- Provenance is shared with the existing parser graph and has no credential bytes.
+- Raw derived context no longer reaches executor/preparation or expression scopes.
+- Denied expressions fail explicitly, including computed and caught accesses.
 
 ### Negative
 
-- Expressions that previously observed leaked secret context now observe a marker.
-  This deliberate security correction needs clear compatibility tests and a dated note.
-- Low-level executor embeddings must honor provenance ownership. The canonical
-  interface and fail-closed migration rule must be settled before implementation.
+- Expressions previously reading leaked context now fail deliberately. This is
+  an explicit security compatibility change; clean and direct-input behaviour stays pinned.
+- Low-level embeddings migrate to a required owned projection and template/VM
+  consumers. A trusted host's fabricated provenance remains outside the guarantee.

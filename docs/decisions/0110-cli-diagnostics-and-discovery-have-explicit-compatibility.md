@@ -2,145 +2,150 @@
 
 - **Status**: Proposed
 - **Date**: 2026-10-15
-- **Related**: [ADR-0047](0047-cli-framework-commander-ink-clack.md), [ADR-0049](0049-cli-machine-output-contract.md), [ADR-0056](0056-cli-in-app-slash-command-system-and-manifest.md), [ADR-0088](0088-the-mcp-boundary-is-hostile.md), [ADR-0103](0103-a-paused-run-hands-off-its-local-producers-before-its-host-closes.md), [Wave 3](../roadmap/current.md#wave-3--clear-the-ground)
+- **Supersedes (partial)**: [ADR-0049](0049-cli-machine-output-contract.md) §6, for explicit help with JSON
+- **Related**: [ADR-0047](0047-cli-framework-commander-ink-clack.md), [ADR-0056](0056-cli-in-app-slash-command-system-and-manifest.md), [ADR-0088](0088-the-mcp-boundary-is-hostile.md), [ADR-0103](0103-a-paused-run-hands-off-its-local-producers-before-its-host-closes.md), [ADR-0111](0111-cli-meta-operations-use-a-lazy-packaged-runtime.md), [Wave 3](../roadmap/current.md#wave-3--clear-the-ground)
 
 ## Context
 
-Wave 3 contains maintainer decisions D19/D20/D22 and findings #13/#18/#19/#45,
-#264/#265/#268/#309/#310 and G15/G35. They change public CLI behaviour and need
-one compatibility decision before implementation. ADR-0049 says help remains
-human-readable under `--json`; ADR-0056 describes a machine-readable command
-manifest. Both cannot govern the same explicit help invocation.
+Wave 3 D19/D20/D22, #13/#17/#18/#19/#40/#41/#42/#45/#224/#264/#265/#268/#269/
+#309/#310 and G35 require explicit CLI compatibility. Accepted ADR-0056 already
+promises machine-readable help; ADR-0049 §6 prescribes human help under JSON.
+This proposal realizes the former and partially replaces the latter.
 
-At the preflight baseline `702cdc9c`, quiet is largely ineffective, debug and
-verbose use different predicates, internal CLI faults share exit 1 with failed
-workflows, and human log replay prints individual token events. The existing
-background-rejection net already reports and keeps the process alive; its absence
-must not be claimed as a new defect. Uncaught exceptions need a different policy.
+At baseline `702cdc9c`, verbosity has no effective general consumer and debug
+predicates differ. Unexpected CLI failures share exit 1 with known operational
+failures. Crucially, `CliErrorCode.internal` also names typed history refusals and
+unacknowledged departures: remapping it wholesale would change accepted semantics.
+Commander echoes unknown input although the later dispatcher does not. The
+recoverable background-rejection net already exists.
 
-This proposal requires maintainer approval. It introduces no engine ErrorCode,
-provider seam field, runtime dependency or new tool. Exact option/output shapes
-belong in [CLI commands](../reference/cli/commands.md), with the interactive
-behaviour in [chat-session.md](../reference/cli/chat-session.md).
+G15's token-firehose premise is refuted: token/reasoning events use only the live
+bus, shipping persistence excludes them, and `logs` reads durable history.
+Preserve replay and add an actual-engine/store regression. Invented persisted
+token fixtures cannot demonstrate a shipping coalescing defect.
+
+The strict, alias-free model command manifest lacks CLI flag spellings,
+positionals, repeats, globals and group paths. Discovery needs an enriched
+descriptor authority and separate compatible projections, not that inadequate DTO.
+
+These choices remain Proposed. Exact shapes, categories and exits belong in
+[CLI commands](../reference/cli/commands.md#proposed-wave-3-cli-compatibility).
+No engine ErrorCode or runtime dependency is added.
 
 ## Decision
 
-We will preserve machine data and existing lifecycle outcomes while making
-diagnostics, discovery and the enumerated remediation aliases explicit.
+### Diagnostics and ownership
 
-### Diagnostic policy and failure ownership
+Keep quiet and verbose mutually exclusive; explicit flags override the exact
+debug alias defined in the canonical proposal. Narrowing the old defined-variable
+debug predicate is deliberate. Quiet preserves requested data and safety output.
+Verbose adds bounded diagnostic metadata and validated stack-frame locations,
+never arbitrary error messages, cause trees or raw stack headers. Pattern
+redaction is defence in depth, not proof that arbitrary text is secret-free.
+JSON diagnostics, including #269's last resort, remain structured stderr records.
 
-Keep `--quiet` and `--verbose` mutually exclusive: specifying both remains an
-invalid invocation. Either explicit flag overrides `RELAVIUM_DEBUG=1`; only the
-exact environment value `1` is a verbose alias. Default verbosity is normal.
-`--json` controls representation independently of verbosity.
+Reserve exit 9 for unexpected CLI infrastructure failures on every surface,
+independently of the existing broad `internal` code. Known history, departure,
+ownership, receipt and operational refusals retain their exit/remedy. The canonical
+surface table explicitly covers Home, chat, one-shot agents, workflow/resume and
+management/meta commands. Genuine run/turn outcomes and deliberate session end
+remain distinct; an unknown CLI failure cannot become Home success or chat end.
 
-Quiet suppresses decoration, banners, progress churn and optional informational
-notices. It preserves requested command results, assistant answers, final outcomes
-and cost/usage qualifications, approvals, warnings, errors, denials and required
-durability/effect disclosures. Implement categories at their owners; never filter
-all stdout/stderr writes. JSON preserves every contractual data record and safety
-diagnostic and never contains human stack dumps. Verbose diagnostics are bounded,
-redacted, terminal-safe and exclude arbitrary cause inspection, raw argv, request
-bodies and credential values. Generic failures point to the supported verbose flag.
+Create one lightweight invocation-owned shutdown registry in the CLI process layer,
+with no engine/native/UI service imports. Owners register stop, join, final-health
+and owned-native-reap callbacks before admitting work; unregister only after actual
+settlement. Normal, fatal and output-failure paths share those registrations.
+ADR-0111's chunks retain one instance. Ambient PID scanning is not ownership proof.
 
-Reserve additive exit **9** for an unclassified CLI internal failure. Genuine
-workflow failure/cancellation remains 1; invocation faults remain 2; existing
-0 and 3–8 and surface-specific signal outcomes retain their meanings. Typed
-history/ownership/receipt refusals must not be flattened into 9. A final joined
-money/effect/durability/ownership disposition takes precedence over a generic
-internal failure.
+Install early diagnostic flag extraction and the registry before dynamic runtime
+imports. Recoverable background rejection keeps the process alive, reports safely,
+and upgrades only an otherwise clean success; existing nonzero outcomes remain.
+Fatal exception/top-level rejection stops admission and exits without resuming
+business logic. Best-effort cooperative joining has a three-second **fatal process
+termination** budget; afterward only explicitly owned native resources may be
+synchronously reaped. This is not an ADR-0103 receipt deadline, acknowledgement or
+safe-close permission. An exit callback cannot await; re-entry and broken sinks
+are guarded. Normal/recoverable cleanup still joins actual owners.
 
-Preserve the recoverable background-rejection net's keepalive policy: report a
-bounded safe diagnostic, remember the failure and upgrade only an otherwise clean
-exit 0 to 9. Preserve an existing nonzero lifecycle outcome. An uncaught exception
-or top-level rejected invocation instead stops new work, reports once and requests
-bounded cooperative owner cleanup. The fatal shutdown budget is three seconds;
-after it, only owned native resources may be synchronously reaped before exit.
-Normal/recoverable cleanup still joins ADR-0103 owners before closing their stores.
-The process `exit` callback cannot await work and must never be described as an
-asynchronous durability acknowledgement. No crash handler fabricates a run terminal
-or retries a paid request. Repeated faults and a broken diagnostic stream cannot
-recursively enter the handler.
+Known final money/effect/durability/ownership health takes precedence on **return
+and throw** paths. Unavailable health remains uncertain, with inspection before
+retry; no terminal or acknowledgement is fabricated. Native teardown uses owned
+POSIX groups and a separately tested Windows child/tree mechanism, never a
+negative-PID claim for Windows or foreign processes.
 
-A closed output pipe is a typed output failure, with bounded cancellation/cleanup,
-not a raw Node stack. Write a safe diagnostic only to a still-usable independent
-sink; an EPIPE sink cannot acknowledge its own error. Preserve more specific final
-safety dispositions; otherwise use exit 9. Do not assert successful terminal delivery
-or durable publication from a failed write.
+EPIPE is a classified output-unavailable operational failure, not an unclassified
+exception. Stop/join producers, preserve stronger safety exits and use at most one
+fixed diagnostic on an independent usable sink. A failed sink cannot acknowledge
+itself. No automatic repetition of paid/effectful work follows an output or fatal
+failure; the canonical exit-9 remedy explicitly says this.
 
 ### Discovery and compatibility
 
-Explicit root `--help --json` returns a versioned command-manifest JSON record
-(`type: command_manifest`, `version: 1`, `commands` containing the canonical list);
-command-specific help returns the matching command/subtree in the same format.
-Stable existing executor IDs remain available; aliases resolve to the same executor.
-Both are exit-0 meta-operations and start no
-services. This replaces **only** ADR-0049 §6's human-help exception for explicit
-help plus JSON. `--version --json` and bare `--json` retain their existing human
-meta-operation behaviour. Run/session JSON streams retain their event shapes and
-sequence ordering. Invalid command/option grammar still fails as an invocation.
+One framework-free descriptor registry owns stable executor IDs, canonical token
+paths, explicit aliases, argument bindings and globals. Derive Commander, help and
+the existing model manifest from it. Keep the legacy strict model-manifest shape;
+new JSON help describes the actual grammar in a separate versioned projection.
+Groups need no executor. Explicitly register nested chat paths and flat aliases;
+Commander aliases alone cannot span them. Two-way grammar drift tests are required.
 
-Make `chat resume`, `chat list` and `chat export` canonical while retaining working
-flat aliases. Make `models pricing --input-price` / `--output-price` canonical,
-retaining the old pricing spellings as deprecated aliases. Specifying both spellings
-for one quantity refuses even when values match, rather than silently choosing one.
-Successful deprecated-alias use has one bounded stderr notice, structured in JSON
-mode, never an extra stdout record. Update the one command manifest,
-dispatch and help together. Do not rename run inputs, gate payloads or reserved
-agent input semantics as collateral work.
+Explicit help plus JSON realizes ADR-0056 and replaces only ADR-0049's corresponding
+exception. Root/subtree projection starts no services. Version plus JSON and bare
+JSON remain human meta-operations. Invalid grammar refuses. JSON-help integration
+follows the descriptor and lazy-graph increments, not an earlier unimplemented step.
 
-`provider remove-key` requires explicit confirmation on an interactive terminal or
-`--force` for automation. A refusal/cancel performs no key deletion; JSON/CI cannot
-prompt. Deliberately declining confirmation exits 0; a noninteractive invocation
-without force exits 2. Actual process termination retains its signal contract.
-Human `logs` coalesces consecutive token/reasoning fragments by run, node
-and channel, flushing at boundaries and EOF with bounded buffering. JSON logs
-retain the actual stored event stream. Unknown-command diagnostics keep arbitrary
-command strings private and add a static help hint rather than echoing raw input.
+Make noun-verb chat paths and unambiguous pricing flags canonical, retaining old
+aliases and one structured stderr deprecation notice in JSON mode. Conflicting
+pricing spellings refuse even if equal. #18/#310's remaining command-scoped input
+meanings are intentionally preserved/documented: workflow inputs, reserved agent
+input and gate payload are not collateral renames. Unknown command/option errors
+use static hints without arbitrary tokens or Commander suggestions; this is a
+parser-path correction, not merely preservation of dispatcher behaviour.
 
-D22 means no unrecorded breaking change. This decision explicitly authorizes the
-listed aliases, deletion consent, diagnostic behaviour, meta-help format and
-internal exit distinction. It does not authorize unrelated command or event
-changes. Landing must reconcile the phase's older two-exception wording and its
-blanket “no new ADR” claim, preserving historical ADR bodies through dated notes.
+Key deletion requires interactive consent or explicit automation force. Canonical
+eligibility/decline/interruption rules and every existing deletion example must
+agree. G15 closes as a refuted current defect with preservation evidence.
 
-Considered preserving all current behaviour and correcting only documentation:
-rejected because quiet, internal-fault distinction and discovery remain misleading.
-Considered making verbose win over quiet: rejected because it changes the existing
-conflict rule unnecessarily. Considered suppressing safety output in quiet or
-coalescing JSON events: rejected because either hides contractual evidence.
-Considered making every unhandled rejection fatal: rejected because it reverses
-the accepted recoverable persister backstop. Fatal exceptions are distinct.
+At **acceptance**, append ADR-0049/0056 forward notes and ADR-0088/0103 refinements
+before dependent code. Reconcile D19's old precedence ladder, D22's two-exception
+shorthand, E's “Required ADR: none new” and phase exit criterion 4's blanket
+machine-contract prohibition to this enumerated scope. Accepted historical bodies
+stay intact. Proposed reference sections are explicitly unshipped.
+
+Considered verbose winning over quiet: rejected to preserve conflict refusal.
+Considered remapping every internal error: rejected because known refusals use it.
+Considered sanitized raw stacks: rejected because pattern matching cannot prove
+confidentiality. Considered coalescing invented token rows: rejected as a false
+premise. Considered every rejection fatal: rejected because the persister
+backstop's accepted keepalive policy is distinct from process exceptions.
 
 ### Acceptance and landing
 
-1. A flags × environment × output-mode matrix proves category-based suppression,
-   explicit precedence and preserved JSON/safety data; planted secret/control text
-   never enters diagnostics, including verbose and fatal paths.
-2. Native child tests cover closed stdout/stderr, synchronous startup throws,
-   background rejection, uncaught exception, repeated faults and owned subprocess
-   teardown. Positive controls preserve genuine terminals and 3–8/signal outcomes.
-3. Commander-to-dispatch tests prove help projection, aliases, conflict refusal,
-   global help and deletion consent with zero unintended service/key effects.
-4. Human log tests prove boundary-aware coalescing and bounded EOF flushing; JSON
-   replay remains byte-equivalent for the same event sequence.
-5. Removing each correction breaks its regression. Required CI, package/build
-   checks and two new independent cumulative review rounds pass before acceptance.
-   Add dated forward notes to ADR-0049/0056/0088/0103 at implementation landing;
-   update their canonical CLI references and the Wave 3 register.
+1. Inventory production output owners against the canonical category matrix.
+   Flags × environment × output-mode tests exercise those owners. Preserve data
+   and warnings; arbitrary canaries in messages/causes/stack headers never render.
+2. Native children test early import failure, background rejection, fatal/repeated
+   fault, both broken sinks, owned children/grandchildren and Windows teardown.
+   Joined health wins on return and throw; timeout never certifies safe store close.
+3. Test every surface's exit classification, typed history/departure refusals and
+   existing 0–8/signal outcomes. Distinguish Node's pre-bootstrap exits.
+4. Commander-to-dispatch and packed tests cover root/subtree discovery, globals,
+   repeated/positional args, aliases, conflicts, non-echoing refusal and deletion
+   consent with zero unintended key/service effects.
+5. Actual engine/store/log tests pin the G15 disposition and unchanged JSON replay;
+   label preservation controls honestly. Actual corrections each need a causal
+   regression and two new independent complete cumulative clean reviews. Land
+   canonical references and the Wave 3 register.
 
 ## Consequences
 
 ### Positive
 
-- Scripts can distinguish a failed workflow from a broken CLI without changing
-  actual run events, receipt authority or the existing safety exits.
-- Quiet and verbose have predictable limits, and discovery derives from one manifest.
+- Scripts distinguish unexpected CLI faults from outcomes across surfaces.
+- Discovery describes real grammar; diagnostics preserve data, consent and safety.
 
 ### Negative
 
-- Explicit JSON help, deletion consent and exit 9 alter public behaviour. Their
-  narrowly recorded scope, old aliases and permanent compatibility tests mitigate it.
-- Fatal shutdown cannot promise durable acknowledgement after its deadline. The
-  diagnostic and final outcome must retain that uncertainty rather than claim cleanup.
+- JSON help, consent, debug predicate and failure classification deliberately alter
+  public behaviour. Explicit compatibility tables and aliases bound the change.
+- Fatal cleanup cannot promise crash-safe receipts. Inspect before repeating paid
+  or effectful work; a failed cleanup must not be reported acknowledged.

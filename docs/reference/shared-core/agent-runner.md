@@ -369,3 +369,24 @@ cannot replace the primary. A cleanup failure with no earlier primary remains a 
 these paths authorizes another provider call, releases an uncertain admission or fabricates a
 successful settlement. The supported host admission callback is the failure boundary; a distinct
 second synchronous cleanup error is not claimed for the current built-in governor.
+
+## Proposed Wave 3 qualified context consumers
+
+**Proposed, unshipped — 2026-10-15.** [ADR-0113](../../decisions/0113-secret-derived-context-keeps-provenance-at-public-sinks.md)
+requires approval. The exact projection, VM and refusal contract belongs to the
+[expression specification](expression-sandbox-spec.md#proposed-wave-3-secret-context-boundary).
+
+WorkflowEngine qualifies raw resolveContext output once at fresh start/resume and
+standalone cross-process budget preparation, before storing or invoking callbacks.
+NodeExecContext and NodePreparationContext carry the same required projection.
+The preparation Pick must actually include it. resolvePrompt/public-template
+lowering consumes denied keys before filter/default resolution; preparation has
+no expression sandbox and no unused VM-only metadata. Execution scope consumes
+the projection for condition/transform/merge, and agent/human text uses the same
+public template path. Test each producer and consumer with a witness.
+
+Embedding migration replaces raw ctx records with the factory-owned projection
+from the admitted workflow; clean embeddings explicitly construct an empty-denial
+projection. No implicit absent metadata. Existing raw secret NodeExecContext.inputs
+remain the trusted-host contract and continue to be masked at public/sandbox
+boundaries. This context repair is not a universal custom-executor secrecy claim.
