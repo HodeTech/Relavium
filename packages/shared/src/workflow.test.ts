@@ -7,6 +7,7 @@ import {
   violatesInputContract,
   WorkflowInputSchema,
   WorkflowSchema,
+  WorkflowSnapshotSchema,
 } from './workflow.js';
 
 /**
@@ -995,5 +996,95 @@ describe('WorkflowInputSchema — the ADR-0083 tightenings', () => {
         validation: { enum: [Number.NaN] },
       }).success,
     ).toBe(false);
+  });
+});
+
+describe('frozen workflow structural compatibility', () => {
+  const historical = {
+    schema_version: '1.0',
+    workflow: {
+      id: 'historical',
+      agents: [
+        {
+          id: 'a',
+          model: 'primary',
+          provider: 'openai',
+          system_prompt: 'hello',
+          fallback_chain: [
+            { model: 'alternate', provider: 'openai', max_attempts: 1 },
+            { model: 'alternate', provider: 'openai', max_attempts: 2 },
+          ],
+        },
+      ],
+      nodes: [
+        { id: 'gate', type: 'human_gate', gate_type: 'approval', timeout_action: 'reject' },
+        {
+          id: 'choose',
+          type: 'condition',
+          expression: 'true',
+          branches: [
+            { when: true, target_node: 'out' },
+            { when: true, target_node: 'out' },
+          ],
+        },
+        { id: 'out', type: 'output' },
+      ],
+      edges: [
+        { from: 'gate', to: 'choose' },
+        { from: 'choose', to: 'out' },
+      ],
+    },
+  };
+
+  it('preserves all newly author-only fields in a historical document', () => {
+    expect(WorkflowSchema.safeParse(historical).success).toBe(false);
+    expect(WorkflowSnapshotSchema.parse(historical)).toEqual(historical);
+  });
+
+  it.each([
+    ['strict fields', { ...historical.workflow, unknown: true }],
+    [
+      'node identity',
+      {
+        ...historical.workflow,
+        nodes: [historical.workflow.nodes[0], historical.workflow.nodes[0]],
+      },
+    ],
+    [
+      'input defaults',
+      { ...historical.workflow, inputs: [{ name: 'n', type: 'number', default: 'wrong' }] },
+    ],
+    [
+      'parallel members',
+      {
+        ...historical.workflow,
+        nodes: [{ id: 'fan', type: 'parallel', parallel_of: ['out', 'out'] }],
+      },
+    ],
+    [
+      'custom merge',
+      { ...historical.workflow, nodes: [{ id: 'join', type: 'merge', merge_strategy: 'custom' }] },
+    ],
+    [
+      'parallel edge membership',
+      {
+        ...historical.workflow,
+        nodes: [{ id: 'fan', type: 'parallel', parallel_of: ['out'] }],
+        edges: [{ from: 'fan', to: 'other' }],
+      },
+    ],
+    [
+      'MCP identity',
+      {
+        ...historical.workflow,
+        agents: [
+          { ...historical.workflow.agents[0], mcp_servers: [{ ref: 'same' }, { ref: 'same' }] },
+        ],
+      },
+    ],
+  ])('retains the previous %s rejection', (_label, workflow) => {
+    expect(WorkflowSnapshotSchema.safeParse({ schema_version: '1.0', workflow }).success).toBe(
+      false,
+    );
   });
 });

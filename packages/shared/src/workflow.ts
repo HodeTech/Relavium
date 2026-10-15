@@ -9,8 +9,8 @@ import {
   positiveInt,
 } from './common.js';
 import { ON_EXCEED_ACTIONS, SCHEMA_VERSION } from './constants.js';
-import { AgentSchema } from './agent.js';
-import { NodeSchema } from './node.js';
+import { AgentSchema, AgentSnapshotSchema } from './agent.js';
+import { NodeSchema, NodeSnapshotSchema } from './node.js';
 import { EdgeSchema } from './edge.js';
 
 /**
@@ -633,89 +633,105 @@ export const WorkflowSpecSchema = z
 export type WorkflowSpec = z.infer<typeof WorkflowSpecSchema>;
 
 /** The complete workflow document: `schema_version` + `workflow`. */
-export const WorkflowSchema = z
+const WorkflowDocumentFields = z
   .object({
     schema_version: z.literal(SCHEMA_VERSION),
     workflow: WorkflowSpecSchema,
   })
-  .strict()
-  .superRefine((doc, ctx) => {
-    const { nodes } = doc.workflow;
+  .strict();
 
-    // `merge_fn` is required when `merge_strategy` is `custom`.
-    nodes.forEach((node, i) => {
-      if (node.type === 'merge' && node.merge_strategy === 'custom' && !node.merge_fn) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: 'merge_fn is required when merge_strategy is "custom"',
-          path: ['workflow', 'nodes', i, 'merge_fn'],
-        });
-      }
-    });
+/** Shared document invariants apply equally to authored and historical workflows. */
+function validateWorkflow(doc: z.infer<typeof WorkflowDocumentFields>, ctx: z.RefinementCtx): void {
+  const { nodes } = doc.workflow;
 
-    // Referenced identifiers must be unique within a workflow — node ids, input names,
-    // context keys, and agent ids are each addressed by reference (edges, `{{inputs.*}}`,
-    // `{{ctx.*}}`, `agent_ref`), so a duplicate is an ambiguity, not a forward-compat field.
-    const reportDuplicates = (values: string[], label: string, path: (string | number)[]) => {
-      const duplicates = findDuplicates(values);
-      if (duplicates.length > 0) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: `duplicate ${label}: ${duplicates.join(', ')}`,
-          path,
-        });
-      }
-    };
-    reportDuplicates(
-      nodes.map((n) => n.id),
-      'node id(s)',
-      ['workflow', 'nodes'],
-    );
-    reportDuplicates(
-      (doc.workflow.inputs ?? []).map((i) => i.name),
-      'input name(s)',
-      ['workflow', 'inputs'],
-    );
-    reportDuplicates(
-      (doc.workflow.context ?? []).map((c) => c.key),
-      'context key(s)',
-      ['workflow', 'context'],
-    );
-    reportDuplicates(
-      // Only inline agents carry an `id`; a `{ $ref }` entry is resolved (and id-checked) by the engine.
-      (doc.workflow.agents ?? []).flatMap((a) => ('id' in a ? [a.id] : [])),
-      'agent id(s)',
-      ['workflow', 'agents'],
-    );
-
-    // NodeSchema owns parallel member uniqueness at both leaf and full-document boundaries.
-    // Do not add a second duplicate diagnostic at the workflow level.
-
-    // `parallel_of` is authoritative for branch membership: an explicit edge out of a
-    // `parallel` node must target a node listed in that node's `parallel_of`
-    // (workflow-yaml-spec.md). Explicit fan-out edges are redundant with `parallel_of`,
-    // but if present they must not contradict it.
-    const branchesByParallelId = new Map<string, readonly string[]>();
-    for (const node of nodes) {
-      if (node.type === 'parallel') branchesByParallelId.set(node.id, node.parallel_of);
+  // `merge_fn` is required when `merge_strategy` is `custom`.
+  nodes.forEach((node, i) => {
+    if (node.type === 'merge' && node.merge_strategy === 'custom' && !node.merge_fn) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'merge_fn is required when merge_strategy is "custom"',
+        path: ['workflow', 'nodes', i, 'merge_fn'],
+      });
     }
-    doc.workflow.edges.forEach((edge, i) => {
-      // Strip an optional `:handle` to the base node id. `split` always yields >= 1
-      // element at runtime; the `?? edge.from` satisfies `noUncheckedIndexedAccess`
-      // (which types `[0]` as `string | undefined`) so `fromId` is a plain `string`.
-      const fromId = edge.from.split(':')[0] ?? edge.from;
-      const branches = branchesByParallelId.get(fromId);
-      if (branches && !branches.includes(edge.to)) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: `edge from parallel node '${fromId}' targets '${edge.to}', which is not in its parallel_of`,
-          path: ['workflow', 'edges', i, 'to'],
-        });
-      }
-    });
-
-    // Note: `agent_ref` → agent resolution and `agents` presence are NOT validated here.
-    // An agent node's agent may be declared inline, in a sibling `.agent.yaml`, or in the
-    // workspace agent registry — only the engine, with the full registry, can resolve it.
   });
+
+  // Referenced identifiers must be unique within a workflow — node ids, input names,
+  // context keys, and agent ids are each addressed by reference (edges, `{{inputs.*}}`,
+  // `{{ctx.*}}`, `agent_ref`), so a duplicate is an ambiguity, not a forward-compat field.
+  const reportDuplicates = (values: string[], label: string, path: (string | number)[]) => {
+    const duplicates = findDuplicates(values);
+    if (duplicates.length > 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `duplicate ${label}: ${duplicates.join(', ')}`,
+        path,
+      });
+    }
+  };
+  reportDuplicates(
+    nodes.map((n) => n.id),
+    'node id(s)',
+    ['workflow', 'nodes'],
+  );
+  reportDuplicates(
+    (doc.workflow.inputs ?? []).map((i) => i.name),
+    'input name(s)',
+    ['workflow', 'inputs'],
+  );
+  reportDuplicates(
+    (doc.workflow.context ?? []).map((c) => c.key),
+    'context key(s)',
+    ['workflow', 'context'],
+  );
+  reportDuplicates(
+    // Only inline agents carry an `id`; a `{ $ref }` entry is resolved (and id-checked) by the engine.
+    (doc.workflow.agents ?? []).flatMap((a) => ('id' in a ? [a.id] : [])),
+    'agent id(s)',
+    ['workflow', 'agents'],
+  );
+
+  // Both authored and historical node schemas own the prior parallel member uniqueness rule.
+  // Do not add a second duplicate diagnostic at the workflow level.
+
+  // `parallel_of` is authoritative for branch membership: an explicit edge out of a
+  // `parallel` node must target a node listed in that node's `parallel_of`
+  // (workflow-yaml-spec.md). Explicit fan-out edges are redundant with `parallel_of`,
+  // but if present they must not contradict it.
+  const branchesByParallelId = new Map<string, readonly string[]>();
+  for (const node of nodes) {
+    if (node.type === 'parallel') branchesByParallelId.set(node.id, node.parallel_of);
+  }
+  doc.workflow.edges.forEach((edge, i) => {
+    // Strip an optional `:handle` to the base node id. `split` always yields >= 1
+    // element at runtime; the `?? edge.from` satisfies `noUncheckedIndexedAccess`
+    // (which types `[0]` as `string | undefined`) so `fromId` is a plain `string`.
+    const fromId = edge.from.split(':')[0] ?? edge.from;
+    const branches = branchesByParallelId.get(fromId);
+    if (branches && !branches.includes(edge.to)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `edge from parallel node '${fromId}' targets '${edge.to}', which is not in its parallel_of`,
+        path: ['workflow', 'edges', i, 'to'],
+      });
+    }
+  });
+
+  // Note: `agent_ref` → agent resolution and `agents` presence are NOT validated here.
+  // An agent node's agent may be declared inline, in a sibling `.agent.yaml`, or in the
+  // workspace agent registry — only the engine, with the full registry, can resolve it.
+}
+
+export const WorkflowSchema = WorkflowDocumentFields.superRefine(validateWorkflow);
+
+/**
+ * Frozen workflow reader: preserve prior structural and whole-document invariants without
+ * applying new author-only fallback, branch-match or orphan gate-action refusals to old runs.
+ * Never use this historical contract to admit a newly authored document.
+ */
+export const WorkflowSnapshotSchema = WorkflowDocumentFields.extend({
+  workflow: WorkflowSpecSchema.extend({
+    agents: z.array(z.union([AgentSnapshotSchema, AgentRefSchema])).optional(),
+    nodes: z.array(NodeSnapshotSchema).min(1, 'a workflow must declare at least one node'),
+  }),
+}).superRefine(validateWorkflow);
 export type Workflow = z.infer<typeof WorkflowSchema>;
