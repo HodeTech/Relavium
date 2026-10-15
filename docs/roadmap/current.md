@@ -1106,10 +1106,11 @@ an ESLint selector rather than a list.
 
 ### Wave 3 — Clear the ground
 
-**Preflight in progress — 2026-10-15.** The original queue below is reconciled against
+**Preflight reviewed; maintainer approval pending — 2026-10-15.** The original queue below is reconciled against
 current source in the [Wave 3 preflight and proposed execution plan](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-preflight-and-proposed-execution-plan--2026-10-15).
 It records already-satisfied items, concrete compatibility/security decisions and
-seventeen proposed increments. ADR-0110–0113 are Proposed; implementation has not
+seventeen proposed increments. Two new independent complete cumulative final
+proposal reviews at `39967075` are clean. ADR-0110–0113 are Proposed; implementation has not
 started and dependent code awaits maintainer approval. Historical finding descriptions
 are not new assertions about current source. The existing Wave 5a renderer/word-wrap
 ownership is preserved, not newly approved by this preflight.

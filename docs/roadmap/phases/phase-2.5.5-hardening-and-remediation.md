@@ -3722,4 +3722,30 @@ paths and all four ADRs. The maintainer then selected public-recipient encrypted
 archival as the method only. ADR-0111 now specifies isolated GnuPG tooling, pinned
 recipient identity and exact ciphertext retention beyond expiring workflow artifacts;
 no plaintext map, production key setup, upload, ADR acceptance or code implementation
-is inferred. Fresh complete cumulative reviews of this final proposal are required.
+is inferred. At that source checkpoint, fresh complete cumulative reviews of the
+final proposal were still required; their outcome follows.
+
+#### Final proposal readiness — 2026-10-15
+
+Two NEW independent complete cumulative final reviews at `39967075` cover all
+seven proposal paths and all four ADRs, including the selected encrypted archive
+mechanism. Authority/security (`gpt-6.1-sol`, high) and compatibility/execution
+(`gpt-6-sol`, high) each report zero verified findings. The parent reads both full
+reports and verifies all A/E/G/I IDs have explicit owners/dispositions, all seventeen
+steps remain ordered, and the final proposal preserves the corrected #3 controls.
+These are proposal-readiness reviews, not product implementation or whole-wave acceptance.
+
+Document validation resolves 2,882 relative links/anchors across the 56 Markdown
+files changed since the Wave 2 base; exact Wave 3 scope is seven documentation paths.
+All 109 pre-existing ADR files are byte-identical to baseline `702cdc9c`; four new
+ADRs remain Proposed. Diff whitespace passes. The existing 319 focused preflight
+test passes and the synthetic security reproduction remain attributed to their
+original unchanged-source runs; no new CI/platform/coverage/release execution is inferred.
+
+This receipt/current-status update changes no reviewed ADR mechanism or proposed
+implementation step. **Document preflight is ready for maintainer review. Approval
+of ADR-0110–0113 and the concrete plan is the only current implementation gate.**
+The archive-method choice is complete; production recipient/retention configuration
+belongs to actual release preparation. No provider request, key access, billing,
+archive upload or code implementation has started. Detailed reports remain local
+and Git-ignored, and no proposal round substitutes for a future implementation review.
