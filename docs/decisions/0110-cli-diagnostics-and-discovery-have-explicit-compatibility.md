@@ -1,6 +1,6 @@
 # ADR-0110: CLI diagnostics and discovery have explicit compatibility
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Date**: 2026-10-15
 - **Related**: [ADR-0049](0049-cli-machine-output-contract.md) (§5 infrastructure/pre-run exceptions and §6 explicit JSON-help partially replaced), [ADR-0047](0047-cli-framework-commander-ink-clack.md), [ADR-0056](0056-cli-in-app-slash-command-system-and-manifest.md), [ADR-0088](0088-the-mcp-boundary-is-hostile.md), [ADR-0103](0103-a-paused-run-hands-off-its-local-producers-before-its-host-closes.md), [ADR-0111](0111-cli-meta-operations-use-a-lazy-packaged-runtime.md), [Wave 3](../roadmap/current.md#wave-3--clear-the-ground)
 
@@ -184,3 +184,11 @@ changes, rather than claiming universal containment.
   or effectful work; a failed cleanup must not be reported acknowledged.
 - Windows subprocess admission refuses if its verified teardown facility is
   unavailable; POSIX MCP cleanup cannot promise reaping its descendants.
+
+## Maintainer acceptance — 2026-10-16
+
+The maintainer approved this final decision, its linked unshipped canonical
+contracts and the nineteen-increment Wave 3 plan. Earlier proposal wording above
+records the review stage; approval is complete. Implementation, independent
+review gates and canonical promotion remain staged in that plan. Acceptance
+does not claim shipping behaviour, an actual release or production custody setup.

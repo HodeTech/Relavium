@@ -184,3 +184,7 @@ with that name and a docblock saying why. The residue is recorded in
 [deferred-tasks.md](../roadmap/deferred-tasks.md) as *"a read the scan cannot confidently resolve"*, which
 is the phrasing that survives the next shape being found.
 
+
+## Wave 3 decision acceptance — 2026-10-16
+
+> Amended 2026-10-16: [ADR-0113](0113-secret-derived-context-keeps-provenance-at-public-sinks.md) is accepted by the maintainer. The literal dependency scan and before-money-spent scheduling rule remain accepted. Runtime secret exclusion uses finite VM accessors for a different purpose: diagnosis of executed denied reads, not replacement of parse-time out-of-closure admission. No universal attempted-access detection is claimed. The approved [execution plan](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#proposed-implementation-increments) owns implementation and review gates; this note does not claim implementation landing.

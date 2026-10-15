@@ -281,3 +281,7 @@ as PR #94 (`ab08209e`). The [merge checkpoint](../roadmap/phases/phase-2.5.5-har
 joins final reviewed source `4cdfe011`, review scopes, execution evidence and preserved
 limits. Earlier pending/unmerged notes are historical; this landing adds no decision,
 future feature, deferral or claim of merge-commit execution.
+
+## Wave 3 decision acceptance — 2026-10-16
+
+> Amended 2026-10-16: [ADR-0112](0112-chat-network-grants-and-onboarding-state-are-operator-owned.md) is accepted by the maintainer. Existing tool-host/dispatch separation remains. Chat HTTP uses an owned immutable admitted target and the existing post-approval/post-effect-prepare beforeDispatch seam for the latest live authority check; no broad egress decoration is authorized. The approved [execution plan](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#proposed-implementation-increments) owns implementation and review gates; this note does not claim implementation landing.

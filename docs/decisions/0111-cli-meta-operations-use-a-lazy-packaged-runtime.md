@@ -1,6 +1,6 @@
 # ADR-0111: CLI meta-operations use a lazy packaged runtime
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Date**: 2026-10-15
 - **Related**: [ADR-0047](0047-cli-framework-commander-ink-clack.md), [ADR-0051](0051-cli-distribution-thin-bundle-private-engine.md) (single-output constraint partially replaced), [ADR-0105](0105-filesystem-roots-are-invocation-grants-not-project-authority.md), [ADR-0056](0056-cli-in-app-slash-command-system-and-manifest.md), [ADR-0067](0067-node-supported-floor-22-reaffirm-better-sqlite3.md), [ADR-0071](0071-models-dev-as-the-model-metadata-source.md), [ADR-0072](0072-model-metadata-in-the-db-behind-a-generated-offline-floor.md), [ADR-0103](0103-a-paused-run-hands-off-its-local-producers-before-its-host-closes.md), [ADR-0109](0109-native-media-close-ownership-is-explicit-iterator-provenance.md), [ADR-0110](0110-cli-diagnostics-and-discovery-have-explicit-compatibility.md), [Wave 3](../roadmap/current.md#wave-3--clear-the-ground)
 
@@ -190,3 +190,11 @@ not by silently weakening a failed release gate.
 - Encrypted archive policy adds a release availability dependency despite public
   source. Explicit backup/rotation/retry and recovery rules bound that tradeoff;
   missing production custody blocks release, not document review.
+
+## Maintainer acceptance — 2026-10-16
+
+The maintainer approved this final decision, its linked unshipped canonical
+contracts and the nineteen-increment Wave 3 plan. Earlier proposal wording above
+records the review stage; approval is complete. Implementation, independent
+review gates and canonical promotion remain staged in that plan. Acceptance
+does not claim shipping behaviour, an actual release or production custody setup.

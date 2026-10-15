@@ -372,8 +372,8 @@ second synchronous cleanup error is not claimed for the current built-in governo
 
 ## Proposed Wave 3 qualified context consumers
 
-**Proposed, unshipped — 2026-10-16.** [ADR-0113](../../decisions/0113-secret-derived-context-keeps-provenance-at-public-sinks.md)
-requires approval. Exact projection, VM/input compatibility, result transport and
+**Approved design, unshipped — 2026-10-16.** [ADR-0113](../../decisions/0113-secret-derived-context-keeps-provenance-at-public-sinks.md)
+was approved by the maintainer. Exact projection, VM/input compatibility, result transport and
 finite refusal scope belong to the
 [expression specification](expression-sandbox-spec.md#proposed-wave-3-secret-context-boundary).
 

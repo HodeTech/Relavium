@@ -195,3 +195,7 @@ choice is settled and is **not** conditional on perf data. The 1.AB spike measur
 latency, per-eval RSS, and **per-surface bundle-size impact** (the embedded wasm adds to the Tauri /
 CLI / VS Code bundles) against recorded thresholds, and runs the dependency-provenance / Leakwatch pass
 on the pinned variant. It cannot reopen the engine choice.
+
+## Wave 3 decision acceptance — 2026-10-16
+
+> Amended 2026-10-16: [ADR-0113](0113-secret-derived-context-keeps-provenance-at-public-sinks.md) is accepted by the maintainer. Expression scopes exclude present declared-secret inputs and secret-derived context rather than passing expression markers. Display/run-start/input-node masking remains unchanged. Executed denied access has a finite private-latch diagnosis; omitted optional inputs retain absence and no host function is introduced. The approved [execution plan](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#proposed-implementation-increments) owns implementation and review gates; this note does not claim implementation landing.

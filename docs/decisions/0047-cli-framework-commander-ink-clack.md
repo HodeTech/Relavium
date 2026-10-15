@@ -1,6 +1,6 @@
 # ADR-0047: CLI framework — `commander` + `ink` + `@clack/prompts`, confined to `apps/cli`
 
-- **Status**: Accepted
+- **Status**: Accepted (single-output constraint partially replaced by ADR-0111)
 - **Date**: 2026-06-22
 - **Related**: [ADR-0003](0003-pure-ts-engine-not-langgraph-python.md), [ADR-0011](0011-internal-llm-abstraction.md), [ADR-0019](0019-cli-node-keychain-library.md), [ADR-0035](0035-yaml-parser-dependency.md), [phase-2-cli.md](../roadmap/phases/phase-2-cli.md), [cli/commands.md](../reference/cli/commands.md), [architectural-principles.md](../standards/architectural-principles.md), [tech-stack.md](../tech-stack.md), [ADR-0068](0068-full-screen-tui-renderer-ink7-harness.md) (refines: `ink` 6→7)
 
@@ -125,3 +125,7 @@ Considered alternatives:
 - `ink` couples the CLI to React in the terminal — accepted: it is the chosen TUI model, its
   footprint is the CLI binary's alone, and the framework-free cores mean a future TUI swap
   would not touch command logic.
+
+## Wave 3 decision acceptance — 2026-10-16
+
+> Amended 2026-10-16: [ADR-0111](0111-cli-meta-operations-use-a-lazy-packaged-runtime.md) is accepted by the maintainer. Only the single-output packaging constraint is partially replaced by a finite flat ESM entry/chunk graph. CLI framework confinement, inlined private engine packages and declared external third-party dependencies remain accepted. The approved [execution plan](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#proposed-implementation-increments) owns implementation and review gates; this note does not claim implementation landing.

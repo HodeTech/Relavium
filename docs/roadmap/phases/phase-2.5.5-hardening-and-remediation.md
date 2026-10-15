@@ -339,7 +339,7 @@ This workstream is `apps/cli`'s outermost layer — the process/runtime host eve
 - **Convert the three remaining bare `throw new Error()` sites to the project's typed `CliError`.** `apps/cli/src/chat/fixture.ts`'s cassette provider and `apps/cli/src/engine/host.ts`'s checkpointer wiring guard both throw a bare `Error` instead of `CliError`. `apps/cli/src/onboarding/wizard.ts`'s internal choice-validation guard does the same, contradicting its own docstring's claimed propagation contract, even though `CliError` is already imported in that file for a different branch. Convert all three in one mechanical pass. *(S · apps/cli/src/onboarding/wizard.ts · G2, #12, #54)*
 - **Generate and privately archive a per-release sourcemap so a `RELAVIUM_DEBUG` crash stack can be symbolicated.** `apps/cli/tsup.config.ts` correctly ships `sourcemap: false` per ADR-0051 (no original source in the published `dist/`), but no separate, privately-retained sourcemap exists anywhere in the release pipeline, so a `RELAVIUM_DEBUG` stack trace prints mangled minified names with no way to map them back. Generate a sourcemap at release-build time and archive it outside the published artifact. *(M · apps/cli/tsup.config.ts · #46)*
 
-**Acceptance:** Ctrl-C during `agent run`/`chat` actually cancels the in-flight generation via `session.abort()` and tears down spawned MCP child processes the same way `run`'s driver already does; `gate.ts`'s two idempotent-resume success paths honor `--json`; `persister.ts`, the four picker switches, and `run-view-model.ts`'s `reduceRunEvent` all carry `const exhaustive: never` and `relavium run` renders `agent:reasoning` events; `openLocalDb` wraps and redacts at every call site, not just 3 of 8+; `/doctor` probes with the session's real profile; `--help --json` either emits a real `COMMAND_MANIFEST` or the docs no longer claim it does; `--version`/`--help` no longer pay the ~400ms `driveHome`/`seedCatalog()` tax; `resolve.ts` uses the same `* 4` UTF-8 byte multiplier as `authoring.ts`/`catalog.ts`; no command leaks an absolute filesystem path into an error message; the existing recoverable rejection net is preserved and the approved process-owner/fatal policy attempts bounded native cleanup without false DB/MCP close ACK or universal descendant-containment claims, `buildProgram()` is wrapped, EPIPE no longer dumps a raw stack, and the last-resort crash message honors `--json`; `provider remove-key` requires confirmation like its sibling destructive commands; and every closed test-coverage gap (`selectGatePrompter`, the verbose-stack branch, `seedRun`'s guard-rails, the cross-process skip) has a red-on-regression test. **Required ADR: none new — the `--quiet`/`--verbose`/`RELAVIUM_DEBUG` precedence decision and the `--input` namespace decision are maintainer calls recorded as amendments to existing CLI diagnostic/flag conventions, not new architectural decisions.**
+**Acceptance:** Ctrl-C during `agent run`/`chat` actually cancels the in-flight generation via `session.abort()` and tears down spawned MCP child processes the same way `run`'s driver already does; `gate.ts`'s two idempotent-resume success paths honor `--json`; `persister.ts`, the four picker switches, and `run-view-model.ts`'s `reduceRunEvent` all carry `const exhaustive: never` and `relavium run` renders `agent:reasoning` events; `openLocalDb` wraps and redacts at every call site, not just 3 of 8+; `/doctor` probes with the session's real profile; `--help --json` either emits a real `COMMAND_MANIFEST` or the docs no longer claim it does; `--version`/`--help` no longer pay the ~400ms `driveHome`/`seedCatalog()` tax; `resolve.ts` uses the same `* 4` UTF-8 byte multiplier as `authoring.ts`/`catalog.ts`; no command leaks an absolute filesystem path into an error message; the existing recoverable rejection net is preserved and the approved process-owner/fatal policy attempts bounded native cleanup without false DB/MCP close ACK or universal descendant-containment claims, `buildProgram()` is wrapped, EPIPE no longer dumps a raw stack, and the last-resort crash message honors `--json`; `provider remove-key` requires confirmation like its sibling destructive commands; and every closed test-coverage gap (`selectGatePrompter`, the verbose-stack branch, `seedRun`'s guard-rails, the cross-process skip) has a red-on-regression test. **Required ADRs: ADR-0110–0113, accepted 2026-10-16.** Their explicit compatibility, packaging/custody, operator policy and provenance decisions replace the old no-new-ADR assumption; implementation remains staged in the approved Wave 3 plan.
 
 ### 2.5.5.F — Documentation & roadmap accuracy
 
@@ -523,8 +523,10 @@ directly as a 2.6.A work item). **Intra-phase:** the five file overlaps recorded
    config-layer secret-hijack gap are closed or explicitly, permanently documented as accepted
    residuals.
 4. `pnpm turbo run lint typecheck test` stays green throughout, with no widening of the
-   `LLMProvider` seam, no new platform import into `packages/core`, and no change to the
-   `--json`/CI machine-output contract.
+   `LLMProvider` seam or new platform import into `packages/core`. Machine-output
+   compatibility changes are limited to the explicitly approved ADR-0110 scope
+   (diagnostics/exits, JSON discovery, aliases and consent); existing run-event
+   stdout and actual workflow-outcome contracts remain accepted.
 5. All items in a given sub-stream's `**Tasks:**` list are either shipped or explicitly
    re-deferred with a recorded reason (routed to Phase 2.6, `deferred-tasks.md`, or declined
    with rationale in the traceability appendix).
@@ -4110,3 +4112,25 @@ clause-specific Accepted-ADR notes before dependent code, then start Step 1 and
 its implementation/commit/two-new-clean-review loop. Later increments advance
 automatically after their gates. Whole-wave acceptance and PR remain Step 19;
 full I/whole phases and existing approved later-wave scope are not closed here.
+
+### Wave 3 maintainer approval and implementation checkpoint — 2026-10-16
+
+The maintainer explicitly approved final ADR-0110–0113, their linked unshipped
+canonical contracts and all nineteen increments. Their statuses/index are Accepted;
+clause-specific partial replacements and forward notes were recorded before
+dependent code. ADR-0047/0051 retain framework, licensing/private-engine and
+no-public-map rules outside the replaced single-output constraint; ADR-0049
+retains actual outcomes/stdout outside the enumerated §5/§6 changes. D19/D22,
+E's old no-new-ADR assertion and exit criterion 4 are reconciled.
+
+Step 1 is active on `development`; no product implementation or implementation
+review acceptance is claimed by this checkpoint. Every increment still requires
+author gates, commits and two NEW independent complete cumulative clean reviews
+after its last material fix. Later increments advance automatically after those
+gates. The previously recorded proposal reviews remain proposal-only evidence.
+
+The approved #61 character-wrap disposition is now linked in
+[deferred-tasks.md](../deferred-tasks.md#wave-3-approved-later-wave-ownership--2026-10-16):
+Wave 5a owns it alongside D18/#60; full I acceptance is not waived. Production
+recipient/recovery setup remains a Wave 4b actual-release prerequisite. No ADR
+approval, provider capture, key, billing or upload is pending for Wave 3.

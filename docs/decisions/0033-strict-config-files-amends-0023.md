@@ -62,3 +62,7 @@ rejected for the same reasons ADR-0023 rejected it for authored YAML (no diagnos
   (`config-spec.md`), and a loud failure on a machine-local file the user controls is preferable to a
   silently-dropped setting. (This is the exact forward-compat tolerance ADR-0023's carve-out had chosen
   to keep; this ADR consciously trades it for fail-loud, reconciling with `config-spec.md`.)
+
+## Wave 3 decision acceptance — 2026-10-16
+
+> Amended 2026-10-16: [ADR-0112](0112-chat-network-grants-and-onboarding-state-are-operator-owned.md) is accepted by the maintainer. Approved new global-only HTTP policy and keychain acknowledgement keys remain strict. The canonical config specification owns old-binary key-removal recovery; acceptance does not make these unimplemented keys shipping. The approved [execution plan](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#proposed-implementation-increments) owns implementation and review gates; this note does not claim implementation landing.

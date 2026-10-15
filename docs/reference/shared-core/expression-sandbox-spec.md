@@ -259,8 +259,8 @@ error, cap-trip classification, determinism over shuffled `run.outputs` key orde
 
 ## Proposed Wave 3 secret context boundary
 
-**Proposed, unshipped — 2026-10-16.** [ADR-0113](../../decisions/0113-secret-derived-context-keeps-provenance-at-public-sinks.md)
-requires maintainer approval, including deliberate replacement of direct secret-input
+**Approved design, unshipped — 2026-10-16.** [ADR-0113](../../decisions/0113-secret-derived-context-keeps-provenance-at-public-sinks.md)
+was approved by the maintainer, including deliberate replacement of direct secret-input
 expression markers. Display/run-start/input-node markers remain unchanged.
 
 ### Owned provenance and consumers

@@ -90,3 +90,9 @@ as PR #94 (`ab08209e`). The [merge checkpoint](../roadmap/phases/phase-2.5.5-har
 joins final reviewed source `4cdfe011`, review scopes, execution evidence and preserved
 limits. Earlier pending/unmerged notes are historical; this landing adds no decision,
 future feature, deferral or claim of merge-commit execution.
+
+## Wave 3 decision acceptance — 2026-10-16
+
+> Amended 2026-10-16: [ADR-0113](0113-secret-derived-context-keeps-provenance-at-public-sinks.md) is accepted by the maintainer. The engine owns qualified context/input provenance before standard execution and budget preparation. Trusted raw resolver/host inputs are not a public secret-free domain. The optional external tool provenance field has no current authored mapping producer and is not proof of cleanliness. The approved [execution plan](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#proposed-implementation-increments) owns implementation and review gates; this note does not claim implementation landing.
+
+[ADR-0112](0112-chat-network-grants-and-onboarding-state-are-operator-owned.md) additionally refines this boundary: The immutable admitted PolicyTarget and existing beforeDispatch seam supply the final live chat HTTP check after approval/effect preparation; tool grants and approval remain independent.

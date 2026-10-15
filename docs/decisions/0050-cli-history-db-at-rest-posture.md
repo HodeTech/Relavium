@@ -206,3 +206,7 @@ as PR #94 (`ab08209e`). The [merge checkpoint](../roadmap/phases/phase-2.5.5-har
 joins final reviewed source `4cdfe011`, review scopes, execution evidence and preserved
 limits. Earlier pending/unmerged notes are historical; this landing adds no decision,
 future feature, deferral or claim of merge-commit execution.
+
+## Wave 3 decision acceptance — 2026-10-16
+
+> Amended 2026-10-16: [ADR-0113](0113-secret-derived-context-keeps-provenance-at-public-sinks.md) is accepted by the maintainer. New qualified expression scopes prevent newly projected secret values from reaching standard execution outputs. Existing sensitive event/step/run outputs and private error detail are not scrubbed or certified secret-free on replay; the unencrypted-at-rest posture remains unchanged. The approved [execution plan](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#proposed-implementation-increments) owns implementation and review gates; this note does not claim implementation landing.

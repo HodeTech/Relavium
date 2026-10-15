@@ -1,11 +1,11 @@
 # CLI Packaging Contract
 
-- **Status**: Proposed — unshipped, maintainer approval required
+- **Status**: Approved design — unshipped; implementation staged in Wave 3
 - **Date**: 2026-10-15
 - **Related**: [ADR-0111](../../decisions/0111-cli-meta-operations-use-a-lazy-packaged-runtime.md), [commands.md](commands.md), [release runbook](../../runbooks/release-a-surface.md)
 
-This is the proposed canonical artifact/custody contract. Current single-bundle
-packaging remains governed by ADR-0047/0051 until approval and implementation.
+This is the maintainer-approved canonical design contract (2026-10-16). Current
+single-bundle packaging remains shipping until the implementing increments land.
 No release, production recipient setup or asset upload is performed by this document.
 
 ## Finite runtime package
@@ -280,5 +280,5 @@ checks repeat exact-artifact evidence after later CLI/DB changes.
 At Step 9 landing update the release runbook's currently accurate single-bundle
 procedure to this graph, modes/recovery and symbolication; do not relabel historical
 single-bundle evidence as testing this design. Before whole-wave acceptance merge
-this Proposed contract into implemented reference status and remove stale proposal
+this approved design contract into implemented reference status and remove stale proposal
 banners only for actually accepted mechanisms.

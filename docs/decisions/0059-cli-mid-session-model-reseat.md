@@ -127,3 +127,7 @@ session that drops history (rejected: poor UX — the user expects to continue).
 >    does not exist in this design"*), reseat or not. The notice now says exactly that. **This narrows the disclosure to
 >    what is true; it does not weaken the text-only bound, which is unchanged.** Whether the engine SHOULD carry tool
 >    pairs is a separate, still-open question — it is a Phase-3 scope cut of the engine, not a property of the reseat.
+
+## Wave 3 decision acceptance — 2026-10-16
+
+> Amended 2026-10-16: [ADR-0112](0112-chat-network-grants-and-onboarding-state-are-operator-owned.md) is accepted by the maintainer. Clear/reseat/Home builds share live narrowing HTTP authority and latest-only selection publication. Explicit ephemeral provider/model choices survive invocation rebuilds without being represented as persisted defaults. The approved [execution plan](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#proposed-implementation-increments) owns implementation and review gates; this note does not claim implementation landing.

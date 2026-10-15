@@ -128,3 +128,9 @@ as PR #94 (`ab08209e`). The [merge checkpoint](../roadmap/phases/phase-2.5.5-har
 joins final reviewed source `4cdfe011`, review scopes, execution evidence and preserved
 limits. Earlier pending/unmerged notes are historical; this landing adds no decision,
 future feature, deferral or claim of merge-commit execution.
+
+## Wave 3 decision acceptance — 2026-10-16
+
+> Amended 2026-10-16: [ADR-0112](0112-chat-network-grants-and-onboarding-state-are-operator-owned.md) is accepted by the maintainer. The built-in chat HTTP tool obtains global-only, invocation-live monotonically narrowing authority, independent of tool grants, approval and SSRF. Workflow, shell, provider and MCP egress retain their separate contracts. The approved [execution plan](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#proposed-implementation-increments) owns implementation and review gates; this note does not claim implementation landing.
+
+[ADR-0113](0113-secret-derived-context-keeps-provenance-at-public-sinks.md) additionally refines this boundary: Declared-source provenance removes raw derived values before standard VM/template sinks; external secretArgKeys remains an unverified optional compatibility field with no current mapping producer.

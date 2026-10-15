@@ -1,6 +1,6 @@
 # ADR-0113: Secret-derived context keeps provenance at public sinks
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Date**: 2026-10-15
 - **Related**: [ADR-0027](0027-expression-sandbox.md), [ADR-0029](0029-tool-policy-hardening.md), [ADR-0037](0037-engine-tool-execution-boundary.md), [ADR-0038](0038-agentrunner-llm-call-boundary.md), [ADR-0050](0050-cli-history-db-at-rest-posture.md), [ADR-0083](0083-input-admission-and-a-resume-that-verifies-its-own-identity.md), [ADR-0093](0093-an-expression-sees-only-what-it-is-ordered-after.md), [ADR-0095](0095-what-an-agent-session-remembers-across-turns.md), [Wave 3](../roadmap/current.md#wave-3--clear-the-ground)
 
@@ -208,3 +208,11 @@ benefit, without weakening raw-value exclusion.
   detection and legacy persisted data are explicitly outside the new guarantee.
 - Low-level embeddings migrate to a required owned projection and template/VM
   consumers. A trusted host's fabricated provenance remains outside the guarantee.
+
+## Maintainer acceptance — 2026-10-16
+
+The maintainer approved this final decision, its linked unshipped canonical
+contracts and the nineteen-increment Wave 3 plan. Earlier proposal wording above
+records the review stage; approval is complete. Implementation, independent
+review gates and canonical promotion remain staged in that plan. Acceptance
+does not claim shipping behaviour, an actual release or production custody setup.

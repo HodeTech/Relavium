@@ -647,8 +647,8 @@ Numeric cost totals are known realized sums. Human totals qualify unverified his
 
 ## Proposed Wave 3 CLI compatibility
 
-**Proposed, unshipped — 2026-10-15.** [ADR-0110](../../decisions/0110-cli-diagnostics-and-discovery-have-explicit-compatibility.md)
-requires maintainer approval. This section owns the proposed exact contract;
+**Approved design, unshipped — 2026-10-16.** [ADR-0110](../../decisions/0110-cli-diagnostics-and-discovery-have-explicit-compatibility.md)
+was approved by the maintainer. This section owns the approved exact contract;
 earlier sections describe current behaviour until implementation landing.
 
 ### Diagnostic policy

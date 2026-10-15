@@ -1106,21 +1106,18 @@ an ESLint selector rather than a list.
 
 ### Wave 3 — Clear the ground
 
-**Revised proposal reviewed; maintainer approval pending — 2026-10-16.**
-[Final rereview readiness and approval scope](phases/phase-2.5.5-hardening-and-remediation.md#second-maintainer-rereview-final-proposal-readiness--2026-10-16)
-records two NEW independent complete cumulative clean reviews at 76065d2d across
-all fourteen proposal paths, four full ADRs and nineteen increments, after every
-material correction. Earlier nonclean/superseded verdicts remain history. The
-source-corrected contracts cover real CLI/native ownership, exact encrypted
-candidate recovery, live Home HTTP narrowing and finite secret-access semantics
-with value/key/absence parity. ADR-0110–0113 remain **Proposed and unshipped**;
-no product code has started. Approval of those ADRs/contracts/plan precedes Step 1.
-Archive method is already selected; actual production recipient/recovery belongs
-to Wave 4b release preparation. No provider capture, key, billing or upload is
-required for this proposal review.
+**Approved for implementation — 2026-10-16.** The maintainer approved
+ADR-0110–0113, their linked unshipped contracts and the nineteen-increment plan.
+The [approval checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-maintainer-approval-and-implementation-checkpoint--2026-10-16)
+records completed decision gates and staged implementation. Step 1 is active;
+no implementation acceptance is claimed. The
+[final proposal reviews](phases/phase-2.5.5-hardening-and-remediation.md#second-maintainer-rereview-final-proposal-readiness--2026-10-16)
+remain proposal evidence, not implementation review. The selected encrypted archive
+method persists; production recipient/recovery belongs to Wave 4b release setup.
+No provider capture, credential, billing or upload is needed for this implementation.
 
 Decompose, guard and normalize every hot file a 2.6 workstream is about to land on.
-**The multi-file queue is Step 1 and runs first.** The proposed
+**The multi-file queue is Step 1 and runs first.** The approved
 [nineteen-increment execution plan](phases/phase-2.5.5-hardening-and-remediation.md#proposed-implementation-increments)
 owns the full order and review gates: finish each increment and its fresh reviews
 before advancing; no parallel edits of shared hot files.
@@ -1145,7 +1142,7 @@ on `home-controller.ts`/`chat-ink.tsx` (the decomposition moves already-guarded 
 - **`home-controller.ts` (strict)** — 2.5.5.E · `selectGatePrompter` test (G37) → the swallowed palette
   rejection (#281) → **2.5.5.I · decompose `createHomeController` + the overlay discriminated union**
   (#215, #243) → 2.5.5.G · the `Capability`/`Port` vocabulary split (#217, #222).
-  Settle #125/D26 before decomposition: the preflight proposes certifying the real
+  Settle #125/D26 before decomposition: the approved preflight certifies the planned scope of the real
   in-Home-chat cost path and retaining chat-only scope. If a new bare-Home cost
   surface is selected, wire its explicit session target before decomposition.
 - **`chat-ink.tsx`** — 1,906 lines at preflight (the original queue recorded 1,795), decomposed by **neither** phase doc.
@@ -1299,10 +1296,10 @@ unanswered**; the remainder sit inline in their own phase-file bullet.
 | D15 | 2 | What masking guarantee does the session fixture (#115) certify? | **Reconciled 2026-10-12:** ADR-0095/0098 supply structural refusal, not universal masking. Certify the actual producer/SQLite/export fixtures and retained-content limits. This repairs the missing Wave 2 decision row; it is unrelated to historical media D15. |
 | D17 | 2 | Book security reviews **by threat class**, not per PR? | **Accepted 2026-10-13:** four new sittings (filesystem, secret input, secrets at rest, config trust), plus W4 hostile-MCP sitting/current regression revalidation. [Closing evidence](phases/phase-2.5.5-hardening-and-remediation.md#wave-2-closing-register--2026-10-13). |
 | D18 | 3 | `chat-ink.tsx` (1,795 lines, in neither doc): decompose or decline? | **Decline** — hand it to 2.6.M's render-v2 in Wave 5a, where the palette sweep then runs once |
-| D19 | 3 | `--quiet`/`--verbose`/`RELAVIUM_DEBUG` precedence | **Proposed ADR-0110:** retain quiet+verbose conflict; either explicit flag overrides exact DEBUG=1. This replaces the earlier recommended precedence ladder; approval pending. JSON remains independent. |
+| D19 | 3 | `--quiet`/`--verbose`/`RELAVIUM_DEBUG` precedence | **Approved ADR-0110, 2026-10-16:** quiet+verbose remains a conflict; either explicit flag overrides exact DEBUG=1. This replaces the old precedence ladder. JSON remains independent; implementation is staged. |
 | D20 | 3 | `--input`'s four-way collision: rename or document? | Rename `models pricing` to `--input-price`/`--output-price`, old spellings deprecated aliases |
-| D22 | 3 | Read EXIT:4 as "no **breaking** change"? | **Proposed ADR-0110:** no unrecorded break; its enumerated compatibility scope replaces the old two-exception recommendation. Reconcile phase exit criterion 4 and E no-new-ADR wording at acceptance, with ADR-0049/0056 forward notes before code. Approval pending. |
-| D26 | 3 | Which session would bare Home's `showCost` target? | **Proposed preflight disposition:** keep `/cost` chat-only; certify both live chat surfaces. Bare Home currently cannot invoke the no-op. Past-session selection remains 2.6.G; no implicit cost release. See the [Wave 3 plan](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-preflight-and-proposed-execution-plan--2026-10-15). |
+| D22 | 3 | Read EXIT:4 as "no **breaking** change"? | **Approved ADR-0110, 2026-10-16:** its enumerated compatibility scope replaces the old two-exception recommendation. Phase exit criterion 4/E wording and ADR-0049/0056 forward notes are reconciled before dependent code. |
+| D26 | 3 | Which session would bare Home's `showCost` target? | **Approved disposition, 2026-10-16:** keep `/cost` chat-only; certify both live chat surfaces. Bare Home currently cannot invoke the no-op. Past-session selection remains 2.6.G; no implicit cost release. See the [Wave 3 plan](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-preflight-and-proposed-execution-plan--2026-10-15). |
 | D28/D29 | 4a | Flip ADR-0058 and ADR-0060 to Accepted | Yes; 0060's taint model is the cited precedent for Wave 7's generation-security ADR |
 | D31 | 4a | Strike 2.6.H's chat-persister atomicity sub-part as a duplicate? | Yes — owned by Wave 1; record the closure |
 | D33 | 4b | Retention policy (the phase's largest single item) | Default bound 50 + `--limit`/`--tail`; ship `chat delete` writing the dead `deleted_at` columns; never auto-hard-delete |

@@ -1,6 +1,6 @@
 # ADR-0112: Chat network grants and onboarding state are operator-owned
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Date**: 2026-10-15
 - **Related**: [ADR-0006](0006-os-keychain-for-api-keys.md), [ADR-0029](0029-tool-policy-hardening.md), [ADR-0033](0033-strict-config-files-amends-0023.md), [ADR-0037](0037-engine-tool-execution-boundary.md), [ADR-0054](0054-cli-bare-invocation-interactive-home.md), [ADR-0055](0055-cli-host-capability-seam-tool-environment-factory.md), [ADR-0057](0057-cli-chat-modes-and-per-tool-approval.md), [ADR-0059](0059-cli-mid-session-model-reseat.md), [ADR-0063](0063-cli-config-write-contract.md), [ADR-0105](0105-filesystem-roots-are-invocation-grants-not-project-authority.md), [ADR-0110](0110-cli-diagnostics-and-discovery-have-explicit-compatibility.md), [Wave 3](../roadmap/current.md#wave-3--clear-the-ground)
 
@@ -175,3 +175,11 @@ These choices do not establish a universal no-project-egress guarantee.
   Final-link refusal applies to every preference writer, including future settings.
 - Symlink writes require manual action or ephemeral continuation. Non-retryable
   diagnostics avoid a wizard loop; comments/order remain a known writer tradeoff.
+
+## Maintainer acceptance — 2026-10-16
+
+The maintainer approved this final decision, its linked unshipped canonical
+contracts and the nineteen-increment Wave 3 plan. Earlier proposal wording above
+records the review stage; approval is complete. Implementation, independent
+review gates and canonical promotion remain staged in that plan. Acceptance
+does not claim shipping behaviour, an actual release or production custody setup.

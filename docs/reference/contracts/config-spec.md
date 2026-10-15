@@ -262,8 +262,8 @@ The workflow and agent files inside `.relavium/` carry their own `schema_version
 
 ## Proposed Wave 3 chat policy and preferences
 
-**Proposed, unshipped — 2026-10-15.** [ADR-0112](../../decisions/0112-chat-network-grants-and-onboarding-state-are-operator-owned.md)
-requires maintainer approval. These additions do not change current schema until
+**Approved design, unshipped — 2026-10-16.** [ADR-0112](../../decisions/0112-chat-network-grants-and-onboarding-state-are-operator-owned.md)
+was approved by the maintainer. These additions do not change current schema until
 implementation landing.
 
 - Global-only `[chat_http].allowed_domains: string[]`, optional, absent/empty deny-all.

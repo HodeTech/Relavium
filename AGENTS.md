@@ -78,8 +78,9 @@ whole Phase 2.5.5/2.6, full M/N production lifecycle, future live provider heade
 and existing approved deferrals remain open in their canonical homes. No Wave 2
 implementation, review, publication, ADR approval, provider capture, credential,
 billing or user-decision gate remains. Next is [Wave 3 — Clear the ground](docs/roadmap/current.md#wave-3--clear-the-ground),
-starting with a fresh document/decision preflight and its serialized multi-file queue.
-Wave 3 implementation has not started in this closure update.
+whose ADR-0110–0113/contracts/nineteen-increment plan were approved on 2026-10-16.
+Its serialized multi-file Step 1 is active on `development`; implementation and
+independent review acceptance remain staged in the canonical roadmap.
 
 See [docs/roadmap/current.md](docs/roadmap/current.md) for live status.
 

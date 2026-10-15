@@ -1241,3 +1241,7 @@ as PR #94 (`ab08209e`). The [merge checkpoint](../roadmap/phases/phase-2.5.5-har
 joins final reviewed source `4cdfe011`, review scopes, execution evidence and preserved
 limits. Earlier pending/unmerged notes are historical; this landing adds no decision,
 future feature, deferral or claim of merge-commit execution.
+
+## Wave 3 decision acceptance — 2026-10-16
+
+> Amended 2026-10-16: [ADR-0110](0110-cli-diagnostics-and-discovery-have-explicit-compatibility.md) is accepted by the maintainer. The invocation shutdown registry preserves actual owner stop/join and run-only health on return and throw paths. The total fatal-process budget is not a receipt deadline or host-safe-close acknowledgement. Sessions keep their existing lifetime/publication failures without fabricated RunDeparture health. ADR-0111 requires a single registry instance in the finite package graph. The approved [execution plan](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#proposed-implementation-increments) owns implementation and review gates; this note does not claim implementation landing.

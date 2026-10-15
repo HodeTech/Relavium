@@ -110,3 +110,7 @@ core decision — the slash registry, the palette, the manifest, and the `--help
   The context-aware footer hint-bar (surfacing `/ for commands` at an empty prompt) plus the palette's own nav
   hints (`↑/↓ · Enter · Esc`) make the keymap discoverable in context, so a separate static-reference command is
   redundant.
+
+## Wave 3 decision acceptance — 2026-10-16
+
+> Amended 2026-10-16: [ADR-0110](0110-cli-diagnostics-and-discovery-have-explicit-compatibility.md) is accepted by the maintainer. The approved framework-free descriptor authority realizes explicit machine-readable help through a separate versioned CLI projection, preserving the strict existing model manifest. Explicit nested command paths and retained flat aliases share stable executor identities; real integration remains staged in Wave 3. The approved [execution plan](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#proposed-implementation-increments) owns implementation and review gates; this note does not claim implementation landing.

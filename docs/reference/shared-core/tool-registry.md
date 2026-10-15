@@ -501,9 +501,9 @@ tool to the catalog never widens what a given node may call. An MCP or media too
 
 ## Proposed Wave 3 HTTP authority and secret provenance
 
-**Proposed, unshipped — 2026-10-15.** [ADR-0112](../../decisions/0112-chat-network-grants-and-onboarding-state-are-operator-owned.md)
+**Approved design, unshipped — 2026-10-16.** [ADR-0112](../../decisions/0112-chat-network-grants-and-onboarding-state-are-operator-owned.md)
 and [ADR-0113](../../decisions/0113-secret-derived-context-keeps-provenance-at-public-sinks.md)
-require maintainer approval.
+were approved by the maintainer. Implementation remains staged in the Wave 3 plan.
 
 HTTP policy compares canonical **hostname**, not URL host-with-port. Reuse the
 shared HTTPS authority parser and one pure DNS normalizer/comparator for both
