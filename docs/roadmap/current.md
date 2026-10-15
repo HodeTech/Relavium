@@ -1,7 +1,7 @@
 # Current state
 
 > Status: Living
-> Last updated: 2026-10-11
+> Last updated: 2026-10-15
 
 - **Related**: [README.md](README.md), [phases/phase-2.5-cli-consolidation.md](phases/phase-2.5-cli-consolidation.md), [phases/phase-2.5.5-hardening-and-remediation.md](phases/phase-2.5.5-hardening-and-remediation.md), [phases/phase-2-cli.md](phases/phase-2-cli.md), [deferred-tasks.md](deferred-tasks.md), [../project-structure.md](../project-structure.md), [../tech-stack.md](../tech-stack.md)
 
@@ -99,16 +99,57 @@ claim. ADR-0087 §1 is outside the denominator. Phase closure does not claim 51 
 implemented items or an empty debt backlog. Phase 2.5.5 and Phase 2.6 remain in progress.
 Earlier dated pending checkpoints in this page and the phase register are historical.
 
-## Next work — Wave 2 — Shut the doors
+<a id="next-work--wave-2--shut-the-doors"></a>
 
-Resume the joint 2.5.5/2.6 [Wave 2 queue](#wave-2--shut-the-doors); this is separate from
-the already merged Phase 2.6.5 W2 liveness wave. Its hostile-MCP transport/config/definition
-work, including G19 and #202, already merged in W4/PR #87. The first remaining change set
-is the **unified filesystem jail** (#36/#39/#235 plus the pulled-forward 2.6.M/N path
-boundaries), followed by secrets/config trust, persistence security and certification
-of the 2.5.5 exit criteria 1–3. Existing decision gates in that queue retain their authority.
-W9 is a historical grouping of harness items and approved deferrals, not a new open wave.
-No Wave 2 code is started by this merge-status update.
+## Wave 2 accepted — Shut the doors
+
+**PR #94 additional corrections implemented — 2026-10-15.** Review of `992e6dab`
+reproduced two High valid-media failures and further host-boundary defects. All four
+repair increments, including the followup finite pin-error capture, are implemented.
+The [additional correction register](phases/phase-2.5.5-hardening-and-remediation.md#pr-94-additional-systematic-review--2026-10-15)
+tracks their scope and checkpoint evidence. [PR #94](https://github.com/HodeTech/Relavium/pull/94)
+owns actual current-source cumulative review, execution and ready/merge status;
+two NEW complete clean rounds after the final fix and actual required gates must
+succeed before merge. The acceptance checkpoints below retain their original scopes.
+Wave 3 follows corrected PR acceptance; no provider, credential or user decision is pending.
+
+**Wave 2's eight steps are accepted on `development`, 2026-10-13.** This existing
+navigation anchor is retained for incoming decision links; implementation is
+complete and publication is separate from merge. The [closing register](phases/phase-2.5.5-hardening-and-remediation.md#wave-2-closing-register--2026-10-13)
+joins all forty item dispositions, four new threat sittings plus W4 revalidation,
+two NEW complete clean cumulative whole-wave review rounds and exact-source author,
+coverage, native Windows/Node-floor and full physical causal evidence.
+
+**PR #94's three maintainer source corrections are accepted — 2026-10-13.**
+Systematic review of `395fbf95` confirmed a runner-level unhandled-error blind spot,
+refusal of valid OpusTags padding and missing nonfinal FLAC block-size consistency.
+All three repairs have permanent regressions and two NEW independent clean complete
+cumulative rounds after each final source correction. The final source rounds at
+`f4ca3c53` cover all 28 correction paths / 72 hunks. The
+[correction register](phases/phase-2.5.5-hardening-and-remediation.md#pr-94-systematic-review-corrections--2026-10-13)
+joins their separate acceptance scopes. Corrected-head full CI, coverage, platform
+results and independently inspected complete controls belong to the
+[PR #94 publication record](https://github.com/HodeTech/Relavium/pull/94) and must
+pass before merge. Earlier green checks retain their original source attribution;
+the original `395fbf95` artifacts do not establish the repaired runner-error
+guarantee. Publication and maintainer review precede merge; Wave 3 remains
+subsequent work.
+
+Completed work covers invocation-authorized filesystem boundaries, bounded secret
+input and bridge diagnostics, faithful-snapshot warnings and structural session
+privacy, export completion, verified bounded media/CAS/native lifecycles, and the
+interim provider-header gate. Exit criteria 1–3 and sub-stream D are signed off.
+M2.5.5-2's I half, full Phase 2.5.5/2.6, M/N production lifecycle, future live headers
+and existing approved residuals remain open. There is no pending ADR approval,
+provider capture, credential, billing or user decision for this wave.
+
+## Next work — Wave 3 — Clear the ground
+
+The next engineering work is [Wave 3 — Clear the ground](#wave-3--clear-the-ground).
+Its serialized multi-file queue starts with shared close handling, safe path
+presentation and exhaustiveness guards, before hot-file decomposition and the
+remaining CLI/process work. Start with current documents/code and its own decision
+preflight; Wave 2 does not silently approve the next wave's unresolved decisions.
 
 ## Historical W7 implementation checkpoints
 
@@ -1039,8 +1080,7 @@ an ESLint selector rather than a list.
 
 ### Wave 2 — Shut the doors
 
-The hostile-MCP holes are closed in W4/PR #87. Complete the unified filesystem jail and the remaining
-secrets/config and persistence-security work, then certify while the reviews are still booked.
+**Accepted on `development`, 2026-10-13; merge remains separate.** The [closing register](phases/phase-2.5.5-hardening-and-remediation.md#wave-2-closing-register--2026-10-13) joins all forty queue IDs and the exit/D sign-off. Hostile-MCP work is reused from W4/PR #87; the remaining filesystem, secrets/config, persistence and media work is complete within its recorded limits. The queue below preserves scope and traceability.
 
 1. ✅ **Completed in W4/PR #87:** 2.5.5.D · project-layer MCP name collision redirecting a global secret
    (G19) and MCP tool-definition poisoning (#202); see the
@@ -1054,17 +1094,18 @@ secrets/config and persistence-security work, then certify while the reviews are
    certify from there in step 6 below; the *work* happens in 2.6.5 alongside `CR-16` (consent before a stdio
    spawn) and `CR-41` (the DNS/redirect SSRF hole), because they are the same code and the same security
    sitting. Splitting them across two phases would book the hostile-MCP reviewer twice.
-3. **The fs jail, ONE reviewed change set** — 2.5.5.D · sensitive-credential floor for `.kube`/`.azure`/gcloud
+3. ✅ **The fs jail, ONE reviewed change set — accepted on `development`, 2026-10-12** — 2.5.5.D · sensitive-credential floor for `.kube`/`.azure`/gcloud
    (#36, #39) → extract `deepestExistingReal` to `packages/shared` (#235) → **2.6.M's `project`-tier
    `extraRoots`** and **2.6.N's fs-floor home-anchoring**, both *pulled forward*. `~/.relavium/tmp/` (G21)
    is resolved under the same general predicate (decision D12) — otherwise `fs.ts` takes two security reviews.
-4. `discoverCatalog` realpath containment (#1); the secrets-layer test pair — OS-keychain bridge (#27) and
+4. `discoverCatalog` realpath containment (#1, accepted in Step 2); the secrets-layer test pair — OS-keychain bridge (#27) and
    `readSecretFromStdin` + stdin cap (#31, #293); secret-typed `run --input` rejection (#25); the unredacted
    workflow-snapshot doc + lint (#30); 2.5.5.B · `scrubSecrets` param-name broadening (#196).
 5. Persistence-security: 2.5.5.C · `assertRelativePath`'s Windows drive-relative form (#113), media-store
-   hardening (#111, #108, #112), media `mimeType` verification (#107, #109, #110), the masking fixture (#115,
-   after decision D15). 2.5.5.A · chat-export redaction (#80, #81, #83, after D14) and `analyzeSecretTaint`'s
-   context sites (G22). 2.5.5.D · `default_headers` (G20, after D13).
+   hardening (#111, #108, #112), media `mimeType` verification (#107, #109, #110), and certification of
+   W7's structural session/tool-content controls (#115, Wave D15). 2.5.5.A · chat-export continuity/slug
+   completion and existing tool-content exclusion (#80, #81, #83, D14), plus `analyzeSecretTaint`'s
+   context sites (G22). 2.5.5.D · the dormant `default_headers` admission/custody gate (G20, D13).
 6. **Certify 2.5.5 exit criteria 1, 2 and 3** + the sub-stream D acceptance sign-off. **Closes M2.5.5-2 (D half).**
 
 > Book **four security-review sittings by threat class** (fs/path-jail · secrets-at-rest · secrets-input ·
@@ -1234,10 +1275,11 @@ unanswered**; the remainder sit inline in their own phase-file bullet.
 | D7 | 0 | Publish v0.1.1 as-is, or supersede with v0.2.0? | v0.2.0 — ADR-0067's Node `>=22` bump is breaking for 0.x |
 | D8 | 1 | Do already-persisted approval previews need a scrub? | ✅ **Ruled 2026-07-30: NO scrub migration.** The recommendation had been "yes, migration 0013, same PR"; the ruling went the other way, so `0013` was left free by this ruling and is now taken by ADR-0074 §4's conservative money columns; the reservation ledger above shifts nothing — `0014` (#101) keeps its number. The forward fix shipped (#91: `previewFor` scrubs the display copy, `unredactedPreview` carries the in-process classification copy), so no NEW row can carry an unscrubbed preview; historical rows in a local `history.db` keep theirs. Recorded here because the shipped state contradicted this table for four days |
 | D10 | 1 | `BudgetExceededError`/`BudgetPauseError`: adopt `.code`? | ✅ **Ruled + executed 2026-07-30: adopt.** Both carry a stable `code` (`budget_exceeded` / `budget_paused`), with exported `isBudgetExceededError` / `isBudgetPauseError` guards — because `instanceof` is unsafe from a surface (the CLI bundles the engine, so two realizations of a class coexist and `instanceof` answers `false` at the boundary that must catch it). Same shape as `isCorruptRunEventError`. Precedes Wave 3's `RelaviumError` migration as required |
-| D12 | 2 | `~/.relavium/tmp/`: `tmp`-specific rule or the general home-anchored predicate? | **General predicate** — a `tmp`-only ruling leaves 2.6.N's real root refused and forces a second `fs.ts` review |
-| D13 | 2 | `default_headers`: keychain-ref indirection vs shape check? | Keychain-ref, shape check as belt-and-suspenders. **Gates work outside this phase** (ADR-0065 §3) |
-| D14 | 2 | chat-export `tool_result`: warn vs redact vs full discipline? | Redact by default + `--include-tool-results`; same reviewer as 2.6.B's write surface |
-| D17 | 2 | Book security reviews **by threat class**, not per PR? | Yes — five sittings; reviewer availability is the wave's critical path |
+| D12 | 2 | `~/.relavium/tmp/`: `tmp`-specific rule or the general home-anchored predicate? | General predicate accepted in [ADR-0105](../decisions/0105-filesystem-roots-are-invocation-grants-not-project-authority.md), with invocation authority and removal of unused tmp provisioning; approved 2026-10-12; implementation accepted in [Step 2](phases/phase-2.5.5-hardening-and-remediation.md#step-2-acceptance--2026-10-12). Full child/scratch lifecycle remains with Phase 2.6.N. |
+| D13 | 2 | `default_headers`: keychain-ref indirection vs shape check? | [ADR-0108](../decisions/0108-provider-headers-stay-gated-until-keychain-custody.md) accepts keychain custody plus an interim nonempty-map refusal. Live header activation remains outside this phase and prohibited pending its custody/migration prerequisites; approved 2026-10-12; interim gate accepted in [Step 7](phases/phase-2.5.5-hardening-and-remediation.md#step-7-acceptance--2026-10-13). |
+| D14 | 2 | chat-export `tool_result`: warn vs redact vs full discipline? | **Reconciled 2026-10-12:** Accepted ADR-0095 requires content-free structure, superseding the old raw-result opt-in recommendation. No `--include-tool-results`. Continuity/slug residuals and retained user text are recorded in the Wave 2 plan. |
+| D15 | 2 | What masking guarantee does the session fixture (#115) certify? | **Reconciled 2026-10-12:** ADR-0095/0098 supply structural refusal, not universal masking. Certify the actual producer/SQLite/export fixtures and retained-content limits. This repairs the missing Wave 2 decision row; it is unrelated to historical media D15. |
+| D17 | 2 | Book security reviews **by threat class**, not per PR? | **Accepted 2026-10-13:** four new sittings (filesystem, secret input, secrets at rest, config trust), plus W4 hostile-MCP sitting/current regression revalidation. [Closing evidence](phases/phase-2.5.5-hardening-and-remediation.md#wave-2-closing-register--2026-10-13). |
 | D18 | 3 | `chat-ink.tsx` (1,795 lines, in neither doc): decompose or decline? | **Decline** — hand it to 2.6.M's render-v2 in Wave 5a, where the palette sweep then runs once |
 | D19 | 3 | `--quiet`/`--verbose`/`RELAVIUM_DEBUG` precedence | `--quiet` < default < `--verbose`; `RELAVIUM_DEBUG=1` an alias, explicit flag wins; `--json` overrides for stream shape |
 | D20 | 3 | `--input`'s four-way collision: rename or document? | Rename `models pricing` to `--input-price`/`--output-price`, old spellings deprecated aliases |
@@ -1284,14 +1326,16 @@ plumbing + inline & async output generation + generative adapters, 1.m6, 1.AD–
 [Phase 1 detail](phases/phase-1-engine-and-llm.md), the [decision index](../decisions/),
 and the [reference specs](../reference/).
 
-> **Live maintainer obligations:** (1) ✅ **done 2026-07-26** — the CI `ci` job is now a **required check**
-> under branch protection on `main` (PR required, force-push/deletion blocked), alongside a `v*` tag ruleset
-> limiting tag creation to maintain/admin; the optional `TURBO_TOKEN`/`TURBO_TEAM` secrets for the
-> cross-runner remote cache are still unset; (2) now that **2.L** has landed (PR #49) and **v0.1.1** has been cut, add the
-> **`NPM_TOKEN`** repo secret + npm 2FA so the tag-triggered `Release CLI` workflow can publish — **still pending
-> for the v0.1.1 tag** (the actual `npm publish` is maintainer-gated,
+> **Repository checkpoint (recorded 2026-07-26; publication status corrected 2026-10-13):**
+> (1) The CI `ci` job became a required check under `main` branch protection, alongside a
+> `v*` tag ruleset limiting tag creation to maintain/admin. The optional `TURBO_TOKEN`/
+> `TURBO_TEAM` secrets for cross-runner remote cache were recorded as unset at that checkpoint;
+> this does not assert their current configuration. (2) The former v0.1.1 publish-pending note
+> was stale: the [npm registry](https://registry.npmjs.org/relavium) records `relavium@0.1.1`
+> published on 2026-06-28. This resolves the package-publication status, without asserting the
+> current `NPM_TOKEN`, npm 2FA or GitHub release-workflow state. The release procedure remains
 > [ADR-0051](../decisions/0051-cli-distribution-thin-bundle-private-engine.md) /
-> [release-a-surface.md](../runbooks/release-a-surface.md)).
+> [release-a-surface.md](../runbooks/release-a-surface.md).
 
 ## What is active now
 

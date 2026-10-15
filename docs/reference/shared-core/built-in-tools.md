@@ -33,7 +33,7 @@ A tool declaration in YAML has a `type` discriminator:
 | `invoke_agent` | Call another agent node in the same workflow by node id, with explicit input. | that agent's output | The dynamic-dispatch mechanism used by orchestrator agents to delegate. |
 | `read_media` | Read a produced/received media asset by its durable `media://sha256-…` handle (**whole handle** — no byte range), so a media-capable model can look at it. | a short **text descriptor** (mime type, byte length, handle) as the `tool_result`; the media itself arrives as a top-level `media` part on a **marked, engine-synthesized `user` message** appended right after it ([ADR-0089](../../decisions/0089-media-correctness-four-boundaries.md) §1) | **Scope-set authz** — the requesting `session`/`workspace` must be in the handle's `allowedScopes` ([ADR-0044](../../decisions/0044-media-access-governance-read-media-save-to-cost.md) §1); knowing a sha256 is **not** authorization; read-only (bypasses the action gate), secret-free `media_scope_denied`. The tool never touches bytes: it authorizes a handle and describes it, and the chain's egress re-materialization resolves the handle per attempt (ADR-0043 §1), so a failover or a resume re-resolves from the canonical handle. The synthesized message carries a fixed engine-authored preamble naming the tool — it must never present as the user's own words. Because the media rides the ordinary media-INPUT rail it is bounded by it: `read_media` **refuses** a video, a PDF (never inline at any size) or an image/audio handle over `INLINE_MEDIA_CEILING`, with a correctable `invalid_args` naming the limit — so the model picks another handle instead of the next request dying on a schema error after the tool has already run. A response's tool calls may deliver at most `ADMISSION_CEILINGS.mediaAttachmentsPerResponse` attachments, refused by the engine before the seam's own per-message cap. All of a response's attachments arrive on **one** synthesized message appended after the FINAL tool result — after every one of them, never interleaved between two — a tool result must stay contiguous with its siblings or the providers reject the turn. And a model that does not accept image input refuses the turn rather than being handed a descriptor for something it never received. *(The delivery path ships as of `W5`/`CR-50`. The host `MediaReadAccess` delegate and the `session`/`workspace` scope population remain unwired in production — see [deferred-tasks.md](../../roadmap/deferred-tasks.md); absent the delegate the tool fails closed with `tool_unavailable`.)* |
 
-> **Mandatory guardrails (security tightenings — [ADR-0029](../../decisions/0029-tool-policy-hardening.md)):** `run_command` only executes commands that **exactly match** the workflow's `allowedCommands` allowlist (opt-in glob via `allowedCommandGlobs`; defined under `spec.tools.allowedCommands` — see [workflow-yaml-spec.md](../contracts/workflow-yaml-spec.md#tool-policy-spectools); empty or absent ⇒ disabled). `http_request` is **HTTPS-only**, matches `allowedDomains` by **exact FQDN** (empty/absent ⇒ disabled), and **blocks private/loopback/link-local/metadata IP ranges** — the same vetted SSRF primitive applied to provider base URLs and MCP server URLs ([security-review.md](../../standards/security-review.md)). And `git_commit` is gated behind human approval in automated workflows. All are enforced by the engine, not by convention. `run_command` is the **only** sandboxed shell-exec built-in — there is no separate `run_javascript` tool (sandboxed JS evaluation is the engine's job for `condition`/`transform` expressions, not a callable tool).
+> **Mandatory guardrails (security tightenings — [ADR-0029](../../decisions/0029-tool-policy-hardening.md)):** `run_command` only executes commands that **exactly match** the workflow's `allowedCommands` allowlist (opt-in glob via `allowedCommandGlobs`; defined under `spec.tools.allowedCommands` — see [workflow-yaml-spec.md](../contracts/workflow-yaml-spec.md#tool-policy-spectools); empty or absent ⇒ disabled). `http_request` is **HTTPS-only**, matches `allowedDomains` by **exact FQDN** (empty/absent ⇒ disabled), and **blocks private/loopback/link-local/metadata IP ranges** — the same vetted SSRF primitive applied to provider base URLs and MCP server URLs ([security-review.md](../../standards/security-review.md)). And `git_commit` is gated behind human approval in automated workflows. All are enforced by the engine, not by convention. `run_command` is the **only** allowlisted shell-exec built-in — there is no separate `run_javascript` tool (sandboxed JS evaluation is the engine's job for `condition`/`transform` expressions, not a callable tool).
 
 > **Return shapes.** The *Returns* column is the **logical** shape. Until a provider-specific normalizer lands, `http_request` / `web_search` / `mcp_call` / `git_status` dispatch the **raw host response** (`EgressResponse` / the MCP tool result / the `git` `ProcessResult`); a downstream `transform` node shapes it. The file tools (`read_file` / `write_file` / `list_directory`) and `run_command` already return the documented shape.
 
@@ -64,17 +64,125 @@ A tool that spawns a process (`run_command`, `git_*`) runs with **`shell: false`
 
 ## Filesystem permission tiers
 
-Every file-touching tool runs under a per-workflow filesystem **scope tier**. The tier is enforced by the desktop's scoped filesystem layer and the Tauri v2 capability system — paths are validated before any syscall (see [../desktop/tauri-plugins.md](../desktop/tauri-plugins.md)).
+File scope is host-enforced. The desktop uses its scoped filesystem layer and Tauri v2 capabilities ([tauri-plugins.md](../desktop/tauri-plugins.md)); its native permission-dialog/capability-grant mechanism is surface-specific. The Node CLI uses the host-owned policy below ([ADR-0105](../../decisions/0105-filesystem-roots-are-invocation-grants-not-project-authority.md)). A committed path declaration alone never authorizes CLI access.
 
-| Tier | Default for | What the agent may touch | How it is granted |
-| --- | --- | --- | --- |
-| **Sandboxed** | untrusted workflows (default) | the current workspace directory and `~/.relavium/tmp/` only | implicit; no prompt |
-| **Project-scoped** | workflows that declare an expanded scope | an explicit path allowlist declared in the workflow | user approves on first run via a native permission dialog |
-| **Full access** | power users, per workflow | unrestricted filesystem | granted in the UI; stored as a capability grant in the project config |
+| CLI tier/surface | Effective roots |
+| --- | --- |
+| Sandboxed chat | workspace only |
+| Project chat | workspace plus invocation-authorized selected roots |
+| Full chat | clamped to project |
+| Workflow full | retains author-trusted full-tier behavior |
 
-The active tier is set in project config (see [../contracts/config-spec.md](../contracts/config-spec.md), `fs_scope`) and can be tightened per workflow. The shell allowlist for `run_command` (`spec.tools.allowedCommands` in the workflow — see [workflow-yaml-spec.md](../contracts/workflow-yaml-spec.md#tool-policy-spectools)) is independent of the FS tier — a workflow can be sandboxed *and* still have an empty command allowlist.
+A valid host-issued scratch descriptor conditionally adds only its exact subtree in sandboxed/project tiers. Exact [argv grants](../cli/commands.md#global-options) and [TOML selectors](../contracts/config-spec.md#chat-filesystem-root-selectors) have their own canonical homes. Workflow `run` does not consume chat roots.
 
-> **CLI host ([ADR-0055](../../decisions/0055-cli-host-capability-seam-tool-environment-factory.md) / [ADR-0057](../../decisions/0057-cli-chat-modes-and-per-tool-approval.md)) posture:** the Node `fs` capability backing the CLI surfaces enforces the tier with a `realpath` + `commonpath` jail (a `..` traversal or a symlinked component/ancestor that escapes the tier is a **fatal `tool_denied`**, never retried). Until a media store is wired into that arm, `read_file` **fail-closes** on a binary/media file (a clear `tool_failed`) rather than returning a durable handle or inline base64 — the durable-handle path (ADR-0031) is a tracked follow-up. Since 2.5.E the `relavium chat` default profile is the **full-capability `chat-read-write`** host — `write_file` / `egress` / `os` ARE wired, but a governed dispatch is gated by the **per-tool approval floor**, not capability absence: the default read-only `ask` mode **denies** them (as `tool_denied`, not `tool_unavailable`); a protected path (`.git/` / `.relavium/` / `.ssh/` / shell-rc) is refused in every mode. A separate **read-side confidentiality floor** additionally refuses to READ a credential/secret store into the model context — `.ssh/` / `.relavium/` / `.aws/` / `.env/` directories, `.env` / `.env.*` dotenv files, `.docker/config.json`, a repo `.git/config` (+ git's XDG `credentials`), and the credential dotfiles (`.gitconfig` / `.git-credentials` / `.netrc` / `.npmrc` / `.pypirc` / `.pgpass` / `.envrc` / `.dockercfg`) — checked on the realpath'd target, in every mode/tier, regardless of `.gitignore`. The `.env` / `.aws` / `.docker/config.json` / `.envrc` (direnv) / `.dockercfg` members were added by 2.5.D ([ADR-0061](../../decisions/0061-cli-input-layer-file-injection-and-shell-escape.md)) and strengthen `read_file` on **every** surface; the CLI `@`-mention read (2.5.D) shares this exact floor (a user typing `@path` replaces the approval prompt, never the floor). The factory does not yet pass an `extraRoots` allowlist, so the **Project-scoped** tier behaves as **workspace-only** here (it can only narrow the jail, never open a hole — `project` == `sandboxed`-minus-tmp); the path-allowlist is a tracked follow-up ([deferred-tasks.md](../../roadmap/deferred-tasks.md)). For the chat surface a declared **Full access** tier is **clamped to Project-scoped** — an unjailed read could exfiltrate `~/.ssh` / `~/.aws/credentials` back to the model, a risk a write-capable chat shares — so it clamps too; `full` stays intact only for the author-trusted workflow-run profile.
+### CLI authority and floors
+
+The CLI owns an immutable, process-local policy with pinned lexical/canonical directory identities, rechecked at each capability operation. Read/list/glob, mention/completion, discovery and write boundaries check lexical provenance and canonical targets; recursive enumeration prunes denied directories **before descent**. An ordinary extra-root grant never overrides confidentiality or protected-write floors, including full tier and auto mode.
+
+Synchronous root admission uses native canonical resolution, matching asynchronous file operations. Windows short-name and long-name spellings must resolve to the same canonical authority; lexical spellings remain separately pinned for provenance and confidentiality checks. Native path membership alone cannot equate two unresolved aliases.
+
+Raw UNC tool paths refuse before asynchronous path resolution, enumeration or byte I/O,
+including literal and wildcard globs before separator normalization. On Windows the
+equivalent forward-slash and mixed-separator UNC prefixes also refuse; this does not
+change POSIX double-slash absolute-path semantics. A full tier does not bypass this floor.
+
+The read floor refuses `.ssh/`, `.relavium/`, `.aws/`, `.env/`, `.kube/`, `.azure/`, `.terraform.d/`, `gcloud/` and `legacy_credentials/`; dotenv files `.env`/`.env.*`; `.docker/config.json`; repository `.git/config` / `.git/config.worktree` (including linked worktrees and bare `*.git` repositories) and git's XDG `credentials`; and credential basenames `.gitconfig`, `.git-credentials`, `.netrc`, `.npmrc`, `.pypirc`, `.pgpass`, `.envrc`, `.dockercfg`, `application_default_credentials.json`, `credentials.tfrc.json`, `.terraformrc` and `terraform.rc`. The write floor inherits the entire sensitive-read credential set above and additionally refuses whole `.git/` directories and shell-startup files; `.relavium/` and `.ssh/` are already included in that inherited set. Components are folded for Windows case, trailing dot/space and alternate-stream aliases. The shared [declared-env predicate](../../../packages/shared/src/declared-env.ts) refuses credential/config redirects for subprocesses; it is not a filesystem grant.
+
+Chat uses the full-capability `chat-read-write` host with writes/egress/os gated by the per-tool approval floor: default ask denies governed actions. Credential/protected-path refusals remain mode-independent. `read_file` still fails closed on binary/media until its durable-handle host path is wired. Existing tool-fs bounded fd reads and hard-link controls remain, including the scoped [pnpm virtual-store read residual](../../roadmap/deferred-tasks.md). That exemption does not apply to CAS.
+
+Permitted extra-root results remain usable as workspace-relative paths retaining necessary `..`, or canonical absolute paths when a relative representation is impossible across Windows drives. Glob reads accept literal paths as well as `*`, `?` and `**` patterns: the parent prefix before the first metacharacter, or the parent directory of a literal path, is admitted under the same roots and floors. Absolute and workspace-relative paths into selected extra roots obey the same authority. Directory entry names are relative to the requested directory; mention/completion consumers do not anchor them twice. Renderers still treat returned text as untrusted.
+
+### Shared ancestor resolution
+
+`deepestExistingReal(startDir, ops)` in `@relavium/shared` is platform-free. Its injected operations are asynchronous `realpath(path)` and `lstat(path)` (returning `isDirectory()`), `dirname(path)`, and `isMissing(error)`. It climbs only when both canonical resolution and lexical inspection prove an entry missing. Permission failures, EACCES/ELOOP/ENOTDIR, non-directories and existing dangling links refuse with a content-free error. The consumer owns containment and permissions.
+
+CLI tool fs and native `save_to` reuse this algorithm without sharing authority: trusted persistence may write `.relavium/runs`, model tools cannot. `save_to` rejects all Windows drive prefixes, including `C:relative`, before I/O, alongside absolute/UNC/traversal paths.
+
+### Host-issued scratch
+
+The host-only `issueHostScratchRoot({ homeDir, rootDir })` factory issues an opaque descriptor for one exact, existing private subtree beneath the trusted home `.relavium` anchor; `createFsPathPolicy({ workspaceDir, extraRoots?, scratch? })` accepts that descriptor. String paths, TOML and tool arguments cannot construct the authority. `assembleToolEnv({ fsPolicy, scratch })` composes the descriptor with an already admitted policy while retaining its original workspace, selected-root and invocation-grant pins. Reattaching the same descriptor is idempotent; forged or conflicting descriptors refuse. At the filesystem-capability factory an opaque `pathPolicy` takes precedence over string `extraRoots`; those strings do not add to its authority. Host construction performs native pinning I/O; the engine remains platform-free.
+
+Both lexical and canonical containment must hold. Anchor/root identities are pinned and rechecked; anchor/root and descendant directories require owner-only POSIX modes and ownership, and symlink descendants refuse. The descriptor exempts only the ancestor `.relavium` component for accesses inside that exact subtree. Home config/history, every project `.relavium`, siblings/prefixes and nested secret/protected components remain denied. Windows retains the owner-controlled profile/ACL assumption; POSIX-bit checks do not verify Windows ACLs.
+
+Synthetic tmp/artifact descriptor tests establish this prerequisite only. Automatic global tmp provisioning is removed without deleting existing directories; ordinary chat has no production allocator. [Phase 2.6.N](../../roadmap/phases/phase-2.6-conversational-authoring.md#26n--child-session-foundation-catalog-spawn-standardized-io-lineage) still owns production provisioning, per-parent isolation, join, cleanup and recovery.
+
+### Physical media storage and limits
+
+The filesystem CAS pins its canonical root on the first admitted operation; reads/GC do not create an unused store, and later absence/replacement/retargeting revokes access. Shards/final descendants cannot be symlinks; files must be regular without extra hard links, with exclusive no-follow temporary ownership, one-fd read identity checks, atomic publication and the same physical containment checked for read, delete and GC. CAS has no pnpm exemption. Handle/port semantics live in the [MediaStore reference](llm-provider-seam.md).
+
+An opened CAS read descriptor may become unlinked when a cooperating publisher atomically republishes the same handle. Reads validate the current root/shard/final-entry floor independently, retain the one opened regular descriptor (at most one remaining link), and verify its bytes against the requested hash before delivery. They do not require the final pathname to retain that descriptor's inode. Temporary ownership and destructive operations retain their stricter identity checks.
+
+CAS deletion is idempotent when a cooperating process has already removed the admitted blob. Only the missing-file unlink outcome qualifies; the pinned root/shard authority is rechecked, and unsafe paths or other I/O failures still refuse. This does not weaken temporary-file cleanup ownership or claim atomic coordination between reference updates and garbage collection.
+
+A pathname stat can itself observe the just-detached regular inode with zero links during concurrent replacement. Non-owning read and publication admission accept that snapshot; temporary ownership, deletion and GC still require one link. On Windows, if native replacement refuses with `EPERM` or `EBUSY`, a publisher performs one independent opened-file/hash verification of the existing winner. Only a valid matching blob satisfies the put; its unpublished owned temp is cleaned up. Missing, corrupt or physically unsafe winners refuse. There is no rename retry or weaker ownership check. A fixture that the OS prevents from replacing an open file proves native refusal, rather than claiming that replacement occurred.
+
+These are owner-controlled storage/cooperating-host controls. Neither pre/post realpath nor final `O_NOFOLLOW` makes parent-directory swaps race-free or supplies a descriptor-relative jail against a hostile same-user process. Windows file-tool reads explicitly refuse an already-planted final symlink before open; Node's ignored Windows `O_NOFOLLOW` supplies no syscall-race guarantee. Native path membership accepts Windows case aliases while refusing sibling and cross-drive escapes. Filesystem grants do not constrain arbitrary subprocess arguments or provide an OS sandbox. Command allowlisting remains independent of file-tool scope.
+
+[ADR-0106](../../decisions/0106-media-publication-requires-bounded-verified-bytes.md) adds independent
+store bounds and byte admission. The exact supported format profiles, errors and host API are in the
+[media publication contract](llm-provider-seam.md#bounded-verified-media-publication-adr-0106).
+`get`, `readRange` and `resolveForEgress` check the actual opened regular fd against the **25 MiB**
+object ceiling before allocation and cumulatively during reads, including old-layout blobs and tiny
+range requests. Oversized legacy bytes refuse without automatic deletion. `validateMedia` instead
+uses an incremental hash/format/count scan without whole-object `get` or base64 materialization.
+Both reference stores check range pre-abort and cancellation before delivery; filesystem operations
+join their owned fd close and remove listeners. `readRange` still has whole-object backing under
+CR-53; this is bounded cancellable delivery, not streaming range delivery. Windows replacement
+contention verifies the existing winner through the bounded scanner rather than `get`.
+
+New producers use exclusive owner-private `media-v1.<PID>.<UUID-v4>.tmp` files inside the pinned
+root. Automatic `sweepTemporaries({ now? })` has a separate **24-hour** minimum age and requires
+the producer PID to be proven absent. A live/reused PID, uncertain/permission-denied probe,
+future timestamp, malformed candidate or unsafe entry is retained. An atomic claim preserves
+original file identity and producer/claimant nonces. Destructive ownership requires one link;
+dead claimant recovery recognizes pre/post-move and post-unlink states without recursive deletion
+or stealing live claims. Recovery itself uses an exclusive claimant marker. Producer and offline
+maintenance handshakes prevent a new writer from starting inside maintenance. This protocol is
+local-device cooperating storage, not a distributed lease or hostile same-user jail.
+
+Marker acquisition retains its captured descriptor identity through joined native close and
+post-close ownership admission. A caught acquisition failure removes only its original known
+regular one-link marker under the original pinned root; recovery additionally requires the exact
+original claim-directory identity. Failed recovery acquisition leaves the claim directory for a
+later normal sweep, so claim removal is counted only by successful directory cleanup. Unknown
+identity, a replaced entry or revoked root is retained. Secondary cleanup failure cannot replace
+the fixed primary acquisition error or expose native diagnostics.
+
+New `media-claim-v2` records encode native bigint device/inode identities as bounded
+canonical unsigned 64-bit tokens. Claim creation, post-move admission and final recovery
+revalidation compare these exact identities without a Number conversion. Existing v1
+claims retain their safe-integer/canonical validation; an ambiguous unsafe historical
+token is retained, never promoted to deletion authority. Producer, maintenance and
+recovery-marker layouts are unchanged. This targeted identity check supplements the
+existing cooperative root/path floor; it does not upgrade that floor to a hostile-parent jail.
+
+`pruneLegacyTemporaries({ legacyOffline: true, force: true })` requires **both** strict boolean
+acknowledgements before mutation. It refuses the entire maintenance operation before any legacy
+deletion if a new producer is live or uncertain. It admits only the two historical ownerless
+grammars: root `stream.<UUID>.tmp` and one two-hex shard containing `<62-lowercase-hex>.<UUID>.tmp`.
+Other suffix matches, symlinks and special entries do not acquire authority. An unrecognized
+`media-maintenance-` prefix is not an unrelated stray: producer admission refuses it with
+`maintenance_active`, offline maintenance refuses it with `owner_unknown`, and normal sweeping
+retains it as `malformed`. An unknown owner or future protocol never acquires automatic deletion
+authority. The flags acknowledge that old binaries, which have no producer records, are stopped. The
+[CLI maintenance command](../cli/commands.md#relavium-media-prune-temporaries) fixes the global CAS
+destination; absence reports zero without provisioning it or opening config/history/key services.
+Normal temporary sweeping is independent of published-object reference GC and active run filters.
+
+Both maintenance methods return `{ removed, retained, reasons }`, counting a claim plus its blob
+as one candidate. For concurrent dead-claim recovery, the successful final claim-directory
+removal accounts for that candidate, even when that recovery first retained a live peer's
+marker and the peer subsequently removed the blob. After identity-checked removal of its
+own marker, a losing recovery treats the peer's directory removal as contention rather than
+I/O failure. Earlier marker/identity admission, pinned-root revocation and non-missing I/O
+errors retain their refusal semantics. Retained reason counts sum to `retained`. Fixed reasons are `too_young`,
+`future_timestamp`, `owner_live`, `owner_unknown`, `claimant_live`, `claimant_unknown`, `malformed`,
+`unsafe_entry`, `identity_changed`, `legacy_offline_required`, `io`.
+Arbitrary unrelated strays and published blobs are not candidates. `MediaTemporaryMaintenanceError`
+has fixed `flags_required`, `producer_active`, `owner_unknown` or `maintenance_active` reasons;
+physical root failures remain `MediaStoreFilesystemError`. No path, bytes or native error detail
+is added to the public report. Step 6's cumulative review and native-platform gates separately
+certify these mechanisms; this description does not infer Windows execution from portable tests.
 
 ## Where tools run
 

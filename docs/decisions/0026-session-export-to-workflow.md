@@ -83,3 +83,33 @@ The approved W7 implementation and scoped independent reviews are complete. Fina
 acceptance, per-item causal evidence, canonical landing checks and approved residuals are joined in
 the [W7 closing register](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w7-closing-register--2026-10-10).
 This dated note preserves the earlier decision and status history; W8 and the phase remain open.
+
+### Wave 2 export refinement — 2026-10-12
+
+The approved Wave 2 plan refines title-derived scaffold identifiers with deterministic
+ASCII normalisation and a bounded session-identity fallback, and adds a value-free
+continuity/review notice on both CLI export surfaces. The exact mapping and retained
+content limits live in [the session contract](../reference/contracts/agent-session-spec.md#export-to-workflow);
+[CLI commands](../reference/cli/commands.md#relavium-chat-export) owns output behaviour.
+This does not reconstruct omitted working context, alter the archive or add raw tool
+content. Implementation is staged in Step 5; independent acceptance remains required.
+
+### Wave 2 live notice delivery correction — 2026-10-12
+
+The second implementation review reproduced a live export warning written to raw
+stderr but absent from the actual full-screen transcript and Ink frames. Live
+exports now use the existing interactive-aware notice channel shared by standalone
+chat and Home; plain/JSON drivers and the standalone export command retain stderr.
+The [CLI output contract](../reference/cli/commands.md#relavium-chat-export) owns
+the exact delivery behaviour. A real renderer regression and independent routing
+removal control are required; this correction does not itself record acceptance.
+
+
+### Wave 2 implementation landing — 2026-10-13
+
+The applicable Wave 2 implementation is accepted on `development`. The
+[closing register](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-2-closing-register--2026-10-13)
+joins the per-item disposition, two NEW clean complete whole-wave review rounds,
+security sittings, exact-source gates and preserved limits. Earlier dated pending
+checkpoints remain historical. This landing does not claim a merge, future header
+activation, full M/N lifecycle or removal of approved residuals.

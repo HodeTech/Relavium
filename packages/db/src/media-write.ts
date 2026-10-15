@@ -2,7 +2,12 @@ import { randomUUID } from 'node:crypto';
 import { lstat, mkdir, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
 
-import type { AbortSignalLike, MediaWritePort, MediaWriteResult } from '@relavium/shared';
+import {
+  deepestExistingReal,
+  type AbortSignalLike,
+  type MediaWritePort,
+  type MediaWriteResult,
+} from '@relavium/shared';
 
 /**
  * `createFilesystemMediaWrite` (1.AF/D16, [ADR-0044](../../../docs/decisions/0044-media-access-governance-read-media-save-to-cost.md)
@@ -76,7 +81,15 @@ async function writeJailedUnsafe(
   // symlinked ancestor pointing outside the root is caught before we create or write anything there.
   // (A `mkdir(recursive)` through a not-yet-checked symlinked ancestor could create stray empty dirs
   // outside the root, but the post-mkdir realpath re-check below throws before ANY byte is written.)
-  assertWithinRoot(realRoot, await deepestExistingReal(targetDir));
+  assertWithinRoot(
+    realRoot,
+    await deepestExistingReal(targetDir, {
+      realpath,
+      lstat,
+      dirname,
+      isMissing: (error) => errnoCode(error) === 'ENOENT',
+    }),
+  );
   throwIfAborted(signal);
   await mkdir(targetDir, { recursive: true });
   // The parent now exists — re-resolve it and re-check (tightens the window between the ancestor check
@@ -116,7 +129,7 @@ function assertRelativePath(relativePath: string): void {
   if (
     isAbsolute(relativePath) ||
     relativePath.startsWith('\\') || // leading backslash / UNC (`\\server\share`)
-    /^[A-Za-z]:[\\/]/.test(relativePath) // Windows drive (`C:\` / `C:/`) — isAbsolute misses it on POSIX
+    /^[A-Za-z]:/.test(relativePath) // Also refuse drive-relative C:relative on every platform.
   ) {
     throw new MediaWriteError('save_to: the resolved path must be relative');
   }
@@ -132,23 +145,6 @@ function assertWithinRoot(realRoot: string, target: string): void {
   const prefix = realRoot.endsWith(sep) ? realRoot : realRoot + sep;
   if (target !== realRoot && !target.startsWith(prefix)) {
     throw new MediaWriteError('save_to: the resolved path escapes the scope root');
-  }
-}
-
-/** Resolve the deepest existing ancestor of `startDir` through `realpath` (walking up past missing dirs). */
-async function deepestExistingReal(startDir: string): Promise<string> {
-  let dir = startDir;
-  for (;;) {
-    try {
-      return await realpath(dir);
-    } catch {
-      const parent = dirname(dir);
-      if (parent === dir) {
-        // Unreachable in practice: the scope root exists, and the target is lexically within it.
-        throw new MediaWriteError('save_to: no existing ancestor directory could be resolved');
-      }
-      dir = parent;
-    }
   }
 }
 

@@ -306,6 +306,13 @@ function stubMediaStore(): MediaStore {
       puts.push({ handle, bytes });
       return Promise.resolve(handle);
     },
+    // Engine lifecycle fixture: actual count comes from the stub's stored bytes. Native format,
+    // digest and SQLite admission are covered by media-publication.e2e.test.ts in the CLI host.
+    validateMedia: (handle, descriptor) => {
+      const found = puts.find((p) => p.handle === handle);
+      if (found === undefined) return Promise.reject(new Error('no stored media'));
+      return Promise.resolve({ ...descriptor, handle, byteLength: found.bytes.byteLength });
+    },
     get: (handle) => {
       const found = puts.find((p) => p.handle === handle);
       return found === undefined
@@ -1870,6 +1877,7 @@ workflow:
   it('async media job: a cancel of a parked job fires the terminal media sweep (#reclaimRunMedia, ADR-0045 §4)', async () => {
     const reclaims: string[] = [];
     const mediaReferences: MediaReferencePort = {
+      admitProducedMedia: () => undefined,
       recordRunMedia: () => undefined,
       reclaimRun: (runId) => {
         reclaims.push(runId);

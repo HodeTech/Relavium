@@ -214,3 +214,69 @@ describe('resolveInputs', () => {
     }
   });
 });
+
+describe('first-run secret input provenance (ADR-0107)', () => {
+  const wf = workflowWithInputs(`  inputs:
+    - { name: first, type: secret, required: true }
+    - { name: second, type: secret }
+    - { name: count, type: number }`);
+
+  it.each(['', 'opaqueArgumentValue'])(
+    'refuses every explicitly supplied argv secret before the required loop: %j',
+    (value) => {
+      expect(
+        () => resolveInputs(wf, { second: value }),
+        'SECRETS_CAUSAL_ARGV_SECRET_REFUSAL',
+      ).toThrow('secret inputs cannot be supplied with --input; use --secret-inputs-stdin.');
+    },
+  );
+
+  it('gives a required-secret remedy and keeps optional omissions absent', () => {
+    expect(() => resolveInputs(wf, {})).toThrow('--secret-inputs-stdin');
+    const result = resolveInputs(wf, { count: '-2' }, { first: '  opaque=value  ' });
+    expect(result).toEqual({ first: '  opaque=value  ', count: -2 });
+    expect(Object.hasOwn(result, 'second')).toBe(false);
+    expect(Object.getPrototypeOf(result)).toBeNull();
+  });
+
+  it('merges only own declared prototype-like secrets into a fresh map', () => {
+    const proto = workflowWithInputs(`  inputs:
+    - { name: __proto__, type: secret, required: true }
+    - { name: constructor, type: secret }
+    - { name: toString, type: secret }`);
+    expect(() => resolveInputs(proto, {})).toThrow('missing required secret');
+    const source = parseInputArgs(['__proto__=opaque', 'constructor=c', 'toString=t']);
+    const result = resolveInputs(proto, {}, source);
+    source['__proto__'] = 'changed';
+    expect(result).toEqual({ ['__proto__']: 'opaque', constructor: 'c', toString: 't' });
+    expect(Object.getPrototypeOf(result)).toBeNull();
+  });
+
+  it.each([{ opaqueName: 'v' }, { count: 'v' }, { first: '   ' }])(
+    'refuses unknown/nonsecret/blank stdin entries without reflecting them: case %#',
+    (secret) => {
+      expect(() => resolveInputs(wf, {}, secret)).toThrow();
+    },
+  );
+
+  it.each([
+    () => parseInputArgs(['opaqueArgumentValue']),
+    () => parseInputArgs(['=opaqueArgumentValue']),
+    () => parseInputArgs(['opaqueArgumentValue=a', 'opaqueArgumentValue=b']),
+    () => resolveInputs(TYPED_INPUTS, { opaqueArgumentValue: 'x' }),
+    () => resolveInputs(TYPED_INPUTS, { count: 'opaqueArgumentValue', needed: 'x' }),
+  ])('never reflects raw input names or values in diagnostics: case %#', (invoke) => {
+    let caught: unknown;
+    try {
+      invoke();
+    } catch (error) {
+      caught = error;
+    }
+    expect(isCliError(caught)).toBe(true);
+    if (!isCliError(caught)) return;
+    expect(caught.message, 'SECRETS_CAUSAL_INPUT_DIAGNOSTIC_OPACITY').not.toContain(
+      'opaqueArgumentValue',
+    );
+    expect(caught.cause).toBeUndefined();
+  });
+});

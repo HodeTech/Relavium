@@ -9,6 +9,7 @@ import {
   serializeAuthored,
   writeAuthoredFile,
 } from '../authoring/authoring.js';
+import { warnSnapshotLiterals } from '../authoring/snapshot-notice.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
@@ -57,6 +58,7 @@ export function importCommand(args: ImportCommandArgs, deps: ImportCommandDeps):
   const target = catalogPath(projectConfigDir, parsed.kind, parsed.slug);
   const rel = relative(cwd, target);
   writeAuthoredFile(target, rel, serializeAuthored(parsed), args.force);
+  warnSnapshotLiterals(parsed.definition, deps.io);
 
   if (deps.global.json) {
     deps.io.writeOut(`${stringifyJsonLine({ id: parsed.slug, kind: parsed.kind, path: rel })}\n`);

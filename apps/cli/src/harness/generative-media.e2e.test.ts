@@ -45,7 +45,13 @@ workflow:
     - { from: paint, to: save }
 `;
 
-const PNG_BYTES = new Uint8Array([0x89, 0x50, 0x4e, 0x47]); // a stand-in "PNG" payload (sha256-addressed)
+// Complete independent 1x1 RGB PNG: IHDR, zlib-compressed red pixel IDAT, IEND and CRCs.
+const PNG_BYTES = Uint8Array.from(
+  Buffer.from(
+    '89504e470d0a1a0a0000000d4948445200000001000000010802000000907753de0000000c49444154789c63f8cfc0000003010100c9fe92ef0000000049454e44ae426082',
+    'hex',
+  ),
+);
 
 /** A provider flagged generative whose generateMedia returns a base64 image (no network); generate/stream throw. */
 function generativeProvider(): LlmProvider {

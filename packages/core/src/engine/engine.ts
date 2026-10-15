@@ -42,8 +42,8 @@ import {
   RETRYABLE_ERROR_CODES,
   RunEventSchema,
   collectDurableMediaHandles,
-  countUnpinnedMedia,
-  containsDurableUnsafeMedia,
+  collectMediaForAdmission,
+  MediaAdmissionError,
   deInlineMedia,
   type DurableMediaMeta,
   type ExecutionMode,
@@ -52,6 +52,7 @@ import {
   type MaskedSecret,
   type MediaBilledModality,
   type MediaEgressHooks,
+  type HostMediaRequest,
   type NodeSkippedReason,
   RUN_LEASE_HEARTBEAT_MS,
   RUN_LEASE_TTL_MS,
@@ -980,19 +981,18 @@ class RunExecution {
    * `transform` can fabricate a url media part, and so can an MCP tool result, which ADR-0088 treats as
    * hostile outright. So the count is refused up front rather than discovered as egress.
    *
-   * With no `MediaStore` the value is returned unchanged and the emit choke point makes the refusal one
-   * step later — duplicating that check here would only change WHICH error a media-bearing run without a
-   * store reports. **With a store wired this IS the I3 gate**, simply running earlier than it used to: the
+   * Every media occurrence requires independent byte evidence, including existing handles. With no
+   * store, media refuses here before it can enter workflow state or a `save_to` write. This is the I3 gate:
    * full `deInlineMedia` hard-fails on a raw buffer, a loose base64 source, an unknown source kind, an
    * unknown mimeType, and a url with no streaming hook. An earlier draft of this comment called it "not a
    * second I3 gate", which read as "this cannot fail" — and the ordering of its failure is exactly what
    * had to be got right.
    *
-   * The overwhelmingly common case is a text output, which pays `deInlineMedia`'s cheap scan and returns
-   * the same reference.
+   * Text-only output still returns an owned graph, so caller mutation cannot introduce media while
+   * publication is awaiting a host operation.
    */
   async #pinMediaOutput(outcome: NodeOutcome, nodeId: string): Promise<NodeOutcome> {
-    if (outcome.kind !== 'completed') {
+    if (outcome.kind !== 'completed' && outcome.kind !== 'branch') {
       return outcome;
     }
     return { ...outcome, output: await this.#pinMediaValue(outcome.output, nodeId) };
@@ -1004,36 +1004,42 @@ class RunExecution {
    * the one route into `#states` that does not pass through `#settleCompleted`.
    */
   async #pinMediaValue(value: unknown, nodeId: string): Promise<unknown> {
-    const store = this.#host.mediaStore;
-    if (store === undefined) {
-      return value;
-    }
-    const unpinned = countUnpinnedMedia(value);
-    if (unpinned > ADMISSION_CEILINGS.mediaPartsPerNodeOutput) {
-      throw new NodeMediaPinError(
-        `node \`${nodeId}\` produced ${unpinned} media parts to re-host, over its limit of ${ADMISSION_CEILINGS.mediaPartsPerNodeOutput}`,
-        'validation',
-      );
-    }
-    // The RUN-level backstop. The per-node ceiling bounds one output; a 50-wide `fan_out` at 32 parts each
-    // is ~1,600 fetches in one graph layer, which is the multiplication ADR-0086 §4 exists to catch.
-    if (this.#pinnedMediaParts + unpinned > ADMISSION_CEILINGS.mediaPartsPerRun) {
-      throw new NodeMediaPinError(
-        `this run has re-hosted ${this.#pinnedMediaParts} media parts and node \`${nodeId}\` adds ${unpinned}, over the run limit of ${ADMISSION_CEILINGS.mediaPartsPerRun}`,
-        'validation',
-      );
-    }
-    this.#pinnedMediaParts += unpinned;
     try {
-      return await deInlineMedia(value, store, this.#mediaEgress());
+      const pinned = await deInlineMedia(
+        value,
+        this.#host.mediaStore,
+        this.#mediaEgress(),
+        (unpinned) => this.#reserveMediaParts(unpinned, nodeId),
+      );
+      await this.#admitMediaValue(pinned);
+      return pinned;
     } catch (error) {
-      // Classified HERE, where the cause is still legible. Left to escape, it reached `#onOutcome`'s bare
-      // catch and became `the engine failed while settling a node` with NO `node:failed` at all — an
-      // ordinary provider-CDN hiccup reported as an engine defect, on what is now the happy path of every
-      // Gemini video generation. The three distinctions the user needs already exist one layer down; this
-      // keeps them, and keeps the url itself out of the message (I3).
+      // Keep egress, validation and cancellation classification without publishing source details.
       throw NodeMediaPinError.from(error, nodeId, this.#abort.signal.aborted);
     }
+  }
+
+  /** The shared snapshot owns the counted graph before this callback runs, with no preceding await. */
+  #reserveMediaParts(unpinned: number, nodeId: string): void {
+    // The RUN-level backstop. The per-node ceiling bounds one output; a 50-wide `fan_out` at 32 parts each
+    // is ~1,600 fetches in one graph layer, which is the multiplication ADR-0086 §4 exists to catch.
+    if (
+      unpinned > ADMISSION_CEILINGS.mediaPartsPerNodeOutput ||
+      this.#pinnedMediaParts + unpinned > ADMISSION_CEILINGS.mediaPartsPerRun
+    )
+      throw NodeMediaPinError.partsExceeded(nodeId, unpinned, this.#pinnedMediaParts);
+    this.#pinnedMediaParts += unpinned;
+  }
+
+  /** Required pre-publication metadata admission, separate from post-ACK best-effort retention. */
+  async #admitMediaValue(value: unknown): Promise<void> {
+    const batch = collectMediaForAdmission(value);
+    if (batch.length === 0) return;
+    const port = this.#host.mediaReferences;
+    if (port === undefined) return; // a byte-verified volatile embedding need not retain SQLite metadata
+    if (typeof port.admitProducedMedia !== 'function')
+      throw new MediaAdmissionError('store_contract');
+    await port.admitProducedMedia(batch);
   }
 
   // --- lifecycle ------------------------------------------------------------------------------
@@ -3150,8 +3156,9 @@ class RunExecution {
       // catch-all below it became `internal` / "the node handler threw an unexpected error", which is the
       // wrong shape twice over: a provider CDN hiccup is not an engine defect, and a transient failure
       // reported as non-retryable never gets the retry it deserves.
-      if (error instanceof NodeMediaPinError) {
-        return { kind: 'failed', error: error.failure };
+      const pinFailure = NodeMediaPinError.failureOf(error, vertex.id);
+      if (pinFailure !== undefined) {
+        return { kind: 'failed', error: pinFailure };
       }
       // The catch-all: any uncaught throw from a node handler maps to a single internal failure
       // (a tool handler classifies its own failures as tool_failed; a sandbox throw as sandbox_error).
@@ -5384,34 +5391,19 @@ class RunExecution {
   }
 
   /**
-   * The flight→durable media transform for the one emit choke point (1.AF, ADR-0042 §2). With a media
-   * store injected, `deInlineMedia` rewrites every in-flight base64 media part to a handle (a no-op
-   * cheap scan when there is no media — the dominant text/tool-only case), and the result is still a
-   * `RunEventDraft` (structure-preserving — it only swaps a media leaf's base64 source for a handle;
-   * `#bus.next` re-validates it against the durable schema regardless). With NO store injected, a
-   * **media-bearing** draft cannot be made handle-only — throwing is the only safe option (never
-   * persist/deliver inline bytes, I3). The throw is the same class as a malformed-draft Zod failure, so
-   * it is caught by the same backstops: `#onOutcome`'s try/catch (the node-settle path) and `#begin`'s
-   * (the `run:started` path) map it to a single `run:failed`. A text-only draft passes straight through.
+   * Own, verify and admit media at the one durable emit choke point (ADR-0042, refined by ADR-0106).
+   * Existing handles require fresh byte evidence too; absent stores refuse all media. Metadata
+   * admission precedes numbering/append/outbox and is mandatory on a present reference port.
+   * `#bus.next` independently validates the structure-preserving leaf rewrite. Existing outcome/begin
+   * backstops turn nonterminal preparation faults into failure; terminal preparation strips media
+   * while retaining its accounting and exactly-one-terminal outcome. Text-only drafts need no store.
    */
   async #deInlineDraft(draft: RunEventDraft): Promise<RunEventDraft> {
-    const store = this.#host.mediaStore;
-    if (store !== undefined) {
-      // Pass the host media-egress hook (D9) so a `url` media source is re-hosted to a handle; undefined
-      // when the host has no egress mechanism, in which case a `url` hard-fails inside deInlineMedia (I3).
-      return (await deInlineMedia(draft, store, this.#mediaEgress())) as RunEventDraft;
-    }
-    // No store: a draft carrying inline bytes OR an un-re-hosted url media part cannot be made
-    // durable-safe — throw (the broadened #emitDurable catch + the #onOutcome/#begin backstops map it to
-    // a single run:failed; a terminal is stripped). `containsDurableUnsafeMedia` (not the byte-only scan)
-    // also catches a url-only payload, so it cannot pass silently.
-    if (containsDurableUnsafeMedia(draft)) {
-      throw new RunLoopInvariantError(
-        'media_store_unavailable',
-        'a media-bearing event was emitted but no MediaStore was injected into the ExecutionHost (1.AF, I3)',
-      );
-    }
-    return draft;
+    const durable = await deInlineMedia(draft, this.#host.mediaStore, this.#mediaEgress());
+    // This await precedes sequence allocation, append queue and terminal outbox publication. A
+    // present but incomplete port is a contract refusal; post-ACK reference failures stay best effort.
+    await this.#admitMediaValue(durable);
+    return durable as RunEventDraft; // structure-preserving leaf rewrite; #bus.next validates the draft
   }
 
   /**
@@ -5430,14 +5422,22 @@ class RunExecution {
       ...(streamMedia === undefined
         ? {}
         : {
-            streamUrl: (url: string) =>
-              streamMedia(url, DEFAULT_MAX_MEDIA_DOWNLOAD_BYTES, this.#abort.signal),
+            streamUrl: (request: HostMediaRequest) =>
+              streamMedia({
+                ...request,
+                maxBytes: DEFAULT_MAX_MEDIA_DOWNLOAD_BYTES,
+                signal: this.#abort.signal,
+              }),
           }),
       ...(fetchMedia === undefined
         ? {}
         : {
-            fetchUrl: (url: string) =>
-              fetchMedia(url, DEFAULT_MAX_MEDIA_DOWNLOAD_BYTES, this.#abort.signal),
+            fetchUrl: (request: HostMediaRequest) =>
+              fetchMedia({
+                ...request,
+                maxBytes: DEFAULT_MAX_MEDIA_DOWNLOAD_BYTES,
+                signal: this.#abort.signal,
+              }),
           }),
     };
   }

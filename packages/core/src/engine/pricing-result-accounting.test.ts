@@ -33,6 +33,7 @@ import { RunEventBus } from './event-bus.js';
 import { createSessionEventSink, createSessionHandle } from './session-handle.js';
 import { MoneyDurability, type SettledAttemptDraft } from './money-durability.js';
 import { captureAgentTurnOutcome, DEFAULT_AGENT_TURN_LIMITS } from './agent-turn.js';
+import { accountingImagePorts } from './fixtures/accounting-media.js';
 
 const model = 'r12-novel-local';
 const rate: ModelPricing = {
@@ -106,7 +107,7 @@ async function workflow(
   } = {},
 ) {
   const store = extras.store ?? new InMemoryRunStore();
-  const host = createInMemoryHost({ store });
+  const host = createInMemoryHost({ store, ...accountingImagePorts('d') });
   const tools = extras.tools ?? [];
   const journal = createInMemoryEffectJournalStore();
   const executor = createAgentNodeExecutor({

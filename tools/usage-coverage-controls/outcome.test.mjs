@@ -69,6 +69,26 @@ test('fixed and restored require a successful complete cohort', () => {
   }
 });
 
+for (const phase of ['fixed', 'mutated', 'restored']) {
+  test(`${phase} refuses duplicate identities while allowing equal names in different files`, () => {
+    const result = { ...processResult, code: phase === 'mutated' ? 1 : 0 };
+    const cases = phase === 'mutated' ? [failure, positive] : [positive];
+    assert.throws(
+      () => checkOutcome([...cases, { ...positive }], result, phase, mechanism, witness),
+      /Duplicate case identity/,
+    );
+    assert.doesNotThrow(() =>
+      checkOutcome(
+        [...cases, { ...positive, file: 'other.test.ts' }],
+        result,
+        phase,
+        mechanism,
+        witness,
+      ),
+    );
+  });
+}
+
 test('refuses empty, skipped and unfinished inventories in every phase', () => {
   for (const phase of ['fixed', 'mutated', 'restored'])
     for (const cases of [

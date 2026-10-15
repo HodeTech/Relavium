@@ -4,7 +4,7 @@
 # Turborepo cache, plus the formatting check and the no-vendor-type-across-the-seam fence.
 #
 # Branch protection (set in the GitHub repo settings, not here): `ci` and `coverage` are the REQUIRED
-# status checks to merge into `main`. The wire/usage mutation jobs feed `ci` through an explicit
+# status checks to merge into `main`. Wire, usage, filesystem and secrets mutation jobs feed `ci` through an explicit
 # success-only aggregation; they cannot silently skip or fail while `ci` stays green. The other jobs
 # self-label `(advisory)` — `floor-check`, `peer-dep-gate` and `windows-concurrency`.
 #
@@ -57,7 +57,7 @@ env:
 
 jobs:
   ci:
-    needs: [wire-mutations, usage-mutations]
+    needs: [wire-mutations, usage-mutations, fs-mutations, secrets-mutations]
     if: ${{ always() }}
     name: lint · typecheck · test
     runs-on: ubuntu-latest
@@ -84,6 +84,16 @@ jobs:
           RELAVIUM_W8_JOB_RESULTS: ${{ toJSON(needs) }}
         run: node tools/ci/require-w8-acceptance.mjs
 
+      - name: Require complete filesystem causal controls
+        env:
+          FS_CONTROLS_RESULT: ${{ needs.fs-mutations.result }}
+        run: node -e "require('node:assert/strict').equal(process.env.FS_CONTROLS_RESULT, 'success')"
+
+      - name: Require complete secrets causal controls
+        env:
+          SECRETS_CONTROLS_RESULT: ${{ needs.secrets-mutations.result }}
+        run: node -e "require('node:assert/strict').equal(process.env.SECRETS_CONTROLS_RESULT, 'success')"
+
       # A squash/main-based checkout need not contain development's immutable predecessor object.
       # Fetch only this canonical pin during CI setup; the acceptance harness itself stays offline.
       - name: Ensure immutable replay predecessor is available
@@ -109,9 +119,41 @@ jobs:
           restore-keys: |
             turbo-${{ runner.os }}-
 
-      # The required gate: lint, typecheck, and test every workspace, then build.
+      - name: Initialize native DB scheduling diagnostics
+        env:
+          RELAVIUM_DB_NATIVE_DIAGNOSTICS: ${{ runner.temp }}/db-native-${{ github.run_id }}-${{ github.run_attempt }}/events.jsonl
+        run: |
+          node --input-type=module <<'NODE'
+          import { mkdirSync, writeFileSync } from 'node:fs';
+          import { dirname } from 'node:path';
+          import { availableParallelism } from 'node:os';
+          const destination = process.env.RELAVIUM_DB_NATIVE_DIAGNOSTICS;
+          mkdirSync(dirname(destination), { recursive: true });
+          writeFileSync(destination, JSON.stringify({
+            stage: 'ci-invocation', node: process.version, platform: process.platform,
+            arch: process.arch, availableParallelism: availableParallelism(),
+            workspaceTestConcurrency: 1,
+            expectedDbCache: 'miss: unique diagnostic path is hashed by DB test only',
+            executionEvidence: 'parent and child records; this setup record alone is not execution'
+          }) + '\n');
+          NODE
+          echo "RELAVIUM_DB_NATIVE_DIAGNOSTICS=$RELAVIUM_DB_NATIVE_DIAGNOSTICS" >> "$GITHUB_ENV"
+
+      # Match local CI: finish lint/typecheck before one workspace test task at a time.
+      # Every file/case and all native races inside each test retain their original bounds.
       - name: Lint, typecheck, test
-        run: pnpm turbo run lint typecheck test
+        run: pnpm ci:workspaces
+      # Setup/upload alone cannot prove native work executed or its children were joined.
+      - name: Require native DB execution diagnostics
+        run: node tools/ci/require-native-db-diagnostics.mjs
+      - name: Preserve native DB scheduling diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: db-native-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/db-native-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 7
+          if-no-files-found: warn
       # Typecheck the root/tooling *.config.ts that sit outside every package's tsc program.
       - name: Typecheck tooling configs
         run: pnpm typecheck:tools
@@ -175,6 +217,10 @@ jobs:
       - name: Smoke the compiled binary
         run: pnpm smoke:cli
 
+      # ADR-0109 exact module identity must hold in actual artifacts, separately from source controls.
+      - name: Smoke built workspace and bundled CLI media ownership (offline)
+        run: pnpm smoke:media-packaging
+
       # The maintainer capture command handles real credentials and paid egress. Exercise its stdin/file/
       # cancellation boundary offline, through the same script as the local required gate.
       - name: Smoke the overflow capture command (offline)
@@ -186,6 +232,74 @@ jobs:
         run: pnpm smoke:budget-replay
 
   # Offline, uncached semantic removal/restoration evidence. Required indirectly through ci.needs.
+  # ADR-0105 isolated, current-source removal/restoration evidence, required through ci.needs.
+  fs-mutations:
+    name: Wave 2 filesystem causal controls
+    # ADR-0106/0109 extend the original 26 controls with complete media/lifetime workloads.
+    # The 20-minute job historically reached only 46 of 93 controls; the later budget covered 99.
+    # The current cohort is 110 controls (2026-10-15); this comment does not certify its execution.
+    # Per-phase 90-second/test 15-second deadlines and output/evidence ceilings remain unchanged.
+    timeout-minutes: 60
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - name: Install (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+      - name: Verify causal outcome and worker lifecycle guards
+        run: pnpm test:acceptance-tools
+      - name: Run filesystem removal and restoration controls
+        env:
+          RELAVIUM_ACCEPTANCE_EVIDENCE: ${{ runner.temp }}/wave2-acceptance
+        run: pnpm check:fs-mutations
+      - name: Retain bounded filesystem control metadata
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: wave2-filesystem-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/wave2-acceptance/filesystem
+          if-no-files-found: warn
+          retention-days: 7
+
+  secrets-mutations:
+    name: Wave 2 secrets causal controls
+    # The historical 35-control, three-phase capture exceeded the former aggregate budget.
+    # The current cohort is 41 controls (2026-10-15); this comment does not certify its execution.
+    # Per-phase, case/hook, output and retained-evidence bounds remain unchanged.
+    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - name: Install (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+      - name: Verify causal outcome and worker lifecycle guards
+        run: pnpm test:acceptance-tools
+      - name: Run secrets removal and restoration controls
+        env:
+          RELAVIUM_ACCEPTANCE_EVIDENCE: ${{ runner.temp }}/wave2-acceptance
+        run: pnpm check:secrets-mutations
+      - name: Retain bounded secrets control metadata
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: wave2-secrets-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/wave2-acceptance/secrets
+          if-no-files-found: warn
+          retention-days: 7
+
   wire-mutations:
     name: W8 wire causal acceptance
     timeout-minutes: 10
@@ -307,7 +421,10 @@ jobs:
         # `--force` = no cache READ (genuine Node-22 run, not a Node-24 replay); the job-level blanked
         # TURBO_TOKEN/TURBO_TEAM above = no cache WRITE (so `ci` never replays this Node-22 result). Both are
         # needed — see the job-level comment.
-        run: pnpm turbo run typecheck test build --force
+        run: |
+          pnpm turbo run typecheck --force
+          pnpm turbo run test --concurrency=1 --force
+          pnpm turbo run build --force
 
   # CI-only strict peer-dependency gate (.npmrc keeps this OFF for local installs so fresh
   # checkouts resolve while the surface packages' peers are not all in the tree yet). Catch
@@ -376,12 +493,14 @@ jobs:
   # a file:// import of the built @relavium/db) are the parts most likely to behave differently on Windows —
   # ci.yml ran ubuntu-only (release.yml already smokes the built binary cross-OS, but never the test suite).
   # Runs the @relavium/db concurrency suite (the real Windows native-addon + WAL exercise) + the CLI
-  # concurrency/perf harness there, plus a headless no-TTY smoke. A SEPARATE, advisory job (the required check
+  # concurrency/perf harness there, the native Step 2 filesystem boundaries (ADR-0105), plus a headless
+  # no-TTY smoke. Native links/containment complement portable Windows lexical vectors; these results are
+  # evidence only after this job actually runs. A SEPARATE, advisory job (the required check
   # stays the ubuntu `ci` job) — promote to required in branch protection once confirmed stable. POSIX 0600/0700
   # perm assertions are NOT exercised here (a documented Windows no-op — ADR-0050); nor is ink's raw-mode code,
   # which is TTY-gated (the driver-selection gate picks the plain driver without a TTY — see the smoke below).
   windows-concurrency:
-    name: windows · db concurrency + headless smoke (advisory)
+    name: windows · db concurrency + filesystem + headless smoke (advisory)
     runs-on: windows-latest
     timeout-minutes: 25
     steps:
@@ -405,12 +524,36 @@ jobs:
       # The two-process concurrency e2e spawns children that import the BUILT @relavium/db (by file:// URL),
       # so the dist must exist before the tests run.
       - name: Build
+        id: windows-build
         run: pnpm turbo run build
+      # These checks are independent after build. Retain every native result even if an earlier
+      # suite fails; the job still fails on any failure (no continue-on-error or skipped gate).
       - name: DB concurrency suite (BEGIN IMMEDIATE + SQLITE_BUSY retry + WAL behave identically on Windows)
+        if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
         run: pnpm --filter @relavium/db test
       - name: CLI concurrency + query-shape harness (cross-process spawn + EXPLAIN plans on Windows)
+        if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
         run: pnpm --filter relavium exec vitest run concurrency perf-budget session-chain
+      - name: Native CLI filesystem admission, containment, catalog and config (ADR-0105)
+        if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
+        run: pnpm --filter relavium exec vitest run --no-file-parallelism --maxWorkers=1 src/config/paths.test.ts src/engine/tool-host/fs-policy.test.ts src/engine/tool-host/fs-policy-native-paths.test.ts src/engine/tool-host/fs-ancestor-consumers.test.ts src/engine/tool-host/fs.test.ts src/commands/fs-invocation.test.ts src/commands/fs-workspace-admission.test.ts src/workflows/catalog.test.ts src/config/resolve.test.ts src/engine/tool-host/fs-policy-scratch-composition.test.ts src/engine/tool-host/fs-rooted-glob.test.ts src/engine/tool-host/fs-write-floor-contract.test.ts
+      - name: Native CAS and save_to containment (ADR-0105)
+        if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
+        run: pnpm --filter @relavium/db exec vitest run src/media-store-paths.test.ts src/media-store-concurrency.test.ts src/media-store-read-races.test.ts src/media-store-entry-snapshots.test.ts src/media-store-publication-contention.test.ts src/media-store.test.ts src/media-write.test.ts
+      - name: Shared filesystem ancestor algorithm and selector schema (ADR-0105)
+        if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
+        run: pnpm --filter @relavium/shared exec vitest run src/existing-ancestor.test.ts src/config.test.ts
+      - name: Shared media byte verification and publication (ADR-0106)
+        if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
+        run: pnpm --filter @relavium/shared exec vitest run src/media-admission.test.ts src/media-deinline.test.ts src/media-deinline-lifecycle.test.ts src/media-iterator.test.ts src/media-publication.test.ts src/media-verifier.test.ts src/media-verifier-invalid.test.ts src/media-verifier-variants.test.ts src/media-verifier-identity.test.ts src/media-generated-result.test.ts src/media-verifier-vorbis.test.ts src/media-verifier-box-size.test.ts src/media-verifier-opus.test.ts src/media-verifier-flac.test.ts
+      - name: Built workspace and bundled CLI native media ownership (ADR-0109)
+        if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
+        run: pnpm smoke:media-packaging
+      - name: Native CLI media publication and offline temporary maintenance (ADR-0106)
+        if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
+        run: pnpm --filter relavium exec vitest run src/engine/media-paid-publication.test.ts src/engine/media-provider-admission.test.ts src/engine/media-publication.e2e.test.ts src/engine/media-retention-ack.test.ts src/engine/media-gc.test.ts src/engine/media-gc-delete-races.test.ts src/run-media-prune.test.ts src/engine/media-generated-publication.test.ts
       - name: Headless no-TTY smoke (the bundle loads; a piped chat picks the plain driver and exits cleanly)
+        if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -419,7 +562,14 @@ jobs:
           # here, the driver-selection gate picks the PLAIN driver (ink/setRawMode is never entered), and the
           # plain driver must exit cleanly on EOF — never crash. A regression routing to ink without a TTY would
           # throw "Raw mode is not supported…", which this catches.
-          out="$(printf '' | node apps/cli/dist/index.js chat 2>&1 || true)"
+          if out="$(printf '' | node apps/cli/dist/index.js chat 2>&1)"; then
+            chat_status=0
+          else
+            chat_status=$?
+          fi
+          if [[ "$chat_status" -ne 4 ]]; then
+            echo "::error::headless chat exited $chat_status (expected 4 on EOF)"; exit 1
+          fi
           if printf '%s' "$out" | grep -qiE 'setRawMode|raw mode'; then
             echo "::error::chat entered raw mode without a TTY (the driver-selection gate regressed)"; exit 1
           fi

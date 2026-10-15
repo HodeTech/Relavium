@@ -2,6 +2,7 @@ import { CommanderError } from 'commander';
 
 import { resolveHomeDir } from './config/load.js';
 import { loadCachedCatalog } from './engine/catalog-refresh.js';
+import { admitFsInvocation } from './engine/tool-host/fs-admission.js';
 import { driveHome, type HomeDeps } from './home/drive-home.js';
 import { shouldOpenHome } from './home/should-open-home.js';
 import { CliError, toUserFacing } from './process/errors.js';
@@ -43,6 +44,7 @@ export async function run(
   let global: GlobalOptions;
   try {
     global = resolveGlobalOptions(raw, process.cwd(), io.env); // env feeds NO_COLOR/FORCE_COLOR; also enforces --verbose/--quiet
+    global = Object.freeze({ ...global, fsGrants: admitFsInvocation(global) });
   } catch (err) {
     renderError(err, renderCtx, io);
     return toUserFacing(err).exitCode;
@@ -56,7 +58,8 @@ export async function run(
   //
   // No fetch here, ever. `[catalog] auto_refresh` (default `false`) governs whether a background refresh may run at
   // all, and even when it is on, the fetch belongs on a path the user can see — not in the boot of every `--help`.
-  seedCatalog();
+  // Offline media maintenance needs only its canonical CAS root, even for malformed flags.
+  if (rest[2] !== 'media') seedCatalog();
 
   const result: { exitCode?: ExitCode } = {};
   const program = buildProgram(io, {

@@ -64,7 +64,7 @@ describe('isForbiddenDeclaredEnvKey', () => {
       expect(isForbiddenDeclaredEnvKey(`${prefix}ANYTHING`), prefix).toBe(true);
     }
     // The counts are the part that makes a DELETION red rather than merely unasserted.
-    expect(forbiddenDeclaredEnvNames()).toHaveLength(31);
+    expect(forbiddenDeclaredEnvNames()).toHaveLength(43);
     expect(forbiddenDeclaredEnvPrefixes()).toHaveLength(6);
   });
 
@@ -86,7 +86,16 @@ describe('isForbiddenDeclaredEnvKey', () => {
   });
 
   it('permits an ordinary declared variable — the list is narrow, not a blanket refusal', () => {
-    for (const key of ['ACME_TOKEN', 'API_BASE', 'LOG_LEVEL', 'MY_APP_HOME', 'NODE_ENV']) {
+    for (const key of [
+      'ACME_TOKEN',
+      'API_BASE',
+      'LOG_LEVEL',
+      'MY_APP_HOME',
+      'NODE_ENV',
+      'AWS_REGION',
+      'CLOUDSDK_CORE_PROJECT',
+      'TF_VAR_environment',
+    ]) {
       expect(isForbiddenDeclaredEnvKey(key), key).toBe(false);
     }
   });
@@ -96,6 +105,42 @@ describe('isForbiddenDeclaredEnvKey', () => {
     // every one of them.
     expect(isForbiddenDeclaredEnvKey('PYTHONHOME')).toBe(true);
     expect(isForbiddenDeclaredEnvKey('PYTHONINSPECT')).toBe(true);
+  });
+});
+
+describe('cloud credential redirection uses the existing shared authority (ADR-0105)', () => {
+  it.each([
+    'KUBECONFIG',
+    'AWS_CONFIG_FILE',
+    'AWS_SHARED_CREDENTIALS_FILE',
+    'AWS_PROFILE',
+    'AWS_DEFAULT_PROFILE',
+    'DOCKER_CONFIG',
+    'GOOGLE_APPLICATION_CREDENTIALS',
+    'AZURE_CONFIG_DIR',
+    'AZURE_AUTH_LOCATION',
+    'CLOUDSDK_CONFIG',
+    'CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE',
+    'TF_CLI_CONFIG_FILE',
+  ])('rejects %s in both MCP declaration entry points without echoing values', (key) => {
+    const parseInline = (env: Record<string, string>) =>
+      McpServerRefSchema.safeParse({ id: 'fs', transport: 'stdio', command: 'node', env });
+    const parseRegistration = (env: Record<string, string>) =>
+      McpServerRegistrationSchema.safeParse({
+        name: 'fs',
+        transport: 'stdio',
+        command: 'node',
+        env,
+      });
+    for (const parse of [parseInline, parseRegistration]) {
+      expect(parse({ AWS_REGION: 'us-east-1' }).success).toBe(true);
+      const parsed = parse({ [key.toLowerCase()]: 'PRIVATE-CREDENTIAL-PATH' });
+      expect(parsed.success).toBe(false);
+      if (!parsed.success) {
+        expect(issueTexts(parsed)).not.toContain('PRIVATE-CREDENTIAL-PATH');
+        expect(issueTexts(parsed)).toContain(key.toLowerCase());
+      }
+    }
   });
 });
 

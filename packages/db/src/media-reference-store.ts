@@ -1,15 +1,17 @@
 import { randomUUID } from 'node:crypto';
 
-import type {
-  DurableMediaMeta,
-  MediaModality,
-  MediaReferencePort,
-  MediaScopeKind,
-  Scope,
+import {
+  MediaAdmissionError,
+  canonicalMediaMimeType,
+  reconcileMediaDescriptors,
+  type DurableMediaMeta,
+  type MediaReferencePort,
+  type MediaScopeKind,
+  type Scope,
 } from '@relavium/shared';
 import { and, eq, inArray, isNull, lte, notInArray } from 'drizzle-orm';
 
-import type { Db } from './client.js';
+import type { Db, TxDb } from './client.js';
 import { withBusyRetry } from './retry.js';
 import { mediaObjects, mediaReferences } from './schema.js';
 
@@ -24,20 +26,16 @@ const SQLITE_INARRAY_CHUNK = 900;
  * engine never imports it — a host wires it behind the engine's reference-lifecycle port + the `read_media`
  * `MediaReadAccess` delegate, exactly as `FilesystemMediaStore` backs `ExecutionHost.mediaStore`.
  *
- * `recordObject` is idempotent on the content-addressed `handle` (same bytes ⇒ same row; a conflict just
- * refreshes `last_referenced_at`, the GC cursor); `addReference` is idempotent on the per-distinct-reference
+ * `admitProducedMedia` owns and validates a complete batch before one BEGIN IMMEDIATE. A handle's MIME,
+ * modality and actual count are immutable, including after soft deletion; a previously absent duration
+ * may be enriched. Conflicts roll back the entire batch. Admission never grants read access.
+ * `addReference` is idempotent on the per-distinct-reference
  * unique index (the refcount is the row count). The `media_references.handle` FK targets `media_objects.handle`,
  * so a reference's object must be recorded first (a stray reference fails closed at the FK, never silently).
  */
 
 /** The durable media metadata recorded when a handle is content-addressed (mirrors the `media_objects` row). */
-export interface MediaObjectInput {
-  readonly handle: string;
-  readonly mimeType: string;
-  readonly modality: MediaModality;
-  readonly byteLength: number;
-  readonly durationMs?: number;
-}
+export type MediaObjectInput = DurableMediaMeta;
 
 /** A handle's durable metadata + its `read_media` authz scopes (the `describe` result the delegate forwards). */
 export interface MediaHandleRecord {
@@ -47,7 +45,9 @@ export interface MediaHandleRecord {
 }
 
 export interface MediaReferenceStore {
-  /** Upsert the `media_objects` row, refreshing `last_referenced_at` (idempotent on the handle). */
+  /** Atomically admit all immutable descriptor tuples; no reference or read grant is added. */
+  admitProducedMedia(batch: readonly DurableMediaMeta[]): void;
+  /** Admit a singleton batch, refreshing compatible rows' retention cursors. */
   recordObject(input: MediaObjectInput): void;
   /** Add a `(handle, scopeKind, scopeId)` reference, idempotent on the unique index (refcount = row count). */
   addReference(handle: string, scopeKind: MediaScopeKind, scopeId: string): void;
@@ -79,7 +79,7 @@ export function createMediaReferenceStore(
   db: Db,
   now: () => number = Date.now,
 ): MediaReferenceStore {
-  // The two write-transaction bodies, hoisted out of the `withBusyRetry(db.transaction(…))` nest so the map/loop
+  // Write-transaction bodies, hoisted out of the `withBusyRetry(db.transaction(…))` nest so the map/loop
   // callbacks stay within the function-nesting budget (2.5.I close-out). Each is invoked INSIDE one BEGIN IMMEDIATE.
 
   /** Capture-then-delete a run's references + refresh the dropped handles' grace clock — atomic under BEGIN IMMEDIATE. */
@@ -137,29 +137,63 @@ export function createMediaReferenceStore(
     return handles;
   }
 
-  return {
-    recordObject(input: MediaObjectInput): void {
-      const ts = now();
-      db.insert(mediaObjects)
-        .values({
-          id: randomUUID(),
-          handle: input.handle,
-          mimeType: input.mimeType,
-          modality: input.modality,
-          byteLength: input.byteLength,
-          ...(input.durationMs === undefined ? {} : { durationMs: input.durationMs }),
+  function admitBatchTxn(tx: TxDb, batch: readonly DurableMediaMeta[], ts: number): void {
+    for (const input of batch) {
+      const existing = tx
+        .select()
+        .from(mediaObjects)
+        .where(eq(mediaObjects.handle, input.handle))
+        .get();
+      if (existing === undefined) {
+        tx.insert(mediaObjects)
+          .values({
+            id: randomUUID(),
+            ...input,
+            lastReferencedAt: ts,
+            createdAt: ts,
+          })
+          .run();
+        continue;
+      }
+      // Deleted rows retain their identity. Never resurrect or refresh a conflicting tuple.
+      if (
+        canonicalMediaMimeType(existing.mimeType) !== input.mimeType ||
+        existing.modality !== input.modality ||
+        existing.byteLength !== input.byteLength ||
+        (existing.durationMs !== null &&
+          input.durationMs !== undefined &&
+          existing.durationMs !== input.durationMs)
+      ) {
+        throw new MediaAdmissionError('descriptor_conflict');
+      }
+      tx.update(mediaObjects)
+        .set({
+          mimeType: input.mimeType, // reviewed lexical aliases share one immutable canonical identity
           lastReferencedAt: ts,
-          createdAt: ts,
+          deletedAt: null,
+          ...(existing.durationMs === null && input.durationMs !== undefined
+            ? { durationMs: input.durationMs }
+            : {}),
         })
-        // Content-addressed ⇒ the bytes (and byteLength) are identical on a re-record; refresh the GC
-        // cursor so a re-referenced object is not reclaimed mid-window, AND clear `deleted_at` so a handle
-        // GC-soft-deleted earlier is RESURRECTED when the same bytes are produced again (otherwise
-        // describe() would keep returning undefined and read_media would deny live, re-introduced content).
-        .onConflictDoUpdate({
-          target: mediaObjects.handle,
-          set: { lastReferencedAt: ts, deletedAt: null },
-        })
+        .where(eq(mediaObjects.handle, input.handle))
         .run();
+    }
+  }
+
+  function admitProducedMedia(batch: readonly DurableMediaMeta[]): void {
+    // Own every occurrence before de-duplication and before retry can yield to another writer.
+    const owned = reconcileMediaDescriptors(batch);
+    if (owned.length === 0) return;
+    const ts = now(); // one timestamp for insertion, enrichment and resurrection, stable across retries
+    withBusyRetry(() =>
+      db.transaction((tx) => admitBatchTxn(tx, owned, ts), { behavior: 'immediate' }),
+    );
+  }
+
+  return {
+    admitProducedMedia,
+    recordObject(input: MediaObjectInput): void {
+      admitProducedMedia([input]);
     },
 
     addReference(handle: string, scopeKind: MediaScopeKind, scopeId: string): void {
@@ -272,6 +306,9 @@ export function createMediaReferenceStore(
  */
 export function createMediaReferencePort(store: MediaReferenceStore): MediaReferencePort {
   return {
+    admitProducedMedia(batch: readonly DurableMediaMeta[]): void {
+      store.admitProducedMedia(batch);
+    },
     recordRunMedia(meta: DurableMediaMeta, runId: string): void {
       store.recordObject(meta);
       store.addReference(meta.handle, 'run', runId);

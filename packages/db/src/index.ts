@@ -137,10 +137,12 @@ export {
   type SessionEffectCheckpoint,
 } from './session-effect-privacy.js';
 
-// Provider registry (2.C) — CRUD over the non-secret `llm_providers` catalog the CLI's `relavium provider`
-// commands manage. The key VALUE never lives here — only the OS-keychain `account` ref (ADR-0006/0019).
+// Provider registry (2.C) — API keys are OS-keychain refs, never values (ADR-0006/0019).
+// Trusted records retain sensitive inert legacy headers; ADR-0108 gates new writes and public projections.
 export {
   createProviderStore,
+  ProviderHeaderPolicyError,
+  isProviderHeaderPolicyError,
   type ProviderStore,
   type ProviderStoreDeps,
   type ProviderRecord,
@@ -151,6 +153,11 @@ export {
 // handle. Node-side (node:crypto + node:fs); a host wires one into ExecutionHost.mediaStore. The pure
 // engine never imports this — it depends only on the @relavium/shared `MediaStore` interface.
 export { FilesystemMediaStore, InMemoryMediaStore } from './media-store.js';
+export { MediaTemporaryMaintenanceError } from './media-store-temporaries.js';
+export type {
+  MediaTemporarySweepResult,
+  MediaTemporaryRetentionReason,
+} from './media-store-temporaries.js';
 
 // Media egress (1.AF/D9, ADR-0043) — the host-side SSRF-validated, size-bounded URL fetch the engine
 // binds into a `MediaUrlFetch` hook so `deInlineMedia` can re-host a url media source to a handle.

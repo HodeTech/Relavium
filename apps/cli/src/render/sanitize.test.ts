@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { makeLlmError } from '@relavium/llm';
 
 import {
   sanitizeUntrusted,
@@ -6,6 +7,54 @@ import {
   stringifyJsonLine,
   stripTerminalControls,
 } from './sanitize.js';
+
+const overlapShapes = ['normalized key', 'URL userinfo', 'Bearer', 'Basic'] as const;
+type OverlapShape = (typeof overlapShapes)[number];
+
+/** Synthetic independent values for actual raw and already-normalized diagnostic paths. */
+function overlapValues(shape: OverlapShape): { readonly value: string; readonly secret: string }[] {
+  const separators = ['\n', '\t', ' \r\n\t '];
+  if (shape === 'normalized key') {
+    const controls = [
+      '\u0001',
+      '\u007f',
+      '\u0085',
+      '\u202e',
+      '\u2066',
+      '\x1b[31m',
+      '\x1b[1 q',
+      '\x1b]52;c;YWJj\x07',
+      '\x1b]0;fixture\x1b\\',
+      '\x1bPfixture\x07',
+      '\x1bPfixture\x1b\\',
+      '\x1b^fixture\x1b\\',
+      '\x1b_fixture\x1b\\',
+      '\x1bXfixture\x1b\\',
+      '\x1bM',
+      '\x1b]',
+    ];
+    const secret = 'AbCdEf0123456789xyzUVWXYZ';
+    return controls.flatMap((control) =>
+      [['sk-', control, 'ant-', 'api03-'].join(''), ['AI', control, 'za', 'SyA'].join('')].flatMap(
+        (prefix) =>
+          separators.map((separator) => ({ value: `${prefix}${separator}${secret}`, secret })),
+      ),
+    );
+  }
+  const secret =
+    shape === 'URL userinfo'
+      ? 'opaque-userinfo-P8'
+      : shape === 'Bearer'
+        ? 'opaque-header-Z29'
+        : 'dXNlcjpvcGFxdWU=';
+  return separators.map((separator) => ({
+    value:
+      shape === 'URL userinfo'
+        ? `https://u${separator}ser:${secret}@provider.invalid/x`
+        : `${shape}${separator}${secret}`,
+    secret,
+  }));
+}
 
 /**
  * The redacting sanitizer for text this process did NOT author (#W15-8) — a rejection message, a provider
@@ -80,6 +129,124 @@ describe('sanitizeUntrusted — the failure paths carry arbitrary text (#W15-8)'
   it('leaves ordinary diagnostic text alone', () => {
     for (const msg of ['ENOENT: no such file', 'database is locked', 'rate limited, retry later']) {
       expect(sanitizeUntrusted(msg)).toBe(msg);
+    }
+  });
+
+  it.each([
+    'client_secret',
+    'refresh_token',
+    'id_token',
+    'auth_token',
+    'session_token',
+    'api_secret',
+    'access_key',
+    'secret_key',
+  ])('uses the finite query-name backstop for %s in both diagnostic sanitizers', (name) => {
+    const text = `request https://provider.invalid/?${name}=opaque-value-Q7&ordinary=kept`;
+    const expected = `request https://provider.invalid/?${name}=[REDACTED]&ordinary=kept`;
+    expect(sanitizeUntrusted(text)).toBe(expected);
+    expect(sanitizeUntrustedInline(text)).toBe(expected);
+  });
+
+  it('normalizes a removed control inside a query name before secret classification', () => {
+    const text = `request ?client_se${String.fromCharCode(1)}cret=opaque-value-Q7`;
+    expect(sanitizeUntrusted(text)).toBe('request ?client_secret=[REDACTED]');
+    expect(sanitizeUntrustedInline(text)).toBe('request ?client_secret=[REDACTED]');
+    expect(sanitizeUntrusted('?client_secret_hint=ordinary')).toBe('?client_secret_hint=ordinary');
+  });
+
+  const queryNames = [
+    'client_secret',
+    'refresh_token',
+    'id_token',
+    'auth_token',
+    'session_token',
+    'api_secret',
+    'access_key',
+    'secret_key',
+  ];
+  it.each(
+    queryNames.flatMap((name) => [
+      { name, label: 'multiline', sanitize: sanitizeUntrusted },
+      { name, label: 'inline', sanitize: sanitizeUntrustedInline },
+    ]),
+  )(
+    'SECRETS_CAUSAL_RESIDUAL_SCRUB protects $name beside a split credential: $label',
+    ({ name, sanitize }) => {
+      for (const separator of ['\n', '\t', ' \n\t ']) {
+        const query = `?${name}=opaque-query-value&ordinary=kept`;
+        for (const split of [
+          `?api_${separator}key=opaque-residual-query-P8`,
+          `https://u${separator}ser:opaque-userinfo-P8@provider.invalid/x`,
+          join('sk-', 'ant-', 'api03-', separator, 'AbCdEf0123456789xyz'),
+        ]) {
+          for (const text of [`${query}; credential: ${split}`, `credential: ${split}; ${query}`]) {
+            expect(sanitize(text), 'SECRETS_CAUSAL_RESIDUAL_SCRUB').toBe('[REDACTED]');
+          }
+        }
+      }
+    },
+  );
+
+  it.each(
+    queryNames.flatMap((name) => [
+      { name, label: 'multiline', sanitize: sanitizeUntrusted },
+      { name, label: 'inline', sanitize: sanitizeUntrustedInline },
+    ]),
+  )('SECRETS_CAUSAL_PREFIX_ORDER protects $name query values: $label', ({ name, sanitize }) => {
+    const suffix = 'AbCdEf0123456789xyzUVWXYZ';
+    for (const prefix of [join('sk-', 'ant-', 'api03-'), join('AI', 'za', 'SyA')]) {
+      for (const separator of ['\n', '\t', ' \r\n\t ']) {
+        const text = `?${name}=${prefix}${separator}${suffix}`;
+        const error = makeLlmError({ provider: 'openai', kind: 'auth', message: text, code: text });
+        for (const projection of [text, error.message]) {
+          expect(sanitize(projection), 'SECRETS_CAUSAL_PREFIX_ORDER').toBe('[REDACTED]');
+        }
+        expect(error.code, 'SECRETS_CAUSAL_PREFIX_ORDER').toBe('[REDACTED]');
+      }
+    }
+  });
+
+  it.each(
+    queryNames.flatMap((name) =>
+      overlapShapes.flatMap((shape) => [
+        { name, shape, label: 'multiline', sanitize: sanitizeUntrusted },
+        { name, shape, label: 'inline', sanitize: sanitizeUntrustedInline },
+      ]),
+    ),
+  )(
+    'SECRETS_CAUSAL_OVERLAP_ORDER protects $name $shape query values: $label',
+    ({ name, shape, sanitize }) => {
+      for (const { value, secret } of overlapValues(shape)) {
+        const text = `?${name}=${value}`;
+        const error = makeLlmError({ provider: 'openai', kind: 'auth', message: text, code: text });
+        for (const projection of [text, error.message, error.code ?? '']) {
+          const output = sanitize(projection);
+          expect(output, 'SECRETS_CAUSAL_OVERLAP_ORDER').not.toContain(secret);
+          expect(output).toContain('[REDACTED]');
+        }
+      }
+    },
+  );
+
+  it.each(queryNames)('preserves ordinary prose after an in-place %s redaction', (name) => {
+    const text = `request ?${name}=opaque-query-value\nretrying after 30s`;
+    expect(sanitizeUntrusted(text)).toBe(`request ?${name}=[REDACTED]\nretrying after 30s`);
+    expect(sanitizeUntrustedInline(text)).toBe(`request ?${name}=[REDACTED] retrying after 30s`);
+  });
+
+  it('checks residual split keys beside other credential shapes without discarding benign prose', () => {
+    const split = join('sk-', 'ant-', 'api03-', '\n', 'AbCdEf0123456789xyz');
+    for (const [credential, redacted] of [
+      ['Authorization: Bearer opaque-value', 'Authorization: Bearer [REDACTED]'],
+      ['Authorization: Basic dXNlcjpwYXNz', 'Authorization: Basic [REDACTED]'],
+      ['https://user:opaque-value@host/x', 'https://[REDACTED]@host/x'],
+      [join('AI', 'za', 'SyA1234567890abcdefghijklmnopqrstuv'), '[REDACTED]'],
+    ]) {
+      for (const sanitize of [sanitizeUntrusted, sanitizeUntrustedInline]) {
+        expect(sanitize(`${credential}; key: ${split}`)).toBe('[REDACTED]');
+        expect(sanitize(`${credential} retry after 30s`)).toBe(`${redacted} retry after 30s`);
+      }
     }
   });
 });

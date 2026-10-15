@@ -72,6 +72,7 @@ function fakeDeps(config: {
       }
       return Promise.resolve({
         status: hop.status,
+        headers: { 'content-type': 'audio/L16' },
         location: hop.location,
         body: hop.bodyThrows === true ? throwingBody() : bodyOf(hop.body ?? []),
         dispose: () => {
@@ -124,12 +125,16 @@ describe('streamMediaBytes (ADR-0089 §2 — the same policy, never fully buffer
   it('yields the body chunk by chunk rather than as one buffer', async () => {
     const { deps } = fakeDeps({
       resolve: { 'media.example': [PUBLIC_IP] },
-      hops: [{ status: 200, body: [new Uint8Array([1, 2]), new Uint8Array([3])] }],
+      hops: [{ status: 200, body: [new Uint8Array([1, 2]), new Uint8Array([3, 4])] }],
     });
     const { bytes, chunks } = await drain(
-      streamMediaBytes('https://media.example/a.png', { maxBytes: 1000 }, deps),
+      streamMediaBytes(
+        'https://media.example/a.png',
+        { mimeType: 'audio/L16', maxBytes: 1000 },
+        deps,
+      ),
     );
-    expect(bytes).toEqual(new Uint8Array([1, 2, 3]));
+    expect(bytes).toEqual(new Uint8Array([1, 2, 3, 4]));
     expect(chunks).toBe(2); // the consumer saw the wire's framing, not a concatenation
   });
 
@@ -148,13 +153,20 @@ describe('streamMediaBytes (ADR-0089 §2 — the same policy, never fully buffer
       openConnection: () =>
         Promise.resolve({
           status: 200,
+          headers: { 'content-type': 'audio/L16' },
           location: undefined,
           body: countingBody(chunks, stats),
           dispose: () => undefined,
         }),
     };
     await expect(
-      drain(streamMediaBytes('https://media.example/big.mp4', { maxBytes: 25 }, withCountingBody)),
+      drain(
+        streamMediaBytes(
+          'https://media.example/big.mp4',
+          { mimeType: 'audio/L16', maxBytes: 25 },
+          withCountingBody,
+        ),
+      ),
     ).rejects.toThrow(/maximum size/);
     expect(stats.produced).toBeLessThanOrEqual(3); // 3 × 10 crosses 25 — and it stops there
     expect(stats.produced).toBeLessThan(chunks.length); // …nowhere near draining the source
@@ -167,7 +179,11 @@ describe('streamMediaBytes (ADR-0089 §2 — the same policy, never fully buffer
       resolve: { 'media.example': [PUBLIC_IP] },
       hops: [{ status: 200, body: [new Uint8Array([1]), new Uint8Array([2])] }],
     });
-    const stream = streamMediaBytes('https://media.example/a.png', { maxBytes: 1000 }, deps);
+    const stream = streamMediaBytes(
+      'https://media.example/a.png',
+      { mimeType: 'audio/L16', maxBytes: 1000 },
+      deps,
+    );
     const iterator = stream[Symbol.asyncIterator]();
     await iterator.next(); // pull one chunk…
     await iterator.return?.(undefined); // …then stop, as a `break` in a `for await` would
@@ -188,6 +204,7 @@ describe('streamMediaBytes (ADR-0089 §2 — the same policy, never fully buffer
       openConnection: () =>
         Promise.resolve({
           status: 200,
+          headers: { 'content-type': 'audio/L16' },
           location: undefined,
           body: {
             [Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
@@ -212,7 +229,7 @@ describe('streamMediaBytes (ADR-0089 §2 — the same policy, never fully buffer
       drain(
         streamMediaBytes(
           'https://media.example/slow.mp4',
-          { maxBytes: 1_000, bodyIdleTimeoutMs: 20 },
+          { mimeType: 'audio/L16', maxBytes: 1_000, bodyIdleTimeoutMs: 20 },
           stalling,
         ),
       ),
@@ -226,18 +243,23 @@ describe('streamMediaBytes (ADR-0089 §2 — the same policy, never fully buffer
       resolve: { 'media.example': [PUBLIC_IP] },
       hops: [{ status: 200 }],
     });
+    let reads = 0;
     const endless: MediaEgressDeps = {
       ...deps,
       openConnection: () =>
         Promise.resolve({
           status: 200,
+          headers: { 'content-type': 'audio/L16' },
           location: undefined,
           body: {
             [Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
               return {
                 next: (): Promise<IteratorResult<Uint8Array>> => {
-                  controller.abort(); // abort arrives while the body is being read
-                  return Promise.resolve({ done: false, value: new Uint8Array([1]) });
+                  if (reads++ === 0) {
+                    controller.abort(); // abort arrives while the body is being read
+                    return Promise.resolve({ done: false, value: new Uint8Array([1]) });
+                  }
+                  return new Promise(() => undefined);
                 },
               };
             },
@@ -247,15 +269,25 @@ describe('streamMediaBytes (ADR-0089 §2 — the same policy, never fully buffer
           },
         }),
     };
-    await expect(
+    const [result] = await Promise.allSettled([
       drain(
         streamMediaBytes(
           'https://media.example/a.mp4',
-          { maxBytes: 1_000_000, signal: controller.signal },
+          {
+            mimeType: 'audio/L16',
+            maxBytes: 1_000_000,
+            bodyIdleTimeoutMs: 50,
+            signal: controller.signal,
+          },
           endless,
         ),
       ),
-    ).rejects.toThrow(/cancelled/);
+    ]);
+    expect(result, 'MEDIA_HTTP_BODY_ABORT').toMatchObject({ status: 'rejected' });
+    const reason: unknown = result.status === 'rejected' ? result.reason : undefined;
+    expect(reason, 'MEDIA_HTTP_BODY_ABORT').toBeInstanceOf(Error);
+    if (reason instanceof Error)
+      expect(reason.message, 'MEDIA_HTTP_BODY_ABORT').toMatch(/cancelled/);
     expect(stats.disposed).toBeGreaterThanOrEqual(1);
   });
 
@@ -268,7 +300,11 @@ describe('streamMediaBytes (ADR-0089 §2 — the same policy, never fully buffer
       hops: [{ status: 200, bodyThrows: true }],
     });
     const err = await drain(
-      streamMediaBytes('https://media.example/a.png', { maxBytes: 1000 }, deps),
+      streamMediaBytes(
+        'https://media.example/a.png',
+        { mimeType: 'audio/L16', maxBytes: 1000 },
+        deps,
+      ),
     ).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(MediaEgressError);
   });
@@ -285,7 +321,9 @@ describe('streamMediaBytes (ADR-0089 §2 — the same policy, never fully buffer
       'https://user:pass@media.example/a.png',
       'https://127.0.0.1/a.png',
     ]) {
-      await expect(drain(streamMediaBytes(url, { maxBytes: 1000 }, deps))).rejects.toThrow();
+      await expect(
+        drain(streamMediaBytes(url, { mimeType: 'audio/L16', maxBytes: 1000 }, deps)),
+      ).rejects.toThrow();
     }
   });
 
@@ -302,7 +340,13 @@ describe('streamMediaBytes (ADR-0089 §2 — the same policy, never fully buffer
       hops: [{ status: 307, location: 'https://evil.example/latest/meta-data/' }, { status: 200 }],
     });
     await expect(
-      drain(streamMediaBytes('https://a.example/a.png', { maxBytes: 1000 }, deps)),
+      drain(
+        streamMediaBytes(
+          'https://a.example/a.png',
+          { mimeType: 'audio/L16', maxBytes: 1000 },
+          deps,
+        ),
+      ),
     ).rejects.toMatchObject({ code: 'blocked_host' });
     // And it stops AT the redirect: the second hop is never dialled, so the metadata endpoint is not
     // merely unread — it is never contacted.
@@ -315,7 +359,13 @@ describe('streamMediaBytes (ADR-0089 §2 — the same policy, never fully buffer
       hops: [{ status: 301, location: 'http://a.example/x' }],
     });
     await expect(
-      drain(streamMediaBytes('https://a.example/a.png', { maxBytes: 1000 }, deps)),
+      drain(
+        streamMediaBytes(
+          'https://a.example/a.png',
+          { mimeType: 'audio/L16', maxBytes: 1000 },
+          deps,
+        ),
+      ),
     ).rejects.toMatchObject({ code: 'insecure_url' });
   });
 
@@ -324,9 +374,15 @@ describe('streamMediaBytes (ADR-0089 §2 — the same policy, never fully buffer
     // a private one. The pin is what defeats it: the dial must carry the address that was validated.
     const { deps, calls } = fakeDeps({
       resolve: { 'rebind.example': [PUBLIC_IP] },
-      hops: [{ status: 200, body: [new Uint8Array([1, 2, 3])] }],
+      hops: [{ status: 200, body: [new Uint8Array([1, 2, 3, 4])] }],
     });
-    await drain(streamMediaBytes('https://rebind.example/a.png', { maxBytes: 1000 }, deps));
+    await drain(
+      streamMediaBytes(
+        'https://rebind.example/a.png',
+        { mimeType: 'audio/L16', maxBytes: 1000 },
+        deps,
+      ),
+    );
     expect(calls[0]?.pinnedIp).toBe(PUBLIC_IP); // dialled by the VALIDATED address (TOCTOU defense)
     expect(calls[0]?.hostname).toBe('rebind.example'); // …with the hostname kept for SNI/Host
   });
@@ -338,7 +394,11 @@ describe('streamMediaBytes (ADR-0089 §2 — the same policy, never fully buffer
       resolve: { 'media.example': [PUBLIC_IP] },
       hops: [{ status: 200, body: [new Uint8Array([1])] }],
     });
-    streamMediaBytes('https://media.example/a.png', { maxBytes: 1000 }, deps);
+    streamMediaBytes(
+      'https://media.example/a.png',
+      { mimeType: 'audio/L16', maxBytes: 1000 },
+      deps,
+    );
     await Promise.resolve();
     expect(calls).toHaveLength(0);
   });
@@ -350,7 +410,11 @@ describe('fetchMediaBytes (1.AF/D9, ADR-0043 — SSRF-validated, size-bounded me
       resolve: { 'media.example': [PUBLIC_IP] },
       hops: [{ status: 200, body: [new Uint8Array([1, 2, 3, 4])] }],
     });
-    const bytes = await fetchMediaBytes('https://media.example/a.png', { maxBytes: 1000 }, deps);
+    const bytes = await fetchMediaBytes(
+      'https://media.example/a.png',
+      { mimeType: 'audio/L16', maxBytes: 1000 },
+      deps,
+    );
     expect([...bytes]).toEqual([1, 2, 3, 4]);
     expect(calls).toHaveLength(1);
     expect(calls[0]?.hostname).toBe('media.example'); // SNI/Host stays the hostname
@@ -360,7 +424,11 @@ describe('fetchMediaBytes (1.AF/D9, ADR-0043 — SSRF-validated, size-bounded me
   it('rejects a non-HTTPS url (insecure_url), opening no connection', async () => {
     const { deps, calls } = fakeDeps({ hops: [{ status: 200 }] });
     await expect(
-      fetchMediaBytes('http://media.example/a.png', { maxBytes: 1000 }, deps),
+      fetchMediaBytes(
+        'http://media.example/a.png',
+        { mimeType: 'audio/L16', maxBytes: 1000 },
+        deps,
+      ),
     ).rejects.toMatchObject({ code: 'insecure_url' });
     expect(calls).toHaveLength(0);
   });
@@ -368,7 +436,11 @@ describe('fetchMediaBytes (1.AF/D9, ADR-0043 — SSRF-validated, size-bounded me
   it('rejects a url with embedded credentials (insecure_url)', async () => {
     const { deps, calls } = fakeDeps({ hops: [{ status: 200 }] });
     await expect(
-      fetchMediaBytes('https://user:pass@media.example/a.png', { maxBytes: 1000 }, deps),
+      fetchMediaBytes(
+        'https://user:pass@media.example/a.png',
+        { mimeType: 'audio/L16', maxBytes: 1000 },
+        deps,
+      ),
     ).rejects.toMatchObject({ code: 'insecure_url' });
     expect(calls).toHaveLength(0);
   });
@@ -376,7 +448,7 @@ describe('fetchMediaBytes (1.AF/D9, ADR-0043 — SSRF-validated, size-bounded me
   it('blocks a private host literal (blocked_host), never resolving or connecting', async () => {
     const { deps, calls } = fakeDeps({ hops: [{ status: 200 }] });
     await expect(
-      fetchMediaBytes('https://127.0.0.1/a.png', { maxBytes: 1000 }, deps),
+      fetchMediaBytes('https://127.0.0.1/a.png', { mimeType: 'audio/L16', maxBytes: 1000 }, deps),
     ).rejects.toMatchObject({ code: 'blocked_host' });
     expect(calls).toHaveLength(0);
   });
@@ -386,7 +458,11 @@ describe('fetchMediaBytes (1.AF/D9, ADR-0043 — SSRF-validated, size-bounded me
     // range-check must extract the embedded IPv4 and block it (closes the SEC-EGRESS 6to4 gap).
     const { deps, calls } = fakeDeps({ hops: [{ status: 200 }] });
     await expect(
-      fetchMediaBytes('https://[2002:7f00:0001::]/a.png', { maxBytes: 1000 }, deps),
+      fetchMediaBytes(
+        'https://[2002:7f00:0001::]/a.png',
+        { mimeType: 'audio/L16', maxBytes: 1000 },
+        deps,
+      ),
     ).rejects.toMatchObject({ code: 'blocked_host' });
     expect(calls).toHaveLength(0);
   });
@@ -397,7 +473,11 @@ describe('fetchMediaBytes (1.AF/D9, ADR-0043 — SSRF-validated, size-bounded me
       hops: [{ status: 200 }],
     });
     await expect(
-      fetchMediaBytes('https://rebind.example/a.png', { maxBytes: 1000 }, deps),
+      fetchMediaBytes(
+        'https://rebind.example/a.png',
+        { mimeType: 'audio/L16', maxBytes: 1000 },
+        deps,
+      ),
     ).rejects.toMatchObject({ code: 'blocked_host' });
     expect(calls).toHaveLength(0);
   });
@@ -408,21 +488,29 @@ describe('fetchMediaBytes (1.AF/D9, ADR-0043 — SSRF-validated, size-bounded me
       hops: [{ status: 200 }],
     });
     await expect(
-      fetchMediaBytes('https://mixed.example/a.png', { maxBytes: 1000 }, deps),
+      fetchMediaBytes(
+        'https://mixed.example/a.png',
+        { mimeType: 'audio/L16', maxBytes: 1000 },
+        deps,
+      ),
     ).rejects.toMatchObject({ code: 'blocked_host' });
   });
 
   it('allows a private target only under the explicit allowPrivate opt-in', async () => {
     const { deps, calls } = fakeDeps({
       resolve: { 'localhost.example': ['127.0.0.1'] },
-      hops: [{ status: 200, body: [new Uint8Array([9])] }],
+      hops: [{ status: 200, body: [new Uint8Array([9, 9])] }],
     });
     const bytes = await fetchMediaBytes(
       'https://localhost.example/a.png',
-      { maxBytes: 1000, localEndpoint: { host: 'localhost.example', port: 443 } },
+      {
+        mimeType: 'audio/L16',
+        maxBytes: 1000,
+        localEndpoint: { host: 'localhost.example', port: 443 },
+      },
       deps,
     );
-    expect([...bytes]).toEqual([9]);
+    expect([...bytes]).toEqual([9, 9]);
     expect(calls).toHaveLength(1);
   });
 
@@ -434,7 +522,11 @@ describe('fetchMediaBytes (1.AF/D9, ADR-0043 — SSRF-validated, size-bounded me
         { status: 200, body: [new Uint8Array([7, 7])] },
       ],
     });
-    const bytes = await fetchMediaBytes('https://a.example/a.png', { maxBytes: 1000 }, deps);
+    const bytes = await fetchMediaBytes(
+      'https://a.example/a.png',
+      { mimeType: 'audio/L16', maxBytes: 1000 },
+      deps,
+    );
     expect([...bytes]).toEqual([7, 7]);
     expect(calls.map((c) => c.hostname)).toEqual(['a.example', 'b.example']);
     expect(calls[1]?.pinnedIp).toBe(PUBLIC_IP_2); // the redirect target was independently resolved + pinned
@@ -447,7 +539,7 @@ describe('fetchMediaBytes (1.AF/D9, ADR-0043 — SSRF-validated, size-bounded me
       hops: [{ status: 307, location: 'https://evil.example/x' }, { status: 200 }],
     });
     await expect(
-      fetchMediaBytes('https://a.example/a.png', { maxBytes: 1000 }, deps),
+      fetchMediaBytes('https://a.example/a.png', { mimeType: 'audio/L16', maxBytes: 1000 }, deps),
     ).rejects.toMatchObject({ code: 'blocked_host' });
   });
 
@@ -457,7 +549,7 @@ describe('fetchMediaBytes (1.AF/D9, ADR-0043 — SSRF-validated, size-bounded me
       hops: [{ status: 301, location: 'http://a.example/x' }],
     });
     await expect(
-      fetchMediaBytes('https://a.example/a.png', { maxBytes: 1000 }, deps),
+      fetchMediaBytes('https://a.example/a.png', { mimeType: 'audio/L16', maxBytes: 1000 }, deps),
     ).rejects.toMatchObject({ code: 'insecure_url' });
   });
 
@@ -471,7 +563,11 @@ describe('fetchMediaBytes (1.AF/D9, ADR-0043 — SSRF-validated, size-bounded me
       ],
     });
     await expect(
-      fetchMediaBytes('https://a.example/a.png', { maxBytes: 1000, maxRedirects: 1 }, deps),
+      fetchMediaBytes(
+        'https://a.example/a.png',
+        { mimeType: 'audio/L16', maxBytes: 1000, maxRedirects: 1 },
+        deps,
+      ),
     ).rejects.toMatchObject({ code: 'too_many_redirects' });
   });
 
@@ -481,7 +577,7 @@ describe('fetchMediaBytes (1.AF/D9, ADR-0043 — SSRF-validated, size-bounded me
       hops: [{ status: 200, body: [new Uint8Array(8), new Uint8Array(8)] }], // 16 bytes
     });
     await expect(
-      fetchMediaBytes('https://big.example/a.png', { maxBytes: 10 }, deps),
+      fetchMediaBytes('https://big.example/a.png', { mimeType: 'audio/L16', maxBytes: 10 }, deps),
     ).rejects.toMatchObject({ code: 'too_large' });
     expect(stats.disposed).toBeGreaterThanOrEqual(1);
   });
@@ -492,7 +588,7 @@ describe('fetchMediaBytes (1.AF/D9, ADR-0043 — SSRF-validated, size-bounded me
       hops: [{ status: 404 }],
     });
     await expect(
-      fetchMediaBytes('https://a.example/a.png', { maxBytes: 1000 }, deps),
+      fetchMediaBytes('https://a.example/a.png', { mimeType: 'audio/L16', maxBytes: 1000 }, deps),
     ).rejects.toMatchObject({ code: 'bad_status' });
   });
 
@@ -504,7 +600,7 @@ describe('fetchMediaBytes (1.AF/D9, ADR-0043 — SSRF-validated, size-bounded me
       hops: [{ status: 200, bodyThrows: true }],
     });
     await expect(
-      fetchMediaBytes('https://a.example/a.png', { maxBytes: 1000 }, deps),
+      fetchMediaBytes('https://a.example/a.png', { mimeType: 'audio/L16', maxBytes: 1000 }, deps),
     ).rejects.toMatchObject({ code: 'network' });
     expect(stats.disposed).toBeGreaterThanOrEqual(1); // the stream was disposed on the way out
   });
@@ -515,7 +611,7 @@ describe('fetchMediaBytes (1.AF/D9, ADR-0043 — SSRF-validated, size-bounded me
       openConnection: () => Promise.reject(new Error('test: must not connect')),
     };
     await expect(
-      fetchMediaBytes('https://a.example/a.png', { maxBytes: 1000 }, deps),
+      fetchMediaBytes('https://a.example/a.png', { mimeType: 'audio/L16', maxBytes: 1000 }, deps),
     ).rejects.toMatchObject({ code: 'network' });
   });
 
@@ -525,7 +621,7 @@ describe('fetchMediaBytes (1.AF/D9, ADR-0043 — SSRF-validated, size-bounded me
       openConnection: () => Promise.reject(new Error('test: must not connect')),
     };
     await expect(
-      fetchMediaBytes('https://a.example/a.png', { maxBytes: 1000 }, deps),
+      fetchMediaBytes('https://a.example/a.png', { mimeType: 'audio/L16', maxBytes: 1000 }, deps),
     ).rejects.toMatchObject({ code: 'blocked_host' });
   });
 
@@ -535,7 +631,11 @@ describe('fetchMediaBytes (1.AF/D9, ADR-0043 — SSRF-validated, size-bounded me
       hops: [{ status: 200 }],
     });
     await expect(
-      fetchMediaBytes('https://nxdomain.example/a.png', { maxBytes: 1000 }, deps),
+      fetchMediaBytes(
+        'https://nxdomain.example/a.png',
+        { mimeType: 'audio/L16', maxBytes: 1000 },
+        deps,
+      ),
     ).rejects.toMatchObject({ code: 'blocked_host' });
     expect(calls).toHaveLength(0); // fail-closed before any openConnection (never pins to the hostname)
   });
@@ -546,7 +646,7 @@ describe('fetchMediaBytes (1.AF/D9, ADR-0043 — SSRF-validated, size-bounded me
       hops: [{ status: 302, location: 'https://[' }], // unclosed IPv6 — new URL() throws (scheme incidental)
     });
     await expect(
-      fetchMediaBytes('https://a.example/a.png', { maxBytes: 1000 }, deps),
+      fetchMediaBytes('https://a.example/a.png', { mimeType: 'audio/L16', maxBytes: 1000 }, deps),
     ).rejects.toMatchObject({ code: 'network' });
   });
 
@@ -579,6 +679,7 @@ interface CapturedHttpsOptions {
 type FakeIncoming = AsyncIterable<Uint8Array> & {
   readonly statusCode: number;
   readonly headers: { readonly location?: string };
+  readonly rawHeaders: readonly string[];
   readonly destroy: () => void;
 };
 
@@ -587,7 +688,12 @@ function fakeIncoming(status: number, chunks: readonly Uint8Array[] = []): FakeI
     await Promise.resolve();
     for (const chunk of chunks) yield chunk;
   })();
-  return Object.assign(stream, { statusCode: status, headers: {}, destroy: () => undefined });
+  return Object.assign(stream, {
+    statusCode: status,
+    headers: {},
+    rawHeaders: [],
+    destroy: () => undefined,
+  });
 }
 
 /**
@@ -645,12 +751,12 @@ describe('nodeMediaEgressDeps — the Node mechanism wiring (E43-7)', () => {
     // openConnection, so the real https.request is never called — a regression that opened the socket first
     // would fail this.
     await expect(
-      fetchMediaBytes('https://127.0.0.1/a.png', { maxBytes: 1000 }),
+      fetchMediaBytes('https://127.0.0.1/a.png', { mimeType: 'audio/L16', maxBytes: 1000 }),
     ).rejects.toMatchObject({
       code: 'blocked_host', // loopback
     });
     await expect(
-      fetchMediaBytes('https://169.254.169.254/latest', { maxBytes: 1000 }),
+      fetchMediaBytes('https://169.254.169.254/latest', { mimeType: 'audio/L16', maxBytes: 1000 }),
     ).rejects.toMatchObject({ code: 'blocked_host' }); // the cloud-metadata link-local address
     expect(httpsRequest).not.toHaveBeenCalled();
   });
@@ -668,7 +774,7 @@ describe('nodeMediaEgressDeps — the Node mechanism wiring (E43-7)', () => {
     };
     const pending = nodeMediaEgressDeps.openConnection(request, new AbortController().signal);
     const { options, onResponse } = lastHttpsCall();
-    onResponse(fakeIncoming(200, [new Uint8Array([1, 2, 3])])); // deliver a 200 so the promise resolves
+    onResponse(fakeIncoming(200, [new Uint8Array([1, 2, 3, 4])])); // deliver a 200 so the promise resolves
     const response = await pending;
 
     expect(response.status).toBe(200);

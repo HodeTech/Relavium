@@ -29,7 +29,7 @@ export const DEFAULT_ORPHAN_MIN_AGE_MS = 60 * 60 * 1000;
 
 export interface MediaGcDeps {
   /** The run's CAS — the byte-reclamation + orphan-sweep delete from / enumerate it (a `FilesystemMediaStore`). */
-  readonly casStore: Pick<FilesystemMediaStore, 'delete' | 'listHandles'>;
+  readonly casStore: Pick<FilesystemMediaStore, 'delete' | 'listHandles' | 'sweepTemporaries'>;
   /** The reference junction the reclaim-retry + grace-GC + orphan-detection read/mutate. */
   readonly references: Pick<
     MediaReferenceStore,
@@ -80,6 +80,8 @@ export interface MediaGcReport {
  * Best-effort: the CALLER swallows a throw (a GC failure is never a run-correctness break, ADR-0042 §3).
  */
 export async function runHostMediaGc(deps: MediaGcDeps): Promise<MediaGcReport> {
+  // Temporary ownership is independent of published-run activity and its retention grace.
+  await deps.casStore.sweepTemporaries({ now: deps.now() });
   // 1. Clean-terminal reclaim retry — only settled (terminal/gone), non-current runs.
   let reclaimedRuns = 0;
   for (const runId of deps.references.runReferenceRunIds()) {

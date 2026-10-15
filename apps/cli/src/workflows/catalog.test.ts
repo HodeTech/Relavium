@@ -1,12 +1,31 @@
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  readSync,
+  readdirSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { isCliError } from '../process/errors.js';
 import { EXIT_CODES } from '../process/exit-codes.js';
 import { discoverCatalog } from './catalog.js';
+
+vi.mock('node:fs', async (original) => {
+  const native = await original<typeof import('node:fs')>();
+  return {
+    ...native,
+    openSync: vi.fn(native.openSync),
+    readSync: vi.fn(native.readSync),
+    readdirSync: vi.fn(native.readdirSync),
+  };
+});
 
 const VALID_WORKFLOW = `schema_version: '1.0'
 workflow:
@@ -60,6 +79,7 @@ describe('discoverCatalog', () => {
     proj = mkdtempSync(join(tmpdir(), 'relavium-catalog-'));
     configDir = join(proj, '.relavium');
     mkdirSync(configDir);
+    vi.clearAllMocks();
   });
   afterEach(() => {
     rmSync(proj, { recursive: true, force: true });
@@ -82,7 +102,7 @@ describe('discoverCatalog', () => {
     expect(hello?.valid).toBe(true);
     expect(hello?.name).toBe('Hello');
     expect(hello?.tags).toEqual(['greeting']);
-    expect(hello?.path).toBe('.relavium/workflows/hello.relavium.yaml'); // cwd-relative
+    expect(hello?.path).toBe(join('.relavium', 'workflows', 'hello.relavium.yaml')); // cwd-relative
 
     const broken = entries.find((e) => e.slug === 'broken'); // slug falls back to the filename stem
     expect(broken?.valid).toBe(false);
@@ -179,11 +199,74 @@ describe('discoverCatalog', () => {
     write('workflows', 'hello.relavium.yaml', VALID_WORKFLOW); // ensures workflows/ exists
     // A `.yaml` symlinked to a DIRECTORY (statSync follows it → not a regular file). The same guard rejects a
     // symlink to a FIFO/character device (e.g. /dev/zero) BEFORE readFileSync — which would otherwise block.
-    symlinkSync(configDir, join(configDir, 'workflows', 'loop.yaml'));
+    symlinkSync(configDir, join(configDir, 'workflows', 'loop.yaml'), 'junction');
 
     const entries = discoverCatalog({ projectConfigDir: configDir, cwd: proj, kind: 'workflows' });
     const loop = entries.find((e) => e.slug === 'loop');
     expect(loop?.valid).toBe(false);
     expect(loop?.error).toBe('not a regular file');
   });
+
+  it.each(['workflows', 'agents'] as const)(
+    'refuses an outside %s catalog directory before listing it (ADR-0105)',
+    (kind) => {
+      const outside = join(proj, 'outside-catalog');
+      mkdirSync(outside);
+      writeFileSync(join(outside, 'private.yaml'), VALID_WORKFLOW);
+      symlinkSync(outside, join(configDir, kind), 'junction');
+      vi.clearAllMocks();
+
+      expect(() => discoverCatalog({ projectConfigDir: configDir, cwd: proj, kind })).toThrow(
+        /could not read the .* catalog directory/,
+      );
+      expect(readdirSync).not.toHaveBeenCalled();
+      expect(openSync).not.toHaveBeenCalled();
+      expect(readSync).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['workflows', 'agents'] as const)(
+    'flags an outside-file symlink in %s before opening or reading its target (ADR-0105)',
+    (kind) => {
+      const outside = join(proj, 'private.yaml');
+      writeFileSync(outside, kind === 'workflows' ? VALID_WORKFLOW : VALID_AGENT);
+      mkdirSync(join(configDir, kind));
+      symlinkSync(outside, join(configDir, kind, 'escaped.yaml'), 'file');
+      vi.clearAllMocks();
+
+      expect(discoverCatalog({ projectConfigDir: configDir, cwd: proj, kind })).toEqual([
+        {
+          slug: 'escaped',
+          name: undefined,
+          tags: [],
+          path: join('.relavium', kind, 'escaped.yaml'),
+          valid: false,
+          error: 'outside the project catalog',
+        },
+      ]);
+      expect(openSync).not.toHaveBeenCalled();
+      expect(readSync).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['workflows', 'agents'] as const)(
+    'reads a contained-file symlink in %s through the bounded fd path (ADR-0105)',
+    (kind) => {
+      const target = join(configDir, 'contained-source.txt');
+      writeFileSync(target, kind === 'workflows' ? VALID_WORKFLOW : VALID_AGENT);
+      mkdirSync(join(configDir, kind));
+      symlinkSync(target, join(configDir, kind, 'alias.yaml'), 'file');
+      vi.clearAllMocks();
+
+      const entries = discoverCatalog({ projectConfigDir: configDir, cwd: proj, kind });
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toMatchObject({
+        slug: kind === 'workflows' ? 'hello' : 'summarizer',
+        path: join('.relavium', kind, 'alias.yaml'),
+        valid: true,
+      });
+      expect(openSync).toHaveBeenCalledOnce();
+      expect(readSync).toHaveBeenCalled();
+    },
+  );
 });

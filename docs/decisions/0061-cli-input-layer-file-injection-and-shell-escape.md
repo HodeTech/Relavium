@@ -349,3 +349,15 @@ bare-invocation Home, kept at parity):
   arrays are now a **coupled unit** — a project that sets **either** owns the whole allowlist and inherits
   **neither** array from the workspace; both fall through only when the project sets neither. Canonical home:
   [config-spec.md](../reference/contracts/config-spec.md) (`resolveChat`, `apps/cli/src/config/resolve.ts`).
+
+> Amended 2026-10-12 by [ADR-0105](0105-filesystem-roots-are-invocation-grants-not-project-authority.md): Mention/completion share the owned filesystem policy and modern credential floor. Permitted extra-root paths remain workspace-relative with necessary `..`, or canonical absolute across Windows drives. Directory entries are relative to the requested directory and consumers do not anchor twice. The renderer untrusted-text boundary remains intact. Exact mechanisms are in the [tool filesystem contract](../reference/shared-core/built-in-tools.md#filesystem-permission-tiers), with [argv authority](../reference/cli/commands.md#global-options) and [config selectors](../reference/contracts/config-spec.md#chat-filesystem-root-selectors) in their canonical homes. Implementation review/gates remain open.
+
+
+### Wave 2 implementation landing — 2026-10-13
+
+The applicable Wave 2 implementation is accepted on `development`. The
+[closing register](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-2-closing-register--2026-10-13)
+joins the per-item disposition, two NEW clean complete whole-wave review rounds,
+security sittings, exact-source gates and preserved limits. Earlier dated pending
+checkpoints remain historical. This landing does not claim a merge, future header
+activation, full M/N lifecycle or removal of approved residuals.

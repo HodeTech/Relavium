@@ -47,6 +47,23 @@ function drive(argv: readonly string[]): { id: unknown; input: unknown } {
 }
 
 describe('commander action → executeCommand forwarding (S10)', () => {
+  it('SECRETS_CAUSAL_RUN_STDIN_FLAG_FORWARDED: run forwards the boolean through its real action', () => {
+    const result = drive(['run', 'wf.relavium.yaml', '--secret-inputs-stdin']);
+    expect(result.id).toBe('run');
+    expect(result.input, 'SECRETS_CAUSAL_RUN_STDIN_FLAG_FORWARDED').toMatchObject({
+      positionals: ['wf.relavium.yaml'],
+      options: { secretInputsStdin: true },
+    });
+  });
+
+  it('keeps repeated ordinary inputs, negative values, and the first equals sign intact', () => {
+    const result = drive(['run', 'wf.relavium.yaml', '--input', 'n=-1', '--input', 'text=a=b']);
+    expect(result.input).toMatchObject({
+      positionals: ['wf.relavium.yaml'],
+      options: { input: ['n=-1', 'text=a=b'] },
+    });
+  });
+
   it('provider add forwards BOTH --base-url AND --pricing-url (the dropped-opt regression)', () => {
     const { id, input } = drive([
       'provider',
@@ -237,4 +254,18 @@ describe('W7 native budget and secret/MCP flag forwarding', () => {
       },
     });
   });
+});
+
+it('MEDIA_MAINTENANCE_FORWARDING: parser forwards each acknowledgement exactly', () => {
+  for (const flags of [[], ['--legacy-offline'], ['--force'], ['--legacy-offline', '--force']]) {
+    const result = drive(['media', 'prune-temporaries', ...flags]);
+    expect(result.id, 'MEDIA_MAINTENANCE_FORWARDING').toBe('media.prune-temporaries');
+    expect(result.input, 'MEDIA_MAINTENANCE_FORWARDING').toEqual({
+      positionals: [],
+      options: {
+        legacyOffline: flags.includes('--legacy-offline') ? true : undefined,
+        force: flags.includes('--force') ? true : undefined,
+      },
+    });
+  }
 });

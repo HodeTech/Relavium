@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { realpathSync } from 'node:fs';
+import { isAbsolute } from 'node:path';
 import { createInterface } from 'node:readline';
 
 import {
@@ -15,7 +17,7 @@ import {
   type Memory,
   type ReasoningEffort,
 } from '@relavium/shared';
-import { exportSession } from '../chat/export.js';
+import { exportSession, SESSION_EXPORT_REVIEW_NOTICE } from '../chat/export.js';
 import { createConsentGate } from '../engine/mcp-consent-gate.js';
 import { createConsentPrompter } from '../mcp/consent-prompt.js';
 import { formatDoctorReport, runDoctorChecks, type DoctorProbes } from '../chat/doctor.js';
@@ -69,7 +71,9 @@ import {
   type BuiltResumedChatSession,
   type ChatBudgetWarning,
 } from '../chat/session-host.js';
-import { loadResolvedConfig } from '../config/load.js';
+import { loadResolvedConfig, resolveHomeDir, type LoadedConfig } from '../config/load.js';
+import { admitFsInvocation, admitChatFsPolicy } from '../engine/tool-host/fs-admission.js';
+import type { FsPathPolicy } from '../engine/tool-host/fs-policy.js';
 import { reconcileResumedSessionEffects, type NoticeFlush } from '../engine/effect-retention.js';
 import { createModelCatalogPort, type ModelCatalogPort } from '../engine/model-catalog-port.js';
 import { assembleToolEnv } from '../engine/tool-host/assemble.js';
@@ -358,6 +362,9 @@ export interface ChatCommandDeps {
   readonly openSessionStore?: (homeDir: string) => OpenedSessionStore;
   /** The MCP named-secret resolver (2.R Step 4) — production injects the keychain-backed one (specs.ts); default env-only. */
   readonly mcpSecretResolver?: McpSecretResolver;
+  readonly resolveKeys?: (
+    db?: OpenedSessionStore['db'],
+  ) => Pick<ChatCommandDeps, 'providers' | 'mcpSecretResolver'>;
   /** The `/doctor` probes (2.5.C S5) — production assembles the real keychain/config/tool/provider/MCP probes;
    *  a test injects a fake so it exercises `/doctor` without a real keychain or a live provider/MCP server. */
   readonly doctorProbes?: DoctorProbes;
@@ -392,6 +399,9 @@ export interface ChatResumeCommandDeps {
   readonly openSessionStore?: (homeDir: string) => OpenedSessionStore;
   /** The MCP named-secret resolver (2.R Step 4) — production injects the keychain-backed one; default env-only. */
   readonly mcpSecretResolver?: McpSecretResolver;
+  readonly resolveKeys?: (
+    db?: OpenedSessionStore['db'],
+  ) => Pick<ChatCommandDeps, 'providers' | 'mcpSecretResolver'>;
   /** The `/doctor` probes (2.5.C S5) — production assembles the real probes; a test injects a fake. */
   readonly doctorProbes?: DoctorProbes;
   /** The interactive driver — defaults to the plain non-TTY line loop; the TTY ink driver + tests override it. */
@@ -549,6 +559,7 @@ export function budgetWarningText(warning: ChatBudgetWarning): string {
 }
 
 export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps): Promise<ExitCode> {
+  const grants = admitFsInvocation(deps.global);
   const now = deps.now ?? Date.now;
   const uuid = deps.uuid ?? randomUUID;
 
@@ -558,8 +569,11 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
     cwd: deps.global.cwd,
     configPath: deps.global.configPath,
   });
-  const providers = deps.providers ?? createProviderResolver(deps.io.env);
-  const mcpSecretResolver = deps.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env);
+  const fsPolicy = admitChatFsPolicy(grants, deps.global.cwd, config.chat.extraRoots);
+  const keys = deps.resolveKeys?.();
+  const providers = deps.providers ?? keys?.providers ?? createProviderResolver(deps.io.env);
+  const mcpSecretResolver =
+    deps.mcpSecretResolver ?? keys?.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env);
   // The full-screen viewport can hold a whole answer; the inline `<Static>` path keeps its trailing tail (ADR-0068
   // Decision (c)). Resolved from `chatAltActive` — the SAME function `runReplLoop` uses for the hoist.
   const transcriptBound = transcriptBoundFor(chatAltActive(deps, config.altScreen));
@@ -574,6 +588,7 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
   // fail-loud exit-2 CliError, cause stripped) before the session is live.
   const built = await (deps.buildSession ?? buildChatSession)({
     chat: config.chat,
+    fsPolicy,
     ...(config.maxTokensEstimate === undefined
       ? {}
       : { maxTokensEstimate: config.maxTokensEstimate }),
@@ -672,6 +687,7 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
   // shared with `chat-resume` via createClearRebuild so it cannot drift.
   const rebuild = createClearRebuild({
     chat: config.chat,
+    fsPolicy,
     ...(config.maxTokensEstimate === undefined
       ? {}
       : { maxTokensEstimate: config.maxTokensEstimate }),
@@ -695,6 +711,7 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
   // just-ended session from the SHARED db, so it does not close over `built.agent` (the reseat swaps the model).
   const reseatRebuild = createReseatRebuild({
     chat: config.chat,
+    fsPolicy,
     ...(config.maxTokensEstimate === undefined
       ? {}
       : { maxTokensEstimate: config.maxTokensEstimate }),
@@ -747,13 +764,14 @@ export async function chatResumeCommand(
   const now = deps.now ?? Date.now;
   const uuid = deps.uuid ?? randomUUID;
 
-  const { config, projectConfigDir, homeDir } = loadResolvedConfig({
-    cwd: deps.global.cwd,
-    configPath: deps.global.configPath,
-  });
-  const providers = deps.providers ?? createProviderResolver(deps.io.env);
-  const mcpSecretResolver = deps.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env);
+  const grants = admitFsInvocation(deps.global);
+  const homeDir = resolveHomeDir({});
   const opened = (deps.openSessionStore ?? openSessionStore)(homeDir);
+  let config: LoadedConfig['config'];
+  let projectConfigDir: LoadedConfig['projectConfigDir'];
+  let fsPolicy: FsPathPolicy;
+  let providers: ProviderResolver;
+  let mcpSecretResolver: McpSecretResolver;
 
   let built: BuiltChatSession;
   let store: ChatStoreController;
@@ -772,12 +790,49 @@ export async function chatResumeCommand(
     if (loaded === undefined) {
       throw new CliError('invalid_invocation', `no session found with id ${args.sessionId}`);
     }
+    if (loaded.session.agentSnapshot === undefined) {
+      throw new CliError(
+        'invalid_invocation',
+        'The session has no stored agent snapshot and cannot be resumed.',
+      );
+    }
+    // Recover the original workspace before reading project/workspace selectors. Launch cwd cannot substitute it.
+    const originalCwd = loaded.session.context.workingDir;
+    if (!isAbsolute(originalCwd)) {
+      throw new CliError(
+        'invalid_invocation',
+        'This legacy session has no absolute workspace anchor and cannot be safely resumed.',
+      );
+    }
+    let canonicalCwd: string;
+    try {
+      canonicalCwd = realpathSync.native(originalCwd);
+    } catch {
+      throw new CliError('invalid_invocation', 'The original session workspace is unavailable.');
+    }
+    if (canonicalCwd !== originalCwd) {
+      throw new CliError(
+        'invalid_invocation',
+        'This legacy session has an ambiguous workspace alias and cannot be safely resumed.',
+      );
+    }
+    ({ config, projectConfigDir } = loadResolvedConfig({
+      cwd: originalCwd,
+      configPath: deps.global.configPath,
+    }));
+    fsPolicy = admitChatFsPolicy(grants, originalCwd, config.chat.extraRoots);
+    deps = { ...deps, global: Object.freeze({ ...deps.global, cwd: originalCwd }) };
+    const keys = deps.resolveKeys?.(opened.db);
+    providers = deps.providers ?? keys?.providers ?? createProviderResolver(deps.io.env);
+    mcpSecretResolver =
+      deps.mcpSecretResolver ?? keys?.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env);
     // The ADR-0065 §2 user-pricing overlay (2.5.G S10), read from the ALREADY-OPEN session db — so a resumed
     // session enforces + tracks a user-priced model exactly like a fresh `chat`. Non-fatal (an empty map on a
     // read fault): a corrupt pricing row must not fail an otherwise-valid resume.
     resolvePrice = readUserPricingOverlay(opened.db);
     const resumed = await (deps.buildResumedSession ?? buildResumedChatSession)({
       chat: config.chat,
+      fsPolicy,
       ...(config.maxTokensEstimate === undefined
         ? {}
         : { maxTokensEstimate: config.maxTokensEstimate }),
@@ -864,6 +919,7 @@ export async function chatResumeCommand(
   // `built.agent` is the frozen snapshot agent (no on-disk ref), passed verbatim. Same shared contract as `chat`.
   const rebuild = createClearRebuild({
     chat: config.chat,
+    fsPolicy,
     ...(config.maxTokensEstimate === undefined
       ? {}
       : { maxTokensEstimate: config.maxTokensEstimate }),
@@ -886,6 +942,7 @@ export async function chatResumeCommand(
   // Reloads the just-ended session (which may itself already be a resume), so it needs no captured agent.
   const reseatRebuild = createReseatRebuild({
     chat: config.chat,
+    fsPolicy,
     ...(config.maxTokensEstimate === undefined
       ? {}
       : { maxTokensEstimate: config.maxTokensEstimate }),
@@ -1021,7 +1078,7 @@ export function chatIsInteractive(
 }
 
 export function createChatModeControl(
-  built: Pick<BuiltChatSession, 'session' | 'tools' | 'context' | 'agent'>,
+  built: Pick<BuiltChatSession, 'session' | 'tools' | 'context' | 'agent' | 'fsPolicy'>,
   store: ChatStoreController,
   opts?: { readonly interactive?: boolean },
 ): ChatModeControl {
@@ -1038,6 +1095,7 @@ export function createChatModeControl(
     session: built.session,
     tools: built.tools,
     workspaceDir: built.context.workingDir,
+    ...(built.fsPolicy === undefined ? {} : { fsPolicy: built.fsPolicy }),
     prompt,
   });
   applyChatMode(modeEnv, store.getSnapshot().mode);
@@ -1228,6 +1286,7 @@ export function createChatLineHandler(
           // id, so `force` here can only ever clobber this session's prior export, never another session's.
           force: true,
         });
+        emitOutput(SESSION_EXPORT_REVIEW_NOTICE.trimEnd());
         if (deps.global.json) {
           // Machine mode (--json, 2.Q): emit `session:exported` THROUGH the session bus, so it rides the
           // live stream's monotonic per-session sequenceNumber (a DB-derived seq would jump backward and
@@ -1570,6 +1629,7 @@ export function createChatLineHandler(
  */
 interface FreshChatWiringDeps {
   readonly chat: BuildChatSessionOptions['chat'];
+  readonly fsPolicy?: FsPathPolicy;
   readonly maxTokensEstimate?: number;
   readonly agent: AgentDefinition;
   readonly cwd: string;
@@ -1604,6 +1664,7 @@ async function buildFreshChatWiring(deps: FreshChatWiringDeps, intro: string): P
   const resolvePrice = readUserPricingOverlay(deps.opened.db);
   const built = await deps.buildSession({
     chat: deps.chat,
+    ...(deps.fsPolicy === undefined ? {} : { fsPolicy: deps.fsPolicy }),
     ...(deps.maxTokensEstimate === undefined ? {} : { maxTokensEstimate: deps.maxTokensEstimate }),
     agent: deps.agent,
     agentRef: deps.agent.id, // ignored when `agent` is set, but the option key is required
@@ -1713,6 +1774,7 @@ async function buildFreshChatWiring(deps: FreshChatWiringDeps, intro: string): P
  */
 function createClearRebuild(params: {
   readonly chat: BuildChatSessionOptions['chat'];
+  readonly fsPolicy?: FsPathPolicy;
   readonly maxTokensEstimate?: number;
   readonly agent: AgentDefinition;
   readonly projectConfigDir: string | undefined;
@@ -1730,6 +1792,7 @@ function createClearRebuild(params: {
 }): (oldSessionId: string) => Promise<ReplWiring> {
   const wiringDeps: FreshChatWiringDeps = {
     chat: params.chat,
+    ...(params.fsPolicy === undefined ? {} : { fsPolicy: params.fsPolicy }),
     ...(params.maxTokensEstimate === undefined
       ? {}
       : { maxTokensEstimate: params.maxTokensEstimate }),
@@ -1834,6 +1897,7 @@ function seedResumedWiring(
  *  fresh, and swaps the bound model (so it has no fixed `agent` — the agent is loaded from the just-ended record). */
 interface ReseatWiringDeps {
   readonly chat: BuildChatSessionOptions['chat'];
+  readonly fsPolicy?: FsPathPolicy;
   readonly maxTokensEstimate?: number;
   readonly now: () => number;
   readonly uuid: () => string;
@@ -1901,6 +1965,7 @@ async function buildReseatWiring(
   const resolvePrice = readUserPricingOverlay(deps.opened.db);
   const resumed = await deps.buildResumedSession({
     chat: deps.chat,
+    ...(deps.fsPolicy === undefined ? {} : { fsPolicy: deps.fsPolicy }),
     ...(deps.maxTokensEstimate === undefined ? {} : { maxTokensEstimate: deps.maxTokensEstimate }),
     record,
     messages: loaded.messages,
@@ -1986,6 +2051,7 @@ async function buildReseatWiring(
  */
 function createReseatRebuild(params: {
   readonly chat: BuildChatSessionOptions['chat'];
+  readonly fsPolicy?: FsPathPolicy;
   readonly maxTokensEstimate?: number;
   readonly now: () => number;
   readonly uuid: () => string;
@@ -2005,6 +2071,7 @@ function createReseatRebuild(params: {
 ) => Promise<ReplWiring> {
   const wiringDeps: ReseatWiringDeps = {
     chat: params.chat,
+    ...(params.fsPolicy === undefined ? {} : { fsPolicy: params.fsPolicy }),
     ...(params.maxTokensEstimate === undefined
       ? {}
       : { maxTokensEstimate: params.maxTokensEstimate }),
@@ -2054,6 +2121,7 @@ function buildInteractiveMentionReader(
     profile: 'chat-read-only',
     fsScopeTier: built.context.fsScopeTier,
     workspaceDir: built.context.workingDir,
+    ...(built.fsPolicy === undefined ? {} : { fsPolicy: built.fsPolicy }),
   }).host.fs;
   return fsArm === undefined ? undefined : createMentionReader(fsArm);
 }

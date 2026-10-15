@@ -64,3 +64,15 @@ analogy**: management + chat only, a **read-only display** status strip with the
   Home, the in-Home chat, and MCP teardown.
 - The Home's exit-code semantics (Home `0`, consumed chat `4`) add a small mapping the regression
   harness must assert; covered by the Phase 2.5 backward-compatibility exit criterion.
+
+> Amended 2026-10-12 by [ADR-0105](0105-filesystem-roots-are-invocation-grants-not-project-authority.md): Bare Home admits invocation filesystem grants before dispatcher composition and forwards process-local authority into chat/resume. Project files and history never grant roots. Resume recovers the original canonical workspace and reauthorizes against fresh flags/current selectors. Exact mechanisms are in the [tool filesystem contract](../reference/shared-core/built-in-tools.md#filesystem-permission-tiers), with [argv authority](../reference/cli/commands.md#global-options) and [config selectors](../reference/contracts/config-spec.md#chat-filesystem-root-selectors) in their canonical homes. Implementation review/gates remain open.
+
+
+### Wave 2 implementation landing — 2026-10-13
+
+The applicable Wave 2 implementation is accepted on `development`. The
+[closing register](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-2-closing-register--2026-10-13)
+joins the per-item disposition, two NEW clean complete whole-wave review rounds,
+security sittings, exact-source gates and preserved limits. Earlier dated pending
+checkpoints remain historical. This landing does not claim a merge, future header
+activation, full M/N lifecycle or removal of approved residuals.

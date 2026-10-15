@@ -34,6 +34,7 @@ import {
   type EffectTier,
   LeaseFencedError,
   type MediaReferencePort,
+  type HostMediaRequest,
   type MediaStore,
   type MediaWritePort,
   nodeIdFromRunScope,
@@ -283,9 +284,11 @@ export interface ExecutionHost {
   /**
    * The host media-reference lifecycle port (1.AF/D12c + D11,
    * [ADR-0042](../../../../docs/decisions/0042-engine-media-storage-substrate-mediastore-deinline-retention.md)
-   * §3-4): the engine records a produced handle's run reference at the de-inline choke point and reclaims
-   * the run's references at its terminal event. **Optional + best-effort** — a record/reclaim failure is a
-   * retention concern, never an I3/run-correctness break. The Node reference is `@relavium/db`'s
+   * §3-4): a present port must admit produced metadata before publication; missing/failed admission
+   * refuses publication. The port itself is optional: absence grants no metadata reference or read scope.
+   * Post-ACK record/reclaim is best-effort retention, separate from that mandatory admission barrier.
+   * See the canonical [bounded-media contract](../../../../docs/reference/shared-core/llm-provider-seam.md#bounded-verified-media-publication-adr-0106).
+   * The Node reference is `@relavium/db`'s
    * `createMediaReferencePort(MediaReferenceStore)`; a text-only host (or a host that does not track media
    * retention) leaves it `undefined`.
    */
@@ -320,17 +323,9 @@ export interface ExecutionHost {
 
 /** The host media-egress port: a public-HTTPS `url` → its bytes, under an engine-supplied size bound. */
 /** The streaming media-egress port: a public-HTTPS `url` → its bytes, chunk by chunk, under a size bound. */
-export type HostMediaStream = (
-  url: string,
-  maxBytes: number,
-  signal: AbortSignalLike,
-) => AsyncIterable<Uint8Array>;
-
-export type HostMediaFetch = (
-  url: string,
-  maxBytes: number,
-  signal?: AbortSignalLike,
-) => Promise<Uint8Array>;
+export type { HostMediaRequest } from '@relavium/shared';
+export type HostMediaStream = (request: HostMediaRequest) => AsyncIterable<Uint8Array>;
+export type HostMediaFetch = (request: HostMediaRequest) => Promise<Uint8Array>;
 
 // --- In-memory reference implementation (engine tests + the local reference) -------------------
 

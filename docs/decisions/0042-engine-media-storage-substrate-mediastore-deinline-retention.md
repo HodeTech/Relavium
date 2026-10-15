@@ -89,3 +89,50 @@ accepted in the [W7 closing register](../roadmap/phases/phase-2.6.5-core-reliabi
 The later [post-closure systematic correction register](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#post-closure-systematic-review--2026-10-10)
 tracks reopened review findings and their scoped acceptance; it governs the current PR acceptance status.
 This additive note does not rewrite the original decision or claim that PR #90 has merged.
+
+> Amended 2026-10-12 by [ADR-0105](0105-filesystem-roots-are-invocation-grants-not-project-authority.md): Filesystem CAS physical containment now pins root identity, refuses linked/special descendants and uses exclusive temporary ownership with atomic publication. The MediaStore port, handle identity, retention and authorization remain intact. Bounded fd reads, cancellation and temp/live-writer maintenance remain Wave 2 Step 6 / ADR-0106 obligations. Exact mechanisms are in the [tool filesystem contract](../reference/shared-core/built-in-tools.md#filesystem-permission-tiers), with [argv authority](../reference/cli/commands.md#global-options) and [config selectors](../reference/contracts/config-spec.md#chat-filesystem-root-selectors) in their canonical homes. Implementation review/gates remain open.
+
+### Wave 2 media implementation checkpoint — 2026-10-12
+
+ADR-0106 refines the formerly all-post-append metadata mechanism: mandatory byte/descriptor
+admission and a present port's atomic batch metadata ACK precede workflow state, `save_to`,
+sequence allocation, append and terminal outbox publication. Post-ACK lifetime reference mutation
+and reclaim remain best effort; admission grants no read access. The immutable tuple/retry/rollback
+rules live in [database-schema.md](../reference/shared-core/database-schema.md#media-metadata-admission);
+[the media contract](../reference/shared-core/llm-provider-seam.md#bounded-verified-media-publication-adr-0106)
+owns host shapes and byte evidence. This supersedes the earlier Step 6 pending mechanism statement,
+not its historical review status. Implementation is undergoing cumulative independent review.
+
+### Native media close ownership — 2026-10-13
+
+Accepted [ADR-0109](0109-native-media-close-ownership-is-explicit-iterator-provenance.md)
+refines interruption at the media byte-consumer boundary. Exact private iterator
+provenance separates foreign return observation from trusted native retirement.
+Store-owned cleanup precedes native acknowledgement joining; counted wrappers
+initiate without blocking store cleanup and their enclosing scope joins afterward.
+Natural EOF, deliberate wrapper adoption and the single loaded-module boundary
+are explicit in the [canonical media lifecycle contract](../reference/shared-core/llm-provider-seam.md#bounded-verified-media-publication-adr-0106).
+Existing host work/receipt ownership and whole-buffer limits remain in force.
+Implementation, packaging and cumulative review gates remain separate from this
+decision approval; this note does not accept Step 6 or close Wave 2.
+
+
+### Wave 2 implementation landing — 2026-10-13
+
+The applicable Wave 2 implementation is accepted on `development`. The
+[closing register](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-2-closing-register--2026-10-13)
+joins the per-item disposition, two NEW clean complete whole-wave review rounds,
+security sittings, exact-source gates and preserved limits. Earlier dated pending
+checkpoints remain historical. This landing does not claim a merge, future header
+activation, full M/N lifecycle or removal of approved residuals.
+
+### Generated-result publication correction — 2026-10-15
+
+The PR #94 review reproduced successful generated base64 results being rejected
+by request-input inline ceilings. The generated-result exception is retained;
+publication uses the existing independently bounded streaming port for larger
+results, with verified handle-only admission before state and durable append.
+The [canonical carrier contract](../reference/shared-core/llm-provider-seam.md#bounded-verified-media-publication-adr-0106)
+owns routing and optional-host compatibility. This corrects integration of
+ADR-0089/0106 without changing ingress bounds, retention or realized accounting.
+Source review and corrected-head execution acceptance remain separate.

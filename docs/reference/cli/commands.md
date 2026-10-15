@@ -1,6 +1,6 @@
 # CLI Command Reference (`relavium`)
 
-> Last updated: 2026-10-03
+> Last updated: 2026-10-15
 
 - **Status**: Reference (partial — surface defined, exact flags to be finalized as the CLI is built)
 - **Surface**: CLI (`relavium`)
@@ -105,8 +105,9 @@ before parsing the subcommand).
 | `--json` | Emit machine-readable NDJSON output (disables the TUI) — see [Output modes](#output-modes). |
 | `--color` | Force colored (ANSI) output on. |
 | `--no-color` | Disable colored (ANSI) output. |
-| `--cwd <dir>` | Run as if started in `<dir>` (project discovery and relative paths resolve from here). |
-| `--config <path>` | Use an explicit global config file instead of `~/.relavium/config.toml` — the project `.relavium/` layers still apply ([config-spec.md](../contracts/config-spec.md)). |
+| `--cwd <dir>` | Run as if started in `<dir>` (project discovery and relative paths resolve from here). On chat resume this cannot replace the original workspace. |
+| `--config <path>` | Use an explicit global config file instead of `~/.relavium/config.toml` — the project `.relavium/` layers still apply ([config-spec.md](../contracts/config-spec.md)). Chat resume uses this current global override while discovering current project layers at its original workspace. |
+| `--allow-fs-root <absolute-directory>` | Repeatable invocation-only filesystem grant for bare Home, `chat`, `chat-resume` and `agent run`; at most 16 arguments, at most 4096 characters each, naming existing accessible directories. Other commands, including workflow `run`, refuse it (exit `2`). [Project/workspace selectors](../contracts/config-spec.md#chat-filesystem-root-selectors) can narrow these grants. |
 | `--no-alt-screen` | Keep the byte-identical inline renderer for the bare Home + `relavium chat` (no full-screen alternate screen) — the screen-reader fallback. Overrides `[preferences].alt_screen`; a non-TTY / `--json` / CI path is always inline regardless ([ADR-0068](../../decisions/0068-full-screen-tui-renderer-ink7-harness.md)). |
 | `--no-mouse` | Disable terminal mouse reporting (DECSET 1002+1006) inside the full-screen renderer. The wheel stops scrolling the transcript (PgUp/PgDn + Ctrl+Home/Ctrl+End still page), in-app selection and copy-on-select go with it, and the emulator's own click-drag selection works again without a modifier. Overrides `[preferences].mouse`, and forces `[preferences].copy_on_select` off. Ignored outside the alt screen ([ADR-0068](../../decisions/0068-full-screen-tui-renderer-ink7-harness.md) §e, [accessibility.md](accessibility.md)). |
 | `-v, --verbose` | Print verbose diagnostics to stderr. |
@@ -114,13 +115,15 @@ before parsing the subcommand).
 | `-V, --version` | Print the version and exit `0`. |
 | `-h, --help` | Print help for the program or a subcommand and exit `0`. |
 
+Filesystem grants undergo native admission before dispatcher history/provider/key/MCP composition. Invalid or unavailable roots refuse with value-free diagnostics. No environment/config/session/model output grants a root. The flag works without selector config; fresh resumes require fresh grants under the [session authority contract](chat-session.md#filesystem-authority-and-resume).
+
 ## Commands
 
 The command set below is the confirmed surface. Commands ship **per workstream**: `run` (2.D), `gate` + `gate list` (2.G/2.I), `provider` (2.C), the read commands `list` / `logs` / `status` (2.I), the whole agent-first chat family — **`chat`** (2.M), **`chat-resume`** (2.N), **`chat-list`** (2.O), **`chat-export`** (2.P), and **`chat --json` + `agent run`** (2.Q) — and the YAML-lifecycle authoring commands **`create`** / **`import`** / **`export`** (2.J) are all **live**; `budget resume` is live under W7 ([ADR-0097](../../decisions/0097-a-budget-approval-is-an-allowance-not-an-exemption.md)). Invoking a not-yet-shipped command exits with a clean "not available yet (lands in …)" message. Subcommands marked _(planned)_ are intended but not yet locked.
 
 | Command | Purpose |
 |---------|---------|
-| `relavium run <workflow> [--input k=v] [--allow-mcp-stdio <digest>]` | Execute a workflow. Streams progress; resolves with the workflow output. |
+| `relavium run <workflow> [--input k=v] [--secret-inputs-stdin] [--allow-mcp-stdio <digest>]` | Execute a workflow. Streams progress; resolves with the workflow output. |
 | `relavium chat [--agent <ref>]` | Start an interactive [agent session](../contracts/agent-session-spec.md) (the agent-first REPL). See [chat-session.md](chat-session.md). |
 | `relavium chat-resume <sessionId>` | Reload a persisted session from `history.db` and continue the conversation. |
 | `relavium chat-list` | List past agent sessions (id, agent, last activity), the way `relavium list` lists workflows. |
@@ -129,7 +132,7 @@ The command set below is the confirmed surface. Commands ship **per workstream**
 | `relavium list` | List discovered workflows (and, with a flag, agents) in the current project. |
 | `relavium create [--force]` | Scaffold a new agent or a minimal single-agent workflow YAML via an interactive wizard (schema-validated before write). |
 | `relavium import <path> [--force]` | Import an external `.relavium.yaml` / `.agent.yaml` into the project, validated + slug-deduplicated. |
-| `relavium export <id> [--out <path>] [--force]` | Export a workflow/agent to a portable, canonical YAML copy (re-serialized from the validated AST — no provider key by construction, comments dropped; MCP `env` secrets preserved faithfully, so author them as `{{secrets.*}}`). |
+| `relavium export <id> [--out <path>] [--force]` | Export a workflow/agent to a portable, canonical YAML copy. Serialization drops comments and preserves authored values, including sensitive literals; review before sharing. Configured provider keys use keychain references; author MCP `env` credentials as `{{secrets.*}}`. |
 | `relavium logs <runId>` | Print the persisted event/log stream for a past run. |
 | `relavium status` | Show active runs and their per-node status. |
 | `relavium gate <runId>` | Resolve a pending human gate (approve / reject / provide input). |
@@ -186,16 +189,22 @@ relavium run ./workflows/code-review.relavium.yaml --input file=./src/index.ts
 
 # CI: machine-readable event stream
 relavium run ./workflows/code-review.relavium.yaml --input file=./src/index.ts --json
+
+# A workflow with a declared secret input: supply it through a non-TTY pipe
+printf 'api_key=%s\n' "$API_KEY" | relavium run ./workflows/code-review.relavium.yaml --secret-inputs-stdin
 ```
 
-- `--input k=v` (repeatable, one distinct key per input) supplies typed workflow inputs (see the `inputs` block in [../contracts/workflow-yaml-spec.md](../contracts/workflow-yaml-spec.md)). Each value is coerced to the input's declared type; an unknown key, a repeated key, a missing required input, or a value that does not coerce is an invalid invocation (exit `2`).
+- `--input k=v` (repeatable, one distinct key per input) supplies **ordinary** typed workflow inputs (see [workflow inputs](../contracts/workflow-yaml-spec.md#inputs)). Values are coerced to their declared types. An unknown or repeated key, a missing required input, or an invalid value is an invocation fault (exit `2`). Every explicit `--input` for a declared `secret` is refused, **including `name=`**: argv can appear in process lists, shell history and CI logs. Raw malformed-input and run-parser diagnostics do not echo pasted argument values.
+- `--secret-inputs-stdin` reads declared `secret` inputs **once from non-TTY stdin**; TTY stdin is refused even if stdout is redirected. Supply one `name=value` line per secret. Blank lines are ignored, the name is trimmed, the value after the **first** `=` is preserved verbatim (including spaces and further `=`), and a carriage return at the end of a line is removed. Repeated names after trimming, malformed lines, unknown or non-secret names, and empty or whitespace-only values are refused with payload-free exit-`2` diagnostics. Names such as `__proto__`, `constructor` and `toString` work only when declared; accumulation uses own properties in a null-prototype map. Required secrets must be supplied; omitted optional secrets remain absent. The [common reader limit](#secret-stdin-limits) applies before line parsing. A workflow with no declared secrets refuses the flag without reading stdin.
+- Run admission rejects forbidden ordinary secret arguments before reading the secret pipe, constructing credential/provider resolvers, connecting MCP or opening run history. The CLI then coerces ordinary values, merges stdin secrets, and runs the pure core input contract (including length, format, pattern, enum and numeric bounds) before those effects. A rejected invocation creates no run. After unknown CLI keys are refused, core contract refusals identify a bounded set of already-declared inputs with sanitized labels and value-free reasons. Unknown, duplicate and malformed ordinary argument diagnostics keep raw argv names and values opaque. The engine validates again at start; admitted secret input slots and input-node results are [masked](../contracts/workflow-yaml-spec.md#inputs) in run events/history, while the authored workflow snapshot is kept faithful. This does not redact arbitrary authored literals, tool output or other content.
+- Consuming the secret pipe removes interactive prompt authority for this invocation. A later unresolved human gate pauses with exit `3` for a fresh `relavium gate` call; an unapproved local MCP program refuses instead of prompting. An existing exact consent grant or explicit `--allow-mcp-stdio <digest>` remains the authorization path. The flag itself grants no tool or transport authority.
 - `--json` switches to NDJSON [RunEvent](../contracts/sse-event-schema.md) output.
 - `Ctrl-C` (SIGINT) requests a cooperative cancel; the run drains to `run:cancelled` and exits non-zero (`1`). This is unchanged when the workflow declares `mcp_servers`: the spawned servers are torn down alongside the drain, and the MCP teardown deliberately does **not** take the exit code — a signalled run still records its terminal and releases its lease ([ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md) §1.3).
 - A missing API key for an inline agent's **primary** provider is caught **pre-flight** as an invalid invocation (exit `2`) naming the `RELAVIUM_<PROVIDER>_API_KEY` to set, before the run starts. The pre-flight is a strict subset of the keys a run may touch, so it never blocks a valid run: a `fallback_chain` provider's key (read only if the chain fails over to it) and a `$ref`-resolved external agent's key (until `$ref` resolution lands, 2.M–2.Q) are conditional and instead surface mid-run as a run failure (exit `1`).
 - `--allow-mcp-stdio <digest>` (repeatable) authorizes a **local MCP program** for this invocation only, when there is no one to prompt. A workflow declaring a `stdio` MCP server that has not been approved on this machine exits `2` before anything spawns — see [Local MCP servers need consent](#local-mcp-servers-need-consent).
 - On a `human_gate` node the run **pauses**: in interactive mode it prompts inline; in CI mode it exits with the gate-paused code (`3`, see [Exit codes](#exit-codes)) and can be resumed with `relavium gate`. The emitted `human_gate:paused` event carries the `runId` + `gateId` needed for the resume (`relavium gate <runId> --gate <gateId>`); with `--json` they are on the NDJSON event line, otherwise the plain/TUI renderer prints them inline (`paused at gate <gateId> (<type>)`, also echoed in the final summary). (`relavium status`, `relavium logs <runId>`, and `relavium gate list` also surface pending `gateId`s, 2.I.)
 
-> **Implementation status (as of workstream 2.G).** `run` is wired to the `@relavium/core` engine: path/id resolution, `--input` coercion, the full lifecycle event stream, exit codes `0`/`1`/`2`/`3`, SIGINT→cancel, and the stable `--json` NDJSON machine contract (stdout = pure RunEvent stream, diagnostics → stderr; see [above](#the---json-machine-output-contract)) are live. The interactive **`ink` TUI** (2.E) renders the live run on a TTY — per-node status + spinners, the active node's streaming tokens, a running cost/duration footer, and a persistent final summary. Under `--no-color` it keeps the TUI but suppresses ANSI color; it falls back to the plain line renderer when no TTY is attached or `CI=true`, and to NDJSON under `--json` (the three renderers are one `onEvent` seam over one bus). Provider keys resolve from the **OS keychain → `RELAVIUM_<PROVIDER>_API_KEY` env var → error** (2.C; manage them with `relavium provider`), and runs persist to durable history (2.H). The **interactive human-gate prompt** + out-of-band [`relavium gate`](#relavium-gate) resume are live (2.G): on a TTY a `human_gate` node renders a `@clack/prompts` card inline (approve / reject + comment / input) and the run continues; under `--json`/CI/no-TTY there is no prompt and the run exits `3`, resumable later by `relavium gate <runId>`. Built-in tools that need a host capability (filesystem, process, egress) are **fail-closed** (unavailable) pending a security-reviewed capability workstream.
+> **Implementation status (as of workstream 2.G).** `run` is wired to the `@relavium/core` engine: path/id resolution, `--input` coercion, the full lifecycle event stream, exit codes `0`/`1`/`2`/`3`, SIGINT→cancel, and the stable `--json` NDJSON machine contract (stdout = pure RunEvent stream, diagnostics → stderr; see [above](#the---json-machine-output-contract)) are live. The interactive **`ink` TUI** (2.E) renders the live run on a TTY — per-node status + spinners, the active node's streaming tokens, a running cost/duration footer, and a persistent final summary. Under `--no-color` it keeps the TUI but suppresses ANSI color; it falls back to the plain line renderer when no TTY is attached or `CI=true`, and to NDJSON under `--json` (the three renderers are one `onEvent` seam over one bus). Provider keys resolve from the **OS keychain → `RELAVIUM_<PROVIDER>_API_KEY` env var → error** (2.C; manage them with `relavium provider`), and runs persist to durable history (2.H). The **interactive human-gate prompt** + out-of-band [`relavium gate`](#relavium-gate) resume are live (2.G): on a TTY a `human_gate` node renders a `@clack/prompts` card inline (approve / reject + comment / input) and the run continues; under `--json`/CI/no-TTY there is no prompt and the run exits `3`, resumable later by `relavium gate <runId>`. The CLI supplies reviewed filesystem, process and egress host capabilities; tool availability remains subject to invocation authority, per-tool policy and wired delegates. The [built-in tool reference](../shared-core/built-in-tools.md#cli-authority-and-floors) owns their current host behavior and security floors.
 
 ### `relavium list`
 
@@ -216,7 +225,15 @@ Both are **surface-agnostic** git-native YAML operations — they read/write `.r
 - **`import <path> [--force]`** copies an external `.relavium.yaml` / `.agent.yaml` into the project after validating it against the schema. It writes the **re-serialized canonical form** to `.relavium/<workflows|agents>/<slug>.<suffix>`. Ids are unique **across both catalogs** (a bare id resolves project-globally, so `export <id>` stays unambiguous): a **same-kind** slug collision is exit `2` unless `--force` overwrites it; a **cross-kind** collision (the id already names the other kind) is exit `2` always — rename one, since `--force` would leave both files in place.
 - **`export <id> [--out <path>] [--force]`** resolves `<id>` across **both** catalogs (an id naming neither is exit `2`; an id that is *both* a workflow and an agent is exit `2`, "rename one"), re-validates it, and writes a portable copy. The default destination is `./<id>.<suffix>` in the cwd (a copy to share, outside the catalog); `--out` overrides it. Under `--json` it emits a single `{ id, kind, path }` record, where `path` is **cwd-relative** (the same shape `import --json` emits — no absolute filesystem path is printed in either mode).
 
-**Why it is safe to share** (see [../desktop/keychain-and-secrets.md](../desktop/keychain-and-secrets.md)): a **provider API key is never in the file by construction** — there is no schema field that holds a key value (keys live in the OS keychain, referenced by account id, and are resolved only at run time). MCP-server secrets are referenced via `{{secrets.*}}` placeholders **by convention** — the `env` map accepts arbitrary strings, so `export`/`import` **re-serialize faithfully** (they preserve whatever is authored; they do not scrub): author secrets as `{{secrets.*}}`, never inline a literal. The re-serialize from the validated AST also **drops all free-form comments** (where a stray secret might otherwise hide), and the exported file re-imports cleanly. This is the "workflow file is the invite" distribution mechanism.
+**Review before sharing.** Relavium does not insert a resolved provider key into authored YAML: its provider-key configuration uses OS-keychain references. Arbitrary authored strings, including prompts, metadata and MCP `env`, can still contain a pasted credential or other sensitive content. `export`/`import` **re-serialize faithfully** and drop comments; they preserve authored values and do not scrub them. Author MCP credentials as `{{secrets.*}}` placeholders, never inline a literal. See [key custody and content retention](../desktop/keychain-and-secrets.md).
+
+`create`, `import` and `run` apply a bounded, best-effort review of the parsed authored definition using the existing finite diagnostic secret-shape detector. A suspicious shape produces a value-free notice on **stderr**; an incomplete scan is also disclosed. These notices neither reject nor redact the document and add no JSON stdout record. The original parsed definition and the run's admitted augmented snapshot remain faithful. Absence of a notice does not certify safe sharing or absence of credentials. Supplied runtime secret-input values are outside this authored-content scan; their admission and recorded-slot masking follow [the input contract](../contracts/workflow-yaml-spec.md#inputs).
+
+`create` and `import` emit these notices only after their YAML file is written. A refused write emits no authored-content notice or success output.
+
+The review visits at most 4,096 nodes through depth 64, checks strings of at most 16,384 UTF-16 code units and at most 262,144 checked code units in total, including property names. It reports only a count of strings matching the existing finite detector (prefixed OpenAI/Anthropic or Google keys, URL userinfo, Bearer/Basic credentials and literal secret query names). It does not classify every credential format. Over-budget strings or structure, repeated objects and unsupported object shapes produce a separate fixed incomplete-review notice. Object-key enumeration relies on the existing parser source ceiling; the node limit is not an independent bound on that enumeration. Neither notice includes values or arbitrary property names.
+
+For this detector probe only, a recognised bare template reference without a path or filter is projected to an already masked span, provided its raw reference contains no recognised credential shape. This keeps `Bearer {{secrets.token}}` and equivalent query placeholders quiet. Adjacent literals, credential-shaped identifiers, paths, filter arguments and unknown or malformed references retain their evidence. This projection neither resolves references nor changes authored content.
 
 ### `relavium logs <runId>`
 
@@ -279,12 +296,12 @@ printf 'api_key=%s\n' "$API_KEY" | relavium gate <runId> --approve --secret-stdi
 
 - Exactly **one** of `--approve` / `--reject` / `--input` is required and they are mutually exclusive; `--comment <text>` annotates an approve/reject rationale and is invalid with `--input` (which carries the payload). A bad combination is an invalid invocation (exit `2`).
 - `--input <value>` is parsed as **JSON when it parses** (`'{"k":1}'` / `'42'` / `'true'` → a structured payload), else kept as the **raw string** (`--input some-token` → `"some-token"`); the result becomes the gate node's output. (The interactive prompt for a `gate_type=input` gate takes the typed value as a raw string.)
-- **Do not pass secrets via `--input`.** The value reaches the durable event log (`human_gate:resumed.payload`) and the `--json` stream, and argv itself leaks into `ps` / shell history / CI logs — exactly the exposure `relavium provider set-key`'s stdin-only rule avoids. Use a non-secret gate input; supply secrets through the OS keychain / env (`RELAVIUM_<PROVIDER>_API_KEY`), never a gate payload.
+- **Do not pass secrets via `--input`.** The value reaches the durable event log (`human_gate:resumed.payload`) and the `--json` stream, and argv itself leaks into `ps` / shell history / CI logs — exactly the exposure `relavium provider set-key`'s stdin-only rule avoids. Use a non-secret gate input. Re-supply declared workflow secret inputs with `--secret-stdin`; provider API keys have their separate OS-keychain / `RELAVIUM_<PROVIDER>_API_KEY` resolution path.
 - `--gate <gateId>` selects **which** pending gate to resolve. The resume contract is `engine.resume(runId, gateId, decision)` — `gateId` is mandatory on the resume path (it is carried on the `human_gate:paused` event; see [sse-event-schema.md](../contracts/sse-event-schema.md) and `resume_run` in [ipc-contract.md](../contracts/ipc-contract.md)). `--gate` is **optional on the CLI**: when exactly one gate is pending the CLI fills it in automatically; when **more than one** gate is pending it is **required**, and omitting it is an invalid invocation (exit `2`) listing the pending `gateId`s.
 - Read the pending `runId` + `gateId` from the run's own output: the `human_gate:paused` event line under `--json`, or the `paused at gate <gateId> (<type>)` line the plain/TUI renderer prints. [`relavium gate list`](#relavium-gate-list), `relavium status`, and `relavium logs <runId>` (2.I) also surface them out-of-band.
-- **`--secret-stdin` re-supplies the run's `secret`-typed inputs** ([ADR-0083](../../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md) §6). A `secret` is never persisted — the durable record holds only a masked `{ secret: true, ref }` slot — so a secret-bearing run cannot resume without the value being handed back. Each is one **`name=value` line on stdin**; blank lines are ignored, and anything else is an invalid invocation (exit `2`).
+- **`--secret-stdin` re-supplies the run's `secret`-typed inputs** ([ADR-0083](../../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md) §6). The raw value is not persisted in the declared input slot — the durable record holds only a masked `{ secret: true, ref }` marker there — so a secret-bearing run cannot resume without the value being handed back. Each is one **`name=value` line on stdin**; blank lines are ignored, and anything else is an invalid invocation (exit `2`). The [shared reader limit](#secret-stdin-limits) applies.
   - **Values never travel through argv**, which is why this is a boolean flag and not `--secret <name=value>`: a credential on a command line leaks to `ps`, shell history and CI logs — the same rule `relavium provider set-key` follows. The *name* in the line is not a secret, and carrying it there rather than in a repeated flag removes the ordering dependency that would silently swap two credentials.
-  - **Every masked slot must be supplied and nothing else may be.** A missing slot, a name the run has no slot for, a repeated name, and an **empty or all-whitespace value** are each exit `2`. A value may contain `=` (the split is on the first one); it may not contain a newline. The **name** is trimmed; the **value is taken verbatim** after the first `=`, so leading and trailing spaces are part of the credential — only a CRLF carriage return is removed. (An earlier version trimmed the whole line, which silently stripped a trailing space from a pasted key and surfaced hours later as an opaque `401`.)
+  - **Every masked slot must be supplied and nothing else may be.** A missing slot, a name the run has no slot for, a repeated name, and an **empty or all-whitespace value** are each exit `2`. A value may contain `=` (the split is on the first one); it may not contain a newline. The **name** is trimmed; the **value is taken verbatim** after the first `=`, so leading and trailing spaces are part of the credential — only a trailing line carriage return is removed. (An earlier version trimmed the whole line, which silently stripped a trailing space from a pasted key and surfaced hours later as an opaque `401`.)
   - **`--secret-stdin` makes the invocation non-interactive.** Reading the credential drains stdin, so a resumed run that reaches a *second* human gate cannot prompt: it exits `3` and is resolvable by another `relavium gate`, exactly as a `--json` or CI resume does.
   - Without the flag, a secret-bearing resume is refused (exit `2`) and the message names the slots and this remedy. With the flag on a run that has **no** secrets, the command refuses rather than blocking on a pipe nobody attached.
   - What this proves is the **slot**, not the credential: the engine verifies that the same named `secret` input was re-supplied and cannot tell whether the value is the same key or a rotated one. ADR-0083 §6 states that limit rather than implying more.
@@ -415,6 +432,10 @@ No per-session attribution or transcript is loaded for this listing.
 
 Exports a persisted session to a `.relavium.yaml` **scaffold** for review before commit ([ADR-0026](../../decisions/0026-session-export-to-workflow.md)) — the same contract the in-REPL `/export` drives. Writes `<sessionId>.relavium.yaml` in cwd by default (the file name is keyed on the unique session id, so two sessions never collide); `--out <path>` overrides, `--force` overwrites an existing target. The session row is marked `exported` with the written path. Under `--json` it emits a single `session:exported` event (`{ type, sessionId, timestamp, sequenceNumber, workflowPath }`). An unknown sessionId or an existing target without `--force` exits `2`; success is exit `0`.
 
+Successful `chat-export` writes a fixed review/continuity notice on **stderr**, even in JSON mode. Live `/export` uses the rendered transcript in interactive chat and Home, and stderr on plain/JSON drivers. The scaffold cannot reproduce the session's summarised, trimmed or omitted working context; retained user/assistant text, attachments, shell output and authored agent literals may be sensitive. Review before running or committing. Strict structural tool-content exclusion remains in force; there is no raw-tool-result opt-in. Deterministic ASCII title normalisation and bounded session-identity fallback follow the [canonical mapping](../contracts/agent-session-spec.md#export-to-workflow). The notice adds no machine stdout record and is not emitted for a refused export.
+
+If `chat-resume` or `chat-export` encounters a session message that fails persistence-format validation, it refuses with exit `2` and a fixed, content-free diagnostic. Restore a safe history backup or start a new session. A refused export writes no scaffold; JSON mode keeps stdout empty and puts one structured error on stderr.
+
 ### `relavium agent run`
 
 Committed effect metadata is swept at one-shot teardown; unresolved effects remain audit evidence.
@@ -435,6 +456,7 @@ echo "review it" | relavium agent run code-reviewer --fixture ./fixtures/review.
 - `--fixture <path>` replays a recorded LLM **cassette** so the run is deterministic and fully offline (no key, no network, no keychain) — the format is documented in [agent-run-fixture.md](agent-run-fixture.md). A malformed cassette exits `2`.
 - `--json` emits the [`SessionEvent`](../contracts/sse-event-schema.md#session-event-namespace) NDJSON stream on stdout (the same shape `chat --json` produces); otherwise the assistant reply streams in human form.
 - `--allow-mcp-stdio <digest>` (repeatable) authorizes a **local MCP program** for this invocation only. `agent run` is the one-shot, pipeline-facing member of the chat family — its stdin carries the prompt, so it can never prompt for consent, and an agent declaring an unapproved `stdio` MCP server exits `2` before anything spawns. See [Local MCP servers need consent](#local-mcp-servers-need-consent).
+- `--allow-fs-root` uses the [global invocation contract](#global-options), including when no selector config exists.
 - **The transcript is not persisted** — a stateless invoke (no transcript or resumable session; only an already-tombstoned durable effect-identity bookkeeping row), unlike the REPL. It does still **open `history.db`** to attach the effect journal ([effect-journal.md](../shared-core/effect-journal.md)): an external effect is carried forward by the target, not by the run, so an unattached journal would refuse every effectful tool on this surface. Its effect metadata is read at teardown for the owned committed-row sweep, never for replay. A `history.db` that cannot be opened fails the invocation.
 - The exit code is the **turn's outcome**: `0` on success, `1` on a turn error; an invocation fault is `2`. It is **never** `4` (that is the interactive REPL's session-ended code). A termination **signal** exits `128+signo` (`130` on Ctrl-C) after tearing any MCP servers down — this surface has no cooperative-cancel contract to preserve, unlike `run` ([ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md) §1.3).
 - **Ctrl-C leaves no orphan.** Any `stdio` MCP server this invocation spawned is reaped before the process exits, including on a `kill`, a closed terminal window, or a second impatient Ctrl-C.
@@ -461,7 +483,8 @@ relavium provider list --verify                         # + a live key-verificat
 
 - **`set-key` reads the key from stdin**, never a CLI argument (argv leaks into `ps`, shell history, and CI
   logs); pipe it or use a heredoc. The key is stored in the OS keychain under the canonical entry-naming
-  scheme ([keychain-and-secrets.md](../desktop/keychain-and-secrets.md#entry-naming)).
+  scheme ([keychain-and-secrets.md](../desktop/keychain-and-secrets.md#entry-naming)). The
+  [common secret-stdin limit](#secret-stdin-limits) applies before key storage.
 - **`list`** shows each registered provider, its base URL, and whether a key is set — a fast, **offline** read (no
   key is read; the status is derived from the stored keychain ref). **`--verify`** (2.5.G S11, [ADR-0065](../../decisions/0065-provider-economics-and-extensibility.md) §6) additionally runs a **bounded, key-redacted live probe** per provider — the SAME `validateProviderKey` seam `provider test` + `/doctor --deep` use — and reports `verified` / `failed — <redacted reason>` / `no key` in the status column. A provider with **no resolvable key** (keychain → env both empty) is reported `no key` and **never probed** (so `--verify` never hangs on a keyless provider); the key is **never** echoed. `list` honors **`--json`** ([ADR-0049](../../decisions/0049-cli-machine-output-contract.md)): one key-free NDJSON record per provider — `{ name, baseUrl, keySet, verified, verifyDetail }`, where `verified` is `null` without `--verify` (else `true`/`false`) and `verifyDetail` is a short reason — a **redacted** failure message, or `"no key"` when a probed provider has no resolvable key, else `null` (so a `verified: null` record with `verifyDetail: "no key"` is a probed-keyless provider, distinct from the un-probed `verifyDetail: null`). The `--verify` probes run **concurrently** (each timeout-bounded), so verifying N providers costs one timeout, not N.
 - **`add` / `set-key`** auto-register the provider row. `--base-url <url>` on `add` records a custom endpoint that **is now actually used at request routing** (2.5.G S9, [ADR-0065](../../decisions/0065-provider-economics-and-extensibility.md) §3–4 — the earlier "dead-config" gap is closed): the resolver rebinds that provider's adapter to the custom endpoint and routes **all** its egress (streaming `generate`/`stream` + the `models.list` refresh) through the shared **SSRF-validated** hop (`connectValidated` — HTTPS-only, no embedded credentials, every resolved IP range-blocked, connect pinned to the validated IP for DNS-rebinding safety). Custom endpoints are **OpenAI-compatible only** this round (`openai` / `deepseek`); a `--base-url` on `anthropic` / `gemini` is **refused** with a clear message (exit `2`), as is a non-HTTPS / private-loopback / credential-bearing URL, or one carrying **terminal-control / bidirectional characters** (fail-fast at `add`, so the stored value is terminal-safe on every surface). The provider-id set stays **closed** — a custom endpoint reuses the `openai` / `deepseek` id (ADR-0065 §6).
@@ -470,8 +493,25 @@ relavium provider list --verify                         # + a live key-verificat
   key fails cleanly (exit `2`) without echoing the key.
 - **Key resolution** (used by `run` + `test`): **OS keychain → `RELAVIUM_<PROVIDER>_API_KEY` env var → error**.
   The env var is the headless/CI source; the `secrets.enc` encrypted-file fallback is deferred past v1.0
-  ([keychain-and-secrets.md](../desktop/keychain-and-secrets.md)). An unavailable keychain (locked / no Linux
-  Secret Service) surfaces a clean error — never a silent plaintext fallback.
+  ([keychain-and-secrets.md](../desktop/keychain-and-secrets.md)). Keychain writes and deletion surface a
+  fixed operation-specific error when unavailable (locked / no Linux Secret Service). Runtime resolution
+  may still use the documented environment source; it never creates a plaintext fallback file.
+
+### Secret stdin limits
+
+The common reader used by `provider set-key`, `run --secret-inputs-stdin`,
+`gate --secret-stdin` and budget resume
+accepts at most **65,536 input bytes (64 KiB)** across all chunks, including whitespace.
+It refuses an oversized pipe rather than truncating it. String chunks count their UTF-8
+encoding; byte chunks are assembled before decoding, preserving split Unicode characters.
+This compatibility limit applies to the incoming pipe, before caller-specific trimming
+or line parsing.
+
+The reader refuses TTY stdin before reading; redirecting stdout does not enable terminal
+secret entry. It preserves admitted whitespace: `provider set-key` trims the key, while
+run/gate line parsing preserves values. Empty/whitespace-only input, over-limit input and
+read failures produce payload-free exit-`2` diagnostics. Early refusal stops reading.
+This byte bound does not impose a deadline on a stalled pipe.
 
 ### Local MCP servers need consent
 
@@ -513,6 +553,28 @@ and `relavium budget resume`, including their non-interactive execution-resume p
 `relavium budget resume <runId> --abort` does not start MCP servers. Human-gate decisions resume
 workflow execution and use the same MCP consent rules; the interactive chat family answers at the
 prompt instead.
+
+### `relavium media prune-temporaries`
+
+```bash
+relavium media prune-temporaries --legacy-offline --force [--json]
+```
+
+Explicit offline cleanup of the two historical ownerless media-temp layouts under the canonical
+global home CAS. **Both flags are required strict booleans**; absence or a string-valued equivalent
+is an invocation refusal before CAS/service construction. Stop old producer binaries first: their
+ownerless files cannot prove quiescence. A live or uncertain new-protocol producer refuses the
+entire operation before any legacy deletion. An absent store reports zero and is not created.
+The command opens no project config, history database, keychain, provider or network service.
+
+Human output reports removed/retained counts and fixed retention reasons. `--json` emits one
+`{ removed, retained, reasons }` object; retained reason counts sum to `retained`. Neither form
+contains paths, native diagnostics or file bytes. Successful maintenance, including conservatively
+retained candidates, exits `0`; missing flags/exclusive-offline refusal exits `2`; an operational
+filesystem failure exits `1`. This command never changes published CAS objects or read grants.
+Exact temp grammars, ownership/recovery rules and reason vocabulary belong to the
+[physical media lifecycle contract](../shared-core/built-in-tools.md#physical-media-storage-and-limits),
+under [ADR-0106](../../decisions/0106-media-publication-requires-bounded-verified-bytes.md).
 
 ## Exit codes
 

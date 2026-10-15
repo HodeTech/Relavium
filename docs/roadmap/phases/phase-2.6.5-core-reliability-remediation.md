@@ -307,8 +307,8 @@ to correct.
 | `CR-72` | made 2026-09-13 (implement; an authored `memory` decides compaction at every entry point) | [ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) §4 | no | — |
 | `CR-73` | made (wire it, or stop advertising it) | — | yes | — |
 | `CR-80` | made (fail closed) | — | yes | provider/config |
-| `CR-81` | made (match the canonical request) · ✅ accepted on `development` 2026-10-10; W8 publication pending | — | no | — |
-| `CR-82` | made (missing usage is unknown) · ✅ accepted on `development` 2026-10-11; W8 merge pending | — | no | — |
+| `CR-81` | made (match the canonical request) · ✅ accepted on `development` 2026-10-10 · ✅ closed on `main` 2026-10-11 (merged in [PR #92](https://github.com/HodeTech/Relavium/pull/92)) | — | no | — |
+| `CR-82` | made (missing usage is unknown) · ✅ accepted on `development` 2026-10-11 · ✅ closed on `main` 2026-10-11 (merged in [PR #92](https://github.com/HodeTech/Relavium/pull/92)) | — | no | — |
 | `CR-90` | made (exclude repo-local checkouts) | — | no | — |
 | `CR-91` | made (build the durable-truth oracle) | — | no | — |
 | `CR-92` | made (durable outbox, distinct typed result) | with `CR-10`'s | yes | — |

@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { captureIo } from '../test-support.js';
 import {
   boolFlag,
+  buildMediaPruneArgs,
   buildAgentRunArgs,
   buildChatArgs,
   buildChatExportArgs,
@@ -83,9 +84,19 @@ describe('build*Args (argv → typed core args)', () => {
     expect(buildRunArgs(input(['wf'], { input: ['a=1', 'b=2'] }))).toEqual({
       workflow: 'wf',
       input: ['a=1', 'b=2'],
+      secretInputsStdin: false,
       allowMcpStdio: [],
     });
-    expect(buildRunArgs(input(['wf']))).toEqual({ workflow: 'wf', input: [], allowMcpStdio: [] });
+    expect(buildRunArgs(input(['wf']))).toEqual({
+      workflow: 'wf',
+      input: [],
+      secretInputsStdin: false,
+      allowMcpStdio: [],
+    });
+    expect(
+      buildRunArgs(input(['wf'], { secretInputsStdin: true })).secretInputsStdin,
+      'SECRETS_CAUSAL_RUN_DISPATCH_FORWARDING',
+    ).toBe(true);
   });
 
   describe('models pricing: the argv→args link the strict-cap remedy runs through (ADR-0089 §4)', () => {
@@ -370,4 +381,22 @@ describe('budget resume exact transport', () => {
       expect(() => buildBudgetArgs(input(['r'], options))).toThrow();
     }
   });
+});
+
+it('MEDIA_MAINTENANCE_STRICT_FLAGS: both acknowledgements are literal booleans before composition', () => {
+  expect(buildMediaPruneArgs(input([], { legacyOffline: true, force: true }))).toEqual({
+    legacyOffline: true,
+    force: true,
+  });
+  for (const options of [
+    {},
+    { legacyOffline: true },
+    { force: true },
+    { legacyOffline: 'true', force: true },
+    { legacyOffline: true, force: 'true' },
+  ]) {
+    expect(() => buildMediaPruneArgs(input([], options)), 'MEDIA_MAINTENANCE_STRICT_FLAGS').toThrow(
+      'requires --legacy-offline and --force',
+    );
+  }
 });

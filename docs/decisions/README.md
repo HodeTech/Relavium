@@ -148,6 +148,11 @@ flowchart TD
 | 0102 | [A measured request owns its inert data through egress](0102-a-measured-request-owns-its-inert-data-through-egress.md) | Accepted | 2026-10-04 |
 | 0103 | [A paused run hands off its local producers before its host closes](0103-a-paused-run-hands-off-its-local-producers-before-its-host-closes.md) | Accepted | 2026-10-07 |
 | 0104 | [Unknown provider usage is durable cost uncertainty](0104-unknown-provider-usage-is-durable-cost-uncertainty.md) | Accepted | 2026-10-10 |
+| 0105 | [Filesystem roots are invocation grants, not project authority](0105-filesystem-roots-are-invocation-grants-not-project-authority.md) | Accepted | 2026-10-12 |
+| 0106 | [Media publication requires bounded verified bytes](0106-media-publication-requires-bounded-verified-bytes.md) | Accepted | 2026-10-12 |
+| 0107 | [First-run secret inputs use bounded stdin](0107-first-run-secret-inputs-use-bounded-stdin.md) | Accepted | 2026-10-12 |
+| 0108 | [Provider headers stay gated until keychain custody](0108-provider-headers-stay-gated-until-keychain-custody.md) | Accepted | 2026-10-12 |
+| 0109 | [Native media close ownership is explicit iterator provenance](0109-native-media-close-ownership-is-explicit-iterator-provenance.md) | Accepted | 2026-10-13 |
 
 ## Creating a new ADR
 

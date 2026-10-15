@@ -28,6 +28,7 @@ import {
   readJailedFile,
   type NodeFsCapabilityConfig,
 } from './fs.js';
+import { issueHostScratchRoot } from './fs-policy.js';
 
 /** An aborted signal for cancellation tests (AbortSignalLike: aborted + the two listener no-ops). */
 const ABORTED = {
@@ -276,12 +277,14 @@ describe('createNodeFsCapability — read (jailed)', () => {
  * Direct coverage of the post-jail fd read guard (`readJailedFile`) — the IO boundary the jail's `realpath`
  * cannot reach in a black-box `readFile` test (it resolves any symlink to its target first). These pin the
  * TOCTOU-relevant properties: a symlink at the resolved path (a swap after validation) is refused at the fd
- * layer by `O_NOFOLLOW`, and the stat / binary probe / content all come from one open handle.
+ * layer by `O_NOFOLLOW` (or the explicit Windows stable-entry check), and the stat /
+ * binary probe / content all come from one open handle.
  */
 describe('readJailedFile — the post-jail fd read guard', () => {
-  it('refuses a final-component symlink at the fd layer (O_NOFOLLOW) — the swap-after-validation guard', async () => {
+  it('refuses a planted final-component symlink at the fd boundary on every platform', async () => {
     // A symlink at the path readJailedFile is handed (i.e. a swap of the post-realpath target) must fail closed
-    // — even though the link points IN-scope, the fd open never follows it (ELOOP/ENOTDIR → fatal tool_denied).
+    // — even though the link points IN-scope. Windows uses the stable-entry lstat guard;
+    // POSIX additionally refuses a swap at open through O_NOFOLLOW.
     await writeFile(join(workspace, 'inside.txt'), 'INSIDE');
     const link = join(workspace, 'swapped.txt');
     await symlink(join(workspace, 'inside.txt'), link);
@@ -361,7 +364,7 @@ describe('createNodeFsCapability — glob read', () => {
     expect(result.content).toContain('AAA');
     expect(result.content).toContain('BBB');
     expect(result.content).not.toContain('CCC');
-    expect(result.content).toContain('src/a.ts');
+    expect(result.content).toContain(join('src', 'a.ts'));
   });
 
   it('matches across directories with `**`', async () => {
@@ -718,7 +721,14 @@ describe('createNodeFsCapability — sensitive-read floor (credential/secret sto
   });
 
   it('refuses a `.git/config` — repo-local, a submodule `.git/modules/*/config`, and a bare `*.git/config`', async () => {
-    for (const rel of ['.git/config', '.git/modules/sub/config', 'myrepo.git/config']) {
+    for (const rel of [
+      '.git/config',
+      '.git/modules/sub/config',
+      'myrepo.git/config',
+      '.git/config.worktree',
+      '.git/worktrees/linked/config.worktree',
+      'myrepo.git/config.worktree',
+    ]) {
       await mkdir(join(workspace, dirname(rel)), { recursive: true });
       await writeFile(join(workspace, rel), '[remote]\n url = https://u:tok@h/r');
       await expect(sandboxed().readFile(rel, {})).rejects.toBeInstanceOf(FsScopeDeniedError);
@@ -726,6 +736,10 @@ describe('createNodeFsCapability — sensitive-read floor (credential/secret sto
     // A file named `config` NOT under any git dir is not a credential store — read is allowed.
     await writeFile(join(workspace, 'config'), 'plain-config');
     expect((await sandboxed().readFile('config', {})).content).toBe('plain-config');
+    for (const rel of ['config.worktree', '.git/config.worktree.txt']) {
+      await writeFile(join(workspace, rel), 'ordinary-config');
+      expect((await sandboxed().readFile(rel, {})).content).toBe('ordinary-config');
+    }
   });
 
   it('refuses every credential dotfile (.gitconfig / .git-credentials / .netrc / .npmrc / .pypirc / .pgpass / .envrc / .dockercfg) and `.relavium/`', async () => {
@@ -965,11 +979,12 @@ describe('createNodeFsCapability — cancellation + malformed paths', () => {
 });
 
 describe('createNodeFsCapability — tiers', () => {
-  it('sandboxed tier allows the optional tmp root (read + write)', async () => {
-    const tmp = join(workspace, '..', 'tmproot');
-    await mkdir(tmp, { recursive: true });
+  it('sandboxed tier allows an exact host-issued private scratch root (read + write)', async () => {
+    const home = join(workspace, '..', 'home');
+    const tmp = join(home, '.relavium', 'tmp');
+    await mkdir(tmp, { recursive: true, mode: 0o700 });
     await writeFile(join(tmp, 't.txt'), 'tmp-ok');
-    const fs = sandboxed({ tmpDir: tmp });
+    const fs = sandboxed({ scratch: issueHostScratchRoot({ homeDir: home, rootDir: tmp }) });
     expect((await fs.readFile(join(tmp, 't.txt'), {})).content).toBe('tmp-ok');
     const written = await fs.writeFile(join(tmp, 'w.txt'), 'tmp-written', {});
     expect(written.bytesWritten).toBe('tmp-written'.length);

@@ -6,6 +6,7 @@ import {
 } from '@relavium/core';
 import {
   createClient,
+  InMemoryMediaStore,
   createRunHistoryStore,
   createRunHistoryReader,
   createRunLeasePort,
@@ -24,6 +25,14 @@ import { buildHomeSnapshot } from '../home/home-store.js';
 import { formatCostShort } from '../render/tui/format.js';
 import { captureIo, parseNdjson } from '../test-support.js';
 import { readRunUsageCoverage } from './usage-coverage.js';
+
+// Complete independent 1x1 RGB PNG: IHDR, zlib-compressed red pixel IDAT, IEND and CRCs.
+const PNG_BYTES = Uint8Array.from(
+  Buffer.from(
+    '89504e470d0a1a0a0000000d4948445200000001000000010802000000907753de0000000c49444154789c63f8cfc0000003010100c9fe92ef0000000049454e44ae426082',
+    'hex',
+  ),
+);
 
 const timestamp = '2026-10-10T00:00:00.000Z';
 function deferred() {
@@ -81,7 +90,13 @@ describe('W8 review: actual persisted usage projections', () => {
             definitionJson: JSON.stringify(workflow),
           },
         });
-        const base = createInMemoryHost({ store, runLeases: createRunLeasePort(store) });
+        const mediaStore = new InMemoryMediaStore();
+        const imageHandle = await mediaStore.put(PNG_BYTES, 'image/png');
+        const base = createInMemoryHost({
+          store,
+          runLeases: createRunLeasePort(store),
+          mediaStore,
+        });
         const host = {
           ...base,
           store: {
@@ -122,7 +137,7 @@ describe('W8 review: actual persisted usage projections', () => {
               media: {
                 type: 'media',
                 mimeType: 'image/png',
-                source: { kind: 'handle', ref: `media://sha256-${'2'.repeat(64)}` },
+                source: { kind: 'handle', ref: imageHandle },
               },
               raw: undefined,
             });

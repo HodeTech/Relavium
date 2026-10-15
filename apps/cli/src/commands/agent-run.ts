@@ -15,6 +15,7 @@ import { guardMcpTeardown } from '../engine/mcp-signal-teardown.js';
 import type { StdioConsentGate } from '../engine/mcp-servers.js';
 import { createConsentPrompter } from '../mcp/consent-prompt.js';
 import { loadResolvedConfig } from '../config/load.js';
+import { admitFsInvocation, admitChatFsPolicy } from '../engine/tool-host/fs-admission.js';
 import { surfaceMcpSkipped } from '../engine/mcp-servers.js';
 import { loadUserPricingOverlay } from '../engine/pricing-overlay.js';
 import { createProviderResolver, type ProviderResolver } from '../engine/providers.js';
@@ -76,6 +77,7 @@ export interface AgentRunCommandDeps {
   readonly consentGate?: StdioConsentGate;
   /** The MCP named-secret resolver (2.R Step 4) — production injects the keychain-backed one; default env-only. */
   readonly mcpSecretResolver?: McpSecretResolver;
+  readonly resolveKeys?: () => Pick<AgentRunCommandDeps, 'providers' | 'mcpSecretResolver'>;
   readonly now?: () => number;
   readonly uuid?: () => string;
 }
@@ -84,6 +86,7 @@ export async function agentRunCommand(
   args: AgentRunCommandArgs,
   deps: AgentRunCommandDeps,
 ): Promise<ExitCode> {
+  const grants = admitFsInvocation(deps.global);
   const now = deps.now ?? Date.now;
   const uuid = deps.uuid ?? randomUUID;
   const { config, projectConfigDir, homeDir } = loadResolvedConfig({
@@ -91,15 +94,18 @@ export async function agentRunCommand(
     configPath: deps.global.configPath,
   });
 
+  const fsPolicy = admitChatFsPolicy(grants, deps.global.cwd, config.chat.extraRoots);
+
   // Validate the invocation + read the one-shot prompt from stdin (the two pre-run faults live in the helper).
   const message = await resolveOneShotInput(args, deps);
 
   // A `--fixture` replays a cassette (offline, no keychain) and takes precedence over any injected/real seam;
   // otherwise tests inject `providers`, and production resolves keys via the env/keychain (like `relavium run`).
   const offline = args.fixture !== undefined;
+  const keys = offline ? undefined : deps.resolveKeys?.();
   const providers =
     args.fixture === undefined
-      ? (deps.providers ?? createProviderResolver(deps.io.env))
+      ? (deps.providers ?? keys?.providers ?? createProviderResolver(deps.io.env))
       : cassetteResolver(loadCassette(args.fixture, deps.global.cwd));
   // The ADR-0065 §2 user-pricing overlay (2.5.G S10) — so a one-shot live turn enforces + tracks a user-priced
   // model. SKIPPED under `--fixture`: cassette pricing stays deterministic and fully offline. Usage coverage
@@ -140,6 +146,7 @@ export async function agentRunCommand(
   const built = await (async (): Promise<BuiltChatSession> => {
     const b = await (deps.buildSession ?? buildChatSession)({
       chat: config.chat,
+      fsPolicy,
       afterTurnCompaction: false, // One-shot output has no next turn; retain active summary permission.
       ...(config.maxTokensEstimate === undefined
         ? {}
@@ -172,7 +179,9 @@ export async function agentRunCommand(
       providers,
       mcpSecretResolver: offline
         ? createMcpSecretResolver(deps.io.env)
-        : (deps.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env)),
+        : (deps.mcpSecretResolver ??
+          keys?.mcpSecretResolver ??
+          createMcpSecretResolver(deps.io.env)),
       mcpRegistrations: offline ? [] : config.mcpServers,
       ...(resolvePrice === undefined ? {} : { resolvePrice }),
       // FULLY offline in `--fixture` (cassette) mode: disable inbound MCP entirely so an agent's inline
@@ -415,6 +424,7 @@ async function runOneShotTurn(
       session: built.session,
       tools: built.tools,
       workspaceDir: built.context.workingDir,
+      ...(built.fsPolicy === undefined ? {} : { fsPolicy: built.fsPolicy }),
       // The one canonical no-TTY fail-closed policy (Step 14) — a one-shot has no user to approve, so every
       // governed dispatch is denied (never a hang / auto-approve). Shared with the non-interactive chat driver.
       prompt: nonInteractiveApprovalPrompt('in a one-shot agent run'),

@@ -215,8 +215,12 @@ const MEDIA_PART = {
   source: { kind: 'base64' as const, data: 'aGVsbG8=' }, // "hello"
 };
 
-/** A pure fake-digest in-memory MediaStore (no crypto) — content-addressed enough for the tests. */
-function stubMediaStore(): { store: MediaStore; puts: { handle: string; bytes: Uint8Array }[] } {
+type StreamingFixtureMediaStore = MediaStore & Required<Pick<MediaStore, 'putStream'>>;
+/** A pure fake-digest streaming MediaStore (no crypto) — content-addressed enough for the tests. */
+function stubMediaStore(): {
+  store: StreamingFixtureMediaStore;
+  puts: { handle: string; bytes: Uint8Array }[];
+} {
   const puts: { handle: string; bytes: Uint8Array }[] = [];
   const digest = (bytes: Uint8Array): string => {
     let hex = '';
@@ -227,11 +231,18 @@ function stubMediaStore(): { store: MediaStore; puts: { handle: string; bytes: U
     }
     return hex;
   };
-  const store: MediaStore = {
+  const store: StreamingFixtureMediaStore = {
     put: (bytes) => {
       const handle = `media://sha256-${digest(bytes)}`;
       puts.push({ handle, bytes });
       return Promise.resolve(handle);
+    },
+    // Engine lifecycle fixture: actual count comes from the stub's stored bytes. Native format,
+    // digest and SQLite admission are covered by media-publication.e2e.test.ts in the CLI host.
+    validateMedia: (handle, descriptor) => {
+      const found = puts.find((p) => p.handle === handle);
+      if (found === undefined) return Promise.reject(new Error('no stored media'));
+      return Promise.resolve({ ...descriptor, handle, byteLength: found.bytes.byteLength });
     },
     get: (handle) => {
       const found = puts.find((p) => p.handle === handle);
@@ -462,6 +473,7 @@ describe('WorkflowEngine — media de-inline at the emit choke point (1.AF, ADR-
     // media-bearing terminal must NOT escape the catch-less #loop as an unhandled rejection / hang. The
     // terminal still settles with its media payload stripped (byte-free).
     const rejectingStore: MediaStore = {
+      validateMedia: () => Promise.reject(new Error('unused')),
       put: () => Promise.reject(new Error('disk full')),
       get: () => Promise.reject(new Error('unused')),
       resolveForEgress: () => Promise.reject(new Error('unused')),
@@ -489,7 +501,7 @@ describe('WorkflowEngine — media de-inline at the emit choke point (1.AF, ADR-
         host: createInMemoryHost({
           store: runStore,
           mediaStore,
-          streamMedia: (url) => {
+          streamMedia: ({ url }) => {
             fetches.push(url);
             call += 1;
             const byte = call; // the SAME url yields different bytes on a second fetch
@@ -712,10 +724,10 @@ describe('WorkflowEngine — media de-inline at the emit choke point (1.AF, ADR-
       // all pass through it. It is the longest window the pin can hold, so it is the one to test.
       const mediaStore: MediaStore = {
         ...inner,
-        put: (bytes, mimeType) =>
+        putStream: (chunks, mimeType) =>
           new Promise((resolve) => {
             releaseFetch = (): void => {
-              resolve(inner.put(bytes, mimeType));
+              resolve(inner.putStream(chunks, mimeType));
             };
           }),
       };
@@ -909,7 +921,7 @@ describe('WorkflowEngine — media de-inline at the emit choke point (1.AF, ADR-
       mediaStore,
       // The url path takes the STREAMING port now (ADR-0089 §2) — a url is the unbounded carrier, so it must
       // never be whole-buffered. Two chunks, so the engine's counting wrapper is crossed at a boundary.
-      streamMedia: (url) => {
+      streamMedia: ({ url }) => {
         fetched.push(url);
         return {
           [Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
@@ -1032,6 +1044,7 @@ describe('WorkflowEngine — media de-inline at the emit choke point (1.AF, ADR-
     const records: Array<{ handle: string; runId: string }> = [];
     const reclaims: string[] = [];
     const mediaReferences: MediaReferencePort = {
+      admitProducedMedia: () => undefined,
       recordRunMedia: (meta, runId) => {
         records.push({ handle: meta.handle, runId });
       },
@@ -1057,6 +1070,7 @@ describe('WorkflowEngine — media de-inline at the emit choke point (1.AF, ADR-
   it('stays unaffected (run completes) when the media-reference port THROWS (best-effort, D12c/D11)', async () => {
     const { store: mediaStore } = stubMediaStore();
     const mediaReferences: MediaReferencePort = {
+      admitProducedMedia: () => undefined,
       recordRunMedia: () => {
         throw new Error('reference db down');
       },
@@ -1088,6 +1102,7 @@ describe('WorkflowEngine — media de-inline at the emit choke point (1.AF, ADR-
     process.on('unhandledRejection', onUnhandled);
     try {
       const mediaReferences: MediaReferencePort = {
+        admitProducedMedia: () => undefined,
         recordRunMedia: () => Promise.reject(new Error('async reference db down')),
         reclaimRun: () => Promise.reject(new Error('async reference db down')),
       };
@@ -2010,11 +2025,11 @@ describe('WorkflowEngine — human gate suspend/resume', () => {
       const original = stubMediaStore().store;
       const mediaStore: MediaStore = {
         ...original,
-        put: async (bytes, mimeType) => {
+        putStream: async (chunks, mimeType) => {
           entered();
           await held;
           if (failPin) throw new Error('offline media pin fault');
-          return original.put(bytes, mimeType);
+          return original.putStream(chunks, mimeType);
         },
       };
       const host = createInMemoryHost({ mediaStore });
@@ -5600,6 +5615,7 @@ describe('WorkflowEngine — crash reconciliation', () => {
         const host = createInMemoryHost({
           store,
           mediaReferences: {
+            admitProducedMedia: () => undefined,
             recordRunMedia: () => undefined,
             reclaimRun: () => {
               entered = true;
@@ -5641,6 +5657,7 @@ describe('WorkflowEngine — crash reconciliation', () => {
     await seedStarted(store, 'crashed-refs');
     const reclaims: string[] = [];
     const mediaReferences: MediaReferencePort = {
+      admitProducedMedia: () => undefined,
       recordRunMedia: () => undefined,
       reclaimRun: (runId) => {
         reclaims.push(runId);
@@ -5656,6 +5673,7 @@ describe('WorkflowEngine — crash reconciliation', () => {
     await seedStarted(store, 'crashed-a');
     await seedStarted(store, 'crashed-b');
     const mediaReferences: MediaReferencePort = {
+      admitProducedMedia: () => undefined,
       recordRunMedia: () => undefined,
       reclaimRun: () => Promise.reject(new Error('reference db down')), // async rejection, swallowed
     };
@@ -6326,16 +6344,17 @@ describe('ordinary gate media lifecycle cutoff (ADR-0085)', () => {
       const cas = stubMediaStore().store;
       const mediaStore: MediaStore = {
         ...cas,
-        put: async (bytes, mimeType) => {
+        putStream: async (chunks, mimeType) => {
           entered();
           await held;
           if (ending === 'late-pin-rejection') throw new Error('synthetic private pin failure');
-          return cas.put(bytes, mimeType);
+          return cas.putStream(chunks, mimeType);
         },
       };
       const activeRefs = new Set<string>();
       const referenceActions: string[] = [];
       const mediaReferences: MediaReferencePort = {
+        admitProducedMedia: () => undefined,
         recordRunMedia: (meta) => {
           activeRefs.add(meta.handle);
           referenceActions.push('record');

@@ -57,6 +57,7 @@ import {
 } from './provider.js';
 import { runCommand, type RunCommandArgs } from './run.js';
 import { statusCommand } from './status.js';
+import { pruneTemporariesCommand, type MediaPruneArgs } from './media.js';
 
 /**
  * The shared **command dispatch table** ([ADR-0056](../../../../docs/decisions/0056-cli-in-app-slash-command-system-and-manifest.md),
@@ -132,6 +133,7 @@ export function buildRunArgs(input: CommandInput): RunCommandArgs {
   return {
     workflow: reqPositional(input, 0, 'workflow'),
     input: stringList(input.options['input']),
+    secretInputsStdin: boolFlag(input.options['secretInputsStdin']),
     // ADR-0084 §6: authorizes THIS invocation and writes no grant. A definite list like `input`, so a
     // consumer never distinguishes "not asked for" from "asked for and empty".
     allowMcpStdio: stringList(input.options['allowMcpStdio']),
@@ -418,14 +420,15 @@ const executeRun: CommandExecutor = (input, ctx) =>
     io: ctx.io,
     global: ctx.global,
     openRunStore: openHistoryStore,
-    ...keyResolvers(ctx),
+    // ADR-0107: construct native credential services only after complete input admission.
+    resolveKeys: () => keyResolvers(ctx),
   });
 
 const executeChat: CommandExecutor = (input, ctx) =>
   chatCommand(buildChatArgs(input), {
     io: ctx.io,
     global: ctx.global,
-    ...keyResolvers(ctx),
+    resolveKeys: (db) => keyResolvers(ctx, db),
     openSessionStore,
     drive: selectChatDriver,
   });
@@ -436,7 +439,7 @@ const executeChatResume: CommandExecutor = (input, ctx) =>
     {
       io: ctx.io,
       global: ctx.global,
-      ...keyResolvers(ctx),
+      resolveKeys: (db) => keyResolvers(ctx, db),
       openSessionStore,
       drive: selectChatDriver,
     },
@@ -467,7 +470,7 @@ const executeAgentRun: CommandExecutor = (input, ctx) =>
   agentRunCommand(buildAgentRunArgs(input), {
     io: ctx.io,
     global: ctx.global,
-    ...keyResolvers(ctx),
+    resolveKeys: () => keyResolvers(ctx),
   });
 
 const executeGate: CommandExecutor = (input, ctx) =>
@@ -699,9 +702,27 @@ function providerExecutor(build: (input: CommandInput) => ProviderCommandArgs): 
   };
 }
 
+export function buildMediaPruneArgs(input: CommandInput): MediaPruneArgs {
+  if (
+    input.positionals.length !== 0 ||
+    input.options['legacyOffline'] !== true ||
+    input.options['force'] !== true
+  ) {
+    throw new CliError(
+      'invalid_invocation',
+      'Temporary maintenance requires --legacy-offline and --force.',
+    );
+  }
+  return { legacyOffline: true, force: true };
+}
+
 // ── the dispatch table ───────────────────────────────────────────────────────
 
 const COMMAND_EXECUTORS: ReadonlyMap<string, CommandExecutor> = new Map<string, CommandExecutor>([
+  [
+    'media.prune-temporaries',
+    (input, ctx) => pruneTemporariesCommand(buildMediaPruneArgs(input), ctx),
+  ],
   ['run', executeRun],
   ['chat', executeChat],
   ['chat-resume', executeChatResume],
@@ -755,6 +776,15 @@ export async function executeCommand(
   const executor = COMMAND_EXECUTORS.get(id);
   if (executor === undefined) {
     throw new CliError('invalid_invocation', 'unknown command.');
+  }
+  if (
+    (ctx.global.allowFsRoots?.length ?? 0) > 0 &&
+    !['chat', 'chat-resume', 'agent.run'].includes(id)
+  ) {
+    throw new CliError(
+      'invalid_invocation',
+      '--allow-fs-root applies only to Home, chat, chat-resume and agent run.',
+    );
   }
   return executor(input, ctx);
 }

@@ -358,3 +358,48 @@ Missing inline-media usage is explicit uncertainty. Separate-endpoint media’s 
 
 See [ADR-0104](0104-unknown-provider-usage-is-durable-cost-uncertainty.md) and the
 [canonical usage contract](../reference/shared-core/llm-provider-seam.md#6-usage).
+
+### Wave 2 media implementation checkpoint — 2026-10-12
+
+ADR-0106 extends the existing streamed URL path with independent store ceilings, bounded
+format/count/hash evidence and pre-publication immutable metadata admission. Installed-SDK offline
+OpenAI chat/TTS AAC, Ogg Opus and raw PCM plus Gemini PCM compatibility controls exercise actual
+CAS and file-backed SQLite; these are synthetic HTTP fixtures, not paid-provider captures or codec
+playback certification. Explicit unsupported output selectors refuse before SDK entry. The
+[canonical media publication contract](../reference/shared-core/llm-provider-seam.md#bounded-verified-media-publication-adr-0106)
+owns profiles and the raw PCM qualification. Two new clean cumulative review rounds and broader
+gates are still required before Step 6 acceptance.
+
+### Native media close ownership — 2026-10-13
+
+Accepted [ADR-0109](0109-native-media-close-ownership-is-explicit-iterator-provenance.md)
+refines interruption at the media byte-consumer boundary. Exact private iterator
+provenance separates foreign return observation from trusted native retirement.
+Store-owned cleanup precedes native acknowledgement joining; counted wrappers
+initiate without blocking store cleanup and their enclosing scope joins afterward.
+Natural EOF, deliberate wrapper adoption and the single loaded-module boundary
+are explicit in the [canonical media lifecycle contract](../reference/shared-core/llm-provider-seam.md#bounded-verified-media-publication-adr-0106).
+Existing host work/receipt ownership and whole-buffer limits remain in force.
+Implementation, packaging and cumulative review gates remain separate from this
+decision approval; this note does not accept Step 6 or close Wave 2.
+
+
+### Wave 2 implementation landing — 2026-10-13
+
+The applicable Wave 2 implementation is accepted on `development`. The
+[closing register](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-2-closing-register--2026-10-13)
+joins the per-item disposition, two NEW clean complete whole-wave review rounds,
+security sittings, exact-source gates and preserved limits. Earlier dated pending
+checkpoints remain historical. This landing does not claim a merge, future header
+activation, full M/N lifecycle or removal of approved residuals.
+
+### Generated base64 is a result carrier — 2026-10-15
+
+PR #94 incorrectly reused request-input ceilings for generated base64 content.
+The result exception predates this decision; a generated result exceeding the
+inline-input bound must use the existing bounded streaming publication path.
+The [canonical seam](../reference/shared-core/llm-provider-seam.md#bounded-verified-media-publication-adr-0106)
+fixes the exact object bound and port compatibility. URL streaming, direct small
+put bounds, byte verification and persist-before-deliver are preserved; a storage
+refusal never repeats already billed generation. This note does not certify the
+new implementation or execution evidence.

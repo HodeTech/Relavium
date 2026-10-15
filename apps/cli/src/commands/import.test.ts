@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { parseAgent, parseWorkflow, serializeWorkflow } from '@relavium/core';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { isCliError } from '../process/errors.js';
@@ -38,8 +39,8 @@ describe('importCommand (2.J)', () => {
     rmSync(cwd, { recursive: true, force: true });
   });
 
-  function deps(json = false): { d: ImportCommandDeps; out: () => string } {
-    const { io, out } = captureIo();
+  function deps(json = false): { d: ImportCommandDeps; out: () => string; err: () => string } {
+    const { io, out, err } = captureIo();
     const global: GlobalOptions = {
       json,
       color: false,
@@ -47,7 +48,7 @@ describe('importCommand (2.J)', () => {
       configPath: undefined,
       verbosity: 'normal',
     };
-    return { d: { io, global }, out };
+    return { d: { io, global }, out, err };
   }
 
   function seed(name: string, content: string): string {
@@ -72,6 +73,68 @@ describe('importCommand (2.J)', () => {
     const { d } = deps();
     expect(importCommand({ path: 'thing.yaml', force: false }, d)).toBe(EXIT_CODES.success);
     expect(existsSync(join(cwd, '.relavium', 'workflows', 'code-review.relavium.yaml'))).toBe(true);
+  });
+
+  it('warns value-free on imported metadata and defaults while preserving JSON stdout and the file', () => {
+    const literal = 'sk-importedSyntheticCredential123456789';
+    const base = parseWorkflow(WORKFLOW);
+    const definition = {
+      ...base,
+      workflow: {
+        ...base.workflow,
+        metadata: {
+          privateMetadataProperty: { nested: literal },
+          authorization: 'Bearer {{secrets.gh}}',
+          url: 'https://example.invalid/?token={{inputs.token}}',
+        },
+        inputs: [{ name: 'ordinary', type: 'string' as const, default: literal }],
+      },
+    };
+    seed('incoming.relavium.yaml', serializeWorkflow(definition));
+    const { d, out, err } = deps(true);
+    expect(importCommand({ path: 'incoming.relavium.yaml', force: false }, d)).toBe(
+      EXIT_CODES.success,
+    );
+    expect(err(), 'SNAPSHOT_CAUSAL_IMPORT_CALLER').toContain(
+      '2 string(s) matching known credential shapes',
+    );
+    const written = readFileSync(
+      join(cwd, '.relavium', 'workflows', 'code-review.relavium.yaml'),
+      'utf8',
+    );
+    expect(parseWorkflow(written)).toEqual(definition);
+    expect(JSON.parse(out())).toEqual({
+      id: 'code-review',
+      kind: 'workflow',
+      path: '.relavium/workflows/code-review.relavium.yaml',
+    });
+    expect(`${out()}${err()}`).not.toContain(literal);
+    expect(err()).not.toContain('privateMetadataProperty');
+  });
+
+  it('does not warn about a credential when the final YAML target cannot be written', () => {
+    const literal = 'sk-importedSyntheticCredential123456789';
+    seed('incoming.agent.yaml', AGENT.replace('Review the code.', literal));
+    const target = join(cwd, '.relavium', 'agents', 'reviewer.agent.yaml');
+    mkdirSync(target, { recursive: true });
+    const { d, out, err } = deps(true);
+    expect(() => importCommand({ path: 'incoming.agent.yaml', force: true }, d)).toThrow();
+    expect(out()).toBe('');
+    expect(err()).toBe('');
+  });
+
+  it('preserves imported literal MCP environment values and secret placeholders', () => {
+    const literal = 'AIzaImportedSyntheticCredential123456789';
+    const authored = `${AGENT}mcp_servers:\n  - id: example\n    transport: stdio\n    command: synthetic\n    env: { LITERAL: '${literal}', TOKEN: '{{secrets.gh}}' }\n`;
+    seed('incoming.agent.yaml', authored);
+    const { d, err } = deps();
+    expect(importCommand({ path: 'incoming.agent.yaml', force: false }, d)).toBe(
+      EXIT_CODES.success,
+    );
+    const written = readFileSync(join(cwd, '.relavium', 'agents', 'reviewer.agent.yaml'), 'utf8');
+    expect(parseAgent(written)).toEqual(parseAgent(authored));
+    expect(err()).toContain('1 string(s) matching known credential shapes');
+    expect(err()).not.toContain(literal);
   });
 
   it('sniffs a bare .yaml agent (no top-level `workflow:`) and lands it under .relavium/agents/', () => {

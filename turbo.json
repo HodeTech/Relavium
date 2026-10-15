@@ -43,6 +43,9 @@
     // the normal case.
     "@relavium/db#test": {
       "dependsOn": ["^build", "@relavium/db#build"],
+      // Only this test task receives diagnostic output. CI uses a unique run/attempt path;
+      // hashing it guarantees fresh native execution rather than replaying a cached pass.
+      "env": ["RELAVIUM_DB_NATIVE_DIAGNOSTICS"],
       "outputs": []
     },
     "//#format:check": {

@@ -69,3 +69,15 @@ Considered alternatives:
 - The `ToolHost` interface is pinned in principle + the Phase-1 capability slices here; its exhaustive method surface lives in [tool-registry.md](../reference/shared-core/tool-registry.md) and will grow as MCP (2.R) and media (1.AF) tools land — an intentional, additive evolution kept to one canonical home, not a reversal.
 - The result-bounding default thresholds are a judgment call (cost vs. truncating a legitimately large result); they are recorded as tunable in [built-in-tools.md](../reference/shared-core/built-in-tools.md) and revisited if real workflows hit them, consistent with the deferred-task's framing.
 - v1.0 result bounding operates on the **in-memory** result a `dispatch` returns (the seam result fields are `string`), so the engine transiently holds a large host result before spilling — the model-facing context-window protection is delivered, but the engine-memory exposure is only fully closed when the host capabilities stream-and-truncate at the source (a `maxBytes` in the read/egress options), a follow-up landed with the first genuinely-streamed large source. Until then the residual is bounded by the FS scope tier + the host process budget, and egress is gated to 1.AE.
+
+> Amended 2026-10-12 by [ADR-0105](0105-filesystem-roots-are-invocation-grants-not-project-authority.md): The shared `deepestExistingReal` helper remains platform-free through injected host operations. Native identity pinning and filesystem authority remain host-owned, transient policy, not durable engine policy. Path guards do not create an OS subprocess sandbox. Exact mechanisms are in the [tool filesystem contract](../reference/shared-core/built-in-tools.md#filesystem-permission-tiers), with [argv authority](../reference/cli/commands.md#global-options) and [config selectors](../reference/contracts/config-spec.md#chat-filesystem-root-selectors) in their canonical homes. Implementation review/gates remain open.
+
+
+### Wave 2 implementation landing — 2026-10-13
+
+The applicable Wave 2 implementation is accepted on `development`. The
+[closing register](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-2-closing-register--2026-10-13)
+joins the per-item disposition, two NEW clean complete whole-wave review rounds,
+security sittings, exact-source gates and preserved limits. Earlier dated pending
+checkpoints remain historical. This landing does not claim a merge, future header
+activation, full M/N lifecycle or removal of approved residuals.

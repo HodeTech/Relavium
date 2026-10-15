@@ -1,10 +1,11 @@
+import { CommanderError } from 'commander';
 import { describe, expect, it } from 'vitest';
 
 import type { HomeDeps } from './home/drive-home.js';
 import { CliError } from './process/errors.js';
 import { EXIT_CODES, type ExitCode } from './process/exit-codes.js';
 import type { CliIo } from './process/io.js';
-import { CLI_VERSION } from './program.js';
+import { buildProgram, CLI_VERSION } from './program.js';
 import { run, type OpenHome } from './run.js';
 import { captureIo } from './test-support.js';
 
@@ -179,6 +180,93 @@ describe('run', () => {
     const { io, out } = captureIo();
     expect(await run(argv('--'), io)).toBe(0);
     expect(out()).toContain('Usage: relavium');
+  });
+});
+
+describe('run parser diagnostics (ADR-0107)', () => {
+  const opaque = 'opaque-run-argument-Q7v4';
+  const invalidRunArguments: readonly (readonly string[])[] = [
+    ['run', 'wf.relavium.yaml', `--secret-inputs-stdin=${opaque}`],
+    ['run', 'wf.relavium.yaml', '--secret-inputs-stdin=false'],
+    ['run', 'wf.relavium.yaml', `--${opaque}`],
+    ['run', 'wf.relavium.yaml', '--secret-inputs-stdin', opaque],
+    ['run', 'wf.relavium.yaml', '--', opaque],
+    ['run', 'wf.relavium.yaml', '--input'],
+  ];
+
+  const modes: readonly (readonly [string, readonly string[]])[] = [
+    ['human', []],
+    ['human verbose', ['--verbose']],
+    ['JSON', ['--json']],
+    ['JSON verbose', ['--json', '--verbose']],
+  ];
+  for (const [label, flags] of modes) {
+    it(`SECRETS_CAUSAL_RUN_COMMANDER_OPACITY: ${label} keeps parser values opaque`, async () => {
+      for (const tokens of invalidRunArguments) {
+        const { io, out, err } = captureIo();
+        expect(await run(argv(...flags, ...tokens), io)).toBe(EXIT_CODES.invalidInvocation);
+        expect(out()).toBe('');
+        expect(err(), 'SECRETS_CAUSAL_RUN_COMMANDER_OPACITY').not.toContain(opaque);
+        expect(err(), 'SECRETS_CAUSAL_RUN_COMMANDER_OPACITY').not.toContain(
+          'secret-inputs-stdin=false',
+        );
+        if (flags.includes('--json')) {
+          const lines = err().trimEnd().split('\n');
+          expect(lines).toHaveLength(1);
+          const parsed: unknown = JSON.parse(lines[0] ?? '');
+          expect(isErrorEnvelope(parsed)).toBe(true);
+          if (isErrorEnvelope(parsed)) {
+            expect(parsed.code).toBe('invalid_invocation');
+            expect(parsed.message, 'SECRETS_CAUSAL_RUN_COMMANDER_OPACITY').toBe(
+              'invalid run arguments; use relavium run --help.',
+            );
+          }
+        } else {
+          expect(err(), 'SECRETS_CAUSAL_RUN_COMMANDER_OPACITY').toBe(
+            'error: invalid run arguments; use relavium run --help.\n',
+          );
+        }
+      }
+    });
+  }
+
+  it('preserves root/run help, root version, and unrelated parser diagnostics', async () => {
+    for (const tokens of [['--help'], ['run', '--help'], ['--version']]) {
+      const { io, out, err } = captureIo();
+      expect(await run(argv('--json', ...tokens), io)).toBe(EXIT_CODES.success);
+      expect(out()).not.toBe('');
+      expect(err()).toBe('');
+    }
+    const unrelated = captureIo();
+    expect(await run(argv('provider', 'list', '--opaque-provider-option'), unrelated.io)).toBe(
+      EXIT_CODES.invalidInvocation,
+    );
+    expect(unrelated.err()).toContain('unknown option');
+    expect(unrelated.err()).toContain('--opaque-provider-option');
+  });
+
+  it('retains Commander code/status while replacing the thrown parser message', async () => {
+    for (const [tokens, code] of [
+      [['run', 'wf.relavium.yaml', '--secret-inputs-stdin=false'], 'commander.unknownOption'],
+      [['run', 'wf.relavium.yaml', '--', opaque], 'commander.excessArguments'],
+      [['run', 'wf.relavium.yaml', '--input'], 'commander.optionMissingArgument'],
+    ] as const) {
+      const { io, err } = captureIo();
+      const program = buildProgram(io);
+      try {
+        await program.parseAsync(argv(...tokens));
+        throw new Error('expected a Commander parse refusal');
+      } catch (error) {
+        expect(error).toBeInstanceOf(CommanderError);
+        if (error instanceof CommanderError) {
+          expect(error.exitCode).toBe(1);
+          expect(error.code).toBe(code);
+          expect(error.message).toBe('error: invalid run arguments; use relavium run --help.');
+          expect(error.message).not.toContain(opaque);
+        }
+      }
+      expect(err()).toBe('error: invalid run arguments; use relavium run --help.\n');
+    }
   });
 });
 

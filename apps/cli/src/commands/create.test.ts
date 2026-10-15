@@ -1,4 +1,12 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -82,6 +90,32 @@ describe('createCommand (2.J)', () => {
     expect(def.workflow.id).toBe('triage');
     expect(def.workflow.agents ?? []).toHaveLength(1); // the inline agent
     expect(def.workflow.nodes.map((n) => n.type)).toEqual(['input', 'agent', 'output']);
+  });
+
+  it('warns value-free on created credential literals and preserves the actual authored file', async () => {
+    const literal = 'sk-createdSyntheticCredential123456789';
+    const { d, out, err } = deps(scriptedPrompter({ ...AGENT_SPEC, systemPrompt: literal }));
+    expect(await createCommand({ force: false }, d)).toBe(EXIT_CODES.success);
+    const written = parseAgent(
+      readFileSync(join(cwd, '.relavium', 'agents', 'code-reviewer.agent.yaml'), 'utf8'),
+    );
+    expect(err(), 'SNAPSHOT_CAUSAL_CREATE_CALLER').toContain(
+      '1 string(s) matching known credential shapes',
+    );
+    expect(written.system_prompt).toBe(literal);
+    expect(`${out()}${err()}`).not.toContain(literal);
+    expect(out()).not.toContain('Warning:');
+  });
+
+  it('does not warn about a credential when the final YAML target cannot be written', async () => {
+    const literal = 'sk-createdSyntheticCredential123456789';
+    const target = join(cwd, '.relavium', 'agents', 'code-reviewer.agent.yaml');
+    mkdirSync(target, { recursive: true });
+    const { d, out, err } = deps(scriptedPrompter({ ...AGENT_SPEC, systemPrompt: literal }));
+    await expect(createCommand({ force: true }, d)).rejects.toThrow();
+    expect(out()).toBe('');
+    expect(err()).toBe('');
+    expect(statSync(target).isDirectory()).toBe(true);
   });
 
   it('rejects a name with no usable id characters as a clean exit-2 CliError', async () => {

@@ -94,6 +94,8 @@ async function runMedia(finish: Finish) {
       runLeases: createRunLeasePort(store),
       // The fixture store consumes only the tiny SDK response; no real CAS or filesystem is opened.
       mediaStore: {
+        validateMedia: (handle, descriptor) =>
+          Promise.resolve({ ...descriptor, handle, byteLength: descriptor.byteLength ?? 1 }),
         put: () => Promise.resolve(HANDLE),
         get: () => Promise.resolve(new Uint8Array([1])),
         readRange: () => Promise.reject(new Error('offline range read is not used')),

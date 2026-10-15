@@ -1,10 +1,26 @@
-import { createHash, randomUUID } from 'node:crypto';
-import type { Dirent } from 'node:fs';
-import { mkdir, open, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
-import { dirname, join, resolve, sep } from 'node:path';
+import { createHash } from 'node:crypto';
+import { constants, type Stats } from 'node:fs';
+import { open, readdir, rename, rm, type FileHandle } from 'node:fs/promises';
+import { join } from 'node:path';
+
+import { MediaStoreFilesystemError, MediaStorePaths } from './media-store-paths.js';
+import { assertMediaNotAborted, scanMediaFile } from './media-store-read.js';
+import {
+  MediaStoreTemporaries,
+  type MediaTemporarySweepResult,
+} from './media-store-temporaries.js';
 
 import {
   MEDIA_HANDLE_PATTERN,
+  MAX_MEDIA_OBJECT_BYTES,
+  INLINE_MEDIA_CEILING,
+  MediaAdmissionError,
+  admitMediaDescriptor,
+  canonicalMediaMimeType,
+  createMediaVerifier,
+  closeMediaIterator,
+  type AbortSignalLike,
+  type DurableMediaMeta,
   validateByteRange,
   type ByteRange,
   type MediaSource,
@@ -22,6 +38,79 @@ import {
  */
 
 const HANDLE_PREFIX = 'media://sha256-';
+type Descriptor = Omit<DurableMediaMeta, 'handle' | 'byteLength'> & {
+  readonly byteLength?: number;
+};
+
+/** Snapshot all metadata before asynchronous fd operations; optional count remains a claim. */
+function snapshotDescriptor(
+  handle: string,
+  descriptor: Descriptor,
+): { meta: DurableMediaMeta; count?: number } {
+  let fields: PropertyDescriptorMap;
+  try {
+    fields = Object.getOwnPropertyDescriptors(descriptor);
+  } catch {
+    throw new MediaAdmissionError('invalid_descriptor');
+  }
+  const owned: Record<string, unknown> = { handle };
+  for (const key of ['mimeType', 'modality', 'byteLength', 'durationMs']) {
+    const field = fields[key];
+    if (field === undefined) continue;
+    if (!('value' in field)) throw new MediaAdmissionError('invalid_descriptor');
+    owned[key] = field.value;
+  }
+  const count = owned['byteLength'];
+  if (count === undefined) owned['byteLength'] = 0;
+  const meta = admitMediaDescriptor(owned);
+  return count === undefined ? { meta } : { meta, count: meta.byteLength };
+}
+
+/** Use the typed-array internal byte length; subclasses cannot waive a pre-copy ceiling. */
+function inputByteLength(bytes: Uint8Array): number {
+  try {
+    if (!(bytes instanceof Uint8Array)) throw new MediaAdmissionError('source_failed');
+    const prototype: unknown = Object.getPrototypeOf(Uint8Array.prototype);
+    if (typeof prototype !== 'object' || prototype === null)
+      throw new MediaAdmissionError('source_failed');
+    const length: unknown = Object.getOwnPropertyDescriptor(prototype, 'byteLength')?.get?.call(
+      bytes,
+    );
+    if (typeof length !== 'number' || !Number.isSafeInteger(length) || length < 0)
+      throw new MediaAdmissionError('source_failed');
+    return length;
+  } catch {
+    throw new MediaAdmissionError('source_failed');
+  }
+}
+
+function admitInline(bytes: Uint8Array, mimeType: string): void {
+  const mime = canonicalMediaMimeType(mimeType);
+  const ceiling = mime.startsWith('image/')
+    ? INLINE_MEDIA_CEILING.image
+    : mime.startsWith('audio/')
+      ? INLINE_MEDIA_CEILING.audio
+      : 0;
+  if (ceiling === 0 || inputByteLength(bytes) > ceiling)
+    throw new MediaAdmissionError('inline_limit');
+}
+
+function validatedDescriptor(
+  snapshot: ReturnType<typeof snapshotDescriptor>,
+  evidence: Readonly<Pick<DurableMediaMeta, 'mimeType' | 'modality' | 'byteLength'>>,
+): DurableMediaMeta {
+  if (snapshot.count !== undefined && snapshot.count !== evidence.byteLength)
+    throw new MediaAdmissionError('descriptor_conflict');
+  return admitMediaDescriptor({ ...snapshot.meta, ...evidence });
+}
+
+/** Join owned retirement without replacing the primary verification/write/cancellation failure. */
+async function closeMediaIteratorPreservingFailure(
+  iterator: AsyncIterator<Uint8Array>,
+): Promise<void> {
+  // Both callers can leave their read loop before EOF only by throwing a primary failure.
+  await closeMediaIterator(iterator).catch(() => undefined);
+}
 
 /** sha256 hex of the bytes — the content address that forms the handle. */
 function sha256Hex(bytes: Uint8Array): string {
@@ -31,6 +120,17 @@ function sha256Hex(bytes: Uint8Array): string {
 /** Build a handle from raw bytes. */
 function handleOf(bytes: Uint8Array): string {
   return `${HANDLE_PREFIX}${sha256Hex(bytes)}`;
+}
+
+/** Windows MoveFileExW may refuse replacement while a cooperating reader owns the target fd. */
+function isWindowsRenameContention(error: unknown): boolean {
+  return (
+    process.platform === 'win32' &&
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    (error.code === 'EPERM' || error.code === 'EBUSY')
+  );
 }
 
 /** Extract the validated 64-hex digest from a handle, or throw — never trust an arbitrary string. */
@@ -69,202 +169,236 @@ function sliceRange(bytes: Uint8Array, range: ByteRange): Uint8Array {
  * engine; the CAS is pure bytes-by-content-hash. The byte-delivery `Range` gate (read_media) is 1.AF/D13.
  */
 export class FilesystemMediaStore implements MediaStore {
-  readonly #root: string;
+  readonly #paths: MediaStorePaths;
+  readonly #temporaries: MediaStoreTemporaries;
 
   constructor(rootDir: string) {
-    this.#root = resolve(rootDir);
+    this.#paths = new MediaStorePaths(rootDir);
+    this.#temporaries = new MediaStoreTemporaries(this.#paths);
   }
 
-  // `mimeType` is intentionally not a parameter here (a fewer-param method still satisfies the
-  // `MediaStore` interface): the CAS is pure bytes-by-content-hash. mimeType is NOT persisted yet — the
-  // P3/P4 media-lifecycle wiring (D10/D11) will record it (and byteLength/modality) in the `media_objects`
-  // row when the store is invoked; no code populates that table at P1+P2.
-  put(bytes: Uint8Array): Promise<string> {
-    return this.#write(bytes);
+  async put(bytes: Uint8Array, mimeType: string): Promise<string> {
+    admitInline(bytes, mimeType);
+    const owned = new Uint8Array(bytes);
+    const verifier = createMediaVerifier(mimeType);
+    verifier.push(owned);
+    verifier.finish();
+    return this.#publish(async (file) => {
+      await file.writeFile(owned).catch((error: unknown) => {
+        throw this.#paths.error(error);
+      });
+      return handleOf(owned);
+    }, mimeType);
   }
 
-  /**
-   * Content-address a STREAMED body without holding it whole
-   * ([ADR-0089](../../../docs/decisions/0089-media-correctness-four-boundaries.md) §2).
-   *
-   * The same atomic-publish discipline as {@link put} — a unique temp file, then a rename onto the
-   * content-addressed path — but the digest is computed INCREMENTALLY as chunks are appended, so the body
-   * never exists whole in memory. That is the whole point: `put` needs the bytes up front to hash them, and
-   * needing them up front is what makes "never fully buffered" impossible.
-   *
-   * The handle is not known until the last chunk, so the temp file is written first and renamed once the
-   * digest is final. A failed or aborted stream removes the temp file and publishes NOTHING — there is no
-   * half-object and no handle anyone could resolve, which is the partial-write cleanup ADR-0089 §2 requires.
-   */
-  async putStream(chunks: AsyncIterable<Uint8Array>): Promise<string> {
-    const hash = createHash('sha256');
-    const tmp = join(this.#root, `stream.${randomUUID()}.tmp`);
-    await mkdir(this.#root, { recursive: true });
-    const file = await open(tmp, 'w');
-    let closed = false;
-    // ONE try covering the write AND the publish. An earlier version scoped it to the write loop only, so
-    // a failure at `mkdir`/`rename` — a full disk, a read-only shard, a permissions change — left a
-    // COMPLETE temp file behind. Nothing ever reclaims it: `listHandles` descends only into the two-hex
-    // shard directories, so the GC cannot see a file in the root, and a repeatable publish failure writes
-    // up to the download ceiling of unreclaimable garbage per attempt.
+  /** Count before every copy/hash/write; EOF verification precedes publication. */
+  async putStream(chunks: AsyncIterable<Uint8Array>, mimeType: string): Promise<string> {
+    const verifier = createMediaVerifier(mimeType);
+    const iterator = chunks[Symbol.asyncIterator]();
+    let ended = false;
     try {
-      for await (const chunk of chunks) {
-        hash.update(chunk);
-        const { bytesWritten } = await file.write(chunk);
-        // `FileHandle.write` is ONE `write(2)` and may write short (classically at a disk-full boundary),
-        // while `hash.update` always digests the whole chunk. A short write would publish a file at a path
-        // whose sha256 it does not match — and `get()` verifies that digest on every read, so the handle
-        // would be permanently unreadable while the durable event insists it exists. `put` cannot do this
-        // because `writeFile` loops internally; this one has to check.
-        if (bytesWritten !== chunk.length) {
-          throw new Error(
-            `media putStream: short write (${bytesWritten} of ${chunk.length} bytes) — the content address would not match`,
-          );
+      // #publish retires its own file and temporary before this outer finally joins the source.
+      return await this.#publish(async (file) => {
+        const hash = createHash('sha256');
+        let total = 0;
+        for (;;) {
+          const step = await iterator.next();
+          if (step.done === true) {
+            ended = true;
+            break;
+          }
+          const chunk = step.value;
+          if (inputByteLength(chunk) > MAX_MEDIA_OBJECT_BYTES - total)
+            throw new MediaAdmissionError('object_limit');
+          const owned = new Uint8Array(chunk);
+          verifier.push(owned);
+          total += owned.length;
+          hash.update(owned);
+          const { bytesWritten } = await file.write(owned).catch((error: unknown) => {
+            throw this.#paths.error(error);
+          });
+          if (bytesWritten !== owned.length) throw new MediaStoreFilesystemError('io');
         }
-      }
-      await file.close();
-      closed = true;
-      const handle = `media://sha256-${hash.digest('hex')}`;
-      const path = this.#pathFor(digestOf(handle));
-      await mkdir(dirname(path), { recursive: true });
-      // Same atomic publish as `#write`, and the same content-addressed idempotence: racing an identical
-      // body produces the same final path, so a duplicate rename is harmless.
-      await rename(tmp, path);
-      return handle;
-    } catch (err) {
-      if (!closed) await file.close().catch(() => undefined);
-      await rm(tmp, { force: true });
-      throw err;
+        verifier.finish();
+        return HANDLE_PREFIX + hash.digest('hex');
+      }, mimeType);
+    } finally {
+      if (!ended) await closeMediaIteratorPreservingFailure(iterator);
     }
   }
 
-  async #write(bytes: Uint8Array): Promise<string> {
-    const handle = handleOf(bytes);
-    const path = this.#pathFor(digestOf(handle));
-    await mkdir(dirname(path), { recursive: true });
-    // Atomic publish: write a unique temp file in the same directory, then rename it onto the final
-    // content-addressed path. An interrupted write leaves a stray `.tmp`, never a partial blob at the
-    // canonical path — so a later get() never serves (and its sha256 check never trips on) a truncated
-    // file. `rename` within a directory is atomic on POSIX. Content-addressed ⇒ the final path is
-    // byte-identical across writers, so racing an identical publish is harmless.
-    const tmp = `${path}.${randomUUID()}.tmp`;
-    await writeFile(tmp, bytes);
-    await rename(tmp, path);
-    return handle;
+  async #publish(write: (file: FileHandle) => Promise<string>, mimeType: string): Promise<string> {
+    const root = this.#paths.root(true);
+    if (root === undefined) throw new MediaStoreFilesystemError('missing');
+    this.#temporaries.assertProducerAllowed();
+    const tmp = this.#temporaries.producerPath(root);
+    this.#paths.assertParent(tmp);
+    // No cleanup is attempted for an EEXIST occupant: the exclusive open did not make it ours.
+    const file = await open(
+      tmp,
+      constants.O_WRONLY |
+        constants.O_CREAT |
+        constants.O_EXCL |
+        constants.O_NOFOLLOW |
+        constants.O_NONBLOCK,
+      0o600,
+    ).catch((error: unknown) => {
+      throw this.#paths.error(error);
+    });
+    let identity: Stats | undefined;
+    let closed = false;
+    let published = false;
+    let result: string | undefined;
+    let cleanupError: MediaStoreFilesystemError | undefined;
+    try {
+      identity = await file.stat().catch((error: unknown) => {
+        throw this.#paths.error(error);
+      });
+      this.#paths.assertOwnedFile(tmp, identity);
+      this.#temporaries.assertProducerAllowed();
+      const handle = await write(file);
+      const digest = digestOf(handle);
+      const target = this.#paths.path(digest, true);
+      if (target === undefined) throw new MediaStoreFilesystemError('unsafe_path');
+      this.#paths.fileSnapshot(target); // Final links/special files refuse; a detached snapshot may reflect another publisher.
+      this.#paths.assertOwnedFile(tmp, identity);
+      await file.close().catch((error: unknown) => {
+        throw this.#paths.error(error);
+      });
+      closed = true;
+      this.#paths.assertOwnedFile(tmp, identity);
+      if (this.#paths.path(digest, false) !== target)
+        throw new MediaStoreFilesystemError('unsafe_path');
+      this.#paths.fileSnapshot(target);
+      try {
+        await rename(tmp, target);
+        published = true;
+      } catch (error) {
+        if (!isWindowsRenameContention(error)) throw this.#paths.error(error);
+        // Another publisher's admitted, hash-verified bytes satisfy the same content address.
+        // This is one verification, not a retry or permission bypass. Keep our temp owned and
+        // unpublished so the finally block removes it; missing/corrupt/unsafe winners still fail.
+        try {
+          await scanMediaFile(this.#paths, digest, false, mimeType);
+        } catch {
+          throw this.#paths.error(error);
+        }
+      }
+      result = handle;
+    } finally {
+      // Join close and cleanup independently. A cleanup fault must not replace the upstream stream failure.
+      if (!closed) {
+        try {
+          await file.close();
+        } catch (error) {
+          cleanupError = this.#paths.error(error);
+        }
+      }
+      if (!published && identity !== undefined) {
+        try {
+          this.#paths.assertOwnedFile(tmp, identity);
+          await rm(tmp);
+        } catch (error) {
+          cleanupError ??= this.#paths.error(error);
+        }
+      }
+    }
+    if (cleanupError !== undefined) throw cleanupError;
+    if (result === undefined) throw new MediaStoreFilesystemError('io');
+    return result;
   }
 
   async get(handle: string): Promise<Uint8Array> {
-    const digest = digestOf(handle);
-    const bytes = new Uint8Array(await readFile(this.#pathFor(digest)));
-    // Content-address integrity: the handle IS the sha256, so verify the bytes on read — a corrupted
-    // file (bit rot, partial write, tampering) is caught here rather than propagating corrupt bytes.
-    if (sha256Hex(bytes) !== digest) {
-      throw new Error('media bytes failed their content-address (sha256) integrity check');
-    }
+    const result = await scanMediaFile(this.#paths, digestOf(handle), true);
+    if (result.bytes === undefined) throw new MediaStoreFilesystemError('io');
+    return result.bytes;
+  }
+
+  async validateMedia(handle: string, descriptor: Descriptor): Promise<DurableMediaMeta> {
+    const snapshot = snapshotDescriptor(handle, descriptor);
+    const result = await scanMediaFile(
+      this.#paths,
+      digestOf(handle),
+      false,
+      snapshot.meta.mimeType,
+    );
+    if (result.evidence === undefined) throw new MediaAdmissionError('store_contract');
+    return validatedDescriptor(snapshot, result.evidence);
+  }
+
+  async readRange(handle: string, range: ByteRange, signal?: AbortSignalLike): Promise<Uint8Array> {
+    assertMediaNotAborted(signal);
+    const result = await scanMediaFile(this.#paths, digestOf(handle), true, undefined, signal);
+    if (result.bytes === undefined) throw new MediaStoreFilesystemError('io');
+    const bytes = sliceRange(result.bytes, range);
+    assertMediaNotAborted(signal);
     return bytes;
   }
 
-  // The `signal` of the `MediaStore.readRange` contract is omitted (a fewer-param method satisfies the
-  // interface): the Node reference reads the bounded blob whole (it is already size-capped by the put/egress
-  // path) and reuses get()'s path-jail + sha256 integrity check, then defensively re-bounds the inclusive
-  // range. The real desktop Rust CAS (1.AH) streams the validated range with an abort.
-  async readRange(handle: string, range: ByteRange): Promise<Uint8Array> {
-    return sliceRange(await this.get(handle), range);
-  }
-
-  // `provider` is intentionally not a parameter yet (a fewer-param method satisfies the interface):
-  // 1.AF resolves to inline base64 for every provider. The provider-aware file re-upload optimization
-  // for over-ceiling media is the egress/sidecar work (1.AF/D8, ADR-0043); the engine, not the adapter,
-  // calls this before egress.
   async resolveForEgress(handle: string): Promise<MediaSource> {
     return toBase64Source(await this.get(handle));
   }
 
-  /**
-   * Delete a blob by handle — the host GC's byte-reclamation step (2.S/D-GC, ADR-0042 §4: a grace-expired handle
-   * (§4c) or a row-less-orphan handle from a crash). `digestOf` rejects a non-`media://` handle and `#pathFor`
-   * jails the path, so this can never unlink outside the store root. Idempotent: a missing blob (already
-   * reclaimed / never written) is a no-op via `rm`'s `force`. NOT on the `MediaStore` engine port — GC is a host
-   * concern, not an engine one.
-   */
-  async delete(handle: string): Promise<void> {
-    await rm(this.#pathFor(digestOf(handle)), { force: true });
+  sweepTemporaries(options?: { readonly now?: number }): Promise<MediaTemporarySweepResult> {
+    return this.#temporaries.sweep(options);
   }
 
-  /**
-   * Enumerate every well-formed `media://sha256-<hex>` handle the CAS currently holds, each with its blob's
-   * `mtimeMs` — the host GC's orphan-detection + age-guard input (a row-less blob, 2.S/D-GC; the `mtimeMs` lets
-   * the GC skip a freshly-written blob a concurrent run may not have `recordObject`'d yet). Reconstructs the
-   * handle from the shard dir + filename and re-validates it against {@link MEDIA_HANDLE_PATTERN}, so a stray
-   * `.tmp` from an interrupted publish, or any non-conforming name, is skipped; the inner loop also skips a
-   * non-file (a stray subdir). An absent root (the CAS was never written) yields `[]`.
-   */
-  async listHandles(): Promise<Array<{ handle: string; mtimeMs: number }>> {
-    let shards: Dirent[];
-    try {
-      shards = await readdir(this.#root, { withFileTypes: true });
-    } catch (err) {
-      // An absent CAS root (never written) yields `[]` — one async call, no `existsSync`/`readdir` window.
-      if (err instanceof Error && 'code' in err && err.code === 'ENOENT') {
-        return [];
+  pruneLegacyTemporaries(options: {
+    readonly legacyOffline: true;
+    readonly force: true;
+  }): Promise<MediaTemporarySweepResult> {
+    return this.#temporaries.pruneLegacy(options);
+  }
+
+  /** Host GC is subject to the same physical root/shard/final identity checks as delivery. */
+  async delete(handle: string): Promise<void> {
+    const digest = digestOf(handle);
+    const path = this.#paths.path(digest, false);
+    if (path === undefined || this.#paths.file(path) === undefined) return;
+    await rm(path).catch((error: unknown) => {
+      const failure = this.#paths.error(error);
+      if (failure.reason === 'missing') {
+        // A cooperating collector may remove the admitted blob before native rm starts.
+        // Revalidate containment and absence; a revoked root or replacement is not success.
+        const current = this.#paths.path(digest, false);
+        if (current === undefined || this.#paths.file(current) === undefined) return;
       }
-      throw err;
-    }
-    // CAS layout: `<root>/<aa>/<rest-of-hash>` — only a 2-hex-char shard DIR holds blobs; skip strays.
-    const shardDirs = shards.filter((s) => s.isDirectory() && /^[0-9a-f]{2}$/.test(s.name));
-    // Enumerate + stat every shard's entries concurrently. The host GC awaits this on the CLI's terminal-run
-    // exit path, so a sequential shard-by-shard, entry-by-entry walk added O(shards + blobs) serial I/O to
-    // every run's exit latency; fanning out bounds it by the slowest single shard instead. Result order is
-    // irrelevant — the GC consumes the handle set unordered. A shard `readdir` / entry `stat` fault still
-    // propagates (Promise.all rejects on the first), preserving the no-silent-partial-listing contract.
+      throw failure;
+    });
+  }
+
+  async listHandles(): Promise<Array<{ handle: string; mtimeMs: number }>> {
+    const root = this.#paths.root(false);
+    if (root === undefined) return [];
+    const shards = await readdir(root, { withFileTypes: true }).catch((error: unknown) => {
+      throw this.#paths.error(error);
+    });
+    this.#paths.root(false);
     const perShard = await Promise.all(
-      shardDirs.map(async (shard) => {
-        const shardDir = join(this.#root, shard.name);
-        const entries = await readdir(shardDir, { withFileTypes: true });
-        const found = await Promise.all(
-          entries.map((entry) => this.#handleForEntry(shardDir, shard.name, entry)),
-        );
-        return found.filter((f): f is { handle: string; mtimeMs: number } => f !== undefined);
-      }),
+      shards
+        .filter(
+          (entry) =>
+            /^[0-9a-f]{2}$/.test(entry.name) && (entry.isDirectory() || entry.isSymbolicLink()),
+        )
+        .map(async (shard) => {
+          const dir = this.#paths.shard(shard.name + '0'.repeat(62), false);
+          if (dir === undefined) return [];
+          const entries = await readdir(dir, { withFileTypes: true }).catch((error: unknown) => {
+            throw this.#paths.error(error);
+          });
+          this.#paths.shard(shard.name + '0'.repeat(62), false);
+          const found: Array<{ handle: string; mtimeMs: number }> = [];
+          for (const entry of entries) {
+            const handle = HANDLE_PREFIX + shard.name + entry.name;
+            // Nonconforming names and stray subdirectories are not blobs. Valid-name links are refused.
+            if (!MEDIA_HANDLE_PATTERN.test(handle) || entry.isDirectory()) continue;
+            const info = this.#paths.file(join(dir, entry.name));
+            if (info !== undefined) found.push({ handle, mtimeMs: info.mtimeMs });
+          }
+          return found;
+        }),
     );
     return perShard.flat();
-  }
-
-  /** Reconstruct + stat one shard-dir entry into a `{handle, mtimeMs}`, or `undefined` to skip it: a non-file (a
-   *  stray subdir), a non-conforming name (a `.tmp`), or a blob that vanished between the readdir and the stat (a
-   *  concurrent delete — ENOENT). A real permission / IO `stat` fault propagates (never a silent partial listing). */
-  async #handleForEntry(
-    shardDir: string,
-    shardName: string,
-    entry: Dirent,
-  ): Promise<{ handle: string; mtimeMs: number } | undefined> {
-    if (!entry.isFile()) {
-      return undefined;
-    }
-    const handle = `${HANDLE_PREFIX}${shardName}${entry.name}`;
-    if (!MEDIA_HANDLE_PATTERN.test(handle)) {
-      return undefined;
-    }
-    try {
-      return { handle, mtimeMs: (await stat(join(shardDir, entry.name))).mtimeMs };
-    } catch (err) {
-      if (err instanceof Error && 'code' in err && err.code === 'ENOENT') {
-        return undefined;
-      }
-      throw err;
-    }
-  }
-
-  /** Resolve the CAS path for a validated digest, fail-closed if it would escape the store root. */
-  #pathFor(digest: string): string {
-    const full = resolve(this.#root, join(digest.slice(0, 2), digest.slice(2)));
-    // Normalize the boundary so a root that already ends in `sep` (the filesystem root `/` or `C:\`)
-    // does not produce a `//`/`C:\\` prefix that a valid child path would fail to match (false positive).
-    const prefix = this.#root.endsWith(sep) ? this.#root : this.#root + sep;
-    if (full !== this.#root && !full.startsWith(prefix)) {
-      throw new Error('media path escapes the store root');
-    }
-    return full;
   }
 }
 
@@ -272,54 +406,100 @@ export class FilesystemMediaStore implements MediaStore {
 export class InMemoryMediaStore implements MediaStore {
   readonly #blobs = new Map<string, Uint8Array>();
 
-  put(bytes: Uint8Array): Promise<string> {
-    const handle = handleOf(bytes);
-    // Defensive copy on write (match FilesystemMediaStore.get's copy-on-read): a later mutation of the
-    // caller's array must never corrupt the content-addressed blob this handle names.
-    this.#blobs.set(handle, bytes.slice());
+  async put(bytes: Uint8Array, mimeType: string): Promise<string> {
+    admitInline(bytes, mimeType);
+    const owned = new Uint8Array(bytes);
+    const verifier = createMediaVerifier(mimeType);
+    verifier.push(owned);
+    verifier.finish();
+    const handle = handleOf(owned);
+    this.#blobs.set(handle, owned);
     return Promise.resolve(handle);
   }
 
-  /**
-   * The streaming write (ADR-0089 §2). An in-MEMORY store necessarily ends up holding the whole body — that
-   * is what it is — so this exists for CONTRACT parity, not for a memory saving: an engine that refuses the
-   * url path without a `putStream` would otherwise be untestable against the reference store, and a test
-   * host would be forced to pretend. Nothing about the real guarantee rests on this implementation; the
-   * filesystem one is where it is kept.
-   */
-  async putStream(chunks: AsyncIterable<Uint8Array>): Promise<string> {
+  async putStream(chunks: AsyncIterable<Uint8Array>, mimeType: string): Promise<string> {
+    const verifier = createMediaVerifier(mimeType);
+    // Bound collection metadata independently of source fragmentation: at most 400 blocks,
+    // rather than retaining one array entry for every byte or empty source chunk.
     const collected: Uint8Array[] = [];
+    let block: Uint8Array | undefined;
+    let used = 0;
     let total = 0;
-    for await (const chunk of chunks) {
-      collected.push(chunk);
-      total += chunk.length;
+    const iterator = chunks[Symbol.asyncIterator]();
+    let ended = false;
+    try {
+      for (;;) {
+        const step = await iterator.next();
+        if (step.done === true) {
+          ended = true;
+          break;
+        }
+        const chunk = step.value;
+        if (inputByteLength(chunk) > MAX_MEDIA_OBJECT_BYTES - total)
+          throw new MediaAdmissionError('object_limit');
+        const owned = new Uint8Array(chunk);
+        verifier.push(owned);
+        let offset = 0;
+        while (offset < owned.length) {
+          if (block === undefined || used === block.length) {
+            block = new Uint8Array(64 * 1024);
+            collected.push(block);
+            used = 0;
+          }
+          const count = Math.min(block.length - used, owned.length - offset);
+          block.set(owned.subarray(offset, offset + count), used);
+          used += count;
+          offset += count;
+        }
+        total += owned.length;
+      }
+      verifier.finish();
+      const bytes = new Uint8Array(total);
+      let at = 0;
+      for (const chunk of collected) {
+        const count = Math.min(chunk.length, total - at);
+        bytes.set(chunk.subarray(0, count), at);
+        at += count;
+      }
+      const handle = handleOf(bytes);
+      this.#blobs.set(handle, bytes);
+      return handle;
+    } finally {
+      // Drop unpublished collection before an owned native acknowledgement can suspend retirement.
+      collected.length = 0;
+      block = undefined;
+      if (!ended) await closeMediaIteratorPreservingFailure(iterator);
     }
-    const bytes = new Uint8Array(total);
-    let at = 0;
-    for (const chunk of collected) {
-      bytes.set(chunk, at);
-      at += chunk.length;
-    }
-    return this.put(bytes);
   }
 
-  get(handle: string): Promise<Uint8Array> {
-    if (!MEDIA_HANDLE_PATTERN.test(handle)) {
-      return Promise.reject(new Error('not a media://sha256-<64hex> handle'));
-    }
+  async get(handle: string): Promise<Uint8Array> {
+    digestOf(handle);
     const bytes = this.#blobs.get(handle);
-    return bytes === undefined
-      ? Promise.reject(new Error(`no media bytes for ${handle}`))
-      : Promise.resolve(bytes.slice()); // copy on read — the caller cannot mutate the stored blob
+    if (bytes === undefined) throw new MediaStoreFilesystemError('missing');
+    if (bytes.byteLength > MAX_MEDIA_OBJECT_BYTES) throw new MediaAdmissionError('object_limit');
+    return Promise.resolve(bytes.slice());
+  }
+
+  async validateMedia(handle: string, descriptor: Descriptor): Promise<DurableMediaMeta> {
+    const snapshot = snapshotDescriptor(handle, descriptor);
+    const bytes = this.#blobs.get(handle);
+    if (bytes === undefined) throw new MediaStoreFilesystemError('missing');
+    if (bytes.byteLength > MAX_MEDIA_OBJECT_BYTES) throw new MediaAdmissionError('object_limit');
+    const verifier = createMediaVerifier(snapshot.meta.mimeType);
+    verifier.push(bytes);
+    const evidence = verifier.finish();
+    if (handleOf(bytes) !== handle) throw new MediaAdmissionError('store_contract');
+    return Promise.resolve(validatedDescriptor(snapshot, evidence));
   }
 
   async resolveForEgress(handle: string): Promise<MediaSource> {
     return toBase64Source(await this.get(handle));
   }
 
-  // The `signal` of the `MediaStore.readRange` contract is omitted (a fewer-param method still satisfies
-  // the interface): the in-memory blob is already resident, so there is no streamed I/O to abort.
-  async readRange(handle: string, range: ByteRange): Promise<Uint8Array> {
-    return sliceRange(await this.get(handle), range);
+  async readRange(handle: string, range: ByteRange, signal?: AbortSignalLike): Promise<Uint8Array> {
+    assertMediaNotAborted(signal);
+    const bytes = sliceRange(await this.get(handle), range);
+    assertMediaNotAborted(signal);
+    return bytes;
   }
 }

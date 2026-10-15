@@ -1,4 +1,4 @@
-import type { Command } from 'commander';
+import { CommanderError, type Command } from 'commander';
 
 import { CliError } from '../process/errors.js';
 import { type ExitCode } from '../process/exit-codes.js';
@@ -51,6 +51,7 @@ export function registerCommands(program: Command, ctx?: CommandContext): void {
   registerBudget(program, ctx);
   registerModels(program, ctx);
   registerProvider(program, ctx);
+  registerMedia(program, ctx);
   registerList(program, ctx);
   registerLogs(program, ctx);
   registerStatus(program, ctx);
@@ -68,14 +69,33 @@ export function registerCommands(program: Command, ctx?: CommandContext): void {
 }
 
 function registerRun(program: Command, ctx?: CommandContext): void {
+  // `command()` shares the parent's output configuration object. A prepared subcommand gets a
+  // separate copy, so its parser faults can be made opaque without changing root/other commands.
   const run = program
-    .command('run <workflow>')
+    .createCommand('run')
+    .argument('<workflow>')
     .description('Execute a workflow (path or id), streaming progress.')
     .option('--input <key=value...>', 'a workflow input (repeatable)')
+    .option('--secret-inputs-stdin', 'read declared secret inputs from non-TTY stdin')
     .option(
       '--allow-mcp-stdio <digest...>',
       'authorize a stdio MCP server by its consent digest for this invocation (repeatable)',
-    );
+    )
+    .allowExcessArguments(false)
+    .configureOutput({
+      ...program.configureOutput(),
+      outputError: (_message, write) =>
+        write('error: invalid run arguments; use relavium run --help.\n'),
+    })
+    .exitOverride((error) => {
+      if (error.exitCode === 0) throw error;
+      throw new CommanderError(
+        error.exitCode,
+        error.code,
+        'error: invalid run arguments; use relavium run --help.',
+      );
+    });
+  program.addCommand(run);
 
   if (ctx === undefined) {
     // No runtime context (e.g. a bare buildProgram for help rendering) — keep it a clean stub.
@@ -88,7 +108,11 @@ function registerRun(program: Command, ctx?: CommandContext): void {
   run.action(
     async (
       workflow: string,
-      opts: { input?: readonly string[]; allowMcpStdio?: readonly string[] },
+      opts: {
+        input?: readonly string[];
+        secretInputsStdin?: boolean;
+        allowMcpStdio?: readonly string[];
+      },
     ) => {
       ctx.result.exitCode = await executeCommand(
         'run',
@@ -98,7 +122,11 @@ function registerRun(program: Command, ctx?: CommandContext): void {
         // inoperative end to end while its unit tests passed, because they call the gate directly.
         {
           positionals: [workflow],
-          options: { input: opts.input, allowMcpStdio: opts.allowMcpStdio },
+          options: {
+            input: opts.input,
+            secretInputsStdin: opts.secretInputsStdin,
+            allowMcpStdio: opts.allowMcpStdio,
+          },
         },
         ctx,
       );
@@ -736,4 +764,39 @@ function registerProvider(program: Command, ctx?: CommandContext): void {
 /** First whitespace-delimited token of a command name — `logs <runId>` → `logs`. */
 function commandWord(name: string): string {
   return name.split(' ', 1)[0] ?? name;
+}
+
+function registerMedia(program: Command, ctx?: CommandContext): void {
+  const media = program.command('media').description('Manage local media storage.');
+  const prune = media.createCommand('prune-temporaries');
+  media.addCommand(prune);
+  prune
+    .configureOutput({
+      ...program.configureOutput(),
+      outputError: (_message, write) => write('error: invalid media maintenance arguments.\n'),
+    })
+    .exitOverride((error) => {
+      if (error.exitCode === 0) throw error;
+      throw new CommanderError(
+        error.exitCode,
+        error.code,
+        'error: invalid media maintenance arguments.',
+      );
+    })
+    .description('Remove legacy temporary media after all old producers are stopped.')
+    .option('--legacy-offline', 'acknowledge that all old media producers are stopped')
+    .option('--force', 'authorize legacy temporary media deletion')
+    .allowExcessArguments(false)
+    .action(async (opts: { legacyOffline?: boolean; force?: boolean }) => {
+      if (ctx === undefined)
+        throw new CliError(
+          'not_implemented',
+          'Media maintenance requires the CLI runtime context.',
+        );
+      ctx.result.exitCode = await executeCommand(
+        'media.prune-temporaries',
+        { positionals: [], options: { legacyOffline: opts.legacyOffline, force: opts.force } },
+        ctx,
+      );
+    });
 }

@@ -41,7 +41,7 @@ and [docs/architecture/managed-inference.md](docs/architecture/managed-inference
 
 **Status: Phase 1 is complete** (2026-06-21) — the engine runs end-to-end behind the
 `LLMProvider` seam with all three adapters, `AgentSession`, multimodal I/O, and the full
-run-loop. **Phase 2 (CLI) is feature-complete** (v0.1.1 release cut, publish pending):
+run-loop. **Phase 2 (CLI) is feature-complete** (published as v0.1.1):
 `relavium chat` / `chat-resume` / `agent run`, `relavium run` with `--json`, the
 inbound MCP client, and the full YAML lifecycle (`create`/`import`/`export`).
 **Phase 2.5 (CLI Consolidation) is complete** (M2.5-4, PR #69, 2026-07-08): the bare-invocation
@@ -130,10 +130,9 @@ throughout the registers describe their original checkpoints.
 CR-70 (cross-turn tool-history carrying), CR-93 (tenant-scoped mutable state), CR-95's long continuation
 and existing exact-capacity/scoped residuals retain their approved limits in
 [deferred-tasks.md](docs/roadmap/deferred-tasks.md). No new deferral, provider capture, billing,
-credential or W8 user decision is pending. Next is the joint 2.5.5/2.6
-[Wave 2 — Shut the doors](docs/roadmap/current.md#wave-2--shut-the-doors), starting with the
-remaining unified filesystem jail; its MCP queue already merged in W4. This is separate from
-Phase 2.6.5's completed W2 liveness wave. Phase 2.5.5 and Phase 2.6 remain in progress.
+credential or W8 user decision is pending. The joint [Wave 2 — Shut the doors](docs/roadmap/current.md#next-work--wave-2--shut-the-doors) is now accepted on `development`;
+next is [Wave 3 — Clear the ground](docs/roadmap/current.md#wave-3--clear-the-ground).
+Phase 2.5.5 and Phase 2.6 remain in progress.
 
 **W7 merged to `main` on 2026-10-10 as PR #90, including final whole-wave Step 12.**
 Steps 1–11, all five genuine overflow records, owned measured requests and consolidated provider/MCP/host
@@ -153,11 +152,54 @@ billing, key or user decision is pending. The [merge checkpoint](docs/roadmap/ph
 records W7 closure. W8 subsequently merged in PR #92; the register is 49/51 on `main`.
 Existing approved limits are unchanged; W8 has no open implementation or landing gate.
 
+**Joint Wave 2 accepted on `development` — 2026-10-13:** all eight implementation
+steps are complete under approved ADR-0105–0109. The [closing register](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-2-closing-register--2026-10-13)
+joins forty individual dispositions, four new security sittings plus W4 revalidation,
+two NEW complete clean cumulative whole-wave rounds, broad author/coverage gates
+and exact-source published causal/platform evidence. Exit criteria 1–3 and the D
+half of M2.5.5-2 are accepted; the I half and full phases remain open. Publication
+is separate from merge. No ADR approval, provider capture, key, billing or user
+decision is pending for Wave 2. Next engineering work is
+[Wave 3 — Clear the ground](docs/roadmap/current.md#wave-3--clear-the-ground),
+starting with its serialized multi-file queue and a fresh decision preflight.
+Full M/N lifecycle and existing approved deferrals retain their canonical homes.
+
+**PR #94 maintainer source corrections accepted — 2026-10-13:** runner-level
+unhandled-error rejection, legal OpusTags tails and FLAC nonfinal block consistency
+each have two NEW independent clean complete cumulative correction rounds. Final
+source rounds at `f4ca3c53` cover all 28 correction paths / 72 hunks; these are not a
+new review of all original PR paths. The [correction register](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#pr-94-systematic-review-corrections--2026-10-13)
+joins source acceptance; [PR #94](https://github.com/HodeTech/Relavium/pull/94)
+records current corrected-head full CI/coverage/platform and complete physical
+controls separately. Their actual success is required before merge. Original
+`395fbf95` artifacts retain their historical scope. Wave 3 is subsequent work.
+
+**PR #94 lower-priority corrections — 2026-10-13:** all twelve verified Low
+items from the subsequent 305-path review are implemented in three increments.
+The [lower-priority correction register](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#pr-94-lower-priority-review-corrections--2026-10-13)
+records every disposition and separately attributes selected controls, broad gates
+and historical captures. Each increment requires two NEW complete clean cumulative
+source rounds after its final fix; PR #94 owns the actual final reviewed-head
+acceptance and refreshed CI/coverage/platform/physical-evidence publication.
+No new ADR, deferral, provider request, key, billing action or user decision is
+introduced. Wave 3 follows these corrections; publication remains separate from merge.
+
 For live status, per-PR history, milestone dates, and open obligations, see the canonical
 home [docs/roadmap/current.md](docs/roadmap/current.md);
 [README.md](README.md) is the public overview;
 [docs/roadmap/phases/phase-2.6-conversational-authoring.md](docs/roadmap/phases/phase-2.6-conversational-authoring.md)
 has the full Phase 2.6 plan.
+
+**PR #94 additional corrections implemented — 2026-10-15:** review of `992e6dab`
+reproduced generated-result publication, Vorbis framing and host-boundary defects.
+All four repair increments, including the subsequent finite pin-error capture, are
+implemented. The [additional correction register](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#pr-94-additional-systematic-review--2026-10-15)
+owns their scope and checkpoint receipts; [PR #94](https://github.com/HodeTech/Relavium/pull/94)
+owns actual current-source review, execution and ready/merge status. Two NEW clean
+complete cumulative rounds after the final material fix and actual corrected-source
+CI/coverage/platform/physical controls are required before merge. Earlier acceptance
+and green captures retain their historical scope. Wave 3 follows corrected PR acceptance.
+No provider, credential, billing or new ADR approval is pending.
 
 ## Non-negotiable rules for AI agents
 

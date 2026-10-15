@@ -78,3 +78,26 @@ The `MediaStore` contract + `Usage.mediaUnits` + the cost shape must **not forec
 ### Neutral
 
 - Per ADR-0009's append-only rule, ADR-0028 and ADR-0029 are unchanged in history; this ADR is the authoritative record for the media cost class, the `read_media` authz, and the `save_to` write port. Future governance/tool-policy readers should read those **and** this.
+
+> Amended 2026-10-12 by [ADR-0105](0105-filesystem-roots-are-invocation-grants-not-project-authority.md): Native `save_to` and tool fs share the injected ancestor resolver without sharing permissions; trusted persistence may write `.relavium/runs`, while model tools cannot. Every Windows drive prefix, including drive-relative forms, is refused before save_to I/O. CAS physical containment refines host implementation; scope authorization and retention remain intact. Bounds/cancellation/maintenance remain Step 6 / ADR-0106. Exact mechanisms are in the [tool filesystem contract](../reference/shared-core/built-in-tools.md#filesystem-permission-tiers), with [argv authority](../reference/cli/commands.md#global-options) and [config selectors](../reference/contracts/config-spec.md#chat-filesystem-root-selectors) in their canonical homes. Implementation review/gates remain open.
+
+### Wave 2 media implementation checkpoint — 2026-10-12
+
+ADR-0106 adds immutable canonical descriptor batch admission before state and `save_to`.
+Known byte/type/duration conflicts, including deleted rows, cannot be hidden by content-address
+idempotence; unknown duration may only be enriched. The
+[metadata transaction contract](../reference/shared-core/database-schema.md#media-metadata-admission)
+creates no reference or read grant. Bounded cancellable fd delivery preserves whole-object range
+backing (CR-53), and `read_media` activation retains its separately owned residual. Existing
+realized-money rules and post-ACK best-effort lifetime semantics are unchanged. Step 6 independent
+implementation review and whole-wave gates remain open at this checkpoint.
+
+
+### Wave 2 implementation landing — 2026-10-13
+
+The applicable Wave 2 implementation is accepted on `development`. The
+[closing register](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-2-closing-register--2026-10-13)
+joins the per-item disposition, two NEW clean complete whole-wave review rounds,
+security sittings, exact-source gates and preserved limits. Earlier dated pending
+checkpoints remain historical. This landing does not claim a merge, future header
+activation, full M/N lifecycle or removal of approved residuals.

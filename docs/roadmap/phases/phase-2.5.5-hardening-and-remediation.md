@@ -1,6 +1,6 @@
 # Phase 2.5.5 — Hardening and Remediation
 
-> Status: 🚧 **Open — Wave 0 in flight.** Live progress and execution order are canonical in
+> Status: 🚧 **Open — Wave 2 Steps 1–8 accepted on development; publication and later waves remain separate.** Live progress and execution order are canonical in
 > [../current.md](../current.md#execution-order--phase-255--phase-26-temporary); this banner does not
 > restate them. A full-project multi-agent code review completed
 > 2026-07-19 at HEAD `f88b0e8` — 377 findings, 373 surviving two-lens adversarial
@@ -211,7 +211,7 @@ reached.
 - **Correct three stale engine doc comments to match current code.** `checkpoint.ts`'s module doc (`packages/core/src/engine/checkpoint.ts`) claims a "runId+nodeId+retryCount idempotency key" bounds resumed side effects; no such key exists. `builtins.ts`'s top comment still says egress is "not wired yet"; it shipped. `workflow-yaml-spec.md` documents `workflow.version` as Semver-format-enforced; `WorkflowSpecSchema` enforces no format. One sweep correcting each. *(S · `packages/core/src/engine/checkpoint.ts`, `packages/core/src/tools/builtins.ts`, `docs/reference/*/workflow-yaml-spec.md` · #78, #97, #214)*
 - **Remove the dead `RunEventBusOptions.validate` escape hatch and replace `kahnOrder`'s full re-sort with a priority structure.** `RunEventBusOptions.validate` (`packages/core/src/engine/event-bus.ts`) is documented as a hot-path escape hatch but no caller ever sets it — dead config, negligible cost today. `kahnOrder` (`packages/core/src/dag.ts`) re-sorts the entire ready-list on every pop instead of using a priority queue, also negligible at today's node counts. Both essentially-free cleanups; batch into one pass and revisit priority-queueing only if 2.6.P's subworkflows push node counts up. *(S · `packages/core/src/engine/event-bus.ts`, `packages/core/src/dag.ts` · #274, #275)*
 - **Introduce a shared `RelaviumError` base class and migrate the 15 hand-rolled error classes onto it.** Error classes across `packages/core`, `packages/llm`, `packages/mcp`, and `apps/cli` (`BudgetExceededError`, `EngineStateError`, `RunLoopInvariantError`, and others) share no common base, each re-implementing its own conventions. `packages/shared` is the correct home. Introduce a minimal `RelaviumError` base class and migrate the existing classes onto it, preserving each class's existing `.code`/discriminant behavior. *(M · `packages/shared/src/*.ts` · #219)*
-- **Chat-to-workflow export hardening: continuity caveat, embedded-secret redaction, and non-ASCII slug fallback.** `sessionToWorkflow` (`packages/core/src/export/serializer.ts`) correctly implements the documented `agent-session-spec.md` contract, but neither the spec nor the CLI warns that the exported node chain does not preserve conversational continuity. Separately, chat-export embeds raw `tool_result` content verbatim into the exported `.relavium.yaml` — a credential a tool happened to read/cat is committed to the file, with only the narrow ADR-0029 secret-input claim as coverage. And `workflowIdFor`'s ASCII-only strip collapses non-Latin session titles (Turkish, German, French) to a static `'exported-session'` fallback. All three live in the same function family in the same file. **Blocked on a maintainer decision**: warn-only banner on chat-export vs. an opt-in redaction/omission flag for `tool_result` content vs. applying the full untrusted-content security discipline to exported transcripts. *(M · `packages/core/src/export/serializer.ts` · #80, #81, #83)*
+- **Chat-to-workflow export hardening: continuity caveat and non-ASCII slug fallback; certify existing tool-content exclusion.** W7/PR #90 and Accepted [ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) structurally exclude model-issued tool arguments/results from durable session rows and exported scaffolds. The earlier raw-tool-result export claim and its proposed opt-in/redaction decision are superseded by that contract; do not add a raw-content flag. Wave 2 still adds a clear continuity/review notice and deterministic ASCII title normalization with a session-identity fallback. Retained user/assistant text, `@` attachments and `!` output can remain sensitive: this is not universal transcript masking. Certify producer→SQLite→export rejection fixtures with #115; the [Wave 2 decision package](#decisions-presented-together-before-implementation) records D14/D15. *(M · `packages/core/src/export/serializer.ts` · #80, #81, #83)*
 - **Give `BudgetExceededError`/`BudgetPauseError` a `.code` field, blocked on a maintainer call.** These two errors (`packages/core/src/engine/budget-governor.ts`) expose no `.code`, unlike `EngineStateError`/`RunLoopInvariantError` in the same directory that `docs/standards/error-handling.md` names as the canonical model. Not a functional bug today. **Blocked on a maintainer decision**: should these errors adopt the `.code` convention, or is `instanceof`-narrowing an accepted exception for this pair? *(S · `packages/core/src/engine/budget-governor.ts` · G50)*
 - **Collapse two always-co-occurring branches in `engine.ts`'s `#dispatch` retry-sleep handling.** Purely cosmetic dead-code/maintenance-trap: two branches that always co-occur, one unreachable dead weight. No behavioral bug, but real, trivially-scheduled cleanup. *(S · `packages/core/src/engine/engine.ts` · #79)*
 
@@ -235,7 +235,7 @@ reached.
 - ✅ **DONE (Wave 1, PR #81, 2026-07-30 — #194/#198 · catch narrowed to `UnknownModelError`, `assertAccountableUsage` in `CostTracker.record()`).** **Narrow `#emitSuccess`'s cost-recording catch and add a bounds check inside `CostTracker.record()`.** `packages/llm/src/fallback-chain.ts`'s `#emitSuccess` cost-recording catch is unnarrowed even though its own comment documents it as guarding only against `UnknownModelError` — any other exception on the pricing path is silently swallowed into an undiagnosable $0 cost (#194). Separately, `packages/llm/src/cost-tracker.ts`'s `CostTracker.record()` consumes `Usage` fields with no non-negative/finite check inside the file itself, risking silent downward erosion of `cumulativeCostMicrocents` from a malformed usage payload (#198). Narrow the catch to `UnknownModelError` and add the bounds check in one defensive-hardening pass. *(S · packages/llm/src/fallback-chain.ts, packages/llm/src/cost-tracker.ts · #194, #198)*
 - **Delete `GeminiToolCallIds.resolveResponse` or mark it reserved.** `packages/llm/src/tool-normalizer.ts`'s `resolveResponse` is fully unit-tested but has zero callers — the actual id-resolution mechanism the Gemini adapter uses is a separate implementation, `toGeminiContents`'s `nameById` Map. Either delete the dead method and its test, or add an explicit "currently unused/reserved" comment so it doesn't read as an untested live path. *(S · packages/llm/src/tool-normalizer.ts · #176)*
 - **Add direct unit tests for `providers.ts`'s adapter-selection and SSRF-validated custom-base-URL wiring.** `packages/llm/src/providers.ts` decides which adapter serves each `ProviderId` and wires the SSRF-validated fetch for custom base URLs, and has zero dedicated unit tests today — a gap on a security-relevant path that is currently only exercised indirectly. *(S · packages/llm/src/providers.ts · #182)*
-- **Broaden `scrubSecrets`'s URL-query-secret regex to catch common param-name variants.** `packages/llm/src/llm-error.ts`'s `scrubSecrets` requires an exact param-name match, so a common OAuth param like `client_secret` slips through this last-line-of-defense log-redaction backstop unredacted. The fix itself is a small regex broadening, but per CLAUDE.md rule 4 (never hand-roll security-critical primitives without review) flag it for explicit security review before merge. *(S · packages/llm/src/llm-error.ts · #196)*
+- ✅ **DONE on `development` (Step 3, reviewed at `8c44e2ec`; final Wave 2 certification remains open).** **Broaden `scrubSecrets`'s URL-query-secret regex to catch common param-name variants.** The finite query-name extension and overlapping-credential corrections have independent security/CLI reviews, benign-output controls and complete mechanism-removal evidence; see the [Step 3 acceptance](#step-3-acceptance--2026-10-12). This is finite shape recognition, not universal secret discovery. *(S · packages/llm/src/llm-error.ts · #196)*
 - **Decide where to parse `LlmResultSchema`/`StreamChunkSchema` against live adapter output, then wire it.** These schemas (`packages/llm/src/types.ts`) carry load-bearing invariants — the ADR-0031 raw-media `superRefine` and the reasoning-tokens refine — but are only ever parsed in tests; no adapter or `packages/core` consumer runs a live result through them, so a defective custom-base-URL endpoint can violate these invariants with no runtime gate. Needs a considered call on insertion point given the per-call perf cost before implementation. *(M · packages/llm/src/types.ts · #184)*
 - **Stream `sync-models-dev`'s body-size guard instead of buffering first.** `tools/sync-models-dev/sync.mjs`'s `MAX_BODY_BYTES` cap only fires after `response.text()` has already buffered the full body when `content-length` is absent. Low real-world severity (this is a maintainer-run sync script, not exposed to untrusted input at runtime) but a cheap fix: stream with a running byte-count guard that aborts before full buffering. *(S · tools/sync-models-dev/sync.mjs · #183)*
 - **Remove the unreachable `?? maxOutputTokens` fallback in `estimateMaxNextCost`.** `packages/llm/src/budget-estimator.ts`'s `estimateMaxNextCost` has a `?? maxOutputTokens` fallback branch that is provably unreachable given the function's own required-number parameter signature. Pure dead-code cleanup — remove the branch and simplify the signature to match. *(S · packages/llm/src/budget-estimator.ts · #197)*
@@ -271,7 +271,7 @@ reached.
 - ✅ **DONE (Wave 1, PR #81, 2026-07-30 — G1 · guarded in `model-catalog-store.ts`).** **Guard the `deprecationDate` conversion in `model-catalog-view.ts` the same way the sibling `capabilities` column already is.** An unguarded `Date` conversion on a corrupted `deprecationDate` row can crash the entire `/models` catalog load; apply the same guarded-parse pattern already present for `capabilities` a few lines away. *(S · `apps/cli/src/engine/model-catalog-view.ts` · G1)*
 - **Decide whether the per-row corruption isolation `model-catalog-store.ts` already has is worth propagating to `session-store.ts`/`provider-store.ts`.** `packages/db/src/model-catalog-store.ts` has a typed error specifically so one corrupt row can be isolated during a list read; `session-store.ts`/`provider-store.ts` instead let one bad row abort the entire read, surfacing as a generic "internal error." *(M · `packages/db/src/session-store.ts` · #117)* — **blocked**: maintainer call on whether per-row isolation is worth adding now, or whether a fully-aborted list read on a corrupted row is an acceptable residual matching the "DB corruption is out of scope" posture applied elsewhere.
 - **Add a fixture-seeded-then-migrated test harness so `ALTER`-based migrations are actually exercised against pre-existing rows.** 9 of 13 migrations in `packages/db/drizzle` use `ALTER` and none is tested against real historic data — only against an empty schema. *(M · `packages/db/drizzle` · #291)*
-- **Add a secret-masking regression fixture for `session_messages.content_parts`/`tool_calls`, mirroring the one `run_events`/`runs` already have.** `packages/db/src/session-store.ts`'s `appendMessage` writes the CLI's never-pruned flagship artifact with no dedicated masked-placeholder fixture, unlike the structurally identical `run_events`/`runs`/`step_executions` columns. *(S · `packages/db/src/session-store.ts` · #115)* — **blocked**: maintainer call on whether secret masking is already guaranteed upstream of `appendMessage`, which determines whether a dedicated fixture (mirroring `run-history-store.test.ts`) is warranted at all.
+- **Certify session-message tool-content rejection and document retained content (#115).** W7/PR #90 already supplies strict session-row validation and producer→SQLite→export controls under Accepted [ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) and [ADR-0098](../../decisions/0098-a-session-effect-row-holds-no-result-and-never-replays.md). Reuse and revalidate these controls for Wave 2 instead of promising masked arbitrary user/assistant text or silently stripping legacy tool content. The canonical unsafe-column inventory already identifies `session_messages`; correct any residual wording and pin the structural refusal at actual persistence/export boundaries. The [Wave D15 reconciliation](#decisions-presented-together-before-implementation) replaces the earlier upstream-masking uncertainty without creating a historical scrub policy. *(S · `packages/db/src/session-store.ts` · #115)*
 
 **Acceptance:** a transient `history.db` write failure during chat no longer crashes the process — it retries and, on genuine exhaustion, surfaces through the `onListenerError` sink rather than an unhandled rejection; two processes racing `runMigrations` against a fresh `history.db` no longer crash either one, proven by a two-process regression test; `withBusyRetry` retries `SQLITE_BUSY_SNAPSHOT` and no longer blocks the event loop synchronously; two concurrent `chat-resume` processes on the same session fail with an actionable error instead of a raw UNIQUE-index crash; `loadMessages`/`loadFull` are bounded/paginated regardless of session age; the DB-open-failure-to-`CliError` mapping in `reader.ts`/`session-open.ts` is under direct test; `model_catalog.kind`/`media_surface`/`source` carry real DB-level CHECK constraints and the false ALTER-limitation doc claim is corrected; the DDL snapshot suite covers all 13 migrations and `time.ts` has a dedicated test; `createClient` throws a typed error and its JSDoc lists all four PRAGMAs; `index.ts`'s table-export asymmetry is resolved or documented; `history.db`'s machine-locality is documented; a fetched/declared media `mimeType` is verified against `Content-Type`/bytes at ingest and cross-checked against `modality` at store time, with the stale "not persisted" comment removed; the Windows drive-relative path form is rejected by `assertRelativePath`; the model-catalog upsert loops batch instead of running N+1; `/models refresh` is reentrancy-safe under rapid repeated calls; a corrupted `deprecationDate` row no longer crashes `/models`; `FilesystemMediaStore`/`InMemoryMediaStore` enforce a `put()` size ceiling, sweep aged orphaned `.tmp` files, and honor `AbortSignalLike` on `readRange`; `ALTER` migrations are tested against seeded pre-existing data. The three blocking items (retention policy, per-row isolation scope, session-message secret-masking-fixture necessity) are resolved by explicit maintainer ruling before their implementation lands; the ADR-0072 enrichment-field disposition is decided once 2.6.Q unblocks.
 
@@ -284,24 +284,24 @@ reached.
 - **Extend the untrusted-content boundary to MCP tool DEFINITIONS, not just call results.** `packages/core/src/tools/untrusted.ts`'s `markUntrusted` (invoked at registry step 8) tags tool CALL RESULTS as untrusted before they reach message assembly, but `buildServerToolDefs` (`packages/mcp/src/tool-mapping.ts:102`) admits a connected server's `description`/`inputSchema` verbatim with no equivalent treatment — a classic MCP tool-poisoning vector, and `docs/standards/security-review.md`'s prompt-injection posture doesn't mention it. At minimum document the gap explicitly in `mcp-integration.md`'s Security section; consider tagging/sanitizing server-supplied description/schema text the same way call results are tagged. *(M · `packages/mcp/src/tool-mapping.ts` · #202)*
 - **Add a connect-phase timeout to every MCP transport.** `startMcpClientFailLoud` (`apps/cli/src/engine/mcp-servers.ts:330`) calls `start(configs)` with no timeout or `AbortSignal`, unlike every other bounded host call in the same file (#35); `connectSdkTransport` (`packages/mcp/src/sdk-stdio.ts:107`) leaves stdio's handshake bound only to the SDK's fixed 60s default, too short for a cold-start `npx` server (#205); WebSocket and SSE (`packages/mcp/src/sdk-websocket.ts:43`, `sdk-sse.ts:32`) have zero connect timeout at all, hanging CLI startup indefinitely against a firewalled server (G32, high). Fix as one change: thread a `connectTimeoutMs` option (per-transport defaults, stdio higher than network) through `connectSdkTransport` and `startMcpClientFailLoud`, wrapped in the same `Promise.race` pattern `validateProviderKey` already establishes. Independent of 2.6.I's Home-UI scope — do not wait for it. *(M · `packages/mcp/src/sdk-stdio.ts`, `apps/cli/src/engine/mcp-servers.ts` · #35, G32, #205)*
 - **Extend the sensitive-credential floor to modern cloud/k8s CLI stores, in both the read-path and the env-injection guard.** `SENSITIVE_READ_DIR_SEGMENTS`/`SENSITIVE_READ_BASENAMES` (`apps/cli/src/engine/tool-host/fs.ts:499`, `:509`) — the belt-and-suspenders floor applied in every mode/tier including unjailed `full` — cover `.ssh`/`.aws`/`.docker`/git but omit `.kube`, `.azure`, gcloud's `legacy_credentials`, and `application_default_credentials.json`/`credentials.tfrc.json` (#36); `FORBIDDEN_DECLARED_ENV` (`apps/cli/src/engine/tool-host/process.ts:110`) separately misses `KUBECONFIG`, `AWS_CONFIG_FILE`, `AWS_SHARED_CREDENTIALS_FILE`, `AWS_PROFILE`, and `GOOGLE_APPLICATION_CREDENTIALS` — the same config-redirection vector already blocked for `GIT_*`. One task extending both lists plus a regression test per new entry. *(M · `apps/cli/src/engine/tool-host/fs.ts`, `apps/cli/src/engine/tool-host/process.ts` · #36, #39)*
-- **Add direct tests for the OS-keychain bridge — the one module touching the native binding.** `createOsKeychainStore` (`apps/cli/src/secrets/os-keychain.ts:16`) is the only file that loads `@napi-rs/keyring` and the only place mapping a native binding failure to `KeychainUnavailableError`; there is no `os-keychain.test.ts` anywhere, every consumer mocks the module away, and this is a CLAUDE.md-rule-6/ADR-0006 security-critical gap. Add `apps/cli/src/secrets/os-keychain.test.ts` mocking `@napi-rs/keyring`'s `Entry`, asserting a thrown native error wraps as `KeychainUnavailableError` with `cause` preserved on get/set/delete, and a `null` getPassword maps correctly. *(M · `apps/cli/src/secrets/os-keychain.ts` · #27)*
+- ✅ **DONE on `development` (Step 3, reviewed at `8c44e2ec`; final Wave 2 certification remains open).** **Add direct tests for the OS-keychain bridge — the one module touching the native binding.** Direct mocked-native tests now cover successful forwarding, null reads, constructor/method failures and private causes for get/set/delete. Actual command/diagnostic controls verify fixed errors and unchanged provider references. Real OS-lock and native-module-loading behavior remain unclaimed; see the [Step 3 acceptance](#step-3-acceptance--2026-10-12). *(M · `apps/cli/src/secrets/os-keychain.ts` · #27)*
 - **Bound MCP transport/discovery/result size against a hostile server — one sizing pass across four files.** `MAX_TOOL_PAGES` (`sdk-stdio.ts`) bounds only the number of `tools/list` pages, never the total tool count or an individual `tool.description` length before `buildServerToolDefs` admits it verbatim (#201); `schema-compiler.ts:235`'s `MAX_DEPTH`/`MAX_NODES`/`MAX_PROPERTIES`/`MAX_ENUM_MEMBERS` bound schema shape but not an embedded string's byte length, so a single oversized `const`/enum literal costs 1 against budget regardless of its real size (#209); `shapeToolResult` (`packages/mcp/src/result.ts:10`) copies a server's `content[].text` through unbounded with no adversarial test proving the downstream `DEFAULT_TOOL_RESULT_LIMITS` cap actually holds at read-time (#288); and `openSseConnection` passes no bounded `fetch` override to `SSEClientTransport` while `openWebSocketConnection`'s transport has no injectable socket at all, so a hostile server can exhaust process memory over either connection (G33, high — highest-value item in this bullet). Fix together: a total-tool-count/description-length cap in `buildServerToolDefs`, a max-string-length check in `schema-compiler.ts`'s `literalSchema`/`enumSchema`, a bounded custom `fetch` for SSE reusing `safe-egress.ts`'s bounded-body-read helper, a wrapped/replaced `WebSocket` for the WS transport, and the missing adversarial test for `shapeToolResult`. *(M · `packages/mcp/src/sdk-stdio.ts`, `schema-compiler.ts`, `result.ts`, `sdk-sse.ts`, `sdk-websocket.ts` · G33, #201, #209, #288)*
 - **Add realpath containment before `discoverCatalog` follows a symlink.** `discoverCatalog` (`apps/cli/src/workflows/catalog.ts:77`) explicitly admits symlinked dirents and `readEntry`'s `statSync` follows the link with only an `isFile()`/size check — no containment check that the resolved target stays inside `projectConfigDir`. Apply the same containment the media layer already uses: `fs.realpathSync` the entry and reject it (generic `valid:false`, matching the existing non-regular-file guard) unless the realpath's directory is `projectConfigDir`'s realpath or a descendant. *(M · `apps/cli/src/workflows/catalog.ts` · #1)*
 - ✅ **DONE (Wave 1, PR #81, 2026-07-30 — #28/#33 · `db/open.ts:62` chmods the db AND its `-wal`/`-shm` siblings unconditionally; `config/load.ts:141-145` re-asserts `0600` on every load).** **Make `history.db`'s 0600 self-heal unconditional; add the equivalent re-assert-on-load for `config.toml`.** `db/open.ts:27`'s `chmodSync(path, 0o600)` runs only after `runMigrations` succeeds, so a throwing migration (disk-full, partial/interrupted run) leaves the file at the process umask default — typically 644 (#28). `config.toml`'s 0600 (`config/write.ts:216`, `fchmodSync`) is write-time-only and never re-asserted by `loadConfigFile`/`loadResolvedConfig` on read, unlike the db's self-heal (#33). Move the db chmod ahead of `runMigrations` (or wrap open+migrate in try/finally), and add a cheap best-effort `chmodSync(target, 0o600)` inside `loadConfigFile` for consistency. *(M · `apps/cli/src/db/open.ts`, `apps/cli/src/config/write.ts` · #28, #33)*
 - **Warn on a project-layer MCP server name collision that can redirect a global secret.** `mergeMcpServers` (`apps/cli/src/config/resolve.ts:215`, called from `resolveConfig:129`) does `byName.set(server.name, server)` per layer in trust order global→workspace→project, so a project `[[mcp_servers]]` entry reusing an existing global `name` wins outright, wholesale-replacing `command`/`args`/`url`/`env` — and because `{{secrets.*}}` resolution is scoped only by name, an attacker-controlled `project.toml` can redirect a real provisioned secret straight into an attacker binary. Add a loud, actionable warning (or require explicit opt-in) at `resolveConfig` time when a lower-trust layer redeclares a name already present in a higher-trust layer with a different `command`/`url`/`env`. *(M · `apps/cli/src/config/resolve.ts` · G19)*
-- **Reject a secret-typed `run --input` at parse time instead of taking the raw argv value.** `coerce()` (`apps/cli/src/commands/inputs.ts:59`) treats a secret-typed workflow input identically to a plain string — the raw `--input` argv value is used verbatim, with no keychain resolution and no warning, unlike `gate --input`'s existing explicit stdin-only warning. A distinct code path from the already-shipped session-input rejection. Reject a declared secret-typed `--input` at parse time and direct the user to keychain-backed resolution. *(M · `apps/cli/src/commands/inputs.ts` · #25)*
+- **Reject a secret-typed `run --input` before execution instead of taking the raw argv value.** `coerce()` treats it identically to a plain string, exposing it through argv. Workflow secrets are caller-supplied, not automatically keychain-resolved (ADR-0083). The [approved Wave 2 plan](#wave-2-preflight-and-proposed-execution-plan--2026-10-12) pairs refusal with first-run bounded stdin delivery under Accepted ADR-0107; implementation is accepted in [Step 4](#step-4-acceptance--2026-10-12). *(M · `apps/cli/src/commands/inputs.ts` · #25)*
 - **Extract `deepestExistingReal`, a security-critical path-jail primitive, into one shared implementation.** The realpath-ancestor-walk helper is implemented independently — near-identical doc comment and loop body — in both `packages/db/src/media-write.ts:139` (backs `save_to`'s path-jail) and `apps/cli/src/engine/tool-host/fs.ts:824` (backs the tool-host fs jail), with no shared source of truth. Extract it into `packages/shared` (both packages already depend on it) and have both call sites import it. *(S · `packages/db/src/media-write.ts`, `apps/cli/src/engine/tool-host/fs.ts` · #235)*
-- **Test the `readSecretFromStdin` argv-vs-keychain guarantee across all three branches; cap the stdin buffer.** `read-secret.ts:13` implements the load-bearing "key is read from stdin, never argv" promise, yet its only test (`commands/provider.test.ts:527-545`, not colocated) covers exactly the TTY-guard rejection — the chunk-assembly read loop, `.trim()`, and the empty-input `CliError` are untested (found independently in two review rounds, #31 and #293). The accumulated `chunks.push(...)`/`Buffer.concat(chunks)` also has no upper size bound, unlike `config/load.ts`'s `MAX_CONFIG_BYTES`. Add a colocated `read-secret.test.ts` covering multi-chunk Buffer assembly + trim, the string-chunk fallback branch, and the empty-input error, plus a size ceiling with a clear error message. *(S · `apps/cli/src/secrets/read-secret.ts` · #31, #293)*
+- ✅ **DONE on `development` (Step 3, reviewed at `8c44e2ec`; final Wave 2 certification remains open).** **Complete direct `readSecretFromStdin` coverage and cap its buffer.** Colocated reader controls and real-default-reader provider/gate tests verify byte bounds, owned chunks, Unicode/whitespace and cleanup; caller-specific trimming remains unchanged. The [command reference](../../reference/cli/commands.md#secret-stdin-limits) owns the contract and the [Step 3 acceptance](#step-3-acceptance--2026-10-12) joins evidence. First-run transport is accepted in [Step 4](#step-4-acceptance--2026-10-12). *(S · `apps/cli/src/secrets/read-secret.ts` · #31, #293)*
 - **Give MCP errors structured discriminant fields instead of baking context into `.message`.** `McpConnectError`/`McpHostUnavailableError` (`packages/mcp/src/errors.ts:23`, `:34`) and the ad-hoc `McpError` throws in `manager.ts` all string-interpolate identifying context (server id, tool name) into the message with no `.serverId`/`.toolId` property, violating `docs/standards/error-handling.md` and already causing test fragility (#203). `McpConnectError` additionally collapses every distinct connect-failure mode — ENOENT, network refusal, auth 401, protocol-version mismatch, timeout — into one identical message template, with `cause` deliberately stripped from the surfaced text (#204). Add `serverId`/`toolId` fields to the error classes, and give `McpConnectError` a `reason` discriminant derived from inspecting the caught error's shape at the catch site. *(S · `packages/mcp/src/errors.ts` · #203, #204)*
-- **Document and best-effort-lint the unredacted workflow snapshot written to `history.db`.** `definitionJson: JSON.stringify(workflow)` (`apps/cli/src/history/open.ts:42`) writes the full authored YAML — not just the ADR-0029-taint-tracked `{{secrets.*}}`/`type: secret` fields — into `runs.workflow_definition_snapshot` on every run, unredacted and unencrypted. The taint mechanism only stops a *declared* secret from reaching a prompt/tool call; it does nothing for a hardcoded credential literal sitting in an unrelated field. Document the data-classification implication in the run-history reference doc, and add a best-effort lint at `create`/`import`/`run` time flagging a suspiciously secret-shaped literal (`sk-`, `ghp_`, `AIza`, etc.). *(S · `apps/cli/src/history/open.ts` · #30)*
-- **Design and gate `llm_providers.default_headers` before it reaches a live write path.** `ProviderUpsert.defaultHeaders` (`packages/db/src/provider-store.ts:43`) round-trips a free-form `Record<string,string>` verbatim through `history.db`'s plaintext `default_headers` TEXT column, and ADR-0065 §5 already documents this column as destined to be sent as live wire headers once §3 wires the stored row to the adapter — exactly where a non-`Authorization` API key would go, in tension with CLAUDE.md rule 6. No live exploit today; the decision must be made before §3 ships. **Blocked** on a maintainer/design call: keychain-ref indirection per header key (mirroring `apiKeyKeychainRef`) vs. a taint/shape check rejecting bearer-token-shaped values at the store boundary. *(M · `packages/db/src/provider-store.ts` · G20 — blocked on maintainer decision, see acceptance)*
+- **Document and best-effort-lint the unredacted workflow snapshot written to `history.db`.** `definitionJson: JSON.stringify(workflow)` writes the full admitted, MCP-augmented workflow into `runs.workflow_definition_snapshot`, unredacted and unencrypted. Declared-input masking does not remove authored credential literals in unrelated fields. Complete the classification in [database-schema.md](../../reference/shared-core/database-schema.md#secrets-at-the-write-boundary), and add a value-free best-effort warning at `create`/`import`/`run` using the [existing finite detector policy](../../reference/cli/commands.md#relavium-import--relavium-export). Preserve faithful snapshot/resume identity; this is not a universal credential classifier. *(S · `apps/cli/src/history/open.ts` · #30)*
+- **Design and gate `llm_providers.default_headers` before live header consumption.** `ProviderUpsert.defaultHeaders` round-trips free-form strings through plaintext SQLite. ADR-0065's custom base-URL factory wiring already ships; its dormant header consumption is the future gate. **Accepted in [Step 7](#step-7-acceptance--2026-10-13)** under [ADR-0108](../../decisions/0108-provider-headers-stay-gated-until-keychain-custody.md): keychain custody for activation, with an interim refusal of every new nonempty map. Historical rows remain inert/sensitive, omission preserves and `{}` explicitly clears. No live header feature or automatic legacy migration is authorized by the Wave 2 design task. *(M · `packages/db/src/provider-store.ts` · G20/D13)*
 - **Fix two independent fail-loud violations in `packages/mcp` together.** `SdkConnection.callTool` (`packages/mcp/src/sdk-stdio.ts:137`) silently substitutes `undefined` for a non-object `args` payload instead of failing loud — meaningful because the schema compiler treats a bare `{}` tool schema as `z.unknown()`, so a non-object payload can slip through `parseArgs` entirely (#206); `closeAll` (`packages/mcp/src/manager.ts:126`) discards every teardown error via a bare `.catch(() => undefined)` with zero logging, unlike the rest of `manager.ts`, which carefully types and preserves failures — a real diagnosability loss when triaging orphaned-process bug reports (#207). Both are small, same-package instances of the identical defect class. Throw a typed `McpError` for the bad-args case; have `closeAll` return `PromiseSettledResult[]` (or accept an `onCloseError` callback) so a caller with a logger can surface teardown failures. *(S · `packages/mcp/src/sdk-stdio.ts`, `packages/mcp/src/manager.ts` · #206, #207)*
 - **Remove or properly harden the dead `~/.relavium/tmp/` directory.** `ensureGlobalConfigDir` (`apps/cli/src/config/paths.ts:27`) unconditionally creates `~/.relavium/tmp/`, but the following `chmodSync(dir, 0o700)` only chmods the parent — the `tmp` subdirectory never inherits the hardened mode. Nothing in the CLI currently writes into or reads from it. Remove the unused directory, or chmod it 0700 and add a one-line comment stating its intended future purpose. *(S · `apps/cli/src/config/paths.ts` · G21)*
 - **Add per-file error-path tests for the MCP transport adapters ADR-0053 is specifically about.** Package-level coverage aggregation for `packages/mcp` (93.7%/95.5%) is pulled up by larger, well-tested files while `sdk-http.ts`, `sdk-sse.ts`, and `sdk-websocket.ts` — the exact transport adapters ADR-0053's network-egress security discipline covers — sit far lower per-file. Add direct tests per adapter for a malformed `spec.url` throw and a transport-construction failure; consider a per-file coverage floor for this directory. *(S · `packages/mcp/src/sdk-http.ts`, `sdk-sse.ts`, `sdk-websocket.ts` · #297)*
 - **Track the `dns.promises.lookup` abort-follow-up as a documented low-priority item, not a bug.** `withEgressTimeout`'s own docstring (`packages/db/src/safe-egress.ts:199`) already discloses that an abort reaches the connection phase but not the DNS-resolution phase, since `dns.promises.lookup` isn't abortable — a deliberate, reasoned, already-documented tradeoff, not a live defect. Track the finding's own recommendation (a bounded custom resolver, or a `dns.setDefaultResultOrder`/threadpool-size note) as a filed low-priority follow-up rather than leaving it comment-only. *(S · `packages/db/src/safe-egress.ts` · G31)*
 - **Derive `CLIENT_INFO.version` from the real package version instead of a hand-maintained literal.** `const CLIENT_INFO = { name: 'relavium', version: '0.1.0' }` (`packages/mcp/src/sdk-stdio.ts:34`) is a static literal already stale relative to the shipped CLI version, reported to every connected MCP server's `initialize` handshake. Source it from `package.json` (or a build-time-injected constant). *(S · `packages/mcp/src/sdk-stdio.ts` · #208)*
 
-**Acceptance:** MCP tool descriptions/schemas are covered by the same untrusted-content boundary as call results, or the gap is explicitly documented in `mcp-integration.md`; a name-collision at the MCP config layer can no longer silently redirect a global secret without a loud warning; every MCP transport (stdio/SSE/WebSocket) has a real, configurable connect-phase timeout with per-transport defaults; a hostile MCP server cannot exhaust process memory via unbounded tool count, description length, embedded schema strings, or unbounded SSE/WebSocket frames, and this is proven by an adversarial test; `discoverCatalog` rejects a symlink resolving outside `projectConfigDir`; the sensitive-credential floor covers `.kube`/`.azure`/gcloud/terraform in both `SENSITIVE_READ_DIR_SEGMENTS` and `FORBIDDEN_DECLARED_ENV`; `history.db`'s 0600 self-heal survives a throwing migration and `config.toml`'s mode is re-asserted on load; `run --input` rejects a secret-typed value at parse time; `deepestExistingReal` has one shared implementation imported by both `packages/db` and `apps/cli`; `readSecretFromStdin`'s argv-vs-keychain guarantee has direct test coverage for all three branches plus a size ceiling; MCP error classes carry structured `serverId`/`reason` fields; the unredacted workflow snapshot's risk is documented and linted at authoring time; `os-keychain.ts` has direct tests mocking native-binding failure modes; the two `packages/mcp` fail-loud gaps throw/surface instead of silently swallowing; per-file MCP transport-adapter coverage no longer hides behind package aggregation. No new ADR is required for this workstream's own scope — `default_headers`'s plaintext risk is a blocked maintainer decision (keychain-ref indirection vs. taint/shape check) that must resolve before ADR-0065 §3 wires it to a live write path.
+**Acceptance:** MCP tool descriptions/schemas are covered by the same untrusted-content boundary as call results, or the gap is explicitly documented in `mcp-integration.md`; a name-collision at the MCP config layer can no longer silently redirect a global secret without a loud warning; every MCP transport (stdio/SSE/WebSocket) has a real, configurable connect-phase timeout with per-transport defaults; a hostile MCP server cannot exhaust process memory via unbounded tool count, description length, embedded schema strings, or unbounded SSE/WebSocket frames, and this is proven by an adversarial test; `discoverCatalog` rejects a symlink resolving outside `projectConfigDir`; the sensitive-credential floor covers `.kube`/`.azure`/gcloud/terraform in the host path floor and the existing shared declared-env predicate; `history.db`'s 0600 self-heal survives a throwing migration and `config.toml`'s mode is re-asserted on load; `run --input` rejects a secret-typed value before execution; `deepestExistingReal` has one shared platform-free implementation imported by both `packages/db` and `apps/cli`; `readSecretFromStdin`'s stdin-only guarantee has direct multi-branch coverage plus a byte ceiling, preserving verbatim values; MCP error classes carry structured `serverId`/`reason` fields; the unredacted workflow snapshot's risk is documented and linted at authoring time; `os-keychain.ts` has direct tests mocking native-binding failure modes; the two `packages/mcp` fail-loud gaps throw/surface instead of silently swallowing; per-file MCP transport-adapter coverage no longer hides behind package aggregation. The original repairs alone require no new ADR; the pulled-forward trust/public-API/lifecycle changes retain the standing ADR threshold. G20/D13 must settle and enforce the interim gate before calling D complete; future header consumption (unlike already shipped custom base URLs) stays prohibited pending the custody/migration prerequisites. G31's existing DNS background-resource limit must be filed explicitly, not certified as abortable.
 
 ### 2.5.5.E — CLI operator-safety net: signals, error boundaries, crash handling & startup performance
 
@@ -448,7 +448,7 @@ This substream is the development-process substrate itself — `.github/workflow
 | In-phase | Completed by | Outcome |
 |----------|--------------|---------|
 | ✅ M2.5.5-1 Safety-critical propagation fixes *(met 2026-07-30, PR #81 — its two CRITICALs, #91 and #228, are closed. ADR-0074 §1 was open at that date and CLOSED on 2026-08-09 with `/cost --release`; the "Wave 1.5" framing this note used was retracted — that work was PR #81's own closing list, not a later wave. See [current.md](../current.md).)* | 2.5.5.A + 2.5.5.C | Two of the three CRITICAL findings closed (`#91` the unredacted approval-preview secret leak; `#228` the chat-persister unhandled-rejection crash — the third, `#56`, lands with 2.5.5.I under M2.5.5-2); the budget governor's concurrency gap and the two-process migration race are fixed |
-| M2.5.5-2 Security-surface hardening | 2.5.5.D + 2.5.5.I | MCP tool-poisoning/config-secret-hijack gaps closed; the third CRITICAL (`#56`) closed as terminal-control sanitization reaches `relavium run`, the error boundary, and the approval card; `chat.ts`/`home-controller.ts` decomposed ahead of 2.6.E/2.6.G |
+| M2.5.5-2 Security-surface hardening — D accepted, I open ([Wave 2 sign-off](#wave-2-closing-register--2026-10-13)) | 2.5.5.D + 2.5.5.I | MCP tool-poisoning/config-secret-hijack gaps closed; the third CRITICAL (`#56`) closed as terminal-control sanitization reaches `relavium run`, the error boundary, and the approval card; `chat.ts`/`home-controller.ts` decomposed ahead of 2.6.E/2.6.G |
 | M2.5.5-3 CLI operator-safety net | 2.5.5.E | The outermost crash/signal/error boundary behaves uniformly across every command; `--version`/`--help` startup tax closed |
 | M2.5.5-4 Money-safety & process substrate | 2.5.5.B + 2.5.5.H | The three LLM adapters share guard/classification parity and `FallbackChain` is the sole retry authority; CI actually executes the compiled binary and the coverage/dependency/logging gates match what they claim to enforce |
 | M2.5.5-5 Documentation & hygiene close-out | 2.5.5.F + 2.5.5.G | No canonical doc names a retired data source or an unbuilt surface as shipped; the naming/duplication/dead-code sweep is closed |
@@ -513,6 +513,8 @@ directly as a 2.6.A work item). **Intra-phase:** the five file overlaps recorded
 
 ## Exit criteria
 
+**Wave 2 disposition — 2026-10-13:** criteria 1–3 are accepted on `development`; the [closing register](#wave-2-closing-register--2026-10-13) joins their direct regressions and threat sittings. Whole-phase criteria 4–8 remain open.
+
 1. All three CRITICAL findings (`#91` the `previewFor()` secret leak; `#228` the chat-persister
    unhandled rejection; `#56` the unsanitized `relavium run` TUI) are closed and regression-tested.
 2. A security review confirms terminal-control sanitization reaches `relavium run`'s TUI,
@@ -529,22 +531,28 @@ directly as a 2.6.A work item). **Intra-phase:** the five file overlaps recorded
 6. Every maintainer-decision item flagged **blocked** in the work breakdown has a recorded
    ruling before its implementation lands.
 7. The nine sub-streams' acceptance paragraphs (2.5.5.A–I above) each hold in full.
-8. **No new ADR is expected** — this is a remediation phase, not an architecture-change phase — but the
-   standing ADR threshold still applies unchanged: any item that introduces a new seam or port, moves a
+8. **Apply the standing ADR threshold.** The original remediation baseline expected no new ADR;
+   Wave 2 uses accepted ADR-0105–ADR-0109 for its trust/API/lifecycle decisions. Any item
+   that introduces a new seam or port, moves a
    trust boundary, defines a storage lifecycle, changes a public CLI / machine-output contract, or adds a
    runtime dependency mints an ADR on its own merits. Minting one is **not** a phase failure; skipping a
    genuine one is. (D33's `deleted_at` retention lifecycle and D20's flag rename are the closest calls.)
 
 ## Required ADRs
 
-None. This is a remediation phase: every sub-stream fixes or hardens an already-shipped
-design rather than introducing a new one. Two sub-streams say so explicitly —
-**2.5.5.D**'s acceptance states "no new ADR is required for this workstream's own scope,"
-and **2.5.5.E**'s acceptance states "Required ADR: none new." The maintainer-decision items
-scattered through the other seven sub-streams (retention policy, coverage-floor enforcement,
-the logging-standard disposition, and the rest named inline) are recorded as **amendments to
-existing conventions and standards**, not new architectural decisions — none proposes a new
-seam, a new package, or a reversal of a prior Accepted ADR.
+The original remediation baseline expected none: most items harden an existing
+design or amend a convention. That expectation does not waive the threshold in
+exit criterion 8, including for work pulled forward from Phase 2.6.
+
+**Wave 2 — 2026-10-12:** [ADR-0105](../../decisions/0105-filesystem-roots-are-invocation-grants-not-project-authority.md),
+[ADR-0106](../../decisions/0106-media-publication-requires-bounded-verified-bytes.md),
+[ADR-0107](../../decisions/0107-first-run-secret-inputs-use-bounded-stdin.md) and
+[ADR-0108](../../decisions/0108-provider-headers-stay-gated-until-keychain-custody.md)
+are **Accepted** following maintainer approval of the corrected decision package
+and execution plan on 2026-10-12. Dependent implementation is authorised.
+They cover filesystem authority, bounded media admission/lifecycle, first-run secret
+stdin and the provider-header custody gate. The subsequently approved [ADR-0109](../../decisions/0109-native-media-close-ownership-is-explicit-iterator-provenance.md) defines explicit native iterator ownership; its implementation is accepted in [Step 6](#step-6-acceptance--2026-10-13). The [Wave 2 decision package](#decisions-presented-together-before-implementation)
+and execution plan record the scope; no new runtime dependency is proposed.
 
 ## Risks & mitigations
 
@@ -1031,4 +1039,2445 @@ Raised by a reviewer, then disproved by both verifiers reading the code. Recorde
 
 ---
 
+## Wave 2 preflight and proposed execution plan — 2026-10-12
+
+> Current disposition — 2026-10-13: all eight steps are accepted on `development`; the [closing register](#wave-2-closing-register--2026-10-13) controls current acceptance. The dated preflight/checkpoint states below remain historical.
+
+**Status: maintainer approved ADR-0105–0108 and the eight-step plan on 2026-10-12.
+Steps 1–6 are accepted after independent cumulative reviews and required gates; Step 7 proceeds.**
+Inspection baseline is `development` at `aaed7d593d72ea414b1fae42ddf20e148a5fce0f`.
+This is the joint Phase 2.5.5/2.6 Wave 2, not the closed core reliability W2/W8.
+All work stays on `development`. Detailed independent reports remain local/ignored;
+this section records concise scope, decisions, evidence and remaining gates.
+
+### Document and source reconciliation
+
+Three independent preflight streams examined filesystem authority, secrets/config
+and persistence/certification. Relevant ADRs were checked with their later dated
+qualifications: 0003/0006/0019/0026/0027/0029/0031/0033/0037/0042–0044/0048–0050/
+0055/0057/0060/0061/0063/0065/0080/0083/0084/0088/0089/0095/0098/0102.
+The controlling references are the existing config, workflow, agent-session and
+SSE contracts; built-in tools, provider seam, database schema and MCP integration;
+CLI commands/agent fixtures and keychain/secrets. Architecture/security, TypeScript,
+testing, error-handling, documentation and commit standards control the implementation.
+Phase files own scope/acceptance; current.md owns ordering. This is a task-relevant
+audit, not a new claim to certify every historical ADR or every filesystem import.
+
+The following table records the preflight state before implementation. The later [Step 2 checkpoint](#step-2-implementation-checkpoint--2026-10-12) qualifies its filesystem/env/CAS rows without relabeling historical evidence.
+
+| Queue | Current disposition and action |
+|---|---|
+| Wave 2 items 1–2, G19/#202 and hostile MCP queue | Already closed in W4/PR #87. Reuse its accepted register/sitting and rerun direct regressions at final head; do not rebuild consent/transports. |
+| #36/#39 | Open. Cloud credential paths and overrides are missing. The env list already lives in shared under ADR-0084; expand that authority rather than the obsolete process-local list. |
+| #235, 2.6.M extra roots, 2.6.N floor, G21 | Open. Share the injected ancestor algorithm; implement host-granted roots/general floor and remove dead tmp provisioning under ADR-0105. Full child/artifact lifecycle stays with 2.6.N. |
+| Catalog #1 | Open. Native containment/regular-file admission must precede reading either catalog kind; preserve contained symlinks. |
+| #27/#31/#293/#25 | Open/partly covered. Test native bridge failures, stop opaque native error-message leakage, retain verbatim reader semantics, cap bytes, reject secret argv and provide approved stdin delivery. |
+| #30/#196 | Open. Warn on suspicious authored literals without mutating admitted snapshots; broaden query-name redaction with benign-name controls. Existing snapshot sensitivity documentation is partial, not absent. |
+| #113/#111/#108/#112/#107/#109/#110 | Open. Native probes reproduce drive-relative acceptance, ignored abort and oversize puts; CAS shard symlink also escapes physically. ADR-0105/0106 own the combined correction. |
+| #81/#115 and D14/D15 | W7's strict session rows and producer→SQLite→export fixtures subsume raw model-issued tool masking. No raw tool-result opt-in is permitted. Certify actual fixtures and retained user-data limits; do not invent universal masking. |
+| #80/#83 | Open. Add an explicit continuity/review notice and deterministic ASCII normalization with session-identity fallback, preserving scaffold semantics and machine stdout. |
+| G22 | Open. Refuse unsupported direct `secrets.*` context references at parse; retain permitted secret-input context propagation and transitive text-sink checks. Do not accept Proposed ADR-0060 as a side effect. |
+| G20/D13 | Design/admission gate in Wave 2 under ADR-0108; live header activation remains outside the original phase, prohibited until keychain custody and legacy recovery are implemented. Historical sensitive rows are not silently erased. |
+| G31 | File/reconcile the existing nonabortable native DNS background-work follow-up in deferred-tasks.md. Current caller cancellation/normalization and late-connect guards already ship; this task does not build a resolver or invent a new deferral. |
+
+Preflight ran **12 focused files / 277 tests**, all passing, and four synthetic native
+probes reproduced the named media/path gaps. These are baseline findings, not
+fixed-code controls or whole-wave acceptance. No credentials, real user history,
+provider requests, paid captures or production storage were used.
+
+The required ordinary CI for existing docs PR #93 is red in native DB process tests;
+the unchanged focused file passes **8/8** with `CI=true`. An independent actual-worker
+probe confirms the readiness timer kills an already-ready child after its spawn
+deadline. Separate pre-readiness CI starvation is suspected, not proved. Repair timer
+ownership and measure worker scheduling before treating the baseline as green;
+retries, skipped native tests and arbitrary timeout increases are not acceptance.
+
+### Decisions presented together before implementation
+
+| Decision | Approved ruling / authority |
+|---|---|
+| Root authority / D12 | [ADR-0105](../../decisions/0105-filesystem-roots-are-invocation-grants-not-project-authority.md): invocation-only `--allow-fs-root`, config selectors bounded by grants, resume reauthorization, general scratch descriptor/floor. Remove unused tmp creation; do not build child agents or a grant database. |
+| Media limits / verification / lifecycle | [ADR-0106](../../decisions/0106-media-publication-requires-bounded-verified-bytes.md): inline/25 MiB write and opened-fd read bounds; finite formats including current AAC/Opus/PCM, with raw PCM's structural-only evidence disclosed; required store validation and atomic metadata admission before durable append; host-hook compatibility change; recoverable ownership-aware 24-hour temp GC and explicit legacy offline maintenance. No total progressing-download timeout or runtime dependency. |
+| First-run secrets | [ADR-0107](../../decisions/0107-first-run-secret-inputs-use-bounded-stdin.md): `run --secret-inputs-stdin`, explicit TTY refusal, shared gate parser, 64 KiB aggregate byte cap, verbatim values, noninteractive approval policy after consumption. |
+| Provider headers / D13 | [ADR-0108](../../decisions/0108-provider-headers-stay-gated-until-keychain-custody.md): reject all new nonempty maps, omission preserves legacy, `{}` clears, no wire consumption; keychain refs and legacy recovery are mandatory before future activation. |
+| Export / D14 | Existing ADR-0095 governs: content-free model-tool structure, no `--include-tool-results`. Add continuity/review notice. Approved slug refinement: NFKD/combining-mark normalization, Turkish dotless i and German sharp-s mappings, legal ASCII title slug; otherwise `exported-session-<session-id>`. Do not promise universal transliteration or change conversational memory. |
+| Missing Wave D15 / #115 | Reconcile with existing ADR-0095/0098 fixtures and explicit user/assistant/@/! retained-content limits. No new masking or historical scrub policy. This D15 is distinct from historical media decisions with the same number. |
+| Snapshot lint and G22 | Value-free bounded best-effort warning at create/import/run; preserve faithful augmented snapshot and JSON stdout. G22 narrows only the unsupported namespace gap; legitimate input-secret propagation remains. |
+| Review organisation / D17 | Four new security sittings by fs/path-jail, secrets-at-rest, secrets-input, config-trust; reuse W4's hostile-MCP sitting. Each implementation step has independent cumulative review cycles as below. |
+
+No billing, provider capture, keychain credential, new runtime dependency, deferred
+core-reliability feature or user-managed secret is needed for this work. Approval of
+the proposals does not certify that their implementations already satisfy them.
+
+### Execution steps after approval
+
+| Step | Scope / primary owners | Meaningful acceptance before review |
+|---|---|---|
+| 1 | Clean baseline: DB worker readiness/lifetime separation and measured native-suite scheduling | Actual child survives the obsolete readiness callback after LOCKED, RELEASE exits normally; no-barrier timeout still rejects/kills/joins. Full ordinary CI and its native/causal inventories stay complete. |
+| 2 | Unified fs changeset: shared helper/env policy; CLI roots/floor/catalog; DB save_to/CAS containment | Native outside-I/O controls, lexical/canonical aliases, no protected descent, actual flag/config/session/resume forwarding and platform gates; approve ADR-0105 first. Keep one cumulative security review scope across these consumers. |
+| 3 | Secrets foundation: OS bridge tests/safe diagnostics, bounded reader, scrub query names | Mock native failures without real keychain, opaque-error sentinel absence, exact/+1 byte bounds and release, Unicode/whitespace preservation, broad names with benign negatives. |
+| 4 | First-run secret input transport and argv refusal | Commander→dispatch→engine/native history evidence, zero preflight side effects on bad input, masked persistence, later-gate/MCP noninteractive behaviour; ADR-0107. |
+| 5 | Snapshot lint/docs, narrow context analysis and export completion; G31 filing | Faithful snapshot/resume identity, value-free authoring warnings, retained credential-context positive control, strict legacy tool refusal, continuity notices and deterministic valid IDs. Correct remaining caller-supplied-input/reader-trimming/storage doc drift and reconcile the existing DNS residual. |
+| 6 | Media bounds, type evidence, mandatory descriptor/metadata admission, cancellation and temp ownership/maintenance | Independent byte fixtures and actual engine→admission→append→reference controls, handle-only/same-hash conflicts, existing provider audio compatibility, old-layout read bounds, real producer/sweeper crashes and live-writer controls, bounded streaming, CLI maintenance scope/JSON output; ADR-0106. |
+| 7 | Provider-header interim gate, typed refusal and dormant-wire/public projections | Real legacy-row preservation/explicit clear, zero plaintext new admission, canonical store/error contract, actual SDK request omits old header and human/JSON/diagnostic projections omit header sentinels while trusted get/list retains legacy data; ADR-0108. |
+| 8 | Whole-wave security certification, canonical landing and publication | Full required CI/coverage/build, mechanism-removal evidence, all four new threat sittings, W4 revalidation, every Wave 2 ID disposition and exit criteria 1–3 / D sign-off at the exact reviewed head. |
+
+For **each step**: implement meaningful permanent controls, run affected and required
+gates, commit, then start independent cumulative reviewers (critical security paths:
+Codex Astra/high; contract/tooling reviews: Codex Sol/high, adjusted to complexity).
+Validate findings against actual code/evidence, fix and commit them, then use **new
+reviewers**. Finish with two new clean complete cumulative rounds after the last
+material correction; a failed round is evidence to address, not an acceptance round.
+Proceed automatically to the next approved step. No forced review-file tracking,
+unchecked findings, speculative deferral or skipped required check counts as closure.
+
+Update canonical homes in the step that changes them; append dated ADR refinements
+without rewriting old bodies. Keep this register concise. The final certificate does
+not close all Phase 2.5.5 A–I, the later joint Waves 3–7 or approved CR deferrals.
+Existing open docs PR #93 must be reconciled before publishing a separate Wave 2 PR
+from the same `development` branch; local implementation does not require switching
+branches or silently repurposing that PR.
+
+### Proposal review checkpoint — 2026-10-12
+
+The first independent proposal round covered filesystem authority, media lifecycle,
+and secrets/config plus whole-plan traceability. Confirmed corrections are incorporated:
+
+- ADR-0105 distinguishes early invocation-grant validation from resumed selectors
+  that require an existing-history read; Windows cross-volume results use canonical
+  absolute paths where a workspace-relative path cannot represent the target.
+- ADR-0106 admits every handle occurrence before deduplication, separates mandatory
+  byte/tuple admission from best-effort post-append retention, preserves existing
+  AAC/Opus/PCM output paths with explicit PCM evidence limits, bounds legacy fd reads,
+  requires positive audio/video durations and recovers dead-sweeper claims.
+- G20 now distinguishes shipped custom base URLs from dormant header consumption;
+  G31 is routed to the existing DNS background-resource entry. Living export/input/
+  at-rest text and historical fallback-status notes are reconciled with shipped code.
+
+These are proposal corrections, not implementation acceptance. New independent
+cumulative filesystem and media/CAS rounds found no material findings in the revised
+decisions. The second secrets/document round identified two documentation errors
+(ADR-0095 link filenames and the old unqualified “Required ADRs: None”); both were
+corrected. A further **new complete cumulative** secrets/document round found no
+material findings. The revised package is ready for maintainer consideration; those
+reviews do not grant approval or certify unimplemented runtime behaviour.
+
+Checks at that proposal checkpoint covered **12 changed/new Markdown files, 699
+relative links and anchors, with no findings**; `git diff --check` passed. Detailed reports stay
+local/ignored; no full CI or new security sitting is claimed. The working tree
+contains documentation changes only, with no Wave 2 source implementation or commit.
+
+### Maintainer proposal review corrections — 2026-10-12
+
+The maintainer's ten-comment review was checked against actual input masking,
+provider-store writers/projections, stdin handling, shared media constants and the
+planned child-session artifact owner. At that checkpoint the proposals were **Proposed**; this is a
+source/document correction record, not approval or implementation acceptance.
+
+| Comment | Disposition in the revised proposal package |
+|---|---|
+| 1 — argv/history | ADR-0107 names argv, shell history and CI command logs. Declared secret-input slots already persist as masked references; unrelated authored literals remain #30. |
+| 2 — alleged header writers | ADR-0108 no longer assumes existing embedding callers. Current nonempty-map writers in the tree are fixtures; the exported-API tightening can affect potential external callers. |
+| 3 — typed-error home | ADR-0108 names the proposed ProviderHeaderPolicyError and @relavium/db structural guard. The existing database reference's llm_providers section will own admission, discriminant and projection details in Step 7; no implemented error/spec is claimed. |
+| 4 — ancestor-helper owner | ADR-0105 explicitly owns the platform-free helper in packages/shared, with Node operations in CLI/DB and the host/tool contract in the built-in-tools reference. |
+| 5 — Related ADRs | ADR-0105 links ADR-0054 for bare Home and ADR-0083 for existing resume-identity context; it does not transfer workflow identity semantics to chat. |
+| 6 — existing versus new media bounds | ADR-0106 distinguishes existing seam-inline/download constants from the new independent put/putStream store guards. |
+| 7 — TTY stdin | ADR-0107 explicitly requires the new run flag to refuse TTY stdin before reading/composition, even when stdout is redirected, with a non-TTY positive control. Provider/gate consumers retain the shared reader's TTY refusal without prohibiting gate resume's necessary prior history lookup. |
+| 8 — header-output evidence | ADR-0108 adds actual human/JSON/error/verbose projection controls with a seeded legacy sentinel and a causal unsafe-projection control; trusted store get/list preservation is separately pinned. |
+| 9 — future scratch owner | ADR-0105 names Phase 2.6.N's CLI artifact-store host as the planned consumer and owner of provisioning/isolation/join/cleanup/recovery. Wave 2 implements the pulled-forward floor prerequisite only. |
+| 10 — navigation | Both anchors exist: Next work is the live status entry; Wave 2 is the detailed queue. ADR-0105 and the agent guides now enter via the status heading, which explicitly links the queue. No broken anchor was found. |
+
+Two NEW independent complete cumulative proposal reviews checked all four revised
+ADRs, the eight-step plan and the ten dispositions against controlling source and
+contracts; neither reported a new material finding. Final documentation checks cover
+**14 changed/new Markdown files and 789 relative links and anchors, with no findings**;
+`git diff --check`, Proposed/index consistency and Accepted-ADR append-only checks pass.
+Detailed reports remain local. These are proposal checks, not implementation or
+security acceptance. No runtime source, paid/provider call, keychain access or
+implementation commit is part of this intake.
+
+### Step 1 implementation checkpoint — 2026-10-12
+
+The native DB worker's five-second deadline now owns **readiness only**: a real
+`CUT`/`LOCKED` barrier disarms it, and an already-queued obsolete callback cannot
+kill a ready child. Each test retains ownership of post-barrier release/kill/join.
+Two permanent native controls cover obsolete-callback survival through `RELEASE`
+and a loaded-but-unready worker's rejection, kill and joined close. Removing the
+disarm or the late-callback state guard independently makes the survival regression
+fail at its intended assertion; both source mutations were restored byte-for-byte.
+
+The acceptance auditor recognises exactly one declared no-readiness control, with
+the ordered `spawn → WAITING → timeout → SIGKILL close` lifecycle. Every ordinary
+child still requires its real barrier and every child retains physical source/PID
+witnesses. Inventory is now **429 cases / 71 joined native children**, with exactly
+one timeout control; the watchdog derives from this inventory without changing the
+five-second readiness or twenty-second native-case deadlines. The first full run
+correctly refused the new no-barrier control under the old universal-barrier rule;
+the narrowly specified auditor correction and its negative tests address that result.
+
+Corrected `CI=true pnpm run ci` passed: ordinary suites **511 files / 11,028 passed /
+12 existing skips**, lint/typecheck/build/format, isolation/fence/dependency/schema/
+bundle checks, all three offline smokes, **60 tool-acceptance tests**, four wire
+mutation controls, **23 usage mechanism controls** and the complete **429-case**
+native/scale cohort. That instrumented cohort measured the nine DB readiness
+barriers at **823–976 ms** locally. This does not establish the cause of the earlier
+Ubuntu pre-readiness failures or claim a new published-head GitHub result. No retry,
+skip, scheduling relaxation, provider call or real user storage was introduced.
+
+Implementation is ready for two new independent complete cumulative review rounds;
+Step 1 and whole-wave acceptance are not yet claimed. Raw reports remain local.
+
+#### Step 1 first review correction — 2026-10-12
+
+Two independent complete cumulative reviewers corroborated one High finding in the
+new controls: their capture-only scheduler replaced the actual readiness timer.
+A withheld-startup native probe survived Vitest's twenty-second timeout without
+entering the test's `finally`. The initial green run did not exercise that failure.
+The helper now always arms its real five-second timer; tests can only observe it
+and invoke an obsolete callback, never substitute its arming/cancellation. The
+no-readiness control waits for actual expiry. The same withheld-startup probe now
+rejects, kills, joins and completes cleanup in approximately five seconds; focused
+native tests pass **10/10**. These finding-bearing reviews do not count as clean
+acceptance rounds. Required gates and new complete cumulative reviews follow.
+
+Post-correction `CI=true pnpm run ci` passed with the same complete ordinary and
+causal inventories: **60 tool tests**, four wire controls, **23 usage controls**,
+**429 permanent cases / 71 joined children / one timeout control**. The complete
+instrumented cohort records actual timeout at **5,001 ms** and joined SIGKILL close
+at **5,016 ms**. Both mechanism-removal regressions were rerun and failed at their
+intended assertions before byte-exact restoration. Documentation checks cover the
+complete cumulative change, including the separate CR-81/CR-82 merge-status commit:
+**16 Markdown files / 1,096 relative links and anchors / no findings**. New complete
+cumulative review rounds remain the next acceptance gate.
+
+The next complete cumulative review round found no implementation or evidence
+defect and identified one Low living-status inconsistency: the G20/D13 task still
+advertised ADR-0108 approval as pending. Its current task wording now records the
+obtained approval and Step 7 implementation gate; the adjacent ADR-0107 task also
+states its approved Step 4 gate. Fresh complete cumulative clean rounds follow
+this documentation correction; neither finding-bearing round is counted as clean.
+
+### Step 1 acceptance — 2026-10-12
+
+Two NEW independent complete cumulative rounds, each with separate lifecycle and
+auditor reviewers, found **zero findings** after the last correction. Both covered
+all **21 changed paths** from inspection baseline `aaed7d59` through reviewed head
+`8c13675f`, including the decision package, native worker, acceptance tools and
+documentation. Finding-bearing rounds 1–2 do not count as clean; rounds 3–4 do.
+Step 1 is **accepted**. Detailed reports remain local/ignored.
+
+Required local CI passed with **511 ordinary files / 11,028 passes / 12 existing
+skips**, **60 tool tests**, four wire controls, **23 usage mechanisms** and **429
+permanent cases / 71 joined native children / one actual readiness timeout**.
+Reviewers independently matched all **1,010 physical source files** to retained
+execution evidence and rechecked the intended semantic removal failures. Focused
+native tests pass **10/10**, workload controls **3/3**, and cumulative documentation
+checks cover **16 Markdown files / 1,096 relative links and anchors / no findings**.
+
+The retained full run captured `56bdba93` plus the then-working-tree source fix;
+physical byte matching supports the reviewed implementation. It is not execution
+at the later committed head or new published GitHub evidence. The original Ubuntu
+pre-readiness starvation cause remains unproved. Native Windows gates, subsequent
+steps, four new security sittings and exact-head publication remain open.
+
+### Step 2 implementation checkpoint — 2026-10-12
+
+The current `development` changeset implements invocation-root admission, project-over-workspace narrowing selectors, original-canonical-workspace chat resume with fresh grants/current config, and the shared immutable policy used by clear/reseat and file/discovery consumers. It adds lexical/canonical credential floors and shared declared-env overrides, the injected ancestor resolver for tool fs/native `save_to`, catalog admission and physical CAS containment.
+
+[Canonical tool contracts](../../reference/shared-core/built-in-tools.md#filesystem-permission-tiers), [CLI options](../../reference/cli/commands.md#global-options), [selectors](../../reference/contracts/config-spec.md#chat-filesystem-root-selectors) and [session authority](../../reference/cli/chat-session.md#filesystem-authority-and-resume) describe the implementation scope and owner-controlled-path assumptions. The dated forward notes in affected ADRs retain their historical text.
+
+G21 removes unused automatic global tmp provisioning; existing directories are not deleted. The host-only exact private scratch descriptor/factory is a prerequisite, with POSIX private-directory checks and the existing Windows profile/ACL assumption. Ordinary chat has no production allocator; full 2.6.N isolation/join/cleanup/recovery remains open. These controls do not promise a hostile same-user parent-swap jail, race-free path checks or OS subprocess isolation.
+
+Physical CAS containment is Step 2 only. Own `put` ceiling, bounded fd delivery, cancellation, descriptor/media admission and temp-age/live-writer maintenance remain Step 6/ADR-0106. Unified independent cumulative Step 2 review, native platform evidence and required gates remain pending. This checkpoint is not acceptance or closure of any Step 2 queue item.
+
+**Pre-review verification:** full local `pnpm run ci` passes against `4668f65c` plus
+the Step 2 working-tree implementation: 516 package test files, 11,174 passing tests,
+11 established LLM capability skips and one Windows-only case on this macOS host.
+Lint, typechecks, build/format, dependency/seam/isolation guards and three offline
+smokes pass. Acceptance-tool guards pass 78/78; the four wire and 23 usage controls,
+including 429 permanent native/scale cases, remain complete. The new filesystem
+matrix passes all 20 fixed/red/restored mechanisms, with 1,020 assertion executions,
+39 expected named failures, identical inventories and byte-exact restoration.
+It checks current copied-source execution and unchanged developer/dependency bytes;
+the compact matrix complements the ordinary all-operation native suites. These are
+local results, not published exact-head or Windows evidence. Cumulative document
+validation covers 36 Markdown files and 2,181 relative links/anchors with no findings.
+
+**Publication dependency:** documentation PR #93 is now merged. The earlier plan's
+open-PR warning is historical; Wave 2 will receive its own PR after implementation
+and acceptance, without repurposing #93 or changing branches.
+
+**First-review and platform corrections:** independent cumulative round 1 at
+`fc097b2e` found a native cooperative CAS regression: same-hash atomic republishing
+replaced an inode that readers incorrectly required the pathname to retain. Read
+validation now separates the current physical path floor from the owned descriptor
+and verifies that descriptor's bytes against the handle; temporary/destructive
+ownership remains strict. Permanent native controls exercise both publication
+methods against get, range and egress readers, plus planted-link and hash failures.
+The round also identified a POSIX-only glob expectation in the Windows suite.
+Published Windows execution additionally exposed case-sensitive raw-prefix
+membership and the ignored Windows `O_NOFOLLOW`; native membership and an explicit
+stable-entry check address those without claiming hostile same-user race isolation.
+Test injection and result expectations use native path semantics. Linux published
+filesystem, floor and coverage jobs shared one inode-reuse fixture failure: the
+replacement control now retains the old directory and proves distinct identity.
+The secure-default workspace check refuses sensitive lexical/canonical chat roots
+before canonical persistence can erase their floor. Benign aliases remain supported;
+no historical grant provenance or legacy repair is inferred. These corrections
+still require fresh gates and two NEW complete clean cumulative rounds.
+
+**Post-correction local verification:** `pnpm run ci` passes with **519 package
+files / 11,205 passing tests / 13 skips** (11 established LLM capability cases and
+two Windows-only cases on macOS). The build, lint/typechecks, format, dependency,
+seam/isolation guards, three offline smokes and 78 acceptance-tool guards pass.
+Four wire controls, 23 usage mechanisms and 429 permanent native/scale cases retain
+their complete inventories. The expanded filesystem matrix passes **22 mechanisms,
+1,062 assertion executions and 52 expected semantic failures**, with identical
+fixed/red/restored inventories and byte-exact restoration. Its copied-source proof
+covers 1,031 physical source files and 457 dependency packages; developer sources
+remain unchanged. Execution records identify `fc097b2e` plus the correction working
+tree, not a later committed head. The ordinary run preceded the final assertion
+markers, two added filesystem mutation declarations and Windows-only test setup
+refinement; focused tests and the expanded matrix verify those deltas. Published
+native Windows and two NEW clean complete cumulative review rounds remain required.
+
+**Second-round platform discovery:** published head `9d718981` passes the wire,
+usage, filesystem causal and enforced-coverage jobs, but Windows native DB execution
+fails 11 cases and Node 22.13 fails one cooperative CAS case. The Windows suite
+fails before subsequent CLI checks, so no result is inferred for those. Independent
+macOS review slices found no issue; the audit incorporates the published failure,
+therefore this cumulative round is **not clean**. Linux reproduction using the actual
+unchanged store confirms regular pathname-stat snapshots with `nlink=0` during atomic
+replacement, including both publication admission and reads. An instrumented native
+100-round workload reports 29 refusals before correction, all with that observed
+snapshot, and zero across the same 3,000 operations after correction (Node 22.23.2;
+not the exact Node 22.13 floor). Windows replacement contention now requires one
+independent verified winner; owned temps and destructive checks remain strict.
+Permanent deterministic controls cover both cases, and the forced-rename fixtures
+distinguish actual replacement from native Windows refusal while closing owned fds.
+Independent Windows checks now all execute after successful build even if another
+suite fails, retaining failures without `continue-on-error`. New exact-head/platform
+gates and two NEW complete clean cumulative rounds follow these corrections.
+
+**Second-correction local gates:** ordinary lint/typecheck/test and build pass with
+**521 package files / 11,229 passing tests / 13 established platform/capability skips**;
+the full DB suite is 39 files / 713 passing tests. Tool lint, formatting, relative
+documentation links and `git diff --check` pass. The expanded filesystem matrix
+passes all **24 mechanisms** with complete fixed/red/restored inventories and
+byte-exact restoration across 1,033 source files and 457 dependency packages.
+The initial new Windows control correctly failed its workload but Vitest's promise
+rejection diagnostic omitted the named assertion marker; settled-result assertions
+now make that causal witness explicit. The successful rerun retains its own source
+manifest (`9d718981` plus this correction working tree); no later-head execution is
+inferred. The predecessor's required CI job also passed; its two native platform
+failures remain historical failures, not waived acceptance. New published platform
+execution and two NEW cumulative review rounds remain required.
+
+**Third-round platform discovery:** exact-head execution at `962c6a54` passes the
+Node 22.13 floor and 24-mechanism filesystem job. Windows runs every independent
+check and exposes 25 CLI failures plus two DB fixture-count failures (repeated by
+the focused CAS suite). Native CAS cooperation and its new production-branch
+controls pass. The fixture count included a successful follow-up read; the initial
+read is now counted before that recovery, with deterministic refusal controls.
+CLI root admission mixed legacy synchronous short-name resolution with native
+asynchronous long-name resolution. Native canonical roots and faithful fault-fixture
+anchors correct that mismatch without widening authority. These are new corrections;
+the otherwise clean scoped R3 reviews do not constitute a clean complete round.
+
+**Third-correction local gates:** lint/typecheck/test and build pass with **522
+files / 11,235 passing tests / 13 established skips**. DB's 39 files / 717 tests
+include four new deterministic fixture-order controls. Tool lint, formatting and
+37 changed Markdown files / 2,184 relative links and anchors pass. The complete
+filesystem matrix passes **25 mechanisms / 1,137 assertion executions / 63 expected
+semantic failures**, with identical per-mechanism inventories, exact restoration
+and unchanged developer sources. Its 1,034-file / 457-dependency manifest attributes
+execution to `962c6a54` plus this correction working tree. Fresh published native
+execution and two NEW clean complete cumulative rounds still gate Step 2 acceptance.
+
+**Fourth-round credential-floor correction:** the complete cumulative review at
+`5c95857d` found one High omission: Terraform's standard `.terraformrc` and Windows
+`terraform.rc` files may contain access tokens but bypassed the common basename
+floor. An independent synthetic native probe reproduced read, mention, discovery
+and write access in all three tiers. The two names now join the existing folded
+floor; ordinary Terraform source and similarly named files remain usable. Sixteen
+new permanent controls failed against the original source before the fix. The
+basename-removal matrix includes both names without weakening its exact inventories.
+The CAS and tooling/document slices found no additional issue, but combined R4 is
+**not clean**. Published `5c95857d` Windows, Node 22.13, coverage, wire and filesystem
+jobs pass; usage and required aggregation remain separately pending. These results
+precede this floor correction and do not certify its final head. Fresh gates and
+two NEW complete clean cumulative rounds are still required.
+
+**Fourth-correction local gates:** full `pnpm run ci` passes with **522 package
+files / 11,251 passing tests / 13 established skips**, including all lint/typecheck,
+build/format, isolation/seam/dependency checks, three offline smokes and 78 acceptance
+tool guards. Four wire and 23 usage mechanisms pass, including 429 permanent cases,
+71 joined native children and the actual readiness-timeout control. The complete
+filesystem matrix passes **25 mechanisms / 1,161 assertion executions / 65 expected
+semantic failures**; fixed/restored inventories match, source restoration is exact
+and developer sources remain unchanged. Its 1,034-file / 457-dependency manifest
+identifies `5c95857d` plus the correction working tree, not the later commit. Fresh
+published platform gates and two NEW complete clean cumulative rounds remain open.
+
+**Sixth-round cooperative-delete correction:** round 5's three new complete
+cumulative scopes were clean at `b7d0997f`. Round 6 independently reproduced one
+Medium maintenance regression: two stores could admit the same blob for deletion,
+then the second unlink reported ENOENT after its peer had already removed it.
+The actual host-GC caller consequently skipped its orphan phase. A deterministic
+native unlink-entry barrier reproduces baseline success and the regression without
+injecting a missing-file error or using sleeps. The CLI/shared and tooling/document
+slices found no additional issue, but combined R6 is **not clean**. The correction
+must preserve strict path admission and non-missing failures; two NEW complete clean
+cumulative rounds and fresh current-source gates follow the final fix. Earlier
+clean slices do not certify that correction or close Step 2.
+
+**Sixth-correction local gates:** full `pnpm run ci` passes with **524 package
+files / 11,263 passing tests / 13 established skips**, including lint/typecheck,
+build/format, isolation/seam/dependency checks, three offline smokes and 80 acceptance
+tool guards. Four wire and 23 usage mechanisms pass; the complete filesystem matrix
+passes **26 mechanisms / 1,197 assertion executions / 67 expected semantic
+failures**. Both deletion regressions fail when the narrow missing-unlink recovery
+is removed; its other ten cases remain green. Fixed/restored inventories match and
+developer sources remain unchanged. The 1,036-file / 457-dependency manifest names
+`b7d0997f` plus the correction working tree, not a later commit.
+
+**Published native gate remains open:** required Ubuntu CI at exact `b7d0997f`
+fails six native session-usage readiness cases; its seven other jobs pass. These
+are genuine pre-readiness expiries, distinct from Step 1's corrected obsolete
+callback. The failing Node 24.21 lane and successful Node 22.13 floor have different
+runtime and task schedules; their logs do not establish the historical cause.
+The next correction budgets overlapping workspace test processes and retains
+native startup diagnostics, preserving the five-second bound and every native
+case. The local deletion gates do not clear that published failure. Fresh platform
+gates and two NEW complete clean cumulative rounds still precede Step 2 acceptance.
+
+**Native workspace scheduling correction:** the common
+[`pnpm ci:workspaces` gate](../../standards/testing.md#ci-gate) finishes lint/typecheck
+before running all workspace test tasks one at a time. Its task union is identical
+to the previous 23-task required graph. The exact Node floor likewise retains its
+18-task union, forced execution and isolated remote credentials. No native race,
+case, five-second readiness bound, 20-second case budget or 15-minute job budget
+is removed or extended. Required CI hashes a unique DB-task-only diagnostic path
+and retains synthetic parent/child startup stages separately from cache results.
+Four new guards exercise actual command ordering, failure propagation and workflow
+setup. Focused native execution passes **10/10**, including nine observed barriers
+and the real timeout with joined SIGKILL; this is local evidence, not Ubuntu proof.
+
+**Scheduling-correction local gates:** full `pnpm run ci` passes with **524 package
+files / 11,263 passing tests / 13 established skips**, 84 acceptance-tool guards,
+all workspace checks, build/format, three offline smokes, four wire mechanisms and
+23 usage mechanisms. The permanent usage cohort retains **429 cases / 71 joined
+native children / one actual readiness timeout**. All **26 filesystem mechanisms /
+1,197 assertion executions / 67 expected semantic failures** pass with identical
+fixed/restored inventories and unchanged developer sources. The filesystem manifest
+names **`cc23b1d2` plus the scheduling correction working tree**, with 1,037 physical
+files and 457 dependency packages; it is not a later committed-head execution.
+Published platform gates and two NEW complete clean cumulative rounds remain open.
+
+**Post-correction rounds 7–8:** all three complete cumulative R7 scopes are clean at
+`aca351af`. Both complete runtime scopes are also clean in R8; its tooling/document
+scope found one Low attribution error in ADR-0105's positive consequences. A dated
+qualification now distinguishes the shared tool-fs/`save_to` helper from CAS's
+separate identity checks, matching the existing Decision and acceptance criteria.
+No runtime, test or tooling bytes changed. Two new complete cumulative tooling/
+document reviews follow this prose correction; the finding-bearing R8 scope is not
+counted as clean. Current published native Windows and Node 22.13 floor jobs pass;
+the required aggregation is still running. Step 2 remains open until those reviews
+and published gates complete.
+
+### Step 2 acceptance — 2026-10-12
+
+**Accepted on `development`; Step 3 proceeds.** The complete cumulative CLI/shared
+and DB/CAS scopes have two NEW clean rounds (R7–R8) at `aca351af` after the last
+runtime correction. The R8 tooling/document scope found one Low consumer-attribution
+error; its append-only qualification changed prose only. Two NEW complete cumulative
+tooling/document rounds (R9–R10) at `d4f54619` are clean. The finding-bearing scope is
+not counted as clean, and earlier clean rounds do not certify later corrections.
+
+| Step 2 obligation | Disposition |
+| --- | --- |
+| #36/#39 credential paths and declared-env overrides | Closed for tool read/write/discovery and shared declaration admission across tiers, including Terraform's standard credential files. |
+| #235 shared ancestor and #113 Windows drive-relative `save_to` | Closed; both actual tool/native host consumers are pinned. CAS retains separate physical identity checks. |
+| Pulled-forward 2.6.M extra roots and 2.6.N floor prerequisite | Accepted: invocation-only grants, narrowing selectors, fresh resume admission and common policy consumers. Full M/N workstreams are not closed. |
+| G21 unused global tmp and host-only scratch floor | Closed for removal of unused provisioning and the exact private descriptor prerequisite. Existing directories are not erased; ordinary chat has no production allocator. |
+| #1 workflow/agent catalog containment | Closed with pre-enumeration and opened-file admission, contained-alias positives and bounded regular-file reads. |
+| CAS physical containment | Accepted, including cooperating publication/read, native Windows winner validation and idempotent concurrent deletion through actual host GC. Step 6's media limits, descriptor admission, cancellation and temp lifecycle remain open. |
+
+The retained full local gate passes **524 package files / 11,263 tests / 13 established
+skips**, 84 tooling guards, four wire controls, 23 usage controls and the complete
+**26-mechanism filesystem matrix / 1,197 assertions / 67 expected semantic failures**.
+Its physical captured implementation matches the reviewed source; the manifest names
+`cc23b1d2` plus the scheduling working tree, not a later committed-head execution.
+
+[Published CI at exact code head `aca351af`](https://github.com/HodeTech/Relavium/actions/runs/38246846580)
+passes all eight jobs, including required lint/typecheck/test, enforced coverage,
+Node 22.13 floor, native Windows and all three causal jobs. The required and forced
+floor runs each pass **524 files / 11,262 tests / 14 established platform/capability
+skips**. Actual Windows DB passes **728 tests**, including all ten native readiness
+cases and eleven deletion controls; its separate CLI filesystem and CAS cohorts,
+shared controls, build and headless smoke also pass. These are `aca351af` executions;
+`d4f54619` adds only the reviewed prose qualification.
+
+The retained required-job diagnostic records actual Linux x64 / Node 24.21 / four
+available CPUs, ten joined children, nine observed barriers at **658–945 ms**, and
+one actual **5,005 ms** readiness expiry with SIGKILL joined at **5,022 ms**. Every
+child has actual import/open stages. The five-second readiness, 20-second case and
+15-minute job budgets remain unchanged. The earlier `b7d0997f` failures remain real;
+this successful schedule and diagnostic record do not prove their historical cause.
+
+Canonical tool/config/CLI/session contracts retain the owner-controlled/cooperating
+filesystem assumptions, Windows profile/ACL limit and absence of a hostile same-user
+or OS subprocess jail guarantee. No user decision, key, provider or billing action
+is pending. Steps 3–8, four final security sittings, full 2.6.N lifecycle and whole-wave
+publication remain open; no approved CR deferral is closed by this increment.
+
+### Step 3 implementation checkpoint — 2026-10-12
+
+**Implemented; required gates and independent acceptance remain open.** The CLI
+native bridge now preserves private causes while publishing fixed get/set/delete
+diagnostics, without inspecting foreign error messages or coercion hooks. Fifty
+direct mocked-native cases and 34 actual command/render cases cover constructor
+and operation faults, human/JSON output, verbose diagnostics and successful
+forwarding. These mocks do not certify a real locked keychain or native-module
+loading failure; no user keychain or provider was accessed.
+
+The common secret reader now bounds incoming UTF-8 bytes at 65,536 before copying
+or retaining chunks, owns admitted Buffer bytes, assembles Unicode before decoding,
+preserves whitespace and joins available iterator cleanup on early refusal. Its
+31 dedicated cases cover aggregate/single-chunk limits, mutable and hostile Buffer
+shapes, zero-byte retention, source failures and cleanup. Actual provider dispatch
+and gate/default-reader controls verify their existing consumers; their necessary
+prior database opening is not a zero-history first-run claim. The reader does not
+provide a deadline for a stalled source. Step 4's run transport remains open.
+
+The pure LLM scrubber adds eight finite literal query-name families, with a 52-case
+LLM-error workload and adjacent CLI diagnostic controls. Opaque-value positives and
+benign near-name negatives distinguish this mechanism from prefix-based masking;
+encoded parameter names and arbitrary content are not claimed to be covered.
+
+Filesystem and secrets causal entry points share one physical-source coordinator,
+with finite family/tool-root authority, complete unique inventories, named semantic
+failures, target-body evaluation, source/dependency fences, exact restoration and
+bounded metadata retention. The existing 26 filesystem declarations are retained;
+nine secrets mechanisms are added. Dedicated required CI aggregation and local CI
+include the full secrets matrix. Selected runs alone do not certify the matrix.
+
+An initial cleanup capture correctly refused an ambiguous inventory before mutation
+(31 cases but 29 unique names); concise parameter labels correct it. This refusal
+is not counted as successful removal evidence. Source, tooling and installed
+dependencies will remain frozen during final captures. Detailed checks and reports
+remain local; no Step 3, security-sitting or whole-wave acceptance is inferred here.
+
+#### Step 3 gates and causal-authority correction — 2026-10-12
+
+Full `CI=true pnpm run ci` passed at `7833c08` plus the implementation working
+tree: **528 package files / 11,438 passing tests / 14 established platform or
+capability skips**, lint/typecheck/build/format, isolation/seam/dependency/schema/
+bundle checks, three offline smokes, **106 acceptance-tool tests**, four wire and
+23 usage mechanisms, and complete filesystem/secrets matrices. The usage cohort
+retains all 429 permanent cases and 71 joined native children, including its actual
+readiness-timeout control. This is local execution, not published-head CI.
+
+A read-only probe then confirmed an inherited evidence gap: a plain runtime
+`Error` carrying a marker could certify a removal. The shared authority now requires
+an `AssertionError` carrying that marker for every required named witness. Six new
+tool guards reject misleading runtime-error markers and pin the additional-witness
+rule. Secrets declarations require every aggregate/single-chunk cap shape, all nine
+foreign-source boundaries, and constructor plus method witnesses for each native
+operation. The decoded-output limit is documented in UTF-16 code units, matching
+the unchanged process implementation.
+
+After that tooling-only correction, **112 acceptance-tool tests**, scoped tooling
+lint/checkJs and the complete **26-mechanism filesystem / nine-mechanism secrets**
+matrices passed. Filesystem records **1,197 assertion executions / 67 expected
+semantic failures**; secrets records **1,071 / 104**. Required witnesses, identical
+complete unique inventories, target-body evaluation and exact restoration were
+independently checked; both scratch trees were removed. Physical manifests cover
+1,054 filesystem / 1,048 secrets source files and 457 installed dependency packages,
+at `7833c08` plus the correction working tree. The earlier unchanged runtime/wire/
+usage gates retain their own source attribution; they are not relabelled as later
+head execution. Relative-document checks cover 41 Markdown files / 2,241 links and
+anchors with zero findings; `git diff --check` passes. Implementation commits and
+two NEW clean complete cumulative review rounds remain the Step 3 acceptance gate.
+
+#### Step 3 independent-review correction — 2026-10-12
+
+The first complete cumulative round was clean. The second found one verified
+secret-disclosure blocker: matching a new query name caused the CLI sanitizer to
+return before checking a second credential split across whitespace. An independent
+source-based reproduction exercised all eight families through human/JSON and
+normal/verbose rendering. The other two assigned second-round scopes were clean;
+the combined finding-bearing round is not counted as clean acceptance.
+
+The sanitizer now checks each remaining unredacted segment after every in-place
+pass. Redacted spans separate those probes, preserving ordinary prose after a
+masked query instead of creating a false match by joining through its marker.
+Permanent cases cover both sanitizer functions, both credential orders, whitespace
+separators, all eight query families, other credential shapes and actual diagnostic
+rendering, including an isolated verbose stack with a benign message. Before the
+fix, **22 of 56** focused cases failed; after it, all 56 pass. The complete affected
+CLI suite passes **232 files / 3,727 tests / three established skips**, with CLI
+lint/typecheck/build and scoped formatting also passing.
+
+A tenth independent secrets control restores the unsafe early return. All **21**
+new named assertion witnesses are required: both helpers for eight families, four
+human/JSON rendering modes and the separate verbose-stack boundary. A first capture
+correctly refused a declaration whose parameterized case names omitted the quotes
+Vitest actually reports; its restoration and cleanup completed, and that incomplete
+capture is not acceptance evidence. Correcting those exact names preserves the
+strict assertion authority and all nine earlier declarations.
+
+The complete corrected **ten-mechanism** secrets matrix passes **1,239 assertion
+executions / 126 expected semantic failures / 46 required witnesses**, with identical
+complete inventories, actual target-body evaluation and exact restoration. Its
+physical capture pins 1,048 source files and 457 installed dependency packages at
+`75b4e562` plus this correction working tree. An independent read-only audit checks
+every phase, current source hashes and scratch removal. The 112 tooling guards,
+scoped lint/checkJs and formatting pass. Unchanged filesystem/wire/usage and broad
+runtime gates retain their earlier attribution; they were not needlessly rerun or
+relabelled as later-head execution. Two NEW clean complete cumulative rounds after
+this material correction remain required before Step 3 closes.
+
+#### Step 3 shared-prefix review correction — 2026-10-12
+
+The next complete cumulative round found a second verified disclosure blocker.
+A whitespace-split prefixed key used as a new query family's value lost its
+identifying prefix during query redaction, leaving the suffix visible. The root
+reproduced all eight families through both CLI sanitizers and all four actual
+human/JSON rendering modes at reviewed head `70ba7f2c`. The other two assigned
+review scopes were clean; this combined round is finding-bearing and cannot
+supply clean acceptance.
+
+The shared LLM scrubber now classifies whitespace-joined residual prefixed keys
+before other credential replacements can erase their prefix. Contiguous key
+masking and that probe share one private pattern authority; the finite query-name
+regex is unchanged. Redacted spans still separate probes, preserving benign prose
+after a fully masked key or opaque query. This also protects messages and codes
+already passed through `makeLlmError` before they reach CLI rendering. The finite
+key-pattern word boundaries and the existing ambiguity after an already completely
+masked prefix remain limits; this is not universal formatted-secret discovery.
+
+Eight new LLM family regressions failed before correction. The final source-backed
+focused workload passes **139 tests**: 62 LLM-error, 61 sanitizer and 16 actual
+renderer cases. It includes raw and pre-scrubbed query values, two prefix shapes,
+three whitespace separators and an isolated pre-scrubbed verbose stack with a
+benign primary message. The earlier CLI residual control now exercises split URL
+userinfo first, retaining its independent obligation after the upstream key fix.
+
+An eleventh secrets mechanism removes the shared prefix probe's whitespace join.
+Its **29** named assertion witnesses join the earlier 46. A selected diagnostic
+capture passed without claiming matrix completion. The complete **11-mechanism**
+matrix then passed **1,749 assertion executions / 156 expected semantic failures /
+75 required witnesses**. A separate read-only audit checks all 33 phases, identical
+complete inventories, strict assertion outcomes, actual target-body evaluations,
+current fixed-source hashes, exact restoration and removed scratch. Physical
+manifests pin 1,048 source files and 457 installed dependency packages at
+`70ba7f2c` plus this correction working tree.
+
+After the shared runtime correction, local workspace lint/typecheck/test and
+build/format gates pass. The workspace test gate accounts for **528 files / 11,499
+passing tests / 14 established skips**; unchanged shared/DB test tasks replay their
+valid Turbo cache, while LLM/core/MCP/CLI tests execute anew. The affected LLM and CLI
+suites respectively pass 2,257 and 3,748 tests. All 112 acceptance-tool tests,
+tooling checkJs, scoped lint and three offline smokes pass. Earlier filesystem,
+wire/usage and full-CI executions retain their own source attribution; this is not
+a new published-head CI, coverage or whole-wave security-sitting claim. No real
+keychain, user history or provider was accessed. Two NEW clean complete cumulative
+rounds after this material correction remain required before Step 3 closes.
+
+#### Step 3 overlapping-credential review correction — 2026-10-12
+
+The fourth complete cumulative round at `f2099c78` found one further disclosure
+family; two reviewers independently reproduced it. Query replacement could erase
+the identifying context of a control-split key, whitespace-split URL userinfo, or
+Bearer/Basic value before shared or CLI classification. Raw diagnostics and
+messages/codes already passed through `makeLlmError` were affected. The tooling
+scope was clean, but the combined round was finding-bearing and supplies no clean
+acceptance.
+
+Each existing non-query credential rule now probes the original diagnostic
+independently, using the existing shared terminal normalizer and a whitespace-joined
+residual view. The unjoined normalized comparison preserves required header
+whitespace. Complete masks separate only that rule's residual spans, so another
+credential family's replacement cannot erase evidence first. Each rule has one
+private pattern authority; the unchanged finite query replacement runs last. A
+candidate that merely reordered complete replacements was rejected because a
+Bearer match could still erase a nested split-key prefix. Benign coloured prose and
+ordinary text after a completely masked credential retain their prior output. The
+existing word-boundary and already-masked-prefix limits remain explicit; this is
+not universal secret discovery and adds no public API, dependency or decision.
+
+The source-backed focused cohort passes **259 tests**: 98 LLM-error, 125 sanitizer
+and 36 actual renderer cases. The LLM suite first produced **33 completed failures
+out of 98** before the runtime correction. Permanent cases cover all eight query
+families, both key prefixes, the canonical normalizer's finite removed code-point
+sets and representative escape sequences, three whitespace separators, URL
+userinfo, Bearer/Basic, raw and pre-scrubbed messages/codes, four rendering modes
+and isolated verbose stacks. A separate root probe over 86 normalizer fixtures and
+4,128 synthetic key inputs finds no disclosure in either the pre-Step-3 baseline
+or corrected source; its 82,560 rendered string evaluations are not additional
+Vitest cases. The independent CLI residual control now begins with a split literal
+query name, which the shared non-query probe deliberately does not classify.
+
+All **13 secrets mechanisms** pass their complete fixed/mutated/restored matrix:
+**4,023 assertion executions / 392 expected semantic failures / 191 required named
+witnesses**. The two new removals independently disable terminal normalization and
+reverse query-last composition; the existing whitespace-join removal also requires
+URL-userinfo witnesses. A read-only audit checks all 39 phases, complete identical
+inventories, strict named assertion outcomes, actual target-body evaluation, source
+hashes, exact restoration and scratch removal. The capture pins 1,048 source files
+and 457 installed dependency packages at `f2099c78` plus this correction working
+tree; no source, index, dependency or commit changed during capture.
+
+Workspace lint/typecheck/test and build/format gates pass: **528 files / 11,619
+passing tests / 14 established skips**, including 2,293 LLM and 3,832 CLI tests.
+Unchanged shared/DB tests retain their valid cache attribution; LLM/core/MCP/CLI
+tests execute anew. All 112 acceptance-tool tests, tooling checkJs, scoped lint and
+three offline smokes pass. Earlier filesystem/wire/usage and full-CI executions
+retain their own attribution; no new published-head CI, coverage or whole-wave
+security sitting is claimed. No real keychain, user history or provider was used.
+Two NEW clean complete cumulative rounds after this material correction remain
+required before Step 3 closes.
+
+### Step 3 acceptance — 2026-10-12
+
+**Accepted on `development`; Step 4 proceeds automatically.** After the last material
+correction, two NEW complete cumulative rounds (R5 and R6) independently reviewed
+`7833c083..8c44e2ec`. Each used fresh security, CLI-boundary and tooling/document
+reviewers; together they cover all 42 changed paths and affected interfaces. Both
+rounds have zero actionable findings. The root read all six reports, confirmed
+coverage and dispositions, and retained the earlier finding-bearing rounds as
+historical evidence. Review artifacts remain local and ignored.
+
+Each round independently passes 179 reader/native/LLM tests, 334 source-backed CLI
+consumer/diagnostic tests and 80 tooling/CI guards. Separate differential probes
+challenge finite credential shapes without promoting unsupported fragments into a
+universal discovery claim. Both tooling reviews audit the complete 13-mechanism,
+39-phase secrets evidence and current source hashes; no historical execution is
+relabelled as a new committed-head run. R6's initial CLI check resolved built package
+interfaces and triggered an unintended scratch Corepack bootstrap. Its authoritative
+rerun uses the installed Vitest directly with source aliases; a separate root audit
+confirms all 457 repository dependency packages / 21,013 files remain byte-identical.
+The initial run is not counted as another source certification or fully offline run.
+
+This accepts #27, #31/#293 and #196 implementation and the shared secrets foundation.
+The preceding checkpoint owns exact runtime/build/smoke/matrix provenance and
+finite limits. First-run #25, later steps, the four new security sittings, exact-head
+publication and whole-Wave-2 certification remain open. No real credential, provider
+capture, billing setup, new architectural decision or user action is pending.
+
+### Step 4 first-run secret inputs — implementation checkpoint, 2026-10-12
+
+**Implemented; independent acceptance remains open.** The approved
+ADR-0107 path adds `run --secret-inputs-stdin` through the actual Commander action
+and shared dispatch. Every explicit declared-secret ordinary argument, including
+an empty value, refuses before reading stdin or constructing credential, provider,
+MCP or history services. Run-local parser errors and raw input diagnostics are
+payload-free. Existing ordinary inputs, help, version and unrelated command
+routing retain their behavior.
+
+First-run and gate resupply use one CLI-local line parser and the already accepted
+65,536-byte reader. Names are trimmed, values after the first equals are verbatim,
+CRLF and blank lines are supported, and own prototype-like names are retained in
+null-prototype maps. Unknown/non-secret/duplicate/empty/missing required values
+refuse; omitted optional secrets stay absent. The public pure core input admission
+checks the merged map before lazy native key/provider services and both history
+open paths. Engine admission still validates at start.
+
+Consumed stdin removes prompt authority in first-run and resume MCP consent and
+later workflow gates, including stale TTY metadata and injected gate selectors.
+Existing exact stdio digests remain explicit invocation authority and append no
+grant. Gate resupply legitimately reads existing history to discover masked slots;
+the first-run zero-history refusal claim does not apply to that lookup.
+
+Root integration passes **10 source-aliased files / 389 tests / zero skips** at
+`f4ca477b` plus the Step 4 working changes. The native file contributes **131 cases**
+through real Commander/dispatch/default reader/engine and file-backed SQLite; the
+new gate companion controls run actual consent, real resupply and sequential gates.
+Synthetic input-only sentinels are absent from actual `runs.input_json`, input-node
+`step_executions.output_json`, all recorded rows/events and reconstructed checkpoint
+state. The faithful admitted workflow snapshot is preserved. This does not assert
+redaction of independent authored literals, arbitrary tool/model/user content or
+historical bytes. Temporary homes, stdin descriptors and mocked native key factories
+isolate these controls from user keys/history and external provider/transport work.
+
+The first complete secrets capture retained all thirteen prior controls, then
+correctly refused duplicated full case names in new parameterized input tests.
+Input and gate companion cases now have stable unique names without reducing
+case counts or weakening the coordinator's inventory gate. That partial capture
+is retained as a failed attempt, not complete Step 4 evidence. The line-parser
+reference also describes its existing trailing-line carriage-return handling
+precisely, without changing value parsing.
+
+The corrected complete secrets matrix passes **24 mechanisms / 72 phases / 6,321
+case executions**, with **563 failing removal cases** and all **242 required named
+assertion witnesses** present. Fixed and restored phases pass with identical unique
+inventories. A separate root audit checks every phase's completed outcome, target
+body/source hashes, all current fixed source bytes, exact restorations and scratch
+removal. Capture provenance is `f4ca477b` plus the corrected Step 4 working changes:
+**1,052 source/tool files and 457 installed dependency packages**. It is not relabelled
+as a later committed-head capture.
+
+Affected gates pass: `CI=true pnpm ci:workspaces` reports **531 files / 11,824 passed /
+14 existing skips**; the changed CLI executes **4,037 tests**, while unchanged engine
+packages use valid existing cache entries. Build/format passes seven tasks (five
+cached). All eighty causal/CI tool guards, configured tool typecheck/lint, seam and
+engine-dependency fences, bundle closure and three offline smokes pass. Cumulative
+document checks cover 41 Markdown files, 2,259 relative links/anchors and thirteen
+pre-existing append-only ADRs without findings. No live provider or paid operation
+was involved.
+
+Two NEW independent complete cumulative review rounds remain required. This
+checkpoint closes no item
+or security sitting, creates no new deferral, and introduces no new decision or
+runtime dependency. Subsequent steps proceed after independent Step 4 acceptance.
+
+### Step 4 acceptance — 2026-10-12
+
+**Accepted on `development`; Step 5 proceeds automatically.** Two NEW complete
+cumulative rounds independently reviewed `f4ca477b..1757ccc5`, including all source,
+test, causal and canonical-document changes. Each round used fresh security,
+CLI/SQLite-boundary and tooling/document reviewers. All six reports are clean,
+cover all 24 changed paths and affected interfaces, and were read and reconciled
+by the root. Detailed reports remain local and ignored.
+
+R1 independently passes 298 source-backed security/interface cases, 269 boundary
+cases and fifteen additional Commander probes. R2 independently passes 251
+security/native cases, 269 boundary cases and eighty tooling guards. Both tooling
+reviews audit all 24 mechanisms, 72 phases and 242 required named witnesses,
+current source/dependency correspondence and exact restoration. Reviewers retain
+the corrected capture's actual `f4ca477b` plus working-tree provenance; they do not
+relabel it as execution at the later committed head. R1's corrected exploratory
+Commander probe was a mistaken probe expectation, not a production finding.
+
+This accepts #25 and ADR-0107's first-run transport, argv refusal, noninteractive
+approval policy and native masked-persistence implementation. The preceding
+checkpoint owns exact gate counts, cache attribution and finite limits. Faithful
+snapshots and independent sensitive authored/generated content remain distinct
+from declared input-slot masking. The four final security sittings, later steps,
+exact-head publication and whole-Wave-2 certification remain open. No new decision,
+credential, provider capture, billing setup or user action is pending.
+
+### Step 5 implementation checkpoint — 2026-10-12
+
+**Implemented; independent acceptance remains open.** Snapshot notices now run at
+the actual create/import/run entry points after parsing and, for run, complete
+input admission. They reuse the existing finite credential detector, disclose an
+incomplete bounded scan, write value-free stderr and preserve authored files,
+JSON stdout and the faithful augmented execution snapshot. The
+[CLI contract](../../reference/cli/commands.md#relavium-import--relavium-export) owns the finite
+limits and placeholder-probe behaviour; absence of a warning is not a secrecy
+certificate.
+
+The core parser refuses unsupported direct `secrets.*` references in workflow
+context even when unread. Legitimate caller-secret-input context propagation and
+existing transitive text-sink checks remain intact; ADR-0060 remains Proposed.
+Export IDs have deterministic ASCII title normalisation and bounded legal
+session-identity fallback. Successful standalone exports emit one fixed
+continuity/content-review notice on stderr, including JSON mode. Live exports use
+the interactive transcript or plain/JSON stderr without introducing raw tool-content export. The
+[canonical export mapping](../../reference/contracts/agent-session-spec.md#export-to-workflow)
+owns the identity rules and their explicit uniqueness limit.
+
+Permanent controls cover faithful actual authored files, augmented engine/store
+identity, strict raw legacy tool-content refusal, native SQLite snapshots and
+fresh-process strict resume. Existing DNS/caller-abort/late-connect tests pass
+**92 cases across three files**. G31's already recorded non-abortable native DNS
+background-work limit remains explicit; no resolver replacement or new waiver is
+claimed. The initial ten new causal controls retain all 24 prior mechanisms and require
+12 additional named assertion witnesses. The complete physical capture passes
+all **34 mechanisms / 102 fixed, removal and restored phases / 254 required named
+witnesses**, with 7,335 case executions and 585 expected assertion failures in
+the removal phases. That capture records `f3e09db9` plus the corrected working
+tree: 1,055 source/tool files and 457 installed dependency packages. The root
+audit verifies complete identical case inventories, source/evaluation hashes,
+current fixed-source correspondence, exact restoration and removed scratch
+trees. This is not relabelled as execution at a later committed head. Two NEW
+complete clean independent review rounds remain required before acceptance.
+
+Before the R2 runtime correction, source-backed checks passed 366 cases in thirteen files, including the native
+snapshot/resume test's four fresh-process child checks. The workspace gate passes
+**533 files / 11,860 tests**, with fourteen existing skips: lint/typecheck has
+17 successful tasks (nine cached), and tests have eleven successful tasks (eight
+cached). Affected core, MCP and CLI tests execute; unchanged shared, LLM and DB
+test results come from cache. The build passes seven tasks (five cached), including
+the actual core build and CLI bundle. Formatting, tools lint/typecheck, DB sync,
+112 tooling tests, seam/engine fences, bundle closure and offline CLI, overflow
+and replay smoke checks pass. Tools typecheck covers its declared TypeScript
+configuration; it is not a claim to typecheck every `.mjs` file. The cumulative
+document audit passes 45 changed Markdown files, 2,423 relative links/anchors and
+fifteen pre-existing append-only ADRs. Final whole-wave coverage, exact-head
+published CI and the four NEW security sittings remain open.
+
+The first full Step 5 capture correctly refused a stale 73-case declaration for
+the existing default-reader control after the run-command file grew to 76 cases.
+The declaration now follows the unchanged complete-file inventory. This failed
+partial capture remains excluded from complete acceptance evidence; the inventory
+gate and named-witness requirements are unchanged.
+
+A subsequent capture reached the export removals and rejected declared case
+names that omitted Vitest's quotes around parameter values. The assertions did
+fail with their required markers; the declarations now use the exact collected
+names for both standalone and live human/JSON exports. This partial capture is
+also excluded. Outcome validation is unchanged, and every declared workload and
+witness is checked against a fresh collected inventory before full recapture.
+
+The first complete independent review round found two current-reference
+contradictions: the catalog-export summary and source comments still promised
+credential-free sharing, and the keychain table's heading contradicted its
+qualified authored-content row. The root verified both against the actual
+serialization path and corrected the claims without changing runtime behaviour.
+The security/authoring slice was clean; the other two reports were finding-bearing
+and do not count as a clean round. All three complete reports were read. The
+corrected source comment has a fresh complete passing capture at `f3e09db9` plus
+the corrected working tree, with the same 34/102/254 witness inventory and verified
+current source correspondence. The earlier successful capture remains historical
+evidence at `3f2b01af` plus its recorded working tree. Two NEW complete clean
+cumulative rounds follow the correction; neither earlier capture is relabelled.
+
+The second complete cumulative round reproduced one live interactive delivery
+defect: raw stderr contained the successful export warning, but the actual Ink
+frames and transcript did not. A visible transcript-notice positive control
+established that the renderer was active. The root independently reran the
+reproduction, read all three reports and corrected the shared chat/Home handler
+to use its existing interactive-aware notice channel. Plain/JSON stderr and the
+machine export event remain intact; refused writes produce no review notice.
+This round is finding-bearing; neither clean sibling slice counts as acceptance.
+
+Two permanent file-backed SQLite/actual Ink cases now exercise successful and
+refused exports with owned synthetic TTY streams and joined renderer cleanup.
+The successful witness failed before the correction at its named assertion.
+The manifest retains all 34 prior controls and adds a separate routing removal
+that restores raw stderr while keeping plain/JSON positive cases intact. Its
+complete inventory is **35 mechanisms / 105 phases / 256 named witnesses**.
+The fresh physical capture at `ff7d43e6` plus the corrected working tree passes
+**7,707 case executions / 587 expected removal failures**. The audit independently
+checks all complete inventories, actual named assertions, evaluated source hashes,
+current fixed-source correspondence, exact restoration and removed scratch trees.
+Its 970 metadata files total 49,951,805 bytes, within the unchanged 2,000-file/64 MiB
+bound; 1,055 source/tool files and 457 installed packages remain pinned. No later
+commit execution is inferred. The fresh collected inventory independently confirms
+every complete-file count, unique case identity, witness name and exact mutation anchor.
+
+Current-source checks under `CI=true` pass **368 cases in thirteen files** and the
+workspace gate passes **533 files / 11,862 tests**, with fourteen existing skips.
+Lint/typecheck has seventeen successful tasks (fifteen cached); tests have eleven
+successful tasks (ten cached), with the affected CLI's 4,067 tests actually executed.
+The seven-task build/format gate passes (five cached), as do 112 acceptance-tool
+tests, tools lint/typecheck, seam/engine fences, bundle closure and compiled CLI smoke.
+Earlier unchanged DB/overflow/replay/DNS evidence retains its own recorded attribution.
+Two NEW complete clean cumulative review rounds remain required; the four NEW
+whole-wave security sittings, final coverage and exact published-head CI stay open.
+
+### Step 5 acceptance — 2026-10-12
+
+**Accepted on `development`; Step 6 proceeds automatically.** After the verified R2
+interactive delivery correction, two NEW complete cumulative rounds, R3 and R4,
+independently reviewed all 32 changed paths from `3f2b01af` through clean code head
+`1be8731d`. Each round has separate security/authoring and core/export reviewers
+(Codex Astra/high), plus tooling/documentation (Codex Sol/high). Root read all six
+complete reports and checked their findings, executions, provenance and limits.
+All six slices are clean. Earlier R1/R2 finding-bearing rounds and their clean
+sibling slices are not counted toward this acceptance.
+
+Fresh independent evidence includes actual mounted Chat and Home/RootApp Ink
+rendering over owned streams and file-backed SQLite, successful/refused exports
+with visible positive controls, reopened legacy args/result/signature refusal
+before output mutation, strict fresh-process snapshot/resume identity, and actual
+durable MCP-augmented execution/snapshot with masked runtime secret input. R3
+export ran 260 permanent cases plus five independent probes; R4 ran 260 plus seven.
+Security ran 108 permanent cases plus fourteen (R3) or sixteen (R4) independent
+probes; R4 additionally ran the complete 122-case chat file. Four native child
+resume checks remain separately counted. These overlapping review executions do
+not add tests to the workspace inventory or claim physical-terminal coverage.
+
+The full **35-mechanism / 105-phase / 256-witness** physical record and its
+**7,707 case executions / 587 expected removal failures** were independently
+audited again, including the separate interactive-routing removal with plain/JSON
+positives. Its source attribution remains `ff7d43e6` plus the corrected working
+tree, whose fixed source bytes match the reviewed code; it is not execution at a
+later commit. The preceding 368-case focused check, 533-file workspace gate,
+11,862 passing tests, fourteen established skips, cache attribution and build/tool
+gates retain the exact qualifications in the implementation checkpoint above.
+
+| Queue | Accepted Step 5 disposition |
+|---|---|
+| #30 | Bounded value-free create/import/run warnings and canonical retained-content documentation; faithful admitted augmented snapshot/resume identity remains. Silence is not a credential safety certificate. |
+| #80/#83 | Success-only continuity/review notice, visible in interactive Chat/Home and stderr in plain/JSON; deterministic bounded legal IDs with documented collision/transliteration limits. |
+| #81/#115, D14/D15 | Existing W7 strict structural tool-content rejection revalidated through producer/store/export and independent corrupted legacy rows; user/model/@/!/authored content remains sensitive and faithful. No raw-result opt-in or historical scrub. |
+| G22 | Unsupported direct `secrets.*` context references refused at parse, including unread values; legitimate secret-input→context propagation and text-sink checks remain. ADR-0060 stays Proposed. |
+| G31 | Existing non-abortable native DNS background-work follow-up reconciled and its 92-case caller-cancellation/late-connect regressions revalidated; no resolver or new deferral, and the existing residual stays open. |
+
+Step 6's media work, Step 7's interim provider-header gate and Step 8's whole-wave
+security sittings, full coverage and exact published-head CI remain open. This
+acceptance does not close Phase 2.5.5 A–I, later joint waves or approved CR limits.
+
+### Step 6 media implementation checkpoint — 2026-10-12
+
+**Implementation on `development`; acceptance remains open.** This increment implements
+[ADR-0106](../../decisions/0106-media-publication-requires-bounded-verified-bytes.md)
+on the released Step 5 base `c6921be1`. Its exact formats, qualifiers, required host
+compatibility change and fixed errors have one home in the
+[media seam](../../reference/shared-core/llm-provider-seam.md#bounded-verified-media-publication-adr-0106).
+The [database reference](../../reference/shared-core/database-schema.md#media-metadata-admission)
+owns immutable metadata-batch admission, while the
+[physical storage contract](../../reference/shared-core/built-in-tools.md#physical-media-storage-and-limits)
+and [CLI command](../../reference/cli/commands.md#relavium-media-prune-temporaries)
+own temporary maintenance. No new dependency, migration, paid capture or credential
+is required.
+
+| Boundary | Implemented controls; still subject to cumulative review |
+| --- | --- |
+| Shared publication | Own the inert graph before the first await, preflight all original occurrences, validate handle-only carriers and reconcile actual descriptors. Separate bounded recognizers consume complete bodies; raw PCM remains explicitly structural. |
+| Stores and native reads | Independent inline/stream bounds, owned memory chunks, completed verification, opened-fd actual-size/cumulative bounds, fresh incremental handle validation, range cancellation and joined native reads/close. Existing physical-jail controls remain. |
+| Metadata and engine | One owned BEGIN IMMEDIATE/busy-retried metadata batch before state/save, and a separate fresh barrier before durable numbering/append/outbox. Admission grants no read scope; post-ACK retention remains best effort. Terminal refusal strips its media without repeating billed execution. |
+| Temporary ownership | Conservative absent-owner/24-hour reclamation, exclusive identity-bearing claims and crash recovery, live/uncertain-owner retention, producer/maintenance handshake and exact legacy offline grammars. Native children use readiness/release barriers and kill/join cleanup. |
+| Providers and host | Installed SDK AAC/Opus/PCM compatibility, unsupported selector refusal before entry, normalized declared/header/body agreement, exact MIME/cap/signal forwarding and joined platform-owned HTTP closure. |
+
+Author self-review reproduced a promise-gap defect: media-free values returned the
+caller-owned graph after ownership scanning, so a caller could introduce media before
+the continuation. The implementation now returns the owned snapshot for these values
+too; a permanent regression covers callback and immediate promise-gap mutation through
+records/Map/Set. This is a correction within the approved ownership obligation, not a
+new design decision.
+
+The author ran the complete ordinary workspace gate after migrating the existing
+accounting fixtures to the required media ports: `pnpm turbo run lint typecheck test
+--concurrency=1` passed all **23 tasks without cache**, with **549 complete test files,
+12,122 passing cases and 13 declared skips**. These are actual executions on the
+implementation working tree, not execution of a later commit. The native media
+process tests retain explicit five-second IPC readiness bounds and kill/join cleanup;
+their multi-process cases have a separate thirty-second aggregate test budget.
+No production deadline or causal-phase limit was raised.
+
+The whole-workspace build/format gate passed all seven tasks (five cached). A further
+self-check found that two new native-test bootstraps used `registerHooks`, introduced
+after the supported Node 22.13 floor. They now use the floor-compatible `register`
+loader, still resolving the current checkout's TypeScript sources. An official
+SHA-256-verified Node 22.13.0 runtime passes all three complete native temporary,
+metadata-writer and CLI-maintenance files: **36 cases**. This evidence is specific to
+that macOS runtime and does not stand in for the Windows gate.
+
+The first extended causal capture is **incomplete**: 32 mechanisms completed before
+the next removal produced a rejection-assertion shape the evidence tool correctly
+refused to certify. All 33 attempted source changes were restored byte-for-byte and
+the worker joined. The affected tests now use explicit settled outcomes with named
+semantic assertions; this test-evidence correction does not establish whole-matrix
+acceptance. Additional reachable classifier bounds and resource-close controls are
+being included before the next complete capture.
+
+Author checks are preparation, not acceptance. The extended existing filesystem
+causal family, exact fixed/removal/restored inventories,
+two NEW clean independent complete cumulative rounds and platform-scoped evidence
+remain required. Step 6 queue items and the whole-wave security certificate stay open
+until those gates are recorded.
+
+### Step 6 evidence corrections — 2026-10-13
+
+**Implementation remains subject to independent review; Step 6 is not yet accepted.**
+The complete uncached ordinary gate subsequently passed **549 files / 12,126 cases /
+13 established skips**. After the final terminal-witness correction, all 23 ordinary
+tasks passed again, with twelve cached tasks; the complete CLI file inventory still
+has 241 files / 4,119 passing cases and two established skips. These executions
+describe the implementation working tree, not a later commit or platform.
+
+Two further incomplete physical captures exposed evidence defects. One stopped
+after 33 complete controls because its memory-store removal bypassed `finish()` but
+left the earlier byte verifier active. The declaration now removes that independent
+verification sequence while retaining the unrelated missing-object, hash and size
+checks. The next run completed 54 controls before a terminal removal survived: two
+tests used `toMatchObject({ outputs: {} })`, which accepts additional output keys.
+They now require exact empty terminal outputs and positively assert the successfully
+published node descriptor. The production barriers were retained. Every attempted
+source change was restored; incomplete runs and a discarded built-package diagnostic
+are not causal acceptance.
+
+The repaired terminal controls and the remaining parser/resource controls pass
+their separate complete-file fixed/removal/restored diagnoses. The full inventory
+remains **71 mechanisms** (26 filesystem and 45 media), with no dropped workload or
+raised phase, output or evidence ceiling. Selected runs do not establish the full
+matrix. The failed 54-control run plus the next attempted control took 589.54 seconds;
+the existing CI job now allows twenty minutes for the expanded aggregate workload,
+installation and orchestration checks. The ninety-second phase bound, 8-MiB output
+bound and 2,000-file / 64-MiB retained-evidence limits remain unchanged. Per-phase
+source manifests use compact JSON with every path, size and digest retained.
+
+The next full physical run will use the committed review head. Independent cumulative
+review, exact source/evidence attribution and two NEW clean complete rounds remain
+gates. Native Windows execution and whole-wave certification remain separate open
+obligations; the Windows workflow now includes the complete shared recognizer and
+CLI media lifecycle cohorts alongside its existing complete DB suite.
+
+### Step 6 first cumulative review and lifecycle decision — 2026-10-13
+
+**Not accepted.** Four independent complete cumulative partitions reviewed the
+Step 5 base `c6921be1` through Step 6 implementation head `bf409fd9`. Their shared,
+stores, integration and tooling/document scopes returned confirmed findings; they
+are not clean acceptance rounds. Local review records remain outside git under the
+approved review-record policy.
+
+The full pre-fix physical inventory completed all **71 mechanisms and 213 joined
+fixed/removal/restored phases**, with **3,747 case executions**, 320 unique cases
+across 22 complete files and byte-exact restoration of all mutations. All declared
+removal witnesses were named assertion failures. Six collateral failed cases across
+four removals were not assertion failures and do not serve as causal witnesses.
+Independent review also found that native fixture children lacked the same-child
+source/dependency execution fences: these outcome results therefore do **not**
+certify the complete required runtime provenance. The tooling repair and a new
+exact-head complete capture remain required; retained evidence caps stay unchanged.
+
+| Confirmed boundary | Action and remaining gate |
+| --- | --- |
+| Base64 source aliases | Count every incoming owned-graph edge against genuine media.source slots. Additional record/Map/Set aliases refuse before host entry; shared legitimate slots remain supported. Four new regressions failed before repair. |
+| WebM encoding | Refuse known ContentEncodings rather than skipping them as unknown. Three codec/fragmentation regressions failed before repair; real memory/filesystem stores also exercise encrypted refusal and a plain-video positive control. |
+| Branch output | Apply the same pre-state pin, metadata admission and rehost reservation as completed outcomes. Actual CAS/SQLite controls reproduced state/event divergence and excess downloads before repair, while preserving routing/tokens without media. |
+| Native causal children | Require current-source/runtime/dependency receipts in the actual native worker. Lossless bounded receipt export must preserve every PID/path/hash record within existing evidence limits. Independent review and fresh full capture remain pending. |
+| Foreign return versus native close | Awaiting arbitrary return can strand real-store temp cleanup; unconditional non-await can release actual HTTP resources prematurely. Proposed [ADR-0109](../../decisions/0109-native-media-close-ownership-is-explicit-iterator-provenance.md) supplies explicit trusted provenance and requires maintainer approval before dependent implementation. |
+
+After the ordinary shared and branch repairs, the seven complete shared media/index
+files pass **140 cases**, and eleven complete integration files pass **148 cases**
+against current-source aliases. These focused author checks do not replace the full
+workspace gate, physical inventory or two NEW clean complete cumulative review rounds
+after the final material fix. Native Windows certification and the original Step 7–8
+obligations remain open. No paid provider, credential or billing action is needed.
+
+The ordinary R1 repairs are committed as `bf38fc16` (shared alias/WebM plus real-store
+regressions), `323b14ff` (branch pre-state admission plus CLI integration) and
+`a703fdd6` (native causal execution fences, lossless bounded receipts and controls).
+The final workspace lint/typecheck/test gate passes **23/23 tasks**, with twenty
+cache hits; its aggregate inventory is 549 files, **12,139 passing cases and 13
+established skips**. The final CLI execution itself runs 241 complete files and
+4,122 passing cases with two established skips. Unchanged other-workspace results
+were executed in the preceding gate or reused from cache; this is not a claim of
+one fresh uncached execution of every case. Build and format checks pass **7/7
+tasks**, with five cache hits. These checks ran on `bf409fd9` plus the repaired
+working tree before the three commits; no post-commit re-execution is inferred.
+
+Acceptance-tool integration passes **130/130**. The same filesystem family now
+declares **74 mechanisms**, preserving the original 71 IDs/order and enlarging
+their affected complete files. Three selected physical diagnoses pass complete
+fixed/named-removal/restored cohorts: alias **17/4/17**, WebM **20/3/20**, and branch
+**21/2/21**. Both independent branch witnesses fail as named assertions on removal.
+Parent separately checked source/dependency pins, complete inventories, every
+compressed receipt byte/index and exact restoration. Each selected export has 29
+files and less than 10 MB including its envelope, under the unchanged 2,000-file /
+64-MiB bounds. Their source attribution is `bf409fd9` plus the frozen repaired
+working tree (1,103 source files, 457 dependency packages), not a later commit.
+They explicitly remain `complete: false`; no new full 74-control or lifecycle
+acceptance is claimed. A fresh exact-head complete capture remains required after
+the lifecycle implementation and its additional controls.
+
+### ADR-0109 proposal clarification — 2026-10-13
+
+The maintainer's proposal review is addressed before approval. Close initiation
+now synchronously caches/returns an acknowledgement; the caller owns the later
+join. An ordinary outer `streamMediaBytes` factory registers the exact public
+lazy generator before escape, while counted return only initiates and the
+encompassing finally joins. The established invocation/receipt callback alternative,
+standalone raw-store benefit and single-module packaging cost are explicit. The
+whole-buffer twin retains its existing limits. Duplicate/late registration,
+already-running registration as a trusted precondition, prior direct return,
+related decisions and the causal inventory are all clarified. Media-specific helper
+names remain intentional; the protocol is scoped to this byte-consumer boundary.
+
+After those clarifications, **two NEW complete cumulative proposal rounds, R5 and
+R6**, each contain separate independent lifecycle and architecture/contracts
+reviews. All four reports are clean on the same complete 207-line proposal,
+SHA-256 `21bff0896350b4b3aed7ffd8bc3fff98b666799f459e00dbe6d474826a04bb77`.
+Parent read every full report and verified its scope. These are static proposal
+reviews, not implementation/native/packaging evidence or Step 6 acceptance.
+ADR-0109 remains **Proposed** pending explicit maintainer approval; no dependent
+lifecycle protocol has been implemented. Step 6 remains unaccepted, and Steps 7–8
+remain unstarted.
+
+### ADR-0109 approval and implementation — 2026-10-13
+
+The maintainer explicitly approved the clarified ADR-0109 and its dependent
+implementation. The decision and index are now **Accepted**; earlier Proposed
+checkpoints remain historical. The shared exact-iterator ownership helper, lazy
+first-party registration, counted return initiation and store-local cleanup before
+native joining are implemented. Native lifecycle, built workspace and actual CLI
+packaging checks, the enlarged bounded causal inventory, full workspace gates and
+two NEW clean complete cumulative implementation review rounds remain gates.
+Approval and focused author tests do not accept Step 6 or close Wave 2.
+
+### ADR-0109 author validation — 2026-10-13
+
+The approved protocol is implemented across shared de-inlining, both actual stores
+and the lazy native stream constructor. The canonical seam and dated notes on
+ADR-0042/0043/0089/0103/0106 record its exact identity, trusted adoption, EOF,
+error precedence and loaded-module boundaries without replacing host-work ownership.
+
+The first complete workspace lint/typecheck/test run passes **23/23 uncached tasks**.
+After strengthening three diagnostic regressions, the final run passes **23/23**,
+with two cache hits. The six test suites total **553 complete files, 12,170 passing
+cases and 13 established skips**. Build/format passes **7/7**, with three cache hits;
+tools lint/typecheck, DB sync, SDK fences, engine purity and bundle closure pass.
+The actual official Node **22.13.0** binary executes all four new lifecycle files:
+**31/31 passing cases** on macOS. This is not native Windows evidence.
+
+The new required `smoke:media-packaging` runs built shared/core/db entry points and
+the untouched CLI bundle. Raw-store and engine de-inline consumers share native
+registration; a physical second shared copy stays foreign. The actual CLI workflow
+uses isolated synthetic history, real loopback HTTP and an actual temporary-file
+write failure: file/temp cleanup finishes while native destruction and command
+settlement stay held, then all resources join and the original failure survives.
+Its fixture transport redirection is packaging/lifetime evidence, not TLS or SSRF
+certification. Missing artifacts refuse rather than skip. Local and GitHub required
+CI invoke the same artifact check after build.
+
+Acceptance tooling passes **140/140**. The existing filesystem family now declares
+**89 controls**, retaining its previous 74 IDs/order and full-file workloads. The
+15 additions complete **45 joined phases and 381 case executions** in selected
+fixed/removal/restored diagnoses. Every required witness is a named AssertionError;
+four collateral failures in this first inventory are explicitly not causal witnesses
+(three foreign-diagnostic awaits and one natural-EOF error under the filesystem
+return-await removal). The diagnostic tests were subsequently made finite and the
+five full helper cohorts rerun: **15 phases, 195 executions, 13 AssertionErrors and
+zero non-AssertionErrors**. No process timeout, signal, output overflow or unjoined
+child occurred. The filesystem ordering removal's one collateral error remains
+qualified rather than relabelled as causal.
+
+Parent independently checked source/dependency hashes, complete case inventories,
+all retained stdio and compressed receipt bytes, same-child native body/dependency
+records, required named witnesses and byte-exact restoration. These selected runs
+capture `699c8335` plus the respective frozen working trees, **1,111 source files
+and 457 dependency packages**; they are **not** later-commit or full-matrix evidence.
+Each export contains 26 files and at most 9,902,401 bytes including its envelope.
+Per-phase stdio is losslessly packed into one length/hash-verified binary envelope;
+no receipts, cases or provenance fields are dropped. The 2,000-file / 64-MiB
+retention caps, 90-second phases and decoded-output bound remain unchanged.
+
+**Step 6 remains unaccepted.** A fresh complete 89-control capture at the committed
+implementation head, two NEW clean complete cumulative implementation review rounds
+and remaining publication/platform checks are still required. Proposal reviews,
+author gates and selected diagnoses do not substitute for them. Steps 7–8 remain
+unstarted; no paid provider, keychain, credential or new user decision is needed.
+
+### Step 6 second cumulative review and repairs — 2026-10-13
+
+Four independent reviewers completed all **140 assigned cumulative paths** from
+accepted Step 5 `c6921be1` through `fc4934fd`: shared 27, stores 27, integration
+52 and tooling/docs 34. Shared and stores each returned one High finding;
+tooling/docs returned one High and two Medium findings. Integration returned no
+finding. This is **not a clean acceptance round**. Root independently reproduced
+the ambiguous video identities and native HTTP header loss before repairing them.
+
+| Confirmed finding | Implemented disposition |
+| --- | --- |
+| WebM/MP4 last-write-wins identity | Refuse repeated identity fields, owning containers and undeclared extra MP4 sample entries. Twenty-eight independently assembled ambiguous vectors run at every two-chunk split, with two unchanged late-container positive controls. Both actual stores refuse representative stream publication; the separate video inline refusal remains intact. |
+| Native duplicate Content-Type disappears | Preserve original individual fields through the native transport and reject multiplicity before normalization/body iteration. Eighteen actual loopback HTTP cases cover both orders, identical fields, parameters and mixed casing through whole-buffer fetch and filesystem-store streaming, with native close barriers and no-publication assertions. |
+| Nine stale case counts and five stale mutation anchors | Retain all prior 89 IDs, order and complete workloads; pin the measured 21-case admission file and relocate only the equivalent single-site removals. Preflight every selected copied-source anchor before any phase. |
+| Case/hook overrides exceed the claimed 15 seconds | Normalize the selected native cohorts, enforce effective case/configured hook budgets through owned setup and check direct hook declarations through the TypeScript parser. Actual negative coordinator fixtures refuse over-budget cases/configuration; no phase/output/retention cap is raised. |
+| Packaging fixtures assume POSIX URL/path syntax | Use native relative containment and file URL conversion. Extend native Windows CI to the new shared lifecycle/identity cohort and actual built-workspace/CLI packaging check. Local success does not establish native Windows execution. |
+
+The exact-head full-89 capture at `fc4934fd` is **incomplete**. The original
+26 controls completed 78 accepted phases and 1,197 case executions; the next
+fixed phase stopped on **21 observed versus 19 declared cases**. Root audited
+the complete failed export, including the envelope: **558 files / 23,956,427
+bytes**, all retained stdio and compressed receipts. Sixty-six expected removal
+failures and two collateral non-AssertionErrors are qualified; neither the prefix
+nor the failure is full-matrix acceptance. Missing completion flags were not
+inferred. The failed export remains historical evidence.
+
+Four new separate removals cover WebM/MP4 uniqueness and native header
+preservation/admission. The declaration now contains **93 controls**. Fresh
+isolated copied-source collection reports **28 complete files / 412 cases**,
+with no count, anchor or named-witness drift. This is collection rather than
+physical fixed/removal/restored execution. Generic units pass **10/10** and
+actual coordinator integration passes **3/3**. Official Node **22.13.0** on
+macOS passes **6 complete files / 80 cases**, including the new real-native
+header matrix and normalized native lifetime/temporary/metadata cohorts.
+
+The repair working tree passes **17/17 uncached lint/typecheck tasks** and
+**11/11 test/dependency tasks** (five dependency-build cache hits). All six
+test suites execute: **556 files, 12,222 passing cases and 13 established skips**.
+Build/format passes **7/7** with five cache hits; acceptance tooling passes
+**144/144**. Tools lint/typecheck, DB sync, SDK fences, engine dependency purity,
+bundle closure and actual built-workspace/CLI media packaging pass. The document
+audit checks **50 changed Markdown files, 2,630 relative links and 19 existing
+append-only ADRs**, without errors. These author gates do not replace the
+committed-head physical controls or independent acceptance rounds below.
+
+**Step 6 remains unaccepted.** Whole-workspace gates, committed-head physical
+controls and independent export audit, two NEW clean complete cumulative review
+rounds after these material repairs, and remaining publication/platform evidence
+are required. No further ADR approval, paid capture, keychain or user decision
+is pending. Steps 7–8 remain unstarted.
+
+### Step 6 third cumulative review and repairs — 2026-10-13
+
+Four independent reviewers completed all **151 cumulative paths** from accepted
+Step 5 `c6921be1` through `fba63e4b`: shared 29, stores 32, integration 52 and
+tooling/docs 38. Shared returned one High finding; the other three reports were
+clean within their assigned complete scopes. **This is not a clean acceptance
+round.** The fixed diagnostic path had still left the original genuine rejected
+Promise unobserved when its own `then` was replaced. Root independently reproduced
+the runtime unhandled rejection before repairing intrinsic observation. Two
+isolated child regressions each exercise thirteen joined scenarios, including
+cross-realm settlement and actual raw-store/de-inline consumers, without
+pre-catching the original rejection. Constructor/species sabotage remains outside
+the supported JavaScript boundary, as the canonical seam now makes explicit.
+
+The required native Windows job also exposed an inconsistent temporary-claim
+identity refusal. Its log contains no measured native identity values. An
+independent controlled production writer/reader probe reproduced unsafe Number
+encoding and radix round-trip failures. New exact-native v2 claims and conservative
+v1 compatibility repair that defect; the unchanged complete nineteen-case file
+now includes actual writer/interruption/recovery vectors and a distinct bigint
+collision that Number would erase. These portable vectors do not certify NTFS;
+a fresh native Windows run remains required.
+
+The remote secrets gate found a stale full-file case pin; fresh copied-source
+collection found one more. Both pins now match the complete fourteen- and
+thirty-two-case files, retaining every one of the 35 controls and their order.
+The usage gate separately found its permanent cohort had grown from 429 to 435
+cases: six new live-export cases in the complete chat file, with no removed case
+or other-file difference. Fresh full seventeen-file collection establishes the
+new exact pin; no semantic threshold or native-child bound changes. The required
+aggregate correctly refused these non-green prerequisite jobs.
+The remote filesystem job completed 46 restored controls before its whole-job
+twenty-minute timeout; this is an incomplete run, not a semantic-control failure
+or full-matrix evidence. Its total job allowance is now sixty minutes. The
+ninety-second phase, fifteen-second test/hook and output/retention bounds are
+unchanged.
+
+Nine selected physical diagnoses at **`fba63e4b`** separately passed **27 joined
+phases, 591 case executions and 42 expected named AssertionErrors**, with no
+collateral non-AssertionError. Root independently audited pins, complete case
+inventories, stdio, compressed receipts, native child/dependency records and exact
+restoration. Each export contains at most 26 files and 9,966,518 bytes, including
+its envelope. This evidence belongs to that earlier head and does not certify the
+new repairs or a complete matrix.
+
+The filesystem family now declares **95 controls**, preserving its earlier 93
+IDs/order and complete workloads. Fresh isolated copied-source collection checks
+all 95 filesystem and 35 secrets declarations against **49 complete files and
+1,345 case names**, with no count, exact-anchor or named-witness drift. It is
+collection evidence only. The unchanged full filesystem retention limit projects
+to exactly 2,000 files; measured-prefix byte projections remain below 64 MiB.
+Only a complete actual capture can certify both bounds.
+
+The repair working tree passes **17/17 uncached lint/typecheck tasks** and
+**11/11 test/dependency tasks**, with five dependency-build cache hits. All six
+test suites execute: **557 complete files, 12,224 passing cases and 13 established
+skips**. Build/format passes **7/7** with five cache hits; acceptance tooling
+passes **144/144**, and tools lint/typecheck pass. These author gates precede
+the repair commits and do not substitute for committed-head acceptance.
+DB sync, SDK fences, engine purity, bundle closure and actual built-workspace/CLI
+media packaging pass. The actual official Node **22.13.0** binary passes **seven
+complete files / 82 cases** on macOS. Its first run rejected only experimental
+type-stripping warnings in the new diagnostic child; the fixture now disables
+that warning category alone, preserving rejection diagnostics and its empty-stderr
+assertion. The new diagnostic tests, DB typecheck and scoped lint/format pass again
+after that launcher-only correction. The document audit checks **50 changed
+Markdown files, 2,633 relative links and 19 append-only ADRs**, without errors.
+The usage-cohort pin correction also passes its **3/3** workload units and tools
+lint/typecheck/format; its complete physical rerun remains required.
+
+**Step 6 remains unaccepted.** New committed-head physical diagnoses, the complete
+95-control filesystem and 35-control secrets matrices with independent export
+audit, two NEW clean complete cumulative review rounds after these repairs,
+and remaining publication/platform gates are required. Steps 7–8 remain
+unstarted. No ADR approval, provider capture, credential or user decision is
+pending.
+
+### Step 6 fourth cumulative review and repairs — 2026-10-13
+
+Four independent reviewers completed all **158 cumulative paths** from accepted
+Step 5 `c6921be1` through **`4e63344c`**: shared 29, stores 34, integration 52
+and tools/docs 43. Integration returned one High finding; the other three complete
+partitions were clean. **This is not a clean acceptance round.** A nested OpenAI
+video format selector was checked under the audio namespace and silently omitted
+from the native request. Root independently reproduced all three unsupported
+fields reaching an installed-SDK synthetic video-job POST. The corrected check
+uses the actual modality before any SDK entry. All three named regressions fail
+before the repair; two positive controls preserve the unspecified video format
+and supported native size. No paid request, credential or user history is used.
+
+Three physical diagnoses at **`4e63344c`** separately pass **nine joined phases,
+120 case executions and four expected named AssertionErrors**, with no collateral
+non-AssertionError. Root and the independent tools reviewer each reconstruct all
+retained stdio and compressed evaluation receipts, complete source manifests,
+dependency pins, same-child native records, inventories and exact restorations.
+Each selected export contains **26 files**, at most **9,989,797 bytes**, including
+its envelope, and captures **1,122 source files / 457 dependency packages**.
+All three explicitly remain incomplete selections; they certify neither the
+later video correction nor a complete matrix.
+
+At that same head, native Windows passes the complete DB **50-file / 844-case**
+cohort, including all nineteen temporary-protocol cases. The later complete CLI
+cohort fails nine cases on its default five-second budget; the identical fourteen
+cases passed at the preceding head. Passing no-provider fixture cases also slow
+down, but the exact expensive stage is unmeasured. Both affected integration files
+now use the existing fifteen-second case/hook fence without removing a variant or
+assertion or changing product/global timeouts. A fresh complete native Windows
+rerun is required; local success does not certify it.
+
+The remote filesystem capture also stops after 74 completed controls: the
+foreign-return removal no longer breaks its fulfilled-Promise getter witness
+after the correct intrinsic-observation repair. The retained thirteen-case report
+has four ordinary AssertionErrors, including the throw/reject witnesses, with
+no timeout or diagnostic leak; the third required witness passes. This is a
+real causal-evidence gap, not a product regression or complete capture. The test
+now holds that genuine Promise pending through the finite checkpoint, then
+releases and joins its cleanup observer. All thirteen cases and required witness
+markers remain; a fresh physical removal/restoration run is required.
+
+The same remote secrets job reaches its ten-minute aggregate timeout during the
+last restored cohort, without exporting a complete artifact. Its job allowance
+becomes thirty minutes; per-phase, case/hook, output and retention limits stay
+unchanged. The prior timeout is not full-matrix or semantic-failure evidence.
+
+The new video removal requires a **96th filesystem control**. The previous
+95-control retained-file projection exactly exhausted the unchanged 2,000-file
+cap. Export-only lossless source-manifest packing preserves the original bytes,
+phase/runtime hashes and inspectable pins in one bounded archive/index pair.
+An independent 64-MiB raw-input/decode bound supplements the unchanged whole-export
+64-MiB / 2,000-file caps. Complete96 projects **1,735 retained files**; actual
+complete capture, measured bytes and independent decoding remain required.
+No prior control, complete workload, provenance field or limit is removed.
+
+The repair working tree passes **17/17 uncached lint/typecheck tasks** and
+**11/11 uncached test/dependency tasks**. The six suites execute **557 complete
+files, 12,229 passing cases and 13 established skips**. The final strengthened
+thirteen-case shared fixture also passes focused tests, lint and ordinary/purity
+typechecks. The video selector and complete OpenAI adapter cohort pass **132/132**
+with package/seam typechecks and scoped lint. Build passes **6/6 uncached tasks**;
+whole-repository formatting passes its one uncached task. Acceptance tooling
+passes **172/172**, including three actual coordinator captures preserving both
+archived failed prefixes and primary failure under forced export refusal.
+All **63** retention cases also pass under the actual official Node **22.13.0**
+binary on macOS. Tools lint/typecheck, DB sync, SDK fences, engine purity, bundle
+closure, compiled CLI, actual built-workspace/CLI media packaging and offline
+overflow smoke pass. These are author gates; no committed-head complete matrix,
+native Windows rerun or independent acceptance is inferred from them.
+Fresh isolated copied-source collection checks all **96 filesystem / 35 secrets**
+declarations against **49 complete files / 1,350 case names**, with no count,
+exact-anchor or named-witness drift. This is collection, not physical execution.
+
+**Step 6 remains unaccepted.** The corrected committed-head physical matrices,
+independent artifact audits, two NEW clean complete cumulative implementation
+review rounds and remaining platform/publication gates are required. Steps 7–8
+remain unstarted. No ADR approval, provider capture, credential or user decision
+is pending.
+
+### Remaining gate
+
+The maintainer approved the revised four-ADR decision package and eight-step plan
+on **2026-10-12**. ADR-0105–0108 are **Accepted** and dependent implementation is
+authorised on `development`; the earlier Proposed checkpoints remain historical
+records. Steps 1–5 have independent acceptance; **Step 6 proceeds automatically** with
+media bounds, verification, admission, cancellation and temporary lifecycle. Subsequent runtime,
+independent implementation reviews, security certification and final publication
+remain gates; approval and Steps 1–5 acceptance do not certify whole-wave completion.
+ADR-0109 and its dependent native ownership repair received separate explicit
+maintainer approval on **2026-10-13**. Its implementation validation and Step 6
+acceptance remain open; no further user approval is currently pending.
+
+---
+
 Part of [roadmap/](../README.md).
+
+### Step 6 fifth cumulative review and repairs — 2026-10-13
+
+Four NEW independent reviewers read all **158 cumulative paths** from accepted
+Step 5 `c6921be1` through **`24e39c1e`**: shared 29, stores 34, integration 52
+and tools/docs 43. Stores returned one High finding; the other three partitions
+were clean. **This is not a clean acceptance round.** Root independently reproduced
+the same finite injected-transport observation: a valid AAC Buffer was admitted,
+then reused by its producer at the next pull. Subtype `slice` had retained an alias,
+so whole-buffer fetch returned zeroed bytes that a fresh verifier refused. Ordinary
+Uint8Array retained the original bytes. The current native Node HTTP implementation
+was not observed reusing its chunks; the supported injected API still owed ownership.
+
+Whole-buffer collection now uses an intrinsic typed-array copy and its owned length.
+The new complete three-case regression retains the ordinary Uint8Array control,
+Buffer reuse and an overridden typed-array subclass. Before repair, exactly the two
+named Buffer/subclass assertions fail; after repair all **53** focused egress cases
+pass. The checks prove source reuse occurred, exact returned bytes, independent
+recognition, disposal and absence of producer slice/iterator calls. They use no socket,
+provider, credential or user history. The new **97th filesystem control** removes
+only the owned-copy expression and requires both named witnesses. Every earlier
+control ID, order and complete workload remains. The unchanged retention limits
+project **1,753 files** for a complete97 export; that arithmetic is not a capture.
+
+At the preceding exact committed head **`24e39c1e`**, three selected physical
+controls pass **nine joined phases / 159 case executions / nine expected named
+AssertionErrors**, with zero collateral failures. Root and the independent tools
+reviewer decode their exact packed manifests, stdio and evaluation receipts; every
+export is an incomplete selection, with 25 files and at most 9,612,186 bytes.
+They establish the corrected foreign acknowledgement, native chat selector and
+video selector, without claiming the later whole-buffer repair or a full matrix.
+
+The same remote head passes native Windows, official Node 22.13, strict peers,
+LLM/MCP coverage, wire and usage jobs. Its complete secrets export independently
+passes Root's retained-evidence audit: **35 controls / 105 phases / 7,713 case
+executions**, 586 expected semantic failures (584 ordinary AssertionErrors and two
+Vitest rejection-expectation assertions), zero collateral failures, **637 files /
+23,166,557 bytes** including the envelope. Exact packed manifests and executed
+loader receipts join 1,114 source files, 458 dependency packages and 21,013 dependency
+file pins. Root rehashes local source bytes and verifies retained remote dependency
+pins/loader receipts; remote installed bytes are not locally accessible or rehashed.
+The filesystem capture and aggregate CI are still pending at this checkpoint.
+These preceding-head successes do not certify the subsequent repair.
+
+The repair working tree passes **17/17 uncached lint/typecheck tasks**, then
+**11/11 uncached test/dependency tasks**: six suites, **558 files / 12,232 passing
+cases / 13 established skips**. Build passes **6/6 uncached tasks**, whole-repository
+formatting its one uncached task, and acceptance tooling **172/172**. Tools lint/types,
+DB sync, SDK fences, engine purity, bundle closure, compiled CLI, actual built-workspace
+and untouched CLI media packaging, offline overflow and budget replay smoke pass.
+The copied-source collection checks **97 filesystem / 35 secrets declarations**
+against **50 complete files / 1,353 names**, without count, anchor or witness drift.
+That collection captures the repair working tree and is not physical phase execution.
+The documentation audit checks 50 Markdown files, 2,636 relative links and nineteen
+pre-existing append-only ADRs without errors. These author gates do not substitute
+for committed-head physical evidence or new independent acceptance rounds.
+
+**Step 6 remains unaccepted.** The whole-buffer physical removal, complete current-head
+matrices, independent artifact audits, two NEW clean complete cumulative implementation
+rounds after this repair and remaining publication gates are required. Steps 7–8
+remain unstarted. No ADR approval, provider capture, credential or user decision
+is pending.
+
+### Step 6 sixth cumulative review and repairs — 2026-10-13
+
+Four NEW complete cumulative reviews cover all **159 paths**, accepted Step 5 base
+`c6921be1` through committed head `85e4b0c1`. Shared and integration are clean;
+stores and tooling each return one independently reproduced **Medium** finding.
+This is a changes-requested round, not one of the required clean rounds.
+
+| Confirmed gap | Correction and permanent evidence |
+| --- | --- |
+| A genuine injected byte view with an inert own `length: 0` bypasses a lower configured response limit | Both shared host readers count intrinsic bytes before copying/yielding. Exact capacity, cumulative overflow, Buffer/Uint8Array overrides, getter non-evaluation and both public media fetch paths are pinned. The independent 25 MiB media ceiling was intact. No ordinary native HTTP shadowing is claimed. |
+| An incomplete standalone evidence archive accepts restored-only/gapped phases or two unfinished controls | Completed IDs are unique and retain all three physical runtime records; incomplete captures allow one contiguous attempted phase prefix, with every predecessor's runtime/hash join. Complete captures allow no unreported tail. External cohort membership/order remains an independent acceptance audit. |
+
+A follow-on Root probe also reproduced producer reuse changing the buffered text
+reader's returned bytes. That reader now owns admitted chunks before another pull;
+the streaming twin remains borrowed and retains no chunk. The initial 20-case DB
+regression produces fourteen named AssertionErrors before repair. Its expanded
+**28-case** permanent file and all **115** focused egress cases pass afterwards.
+Two appended filesystem controls separately remove intrinsic counting and buffered
+ownership, preserving all original **97 IDs, order and complete workloads**.
+The **99-control** export projects **1,789 files** under unchanged retention caps;
+this arithmetic is not physical acceptance evidence.
+
+The evidence repair's six new negative regressions fail before the fix with ordinary
+missing-exception assertions; seven genuine-prefix controls remain positive. All
+**76 retention tests**, including the original 63, pass afterwards. Zero phases,
+selected completed controls, interruption at each phase with/without final runtime,
+full unreported failed tails and primary failure precedence remain supported.
+
+The repair working tree passes **17/17 uncached lint/typecheck tasks**, **11/11
+uncached test/dependency tasks**, **559 files / 12,260 passing tests / 13 established
+skips**, six uncached builds and the uncached whole-repository formatting task. All
+**185 acceptance-tool tests**, configured tools lint/types, isolation, DB sync, SDK
+fences, engine purity, bundle closure, compiled CLI, actual workspace/untouched CLI
+media packaging, offline overflow and budget replay checks pass. The copied-source
+collection validates **99 filesystem / 35 secrets controls**, **51 complete files /
+1,381 names**, with no anchor/count/witness drift. It captures the repair working
+tree on `85e4b0c1`, not committed-head physical phase execution. The document audit
+checks fifty Markdown files, 2,638 relative links and nineteen append-only ADRs.
+
+**Step 6 remains unaccepted.** Current committed-head physical controls, complete
+matrices and artifact audits, required gates, and two NEW clean complete cumulative
+implementation rounds after these repairs remain required. Steps 7–8 are unstarted.
+No new ADR, approval, provider capture, credential or user decision is pending.
+
+### Step 6 acceptance — 2026-10-13
+
+**Accepted on `development` at implementation head `0b025416`; Step 7 proceeds
+automatically.** After the sixth-round corrections, two NEW complete cumulative
+rounds (R7 and R8) independently review all **160 paths** from accepted Step 5 base
+`c6921be1`. Each round has separate shared, stores, integration and tooling/document
+reviewers; all eight reports are clean. Root reads every full report and joins the
+scoped checks. Independent focused executions total 513 cases in R7 and 462 in R8;
+these overlapping executions are not a unique-test or whole-suite count.
+
+The acceptance retains the canonical [finite media profiles and ownership contract](../../reference/shared-core/llm-provider-seam.md#bounded-verified-media-publication-adr-0106),
+[metadata admission](../../reference/shared-core/database-schema.md#media-metadata-admission),
+[physical storage limits](../../reference/shared-core/built-in-tools.md#physical-media-storage-and-limits)
+and [offline maintenance command](../../reference/cli/commands.md#relavium-media-prune-temporaries).
+It includes all confirmed R1–R6 corrections, Accepted ADR-0109 native ownership,
+pre-publication admission, old-layout read bounds, borrowed-byte ownership, exact
+native temporary identity and finite evidence-prefix validation. The final caller
+comment distinguishes mandatory admission on a **present** reference port from
+optional port absence and best-effort post-ACK retention; it changes no runtime.
+
+At the exact reviewed head, [CI run 38330334716](https://github.com/HodeTech/Relavium/actions/runs/38330334716)
+passes all **nine jobs**, including the success-only required aggregate. Its lint,
+types, tests, build, formatting, tooling, isolation, DB sync, SDK/engine fences,
+bundle closure and compiled CLI/media packaging/overflow/replay smoke checks pass.
+Root downloads and independently decodes the actual current-head artifacts:
+
+| Family | Complete physical evidence |
+| --- | --- |
+| Filesystem | **99 controls / 297 phases / 5,115 executions**, 255 removal failures: 248 ordinary AssertionErrors, four Vitest rejection-expectation assertions and three separately traced secondary removal effects. All required named semantic witnesses and full fixed/removal/restored inventories pass; 1,789 retained files / 32,500,649 bytes including envelope. |
+| Secrets | **35 controls / 105 phases / 7,713 executions**, 584 ordinary AssertionErrors and two Vitest rejection-expectation assertions; no collateral failure. 637 retained files / 23,174,544 bytes including envelope. |
+| Wire | **Four controls / nine phases including shared baseline / 216 executions** over the same 24-case inventory. All 36 primary semantic assertions fail as intended; fourteen secondary assertions and six normalized provider refusals are individually qualified. Exact installed SDK byte inventories match independent local capture; a different local shared build is not substituted for the remote artifact. |
+| Usage | **23 mechanisms / 3,738 executions / 227 semantic failures**, plus **435 permanent cases / 71 native children / one intentional readiness-timeout control**. Complete ordered inventories and multiplicities pass. Three inherited query-title pairs remain duplicated; Step 8 must distinguish them and rerun the full final inventory. Both original bodies remain executed; no unique-label claim is made here. |
+
+The filesystem secondary effects are a source-failed error from premature native
+return in the natural-EOF regression, a rejected reverse Ogg claim after body
+evidence is removed, and a recovery worker exiting
+before an intentionally removed unlink stage. The last is not its post-unlink
+semantic assertion and is not counted as a designated causal witness. Every control
+still has its separate required named AssertionError and green complete fixed/restored
+suites. These are explained removal consequences, not unrelated setup/timeout failures.
+
+Packed manifests, exact stdio, source and dependency loader receipts, native
+parent/child joins, restoration and unchanged caps are checked. Filesystem source
+pins equal exact reviewed Git blobs; its 297 packed manifests join 1,124 source
+files, 458 dependency packages and 21,013 dependency-file pins. Standalone production
+manifest/evaluation/stdio validators also pass. Remote installed dependency bytes
+are not locally accessible or rehashed; retained pins and executed receipts are
+verified instead. Earlier cancelled or selected captures are not acceptance evidence.
+
+Native Windows passes the full DB suite, concurrency, filesystem/CAS/shared-media,
+publication/GC/prune, actual workspace and untouched CLI packaging, and headless
+smoke. The official Node 22.13 floor passes uncached types/tests/build. Both that
+Linux test run and the enforced LLM/MCP coverage run execute **559 files / 12,259
+passing tests / 14 established skips**. Eleven skips are existing LLM capability
+cases, two are Windows-only filesystem cases on Linux, and one is the existing
+CI-only benchmark exclusion. Windows retains sixteen established POSIX-only
+filesystem skips. No Step 6 test is newly skipped. Core coverage is measured here,
+not claimed as formally enforced; Step 8 still requires bare and enforced coverage.
+
+The current broad local author gates and all 185 acceptance-tool tests are green
+as recorded in the preceding repair checkpoint. Acceptance is limited to the
+approved structural formats, cooperating filesystem ownership and explicit native
+iterator domain/EOF/adoption obligations. It does not certify decoding/playback,
+hostile same-user filesystem isolation, arbitrary JavaScript containment or cross-copy
+ownership. **Steps 1–6 are accepted; Steps 7–8 and whole-wave certification remain
+open.** No new ADR approval, provider request, credential, billing or user decision
+is pending.
+
+
+### Step 7 implementation checkpoint — 2026-10-13
+
+The approved [provider-header interim gate](../../reference/shared-core/database-schema.md#llm_providers)
+is implemented, with independent cumulative review and acceptance still open. Every
+new nonempty map is refused before clock, ID, retry or transaction entry. Omission
+and explicit own `undefined` preserve exact legacy JSON; an explicit empty ordinary
+or null-prototype map clears it transactionally. New rows use canonical empty JSON.
+Trusted store reads preserve genuine legacy maps; actual provider HTTP requests and
+public human/JSON projections exclude them. Read corruption remains loud through
+a fixed content-free diagnostic, including verbose rendering.
+
+The new DB regression file first ran against the ungated writer: **18 passed /
+38 failed**, all intended assertion failures, before the fix. After the fix its
+**56 cases**, the existing **11 store cases**, **18 actual-SDK HTTP cases** and
+**47 command/mapper cases** pass. Six declared causal controls extend the existing
+secrets family to **41 controls / 276 required named witnesses**, preserving the
+previous 35 declarations and workloads. Declaration and focused tests are not
+physical mutation acceptance; full author gates, fixed/removal/restored execution
+and two NEW complete clean cumulative review rounds remain required.
+
+No migration, automatic legacy scrub, keychain copy, new clear command or live
+header feature is introduced. `remove-key` does not clear headers. Logical empty-map
+clearing does not establish physical erasure from SQLite/WAL/backups. Future header
+activation remains gated by ADR-0108's custody, schema, precedence and recovery
+prerequisites. No new ADR approval, provider capture, credential or user decision
+is pending; Step 8 whole-wave certification remains open.
+
+**Pre-review author gates:** uncached lint/types pass all 17 tasks; ordinary tests
+pass all 11 tasks (**562 files / 12,365 passes / 13 existing skips** on macOS).
+All six uncached builds, formatting, tooling types/lint, DB sync, isolation, SDK
+fence, engine dependency and bundle closure checks pass. Compiled CLI/media
+packaging, overflow and replay smokes pass; replay retains 16 refusal prefixes,
+two legacy positive controls and zero fetches. All 185 acceptance-tool tests pass.
+Cumulative document checks cover 51 Markdown files and 2,695 relative links/anchors
+with no findings; 20 pre-existing ADRs remain append-only. Physical matrices and
+independent cumulative implementation reviews follow the committed snapshot.
+
+
+#### Step 7 first review correction — 2026-10-13
+
+Three independent complete cumulative reviewers inspect all 20 changed paths at
+`01259d12`. They corroborate one living-status error: the Step 7 header progress
+was attached to D12 (filesystem) rather than D13 (provider headers). D12 now links
+its accepted Step 2 implementation; D13 states the implemented interim gate with
+review/acceptance pending. No runtime/security defect is verified. Independent
+focused executions pass 132 and 194 overlapping cases; a separate tooling reviewer
+passes 114 cases and verifies all previous 35 declarations unchanged. These
+finding-bearing reviews are not clean acceptance rounds.
+
+The complete local secrets matrix passes **41 controls / 123 phases / 8,445
+executions / 653 reported removal failures**, with unchanged developer bytes,
+identical inventories and byte-exact restoration. The six new controls contribute
+732 executions and 66 failures. This invocation did not export raw physical
+artifacts; its summary is not an independent artifact audit. The current-head
+GitHub run exports that evidence for separate verification. Two NEW complete clean
+cumulative review rounds and published gates remain required.
+
+
+### Step 7 review completion — 2026-10-13
+
+After the D12/D13 correction, two NEW complete cumulative rounds (R2 and R3)
+independently inspect all twenty paths from Step 6 acceptance metadata `e405a5dd`
+through `3a6f3cc4`. Trust, consumer and tooling/document partitions are clean in
+both rounds. Root reads all six full reports. The second tooling round repeats its
+unchanged failed scratch-inventory test after the competing capture joins; that
+isolated rerun passes, without calling the earlier full invocation green. The third
+round passes all 121 then-current acceptance-tool tests in its scoped invocation.
+
+At exact runtime/document head `01259d12`, Root and independent reviewers decode
+the full exported secrets evidence from CI run 38335121918: **41 controls / 123
+phases / 8,445 executions**, 650 ordinary assertion failures plus two Vitest
+rejection-expectation assertions, zero collateral failures. All twenty new required
+witnesses pass; the six new controls contribute 732 executions and 66 intended
+assertion failures. The retained 745 files / 25,003,046 bytes include exact packed
+manifests, loader receipts, stdio, native joins and restoration. Source pins match
+Git; remote installed dependency bytes are verified through retained pins/receipts,
+not locally rehashed. The local matrix's 653 failures are a separately attributed
+platform result, not substituted for the remote 652.
+
+`01259d12` to `3a6f3cc4` changes only two roadmap documents. Subsequent Step 8
+hygiene distinguishes three inherited query-title pairs and rejects duplicate
+(file, case) evidence identities, preserving every case body. Step 7 implementation
+reviews are complete; its published required aggregate and final whole-wave gates
+remain separately pending. No new approval, provider or credential is required.
+
+### Step 8 certification checkpoint — 2026-10-13
+
+Four new [security sittings](../../standards/security-review.md#wave-2-sittings--filesystem-secrets-and-config-2026-10-13)
+are clean; W4's hostile-MCP sitting is reused with fresh direct regressions. Their
+focused executions and unchanged-scope revalidation do not replace exact-head CI
+or physical evidence. Root also revalidates critical preview/persister/TUI controls
+and all four display boundaries. Existing approved residuals retain their homes.
+
+The inherited usage-query label pairs now distinguish expanded and subquery
+predicates. Before the tooling repair, three negative duplicate-identity probes
+fail with missing expected exceptions; afterwards all 21 outcome controls and 21
+query tests pass. Read-only collection finds 885 distinct (file, case) identities
+across 31 usage files. Collection is not physical execution. The permanent evidence
+checker now rejects duplicates in every phase; neither original body is removed.
+
+Fresh full `pnpm run ci`, bare `pnpm coverage`, `pnpm coverage:enforced`, native
+Windows/floor jobs, exact-head complete causal audits and two NEW independent whole-
+wave cumulative review rounds remain required. Exit criteria 1–3 and the D sign-off
+will be scored after those gates. Full Phase 2.5.5, M2.5.5-2's I half, Phase 2.6 M/N,
+later Waves 3–7 and existing approved deferrals remain open. This checkpoint creates
+no new deferral and claims neither Wave 2 acceptance nor merge.
+
+
+<a id="wave-2-individual-dispositions--certification-in-progress"></a>
+
+#### Wave 2 individual dispositions — accepted
+
+All **forty distinct queue IDs** are accepted within their recorded limits.
+The [closing register](#wave-2-closing-register--2026-10-13) joins all eight steps,
+current W4 revalidation and final Step 8 review/gates to the wave/exit sign-off.
+Earlier checkpoint statements of open work remain historical; this inventory
+retains each implementation and residual's canonical home.
+
+| ID | Owner / accepted implementation home | Verified disposition and limit |
+| --- | --- | --- |
+| G19 | D; W4 reused, S8 revalidation | Prior closed W4/PR87: same/cross-layer name collision refuses. Re-run actual resolve tests; no downgrade to warning-only. |
+| #202 | D; W4 reused, S8 revalidation | W4 accepted; current regressions pass: definitions sanitized including schema presentation, semantic controls refuse, model-visible provenance. tool-mapping + actual agent-session request witnesses. |
+| #35 | D; W4 reused, S8 revalidation | W4 accepted; current regressions pass: whole connect window, authored connect timeout, cancellation. deadlines/agent/config controls. |
+| G32 | D; W4 reused, S8 revalidation | W4 accepted; current regressions pass: bounded network transport startup; do not certify remote websocket support. |
+| #205 | D; W4 reused, S8 revalidation | W4 accepted; current regressions pass: bounded/configurable stdio startup, not SDK fixed-default-only. |
+| G33 | D; W4 reused, S8 revalidation | W4 accepted; current regressions pass: transport/discovery ingress bounds; mcp-fetch + ingress-bounds controls. |
+| #201 | D; W4 reused, S8 revalidation | W4 accepted; current regressions pass: aggregate tool/count/description bounds, paging stops, adversarial 50k catalog. |
+| #209 | D; W4 reused, S8 revalidation | W4 accepted; current regressions pass: schema embedded string bounds; compiler moved to shared later—exercise current consumer. |
+| #288 | D; W4 reused, S8 revalidation | W4 accepted; current regressions pass: result text bounded at hostile boundary; no upstream-only assertion. |
+| #203 | D; W4 reused, S8 revalidation | W4 accepted; current regressions pass: structured server/tool fields; actual errors/taxonomy controls. |
+| #204 | D; W4 reused, S8 revalidation | W4 accepted; current regressions pass: shape-derived reason covers every egress code. |
+| #206 | D; W4 reused, S8 revalidation | W4 accepted; current regressions pass: bad args fail loud rather than substitute undefined. |
+| #207 | D; W4 reused, S8 revalidation | W4 accepted; current regressions pass: actual rejecting adapter close reaches onCloseError; no swallowed error. |
+| #297 | D; W4 reused, S8 revalidation | Direct per-adapter tests satisfy incidentally. W4 explicitly leaves a per-file coverage-threshold question unclaimed; do not assert a new threshold. Record actual direct coverage/tests and this qualification. |
+| #208 | D; W4 reused, S8 revalidation | W4 accepted; current regressions pass: host-supplied version, real server handshake in network-adapters.test.ts. errors.test.ts was the historical incorrect attribution. |
+| #36 | D; S2 shared/CLI | Accepted S2 credential read/write/discovery floor in all tiers; lexical/canonical aliases, prune before descent, Terraform standard credentials included. |
+| #39 | D; S2 shared/CLI | Accepted S2 shared declared-env floor across process and MCP declarations; no duplicate host list. |
+| #235 | D; S2 shared + CLI/DB | Accepted S2 injected platform-free ancestor helper through tool fs and native save_to. CAS uses separate physical identity checks; do not claim it calls this helper. |
+| #113 | C; S2 DB | Accepted S2 drive-relative rejection before save_to I/O, including C:relative, with native/platform evidence. |
+| G21 | D; S2 CLI | Accepted S2 removes dead global tmp provisioning and supplies exact host scratch descriptor prerequisite. Existing directories not deleted; no shipping ordinary-chat allocator. |
+| #1 | D; S2 CLI | Accepted S2 workflow AND agent catalogs: pre-enumeration/opened-file containment, regular/bounded files, contained aliases positive. |
+| #27 | D; S3 CLI secrets | Step 3 accepted: direct native-binding mocks, get/set/delete constructor/operation faults, private cause preserved, fixed public errors/human/JSON/verbose sentinel absence. No real locked-keychain or native-load claim. |
+| #31 | D; S3 CLI secrets | Step 3 accepted: aggregate 65536-byte reader cap before retention/copy, exact/+1 and single oversized chunks; faithful split Unicode/whitespace; iterator cleanup. |
+| #293 | D; S3 CLI secrets | Same S3 reader plus actual provider/gate consumer tests; trimming belongs to provider boundary. Gate/provider may need prior DB open; no zero-history claim for these consumers. |
+| #196 | B; S3 LLM/CLI | Step 3 accepted: finite query-name families, opaque sentinels and benign near-name controls; fixed surfaced errors. Encoded names/arbitrary content not covered. |
+| #25 | D; S4 CLI run/core/DB evidence | Implementation reviewed: reject every explicit secret-typed --input (even empty), add boolean --secret-inputs-stdin, share gate parser, no invalid-input key/provider/history/MCP side effects, masked persisted slots; ADR0107. |
+| #30 | D; S5 CLI/history/docs | Implementation reviewed: bounded value-free best-effort literal warnings at create/import/run; faithful admitted MCP-augmented snapshot retained; classify sensitive plaintext in canonical database reference. |
+| #80 | A; S5 core export + CLI | Implementation reviewed: explicit continuity/review notice on real export surfaces, preserve scaffold semantics and machine stdout. |
+| #81 | A; S5 reuse W7 + S8 certify | Existing ADR0095 content-free model-tool structure controls; producer→SQLite→export actual refusal, no raw result opt-in and no universal transcript masking. |
+| #83 | A; S5 core export | Implementation reviewed: deterministic NFKD/combining mark normalization, dotless-i/sharp-s mappings, legal ASCII slug or exported-session-<session-id>; no universal transliteration claim. |
+| #115 | C; S5 reuse W7 + S8 certify | Strict session rows and producer→SQLite→export rejection; document user/assistant/@/! retained content and legacy refusal; no silent scrub migration. |
+| G22 | A; S5 core analysis | Implementation reviewed: reject unsupported direct secrets.* context references at parse while preserving legitimate secret-input→credential context and transitive text-sink restrictions. Not blanket ban on secret context, no acceptance of Proposed ADR0060. |
+| G31 | D; S5 filing + S8 revalidation | Existing DNS background-work follow-up now explicitly filed in deferred-tasks.md (80–93). Verify caller cancellation/fixed error/late-connect guards; no new resolver, no native DNS abortability claim. |
+| #111 | C; S6 DB both stores | Implementation reviewed: independent inline put limits (256KiB image/audio; no video/document), cumulative 25MiB putStream, exact/+1 before excess copy/hash/write. |
+| #108 | C; S6 DB + CLI | Implementation reviewed: ownership-aware 24h temp GC, crash/claim recovery/live-writer/PID uncertainty/two sweepers; explicit narrow legacy-offline maintenance. |
+| #112 | C; S6 DB both stores | Implementation reviewed: pre-abort and in-I/O readRange cancellation; bounded opened-fd legacy reads; no streaming delivery claim. |
+| #107 | C; S6 fetch/store | Implementation reviewed: declared/header/independent body evidence, finite reviewed formats/aliases and compatibility; missing/octet-stream excludes PCM. |
+| #109 | C; S6 DB/core ports | Implementation reviewed: independent descriptor/recordObject checks; every occurrence and handle-only admission before dedup; immutable tuples/durations and transactional pre-append metadata admission. |
+| #110 | C; S6 docs/code | Implementation reviewed: remove stale non-persisted-MIME comment in same verified media change; canonical references match real metadata. |
+| G20 | D; S7 DB/provider/CLI | Implementation reviewed: all new nonempty maps refuse before SQL, omission preserves genuine legacy, {} clears, no resurrection; typed content-free structural-guard error; inert wire/public projections. This closes design/interim gate only. |
+
+D12's general filesystem predicate is accepted with invocation authority and the
+scratch-floor prerequisite; complete M/N child lifecycle remains open. D13 uses
+the approved interim gate, with live header activation prohibited pending custody
+and migration prerequisites. D14 and Wave D15 use ADR-0095/0098 structural tool
+content, not a raw-result export opt-in or universal masking. D17 is four new
+sittings plus reused W4. No new user decision or deferred item is introduced.
+
+Exit 1 revalidation covers #91's redacted approval preview/real dispatch positive,
+#228's atomic persister and surfaced background failure, and #56's real Ink hostile
+frame. Exit 2 covers actual run TUI, final summary, universal error renderer and
+human-gate card, preserving machine escaping and the documented error exception.
+Exit 3 reuses W4's definition/config trust boundary with current complete tests.
+The D acceptance is traced in full: untrusted definitions/results, collision
+**refusal**, bounded configurable connect/discovery/frames, catalog containment,
+shared credential/env floor, existing permission self-heal, bounded faithful input
+and first-run argv refusal, shared ancestor use in tool fs/save-to (CAS has separate
+identity checks), structured diagnostics, snapshot lint, native-bridge mocks,
+fail-loud args/teardown, direct adapter controls with #297's unclaimed floor, G20's
+interim enforcement and G31's explicit residual filing. Formal sign-off waits for
+final author gates and both NEW complete whole-wave rounds. M2.5.5-2's **D half**
+is the relevant milestone slice; its I half and phase exit criteria 4–8 remain open.
+
+
+### Step 7 acceptance — 2026-10-13
+
+**Accepted on `development`.** The two NEW clean complete cumulative R2/R3 rounds
+at `3a6f3cc4` cover every one of the twenty Step 7 paths. Its exact implementation
+head `01259d12` passes all nine jobs in [CI run 38335121918](https://github.com/HodeTech/Relavium/actions/runs/38335121918),
+including the required success-only aggregate, native Windows and the forced Node
+22.13 floor. Complete 41-control secrets evidence is independently audited by Root
+and tooling reviewers as recorded above. The only successor changes at the review
+head are two roadmap corrections; later Step 8 hygiene changes test identities and
+the evidence checker, without altering the accepted provider runtime.
+
+The canonical [interim provider policy](../../reference/shared-core/database-schema.md#interim-provider-header-policy)
+is implemented: pre-side-effect refusal, exact omission preservation, explicit
+logical clear, trusted validated legacy reads and actual SDK/public/verbose
+exclusion. There is no automatic migration, physical erase or live-header feature.
+Future custody/schema/egress/precedence/recovery prerequisites remain binding.
+Steps 1–7 are accepted; whole-wave Step 8 remains separate.
+
+### Step 8 first cumulative review and correction — 2026-10-13
+
+Three NEW independent reviewers inspect all **291 cumulative paths** at `a75209ad`
+against `664336c2`: contracts/stores 110, CLI/security 91 and tools/documents 90.
+The first two partitions are clean; tooling verifies one Medium live-status error.
+Three deferred-task rows still mark accepted Step 2 invocation roots and the scratch
+floor prerequisite pending. Those rows now link acceptance and close only the
+implemented prerequisite, retaining full M/N and production provisioning/isolation/
+join/cleanup/recovery. This is a documentation correction, not a new deferral or
+runtime change. **R1 is finding-bearing and is not counted as clean acceptance.**
+
+Root reads all three complete reports. Independent focused executions pass 138
+cases in eight contracts/native files and 1,656 cases in seventy CLI/MCP files,
+with two established platform skips. These are overlapping review executions,
+not a unique whole-suite total. Tooling independently audits both complete prior
+`01259d12` filesystem and secrets artifacts, all forty distinct ledger IDs and the
+full document/link/append-only inventory. Exact-source final author/publication
+evidence retains its own attribution. Two NEW complete clean cumulative whole-wave
+rounds after this correction remain required before Step 8 acceptance.
+
+
+#### Step 8 frozen-source author gates — 2026-10-13
+
+At exact committed head `a75209ad`, fresh `pnpm run ci`, bare `pnpm coverage` and
+`pnpm coverage:enforced` all pass. The ordinary/coverage inventories are **562 files /
+12,364 passes / 14 established skips** under `CI=true`. Broad Turbo lint/types,
+test/build and build/format groups contain respectively 12/17, 9/11 and 5/7 cache
+hits; these commands are not called uncached. Both coverage executions are fresh.
+Bare coverage enforces the core/LLM/MCP line-and-branch floor; the separate enforced
+command retains its documented LLM/MCP enforcement with core measured. Bare package
+line/branch results are core 96.62/90.74, LLM 97.69/95.51 and MCP 96.17/90.53.
+
+All **188 acceptance-tool tests**, fences, isolation, DB sync, CLI/media packaging,
+overflow and 16-refusal/two-positive/zero-fetch budget-replay smokes pass. Complete
+local filesystem and secrets matrices execute 99/297/5,115 and 41/123/8,445
+controls/phases/cases, with 255 and 653 reported removal failures respectively;
+local summary-only results are not substituted for published physical audits.
+At the same head, current published wire/usage/secrets/filesystem artifacts are
+independently audited. Their final counts and family-specific qualifications belong
+to the closing register; the success-only aggregate is still pending at this
+checkpoint. No code changes are made to obtain this documentation correction.
+Two NEW clean complete cumulative whole-wave rounds remain required.
+
+
+### Wave 2 closing register — 2026-10-13
+
+**Steps 1–8 are accepted on `development`; publication is separate from merge.**
+This is the joint Phase 2.5.5/2.6 “Shut the doors” wave. It does not reopen the
+merged Phase 2.6.5 W2/W8 interlude or close all of Phase 2.5.5/2.6.
+
+The [forty-ID disposition ledger](#wave-2-individual-dispositions--certification-in-progress)
+joins each queue item to its accepted implementation or reused W4 controls. The
+four new [threat sittings](../../standards/security-review.md#wave-2-sittings--filesystem-secrets-and-config-2026-10-13)
+cover filesystem boundaries, secrets input, secrets at rest and config trust.
+W4's hostile-MCP sitting is reused with current direct and actual-SDK regressions.
+There are four new sittings, not five new reviews of the same class.
+
+| Step | Accepted result and controlling evidence |
+| --- | --- |
+| 1 | Corrected canonical trust contracts and finite causal-control foundations; [acceptance](#step-1-acceptance--2026-10-12). |
+| 2 | Invocation-authorized filesystem roots/selectors, shared ancestor walk, credential floor, catalog containment and scratch-floor prerequisite; [acceptance](#step-2-acceptance--2026-10-12). Full M/N lifecycle remains open. |
+| 3 | Bounded owned secret stdin, native-bridge failure privacy and finite URL-query scrubbing; [acceptance](#step-3-acceptance--2026-10-12). |
+| 4 | Secret argv refusal and bounded first-run stdin delivery, native masked history and resume resupply; [acceptance](#step-4-acceptance--2026-10-12). |
+| 5 | Faithful-snapshot warnings, structural session/tool-content refusal, context secret analysis and export continuity/slug/notice delivery; [acceptance](#step-5-acceptance--2026-10-12). |
+| 6 | Bounded structural media verification, descriptor/admission authority, CAS/temp/native lifecycle and explicit iterator ownership; [acceptance](#step-6-acceptance--2026-10-13). |
+| 7 | Interim refusal of new nonempty provider headers, legacy preservation, explicit logical clear and SDK/public-output exclusion; [acceptance](#step-7-acceptance--2026-10-13). |
+| 8 | Four new security sittings, W4 revalidation, per-ID/exit/D sign-off, fresh broad author and published physical controls, and two NEW clean complete cumulative rounds after the R1 correction; evidence below. |
+
+#### Final independent cumulative review
+
+R2 and R3 are two NEW complete clean cumulative whole-wave rounds at
+`cfae361adebfadf7e354b79907330758275e64e5`, after the R1 live-status correction.
+Each round uses three new independent reviewers: contracts/stores (110 paths),
+CLI/security (91), and tooling/docs (90), covering all **291 distinct cumulative
+paths** against `664336c2794622c2b940be823966eddc9d61423d`. Critical partitions use
+`gpt-6-astra`/high; tooling/docs uses `gpt-6.1-sol`/high. Root reads all six full
+reports and reconciles disjoint manifests, actual inspected ranges and exact hashes.
+Every cumulative hunk, complete new/security primitive module and relevant
+contract/caller is covered; unrelated unchanged historical test bodies/registers
+are not recertified. No verified actionable finding remains.
+
+Fresh scoped R2 evidence includes five native/source workers, all fifty assigned
+CLI files (1,292 passes, two established Windows-only skips, with two temporary
+alias collection faults corrected and completed separately), and 178 tool tests.
+R3 independently passes 29 source/native files (613 tests, zero skips), sixteen
+CLI files (572 passes, two Windows-only skips) and 181 tooling tests. R2/R3 tools
+reviewers also independently inspect retained physical artifact joins. These
+focused cohorts overlap other executions and are not added to whole-project
+unique counts. R1 remains finding-bearing; failed probe/setup invocations retain
+their disclosed limits rather than being promoted to passing evidence.
+
+Detailed reports remain ignored/local. Final publication metadata is reviewed
+separately; it does not replace these complete product rounds or relabel prior
+CI execution as a new run at a Markdown-only successor.
+
+The R1 live deferred-status finding is corrected: accepted invocation-root and
+scratch-floor prerequisites no longer appear pending. Full Phase 2.6.M/N and
+production allocation/isolation/join/cleanup/recovery remain open. Earlier dated
+checkpoint statements describe their original state; new landing notes in all
+25 affected ADRs point to this register without rewriting the decisions.
+
+#### Exact-source author and publication evidence
+
+At exact committed source head `a75209ad`, all three author commands pass:
+`pnpm run ci`, bare `pnpm coverage` and `pnpm coverage:enforced`. Ordinary tests
+and both fresh coverage executions retain **562 files / 12,364 passes / 14
+established skips** under `CI=true`. Turbo lint/types, test/dependency and
+build/format groups contain respectively 12/17, 9/11 and 5/7 cache hits; they are
+not described as uncached. Bare coverage enforces the core/LLM/MCP line/branch
+floors: core 96.62/90.74, LLM 97.69/95.51 and MCP 96.17/90.53. The separate enforced
+command retains its documented LLM/MCP enforcement, with core measured.
+
+All 188 acceptance-tool tests, source/dependency fences, isolation, DB sync,
+formatting, bundle closure and compiled CLI/media packaging/overflow/replay smokes
+pass. Budget replay retains sixteen refusal prefixes, two legacy positive controls
+and zero fetches. Complete local filesystem/secrets matrices retain 99/297/5,115
+and 41/123/8,445 controls/phases/cases; their 255 and 653 reported removal failures
+remain local summary-only evidence.
+
+At that same head, [published CI run 38338972257](https://github.com/HodeTech/Relavium/actions/runs/38338972257)
+passes all **nine jobs**, including the success-only required aggregate, all four
+complete causal families, native Windows, official Node 22.13 and coverage/peer
+checks. The forced floor and published enforced coverage retain the same
+562/12,364/14 inventory. Windows executes the native DB/concurrency/filesystem/CAS/
+media/packaging/headless suites with sixteen established POSIX-only filesystem
+skips; no unsupported-platform execution is inferred.
+
+Root downloads and independently audits all four actual published artifact families
+from `a75209ad`; no predecessor artifact is substituted:
+
+| Family | Complete physical result |
+| --- | --- |
+| Filesystem | 99 controls / 297 phases / 5,115 case executions; 255 removal failures = 248 ordinary assertions, four Vitest rejection-expectation assertions and three separately traced secondary effects. Required semantic witnesses and complete fixed/restored inventories pass. 1,789 files / 32,560,048 retained bytes including envelope. |
+| Secrets | 41 controls / 123 phases / 8,445 case executions; 652 removal failures = 650 ordinary assertions and two Vitest rejection-expectation assertions, zero collateral failures. All 276 required named witnesses pass. 745 files / 25,002,129 retained bytes including envelope. The local 653 count is separate. |
+| Wire | Four controls / nine phases including shared baseline / 216 executions over the same 24-case inventory. All 36 primary semantic assertions fail as intended; fourteen secondary assertions and six normalized provider refusals are individually qualified. 12 files / 143,985 retained bytes. |
+| Usage | 23 mechanisms / 3,303 mechanism-phase executions plus 435 permanent cases = 3,738 total executions; 227 semantic failures. The permanent cohort joins 71 native children and one intentional readiness-timeout control. All phase/permanent identities are unique. 1,209 files / 96,604,425 retained bytes including envelope. |
+
+Filesystem source pins join 1,128 exact Git blobs, 297 packed manifests, 458
+installed dependency packages and 21,013 dependency-file pins; secrets joins
+1,120 source blobs and 123 packed manifests. Usage independently verifies all
+1,100 source pins against Git and seventy exact process-record joins. The bounded
+artifact sizes are physical audits, not declaration projections.
+
+The earlier Step 6 usage summary's “plus 435 permanent cases” describes the
+permanent cohort already included in its 3,738 total; it is not 435 additional
+executions. The exact arithmetic is 3,303 mechanism-phase + 435 permanent = 3,738.
+
+Each physical family retains its own exact source-head attribution. Current
+usage phase/permanent `(file, case)` identities are unique, including both bodies
+of the three inherited query-title pairs. Fixed/restored suites are complete and
+green; removal failures require their declared semantic witnesses. The three
+filesystem secondary effects and the wire normalized refusals are qualified
+consequences, not substituted for the required witnesses. Previous selected,
+interrupted or cancelled runs do not certify the complete matrix.
+
+Source pins are checked against exact Git blobs. Packed manifests, loader/body
+receipts, process/native joins, complete inventories and restoration are checked;
+filesystem/secrets stdio digests are reconstructed. Usage retains bounded UTF-8
+stdio and exact process-record joins without claiming an independent remote
+stdio digest. Remote installed dependency bytes are not locally rehashed; their
+captured pins and executed loader receipts are verified. Wire installed SDK byte
+inventories match an independent local capture; a differing local shared build
+is not substituted for the remote build. Documentation-only successor commits
+are not relabeled as new execution at a different head.
+
+#### Exit criteria 1–3 and sub-stream D sign-off
+
+| Obligation | Accepted disposition |
+| --- | --- |
+| Phase exit 1 | All three critical findings are closed and directly regression-tested: #91 actual preview redaction, #228 persister failure/atomic history, #56 real Ink `RunApp` sanitization. W1/W7/W8 fixes are revalidated rather than reimplemented. |
+| Phase exit 2 | All four human boundaries are exercised: workflow TUI, persisted run summary, universal error presentation and human-gate card. Machine JSON preserves ordinary content through escaping, with its documented lossy error exception; there is no universal content-scrubbing claim. |
+| Phase exit 3 | MCP tool-definition sanitation/provenance and config name-collision **refusal** are verified, including actual model-visible tool mapping, shared schema boundaries and current config/consent regressions. |
+| D acceptance | The complete 2.5.5.D paragraph holds under its approved refinements: bounded startup/catalog/ingress/results; structured errors; credential/env floor; all filesystem/selector/catalog consumers; current permission self-heal; secret argv/stdin controls; faithful snapshot warning; interim header gate; direct network-adapter tests and actual version handshake. #297 does not claim a new per-file coverage floor. G31 is filed with its bounded DNS-cancellation residual, not silently presented as fixed. |
+| M2.5.5-2 | The **D half** is accepted. Its I half, decomposition work, later Waves 3–7 and formal whole-phase exit criteria 4–8 remain open. |
+
+No new deferral is created. Existing CR-70/CR-93/CR-94/CR-95, W3 capacity,
+W4 DNS, media range/heap/format and other approved residuals retain their severity,
+triggers and canonical [deferred homes](../deferred-tasks.md).
+Filesystem guarantees assume cooperating owner-controlled storage; there is no
+hostile same-user isolation or OS subprocess jail. The scratch descriptor/floor
+is not a production allocator. Media profiles are finite structural checks;
+PCM is qualified, and playback/full decoding/malware inspection are unclaimed.
+Native iterator ownership is exact-object/private-module provenance: explicit
+wrapper adoption, one loaded shared domain and trusted EOF/Promise obligations
+remain binding; foreign iterators do not inherit native authority. Secrets scans
+are finite; retained user/model/attachment/shell/run/snapshot content and legacy
+header rows can be sensitive. Logical clearing is not SQLite/WAL/backup erasure.
+Future live headers require custody/schema/egress/precedence/recovery work.
+
+No ADR approval, billing, key, provider capture or user decision is pending for
+this wave. The next engineering work is [Wave 3 — Clear the ground](../current.md#wave-3--clear-the-ground),
+starting with its serialized multi-file queue and a fresh decision/document preflight.
+This acceptance does not authorize implementing that next wave within this change.
+
+### Post-publication recovery accounting correction — 2026-10-13
+
+The first `84a2fddb` push [filesystem job](https://github.com/HodeTech/Relavium/actions/runs/38345819360/job/115126866456)
+refused the restored native recovery concurrency case. The parallel PR matrix
+passing does not clear that failure. A deterministic native-filesystem witness
+and two explicit multi-process schedules establish a production reporting race:
+a recovery can win the final empty claim-directory removal after retaining a live
+peer, while both processes report zero removals. The original test is retained.
+
+The correction implements the existing one-claim reporting contract at the final
+native rmdir winner. The losing recovery recognizes raw or normalized directory
+absence only after its own identity-checked marker removal; pinned-root revocation,
+earlier ownership admission and substantive I/O still refuse. Two deterministic
+process cases and two listing-disposition cases enlarge the complete temporary
+suite from nineteen to twenty-three. Separate winner-accounting and absence
+removals require both native race witnesses. The five existing temporary controls
+run the enlarged suite; the declared filesystem matrix is now **101 controls /
+303 phases / 5,313 case executions**. These are declared workloads, not a claim
+that an earlier 99-control artifact executed the additional cases.
+
+The [canonical maintenance contract](../../reference/shared-core/built-in-tools.md#physical-media-storage-and-limits)
+and dated [ADR-0106 correction](../../decisions/0106-media-publication-requires-bounded-verified-bytes.md#recovery-cleanup-accounting-correction--2026-10-13)
+record the behavior without new deletion authority, minimum age or dependency.
+The correction requires two NEW independent complete clean cumulative correction
+review rounds and exact-head publication gates. Their [PR #94 publication record](https://github.com/HodeTech/Relavium/pull/94)
+retains their separate source attribution; scoped correction reviews do not
+relabel earlier whole-wave rounds or artifacts as fresh executions. The closing
+register's `a75209ad`/`cfae361a` evidence remains its historical checkpoint.
+
+### Native evidence journal capacity correction — 2026-10-13
+
+Both `5021bc59` publication runs reported all 303 filesystem phases, including
+the two new recovery removals and their restored 23-case suites. Export then
+refused `Raw evaluation receipt file bound`; no filesystem artifact was retained,
+and the required aggregate correctly refused publication. Passing phase log lines
+do not substitute for the missing independently auditable artifact.
+
+The former 99-control artifact already contained 1,969 raw process journals.
+The enlarged native workload exceeded the 2,000-journal input count, which had
+incorrectly shared the retained physical-file ceiling. The correction separates
+the raw journal/segment count at 4,096 from the unchanged 2,000 physical output
+files. Raw input, index/archive and retained evidence remain bounded by their
+existing 64-MiB ceilings; paths, semantic witnesses, process/source joins,
+phase inventories and timeouts are unchanged. Every original journal remains
+losslessly indexed. The [tooling contract](../../../tools/causal-controls/README.md)
+owns these independent limits.
+
+Permanent boundary controls reconstruct all 4,096 synthetic PID/thread journals,
+refuse 4,097 at both exporter and standalone verifier, and test physical output
+exactly at 2,000 files and one file over, counting summary and envelope. The
+earlier two recovery-review rounds certify their original source scope only.
+This additional tooling correction requires two NEW complete clean cumulative
+correction rounds and fresh published gates/artifact inspection; their separate
+source attribution belongs in the [PR #94 publication record](https://github.com/HodeTech/Relavium/pull/94).
+
+### PR #94 systematic review corrections — 2026-10-13
+
+The maintainer's complete review of `395fbf95980aa1fd41e56156c93b9c2db120348c`
+against `664336c2794622c2b940be823966eddc9d61423d` requested three corrections.
+All three source repairs are now independently accepted. Original eight-step and
+publication records retain their checkpoint attribution; the old artifacts'
+physical consistency does not establish the repaired runner-error guarantee.
+Current corrected-head publication evidence belongs to the
+[PR #94 publication record](https://github.com/HodeTech/Relavium/pull/94), separately
+from source acceptance and maintainer merge review.
+
+| Increment | Confirmed finding | Required correction and evidence | State |
+| --- | --- | --- | --- |
+| 1 — R94-1 (High) | JSON-only Vitest reporting omits unhandled runner errors, so a named removal assertion can coexist with an invisible background failure. | Own a structured completed runner-error receipt, require zero errors before phase acceptance, and permanently exercise the real coordinator with a designated assertion plus a genuine unhandled rejection/exception. Refresh affected complete controls; old artifacts do not certify this repair. | Source accepted at `9664b7cc` after two NEW clean complete cumulative rounds (14 paths / 48 hunks each); final publication gates are owned by the PR #94 record. |
+| 2 — R94-2 (High) | Valid OpusTags padding is refused after otherwise supported provider generation. | Consume the permitted bounded Opus tail after complete comment framing; preserve Vorbis framing. Pin fragmented packet/page positives, malformed negatives and actual store/installed-SDK publication. | Source accepted at `0269a78a` after two NEW clean complete cumulative rounds (23 paths / 61 hunks each); final publication gates are owned by the PR #94 record. |
+| 3 — R94-3 (Medium) | FLAC nonfinal minimum and fixed block-size consistency are not enforced. | Validate the previous frame once a successor establishes that it is nonfinal; retain the legal shorter final frame. Pin fragmented verifier and actual-store refusal/acceptance pairs. | Source accepted at `f4ca3c53` after two NEW clean complete cumulative rounds (28 paths / 72 hunks each); 54 permanent cases and three isolated removal controls; final publication gates are owned by the PR #94 record. |
+
+Each increment follows implement/regression/commit, independent review/fix/commit,
+then a NEW complete cumulative review round. A material correction restarts the
+two-clean-round requirement. Final correction acceptance additionally requires
+current broad author/coverage/platform gates and independently inspected complete
+filesystem/secrets evidence. Report counts and source pins remain attributed to
+the head that actually executed them. Review records remain local/ignored.
+
+These are repairs to accepted admission, structural-media and test-evidence
+contracts, not new format profiles or policies. No new ADR, runtime dependency,
+live provider request, credential, billing action or deferral is required. The
+[canonical media profile](../../reference/shared-core/llm-provider-seam.md#bounded-verified-media-publication-adr-0106)
+and [causal runner contract](../../../tools/causal-controls/README.md) own the
+implementation details. Wave 3 remains subsequent work.
+
+R94-1's author gate passed 269 acceptance-tool tests at its corrected bytes. Each
+new runtime review independently passed all 202 causal-tool tests, including real
+coordinator rejection, exception and hook contamination; separate evidence reviews
+covered the entire same delta and adversarial raw/retained receipt boundaries.
+Selected native-child fixed/removal/restored captures retained three completed
+zero-error receipts each, independently joined to exact source/runtime/process
+records. These scoped source gates do not replace the required corrected-head
+full-family refresh or certify all original PR files again. R94-2 and R94-3 remain
+separate increments.
+
+R94-2's final affected cohort passes 42 tests: 24 verifier, four real-store and
+14 installed-SDK publication cases. Both new runtime rounds independently execute
+the selected exact-commit control: 42 fixed pass, 17 named removal assertions,
+42 restored pass, with all ten required witnesses and three zero-error receipts.
+Root independently joins every phase's source/runtime/process/reporter records,
+restoration, installed dependency bytes and unchanged physical bounds. Each new
+integration reviewer covers the entire same cumulative delta and independently
+probes legal and malformed continued-packet boundaries. Full product lint/typecheck,
+workspace tests and build pass at `0269a78a`; all six actual test tasks execute
+freshly. The five cache hits among eleven tasks in that test graph are prerequisite
+builds already executed in its preceding zero-cache lint/typecheck/build graph.
+The separate final build graph reports five of six tasks cached. Their scope is source
+acceptance; final corrected-head full-family/coverage/platform evidence is separate.
+
+R94-3 adds 54 permanent cases: 25 verifier, 24 actual-store and five engine/CLI
+publication cases. Minimum, fixed nonfinal equality and fixed final growth each
+have an isolated removal control over the same complete 54-case cohort. Both NEW
+runtime rounds execute all three at clean `f4ca3c53`: 54 fixed pass, respectively
+18/9/8 named removal assertion failures, and 54 restored pass. Each round has nine
+completed zero-error runner receipts. Root independently joins exact Git source,
+raw runtime/reporter/PID evidence, all required witnesses, unchanged inventories,
+restoration, installed dependency bytes and physical bounds. Each NEW integration
+reviewer covers the entire same 28-path /72-hunk cumulative correction. Legal short
+final frames and variable-size positive controls remain accepted; actual stores
+and the engine/CLI metadata-before-append/grants-after-ACK path refuse malformed
+streams. Event persistence in that CLI cohort is InMemoryRunStore; only metadata
+is file-backed SQLite.
+
+The three final source controls are selected captures, not complete-family evidence.
+The causal source graph excludes `docs/**`; documentation acceptance uses separate
+Git/hash inventories. The final two source rounds cover the complete correction
+range `395fbf95` → `f4ca3c53`, not a new review of all 292 original PR paths. The
+`193c4649` documentation-only closure preserves those runtime bytes. Final full CI,
+bare/enforced coverage, native Windows/Node-floor results and complete filesystem/
+secrets physical audits must be executed at the corrected publication head and
+recorded in PR #94 before it is ready for maintainer review. A selected capture,
+capacity projection, cached task or prior-head success cannot substitute for those
+gates. No new decision, provider capture, credential or billing action is pending.
+
+#### Corrected-head local review isolation — 2026-10-13
+
+The first final bare coverage run at `193c4649` collected an intentional failing
+review reproduction from ignored `docs/reviews/`: the 567 product files passed
+12,454 tests with 13 established skips, but the extra reproduction failed and
+raised its deliberate background rejection. That run is failed evidence, not a
+coverage pass. Review files remain untouched. The root-anchored local-artifact
+exclusion now reaches both test discovery and coverage, with an unconditional
+marker-free probe and permanent removal/ownership controls; every real
+source-adjacent test must still be collected in root and package modes. Coverage
+thresholds, product includes and all existing exclusions remain unchanged.
+
+This publication correction requires two NEW complete clean cumulative rounds
+covering its configuration/guard changes and the final documentation closure,
+plus fresh bare/enforced coverage and corrected-head full publication gates.
+Their actual source pins and results belong to the PR #94 publication record;
+this requirement does not upgrade the failed run or earlier selected captures.
+
+#### Publication field-membership clarification — 2026-10-13
+
+SonarCloud classified the two default string sorts in the receipt field-name
+comparison as reliability bugs. The accepted operation is exact field-set equality,
+not alphabetic or numeric ordering. Expressing it directly with Set equality
+preserves the existing acceptance set and removes the irrelevant sorting operation.
+A permanent regression accepts reordered valid fields and refuses a same-size
+lookalike replacement of every field; existing missing/extra/duplicate field,
+identity, completion, zero-error and coordinator contamination controls remain.
+No receipt field or protocol version changes.
+
+The local `3cfa2b7e` full-CI attempt was deliberately stopped through its owned
+worker after this publication feedback; its coordinator joined and removed its
+scratch. Its successful partial stages and earlier coverage remain attributed to
+that head, not promoted to a complete CI pass. The final publication record must
+join two NEW complete clean cumulative publication rounds, fresh current-head
+local/remote gates and complete affected physical controls after this clarification.
+
+#### Local cleanup-order control correction — 2026-10-13
+
+The new runner authority refused `media-fs-store-local-first` during both Linux
+publication jobs and local full CI at `9299e3fd`: its removal produced two
+unhandled errors. Those failed, incomplete runs remain diagnostic evidence. The
+old removal dropped the publisher await, accidentally abandoning its Promise and
+also breaking natural EOF. The corrected control moves the source-close join
+into the producer's verification-failure path before publisher cleanup, while
+keeping the publisher awaited and preserving the primary byte failure. No
+production behavior, case inventory, deadline or zero-error requirement changes.
+
+The selected author capture runs the same six cases in all three phases: fixed
+and restored pass; removal produces the named cleanup-order assertion plus the
+related foreign-close assertion, with three completed zero-error runner receipts.
+It is not complete-family acceptance. Two NEW independent complete cumulative
+correction rounds and fresh final publication gates, including the entire
+filesystem matrix, must join at the final source head in PR #94.
+
+#### PR #94 lower-priority review corrections — 2026-10-13
+
+The subsequent systematic review covers all 305 paths at `798192f2` against
+`664336c2` and reports twelve Low findings plus three informational notes. Every
+verified Low is addressed in three increments; none is deferred. The original
+review scope and its remote-evidence limits are retained, rather than treating
+that review as a new execution of the previously published CI artifacts.
+
+| Increment | Report items | Correction and permanent evidence |
+| --- | --- | --- |
+| 1 — security floor and CLI refusals | 1, 2, 3, 9, 10 | Extend the existing Git credential floor to exact `config.worktree` and the shared declared-environment floor to AWS/Docker configuration aliases; correct the Windows path-display comment. Fixed session-persistence exit-2 diagnostics preserve row privacy and refuse before resume/export construction. Create/import notices follow successful writes. Real dirty-row and failed-write controls, lexical/canonical/discovery controls and separate worktree/environment removals pin the boundaries. |
+| 2 — media conformance and reachable contracts | 4, 5, 6, 7 | Refuse FLAC partition equality and mandatory metadata violations, with independent fixed/LPC/Rice/escape/wasted-bit vectors and the published RFC Appendix D.2.1 fixture. The complete 138-case cohort reaches verifier, both real stores, legacy revalidation and engine/CLI publication. Remove only the unreachable retention variant and consumer cleanup branches; preserve the shared helper's native close-only failure. Installed-SDK selector tests pin 67 cases and the canonical contract states exactly which defined overrides refuse. |
+| 3 — CI and live documentation | 11, 12, 14 | Distinguish historical 99-control capacity arithmetic from the current 109-control /327-phase declaration and 1,969-file projection under unchanged bounds. The Windows headless smoke requires the canonical EOF exit code as well as absence of raw-mode failures; permanent controls execute its actual workflow body. Root guides and the live roadmap agree with the already published npm v0.1.1. |
+
+Increment 1 is source-accepted at `d98e18c2` after two NEW complete clean cumulative
+rounds over 19 paths /33 hunks. Increment 2 is source-accepted at `70eafa12` after
+two NEW complete clean cumulative rounds over 32 paths /80 hunks. These scoped
+reviews cover the entire correction delta from `798192f2`; they are not another
+whole-PR review. Increment 3 and the final combined source receive the same
+commit/review/fix discipline. The PR #94 publication record owns their actual
+reviewed-head acceptance and fresh final broad/platform/physical-evidence gates.
+No earlier-head success, selected control or capacity projection substitutes for
+those gates.
+
+The first Step 2 cache-removal capture correctly refused an introduced test-cleanup
+error: a failing identity assertion could abandon the new fixture's rejecting
+native acknowledgement. `70eafa12` observes that acknowledgement before assertions
+and joins it in `finally`. No product mechanism, test inventory or zero-error gate
+was weakened. All eighteen affected selected mechanisms then passed 54 phases /
+2,847 executions with 54 completed zero-error receipts at that head. They remain
+selected evidence (`complete: false`), separate from the final complete family.
+
+The Step 1/2 author logs execute all six actual workspace test tasks freshly. Their
+five cache hits in the eleven-task test graph are prerequisite builds already
+executed in the preceding zero-cache lint/typecheck/build graph; the final CLI
+build also executes freshly. Step 2's broad 569-file /12,635-pass /13-skip run
+precedes the final test-only acknowledgement correction; focused tests and selected
+controls verify the latter, and final broad gates retain their own exact head.
+
+Informational item 8 is a pre-existing narrowing revalidated by the event bus;
+item 13 proposes coordinated CI-guard removal without demonstrating a defect;
+item 15 is the accepted ADR-0108 interim legacy-read/runtime-write-refusal design.
+They add no new implementation or deferral. Accepted decisions, format profiles,
+permission authority, dependencies, timeouts and retained-evidence ceilings are
+unchanged. The canonical [media contract](../../reference/shared-core/llm-provider-seam.md#bounded-verified-media-publication-adr-0106),
+[CLI contract](../../reference/cli/commands.md), and
+[causal runner contract](../../../tools/causal-controls/README.md) own the details.
+Review records remain local and ignored. No new ADR approval, provider call, key,
+billing action or user decision is required. Wave 3 remains subsequent work;
+PR #94 and Wave 2 publication are separate from merge and full phase closure.
+
+The final `77faa460` publication attempt exposed two stale secrets-cohort counts:
+the new failed-write regressions made both create/import files eleven cases, while
+their unchanged declarations still expected ten. Both remote secrets jobs correctly
+refused the first enlarged cohort. The declarations and adjacent README now retain
+the complete eleven-case files; neither a case nor a named witness is removed.
+This confirmed cross-family finding invalidates that head's final clean acceptance.
+Two NEW complete clean cumulative source rounds and fresh final gates are required
+after the correction. The local full-CI attempt was stopped through its proven
+owned Vitest worker; its coordinator joined and removed its scratch. Its completed
+wire/usage and partial filesystem stages remain attributed to `77faa460`.
+
+At the same head, the push Windows job passed, but the PR Windows job timed out
+in two native CLI filesystem cases at their unchanged five-second limits. This
+establishes a failed platform attempt, not a demonstrated product fault or a
+successful rerun. The nine-file Windows CLI filesystem task now runs files serially
+with one worker to reduce file-level contention; its exact file/case inventory,
+individual deadlines and job bound remain unchanged. The actual workflow command
+has a scheduling guard, and new native Windows runs remain the acceptance evidence.
+
+### PR #94 additional systematic review — 2026-10-15
+
+The maintainer's review of `992e6dab` independently reproduced two High valid-media
+publication failures, a Medium scratch-policy composition defect, a Low exact-owned
+marker cleanup defect and a qualified rooted-literal glob inconsistency. A second
+report adds lower-priority compatibility, diagnostics and contract hypotheses.
+These findings reopened correction acceptance for PR #94. Earlier clean source rounds,
+CI/Sonar success and physical captures retain their historical heads; they do not
+certify the newly demonstrated scenarios. The following implementation checkpoints
+retain their dates; PR #94 owns the actual current source, execution and ready/merge status.
+
+| Increment | Scope | Current gate |
+| --- | --- | --- |
+| 1 | Generated-result object preflight, bounded streaming and optional small-host compatibility; actual SDK/executor/engine/both-store publication. | Accepted source at `51140d48`: two NEW clean complete cumulative rounds, each covering 17 paths / 29 hunks with independently joined hashes. The selected current-head control has 3 phases / 54 executions and zero runner errors; full-family publication remains separate. |
+| 2 | Vorbis setup bit framing, bounded structural traversal, allocation-free header CRC, extended MP4 sizes and unknown FLAC totals. | Accepted source at `ef256157`: two NEW clean complete cumulative rounds, each covering all 14 paths / 34 hunks. The 113 new regressions pass; original-source control has 15 expected assertion failures and one adjacent positive among 16 selected cases. Existing selected comment-count and Opus-tail controls pass 60 and 126 executions respectively (`complete: false`); corrected-head full publication remains separate. |
+| 3 | Scratch-policy pin composition, rooted literal glob, complete write floor and exact-owned maintenance/recovery marker cleanup. | Accepted source at `e9717319`: two NEW clean complete cumulative rounds after the UNC repair, each covering all 15 paths / 47 hunks and five full new regression files with independently joined hashes. The 115 local passes / seven Windows-only disables and 307-file / 5,341-pass / ten-skip affected graph remain scoped author evidence; unknown-owner retention is unchanged. |
+| 4 | Snapshot own-property preservation and supported-domain evidence, safe input diagnostics, concrete CI/evidence and document corrections. | Implementation complete, including the finite pin-error followup below. The first `b87462d2` round remains nonclean history. Two NEW clean complete cumulative rounds after the final material fix and actual corrected-source gates are required; PR #94 owns their current verdicts and execution. |
+
+The [canonical publication contract](../../reference/shared-core/llm-provider-seam.md#bounded-verified-media-publication-adr-0106)
+owns result bounds and finite format evidence. Request-message and direct-put
+ceilings remain separate. The generated PNG regression reconstructs the retained
+3,147,775-byte review fixture independently; macOS native decoding is separate
+local evidence. Default TTS MPEG and Sora MP4 fixtures establish the declared finite
+structural profile, without claiming decoded audio/video or paid-provider execution.
+
+Increment 2's affected-workspace gate covers shared, LLM, DB, core and CLI: 557
+files / 12,554 passing tests / 13 established skips. Its successful graph reuses
+three unchanged test-task caches; core and CLI rerun after three legacy fixture
+barriers were moved from direct put to the selected stream write. The same 162
+engine cases and their original deadlines remain intact. Lint/typecheck, CLI
+build, seam/dependency fences, formatting and relative-document checks pass.
+These author gates are not final whole-project or platform publication.
+
+Increment 3 retains the original opaque workspace, selected-root and invocation-grant
+pins when attaching host-issued scratch. Forged/conflicting descriptors refuse;
+lexical provenance and identity revocation remain authoritative. Literal globs now
+admit their real parent directory. Marker acquisition keeps its native fd identity
+through close, retires only its exact owned marker on failure and leaves recovery
+directory counting to normal cleanup. Unknown ownership, replacement and revoked
+roots remain conservative. Fixed read cancellation adds no caller-provided cause.
+The Windows cohorts include the new filesystem and earlier media regressions; the
+full DB cohort remains selected. These selections are not native Windows execution.
+
+The increment 3 pre-UNC `eee9ca53` DB and CLI test tasks execute freshly under `CI=true`; the five
+successful cache hits in their seven-task graph are prerequisite builds. Its four
+skips comprise the existing Windows-specific and local-only scale guards plus the
+new Windows literal-path case. Lint/typecheck, build, isolation, tooling, fences,
+formatting and document checks pass. The initial lint refusal of an unsafe Vitest
+matcher assignment is retained; removing that redundant pre-read matcher keeps
+the original fulfilled-versus-rejected witness and actual content/path assertions.
+These author results do not certify a native Windows run or final whole-project CI.
+
+The first complete cumulative increment 3 review found the raw-UNC glob floor
+interaction: Windows separator normalization bypassed the original lexical denial.
+Literal parent support made the inherited wildcard hole reachable for literal paths.
+The repair admits the raw spelling before normalization, covers equivalent native
+Windows separators and preserves POSIX double-slash paths. Two original-`eee9ca53`
+raw-UNC cases fail at their named assertion before this repair; the earlier thirteen
+original-runtime failures retain their separate scope. New tests assert fixed fatal
+refusal with zero asynchronous lookup, enumeration or byte access. Windows controls
+remain selected rather than locally executed. The updated CLI test task runs freshly;
+the unchanged DB test task reuses its successful cache. Five additional cache hits
+are prerequisite builds. The five selected existing controls at `eee9ca53` pass
+15 phases / 327 executions with zero runner errors (`complete: false`), and retain
+that historical head. They do not replace corrected-head whole-family publication.
+
+Unsupported noninert publication values already refuse under the current canonical
+contract; increment 4 documents and pins that compatibility limit without invoking
+caller serializers. Unknown maintenance ownership remains
+conservative: recognizing no current owner is not deletion or maintenance authority.
+Automatic unknown-owner discard would require an explicit approved decision.
+MCP registration credentials remain runtime connection configuration; the augmented
+workflow snapshot adds discovered tool grants, not resolved registration secrets.
+The authored-definition notice retains its documented best-effort scope.
+
+All four increments require committed regressions and two NEW independent complete
+clean cumulative source rounds after their final material fix. Actual corrected-source
+full CI, bare/enforced coverage, platform and physical-evidence gates are required
+before merge. [PR #94](https://github.com/HodeTech/Relavium/pull/94) owns their current
+source verdicts, execution publication and ready/merge status. The receipts below are
+attributed implementation checkpoints, not a substitute for those actual outcomes. No new ADR, provider capture, key or billing action
+is required for these existing-contract repairs. Wave 3 remains subsequent work.
+
+Increment 4 preserves collection own data, nested media and alias accounting after
+intrinsic Map/Set entries. Only array length receives the intrinsic descriptor rule.
+The synchronous admission scan owns frozen primitive descriptors without cloning the
+whole enclosing graph again; the held engine metadata-port control preserves the
+existing ownership barrier, without claiming a measured allocation benchmark.
+Reflection faults and compatible foreign admission exceptions cannot contribute
+private diagnostic text: fixed local messages and closed own-data codes govern
+classification, with cancellation first and native-iterator ownership unchanged.
+
+The original runtime with six changed regression paths reports 135 cases: 94 pass
+and 41 fail. Of those failures, 26 are named assertion failures and 15 are test-body
+errors (including expected-own-data, rejected-promise and reflection witnesses),
+not an assertion-only causal receipt or a runner-level zero-error certificate.
+After repair, the eight focused files report 152 passes. The broad five-package
+run reports 569 files / 12,745 passes / 20 explicit established/platform skips;
+all five test tasks execute freshly and five prerequisite builds are cached.
+The initial lint refusal of a control-character regex in a new test is retained;
+explicit string checks preserve the case and its terminal-control expectations.
+Lint/typecheck, build, isolation, tooling and seam/dependency gates subsequently pass.
+
+CLI admission keeps unknown/duplicate raw argv keys and values opaque under
+ADR-0107. Already-declared core input faults now show bounded sanitized labels and
+structural value-free reasons before services start. A name grammar or finite
+scrubber is not proof an arbitrary unknown key contains no credential. Provider
+policy diagnostics use the canonical error constructor's own fixed message.
+Serializer controls now prove literal transcript preservation and attribute the
+structural signature/secret exclusion to its upstream boundary.
+
+The new required post-workspace CI validator demands the actual bounded native DB
+journal, matching parent/child identities, all ten workers/nine modes, original
+readiness deadlines, transaction barriers and joined outcomes. Root's separate
+local execution of the existing native fixture passes ten cases and produces 97
+records (31 parent, 65 child, one setup), accepted by the real validator. Forty-six
+Node diagnostics/physical-selection controls pass. This is actual macOS evidence,
+not native Windows or remote CI certification. Historical filesystem/secrets budget
+comments, the ADR-0065 dated section reference and CLI command freshness are corrected.
+
+Other report hypotheses retain explicit dispositions: unknown maintenance ownership
+remains conservatively blocking under its accepted contract; the zero-error reporter
+has its documented finite completion window; total retained-file/byte caps are
+verified at export; native child/source/dependency pins retain their cooperating-host
+scope. Workspace serialization and physical packaging/source joins are intentional.
+Published historical attribution, condensed guide numbering and ADR section style
+are not rewritten. The separate pre-existing transcript-persistence observation is
+not claimed repaired. These dispositions add no approved deferral or new decision.
+
+
+### Increment 4 pin-error followup — 2026-10-15
+
+Both independent increment-4 reviewers and the separate complete correction reviewer
+confirmed the same remaining `NodeMediaPinError` prototype pass-through at `b87462d2`.
+Their independently reported High/Low severities retain their original scopes; Root
+reproduced the defect through the actual compiled engine and in-memory durable port.
+A synthetic private message reached both delivered and persisted failures. No live
+provider, user credential/history or native SQLite claim follows from that probe.
+
+The repair records only finite engine-authored failures in a private immutable
+node-bound capture. Prototype/constructor shapes and mutable public fields provide
+no capture; wrong-node reuse refuses before external-field fallback. The dispatch
+catch independently queries the capture. Existing per-node/run limit messages and
+ceilings remain, all pin failures stay nonretryable, and cancellation remains first.
+
+Four selected original-runtime controls fail at named assertions: the class capture
+case and three real engine host/executor cases. The latter execute the synthetic
+node three times under forged retry policy, instead of the expected one. The
+reference host's work timers are driven explicitly after arming, without wall-clock
+sleep. A preceding attempt with undriven manual timers timed out and is not causal
+acceptance; an earlier title selector selected only the unit case. Those attempts
+retain their limited scopes. Fixed controls report 52 passes across four files,
+including finite factory/capture and direct JavaScript constructor-bypass controls.
+The initial followup lint refusal of an unsafe reflection return and unknown Promise
+rejection reasons in tests is retained; explicit unknown data and actual Error
+fixture types correct those tests without changing the behavioral witness.
+
+Followup author gates under `CI=true` pass core/CLI lint/typecheck, build, isolation
+and architecture fences. Both test tasks execute freshly: 401 files / 7,979 passes /
+ten explicit platform/CI skips; five successful cache hits are prerequisite builds.
+The prior five-package and native-journal author receipts remain attributed to their
+recorded working source. They do not certify this correction's final publication.
+
+The initial `b87462d2` full local CI was stopped at an owned usage-control Vitest
+worker after the finding. The coordinator and pipeline joined, and no owned worker
+remained; retained failed-attempt diagnostics are not a completed family. Earlier
+completed stages and remote runs keep their original source, without final acceptance.
+Two NEW complete clean cumulative rounds now cover all four correction increments
+together, including the entire increment-4 diff. PR #94 owns their actual verdicts
+and the required final CI/coverage/platform/physical-evidence publication; the old
+nonclean round contributes no clean acceptance. No new ADR, deferral or user action
+is introduced, and Wave 3 remains subsequent work.

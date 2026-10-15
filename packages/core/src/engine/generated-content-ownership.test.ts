@@ -24,6 +24,7 @@ import {
   type AgentTurnParams,
 } from './agent-turn.js';
 import { BudgetPauseError, CommitmentDurabilityError } from './budget-governor.js';
+import { accountingImagePorts } from './fixtures/accounting-media.js';
 import {
   MoneyDurability,
   type SettledAttemptDraft,
@@ -117,7 +118,7 @@ function params(p: LlmProvider, overrides: Partial<AgentTurnParams> = {}): Agent
 }
 async function workflow(p: LlmProvider, onClock?: () => void) {
   const store = new InMemoryRunStore();
-  const host = createInMemoryHost({ store });
+  const host = createInMemoryHost({ store, ...accountingImagePorts('b') });
   const runner = createAgentNodeExecutor({
     resolveProvider: () => p,
     keyFor: () => 'offline-synthetic-placeholder',

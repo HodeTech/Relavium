@@ -1,4 +1,6 @@
 import { CliError } from './errors.js';
+import { FS_ROOT_LIMITS } from '@relavium/shared';
+import type { InvocationFsGrants } from '../engine/tool-host/fs-policy.js';
 
 /**
  * Resolved, normalized global options every command inherits. The global flags are
@@ -25,6 +27,10 @@ export interface GlobalOptions {
    *  `resolveMouseMode` (render-mode.ts), which also gates on the alt screen being active at all. OPTIONAL for the
    *  same reason as {@link noAltScreen} — an absent value reads as `false` (mouse not force-disabled). */
   readonly noMouse?: boolean;
+  /** Operator-authored flags only. Never persisted or populated from config/environment. */
+  readonly allowFsRoots?: readonly string[];
+  /** Host-owned invocation authority captured before dispatcher composition. */
+  readonly fsGrants?: InvocationFsGrants;
 }
 
 /** The raw global-flag values harvested from argv (before normalization). */
@@ -42,6 +48,7 @@ export interface RawGlobalOptions {
   /** `true` for `--no-mouse` (the DISABLE opt-out; enabling is via `[preferences].mouse`, ADR-0068 §e).
    *  Absent ⇒ fall to the config key / phase default. */
   noMouse?: boolean;
+  allowFsRoots?: string[];
 }
 
 export interface ExtractedArgv {
@@ -140,32 +147,52 @@ function takeValueFlag(
   token: string,
   next: string | undefined,
 ): ValueFlagResult {
-  if (token.startsWith('--cwd=') || token.startsWith('--config=')) {
+  if (
+    token.startsWith('--cwd=') ||
+    token.startsWith('--config=') ||
+    token.startsWith('--allow-fs-root=')
+  ) {
     const eq = token.indexOf('=');
     const flag = token.slice(0, eq);
     const value = token.slice(eq + 1);
     if (value.trim() === '') {
       return { kind: 'error', error: requiresArgument(flag) };
     }
-    assignValueFlag(raw, flag, value);
+    const error = assignValueFlag(raw, flag, value);
+    if (error !== undefined) return { kind: 'error', error };
     return { kind: 'consumed', advance: 0 };
   }
-  if (token === '--cwd' || token === '--config') {
+  if (token === '--cwd' || token === '--config' || token === '--allow-fs-root') {
     if (next === undefined || next.startsWith('-') || next.trim() === '') {
       return { kind: 'error', error: requiresArgument(token) };
     }
-    assignValueFlag(raw, token, next);
+    const error = assignValueFlag(raw, token, next);
+    if (error !== undefined) return { kind: 'error', error };
     return { kind: 'consumed', advance: 1 };
   }
   return { kind: 'skip' };
 }
 
-function assignValueFlag(raw: RawGlobalOptions, flag: string, value: string): void {
+function assignValueFlag(raw: RawGlobalOptions, flag: string, value: string): CliError | undefined {
+  if (flag === '--allow-fs-root') {
+    if (
+      value.length > FS_ROOT_LIMITS.characters ||
+      (raw.allowFsRoots?.length ?? 0) >= FS_ROOT_LIMITS.count
+    ) {
+      return new CliError(
+        'invalid_invocation',
+        'Filesystem root grants exceed the supported bounds.',
+      );
+    }
+    (raw.allowFsRoots ??= []).push(value);
+    return undefined;
+  }
   if (flag === '--cwd') {
     raw.cwd = value;
   } else {
     raw.config = value;
   }
+  return undefined;
 }
 
 function requiresArgument(flag: string): CliError {
@@ -226,5 +253,8 @@ export function resolveGlobalOptions(
     verbosity: resolveVerbosity(raw),
     noAltScreen: raw.noAltScreen === true,
     noMouse: raw.noMouse === true,
+    ...(raw.allowFsRoots === undefined
+      ? {}
+      : { allowFsRoots: Object.freeze([...raw.allowFsRoots]) }),
   };
 }

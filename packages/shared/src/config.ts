@@ -21,6 +21,9 @@ export const UpdateChannelSchema = z.enum(['stable', 'beta']);
 /** Filesystem permission tier (built-in-tools.md) — derived from the shared tier vocabulary. */
 export const FsScopeSchema = z.enum(FS_SCOPE_TIERS);
 
+/** Shared admission/selector bounds (ADR-0105); these limits never grant a path. */
+export const FS_ROOT_LIMITS = Object.freeze({ count: 16, characters: 4096 });
+
 /** A registered network MCP server must use http(s) (`http`) or ws(s) (`websocket`) — never file:/javascript:/etc. */
 const SAFE_HTTP_URL = /^https?:\/\//i;
 const SAFE_WS_URL = /^wss?:\/\//i;
@@ -231,6 +234,19 @@ export const ChatConfigSchema = z
     // `[preferences].default_provider` note above; the project layer overrides the global one, like `default_model`.
     default_provider: z.enum(LLM_PROVIDERS).optional(),
     fs_scope: FsScopeSchema.optional(),
+    // Select only within this invocation's independently admitted filesystem grants.
+    extra_roots: z
+      .array(
+        z
+          .string()
+          .min(1)
+          .max(FS_ROOT_LIMITS.characters)
+          .refine((value) => value.trim() !== '', {
+            message: 'a filesystem selector must be non-empty',
+          }),
+      )
+      .max(FS_ROOT_LIMITS.count)
+      .optional(),
     // `!`-shell allowlist (ADR-0061): exact full-command-string match (`allowed_commands`) + opt-in glob patterns
     // (`allowed_command_globs`, riskier). Both empty/absent ⇒ `!` denied (secure-by-default; the user opts in per
     // config-spec.md `[chat]`). Enforced by the SAME `enforcePolicy(allowedCommands)` the workflow run_command uses.

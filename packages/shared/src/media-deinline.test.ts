@@ -5,7 +5,11 @@ import {
   MEDIA_HANDLE_PATTERN,
   type ContentPart,
   type MediaStore,
+  type HostMediaRequest,
 } from './content.js';
+import { PNG } from './media-test-vectors.js';
+import { createMediaVerifier } from './media-verifier.js';
+import { admitMediaDescriptor } from './media-admission.js';
 import { countUnpinnedMedia, deInlineMedia } from './media-deinline.js';
 
 /** A content-addressed in-memory `MediaStore` stub (pure, no crypto): same bytes ⇒ same 64-hex handle. */
@@ -51,6 +55,14 @@ function makeStubStore(): {
     return hex; // 8 × 8 = 64 lowercase hex
   };
   const store: MediaStore = {
+    validateMedia: (handle, descriptor) => {
+      const found = puts.find((p) => p.handle === handle);
+      if (found === undefined) return Promise.reject(new Error('missing fixture bytes'));
+      const verifier = createMediaVerifier(descriptor.mimeType);
+      verifier.push(found.bytes);
+      const actual = verifier.finish();
+      return Promise.resolve(admitMediaDescriptor({ ...descriptor, ...actual, handle }));
+    },
     put: (bytes, mimeType) => {
       const handle = `media://sha256-${fakeDigest(bytes)}`;
       puts.push({ handle, mimeType, bytes });
@@ -93,7 +105,7 @@ function makeStubStore(): {
 const base64MediaPart: ContentPart = {
   type: 'media',
   mimeType: 'image/png',
-  source: { kind: 'base64', data: 'aGVsbG8=' }, // "hello"
+  source: { kind: 'base64', data: Buffer.from(PNG).toString('base64') }, // independently specified PNG
   name: 'pic.png',
 };
 
@@ -109,18 +121,19 @@ describe('deInlineMedia (1.AF, ADR-0042 §2 — flight→durable transform)', ()
     if (media?.type === 'media') {
       expect(media.source).toEqual({ kind: 'handle', ref: put0?.handle });
       expect(media.source.ref).toMatch(MEDIA_HANDLE_PATTERN);
-      expect(media.byteLength).toBe(5); // "hello"
+      expect(media.byteLength).toBe(PNG.length);
       expect(media.name).toBe('pic.png');
     }
     // The output parses as a durable content part (handle-only, no bytes) — the I3 invariant.
     for (const part of out) expect(DurableContentPartSchema.safeParse(part).success).toBe(true);
   });
 
-  it('returns the input unchanged on the no-media fast path (same reference, no put)', async () => {
+  it('returns an owned no-media snapshot without store calls', async () => {
     const { store, puts } = makeStubStore();
     const parts: ContentPart[] = [{ type: 'text', text: 'no media here' }];
     const out = await deInlineMedia(parts, store);
-    expect(out).toBe(parts); // identical reference — no clone, no store round-trip
+    expect(out).toEqual(parts);
+    expect(out).not.toBe(parts);
     expect(puts).toHaveLength(0);
   });
 
@@ -139,10 +152,13 @@ describe('deInlineMedia (1.AF, ADR-0042 §2 — flight→durable transform)', ()
     expect(tree.output.artifacts[0]?.source).toEqual({ kind: 'handle', ref: put0?.handle });
     // the original input is untouched
     const original = value as { output: { artifacts: { source: unknown }[] } };
-    expect(original.output.artifacts[0]?.source).toEqual({ kind: 'base64', data: 'aGVsbG8=' });
+    expect(original.output.artifacts[0]?.source).toEqual({
+      kind: 'base64',
+      data: Buffer.from(PNG).toString('base64'),
+    });
   });
 
-  it('is idempotent (same bytes → same handle) and leaves an already-handle part unchanged', async () => {
+  it('is idempotent (same bytes → same handle) and rescans an already-handle part without a write', async () => {
     const { store, puts } = makeStubStore();
     const a = await deInlineMedia([base64MediaPart], store);
     const b = await deInlineMedia([base64MediaPart], store);
@@ -161,7 +177,8 @@ describe('deInlineMedia (1.AF, ADR-0042 §2 — flight→durable transform)', ()
     };
     const out = await deInlineMedia([handlePart], store);
     expect(puts).toHaveLength(2); // unchanged — the handle part did not put
-    expect(out[0]).toEqual(handlePart);
+    expect(out[0]).toEqual({ ...handlePart, byteLength: PNG.length });
+    expect(out[0]).not.toBe(handlePart);
   });
 
   it('preserves cycles, Maps, and Sets while still de-inlining media within them', async () => {
@@ -197,7 +214,7 @@ describe('deInlineMedia (1.AF, ADR-0042 §2 — flight→durable transform)', ()
         source: { kind: 'url', url: 'https://x.example/a.png' },
       },
     ];
-    await expect(deInlineMedia(urlOnly, store)).rejects.toThrow(/re-host a url media source/);
+    await expect(deInlineMedia(urlOnly, store)).rejects.toThrow(/Media (?:source|descriptor)/);
     expect(puts).toHaveLength(0);
   });
 
@@ -205,11 +222,12 @@ describe('deInlineMedia (1.AF, ADR-0042 §2 — flight→durable transform)', ()
   it('re-hosts a url media part to a handle via the injected fetch hook (D9 — no url in output)', async () => {
     const { store, puts } = makeStubStore();
     const fetched: string[] = [];
-    const FETCH_BYTES = new Uint8Array([1, 2, 3, 4]);
+    const FETCH_BYTES = PNG;
     // A url takes the STREAMING hook now (ADR-0089 §2) — it is the unbounded carrier, so it must never be
     // whole-buffered. Yielded in two chunks so the counting wrapper is exercised across boundaries.
-    const streamUrl = (url: string): AsyncIterable<Uint8Array> => {
-      fetched.push(url);
+    const streamUrl = (request: HostMediaRequest): AsyncIterable<Uint8Array> => {
+      expect(request.mimeType).toBe('image/png');
+      fetched.push(request.url);
       return asyncChunks([FETCH_BYTES.slice(0, 2), FETCH_BYTES.slice(2)]);
     };
     const urlPart: unknown = [
@@ -228,7 +246,7 @@ describe('deInlineMedia (1.AF, ADR-0042 §2 — flight→durable transform)', ()
     expect(put0).toBeDefined();
     expect(put0?.bytes).toEqual(FETCH_BYTES); // the streamed bytes were content-addressed, in order
     expect(out[0]?.source).toEqual({ kind: 'handle', ref: put0?.handle });
-    expect(out[0]?.byteLength).toBe(4);
+    expect(out[0]?.byteLength).toBe(PNG.length);
     expect(JSON.stringify(out)).not.toContain('x.example'); // the url is gone — re-hosted to a handle (I3)
   });
 
@@ -250,20 +268,16 @@ describe('deInlineMedia (1.AF, ADR-0042 §2 — flight→durable transform)', ()
         source: { kind: 'url', url: 'https://x.example/a.png' },
       },
     ];
-    await expect(deInlineMedia(urlPart, store, { fetchUrl })).rejects.toThrow(
-      /no streaming media-egress hook/,
-    );
+    await expect(deInlineMedia(urlPart, store, { fetchUrl })).rejects.toThrow(/streaming host/);
     expect(fetchCalls).toBe(0); // the whole-buffer hook is never reached
     expect(puts).toHaveLength(0);
   });
 
-  it('takes putStream for a url and put for base64 — the carrier decides the method', async () => {
-    // The two are not interchangeable. `put` stays correct for a decoded base64 body (already whole, already
-    // bounded); routing a url through it is the defect. Asserted by WHICH method each carrier reached.
+  it('prefers putStream for both generated base64 and a url when the host supplies it', async () => {
     const { store, streamPuts } = makeStubStore();
-    const streamUrl = (): AsyncIterable<Uint8Array> => asyncChunks([new Uint8Array([9])]);
+    const streamUrl = (): AsyncIterable<Uint8Array> => asyncChunks([PNG]);
     await deInlineMedia([base64MediaPart], store, { streamUrl });
-    expect(streamPuts).toHaveLength(0); // base64 → put
+    expect(streamPuts, 'MEDIA_GENERATED_STREAM_PREFERRED').toHaveLength(1);
 
     await deInlineMedia(
       [
@@ -276,7 +290,7 @@ describe('deInlineMedia (1.AF, ADR-0042 §2 — flight→durable transform)', ()
       store,
       { streamUrl },
     );
-    expect(streamPuts).toHaveLength(1); // url → putStream
+    expect(streamPuts).toHaveLength(2);
   });
 
   it('REFUSES a store that returns a handle without draining the stream', async () => {
@@ -305,7 +319,7 @@ describe('deInlineMedia (1.AF, ADR-0042 §2 — flight→durable transform)', ()
         lazy,
         { streamUrl: () => asyncChunks([new Uint8Array([1]), new Uint8Array([2])]) },
       ),
-    ).rejects.toThrow(/without consuming the whole media stream/);
+    ).rejects.toThrow(/complete stream/);
   });
 
   it('still hard-fails a mimeType-less url part EVEN WITH a fetch hook (nothing to content-address)', async () => {
@@ -319,7 +333,9 @@ describe('deInlineMedia (1.AF, ADR-0042 §2 — flight→durable transform)', ()
       type: 'media',
       source: { kind: 'url', url: 'https://x.example/a.png' },
     };
-    await expect(deInlineMedia(bare, store, { streamUrl })).rejects.toThrow(/no mimeType/);
+    await expect(deInlineMedia(bare, store, { streamUrl })).rejects.toThrow(
+      /descriptor is invalid/,
+    );
     expect(puts).toHaveLength(0); // fail-closed before the hook — no fetch, no put
     expect(fetchCalls).toBe(0); // the hook is never invoked — it fails closed BEFORE any fetch
   });
@@ -328,20 +344,20 @@ describe('deInlineMedia (1.AF, ADR-0042 §2 — flight→durable transform)', ()
   it('hard-fails (no leak, no put) on a base64 data: URI string in an opaque value', async () => {
     const { store, puts } = makeStubStore();
     const value: unknown = { node: 'x', out: 'data:image/png;base64,aGVsbG8=' };
-    await expect(deInlineMedia(value, store)).rejects.toThrow(/data: URI/);
+    await expect(deInlineMedia(value, store)).rejects.toThrow(/inert data/);
     expect(puts).toHaveLength(0);
   });
 
   it('hard-fails on a loose base64 source not wrapped in a media part', async () => {
     const { store } = makeStubStore();
     const value: unknown = { smuggled: { kind: 'base64', data: 'aGVsbG8=' } };
-    await expect(deInlineMedia(value, store)).rejects.toThrow(/loose base64 media source/);
+    await expect(deInlineMedia(value, store)).rejects.toThrow(/inert data/);
   });
 
   it('hard-fails on a raw binary buffer (never mangles a typed array into a numeric object)', async () => {
     const { store } = makeStubStore();
     const value: unknown = { blob: new Uint8Array([1, 2, 3, 4, 5]) };
-    await expect(deInlineMedia(value, store)).rejects.toThrow(/raw binary buffer/);
+    await expect(deInlineMedia(value, store)).rejects.toThrow(/inert data/);
   });
 
   it('hard-fails (modality fail-closed) on a media part with an unknown mimeType', async () => {
@@ -349,7 +365,7 @@ describe('deInlineMedia (1.AF, ADR-0042 §2 — flight→durable transform)', ()
     const bad: unknown = [
       { type: 'media', mimeType: 'application/zip', source: { kind: 'base64', data: 'aGVsbG8=' } },
     ];
-    await expect(deInlineMedia(bad, store)).rejects.toThrow(/unsupported media mimeType/);
+    await expect(deInlineMedia(bad, store)).rejects.toThrow(/type is not supported/);
   });
 
   // --- review HIGH (rank 1): a url media part with NO mimeType slips past isInflightMediaPart (which
@@ -361,12 +377,12 @@ describe('deInlineMedia (1.AF, ADR-0042 §2 — flight→durable transform)', ()
       type: 'media',
       source: { kind: 'url', url: 'https://x.example/a.png' },
     };
-    await expect(deInlineMedia(bare, store)).rejects.toThrow(/re-host a url media source/);
+    await expect(deInlineMedia(bare, store)).rejects.toThrow(/Media (?:source|descriptor)/);
     // and nested inside an opaque tree (the unknown-overload walk)
     const nested: unknown = [
       { type: 'media', source: { kind: 'url', url: 'https://x.example/b.png' } },
     ];
-    await expect(deInlineMedia(nested, store)).rejects.toThrow(/re-host a url media source/);
+    await expect(deInlineMedia(nested, store)).rejects.toThrow(/Media (?:source|descriptor)/);
     expect(puts).toHaveLength(0);
   });
 
@@ -375,11 +391,11 @@ describe('deInlineMedia (1.AF, ADR-0042 §2 — flight→durable transform)', ()
     const bad: unknown = [
       { type: 'media', mimeType: 'image/png', source: { kind: 'base64', data: '@@@@' } },
     ];
-    await expect(deInlineMedia(bad, store)).rejects.toThrow(/not valid base64/);
+    await expect(deInlineMedia(bad, store)).rejects.toThrow(/descriptor is invalid/);
     expect(puts).toHaveLength(0);
   });
 
-  it('hard-fails (TypeError naming the real fault) on a base64 media source whose data is not a string', async () => {
+  it('hard-fails with a fixed descriptor error on a base64 media source whose data is not a string', async () => {
     const { store, puts } = makeStubStore();
     // Co-locate with a real carrier so the scan triggers the walk — a lone non-string-data source is NOT
     // flagged (its data isn't a string), so it would otherwise fast-path through unchanged (and fail the
@@ -389,7 +405,7 @@ describe('deInlineMedia (1.AF, ADR-0042 §2 — flight→durable transform)', ()
       { type: 'media', mimeType: 'image/png', source: { kind: 'base64', data: 42 } },
       base64MediaPart,
     ];
-    await expect(deInlineMedia(bad, store)).rejects.toThrow(/source\.data must be a string/);
+    await expect(deInlineMedia(bad, store)).rejects.toThrow(/descriptor is invalid/);
     expect(puts).toHaveLength(0); // throws on item 0 before the valid carrier is put
   });
 
@@ -401,7 +417,7 @@ describe('deInlineMedia (1.AF, ADR-0042 §2 — flight→durable transform)', ()
       { type: 'media', mimeType: 'image/png', source: { kind: 'blob', ref: 'x' } },
       base64MediaPart,
     ];
-    await expect(deInlineMedia(value, store)).rejects.toThrow(/unsupported media source kind/);
+    await expect(deInlineMedia(value, store)).rejects.toThrow(/descriptor is invalid/);
   });
 
   it('puts a shared media-part reference only once within a single call (cache-before-recursion dedup)', async () => {

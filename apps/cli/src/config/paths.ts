@@ -14,7 +14,7 @@ export function globalConfigDir(home: string = homedir()): string {
 }
 
 /**
- * Lazily create `~/.relavium/` (and its `tmp/`) on first run, owner-only (`0700`). Idempotent.
+ * Lazily create `~/.relavium/` on first run, owner-only (`0700`). Idempotent.
  *
  * The `0700` is the at-rest control for the unencrypted CLI `history.db` it will hold
  * ([ADR-0050](../../../../docs/decisions/0050-cli-history-db-at-rest-posture.md)). The explicit
@@ -24,7 +24,7 @@ export function globalConfigDir(home: string = homedir()): string {
  */
 export function ensureGlobalConfigDir(home: string = homedir()): string {
   const dir = globalConfigDir(home);
-  mkdirSync(join(dir, 'tmp'), { recursive: true });
+  mkdirSync(dir, { recursive: true });
   chmodSync(dir, 0o700);
   return dir;
 }

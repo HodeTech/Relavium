@@ -60,6 +60,20 @@ const FORBIDDEN_DECLARED_ENV: ReadonlySet<string> = new Set([
   'HOMEPATH',
   'APPDATA',
   'LOCALAPPDATA',
+  // Credential/config selectors: a declaration cannot point an approved CLI at a different
+  // Kubernetes/cloud/Terraform identity or an attacker-authored config (ADR-0105).
+  'KUBECONFIG',
+  'AWS_CONFIG_FILE',
+  'AWS_SHARED_CREDENTIALS_FILE',
+  'AWS_PROFILE',
+  'AWS_DEFAULT_PROFILE',
+  'DOCKER_CONFIG',
+  'GOOGLE_APPLICATION_CREDENTIALS',
+  'AZURE_CONFIG_DIR',
+  'AZURE_AUTH_LOCATION',
+  'CLOUDSDK_CONFIG',
+  'CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE',
+  'TF_CLI_CONFIG_FILE',
   // executable resolution ignores a declared PATH — reject it rather than mislead
   'PATH',
 ]);

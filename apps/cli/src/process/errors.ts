@@ -4,7 +4,13 @@ import {
   isTransientEngineStateError,
   WorkflowParseError,
 } from '@relavium/core';
-import { isCorruptRunEventError, isUnreadableRunEventLogError } from '@relavium/db';
+import {
+  isCorruptRunEventError,
+  isProviderHeaderPolicyError,
+  isUnreadableRunEventLogError,
+  ProviderHeaderPolicyError,
+  SessionMessageBoundaryError,
+} from '@relavium/db';
 
 import { EXIT_CODES, type ExitCode } from './exit-codes.js';
 
@@ -75,6 +81,26 @@ export interface UserFacingError {
 export function toUserFacing(value: unknown): UserFacingError {
   if (isCliError(value)) {
     return { code: value.code, message: value.message, exitCode: value.exitCode };
+  }
+  // ADR-0108: the disabled header field is an invocation refusal. Keep this projection fixed rather than
+  // promoting the incoming message: structurally compatible errors can originate from another bundle.
+  if (isProviderHeaderPolicyError(value)) {
+    return {
+      code: 'invalid_invocation',
+      message: new ProviderHeaderPolicyError().message,
+      exitCode: EXIT_CODES.invalidInvocation,
+    };
+  }
+  // SessionMessageBoundaryError is raised by both read and write validation. The DB type has no
+  // session id, and its cause/message must never become a transcript diagnostic. A refused read can
+  // be recovered from a safe history backup; a refused write must not claim the row was persisted.
+  if (value instanceof SessionMessageBoundaryError) {
+    return {
+      code: 'invalid_invocation',
+      message:
+        'A session message has an invalid persistence format. Restore a safe history backup or start a new session.',
+      exitCode: EXIT_CODES.invalidInvocation,
+    };
   }
   // A damaged `run_events` row (ADR-0074 §5 / ADR-0050). The generic fallback below would report a corrupt row
   // out of a 4,000-event log as `An unexpected internal error occurred.` — no run, no row, no next step. The

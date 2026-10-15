@@ -6,7 +6,12 @@ import {
   WorkflowSyntaxError,
   WorkflowValidationError,
 } from '@relavium/core';
-import { CorruptRunEventError, UnreadableRunEventLogError } from '@relavium/db';
+import {
+  CorruptRunEventError,
+  ProviderHeaderPolicyError,
+  SessionMessageBoundaryError,
+  UnreadableRunEventLogError,
+} from '@relavium/db';
 import { describe, expect, it } from 'vitest';
 
 import { CliError, isCliError, toUserFacing } from './errors.js';
@@ -61,6 +66,48 @@ describe('CliError', () => {
 });
 
 describe('toUserFacing', () => {
+  it.each(['message_invalid', 'metadata_invalid'] as const)(
+    'maps a %s session boundary refusal to a fixed, value-free invocation diagnostic',
+    (code) => {
+      const error = new SessionMessageBoundaryError(code);
+      error.message = 'PRIVATE_SESSION_BODY_AND_PROPERTY';
+      const projected = toUserFacing(error);
+      expect(projected).toEqual({
+        code: 'invalid_invocation',
+        message:
+          'A session message has an invalid persistence format. Restore a safe history backup or start a new session.',
+        exitCode: EXIT_CODES.invalidInvocation,
+      });
+      expect(JSON.stringify(projected)).not.toContain('PRIVATE_SESSION_BODY_AND_PROPERTY');
+    },
+  );
+
+  it('maps a provider-header policy refusal to the fixed invocation diagnostic (ADR-0108)', () => {
+    expect(toUserFacing(new ProviderHeaderPolicyError())).toEqual({
+      code: 'invalid_invocation',
+      message: new ProviderHeaderPolicyError().message,
+      exitCode: EXIT_CODES.invalidInvocation,
+    });
+  });
+
+  it('uses the structural DB guard for another bundle and refuses altered lookalikes', () => {
+    const compatible = new Error(new ProviderHeaderPolicyError().message);
+    Object.defineProperty(compatible, 'code', { value: 'provider_header_policy' });
+    compatible.name = 'ProviderHeaderPolicyError';
+    expect(toUserFacing(compatible)).toEqual({
+      code: 'invalid_invocation',
+      message: new ProviderHeaderPolicyError().message,
+      exitCode: EXIT_CODES.invalidInvocation,
+    });
+    expect(toUserFacing({ code: 'provider_header_policy' }).code).toBe('internal');
+    compatible.message = 'opaque compatibility payload';
+    expect(toUserFacing(compatible)).toEqual({
+      code: 'internal',
+      message: 'An unexpected internal error occurred.',
+      exitCode: EXIT_CODES.workflowFailed,
+    });
+  });
+
   it('passes a CliError through verbatim', () => {
     expect(toUserFacing(new CliError('invalid_invocation', 'name it'))).toEqual({
       code: 'invalid_invocation',

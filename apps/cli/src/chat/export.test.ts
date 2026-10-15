@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { parseWorkflow } from '@relavium/core';
 import { createClient, createSessionStore, runMigrations, type DbClient } from '@relavium/db';
 import { AgentSchema, type AgentSessionRecord, type SessionMessage } from '@relavium/shared';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -82,6 +83,32 @@ describe('exportSession (2.P)', () => {
     expect(yaml).toContain('type: agent'); // the one completed turn becomes an agent node
     expect(yaml).toContain('relaviumExport'); // the full transcript is preserved in metadata
     expect(yaml).toContain('hello'); // the transcript is in the metadata
+  });
+
+  it('preserves authored agent literals and retained conversation archive for review without reconstructing memory', () => {
+    const agent = AgentSchema.parse({
+      ...AGENT,
+      system_prompt: 'AUTHORED_LITERAL_SENTINEL sk-test-authored-sensitive-string',
+    });
+    store.createSession(record({ agentSnapshot: agent }));
+    const messages: SessionMessage[] = [
+      message(0, 'user', 'USER_SENTINEL @-attached FILE_SENTINEL !-shell SHELL_SENTINEL'),
+      message(1, 'assistant', 'ASSISTANT_SENTINEL'),
+      {
+        ...message(2, 'user', 'COMPACTION_SUMMARY_SENTINEL'),
+        role: 'system',
+        compaction: { droppedThroughSequence: 1 },
+      },
+    ];
+    for (const row of messages) store.appendMessage(row);
+    const result = exportSession({ store, sessionId: 's1', cwd, force: false });
+    const workflow = parseWorkflow(readFileSync(result.path, 'utf8')).workflow;
+    expect(workflow.agents, 'W2_EXPORT_FAITHFUL_LITERALS').toEqual([agent]);
+    expect(workflow.metadata?.['relaviumExport']).toMatchObject({ messages });
+    const nodes = JSON.stringify(workflow.nodes);
+    expect(nodes).toContain('USER_SENTINEL');
+    expect(nodes).not.toContain('COMPACTION_SUMMARY_SENTINEL');
+    expect(store.loadFull('s1')?.messages).toEqual(messages);
   });
 
   it('keys the default filename on the session id, so same-titled sessions never collide', () => {

@@ -39,6 +39,7 @@ import {
   type SessionPersister,
 } from '../chat/persister.js';
 import { loadResolvedConfig } from '../config/load.js';
+import { admitFsInvocation, admitChatFsPolicy } from '../engine/tool-host/fs-admission.js';
 import { writeGlobalPreferences } from '../config/write.js';
 import { createModelCatalogPort } from '../engine/model-catalog-port.js';
 import { readUserPricingOverlay } from '../engine/pricing-overlay.js';
@@ -189,12 +190,14 @@ export const defaultOnboardingTerminalLifecycle: OnboardingTerminalLifecycle = {
 };
 
 export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
+  const grants = admitFsInvocation(deps.global);
   const now = deps.now ?? Date.now;
   const uuid = deps.uuid ?? randomUUID;
   const { config, projectConfigDir, homeDir } = loadResolvedConfig({
     cwd: deps.global.cwd,
     configPath: deps.global.configPath,
   });
+  const fsPolicy = admitChatFsPolicy(grants, deps.global.cwd, config.chat.extraRoots);
   // One OS-keychain accessor shared by the provider key resolver (2.C) + the MCP named-secret resolver (2.R) — the
   // Home's composition-root wiring, mirroring `dispatch.ts`'s `keyResolvers` for the named commands. WITHOUT the
   // keychain the Home defaulted to an ENV-ONLY resolver, so a key stored in the OS keychain (the normal
@@ -570,6 +573,7 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
           profile: 'chat-read-only',
           fsScopeTier: built.context.fsScopeTier,
           workspaceDir: built.context.workingDir,
+          ...(built.fsPolicy === undefined ? {} : { fsPolicy: built.fsPolicy }),
         }).host.fs;
         const mentionReader = mentionFs === undefined ? undefined : createMentionReader(mentionFs);
         // The `!`-shell runner (2.5.D step 5, ADR-0061) — a thin wrapper over the session's `runUserCommand`.
@@ -676,6 +680,7 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
           homeDir,
           prompt: createConsentPrompter(),
         }),
+        fsPolicy,
         chat: {
           ...config.chat,
           defaultModel,
@@ -762,6 +767,7 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         noteToStore(budgetWarningText(warning));
       const built = await (deps.buildResumedSession ?? buildResumedChatSession)({
         chat: config.chat,
+        fsPolicy,
         ...(config.maxTokensEstimate === undefined
           ? {}
           : { maxTokensEstimate: config.maxTokensEstimate }),

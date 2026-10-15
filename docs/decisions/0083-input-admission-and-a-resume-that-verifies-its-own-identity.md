@@ -378,3 +378,17 @@ had. That follows from §5's authority rule and needs no version marker.
 - **A `secret` input must be re-supplied on every resume**, through stdin, which is friction on an unattended
   resume and the honest cost of never persisting a credential — and it still does not prove continuity (§6).
 - **A catastrophic authored `pattern` can still stall a run** whose input has no `max_length`.
+
+> Amended 2026-10-12 by [ADR-0105](0105-filesystem-roots-are-invocation-grants-not-project-authority.md): This ADR’s workflow-resume identity contract remains intact. ADR-0105 adds a separate chat-resume original-canonical-workspace/current-config root reauthorization contract; workflow execution does not consume chat grants. Exact mechanisms are in the [tool filesystem contract](../reference/shared-core/built-in-tools.md#filesystem-permission-tiers), with [argv authority](../reference/cli/commands.md#global-options) and [config selectors](../reference/contracts/config-spec.md#chat-filesystem-root-selectors) in their canonical homes. Implementation review/gates remain open.
+
+> Implementation note 2026-10-12 under [ADR-0107](0107-first-run-secret-inputs-use-bounded-stdin.md): The CLI now refuses every explicit first-run `--input` for a declared `secret`, including an empty value, and accepts first-run values through the bounded non-TTY `run --secret-inputs-stdin` transport. The CLI runs this ADR's pure input admission over the merged values before credential/provider/MCP/history composition; the engine's final admission remains in place. Recorded input slots and input-node outputs stay masked, and a resume still requires fresh stdin resupply. The faithful workflow snapshot and unrelated content are outside that masking claim. The [CLI command contract](../reference/cli/commands.md#relavium-run) owns the transport and prompt behavior; the [workflow input contract](../reference/contracts/workflow-yaml-spec.md#inputs) owns provenance and masking. This note records implementation without altering this ADR's Accepted decision or claiming whole-Step-4 acceptance.
+
+
+### Wave 2 implementation landing — 2026-10-13
+
+The applicable Wave 2 implementation is accepted on `development`. The
+[closing register](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-2-closing-register--2026-10-13)
+joins the per-item disposition, two NEW clean complete whole-wave review rounds,
+security sittings, exact-source gates and preserved limits. Earlier dated pending
+checkpoints remain historical. This landing does not claim a merge, future header
+activation, full M/N lifecycle or removal of approved residuals.

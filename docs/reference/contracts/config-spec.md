@@ -20,8 +20,9 @@ Created on first launch. Holds user-wide preferences and the registry of MCP ser
   ipc.json           # desktop loopback server discovery (port, authToken, pid) — see ipc-contract.md
   history.db         # cross-project run history (SQLite; desktop: SQLCipher, CLI: unencrypted + 0600/0700 OS perms — ADR-0050) — see shared-core/database-schema.md
   secrets.enc        # RESERVED encrypted-file key fallback (deferred past v1.0; Argon2id KDF) — see keychain-and-secrets.md
-  tmp/               # scratch space agents may write to under the sandbox tier
 ```
+
+Automatic global `tmp/` provisioning is removed; existing directories are not deleted. Ordinary chat has no production scratch allocator. The host-only [scratch descriptor prerequisite](../shared-core/built-in-tools.md#host-issued-scratch) supports the future [Phase 2.6.N artifact-store producer](../../roadmap/phases/phase-2.6-conversational-authoring.md#26n--child-session-foundation-catalog-spawn-standardized-io-lineage).
 
 > API keys are **not** stored in `config.toml`. They live in the OS keychain; the CLI's headless/CI fallback is the env var `RELAVIUM_<PROVIDER>_API_KEY`. The `secrets.enc` encrypted-file fallback is **deferred past v1.0** (it needs a proper Argon2id KDF). See [../desktop/keychain-and-secrets.md](../desktop/keychain-and-secrets.md).
 
@@ -56,6 +57,8 @@ flowchart LR
 2. **Workspace** (`workspace.toml`) — shared, committed variables for everything in the directory.
 3. **Project** (`project.toml`) — project-specific overrides.
 4. **Per-invocation** — a CLI flag or environment variable for a single run; highest precedence. See [../cli/commands.md](../cli/commands.md).
+
+This general precedence never creates filesystem authority. Only the explicit invocation grants in [CLI commands](../cli/commands.md#global-options) authorize extra roots; committed config can only narrow them through the [chat selector](#chat-filesystem-root-selectors). No environment variable grants a root.
 
 MCP server registrations **union** across layers rather than following this precedence: globally registered servers (`config.toml`) plus any project-scoped servers. A duplicate `name` is **refused, not overridden** — whether it appears in more than one layer, or twice within a single file — see the **Project-scoped MCP servers** note under [`project.toml` / `workspace.toml`](#projecttoml--workspacetoml-project--keys) for the rule and its remedies, and [../shared-core/mcp-integration.md](../shared-core/mcp-integration.md) for the registration shape.
 
@@ -122,7 +125,7 @@ tool's configuration** — `NODE_OPTIONS`, `PATH`, `ZDOTDIR`, `BASH_ENV`, `HOME`
 the registration is rejected at parse rather than silently dropped at spawn, because an author who wrote it
 believed it would take effect. The match is case-insensitive, and the same rule governs `run_command`'s
 `declared_env` and an inline `agent.mcp_servers` entry — one list, in `@relavium/shared`, so the two process
-hosts cannot drift ([ADR-0084](../../decisions/0084-consent-before-a-local-mcp-spawn.md) §4). Credentials
+hosts cannot drift. Cloud, Kubernetes and Terraform config/credential overrides join the same [shared predicate](../../../packages/shared/src/declared-env.ts), case-insensitively ([ADR-0084](../../decisions/0084-consent-before-a-local-mcp-spawn.md) §4). Credentials
 belong in `env` as `{{secrets.*}}` references, which are unaffected.
 
 Registering a stdio server does **not** authorize spawning it: a local MCP program still needs the user's
@@ -174,6 +177,7 @@ default_model = "claude-sonnet-4-6"   # model for a chat session that names none
 default_provider = "anthropic"     # ADR-0059: the provider serving [chat].default_model, resolved from the SAME config layer as the effective default_model (NEVER independently — a fresh model paired with a stale layer's provider dials the wrong adapter → 404). Absent when the model resolves ⇒ inferred from the id (catalog first, then prefix).
 reasoning_effort = "medium"        # ADR-0066: reasoning-effort tier baked onto the DEFAULT chat agent — off | low | medium | high | max; absent ⇒ no reasoning control (the provider default). Ignored on a model without a controllable reasoning tier.
 fs_scope = "sandboxed"             # SAME tier enum as [defaults].fs_scope above (not re-listed here)
+extra_roots = ["../shared"]         # OPTIONAL narrowing selector for invocation grants; project/workspace only — see Chat filesystem root selectors
 max_turns = 50                     # hard session TURN cap → SessionDeps.maxTurns (DoS fail-safe; absent ⇒ engine default 50; positiveInt — 0 is rejected here) — DISTINCT from max_messages
 max_messages = 200                 # history-trim threshold — consumed by `/trim` + auto-compaction (ADR-0062); older turns trimmed/summarized
 auto_compact = true                # ADR-0096: permit measured next-request compaction when memory is omitted (absent ⇒ true)
@@ -227,6 +231,14 @@ allowed_command_globs = []         # opt-in glob form of the !-shell allowlist (
 > The `[chat]` block resolves **per field** (each key independently, last-writer-wins project → workspace) — a project that sets only `max_turns` still inherits `default_model`/`max_messages` from the workspace layer. (Contrast `[defaults].media_cost_estimate`, which resolves **whole-object**: the highest layer present replaces the table outright.) **`default_model` and `reasoning_effort` each have one extra fallback**: absent at both `[chat]` layers, each falls through to its global **`[preferences]`** counterpart (`default_model` per [ADR-0063](../../decisions/0063-cli-config-write-contract.md) §1; `reasoning_effort` per [ADR-0066](../../decisions/0066-normalized-reasoning-effort-control.md) §6) — the write targets of `/models` (model + its effort sub-step) and the wizard — so a user's "preferred model / effort everywhere" governs chat too, exactly as `[preferences].default_model` already governs a workflow's `[defaults].model`. Full precedence for each: `[chat].<key>` (project → workspace) → `[preferences].<key>` (global). **`default_provider` ([ADR-0059](../../decisions/0059-cli-mid-session-model-reseat.md)) also reads the global layer, but COUPLED to `default_model`** — NOT resolved independently: it is taken from the SAME layer that supplied the model (absent there ⇒ id inference), so a lower layer's stale provider can never pair with a higher layer's model (an `openai` provider leaking onto a project's `claude` `default_model` would bind the wrong adapter). No OTHER `[chat]` field reads the global layer. The `!`-shell allowlist is a **second coupled group**: `allowed_commands` (exact) + `allowed_command_globs` (globs) are a **coupled unit**, so a project that sets **either** array owns the **whole** allowlist and does **not** inherit the other array from the workspace. Otherwise a project narrowing `allowed_commands` would silently keep the workspace's broader globs — lock to `git status`, yet still allow `git push` via an inherited `git *`. Only when a project sets **neither** allowlist array do both fall through to the workspace; a present array otherwise REPLACES (never merges) the lower layer's. This is what guarantees a narrower project can never inherit a broader workspace entry.
 >
 > `allowed_commands` / `allowed_command_globs` gate the **`!`-shell escape** (2.5.D, [ADR-0061](../../decisions/0061-cli-input-layer-file-injection-and-shell-escape.md)) — a chat user typing `!command` runs it through the **one** `run_command` boundary (they map to the engine's camelCase `allowedCommands` / `allowedCommandGlobs`, the SAME allowlist a workflow `run_command` uses). `allowed_commands` is **exact full-command-string** match (`git status`, `ls -la` — `git` never authorizes `git push --force`); `allowed_command_globs` is the opt-in, riskier pattern form. **Both default to EMPTY ⇒ `!`-shell is disabled** — the `empty ⇒ disabled` symmetry [security-review.md](../../standards/security-review.md) pins, with **no chat-specific relaxation** (there is no curated default: `run_command` has no argument/file confidentiality floor, so even a "read-only" default set — `cat`, `grep` — would reopen `!cat .env` → provider). `!`-shell is first-class via a first-class **opt-in** (the user lists commands, or the 2.5.G onboarding offers a reviewed seed), and a non-allowlisted `!cmd` gets an **actionable, secret-free deny hint** naming the exact line to add. `enforcePolicy(allowedCommands)` runs **before** the mode-aware `confirmAction`, so even `auto` mode never runs a command absent from the allowlist. Editing chat `allowed_commands` is a [security-review.md](../../standards/security-review.md) trigger.
+
+### Chat filesystem root selectors
+
+`[chat].extra_roots` is optional and legal only in strict project/workspace config, never global preferences. It accepts at most 16 nonempty, non-whitespace strings of at most 4096 characters each. The project value **replaces** the workspace value. Relative selectors resolve against the session working directory.
+
+Absent selects every invocation grant; `[]` selects none. Each selected canonical directory must equal or be beneath an independently admitted [invocation grant](../cli/commands.md#global-options). Inaccessible or unmatched requests refuse, including under the sandboxed tier. Config, history and model output never grant authority.
+
+The selector does not promote the tier: sandboxed remains workspace-only; project adds effective selected roots; chat full is clamped to project. Workflow `run` does not consume these chat roots. Resume reloads current project/workspace selectors at the original canonical workspace, using the current global `--config` override only for global preferences; see [session authority](../cli/chat-session.md#filesystem-authority-and-resume).
 
 ## Secrets are out of band
 

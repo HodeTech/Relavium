@@ -48,6 +48,11 @@ function mediaStore(): MediaStore {
       blobs.set(key, bytes);
       return Promise.resolve(key);
     },
+    validateMedia: (handle, descriptor) => {
+      const bytes = blobs.get(handle);
+      if (bytes === undefined) return Promise.reject(new Error('missing synthetic media'));
+      return Promise.resolve({ ...descriptor, handle, byteLength: bytes.byteLength });
+    },
     get: (key) => {
       const bytes = blobs.get(key);
       return bytes === undefined

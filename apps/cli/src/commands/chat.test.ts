@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough, Readable } from 'node:stream';
@@ -19,6 +19,8 @@ import {
 } from '@relavium/db';
 import { startMcpClient as realStartMcpClient, type McpConnection } from '@relavium/mcp';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { render } from 'ink';
+import { createElement } from 'react';
 
 import type { DoctorProbes } from '../chat/doctor.js';
 import { buildChatSession, buildResumedChatSession } from '../chat/session-host.js';
@@ -31,11 +33,11 @@ import {
 import type { ResolvedChatConfig } from '../config/resolve.js';
 import { EXIT_CODES } from '../process/exit-codes.js';
 import type { GlobalOptions } from '../process/options.js';
-import { selectChatDriver } from '../render/tui/chat-ink.js';
+import { ChatApp, selectChatDriver } from '../render/tui/chat-ink.js';
 import { createChatStore, type ChatStoreController } from '../render/tui/chat-store.js';
 import { INLINE_TRANSCRIPT_BOUND } from '../render/tui/session-view-model.js';
 import { formatTurnSummary, errorRecoveryHint } from '../render/tui/chat-projection.js';
-import { captureIo, parseNdjson, OwnedTtyOutput } from '../test-support.js';
+import { captureIo, parseNdjson, OwnedTtyInput, OwnedTtyOutput } from '../test-support.js';
 import { processIo } from '../process/io.js';
 import {
   DISABLE_MOUSE,
@@ -208,7 +210,7 @@ describe('chatCommand', () => {
   const savedHome = new Map<string, string | undefined>();
 
   beforeEach(() => {
-    cwd = mkdtempSync(join(tmpdir(), 'relavium-chat-cwd-'));
+    cwd = realpathSync(mkdtempSync(join(tmpdir(), 'relavium-chat-cwd-')));
     home = mkdtempSync(join(tmpdir(), 'relavium-chat-home-'));
     // os.homedir() reads HOME (POSIX) / USERPROFILE (Windows) — override BOTH so config load is hermetic.
     for (const v of HOME_ENV_VARS) {
@@ -843,6 +845,161 @@ describe('chatCommand', () => {
     const { notices, err } = await budgetWarningDuringSession({}); // default io ⇒ non-TTY ⇒ plain path
     expect(err).toContain('budget warning'); // visible on stderr, exactly as before the alt-screen work
     expect(notices.some((t) => t.includes('budget warning'))).toBe(false); // not buried in an unrendered store
+  });
+
+  it.each([
+    { mode: 'human', json: false },
+    { mode: 'json', json: true },
+  ])(
+    'reports fixed continuity and review notice on stderr after live $mode /export',
+    async ({ json }) => {
+      const { d, out, err } = deps([], [textTurn('PRIVATE_ASSISTANT_SENTINEL')]);
+      await chatCommand(
+        { agent: undefined },
+        {
+          ...d,
+          io: { ...d.io, stdin: Readable.from(['PRIVATE_USER_SENTINEL\n/export\n']) },
+          global: { ...d.global, json },
+          drive: json ? driveJson : drivePlain,
+        },
+      );
+      const notice = err()
+        .split('\n')
+        .filter((line) => line.startsWith('note: exported workflow'));
+      expect(notice, 'W2_EXPORT_LIVE_NOTICE').toHaveLength(1);
+      expect(notice[0], 'W2_EXPORT_LIVE_NOTICE').toContain(
+        'scaffold; conversation context is not reproduced',
+      );
+      expect(notice[0], 'W2_EXPORT_LIVE_NOTICE').toContain(
+        'Compaction summaries, trimming and omitted context may not transfer',
+      );
+      expect(notice[0], 'W2_EXPORT_LIVE_NOTICE').toContain(
+        'Review retained user/assistant text, @-attached files, !-shell output and authored agent literals before committing',
+      );
+      expect(err()).not.toContain('PRIVATE_');
+      expect(out()).not.toContain('note: exported workflow');
+      expect(existsSync(join(cwd, 'id-0.relavium.yaml'))).toBe(true);
+      if (json) {
+        const events = parseNdjson<{ type: string; workflowPath?: string }>(out());
+        expect(events.filter((event) => event.type === 'session:exported')).toEqual([
+          expect.objectContaining({ workflowPath: join(cwd, 'id-0.relavium.yaml') }),
+        ]);
+      } else {
+        expect(err()).toContain(`exported session to ${join(cwd, 'id-0.relavium.yaml')}`);
+      }
+    },
+  );
+
+  it.each([
+    { mode: 'human', json: false },
+    { mode: 'json', json: true },
+  ])(
+    'omits the live $mode continuity notice and exported event after a refused write',
+    async ({ json }) => {
+      const { d, out, err } = deps([], [textTurn('hi')]);
+      mkdirSync(join(cwd, 'id-0.relavium.yaml'));
+      await chatCommand(
+        { agent: undefined },
+        {
+          ...d,
+          io: { ...d.io, stdin: Readable.from(['hello\n/export\n']) },
+          global: { ...d.global, json },
+          drive: json ? driveJson : drivePlain,
+        },
+      );
+      expect(err()).toContain('export failed:');
+      expect(err(), 'W2_EXPORT_LIVE_SUCCESS_ONLY').not.toContain('note: exported workflow');
+      expect(out()).not.toContain('note: exported workflow');
+      if (json) {
+        expect(
+          parseNdjson<{ type: string }>(out()).some((event) => event.type === 'session:exported'),
+        ).toBe(false);
+      }
+    },
+  );
+
+  it.each([
+    { result: 'success', refuse: false },
+    { result: 'refusal', refuse: true },
+  ])('renders the live export $result through the interactive transcript', async ({ refuse }) => {
+    client.sqlite.close();
+    client = createClient(join(home, 'export-notice.db'));
+    runMigrations(client.db);
+    const { d, err } = deps([], [textTurn('PRIVATE_ASSISTANT_SENTINEL')]);
+    if (refuse) mkdirSync(join(cwd, 'id-0.relavium.yaml'));
+    const stdout = new OwnedTtyOutput();
+    const stdin = new OwnedTtyInput();
+    let app: ReturnType<typeof render> | undefined;
+    try {
+      await chatCommand(
+        { agent: undefined },
+        {
+          ...d,
+          ...INERT_HOIST,
+          io: { ...d.io, stdoutIsTty: true },
+          drive: async (ctx) => {
+            ctx.startSession();
+            app = render(
+              createElement(ChatApp, {
+                store: ctx.store,
+                alternateScreen: true,
+                onSubmit: ctx.processLine,
+                shouldStop: ctx.shouldStop,
+                onExit: () => undefined,
+                onError: (error) => {
+                  throw error;
+                },
+                onModeChange: () => undefined,
+              }),
+              {
+                stdout,
+                stdin,
+                stderr: stdout,
+                patchConsole: false,
+                interactive: true,
+                alternateScreen: false,
+                exitOnCtrlC: false,
+              },
+            );
+            await app.waitUntilRenderFlush();
+            await ctx.processLine('PRIVATE_USER_SENTINEL');
+            await ctx.processLine('/export');
+            ctx.store.notice('EXPORT_RENDER_POSITIVE_CONTROL');
+            await app.waitUntilRenderFlush();
+            const notices = ctx.store
+              .getSnapshot()
+              .state.transcript.filter((entry) => entry.role === 'notice')
+              .map((entry) => entry.text);
+            const frames = stdout.frames.join('');
+            expect(notices).toContain('EXPORT_RENDER_POSITIVE_CONTROL');
+            expect(frames).toContain('EXPORT_RENDER_POSITIVE_CONTROL');
+            const warning = notices.filter((text) => text.startsWith('note: exported workflow'));
+            expect(warning, 'W2_EXPORT_LIVE_RENDERED_NOTICE').toHaveLength(refuse ? 0 : 1);
+            if (refuse) {
+              expect(frames).not.toContain('exported workflow is a scaffold');
+              expect(err()).toContain('export failed:');
+            } else {
+              expect(frames, 'W2_EXPORT_LIVE_RENDERED_NOTICE').toContain(
+                'exported workflow is a scaffold',
+              );
+              expect(warning[0]).not.toContain('PRIVATE_');
+              expect(existsSync(join(cwd, 'id-0.relavium.yaml'))).toBe(true);
+            }
+            expect(err()).not.toContain('note: exported workflow');
+            await ctx.processLine('/exit');
+            return { kind: 'exit' };
+          },
+        },
+      );
+    } finally {
+      try {
+        app?.unmount();
+        if (app !== undefined) await app.waitUntilExit();
+      } finally {
+        stdin.destroy();
+        stdout.destroy();
+      }
+    }
   });
 
   it('exports the session-so-far to a scaffold on /export, continues, and does NOT mark the live row', async () => {
@@ -2279,20 +2436,12 @@ describe('chatResumeCommand (2.N)', () => {
       { agent: undefined },
       freshDeps(['t1', 't2', '/exit'], [textTurn('a'), textTurn('b')], store),
     );
-    // A separate project whose [chat].max_turns = 1 is BELOW the session's 2 prior turns.
-    const capCwd = mkdtempSync(join(tmpdir(), 'relavium-cap-'));
-    mkdirSync(join(capCwd, '.relavium'), { recursive: true });
-    writeFileSync(join(capCwd, '.relavium', 'project.toml'), '[chat]\nmax_turns = 1\n');
-    try {
-      const { d, err } = resumeDeps([], [], store);
-      await chatResumeCommand(
-        { sessionId: 'id-0' },
-        { ...d, global: { ...globalOptions(capCwd), json: false } },
-      );
-      expect(err()).toContain('new turns will be refused');
-    } finally {
-      rmSync(capCwd, { recursive: true, force: true });
-    }
+    // Current config is rediscovered at the ORIGINAL workspace, regardless of launch cwd.
+    mkdirSync(join(cwd, '.relavium'), { recursive: true });
+    writeFileSync(join(cwd, '.relavium', 'project.toml'), '[chat]\nmax_turns = 1\n');
+    const { d, err } = resumeDeps([], [], store);
+    await chatResumeCommand({ sessionId: 'id-0' }, { ...d, global: { ...d.global, json: false } });
+    expect(err()).toContain('new turns will be refused');
   });
 
   it('does NOT warn when resuming a session below the (default) turn cap', async () => {

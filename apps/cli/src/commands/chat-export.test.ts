@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -78,6 +78,64 @@ describe('chatExportCommand (2.P)', () => {
     };
   }
 
+  it.each([
+    { mode: 'human', json: false },
+    { mode: 'json', json: true },
+  ])(
+    'reports fixed continuity and review notice on stderr after successful $mode export',
+    ({ json }) => {
+      opened.store.updateSession(record({ title: 'PRIVATE_TITLE_SENTINEL' }));
+      opened.store.appendMessage(message(2, 'user', 'PRIVATE_USER_SENTINEL'));
+      opened.store.appendMessage(message(3, 'assistant', 'PRIVATE_ASSISTANT_SENTINEL'));
+      const { io, out, err } = captureIo();
+      expect(chatExportCommand({ sessionId: 's1', force: false }, deps(io, json))).toBe(
+        EXIT_CODES.success,
+      );
+      const notice = err();
+      expect(notice, 'W2_EXPORT_COMMAND_NOTICE').toMatch(
+        /scaffold; conversation context is not reproduced/,
+      );
+      expect(notice, 'W2_EXPORT_COMMAND_NOTICE').toMatch(
+        /Compaction summaries, trimming and omitted context may not transfer/,
+      );
+      expect(notice, 'W2_EXPORT_COMMAND_NOTICE').toMatch(
+        /Review retained user\/assistant text, @-attached files, !-shell output and authored agent literals before committing/,
+      );
+      expect(notice.trim().split('\n')).toHaveLength(1);
+      expect(`${out()}${notice}`).not.toContain('PRIVATE_');
+      expect(out()).not.toContain('scaffold;');
+      expect(readFileSync(join(cwd, 's1.relavium.yaml'), 'utf8')).toContain(
+        'PRIVATE_USER_SENTINEL',
+      );
+      if (json) {
+        expect(parseNdjson(out())).toEqual([
+          expect.objectContaining({
+            type: 'session:exported',
+            workflowPath: join(cwd, 's1.relavium.yaml'),
+          }),
+        ]);
+      } else {
+        expect(out()).toBe(`Exported session s1 to ${join(cwd, 's1.relavium.yaml')}\n`);
+      }
+    },
+  );
+
+  it.each([
+    { mode: 'human', json: false },
+    { mode: 'json', json: true },
+  ])('does not report a successful $mode export notice after a refused write', ({ json }) => {
+    const path = join(cwd, 's1.relavium.yaml');
+    writeFileSync(path, 'existing artifact');
+    const { io, out, err } = captureIo();
+    expect(() => chatExportCommand({ sessionId: 's1', force: false }, deps(io, json))).toThrow(
+      /already exists/,
+    );
+    expect(err(), 'W2_EXPORT_COMMAND_SUCCESS_ONLY').toBe('');
+    expect(out()).toBe('');
+    expect(readFileSync(path, 'utf8')).toBe('existing artifact');
+    expect(opened.store.loadFull('s1')?.session.status).toBe('active');
+  });
+
   it('writes the scaffold, marks the session exported, and prints the path (exit 0)', () => {
     const { io, out } = captureIo();
     expect(chatExportCommand({ sessionId: 's1', force: false }, deps(io))).toBe(EXIT_CODES.success);
@@ -121,7 +179,7 @@ describe('chatExportCommand (2.P)', () => {
     expect(parseNdjson(out())[0]).toMatchObject({ sequenceNumber: 0 });
   });
 
-  it('embeds no Relavium-managed key in the scaffold (the agentSnapshot carries no api_key)', () => {
+  it('embeds the fixture agent without adding a provider credential field', () => {
     const { io } = captureIo();
     chatExportCommand({ sessionId: 's1', force: false }, deps(io));
     const yaml = readFileSync(join(cwd, 's1.relavium.yaml'), 'utf8');
@@ -177,16 +235,24 @@ describe('chatExportCommand (2.P)', () => {
     expect(closed).toBe(true); // the store is closed on the file-exists throw path too
   });
 
-  it('warns when exporting a session with no stored agent snapshot (run-time agent_ref hint)', () => {
-    const fresh = createSessionStore(client.db);
-    fresh.createSession(record({ id: 's-nosnap', title: 'No Snap', agentSnapshot: undefined }));
-    opened = { store: fresh, db: client.db, close: () => undefined };
-    const { io, err } = captureIo();
-    expect(chatExportCommand({ sessionId: 's-nosnap', force: false }, deps(io))).toBe(
-      EXIT_CODES.success,
-    );
-    expect(err()).toContain('no stored agent');
-  });
+  it.each([
+    { mode: 'human', json: false },
+    { mode: 'json', json: true },
+  ])(
+    'retains the missing agent snapshot warning beside the $mode continuity notice',
+    ({ json }) => {
+      const fresh = createSessionStore(client.db);
+      fresh.createSession(record({ id: 's-nosnap', title: 'No Snap', agentSnapshot: undefined }));
+      opened = { store: fresh, db: client.db, close: () => undefined };
+      const { io, out, err } = captureIo();
+      expect(chatExportCommand({ sessionId: 's-nosnap', force: false }, deps(io, json))).toBe(
+        EXIT_CODES.success,
+      );
+      expect(err(), 'W2_EXPORT_MISSING_AGENT_POSITIVE').toContain('no stored agent');
+      expect(err()).toContain('note: exported workflow is a scaffold');
+      if (json) expect(parseNdjson(out())).toHaveLength(1);
+    },
+  );
 
   it('overwrites with --force', () => {
     const { io } = captureIo();

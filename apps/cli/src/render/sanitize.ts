@@ -37,10 +37,9 @@ export function sanitizeInline(text: string): string {
  * the pattern while the byte is still there, and then the strip rejoins the halves — printing the whole key.
  * Redacting after the strip sees the contiguous key and replaces it.
  *
- * The near-miss worth recording, because it is the case that made the old order look safe: a split by a
- * NEWLINE does not leak either way, since `sanitizeInline` collapses it to a SPACE rather than removing it, so
- * the halves never become contiguous. Only the REMOVED bytes rejoin — which is exactly why normalization has
- * to run first, and why "I could not construct a case" was not evidence.
+ * A NEWLINE is different: `sanitizeInline` collapses it to a SPACE rather than removing it, so the halves
+ * never become contiguous. The in-place pass cannot protect that suffix on its own; the whitespace-joined
+ * residual check below supplies that protection. Only the REMOVED bytes rejoin during normalization.
  *
  * `scrubSecrets` rather than the tool-input detector `redactSecretShapedText`: the two catch different things,
  * and this path needs the KEY-PREFIX patterns (`sk-*`, `AIza*`, `Bearer`/`Basic` headers, URL userinfo, secret
@@ -70,18 +69,24 @@ export function sanitizeUntrustedInline(text: string): string {
  * the halves never become contiguous for the matcher. The prefix (`sk-ant-…`) is public, so what leaked was
  * the part that matters: the secret suffix.
  *
- * So when the in-place pass finds nothing, this asks a second question — is there a credential once the
- * separators are gone? — and if so redacts the WHOLE text. Coarse on purpose: a boolean cannot locate the
+ * After every in-place pass, this checks the remaining unredacted segments — is there a credential once
+ * their separators are gone? — and if so redacts the WHOLE text. A successful independent redaction must
+ * not bypass protection for a second split credential. Already-redacted spans separate these probes: joining
+ * through them could turn a masked query value and following ordinary prose into a false new query match.
+ * Coarse on purpose: a boolean cannot locate the
  * span, and this function's whole posture (see {@link sanitizeUntrusted}) is that the cost of a false
- * positive is a `[REDACTED]` in a diagnostic, while the cost of a miss is a printed key. It stays out of the
- * shared `scrubSecrets`, which every surface depends on and where the same broadening would put ordinary
- * output at risk.
+ * positive is a `[REDACTED]` in a diagnostic, while the cost of a miss is a printed key. This broader CLI
+ * probe also checks split literal query names. The shared `scrubSecrets` separately protects its finite
+ * non-query credential shapes before query masking can destroy their identifying context; it does not
+ * join query names or ordinary query prose.
  */
 function redactIncludingAcrossSeparators(normalized: string): string {
   const scrubbed = scrubSecrets(normalized);
-  if (scrubbed !== normalized) return scrubbed; // located and replaced in place — the common case
-  const joined = normalized.replace(/\s+/g, '');
-  return scrubSecrets(joined) === joined ? normalized : '[REDACTED]';
+  for (const remaining of scrubbed.split('[REDACTED]')) {
+    const joined = remaining.replace(/\s+/g, '');
+    if (scrubSecrets(joined) !== joined) return '[REDACTED]';
+  }
+  return scrubbed;
 }
 
 /**

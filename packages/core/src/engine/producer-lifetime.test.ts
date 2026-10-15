@@ -132,6 +132,8 @@ function start(p: LlmProvider, media: boolean, extra: Partial<AgentRunnerDeps> =
   let pins = 0;
   const host = createInMemoryHost({
     mediaStore: {
+      validateMedia: (handle, descriptor) =>
+        Promise.resolve({ ...descriptor, handle, byteLength: 1 }),
       put: () => {
         pins++;
         return Promise.resolve(`media://sha256-${'1'.repeat(64)}`);
@@ -410,6 +412,8 @@ for (const held of ['raw poll', 'transferred child'] as const)
     });
     const host = createInMemoryHost({
       mediaStore: {
+        validateMedia: (handle, descriptor) =>
+          Promise.resolve({ ...descriptor, handle, byteLength: 1 }),
         put: () => {
           pins += 1;
           return Promise.resolve(`media://sha256-${'1'.repeat(64)}`);

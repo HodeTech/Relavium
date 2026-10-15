@@ -16,7 +16,7 @@ import { STUB_COMMANDS } from './specs.js';
  */
 
 /** Permanent parent-only containers — a parent whose only real form is a subcommand; never a manifest entry. */
-const CONTAINER_PATHS = ['agent', 'budget', 'provider'] as const;
+const CONTAINER_PATHS = ['agent', 'budget', 'provider', 'media'] as const;
 /**
  * The not-yet-available stubs are excluded too — but **derived from `STUB_COMMANDS`**, not hardcoded, so a stub
  * that graduates to a real command (removed from `STUB_COMMANDS` + given a real registration) automatically stops
@@ -45,6 +45,15 @@ function collectCommandNodes(command: Command, prefix: string): CommandNode[] {
 }
 
 describe('command manifest (ADR-0056)', () => {
+  it('advertises the run stdin transport as a boolean option', () => {
+    const stdin = MANIFEST_BY_ID.get('run')?.args?.find((arg) => arg.name === 'secretInputsStdin');
+    expect(stdin).toMatchObject({
+      name: 'secretInputsStdin',
+      type: 'boolean',
+      description: 'read declared secret inputs from non-TTY stdin',
+    });
+  });
+
   it('parses + deep-freezes at module load (no duplicate ids, schema-valid, immutable entries)', () => {
     expect(COMMAND_MANIFEST.length).toBeGreaterThan(0);
     expect(Object.isFrozen(COMMAND_MANIFEST)).toBe(true);
@@ -133,6 +142,9 @@ describe('command manifest (ADR-0056)', () => {
 
   it('the destructive annotation marks credential removal (the one destructive entry today)', () => {
     const destructive = COMMAND_MANIFEST.filter((entry) => entry.effect === 'destructive');
-    expect(destructive.map((entry) => entry.id)).toEqual(['provider.remove-key']);
+    expect(destructive.map((entry) => entry.id)).toEqual([
+      'media.prune-temporaries',
+      'provider.remove-key',
+    ]);
   });
 });

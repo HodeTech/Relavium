@@ -30,6 +30,8 @@ export interface ResolvedChatConfig {
   readonly defaultProvider: ChatConfig['default_provider'];
   /** `[chat].fs_scope` — the filesystem permission tier for chat tool dispatch (same tiers as workflows). */
   readonly fsScope: ChatConfig['fs_scope'];
+  /** Optional selectors inside the invocation's independently admitted grants (ADR-0105). */
+  readonly extraRoots?: ChatConfig['extra_roots'];
   /** `[chat].max_turns` — the hard session turn cap → `SessionDeps.maxTurns` (absent ⇒ engine default 50;
    *  a `positiveInt`, so 0 is rejected at the config layer, never reaching the engine's `<= 0 ⇒ default` arm);
    *  DISTINCT from `maxMessages` (a history-trim threshold) and the within-turn `maxToolTurns` guard. */
@@ -197,6 +199,7 @@ function resolveChat(
     defaultModel,
     defaultProvider,
     fsScope: p?.fs_scope ?? w?.fs_scope,
+    extraRoots: p?.extra_roots ?? w?.extra_roots,
     maxTurns: p?.max_turns ?? w?.max_turns,
     maxMessages: p?.max_messages ?? w?.max_messages,
     autoCompact: p?.auto_compact ?? w?.auto_compact,

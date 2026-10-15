@@ -7,11 +7,20 @@ import {
   parseWorkflow,
   WorkflowEngine,
 } from '@relavium/core';
+import { InMemoryMediaStore } from '@relavium/db';
 import type { LlmProvider, ModelPricing } from '@relavium/llm';
 import { RunEventSchema, type RunEvent, type UsageCoverage } from '@relavium/shared';
 import { describe, expect, it } from 'vitest';
 
 import { createRunStore } from './tui/run-store.js';
+
+// Complete independent 1x1 RGB PNG: IHDR, zlib-compressed red pixel IDAT, IEND and CRCs.
+const PNG_BYTES = Uint8Array.from(
+  Buffer.from(
+    '89504e470d0a1a0a0000000d4948445200000001000000010802000000907753de0000000c49444154789c63f8cfc0000003010100c9fe92ef0000000049454e44ae426082',
+    'hex',
+  ),
+);
 
 const complete: UsageCoverage = { unverified: false, pendingInvocations: 0, unknownCalls: 0 };
 type InitialCall = 'missing' | 'zero' | 'positive' | 'unpriced' | 'image-zero' | 'image-unpriced';
@@ -24,6 +33,8 @@ function withoutCoverage(event: RunEvent): RunEvent {
 
 async function runThroughResume(kind: InitialCall, secondMissing: boolean) {
   const media = kind.startsWith('image-');
+  const mediaStore = new InMemoryMediaStore();
+  const imageHandle = await mediaStore.put(PNG_BYTES, 'image/png');
   const workflow = parseWorkflow(
     JSON.stringify({
       schema_version: '1.0',
@@ -97,7 +108,7 @@ async function runThroughResume(kind: InitialCall, secondMissing: boolean) {
         media: {
           type: 'media',
           mimeType: 'image/png',
-          source: { kind: 'handle', ref: `media://sha256-${'2'.repeat(64)}` },
+          source: { kind: 'handle', ref: imageHandle },
         },
         raw: undefined,
       });
@@ -132,7 +143,7 @@ async function runThroughResume(kind: InitialCall, secondMissing: boolean) {
     human_in_the_loop: createHumanGateNodeExecutor(),
     output: createOutputNodeExecutor(),
   });
-  const host = createInMemoryHost();
+  const host = createInMemoryHost({ mediaStore });
   const first = new WorkflowEngine({ host, executor, resolvePrice }).start({ workflow });
   let pausedResolve: () => void = () => {};
   const paused = new Promise<void>((resolve) => {
@@ -158,7 +169,7 @@ async function runThroughResume(kind: InitialCall, secondMissing: boolean) {
   if (gate?.type !== 'human_gate:paused' || checkpoint === undefined)
     throw new Error('missing pause');
   const resumed = await new WorkflowEngine({
-    host: createInMemoryHost({ store: host.store }),
+    host: createInMemoryHost({ store: host.store, mediaStore }),
     executor,
     resolvePrice,
   }).resumeFromCheckpoint({

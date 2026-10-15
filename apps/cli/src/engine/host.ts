@@ -49,8 +49,9 @@ export interface CliMediaOptions {
   /**
    * The SQLite connection backing the `media_objects`/`media_references` retention + authz junction (2.S reuses
    * the 2.H `history.db`). Wires `ExecutionHost.mediaReferences` so the engine records a produced handle's run
-   * reference at the de-inline choke point and reclaims them at the run's terminal event. Absent ⇒ no port
-   * (best-effort retention only; never a run-correctness break).
+   * reference after append acknowledgement and reclaims it at the terminal event. A present port admits
+   * metadata before publication; that admission is mandatory. Post-ACK retention remains best effort.
+   * Absent ⇒ bytes/descriptors still require admission, without a metadata port.
    */
   readonly referenceDb?: Db;
 }
@@ -226,11 +227,12 @@ export function createCliHost(
     // `undefined` (which `exactOptionalPropertyTypes` rejects). The default-deny posture is the ABSENT
     // local-endpoint policy described below — this used to say `allowPrivate: false`, a flag ADR-0088 §4
     // removed, and contradicted the comment two lines under it.
-    fetchMedia: (url, maxBytes, signal) =>
+    fetchMedia: ({ url, mimeType, maxBytes, signal }) =>
       // No `localEndpoint`: media bytes come from a url the model or a provider produced, so there is no
       // authored opt-in to honour. Private/loopback/metadata targets stay blocked (ADR-0088 §4 replaced the
       // old `allowPrivate: false` with an absent policy — the same answer, one fewer flag to flip).
       fetchMediaBytes(url, {
+        mimeType,
         maxBytes,
         ...(signal === undefined ? {} : { signal }),
       }),
@@ -239,8 +241,9 @@ export function createCliHost(
     // whole and then measured. Wired unconditionally beside its sibling — a host that offers only the
     // whole-buffer form would have every url media source refused, which is the correct refusal but a
     // pointless one when the streaming mechanism exists right here.
-    streamMedia: (url, maxBytes, signal) =>
+    streamMedia: ({ url, mimeType, maxBytes, signal }) =>
       streamMediaBytes(url, {
+        mimeType,
         maxBytes,
         ...(signal === undefined ? {} : { signal }),
       }),

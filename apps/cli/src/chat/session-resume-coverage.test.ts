@@ -1,5 +1,5 @@
 import type { SessionHandle, SessionStreamHandleEvent } from '@relavium/core';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -30,7 +30,7 @@ const cases = outcomes.flatMap((outcome) => [0, 10].map((tokens) => ({ outcome, 
 const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 
 function fixture() {
-  const cwd = mkdtempSync(join(tmpdir(), 'relavium-resume-coverage-'));
+  const cwd = realpathSync(mkdtempSync(join(tmpdir(), 'relavium-resume-coverage-')));
   const configPath = join(cwd, 'config.toml');
   writeFileSync(configPath, '');
   const client = createClient();

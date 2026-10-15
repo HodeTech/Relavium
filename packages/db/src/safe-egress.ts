@@ -94,8 +94,10 @@ export interface HopRequest {
 /** One redirect-free HTTP response the caller inspects (status + headers + Location + a body stream). */
 export interface HopResponse {
   readonly status: number;
-  /** Response headers — populated by the Node deps; a media fake may omit them (the byte path ignores them). */
+  /** Normalized response headers. Media admission checks declared type before consuming the body. */
   readonly headers?: Readonly<Record<string, string>> | undefined;
+  /** Original Content-Type field values before Node's normalized headers discard duplicates. */
+  readonly contentTypeValues?: readonly string[];
   readonly location: string | undefined;
   readonly body: AsyncIterable<Uint8Array>;
   /** Abort the underlying socket — called when we stop reading early (a redirect, an error, an over-size body). */
@@ -388,7 +390,27 @@ function sanitizeHopHeaders(
   return out;
 }
 
-/** Consume a body stream, aborting the moment it exceeds `maxBytes`; concat the bounded chunks. */
+const typedArrayPrototype: unknown = Object.getPrototypeOf(Uint8Array.prototype);
+const byteLengthDescriptor =
+  typeof typedArrayPrototype === 'object' && typedArrayPrototype !== null
+    ? Object.getOwnPropertyDescriptor(typedArrayPrototype, 'byteLength')
+    : undefined;
+
+/** Count the actual borrowed view before copying or yielding; public lengths are replaceable. */
+function chunkByteLength(chunk: Uint8Array): number {
+  try {
+    if (!(chunk instanceof Uint8Array) || byteLengthDescriptor?.get === undefined)
+      throw new Error();
+    const length: unknown = byteLengthDescriptor.get.call(chunk);
+    if (typeof length !== 'number' || !Number.isSafeInteger(length) || length < 0)
+      throw new Error();
+    return length;
+  } catch {
+    throw new SafeEgressError('network', 'egress response contained an invalid byte view');
+  }
+}
+
+/** Consume a body stream, aborting the moment it exceeds `maxBytes`; concat owned bounded chunks. */
 export async function readBounded(
   body: AsyncIterable<Uint8Array>,
   maxBytes: number,
@@ -398,11 +420,12 @@ export async function readBounded(
   let total = 0;
   try {
     for await (const chunk of body) {
-      total += chunk.length;
+      total += chunkByteLength(chunk);
       if (total > maxBytes) {
         throw new SafeEgressError('too_large', 'egress response exceeded the maximum size');
       }
-      chunks.push(chunk);
+      // A producer may reuse its Uint8Array/Buffer on the next pull. Own this admitted view now.
+      chunks.push(new Uint8Array(chunk));
     }
   } finally {
     dispose(); // abort the socket (harmless if the body already ended)
@@ -440,7 +463,7 @@ export async function* streamBounded(
   let total = 0;
   try {
     for await (const chunk of body) {
-      total += chunk.length;
+      total += chunkByteLength(chunk);
       if (total > maxBytes) {
         throw new SafeEgressError('too_large', 'egress response exceeded the maximum size');
       }
@@ -614,6 +637,7 @@ export const nodeEgressDeps: EgressDeps = {
             resolveResponse({
               status: incoming.statusCode ?? 0,
               headers: flattenHeaders(incoming.headers),
+              contentTypeValues: originalContentTypeValues(incoming.rawHeaders),
               location: typeof location === 'string' ? location : undefined,
               body: incoming,
               dispose: () => {
@@ -661,6 +685,17 @@ export const nodeEgressDeps: EgressDeps = {
     return response;
   },
 };
+
+/** Preserve media header multiplicity without changing normalized headers for other consumers. */
+function originalContentTypeValues(rawHeaders: readonly string[]): string[] {
+  const values: string[] = [];
+  for (let index = 0; index < rawHeaders.length; index += 2) {
+    const name = rawHeaders[index];
+    const value = rawHeaders[index + 1];
+    if (name?.toLowerCase() === 'content-type' && value !== undefined) values.push(value);
+  }
+  return values;
+}
 
 /** Flatten Node's `IncomingHttpHeaders` (string | string[] | undefined) to a plain string record. */
 function flattenHeaders(

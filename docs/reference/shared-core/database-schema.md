@@ -1,6 +1,6 @@
 # Database Schema (Local SQLite)
 
-> Last updated: 2026-10-10
+> Last updated: 2026-10-13
 
 - **Status**: Reference
 - **Surface**: Shared — Desktop (Tauri v2, `tauri-plugin-sql`/SQLCipher), CLI (`better-sqlite3`, [ADR-0021](../../decisions/0021-node-sqlite-driver-better-sqlite3.md)/[ADR-0050](../../decisions/0050-cli-history-db-at-rest-posture.md)), and VS Code (a wasm SQLite build). One schema, three drivers — see [Concurrency & transaction behavior](#concurrency--transaction-behavior) and [Encryption at rest](#encryption-at-rest) for the per-surface divergences.
@@ -236,7 +236,7 @@ erDiagram
 
 #### `llm_providers`
 
-Registered LLM providers. The actual API key never lives here — only a reference; the key is stored in the OS keychain (see [keychain-and-secrets.md](../desktop/keychain-and-secrets.md)).
+Registered LLM providers. The dedicated provider API-key field holds only a reference; the resolved key is stored in the OS keychain (see [keychain-and-secrets.md](../desktop/keychain-and-secrets.md)). Historical `default_headers` values may contain credentials and remain sensitive, as specified below.
 
 | Column | Type | Constraints |
 |--------|------|-------------|
@@ -256,6 +256,78 @@ Registered LLM providers. The actual API key never lives here — only a referen
 ```sql
 CREATE UNIQUE INDEX idx_llm_providers_name ON llm_providers (name) WHERE deleted_at IS NULL;
 ```
+
+##### Interim provider-header policy
+
+[ADR-0108](../../decisions/0108-provider-headers-stay-gated-until-keychain-custody.md)
+tightens the exported `ProviderStore.upsert` API without changing the column or
+activating HTTP headers. The store captures one `defaultHeaders` admission branch
+before its clock callback, UUID allocation, SQL or retry work:
+
+| Supplied field | Result |
+|----------------|--------|
+| No own or inherited `defaultHeaders` property | Preserve existing raw JSON exactly. |
+| Own data property whose value is `undefined` | Preserve existing raw JSON exactly. |
+| Own data property containing an empty ordinary (`Object.prototype`) or null-prototype object | Explicitly clear to canonical `'{}'`. |
+| Any other shape | Refuse with `ProviderHeaderPolicyError`. |
+
+Every nonempty map is refused, including benign-looking literals. Empty arrays,
+custom instances, primitives, null, own accessors and inherited fields are refused.
+Any own key, including a symbol or non-enumerable key, makes a map nonempty. The
+field's descriptor and map prototype/own keys are inspected without invoking a
+field getter or caller serializer; reflection failures become the same fixed
+refusal. This narrow field gate does not own the rest of `ProviderUpsert` or sandbox
+JavaScript reflection traps. The captured branch is not reread after callbacks.
+
+An admitted new row always writes `'{}'`. An existing row preserves its exact
+stored JSON bytes on omission/own `undefined`, inside the existing IMMEDIATE
+transaction; explicit clearing writes the constant `'{}'` without serializing the
+caller object. Later ordinary updates preserve the cleared value. This is a
+logical clear: SQLite pages, WAL files and backups are not certified erased.
+There is no automatic rewrite, scrub, migration or keychain copy. The existing
+`provider remove-key` command deletes the keychain key and clears its reference;
+`clearKeychainRef` clears only that reference. Neither clears headers. This step
+adds no header-clear CLI command. A trusted store caller can explicitly clear through `upsert({ ...providerFields, defaultHeaders: {} })`.
+
+`@relavium/db` exports `ProviderHeaderPolicyError` and
+`isProviderHeaderPolicyError` from its public barrel. A newly constructed refusal
+has these fixed own data fields and no cause:
+
+| Field | Value |
+|-------|-------|
+| `code` | `provider_header_policy` |
+| `name` | `ProviderHeaderPolicyError` |
+| `message` | `Provider headers are disabled until keychain custody is implemented.` |
+
+The guard accepts an `Error` with those exact own data discriminants, including a
+compatible error from another bundle; it does not require this class's identity.
+Accessors do not qualify, and inspection faults return false. The CLI maps a
+recognized refusal to `invalid_invocation` (exit 2) using the fixed message rather
+than an incoming diagnostic. Header names, values and caller inspection causes are
+not retained by the store refusal.
+
+Trusted `get`, `list` and `upsert` results still expose the validated legacy map in
+`ProviderRecord.defaultHeaders`; this compatibility field is sensitive, not a public
+projection. Stored JSON must be an object with string members; malformed JSON,
+arrays, null and non-string members throw a content-free `TypeError` with message
+`Stored provider headers are invalid.` and no original parse cause. Valid own keys,
+including `__proto__`, remain own data without mutating the output prototype. These
+corruption errors remain unexpected CLI `internal` failures (exit 1), not policy
+refusals or silent empty maps.
+
+The provider-list human and NDJSON paths, with or without `--verify`, omit the
+header map and its names/values. Diagnostic projections must also omit them. The
+first-party host factory does not consume either new or legacy maps as HTTP
+headers, on default or custom endpoints. These output/wire limits do not remove
+the trusted store API data. The CLI database remains unencrypted under
+[ADR-0050](../../decisions/0050-cli-history-db-at-rest-posture.md)'s sensitive-history
+posture; retained header credentials share that limit.
+
+Future activation remains outside this wave and requires the keychain-reference
+schema, trusted-host egress resolution, header precedence/validation, content-free
+reference failures, safe projections and reviewed legacy migration/recovery policy
+specified by [ADR-0108](../../decisions/0108-provider-headers-stay-gated-until-keychain-custody.md#decision).
+The interim gate does not implement keychain-backed headers or historical cleanup.
 
 #### `model_catalog`
 
@@ -1164,6 +1236,31 @@ CREATE INDEX idx_media_references_scope  ON media_references (scope_kind, scope_
 CREATE INDEX idx_media_references_handle ON media_references (handle);
 ```
 
+#### Media metadata admission
+
+[ADR-0106](../../decisions/0106-media-publication-requires-bounded-verified-bytes.md) separates
+mandatory pre-publication metadata admission from post-ACK best-effort reference retention.
+`MediaReferenceStore.admitProducedMedia(batch)` synchronously owns and validates every descriptor
+before deduplicating or entering SQLite. `recordObject` uses the same singleton-batch path.
+One `BEGIN IMMEDIATE`, with the [existing busy retry](#concurrency--transaction-behavior), checks
+and writes the entire batch. Its timestamp is captured once and remains stable across retries.
+Statements use the transaction handle. There is no schema migration or second descriptor DTO.
+
+For a given handle, canonical MIME, modality and actual nonnegative safe byte count are immutable,
+including on soft-deleted rows. The supported lexical aliases share canonical identity; alias
+normalization cannot relabel an incompatible format. Optional duration is a positive safe integer
+on audio/video only. Unknown duration may be enriched, equal known duration is idempotent,
+absence preserves known evidence, and conflicting known duration refuses. Compatible admission
+refreshes `last_referenced_at` and clears `deleted_at`; conflict changes neither.
+
+A conflict in the final item rolls back earlier insertion, enrichment, resurrection and cursor
+refresh in that batch. Admission adds **no** `media_references` rows or read grants. The engine
+awaits it before state/`save_to` and before durable append. Append failure may leave compatible,
+unreferenced object metadata for ordinary grace GC. After ACK, `recordRunMedia` and `reclaimRun`
+retain their existing best-effort lifetime semantics; their failures cannot revoke publication.
+Byte/format verification and exact host shapes live in the
+[media publication contract](llm-provider-seam.md#bounded-verified-media-publication-adr-0106).
+
 > **Refcount ↔ authz keying — one junction, two roles ([ADR-0042](../../decisions/0042-engine-media-storage-substrate-mediastore-deinline-retention.md) §3 / [ADR-0044](../../decisions/0044-media-access-governance-read-media-save-to-cost.md)).** A handle's refcount is its **row count** here. `scope_kind` is a deliberate **superset**: `run` / `node` references are lifetime/refcount entries ONLY (the terminal-state sweep reclaims a run's `run` rows when it reaches `run:completed|failed|cancelled`), while `session` / (reserved) `workspace` are ALSO the `read_media` authz `Scope` kinds — `read_media` authz consults **only** the `session`/`workspace` rows, so a `run`/`node` reference **never grants read**. A handle may carry both a `run` reference (lifetime) and a `session` reference (authz); the terminal sweep removing the run row leaves the handle alive while a session row remains.
 
 > **Retention / GC ([ADR-0042](../../decisions/0042-engine-media-storage-substrate-mediastore-deinline-retention.md) §4).** A handle whose reference count reaches zero enters a **grace window** (default **7 days**, measured from `last_referenced_at`); refcount-GC reclaims the bytes and sets `deleted_at` only after it elapses — distinct from the 90-day `run_events` prune. GC ownership is the host's (Rust on desktop / filesystem on CLI/VS Code).
@@ -1200,7 +1297,7 @@ This realizes the concurrent-process write requirement recorded in the [ADR-0064
 At-rest encryption of `history.db` is **per-surface**:
 
 - **Desktop:** opened with SQLCipher. The passphrase is derived from a stable machine secret (combined with the OS keychain entry) so the database opens on restart without prompting the user; see [keychain-and-secrets.md](../desktop/keychain-and-secrets.md).
-- **CLI (Phase 2):** opened with `better-sqlite3` **unencrypted**, guarded by owner-only OS file permissions — `~/.relavium/` at `0700` and `history.db` (with its `-wal`/`-shm` sidecars) at `0600`, set with an explicit `chmod` (umask-independent, applied even to a pre-existing directory). On Windows, POSIX mode bits do not apply (`chmod` is a no-op); protection falls to the per-user `%USERPROFILE%` NTFS ACL. Relavium-managed provider keys stay in the OS keychain ([ADR-0006](../../decisions/0006-os-keychain-for-api-keys.md)) and a `secret`-typed input persists only as its `{ secret: true, ref }` placeholder ([ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)). This custody guarantee does not imply that the file contains no credentials or sensitive content. The retained-content limits follow [ADR-0050](../../decisions/0050-cli-history-db-at-rest-posture.md)'s note of 2026-09-14: tool-I/O redaction is shape-based and applied upstream to event copies, not by the bus; and user-injected content plus a committed tier-3 effect's bounded result are genuinely at rest (a run's until that run's terminal sweep). On `development`, accepted W7 Step 4 implements [ADR-0098](../../decisions/0098-a-session-effect-row-holds-no-result-and-never-replays.md): session effect results are SQL NULL, legacy result values are cleared, and sessions never replay them. Rationale and the cross-surface Phase-3 follow-on: [ADR-0050](../../decisions/0050-cli-history-db-at-rest-posture.md).
+- **CLI (Phase 2):** opened with `better-sqlite3` **unencrypted**, guarded by owner-only OS file permissions — `~/.relavium/` at `0700` and `history.db` (with its `-wal`/`-shm` sidecars) at `0600`, set with an explicit `chmod` (umask-independent, applied even to a pre-existing directory). On Windows, POSIX mode bits do not apply (`chmod` is a no-op); protection falls to the per-user `%USERPROFILE%` NTFS ACL. Relavium-managed provider keys stay in the OS keychain ([ADR-0006](../../decisions/0006-os-keychain-for-api-keys.md)) and a `secret`-typed input persists only as its `{ secret: true, ref }` placeholder ([ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)). This custody guarantee does not imply that the file contains no credentials or sensitive content. The retained-content limits follow [ADR-0050](../../decisions/0050-cli-history-db-at-rest-posture.md)'s note of 2026-09-14: tool-I/O redaction is shape-based and applied upstream to event copies, not by the bus; and user-injected content plus a committed tier-3 effect's bounded result are genuinely at rest (a run's until that run's terminal sweep). W7 Step 4, merged to `main` in PR #90 on 2026-10-10, implements [ADR-0098](../../decisions/0098-a-session-effect-row-holds-no-result-and-never-replays.md): session effect results are SQL NULL, legacy result values are cleared, and sessions never replay them. Rationale and the cross-surface Phase-3 follow-on: [ADR-0050](../../decisions/0050-cli-history-db-at-rest-posture.md).
 
 The per-project `runs.db` is **not** encrypted on any surface because it is intentionally git-committed and contains only non-sensitive run metadata (no prompts, completions, or tokens).
 

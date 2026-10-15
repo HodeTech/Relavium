@@ -18,7 +18,8 @@
     "test": "turbo run test",
     "coverage": "vitest run --coverage",
     "coverage:enforced": "node tools/coverage-gate/run.mjs",
-    "ci": "pnpm lint:test-isolation && turbo run lint typecheck test && pnpm db:sync-check && pnpm typecheck:tools && pnpm lint:tools && turbo run build format:check && pnpm lint:fence-check && pnpm lint:engine-deps && pnpm lint:bundle-closure && pnpm smoke:cli && pnpm smoke:overflow-capture && pnpm smoke:budget-replay && pnpm test:acceptance-tools && pnpm check:wire-mutations && pnpm check:usage-mutations",
+    "ci:workspaces": "turbo run lint typecheck && turbo run test --concurrency=1",
+    "ci": "pnpm lint:test-isolation && pnpm ci:workspaces && pnpm db:sync-check && pnpm typecheck:tools && pnpm lint:tools && turbo run build format:check && pnpm lint:fence-check && pnpm lint:engine-deps && pnpm lint:bundle-closure && pnpm smoke:cli && pnpm smoke:media-packaging && pnpm smoke:overflow-capture && pnpm smoke:budget-replay && pnpm test:acceptance-tools && pnpm check:wire-mutations && pnpm check:usage-mutations && pnpm check:fs-mutations && pnpm check:secrets-mutations",
     "lint:test-isolation": "node tools/test-isolation/check.mjs && node tools/test-isolation/check-ownership.mjs",
     "lint:fence-check": "node tools/lint-fixtures/assert-fence.mjs",
     "lint:engine-deps": "node tools/engine-deps/check.mjs",
@@ -30,11 +31,14 @@
     "lint:tools": "eslint tools --ignore-pattern 'tools/lint-fixtures/**'",
     "db:sync-check": "node tools/db-sync/check.mjs",
     "smoke:cli": "node tools/cli-smoke/check.mjs",
+    "smoke:media-packaging": "node tools/fs-policy-controls/fixtures/media-workspace-provenance.mjs && node tools/fs-policy-controls/fixtures/media-native-packaging.mjs",
     "smoke:overflow-capture": "node tools/overflow-capture/check.mjs",
     "smoke:budget-replay": "node tools/budget-replay-compat/check.mjs",
     "check:wire-mutations": "node tools/wire-conformance/check.mjs",
     "check:usage-mutations": "node tools/usage-coverage-controls/check.mjs",
-    "test:acceptance-tools": "node --test tools/usage-coverage-controls/outcome.test.mjs tools/usage-coverage-controls/workload.test.mjs tools/ci/require-w8-acceptance.test.mjs tools/acceptance-evidence/export.test.mjs tools/wire-conformance/provenance.test.mjs"
+    "test:acceptance-tools": "node --test tools/ci/windows-headless-smoke.test.mjs tools/ci/workspace-scheduling.test.mjs tools/ci/require-native-db-diagnostics.test.mjs tools/usage-coverage-controls/outcome.test.mjs tools/usage-coverage-controls/workload.test.mjs tools/ci/require-w8-acceptance.test.mjs tools/acceptance-evidence/export.test.mjs tools/wire-conformance/provenance.test.mjs tools/causal-controls/outcome.test.mjs tools/causal-controls/process.test.mjs tools/causal-controls/provenance.test.mjs tools/causal-controls/retention.test.mjs tools/causal-controls/run.test.mjs tools/causal-controls/timeout-policy.test.mjs",
+    "check:fs-mutations": "node tools/fs-policy-controls/check.mjs",
+    "check:secrets-mutations": "node tools/secrets-controls/check.mjs"
   },
   "devDependencies": {
     "@eslint/js": "catalog:",

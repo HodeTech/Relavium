@@ -201,3 +201,37 @@ Only complete provider quantities enter realized token pricing. Partial observat
 
 See [ADR-0104](0104-unknown-provider-usage-is-durable-cost-uncertainty.md) and the
 [canonical usage contract](../reference/shared-core/llm-provider-seam.md#6-usage).
+
+### Provider-header custody refinement — 2026-10-13
+
+> Amended 2026-10-13: [ADR-0108](0108-provider-headers-stay-gated-until-keychain-custody.md)
+> gates the future header activation described in §5. Custom endpoint routing stays
+> live; stored headers remain inert.
+
+The Step 7 implementation tightens nonempty-map admission at the provider store,
+preserves historical rows on ordinary updates and retains an explicit logical clear.
+The exact write/error/read/projection contract now lives in the
+[canonical provider-header policy](../reference/shared-core/database-schema.md#interim-provider-header-policy).
+Legacy values remain sensitive in the unencrypted CLI database; no historical
+erasure or working keychain-reference header feature is claimed. Source/test gates
+and independent implementation reviews remain pending at this authoring checkpoint;
+the accepted design does not itself certify Step 7 or the whole wave.
+
+
+### Wave 2 implementation landing — 2026-10-13
+
+The applicable Wave 2 implementation is accepted on `development`. The
+[closing register](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-2-closing-register--2026-10-13)
+joins the per-item disposition, two NEW clean complete whole-wave review rounds,
+security sittings, exact-source gates and preserved limits. Earlier dated pending
+checkpoints remain historical. This landing does not claim a merge, future header
+activation, full M/N lifecycle or removal of approved residuals.
+
+
+### Provider-header refinement cross-reference correction — 2026-10-15
+
+> Amended 2026-10-15: the 2026-10-13 custody refinement above refers to §5.
+> The future header consumption it gates is described in §3; §5 owns pricing-reference
+> capture and the `kind` column. [ADR-0108](0108-provider-headers-stay-gated-until-keychain-custody.md)
+> remains the governing custody and activation gate. The earlier dated note is retained
+> as history; this correction changes no decision or implementation boundary.

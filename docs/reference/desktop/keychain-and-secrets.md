@@ -1,13 +1,13 @@
 # Desktop Keychain & Secrets
 
-> Last updated: 2026-10-02
+> Last updated: 2026-10-13
 
 - **Status**: Reference
 - **Surface**: Desktop (Tauri v2)
 - **Scope**: Phase 1, local-first. API-key and passphrase storage. No key ever leaves the machine except in outbound LLM API calls.
 - **Related**: [tauri-plugins.md](tauri-plugins.md), [database-schema.md](../shared-core/database-schema.md), [../../architecture/local-first-and-security.md](../../architecture/local-first-and-security.md), [decision 0006](../../decisions/0006-os-keychain-for-api-keys.md), [../../runbooks/add-a-provider-key.md](../../runbooks/add-a-provider-key.md)
 
-This is the canonical reference for how the desktop app stores LLM provider API keys and the database passphrase. The governing principle: **secrets are never written to disk in plaintext, never sent to the WebView/frontend, and never serialized into workflow YAML, run records, logs, or IPC payloads.**
+This is the canonical reference for how the desktop app stores LLM provider API keys and the database passphrase. Provider API keys stay in the OS keychain, are never sent to the WebView/frontend, and have no value field in workflow YAML. Declared workflow `secret` inputs have a separate [caller-supplied input contract](../contracts/workflow-yaml-spec.md#inputs); its masking covers recorded input slots and input-node results, not arbitrary authored or generated content.
 
 ## Storage model
 
@@ -53,7 +53,7 @@ The built-in web-search tool stores its key the same way under `account = search
 
 A `{{secrets.<name>}}` placeholder in an MCP server's `env` resolves **only** within this `mcp-secret:*` namespace (keychain → env var → fail-closed) and is injected **only** into the spawned server's child environment — never a committed YAML, a log, an event, or a `--json` line. The isolation is load-bearing: `{{secrets.*}}` can **never** reach a provider-key account (`{providerId}:{keyId}`) or `search-provider`, so a hostile imported workflow naming a *provider* key resolves an unrelated (normally-empty) `mcp-secret:*` account instead of the real key — closing the exfiltration path under the "a shared/imported workflow is the invite" distribution model.
 
-The `llm_providers` table stores only an `api_key_keychain_ref` (the `account` identifier) — **never the key value** (see [database-schema.md](../shared-core/database-schema.md)).
+The `llm_providers` table stores an `api_key_keychain_ref` (the `account` identifier) for the provider API key — **never its resolved value**. Historical arbitrary header values remain sensitive and inert under the [canonical provider-header policy](../shared-core/database-schema.md#interim-provider-header-policy). [ADR-0108](../../decisions/0108-provider-headers-stay-gated-until-keychain-custody.md) requires keychain-reference custody before future header activation; the interim gate implements no header-reference namespace or keychain migration.
 
 ## Encrypted-file fallback — deferred past v1.0
 
@@ -63,15 +63,15 @@ There is **no** encrypted-file key store in v1.0. A headless/CI fallback for env
 
 The global run-history database (`~/.relavium/history.db`) is encrypted with SQLCipher **on the desktop** (see [database-schema.md](../shared-core/database-schema.md)). Its passphrase is derived from the same stable machine secret combined with a keychain entry, so the database opens automatically on restart without prompting the user. The passphrase is set in the Rust `setup()` hook **before** the SQL plugin initializes — if it is not present when the database is opened, the open fails.
 
-The **Phase-2 CLI does not use SQLCipher**: it opens the same `history.db` with `better-sqlite3` **unencrypted**, guarded by `0600`/`0700` OS file permissions ([ADR-0050](../../decisions/0050-cli-history-db-at-rest-posture.md)). Relavium-managed provider keys stay here in the OS keychain, and `secret`-typed inputs are persisted as `{ secret: true, ref }` placeholders. This is a key-custody guarantee, not a guarantee that the file contains no credentials or sensitive content, and [ADR-0050](../../decisions/0050-cli-history-db-at-rest-posture.md)'s note of 2026-09-14 says what it does hold: tool-I/O redaction is shape-based and applied upstream to event copies rather than by the bus, user-injected content (an `@`-attached file, `!`-shell output) is at rest as the user's own data, and a committed tier-3 run effect keeps its bounded result until that run's sweep. Session effect rows hold no result and never replay ([ADR-0098](../../decisions/0098-a-session-effect-row-holds-no-result-and-never-replays.md)); their physical erasure guarantee requires secure deletion and a successful WAL checkpoint, with busy-reader and pre-upgrade freed-page residuals stated in [effect-journal.md §11](../shared-core/effect-journal.md#11-secrets-what-a-row-may-hold). The two at-rest postures cannot share one file at the same path; reconciling cross-surface coexistence is a named Phase-3 follow-on (ADR-0050).
+The **Phase-2 CLI does not use SQLCipher**: it opens the same `history.db` with `better-sqlite3` **unencrypted**, guarded by `0600`/`0700` OS file permissions ([ADR-0050](../../decisions/0050-cli-history-db-at-rest-posture.md)). Relavium-managed provider keys stay here in the OS keychain. The CLI accepts first-run declared `secret` inputs through bounded [non-TTY stdin](../cli/commands.md#relavium-run), rejects them in ordinary `--input` arguments, and persists their recorded input slots and input-node results as `{ secret: true, ref }` placeholders. The workflow definition snapshot faithfully records the parsed workflow and may contain other authored literals. This is a key-custody and input-slot guarantee, not a guarantee that the file contains no credentials or sensitive content, and [ADR-0050](../../decisions/0050-cli-history-db-at-rest-posture.md)'s note of 2026-09-14 says what it does hold: tool-I/O redaction is shape-based and applied upstream to event copies rather than by the bus, user-injected content (an `@`-attached file, `!`-shell output) is at rest as the user's own data, and a committed tier-3 run effect keeps its bounded result until that run's sweep. Session effect rows hold no result and never replay ([ADR-0098](../../decisions/0098-a-session-effect-row-holds-no-result-and-never-replays.md)); their physical erasure guarantee requires secure deletion and a successful WAL checkpoint, with busy-reader and pre-upgrade freed-page residuals stated in [effect-journal.md §11](../shared-core/effect-journal.md#11-secrets-what-a-row-may-hold). The two at-rest postures cannot share one file at the same path; reconciling cross-surface coexistence is a named Phase-3 follow-on (ADR-0050).
 
-## What never holds a secret
+## Key custody and retained content
 
 | Surface | Guarantee |
 |---------|-----------|
 | Frontend / WebView | Receives only a key hint (last 4 chars). Never the key. |
-| Workflow / agent YAML (`.relavium.yaml` / `.agent.yaml`) | No **provider key** by construction — no schema field carries a key value (keys live in the keychain, referenced by account id). MCP-server secrets are referenced via `{{secrets.*}}` placeholders **by convention**; the `env` map accepts arbitrary strings, so `relavium export`/`import` re-serialize **faithfully** (they do not scrub) — author placeholders, never inline a literal. The re-serialize also drops free-form comments where a stray secret might hide. See [../cli/commands.md](../cli/commands.md#relavium-import--relavium-export). |
-| Run records, `messages`, `run_events` | Tool inputs are sanitized before persistence; no `Authorization` value is ever logged. |
+| Workflow / agent YAML (`.relavium.yaml` / `.agent.yaml`) | Relavium does not insert resolved provider keys; configured credentials use keychain references. Arbitrary authored strings may still contain pasted credentials. Serialization preserves values and drops comments; it does not scrub. Author MCP `env` credentials as `{{secrets.*}}` placeholders. The CLI's [bounded value-free review notices](../cli/commands.md#relavium-import--relavium-export) do not certify safe sharing or alter the admitted snapshot. |
+| Declared workflow input slots and input-node results | A `secret`-typed value is represented by a masked `{ secret: true, ref }` marker in the run event/history fields that record those slots. This says nothing about independent authored literals, model/tool content, messages or other event fields; see [workflow inputs](../contracts/workflow-yaml-spec.md#inputs). |
 | VS Code IPC (desktop-enhanced mode) | The VS Code extension is **standalone** and keeps its own keys in `vscode.SecretStorage`; the loopback desktop↔extension channel **never carries a raw key in either direction**. The handshake (dynamic port + bearer token) is canonical in [../contracts/ipc-contract.md](../contracts/ipc-contract.md#vs-code-mirror-loopback-http). |
 | Tray / notifications | Never include secret material. |
 
@@ -81,6 +81,11 @@ The **Phase-2 CLI does not use SQLCipher**: it opens the same `history.db` with 
 - **Capability gating.** Every keychain plugin call the frontend can trigger must be declared in the Tauri v2 capabilities manifest (`src-tauri/capabilities/`); a missing capability surfaces as a silent "not allowed" runtime error.
 - **Linux dependency.** libsecret requires a Secret Service provider to be running; if none is present in v1.0, key storage is unavailable and the app surfaces an error (the KDF-based file fallback is deferred — see [Encrypted-file fallback — deferred past v1.0](#encrypted-file-fallback--deferred-past-v10)).
 - **No silent plaintext fallback.** If the OS keychain cannot be used, the app surfaces an error rather than writing a key in the clear; it never hand-rolls an alternative key store. _(The CLI's run-time key resolver additionally falls through to the `RELAVIUM_<PROVIDER>_API_KEY` env var when the keychain is absent or unavailable — an env var is not an on-disk plaintext store, so this is not a plaintext fallback; the `provider set-key` **write** path still surfaces an unavailable keychain as a clean error.)_
+- **CLI native diagnostics.** OS-keychain construction and get/set/delete failures become fixed,
+  operation-specific errors. Native messages, account values and key values are not incorporated into
+  those diagnostics, including verbose and JSON output. The original cause remains private to the
+  process. Secret stdin follows the
+  [CLI reader limit](../cli/commands.md#secret-stdin-limits).
 
 ## Phase 2 divergence
 

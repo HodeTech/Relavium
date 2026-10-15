@@ -11,6 +11,8 @@ export function checkOutcome(tests, processResult, phase, mechanism, witness) {
     tests.length > 0 && tests.every((test) => test.status === 'passed' || test.status === 'failed'),
     'Incomplete case inventory',
   );
+  const identities = tests.map((test) => JSON.stringify([test.file, test.id]));
+  assert.equal(new Set(identities).size, tests.length, 'Duplicate case identity');
   const failures = tests.filter((test) => test.status === 'failed');
   if (phase !== 'mutated') {
     assert.equal(processResult.code, 0, 'Fixed/restored whole cohort failed');

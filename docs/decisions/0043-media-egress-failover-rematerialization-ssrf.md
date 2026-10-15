@@ -73,3 +73,36 @@ We resolve the ADR-0031 contradiction decisively:
 
 - Per ADR-0009's append-only rule, ADR-0031 is unchanged in history; this ADR is the authoritative record for the media-egress byte path, the failover re-materialization contract, and the SSRF mechanism placement. Future seam-egress readers should read ADR-0031 **and** this.
 - `width`/`height` stay **excluded** from the media metadata (ADR-0031 Y3, a pure-render concern) — no egress or failover consumer needs them, so this ADR inherits that exclusion unchanged.
+
+### Wave 2 media implementation checkpoint — 2026-10-12
+
+ADR-0106 now carries declared MIME in the one shared host request and compares final HTTP
+header evidence with bounded verified body evidence. Connect/body-idle bounds, SSRF validation,
+run cancellation and actual native resource ownership remain; progressing transfers acquire no
+new total deadline. Raw L16 needs explicit compatible HTTP type and aligned nonempty samples,
+with no detected-identity or rate-repair claim. Exact compatibility/error rules live in the
+[media publication contract](../reference/shared-core/llm-provider-seam.md#bounded-verified-media-publication-adr-0106).
+Implementation is present in the Step 6 working tree; cumulative independent acceptance is pending.
+
+### Native media close ownership — 2026-10-13
+
+Accepted [ADR-0109](0109-native-media-close-ownership-is-explicit-iterator-provenance.md)
+refines interruption at the media byte-consumer boundary. Exact private iterator
+provenance separates foreign return observation from trusted native retirement.
+Store-owned cleanup precedes native acknowledgement joining; counted wrappers
+initiate without blocking store cleanup and their enclosing scope joins afterward.
+Natural EOF, deliberate wrapper adoption and the single loaded-module boundary
+are explicit in the [canonical media lifecycle contract](../reference/shared-core/llm-provider-seam.md#bounded-verified-media-publication-adr-0106).
+Existing host work/receipt ownership and whole-buffer limits remain in force.
+Implementation, packaging and cumulative review gates remain separate from this
+decision approval; this note does not accept Step 6 or close Wave 2.
+
+
+### Wave 2 implementation landing — 2026-10-13
+
+The applicable Wave 2 implementation is accepted on `development`. The
+[closing register](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-2-closing-register--2026-10-13)
+joins the per-item disposition, two NEW clean complete whole-wave review rounds,
+security sittings, exact-source gates and preserved limits. Earlier dated pending
+checkpoints remain historical. This landing does not claim a merge, future header
+activation, full M/N lifecycle or removal of approved residuals.

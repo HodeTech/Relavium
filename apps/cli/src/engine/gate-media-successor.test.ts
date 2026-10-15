@@ -51,6 +51,7 @@ for (const ending of ['normal', 'cancel', 'successor-observed', 'successor-unobs
     const referenceStore = createMediaReferenceStore(second.db, () => clock);
     const actions: string[] = [];
     const mediaReferences: MediaReferencePort = {
+      admitProducedMedia: (batch) => nativeReferences.admitProducedMedia(batch),
       recordRunMedia: (meta, runId) => {
         actions.push(`record:${runId}`);
         return nativeReferences.recordRunMedia(meta, runId);
@@ -70,10 +71,11 @@ for (const ending of ['normal', 'cancel', 'successor-observed', 'successor-unobs
     });
     const cas = new FilesystemMediaStore(join(root, 'cas'));
     const heldCas: MediaStore = {
-      put: async (bytes) => {
+      validateMedia: (handle, descriptor) => cas.validateMedia(handle, descriptor),
+      put: async (bytes, mimeType) => {
         entered();
         await held;
-        return cas.put(bytes);
+        return cas.put(bytes, mimeType);
       },
       get: (handle) => cas.get(handle),
       resolveForEgress: (handle) => cas.resolveForEgress(handle),
@@ -115,8 +117,8 @@ for (const ending of ['normal', 'cancel', 'successor-observed', 'successor-unobs
             payload: {
               image: {
                 type: 'media',
-                mimeType: 'image/png',
-                source: { kind: 'base64', data: 'aGVsbG8=' },
+                mimeType: 'audio/L16',
+                source: { kind: 'base64', data: 'AQACAAMA' },
               },
             },
           });

@@ -1,5 +1,5 @@
 /**
- * Test-isolation guard — repo-local SECOND checkouts and private analysis must not enter product runs.
+ * Test-isolation guard — repo-local SECOND checkouts and local analysis/reviews must not enter product runs.
  *
  * The defect this closes was live, not theoretical. Measured 2026-08-10: a root `vitest list` discovered
  * **472** test files, **234** of them under `.claude/worktrees/<id>/packages/...` — a full agent-tooling
@@ -184,7 +184,13 @@ for (const [name, match, why] of [
  * gets probed here and fails loudly; a NEW location nobody added here is still probed by the derived fixtures.
  * Neither omission can produce a silent pass.
  */
-const ALWAYS_PROBED = ['.claude', '.worktrees', 'worktrees', 'docs/analysis/private'];
+const ALWAYS_PROBED = [
+  '.claude',
+  '.worktrees',
+  'worktrees',
+  'docs/analysis/private',
+  'docs/reviews',
+];
 
 const fixtureDirs = [...new Set([...patterns.map(plantableDir), ...ALWAYS_PROBED])];
 const fixtures = fixtureDirs.map((dir) => ({
@@ -208,9 +214,9 @@ function plant(fixture) {
   mkdirSync(src, { recursive: true });
   // The workspace marker too, so the fixture shape-matches a real second checkout for BOTH assertions: if an
   // exclusion breaks, the structural check fires alongside the leak check and the error names the cause twice.
-  // Private prototypes are PARTIAL copies without a workspace marker: the primary detector cannot catch
-  // them. Keep this probe equally marker-free so removing its exclusion fails on a clean checkout too.
-  if (fixture.dir !== 'docs/analysis/private') {
+  // Private prototypes and review reproductions have no workspace marker: the primary detector cannot
+  // catch them. Keep these probes marker-free so removing either exclusion fails on a clean checkout too.
+  if (!['docs/analysis/private', 'docs/reviews'].includes(fixture.dir)) {
     writeFileSync(join(fixture.root, 'pnpm-workspace.yaml'), "packages:\n  - 'packages/*'\n");
   }
   writeFileSync(join(src, 'probe.ts'), 'export const probe = 1;\n');

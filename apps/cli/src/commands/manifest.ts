@@ -84,8 +84,8 @@ const CommandManifestSchema = z.array(CommandManifestEntrySchema).superRefine((e
 
 /**
  * The authored entries (pre-validation). Descriptions are copied verbatim from the `commander` registrations in
- * [specs.ts](specs.ts) so the drift guard ties them together. `provider.remove-key` is the one `destructive`
- * entry — it irreversibly removes a stored credential.
+ * [specs.ts](specs.ts) so the drift guard ties them together. Credential removal and legacy media maintenance are `destructive`
+ * entries: they remove stored credentials or legacy temporary files.
  */
 const ENTRIES: readonly CommandManifestEntry[] = [
   {
@@ -95,6 +95,11 @@ const ENTRIES: readonly CommandManifestEntry[] = [
     args: [
       { name: 'workflow', type: 'string', required: true, description: 'workflow path or id' },
       { name: 'input', type: 'string', description: 'a workflow input (repeatable)' },
+      {
+        name: 'secretInputsStdin',
+        type: 'boolean',
+        description: 'read declared secret inputs from non-TTY stdin',
+      },
       {
         name: 'allowMcpStdio',
         type: 'string',
@@ -477,6 +482,20 @@ const ENTRIES: readonly CommandManifestEntry[] = [
       },
     ],
     effect: 'write',
+  },
+  {
+    id: 'media.prune-temporaries',
+    label: 'Prune legacy media temporaries',
+    description: 'Remove legacy temporary media after all old producers are stopped.',
+    args: [
+      {
+        name: 'legacyOffline',
+        type: 'boolean',
+        description: 'acknowledge that all old media producers are stopped',
+      },
+      { name: 'force', type: 'boolean', description: 'authorize legacy temporary media deletion' },
+    ],
+    effect: 'destructive',
   },
   {
     id: 'provider.remove-key',
