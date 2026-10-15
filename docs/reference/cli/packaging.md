@@ -76,7 +76,7 @@ Use SHA-256 for file identity, not a homemade signature/provenance protocol.
 Check originating identity against the trusted CI service/run and real tag/source;
 a self-declared JSON field alone does not authenticate its producer.
 
-A candidate comprises exact tarball, original ciphertext and binding receipt.
+A **release candidate** comprises exact tarball, original ciphertext and release binding receipt.
 Package version plus source SHA identifies the intended candidate; a different
 candidate for that version refuses instead of silently superseding it.
 The finalized JS/map receipt is sealed locally before encryption; the binding
@@ -104,9 +104,37 @@ update for future candidates; preserve historical fingerprint/decryption capabil
 for supported versions. Existing public ciphertext cannot be recalled by revocation.
 This wave creates no automatic deletion policy or production key.
 
+## Package-test and release modes
+
+**Package-test mode** is required on PR/push and manual dry-run. In its isolated
+uncached originating pack job, build once, inspect exact tarball, verify maps and
+CLI/engine symbolication locally, then discard all private maps/manifests/metafiles.
+Share only the tarball and a nonsecret package-test receipt (version, mode
+package_test, source SHA, package version, tarball digest and originating workflow
+identity) with platform consumers. It needs no production recipient. GPG fixture
+controls remain separate and use synthetic map payloads only.
+
+A package-test artifact is never promoted to a release candidate after private
+maps are discarded. A trusted-tag release makes its own fresh candidate once,
+then obeys no-rebuild/no-re-encryption retry rules. This is a distinct release
+build identity, not a replacement for an existing same-version release candidate.
+
+**Release mode** runs only for the real trusted pushed tag. First retrieve any
+matching original release candidate for retry. If none exists, require confirmed
+production recipient in the originating isolated pack job, build/pack/maps once,
+and encrypt there **before any job handoff**. Private bytes never enter shared
+staging. Its public binding receipt has mode release plus the fields above in
+the release-receipt contract. If required custody is unavailable, fail the release;
+do not downgrade to package-test mode or use a fixture key for product maps.
+
+Both modes run the same exact-tarball smoke implementation and local map checks.
+Only release mode can enter the archive/publish DAG. Mode, trusted trigger/source
+and receipt digest are validated by consumers; a flag or self-declared receipt
+does not confer trusted release authority.
+
 ## Archive, retry and publication
 
-Workflow staging contains only tarball, ciphertext and nonsecret receipt.
+Release workflow staging contains only tarball, ciphertext and release receipt.
 A dedicated archive job after pack/smoke creates or reuses a draft Release for the
 real pushed version tag, uploads those three assets, downloads/verifies them, then
 permits npm publication of **that exact tarball**. A successfully published package
@@ -122,7 +150,7 @@ writers and recheck before upload; do not rely only on asset names.
 
 | Durable state | Permitted action |
 |---|---|
-| No prior candidate | Build/pack/encrypt once, stage original candidate |
+| No prior release candidate | Build/pack/encrypt once, stage original candidate |
 | Trusted candidate staging exists | Retrieve/verify and reuse exact bytes, rerun smoke if needed |
 | Complete matching Release assets exist | Retrieve/verify; no rebuild, re-encryption or overwrite |
 | Partial upload, trusted full staged candidate recoverable | Verify present assets against it; add only absent matching assets |

@@ -3829,3 +3829,20 @@ Windows facility/scope. All five are corrected in the proposal before approval:
 Reviews remain nonclean history. These corrections require two NEW complete
 cumulative clean proposal rounds after their final material fix. No implementation,
 Windows native gate, public archive, full CI/coverage or ADR approval is inferred.
+
+#### Revised proposal round 2 clarification — 2026-10-15
+
+The NEW complete cumulative review at 35935273 verifies the five round-1
+corrections and reports one Medium: package-test and release-candidate modes
+were implicit. The canonical packaging contract now separates them. Required
+PR/push/manual tests keep map verification local, discard private outputs and share
+only the exact tarball/package-test hash receipt without production keys. Actual
+trusted-tag release requires production encryption in its originating pack job
+before any handoff, retains the original three-asset candidate and never promotes
+a test artifact whose maps were discarded. No recipient-less or fixture-key
+product release is authorized. Existing retry/no-overwrite rules still apply.
+
+The focused 127-test pass, actual engine/SQLite probe and six primitive-envelope
+controls retain that review's exact 35935273 attribution; no product fix/CI/Windows
+execution is claimed. This material clarification requires two NEW complete
+cumulative clean proposal rounds at its corrected head before approval is requested.

@@ -89,7 +89,15 @@ nonsecret binding receipt. The private per-source manifest stays inside cipherte
 Public source/build identity and hashes are allowed in the binding receipt;
 maps, source content and private per-source inventories are not.
 
-Before retrying, retrieve and verify original staged or Release assets. Reuse
+Separate required package-test and actual release modes. PR/push/manual dry-runs
+verify the exact pack and maps locally, discard private outputs and share only
+tarball plus public package-test identity; no production recipient is needed.
+Synthetic GPG controls use synthetic maps only. A package-test artifact is not
+promoted after its maps are discarded. A trusted tag creates its own original
+release candidate once, requiring production encryption in that originating pack
+job before handoff; missing custody cannot downgrade to test mode.
+
+Before retrying a release, retrieve and verify original staged or Release assets. Reuse
 exact matching bytes, fill only missing assets from a recoverable candidate and
 refuse conflicts. Expired staging without a complete candidate fails with recovery
 instructions; re-encryption cannot manufacture identical custody. Never make
