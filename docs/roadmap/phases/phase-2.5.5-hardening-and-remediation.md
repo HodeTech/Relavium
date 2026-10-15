@@ -4248,3 +4248,45 @@ These remain local author gates, not full CI/coverage/native-platform certificat
 Two NEW complete cumulative clean rounds after this material fix are required;
 no earlier round is counted as acceptance. Detailed reports/logs remain local and
 Git-ignored.
+
+
+### Wave 3 Step 2 frozen-workflow correction — 2026-10-16
+
+The NEW complete cumulative review at `09e5927d` confirms one High and one Medium;
+the parent reads the full report and verifies both actual consumer paths. The
+session-reader correction stands, but the engine's frozen-content identity check
+and CLI gate reader still applied fresh WorkflowSchema rules to historical runs.
+Unchanged inline fallback duplicates, repeated condition matches and inactive
+orphan timeout actions were valid at the Step 2 base. This round is not clean;
+no earlier review is counted toward acceptance.
+
+WorkflowSnapshotSchema now composes the same structural fields and shared
+whole-document invariants with historical agent/node contracts. It omits only the
+new author-only fallback/condition/gate checks. Prior strict fields, duplicate
+identities, input default/enum checks, parallel member uniqueness, custom merge
+requirements and parallel-edge consistency remain enforced. Actual CLI gate and
+engine frozen-identity readers use this contract; fresh parsers retain strict
+WorkflowSchema/AgentSchema/leaf admission. Historical content remains the identity
+authority, without automatic graph repair or fallback deduplication.
+
+Permanent controls cover the real frozen-content verifier and actual CLI → engine
+→ SQLite pause/resume for all three shapes, exact completed output, first-declared
+condition selection, inactive timeout action, preserved original events/snapshot
+and continued corrupt parallel-member refusal. Shared snapshot controls retain
+seven prior rejection classes. Session export faithfully preserves old fallback
+order/budgets; canonical mapping and serializer comments now qualify the current-
+authoring round-trip guarantee, a permanent test pins explicit repair/current
+refusal, and the shared successful-export notice names required historical review.
+The exporter neither rewrites history nor silently deduplicates the snapshot.
+
+Final author gates pass: all workspace lint/typecheck, 591 files / 13,119 passing
+tests / 20 established skips, six build tasks (five cached), seam/dependency fences,
+test-isolation across all six workspaces, source formatting, whitespace and 3,338
+relative links. Nine fresh mechanism removals break 25/3/9/3/3/6/1/3/3 designated
+regressions for node, agent, run, literal, standalone reasons, config bounds,
+historical session, engine frozen identity and CLI gate readers; every source is
+restored byte-identically before the final passing author suite. Filtered cases
+are not platform skips. This is local author evidence, not full CI, coverage,
+native-platform or whole-wave certification. Two NEW independent complete clean
+cumulative Step 2 rounds after this final material fix remain required before
+Step 3. Detailed reports/controls remain local and Git-ignored.
