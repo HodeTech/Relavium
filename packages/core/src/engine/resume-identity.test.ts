@@ -8,7 +8,7 @@
  * the lease** it acquired before it could know it would refuse (ADR-0079 §4).
  */
 
-import type { RunEvent } from '@relavium/shared';
+import { WorkflowSchema, WorkflowSnapshotSchema, type RunEvent } from '@relavium/shared';
 import { describe, expect, it } from 'vitest';
 
 import { parseWorkflow, type WorkflowDefinition } from '../parser.js';
@@ -429,6 +429,57 @@ describe('verifyFrozenWorkflowContent — the same slug is not the same graph (A
     expect(verifyFrozenWorkflowContent(JSON.stringify(WF), WF)).toBeUndefined();
     expect(verifyFrozenWorkflowContent(JSON.stringify(WF, null, 2), WF)).toBeUndefined();
   });
+
+  it.each(['fallback', 'condition', 'gate'] as const)(
+    'accepts an unchanged historical %s snapshot while fresh authoring refuses it',
+    (kind) => {
+      const historical = {
+        ...WF,
+        workflow: {
+          ...WF.workflow,
+          ...(kind === 'fallback'
+            ? {
+                agents: [
+                  {
+                    id: 'legacy-agent',
+                    model: 'primary',
+                    provider: 'openai',
+                    system_prompt: 'hello',
+                    fallback_chain: [
+                      { model: 'alternate', provider: 'openai', max_attempts: 1 },
+                      { model: 'alternate', provider: 'openai', max_attempts: 2 },
+                    ],
+                  },
+                ],
+              }
+            : {}),
+          nodes: WF.workflow.nodes.map((node) => {
+            if (node.id !== 'g') return node;
+            if (kind === 'condition')
+              return {
+                id: 'g',
+                type: 'condition',
+                expression: 'true',
+                branches: [
+                  { when: true, target_node: 'b' },
+                  { when: true, target_node: 'b' },
+                ],
+              };
+            return kind === 'gate' ? { ...node, timeout_action: 'reject' } : node;
+          }),
+        },
+      };
+      expect(WorkflowSchema.safeParse(historical).success).toBe(false);
+      const supplied = WorkflowSnapshotSchema.parse(historical);
+      expect(verifyFrozenWorkflowContent(JSON.stringify(historical), supplied)).toBeUndefined();
+      expect(
+        verifyFrozenWorkflowContent(JSON.stringify(historical), {
+          ...supplied,
+          workflow: { ...supplied.workflow, name: 'changed' },
+        })?.code,
+      ).toBe('workflow_content_mismatch');
+    },
+  );
 
   it('refuses the SAME slug with edited content — the drift the id guard cannot see', () => {
     // `resolveWorkflowId` maps a slug to a surrogate UUID, so an edited-but-same-slug workflow passes the
