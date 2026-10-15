@@ -114,6 +114,42 @@ describe('createSessionPersister', () => {
     return { built, persister, store, usageStore };
   }
 
+  it('keeps reasoning live-only while durably recording the completed answer', async () => {
+    const privateThinking = 'live reasoning sentinel';
+    const { built, persister } = await setup(
+      scriptedResolver([
+        [
+          { type: 'reasoning_delta', id: 'thinking-1', text: privateThinking },
+          { type: 'text_delta', text: 'durable answer' },
+          stop(),
+        ],
+      ]),
+    );
+    const observed: SessionStreamHandleEvent[] = [];
+    const off = built.handle.subscribe((event) => observed.push(event));
+    try {
+      persister.start();
+      built.session.start();
+      persister.beginUserTurn('hello');
+      await built.session.sendMessage('hello');
+      expect(
+        observed.some(
+          (event) => event.type === 'agent:reasoning' && event.text === privateThinking,
+        ),
+      ).toBe(true);
+      const loaded = store.loadMessages(built.sessionId);
+      expect(store.loadSession(built.sessionId)).toBeDefined();
+      expect(loaded.map((message) => textOf(message.content))).toEqual(['hello', 'durable answer']);
+      expect(JSON.stringify(loaded)).not.toContain(privateThinking);
+      expect(listenerNotes).toEqual([]);
+    } finally {
+      built.session.cancel();
+      await built.whenHostSafeToClose();
+      persister.close();
+      off();
+    }
+  });
+
   it('publishes typed session usage events only after their native SQLite coverage ACK', async () => {
     const { built, persister } = await setup(
       scriptedResolver([

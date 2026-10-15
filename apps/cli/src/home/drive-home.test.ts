@@ -129,7 +129,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     cwd = mkdtempSync(join(tmpdir(), 'relavium-home-'));
   });
   afterEach(() => {
-    client.sqlite.close();
+    if (client.sqlite.open) client.sqlite.close();
   });
 
   const global: GlobalOptions = {
@@ -258,6 +258,55 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     const controls = writeControl.mock.calls.map((c) => c[0] as string);
     expect(controls).toContain(DISABLE_BRACKETED_PASTE);
     expect(controls).toContain(DISABLE_MOUSE);
+  });
+
+  it('a native database close failure preserves a clean Home exit and restored terminal controls (#22)', async () => {
+    closeSpy.mockImplementation(() => {
+      client.sqlite.close();
+      throw new Error('SQLITE_IOERR_CLOSE /private/operator/history.db secret-token\x1b[2J');
+    });
+    let captured: RootAppProps | undefined;
+    const writeErr = vi.fn();
+    const { deps, unmount, writeControl, exitHandlers } = makeDeps((props) => (captured = props), {
+      io: { ...io, writeErr },
+    });
+    const drivePromise = driveHome(deps);
+    if (captured === undefined) throw new Error('the injected render was never invoked');
+    captured.controller.handleKey('c', CTRL_C);
+
+    expect(await drivePromise).toBe(EXIT_CODES.success);
+    expect(client.sqlite.open).toBe(false);
+    expect(closeSpy).toHaveBeenCalledTimes(1);
+    expect(unmount).toHaveBeenCalledTimes(1);
+    expect(writeControl).toHaveBeenCalledWith(DISABLE_BRACKETED_PASTE);
+    expect(writeControl).toHaveBeenCalledWith(DISABLE_MOUSE);
+    expect(writeErr).toHaveBeenCalledExactlyOnceWith('warning: session store teardown failed\n');
+    // The process-exit fallback shares the same close owner; a late callback must not repeat close or warning.
+    for (const exit of exitHandlers) exit();
+    expect(closeSpy).toHaveBeenCalledTimes(1);
+    expect(writeErr).toHaveBeenCalledTimes(1);
+  });
+
+  it('a native database close failure preserves the original mount error and restored controls (#22)', async () => {
+    const primary = new Error('ink mount primary failure');
+    closeSpy.mockImplementation(() => {
+      client.sqlite.close();
+      throw new Error('SQLITE_IOERR_CLOSE /private/operator/history.db secret-token\x1b[2J');
+    });
+    const writeErr = vi.fn();
+    const { deps, writeControl } = makeDeps(() => undefined, {
+      io: { ...io, writeErr },
+      render: () => {
+        throw primary;
+      },
+    });
+
+    await expect(driveHome(deps)).rejects.toBe(primary);
+    expect(client.sqlite.open).toBe(false);
+    expect(closeSpy).toHaveBeenCalledTimes(1);
+    expect(writeControl).toHaveBeenCalledWith(DISABLE_BRACKETED_PASTE);
+    expect(writeControl).toHaveBeenCalledWith(DISABLE_MOUSE);
+    expect(writeErr).toHaveBeenCalledExactlyOnceWith('warning: session store teardown failed\n');
   });
 
   it('MOUSE: the capture PORT exists by default, and `--no-mouse` withholds it (Step 5e/6g, ADR-0068 §e)', async () => {

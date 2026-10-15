@@ -478,8 +478,25 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
           unsubscribe = undefined;
         }
         return;
-      default:
+      // Lifecycle/display-only events have no transcript or money write here. Coverage has its
+      // acknowledged writer; reasoning remains live-only, never persisted as assistant text.
+      case 'session:started':
+      case 'session:turn_started':
+      case 'session:exported':
+      case 'session:compacting':
+      case 'session:compaction_failed':
+      case 'session:compaction_budget_refused':
+      case 'agent:reasoning':
+      case 'agent:tool_result':
+      case 'agent:approval_requested':
+      case 'cost:usage_pending':
+      case 'cost:usage_disposition':
+      case 'budget:estimate_committed':
         return;
+      default: {
+        const exhaustive: never = event;
+        return exhaustive;
+      }
     }
   };
 

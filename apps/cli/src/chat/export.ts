@@ -6,6 +6,7 @@ import type { SessionStore } from '@relavium/db';
 import type { AgentSessionRecord } from '@relavium/shared';
 
 import { CliError } from '../process/errors.js';
+import { sourceLabel } from '../process/source-label.js';
 
 /**
  * Session → workflow export (2.P / [ADR-0026](../../../../docs/decisions/0026-session-export-to-workflow.md)) —
@@ -72,6 +73,7 @@ export function exportSession(opts: ExportSessionOptions): ExportResult {
     opts.outPath === undefined
       ? join(opts.cwd, `${opts.sessionId}.relavium.yaml`)
       : resolve(opts.cwd, opts.outPath);
+  const label = sourceLabel(opts.cwd, path);
   try {
     // Create the parent directory (so `--out exports/wf.yaml` just works) before writing the scaffold.
     mkdirSync(dirname(path), { recursive: true });
@@ -79,26 +81,29 @@ export function exportSession(opts: ExportSessionOptions): ExportResult {
     // separate existence check and the write; `w` truncates/overwrites under `--force`.
     writeFileSync(path, yaml, { encoding: 'utf8', flag: opts.force ? 'w' : 'wx' });
   } catch (err) {
-    const code =
-      err instanceof Error && 'code' in err ? (err as NodeJS.ErrnoException).code : undefined;
+    const code = typeof err === 'object' && err !== null && 'code' in err ? err.code : undefined;
     // An existing target without `--force` (EEXIST) is the no-overwrite fault; a structurally-invalid
     // `--out` (a directory → EISDIR; a file used as a dir → ENOTDIR) is also an INVOCATION fault (exit 2).
-    // Other write faults (permissions, disk) propagate.
+    // Other native write faults retain their cause behind a fixed safe diagnostic.
     if (code === 'EEXIST') {
       throw new CliError(
         'invalid_invocation',
-        `${path} already exists — pass --force to overwrite`,
+        `${label} already exists — pass --force to overwrite`,
         { cause: err },
       );
     }
     if (code === 'EISDIR' || code === 'ENOTDIR') {
       throw new CliError(
         'invalid_invocation',
-        `cannot write ${path}: the target path is not a file`,
+        `cannot write ${label}: the target path is not a file`,
         { cause: err },
       );
     }
-    throw err;
+    throw new CliError(
+      'internal',
+      `could not write ${label}: check destination permissions and available disk space`,
+      { cause: err },
+    );
   }
 
   // The session is append-only; the next event/seq is one past the durable MAX (a fold, not a spread).

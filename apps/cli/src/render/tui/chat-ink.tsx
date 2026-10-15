@@ -1006,6 +1006,10 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         // Clear the transient hint only on a REAL interaction — the fold returns the SAME state ref for an inert key.
         applyModelPicker(step.state === open ? open : { ...step.state, hint: undefined });
         return;
+      default: {
+        const exhaustive: never = step;
+        return exhaustive;
+      }
     }
   };
 
@@ -1041,6 +1045,10 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       case 'state':
         applyEffortPicker(step.state);
         return;
+      default: {
+        const exhaustive: never = step;
+        return exhaustive;
+      }
     }
   };
 

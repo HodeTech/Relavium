@@ -1,3 +1,4 @@
+import { closeQuietly } from '../process/close-quietly.js';
 import type { AgentSessionRecord } from '@relavium/shared';
 
 import { loadResolvedConfig } from '../config/load.js';
@@ -54,7 +55,7 @@ export function chatListCommand(deps: ChatListCommandDeps): ExitCode {
     }
     return EXIT_CODES.success;
   } finally {
-    opened.close();
+    closeQuietly(deps.io, 'session store', () => opened.close());
   }
 }
 

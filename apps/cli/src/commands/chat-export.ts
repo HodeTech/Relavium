@@ -1,3 +1,4 @@
+import { closeQuietly } from '../process/close-quietly.js';
 import { SessionExportedEventSchema } from '@relavium/shared';
 
 import { exportSession, SESSION_EXPORT_REVIEW_NOTICE } from '../chat/export.js';
@@ -75,10 +76,8 @@ export function chatExportCommand(
         exportedWorkflowPath: result.path,
         updatedAt: new Date(now()).toISOString(),
       });
-    } catch (err) {
-      deps.io.writeErr(
-        `note: scaffold written but could not mark the session exported: ${err instanceof Error ? err.message : String(err)}\n`,
-      );
+    } catch {
+      deps.io.writeErr('note: scaffold written but could not mark the session exported\n');
     }
 
     if (deps.global.json) {
@@ -96,6 +95,6 @@ export function chatExportCommand(
     }
     return EXIT_CODES.success;
   } finally {
-    opened.close();
+    closeQuietly(deps.io, 'session store', () => opened.close());
   }
 }

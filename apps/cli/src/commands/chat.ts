@@ -83,6 +83,7 @@ import { createProviderResolver, type ProviderResolver } from '../engine/provide
 import { openSessionStore, type OpenedSessionStore } from '../history/session-open.js';
 import { CliError } from '../process/errors.js';
 import type { CliIo } from '../process/io.js';
+import { closeQuietly, warnTeardown } from '../process/close-quietly.js';
 import type { GlobalOptions } from '../process/options.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import { detectOutputMode, isCiEnv } from '../process/output-mode.js';
@@ -142,24 +143,6 @@ import {
 export interface ChatCommandArgs {
   /** `--agent <ref>` (path or bare id); `undefined` ⇒ the built-in default agent over `[chat].default_model`. */
   readonly agent: string | undefined;
-}
-
-/** Surface a teardown failure as a stderr warning (never silently swallowed, never thrown — the primary
- *  command outcome must survive a cleanup fault). Shared by the chat command + resume teardown paths. */
-function warnTeardown(io: CliIo, label: string, err: unknown): void {
-  io.writeErr(
-    `warning: ${label} teardown failed: ${err instanceof Error ? err.message : String(err)}\n`,
-  );
-}
-
-/** Best-effort SYNC close: run it, but a reject/throw only warns — so one resource's failure never skips the
- *  next teardown step nor masks the primary outcome (attempt-all, preserve-primary). */
-function closeQuietly(io: CliIo, label: string, close: () => void): void {
-  try {
-    close();
-  } catch (err) {
-    warnTeardown(io, label, err);
-  }
 }
 
 /**
@@ -581,7 +564,7 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
   // The ADR-0065 §2 user-pricing overlay (2.5.G S10) — a transient read of the `model_catalog` `source='user'`
   // rows, so a user-priced model is enforced by `[chat].max_cost_microcents` + tracked in realized cost. NON-FATAL:
   // an unopenable db yields `undefined` here and surfaces cleanly through the session store open below.
-  const resolvePrice = loadUserPricingOverlay(homeDir);
+  const resolvePrice = loadUserPricingOverlay(homeDir, deps.io);
 
   // An unknown --agent / un-inferrable default model throws a typed CliError here (exit 2), before any session.
   // The build is async (2.R): it connects the agent's inline stdio `mcp_servers` (a connect failure is a
@@ -898,7 +881,7 @@ export async function chatResumeCommand(
     // A pre-loop fault (not-found, no snapshot, build failure, or a post-build setup throw) must not strand the
     // open db handle NOR the spawned MCP children — tear BOTH down (a reject in one must not skip the other), and
     // never let a cleanup fault mask the primary error (best-effort; closeMcp is idempotent + a no-op when unset).
-    await closeMcp?.().catch((e: unknown) => warnTeardown(deps.io, 'MCP', e));
+    await closeMcp?.().catch(() => warnTeardown(deps.io, 'MCP'));
     closeQuietly(deps.io, 'session store', () => opened.close());
     throw err;
   }
@@ -2266,7 +2249,7 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
       // The lifetime join finishes before its durability verdict can reject. A failed final write
       // must still release the now-quiescent persister and MCP clients.
       closeQuietly(deps.io, 'persister', () => persister.close());
-      await built.closeMcp?.().catch((e: unknown) => warnTeardown(deps.io, 'MCP', e));
+      await built.closeMcp?.().catch(() => warnTeardown(deps.io, 'MCP'));
     }
   }
 }

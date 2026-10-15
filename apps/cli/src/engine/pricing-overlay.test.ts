@@ -14,6 +14,7 @@ import {
 import { clearCatalogRefresh, priceModel } from '@relavium/llm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { captureIo } from '../test-support.js';
 import { openLocalDb } from '../db/open.js';
 import { catalogModelToRow } from './catalog-metadata.js';
 import {
@@ -153,7 +154,7 @@ describe('loadUserPricingOverlay (self-contained transient open)', () => {
     } finally {
       opened.close();
     }
-    const overlay = loadUserPricingOverlay(home);
+    const overlay = loadUserPricingOverlay(home, captureIo().io);
     expect(overlay?.get('acme-custom-1')?.inputPerMtokMicrocents).toBe(300_000_000);
   });
 
@@ -163,6 +164,6 @@ describe('loadUserPricingOverlay (self-contained transient open)', () => {
     // than propagating (the surface's own session/run store open is the authoritative fault report, a clean exit 2).
     const blocker = join(home, 'blocker');
     writeFileSync(blocker, 'not a directory');
-    expect(loadUserPricingOverlay(blocker)).toBeUndefined();
+    expect(loadUserPricingOverlay(blocker, captureIo().io)).toBeUndefined();
   });
 });

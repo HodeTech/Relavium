@@ -201,8 +201,8 @@ export const AgentTokenEventSchema = z.object({
  * counterpart of `agent:token`: a **dual-envelope** event (`runId` on a run, `sessionId` on a session)
  * the correlation-agnostic turn core emits per `reasoning_delta` chunk. Carries the delta `text` + the
  * emitting `model` — never the ephemeral same-provider `signature` (a same-turn continuity token that is
- * never written to an event or log, ADR-0030). A surface renders it as a collapsible "thinking" panel; a
- * consumer that does not care ignores it forward-compatibly (an additive `type`, no `assertNever`).
+ * never written to an event or log, ADR-0030). Surfaces render a bounded thinking region; consumers of the closed event union
+ * explicitly handle it or name their deliberate ignore disposition. No signature becomes display data.
  */
 export const AgentReasoningEventSchema = z.object({
   type: z.literal('agent:reasoning'),

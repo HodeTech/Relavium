@@ -1,3 +1,4 @@
+import { closeQuietly, warnTeardown } from '../process/close-quietly.js';
 import { EgressWorkScope } from '../engine/egress-work.js';
 import { randomUUID } from 'node:crypto';
 import { statSync } from 'node:fs';
@@ -611,13 +612,11 @@ async function resumeGateCommand(
     try {
       try {
         // Cleanup must not replace a primary refusal or a durably completed command result.
-        await mcpRuntime?.client.close().catch(() => {
-          deps.io.writeErr('warning: the MCP client could not close cleanly\n');
-        });
+        await mcpRuntime?.client.close().catch(() => warnTeardown(deps.io, 'MCP'));
       } finally {
         mcpWork.seal();
         await mcpWork.done;
-        opened.close();
+        closeQuietly(deps.io, 'history database', () => opened.close());
       }
     } finally {
       unguardMcp();

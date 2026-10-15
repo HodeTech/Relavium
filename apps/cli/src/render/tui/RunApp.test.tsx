@@ -4,7 +4,12 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { waitFor } from './harness-util.js';
 import { RunApp } from './RunApp.js';
 import type { RunStore, RunStoreSnapshot } from './run-store.js';
-import type { RunViewState } from './run-view-model.js';
+import {
+  initialRunViewState,
+  reduceRunEvent,
+  MAX_ACTIVE_TOKEN_LINES,
+  type RunViewState,
+} from './run-view-model.js';
 
 afterEach(cleanup);
 
@@ -24,6 +29,26 @@ function staticStore(state: RunViewState): RunStore {
 }
 
 describe('RunApp terminal projection', () => {
+  it('renders reduced reasoning with a bounded tail in a real color-disabled Ink frame', async () => {
+    const text = Array.from({ length: 12 }, (_, i) => `reasoning row ${i}`).join('\n');
+    const state = reduceRunEvent(initialRunViewState(), {
+      type: 'agent:reasoning',
+      runId: 'run-1',
+      nodeId: 'thinker',
+      model: 'reasoner',
+      timestamp: '2026-10-16T00:00:00.000Z',
+      sequenceNumber: 1,
+      text,
+    });
+    const { lastFrame } = render(<RunApp store={staticStore(state)} />);
+    await waitFor(() => (lastFrame() ?? '').includes('reasoning row 11'));
+    const frame = lastFrame() ?? '';
+    expect(frame).toContain('thinking · thinker');
+    expect(frame).not.toContain('reasoning row 0');
+    expect(frame.match(/reasoning row/g)).toHaveLength(MAX_ACTIVE_TOKEN_LINES);
+    expect(frame).not.toContain('\x1b');
+  });
+
   it('removes terminal and bidi controls from every untrusted display field in a real Ink frame (#56)', async () => {
     const nodeId = `node visible${ATTACK}\nforged row`;
     const state: RunViewState = {
@@ -37,6 +62,7 @@ describe('RunApp terminal projection', () => {
       },
       activeNodeId: nodeId,
       activeModel: `model visible${ATTACK}\nforged model`,
+      activeReasoning: `reasoning visible${ATTACK}\nsecond reasoning visible`,
       activeTokens: `token visible${ATTACK}\nsecond token visible`,
       toolLines: [`tool visible${ATTACK}\nforged tool row`],
       cumulativeCostMicrocents: 0,
@@ -65,6 +91,8 @@ describe('RunApp terminal projection', () => {
     expect(frame).toContain('error visible');
     expect(frame).toContain('model visible');
     expect(frame).toContain('token visible');
+    expect(frame).toContain('reasoning visible');
+    expect(frame).toContain('thinking');
     expect(frame).toContain('tool visible');
     expect(frame).toContain('warning visible');
     expect(frame).toContain('image/png visible');

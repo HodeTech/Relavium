@@ -942,6 +942,10 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         // (an unhandled key / backspace on an empty filter), which must not wipe a just-shown hint.
         set({ modelPicker: step.state === open ? open : { ...step.state, hint: undefined } });
         break;
+      default: {
+        const exhaustive: never = step;
+        return exhaustive;
+      }
     }
     return true;
   };
@@ -985,6 +989,10 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       case 'state':
         set({ effortPicker: step.state });
         break;
+      default: {
+        const exhaustive: never = step;
+        return exhaustive;
+      }
     }
     return true;
   };

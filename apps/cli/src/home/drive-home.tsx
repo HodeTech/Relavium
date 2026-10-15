@@ -1,3 +1,4 @@
+import { closeQuietly, warnTeardown } from '../process/close-quietly.js';
 import { COMPACTION_UNKNOWN_WINDOW_NOTICE } from '../chat/repl-info.js';
 import { randomUUID } from 'node:crypto';
 import { Buffer } from 'node:buffer';
@@ -230,7 +231,7 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
   const closeDb = (): void => {
     if (dbClosed) return;
     dbClosed = true;
-    opened.close();
+    closeQuietly(deps.io, 'session store', () => opened.close());
   };
   const writeControl =
     deps.writeControl ??
@@ -593,9 +594,9 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
             await built.whenHostSafeToClose();
           } finally {
             try {
-              persister?.close();
+              closeQuietly(deps.io, 'persister', () => persister?.close());
             } finally {
-              await built.closeMcp?.().catch(() => undefined); // best-effort; never orphan a spawned stdio child
+              await built.closeMcp?.().catch(() => warnTeardown(deps.io, 'MCP')); // best-effort; never orphan a spawned stdio child
             }
           }
         };
@@ -635,9 +636,9 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         clearInterval(frame); // reclaim whatever the wiring managed to acquire before the throw
         unsubscribe?.();
         try {
-          persister?.close();
+          closeQuietly(deps.io, 'persister', () => persister?.close());
         } finally {
-          await built.closeMcp?.().catch(() => undefined);
+          await built.closeMcp?.().catch(() => warnTeardown(deps.io, 'MCP'));
         }
         throw err;
       }

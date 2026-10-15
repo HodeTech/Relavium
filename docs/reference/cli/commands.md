@@ -28,7 +28,7 @@ The CLI auto-detects its environment and switches presentation accordingly:
 
 | Mode | When | Behavior |
 |------|------|----------|
-| **Interactive TUI** | TTY attached, no `--json` | `ink`-rendered live view: animated per-node status, streaming token output for the active node, final cost/duration summary |
+| **Interactive TUI** | TTY attached, no `--json` | `ink`-rendered live view: animated per-node status, separate bounded live reasoning and answer output for the active node, final cost/duration summary |
 | **Plain** | No TTY or `CI=true` (and no `--json`) | The TUI is disabled; a terse line-per-lifecycle-event human renderer writes to stdout |
 | **NDJSON** | `--json` (anywhere on the command line) | The machine contract: stdout is a pure NDJSON stream — [RunEvent](../contracts/sse-event-schema.md)s for `run` / `gate` / `budget resume`, or [SessionEvent](../contracts/sse-event-schema.md#session-event-namespace)s for `chat` / `agent run` — and all diagnostics go to stderr. See [The `--json` machine-output contract](#the---json-machine-output-contract) |
 

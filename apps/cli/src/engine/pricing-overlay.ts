@@ -1,3 +1,5 @@
+import { closeQuietly } from '../process/close-quietly.js';
+import type { CliIo } from '../process/io.js';
 import { randomUUID } from 'node:crypto';
 
 import {
@@ -91,7 +93,10 @@ function readPricingRows(db: Db): PricingOverlay {
  * fault surfaces through the surface's OWN store-open error path (a clean exit 2), not an opaque throw here. The
  * transient handle closes before the surface opens its real store — sequential opens of the one SQLite file.
  */
-export function loadUserPricingOverlay(homeDir: string): PricingOverlay | undefined {
+export function loadUserPricingOverlay(
+  homeDir: string,
+  io: Pick<CliIo, 'writeErr'>,
+): PricingOverlay | undefined {
   let opened: { db: Db; close: () => void };
   try {
     opened = openLocalDb(homeDir);
@@ -108,6 +113,6 @@ export function loadUserPricingOverlay(homeDir: string): PricingOverlay | undefi
     // surface; the surface's own store open is the authoritative fault report.
     return undefined;
   } finally {
-    opened.close();
+    closeQuietly(io, 'history database', () => opened.close());
   }
 }

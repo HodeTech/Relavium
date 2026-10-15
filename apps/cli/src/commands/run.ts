@@ -1,3 +1,4 @@
+import { closeQuietly, warnTeardown } from '../process/close-quietly.js';
 import { EgressWorkScope } from '../engine/egress-work.js';
 import { randomUUID } from 'node:crypto';
 
@@ -511,11 +512,11 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
     // outcome (closeAll swallows per-connection; the db close is best-effort here too).
     try {
       try {
-        await mcpRuntime?.client.close();
+        await mcpRuntime?.client.close().catch(() => warnTeardown(deps.io, 'MCP'));
       } finally {
         mcpWork.seal();
         await mcpWork.done;
-        opened?.close();
+        closeQuietly(deps.io, 'history database', () => opened?.close());
       }
     } finally {
       // **Released LAST, after the MCP close has finished** — and it was released first, which left the one
