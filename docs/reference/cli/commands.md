@@ -675,6 +675,16 @@ request or credential text. Unknown throws, projection/getter faults and broken
 sinks fall back to a fixed message; do not coerce arbitrary objects. The ordinary
 generic failure points to `--verbose`.
 
+Frame syntax alone is not provenance: Error.stack is writable. Emit only an exact
+owned shipped-artifact/source-file identity from a pure static/build-generated
+allowlist, as its canonical relative ID plus bounded positive line/column.
+Drop function labels, absolute install/user paths, URL queries/fragments,
+eval/anonymous/sourceURL and unknown/external frames. Do not open maps/config or
+inspect causes to validate frames. Early failures with no owned match get fixed
+classification only. Bound descriptor-safe stack acquisition and parsing; hostile
+accessor/proxy/coercion faults produce no detail. Include arbitrary canaries in
+syntactically valid frame paths as negative controls.
+
 ### Failure classification and remedies
 
 | Surface / origin | Proposed disposition |
@@ -710,6 +720,38 @@ joining remains unbounded by this fatal policy. A timer never acknowledges an ow
 or allows an unjoined store to close. Register owners before work, stop all even
 if one callback throws, release only after actual joins, reap only owned native
 resources on fallback and guard handler re-entry.
+
+### Native crash teardown scope
+
+On POSIX, terminate only registered owned process groups/children. On Windows,
+use the OS [taskkill](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/taskkill)
+facility with fixed `/PID <owned-live-root> /T /F` arguments, shell=false and no
+image-name/remote/wildcard selectors. Resolve its absolute System32 location from
+the invocation's trusted OS installation root, canonicalize and verify that fixed
+regular executable there before any tool/MCP spawn; never search workspace/PATH,
+or accept a workflow/model-supplied executable/root. A missing/invalid facility
+refuses subprocess admission; it cannot silently degrade to claimed tree cleanup.
+The OS installation root is trusted host environment, not a security boundary
+against an already hostile launching user/process.
+
+Register exact ChildProcess ownership before exposing work; retain it until close.
+Do not kill a stale PID after the owned root has closed. Bound taskkill completion
+within the responsive fatal budget, attempt all registered owners, and join actual
+native close separately; termination-request success is not acknowledgement.
+
+**Finite guarantee:** best-effort cleanup of the live registered root/current
+descendants on Windows and owned process group on POSIX. Already exited roots,
+escaped/reparented/detached descendants and same-user PID-reuse races are not
+race-free contained by these primitives. Do not scan ambient processes or claim
+no orphan can ever remain. Retain uncertainty/remedy when membership/closure is
+unknown. This explicitly bounded crash mechanism is the proposed Wave 3 scope;
+full M/N child isolation/containment remains with its existing owner, not silently
+certified here. Full Windows job-object containment would require a separately
+approved native-helper/dependency decision; no such dependency is authorized.
+
+Required native Windows controls cover hostile PATH, invalid OS-root facility,
+live descendants, root-exit/stale registration, refusal, timeout and actual close.
+POSIX tests cover owned groups and the same uncertainty distinctions.
 
 ### Discovery DTO and one descriptor authority
 

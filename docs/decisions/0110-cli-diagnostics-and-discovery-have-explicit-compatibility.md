@@ -39,7 +39,7 @@ No engine ErrorCode or runtime dependency is added.
 Keep quiet and verbose mutually exclusive; explicit flags override the exact
 debug alias defined in the canonical proposal. Narrowing the old defined-variable
 debug predicate is deliberate. Quiet preserves requested data and safety output.
-Verbose adds bounded diagnostic metadata and validated stack-frame locations,
+Verbose adds bounded diagnostic metadata and validated stack-frame locations from a closed build-owned relative-file allowlist,
 never arbitrary error messages, cause trees or raw stack headers. Pattern
 redaction is defence in depth, not proof that arbitrary text is secret-free.
 JSON diagnostics, including #269's last resort, remain structured stderr records.
@@ -70,8 +70,12 @@ are guarded. Normal/recoverable cleanup still joins actual owners.
 Known final money/effect/durability/ownership health takes precedence on **return
 and throw** paths. Unavailable health remains uncertain, with inspection before
 retry; no terminal or acknowledgement is fabricated. Native teardown uses owned
-POSIX groups and a separately tested Windows child/tree mechanism, never a
-negative-PID claim for Windows or foreign processes.
+POSIX groups and the trusted absolute Windows taskkill facility with fixed
+owned-root tree arguments, never PATH lookup or foreign PID scanning. The
+canonical contract limits this to live registered roots/current descendants;
+root-exit, escape/reparenting and same-user PID reuse are not race-free contained.
+A request is not close ACK. Full job-object/native containment is not claimed or
+silently deferred as a completed Wave 3 guarantee; existing M/N ownership remains.
 
 EPIPE is a classified output-unavailable operational failure, not an unclassified
 exception. Stop/join producers, preserve stronger safety exits and use at most one
@@ -147,5 +151,5 @@ backstop's accepted keepalive policy is distinct from process exceptions.
 
 - JSON help, consent, debug predicate and failure classification deliberately alter
   public behaviour. Explicit compatibility tables and aliases bound the change.
-- Fatal cleanup cannot promise crash-safe receipts. Inspect before repeating paid
+- Fatal cleanup cannot promise crash-safe receipts or universal descendant containment. Inspect before repeating paid
   or effectful work; a failed cleanup must not be reported acknowledged.

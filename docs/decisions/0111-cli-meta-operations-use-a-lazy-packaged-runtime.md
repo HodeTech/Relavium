@@ -69,8 +69,10 @@ OSes and the declared minimum runtime, then release CI reuses that mechanism.
 
 ### One build, exact maps and retryable custody
 
-Enable external upstream TypeScript maps for inlined packages, without embedded
-sources. The final bundler chains them to original TypeScript; do not substitute
+Emit external upstream TypeScript maps only in a fresh isolated, uncached
+candidate build, without embedded sources. Ordinary workspace builds remain
+map-free. No Actions/Turbo/remote build-cache read/write or later broad cache
+capture may include upstream/final maps, private manifests or staging. The final bundler chains them to original TypeScript; do not substitute
 source aliases or claim a decrypt test proves engine symbolication.
 
 Make **prepack the sole final CLI build** after dependency builds. Finalize tsup

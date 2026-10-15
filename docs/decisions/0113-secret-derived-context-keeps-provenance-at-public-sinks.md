@@ -64,10 +64,14 @@ stays local to the resolver/projection cut rather than a second executor authori
 Expression scopes serialize only clean context and denied-key metadata. Inside
 QuickJS, create frozen context accessors for denied keys with an inaccessible
 sticky denial latch. Evaluate authored code in a separate lexical environment
-receiving only the public bindings; a guessed wrapper-local name or eval cannot
-reset the latch. Capture required intrinsic operations before author execution.
+receiving a frozen public pack and binding its public names as const; a guessed
+wrapper-local name or eval cannot reset the latch. Capture required intrinsic
+operations before author execution.
 After evaluation **and result serialization**, check the latch before accepting a
-condition, transform or custom merge. This covers caught access, returned ctx,
+condition, transform or custom merge. Return the final null-prototype control
+envelope as a primitive string through captured serialization; host typeof/getString,
+parse and strict arm validation replace prototype-sensitive object dump. Author
+results cannot select an outer control arm. This covers caught access, returned ctx,
 nested outputs, getters and toJSON, not just literal property reads.
 
 Any denied value access produces the fixed non-retryable secret-context sandbox
@@ -79,8 +83,10 @@ existing condition/output serialization rules; prototype/intrinsic mutation cann
 replace the trusted result check. This mechanism requires real VM causal controls,
 not only a host Proxy or wrapper mock.
 
-A synthetic probe on the installed QuickJS supports private lexical latch,
-caught-read and serialization feasibility; it is not product implementation.
+The initial ordinary-object feasibility wrapper was forgeable through inherited
+toJSON at host dump, despite its private latch. A revised primitive-transport
+probe closes that schedule and preserves const binding refusal. Both are design
+evidence, not product implementation.
 Permanent actual-engine/store tests below must establish the final mechanism.
 Existing direct-input markers remain their Accepted contract; extending this
 fail-loud rule to them is not silently included.
@@ -120,7 +126,8 @@ fabricated empty tool metadata add unsupported claims without repairing the sink
 
 1. Actual WorkflowEngine + createStandardNodeExecutor + QuickJS controls cover
    direct/computed/serialized/transitive/nested/custom merge, caught access,
-   condition oracle, returned ctx/getters/toJSON and intrinsic/latch tampering.
+   condition oracle, returned ctx/getters/toJSON, final-envelope prototype poisoning,
+   const reassignment and intrinsic/latch tampering.
    Assert the expected typed failed outcome, no branch/output-schema success and
    no raw VM input/error detail. Independently successful clean workflows must
    complete with exact expected outputs; no vacuous negative-only test.

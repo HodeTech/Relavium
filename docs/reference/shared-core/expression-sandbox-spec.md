@@ -285,13 +285,22 @@ Actual consumers:
   empty deniedKeys is the clean migration), not an omitted VM-only field.
 - In QuickJS, denied keys are enumerable frozen accessors with a private sticky
   attempted-access latch. Raw denied values do not exist in the VM. Author code
-  runs in a separate strict lexical environment receiving only the public bindings,
-  outside the latch/serializer closure. Capture required intrinsics first.
+  runs in a separate strict lexical environment receiving only a frozen public scope pack, outside the latch/serializer closure.
+  Bind inputs/ctx/run/branches as local const names inside that function (ordinary
+  mutable parameters would change existing semantics). Capture required intrinsics first.
 - Serialize/marshal the result once inside the trusted wrapper, then test the latch
   before accepting the type/result. Author catch, returned ctx/nested getter/toJSON,
-  eval/name guessing or intrinsic mutation cannot produce successful denial.
+  eval/name guessing, Object.prototype.toJSON envelope poisoning or intrinsic mutation cannot produce successful denial.
   Keep current primitive, condition, nonserializable/cycle and lossy JSON rules;
   JSON-normalizing first must not conceal a forbidden result type.
+- The final private control envelope has a null prototype and is serialized with
+  captured intrinsics **inside** that closure, returned as a primitive string.
+  The host checks VM typeof, extracts with getString, host-parses and strictly
+  validates closed success/failure/denial arms. Never dump a prototype-bearing VM
+  object after checking denial: inherited toJSON can forge that final observation.
+  Author results remain nested payload, never the control arm. Bound the transport.
+  Preserve primitive/condition/boxed/cycle semantics explicitly rather than
+  JSON-normalizing all values indiscriminately.
 
 Denied access yields `SandboxError.reason: 'secret_context'`, existing
 `code: 'sandbox_error'`, retryable=false, fixed message

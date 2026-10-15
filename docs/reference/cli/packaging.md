@@ -33,8 +33,11 @@ silently replaces existing private-module provenance.
 
 ## Build, map and candidate identity
 
-1. Build inlined dependencies fresh with external TypeScript maps and no inline
-   source contents; do not accept stale incremental/cache output missing maps.
+1. Build inlined dependencies fresh in an isolated candidate job with external
+   TypeScript maps and no inline source contents. Ordinary workspace builds stay
+   map-free. Disable build-cache read **and write**, including Turbo local/remote,
+   Actions build caches and later broad capture; force alone is insufficient.
+   Build via existing dependency-ordered scripts in that private stage; do not accept stale incremental/cache output missing maps.
    Keep current package exports, engine purity and SDK seam.
 2. Invoke `pnpm pack` once. Prepack owns the sole final CLI build, clean output,
    minification, splitting, migration copy, map chaining and closure checks.
@@ -50,6 +53,15 @@ silently replaces existing private-module provenance.
    packed CLI and engine frames to expected TypeScript lines/columns. Verify wrong
    JS/map/source and missing upstream map refusal. A decrypt round trip alone
    does not certify mappings.
+
+Upstream/final maps, private manifests, metafiles and staging may leave the
+candidate job only inside ciphertext; exclude them from every artifact, cache,
+diagnostic and failure upload. Package/dependency-download caching may include
+only already-public dependencies, never this build output. A synthetic planted
+map/cache marker must fail the public-output inventory; changing the exclusion
+or enabling a candidate build-cache write must break that causal control.
+[GitHub cache access](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching)
+is not a private archive boundary.
 
 The **private map manifest** is versioned JSON inside the encrypted archive:
 source commit/tree, package version, Node/pnpm/TypeScript/tsup/esbuild versions,
