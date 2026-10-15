@@ -2,14 +2,16 @@
 
 - **Status**: Proposed
 - **Date**: 2026-10-15
-- **Related**: [ADR-0049](0049-cli-machine-output-contract.md) (partial replacement of explicit JSON-help exception), [ADR-0047](0047-cli-framework-commander-ink-clack.md), [ADR-0056](0056-cli-in-app-slash-command-system-and-manifest.md), [ADR-0088](0088-the-mcp-boundary-is-hostile.md), [ADR-0103](0103-a-paused-run-hands-off-its-local-producers-before-its-host-closes.md), [ADR-0111](0111-cli-meta-operations-use-a-lazy-packaged-runtime.md), [Wave 3](../roadmap/current.md#wave-3--clear-the-ground)
+- **Related**: [ADR-0049](0049-cli-machine-output-contract.md) (§5 infrastructure/pre-run exceptions and §6 explicit JSON-help partially replaced), [ADR-0047](0047-cli-framework-commander-ink-clack.md), [ADR-0056](0056-cli-in-app-slash-command-system-and-manifest.md), [ADR-0088](0088-the-mcp-boundary-is-hostile.md), [ADR-0103](0103-a-paused-run-hands-off-its-local-producers-before-its-host-closes.md), [ADR-0111](0111-cli-meta-operations-use-a-lazy-packaged-runtime.md), [Wave 3](../roadmap/current.md#wave-3--clear-the-ground)
 
 ## Context
 
 Wave 3 D19/D20/D22, #13/#17/#18/#19/#40/#41/#42/#45/#224/#264/#265/#268/#269/
 #309/#310 and G35 require explicit CLI compatibility. Accepted ADR-0056 already
 promises machine-readable help; ADR-0049 §6 prescribes human help under JSON.
-This proposal realizes the former and partially replaces the latter.
+This proposal realizes the former and partially replaces ADR-0049 §6 for explicit
+JSON help, and §5 for classified storage/infrastructure exceptions. Actual run
+terminal outcomes and the pure stdout event stream retain their contracts.
 
 At baseline `702cdc9c`, verbosity has no effective general consumer and debug
 predicates differ. Unexpected CLI failures share exit 1 with known operational
@@ -124,7 +126,8 @@ eligibility/decline/interruption rules and every existing deletion example must
 agree. G15 closes as a refuted current defect with preservation evidence.
 
 At **acceptance**, record ADR-0049's clause-specific partial replacement in its
-Status/index and dated forward note, append ADR-0056's realization note and
+Status/index and dated forward note: §5 pre-run/infrastructure exceptions and §6
+explicit JSON help. Append ADR-0056's realization note and
 ADR-0088/0103 refinements before dependent code. Reconcile D19's old precedence
 ladder, D22's two-exception shorthand, E's “Required ADR: none new” and phase exit
 criterion 4's blanket machine-contract prohibition to this enumerated scope.

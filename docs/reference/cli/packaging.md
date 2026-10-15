@@ -97,8 +97,9 @@ No host absolute paths, credentials or embedded source are stored.
 
 The **public binding receipt** is versioned JSON beside ciphertext: source SHA,
 package version, tarball/ciphertext SHA-256, recipient primary and encryption-subkey
-fingerprints, toolchain/config/lock identity, nonsecret originating map-check completion status,
-and originating trusted workflow/run/attempt identity. It contains neither maps nor private per-source inventory.
+fingerprints, toolchain/config/lock identity, nonsecret originating map-check
+completion status, and originating trusted workflow/run/attempt identity. It
+contains neither maps nor private per-source inventory.
 Use SHA-256 for file identity, not a homemade signature/provenance protocol.
 Check originating identity against the trusted CI service/run and real tag/source;
 a self-declared JSON field alone does not authenticate its producer.
@@ -240,7 +241,8 @@ Same-run transfer may use Actions' existing artifact runtime capability; cross-r
 retrieval remains in the Actions-read discovery owner. Archive/finalize recheck
 remote state with their own custody permissions on every retry. No downstream job
 can interpret stale fresh output as authority to rebuild. A missing source artifact
-cannot be compensated by re-encryption. Retain tarball/ciphertext/receipt for every supported release beyond
+cannot be compensated by re-encryption. Retain tarball/ciphertext/receipt for every
+supported release beyond
 Actions expiry, including npm failures. No automatic asset deletion/replacement.
 Public Release is not private storage; only ciphertext restricts debugging payload.
 

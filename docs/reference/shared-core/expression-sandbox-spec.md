@@ -272,7 +272,8 @@ Object.keys(resolved) order, not a new lexical sort. Validate unique well-formed
 keys and that orderedKeys is exactly the disjoint union of clean and denied keys.
 Reconstruct scope data/accessors in this full order, preserving existing context
 declaration order and ECMAScript integer-key enumeration. Separate clean/denied
-lists alone cannot recover their original interleaving. One pure factory qualifies resolved context using the existing
+lists alone cannot recover their original interleaving. One pure factory qualifies
+resolved context using the existing
 linear taint graph. Required execution/preparation ctx becomes this projection;
 the exported trusted raw resolver contract stays unchanged. Missing/malformed
 projection uses existing validation ErrorCode with fixed content-free message,
@@ -282,7 +283,8 @@ Derive secret-input membership once from that same admitted workflow. Own its
 backing data; expose a ReadonlySet-compatible membership/iteration facade without
 Set mutation methods and an immutable ordered denied-name array from the same
 factory. Facade callbacks/iterators must never expose the mutable backing Set
-(including forEach’s third argument). Copy caller-provided names at embedding entry: Object.freeze(new Set())
+(including forEach’s third argument). Copy caller-provided names at embedding
+entry: Object.freeze(new Set())
 or a live caller Set is insufficient. Every fresh/resume/preparation producer uses
 that same authority, rather than recomputing a mutable set at resume.
 
@@ -299,10 +301,11 @@ that same authority, rather than recomputing a mutable set at resume.
   private null placeholders which become accessors before author code; absent
   declared-secret keys get non-enumerable denied accessors. Never create an
   enumerable missing input or reorder unrelated clean keys. Placeholders are
-  transport data, never readable expression values or display markers. Trusted NodeExecContext.inputs
+  transport data, never readable expression values or display markers. Trusted
+  NodeExecContext.inputs
   remains raw; input-node/public display continues using maskSecretInputs.
-- QuickJS rebuilds frozen null-prototype scope records and enumerable denied
-  accessors for both namespaces. Clean values and key-only enumeration remain
+- QuickJS rebuilds frozen null-prototype scope records and denied accessors with
+  the present/absent enumerability specified above. Clean values and key-only enumeration remain
   usable. Scope metadata validation precedes serialization; no newly projected
   raw denied input/context bytes enter the VM.
 

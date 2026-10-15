@@ -3949,7 +3949,8 @@ is inferred. Working reports/probes remain local and ignored.
 **Canonical landing checklist (required, not a future unowned debt):**
 
 1. At explicit approval: change only new ADR statuses/index, append old clause-specific
-   notes and partial Accepted/index annotations for ADR-0047/0049/0051. Append the
+   notes and partial Accepted/index annotations for ADR-0047/0049/0051; ADR-0049
+   names §5 infrastructure/pre-run exceptions as well as §6 explicit JSON help. Append the
    listed refinements, including ADR-0105 meta admission and ADR-0027/0083 direct-input
    compatibility/ADR-0093 rationale. Reconcile D19/D22, E no-new-ADR statement and
    phase criterion 4 before dependent code. Keep historical bodies intact.
@@ -3998,3 +3999,19 @@ work, consistent with the existing ADR uncertainty rule. These are documentation
 corrections, not fixes to running product code. ADRs remain Proposed. The nonclean
 round is retained; two NEW complete cumulative clean proposal rounds are required
 after this final material correction before asking for approval.
+
+#### Second rereview proposal round 2 wording closure — 2026-10-16
+
+The NEW complete cumulative source review at 741d0db4 (gpt-6.1-sol, xhigh)
+verifies all three prior Mediums resolved and records no new material finding.
+Two optional Low cautions are also closed: absent declared-secret input accessors
+retain non-enumerability, and ADR-0049’s partial-replacement instructions name
+§5 infrastructure/pre-run exceptions as well as §6 explicit JSON help. These
+clarify the already explicit behavior matrix rather than introduce another rule.
+The earlier complete round at 86ff88a8 used gpt-6-astra, xhigh.
+
+For an unambiguous final checkpoint, obtain two NEW independent complete cumulative
+reviews of all fourteen paths at the wording-corrected source. Neither round 1’s
+three Mediums nor round 2’s optional cautions are hidden or relabeled zero issues.
+All four ADRs remain Proposed; code, platform, production custody and whole-wave
+acceptance are still future implementation gates.
