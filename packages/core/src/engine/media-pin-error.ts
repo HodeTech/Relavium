@@ -39,13 +39,17 @@ const REFUSED_EGRESS_CODES: ReadonlySet<string> = new Set([
 /** Egress reasons that mean the transfer failed in flight — worth another attempt. */
 const TRANSIENT_EGRESS_CODES: ReadonlySet<string> = new Set(['network', 'timeout']);
 
-/** A thrown value shaped like `@relavium/db`'s `SafeEgressError` (read structurally — see the module note). */
+/** Own data code only; reflection faults and accessors do not match. A thrown value shaped like `@relavium/db`'s `SafeEgressError` (read structurally — see the module note). */
 function egressCodeOf(error: unknown): string | undefined {
-  if (typeof error !== 'object' || error === null || !('code' in error)) {
+  if (typeof error !== 'object' || error === null) return undefined;
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(error, 'code');
+    if (descriptor === undefined || !('value' in descriptor)) return undefined;
+    const code: unknown = descriptor.value;
+    return typeof code === 'string' ? code : undefined;
+  } catch {
     return undefined;
   }
-  const { code }: { readonly code: unknown } = error;
-  return typeof code === 'string' ? code : undefined;
 }
 
 export class NodeMediaPinError extends Error {
@@ -65,18 +69,21 @@ export class NodeMediaPinError extends Error {
     if (aborted) {
       return new NodeMediaPinError('the run was cancelled', 'cancelled');
     }
-    if (error instanceof NodeMediaPinError) {
-      return error;
-    }
     const where = `node \`${nodeId}\` produced media that could not be re-hosted`;
-    if (error instanceof MediaAdmissionError) {
+    try {
+      if (error instanceof NodeMediaPinError) return error;
+    } catch {
+      return new NodeMediaPinError(`${where} (internal)`, 'internal');
+    }
+    const admission = MediaAdmissionError.from(error);
+    if (admission !== undefined) {
       const internal =
-        error.code === 'store_contract' ||
-        error.code === 'store_unavailable' ||
-        error.code === 'source_unavailable' ||
-        error.code === 'verifier_state';
+        admission.code === 'store_contract' ||
+        admission.code === 'store_unavailable' ||
+        admission.code === 'source_unavailable' ||
+        admission.code === 'verifier_state';
       return new NodeMediaPinError(
-        `${where}: ${error.message}`,
+        `${where}: ${admission.message}`,
         internal ? 'internal' : 'validation',
       );
     }

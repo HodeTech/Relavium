@@ -48,12 +48,41 @@ const MESSAGES: Readonly<Record<MediaAdmissionErrorCode, string>> = {
   stream_incomplete: 'Media store did not consume the complete stream.',
   verifier_state: 'Media verifier is already finished or failed.',
 };
+function isMediaAdmissionErrorCode(value: unknown): value is MediaAdmissionErrorCode {
+  return typeof value === 'string' && Object.hasOwn(MESSAGES, value);
+}
 export class MediaAdmissionError extends Error {
   readonly code: MediaAdmissionErrorCode;
   constructor(code: MediaAdmissionErrorCode) {
     super(MESSAGES[code]);
     this.name = 'MediaAdmissionError';
     this.code = code;
+  }
+  /**
+   * Reconstruct a fixed diagnostic from own data discriminants, including another shared copy.
+   * Matching caller fields classify a failure; they establish no provenance or authority.
+   * Never read a caller's message/cause or evaluate its getters. Reflection faults do not match.
+   */
+  static from(error: unknown): MediaAdmissionError | undefined {
+    if (typeof error !== 'object' || error === null) return undefined;
+    try {
+      const nameDescriptor = Object.getOwnPropertyDescriptor(error, 'name');
+      const codeDescriptor = Object.getOwnPropertyDescriptor(error, 'code');
+      if (
+        nameDescriptor === undefined ||
+        !('value' in nameDescriptor) ||
+        codeDescriptor === undefined ||
+        !('value' in codeDescriptor)
+      )
+        return undefined;
+      const name: unknown = nameDescriptor.value;
+      const code: unknown = codeDescriptor.value;
+      return name === 'MediaAdmissionError' && isMediaAdmissionErrorCode(code)
+        ? new MediaAdmissionError(code)
+        : undefined;
+    } catch {
+      return undefined;
+    }
   }
 }
 export function canonicalMediaMimeType(input: string): CanonicalMediaMimeType {

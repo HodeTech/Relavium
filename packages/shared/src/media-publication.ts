@@ -3,6 +3,7 @@ import {
   admitMediaDescriptor,
   MediaAdmissionError,
   mediaDataField,
+  mediaHasField,
   reconcileMediaDescriptors,
 } from './media-admission.js';
 export interface MediaSnapshot {
@@ -11,6 +12,54 @@ export interface MediaSnapshot {
 }
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
+}
+/** Shared supported-domain check; neither publication path invokes caller serializers. */
+function mediaContainer(value: unknown, countOnly: boolean): object | undefined {
+  if (typeof value === 'string') {
+    if (!countOnly && isBase64DataUri(value)) throw new MediaAdmissionError('unsafe_value');
+    return undefined;
+  }
+  if (typeof value === 'function' || typeof value === 'symbol') {
+    if (!countOnly) throw new MediaAdmissionError('unsafe_value');
+    return undefined;
+  }
+  if (typeof value !== 'object' || value === null) return undefined;
+  if (isBinaryBuffer(value)) {
+    if (!countOnly) throw new MediaAdmissionError('unsafe_value');
+    return undefined;
+  }
+  const proto: unknown = Object.getPrototypeOf(value);
+  if (
+    !Array.isArray(value) &&
+    !(value instanceof Map) &&
+    !(value instanceof Set) &&
+    proto !== Object.prototype &&
+    proto !== null
+  )
+    throw new MediaAdmissionError('unsafe_value');
+  return value;
+}
+/** Intrinsic entries are visited separately, then every inert own string property. */
+function forEachMediaProperty(
+  source: object,
+  countOnly: boolean,
+  visit: (key: string, value: unknown, enumerable: boolean) => void,
+): void {
+  const collection = source instanceof Map || source instanceof Set;
+  for (const key of Reflect.ownKeys(source)) {
+    // Deliberately bypass the caller's collection iterator, including its descriptor getter.
+    // Other symbols remain outside the publication domain instead of disappearing from data.
+    if (collection && key === Symbol.iterator) continue;
+    const descriptor = Object.getOwnPropertyDescriptor(source, key);
+    if (descriptor === undefined || !('value' in descriptor))
+      throw new MediaAdmissionError('unsafe_value');
+    if (typeof key === 'symbol') {
+      if (!countOnly) throw new MediaAdmissionError('unsafe_value');
+      continue;
+    }
+    const value: unknown = descriptor.value;
+    visit(key, value, descriptor.enumerable === true);
+  }
 }
 /** Own the inert graph in this synchronous call. Transparent Proxy reflection may trap; faults refuse. */
 export function snapshotMediaValue(value: unknown, countOnly = false): MediaSnapshot {
@@ -21,37 +70,21 @@ export function snapshotMediaValue(value: unknown, countOnly = false): MediaSnap
     sourceEdges = new Map<object, number>(),
     loose: object[] = [];
   const copy = (item: unknown): unknown => {
-    if (typeof item === 'string') {
-      if (!countOnly && isBase64DataUri(item)) throw new MediaAdmissionError('unsafe_value');
-      return item;
-    }
-    if (typeof item === 'function' || typeof item === 'symbol') {
-      if (!countOnly) throw new MediaAdmissionError('unsafe_value');
-      return item;
-    }
-    if (typeof item !== 'object' || item === null) return item;
-    if (isBinaryBuffer(item)) {
-      if (!countOnly) throw new MediaAdmissionError('unsafe_value');
-      return item;
-    }
-    const prior = memo.get(item);
+    const source = mediaContainer(item, countOnly);
+    if (source === undefined) return item;
+    const prior = memo.get(source);
     if (prior !== undefined) {
       incoming.set(prior, (incoming.get(prior) ?? 0) + 1);
       return prior;
     }
-    const proto: unknown = Object.getPrototypeOf(item);
     let clone: object;
-    if (Array.isArray(item)) clone = [];
-    else if (item instanceof Map) clone = new Map<unknown, unknown>();
-    else if (item instanceof Set) clone = new Set<unknown>();
-    else {
-      if (proto !== Object.prototype && proto !== null)
-        throw new MediaAdmissionError('unsafe_value');
-      clone = {};
-    }
-    memo.set(item, clone);
+    if (Array.isArray(source)) clone = [];
+    else if (source instanceof Map) clone = new Map<unknown, unknown>();
+    else if (source instanceof Set) clone = new Set<unknown>();
+    else clone = {};
+    memo.set(source, clone);
     incoming.set(clone, 1);
-    pending.push({ source: item, clone });
+    pending.push({ source, clone });
     return clone;
   };
   try {
@@ -64,76 +97,110 @@ export function snapshotMediaValue(value: unknown, countOnly = false): MediaSnap
         Map.prototype.forEach.call(source, (v: unknown, k: unknown) => {
           Map.prototype.set.call(clone, copy(k), copy(v));
         });
-        continue;
-      }
-      if (source instanceof Set && clone instanceof Set) {
+      } else if (source instanceof Set && clone instanceof Set) {
         Set.prototype.forEach.call(source, (v: unknown) => {
           Set.prototype.add.call(clone, copy(v));
         });
-        continue;
       }
-      for (const key of Reflect.ownKeys(source)) {
-        const descriptor = Object.getOwnPropertyDescriptor(source, key);
-        if (descriptor === undefined) throw new MediaAdmissionError('unsafe_value');
-        if (!('value' in descriptor)) throw new MediaAdmissionError('unsafe_value');
-        const v: unknown = descriptor.value;
-        if (typeof key === 'symbol') {
-          if (!countOnly) throw new MediaAdmissionError('unsafe_value');
-          continue;
-        }
+      forEachMediaProperty(source, countOnly, (key, v, enumerable) => {
         Object.defineProperty(clone, key, {
           value: copy(v),
-          enumerable: descriptor.enumerable === true,
+          enumerable,
           writable: true,
-          configurable: key !== 'length',
+          configurable: !(Array.isArray(clone) && key === 'length'),
         });
-      }
+      });
       if (record(clone)) {
-        if (clone['type'] === 'media') {
+        if (mediaDataField(clone, 'type') === 'media') {
           nodes.push(clone);
-          const source = clone['source'];
+          const source = mediaDataField(clone, 'source');
           if (record(source)) sourceEdges.set(source, (sourceEdges.get(source) ?? 0) + 1);
         }
-        if (clone['kind'] === 'base64') loose.push(clone);
+        if (mediaDataField(clone, 'kind') === 'base64') loose.push(clone);
       }
     }
     // Replacing media.source cannot remove an alias elsewhere in the owned graph. Every incoming
     // edge of a base64 source must therefore be an original media.source slot, including Map/Set
-    // contents; multiple genuine media nodes may still share one source.
+    // entries and own properties; multiple genuine media nodes may still share one source.
     if (!countOnly && loose.some((item) => incoming.get(item) !== sourceEdges.get(item)))
       throw new MediaAdmissionError('unsafe_value');
     return { value: owned, nodes };
-  } catch (error) {
-    if (error instanceof MediaAdmissionError) throw error;
+  } catch {
     throw new MediaAdmissionError('unsafe_value');
   }
 }
+/** Synchronously own only the admission descriptors, without cloning the enclosing graph again. */
 export function collectMediaForAdmission(value: unknown): readonly DurableMediaMeta[] {
-  const snapshot = snapshotMediaValue(value),
+  const visited = new Set<object>(),
+    pending: object[] = [],
+    incoming = new Map<object, number>(),
+    sourceEdges = new Map<object, number>(),
+    loose: object[] = [],
     items: DurableMediaMeta[] = [];
-  for (const node of snapshot.nodes) {
-    const source = mediaDataField(node, 'source');
-    if (!record(source) || source['kind'] !== 'handle')
-      throw new MediaAdmissionError('invalid_descriptor');
-    const mimeType = node['mimeType'];
-    items.push(
-      admitMediaDescriptor({
-        handle: source['ref'],
-        mimeType,
-        modality:
-          typeof mimeType === 'string'
-            ? mimeType.toLowerCase().startsWith('image/')
-              ? 'image'
-              : mimeType.toLowerCase().startsWith('audio/')
-                ? 'audio'
-                : mimeType.toLowerCase().startsWith('video/')
-                  ? 'video'
-                  : 'document'
-            : undefined,
-        byteLength: node['byteLength'],
-        ...(Object.hasOwn(node, 'durationMs') ? { durationMs: node['durationMs'] } : {}),
-      }),
-    );
+  let descriptorFailure: MediaAdmissionError | undefined;
+  const visit = (item: unknown): void => {
+    const source = mediaContainer(item, false);
+    if (source === undefined) return;
+    incoming.set(source, (incoming.get(source) ?? 0) + 1);
+    if (visited.has(source)) return;
+    visited.add(source);
+    pending.push(source);
+  };
+  try {
+    visit(value);
+    for (let at = 0; at < pending.length; at++) {
+      const node = pending[at];
+      if (node === undefined) throw new MediaAdmissionError('unsafe_value');
+      if (node instanceof Map) {
+        Map.prototype.forEach.call(node, (v: unknown, k: unknown) => {
+          visit(k);
+          visit(v);
+        });
+      } else if (node instanceof Set) {
+        Set.prototype.forEach.call(node, (v: unknown) => visit(v));
+      }
+      forEachMediaProperty(node, false, (_key, item) => visit(item));
+      if (mediaDataField(node, 'kind') === 'base64') loose.push(node);
+      if (mediaDataField(node, 'type') !== 'media') continue;
+      const source = mediaDataField(node, 'source');
+      if (record(source)) sourceEdges.set(source, (sourceEdges.get(source) ?? 0) + 1);
+      try {
+        if (!record(source) || mediaDataField(source, 'kind') !== 'handle')
+          throw new MediaAdmissionError('invalid_descriptor');
+        const mimeType = mediaDataField(node, 'mimeType');
+        items.push(
+          admitMediaDescriptor({
+            handle: mediaDataField(source, 'ref'),
+            mimeType,
+            modality:
+              typeof mimeType === 'string'
+                ? mimeType.toLowerCase().startsWith('image/')
+                  ? 'image'
+                  : mimeType.toLowerCase().startsWith('audio/')
+                    ? 'audio'
+                    : mimeType.toLowerCase().startsWith('video/')
+                      ? 'video'
+                      : 'document'
+                : undefined,
+            byteLength: mediaDataField(node, 'byteLength'),
+            ...(mediaHasField(node, 'durationMs')
+              ? { durationMs: mediaDataField(node, 'durationMs') }
+              : {}),
+          }),
+        );
+      } catch (error) {
+        if (!(error instanceof MediaAdmissionError) || error.code === 'unsafe_value') throw error;
+        // Keep full-graph safety/alias preflight ahead of descriptor refusal, as the snapshot did.
+        descriptorFailure ??= error;
+      }
+    }
+    if (loose.some((item) => incoming.get(item) !== sourceEdges.get(item)))
+      throw new MediaAdmissionError('unsafe_value');
+  } catch {
+    // Reflection and collection inspection never choose a diagnostic code or supply its text.
+    throw new MediaAdmissionError('unsafe_value');
   }
+  // Only pure admission/reconciliation failures survive the complete unsafe-value preflight.
+  if (descriptorFailure !== undefined) throw descriptorFailure;
   return reconcileMediaDescriptors(items);
 }

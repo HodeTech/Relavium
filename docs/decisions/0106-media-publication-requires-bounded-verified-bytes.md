@@ -474,3 +474,46 @@ foreign/replaced ownership and verify subsequent publication/recovery. Fixed typ
 read cancellation preserves native read/close acknowledgement and content-free
 diagnostics. No automatic unknown-owner recovery or broader deletion authority is
 introduced; source review and final execution remain separate acceptance gates.
+
+### Inert snapshot collection-property correction — 2026-10-15
+
+Maintainer review reproduced loss of inert own data on Map/Set values: intrinsic
+entries were copied, then traversal skipped the collection's remaining properties.
+The same branch omitted nested media and aliases that must participate in preflight.
+A separate descriptor rule incorrectly reserved every field named `length` for the
+array-specific nonconfigurable treatment. Both corrections preserve the existing
+supported graph rather than introducing a serializer or a broader object domain.
+
+The [canonical publication contract](../reference/shared-core/llm-provider-seam.md#bounded-verified-media-publication-adr-0106)
+owns the supported/refused domain, collection iterator exception, own-property and
+alias semantics. Media-free Date, RegExp, custom-class and executable values already
+refuse; the permanent controls now make that compatibility boundary explicit. The
+request-data domain in [ADR-0102](0102-a-measured-request-owns-its-inert-data-through-egress.md)
+remains separate; its JSON-oriented Map/Set treatment and cycle policy do not replace
+publication's intrinsic-entry ownership.
+
+Metadata admission needs owned primitive descriptors, while the engine already owns
+the de-inlined graph. Its existing synchronous collector can therefore validate and
+capture those descriptors during a visited traversal without a second whole-graph
+clone. Unsafe standalone callers still receive the same fixed refusals, and no cache,
+new public bypass or caller reference crosses the metadata await. Collection-property,
+supported-domain, standalone-admission and held-metadata-port regressions accompany
+this correction. Their independent review and execution acceptance remain separate
+from the earlier published source and physical evidence.
+
+### Fixed admission-error reconstruction — 2026-10-15
+
+The fixed, content-free diagnostic policy also applies when a compatible bundle
+uses another `MediaAdmissionError` constructor or a caller mutates an exception's
+message. The existing exported class now reconstructs a fresh local error from
+own data name and canonical closed code fields; foreign messages, causes and
+getters supply no diagnostic text. This is classification only, without provenance,
+authorization or a bridge between native-iterator ownership domains.
+
+Publication reflection faults always become fresh `unsafe_value` refusals, even
+when a trap throws a recognized admission error. Pure descriptor/MIME and conflict
+refusals retain their reasons after complete unsafe-value preflight. The engine's
+pin classifier similarly reads inert own egress codes under a reflection guard,
+keeps cancellation first, and contains prototype faults with fixed internal wording.
+These corrections preserve the existing error codes and iterator constraints;
+new regression execution and independent source review remain separate gates.

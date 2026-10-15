@@ -1092,17 +1092,36 @@ presence is never erased. The returned descriptor is owned. Filesystem validatio
 checks the opened bounded fd, hash and format; it does not invoke whole-object `get`.
 
 De-inlining synchronously owns the supported inert graph before its first await,
-including source/hints, nested arrays/records and intrinsic Map/Set keys/values. It refuses
-accessors, unsupported carriers and inspection faults without invoking caller getters or overridden
-collection iterators. Transparent Proxy reflection can itself trap; thrown faults become fixed
-errors, without a claim of universally trap-free detection. A base64 source may be shared by
-genuine media.source slots, but any additional
-record/array/Map/Set alias refuses before writing; replacing a media slot must not leave raw
-base64 elsewhere in the owned graph. Every occurrence is checked before
-handle deduplication and again against actual returned evidence. Same-hash canonical MIME,
-modality, known counts and known durations must agree. Missing stores refuse handle-only media
-as well as inline/URL media; text-only values need no store but also return the owned snapshot,
-so a caller cannot introduce unvalidated media during the promise gap.
+including source/hints, nested arrays/records and intrinsic Map/Set keys/values. Supported
+containers are arrays, plain or null-prototype records and Map/Set collections; cycles and
+repeated aliases are preserved. After intrinsic collection entries, traversal preserves every
+own string data property, including non-enumerable properties and literal `__proto__` and
+`length` fields. Only an array's intrinsic length remains nonconfigurable in the owned copy;
+a record or collection field named `length` is ordinary owned data.
+
+Accessors, Date/RegExp and other unsupported class instances, functions, symbol values,
+raw binary carriers and base64 data URIs refuse even in media-free values. Caller serializers
+are never invoked or normalized into supported data. Symbol-keyed properties refuse, with
+one deliberate collection exception: an own Map/Set `Symbol.iterator` override is bypassed
+without reading its descriptor or invoking its getter. Intrinsic entries remain authoritative.
+Media discriminants and descriptor fields are read from own data properties, never inherited
+getters. Inspection faults become fixed errors. Transparent Proxy reflection can itself trap;
+this is ownership after inspection, without a universally trap-free JavaScript sandbox claim.
+
+A base64 source may be shared by genuine media.source slots, but any additional
+record/array/Map/Set entry or own-property alias refuses before writing; replacing a media
+slot must not leave raw base64 elsewhere in the owned graph. Every occurrence is checked
+before handle deduplication and again against actual returned evidence. Same-hash canonical
+MIME, modality, known counts and known durations must agree. Missing stores refuse handle-only
+media as well as inline/URL media; text-only values need no store but also return the owned
+snapshot, so a caller cannot introduce unvalidated media during the promise gap.
+
+The existing admission collector synchronously scans this same supported graph with descriptor
+inspection and a visited set. It owns fresh frozen primitive metadata descriptors before the
+engine awaits the metadata reference port; it does not clone the enclosing graph a second time
+or retain caller references in the batch. Standalone calls retain the same unsafe-value,
+loose-base64, inspection-fault and descriptor-conflict refusals. This does not create a trusted
+caller bypass or replace the engine's preceding de-inlining ownership boundary.
 
 The optional synchronous `deInlineMedia` fourth callback receives the owned graph's unpinned
 count after all original occurrences pass preflight and before host entry. The engine reserves
@@ -1180,6 +1199,14 @@ read grants. After append ACK, reference mutation/reclaim remains best effort. T
 preparation failure strips nested media from its outputs while preserving one terminal and
 already incurred accounting. Every later publication revalidates bytes; there is no mutable-file
 verification cache. Unsupported old handles may remain stored but cannot bypass new admission.
+
+`MediaAdmissionError.from(unknown)` reconstructs a fresh local fixed diagnostic from
+own data `name` and canonical closed `code` fields, including another compatible
+constructor. It never reads foreign messages/causes or invokes getters; reflection
+faults do not match. This diagnostic classification establishes no provenance or
+native-iterator ownership. Publication inspection faults always produce a fresh
+`unsafe_value` error; only pure descriptor and reconciliation failures retain their
+specific reason after complete safety preflight.
 
 `MediaAdmissionError` has fixed content-free diagnostics and these closed reasons:
 `unsupported_mime`, `invalid_descriptor`, `descriptor_conflict`, `invalid_format`,
