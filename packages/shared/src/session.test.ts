@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { AgentSchema } from './agent.js';
 import { SessionContextSchema } from './run-event.js';
 import {
   AgentSessionSchema,
@@ -129,6 +130,37 @@ describe('AgentSessionSchema', () => {
       },
     });
     expect(AgentSessionSchema.safeParse(full).success).toBe(true);
+  });
+
+  it('preserves historical fallback entries while fresh authored admission rejects duplicates', () => {
+    const agentSnapshot = {
+      id: 'chatter',
+      model: 'primary',
+      provider: 'openai',
+      system_prompt: 'hello',
+      fallback_chain: [
+        { model: 'alternate', provider: 'openai', max_attempts: 1 },
+        { model: 'alternate', provider: 'openai', max_attempts: 2 },
+      ],
+    };
+    expect(AgentSchema.safeParse(agentSnapshot).success).toBe(false);
+    const parsed = AgentSessionSchema.parse(baseSession({ agentSnapshot }));
+    expect(parsed.agentSnapshot).toEqual(agentSnapshot);
+    // Historical compatibility does not bypass pre-existing shape or MCP identity validation.
+    expect(
+      AgentSessionSchema.safeParse(
+        baseSession({
+          agentSnapshot: { ...agentSnapshot, provider: 'unknown' },
+        }),
+      ).success,
+    ).toBe(false);
+    expect(
+      AgentSessionSchema.safeParse(
+        baseSession({
+          agentSnapshot: { ...agentSnapshot, mcp_servers: [{ ref: 'same' }, { ref: 'same' }] },
+        }),
+      ).success,
+    ).toBe(false);
   });
 
   it('rejects a status outside the closed set', () => {

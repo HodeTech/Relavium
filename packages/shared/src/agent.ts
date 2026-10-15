@@ -284,8 +284,12 @@ export const FallbackChainEntrySchema = z
   .strict();
 export type FallbackChainEntry = z.infer<typeof FallbackChainEntrySchema>;
 
-/** A reusable agent definition (`.agent.yaml` or an inline `agents:` entry). */
-export const AgentSchema = z
+/**
+ * Frozen session snapshots retain the structural admission contract they were written under.
+ * New authored fallback uniqueness is intentionally applied only by AgentSchema below; history
+ * must preserve old ordered entries and their attempt budgets, not deduplicate or reject them.
+ */
+export const AgentSnapshotSchema = z
   .object({
     id: kebabIdSchema,
     name: z.string().optional(),
@@ -311,19 +315,6 @@ export const AgentSchema = z
   })
   .strict()
   .superRefine((agent, ctx) => {
-    // Identity is the model/provider pair within the fallback list, not the attempt count.
-    // Equality with the primary is permitted; tuple encoding avoids delimiter collisions.
-    const fallbacks = (agent.fallback_chain ?? []).map(({ model, provider }) =>
-      JSON.stringify([model, provider]),
-    );
-    if (findDuplicates(fallbacks).length > 0) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['fallback_chain'],
-        message: 'duplicate fallback_chain model/provider pair(s)',
-      });
-    }
-
     // MCP server identities must be unique within an agent (they namespace the registered tools). The identity
     // here is the EXACT inline `id` or by-name `ref` registration name. This catches the common exact-duplicate
     // case at parse; a host-side *sanitization* collision (two distinct free-form registration names that map to
@@ -342,4 +333,19 @@ export const AgentSchema = z
       });
     }
   });
+/** A reusable agent definition (`.agent.yaml` or an inline `agents:` entry). */
+export const AgentSchema = AgentSnapshotSchema.superRefine((agent, ctx) => {
+  // Identity is the model/provider pair within the fallback list, not the attempt count.
+  // Equality with the primary is permitted; tuple encoding avoids delimiter collisions.
+  const fallbacks = (agent.fallback_chain ?? []).map(({ model, provider }) =>
+    JSON.stringify([model, provider]),
+  );
+  if (findDuplicates(fallbacks).length > 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['fallback_chain'],
+      message: 'duplicate fallback_chain model/provider pair(s)',
+    });
+  }
+});
 export type Agent = z.infer<typeof AgentSchema>;
