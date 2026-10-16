@@ -4426,3 +4426,48 @@ whole-wave certification. A fresh security revalidation and two NEW independent
 complete cumulative clean rounds after the last material correction remain
 required before Step 4. Baseline evidence, detailed reports and local controls
 stay Git-ignored. No new decision, credential, paid call or release is pending.
+
+
+### Wave 3 Step 3 conversion-order correction — 2026-10-16
+
+The NEW complete cumulative review at `1728c9b4` is **not clean**: one High
+finding shows diagnostic hydration occurring before ordinary JSON traversal
+finishes. The fresh security revalidation independently corroborates it; no
+additional declared-secret confidentiality or ambient-authority defect is verified.
+The parent reads both complete reports and reproduces the issue against the
+isolated accepted Step 2 runtime. Neither review counts toward acceptance.
+
+An undefined diagnostic getter changes a later sibling value from 1 to 2;
+the actual WorkflowEngine/standard executor consequently fails a previously
+successful output schema. The same sequencing defect changes an ordinary thrown
+object from memory to stack classification. A separate supplemental object's
+`toJSON` can also run before later diagnostic getters, changing their values.
+These are one converter-order defect, not three independently counted findings.
+
+The converter now completes the original JSON traversal once, then reads all
+missing diagnostic fields in the pinned bridge's fixed order, then serializes
+supplemental values before the private denial check. It removes the eager root
+replacer and boxed-value emulation. Final encoding still contains detached JSON
+only; the original authored `toJSON` is not invoked again, no successful authored
+object is dumped after denial observation, and the original VM deadline remains.
+Permanent actual-VM controls pin sibling values/key order, supplemental callback
+ordering, ordinary thrown classification and denied supplemental conversion.
+The parity suite grows from 216 to 243 cases; its pre-fix run has 16 genuine
+assertion failures. A separate real-engine output-schema test fails before repair
+and completes with exact output after it. Eleven independent old/current probes
+also match after correction. Detailed raw probes remain local and Git-ignored.
+
+Fresh final author gates pass on the restored corrected source: all workspace
+lint/typecheck, **601 files / 13,748 passing tests / 20 established skips**, all
+six build tasks (five cached), fences, 601-file/six-workspace isolation, changed-
+source formatting/whitespace and 3,365 relative links. Seven fresh causal cohorts
+produce **6 / 6 / 64 / 75 / 84 / 8 / 1** named removal failures, with passing
+fixed/restored inventories **29 / 19 / 184 / 243 / 243 / 17 / 1**, respectively.
+All 21 final runner receipts record zero unhandled errors; every source restores
+byte-identically before the final passing full author suite. The seventh cohort
+pins the actual engine output-schema success rather than a fabricated converter.
+
+Fresh security revalidation and two NEW independent complete cumulative clean
+rounds after this final material fix remain required before Step 4. All earlier
+nonclean rounds remain explicitly nonclean. These author gates are not full CI,
+coverage, native-platform or whole-wave acceptance; later plan ownership remains.

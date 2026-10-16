@@ -365,9 +365,12 @@ The native interrupt does not receive a new deadline or become a successful deni
 
 Top-level result conversion retains the installed bridge's supplemental `name`, `message`,
 `stack`, `fileName` and `lineNumber` fields, including inherited/non-enumerable fields when
-the serialized result does not supply a value. Hydration happens inside the single authored
-serialization; subsequent encoding uses detached JSON records/arrays without authored
-prototypes or callbacks. Nested Error values retain ordinary JSON semantics. Stack strings
+the serialized result does not supply a value. The original result's JSON traversal completes
+first, retaining its getter order and invoking its `toJSON` once. Missing diagnostic fields
+are then read in the native fixed order; all supplemental getters finish before supplemental
+values are serialized. These authored conversions occur before the final latch check.
+Subsequent encoding uses detached JSON records/arrays without authored prototypes or callbacks.
+Nested Error values retain ordinary JSON semantics. Stack strings
 describe the current VM wrapper; their internal frame text is not a stable cross-version value.
 Ordinary thrown values use the same VM-owned conversion and fallback-text semantics before
 the unchanged host classifier. Their bounded JSON payload is private error transport, never
