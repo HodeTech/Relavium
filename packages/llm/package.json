@@ -14,6 +14,11 @@
       "types": "./dist/adapters/index.d.ts",
       "import": "./dist/adapters/index.js",
       "default": "./dist/adapters/index.js"
+    },
+    "./scrub-secrets": {
+      "types": "./dist/scrub-secrets.d.ts",
+      "import": "./dist/scrub-secrets.js",
+      "default": "./dist/scrub-secrets.js"
     }
   },
   "main": "./dist/index.js",
