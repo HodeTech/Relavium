@@ -11,6 +11,7 @@ import {
   type DurableMediaPart,
   type EffectPrepareVerdict,
   type EffectTier,
+  byCodeUnit,
   extractHttpsHost,
   isEffectConflictError,
   type ToolActionClass,
@@ -184,7 +185,7 @@ export function createToolRegistry(options: CreateToolRegistryOptions): {
 
   return {
     has: (id) => tools.has(id),
-    list: () => [...tools.keys()].sort((a, b) => a.localeCompare(b)),
+    list: () => [...tools.keys()].sort(byCodeUnit),
     dispatch: (toolCall, ctx) => dispatch(tools, host, toolCall, ctx),
   };
 }
@@ -688,7 +689,7 @@ function assertNoTaintedArgs(
   }
   const tainted = Object.keys(effective).filter((key) => secretArgKeys.has(key));
   if (tainted.length > 0) {
-    const sorted = tainted.toSorted((a, b) => a.localeCompare(b));
+    const sorted = tainted.toSorted(byCodeUnit);
     throw new ToolArgsInvalidError(
       toolId,
       sorted,
@@ -728,7 +729,7 @@ function zodIssuePaths(cause: unknown): readonly string[] {
       }
     }
   }
-  return [...paths].sort((a, b) => a.localeCompare(b));
+  return [...paths].sort(byCodeUnit);
 }
 
 /* ------------------------------------------------------------------------------------------------ *
@@ -740,7 +741,7 @@ function enforcePolicy(def: ToolDef, target: PolicyTarget, ctx: ToolDispatchCont
     throw new ToolPolicyError(
       def.id,
       'gate_required',
-      `tool \`${def.id}\` requires a human-gate approval in an automated workflow`,
+      `tool \`${def.id}\` requires a human-gate approval. Chat cannot provide that approval; review the changes and commit manually instead.`,
     );
   }
 
@@ -1120,12 +1121,16 @@ function boundArgsForScan(value: unknown, seen: WeakSet<object> = new WeakSet<ob
   if (typeof value !== 'object' || value === null) return value;
   if (seen.has(value)) return '[cyclic]';
   seen.add(value);
-  if (Array.isArray(value)) return value.map((item) => boundArgsForScan(item, seen));
-  const proto: unknown = Object.getPrototypeOf(value);
-  if (proto !== Object.prototype && proto !== null) return value;
-  const out: Record<string, unknown> = {};
-  for (const [key, item] of Object.entries(value)) out[key] = boundArgsForScan(item, seen);
-  return out;
+  try {
+    if (Array.isArray(value)) return value.map((item) => boundArgsForScan(item, seen));
+    const proto: unknown = Object.getPrototypeOf(value);
+    if (proto !== Object.prototype && proto !== null) return value;
+    const out: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value)) out[key] = boundArgsForScan(item, seen);
+    return out;
+  } finally {
+    seen.delete(value);
+  }
 }
 
 /** Narrow the walk's `unknown` result back to a record, without an unsafe cast. */
@@ -1145,19 +1150,23 @@ function dropSecretKeysDeep(
   if (typeof value !== 'object' || value === null) return value;
   if (seen.has(value)) return '[cyclic]';
   seen.add(value);
-  if (Array.isArray(value)) {
-    return value.map((item) => dropSecretKeysDeep(item, secretArgKeys, seen));
+  try {
+    if (Array.isArray(value)) {
+      return value.map((item) => dropSecretKeysDeep(item, secretArgKeys, seen));
+    }
+    const proto: unknown = Object.getPrototypeOf(value);
+    if (proto !== Object.prototype && proto !== null) {
+      return value; // Date/RegExp/Map/… — left for the shape walk, exactly as it leaves them
+    }
+    const out: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value)) {
+      if (secretArgKeys.has(key)) continue;
+      out[key] = dropSecretKeysDeep(item, secretArgKeys, seen);
+    }
+    return out;
+  } finally {
+    seen.delete(value);
   }
-  const proto: unknown = Object.getPrototypeOf(value);
-  if (proto !== Object.prototype && proto !== null) {
-    return value; // Date/RegExp/Map/… — left for the shape walk, exactly as it leaves them
-  }
-  const out: Record<string, unknown> = {};
-  for (const [key, item] of Object.entries(value)) {
-    if (secretArgKeys.has(key)) continue;
-    out[key] = dropSecretKeysDeep(item, secretArgKeys, seen);
-  }
-  return out;
 }
 
 /* ------------------------------------------------------------------------------------------------ *

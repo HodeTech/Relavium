@@ -392,7 +392,13 @@ describe('read_media (1.AF/D12 + `CR-50` — scope-set authz, whole handle, deli
     // would let `start` back into the projection without a word.
     expect(t.llmVisibleParams).toEqual({
       type: 'object',
-      properties: { handle: { type: 'string' } },
+      properties: {
+        handle: {
+          type: 'string',
+          description:
+            'Whole media://sha256-<64hex> handle authorized for this conversation; byte ranges are not supported.',
+        },
+      },
       required: ['handle'],
       additionalProperties: false,
     });

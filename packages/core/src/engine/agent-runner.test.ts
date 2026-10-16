@@ -21,7 +21,15 @@ import {
 import type { AgentPlanConfig, PlanVertex } from '../run-plan.js';
 import { BUILTIN_TOOLS } from '../tools/builtins.js';
 import { delegateAvailable } from '../tools/delegates.js';
-import type { ToolCallPart, ToolRegistry, ToolResultPart } from '../tools/types.js';
+import { ToolPolicyError } from '../tools/errors.js';
+import { createToolRegistry } from '../tools/registry.js';
+import type {
+  ToolCallPart,
+  ToolDispatchContext,
+  ToolHost,
+  ToolRegistry,
+  ToolResultPart,
+} from '../tools/types.js';
 import { markUntrusted } from '../tools/untrusted.js';
 import {
   buildMediaUnitsEstimate,
@@ -35,7 +43,7 @@ import type { NodeExecContext, NodeStreamEvent, NodePreparationContext } from '.
 import { createDispatchingNodeExecutor } from './node-handlers/dispatcher.js';
 import type { PreEgressInfo } from './agent-turn.js';
 import { parseWorkflow } from '../parser.js';
-import { createInMemoryHost } from './execution-host.js';
+import { createInMemoryHost, createInMemoryEffectJournalStore } from './execution-host.js';
 import { WorkflowEngine } from './engine.js';
 import type { RunEvent } from '@relavium/shared';
 
@@ -315,6 +323,67 @@ function capsWithOutput(combinations: readonly (readonly OutputModality[])[]): C
 }
 
 describe('createAgentNodeExecutor — dispatch', () => {
+  it('keeps the actual workflow-agent git gate closed and gives a truthful manual remedy (#308)', async () => {
+    const spawn = vi.fn<NonNullable<ToolHost['process']>['spawn']>(() =>
+      Promise.resolve({ exitCode: 0, stdout: '', stderr: '', durationMs: 0 }),
+    );
+    const actual = createToolRegistry({ tools: BUILTIN_TOOLS, host: { process: { spawn } } });
+    let captured: ToolDispatchContext | undefined;
+    let denial: unknown;
+    const registry: ToolRegistry = {
+      has: (id) => actual.has(id),
+      list: () => actual.list(),
+      dispatch: async (call, ctx) => {
+        captured = ctx;
+        try {
+          return await actual.dispatch(call, ctx);
+        } catch (error) {
+          denial = error;
+          throw error;
+        }
+      },
+    };
+    const p = provider([
+      { type: 'tool_call_start', id: 'commit-call', name: 'git_commit' },
+      {
+        type: 'tool_call_delta',
+        id: 'commit-call',
+        argsJsonDelta: '{"message":"reviewed changes"}',
+      },
+      { type: 'tool_call_end', id: 'commit-call' },
+      { ...STOP, stopReason: 'tool_use' },
+    ]);
+    const stream = vi.fn<LlmProvider['stream']>((...args) => p.stream(...args));
+    const exec = createAgentNodeExecutor(
+      deps({ ...p, stream }, { registry, tools: BUILTIN_TOOLS }),
+    );
+    const { ctx } = ctxFor(
+      vertexFor({
+        kind: 'agent',
+        node: agentNode(),
+        resolvedAgent: { ...AGENT, tools: ['git_commit'] },
+      }),
+    );
+    const journal = createInMemoryEffectJournalStore();
+    const port = journal.for({ kind: 'run', runId: 'r-git', nodeId: 'n1', attempt: 1 });
+    const prepare = vi.fn(port.prepare);
+    const outcome = await exec.execute({ ...ctx, effects: { ...port, prepare } });
+    expect(outcome).toMatchObject({
+      kind: 'failed',
+      error: { code: 'tool_denied', retryable: false },
+    });
+    expect(stream).toHaveBeenCalledTimes(1);
+    expect(captured?.gateApproved).toBe(false);
+    expect(captured).not.toHaveProperty('approval');
+    expect(denial).toBeInstanceOf(ToolPolicyError);
+    if (!(denial instanceof ToolPolicyError))
+      throw new Error('missing actual workflow gate denial');
+    expect(denial.reason).toBe('gate_required');
+    expect(denial.message).toMatch(/chat cannot provide.*review.*commit manually/i);
+    expect(prepare).not.toHaveBeenCalled();
+    expect(spawn).not.toHaveBeenCalled();
+    expect(journal.rows()).toEqual([]);
+  });
   it.each(['none', 'window', 'summary'] as const)(
     'authored memory has no effect on a workflow agent node (%s)',
     async (type) => {

@@ -2932,15 +2932,9 @@ class RunExecution {
       if (this.#settled) {
         return; // the run settled (e.g. a sibling failure/cancel) while we waited — drop this re-dispatch
       }
-      if (this.#cancelling || this.#abort.signal.aborted) {
-        // A cancel / sibling-abort landed on the same tick the timer fully elapsed (so sleptFully was true
-        // but the run is now ending) — settle this node's last failure rather than waste a re-dispatch.
-        await this.#onOutcome(vertex, outcome, startedAtMs, attempt);
-        return;
-      }
-      if (!sleptFully) {
-        // The run's AbortSignal fired during the backoff — a cancel OR a sibling node's failure (which
-        // aborts to stop other branches). Do not re-dispatch; settle this node's last failure. #settleFailed
+      if (this.#cancelling || this.#abort.signal.aborted || !sleptFully) {
+        // Cancellation/sibling abort can interrupt sleep or arrive on the tick it finishes. In either
+        // case, do not re-dispatch; settle this node's last failure. #settleFailed
         // honours precedence: it won't overwrite an already-set #failure (a sibling's root cause) nor set one
         // while cancelling — so the run closes as the sibling's run:failed, or run:cancelled, accordingly.
         await this.#onOutcome(vertex, outcome, startedAtMs, attempt);

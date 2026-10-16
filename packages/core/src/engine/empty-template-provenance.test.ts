@@ -279,29 +279,41 @@ describe('empty public templates retain the required provenance boundary (ADR-01
     expect(run.keyReads()).toBe(0);
   });
 
-  it('preserves pre-aborted agent execution after preparation without quoting or provider invocation', async () => {
-    const run = fixture();
-    const ctx = context(vertex('agent'));
-    const abort = createAbortController();
-    abort.abort();
-    Reflect.set(ctx, 'signal', abort.signal);
-    const prepare = run.agent.prepareBudgetDispatch?.bind(run.agent);
-    if (prepare === undefined) throw new Error('agent preparation is required');
-    // Preparation historically lowers a request even when already aborted. This correction
-    // preserves that contract; cancellation is enforced when executing, without calling quote.
-    const prepared = await prepare(ctx);
-    if (prepared.kind !== 'prepared') throw new Error('expected existing preparation behavior');
-    expect(await prepared.preparation.execute(ctx)).toMatchObject({
-      kind: 'failed',
-      error: { code: 'cancelled', retryable: false },
-    });
-    expect(await run.agent.execute(ctx)).toMatchObject({
-      kind: 'failed',
-      error: { code: 'cancelled', retryable: false },
-    });
-    expect(run.requests).toEqual([]);
-    expect(run.keyReads()).toBe(0);
-  });
+  it.each([false, true])(
+    'cancels an empty agent before quoting or invoking, aborted before preparation=%s',
+    async (beforePreparation) => {
+      const run = fixture();
+      const ctx = context(vertex('agent'));
+      const abort = createAbortController();
+      if (beforePreparation) abort.abort();
+      Reflect.set(ctx, 'signal', abort.signal);
+      const prepare = run.agent.prepareBudgetDispatch?.bind(run.agent);
+      if (prepare === undefined) throw new Error('agent preparation is required');
+      // Step 5 now refuses a pre-aborted prompt at the final resolver boundary. A live preparation
+      // remains usable, and cancellation after it also refuses execution without calling quote.
+      const prepared = await prepare(ctx);
+      if (beforePreparation)
+        expect(prepared).toMatchObject({
+          kind: 'failed',
+          error: { code: 'cancelled', retryable: false },
+        });
+      else {
+        expect(prepared.kind).toBe('prepared');
+        if (prepared.kind !== 'prepared') throw new Error('live empty preparation refused');
+        abort.abort();
+        expect(await prepared.preparation.execute(ctx)).toMatchObject({
+          kind: 'failed',
+          error: { code: 'cancelled', retryable: false },
+        });
+      }
+      expect(await run.agent.execute(ctx)).toMatchObject({
+        kind: 'failed',
+        error: { code: 'cancelled', retryable: false },
+      });
+      expect(run.requests).toEqual([]);
+      expect(run.keyReads()).toBe(0);
+    },
+  );
 
   it('fails the real engine instead of publishing a template-free gate when an embedding drops ctx', async () => {
     const run = fixture();

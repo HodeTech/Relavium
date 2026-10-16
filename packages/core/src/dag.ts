@@ -645,7 +645,8 @@ function validateHandle(
 /**
  * Kahn's algorithm over the dependency graph. Each step emits the authored-**minimum** ready vertex, so
  * the authored-order tie-break holds across the ENTIRE ready set (not merely discovery order) — a fully
- * deterministic, reproducible plan. (`ready` is re-sorted each step; the authored graph is small.)
+ * deterministic, reproducible plan. A min-heap preserves that choice without sorting the full ready
+ * set after each emitted vertex.
  */
 function kahnOrder(
   nodes: Workflow['workflow']['nodes'],
@@ -660,15 +661,45 @@ function kahnOrder(
     remaining.set(id, ins.size);
   }
   const ready: string[] = [];
+  const pushReady = (id: string): void => {
+    let index = ready.length;
+    ready.push(id);
+    while (index > 0) {
+      const parent = (index - 1) >>> 1;
+      const parentId = ready[parent];
+      if (parentId === undefined || byAuthored(parentId, id) <= 0) break;
+      ready[index] = parentId;
+      index = parent;
+    }
+    ready[index] = id;
+  };
+  const popReady = (): string | undefined => {
+    const first = ready[0];
+    const last = ready.pop();
+    if (last === undefined || ready.length === 0) return first;
+    let index = 0;
+    while (index * 2 + 1 < ready.length) {
+      let child = index * 2 + 1;
+      const left = ready[child];
+      const right = ready[child + 1];
+      if (left === undefined) break;
+      if (right !== undefined && byAuthored(right, left) < 0) child += 1;
+      const childId = ready[child];
+      if (childId === undefined || byAuthored(last, childId) <= 0) break;
+      ready[index] = childId;
+      index = child;
+    }
+    ready[index] = last;
+    return first;
+  };
   for (const node of nodes) {
     if ((remaining.get(node.id) ?? 0) === 0) {
-      ready.push(node.id);
+      pushReady(node.id);
     }
   }
   const order: string[] = [];
   while (ready.length > 0) {
-    ready.sort(byAuthored);
-    const id = ready.shift();
+    const id = popReady();
     if (id === undefined) {
       break;
     }
@@ -677,7 +708,7 @@ function kahnOrder(
       const next = (remaining.get(consumer) ?? 0) - 1;
       remaining.set(consumer, next);
       if (next === 0) {
-        ready.push(consumer);
+        pushReady(consumer);
       }
     }
   }

@@ -65,6 +65,9 @@ async function runHumanGate(
       false,
     );
   }
+  // Literal/empty resolution can settle without reading the signal; the final await is still a
+  // cancellation boundary, including when there is no assignee to resolve afterward.
+  if (ctx.signal.aborted) return cancelled();
   const gate: GateRequest = {
     gateType: node.gate_type,
     message,

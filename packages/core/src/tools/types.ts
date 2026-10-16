@@ -381,7 +381,10 @@ export interface ToolDispatchContext {
   readonly config: ToolNodeConfig;
   /** The resolved workflow tool policy — `allowedCommands` / `allowedCommandGlobs` / `allowedDomains`. */
   readonly toolPolicy: import('@relavium/shared').ToolPolicy;
-  /** The active filesystem scope tier (built-in-tools.md). */
+  /**
+   * Describes the host's captured filesystem tier (built-in-tools.md), not a per-call grant.
+   * The host capability's immutable policy owns access; changing this metadata grants none.
+   */
   readonly fsScope: FsScopeTier;
   /** A human-gate decision is present for this dispatch (1.Q) — required by `git_commit`. */
   readonly gateApproved: boolean;

@@ -487,6 +487,7 @@ async function prepareAgentDispatch(
 
   // Empty public text still crosses the required provenance boundary for low-level embeddings.
   const prompt = await resolvePrompt(node.prompt_template ?? '', ctx, deps);
+  if (ctx.signal.aborted) return failed('cancelled', 'run cancelled', false);
   if (!prompt.ok) return failed('validation', prompt.message, false);
 
   // Inline-vs-generative routing (1.AG Section C, ADR-0045 §1): a resolved model whose `media_surface` is
@@ -1575,7 +1576,7 @@ function chainCapabilities(deps: AgentRunnerDeps): ChainCapabilities {
 
 async function resolvePrompt(
   template: string,
-  ctx: Pick<NodeExecContext, 'inputs' | 'ctx' | 'secretInputNames' | 'runOutputs'>,
+  ctx: Pick<NodeExecContext, 'inputs' | 'ctx' | 'secretInputNames' | 'runOutputs' | 'signal'>,
   deps: AgentRunnerDeps,
 ): Promise<{ ok: true; text: string } | { ok: false; message: string }> {
   // The resolved prompt may draw on untrusted run.outputs / read_file — it lands in a USER message
@@ -1589,7 +1590,12 @@ async function resolvePrompt(
     outputs: Object.fromEntries(ctx.runOutputs),
   };
   try {
-    const text = await resolvePublicTemplate(template, scope, deps.resolverCapabilities ?? {});
+    const text = await resolvePublicTemplate(
+      template,
+      scope,
+      deps.resolverCapabilities ?? {},
+      ctx.signal,
+    );
     return { ok: true, text };
   } catch (err) {
     return {

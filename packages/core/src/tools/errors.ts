@@ -8,7 +8,7 @@
  * [tool-registry.md](../../../../docs/reference/shared-core/tool-registry.md#error-taxonomy) and ADR-0037.
  */
 
-import { RelaviumError } from '@relavium/shared';
+import { byCodeUnit, RelaviumError } from '@relavium/shared';
 
 import type { ErrorCode } from '@relavium/shared';
 
@@ -71,7 +71,7 @@ export class UnknownToolError extends ToolDispatchError {
 
   constructor(toolId: ToolId, availableIds: readonly ToolId[]) {
     super(
-      `unknown tool \`${toolId}\` — available tools: ${[...availableIds].sort((a, b) => a.localeCompare(b)).join(', ')}`,
+      `unknown tool \`${toolId}\` — available tools: ${[...availableIds].sort(byCodeUnit).join(', ')}`,
       toolId,
       undefined,
     );

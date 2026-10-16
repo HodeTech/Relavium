@@ -15,14 +15,14 @@ import {
   type Agent,
   type SessionContext,
 } from '@relavium/shared';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { authoredSystemPrompt } from './authored-system-prompt.js';
 
 import { WorkflowGraphError } from '../errors.js';
 import { ADMISSION_CEILINGS } from '../limits.js';
 import { BUILTIN_TOOLS } from '../tools/builtins.js';
-import { ToolExecutionError } from '../tools/errors.js';
+import { ToolExecutionError, ToolPolicyError } from '../tools/errors.js';
 import { createToolRegistry } from '../tools/registry.js';
 import type {
   ProcessResult,
@@ -268,6 +268,92 @@ const session = (deps: SessionDeps, agent: Agent = AGENT): AgentSession =>
 
 const typesOf = (events: readonly SessionStreamEvent[]): readonly string[] =>
   events.map((e) => e.type);
+
+describe('git_commit requires a gate that chat cannot supply (#308)', () => {
+  it.each([false, true])(
+    'refuses before confirm/journal/process with active approval=%s',
+    async (approval) => {
+      const spawn = vi.fn<NonNullable<ToolHost['process']>['spawn']>(() =>
+        Promise.resolve({ exitCode: 0, stdout: 'committed', stderr: '', durationMs: 1 }),
+      );
+      const actual = createToolRegistry({ tools: BUILTIN_TOOLS, host: { process: { spawn } } });
+      let context: ToolDispatchContext | undefined;
+      let denial: unknown;
+      const registry: ToolRegistry = {
+        has: (id) => actual.has(id),
+        list: () => actual.list(),
+        dispatch: async (call, ctx) => {
+          context = ctx;
+          try {
+            return await actual.dispatch(call, ctx);
+          } catch (error) {
+            denial = error;
+            throw error;
+          }
+        },
+      };
+      const journal = createInMemoryEffectJournalStore();
+      const prepareObserved = vi.fn();
+      const confirm = vi.fn(() => Promise.resolve({ outcome: 'approve' as const }));
+      const p = scriptedProvider([
+        [
+          { type: 'tool_call_start', id: 'commit-call', name: 'git_commit' },
+          {
+            type: 'tool_call_delta',
+            id: 'commit-call',
+            argsJsonDelta: '{"message":"reviewed changes"}',
+          },
+          { type: 'tool_call_end', id: 'commit-call' },
+          {
+            type: 'stop',
+            stopReason: 'tool_use',
+            usage: { kind: 'complete', usage: { inputTokens: 4, outputTokens: 2 } },
+          },
+        ],
+      ]);
+      const stream = vi.fn<LlmProvider['stream']>((...args) => p.stream(...args));
+      const { deps, events } = harness(
+        [],
+        {
+          resolveProvider: () => ({ ...p, stream }),
+          tools: BUILTIN_TOOLS,
+          effects: (correlation) => {
+            const port = journal.for(correlation);
+            return {
+              ...port,
+              prepare: (...args) => {
+                prepareObserved();
+                return port.prepare(...args);
+              },
+            };
+          },
+        },
+        registry,
+      );
+      const s = session(deps, AgentSchema.parse({ ...AGENT, tools: ['git_commit'] }));
+      s.start();
+      if (approval) s.setTurnPolicy({ confirm });
+      await s.sendMessage('please commit');
+      expect(stream).toHaveBeenCalledTimes(1);
+      expect(context?.gateApproved).toBe(false);
+      if (approval) expect(context?.approval?.confirm).toBe(confirm);
+      else expect(context).not.toHaveProperty('approval');
+      expect(denial).toBeInstanceOf(ToolPolicyError);
+      if (!(denial instanceof ToolPolicyError)) throw new Error('missing actual gate denial');
+      expect(denial.reason).toBe('gate_required');
+      expect(denial.recoverable).toBe(false);
+      expect(denial.message).toMatch(/chat cannot provide.*review.*commit manually/i);
+      expect(confirm).not.toHaveBeenCalled();
+      expect(prepareObserved).not.toHaveBeenCalled();
+      expect(spawn).not.toHaveBeenCalled();
+      expect(journal.rows()).toEqual([]);
+      expect(events.filter((event) => event.type === 'agent:approval_requested')).toEqual([]);
+      expect(events.filter((event) => event.type === 'session:turn_completed')).toMatchObject([
+        { error: { code: 'tool_denied' } },
+      ]);
+    },
+  );
+});
 
 /** Drain a `SessionHandle` stream to completion — for the 1.W end-to-end wiring test below. */
 async function drainSession(
