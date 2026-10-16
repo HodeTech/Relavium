@@ -24,6 +24,8 @@ import { buildChatSession } from '../chat/session-host.js';
 import { scriptedResolver, textTurn } from '../chat/test-support.js';
 import { EXIT_CODES } from '../process/exit-codes.js';
 import { createCliInvocation } from '../process/invocation.js';
+import { invocationFixture } from '../process/invocation.test-support.js';
+import * as signalPorts from '../process/signals.js';
 import type { GlobalOptions } from '../process/options.js';
 import { captureIo, parseNdjson } from '../test-support.js';
 import { chatExportCommand } from './chat-export.js';
@@ -364,7 +366,7 @@ describe('command teardown preserves primary outcomes (#22)', () => {
   });
 
   it.each([false, true])(
-    'agent-run joins host work before closing its journal and preserves its outcome (join verdict fails=%s)',
+    'agent-run retains failed cleanup without treating it as database close permission (join verdict fails=%s)',
     async (verdictFails) => {
       const primary = new Error('final money publication failed');
       let joined = false;
@@ -380,9 +382,12 @@ describe('command teardown preserves primary outcomes (#22)', () => {
         'id: chatter\nprovider: anthropic\nmodel: claude-sonnet-4-6\nsystem_prompt: Be concise.\n',
       );
       const { io, out, err } = captureIo();
+      const control = invocationFixture();
+      vi.spyOn(signalPorts, 'defaultSubscribeSignals').mockReturnValue(() => undefined);
       const command = agentRunCommand(
         { agent: 'agent.yaml', input: [], allowMcpStdio: [] },
         {
+          invocation: control.invocation,
           io: { ...io, stdin: Readable.from(['hello']) },
           global: global(true),
           providers: scriptedResolver([textTurn('done')]),
@@ -400,15 +405,37 @@ describe('command teardown preserves primary outcomes (#22)', () => {
           },
         },
       );
-      if (verdictFails) await expect(command).rejects.toBe(primary);
-      else {
-        expect(await command).toBe(EXIT_CODES.success);
+      let settled = false;
+      void command.then(
+        () => {
+          settled = true;
+        },
+        () => {
+          settled = true;
+        },
+      );
+      await vi.waitFor(() => expect(joined).toBe(true));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(settled, 'AGENT_CLEANUP_REFUSAL_RETAINS_OWNERSHIP').toBe(false);
+      expect(control.registry.observations.exitCode()).toBe(9);
+      if (verdictFails) {
+        expect(close).not.toHaveBeenCalled();
+        expect(client.sqlite.open).toBe(true);
+        expect(control.registry.activeOwners).toBe(2);
+      } else {
+        expect(close).toHaveBeenCalledOnce();
+        expect(client.sqlite.open).toBe(false);
+        expect(control.registry.activeOwners).toBe(1);
         expect(parseNdjson(out())).toEqual(
           expect.arrayContaining([expect.objectContaining({ type: 'session:turn_completed' })]),
         );
       }
-      expect(err()).toContain('warning: effect journal teardown failed\n');
-      assertClosed(err());
+      control.advance(3000);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(control.exit).toHaveBeenCalledExactlyOnceWith(9);
+      expect(err()).not.toContain('secret-token');
+      expect(err()).not.toContain('/private/operator');
+      expect(err()).not.toContain('final money publication failed');
     },
   );
 });

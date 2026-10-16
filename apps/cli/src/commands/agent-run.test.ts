@@ -15,8 +15,13 @@ import { buildChatSession } from '../chat/session-host.js';
 import { openSessionStore } from '../history/session-open.js';
 import { scriptedResolver, textTurn, unresolvedResolver } from '../chat/test-support.js';
 import type { ProviderResolver } from '../engine/providers.js';
-import { isCliError } from '../process/errors.js';
+import { CliError, isCliError } from '../process/errors.js';
 import { EXIT_CODES } from '../process/exit-codes.js';
+import { invocationFixture } from '../process/invocation.test-support.js';
+import * as signalPorts from '../process/signals.js';
+import * as sessionOpen from '../history/session-open.js';
+import * as consentPrompts from '../mcp/consent-prompt.js';
+import { mcpConsentPath } from '../engine/mcp-consent-gate.js';
 import type { GlobalOptions } from '../process/options.js';
 import { captureIo, parseNdjson } from '../test-support.js';
 import { agentRunCommand, readAllStdin, type AgentRunCommandDeps } from './agent-run.js';
@@ -49,11 +54,13 @@ function globalOptions(cwd: string, json = false): GlobalOptions {
   return { json, color: false, cwd, configPath: undefined, verbosity: 'normal' };
 }
 
+const reactions = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+
 describe('agentRunCommand (2.Q)', () => {
-  it('closes MCP after the lifetime join reports a durability failure', async () => {
+  it('attempts MCP cleanup but retains the database obligation after a refused durability join', async () => {
     const closeMcp = vi.fn(async () => {});
     const failure = new Error('synthetic final usage write failure');
-    const { d } = deps('synthetic prompt', {
+    const { d, control } = deps('synthetic prompt', {
       providers: scriptedResolver([textTurn('done')]),
       onBuilt: (built) => {
         const join = built.whenHostSafeToClose;
@@ -64,13 +71,28 @@ describe('agentRunCommand (2.Q)', () => {
       },
     });
     const original = d.buildSession ?? buildChatSession;
-    await expect(
-      agentRunCommand(
-        { agent: agentPath(), input: [], allowMcpStdio: [] },
-        { ...d, buildSession: async (options) => ({ ...(await original(options)), closeMcp }) },
-      ),
-    ).rejects.toBe(failure);
-    expect(closeMcp).toHaveBeenCalledTimes(1);
+    let settled = false;
+    void agentRunCommand(
+      { agent: agentPath(), input: [], allowMcpStdio: [] },
+      { ...d, buildSession: async (options) => ({ ...(await original(options)), closeMcp }) },
+    ).then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await vi.waitFor(() => expect(closeMcp).toHaveBeenCalledOnce());
+    expect(settled, 'AGENT_REFUSED_JOIN_IS_NOT_DATABASE_CLOSE_PERMISSION').toBe(false);
+    expect(control.invocation.registry.activeOwners).toBe(2);
+    expect(control.invocation.registry.observations.exitCode()).toBe(9);
+    expect(productStores).toHaveLength(1);
+    expect(productStores[0]?.db.$client.open).toBe(true);
+    control.advance(3000);
+    await reactions();
+    expect(control.exit).toHaveBeenCalledExactlyOnceWith(9);
+    expect(settled).toBe(false);
   });
 
   it('keeps only a hidden durable identity and refuses reuse before provider egress', async () => {
@@ -144,10 +166,18 @@ describe('agentRunCommand (2.Q)', () => {
     }
   });
 
-  it.each(['success', 'failure', 'abort', 'teardown', 'setup-unwind'] as const)(
+  it.each([
+    'success',
+    'failure',
+    'abort',
+    'setup-unwind',
+    'teardown',
+    'warning-held',
+    'warning-refused',
+  ] as const)(
     'sweeps only owned committed one-shot effects on %s, retaining unresolved evidence',
     async (mode) => {
-      const { d, out } = deps('synthetic prompt', {
+      const { d, out, control } = deps('synthetic prompt', {
         json: true,
         providers: mode === 'failure' ? unresolvedResolver() : scriptedResolver([textTurn('done')]),
         onBuilt: (built) => {
@@ -187,6 +217,10 @@ describe('agentRunCommand (2.Q)', () => {
                   if (state !== 'prepared')
                     journal.settle(identity, state, 'synthetic private result');
                 }
+                if (mode === 'warning-held' || mode === 'warning-refused')
+                  opened.db.$client.exec(
+                    "CREATE TRIGGER refuse_effect_sweep BEFORE DELETE ON run_effects BEGIN SELECT RAISE(ABORT, 'synthetic_retention_refusal'); END",
+                  );
               } finally {
                 opened.close();
               }
@@ -203,21 +237,73 @@ describe('agentRunCommand (2.Q)', () => {
             });
         },
       });
+      let acknowledgeWarning: () => void = () => undefined;
+      const warning = new Promise<void>((resolve) => {
+        acknowledgeWarning = resolve;
+      });
+      const writeWarning = vi.fn(() =>
+        mode === 'warning-refused'
+          ? Promise.reject(new CliError('output_unavailable', ''))
+          : warning,
+      );
       const original = d.buildSession ?? buildChatSession;
-      const buildSession: typeof buildChatSession = async (options) => {
-        const built = await original(options);
-        return mode === 'teardown'
-          ? {
-              ...built,
-              closeMcp: () => Promise.reject(new Error('synthetic teardown refusal')),
-            }
-          : built;
-      };
+      const closeMcp = vi.fn(() => Promise.reject(new Error('synthetic teardown refusal')));
       const action = agentRunCommand(
         { agent: agentPath(), input: [], allowMcpStdio: [] },
-        { ...d, buildSession },
+        {
+          ...d,
+          ...(mode === 'teardown'
+            ? {
+                buildSession: async (options: Parameters<typeof buildChatSession>[0]) => ({
+                  ...(await original(options)),
+                  closeMcp,
+                }),
+              }
+            : {}),
+          ...(mode === 'warning-held' || mode === 'warning-refused'
+            ? { io: { ...d.io, writeErrAcknowledged: writeWarning } }
+            : {}),
+        },
       );
-      if (mode === 'setup-unwind') await expect(action).rejects.toThrow('synthetic setup refusal');
+      if (mode === 'teardown') {
+        let settled = false;
+        void action.then(
+          () => {
+            settled = true;
+          },
+          () => {
+            settled = true;
+          },
+        );
+        await vi.waitFor(() => expect(closeMcp).toHaveBeenCalledOnce());
+        expect(control.invocation.registry.activeOwners).toBe(2);
+        expect(control.invocation.registry.budget.deadline()).toBe(3000);
+        control.advance(3000);
+        await reactions();
+        expect(control.exit).toHaveBeenCalledExactlyOnceWith(9);
+        expect(settled, 'AGENT_CLOSE_REFUSAL_PREVENTS_RETENTION_AND_DATABASE_ACK').toBe(false);
+      } else if (mode === 'warning-held') {
+        let settled = false;
+        void action.then(() => {
+          settled = true;
+        });
+        await vi.waitFor(() => expect(writeWarning).toHaveBeenCalledOnce());
+        await reactions();
+        expect(settled, 'AGENT_RETENTION_WARNING_IS_AN_OWNED_DELIVERY_TAIL').toBe(false);
+        expect(control.invocation.registry.activeOwners).toBe(1);
+        acknowledgeWarning();
+        expect(await action).toBe(0);
+      } else if (mode === 'warning-refused') {
+        expect(await action).toBe(9);
+        expect(writeWarning).toHaveBeenCalledOnce();
+        expect(control.invocation.registry.observations.infrastructureCode()).toBe(
+          'output_unavailable',
+        );
+        control.advance(3000);
+        await reactions();
+        expect(control.exit).toHaveBeenCalledExactlyOnceWith(9);
+      } else if (mode === 'setup-unwind')
+        await expect(action).rejects.toThrow('synthetic setup refusal');
       else expect(await action).toBe(mode === 'failure' ? 1 : 0);
       if (mode === 'abort') expect(out()).toContain('"stopReason":"aborted"');
       const opened = openSessionStore(home);
@@ -227,6 +313,9 @@ describe('agentRunCommand (2.Q)', () => {
             .prepare('SELECT state, result_json FROM run_effects ORDER BY slot')
             .all(),
         ).toEqual([
+          ...(mode === 'teardown' || mode === 'warning-held' || mode === 'warning-refused'
+            ? [{ state: 'committed', result_json: null }]
+            : []),
           { state: 'ambiguous', result_json: null },
           { state: 'prepared', result_json: null },
         ]);
@@ -236,11 +325,195 @@ describe('agentRunCommand (2.Q)', () => {
       }
     },
   );
+  it('observes a setup fault before a held host cleanup', async () => {
+    let release: () => void = () => undefined;
+    const closing = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const closeMcp = vi.fn(() => closing);
+    const failure = new Error('PRIVATE_SETUP_FAILURE');
+    const { d, control, out, err } = deps('synthetic prompt', {
+      providers: scriptedResolver([textTurn('must not egress')]),
+      onBuilt: (built) => {
+        vi.spyOn(built, 'attachEffectJournal').mockImplementation(() => {
+          throw failure;
+        });
+      },
+    });
+    const original = d.buildSession ?? buildChatSession;
+    const result = agentRunCommand(
+      { agent: agentPath(), input: [], allowMcpStdio: [] },
+      { ...d, buildSession: async (options) => ({ ...(await original(options)), closeMcp }) },
+    ).catch((cause: unknown) => cause);
+    try {
+      await vi.waitFor(() => expect(closeMcp).toHaveBeenCalledOnce());
+      expect(
+        control.invocation.registry.budget.deadline(),
+        'AGENT_SETUP_FAULT_BEFORE_HELD_CLOSE',
+      ).toBe(3000);
+      expect(control.invocation.registry.observations.exitCode()).toBe(9);
+      expect(control.invocation.registry.activeOwners).toBe(2);
+      expect(productStores[0]?.db.$client.open).toBe(true);
+      expect(out()).not.toContain('must not egress');
+      expect(err()).not.toContain('PRIVATE_SETUP_FAILURE');
+    } finally {
+      release();
+    }
+    expect(await result).toBe(failure);
+    control.advance(3000);
+    await reactions();
+  });
+
+  it('does not disguise an unexpected clock fault at hidden-owner reservation', async () => {
+    let built = false;
+    const failure = new Error('PRIVATE_CLOCK_FAILURE');
+    const { d, control } = deps('synthetic prompt', {
+      providers: scriptedResolver([textTurn('must not egress')]),
+      onBuilt: () => {
+        built = true;
+      },
+    });
+    await expect(
+      agentRunCommand(
+        { agent: agentPath(), input: [], allowMcpStdio: [] },
+        {
+          ...d,
+          now: () => {
+            if (built) {
+              built = false; // This probe faults reservation; later native cleanup remains healthy.
+              throw failure;
+            }
+            return 0;
+          },
+        },
+      ),
+    ).rejects.toBe(failure);
+    expect(control.invocation.registry.observations.exitCode()).toBe(9);
+    control.advance(3000);
+    await reactions();
+    expect(control.exit).toHaveBeenCalledExactlyOnceWith(9);
+  });
+
+  it('cancels a captured native stdin read and retains its actual delayed close before signal exit', async () => {
+    let acknowledgeDestroy: (error?: Error | null) => void = () => undefined;
+    let readEntered: () => void = () => undefined;
+    const reading = new Promise<void>((resolve) => {
+      readEntered = resolve;
+    });
+    const input = new Readable({
+      read() {
+        readEntered();
+      },
+      destroy(_error, callback) {
+        acknowledgeDestroy = () => callback(_error);
+      },
+    });
+    const { d, control } = deps('unused');
+    const keys = vi.fn();
+    let returned = false;
+    const action = agentRunCommand(
+      { agent: agentPath(), input: [], allowMcpStdio: [] },
+      { ...d, io: { ...d.io, stdin: input }, resolveKeys: keys },
+    );
+    void action.then(
+      () => {
+        returned = true;
+      },
+      () => {
+        returned = true;
+      },
+    );
+    await reading;
+    control.invocation.finiteExit.signal(15);
+    await reactions();
+    expect(input.destroyed).toBe(true);
+    expect(input.closed).toBe(false);
+    expect(keys).not.toHaveBeenCalled();
+    expect(control.invocation.registry.activeOwners, 'AGENT_STDIN_CLOSE_IS_ACTUAL_NOT_ABORT').toBe(
+      1,
+    );
+    expect(returned).toBe(false);
+    expect(control.exit).not.toHaveBeenCalled();
+    acknowledgeDestroy();
+    expect(await action).toBe(4); // The fake port returns; the real signal outcome is owned below.
+    await reactions();
+    expect(input.closed).toBe(true);
+    expect(control.invocation.registry.activeOwners).toBe(0);
+    expect(control.exit).toHaveBeenCalledExactlyOnceWith(143);
+  });
+
+  it.each([false, true])(
+    'the default MCP gate owns a late consent answer (stopped=%s)',
+    async (stopped) => {
+      writeFileSync(
+        agentPath(),
+        `${AGENT_YAML}\nmcp_servers:\n  - id: synthetic\n    transport: stdio\n    command: ${JSON.stringify(process.execPath)}\n`,
+      );
+      let answer: (approved: boolean) => void = () => undefined;
+      const pendingAnswer = new Promise<boolean>((resolve) => {
+        answer = resolve;
+      });
+      let entered: () => void = () => undefined;
+      const prompted = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const prompt = vi.fn(async () => {
+        entered();
+        return pendingAnswer;
+      });
+      vi.spyOn(consentPrompts, 'createBoundConsentPrompter').mockReturnValue(prompt);
+      const { d, control } = deps('synthetic prompt', {
+        providers: scriptedResolver([textTurn('done')]),
+      });
+      const start = vi.fn(() => realStartMcpClient([])); // A real empty manager; no native child or network.
+      const action = agentRunCommand(
+        { agent: agentPath(), input: [], allowMcpStdio: [] },
+        {
+          ...d,
+          io: { ...d.io, stdinIsTty: true, stdoutIsTty: true },
+          buildSession: (options) => buildChatSession({ ...options, startMcpClient: start }),
+        },
+      );
+      try {
+        await prompted;
+        expect(prompt).toHaveBeenCalledOnce();
+        expect(start).not.toHaveBeenCalled();
+        if (stopped) {
+          control.invocation.finiteExit.signal(15);
+          await reactions();
+          expect(control.registry.activeOwners).toBe(3);
+        }
+      } finally {
+        answer(true);
+      }
+      expect(await action).toBe(stopped ? 4 : 0);
+      await reactions();
+      expect(existsSync(mcpConsentPath(home)), 'AGENT_LATE_CONSENT_CANNOT_APPEND_GRANT').toBe(
+        !stopped,
+      );
+      expect(start).toHaveBeenCalledTimes(stopped ? 0 : 1);
+      expect(control.registry.activeOwners).toBe(0);
+      if (stopped) expect(control.exit).toHaveBeenCalledExactlyOnceWith(143);
+      else expect(control.exit).not.toHaveBeenCalled();
+    },
+  );
+
   let cwd: string;
   let home: string;
   const savedHome = new Map<string, string | undefined>();
+  const productStores: ReturnType<typeof openSessionStore>[] = [];
 
   beforeEach(() => {
+    productStores.length = 0;
+    const open = sessionOpen.openSessionStore;
+    vi.spyOn(sessionOpen, 'openSessionStore').mockImplementation((directory) => {
+      const opened = open(directory);
+      productStores.push(opened);
+      return opened;
+    });
+    // These command units use explicit fake exit/clock ports. Actual OS signal/exit evidence belongs
+    // to the native child cohorts, not a Vitest worker's process-wide listeners.
+    vi.spyOn(signalPorts, 'defaultSubscribeSignals').mockReturnValue(() => undefined);
     cwd = mkdtempSync(join(tmpdir(), 'relavium-agentrun-cwd-'));
     home = mkdtempSync(join(tmpdir(), 'relavium-agentrun-home-'));
     for (const v of HOME_ENV_VARS) {
@@ -250,6 +523,10 @@ describe('agentRunCommand (2.Q)', () => {
     writeFileSync(join(cwd, 'coder.agent.yaml'), AGENT_YAML);
   });
   afterEach(() => {
+    // Fault fixtures deliberately retain their product obligation. Dispose only test-owned native
+    // handles after their entered work is quiet; this does not grant the product a retirement ACK.
+    for (const opened of productStores) if (opened.db.$client.open) opened.close();
+    vi.restoreAllMocks();
     for (const v of HOME_ENV_VARS) {
       const prev = savedHome.get(v);
       if (prev === undefined) delete process.env[v];
@@ -267,10 +544,17 @@ describe('agentRunCommand (2.Q)', () => {
       /** Observe the built session — wraps the REAL builder, so nothing is stubbed out. */
       onBuilt?: (built: Awaited<ReturnType<typeof buildChatSession>>) => void;
     } = {},
-  ): { d: AgentRunCommandDeps; out: () => string; err: () => string } {
+  ): {
+    d: AgentRunCommandDeps;
+    out: () => string;
+    err: () => string;
+    control: ReturnType<typeof invocationFixture>;
+  } {
     const { io, out, err } = captureIo();
+    const control = invocationFixture();
     return {
       d: {
+        invocation: control.invocation,
         io: { ...io, stdin: Readable.from([stdin]) },
         global: globalOptions(cwd, opts.json ?? false),
         now: () => 0,
@@ -288,6 +572,7 @@ describe('agentRunCommand (2.Q)', () => {
       },
       out,
       err,
+      control,
     };
   }
 
@@ -311,7 +596,7 @@ describe('agentRunCommand (2.Q)', () => {
             ...d,
             invocation,
             buildSession: async (options) => {
-              await witnessNativeToolProcess(options.nativeProcesses, invocation, cwd);
+              await witnessNativeToolProcess(options.nativeProcesses, invocation, cwd, 2);
               expect(options.disableMcp).toBe(offline ? true : undefined);
               return buildChatSession(options);
             },

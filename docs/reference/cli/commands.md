@@ -894,6 +894,34 @@ it cannot launch a new async helper; a returned promise may only observe work
 already started. Joins, restoration and reap helpers do not start after expiry.
 This attempt-all cancellation rule grants no retirement or safe-close ACK.
 
+### Session ownership implementation checkpoint
+
+**Partial Step 8d implementation on `development`; not independently accepted.**
+Standalone `agent run` now reserves its surface and host owners before asynchronous
+input, consent or session construction. The original invocation owns captured
+stdin cancellation, late builder adoption, producer/accounting joins, MCP cleanup
+and the shared database tail. A rejected durability barrier, callback-reported
+MCP close fault or database-close throw retains cleanup uncertainty; cancellation
+and the common fatal deadline do not acknowledge those obligations. Classified
+turn failures retain exit 1, invocation refusals retain exit 2, and unexpected
+infrastructure failures use exit 9. This surface has no workflow health authority
+to invent exits 5–8.
+
+Bound MCP consent uses captured prompt streams and the host cancellation signal.
+A late answer cannot append a grant. Prompt custody joins actual completion and
+acknowledged cursor delivery; a fulfilled Clack prompt is not aborted again during
+normal cleanup. Best-effort retention warnings retain their actual delivery tail
+and output-failure classification. The optional builder ownership port preserves
+accounting/publication failures across repeated host-safe-close checks.
+
+The new per-mount terminal owner requires explicit acquisition custody and joins
+entered suspension/publication work before final native release. Its actual
+chat/Home Ink, persistent alternate-screen and job-control adapters remain staged.
+Fresh/resumed/replaced chat/Home hosts, wizard custody and global native/bootstrap
+activation still require integration and complete cumulative/platform acceptance.
+The [implementation register](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-session-substrate-checkpoint--2026-10-16)
+records this limited scope; whole Step 8 remains open.
+
 ### Workflow and terminal ownership
 
 **Step 8c independently accepted on `development`.** The

@@ -429,6 +429,7 @@ async function resumeGateOwned(
           if (!lifetime.isStoppedFailure(cause)) lifetime.failure(cause);
         },
         onCloseError: reportMcpCloseFailure,
+        budget: lifetime.invocation.registry.budget,
         work: mcpWork,
         registrations: config.mcpServers,
         resolveSecret:

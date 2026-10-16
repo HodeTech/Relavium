@@ -6023,3 +6023,49 @@ session/preparation/terminal lifetimes and caught/fatal/background/sink paths,
 then supplies its own cumulative and actual-platform acceptance. Steps 9–19 and
 whole-wave publication remain staged. No new ADR, deferral, provider capture,
 credential, billing or user decision is needed. Step 8d proceeds automatically.
+
+## Wave 3 Step 8d session substrate checkpoint — 2026-10-16
+
+**Implementation checkpoint on `development`, not Step 8d acceptance.**
+The session work/surface/host owners and a per-acquisition terminal owner are
+implemented. Standalone one-shot `agent run` connects its input, consent,
+construction, actual producer/accounting/MCP cleanup, warning delivery and shared
+database lifetime. The [canonical CLI contract](../../reference/cli/commands.md#session-ownership-implementation-checkpoint)
+describes this partial scope. The SDK-free optional failed-start MCP lifecycle
+reports close uncertainty before waiting on siblings and preserves their actual
+raw lifetimes; its [canonical home](../../reference/shared-core/mcp-integration.md#failed-start-cleanup-lifecycle)
+records compatibility and the common budget.
+
+Scoped read-only implementation advice found terminal-write observation behind
+a held provider, lost failed-start MCP close uncertainty, pre-cleanup setup fault
+ordering, late consent writes, lease capture before acknowledgement, repeated
+Clack close and lost output-failure classification. Each is corrected with
+permanent regressions. These advisory reads are **not** either required complete
+cumulative clean round or the separate security sitting. Earlier failed author
+attempts remain failed evidence; no warning/timeout is relabelled as cleanup ACK.
+
+At the frozen author source, before the final two late-consent integration
+controls, the fresh ordinary CLI suite passes **304 files / 5,178 tests /
+10 established skips**. Production bytes remain unchanged when those two
+controls are added; the focused agent cohort passes all **37 tests**. The complete
+MCP suite passes **20 files / 242 tests**.
+Workspace lint/typecheck passes **17 tasks**, with twelve existing cache hits and
+five fresh executions. The CLI build, seam/dependency fences, finite bundle closure,
+compiled bootstrap and compiled CLI smoke pass. Closure remains **26 JavaScript
+outputs / seventeen external dependencies**. The installed-Clack regression uses
+synthetic streams; terminal-owner controls use captured clocks/deferred work.
+Neither proves operator TTY restoration or actual Windows session shutdown.
+The final `CI=true` workspace lint/typecheck/test gate passes **23 tasks**:
+twenty valid cache hits and fresh CLI lint, typecheck and tests. That fresh CLI
+execution includes both late-consent controls: **304 files / 5,179 tests /
+11 established CI-projection skips**. Other packages' replayed test inventories
+remain cache-attributed, rather than a fresh whole-repository execution. No new
+remote CI, packed-platform, whole-wave or merge execution is inferred.
+
+Remaining Step 8d work is actual fresh/resume/clear/reseat and superseded chat/Home
+host integration; entered Ink suspension, persistent alternate-screen/job-control
+and wizard custody; then native/bootstrap/caught/fatal/background/sink activation.
+Two NEW complete cumulative clean rounds from the original `d9625ff0` boundary,
+a separate NEW clean security sitting and actual required platform evidence are
+still owed after final integration. **Whole Step 8 and Steps 9–19 remain open.**
+No new ADR, deferral, credential, provider call, billing or user decision is needed.

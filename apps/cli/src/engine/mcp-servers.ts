@@ -20,6 +20,7 @@ import {
   type McpClient,
   type McpConnection,
   type McpServerConfig,
+  type McpStartupLifecycle,
   type SseServerSpec,
   type StdioServerSpec,
   type WebSocketServerSpec,
@@ -46,6 +47,7 @@ import { CliError } from '../process/errors.js';
 import { createMcpFetch, type McpFetch, type McpFetchConfig } from './mcp-fetch.js';
 import type { ResolvedStdioSpawn } from './mcp-consent.js';
 import type { CliIo } from '../process/io.js';
+import type { RemainingBudget } from '../process/invocation-registry.js';
 import { sanitizeInline } from '../render/tui/chat-projection.js';
 import type { McpSecretResolver } from '../secrets/mcp-secret.js';
 import {
@@ -76,11 +78,20 @@ import {
 export interface ConnectAgentMcpOptions {
   /** The session/run working directory — the spawned server's `cwd` (relative server paths resolve here). */
   readonly cwd: string;
+  /** The preparation owner is rechecked after consent and before secrets, native entry or publication. */
+  readonly assertAdmitting?: () => void;
+  /** Observe a construction fault before its actual cleanup can hold propagation. */
+  readonly onFailure?: (cause: unknown) => void;
+  /** A fulfilled manager close does not erase callback-reported transport uncertainty. */
+  readonly onCloseError?: (serverId: string, cause: unknown) => void;
+  /** The existing invocation budget; an expired cleanup cannot launch another asynchronous close. */
+  readonly budget?: RemainingBudget;
   /** Injectable connect-all (tests pass a fake that never spawns); defaults to the real `startMcpClient`. */
   readonly startMcpClient?: (
     servers: readonly McpServerConfig[],
     signal?: AbortSignalLike,
     options?: ToolHostCallOptions,
+    lifecycle?: McpStartupLifecycle,
   ) => Promise<McpClient>;
   /**
    * Cancels the connect and the discovery walk (ADR-0088 §1.1).
@@ -700,6 +711,7 @@ export async function connectAgentMcp(
   mcpServers: readonly McpServerRef[] | undefined,
   opts: ConnectAgentMcpOptions,
 ): Promise<McpClient | undefined> {
+  opts.assertAdmitting?.();
   // Resolve any by-name `ref` entries to inline against the config registrations (Step 4b) BEFORE building the
   // stdio configs — so the rest of the pipeline always sees a self-contained, inline server.
   const inline = (mcpServers ?? []).map((entry) =>
@@ -709,6 +721,8 @@ export async function connectAgentMcp(
   // declare a server with no `[[mcp_servers]]` registration at all — the imported-artifact case.
   requireGateForStdio(inline, opts.consentGate);
   const consented = await opts.consentGate?.(inline, opts.cwd, opts.artifact);
+  opts.assertAdmitting?.();
+  if (opts.connectSignal?.aborted) throw new CliError('internal', 'MCP connection was cancelled.');
   const configs = resolveServerConfigs(
     inline,
     opts.cwd,
@@ -718,7 +732,39 @@ export async function connectAgentMcp(
     opts.nativeProcesses,
   );
   if (configs.length === 0) return undefined;
-  return startMcpClientFailLoud(configs, opts.startMcpClient, opts.connectSignal, opts.work);
+  opts.assertAdmitting?.();
+  const client = await startMcpClientFailLoud(
+    configs,
+    opts.startMcpClient,
+    opts.connectSignal,
+    opts.work,
+    opts.assertAdmitting,
+    opts.onFailure,
+    startupLifecycle(opts),
+  );
+  try {
+    opts.assertAdmitting?.();
+    return client;
+  } catch (cause) {
+    opts.onFailure?.(cause);
+    await closePreparedMcp(client, opts.onCloseError, opts.budget);
+    throw cause;
+  }
+}
+
+/** Expiry is no permission to enter another cleanup or to pretend this client has closed. */
+export async function closePreparedMcp(
+  client: McpClient,
+  onCloseError?: (serverId: string, cause: unknown) => void,
+  budget?: RemainingBudget,
+): Promise<void> {
+  if (budget?.remainingMs() === 0) await new Promise<never>(() => {});
+  try {
+    await client.close(onCloseError);
+  } catch (cause) {
+    if (onCloseError === undefined) throw cause;
+    onCloseError('', cause);
+  }
 }
 
 /**
@@ -734,14 +780,21 @@ async function startMcpClientFailLoud(
   connectSignal?: AbortSignalLike,
   work?: ToolHostCallOptions,
   onOwnedCancellation?: () => void,
+  onFailure?: (cause: unknown) => void,
+  lifecycle?: McpStartupLifecycle,
 ): Promise<McpClient> {
   // The shared build token is installed only at the actual MCP construction choke.
   setMcpClientVersion(CLI_VERSION);
   const start = custom ?? defaultStartMcpClient;
   const owned = work === undefined ? new EgressWorkScope() : undefined;
   try {
-    return await start(configs, connectSignal, work ?? owned);
+    return await (lifecycle === undefined
+      ? start(configs, connectSignal, work ?? owned)
+      : start(configs, connectSignal, work ?? owned, lifecycle));
   } catch (err) {
+    // Typed MCP refusals retain their existing public classifier below. An opaque failure must
+    // reach its owner before a self-cleanup lifetime can hold this rejection indefinitely.
+    if (!(err instanceof McpError) && !windowsTeardownRefusal(err)) onFailure?.(err);
     // A session builder without an external pre-handle owner must self-clean before propagating.
     owned?.seal();
     await owned?.done;
@@ -855,10 +908,12 @@ export interface ConnectWorkflowMcpOptions {
   readonly onFailure?: (cause: unknown) => void;
   /** Actual manager close failures use this callback even when close() itself fulfills. */
   readonly onCloseError?: (serverId: string, cause: unknown) => void;
+  readonly budget?: RemainingBudget;
   readonly startMcpClient?: (
     servers: readonly McpServerConfig[],
     signal?: AbortSignalLike,
     options?: ToolHostCallOptions,
+    lifecycle?: McpStartupLifecycle,
   ) => Promise<McpClient>;
   /** Cancels the connect and the discovery walk (ADR-0088 §1.1) — see {@link ConnectAgentMcpOptions.connectSignal}. */
   readonly connectSignal?: AbortSignalLike;
@@ -958,6 +1013,8 @@ export async function connectWorkflowMcp(
     opts.connectSignal,
     opts.work,
     opts.assertAdmitting,
+    opts.onFailure,
+    startupLifecycle(opts),
   );
 
   try {
@@ -986,6 +1043,16 @@ export async function connectWorkflowMcp(
     }
     throw err;
   }
+}
+
+function startupLifecycle(
+  opts: Pick<ConnectAgentMcpOptions, 'onCloseError' | 'budget'>,
+): McpStartupLifecycle | undefined {
+  if (opts.onCloseError === undefined && opts.budget === undefined) return undefined;
+  return {
+    ...(opts.onCloseError === undefined ? {} : { onCloseError: opts.onCloseError }),
+    ...(opts.budget === undefined ? {} : { budget: opts.budget }),
+  };
 }
 
 /** True for an inline agent definition (carries an `id`), false for a `{ $ref }` external reference. */

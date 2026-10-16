@@ -122,7 +122,13 @@ it.each([0, 10])(
         name: 'LedgerDurabilityError',
       });
       f.built.session.cancel();
-      await f.built.whenHostSafeToClose();
+      await expect(f.built.whenHostSafeToClose()).rejects.toThrow(
+        'Session cost ledger could not be made durable.',
+      );
+      await expect(
+        f.built.whenHostSafeToClose(),
+        'SESSION_SETTLEMENT_FAILURE_REMAINS_AFTER_FIRST_JOIN',
+      ).rejects.toThrow('Session cost ledger could not be made durable.');
       f.view.flush();
       expect(f.snapshot().coverage.pendingInvocations).toBe(1);
       expect(f.snapshot().totalCostMicrocents).toBe(0);

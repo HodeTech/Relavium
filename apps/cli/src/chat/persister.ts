@@ -458,11 +458,9 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
         // self-detach so the bus listener does not leak if the REPL's close() is skipped on an early exit.
         //
         // Through `persistDurably`, like every other write here (`CR-01`) — but be precise about WHAT that
-        // buys, because the obvious reading is wrong. The latch half is inert on this arm: `session:cancelled`
-        // is emitted only by `AgentSession.cancel()`, which sets `#status = 'cancelled'`, and every later
-        // egress entry point is already refused by `#assertSendable()` with `not_active`. Nothing reads
-        // `durabilityFailure` again. It is wrapped for SYMMETRY with its siblings — one arm reaching the store
-        // bare is how the next reader concludes the wrapper is optional.
+        // buys: `session:cancelled` is emitted by `AgentSession.cancel()`, so later egress is already
+        // refused. The retained latch still matters to the session's actual cleanup owner: a failed
+        // final write must survive terminal cancellation and cannot become a clean close verdict.
         //
         // **The `finally` is the load-bearing half.** Before it, a throwing write jumped straight over the two
         // unsubscribe lines and left this persister attached to the bus — so every later event re-entered a

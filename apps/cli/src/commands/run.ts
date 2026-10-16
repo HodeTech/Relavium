@@ -270,6 +270,7 @@ async function runOwned(
         if (!lifetime.isStoppedFailure(cause)) lifetime.failure(cause);
       },
       onCloseError: reportMcpCloseFailure,
+      budget: lifetime.invocation.registry.budget,
       work: mcpWork,
       resolveSecret:
         deps.mcpSecretResolver ?? keys?.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env),
