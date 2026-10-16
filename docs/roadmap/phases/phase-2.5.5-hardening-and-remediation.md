@@ -4956,3 +4956,82 @@ identity before Step 8 means one canonical module, one bootstrap invocation obje
 and preserved context identity across lazy routes. Actual registered native-owner
 stop/join evidence belongs to Step 8. No new ADR, dependency, deferral, provider
 request, credential, billing or user decision is introduced.
+
+
+### Wave 3 Step 7a implementation checkpoint — 2026-10-16
+
+**Implemented on `development`, not independently accepted.** The recorded 7a → 7b
+split starts at Step 6 acceptance metadata `b09008e7`. This increment implements
+only the guarded lazy source/runtime and finite compiled graph under ADR-0111.
+[Packaging](../../reference/cli/packaging.md#compiled-graph-implementation-boundary--step-7a)
+owns its current boundary; installed packaging, native fatal integration, maps/
+custody and new JSON help retain Steps 7b, 8, 9 and 10 respectively.
+
+The real bootstrap constructs one invocation before guarded imports and threads
+that exact object through actions and interactive Home. Existing error and
+sanitizer implementations have pure supported leaves, retaining root identities.
+An initial grant-admission graph reached the core/provider barrel through its error
+base; the exact existing ToolDispatchError base is extracted without changing the
+family or private filesystem authority. Directory admission now precedes optional
+file-cache seeding and the lazy runtime. Meta uses the same grammar but does not
+stat an absent absolute grant. Pure syntax/size/count checks remain; no ad-hoc
+help-token parser or model/user-derived import path is introduced.
+
+One invocation-owned total file-cache attempt is lazy, concurrent/reentrant safe
+and remains attempted after missing/torn/import failure. Nine priced executor
+routes and Home use it before first runtime metadata access; current eleven DB
+consumers remain unchanged and install the latest admitted DB tail. History,
+provider management, authoring and media do not load an unused file cache; an
+actual string agent fixture skips it. New tests distinguish injected action/
+context observers from actual SQLite/cache/cost helper integration. Existing
+agent fixture tests also pass; no eleven-surface end-to-end claim is made.
+MCP installs the same build version token only at its actual construction choke.
+
+One actual tsup invocation emits **24 flat ESM files / 375 inputs**, with all
+seventeen third-party runtime dependencies external. The entry alone has a
+hashbang and executable POSIX mode. The new emitted checker parses every JS
+loading edge and compares independent file/import inventories, dependency parity,
+reachability and single input contribution. Seventy-six negative/positive tool
+controls include actual esbuild split fixtures. Windows explicitly reports graph
+scope without fabricating POSIX mode observations; actual tar headers belong 7b.
+
+The untouched final compiled entry passes **175 native controls** on Node 22.23.1 /
+macOS: forty current human meta forms × JSON/plain × absent-root/no-root, twelve
+grammar refusals, real grant admission before services and two guarded deferred
+import failures. Native witnesses forbid service/config/cache/grant/network/
+subprocess activity and retain all 24 unchanged JS digests. Ten self-controls pin
+these witnesses, descendant boundaries, UTF-8 output bounds and child termination.
+This is repository-dist evidence, not an installed artifact, minimum Node or other
+platform certification. Existing compiled workflow/budget/MCP-signal and native
+media ownership smokes also pass; their deliberate failure controls are not
+claimed as successful generation tests.
+
+All **six final local causal cohorts / eighteen structured zero-unhandled receipts**
+pass named assertions, complete unique inventories, direct target/test/reporter
+pins and byte-exact restoration. Earlier partial execution stops on ambiguous
+new test labels and is not counted; labels are made unique without changing
+assertions. Four existing secret controls and one filesystem invocation control
+retain IDs, mutation bodies and workloads after target moves. Their selected
+physical captures each have three verified receipts and 457 dependency packages;
+source inventories are 1,239, 1,239, 1,240, 1,240 and 1,248 files respectively.
+These precommit snapshots name base `b09008e7` and their physical source pins,
+not a future committed head or complete 41/110-control family. The parent verifies
+stdio, runtime receipts, evaluations, manifests and restoration independently.
+
+Final author gates pass **646 files / 14,659 tests / 20 established skips**, all
+workspace lint/typechecks and six forced builds after causal restoration. The
+final CLI suite runs fresh; ten of eleven test/build tasks reuse valid normal
+caches in the workspace gate. All **408 acceptance-tool tests**, tools lint/
+typecheck, seam/engine fences, DB synchronization, 646-file isolation, changed
+code/data formatting, bundle closure, compiled smokes and document/diff checks pass.
+Initial author failures are corrected test return typing, await-free async doubles,
+the moved JSON-renderer lint requirement and one stale mutation anchor. A later
+tooling run overlaps separately invoked coordinator captures and misattributes
+their global temporary directories as a leak; serialized final execution passes.
+No source cleanliness or gate is inferred from either failed run.
+
+Two NEW independent complete cumulative clean reviews and a separate sanitizer/
+bootstrap/package-boundary security sitting remain required before accepting 7a.
+Step 7b, whole Step 7 and Steps 8–19 remain open. No new ADR, runtime dependency,
+provider capture, credential, billing action, external release or user decision
+is introduced. No full CI/coverage or native-platform publication is claimed.

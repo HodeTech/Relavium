@@ -198,3 +198,16 @@ contracts and the nineteen-increment Wave 3 plan. Earlier proposal wording above
 records the review stage; approval is complete. Implementation, independent
 review gates and canonical promotion remain staged in that plan. Acceptance
 does not claim shipping behaviour, an actual release or production custody setup.
+
+## Compiled-graph implementation staging — 2026-10-16
+
+The approved Step 7 is split into 7a (guarded lazy runtime, offline catalog order
+and every-output emitted closure) and 7b (independent installed-tarball and required
+platform/minimum-runtime controls), preserving every original obligation. Step 7a
+implementation is present on `development`; independent reviews remain required.
+The [canonical packaging contract](../reference/cli/packaging.md#compiled-graph-implementation-boundary--step-7a)
+records the implemented boundary and remaining gates. Existing error and sanitizer
+identities have supported pure leaves; no new runtime dependency or security policy
+is introduced. Context/module continuity does not claim the native registered-owner
+integration assigned to Step 8. Original-TS maps and custody remain Step 9. Neither
+this note nor local compiled controls close whole Step 7 or claim a new release.

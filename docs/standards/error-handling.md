@@ -23,6 +23,12 @@ identity and private-authority guards also retain their own contracts.
 The supported `@relavium/shared/relavium-error` leaf exports that same constructor
 without evaluating the schema barrel. Early process contracts use this leaf;
 runtime classifiers that recognize engine/DB families stay behind runtime loading.
+The supported `@relavium/core/tool-dispatch-error` leaf likewise exports the
+existing `ToolDispatchError` base without loading the engine/provider barrel.
+Concrete tool errors and the root export extend/re-export that exact constructor;
+filesystem grant admission can classify its own denial before service evaluation.
+CLI diagnostic rendering accepts an already-classified projection independently
+of the heavy runtime-family classifier.
 
 - Errors are **typed and discriminated**, never bare `Error` and never thrown strings
   (see [code-style-typescript.md](code-style-typescript.md)). Each error type carries a

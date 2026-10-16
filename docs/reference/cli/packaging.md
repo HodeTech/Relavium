@@ -1,11 +1,14 @@
 # CLI Packaging Contract
 
-- **Status**: Approved design — unshipped; implementation staged in Wave 3
+- **Status**: Approved design — compiled graph implemented on `development`; independent acceptance, installed-package and release gates staged
 - **Date**: 2026-10-15
 - **Related**: [ADR-0111](../../decisions/0111-cli-meta-operations-use-a-lazy-packaged-runtime.md), [commands.md](commands.md), [release runbook](../../runbooks/release-a-surface.md)
 
-This is the maintainer-approved canonical design contract (2026-10-16). Current
-single-bundle packaging remains shipping until the implementing increments land.
+This is the maintainer-approved canonical design contract (2026-10-16). Wave 3
+Step 7a implements the lazy compiled graph on `development`; its independent
+reviews remain a gate. The published release retains its historical single bundle.
+Step 7b owns actual tarball/install/platform acceptance, Step 8 owns native fatal
+integration, and Step 9 owns maps and archival custody.
 No release, production recipient setup or asset upload is performed by this document.
 
 ## Finite runtime package
@@ -44,6 +47,47 @@ tail wins, offline agent fixture and media no-cache exceptions remain.
 
 One registry instance passes through the chunk graph; no global-symbol bridge
 silently replaces existing private-module provenance.
+
+### Compiled graph implementation boundary — Step 7a
+
+The bootstrap creates one invocation object before guarded imports. That object
+contains the registry and one total, latched offline file-cache attempt. Actions
+receive it through their context, and interactive Home receives the same object.
+The native registered-owner adapters are not yet integrated; this is context and
+module identity, not proof of physical owner shutdown.
+
+Current human help/version/bare/subtree paths use the same Commander grammar as
+execution. They do not load runtime services or admit filesystem directories.
+Actual actions admit grants before optional catalog seeding and command runtime
+loading. A finite executor map is checked against the descriptor registry;
+import paths are literal, independent of model, command argument or user content.
+Media maintenance has its own route. Offline agent fixtures skip cache seeding;
+history, provider management and authoring paths do not seed an unused catalog.
+The existing eleven DB-overlay consumers remain responsible for installing current
+DB metadata; no rebuild can repeat the invocation's file-cache attempt over it.
+
+Pure supported leaves retain their existing constructor/function identities:
+shared terminal stripping and the error base, LLM secret scrubbing, and core's
+tool-dispatch error base. Runtime classification remains separate from diagnostic
+rendering. Dependency/evaluation failures reach fixed early diagnostics even if
+the heavy classifier cannot load; their historical fallback exit 1 is retained
+until Step 8 integrates the approved origin and exit-9 policy.
+
+The emitted graph checker parses actual JavaScript and compares every loading edge
+with the build inventory. It rejects missing/extra/unreachable/escaping chunks,
+computed or unreviewed loaders, private external imports, undeclared dependencies
+and independently duplicated input contributions. Flat chunks preserve migration
+resolution. Entry-only hashbangs and actual POSIX modes are checked; Windows graph
+checks explicitly do not claim unobservable POSIX mode bits. Step 7b independently
+checks actual tar headers on every consumer platform.
+
+`pnpm smoke:cli-bootstrap` runs the untouched compiled entry with native import,
+application-file, network and subprocess throw witnesses in a synthetic HOME.
+It covers current human meta output, pure grammar, absent absolute root refinement,
+real execution admission ordering and deferred import failure. Its own negative
+controls pin the witnesses, child deadline and UTF-8 output bound. The source and
+compiled controls do not certify installed dependencies, complete chat turns,
+minimum Node, other platforms, original-TS symbolication or release custody.
 
 ## Build, map and candidate identity
 
