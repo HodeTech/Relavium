@@ -403,11 +403,11 @@ code-unit ordering, independent of ambient locale.
 ## Result bounding and spill-to-file
 
 The result a tool hands **back to the model** (which re-enters the next `LlmRequest`) is bounded —
-distinct from the *event* `outputSummary`, which is truncated separately at the bus translation point
+distinct from the *event* `outputSummary`, which the registry bounding stage produces before bus stamping/delivery
 ([ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)). Three rules:
 
 - **Bounding is model-facing only.** `output_mapping` runs on the **full** result (step 6) so workflow state holds the real value; only the model-facing `tool_result` is replaced by a **bounded preview + an explicit truncation marker + the spill path** (step 7).
-- **The full result is spilled to the host `outputStore`; the model gets a preview + handle.** *v1.0 caveat:* the bound is over the **in-memory** result the `dispatch` returns — the seam's `FileRead.content` / `EgressResponse.body` / `ProcessResult.stdout` are `string`, so the engine holds the full result transiently before spilling. The **stream-and-incrementally-spill-at-the-boundary** guarantee (the engine never holding the full bytes) is a **host-capability obligation** — push a `maxBytes` into `FsReadOpts` / `EgressRequest` so the host truncates at the source — landed with the first genuinely-streamed large source (the residual engine-memory exposure until then is bounded by the FS scope tier + the host process budget; egress is gated to 1.AE). The model-facing context-window protection (the stated purpose) holds today regardless. The output store is its **own** `ToolHost` capability, so bounding does not depend on the optional `fs` capability (a `web_search` / MCP host with no `fs` still bounds).
+- **The full result is spilled to the host `outputStore`; the model gets a preview + handle.** *v1.0 caveat:* the bound is over the **in-memory** result the `dispatch` returns — the seam's `FileRead.content` / `EgressResponse.body` / `ProcessResult.stdout` are `string`, so the engine holds the full result transiently before spilling. A **stream-and-incrementally-spill-at-the-boundary** guarantee (the engine never holding the full bytes) requires a **host-capability contract**; it is not provided by this string-returning seam. Hosts own their source limits, and network availability depends on the surface/profile wiring. The shipping CLI wires egress in `chat-read-write`; its `chat-read-only` and `workflow-read-write` profiles omit that arm. This does not claim streamed engine results or shipping workflow HTTP. The model-facing context-window protection (the stated purpose) holds today regardless. The output store is its **own** `ToolHost` capability, so bounding does not depend on the optional `fs` capability (a `web_search` / MCP host with no `fs` still bounds).
 - **Reclaimed at the terminal event.** Spilled output is run-scoped and swept when the run reaches a terminal event (the ADR-0036 terminal-state sweep), like other run-scoped artifacts.
 
 The ceiling is a **byte/line** bound (no token count — that needs a provider-specific tokenizer, which would break engine purity); concrete defaults and the marker shape are canonical in
@@ -444,7 +444,7 @@ per-call-site discipline ([security-review.md §Prompt-injection](../../standard
 | `run_command` | `host.process` | exact `allowedCommands` + host-resolved executable + declared env, `shell:false` |
 | `git_status` | `host.process` | pre-approved git allowlist |
 | `git_commit` | `host.process` | **human-gate approval required** |
-| `http_request` | `host.egress` (`http`) | HTTPS-only + exact-FQDN `allowedDomains` + SSRF (1.AE-gated) |
+| `http_request` | `host.egress` (`http`) | HTTPS-only + exact-FQDN `allowedDomains` + SSRF at the wired host; availability is profile-dependent |
 | `web_search` | `host.egress` (`search`) | provider key via host-resolved `credentialRef`; untrusted query |
 | `read_clipboard` / `notify` | `host.os` | — |
 | `mcp_call` | `host.mcp` | server URL runs the same SSRF primitive (0029(d); 2.R) |

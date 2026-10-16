@@ -4708,11 +4708,15 @@ acceptance of Step 5 or the whole wave.
 
 Twenty-one new test files contribute 393 cases; actual git-denial controls and the
 split pre/post-preparation cancellation case add four cases in existing owners.
-Author baselines record 115 expected bound/metadata failures, alias/replay/digest
+Author-reported baselines describe 115 expected bound/metadata failures, alias/replay/digest
 failures, eight quoted-decoding failures, six direct gate failures, the actual
 engine pause race and forty prompt-cancellation failures. Fixture/API mistakes
 were corrected separately; they are not attributed to production. DAG, literal
-append and bus controls certify existing behaviour rather than claim old defects.
+append and bus controls certify existing behaviour rather than claim old defects. Original raw baseline
+outputs were tool-response observations, not retained physical runner reports. The
+retrospective ignored author note discloses that limit; fresh broad/causal records
+below are independently retained. Later comparator-observer test refinements are
+attributed to final source rather than earlier author hashes.
 
 The broad workspace command passes: **629 files / 14,281 passing tests / 20
 established skips**, plus all workspace lint/typecheck tasks. Standard Turbo cache
@@ -4745,3 +4749,27 @@ Detailed baseline, causal and review records remain local and Git-ignored. There
 is no new dependency, engine platform import, error taxonomy, grant feature, ADR,
 provider call, credential/billing action or external publication. Final full CI,
 ordinary/enforced coverage, platform and whole-wave publication remain Step 19.
+
+
+### Wave 3 Step 5 first review correction — 2026-10-16
+
+The first complete cumulative correctness review at `25cac33a` covers all 52 paths /
+124 hunks and freshly passes 35 files / 942 tests, direct four-package typechecks
+and all 46 changed TypeScript lint targets. Its result is **nonclean**: one verified
+Medium canonical-documentation finding, with no production defect. It is not either
+of the required clean rounds.
+
+The parent reads the full report and confirms all three stale statements: summaries
+are produced by registry bounding, not truncated in the bus, and network availability
+is profile-dependent rather than waiting for historical 1.AE. The canonical registry
+reference now describes the actual chat-read-write wiring, retains the read-only and
+workflow omissions, and states the string-seam/spill limitation accurately. No runtime
+capability or workflow network feature is added. The author checkpoint also makes raw
+baseline-retention and later test-observer attribution explicit.
+
+The separate independent security sitting at `25cac33a` passes 18 files / 680 tests,
+zero skips, with no verified finding. Its evidence is source-pinned; this correction
+changes only two documents. All production/test bytes and the 31 causal source hashes
+remain unchanged. Existing broad/build evidence keeps its original source and cache
+scope. Relative-link/append-only and diff checks are rerun for this document correction;
+two NEW independent complete cumulative clean rounds remain required after this fix.
