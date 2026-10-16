@@ -896,7 +896,9 @@ This attempt-all cancellation rule grants no retirement or safe-close ACK.
 
 ### Workflow and terminal ownership
 
-**Step 8c implementation on `development`; independent acceptance pending.**
+**Step 8c independently accepted on `development`.** The
+[acceptance register](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8c-acceptance--2026-10-16)
+records exact reviewed-source, causal, CI and platform evidence.
 Workflow `run`, human-gate resume and budget resume reserve their workflow and
 terminal owners before asynchronous preparation. The command explicitly activates
 the existing single fallback observer before native creation; an autonomous native

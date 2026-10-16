@@ -5942,3 +5942,84 @@ that execution is transferred to these changed runtime bytes.
 These corrections implement the approved deadline/ownership contract without a
 new decision, dependency or deferral. Source and evidence scopes remain explicit;
 whole Step 8, 8d and Steps 9–19 are still open. No user action is pending.
+
+## Wave 3 Step 8c acceptance — 2026-10-16
+
+**Step 8c is independently accepted on `development` at reviewed source
+`dbab25d85a2c4ae97c252cdaaf47921648e245af`.** Following the verified first-round
+corrections, two NEW complete cumulative correctness rounds and a NEW separate
+security sitting are clean. Each covers the mandatory whole-Step-7 base
+`d9625ff0a641197c6ed45968df99094a25db88d6` through that source: **164 paths /
+770 zero-context hunks / 54 whole added files**. Detailed reports remain local
+and Git-ignored; their final report digests are recorded below.
+
+| Sitting | Model / effort | Fresh execution | Report SHA-256 |
+|---|---|---|---|
+| New cumulative correctness round 1 | GPT-6 Astra / xhigh | 65 files / 1,396 passes / one actual-Windows-only local skip; 50 tooling tests and four independent inert probes | `e786051ba38f3cf840ae15a73111d3b4ed25a03203835184ce834f692fcfc8f7` |
+| New cumulative correctness round 2 | GPT-6.1 Sol / xhigh | 65 files / 1,396 passes / one actual-Windows-only local skip; 50 tooling tests and four independent inert probes | `0f272955baf1b2a1176a7160f75436710548ce34cf38e472393d6c7c55d9716e` |
+| New separate security sitting | GPT-6.1 Sol / xhigh | 26 files / 380 passes / one actual-Windows-only local skip; 22 tooling tests | `f9776b8f4499877d085400069bedfa7c82adcc153cb643f2c1fed61e15ade2e7` |
+
+The parent reads all three complete reports and every substantive path assessment,
+then independently verifies every current file pin and all 770 individual hunk
+bodies and hashes. Round 2's final 147-file report inventory and seal also match.
+Its draft assessment inaccuracies are corrected after source reinspection; the
+parent reads all 39 corrected assessments. This report correction changes no
+product bytes, test execution or finding disposition. Independent test totals
+above are separate executions, not a deduplicated product-suite total.
+
+Fresh author lint/typecheck and workspace tests pass, with the CLI executing
+298 files / 5,116 passing cases / 10 established skips; unchanged workspace
+results retain cache attribution. Build, formatting and the compiled CLI smoke
+pass. The final complete ordinary ownership cohort passes 10 files / 171 cases
+without skips. The last assertion-label correction is included in that cohort
+and both fresh correctness-review cohorts; no new full local coverage execution
+is inferred.
+
+The corrected-source selected causal capture is complete: **13 mechanisms /
+39 fixed-removal-restored phases / 597 repeated executions / 21 named semantic
+witnesses / 22 actual removal assertion failures**. Every completed phase has a
+zero-unhandled runner receipt, the exact full inventory and byte-identical
+restoration. The freeze digest is
+`f0e60563dbe4ae4df95ff2a9a83a843b9f8be7895ba4e3b3ea99a3ca919178a4`.
+The parent and all three reviewers independently inspect the actual raw receipts,
+1,288 source/tool pins, 21,013 dependency files / 457 packages, runtime identities
+and retained graph bodies. The bounded retained inventory is **825 files /
+43,528,270 bytes**; copied graphs and caches are removed. Six run/gate callback
+phases have actual target-process SQLite-addon load receipts. The selected capture
+does not claim whole-wave acceptance or fresh reviewer mutation execution.
+
+The rejected first capture, its failed ninth removal and its immutable source
+freeze remain historical, with acceptance false. Earlier NONCLEAN reviews are
+not reused as clean sittings. Their first-source CI has two real failed jobs and
+was subsequently cancelled by the corrected-source push; its four successful
+package consumers do not become execution evidence for the changed runtime.
+
+Full push CI **38936742126 / attempt 1 / `dbab25d8`** completes successfully:
+all **15 jobs** pass, including required lint/typecheck/test/build/fences/smokes,
+coverage, filesystem, secrets, wire and usage controls. Current Windows, macOS
+and Linux and exact Node 22.0.0 Linux consume the same **429,116-byte** tarball,
+SHA-256 `529942465b79c6d147c4f45ea5b22dea1efe14770f12715f2487ff0b69e34c54`.
+All four consumers and their required aggregate pass **175 bootstrap controls /
+seven installed cases** each. The current-runtime consumers use Node 24.21.0.
+The parent and reviewers independently inspect all five physical package/report
+ZIPs, all 71 public tar members and matching installed inventories, all 26
+reachable JavaScript outputs and seventeen declared external dependencies.
+No SonarCloud result, merge-commit execution or remote private worker journal is
+inferred from this push run or its public success receipts.
+
+The [separate security sitting](../../standards/security-review.md#sitting-wave-3-workflow-and-terminal-ownership-2026-10-16)
+retains exact evidence limits: local simulated Windows protocol controls do not
+claim actual OS execution, actual platform packaging does not prove 8d global
+activation, and the workflow-cleanup fixture uses a real SQLite/MCP manager with
+synthetic connections rather than an actual MCP subprocess. The installed native
+case exercises creation-owned offline agent tooling, not the new autonomous
+WorkflowLifetime fault on actual Windows. Actual native close and persistence
+ACK remain distinct. Fixed diagnostics do not certify unchanged legacy verbose
+stack confidentiality.
+
+The [workflow ownership contract](../../reference/cli/commands.md#workflow-and-terminal-ownership)
+is accepted for 8c. **Whole Step 8 remains open:** Step 8d connects all remaining
+session/preparation/terminal lifetimes and caught/fatal/background/sink paths,
+then supplies its own cumulative and actual-platform acceptance. Steps 9–19 and
+whole-wave publication remain staged. No new ADR, deferral, provider capture,
+credential, billing or user decision is needed. Step 8d proceeds automatically.

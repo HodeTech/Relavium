@@ -278,3 +278,16 @@ corrections remain separately attributed. The old NONCLEAN audits and rejected
 capture grant no acceptance; two NEW complete cumulative clean reviews and a NEW
 clean security sitting are required after the final correction. Step 8d remains
 staged.
+
+## Step 8c independent acceptance — 2026-10-16
+
+The [Step 8c acceptance register](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8c-acceptance--2026-10-16)
+records two NEW complete cumulative clean correctness rounds and a NEW separate
+clean security sitting after the verified first-round corrections. All cover
+`d9625ff0` through `dbab25d8`. Corrected causal controls, full CI and all four
+same-tarball platform consumers pass at that exact reviewed source; the register
+preserves their distinct execution and actual-platform limits. Workflow,
+preparation, driver and terminal ownership are independently accepted for 8c.
+Session lifetimes, final diagnostic acknowledgement and all-surface activation
+remain 8d. Whole Step 8 and later Wave 3 work remain open; no new decision,
+dependency or deferral is added.

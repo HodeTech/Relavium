@@ -191,10 +191,11 @@ Step 8b (creation-owned native processes) is independently accepted at
 security sitting following its canonical-reference correction. Its unchanged
 runtime/control evidence and successful full CI plus all four same-tarball
 platform consumers remain attributed to `ab50be11`, with independently verified
-source/dependency equivalence. Whole Step 8, workflow/terminal integration in 8c
-and product fatal activation in 8d remain open.
-Step 8c workflow/preparation/terminal integration is under author verification;
-no independent acceptance is inferred from its focused tests.
+source/dependency equivalence. Step 8c workflow/preparation/terminal integration
+is independently accepted at `dbab25d8` after two NEW complete cumulative clean
+rounds, a separate clean security sitting and successful full CI. All four
+same-tarball platform consumers pass at that reviewed source. Whole Step 8,
+session/terminal integration and product fatal activation in 8d remain open.
 Step 8 proceeds as recorded serial increments 8a–8d; native
 fatal integration remains open until all actual owners are connected.
 Later implementation and whole-wave acceptance

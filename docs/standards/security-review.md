@@ -669,6 +669,39 @@ confirmed finding or deferral remains in 8b. The [acceptance register](../roadma
 joins exact pins and limits. Workflow/terminal integration in 8c, product native
 activation in 8d and whole-Wave-3 acceptance remain open.
 
+### Sitting: Wave 3 workflow and terminal ownership (2026-10-16)
+
+A NEW separate complete cumulative sitting is **clean** at
+`dbab25d85a2c4ae97c252cdaaf47921648e245af`, independent of both NEW clean
+correctness rounds after the first implementation's verified corrections. The
+mandatory base `d9625ff0` yields **164 paths / 770 zero-context hunks / 54 whole
+added files**. Fresh execution passes **26 files / 380 tests**, with one
+actual-Windows-only local skip, and **22 tooling tests**. The parent reads the
+complete report and every substantive assessment, and independently verifies all
+file/hunk and retained-artifact pins. The report SHA-256 is
+`f9776b8f4499877d085400069bedfa7c82adcc153cb643f2c1fed61e15ade2e7`.
+
+The sitting independently audits all **13 mechanisms / 39 completed raw causal
+phases**, their zero-unhandled receipts, source/dependency/runtime identities,
+exact restoration and bounded physical inventory. It also inspects the original
+package and all four same-tarball consumer ZIPs. Full CI **38936742126** now
+passes all fifteen jobs at the reviewed source. Actual current Windows, macOS,
+Linux and exact Node 22.0.0 Linux installed consumers pass; local simulated
+Windows protocol controls remain separately attributed. Public success receipts
+provide no remote private per-mode worker journal.
+
+The [acceptance register](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8c-acceptance--2026-10-16)
+records exact counts, digests and limits. The native workflow-cleanup fixture
+uses actual SQLite and an MCP manager with synthetic connections, not a real MCP
+subprocess. The installed native case proves creation-owned offline agent
+tooling, not the autonomous WorkflowLifetime fault on actual Windows. Actual
+native closure is not persistence ACK; expiry never grants store-close permission.
+Fixed projections do not certify unchanged legacy verbose stacks. No real
+provider, keychain, editor, operator TTY or payment is exercised. No confirmed
+finding or new deferral remains in 8c. Session/terminal integration, global native
+activation and final acknowledged diagnosis remain Step 8d; whole Step 8 and
+whole-wave acceptance are still open.
+
 ## Sandbox and tool policy (`run_command`, node tools, secret inputs)
 
 This is the **binding home** for the tool-policy rules; the rationale is
