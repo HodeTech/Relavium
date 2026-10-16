@@ -13,6 +13,22 @@ import {
   UnreadableRunEventLogError,
 } from './frozen/packages/db/src/run-history-store.ts';
 import { createHistoryCheckpointer } from './frozen/apps/cli/src/engine/checkpointer.ts';
+// This historical source exists in the frozen manifest. Later leaves must never
+// fall through to the producer copy even though the loader recognizes their names.
+const terminalSafe = await import('@relavium/shared/terminal-safe');
+assert.equal(terminalSafe.stripTerminalControls('\u001b[31mvisible\u001b[0m'), 'visible');
+for (const [specifier, load] of [
+  ['@relavium/shared/relavium-error', () => import('@relavium/shared/relavium-error')],
+  ['@relavium/shared/fs-root-limits', () => import('@relavium/shared/fs-root-limits')],
+  ['@relavium/llm/scrub-secrets', () => import('@relavium/llm/scrub-secrets')],
+  ['@relavium/core/tool-dispatch-error', () => import('@relavium/core/tool-dispatch-error')],
+])
+  await assert.rejects(load(), {
+    message: `Source alias absent from frozen manifest: ${specifier}`,
+  });
+await assert.rejects(import('@relavium/shared/not-exported'), {
+  message: 'Unowned Relavium subpath forbidden: @relavium/shared/not-exported',
+});
 const uuid = (n) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const errorJson = (e) => ({
   name: e.name,
