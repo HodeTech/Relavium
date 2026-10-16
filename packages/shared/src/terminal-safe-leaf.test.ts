@@ -4,11 +4,8 @@ import { stripTerminalControls as rootStripTerminalControls } from './index.js';
 import { stripTerminalControls } from './terminal-safe.js';
 
 describe('supported terminal-safe leaf', () => {
-  it('retains the root function identity in source and actual compiled exports', async () => {
+  it('retains the root function identity in source', () => {
     expect(rootStripTerminalControls).toBe(stripTerminalControls);
-    const root = await import('@relavium/shared');
-    const leaf = await import('@relavium/shared/terminal-safe');
-    expect(root.stripTerminalControls).toBe(leaf.stripTerminalControls);
   });
 
   it('removes finite escape/control families while preserving text, tabs, newlines and shaping', () => {

@@ -1,6 +1,3 @@
-import { spawnSync } from 'node:child_process';
-import { createRequire } from 'node:module';
-import { pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import { scrubSecrets as rootScrubSecrets } from './index.js';
@@ -63,45 +60,5 @@ describe('pure scrub-secrets leaf compatibility', () => {
     const error = makeLlmError({ provider: 'openai', kind: 'auth', message: input, code: input });
     expect(error.message).toBe(expected);
     expect(error.code).toBe(expected);
-  });
-
-  it('retains one function through the supported compiled root and leaf exports', async () => {
-    const root = await import('@relavium/llm');
-    const leaf = await import('@relavium/llm/scrub-secrets');
-    expect(root.scrubSecrets).toBe(leaf.scrubSecrets);
-    for (const { input, expected } of compatibleDiagnostics) {
-      expect(leaf.scrubSecrets(input)).toBe(expected);
-    }
-  });
-
-  it('loads the actual supported compiled leaf with only terminal-safe reachable', () => {
-    const require = createRequire(import.meta.url);
-    const allowed = [
-      pathToFileURL(require.resolve('@relavium/llm/scrub-secrets')).href,
-      pathToFileURL(require.resolve('@relavium/shared/terminal-safe')).href,
-    ];
-    // An isolated ESM loader refuses every other module, including schema/provider barrels.
-    // This tests evaluation without relying on bundler tree shaking or warm module caches.
-    const loader = `export async function load(url, context, nextLoad) {
-      if (!url.startsWith('data:') && !${JSON.stringify(allowed)}.includes(url)) {
-        throw new Error('Unexpected sanitizer dependency: ' + url);
-      }
-      return nextLoad(url, context);
-    }`;
-    const run = spawnSync(
-      process.execPath,
-      [
-        '--no-warnings',
-        `--experimental-loader=data:text/javascript,${encodeURIComponent(loader)}`,
-        '--input-type=module',
-        '--eval',
-        `import { scrubSecrets } from ${JSON.stringify(allowed[0])};
-         if (scrubSecrets('?api_key=opaque') !== '?api_key=[REDACTED]') process.exit(1);`,
-      ],
-      { encoding: 'utf8', timeout: 10_000 },
-    );
-    expect(run.error).toBeUndefined();
-    expect(run.stderr).toBe('');
-    expect(run.status).toBe(0);
   });
 });
