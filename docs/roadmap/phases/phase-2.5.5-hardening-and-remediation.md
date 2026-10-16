@@ -206,11 +206,11 @@ reached.
 - **Unescape the quoted filter-argument text `parseArg` returns.** `parseArg` (`packages/core/src/interpolation/references.ts`) returns the raw backslash-escaped text of a quoted filter argument instead of unescaping it, contradicted by its own test's comment. Fix `parseArg` to unescape the quoted argument text per its documented contract, and correct the misleading test comment. *(S · `packages/core/src/interpolation/references.ts` · #82)*
 - ✅ **DONE ([Wave 3 Step 2](#wave-3-step-2-acceptance--2026-10-16)).** **Apply consistent duplicate/cross-field admission; certify existing input and session guards.** Shared leaf/full admission now enforces the approved duplicate, human-gate timeout and logical Run status matrices. Existing input defaults/enums and session compaction-role rules are certified. Historical session/workflow readers retain their former contracts; no rows are migrated or silently repaired. *(M · `packages/shared/src/{node,agent,workflow,session,run,common}.ts` · #89, #90, G18, #212, G16, G17, #210, #211)*
 - **Extend `analyzeSecretTaint`'s leak-reporting loop to cover context-value sites.** `analyzeSecretTaint` (`packages/core/src/interpolation/analyze.ts`) deliberately skips context-value sites in its leak-reporting loop, so a direct `{{secrets.*}}` reference never read elsewhere is not reported at parse time — the workflow only fails later, differently-shaped, at run start. Not an actual secret leak, but a real completeness gap in the "reject before a run starts, uniformly" contract. *(S · `packages/core/src/interpolation/analyze.ts` · G22)*
-- **Delete the unused `BaseEventSchema`/`HumanGateEvent` exports or wire `BaseEventSchema` to validate the envelope it claims to model.** Both are public exports from `packages/shared/src/run-event.ts`, pinned by `index.test.ts`'s public-surface list, with zero consumers anywhere — and `BaseEventSchema` isn't even used to validate the envelope it claims to model. Delete the unused exports and pinning entries, or wire `BaseEventSchema` to actually validate the run-event envelope. *(S · `packages/shared/src/run-event.ts` · #213)*
+- ✅ **DONE ([Wave 3 Step 4](#wave-3-step-4-acceptance--2026-10-16)).** **Retain and validate the public event envelope without stripping full payloads.** `BaseEventSchema` shares the full run family's parsed exactly-one-correlation check; `BaseEvent` and `HumanGateEvent` remain exported. Complete payload, strict accounting, lenient opposite-key and stored forward-reader contracts are preserved. *(S · `packages/shared/src/run-event.ts` · #213)*
 - **Correct `ctx.fsScope`'s wiring, blocked on a maintainer call.** `ctx.fsScope` is threaded through every dispatch context in `packages/core/src/tools/{types,registry,builtins}.ts` and `packages/core/src/engine/agent-session.ts`, but `enforcePolicy()` (`packages/core/src/tools/registry.ts`) has no `fsScoped` branch and no `FsCapability` method signature accepts it. **Blocked on a maintainer decision**: is this a deliberate "one host instance = one immutable scope" design, in which case only the doc comment needs correcting, or should it be threaded into `FsCapability`'s method signatures to support future per-turn scope escalation? *(S · `packages/core/src/tools/registry.ts` · #93)*
 - **Correct three stale engine doc comments to match current code.** `checkpoint.ts`'s module doc (`packages/core/src/engine/checkpoint.ts`) claims a "runId+nodeId+retryCount idempotency key" bounds resumed side effects; no such key exists. `builtins.ts`'s top comment still says egress is "not wired yet"; it shipped. `workflow-yaml-spec.md` documents `workflow.version` as Semver-format-enforced; `WorkflowSpecSchema` enforces no format. One sweep correcting each. *(S · `packages/core/src/engine/checkpoint.ts`, `packages/core/src/tools/builtins.ts`, `docs/reference/*/workflow-yaml-spec.md` · #78, #97, #214)*
 - **Remove the dead `RunEventBusOptions.validate` escape hatch and replace `kahnOrder`'s full re-sort with a priority structure.** `RunEventBusOptions.validate` (`packages/core/src/engine/event-bus.ts`) is documented as a hot-path escape hatch but no caller ever sets it — dead config, negligible cost today. `kahnOrder` (`packages/core/src/dag.ts`) re-sorts the entire ready-list on every pop instead of using a priority queue, also negligible at today's node counts. Both essentially-free cleanups; batch into one pass and revisit priority-queueing only if 2.6.P's subworkflows push node counts up. *(S · `packages/core/src/engine/event-bus.ts`, `packages/core/src/dag.ts` · #274, #275)*
-- **Introduce a shared `RelaviumError` base class and migrate the 15 hand-rolled error classes onto it.** Error classes across `packages/core`, `packages/llm`, `packages/mcp`, and `apps/cli` (`BudgetExceededError`, `EngineStateError`, `RunLoopInvariantError`, and others) share no common base, each re-implementing its own conventions. `packages/shared` is the correct home. Introduce a minimal `RelaviumError` base class and migrate the existing classes onto it, preserving each class's existing `.code`/discriminant behavior. *(M · `packages/shared/src/*.ts` · #219)*
+- ✅ **DONE ([Wave 3 Step 4](#wave-3-step-4-acceptance--2026-10-16)).** **Introduce minimal shared native error ancestry while retaining each family's contract.** The current export-scoped inventory replaces the historical 15/17 estimate: 46 roots across 37 files reach 83 module-exported production classes, with the additional unchanged private timeout descendant recorded separately. Constructors, names, discriminants, context/cause and structural/private-authority guards are preserved. *(M · `packages/shared/src/relavium-error.ts` and existing package families · #219)*
 - **Chat-to-workflow export hardening: continuity caveat and non-ASCII slug fallback; certify existing tool-content exclusion.** W7/PR #90 and Accepted [ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) structurally exclude model-issued tool arguments/results from durable session rows and exported scaffolds. The earlier raw-tool-result export claim and its proposed opt-in/redaction decision are superseded by that contract; do not add a raw-content flag. Wave 2 still adds a clear continuity/review notice and deterministic ASCII title normalization with a session-identity fallback. Retained user/assistant text, `@` attachments and `!` output can remain sensitive: this is not universal transcript masking. Certify producer→SQLite→export rejection fixtures with #115; the [Wave 2 decision package](#decisions-presented-together-before-implementation) records D14/D15. *(M · `packages/core/src/export/serializer.ts` · #80, #81, #83)*
 - **Give `BudgetExceededError`/`BudgetPauseError` a `.code` field, blocked on a maintainer call.** These two errors (`packages/core/src/engine/budget-governor.ts`) expose no `.code`, unlike `EngineStateError`/`RunLoopInvariantError` in the same directory that `docs/standards/error-handling.md` names as the canonical model. Not a functional bug today. **Blocked on a maintainer decision**: should these errors adopt the `.code` convention, or is `instanceof`-narrowing an accepted exception for this pair? *(S · `packages/core/src/engine/budget-governor.ts` · G50)*
 - **Collapse two always-co-occurring branches in `engine.ts`'s `#dispatch` retry-sleep handling.** Purely cosmetic dead-code/maintenance-trap: two branches that always co-occur, one unreachable dead weight. No behavioral bug, but real, trivially-scheduled cleanup. *(S · `packages/core/src/engine/engine.ts` · #79)*
@@ -4652,3 +4652,36 @@ receipt. Existing product and test bytes remain unchanged. These documentation
 corrections do not claim a fresh source execution; author gates retain their
 original source attribution. Two NEW complete cumulative clean reviews at the
 corrected head remain required before Step 5.
+
+
+### Wave 3 Step 4 acceptance — 2026-10-16
+
+Step 4 is independently accepted at `b16c3b4c29a82396c8f060f6e3ed199e2f340476`.
+Two NEW complete cumulative clean reviews after the final correction cover all
+**50 changed paths / 97 hunks**, including the eight additions, unchanged error
+descendants and actual consumers. Selected reviewers are gpt-6.1-sol/high
+(**26 files / 819 passing tests**) and gpt-6-astra/high (**29 files / 1,214 tests**),
+with zero skips in their independent runs. The parent reads both complete reports.
+The earlier two-Low sitting remains nonclean; both verified documentation findings
+are fixed, with no scoped review finding left open.
+
+The minimal error base and direct envelope correction satisfy #219/#213. Every
+existing class member list is unchanged; export-scoped counts, private inherited
+timeout, structural versus local authority and native versus plain seam values
+are explicit. Full payload and historical-reader controls remain effective.
+Both reviewers independently audit all twelve retained causal receipts, source
+and reconstructed mutant hashes; the secondary test-local payload TypeError is
+accurately separated from zero runner-unhandled errors.
+
+Author evidence retains its original scope: **608 files / 13,884 passing tests /
+20 established skips**, workspace lint/typecheck, six builds, source formatting,
+fences, isolation and relative links. Reviewer counts overlap and are not added
+to author counts. This metadata landing does not claim new source execution,
+full CI/coverage/native-platform, whole-wave acceptance or merge. Detailed
+reports remain local and Git-ignored.
+
+Step 5's tools/engine-tail implementation now proceeds automatically. Its read-
+only test designs are preparation, not acceptance. Necessary same-defect registry
+redaction prewalks and remaining identifier-sort consumers stay in that increment.
+No new ADR, user decision, provider capture, credential or external operation is
+pending. Step 19 retains final whole-wave validation and publication.

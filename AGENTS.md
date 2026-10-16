@@ -83,7 +83,9 @@ Its serialized multi-file Step 1 is independently accepted on `development`
 (2026-10-16); Step 2 is also accepted after two NEW clean complete cumulative rounds
 following its historical-reader corrections. Step 3 (ADR-0113 secret provenance)
 is independently accepted after two NEW complete cumulative clean rounds and a
-separate clean security sitting. Step 4 (error/envelope substrate) is active.
+separate clean security sitting. Step 4 (error/envelope substrate) is independently
+accepted after two NEW complete cumulative clean rounds; Step 5 (tools and engine
+tails) is active.
 Later implementation and whole-wave acceptance
 remain staged in the canonical roadmap.
 

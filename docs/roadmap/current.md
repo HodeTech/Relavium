@@ -1116,7 +1116,9 @@ after two NEW independent complete clean reviews.
 with two NEW complete clean cumulative rounds after its historical-reader corrections;
 [Step 3 is independently accepted](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-3-acceptance--2026-10-16)
 after two NEW complete cumulative clean rounds and a separate clean security sitting.
-Step 4 (error/envelope substrate) is active. The
+[Step 4 is independently accepted](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-4-acceptance--2026-10-16)
+after two NEW complete cumulative clean rounds. Step 5 (tools and engine tails)
+is active. The
 [final proposal reviews](phases/phase-2.5.5-hardening-and-remediation.md#second-maintainer-rereview-final-proposal-readiness--2026-10-16)
 remain proposal evidence, not implementation review. The selected encrypted archive
 method persists; production recipient/recovery belongs to Wave 4b release setup.
