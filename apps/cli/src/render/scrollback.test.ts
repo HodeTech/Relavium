@@ -3,6 +3,7 @@ import { Writable } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
 
 import { PassThrough } from 'node:stream';
+import { injectPostRemoval } from '../chat/native-removal.test-support.js';
 
 import {
   DUMP_FOOTER,
@@ -160,7 +161,7 @@ describe('nodeWaitForContinue', () => {
     const interrupts = fakeInterrupts();
     const cancel = new AbortController();
     const primary = new Error('native removal failed');
-    stdin.on('removeListener', (event: string | symbol) => {
+    injectPostRemoval(stdin)((event) => {
       if (event === 'data') throw primary;
     });
     const wait = nodeWaitForContinue(stdin, interrupts, cancel.signal)();

@@ -344,7 +344,7 @@ export const mutations = [
   control(
     'run-default-secret-reader',
     'apps/cli/src/commands/run.ts',
-    '  const raw = await (deps.readSecretInput?.() ?? readSecretFromStdin(RUN_SECRET_STDIN_CONTEXT));',
+    '  const raw = await read();',
     "  const raw = await (deps.readSecretInput?.() ?? Promise.resolve(''));",
     ['apps/cli/src/commands/run.test.ts'],
     80,

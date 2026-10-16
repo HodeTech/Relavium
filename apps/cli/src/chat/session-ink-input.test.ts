@@ -4,14 +4,16 @@ import { CliError } from '../process/cli-error.js';
 import { invocationFixture } from '../process/invocation.test-support.js';
 import { OwnedTtyInput } from '../test-support.js';
 import { SessionInkInput } from './session-ink-input.js';
+import { injectPostRemoval } from './native-removal.test-support.js';
 
 const turn = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
 function fixture(acknowledge = vi.fn(() => Promise.resolve())) {
   const f = invocationFixture();
   const input = new OwnedTtyInput();
+  const afterRemoval = injectPostRemoval(input);
   const failure = vi.fn(() => f.invocation.finiteExit.fail('cli_internal'));
   const lease = new SessionInkInput({ input, invocation: f.invocation, acknowledge, failure });
-  return { ...f, input, failure, lease, acknowledge };
+  return { ...f, input, failure, lease, acknowledge, afterRemoval };
 }
 
 describe('captured native Ink input final release', () => {
@@ -22,10 +24,15 @@ describe('captured native Ink input final release', () => {
     f.lease.enter();
     f.input.on('readable', shared);
     f.input.on('readable', shared);
-    f.input.once('removeListener', (event, listener: unknown) => {
-      if (event === 'readable' && listener === shared) f.input.removeListener('readable', shared);
+    let reentered = false;
+    f.afterRemoval((event, listener: unknown) => {
+      if (!reentered && event === 'readable' && listener === shared) {
+        reentered = true;
+        f.input.removeListener('readable', shared);
+      }
     });
     await f.lease.close();
+    expect(reentered).toBe(true);
     expect(f.input.listeners('readable'), 'SESSION_INK_INPUT_REMOVAL_REENTRY_BASELINE').toEqual([
       shared,
     ]);
@@ -51,6 +58,7 @@ describe('captured native Ink input final release', () => {
   it('a throwing failure reporter cannot skip independent release or replace the primary remover failure', async () => {
     const f = invocationFixture();
     const input = new OwnedTtyInput();
+    const afterRemoval = injectPostRemoval(input);
     const primary = new Error('PRIVATE_PRIMARY_REMOVER');
     const observer = new Error('PRIVATE_FAILURE_OBSERVER');
     const acknowledge = vi.fn(() => Promise.resolve());
@@ -67,7 +75,7 @@ describe('captured native Ink input final release', () => {
     input.on('readable', first);
     input.on('readable', vi.fn());
     input.setRawMode(true);
-    input.on('removeListener', (event, listener: unknown) => {
+    afterRemoval((event, listener: unknown) => {
       if (event === 'readable' && listener === first) throw primary;
     });
     await expect(lease.close()).rejects.toBe(primary);
@@ -96,7 +104,7 @@ describe('captured native Ink input final release', () => {
     const shared = vi.fn();
     f.input.on('readable', shared);
     f.lease.enter();
-    f.input.on('removeListener', (event) => {
+    f.afterRemoval((event) => {
       if (event === 'newListener') f.input.on('readable', shared);
     });
     await expect(f.lease.close()).rejects.toBeInstanceOf(CliError);
@@ -131,7 +139,7 @@ describe('captured native Ink input final release', () => {
     const native = vi.fn();
     f.input.on('readable', native);
     let reentered: Promise<void> | undefined;
-    f.input.on('removeListener', (event) => {
+    f.afterRemoval((event) => {
       if (event === 'readable') reentered = f.lease.close();
     });
     const close = f.lease.close();
@@ -158,7 +166,7 @@ describe('captured native Ink input final release', () => {
     f.input.on('readable', first);
     f.input.on('readable', second);
     f.input.setRawMode(true);
-    f.input.on('removeListener', (event, listener: unknown) => {
+    f.afterRemoval((event, listener: unknown) => {
       if (event === 'readable' && listener === first) throw primary;
     });
     await expect(f.lease.close()).rejects.toBe(primary);
@@ -173,7 +181,7 @@ describe('captured native Ink input final release', () => {
     const f = fixture();
     f.lease.enter();
     const late = vi.fn();
-    f.input.on('removeListener', (event) => {
+    f.afterRemoval((event) => {
       if (event === 'newListener') f.input.on('readable', late);
     });
     await expect(f.lease.close()).rejects.toBeInstanceOf(CliError);

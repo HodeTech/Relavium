@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import { Readable } from 'node:stream';
 
 import { parseWorkflow, WorkflowEngine } from '@relavium/core';
 import { createClient } from '@relavium/db';
@@ -12,7 +13,7 @@ import { RunEventSchema } from '@relavium/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { run } from './run.js';
-import { captureIo } from './test-support.js';
+import { captureIo as captureOutput } from './test-support.js';
 
 const isolated = vi.hoisted(() => ({ home: '' }));
 vi.mock('./secrets/os-keychain.js', () => ({
@@ -44,16 +45,12 @@ workflow:
     - { from: second, to: out }
 `;
 
-function installStdin(): void {
-  Object.defineProperty(process, 'stdin', {
-    configurable: true,
-    value: {
-      isTTY: false,
-      async *[Symbol.asyncIterator]() {
-        yield await Promise.resolve(Buffer.from(`token=${INPUT}`));
-      },
-    },
-  });
+function captureIo() {
+  const capture = captureOutput();
+  return {
+    ...capture,
+    io: { ...capture.io, stdin: Readable.from([Buffer.from(`token=${INPUT}`)]) },
+  };
 }
 
 function nativeSnapshot(directory: string) {
@@ -88,17 +85,13 @@ const childMismatch = process.env['RELAVIUM_SNAPSHOT_TEST_MISMATCH'] === 'true';
 
 describe('native authored snapshot warning and resume identity', () => {
   let directory: string;
-  let stdinDescriptor: PropertyDescriptor | undefined;
   beforeEach(() => {
     directory = childHome ?? mkdtempSync(join(tmpdir(), 'relavium-snapshot-native-'));
     isolated.home = directory;
     vi.stubEnv('HOME', directory);
     vi.stubEnv('USERPROFILE', directory);
-    stdinDescriptor = Object.getOwnPropertyDescriptor(process, 'stdin');
-    installStdin();
   });
   afterEach(() => {
-    if (stdinDescriptor !== undefined) Object.defineProperty(process, 'stdin', stdinDescriptor);
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
     if (childHome === undefined) rmSync(directory, { recursive: true, force: true });

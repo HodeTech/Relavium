@@ -74,6 +74,7 @@ import { createMcpSecretResolver, type McpSecretResolver } from '../secrets/mcp-
 import type { GatePrompter } from '../gate/prompter.js';
 import { selectGatePrompter } from '../gate/select-prompter.js';
 import { readSecretFromStdin, type StdinSecretContext } from '../secrets/read-secret.js';
+import { Readable } from 'node:stream';
 import { parseSecretLines } from '../secrets/parse-secret-lines.js';
 import { CliError } from '../process/errors.js';
 import { storageBoundaryError } from '../process/owned-storage.js';
@@ -833,8 +834,17 @@ async function resolveSecretInputs(
   }
   const read =
     deps.readSecretInput ??
-    ((): Promise<string> =>
-      readSecretFromStdin(SECRET_STDIN_CONTEXT(args.runId, resumeInvocation)));
+    ((): Promise<string> => {
+      if (!(deps.io.stdin instanceof Readable)) throw new CliError('cli_internal', '');
+      return readSecretFromStdin(
+        SECRET_STDIN_CONTEXT(args.runId, resumeInvocation),
+        deps.io.stdin,
+        {
+          signal: lifetime.signal,
+          onFailure: (cause) => lifetime.failure(cause),
+        },
+      );
+    });
   const raw = await read();
   lifetime.checkpoint();
   const supplied = parseSecretLines(raw, `run ${args.runId}`);

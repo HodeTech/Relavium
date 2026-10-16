@@ -16,6 +16,7 @@ import { clearTimeout, setTimeout } from 'node:timers';
 import { fileURLToPath } from 'node:url';
 import { readOrdinaryFile, sha256 } from '../files.mjs';
 import { ndjson, poll, startOwned } from './process.mjs';
+import { projectRuntimeStderr } from './runtime-stderr.mjs';
 
 const fixture = (name) => fileURLToPath(new URL(name, import.meta.url));
 const positivePid = (pid) => Number.isSafeInteger(pid) && pid > 0;
@@ -369,7 +370,10 @@ export async function assertInstalledNativeProcesses(context, { bootstrap = fals
           );
           if (bootstrap && mode !== 'bootstrap-background') {
             assert.equal(
-              owned.output().stderr,
+              projectRuntimeStderr(owned.output().stderr, {
+                runtime: process.version,
+                pid: owned.child.pid,
+              }).diagnostics,
               '',
               'Fatal diagnostic preceded actual native close delivery',
             );
@@ -417,7 +421,12 @@ export async function assertInstalledNativeProcesses(context, { bootstrap = fals
             observed.some((item) => item.operation === `native-${gate}-close-delivered`),
             'Actual gated close was not delivered before product completion',
           );
-          const diagnostics = ndjson(result.stderr);
+          const projected = projectRuntimeStderr(result.stderr, {
+            runtime: process.version,
+            pid: owned.child.pid,
+          });
+          outcome.runtimeWarnings = projected.runtimeWarnings;
+          const diagnostics = ndjson(projected.diagnostics);
           assert.equal(diagnostics.length, 1, 'Exactly one native diagnostic is owed');
           assert.equal(
             diagnostics[0].code,
@@ -590,7 +599,12 @@ export async function assertInstalledNativeProcesses(context, { bootstrap = fals
       0,
       'Native offline control attempted a provider/keychain/forbidden service',
     );
-    assert.equal(observed.filter((call) => call.operation === 'native-owned-spawn').length, 3);
+    // Windows fatal/output modes each own a target plus a real helper; background owns only its target.
+    const expectedSpawns = bootstrap && process.platform === 'win32' ? 5 : 3;
+    assert.equal(
+      observed.filter((call) => call.operation === 'native-owned-spawn').length,
+      expectedSpawns,
+    );
     return {
       platform: process.platform,
       runtime: process.version,

@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Readable } from 'node:stream';
 
 import {
   WorkflowEngine,
@@ -2137,13 +2138,13 @@ describe('first-run secret admission before service construction (ADR-0107)', ()
       ),
     );
     const { io } = captureIo();
-    const descriptor = Object.getOwnPropertyDescriptor(process, 'stdin');
+    const source = new Readable({ read() {} });
     const iterator = vi.fn(async function* () {
       yield await Promise.resolve(Buffer.from('token=  opaque=verbatim  \r\n'));
     });
-    Object.defineProperty(process, 'stdin', {
-      configurable: true,
-      value: { isTTY: false, [Symbol.asyncIterator]: iterator },
+    Object.defineProperties(source, {
+      isTTY: { value: false },
+      [Symbol.asyncIterator]: { value: iterator },
     });
     const prompt = vi.fn<GatePrompter['prompt']>(() => Promise.resolve(null));
     const selectGatePrompter = vi.fn(() => ({ prompt, dispose: () => {} }));
@@ -2155,7 +2156,7 @@ describe('first-run secret admission before service construction (ADR-0107)', ()
       try {
         code = await runCommand(
           { workflow: path, input: [], allowMcpStdio: [], secretInputsStdin: true },
-          deps(io, globalOptions(), {
+          deps({ ...io, stdin: source }, globalOptions(), {
             buildEngine: () => Promise.resolve(engine),
             selectGatePrompter,
           }),
@@ -2175,7 +2176,7 @@ describe('first-run secret admission before service construction (ADR-0107)', ()
       expect(caught).toBeUndefined();
       expect(code).toBe(EXIT_CODES.gatePaused);
     } finally {
-      if (descriptor !== undefined) Object.defineProperty(process, 'stdin', descriptor);
+      source.destroy();
     }
   });
 
@@ -2184,13 +2185,13 @@ describe('first-run secret admission before service construction (ADR-0107)', ()
     async (isTTY) => {
       const path = writeWorkflow('reader-refusal.relavium.yaml', SECRET_RUN);
       const { io } = captureIo();
-      const descriptor = Object.getOwnPropertyDescriptor(process, 'stdin');
+      const source = new Readable({ read() {} });
       const iterator = vi.fn(async function* () {
         yield await Promise.resolve('token=' + 'x'.repeat(65_536));
       });
-      Object.defineProperty(process, 'stdin', {
-        configurable: true,
-        value: { isTTY, [Symbol.asyncIterator]: iterator },
+      Object.defineProperties(source, {
+        isTTY: { value: isTTY },
+        [Symbol.asyncIterator]: { value: iterator },
       });
       const resolveKeys = vi.fn(() => ({
         providers: createProviderResolver({}),
@@ -2200,13 +2201,13 @@ describe('first-run secret admission before service construction (ADR-0107)', ()
         await expect(
           runCommand(
             { workflow: path, input: [], allowMcpStdio: [], secretInputsStdin: true },
-            deps(io, globalOptions(), { resolveKeys }),
+            deps({ ...io, stdin: source }, globalOptions(), { resolveKeys }),
           ),
         ).rejects.toMatchObject({ code: 'invalid_invocation' });
         expect(resolveKeys).not.toHaveBeenCalled();
         expect(iterator).toHaveBeenCalledTimes(isTTY ? 0 : 1);
       } finally {
-        if (descriptor !== undefined) Object.defineProperty(process, 'stdin', descriptor);
+        source.destroy();
       }
     },
   );

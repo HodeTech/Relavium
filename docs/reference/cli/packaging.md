@@ -83,7 +83,10 @@ failures in both representations; installed-package binding requires the same
 inventory. Step 8d adds an eighth required installed case for actual global
 fatal/background/output hooks and native close-delivery ordering through the
 untouched entry. Interactive restoration and deadline nonrenewal retain separate
-source controls. Step 8d's cumulative review/security/platform acceptance remains open.
+source controls. The exact owned Node 22.0.0 experimental JSON-module warning is
+retained separately from product diagnostics; unknown runtime output still fails
+the diagnostic grammar and ordering controls. Step 8d's cumulative
+review/security/platform acceptance remains open.
 
 The emitted graph checker parses actual JavaScript and compares every loading edge
 with the build inventory. It rejects missing/extra/unreachable/escaping chunks,

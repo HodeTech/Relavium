@@ -95,7 +95,7 @@ is explicit native-edge fault injection, not an OS-fault claim.
 Step 8d adds an eighth required case through the untouched installed entry: an
 actual scheduled uncaught throw, an actual unhandled rejection, and a real stdout
 pipe closure/write. Exact root/descendant readiness precedes injection. Fatal and
-output modes require empty stderr while actual native close delivery remains
+output modes require no product diagnostic while actual native close delivery remains
 gated, then one fixed diagnostic and exit 9 after delivery. Background mode keeps
 both native PIDs alive, permits the fixture's ordinary successful turn, and ends
 with background-only exit 9. Each independent mode retains its own sibling,
@@ -103,7 +103,16 @@ watchdog, actual close and exact-PID cleanup evidence. These are plain one-shot
 activation/ACK-order controls: interactive terminal restoration and absolute
 budget nonrenewal retain their separately attributed source controls. Whole
 Step 8d acceptance remains open. Original-TS maps/custody remain Step 9. All eight
-behavior cases and 177 bootstrap controls are required.
+behavior cases and 177 bootstrap controls are required. Windows bootstrap modes
+require five actual target/helper creations (two fatal, one background, two output);
+the other platform/cohort combinations require three.
+
+The exact Node 22.0.0 JSON-module ExperimentalWarning is retained in raw private
+stderr and recorded separately from product diagnostics only for that runtime
+and the actual owned CLI PID. The entire two-line frame must match once; unknown,
+partial, duplicate, wrong-PID and wrong-runtime output remains diagnostic output
+and cannot pass the JSON or pre-delivery checks. No warning is disabled in the
+installed process.
 
 Narrow child-lifetime negative controls run with:
 

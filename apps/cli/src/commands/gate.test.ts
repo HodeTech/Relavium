@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Readable } from 'node:stream';
 
 import {
   EngineStateError,
@@ -562,14 +563,13 @@ describe('gateCommand', () => {
       // refuse immediately, which exercises the real function and its message without touching stdin.
       const { runId, gateIds } = await seedSecretRun();
       const { io } = captureIo();
-      const original = process.stdin.isTTY;
       try {
-        Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true });
+        Object.defineProperty(io.stdin, 'isTTY', { value: true, configurable: true });
         await expect(
           gateCommand({ runId, approve: true, secretStdin: true }, deps(io)),
         ).rejects.toThrow(`relavium gate ${runId} --gate ${gateIds[0]} --approve --secret-stdin`);
       } finally {
-        Object.defineProperty(process.stdin, 'isTTY', { value: original, configurable: true });
+        Object.defineProperty(io.stdin, 'isTTY', { value: false, configurable: true });
       }
     });
 
@@ -578,7 +578,7 @@ describe('gateCommand', () => {
       async (mode) => {
         const { runId } = await seedSecretRun();
         const captured = captureIo();
-        const original = Object.getOwnPropertyDescriptor(process, 'stdin');
+        const source = new Readable({ read() {} });
         const close = vi.fn();
         const resolveKeys = vi.fn(() => {
           throw new Error('keys must not resolve');
@@ -598,17 +598,14 @@ describe('gateCommand', () => {
           return Promise.resolve({ done, value: 'api_key=' + 'x'.repeat(65_536) });
         });
         try {
-          Object.defineProperty(process, 'stdin', {
-            configurable: true,
-            value: {
-              isTTY: mode === 'TTY',
-              [Symbol.asyncIterator]: () => ({ next }),
-            },
+          Object.defineProperties(source, {
+            isTTY: { value: mode === 'TTY' },
+            [Symbol.asyncIterator]: { value: () => ({ next }) },
           });
           const operation = gateCommand(
             { runId, approve: true, secretStdin: true },
             {
-              ...deps(captured.io),
+              ...deps({ ...captured.io, stdin: source }),
               openDb: () => ({ db, close }),
               resolveKeys,
               startMcpClient,
@@ -630,7 +627,7 @@ describe('gateCommand', () => {
           expect(captured.out()).toBe('');
           expect(captured.err()).not.toContain('opaque-gate-stdin-fault');
         } finally {
-          if (original !== undefined) Object.defineProperty(process, 'stdin', original);
+          source.destroy();
         }
       },
     );
@@ -640,26 +637,23 @@ describe('gateCommand', () => {
       async (exactCapacity) => {
         const { runId } = await seedSecretRun();
         const { io } = captureIo();
-        const original = Object.getOwnPropertyDescriptor(process, 'stdin');
+        const source = new Readable({ read() {} });
         let supplied: unknown;
         const padding = exactCapacity
           ? 'x'.repeat(65_536 - Buffer.byteLength(' api_key = value=with=equals  \r\n'))
           : '';
         const value = ` ${padding}value=with=equals  `;
         try {
-          Object.defineProperty(process, 'stdin', {
-            configurable: true,
-            value: {
-              async *[Symbol.asyncIterator]() {
-                await Promise.resolve();
-                yield ` api_key =${value}\r\n`;
-              },
+          Object.defineProperty(source, Symbol.asyncIterator, {
+            value: async function* () {
+              await Promise.resolve();
+              yield ` api_key =${value}\r\n`;
             },
           });
           const code = await gateCommand(
             { runId, approve: true, secretStdin: true },
             {
-              ...deps(io),
+              ...deps({ ...io, stdin: source }),
               buildEngine: async (options) => {
                 const engine = await buildEngine(options);
                 const resume = engine.resumeFromCheckpoint.bind(engine);
@@ -675,7 +669,7 @@ describe('gateCommand', () => {
           expect(supplied).toMatchObject({ inputs: { api_key: value } });
           expect(JSON.stringify(reader().loadRunEvents(runId))).not.toContain('value=with=equals');
         } finally {
-          if (original !== undefined) Object.defineProperty(process, 'stdin', original);
+          source.destroy();
         }
       },
     );
@@ -858,21 +852,21 @@ describe('gateCommand', () => {
         const io = { ...captured.io, stdinIsTty: true, stdoutIsTty: true, env: {} };
         const startMcpClient = vi.fn(() => realStartMcpClient([]));
         const before = reader().loadRunEvents(runId);
-        const descriptor = Object.getOwnPropertyDescriptor(process, 'stdin');
+        const source = new Readable({ read() {} });
         const iterator = vi.fn(async function* () {
           yield await Promise.resolve(`api_key=${opaque}`);
         });
         let caught: unknown;
         try {
-          Object.defineProperty(process, 'stdin', {
-            configurable: true,
-            value: { isTTY: false, [Symbol.asyncIterator]: iterator },
+          Object.defineProperties(source, {
+            isTTY: { value: false },
+            [Symbol.asyncIterator]: { value: iterator },
           });
           try {
             await gateCommand(
               { runId, approve: true, secretStdin: true },
               {
-                ...deps(io),
+                ...deps({ ...io, stdin: source }),
                 startMcpClient,
                 selectRenderer: () => ({ onEvent: () => {}, finalize: () => {} }),
               },
@@ -891,7 +885,7 @@ describe('gateCommand', () => {
           expect(existsSync(mcpConsentPath(home))).toBe(false);
           expect(reader().loadRunEvents(runId)).toEqual(before);
         } finally {
-          if (descriptor !== undefined) Object.defineProperty(process, 'stdin', descriptor);
+          source.destroy();
         }
       });
 

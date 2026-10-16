@@ -1142,8 +1142,8 @@ four required same-tarball consumers pass at `ab50be11`; independent equivalence
 checks preserve that execution attribution. [Step 8c workflow/terminal integration is independently accepted](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8c-acceptance--2026-10-16)
 at `dbab25d8` after two NEW complete cumulative clean rounds, a separate clean
 security sitting and successful full CI plus all four same-tarball platform
-consumers. Step 8d session/terminal integration and product fatal activation,
-whole Step 8 and Steps 9–19 remain open. Its
+consumers. Step 8d session/terminal integration and product fatal activation are
+implemented but their acceptance remains open; whole Step 8 and Steps 9–19 remain open. Its
 [2026-10-17 chat/Home implementation checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-chat-and-home-integration-checkpoint--2026-10-17)
 records partial session/native-terminal integration and the remaining activation,
 review/security/platform gates without claiming acceptance. The subsequent
@@ -1153,7 +1153,10 @@ records remaining command, prompt, doctor and transient-resource integration;
 records product bootstrap activation at `a2acba8e` and the eighth required
 installed case at `2928d8ef`. Implementation is present; two NEW complete
 cumulative clean reviews, a separate clean security sitting and current full
-CI/platform acceptance remain open. Step 8d proceeds automatically. The
+CI/platform acceptance remain open. The
+[first cumulative round and correction register](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-first-cumulative-review-and-corrections--2026-10-17)
+records complete NONCLEAN coverage of all 255 paths and the verified corrections;
+no clean-round acceptance is inferred. Step 8d proceeds automatically. The
 [final proposal reviews](phases/phase-2.5.5-hardening-and-remediation.md#second-maintainer-rereview-final-proposal-readiness--2026-10-16)
 remain proposal evidence, not implementation review. The selected encrypted archive
 method persists; production recipient/recovery belongs to Wave 4b release setup.

@@ -6239,3 +6239,73 @@ a NEW separate clean security sitting, fresh required full CI and the four
 current same-tarball Linux/macOS/Windows/Node-22.0.0 consumers with the eighth case.
 Whole Step 8 and Steps 9–19 remain open. No new ADR approval, provider capture,
 credential, billing or user decision is pending. Work proceeds automatically.
+
+## Wave 3 Step 8d first cumulative review and corrections — 2026-10-17
+
+**Complete cumulative round 1 is NONCLEAN at `e3b0b673`; Step 8d is not accepted.**
+Three independent reviewers inspected every path from
+`d9625ff0a641197c6ed45968df99094a25db88d6`: 69 session/terminal paths,
+117 workflow/management paths and 69 native/tooling/documentation paths.
+Their coverage records join exactly 255 distinct paths without omission or
+intersection. The local Git-ignored aggregate has SHA-256
+`ff119d6d7d733a1bbf827ddb9d93206a5baa59ca9a5ea74043bbc89b6bcc7fff`.
+A clean individual slice does not turn this nonclean round into acceptance.
+
+All three verified findings are corrected in the subsequent working source:
+
+- Fresh workflow and gate-resume default secret readers now use the original
+  captured native stdin and workflow cancellation/failure ownership. The first
+  cooperative Ctrl-C closes the actual open input pipe; command retirement and
+  gate DB closure follow actual stdin close, without entering keys or the engine.
+  Two permanent native-child regressions use an actual POSIX SIGINT on macOS and
+  the exact registered callback on Windows. Removing only cancellation forwarding
+  breaks both regressions; watchdog termination remains failure, never an ACK.
+  Human-gate resume is physically exercised; the shared budget-resume helper is
+  covered by its existing command tests rather than claimed as a new native probe.
+- The installed Windows bootstrap cohort now requires five actual target/helper
+  creations; the other cohort/platform combinations retain three. At the old head,
+  all three Windows modes passed their native lifetime assertions before the wrong
+  aggregate count refused publication. This does not certify the corrected head.
+- The secrets-control README now records the actual 133-case live-chat inventory.
+
+Required CI at the old head also refused the minimum-Node installed case. An
+independently downloaded official Node 22.0.0 macOS runtime, verified against its
+published SHA-256, reproduced the failure: the exact experimental JSON-module
+warning was mistaken for a premature product diagnostic. The warning now remains
+in raw private stderr and a separately named runtime observation; only the exact
+owned-PID/version/two-line frame can be separated. Unknown, partial, duplicate and
+wrong-identity stderr still fails. Three permanent tooling tests cover that fence.
+The unchanged old package then passed all 177 bootstrap and eight installed cases
+locally on Node 22.0.0; its SHA-256 is
+`5d50070afbfe2f61efa6f59c64238ea374b48ba745b78b5b885cdb69da761ff0`.
+This is a tooling correction on an old package, not corrected-product or Linux
+acceptance. The old remote artifact retains its different recorded digest.
+
+Four advisory Node-22.13 test failures reproduced on Node 22.0.0: older native
+streams do not emit the `removeListener` event used by those injection fixtures.
+The fixtures now inject reentry/refusal after the actual native remover returns,
+independently of that optional runtime event. The callback-multiplicity control
+also requires positive reentry. Both original-Node and minimum-Node 32-test cohorts
+pass. Product removal logic is unchanged. Existing secret-reader fixtures now
+supply captured sources rather than replacing ambient process stdin; named causal
+witnesses and fixed test inventories remain unchanged.
+
+Author validation after the corrections passes workspace lint/typecheck (17 tasks,
+15 cached) and tests (11 tasks, ten cached packages and a fresh CLI execution).
+Fresh CLI results are 323 files, 5,316 passing tests and ten established skips.
+Build passes all six tasks, finite emitted-graph closure and 177 bootstrap controls
+pass, as do tools lint/typecheck, 511 acceptance-tool tests and seam/purity gates.
+Initial broad validation exposed four remaining ambient-stdin fixture failures;
+those are corrected and the fresh workspace run is green. Earlier failed attempts
+and source-change-contaminated selected controls remain failure evidence.
+
+The default-reader and consumed-stdin consent mechanisms each pass their fresh
+fixed/removal/restored cycles with 80 and 68 fixed/restored cases respectively,
+exact named failures and byte-identical restoration. Both selected-family reports
+retain `complete: false` and verify unchanged developer sources; neither is the
+full secrets family. Test-isolation controls and the compiled CLI smoke also pass.
+
+Two NEW complete cumulative clean review rounds after the final correction, a NEW
+separate clean security sitting and fresh required full CI/four same-artifact
+platform consumers remain open. Whole Step 8 and Steps 9–19 remain open. No new
+ADR approval, credential, provider, billing or user action is pending.

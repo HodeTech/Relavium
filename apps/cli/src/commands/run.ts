@@ -66,6 +66,7 @@ import { selectRenderer } from '../render/select.js';
 import { createMcpSecretResolver, type McpSecretResolver } from '../secrets/mcp-secret.js';
 import { parseSecretLines } from '../secrets/parse-secret-lines.js';
 import { readSecretFromStdin, type StdinSecretContext } from '../secrets/read-secret.js';
+import { Readable } from 'node:stream';
 import { resolveWorkflowSource } from '../workflows/resolve.js';
 import {
   assertWorkflowCatalogValid,
@@ -577,7 +578,16 @@ async function readRunSecrets(
       '--secret-inputs-stdin requires a declared secret input.',
     );
   }
-  const raw = await (deps.readSecretInput?.() ?? readSecretFromStdin(RUN_SECRET_STDIN_CONTEXT));
+  const read =
+    deps.readSecretInput ??
+    ((): Promise<string> => {
+      if (!(deps.io.stdin instanceof Readable)) throw new CliError('cli_internal', '');
+      return readSecretFromStdin(RUN_SECRET_STDIN_CONTEXT, deps.io.stdin, {
+        signal: lifetime.signal,
+        onFailure: (cause) => lifetime.failure(cause),
+      });
+    });
+  const raw = await read();
   lifetime.checkpoint();
   return parseSecretLines(raw, 'run --secret-inputs-stdin');
 }
