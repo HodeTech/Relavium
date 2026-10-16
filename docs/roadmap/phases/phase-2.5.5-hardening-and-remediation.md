@@ -4567,3 +4567,64 @@ whole-wave acceptance or merge. Step 19 retains those final gates/publication.
 Next is Step 4's approved minimal error/envelope substrate. Read-only inventories
 for Steps 4–5 are preparation, not implementation acceptance. No user decision,
 credential, provider capture, billing or release action is pending.
+
+
+### Wave 3 Step 4 error/envelope substrate — implementation checkpoint, 2026-10-16
+
+The approved #213/#219 increment introduces the minimal shared `RelaviumError`
+without a new discriminant, name, context or cause policy. Existing family
+constructors and descendant parents remain unchanged. The source inventory
+replaces the historical 15/17 estimates: **96 existing error declarations**,
+including 86 module exports and ten private control-flow sentinels. Of those
+exports, **83 belong to production** (60 unique package-root-public identities
+and 23 implementation exports); three others belong to capture/conformance
+tooling. Public aliases/re-exports do not create another class identity.
+
+Migration changes **46 direct native-Error roots across 37 production files**.
+Their 37 existing descendants acquire the same ancestry through their current
+parents. The new base itself is additional to the 96-declaration intake. Private
+sentinels, capture/conformance errors, vendor exceptions and plain seam unions
+retain their representations. This is a scoped disposition, not a claim that
+every thrown value or private control-flow path has shared ancestry.
+
+| Package | Production classes reached | Direct roots changed | Existing roots |
+| --- | ---: | ---: | --- |
+| `packages/shared` | 10 | 10 | `NonCanonicalValueError`, `ExistingAncestorError`, `MediaAdmissionError`, `CorruptRunEventError`, `RunSuspensionCorruptionError`, `AppendConflictError`, `LeaseFencedError`, `EffectTransitionError`, `EffectConflictError`, `InvalidUsageEvidenceError` |
+| `packages/llm` | 9 | 2 | `LlmConfigError`, `LlmProviderError` |
+| `packages/core` | 29 | 16 | `AgentParseError`, `SessionStateError`, `AgentTurnError`, `BudgetExceededError`, `BudgetPauseError`, `CommitmentDurabilityError`, `InvalidDispatchAllowanceError`, `EngineStateError`, `RunLoopInvariantError`, `NodeMediaPinError`, `LedgerDurabilityError`, `WorkflowParseError`, `InterpolationError`, `WorkflowContextError`, `SandboxError`, `ToolDispatchError` |
+| `packages/db` | 12 | 12 | `DbOpenError`, `MediaStoreFilesystemError`, `MediaTemporaryMaintenanceError`, `MediaWriteError`, `ModelCatalogCapabilitiesError`, `ProviderHeaderPolicyError`, `UnreadableRunEventLogError`, `SafeEgressError`, `SessionEffectPrivacyError`, `SessionEffectTurnError`, `SessionMessageBoundaryError`, `SessionUsageError` |
+| `packages/mcp` | 8 | 1 | `McpError` |
+| `apps/cli` | 15 | 5 | `StdioResolutionError`, `ConsentStoreError`, `HostCapabilityError`, `CliError`, `KeychainUnavailableError` |
+
+Existing structural budget, corruption, unreadable-history, provider-header and
+media-admission boundary classifiers retain their individual acceptance rules.
+Local identity guards and private WeakMap authority also remain unchanged; the
+base is neither a safe-message classifier nor cross-bundle authority. New foreign
+class tests are explicitly simulations, not execution of a second packed bundle.
+
+The retained `BaseEventSchema` now uses the same parsed correlation refinement
+as the full run family. Direct both/neither cases fail; declared full event
+payloads remain intact. Generic envelope projection is not substituted for a full
+event. Lenient opposite-key/future-field stripping, strict accounting boundaries,
+nine cross-field guards and unknown-discriminator forward reading are preserved.
+The authored envelope suite first reports exactly two assertion failures on the
+unchanged implementation and passes all forty controls after repair.
+
+Six package/surface compatibility files add thirty constructor/guard controls.
+Four local fixed/removal/restored cohorts pin direct envelope correlation, full
+payload preservation, native cause forwarding and foreign structural budgets.
+Passing fixed/restored inventories are **40 / 40 / 6 / 11**; removal produces
+**2 / 10 / 3 / 1** named assertion failures. All twelve final runner receipts
+record zero unhandled errors, and exact source restoration is verified before
+broad author gates. The retained controls are local author evidence, not full CI,
+coverage, native-platform or whole-wave acceptance.
+
+Broad author checks pass: **608 files / 13,884 passing tests / 20 established
+skips**, all workspace lint/typecheck, source formatting/whitespace, vendor and
+platform/dependency fences, 608-file/six-workspace isolation and 3,511 relative
+links across 74 changed Markdown files. Dependency outputs are built before
+native/dist consumers; all six build tasks pass.
+
+Two NEW independent complete cumulative clean reviews remain required before
+Step 5. Detailed source inventories and reports remain Git-ignored. No new ADR,
+user decision, credential or external operation is needed.

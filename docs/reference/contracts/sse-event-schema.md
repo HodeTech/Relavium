@@ -38,6 +38,17 @@ interface BaseEvent {
 
 > **Correlation key.** Exactly one of `runId` / `sessionId` is present — `runId` on a workflow run, `sessionId` on an agent session. The reused `agent:token` / `agent:reasoning` / `agent:tool_call` / `agent:tool_result` / `cost:updated` / `budget:estimate_committed` events carry `runId` on a run and `sessionId` on a session; `agent:approval_requested` (ADR-0057) is also dual-envelope but **session-only-emitted** in Phase 2.5. Consumers route on whichever is present.
 
+The exported `BaseEventSchema` validates this correlation invariant and projects
+only the envelope. Full event parsers share that check while retaining each
+variant's declared payload; a full event must never be replaced by its envelope
+projection. The exported `BaseEvent` and `HumanGateEvent` types remain available.
+Correlation validation applies after variant parsing: a run-only or session-only
+lenient variant still strips an undeclared opposite key, whereas a dual-envelope
+variant rejects both or neither. Existing strict accounting boundaries and other
+cross-field guards retain their stricter rules. The stored run reader still drops
+an unknown nonempty discriminator independently of its body, while refusing a
+known damaged event; envelope validation does not precede discriminator selection.
+
 `sequenceNumber` is monotonic per run and is the basis for **gap detection**: if a consumer sees a jump in `sequenceNumber`, it triggers a full state resync (re-read the durable run state) rather than trusting a partial view. This is what makes reconnection lossless. The **envelope** fields (`sessionId` / `runId`, `sequenceNumber`, `timestamp`) are stamped by the bus, not the producer: `WorkflowEngine` emits through the `RunEventBus`, and `AgentSession` (1.V) emits *envelope-free payload drafts* through an injected `SessionEventSink` — wiring that sink onto the bus, where the per-session `sequenceNumber` (and its same gap/resync rule) is assigned, is **1.W**. So a session's monotonic numbering is the bus's responsibility, not the session core's.
 
 ## The `RunEvent` union

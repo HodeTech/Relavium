@@ -11,6 +11,15 @@ and cost accounting that are product features.
 
 ## Typed errors, never strings
 
+Owned production error families inherit the minimal `RelaviumError` exported by
+`@relavium/shared`. It forwards the native `Error` constructor without imposing a
+name, discriminant, context or cause policy; each existing family owns those
+contracts. Plain seam values such as `LlmError`, foreign SDK exceptions and private
+control-flow sentinels retain their separate representations. Shared ancestry is
+neither proof of a safe diagnostic nor a substitute for an existing structural
+boundary guard: independently bundled class identities can differ. Existing local
+identity and private-authority guards also retain their own contracts.
+
 - Errors are **typed and discriminated**, never bare `Error` and never thrown strings
   (see [code-style-typescript.md](code-style-typescript.md)). Each error type carries a
   stable discriminant (a `kind` / `code`) callers narrow on — not `error.message`, which
