@@ -5633,3 +5633,70 @@ whole-wave or family certificate. Two NEW complete cumulative clean reviews
 from `d9625ff0` and a separate native/process security sitting remain required.
 **Step 8b is not accepted. Whole Step 8 and Steps 8c–19 remain open.** No new
 ADR, dependency, credential, billing, provider or user-decision gate is introduced.
+
+
+## Wave 3 Step 8b first review and CI corrections — 2026-10-16
+
+The complete cumulative review of `d9625ff0` → `e6e91039` covers **112 paths /
+456 hunks / 33 whole added files** and is **NONCLEAN**. Independent ordinary
+execution passes **1,076 tests / 45 files**, with one actual-Windows-only local
+skip. The separate security sitting is also NONCLEAN and independently reproduces
+the same helper-cancellation reentry. Neither sitting counts towards the two new
+clean rounds required after the final material correction.
+
+Node's actual `ChildProcess.kill` error protocol reproduces 1,296 nested helper
+kill requests from one native refusal, using an inert simulated native handle
+and no PID operation. The correction guards synchronous cancellation reentry,
+allows later independent finite requests and still owes both actual native closes.
+Two permanent semantic cases cover helper error and finite exit. The independent
+real-Node-protocol correction probe observes one request; it is local simulation,
+not actual Windows execution or a new native-close acknowledgement.
+
+Required CI run **38893418852**, exact source `e6e91039`, fails secrets, usage and
+the current-Windows installed consumer. Linux/macOS/current and Linux/Node 22.0
+installed legs pass but do not substitute for Windows or the four-leg aggregate.
+Five secrets declarations are refreshed against complete ordinary inventories:
+run **79**, gate **68**, chat **127**, preserving every witness and strict guard.
+The usage permanent cohort contains **440**, rather than 435, cases; all 23
+mechanisms and 71 native fixture lifetimes in the original failed capture retain
+their exact partial scope. A generated temporary editor script was correctly
+refused by the inherited physical source fence. Both editor tests now use one
+tracked ESM fixture with explicit readiness/release and watchdog-failure evidence;
+no source-fence, NODE_OPTIONS or acceptance timeout is weakened.
+
+The original Windows worker exits 1 with empty stderr before the launcher can
+read its private report; the failing case/mode is therefore still unknown. A
+failure-only, bounded synthetic-test diagnostic now projects canonical identities,
+failed cases and native cleanup facts to stderr after existing cleanup. It grants
+no success or receipt and preserves actual worker join and installation removal.
+The advisory Windows filesystem test separately exceeds its unchanged five-second
+bound; no product defect or timeout-relaxation justification is inferred.
+
+The original native capture completes **23 controls / 69 phases / 1,380 repeated
+cases** and is independently physically audited. Original forwarding capture
+remains **failed overall**, after seven completed controls: three existing budget
+cases declare 20 seconds and correctly refuse the causal guard's 15-second ceiling.
+The corrected private declaration uses the complete 68-case gate file to prove
+its shared physical human/budget forwarding site; all 38 ordinary budget cases,
+including their existing bounds, remain mandatory. No successful replacement
+capture is claimed. Final correction source requires all **24 native controls**
+(including cancellation reentry), all **23 forwarding controls**, fresh author
+checks, actual platform checks, two NEW complete cumulative clean reviews and a
+NEW clean separate security sitting. **Step 8b and whole Step 8 remain open.**
+No ADR approval, user decision, provider, keychain, billing or credential is pending.
+
+
+### Step 8b first-correction author gates — 2026-10-16
+
+The corrected uncommitted body above parent `e6e91039` passes serialized workspace
+checks: **664 files / 14,945 passing tests / 21 declared local/platform skips**;
+CLI's **287 files / 5,016 passes / ten skips** run freshly, while ten other test
+tasks reuse valid caches. All 17 lint/typecheck tasks, seven build/format tasks,
+**505 acceptance-tool tests**, tools lint/typecheck, schema sync, isolation,
+seam/dependency/finite-bundle guards and compiled CLI/media/overflow/replay smokes
+pass. Fresh complete native/forwarding ordinary selection passes **15 files /
+572 tests / zero skips**, including all 38 budget cases with unchanged bounds.
+The editor fixture's first lint attempt correctly refuses implicit Node globals;
+explicit built-in imports fix it without weakening lint. Original failed runs and
+NONCLEAN reviews retain their scope. No new causal, actual-Windows or independent
+correction-review acceptance is inferred from these author gates.
