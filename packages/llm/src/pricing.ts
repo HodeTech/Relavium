@@ -111,6 +111,6 @@ export interface ModelPricing {
  * generated catalog said 1 050 000 — so the fullness percentage every user saw was computed against a window the
  * model does not have.
  */
-export function contextWindowForModel(model: string): number | undefined {
-  return catalogModel(model)?.contextWindowTokens;
+export function contextWindowForModel(modelId: string): number | undefined {
+  return catalogModel(modelId)?.contextWindowTokens;
 }

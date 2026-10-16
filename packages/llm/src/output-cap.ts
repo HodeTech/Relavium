@@ -965,11 +965,11 @@ export function outputTokensReservation(
  */
 export function cappedMaxTokens(
   requested: number | undefined,
-  model: string,
+  modelId: string,
   endpoint: EndpointKind = 'official',
 ): number | undefined {
   if (requested === undefined || endpoint === 'custom') return requested;
-  const ceiling = catalogModel(model)?.maxOutputTokens;
+  const ceiling = catalogModel(modelId)?.maxOutputTokens;
   if (ceiling === undefined) return requested; // not in the catalog — nothing to clamp against
   return Math.min(requested, ceiling);
 }

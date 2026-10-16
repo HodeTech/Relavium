@@ -34,8 +34,8 @@ export function isAbortSignal(value: unknown): value is AbortSignal {
  * each adapter's `contextLimit`. `undefined` for a model the catalog does not carry (a custom base URL, or one
  * newer than the snapshot); the engine then skips auto-compaction rather than guess a window.
  */
-export function contextLimitFor(model: string): number | undefined {
-  return catalogModel(model)?.contextWindowTokens;
+export function contextLimitFor(modelId: string): number | undefined {
+  return catalogModel(modelId)?.contextWindowTokens;
 }
 
 /**
@@ -46,8 +46,8 @@ export function contextLimitFor(model: string): number | undefined {
  * `estimateTokens` on top (a same-key property AFTER the spread wins).
  */
 export const CONTEXT_SEAM_DEFAULTS = {
-  contextLimit(model: string): number | undefined {
-    return contextLimitFor(model);
+  contextLimit(modelId: string): number | undefined {
+    return contextLimitFor(modelId);
   },
   managesOwnContext(): boolean {
     return false;
