@@ -7,4 +7,5 @@ export const REQUIRED_SMOKE_CASES = Object.freeze([
   'actual-mcp-initialize-version',
   'actual-media-cas-iterator-cleanup',
   'actual-native-process-owner',
+  'actual-native-bootstrap-lifecycle',
 ]);

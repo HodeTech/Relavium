@@ -206,6 +206,9 @@ async function exerciseInstalledSmoke({ packageRoot, supportRoot, artifactSha256
       };
     });
     await runCase('actual-native-process-owner', () => assertInstalledNativeProcesses(context));
+    await runCase('actual-native-bootstrap-lifecycle', () =>
+      assertInstalledNativeProcesses(context, { bootstrap: true }),
+    );
     report.guardCalls = calls();
     for (const call of report.guardCalls.filter((value) => value.operation === 'external-module')) {
       const resolved = realpathSync(fileURLToPath(call.url));

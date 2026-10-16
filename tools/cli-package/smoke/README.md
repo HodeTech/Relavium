@@ -90,10 +90,20 @@ captures the actual packaged creation-registry exit callback before native entry
 invokes that exact finite callback in a separate subcase, and observes its release
 after native close. This proves packaged creation/fallback identity; source
 forwarding controls separately prove original bootstrap object identity. The error
-is explicit native-edge fault injection, not an OS-fault claim. Fatal coordinator
-activation and live fatal budget integration retain the later Step 8d scope;
-original-TS maps/custody remain Step 9. All existing six behavior cases and 175
-bootstrap controls remain required.
+is explicit native-edge fault injection, not an OS-fault claim.
+
+Step 8d adds an eighth required case through the untouched installed entry: an
+actual scheduled uncaught throw, an actual unhandled rejection, and a real stdout
+pipe closure/write. Exact root/descendant readiness precedes injection. Fatal and
+output modes require empty stderr while actual native close delivery remains
+gated, then one fixed diagnostic and exit 9 after delivery. Background mode keeps
+both native PIDs alive, permits the fixture's ordinary successful turn, and ends
+with background-only exit 9. Each independent mode retains its own sibling,
+watchdog, actual close and exact-PID cleanup evidence. These are plain one-shot
+activation/ACK-order controls: interactive terminal restoration and absolute
+budget nonrenewal retain their separately attributed source controls. Whole
+Step 8d acceptance remains open. Original-TS maps/custody remain Step 9. All eight
+behavior cases and 177 bootstrap controls are required.
 
 Narrow child-lifetime negative controls run with:
 

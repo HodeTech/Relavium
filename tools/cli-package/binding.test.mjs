@@ -243,32 +243,34 @@ test('consumer refuses replay, mismatched files, failed/skipped/incomplete contr
   );
 });
 
-test('each required platform refuses the former six-case cohort without its native owner control', () => {
+test('each required platform refuses a missing or failed native owner/bootstrap case', () => {
   assert.ok(REQUIRED_SMOKE_CASES.includes('actual-native-process-owner'));
-  assert.equal(REQUIRED_SMOKE_CASES.length, 7);
-  for (const leg of REQUIRED_CONSUMER_LEGS) {
-    const report = consumer(leg);
-    const cases = report.smoke.cases.filter((item) => item.id !== 'actual-native-process-owner');
-    assert.equal(cases.length, 6);
-    refuses(() =>
-      validateConsumerRecord({ ...report, smoke: { success: true, cases } }, receipt(), expected),
-    );
-    refuses(() =>
-      validateConsumerRecord(
-        {
-          ...report,
-          smoke: {
-            success: true,
-            cases: report.smoke.cases.map((item) =>
-              item.id === 'actual-native-process-owner' ? { ...item, passed: false } : item,
-            ),
+  assert.ok(REQUIRED_SMOKE_CASES.includes('actual-native-bootstrap-lifecycle'));
+  assert.equal(REQUIRED_SMOKE_CASES.length, 8);
+  for (const nativeCase of ['actual-native-process-owner', 'actual-native-bootstrap-lifecycle'])
+    for (const leg of REQUIRED_CONSUMER_LEGS) {
+      const report = consumer(leg);
+      const cases = report.smoke.cases.filter((item) => item.id !== nativeCase);
+      assert.equal(cases.length, 7);
+      refuses(() =>
+        validateConsumerRecord({ ...report, smoke: { success: true, cases } }, receipt(), expected),
+      );
+      refuses(() =>
+        validateConsumerRecord(
+          {
+            ...report,
+            smoke: {
+              success: true,
+              cases: report.smoke.cases.map((item) =>
+                item.id === nativeCase ? { ...item, passed: false } : item,
+              ),
+            },
           },
-        },
-        receipt(),
-        expected,
-      ),
-    );
-  }
+          receipt(),
+          expected,
+        ),
+      );
+    }
 });
 
 test('resolved dependency evidence records every approved package without exposing host paths', () => {

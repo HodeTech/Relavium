@@ -3,7 +3,15 @@ import { writeSync } from 'node:fs';
 import { REQUIRED_SMOKE_CASES } from './cases.mjs';
 
 export const MAX_WORKER_FAILURE_BYTES = 8192;
-const modes = new Set(['injected-error', 'exit-fallback', 'facility-refusal', 'leader-exit']);
+const modes = new Set([
+  'injected-error',
+  'exit-fallback',
+  'facility-refusal',
+  'leader-exit',
+  'bootstrap-fatal',
+  'bootstrap-background',
+  'bootstrap-output',
+]);
 const signals = new Set([
   'SIGKILL',
   'SIGTERM',
@@ -31,12 +39,17 @@ const operations = new Set([
   'native-helper-error',
   'native-target-actual-close',
   'native-helper-actual-close',
+  'native-target-close-delivered',
+  'native-helper-close-delivered',
   'native-exit-listener-released',
   'native-synthetic-error-injected',
   'native-captured-exit-reap-invoked',
   'native-witness-gate-timeout',
   'native-witness-readiness-refused',
   'native-facility-access-refused',
+  'native-bootstrap-fatal-injected',
+  'native-bootstrap-background-injected',
+  'native-bootstrap-output-injected',
 ]);
 const object = (value) => (value !== null && typeof value === 'object' ? value : {});
 const list = (value, maximum) => (Array.isArray(value) ? value.slice(0, maximum) : []);
@@ -140,7 +153,7 @@ export function formatInstalledWorkerFailure(raw) {
           id,
           status: item === undefined ? 'missing' : 'failed',
           error: errorText(item?.error),
-          ...(id === 'actual-native-process-owner'
+          ...(['actual-native-process-owner', 'actual-native-bootstrap-lifecycle'].includes(id)
             ? {
                 native: list(object(item?.evidence).outcomes, 6)
                   .map(nativeMode)
@@ -157,6 +170,10 @@ export function formatInstalledWorkerFailure(raw) {
     diagnostic.truncated = true;
     for (const item of diagnostic.cases) {
       item.error = errorText(item.error, 96);
+      if ((item.native?.length ?? 0) > 2) {
+        item.native = [item.native[0], item.native.at(-1)];
+        item.nativeModesTruncated = true;
+      }
       for (const mode of item.native ?? []) {
         if (mode.observed.length > 4)
           mode.observed = [...mode.observed.slice(0, 2), ...mode.observed.slice(-2)];
@@ -166,7 +183,7 @@ export function formatInstalledWorkerFailure(raw) {
     }
     line = JSON.stringify(diagnostic) + '\n';
   }
-  // The compact fixed inventory fits well below this bound even with all seven failures.
+  // The compact fixed inventory fits well below this bound even with all eight failures.
   if (Buffer.byteLength(line) > MAX_WORKER_FAILURE_BYTES)
     throw new Error('Worker failure diagnostic bound exceeded');
   return line;

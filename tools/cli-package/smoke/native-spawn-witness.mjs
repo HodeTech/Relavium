@@ -44,7 +44,15 @@ export function createNativeSpawnWitness(configuration, spawn) {
   );
   for (const key of ['cwd', 'executable', 'log', 'release']) assert.ok(isAbsolute(config[key]));
   assert.ok(
-    ['injected-error', 'leader-exit', 'exit-fallback', 'facility-refusal'].includes(config.mode),
+    [
+      'injected-error',
+      'leader-exit',
+      'exit-fallback',
+      'facility-refusal',
+      'bootstrap-fatal',
+      'bootstrap-background',
+      'bootstrap-output',
+    ].includes(config.mode),
   );
   assert.ok(['target', 'helper', 'none'].includes(config.gate));
   assert.ok(config.taskkill === null || isAbsolute(config.taskkill));
@@ -66,12 +74,14 @@ export function createNativeSpawnWitness(configuration, spawn) {
   let pending = [];
   let gateTimer;
   let gateTicks = 0;
-  const afterDelivery = () => {
-    setImmediate(() => {
-      if (exitReaper !== undefined && !process.listeners('exit').includes(exitReaper))
-        record({ operation: 'native-exit-listener-released' });
-    });
+  // Observe the actual synchronous removal. A later setImmediate would be skipped by a
+  // legitimate fatal process exit even after the creation owner had already retired.
+  const onExitRemoved = (event, listener) => {
+    if (event !== 'exit' || listener !== exitReaper) return;
+    process.off('removeListener', onExitRemoved);
+    record({ operation: 'native-exit-listener-released' });
   };
+  process.on('removeListener', onExitRemoved);
   function holdClose(child, kind) {
     const on = child.on;
     const output = { stdout: '', stderr: '' };
@@ -89,7 +99,7 @@ export function createNativeSpawnWitness(configuration, spawn) {
       return on.call(this, event, (...args) => {
         const deliver = () => {
           listener.apply(this, args);
-          afterDelivery();
+          record({ operation: `native-${kind}-close-delivered`, pid: child.pid });
         };
         if (config.gate !== kind || existsSync(config.release)) return deliver();
         pending.push(deliver);
@@ -175,7 +185,29 @@ export function createNativeSpawnWitness(configuration, spawn) {
               });
               return;
             }
-            if (config.mode === 'injected-error') {
+            if (config.mode === 'bootstrap-fatal') {
+              record({ operation: 'native-bootstrap-fatal-injected', pid: target.pid });
+              // Real uncaught callback, observed by the untouched installed entry's native hook.
+              setImmediate(() => {
+                throw new Error('PRIVATE_INSTALLED_FATAL_CANARY');
+              });
+            } else if (config.mode === 'bootstrap-background') {
+              record({ operation: 'native-bootstrap-background-injected', pid: target.pid });
+              // No listener/process.emit replacement: Node supplies the actual unhandled-rejection event.
+              void Promise.reject(new Error('PRIVATE_INSTALLED_BACKGROUND_CANARY'));
+            } else if (config.mode === 'bootstrap-output') {
+              let ticks = 0;
+              const pipe = setInterval(() => {
+                if (!existsSync(config.release + '.pipe-closed') && ++ticks < 400) return;
+                clearInterval(pipe);
+                if (!existsSync(config.release + '.pipe-closed')) {
+                  record({ operation: 'native-witness-gate-timeout' });
+                  return;
+                }
+                record({ operation: 'native-bootstrap-output-injected', pid: target.pid });
+                process.stdout.write('SYNTHETIC_CLOSED_PIPE_WRITE\n');
+              }, 25);
+            } else if (config.mode === 'injected-error') {
               record({ operation: 'native-synthetic-error-injected', pid: target.pid });
               target.emit('error', new Error('Synthetic installed native lifetime control'));
             } else if (config.mode === 'exit-fallback') {

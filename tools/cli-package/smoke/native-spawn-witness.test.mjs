@@ -152,7 +152,6 @@ test('callback capture uses the exact pre-entry function and releases only after
     );
     h.target.on('close', () => process.off('exit', h.exit));
     h.target.emit('close', null, 'SIGKILL');
-    await new Promise(setImmediate);
     assert.equal(
       h.log().filter((item) => item.operation === 'native-exit-listener-released').length,
       1,

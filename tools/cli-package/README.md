@@ -5,7 +5,8 @@ These tooling runners implement Wave 3 Step 7b under
 The canonical package and release contract lives in
 [packaging.md](../../docs/reference/cli/packaging.md).
 Step 8b adds required creation-owned native process controls to the same installed
-artifact cohort; fatal coordinator activation remains Step 8d.
+artifact cohort. Step 8d adds installed global fatal/background/output-hook
+controls; complete Step 8d acceptance remains separate.
 
 ```sh
 pnpm package:cli:pack /absolute/empty/artifact-directory
@@ -37,7 +38,7 @@ access is refused. No workspace install, product build, repack, provider request
 credential is used by a consumer. Actual installed dependency versions and metadata
 digests are recorded; a workspace resolution is never substituted.
 
-Each consumer repeats the 177 untouched-entry bootstrap controls and the seven
+Each consumer repeats the 177 untouched-entry bootstrap controls and the eight
 [installed behavior cases](smoke/README.md). Detailed local reports remain in the
 support directory. CI uploads **only** the bounded public `installed-consumer.json`:
 source/artifact/origin/runtime identities, public file/dependency digests, and exact

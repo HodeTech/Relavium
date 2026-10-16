@@ -185,9 +185,9 @@ function cassette() {
 }
 
 /** Public offline route; all native mechanism/controller/registry bytes are from the selected installation. */
-export async function assertInstalledNativeProcesses(context) {
+export async function assertInstalledNativeProcesses(context, { bootstrap = false } = {}) {
   const { root, cli, environment, calls } = context;
-  const home = join(root, 'native-home');
+  const home = join(root, bootstrap ? 'bootstrap-home' : 'native-home');
   const bin = join(home, 'bin');
   mkdirSync(bin, { recursive: true, mode: 0o700 });
   const executable = join(bin, process.platform === 'win32' ? 'git.exe' : 'git');
@@ -202,11 +202,13 @@ export async function assertInstalledNativeProcesses(context) {
   const outcomes = [];
   let caseFailure;
   let sibling;
-  const modes = [
-    'injected-error',
-    'exit-fallback',
-    ...(process.platform === 'win32' ? ['facility-refusal'] : ['leader-exit']),
-  ];
+  const modes = bootstrap
+    ? ['bootstrap-fatal', 'bootstrap-background', 'bootstrap-output']
+    : [
+        'injected-error',
+        'exit-fallback',
+        ...(process.platform === 'win32' ? ['facility-refusal'] : ['leader-exit']),
+      ];
   try {
     for (const mode of modes) {
       const cwd = join(home, mode);
@@ -217,7 +219,8 @@ export async function assertInstalledNativeProcesses(context) {
       const gate =
         mode === 'facility-refusal'
           ? 'none'
-          : process.platform === 'win32' && mode === 'injected-error'
+          : process.platform === 'win32' &&
+              ['injected-error', 'bootstrap-fatal', 'bootstrap-output'].includes(mode)
             ? 'helper'
             : 'target';
       const outcome = {
@@ -236,6 +239,7 @@ export async function assertInstalledNativeProcesses(context) {
           log,
           node: process.execPath,
           descendant: fixture('native-descendant.cjs'),
+          ...(bootstrap ? { release } : {}),
         }),
         { mode: 0o600 },
       );
@@ -285,6 +289,63 @@ export async function assertInstalledNativeProcesses(context) {
       }, 15000);
       let primary;
       try {
+        if (bootstrap) {
+          await poll(
+            () => records(log).some((item) => item.operation === 'native-fixture-descendant-ready'),
+            10000,
+            'Actual bootstrap descendant never became ready',
+          );
+          if (mode === 'bootstrap-background') {
+            await poll(
+              () => owned.output().stderr.includes('A background operation failed.'),
+              5000,
+              'Installed entry did not observe actual background rejection',
+            );
+            assert.equal(
+              owned.isSettled(),
+              false,
+              'Background observer unexpectedly killed entered work',
+            );
+            const live = records(log).find((item) => item.operation === 'native-target-spawn');
+            assert.equal(
+              nativePidGone(live.pid),
+              false,
+              'Background observer reaped the actual live target',
+            );
+            const atNotice = records(log);
+            const descendant = atNotice.find(
+              (item) =>
+                item.operation === 'native-fixture-descendant' && item.parentPid === live.pid,
+            );
+            assert.ok(descendant);
+            assert.equal(
+              nativePidGone(descendant.pid),
+              false,
+              'Background observer reaped the descendant',
+            );
+            assert.equal(
+              atNotice.some((item) =>
+                ['native-target-actual-close', 'native-helper-spawn'].includes(item.operation),
+              ),
+              false,
+            );
+            assert.equal(
+              completeEvents(owned.output().stdout).some(
+                (event) => event.type === 'session:turn_completed',
+              ),
+              false,
+            );
+            sibling.assertAlive();
+            writeFileSync(release + '.target-exit', 'finish the exact fixture normally\n', {
+              mode: 0o600,
+            });
+          } else if (mode === 'bootstrap-output') {
+            owned.child.stdout.destroy(); // Real parent read-end close, then one native child pipe write.
+            writeFileSync(release + '.pipe-closed', 'parent closed the exact stdout pipe\n', {
+              mode: 0o600,
+            });
+          }
+        }
         if (mode !== 'facility-refusal') {
           await poll(
             () =>
@@ -306,6 +367,13 @@ export async function assertInstalledNativeProcesses(context) {
             false,
             'A request/error supplied a premature close acknowledgement',
           );
+          if (bootstrap && mode !== 'bootstrap-background') {
+            assert.equal(
+              owned.output().stderr,
+              '',
+              'Fatal diagnostic preceded actual native close delivery',
+            );
+          }
           const atClose = records(log);
           const descendant = atClose.find((item) => item.operation === 'native-fixture-descendant');
           const started = atClose.find((item) => item.operation === 'native-target-spawn');
@@ -336,13 +404,42 @@ export async function assertInstalledNativeProcesses(context) {
         }
         const result = await owned.result();
         assert.equal(result.signal, null, result.stderr);
-        assert.ok([0, 1].includes(result.code), result.stderr);
+        if (bootstrap) assert.equal(result.code, 9, result.stderr);
+        else assert.ok([0, 1].includes(result.code), result.stderr);
         assert.equal(
           ndjson(result.stdout).filter((event) => event.type === 'session:turn_completed').length,
-          1,
-          'The public offline turn did not complete',
+          bootstrap && mode !== 'bootstrap-background' ? 0 : 1,
+          'The public offline turn completion differs from its actual lifetime',
         );
         const observed = records(log);
+        if (bootstrap) {
+          assert.ok(
+            observed.some((item) => item.operation === `native-${gate}-close-delivered`),
+            'Actual gated close was not delivered before product completion',
+          );
+          const diagnostics = ndjson(result.stderr);
+          assert.equal(diagnostics.length, 1, 'Exactly one native diagnostic is owed');
+          assert.equal(
+            diagnostics[0].code,
+            mode === 'bootstrap-output' ? 'output_unavailable' : 'cli_internal',
+          );
+          if (mode === 'bootstrap-background') {
+            assert.match(diagnostics[0].message, /^A background operation failed\./);
+            assert.equal(
+              observed.find((item) => item.operation === 'native-target-actual-close').code,
+              0,
+            );
+            const completed = ndjson(result.stdout).find(
+              (event) => event.type === 'session:turn_completed',
+            );
+            assert.equal(
+              completed.error,
+              undefined,
+              'Background-only observation changed a successful turn',
+            );
+          }
+          assert.doesNotMatch(result.stderr, /PRIVATE_INSTALLED_|\n\s+at |file:\/\//);
+        }
         assert.equal(watchdogFired, false, 'External fixture watchdog supplied native cleanup');
         assert.equal(
           observed.some((item) => item.operation === 'native-witness-gate-timeout'),
@@ -389,7 +486,10 @@ export async function assertInstalledNativeProcesses(context) {
             observed.filter((item) => item.operation === 'native-synthetic-error-injected').length,
             mode === 'injected-error' ? 1 : 0,
           );
-          if (process.platform === 'win32' && mode === 'injected-error') {
+          if (
+            process.platform === 'win32' &&
+            ['injected-error', 'bootstrap-fatal', 'bootstrap-output'].includes(mode)
+          ) {
             assert.equal(helpers.length, 1);
             assert.equal(helpers[0].executable, systemTaskkill);
             assert.notEqual(
@@ -415,7 +515,7 @@ export async function assertInstalledNativeProcesses(context) {
           actualNativeClose: mode !== 'facility-refusal',
           syntheticNativeError: mode === 'injected-error',
           syntheticFacilityAccessRefusal: mode === 'facility-refusal',
-          ownedDescendantClosed: mode === 'injected-error' || mode === 'leader-exit',
+          ownedDescendantClosed: bootstrap || mode === 'injected-error' || mode === 'leader-exit',
           siblingSurvived: true,
           observed,
         });
@@ -496,8 +596,16 @@ export async function assertInstalledNativeProcesses(context) {
       runtime: process.version,
       publicOfflineAgentRoute: true,
       capturedPackagedCreationExitClosure: true,
-      originalBootstrapIdentity: 'separately checked by source forwarding controls',
-      fatalCoordinatorActivated: false,
+      originalBootstrapIdentity: bootstrap
+        ? 'untouched installed entry owns global hooks'
+        : 'separately checked by source forwarding controls',
+      fatalCoordinatorActivated: bootstrap,
+      ...(bootstrap
+        ? {
+            scope:
+              'plain installed one-shot hooks and owned native ACK ordering; interactive restoration and deadline nonrenewal remain separately attributed source controls',
+          }
+        : {}),
       copiedRuntimeLibraries,
       outcomes,
     };

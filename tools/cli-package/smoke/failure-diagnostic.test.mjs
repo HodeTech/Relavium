@@ -35,10 +35,11 @@ test('successful worker stays silent on both formatter and failure-only emitter'
 
 test('failure identifies the exact artifact/runtime/canonical case and partial native cleanup facts', () => {
   const failed = report();
-  failed.cases.at(-1).passed = false;
-  failed.cases.at(-1).error =
+  const native = failed.cases.find((item) => item.id === 'actual-native-process-owner');
+  native.passed = false;
+  native.error =
     'AssertionError [ERR_ASSERTION]: synthetic helper close failed\nprivate stack omitted';
-  failed.cases.at(-1).evidence = {
+  native.evidence = {
     outcomes: [
       {
         mode: 'injected-error',

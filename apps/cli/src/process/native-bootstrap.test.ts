@@ -6,6 +6,7 @@ import { invocationFixture } from './invocation.test-support.js';
 import { startNativeCli } from './native-bootstrap.js';
 import { SignalCustody, subscribeWithSignalCustody } from './signal-custody.js';
 import type { NativeInvocationPorts } from './native-invocation.js';
+import { CliError } from './cli-error.js';
 
 function deferred<T>() {
   let resolve: (value: T) => void = () => undefined;
@@ -84,6 +85,26 @@ function fixture() {
 }
 
 describe('native product bootstrap', () => {
+  it('preserves an escaping native output refusal even when ordinary diagnostic rendering throws', async () => {
+    const f = fixture();
+    const native = f.start(
+      () =>
+        Promise.resolve({
+          run: () => {
+            throw new CliError('output_unavailable', '', {
+              cause: new Error('PRIVATE_NATIVE_SINK'),
+            });
+          },
+        }),
+      ['--json'],
+    );
+    expect(await native.finished).toBe(9);
+    expect(f.registry.observations.infrastructureCode()).toBe('output_unavailable');
+    expect(f.stderr.frames).toHaveLength(1);
+    const diagnostic: unknown = JSON.parse(f.stderr.frames[0] ?? '');
+    expect(diagnostic).toMatchObject({ code: 'output_unavailable' });
+    expect(f.stderr.frames.join('')).not.toContain('PRIVATE_NATIVE_SINK');
+  });
   it.each([0, 1, 2, 3, 4, 6] satisfies ExitCode[])(
     'settles the actual entry root before normal exit %s',
     async (code) => {
