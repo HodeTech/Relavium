@@ -176,7 +176,9 @@ describe('real argv → Commander → dispatcher admission (synthetic key bounda
         },
       );
       // The injected key boundary deliberately throws: this certifies routing/admission, not a live provider turn.
-      expect(code).toBe(1);
+      expect(code).toBe(9);
+      expect(captured.err()).toContain('unexpected CLI failure');
+      expect(captured.err()).not.toContain('synthetic composition boundary reached');
       expect(effects.keys, 'FS_CAUSAL_INVOCATION_FORWARD').toBe(1);
       expect(effects.history).toBe(0);
     },
@@ -398,7 +400,8 @@ it('forwards real argv grants into a project selector before composition', async
   config(workspace, `[chat]\nfs_scope="project"\nextra_roots=[${JSON.stringify(outside)}]\n`);
   const captured = captureIo();
   const code = await run(argv('chat', '--cwd', workspace, '--allow-fs-root', outside), captured.io);
-  expect(code, 'FS_CAUSAL_INVOCATION_FORWARD').toBe(1);
+  expect(code, 'FS_CAUSAL_INVOCATION_FORWARD').toBe(9);
+  expect(captured.err()).not.toContain('synthetic composition boundary reached');
   expect(effects.keys, 'FS_CAUSAL_INVOCATION_FORWARD').toBe(1);
   expect(effects.history).toBe(0);
 });

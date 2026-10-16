@@ -72,6 +72,105 @@ async function retire(
 }
 
 describe('InvocationRegistry ownership', () => {
+  it('notifies the one process owner of autonomous faults without waiting for runtime completion', async () => {
+    const registry = new InvocationRegistry(new ManualClock());
+    const life = deferred<OwnerRetirement>();
+    const failure = deferred<void>();
+    const lease = registry.register(session(life.promise, { join: () => failure.promise }));
+    const notified = deferred<Promise<InvocationCloseResult>>();
+    let notificationReceived = false;
+    const remove = registry.observeTermination(() => {
+      notificationReceived = true;
+      const termination = registry.termination;
+      if (termination !== undefined) notified.resolve(termination);
+    });
+    expect(() => registry.observeTermination(() => undefined)).toThrow();
+    expect(registry.termination).toBeUndefined();
+    const closing = lease.close();
+    failure.reject(new Error('private owner failure while runtime is held'));
+    await failure.promise.catch(() => undefined);
+    expect(notificationReceived, 'REGISTRY_TERMINATION_OBSERVATION').toBe(true);
+    const observed = notified.promise;
+    expect(registry.termination).toBeDefined();
+    expect(registry.budget.deadline()).toBe(3000);
+    expect(registry.observations.exitCode()).toBe(9);
+    await retire(life);
+    expect(await closing).toEqual({ kind: 'retired' });
+    expect(await observed).toEqual({ kind: 'settled', unacknowledgedOwners: 0 });
+    remove();
+  });
+
+  it('shares its original deadline after owner settlement and reports a tighter final-flush deadline', async () => {
+    const clock = new ManualClock();
+    const registry = new InvocationRegistry(clock);
+    const budgets: RemainingBudget[] = [];
+    const remove = registry.observeTermination(() => budgets.push(registry.budget));
+    const closing = registry.terminate({ kind: 'infrastructure', code: 'cli_internal' });
+    await closing;
+    expect(clock.timers.size).toBe(0);
+    clock.advanceTo(700);
+    expect(registry.terminate({ kind: 'infrastructure', code: 'output_unavailable' })).toBe(
+      closing,
+    );
+    expect(registry.budget.deadline()).toBe(3000);
+    expect(registry.budget.remainingMs()).toBe(2300);
+    void registry.terminate({ kind: 'signal', signalNumber: 15, deadline: 1500 });
+    expect(clock.timers.size).toBe(0);
+    expect(registry.budget.remainingMs()).toBe(800);
+    expect(budgets.length).toBeGreaterThan(0);
+    expect(budgets.every((budget) => budget === registry.budget)).toBe(true);
+    remove();
+  });
+
+  it('starts one fatal budget for the first output failure after normal cleanup has already settled', async () => {
+    const clock = new ManualClock();
+    const registry = new InvocationRegistry(clock);
+    const closing = registry.terminate({ kind: 'normal' });
+    await closing;
+    expect(registry.budget.deadline()).toBeUndefined();
+    const deadlines: (number | undefined)[] = [];
+    const remove = registry.observeTermination(() => deadlines.push(registry.budget.deadline()));
+    clock.advanceTo(200);
+    expect(registry.terminate({ kind: 'infrastructure', code: 'output_unavailable' })).toBe(
+      closing,
+    );
+    expect(registry.budget.deadline()).toBe(3200);
+    clock.advanceTo(600);
+    void registry.terminate({ kind: 'infrastructure', code: 'cli_internal' });
+    expect(registry.budget.deadline()).toBe(3200);
+    expect(deadlines).toContain(3200);
+    expect(clock.timers.size).toBe(0);
+    remove();
+  });
+
+  it('guards process observer failure and reentry without skipping any sibling stop', async () => {
+    const clock = new ManualClock();
+    const registry = new InvocationRegistry(clock);
+    const life = deferred<OwnerRetirement>();
+    const stops: number[] = [];
+    for (const index of [0, 1, 2])
+      registry.register(
+        session(life.promise, {
+          stop: () => {
+            stops.push(index);
+          },
+        }),
+      );
+    const remove = registry.observeTermination(() => {
+      void registry.terminate({ kind: 'normal' });
+      throw new Error('private observer failure');
+    });
+    const closing = registry.terminate({ kind: 'normal' });
+    expect(stops).toEqual([0, 1, 2]);
+    expect(registry.observations.exitCode()).toBe(9);
+    expect(registry.budget.deadline()).toBe(3000);
+    await retire(life);
+    expect((await closing).kind).toBe('settled');
+    remove();
+    const next = registry.observeTermination(() => undefined);
+    next();
+  });
+
   it('registers before admission without joining an idle session, and closes only that instance', async () => {
     const registry = new InvocationRegistry(new ManualClock());
     const first = deferred<OwnerRetirement>();

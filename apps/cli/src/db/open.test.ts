@@ -62,7 +62,13 @@ describe('openLocalDb — the at-rest 0600 (#28, ADR-0050)', () => {
       vi.resetModules();
       const { openLocalDb } = await import('./open.js');
 
-      expect(() => openLocalDb(home)).toThrow('disk full');
+      let failure: unknown;
+      try {
+        openLocalDb(home);
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toMatchObject({ code: 'cli_internal', exitCode: 9 });
       // The file exists (createClient made it) and is owner-only despite the failure.
       expect(modeOf(join(globalConfigDir(home), 'history.db'))).toBe(0o600);
     },

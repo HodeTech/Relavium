@@ -222,6 +222,33 @@ function globalOptions(): GlobalOptions {
 }
 
 describe('gateCommand', () => {
+  it('classifies actual history corruption as storage 1 before any resume', async () => {
+    mkdirSync(join(home, '.relavium'));
+    writeFileSync(join(home, '.relavium', 'history.db'), 'PRIVATE_CORRUPT_HISTORY');
+    await expect(
+      gateCommand(
+        { runId: 'synthetic', approve: true },
+        { io: captureIo().io, global: globalOptions() },
+      ),
+    ).rejects.toMatchObject({ code: 'storage_unavailable', exitCode: 1 });
+  });
+
+  it('does not promote an injected errno-shaped opener failure to storage', async () => {
+    const cause = Object.assign(new Error('PRIVATE_FOREIGN_OPEN_FAILURE'), { code: 'ENOSPC' });
+    await expect(
+      gateCommand(
+        { runId: 'synthetic', approve: true },
+        {
+          io: captureIo().io,
+          global: globalOptions(),
+          openDb: () => {
+            throw cause;
+          },
+        },
+      ),
+    ).rejects.toMatchObject({ code: 'cli_internal', exitCode: 9, cause });
+  });
+
   let client: DbClient;
   let db: Db;
 

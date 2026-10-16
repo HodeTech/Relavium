@@ -8,11 +8,17 @@ import {
 } from '@relavium/core';
 import {
   CorruptRunEventError,
+  createClient,
+  DbOpenError,
   ProviderHeaderPolicyError,
   SessionMessageBoundaryError,
   UnreadableRunEventLogError,
 } from '@relavium/db';
 import { describe, expect, it } from 'vitest';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { CLI_ERROR_POLICY } from './cli-error.js';
 
 import { CliError, isCliError, toUserFacing } from './errors.js';
 import {
@@ -126,12 +132,12 @@ describe('toUserFacing', () => {
       message: new ProviderHeaderPolicyError().message,
       exitCode: EXIT_CODES.invalidInvocation,
     });
-    expect(toUserFacing({ code: 'provider_header_policy' }).code).toBe('internal');
+    expect(toUserFacing({ code: 'provider_header_policy' }).code).toBe('cli_internal');
     compatible.message = 'opaque compatibility payload';
     expect(toUserFacing(compatible)).toEqual({
-      code: 'internal',
-      message: 'An unexpected internal error occurred.',
-      exitCode: EXIT_CODES.workflowFailed,
+      code: 'cli_internal',
+      message: CLI_ERROR_POLICY.cli_internal.fixedMessage,
+      exitCode: EXIT_CODES.infrastructureFailed,
     });
   });
 
@@ -208,8 +214,8 @@ describe('toUserFacing', () => {
 
   it('maps an unknown throw to a generic internal error without leaking detail', () => {
     const userFacing = toUserFacing(new Error('secret stack detail'));
-    expect(userFacing.code).toBe('internal');
-    expect(userFacing.exitCode).toBe(EXIT_CODES.workflowFailed);
+    expect(userFacing.code).toBe('cli_internal');
+    expect(userFacing.exitCode).toBe(EXIT_CODES.infrastructureFailed);
     expect(userFacing.message).not.toContain('secret');
   });
 });
@@ -255,10 +261,10 @@ describe('a graph fault is an AUTHORING fault, not an internal one (CR-64 review
     expect(leak.message).toContain('inputs.api_key'); // the tainted SYMBOL, never a resolved value
   });
 
-  it('a genuinely unknown error is still internal/exit 1', () => {
+  it('an unknown error is infrastructure/exit 9', () => {
     const out = toUserFacing(new Error('boom'));
-    expect(out.code).toBe('internal');
-    expect(out.exitCode).toBe(EXIT_CODES.workflowFailed);
+    expect(out.code).toBe('cli_internal');
+    expect(out.exitCode).toBe(EXIT_CODES.infrastructureFailed);
   });
 });
 
@@ -274,4 +280,160 @@ describe('toUserFacing — a malformed standalone agent file', () => {
     expect(mapped.exitCode).toBe(EXIT_CODES.invalidInvocation);
     expect(mapped.message).toContain('invalid agent');
   });
+});
+
+describe('owned storage origin (ADR-0110 Step 8a)', () => {
+  it('projects real corrupt database setup to fixed storage 1 without its private path/cause', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'relavium-owned-storage-'));
+    const path = join(dir, 'PRIVATE_HISTORY_PATH.db');
+    writeFileSync(path, 'PRIVATE_NOT_SQLITE_BYTES');
+    try {
+      let failure: unknown;
+      try {
+        createClient(path);
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toBeInstanceOf(DbOpenError);
+      expect(toUserFacing(failure), 'CLI_ORIGIN_DB_FACT').toEqual({
+        code: 'storage_unavailable',
+        message: CLI_ERROR_POLICY.storage_unavailable.fixedMessage,
+        exitCode: EXIT_CODES.workflowFailed,
+      });
+      expect(JSON.stringify(toUserFacing(failure))).not.toContain('PRIVATE_');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    new DbOpenError('open_failed', 'PRIVATE_ABI_MESSAGE', '/PRIVATE_PATH', {
+      cause: Object.assign(new Error('PRIVATE_ABI_CAUSE'), { code: 'ERR_DLOPEN_FAILED' }),
+    }),
+    new DbOpenError('open_failed', 'PRIVATE_NATIVE_MESSAGE', '/PRIVATE_PATH', {
+      cause: Object.assign(new Error('PRIVATE_NATIVE_CAUSE'), { code: 'SQLITE_FULL' }),
+    }),
+    Object.assign(new Error('PRIVATE_ERRNO_MESSAGE'), { code: 'EACCES' }),
+    { code: 'open_failed', cause: { code: 'SQLITE_CANTOPEN' } },
+  ])(
+    'case %#: does not infer storage from a public constructor, errno or convincing cause',
+    (failure) => {
+      expect(toUserFacing(failure)).toEqual({
+        code: 'cli_internal',
+        message: CLI_ERROR_POLICY.cli_internal.fixedMessage,
+        exitCode: EXIT_CODES.infrastructureFailed,
+      });
+      expect(JSON.stringify(toUserFacing(failure))).not.toContain('PRIVATE_');
+    },
+  );
+
+  it('preserves the programmer-invalid DB URI API refusal as invocation 2', () => {
+    let failure: unknown;
+    try {
+      createClient('file:PRIVATE_URI?mode=memory');
+    } catch (error) {
+      failure = error;
+    }
+    expect(toUserFacing(failure).code).toBe('invalid_invocation');
+    expect(toUserFacing(failure).exitCode).toBe(EXIT_CODES.invalidInvocation);
+    expect(toUserFacing(failure).message).not.toContain('PRIVATE_URI');
+  });
+});
+
+describe('defensive runtime projection', () => {
+  it.each(['code', 'message', 'name', 'stack', 'cause'])(
+    'does not invoke hostile %s accessors on unknown errors',
+    (key) => {
+      let calls = 0;
+      const value = new Error('PRIVATE_UNKNOWN');
+      Object.defineProperty(value, key, {
+        get: () => {
+          calls += 1;
+          throw new Error('PRIVATE_GETTER');
+        },
+      });
+      expect(toUserFacing(value)).toEqual({
+        code: 'cli_internal',
+        message: CLI_ERROR_POLICY.cli_internal.fixedMessage,
+        exitCode: 9,
+      });
+      expect(calls).toBe(0);
+    },
+  );
+
+  it.each([
+    new CorruptRunEventError('run-safe', 1, 'node:started', undefined),
+    new UnreadableRunEventLogError('run-safe', [1]),
+    new EngineStateError('unknown_run', 'safe'),
+    new AgentParseError('agent_validation', 'safe'),
+    new WorkflowSyntaxError('safe'),
+    new CliError('internal', 'safe'),
+  ])(
+    'case %#: refuses accessor messages on known mutable typed errors without executing them',
+    (value) => {
+      let calls = 0;
+      Object.defineProperty(value, 'message', {
+        get: () => {
+          calls += 1;
+          return 'PRIVATE_GETTER';
+        },
+      });
+      expect(toUserFacing(value).code).toBe('cli_internal');
+      expect(toUserFacing(value).exitCode).toBe(9);
+      expect(calls).toBe(0);
+    },
+  );
+
+  it('does not invoke inherited code accessors or coerce their arbitrary values', () => {
+    let calls = 0;
+    const value = new Error('PRIVATE_UNKNOWN');
+    const inherited: unknown = Object.create(Error.prototype, {
+      code: {
+        get: () => {
+          calls += 1;
+          return 'corrupt_run_event';
+        },
+      },
+    });
+    if (typeof inherited !== 'object' || inherited === null)
+      throw new Error('Missing test prototype');
+    Object.setPrototypeOf(value, inherited);
+    expect(toUserFacing(value).code).toBe('cli_internal');
+    expect(calls).toBe(0);
+  });
+
+  it.each(['getPrototypeOf', 'getOwnPropertyDescriptor'] as const)(
+    'reflection trap %s becomes a fixed infrastructure diagnostic',
+    (trap) => {
+      const value = new Proxy(new Error('PRIVATE_PROXY_BYTES'), {
+        [trap]: () => {
+          throw new Error('PRIVATE_REFLECTION');
+        },
+      });
+      expect(toUserFacing(value)).toEqual({
+        code: 'cli_internal',
+        message: CLI_ERROR_POLICY.cli_internal.fixedMessage,
+        exitCode: 9,
+      });
+    },
+  );
+
+  it('refuses a mutated public CliError code and derives valid-code exit only from policy', () => {
+    const value = new CliError('internal', 'known refusal');
+    Object.defineProperty(value, 'code', { value: '__proto__' });
+    expect(toUserFacing(value).code).toBe('cli_internal');
+    expect(toUserFacing(value).exitCode).toBe(9);
+    Object.defineProperty(value, 'code', { value: 'storage_unavailable' });
+    Object.defineProperty(value, 'exitCode', { value: 0 });
+    expect(toUserFacing(value).exitCode).toBe(1);
+  });
+
+  it.each(['corrupt_run_event', 'unreadable_run_event_log'])(
+    'retains stable own-data %s history compatibility from another bundle',
+    (code) => {
+      const value = Object.assign(new Error('safe history reason'), { code });
+      expect(toUserFacing(value).code).toBe('internal');
+      expect(toUserFacing(value).exitCode).toBe(1);
+    },
+  );
 });

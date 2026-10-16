@@ -54,6 +54,7 @@ import { createConsentGate } from '../engine/mcp-consent-gate.js';
 import { guardMcpTeardown } from '../engine/mcp-signal-teardown.js';
 import { createConsentPrompter } from '../mcp/consent-prompt.js';
 import { CliError } from '../process/errors.js';
+import { storageBoundaryError } from '../process/owned-storage.js';
 import { sourceLabel } from '../process/source-label.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
@@ -301,14 +302,8 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
     try {
       opened = deps.openRunStore?.(runWorkflow, homeDir, deps.global.cwd);
     } catch (err) {
-      // A pre-run history fault (cannot create / open / migrate ~/.relavium/history.db) is an INVOCATION
-      // fault (exit 2), not a workflow failure (exit 1) — surface it as such, before the engine starts, so a
-      // `--json`/CI consumer can tell "the history db couldn't open" from "a node failed mid-run".
-      throw new CliError(
-        'invalid_invocation',
-        `could not open the run history database: ${err instanceof Error ? err.message : String(err)}`,
-        { cause: err },
-      );
+      // Classify only this open operation; engine/work faults retain their own boundary.
+      throw storageBoundaryError(err);
     }
 
     const mcpOption =

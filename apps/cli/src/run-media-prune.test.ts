@@ -250,7 +250,7 @@ for (const kind of ['root', 'shard', 'file-symlink', 'hardlink'] as const) {
         io.io,
       ),
       'MEDIA_MAINTENANCE_CONTAINMENT',
-    ).toBe(kind === 'root' ? 0 : 1);
+    ).toBe(kind === 'root' ? 0 : 9);
     // Initial root aliases are admitted and pinned by ADR-0105; linked descendants are refused.
     expect(readFileSync(witness, 'utf8')).toBe('PRIVATE_OUTSIDE_BYTES');
     expect(io.out() + io.err()).not.toContain(isolated.home);

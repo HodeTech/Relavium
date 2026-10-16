@@ -1,9 +1,13 @@
-import { chmodSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { createClient, runMigrations, type Db, type SessionEffectCheckpoint } from '@relavium/db';
 
-import { ensureGlobalConfigDir, globalConfigDir } from '../config/paths.js';
+import { globalConfigDir } from '../config/paths.js';
+import {
+  chmodForStorage,
+  mkdirForStorage,
+  storageBoundaryError,
+} from '../process/owned-storage.js';
 import { processIo } from '../process/io.js';
 import { CHECKPOINT_DEFERRED } from './privacy-notice.js';
 
@@ -23,9 +27,16 @@ export function openLocalDb(
   homeDir: string,
   notice: (text: string) => void | Promise<void> = (text) => processIo().writeErrAcknowledged(text),
 ): OpenedDb {
-  ensureGlobalConfigDir(homeDir); // creates ~/.relavium/ at 0700 (ADR-0050)
+  const dir = globalConfigDir(homeDir);
+  mkdirForStorage(dir);
+  chmodForStorage(dir, 0o700);
   const path = join(globalConfigDir(homeDir), 'history.db');
-  const client = createClient(path);
+  let client: ReturnType<typeof createClient>;
+  try {
+    client = createClient(path);
+  } catch (error) {
+    throw storageBoundaryError(error);
+  }
   let checkpoint: SessionEffectCheckpoint;
   // If setup (migrations / the at-rest chmod) throws, close the just-opened handle before propagating —
   // otherwise the SQLite connection leaks for the lifetime of the failing process.
@@ -42,7 +53,7 @@ export function openLocalDb(
     hardenAtRest(path);
   } catch (err) {
     client.sqlite.close();
-    throw err;
+    throw storageBoundaryError(err);
   }
   if (checkpoint === 'deferred') {
     // Logical suppression succeeded; only physical erasure awaits a reader. Diagnostic failure
@@ -75,10 +86,10 @@ export function openLocalDb(
  * Idempotent, so it is safe to call on both sides of the migration batch.
  */
 function hardenAtRest(path: string): void {
-  chmodSync(path, 0o600);
+  chmodForStorage(path, 0o600);
   for (const suffix of ['-wal', '-shm']) {
     try {
-      chmodSync(`${path}${suffix}`, 0o600);
+      chmodForStorage(`${path}${suffix}`, 0o600);
     } catch (err) {
       if (errnoCode(err) !== 'ENOENT') {
         throw err;
@@ -89,9 +100,16 @@ function hardenAtRest(path: string): void {
 
 /** The `errno` code of a Node fs error (`ENOENT`, `EPERM`, …), or `undefined` if it is not one. */
 function errnoCode(err: unknown): string | undefined {
-  if (typeof err === 'object' && err !== null && 'code' in err) {
-    const code: unknown = err.code;
-    return typeof code === 'string' ? code : undefined;
+  try {
+    if (typeof err === 'object' && err !== null) {
+      const descriptor = Object.getOwnPropertyDescriptor(err, 'code');
+      if (descriptor !== undefined && 'value' in descriptor) {
+        const code: unknown = descriptor.value;
+        return typeof code === 'string' ? code : undefined;
+      }
+    }
+  } catch {
+    // An uninspectable failure is not a benign absent sidecar.
   }
   return undefined;
 }

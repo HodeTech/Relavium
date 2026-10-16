@@ -95,4 +95,13 @@ export class ExitObservations {
     if (this.#infrastructure || this.#background) return 'cli_internal';
     return undefined;
   }
+
+  /** Background keepalive uncertainty is deliberately excluded from fatal shutdown authority. */
+  hasInfrastructureFailure(): boolean {
+    return this.#infrastructure || this.#output;
+  }
+
+  hasTerminatingSignal(): boolean {
+    return this.#signal !== undefined;
+  }
 }

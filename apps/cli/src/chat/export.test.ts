@@ -215,7 +215,7 @@ describe('exportSession (2.P)', () => {
     expect(yaml).toContain('type: output');
     expect(yaml).not.toContain('type: agent'); // no completed turn ⇒ no agent node
   });
-  it('wraps native write failure behind a safe destination label and preserves cause', () => {
+  it('wraps unexpected write failure as fixed infrastructure 9 and preserves cause', () => {
     store.createSession(record());
     const cause = new Error(`private native destination ${cwd}`);
     vi.mocked(writeFileSync).mockImplementationOnce(() => {
@@ -227,11 +227,43 @@ describe('exportSession (2.P)', () => {
     } catch (error) {
       expect(isCliError(error)).toBe(true);
       if (!isCliError(error)) throw error;
-      expect(error.code).toBe('internal');
+      expect(error.code).toBe('cli_internal');
+      expect(error.exitCode).toBe(9);
       expect(error.cause).toBe(cause);
-      expect(error.message).toContain(join('exports', 'fault.yaml'));
+      expect(error.message).not.toContain(join('exports', 'fault.yaml'));
       expect(error.message).not.toContain(cwd);
       expect(error.message).not.toContain('private native');
     }
+  });
+  it.each(['EACCES', 'EPERM', 'ENOSPC', 'EROFS'])(
+    'projects owned native export write %s to fixed storage 1',
+    (code) => {
+      store.createSession(record());
+      const cause = Object.assign(new Error('PRIVATE_WRITE_BYTES'), { code });
+      vi.mocked(writeFileSync).mockImplementationOnce(() => {
+        throw cause;
+      });
+      try {
+        exportSession({ store, sessionId: 's1', cwd, force: false });
+        expect.fail('write must refuse');
+      } catch (error) {
+        expect(isCliError(error)).toBe(true);
+        if (!isCliError(error)) throw error;
+        expect(error.code, 'CLI_ORIGIN_EXPORT_STORAGE').toBe('storage_unavailable');
+        expect(error.exitCode).toBe(1);
+        expect(error.cause).toBe(cause);
+        expect(error.message).not.toContain('PRIVATE_');
+        expect(error.message).not.toContain(cwd);
+      }
+    },
+  );
+
+  it('does not promote an errno-shaped store failure outside its owned write boundary', () => {
+    const failure = Object.assign(new Error('PRIVATE_STORE_FAILURE'), { code: 'ENOSPC' });
+    vi.spyOn(store, 'loadFull').mockImplementationOnce(() => {
+      throw failure;
+    });
+    expect(() => exportSession({ store, sessionId: 's1', cwd, force: false })).toThrow(failure);
+    expect(vi.mocked(writeFileSync)).not.toHaveBeenCalled();
   });
 });

@@ -39,9 +39,7 @@ export function processIo(): CliIo {
   };
 }
 
-const STDERR_FAILED = 'The diagnostic output could not be acknowledged.';
-
-function canWrite(stream: NodeJS.WriteStream): boolean {
+export function canWrite(stream: NodeJS.WriteStream): boolean {
   return (
     stream.writable &&
     !stream.destroyed &&
@@ -52,7 +50,7 @@ function canWrite(stream: NodeJS.WriteStream): boolean {
 }
 
 /** Native write callbacks acknowledge delivery; returning from write() only acknowledges enqueueing. */
-function acknowledgeWrite(stream: NodeJS.WriteStream, text: string): Promise<void> {
+export function acknowledgeWrite(stream: NodeJS.WriteStream, text: string): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     let pending = true;
     const release = (): void => {
@@ -72,7 +70,7 @@ function acknowledgeWrite(stream: NodeJS.WriteStream, text: string): Promise<voi
         stream.once('close', release);
       } else setImmediate(release);
       if (success) resolve();
-      else reject(new CliError('internal', STDERR_FAILED));
+      else reject(new CliError('output_unavailable', ''));
     };
     const failed = (): void => finish(false);
     stream.on('error', failed);

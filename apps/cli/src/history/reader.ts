@@ -1,7 +1,7 @@
 import { createRunHistoryReader, type Db, type RunHistoryReader } from '@relavium/db';
 
 import { openLocalDb } from '../db/open.js';
-import { CliError } from '../process/errors.js';
+import { storageBoundaryError } from '../process/owned-storage.js';
 
 /** An opened workflow-agnostic read seam plus the handle to close its SQLite connection. */
 export interface OpenedReader {
@@ -12,8 +12,8 @@ export interface OpenedReader {
 /**
  * Open `~/.relavium/history.db` and wrap it in the workflow-agnostic {@link RunHistoryReader} the read commands
  * (`list`/`logs`/`status`/`gate list`, 2.I) consume — distinct from the workflow-scoped `openHistoryStore` the
- * `run`/`gate` write paths use. A pre-run db-open fault (cannot create / open / migrate the file) is an
- * INVOCATION fault (exit 2), surfaced before any read. Tests inject `openDb` to pass an in-memory db.
+ * `run`/`gate` write paths use. An owned storage-open fault is operational 1; an unexpected open failure is infrastructure 9.
+ * Tests inject `openDb` to pass an in-memory db, without granting arbitrary errors storage origin.
  */
 export function openHistoryReader(
   homeDir: string,
@@ -23,11 +23,7 @@ export function openHistoryReader(
   try {
     opened = openDb(homeDir);
   } catch (err) {
-    throw new CliError(
-      'invalid_invocation',
-      `could not open the run history database: ${err instanceof Error ? err.message : String(err)}`,
-      { cause: err },
-    );
+    throw storageBoundaryError(err);
   }
   return { reader: createRunHistoryReader(opened.db), close: opened.close };
 }

@@ -74,6 +74,7 @@ import { selectGatePrompter } from '../gate/select-prompter.js';
 import { readSecretFromStdin, type StdinSecretContext } from '../secrets/read-secret.js';
 import { parseSecretLines } from '../secrets/parse-secret-lines.js';
 import { CliError } from '../process/errors.js';
+import { storageBoundaryError } from '../process/owned-storage.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
@@ -274,11 +275,7 @@ async function resumeGateCommand(
   try {
     opened = (deps.openDb ?? openLocalDb)(homeDir);
   } catch (err) {
-    throw new CliError(
-      'invalid_invocation',
-      `could not open the run history database: ${err instanceof Error ? err.message : String(err)}`,
-      { cause: err },
-    );
+    throw storageBoundaryError(err);
   }
 
   let mcpRuntime: WorkflowMcpRuntime | undefined;

@@ -122,6 +122,8 @@ export class InvocationRegistry {
   #sampling = false;
   #finished = false;
   #stopping = false;
+  #terminationObserver: (() => void) | undefined;
+  #notifying = false;
 
   constructor(clock: InvocationClock, observations = new ExitObservations()) {
     this.#clock = clock;
@@ -139,6 +141,26 @@ export class InvocationRegistry {
   /** Bounded by the fixed owner-kind × stage × code vocabulary, not completed attempt count. */
   get failureKinds(): number {
     return this.#failures.size;
+  }
+
+  /** The same live absolute budget used by owners; settling cleanup never renews it. */
+  get budget(): RemainingBudget {
+    return this.#budget;
+  }
+
+  /** Published before callbacks; a native coordinator can observe autonomous owner escalation. */
+  get termination(): Promise<InvocationCloseResult> | undefined {
+    return this.#termination;
+  }
+
+  /** One invocation-owned process adapter, not an unbounded history of subscribers. */
+  observeTermination(listener: () => void): () => void {
+    if (this.#terminationObserver !== undefined) throw new CliError('cli_internal', '');
+    this.#terminationObserver = listener;
+    if (this.#termination !== undefined) this.#notifyTermination();
+    return () => {
+      if (this.#terminationObserver === listener) this.#terminationObserver = undefined;
+    };
   }
 
   assertAdmitting(): void {
@@ -204,6 +226,7 @@ export class InvocationRegistry {
     this.#stopping = true;
     try {
       this.#observeRequest(request);
+      this.#notifyTermination();
       for (const entry of entries) {
         entry.closing = true;
         this.#attempt(entry, 'stop', entry.owner.stop);
@@ -229,6 +252,7 @@ export class InvocationRegistry {
           unacknowledgedOwners: this.#entries.size,
         }),
       );
+      this.#notifyTermination();
     });
     return this.#termination;
   }
@@ -389,7 +413,7 @@ export class InvocationRegistry {
     if (!isOwnerFailureCode(code)) code = 'cli_internal';
     this.#failures.add(`${entry.owner.kind}:${stage}:${code}`);
     this.observations.observeFailure(code);
-    if ((code === 'cli_internal' || code === 'output_unavailable') && !this.#finished) {
+    if (code === 'cli_internal' || code === 'output_unavailable') {
       // A callback's first infrastructure failure has the same absolute budget as an external fatal request.
       // Recoverable background rejection is deliberately a separate observation API.
       try {
@@ -405,17 +429,15 @@ export class InvocationRegistry {
   #observeRequest(request: TerminationRequest): void {
     if (request.kind === 'infrastructure') {
       this.observations.observeFailure(request.code);
-      if (!this.#finished) {
-        try {
-          this.#tighten(this.#now() + FATAL_TERMINATION_MS);
-        } catch {
-          this.observations.observeFailure('cli_internal');
-          this.#expire();
-        }
+      try {
+        this.#tighten(this.#now() + FATAL_TERMINATION_MS);
+      } catch {
+        this.observations.observeFailure('cli_internal');
+        this.#expire();
       }
     } else if (request.kind === 'signal') {
       this.observations.observeTerminatingSignal(request.signalNumber);
-      if (!this.#finished && request.deadline !== undefined) {
+      if (request.deadline !== undefined) {
         try {
           this.#tighten(request.deadline);
         } catch {
@@ -425,6 +447,7 @@ export class InvocationRegistry {
       }
     }
     this.#sampleHealth();
+    this.#notifyTermination();
   }
 
   #now(): number {
@@ -440,7 +463,27 @@ export class InvocationRegistry {
     this.#disarmTimer();
     const remaining = deadline - this.#now();
     if (remaining <= 0) this.#expire();
-    else this.#disarm = this.#clock.schedule(remaining, () => this.#expire());
+    else if (!this.#finished) this.#disarm = this.#clock.schedule(remaining, () => this.#expire());
+    this.#notifyTermination();
+  }
+
+  #notifyTermination(): void {
+    const listener = this.#terminationObserver;
+    if (listener === undefined || this.#termination === undefined || this.#notifying) return;
+    this.#notifying = true;
+    try {
+      // Native adapters schedule their finalization; synchronous notification cannot acknowledge an owner.
+      listener();
+    } catch {
+      this.observations.observeFailure('cli_internal');
+      try {
+        void this.terminate({ kind: 'infrastructure', code: 'cli_internal' });
+      } catch {
+        this.#expire();
+      }
+    } finally {
+      this.#notifying = false;
+    }
   }
 
   #disarmTimer(): void {

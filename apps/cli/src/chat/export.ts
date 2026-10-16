@@ -1,4 +1,3 @@
-import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 
 import { serializeWorkflow, sessionToWorkflow } from '@relavium/core';
@@ -6,6 +5,11 @@ import type { SessionStore } from '@relavium/db';
 import type { AgentSessionRecord } from '@relavium/shared';
 
 import { CliError } from '../process/errors.js';
+import {
+  mkdirForStorage,
+  writeFileForStorage,
+  storageBoundaryError,
+} from '../process/owned-storage.js';
 import { sourceLabel } from '../process/source-label.js';
 
 /**
@@ -76,12 +80,12 @@ export function exportSession(opts: ExportSessionOptions): ExportResult {
   const label = sourceLabel(opts.cwd, path);
   try {
     // Create the parent directory (so `--out exports/wf.yaml` just works) before writing the scaffold.
-    mkdirSync(dirname(path), { recursive: true });
+    mkdirForStorage(dirname(path));
     // Atomic create: `wx` fails with EEXIST if the target already exists — no TOCTOU window between a
     // separate existence check and the write; `w` truncates/overwrites under `--force`.
-    writeFileSync(path, yaml, { encoding: 'utf8', flag: opts.force ? 'w' : 'wx' });
+    writeFileForStorage(path, yaml, opts.force);
   } catch (err) {
-    const code = typeof err === 'object' && err !== null && 'code' in err ? err.code : undefined;
+    const code = exportTargetCode(err);
     // An existing target without `--force` (EEXIST) is the no-overwrite fault; a structurally-invalid
     // `--out` (a directory → EISDIR; a file used as a dir → ENOTDIR) is also an INVOCATION fault (exit 2).
     // Other native write faults retain their cause behind a fixed safe diagnostic.
@@ -99,15 +103,24 @@ export function exportSession(opts: ExportSessionOptions): ExportResult {
         { cause: err },
       );
     }
-    throw new CliError(
-      'internal',
-      `could not write ${label}: check destination permissions and available disk space`,
-      { cause: err },
-    );
+    throw storageBoundaryError(err);
   }
 
   // The session is append-only; the next event/seq is one past the durable MAX (a fold, not a spread).
   const sequenceNumber =
     loaded.messages.reduce((max, m) => Math.max(max, m.sequenceNumber), -1) + 1;
   return { path, workflowId: definition.workflow.id, sequenceNumber, record: loaded.session };
+}
+
+/** Target-shape refusals are admitted only from the export's actual mkdir/write catch. */
+function exportTargetCode(error: unknown): unknown {
+  try {
+    if (typeof error === 'object' && error !== null) {
+      const descriptor = Object.getOwnPropertyDescriptor(error, 'code');
+      if (descriptor !== undefined && 'value' in descriptor) return descriptor.value;
+    }
+  } catch {
+    // An accessor/proxy is not evidence of a native target refusal.
+  }
+  return undefined;
 }

@@ -1582,12 +1582,56 @@ workflow:
     }
   });
 
-  it("a history-db fault is exit 2, and still tears the MCP children down (the reorder's new context)", async () => {
-    // The block that maps a history-open failure to an INVOCATION fault carries an explicit contract — "so a
-    // `--json`/CI consumer can tell 'the history db couldn't open' from 'a node failed mid-run'" — and no
-    // test greped for it: a review measured the whole `CliError` replaceable with a bare rethrow while the
-    // suite stayed green. `630c3b6` moved that branch into a materially different context, where the MCP
-    // children are ALREADY SPAWNED when it fires, so the teardown is asserted with it.
+  it('keeps owned storage open failure at 1 without promoting the private DB path', async () => {
+    const dbPath = join(root, 'PRIVATE_CORRUPT_HISTORY.db');
+    writeFileSync(dbPath, 'PRIVATE_CORRUPT_BYTES');
+    const path = writeWorkflow('storage-fault.relavium.yaml', MCP_WF);
+    const { io } = captureIo();
+    let cause: unknown;
+    try {
+      createClient(dbPath);
+    } catch (error) {
+      cause = error;
+    }
+    expect(cause).toBeDefined();
+    let closed = 0;
+    const conn: McpConnection = {
+      listTools: () => Promise.resolve([{ name: 'read', inputSchema: { type: 'object' } }]),
+      callTool: () => Promise.resolve({ content: [], isError: false }),
+      close: () => {
+        closed += 1;
+        return Promise.resolve();
+      },
+    };
+    let caught: unknown;
+    try {
+      await runCommand(
+        { workflow: path, input: [], allowMcpStdio: [] },
+        {
+          io,
+          global: globalOptions(),
+          providers: scriptedResolver([textTurn('done')]),
+          consentGate: PASS_CONSENT,
+          startMcpClient: () =>
+            realStartMcpClient([
+              { id: 'fs', toolsAllowlist: ['read'], open: () => Promise.resolve(conn) },
+            ]),
+          openRunStore: () => {
+            throw cause;
+          },
+        },
+      );
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toMatchObject({ code: 'storage_unavailable', exitCode: 1, cause });
+    expect(isCliError(caught) && caught.message).not.toContain('PRIVATE_');
+    expect(closed).toBe(1);
+  });
+
+  it('an unowned history-db fault is infrastructure 9 and still tears the MCP children down', async () => {
+    // An injected errno-shaped fault has no actual I/O provenance; it must still tear down
+    // already-created MCP children while refusing to misreport a storage/invocation fault.
     const path = writeWorkflow('mcp-dbfault.relavium.yaml', MCP_WF);
     const { io } = captureIo();
     let closed = 0;
@@ -1613,16 +1657,16 @@ workflow:
               { id: 'fs', toolsAllowlist: ['read'], open: () => Promise.resolve(conn) },
             ]),
           openRunStore: () => {
-            throw new Error('EACCES: permission denied');
+            throw Object.assign(new Error('PRIVATE_HISTORY_FAULT'), { code: 'EACCES' });
           },
         },
       );
     } catch (error) {
       caught = error;
     }
-    expect(isCliError(caught) && caught.code).toBe('invalid_invocation');
-    expect(isCliError(caught) && caught.exitCode).toBe(EXIT_CODES.invalidInvocation);
-    expect(isCliError(caught) && caught.message).toContain('run history database');
+    expect(isCliError(caught) && caught.code).toBe('cli_internal');
+    expect(isCliError(caught) && caught.exitCode).toBe(EXIT_CODES.infrastructureFailed);
+    expect(isCliError(caught) && caught.message).not.toContain('PRIVATE_HISTORY_FAULT');
     expect(closed).toBe(1); // the spawned connection did not leak past the fault
   });
 

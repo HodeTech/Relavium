@@ -74,8 +74,8 @@ describe('native diagnostic acknowledgement (ADR-0098)', () => {
       try {
         const done = ioFor(stderr).writeErrAcknowledged('notice\n');
         const assertion = expect(done).rejects.toMatchObject({
-          code: 'internal',
-          message: 'The diagnostic output could not be acknowledged.',
+          code: 'output_unavailable',
+          exitCode: 9,
         });
         if (kind === 'callback') stderr.complete?.(new Error('SECRET_NATIVE_FAILURE'));
         else stderr.destroy(kind === 'destroy' ? new Error('SECRET_NATIVE_FAILURE') : undefined);
@@ -107,7 +107,9 @@ describe('native diagnostic acknowledgement (ADR-0098)', () => {
       }
       const io = ioFor(stderr);
       stderr.destroy(new Error('SECRET_FILE_FAILURE'));
-      await expect(io.writeErrAcknowledged('notice\n')).rejects.toMatchObject({ code: 'internal' });
+      await expect(io.writeErrAcknowledged('notice\n')).rejects.toMatchObject({
+        code: 'output_unavailable',
+      });
       await released(stderr);
       expect(stderr.closed).toBe(true);
     } finally {
@@ -121,7 +123,7 @@ describe('native diagnostic acknowledgement (ADR-0098)', () => {
     stderr.destroy();
     await new Promise<void>((resolve) => setImmediate(resolve));
     await expect(ioFor(stderr).writeErrAcknowledged('notice\n')).rejects.toMatchObject({
-      code: 'internal',
+      code: 'output_unavailable',
     });
     expect(stderr.frames).toEqual([]);
     await released(stderr);
