@@ -1,6 +1,6 @@
 # CLI Command Reference (`relavium`)
 
-> Last updated: 2026-10-16
+> Last updated: 2026-10-17
 
 - **Status**: Reference (partial — surface defined, exact flags to be finalized as the CLI is built)
 - **Surface**: CLI (`relavium`)
@@ -914,13 +914,39 @@ normal cleanup. Best-effort retention warnings retain their actual delivery tail
 and output-failure classification. The optional builder ownership port preserves
 accounting/publication failures across repeated host-safe-close checks.
 
-The new per-mount terminal owner requires explicit acquisition custody and joins
-entered suspension/publication work before final native release. Its actual
-chat/Home Ink, persistent alternate-screen and job-control adapters remain staged.
-Fresh/resumed/replaced chat/Home hosts, wizard custody and global native/bootstrap
-activation still require integration and complete cumulative/platform acceptance.
-The [implementation register](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-session-substrate-checkpoint--2026-10-16)
-records this limited scope; whole Step 8 remains open.
+Fresh, resumed, cleared and reseated standalone chats, and every actual pending,
+late or superseded Home chat, now retain their construction and post-build
+persistence/view setup independently of the UI's selected session. Equal durable
+session IDs do not identify an instance's cleanup. The shared database closes in
+the surface's final cleanup stage, after host roots and transferred producer,
+accounting, prompt, catalog and output work. Signal custody remains until that
+cleanup succeeds; a failed database close cannot remove the original signal path.
+
+Each actual Ink mount reserves custody before render, synchronously seals key,
+paste, mouse and submit dispatch, and joins complete entered suspension and
+job-control continuations before unmount and captured-input release. Native exit
+and final control delivery are separate acknowledgements. The persistent chat
+buffer retains all actual mounts and job bindings until their positive retirement;
+no-Ink job-control custody covers old-host cleanup as well as rebuild. Control
+delivery precedes native handoff and final buffer restoration precedes summary
+publication. Every new final write checks the original remaining budget.
+
+Home onboarding binds informational output and each select/password prompt to
+captured streams. The installed spinner's ambient-input path is excluded; a fixed
+verification notice supplies progress. Actual provider validation remains retained
+after its UX timeout or cancellation result. Every continuation rechecks admission,
+including the provider command's internal post-secret-read boundary before keychain
+and database mutation. Catalog discovery is joined before database cleanup and
+checks admission before publication; unexpected local clock/key/publication faults
+are observed before sibling discovery joins. Optional cache reads keep their
+existing recoverable UI policy.
+
+These are **partial Step 8d implementation claims, not acceptance**. Global native,
+bootstrap, caught/fatal/background/sink activation, complete cumulative reviews,
+security and actual required platform acceptance remain open. The
+[session substrate checkpoint](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-session-substrate-checkpoint--2026-10-16)
+and [chat/Home checkpoint](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-chat-and-home-integration-checkpoint--2026-10-17)
+record their exact scopes. Whole Step 8 remains open.
 
 ### Workflow and terminal ownership
 

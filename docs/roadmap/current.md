@@ -1143,7 +1143,10 @@ checks preserve that execution attribution. [Step 8c workflow/terminal integrati
 at `dbab25d8` after two NEW complete cumulative clean rounds, a separate clean
 security sitting and successful full CI plus all four same-tarball platform
 consumers. Step 8d session/terminal integration and product fatal activation,
-whole Step 8 and Steps 9–19 remain open. Step 8d proceeds automatically. The
+whole Step 8 and Steps 9–19 remain open. Its
+[2026-10-17 chat/Home implementation checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-chat-and-home-integration-checkpoint--2026-10-17)
+records partial session/native-terminal integration and the remaining activation,
+review/security/platform gates without claiming acceptance. Step 8d proceeds automatically. The
 [final proposal reviews](phases/phase-2.5.5-hardening-and-remediation.md#second-maintainer-rereview-final-proposal-readiness--2026-10-16)
 remain proposal evidence, not implementation review. The selected encrypted archive
 method persists; production recipient/recovery belongs to Wave 4b release setup.

@@ -6069,3 +6069,55 @@ Two NEW complete cumulative clean rounds from the original `d9625ff0` boundary,
 a separate NEW clean security sitting and actual required platform evidence are
 still owed after final integration. **Whole Step 8 and Steps 9–19 remain open.**
 No new ADR, deferral, credential, provider call, billing or user decision is needed.
+
+## Wave 3 Step 8d chat and Home integration checkpoint — 2026-10-17
+
+**Partial implementation on `development` at `f39a360d`; not Step 8d acceptance.** The
+[canonical session ownership contract](../../reference/cli/commands.md#session-ownership-implementation-checkpoint)
+now describes actual fresh/resume/clear/reseat and pending/superseded Home
+construction, per-instance host/view/persister lifetime, captured Ink/prompt input,
+shared database cleanup and persistent terminal/job-control integration.
+One-shot acceptance is not inferred from the earlier substrate checkpoint.
+
+Source advisory reads identify and correct the following mechanisms. They are
+implementation advice, not either required complete cumulative clean round or
+the separate security sitting. Reports remain local and Git-ignored. The first
+53-path pin remains historical; subsequent fixes have their own source identity.
+Changes made during advisory reads are explicitly outside those earlier hashes.
+
+| Observed mechanism | Correction and permanent evidence |
+|---|---|
+| Readable-listener removal reentry consumes a pre-existing occurrence | Recheck actual multiplicity before every bounded removal. The real EventEmitter regression first fails at the baseline-preservation assertion, then passes. |
+| Mounted input continues while native teardown waits | Gate root key/paste/submit handling before dispatch, including Home mouse copy. Installed Ink with a held native drain first reproduces a second Ctrl-Z dispatch, then passes after sealing. |
+| Pending/replaced or equal-ID hosts are confused with the current UI pointer | Retain every actual builder invocation through post-build setup and all actual roots/children. Existing physical native forwarding controls retain separate instance/child counts. |
+| Validation timeout or catalog completion permits early database close | Move shared close into surface cleanup after all roots/transferred work. Actual Home lifetime regressions retain held fake generation/discovery and refuse post-stop catalog writes. |
+| Failed database close drops signal custody | Remove the signal subscription only after shared cleanup succeeds. A later terminating signal retains the original infrastructure disposition and deadline. |
+| Partial view/exit-net/input registration or a failed remover supplies false release | Transfer custody before registration, guard empty construction, attempt sibling releases independently and retain uncertainty. Keep the synchronous exit net through final control ACK. |
+| Unknown local catalog faults wait behind a held sibling | Report clock/key/publication faults at their actual boundary. Preserve optional cache-read recovery and ordinary provider-discovery isolation. |
+| Old-host cleanup has no job-control handler; final publication starts after expiry | Hand off gap custody before waiting on receipts/MCP. Check remaining budget at each final publication; retain failed output classification before sibling joins. |
+| Control enqueue is treated as native handoff | Retain exact captured delivery promises and await release/reclaim before native continuation. Final persistent-buffer restoration follows all actual child mounts and bindings. |
+| Wizard or consent continuation writes after stop | Bind native prompts and cancellation, omit the installed ambient-input spinner, retain raw validation, and recheck admission after every relevant await and before credential writes. |
+
+No new dependency, ADR, deferral, paid provider call, credential or user decision
+is introduced. The bootstrap remains unchanged and native product-wide fatal
+activation is still staged. Complete Step 8d acceptance still requires two NEW
+complete cumulative clean rounds from `d9625ff0`, a separate NEW clean security
+sitting and actual required same-artifact platform evidence. Whole Step 8 and
+Steps 9–19 remain open; work proceeds automatically.
+
+The final frozen partial source has **56 product/tool paths**, with no source
+drift across the author gates. Fresh ordinary CLI execution passes **314 files /
+5,266 tests / ten established skips**. The workspace lint/typecheck/test gate
+passes **23 tasks**, comprising twenty valid cache hits and three fresh CLI tasks;
+other packages' cached inventories are not a fresh whole-repository execution.
+The build passes **six tasks**, with five cache hits and a fresh CLI build.
+Tool lint, seam and engine-dependency fences, compiled CLI smoke and all **175
+compiled bootstrap controls** pass on macOS/Node **22.23.1**. The finite packaged
+graph has **25 JavaScript outputs / seventeen declared external dependencies**.
+Both affected secrets controls (`export-live-review-notice` and
+`export-live-interactive-notice-routing`) pass separate isolated
+fixed/removal/restored cycles against the complete **130-case** chat file, with
+the expected assertion failures and byte-identical restoration. These selected
+cycles do not claim completion of the entire secrets-control family. Synthetic
+TTY/input controls and local macOS smoke do not establish actual Windows session
+shutdown, operator-terminal restoration or complete Step 8d acceptance.
