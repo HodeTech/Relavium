@@ -5238,3 +5238,59 @@ literal leaf imports and explicitly justifies only the owned URL-path fixture.
 Two NEW complete cumulative clean rounds after these final material fixes,
 affected security review and real required same-artifact platform success remain
 necessary. No new decision, dependency or deferral is introduced.
+
+### Step 7b third cumulative review and completed-consumer correction — 2026-10-16
+
+The third NEW complete cumulative review at `eb21b86c` covers **103 paths /
+193 hunks / 59 full new files** and is **non-clean**. It verifies the prior four
+corrections, then independently reproduces the actual Windows consumer's outer
+cleanup failure. All 175 bootstrap controls and six installed cases finish, but
+`consume.mjs` still hosts installed SQLite native loads and fails to remove its
+installation. A success receipt/summary was written before that required removal.
+The real success-only upload and separate job-result aggregate refuse the failed
+job. Its local 153 tooling / 106 runtime / 175 compiled passes do not close this
+failure. The parent reads the full report and the separate native security sitting.
+
+The correction runs the complete installed cohort in one bounded native worker,
+joins actual process closure, and binds its bounded private report to the observed
+worker PID, parent, source, artifact and runtime. The cleanup process imports no
+installed native module. Required installation removal precedes both success
+receipt and summary. An exercise failure retains its exact primary value through
+secondary cleanup or diagnostic failure; a cleanup-only failure prevents success.
+Seven permanent controls include a real copied SQLite addon in the worker,
+forbidden native loading in the parent, worker exit before removal/publication,
+wrong PID, nonzero-after-early-report, cleanup refusal and Error/null/undefined
+primary retention. Existing timeout/output/join controls remain required.
+
+Actual CI `38866746303` passes the **complete usage causal gate**, correcting the
+nested replay alias failure. Pack, current Linux/macOS and exact Node 22.0.0 Linux
+also pass, with the same remote `5cc4e96e…` artifact; Windows/aggregate remain
+failed at this historical source. Independently downloaded tar bytes and three
+successful receipts bind to clean source `eb21b86c`; no four-leg or full-CI pass
+is inferred. The local `df7935b2…` candidate is separately attributed.
+
+The same run exposes four stale secrets-workload declarations after Step 2's
+historical-reader regressions: the gate file contains 65, not 61 cases; each of
+three serializer controls contains 25, not 24. A separate source-fenced actual
+collection audits all **41 secrets declarations / 23 files / 1,041 cases** and
+all **110 filesystem declarations / 38 files / 658 cases**. Only those four
+counts differ. Their exact counts are corrected without weakening whole-file
+equality, runtime receipts, semantic markers, restoration or source provenance.
+The four selected fixed/removal/restored cohorts retain **65/25/25/25** cases per
+phase, with **3/2/3/2** expected semantic removal failures and byte-identical
+restoration. Selected runs remain incomplete-family evidence.
+
+The first author tooling run exposes a separate test-isolation assumption:
+coordinator tests compare all matching names in the shared OS temp root while
+four real selected controls create/remove their own roots concurrently. Each
+coordinator fixture now supplies and scans its own TMPDIR/TMP/TEMP directory;
+the scratch-leak assertion remains exact. No other invocation's temp state is
+treated as this fixture's cleanup failure. The corrected **482 acceptance-tool
+tests** pass with zero skips. Initial author lint catches a moved summary binding
+and an unsafe-finally form; fixed lexical bindings and explicit primary capture
+pass lint without rule suppression. The earlier consumer attempt with that binding
+error remains failed evidence; its corrected local retry passes all 175/six cases.
+
+Affected security and two NEW complete cumulative clean rounds after these
+material corrections, plus actual required same-artifact platform success, remain
+open. No new ADR, dependency, deferral, credential or provider action is introduced.

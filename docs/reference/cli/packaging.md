@@ -103,6 +103,13 @@ allowlist, verifies installed public files, and records actual dependency versio
 Dependency installation uses the public registry; provider transport and keychain
 API controls use synthetic data and refusals.
 
+Installed native smoke and SQLite reads run in an owned bounded child. The
+installation cleanup owner joins actual child closure before removing the tree;
+a connection close alone does not unload a Windows native module. Required
+removal precedes success receipt/summary publication. Worker or cleanup failure
+prevents publication, and secondary cleanup/diagnostic failure preserves the
+primary outcome. Private worker identity stays outside public receipts.
+
 Required workflows share one public tarball and a `compiled_package_test` receipt
 with current `.nvmrc` Linux/macOS/Windows and exact Node 22.0.0 Linux. Each repeats
 untouched-entry bootstrap controls and actual workflow, gate, budget, chat/resume,
