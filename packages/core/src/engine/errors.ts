@@ -55,9 +55,9 @@ export type EngineStateErrorCode =
  * will fail identically forever. A surface uses this to tell a caller "try again shortly" from "never call
  * this again" — the CLI maps it to its own exit code (ADR-0079 §7).
  */
-export const TRANSIENT_ENGINE_STATE_CODES: readonly EngineStateErrorCode[] = [
+export const TRANSIENT_ENGINE_STATE_CODES: readonly EngineStateErrorCode[] = Object.freeze([
   'run_owned_elsewhere',
-];
+]);
 
 /** Whether an {@link EngineStateError} is worth retrying unchanged. */
 export function isTransientEngineStateError(error: EngineStateError): boolean {

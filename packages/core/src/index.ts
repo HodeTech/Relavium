@@ -202,7 +202,11 @@ export type {
 } from './engine/node-executor.js';
 
 // Typed run-loop API-boundary errors (1.N) — narrow on `code`, never on `message`.
-export { EngineStateError, isTransientEngineStateError } from './engine/errors.js';
+export {
+  EngineStateError,
+  isTransientEngineStateError,
+  TRANSIENT_ENGINE_STATE_CODES,
+} from './engine/errors.js';
 
 // ADR-0080's dispatch-side journal seam, re-exported so a `ToolDispatchContext` consumer can satisfy the
 // required port from this package alone. The loud unwired variant is what a fixture with no effects passes.
