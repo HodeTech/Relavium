@@ -349,8 +349,10 @@ projection. Stored JSON must be an object with string members; malformed JSON,
 arrays, null and non-string members throw a content-free `TypeError` with message
 `Stored provider headers are invalid.` and no original parse cause. Valid own keys,
 including `__proto__`, remain own data without mutating the output prototype. These
-corruption errors remain unexpected CLI `internal` failures (exit 1), not policy
-refusals or silent empty maps.
+At the CLI boundary, these corruption errors use the fixed `cli_internal`
+projection (exit 9), following the [CLI failure classification](../cli/commands.md#failure-classification-and-remedies).
+They are not policy refusals or silent empty maps. The fixed projection contains
+no stored header names or values.
 
 The provider-list human and NDJSON paths, with or without `--verify`, omit the
 header map and its names/values. Diagnostic projections must also omit them. The

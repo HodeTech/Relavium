@@ -226,3 +226,15 @@ The [implementation checkpoint](../roadmap/phases/phase-2.5.5-hardening-and-reme
 keeps author, installed-host, causal and review evidence separately attributed.
 Production fatal activation, workflow/session health integration and whole Step 8
 remain staged in 8c–8d. This note grants no acceptance or safe-store-close ACK.
+
+## Canonical classification landing correction — 2026-10-16
+
+The second new cumulative Step 8b review identifies two surviving reference
+claims of unexpected CLI failure exiting 1. The
+[provider-header reference](../reference/shared-core/database-schema.md#interim-provider-header-policy)
+and [Home reference](../reference/cli/home.md#the-tty-gate-when-the-home-opens)
+now follow the already-approved
+[CLI failure classification](../reference/cli/commands.md#failure-classification-and-remedies)
+implemented by the origin/classification work. Known operational and invocation
+dispositions remain distinct. This repairs documentation drift, changes no runtime
+behaviour or decision, and grants no Step 8b or whole-Step-8 acceptance.

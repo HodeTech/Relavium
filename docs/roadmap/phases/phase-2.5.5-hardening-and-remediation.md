@@ -5741,3 +5741,44 @@ all **11** test tasks pass (ten valid cache hits), including a fresh CLI run of
 tools lint/typecheck and source-fence checks retain their separately recorded
 results. These are author checks before the new source freeze; actual-platform,
 causal and independent final-correction acceptance are not inferred.
+
+### Step 8b canonical exit-classification correction — 2026-10-16
+
+The new complete cumulative correctness round 1 and separate security sitting at
+**`ab50be11`** are clean, but new cumulative round 2 is **NONCLEAN**: the
+[provider-header reference](../../reference/shared-core/database-schema.md#interim-provider-header-policy)
+and [Home reference](../../reference/cli/home.md#the-tty-gate-when-the-home-opens)
+still describe unexpected failures as exit 1. The parent verifies both against
+actual classification and the permanent provider-header/Home regressions, then
+corrects the references to the already-approved CLI contract. Known operational 1,
+invalid invocation 2 and staged caught/fatal integration remain distinct. No
+runtime, test, tool, dependency or decision changes in this correction.
+
+All three sittings cover **120 paths / 485 hunks / 36 complete added files** from
+the unchanged whole-Step-7 base `d9625ff0`; each independently executes all
+**48 changed test files / 1,100 passes / one actual-Windows-only local skip** and
+inspects both complete retained raw captures. The parent reads the full reports
+and ledgers before accepting their dispositions. The earlier clean sittings do
+not accept this subsequent documentation correction; two NEW complete cumulative
+clean rounds remain required.
+
+Executed native/control and platform evidence remains attributed to `ab50be11`:
+**24 native controls / 72 phases / 1,557 repeated cases / 74 semantic failures**,
+**23 forwarding controls / 69 phases / 4,383 repeated cases / 39 semantic failures**,
+and **141 zero-unhandled completed receipts**. The parent and all three reviewers
+independently inspect actual source/dependency/runtime pins, exact restoration,
+strict full inventories, bounded retention and removed graphs. Native retains
+**1,173 files / 31,501,966 bytes**; forwarding **972 / 56,727,016**, with 207 MCP
+fixture pin checks and no fabricated per-phase fixture-body custody.
+
+CI **38904219484** executes the same **425,556-byte** tarball
+`cc269b86836876e4cb931bf62ad5dddf79591263d12c2ca1863ec7a2af58c0c6` on current
+Windows/macOS/Linux and exact Node 22.0.0 Linux; all four consumers and the required
+aggregate pass **175 bootstrap controls / seven installed cases** each. The parent
+and reviewers independently bind all five downloaded ZIPs to API digests and
+inspect all 71 public tar members and strict reports. Public success receipts do
+not export remote private per-mode journals. Broader CI completion retains its
+separate actual status; no overall-CI-green or documentation-head execution is
+inferred. Runtime byte equivalence must be independently checked before reusing
+this attributed evidence. Step 8b acceptance, 8c–8d, whole Step 8 and later Wave 3
+work remain open; no new ADR or user decision is needed.
