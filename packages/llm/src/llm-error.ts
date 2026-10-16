@@ -1,4 +1,5 @@
 import {
+  RelaviumError,
   ownUsageEvidence,
   InvalidUsageEvidenceError,
   stripTerminalControls,
@@ -76,7 +77,7 @@ export function kindFromHttpStatus(status: number): LlmErrorKind {
  * `FallbackChain` (1.K) catches this and narrows on `.llmError` for its retry/fatal decision. A
  * `stream` surfaces the same `LlmError` in an `error` `StreamChunk` instead of throwing.
  */
-export class LlmProviderError extends Error {
+export class LlmProviderError extends RelaviumError {
   readonly llmError: LlmError;
 
   constructor(llmError: LlmError) {
