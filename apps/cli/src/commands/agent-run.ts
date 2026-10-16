@@ -155,7 +155,9 @@ async function agentRunOwned(
     // The ADR-0065 §2 user-pricing overlay (2.5.G S10) — so a one-shot live turn enforces + tracks a user-priced
     // model. SKIPPED under `--fixture`: cassette pricing stays deterministic and fully offline. Usage coverage
     // and realized attribution still use the local database, without consulting the user pricing overlay.
-    const resolvePrice = offline ? undefined : loadUserPricingOverlay(homeDir, deps.io);
+    const resolvePrice = offline
+      ? undefined
+      : loadUserPricingOverlay(homeDir, deps.io, deps.invocation);
 
     // An unknown `<agent>` (path or id) throws a typed CliError here (exit 2), before any turn. The build is
     // async (2.R): it connects the agent's inline stdio `mcp_servers` (a connect failure is a fail-loud exit-2

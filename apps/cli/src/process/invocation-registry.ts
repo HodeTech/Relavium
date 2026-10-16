@@ -52,6 +52,11 @@ export interface SessionOwner extends OwnerBase {
   readonly surface: 'chat' | 'home' | 'agent';
 }
 
+/** Management/maintenance operations own raw work and cleanup, never workflow receipt health. */
+export interface CommandOwner extends OwnerBase {
+  readonly kind: 'command';
+}
+
 export interface TerminalOwner extends OwnerBase {
   readonly kind: 'terminal';
   readonly restore: (budget: RemainingBudget) => void | Promise<void>;
@@ -69,7 +74,12 @@ export interface NativeOwner extends OwnerBase {
   readonly exitReap?: () => void;
 }
 
-export type InvocationOwner = WorkflowOwner | SessionOwner | TerminalOwner | NativeOwner;
+export type InvocationOwner =
+  | WorkflowOwner
+  | SessionOwner
+  | CommandOwner
+  | TerminalOwner
+  | NativeOwner;
 export type OwnerStage =
   | 'stop'
   | 'join'

@@ -529,6 +529,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
     const doctorProbes =
       deps.doctorProbes ??
       assembleDoctorProbes({
+        ...(ownership === undefined ? {} : { workOwner: ownership.surface.work }),
         cwd: deps.global.cwd,
         ...(deps.global.configPath === undefined ? {} : { configPath: deps.global.configPath }),
         resolver: providers,
@@ -605,6 +606,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       const chatDoctorProbes =
         deps.doctorProbes ??
         assembleDoctorProbes({
+          ...(built.workOwner === undefined ? {} : { workOwner: built.workOwner }),
           cwd: deps.global.cwd,
           ...(deps.global.configPath === undefined ? {} : { configPath: deps.global.configPath }),
           resolver: providers,

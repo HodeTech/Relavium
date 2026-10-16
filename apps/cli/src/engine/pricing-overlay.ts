@@ -1,5 +1,7 @@
 import { closeQuietly } from '../process/close-quietly.js';
 import type { CliIo } from '../process/io.js';
+import type { CliInvocation } from '../process/invocation.js';
+import { withSynchronousResource } from '../process/synchronous-resource.js';
 import { randomUUID } from 'node:crypto';
 
 import {
@@ -96,23 +98,34 @@ function readPricingRows(db: Db): PricingOverlay {
 export function loadUserPricingOverlay(
   homeDir: string,
   io: Pick<CliIo, 'writeErr'>,
+  invocation?: CliInvocation,
 ): PricingOverlay | undefined {
-  let opened: { db: Db; close: () => void };
-  try {
-    opened = openLocalDb(homeDir);
-  } catch {
-    return undefined; // a broken db is reported by the surface's own store open, not this best-effort read
-  }
-  try {
-    // Same M4-safe catalog cutover as readUserPricingOverlay, on this transient handle (ADR-0072 point 7).
-    syncCatalogFromDb(opened.db, readStoreDeps.now);
-    return buildUserPricingOverlay(opened.db);
-  } catch {
-    // A READ fault too (a corrupt provider/catalog row, a locked table) degrades to `undefined` — the docstring's
-    // "any db fault ⇒ undefined" contract is unconditional, so the overlay is never the thing that crashes a
-    // surface; the surface's own store open is the authoritative fault report.
-    return undefined;
-  } finally {
-    closeQuietly(io, 'history database', () => opened.close());
-  }
+  return withSynchronousResource(
+    invocation,
+    () => {
+      let opened: { db: Db; close: () => void };
+      try {
+        opened = openLocalDb(homeDir);
+      } catch {
+        // Preserve optional open/read degradation; the authoritative store reports its own failure.
+        return { db: undefined, close: () => undefined };
+      }
+      return {
+        db: opened.db,
+        close: () =>
+          invocation === undefined
+            ? closeQuietly(io, 'history database', () => opened.close())
+            : opened.close(),
+      };
+    },
+    ({ db }) => {
+      if (db === undefined) return undefined;
+      try {
+        syncCatalogFromDb(db, readStoreDeps.now);
+        return buildUserPricingOverlay(db);
+      } catch {
+        return undefined;
+      }
+    },
+  );
 }

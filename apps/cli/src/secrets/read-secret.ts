@@ -1,4 +1,5 @@
 import { CliError } from '../process/errors.js';
+import { Readable } from 'node:stream';
 
 /**
  * Read a secret (an API key) from **stdin** for `relavium provider set-key` (2.C). The key is deliberately
@@ -52,7 +53,9 @@ function limitFailure(): CliError {
 export async function readSecretFromStdin(
   context: StdinSecretContext = API_KEY,
   source?: StdinSecretSource,
+  lifecycle?: { readonly signal: AbortSignal; readonly onFailure: (cause: unknown) => void },
 ): Promise<string> {
+  lifecycle?.signal.throwIfAborted();
   let input: StdinSecretSource;
   let isTTY: boolean | undefined;
   try {
@@ -70,6 +73,26 @@ export async function readSecretFromStdin(
     throw readFailure(cause);
   }
   let finished = false;
+  const native = input instanceof Readable ? input : undefined;
+  const cancelled = new Error('Secret input stopped.');
+  let closing: Promise<void> | undefined;
+  let acknowledgeClose: () => void = () => undefined;
+  const onClose = (): void => acknowledgeClose();
+  const stop = (): void => {
+    if (native === undefined || closing !== undefined) return;
+    closing = new Promise((resolve) => {
+      acknowledgeClose = resolve;
+    });
+    try {
+      native.once('close', onClose);
+      if (native.closed) acknowledgeClose();
+      native.destroy(cancelled);
+    } catch (cause) {
+      lifecycle?.onFailure(cause);
+    }
+  };
+  lifecycle?.signal.addEventListener('abort', stop, { once: true });
+  if (lifecycle?.signal.aborted === true) stop();
   const chunks: Buffer[] = [];
   let totalBytes = 0;
   try {
@@ -93,6 +116,7 @@ export async function readSecretFromStdin(
           } else if (typeof chunk === 'string') size = chunk.length;
         }
       } catch (cause) {
+        if (cause === cancelled) lifecycle?.signal.throwIfAborted();
         throw readFailure(cause);
       }
       if (done) {
@@ -128,7 +152,11 @@ export async function readSecretFromStdin(
         // Best-effort release must not replace the primary refusal with foreign cleanup text.
       }
     }
+    lifecycle?.signal.removeEventListener('abort', stop);
+    await closing;
+    native?.removeListener('close', onClose);
   }
+  lifecycle?.signal.throwIfAborted();
   // Decode once to preserve code points split across Buffer chunks; only callers may trim values.
   const payload = Buffer.concat(chunks, totalBytes).toString('utf8');
   if (payload.trim() === '') throw new CliError('invalid_invocation', context.emptyMessage);

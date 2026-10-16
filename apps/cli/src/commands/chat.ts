@@ -618,7 +618,7 @@ async function chatCommandBody(
   // The ADR-0065 §2 user-pricing overlay (2.5.G S10) — a transient read of the `model_catalog` `source='user'`
   // rows, so a user-priced model is enforced by `[chat].max_cost_microcents` + tracked in realized cost. NON-FATAL:
   // an unopenable db yields `undefined` here and surfaces cleanly through the session store open below.
-  const resolvePrice = loadUserPricingOverlay(homeDir, deps.io);
+  const resolvePrice = loadUserPricingOverlay(homeDir, deps.io, deps.invocation);
 
   // An unknown --agent / un-inferrable default model throws a typed CliError here (exit 2), before any session.
   // The build is async (2.R): it connects the agent's inline stdio `mcp_servers` (a connect failure is a
@@ -732,6 +732,7 @@ async function chatCommandBody(
     const doctorProbes =
       deps.doctorProbes ??
       assembleDoctorProbes({
+        ...(built.workOwner === undefined ? {} : { workOwner: built.workOwner }),
         cwd: deps.global.cwd,
         ...(deps.global.configPath === undefined ? {} : { configPath: deps.global.configPath }),
         resolver: providers,
@@ -1024,6 +1025,7 @@ async function chatResumeCommandBody(
     const doctorProbes =
       deps.doctorProbes ??
       assembleDoctorProbes({
+        ...(built.workOwner === undefined ? {} : { workOwner: built.workOwner }),
         cwd: deps.global.cwd,
         ...(deps.global.configPath === undefined ? {} : { configPath: deps.global.configPath }),
         resolver: providers,
@@ -1923,6 +1925,7 @@ async function buildFreshChatWiring(
     throw err;
   }
   const doctorProbes = assembleDoctorProbes({
+    ...(built.workOwner === undefined ? {} : { workOwner: built.workOwner }),
     cwd: deps.cwd,
     ...(deps.configPath === undefined ? {} : { configPath: deps.configPath }),
     resolver: deps.providers,
@@ -2219,6 +2222,7 @@ async function buildReseatWiring(
   // transcript rather than a raw `io.writeErr` the alt buffer would discard (Step-4b-3 Sonnet review).
   for (const line of mcpSkippedLines(resumed.mcpSkipped)) seeded.store.notice(line);
   const doctorProbes = assembleDoctorProbes({
+    ...(resumed.workOwner === undefined ? {} : { workOwner: resumed.workOwner }),
     cwd: deps.global.cwd,
     ...(deps.configPath === undefined ? {} : { configPath: deps.configPath }),
     resolver: deps.providers,

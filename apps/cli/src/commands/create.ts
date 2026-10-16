@@ -9,7 +9,8 @@ import {
   writeAuthoredFile,
   type CreatePrompter,
 } from '../authoring/authoring.js';
-import { createClackPrompter } from '../authoring/create-prompter.js';
+import { createClackPrompter, createOwnedClackPrompter } from '../authoring/create-prompter.js';
+import type { CommandLifetime } from '../process/command-lifetime.js';
 import { warnSnapshotLiterals } from '../authoring/snapshot-notice.js';
 import { CliError } from '../process/errors.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
@@ -23,6 +24,7 @@ export interface CreateCommandArgs {
 }
 
 export interface CreateCommandDeps {
+  readonly commandLifetime?: CommandLifetime;
   readonly io: CliIo;
   readonly global: GlobalOptions;
   /** Injectable wizard (tests inject canned answers); default is the `@clack/prompts` wizard. */
@@ -63,7 +65,15 @@ export async function createCommand(
     );
   }
 
-  const spec = await (deps.prompter ?? createClackPrompter()).gather();
+  const owner = deps.commandLifetime?.work;
+  owner?.assertAdmitting();
+  const spec = await (
+    deps.prompter ??
+    (owner === undefined
+      ? createClackPrompter()
+      : createOwnedClackPrompter(deps.commandLifetime?.terminalIo ?? deps.io, owner))
+  ).gather();
+  owner?.assertAdmitting();
   if (spec === null) {
     // The user cancelled the wizard (Ctrl-C / ESC) — nothing was written; a clean, non-fault exit.
     deps.io.writeErr('create cancelled.\n');

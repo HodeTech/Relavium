@@ -1,3 +1,4 @@
+import type { CommandLifetime } from '../process/command-lifetime.js';
 import type { Db, RunRecord } from '@relavium/db';
 import { byCodeUnit } from '@relavium/shared';
 
@@ -16,6 +17,7 @@ export interface ListCommandArgs {
 }
 
 export interface ListCommandDeps {
+  readonly commandLifetime?: CommandLifetime;
   readonly io: CliIo;
   readonly global: GlobalOptions;
   /** Injectable history-db opener — tests pass an in-memory db; production opens `~/.relavium/history.db`. */
@@ -65,12 +67,13 @@ export function listCommand(args: ListCommandArgs, deps: ListCommandDeps): ExitC
   const lastBySlug = new Map<string, RunRecord>();
   if (kind === 'workflows' && entries.some((entry) => entry.valid)) {
     const { reader, close } = openHistoryReader(homeDir, deps.openDb);
+    deps.commandLifetime?.adoptCleanup(close);
     try {
       for (const summary of reader.loadLatestRunPerWorkflow()) {
         lastBySlug.set(summary.slug, summary.lastRun);
       }
     } finally {
-      close();
+      if (deps.commandLifetime === undefined) close();
     }
   }
   // A valid workflow entry's trusted last run, or `undefined` (an invalid entry never picks up an overlay).

@@ -2,6 +2,7 @@ import type { CliInvocation } from '../process/invocation.js';
 import type { ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
+import type { CommandLifetime } from '../process/command-lifetime.js';
 
 export type CommandOptionValue = string | boolean | readonly string[] | undefined;
 
@@ -11,6 +12,8 @@ export interface CommandInput {
 }
 
 export interface DispatchContext {
+  /** Runtime-only management owner; workflow/session drivers keep their own lifetime. */
+  readonly commandLifetime?: CommandLifetime;
   /** One bootstrap owner, retained through lazy routes; native owner adapters land separately. */
   readonly invocation?: CliInvocation;
   readonly io: CliIo;

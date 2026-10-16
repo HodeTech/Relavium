@@ -27,7 +27,11 @@ export async function witnessNativeToolProcess(
     ...(nativeProcesses === undefined ? {} : { nativeProcesses }),
   });
   if (host.process === undefined) throw new Error('the real process arm is missing');
-  expect(invocation.registry.activeOwners).toBe(expectedParentOwners);
+  // A synchronously closed transient DB can still have its positive retirement reaction
+  // queued. Require its actual removal before measuring the stable native-parent baseline.
+  await vi.waitFor(() => expect(invocation.registry.activeOwners).toBe(expectedParentOwners), {
+    interval: 1,
+  });
   const pending = host.process.spawn(
     process.execPath,
     ['-e', 'setTimeout(() => process.stdout.write("native-witness"), 150)'],

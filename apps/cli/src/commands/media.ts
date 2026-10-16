@@ -7,6 +7,8 @@ import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import { stringifyJsonLine } from '../render/sanitize.js';
+import { withCommandLifetime, type CommandLifetime } from '../process/command-lifetime.js';
+import type { CliInvocation } from '../process/invocation.js';
 
 export interface MediaPruneArgs {
   readonly legacyOffline: boolean;
@@ -16,7 +18,13 @@ export interface MediaPruneArgs {
 /** ADR-0106: strict acknowledgements precede even CAS construction; no config/history/key services. */
 export async function pruneTemporariesCommand(
   args: MediaPruneArgs,
-  deps: { readonly io: CliIo; readonly global: GlobalOptions; readonly homeDir?: string },
+  deps: {
+    readonly io: CliIo;
+    readonly global: GlobalOptions;
+    readonly homeDir?: string;
+    readonly invocation?: CliInvocation;
+    readonly commandLifetime?: CommandLifetime;
+  },
 ): Promise<ExitCode> {
   if (args.legacyOffline !== true || args.force !== true) {
     throw new CliError(
@@ -24,6 +32,11 @@ export async function pruneTemporariesCommand(
       'Temporary maintenance requires --legacy-offline and --force.',
     );
   }
+  return withCommandLifetime(deps, (owned) => pruneOwned({ ...deps, ...owned }));
+}
+
+async function pruneOwned(deps: Parameters<typeof pruneTemporariesCommand>[1]): Promise<ExitCode> {
+  deps.commandLifetime?.work.assertAdmitting();
   let report: Awaited<ReturnType<FilesystemMediaStore['pruneLegacyTemporaries']>>;
   try {
     const store = new FilesystemMediaStore(join(globalConfigDir(deps.homeDir), 'media'));
@@ -36,6 +49,7 @@ export async function pruneTemporariesCommand(
     }
     throw storageBoundaryError(error);
   }
+  deps.commandLifetime?.work.assertAdmitting();
   const output = deps.global.json
     ? `${stringifyJsonLine(report)}\n`
     : `Temporary maintenance: removed ${report.removed}, retained ${report.retained}.\n${Object.entries(

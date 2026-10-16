@@ -8,6 +8,7 @@ import { createOsKeychainStore } from '../secrets/os-keychain.js';
 import type { KeychainStore } from '../secrets/keychain.js';
 import { buildProviderProbe, mcpSessionChecks } from './doctor-deep.js';
 import type { DoctorProbes } from './doctor.js';
+import type { ProviderProbeDeps } from './doctor-deep.js';
 
 /**
  * Assemble the production {@link DoctorProbes} from the host's real ports (2.5.C S5). Pure CONSTRUCTION — every
@@ -23,6 +24,7 @@ import type { DoctorProbes } from './doctor.js';
 const DOCTOR_KEYCHAIN_PROBE = 'doctor:reachability-probe';
 
 export interface DoctorHostInputs {
+  readonly workOwner?: ProviderProbeDeps['workOwner'];
   readonly cwd: string;
   readonly configPath?: string;
   /** The provider seam — the `--deep` probe validates each provider whose key resolves (keychain ∪ env). */
@@ -56,7 +58,10 @@ export function assembleDoctorProbes(inputs: DoctorHostInputs): DoctorProbes {
       fsScopeTier: 'sandboxed',
       workspaceDir: inputs.cwd,
     }).host,
-    deepProviders: buildProviderProbe({ resolver: inputs.resolver }),
+    deepProviders: buildProviderProbe({
+      resolver: inputs.resolver,
+      ...(inputs.workOwner === undefined ? {} : { workOwner: inputs.workOwner }),
+    }),
     deepMcp: () =>
       Promise.resolve(mcpSessionChecks(inputs.agentMcpServers ?? [], inputs.mcpSkipped ?? [])),
   };
