@@ -292,6 +292,13 @@ mutation methods; its callbacks and iterators do not expose the mutable backing 
 `Object.freeze(new Set())` or retaining a caller's live Set would not provide that ownership.
 Shape validation cannot detect a dishonest trusted embedding's fabricated provenance.
 
+The authority also snapshots/freezes the context definition array and its key/value entries
+before analysis. Engine resolution consumes that same `contextSource`, including across
+awaited capabilities and same-process resume. A caller mutation after `start()` cannot make
+resolution consume a different context definition from the one whose taint was analysed.
+The trusted raw resolver remains compatible with full workflows and accepts a minimal
+read-only context source; only engine resolution chooses the owned invocation source.
+
 Execution/preparation require this projection and owned membership. Missing or malformed
 metadata at an engine/public-template boundary raises fixed, content-free
 `WorkflowContextError` (`validation`, non-retryable). Direct `ExpressionSandbox.evaluate`
@@ -356,6 +363,17 @@ or a native serialization interrupt that prevents completion of the closure, pre
 disposition: `result_type` for `condition`, `non_serializable` for `transform`/`merge_fn`.
 The native interrupt does not receive a new deadline or become a successful denial observation.
 
+Top-level result conversion retains the installed bridge's supplemental `name`, `message`,
+`stack`, `fileName` and `lineNumber` fields, including inherited/non-enumerable fields when
+the serialized result does not supply a value. Hydration happens inside the single authored
+serialization; subsequent encoding uses detached JSON records/arrays without authored
+prototypes or callbacks. Nested Error values retain ordinary JSON semantics. Stack strings
+describe the current VM wrapper; their internal frame text is not a stable cross-version value.
+Ordinary thrown values use the same VM-owned conversion and fallback-text semantics before
+the unchanged host classifier. Their bounded JSON payload is private error transport, never
+an authored control arm. A VM-owned immutable Boolean distinguishes failed evaluation from
+successful-result serialization if the native closure cannot complete; it grants no extra time.
+
 The versioned private transport has closed `success`, `failure` and `denied` arms. Success
 contains the trusted original VM `typeof`, a primitive `payloadJson` string and, where needed,
 a closed number tag. The null-prototype outer envelope contains only trusted primitive metadata
@@ -374,6 +392,7 @@ resource limits remain unchanged; no unbounded host object dump/parse is introdu
 | Boolean/string/finite number | Preserve exact value | Preserve exact value |
 | Top-level NaN, ±Infinity, -0 | Preserve numeric value/sign using private tags | Same; later JSON persistence keeps existing normalization |
 | Object/array/null, including Map/Set | `result_type` | Existing JSON object semantics; Map/Set → `{}`; cycles fail |
+| Top-level Error / Error subclass | `result_type` | Retain enumerable data plus supplemental diagnostic fields; nested Errors keep ordinary JSON semantics |
 | Boxed primitive or object whose `toJSON` returns a non-null scalar | `result_type` | `non_serializable` |
 | Undefined/function/symbol/bigint | `result_type` | `non_serializable` |
 

@@ -4375,3 +4375,54 @@ clean reviews after the last material correction remain required before Step 4.
 Detailed baseline hashes, runtime identities, local probes and reports remain
 Git-ignored under docs/reviews; no production credential, paid call, release,
 archive upload or user decision is needed for this increment.
+
+
+### Wave 3 Step 3 review corrections — 2026-10-16
+
+The first complete cumulative review of `3222a8c6` is **not clean**: two High
+findings identify lost native top-level Error result metadata and changed ordinary
+thrown-value classification; one Medium identifies missing required provenance
+validation when agent/human templates are absent. The separate secret-flow
+security sitting corroborates the classification finding and is also **not clean**.
+Neither counts toward acceptance. The parent reads both full reports, independently
+compares the pinned Step 2 runtime and verifies the findings before correction.
+
+The private VM converter now preserves the pinned bridge's supplemental diagnostic
+fields and ordinary thrown-value normalization under the original shared deadline.
+Authored result/error conversion completes before the private denial check; only
+inert detached JSON reaches final encoding and the bounded primitive transport.
+Boxed values, nonfinite numbers, failed/cyclic/stateful conversion and denial during
+Error getters/toJSON have permanent actual-QuickJS controls. Stack frame text
+reflects the private wrapper and is not a stable ABI. Empty agent and human text
+still validates required owned provenance; absent assignee and existing cancellation
+contracts remain intact. New files contribute 216 parity and 38 empty-template
+regressions; the original red runs independently expose the repaired mechanisms.
+
+An additional parent reproduction finds a live context-definition ownership gap:
+a caller changes an originally clean definition after start, while taint analysis
+retains the earlier definition; successful node output exposes the synthetic
+canary. Taint analysis and raw resolution now consume the same frozen owned
+context definitions in fresh, resumed and budget-preparation paths. This is a
+context-definition snapshot, not a claim that every workflow field is immutable.
+Seventeen permanent actual-engine controls cover immediate and suspended-read
+mutations, same-process resume and trusted raw-resolver compatibility. Actual
+file-backed SQLite also pins the successful clean mutation control and native
+Error-result persistence, with nonempty event/step/run rows.
+
+Final corrected-source author gates pass: all workspace lint/typecheck, **600 files
+/ 13,720 passing tests / 20 established skips**, six-workspace isolation, source
+formatting/whitespace, dependency/vendor/platform fences and 3,365 relative links
+across 72 changed Markdown files. All six build tasks pass (five cached).
+Six fresh fixed/removal/restored cohorts pin context qualification,
+public-template refusal, finite VM latch, native result projection, thrown-value
+projection and actual engine definition binding. Removals produce **6 / 6 / 64 /
+60 / 81 / 8** named assertion failures; fixed/restored inventories are **29 / 19 /
+184 / 216 / 216 / 17**. All eighteen final runner receipts report zero unhandled
+errors and all sources restore byte-identically before the final full author suite.
+An exploratory witness-name mismatch was rejected rather than certified.
+
+These remain local author controls, not full CI/coverage/native-platform or
+whole-wave certification. A fresh security revalidation and two NEW independent
+complete cumulative clean rounds after the last material correction remain
+required before Step 4. Baseline evidence, detailed reports and local controls
+stay Git-ignored. No new decision, credential, paid call or release is pending.

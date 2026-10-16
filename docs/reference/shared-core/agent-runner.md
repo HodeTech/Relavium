@@ -388,6 +388,8 @@ owned provenance authority shared by execution and `budgetPreparationContext`. S
 cross-process budget preparation creates that authority, qualifies the resolved context and
 passes both through `resumePreparation.context` / `resumePreparation.provenance`; the resumed
 execution reuses them rather than deriving a second mutable secret-name set.
+Context analysis and resolution use the authority's same owned definition snapshot, so caller
+edits after admission or during an awaited context capability cannot change the analysed source.
 
 `NodeExecContext` and `NodePreparationContext` require the same context projection and owned
 `secretInputNames` membership; the preparation Pick includes both. Agent prompt resolution
@@ -397,6 +399,9 @@ context and direct declared secret-input references refuse before any filters, d
 read capabilities, including on hand-constructed workflows that bypass the parser. Clean
 fields retain their existing resolution and user-role placement. Authored system text is
 still concatenated verbatim, not interpolated.
+An absent public template still resolves the empty default through the provenance boundary;
+it does not waive required context or secret-input membership metadata. Optional assignee
+presence and existing cancellation/preparation outcomes remain unchanged.
 
 Condition/transform/custom-merge handlers use `buildExpressionScope` with the required
 projection and explicit denied input names. Direct supplied secret inputs become VM-owned
