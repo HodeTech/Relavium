@@ -8,6 +8,14 @@ product files. `supportRoot/installed-smoke.json` contains bounded structured
 results; the runner removes its owned temporary HOME/workspaces after joining
 children. Every compiled JS digest must remain unchanged.
 
+The launcher runs the complete cohort in [worker.mjs](worker.mjs), a bounded
+owned process, and reads its bounded report only after native process closure.
+Actual worker PID/parent identity and source/artifact/runtime identities must match.
+SQLite inspection and native addon loads therefore cannot lock the installation
+in its cleanup owner. The surrounding consumer removes that installation before
+publishing success. Worker failure, forged PID or cleanup refusal remains failure;
+no successful receipt is inferred from an early private report.
+
 [cases.mjs](cases.mjs) is the fixed required case inventory, shared with the
 aggregate. Each result has `id`, `passed`, and evidence or an error. Overall
 `success` requires the complete inventory and unchanged compiled bytes.

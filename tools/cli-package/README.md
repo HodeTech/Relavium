@@ -41,6 +41,13 @@ support directory. CI uploads **only** the bounded public `installed-consumer.js
 source/artifact/origin/runtime identities, public file/dependency digests, and exact
 successful case inventory. It does not upload transport bodies, host paths or logs.
 
+All installed-smoke native loads and SQLite reads run in one bounded owned worker.
+The cleanup owner observes actual process closure and binds the private report to
+that worker PID before removing the installation. Closing a SQLite connection is
+not unloading its native DLL on Windows. Success receipt/summary publication occurs
+only after required installation removal; a worker or cleanup failure prevents
+publication, and a secondary cleanup/diagnostic failure preserves the primary.
+
 Required PR/push consumers use current `.nvmrc` Linux/macOS/Windows and exact Node
 22.0.0 Linux. The aggregate reinspects the tarball and requires all four unique
 matching receipts plus successful pack/matrix jobs. Missing, failed, skipped,

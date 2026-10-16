@@ -123,6 +123,7 @@ export function runCommand(command, args, options = {}) {
         await new Promise((done) => killer.once('close', done));
       clearTimeout(killerTimer);
       const result = {
+        pid: child.pid,
         code,
         signal,
         stdout: Buffer.concat(output.stdout).toString('utf8'),
