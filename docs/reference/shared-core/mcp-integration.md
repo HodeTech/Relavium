@@ -161,9 +161,32 @@ acknowledgement and admitted descendants remain owed.
 `liveMcpChildPids()` includes pre-initialize stdio children; a connection's `childPid` remains
 latched until positive native-close acknowledgement. `McpClient.childPids` is a current view of
 retained initialized connections. Each acknowledged PID disappears independently while another
-cleanup may still be pending; forced-exit callers must read the current view rather than cache
-an old PID. The manager retains failed connection handles and reports each stored fault once
+cleanup may still be pending. These compatibility observations grant no CLI kill authority;
+the CLI uses the exact creation-owned native registration described below. External callers
+must not retain historical PIDs as fresh liveness evidence. The manager retains failed connection handles and reports each stored fault once
 per supplied reporter; its default remains best-effort reporting, not semantic receipt health.
+
+### Creation-owned native stdio lifetime
+
+**Wave 3 Step 8b implementation; independent acceptance pending.**
+`StdioServerSpec.nativeObserver` is an optional trusted, SDK-free host projection.
+Its synchronous `attach` receives a creation-latched PID reader, known-close
+reader, actual native `whenClosed` promise and the existing idempotent full-owner
+`close` function. Attachment precedes connect/start. Synchronous `beforeStart`
+admission runs immediately before native entry, followed by an owner-open and
+caller-abort recheck. Neither hook receives a transport, client or native process
+handle. Both return `undefined`; an unexpected return refuses with the fixed
+`observer_unavailable` lifetime reason. Ordinary returned native Promise rejection
+is observed without reading a foreign `then` getter; hostile Promise
+constructor/species protocols are outside this trusted callback contract.
+
+Actual native close remains separate from full MCP work completion. A rejected
+start, callback refusal or cancellation cannot acknowledge an already-created
+resource. If the host bridge refuses before attachment, it may retire only its
+proved-empty reservation. Attached native work remains owed through the existing
+owner. The CLI connects this projection to its original invocation registry;
+its [native scope](../cli/commands.md#native-crash-teardown-scope)
+owns platform-specific reap authority and its stated containment limits.
 
 Manager startup transfers an aggregate before any server open. `startMcpClient` accepts optional
 trusted work options as its third argument; `McpServerConfig.open` receives them second, and SDK

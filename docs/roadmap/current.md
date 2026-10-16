@@ -1134,8 +1134,10 @@ acceptance observation. [Step 8a implements origin adapters and an inert native
 foundation](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8a-implementation-checkpoint--2026-10-16);
 [its independent acceptance](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8a-acceptance--2026-10-16)
 at `e0a5ae19` includes two NEW complete cumulative clean rounds and a separate
-clean security sitting. Step 8b proceeds next; product fatal activation remains
-in 8d and whole Step 8 stays open. Steps 8b–19 remain pending. The
+clean security sitting. [The same reviewed source's full CI subsequently completed successfully](phases/phase-2.5.5-hardening-and-remediation.md#step-8a-completed-full-ci-follow-up--2026-10-16),
+with remote totals attributed separately. [Step 8b is in implementation](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8b-implementation-checkpoint--2026-10-16) and its
+acceptance remains open; product fatal activation remains in 8d and whole Step 8
+stays open. Steps 8c–19 remain staged. The
 [final proposal reviews](phases/phase-2.5.5-hardening-and-remediation.md#second-maintainer-rereview-final-proposal-readiness--2026-10-16)
 remain proposal evidence, not implementation review. The selected encrypted archive
 method persists; production recipient/recovery belongs to Wave 4b release setup.

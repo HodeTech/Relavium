@@ -97,6 +97,9 @@ Linux/macOS/Windows plus Node 22.0.0 consumers. Broader CI retains its separatel
 attributed status. Step 8a implements origin adapters and an inert native foundation;
 it is independently accepted at `e0a5ae19` after two NEW complete cumulative
 clean rounds and a separate clean security sitting.
+Step 8b's creation-owned native integration passes local author and installed
+checks; required platform controls, two NEW complete cumulative reviews
+and its separate security sitting remain open.
 Step 8 proceeds as recorded serial increments 8a–8d; native
 fatal integration remains open until all actual owners are connected.
 Later implementation and whole-wave acceptance

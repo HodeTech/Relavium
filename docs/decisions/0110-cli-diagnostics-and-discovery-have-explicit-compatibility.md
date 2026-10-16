@@ -213,3 +213,16 @@ NEW complete cumulative clean rounds and a separate clean security sitting.
 Actual same-tarball platform controls and broader CI retain their exact source
 and completion status. Product activation, remaining owners and whole Step 8
 stay staged in 8b–8d; later review remains cumulative over the entire Step 8 range.
+
+## Step 8b partial implementation — 2026-10-16
+
+The creation-owned native integration is implemented on `development`, with
+author and independent acceptance gates still open. The
+[native teardown contract](../reference/cli/commands.md#native-crash-teardown-scope)
+owns platform distinctions, actual target/helper closure and finite exit
+cleanup; the [MCP contract](../reference/shared-core/mcp-integration.md#creation-owned-native-stdio-lifetime)
+owns the SDK-free attachment and native-versus-full-work close distinction.
+The [implementation checkpoint](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8b-implementation-checkpoint--2026-10-16)
+keeps author, installed-host, causal and review evidence separately attributed.
+Production fatal activation, workflow/session health integration and whole Step 8
+remain staged in 8c–8d. This note grants no acceptance or safe-store-close ACK.

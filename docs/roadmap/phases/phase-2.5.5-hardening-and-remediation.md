@@ -5545,3 +5545,91 @@ narrow those reviews. Step 18 still owns central DB-opener consolidation and
 Step 19 publication. Detailed reports/artifacts stay local and Git-ignored.
 No new ADR, dependency, deferral, credential, billing, provider or user-decision
 gate is introduced. Step 8b proceeds automatically.
+
+### Step 8a completed full CI follow-up — 2026-10-16
+
+The previously pending push run **38880157607 / attempt 1** subsequently
+reports **success** for the exact reviewed source
+`e0a5ae19981e749a75455e6b5698c806d9f1c674`. The parent queries the completed
+job identities and reads main job **116919762337**: lint/typecheck, build,
+format, isolation and CLI/media/overflow/budget-replay smoke gates pass.
+The serialized workspace execution records **657 files / 14,790 passing tests /
+21 established CI skips**: eleven dialect capability cases, nine filesystem
+platform cases and one CI-only Ink projection case. These are remote execution
+totals, separate from the earlier local 14,791 / twenty-skip observation.
+
+Filesystem, secrets, usage, wire, enforced LLM/MCP coverage and all required
+same-tarball consumers/aggregate also report success. The earlier physical
+package audit retains its exact six-case scope and artifact identity; a
+successful job status does not imply a new independent download/audit of its
+private causal artifacts. No execution of acceptance metadata `a5742dd9`, the
+subsequent Step 8b working tree or its added seventh installed case is inferred.
+The historical in-progress checkpoint above remains unchanged. Step 8b is in
+implementation; whole Step 8 and later whole-wave gates remain open.
+
+## Wave 3 Step 8b implementation checkpoint — 2026-10-16
+
+Step 8b implements actual native creation ownership above accepted Step 8a
+metadata `a5742dd9`. Every product creation receives the original invocation's
+native controller before asynchronous initialization: workflow and gate/budget
+resume, one-shot live/offline agents, fresh/resumed chat, pending/replaced Home
+hosts, OS helpers and both default editor bindings. Native attachment is reserved
+before entry; a public error or successful cancellation request does not retire
+the target. The [CLI contract](../../reference/cli/commands.md#native-crash-teardown-scope)
+owns platform and helper semantics. The [MCP contract](../../reference/shared-core/mcp-integration.md#creation-owned-native-stdio-lifetime)
+separates actual native closure from full SDK/work completion. A separately
+reproduced standalone clear/reseat omission now carries the existing consent
+gate alongside the same native authority, without bypassing approval.
+
+Registry entries carry live budget notifications and finite exit hooks, with
+one removable creation-owned exit callback and no completed PID history or
+independent process-wide reaper set. Windows admission verifies its absolute
+installation facility before native entry; target and already-entered helper
+remain separate obligations. Existing cooperative signal/grace behaviour is
+preserved. Product fatal activation and workflow/session/terminal health remain
+8c–8d; native closure alone does not acknowledge storage or receipts.
+
+### Step 8b author evidence and remaining gates
+
+The local uncommitted candidate passes serialized workspace checks:
+**664 files / 14,943 passing tests / 21 declared local/platform skips**. CLI and MCP
+execute freshly; nine other test tasks reuse valid cache entries. Build/format,
+tools lint/typecheck, schema sync, seam/engine fences, isolation and the finite
+**26-JS / 380-input / 17-dependency** closure pass. The complete acceptance-tool
+command passes **496 tests** after the fixture corrections below. Its earlier execution correctly refused source
+custody after a concurrent author script edit; that failed run remains failed
+evidence and is followed by the successful frozen-source rerun. Compiled CLI,
+media-packaging, bootstrap, overflow-capture and budget-replay smokes also pass.
+
+The seventh required installed case exercises actual creation-owned native
+cleanup through the public offline agent route. Two early local executions
+remain failed evidence: a copied Homebrew Node lacked its adjacent ABI dylib,
+then two same-directory copies tried to overwrite that read-only support file.
+The corrected fixture verifies and reuses the exact ordinary support bytes;
+its permanent actual regression runs both copies and verifies the descendant's
+own PID/parent readiness. Separate sentinel, altered-byte, symlink, callback and
+delayed-close controls pass. No product mechanism changes for these fixture fixes.
+
+A fresh local tarball and corrected outside-workspace consumer pass **175
+bootstrap controls and all seven installed cases** on macOS/Node **22.23.1**:
+**`39f47a9e006d924c551867522fd65d445074e6cf9f9bf92974f8afe241a5547f`**,
+**425,640 bytes / 71 public files / 26 JS / 17 dependencies**. The parent
+independently inspects exact archive file bytes/modes, source/runtime bindings,
+all three actual native subcases and joined worker/installation removal.
+Synthetic native error, finite creation-exit callback and natural POSIX leader
+exit each retain real close obligations, leave their unrelated owned sibling
+alive and complete without external-watchdog cleanup. This candidate explicitly
+records `dirty: true` at parent metadata `a5742dd9`; it is local-host evidence,
+not execution of a pristine successor commit or four new platform legs.
+Earlier Step 8a six-case platform evidence is not substituted. Windows
+simulation is not actual Windows execution; current platform receipts must
+bind the same new tarball.
+
+Two isolated causal preparations cover 23 native mechanisms and 23 forwarding
+sites; they are still unexecuted and unpinned at this checkpoint. Full source,
+runtime, complete-cohort and physical dependency custody must be fixed before
+execution. Any resulting local selected evidence remains distinct from a
+whole-wave or family certificate. Two NEW complete cumulative clean reviews
+from `d9625ff0` and a separate native/process security sitting remain required.
+**Step 8b is not accepted. Whole Step 8 and Steps 8c–19 remain open.** No new
+ADR, dependency, credential, billing, provider or user-decision gate is introduced.

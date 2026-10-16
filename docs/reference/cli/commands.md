@@ -896,6 +896,24 @@ This attempt-all cancellation rule grants no retirement or safe-close ACK.
 
 ### Native crash teardown scope
 
+**Step 8b implementation; independent acceptance pending.** Actual process,
+OS-helper, editor and stdio MCP creation paths now receive the original invocation's
+native controller through run/resume, standalone chat, one-shot agent and Home
+builders, including pending/replaced builds. Construction is inert. Each actual
+creation registers before asynchronous facility verification and rechecks
+admission before native entry. Actual target and cleanup-helper close remain
+independent retirement obligations; command rejection and successful cancellation
+requests supply neither acknowledgement. Standalone clear/reseat also preserve
+the already-captured MCP consent gate.
+
+One removable invocation-bound exit callback iterates the existing registry's
+active native capabilities. There is no completed PID/group history or independent
+product MCP reaper collection. The compatibility signal guard retains its existing
+cooperative/grace/outcome routing until 8c/8d; connecting native creation does not
+activate the complete fatal coordinator. Source fixtures explicitly install that
+foundation when testing fatal cleanup. Workflow/session/terminal retirement and
+safe DB close remain their separate integration obligations.
+
 | Creation owner / platform | Permitted finite teardown |
 |---|---|
 | POSIX run_command | Its explicitly detached owned process group; retain the group token through bounded final reap even if the leader closes |
@@ -910,6 +928,15 @@ Missing/invalid facility refuses Windows subprocess admission, with a fixed
 remedy. The OS root is trusted launching environment, not protection against an
 already hostile launching user/process. The helper is itself owned and its runtime
 fits the same remaining deadline; a successful request is not target close ACK.
+Its ordinary operational request limit is fixed at entry, independently of a
+later fatal deadline. Owner-scoped budget notifications only shorten/cancel that
+already-entered helper; expiry without a numeric deadline is zero remaining time.
+They cannot create another helper or renew either bound. Helper failure retains
+the fixed infrastructure diagnosis and permits only finite cancellation of the
+already-owned root/helper while their actual close remains owed. If the root
+finished cooperatively before a nonzero taskkill result, that closed/now-absent
+root does not create a new failure. Finite process-exit cleanup launches no helper
+or normal asynchronous shutdown, including when its own cancellation attempt fails.
 
 Use actual owner close observations. MCP's latched live PID list alone is not a
 ChildProcess handle or race-free liveness proof: a narrow owner adapter must expose
