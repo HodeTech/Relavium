@@ -201,6 +201,33 @@ owns all run actors and final receipt health. MCP connection close supplies its 
 acknowledgement; a bounded public failure does not substitute for it. Consolidated independent
 acceptance is recorded in [current.md](../../roadmap/current.md).
 
+### Failed-start cleanup lifecycle
+
+**Wave 3 Step 8d partial implementation on `development`; independent acceptance
+is pending.** `startMcpClient` accepts an optional fourth `McpStartupLifecycle`
+argument, separately from its existing third work-transfer argument. Its
+`onCloseError(serverId, cause)` observes each failed-start connection close
+refusal immediately, including while a different close is held. Its read-only
+`budget.remainingMs()` uses the invocation's existing remaining budget. The
+manager checks it before each new close; zero remaining time enters no new
+asynchronous close and supplies no cleanup acknowledgement. Ordinary startup
+without these ports retains its existing actual joins and typed refusal.
+
+Failed-start cleanup transfers its own work scope before server construction.
+All exact entered closes remain joined even if the lifecycle reporter throws.
+A reporter/budget-port failure surfaces promptly as a fixed generic
+infrastructure error, with the original startup failure and reporter cause kept
+private; it cannot become an ordinary configuration refusal or erase a held
+sibling. A successful reporter preserves the original typed startup failure.
+Neither a close refusal nor an exhausted budget retires a connection.
+
+The CLI forwards this lifecycle through the actual default manager. Custom
+starters that delegate to `startMcpClient` must forward the fourth argument to
+retain the same failed-start observations. No vendor handle, PID authority,
+receipt success or new engine error code is carried by this channel. Final
+session/terminal integration and global activation remain Step 8d in the
+[execution plan](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#proposed-implementation-increments).
+
 ### Discovery and result ingress bounds
 
 A server's own output is untrusted input, and it is bounded

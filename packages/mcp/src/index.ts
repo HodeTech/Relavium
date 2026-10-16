@@ -78,4 +78,5 @@ export {
   type McpClient,
   type McpServerConfig,
   type ManagerSkippedTool,
+  type McpStartupLifecycle,
 } from './manager.js';
