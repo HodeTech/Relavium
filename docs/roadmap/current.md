@@ -1125,8 +1125,12 @@ correction and a separate clean security sitting.
 after two NEW complete cumulative clean rounds and a separate clean security sitting.
 [Step 7a is independently accepted](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-7a-acceptance--2026-10-16)
 after two NEW complete cumulative clean rounds and a separate clean security sitting.
-Step 7b's installed-tarball and required platform controls are active; whole Step 7
-remains open until they pass. The
+[Step 7b and whole Step 7 are independently accepted](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-7b-and-whole-step-7-acceptance--2026-10-16)
+at `c836ffe6` after two NEW complete cumulative clean rounds, a separate clean
+security sitting and successful same-tarball current Linux/macOS/Windows and
+exact Node 22.0.0 Linux consumers. Broader CI keeps its separately attributed
+status. Step 8 proceeds as serial 8a–8d increments; whole native integration
+remains open until their actual owners and all-surface controls pass. The
 [final proposal reviews](phases/phase-2.5.5-hardening-and-remediation.md#second-maintainer-rereview-final-proposal-readiness--2026-10-16)
 remain proposal evidence, not implementation review. The selected encrypted archive
 method persists; production recipient/recovery belongs to Wave 4b release setup.

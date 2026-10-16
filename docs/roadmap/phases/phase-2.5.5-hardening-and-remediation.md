@@ -3667,6 +3667,10 @@ No credential values or request captures belong in tracked evidence.
 | 7a | **Recorded split, 2026-10-16 — source/router and finite compiled graph:** exact sanitizer leaves, guarded entry/runtime imports, untouched compiled human meta and grammar controls, actual execution admission ordering, one invocation file seed and eleven current DB-owner/quote/media/fixture controls. One split ESM build, flat layout, entry-only shebang and every-output file/import/dependency closure. Preserve affected compiled workflow/media smokes. Two NEW complete cumulative clean rounds and a scoped security sitting are required. This accepts only the compiled graph, not installed packaging or whole Step 7. |
 | 7b | **Recorded split, 2026-10-16 — exact tarball and required consumers:** independently inspect actual tar bytes/modes/public inventory; install the same digest outside the workspace; prove complete real chat/resume, workflow/migrations/native/CAS/MCP/class identity and invocation-context continuity. Required exact Node 22.0.0 and current-runtime Linux/macOS/Windows consumers aggregate the same artifact. Final cumulative reviews include all 7a changes from the Step 6 boundary. Whole Step 7 and ADR-0111's graph obligations close only after both increments; actual registered native-owner cleanup remains Step 8. |
 | 8 | **Native process integration:** #40/#41/#42/#224/#269/G35 under ADR-0110, after the early graph can catch import failures. Wire kind-specific owners, output_unavailable/cli_internal 9, known storage/history/departure classification, run-only health precedence and session join uncertainty. Preserve recoverable #228/signals; MCP PID versus tool PGID/Windows, terminal restore before stderr, total remaining fatal budget, competing faults and both sinks. Minimal I/O adapters land here; central DB refactor stays last. No false host-safe-close ACK. |
+| 8a | **Recorded split, 2026-10-16 — origin and inert native foundation:** private factory/I/O storage facts and read-only classification, fixed projections, observable registry termination and one live absolute budget through diagnostic ACK. Preserve actual migration/checkpoint origin at fixed native/vendor boundaries; no arbitrary cause-tree classification. Native fixtures explicitly install the coordinator; product activation waits for all creation owners. |
+| 8b | **Recorded split — creation-owned native processes:** tool POSIX group versus MCP PID, actual close/retirement, verified absolute Windows teardown admission and helper lifetime; connect OS/editor helpers and replace independent reapers without claiming full descendant containment. |
+| 8c | **Recorded split — workflow and render integration:** run/gate/budget/driver owners, real return/throw health priority, cancellation, terminal/job-control leases and force-quit routing. No timer certifies DB close or receipt settlement. |
+| 8d | **Recorded split — sessions, terminal and activation:** fresh/resumed/one-shot/Home/pending/replaced session lifetimes, retained publication failure and shared actual cleanup promises; connect caught slash/rebuild faults, restore terminal custody before diagnosis, then activate early coordinator/background/sink integration. Actual native/platform/packed controls and complete cumulative Step 8 acceptance follow. |
 | 9 | **Release map/custody substrate:** #46/ADR-0111, independently reviewed after the finite graph. Upstream TS maps, sole prepack final build, pre-hash trailer removal/staging, exact tarball/CLI+engine symbolication, encrypt-once candidate with permissioned prebuild discovery/reservation → pack/reuse → smoke → archive → npm → finalization. Required artifact/platform aggregation, all rerun modes, lost-staging refusal and permission-enforcing offline API controls. Dedicated archive/crypto security sitting. Fixture proof never claims production recipient/custody configuration. |
 | 10 | **CLI behaviour/discovery integration:** #45/#264/#265/#268/#13/#17/#18/#310/#309/#19 under ADR-0110, consuming Steps 6–9. Production owner category matrix, real root/subtree JSON help, pricing/chat aliases, non-echoing Commander refusal and signal-safe deletion consent. G15 is refuted and receives real engine/store/log preservation evidence, with no invented token coalescing. Repeat affected packed gates. |
 | 11 | **Chat normalization and abort:** #236/#237/#242/#307 → #218 → #21/#23. Canonical token/money source with approved additive LLM export, preserved two-decimal cap formatting and real immediate abort while a turn is blocked. Audit Home's imports. |
@@ -5294,3 +5298,93 @@ error remains failed evidence; its corrected local retry passes all 175/six case
 Affected security and two NEW complete cumulative clean rounds after these
 material corrections, plus actual required same-artifact platform success, remain
 open. No new ADR, dependency, deferral, credential or provider action is introduced.
+
+## Wave 3 Step 7b and whole Step 7 acceptance — 2026-10-16
+
+**Accepted on `development` at `c836ffe616803697285f51204c78b76ce3a99814`.**
+The parent reads both NEW complete cumulative clean reports after the final
+native-worker, workload and coordinator-isolation corrections. R4 uses
+gpt-6-astra/high; R5 uses gpt-6.1-sol/xhigh. Each independently covers all
+**107 paths / 211 zero-context hunks / 62 full added files** from the accepted
+Step 6 boundary `b09008e7`, including all Step 7a work and every correction.
+Each freshly passes **160 tooling tests, eight runtime files / 106 tests,
+six actual coordinator tests and 175 untouched compiled bootstrap controls**,
+with zero skips. Closure remains **24 JS / 375 inputs / 17 external dependencies**;
+the hidden-own-dist resolution probe has zero unresolved self imports.
+Finding-bearing R1–R3 and interrupted attempts are not counted clean.
+
+The separate NEW completed-consumer security sitting is clean at the same source:
+**61 tooling tests and nine independent copied-launcher negative probes**.
+The parent reads the whole report. Exact child closure precedes installation
+removal, and required removal precedes public success. This gate is distinct
+from both complete correctness rounds and from Step 8 product fatal ownership.
+
+### Author, artifact and actual required platform evidence
+
+The final author **482 acceptance-tool tests** pass with zero skips; tools
+lint/typecheck/format/fences pass. Ordinary workspace checks retain the valid
+**647 files / 14,660 passes / 20 established skips** cache attribution and the
+separate earlier fresh clone's **647 / 14,659 / 21 established CI-projection
+skips**. Neither is relabeled as a new fresh final-source full suite. Fresh
+reviewer checks above independently exercise the affected current source.
+Earlier build, selected causal and failed attempts keep their original scopes.
+
+GitHub push run **38869520079 / attempt 1** is the exact reviewed source.
+Actual successful jobs are pack **116870449731**, current Linux **116870634562**,
+current macOS **116870634638**, current Windows **116870634595**, exact minimum
+Linux **116870634584**, and required packed aggregate **116871821131**.
+All four consumers bind the same original tarball:
+`9926f8eab1686f3e541052f1af22b832658166126c7a6ac72b908e2f7f18c228`.
+Current legs run **v24.21.0**; the minimum leg runs **v22.0.0**. Both complete
+reviewers independently inspect actual bytes and strict receipts against actual
+API job/source/origin identity; R5 downloads its own copies. The parent also
+independently inspects original bytes and all four receipts. Each leg passes
+175 bootstrap controls and six installed cases. Historical Windows failures
+remain failed evidence, not accepted runs.
+
+The separately produced local candidate is
+`d707f89adbb71490a5c03b59cc095bce1ff6dda7b265df9c83d4ab965c09d7ed`,
+**69 public files / 24 JS / 17 dependencies**, at the same source. Its completed
+175/six consumer, joined worker and absent installation are independently checked;
+its explicit local `dirty: true`/isolated-Git-HOME qualification is retained.
+It is never substituted for the clean GitHub artifact or a remote platform leg.
+
+### Broader CI and physical evidence retain separate attribution
+
+At this acceptance checkpoint, actual current wire, complete secrets, complete
+usage, coverage and advisory platform jobs are successful; filesystem controls
+and the overall CI run remain **in progress**. Required Step 7 package/platform
+gates above are complete. No whole-CI or successor-metadata execution is inferred.
+The current CI run is allowed to finish without a superseding push; any later
+failure remains actionable. Whole-wave source/coverage/platform gates repeat in
+Step 19 after later implementation.
+
+A separate read-only physical audit downloads current wire, secrets and usage
+artifacts from that run and validates exact source, counts, semantic witnesses,
+restoration and retained bounds: wire **four mechanisms / 24 cases**;
+secrets **41 controls / 123 phases**, including the repaired **65/25/25/25**
+cohorts and all 123 zero-unhandled completed runtime receipts; usage **23 controls /
+eight groups**, with **435 permanent cases / 71 native children / one ordered
+readiness-timeout control**. Raw source/body/dependency journals are joined within
+their respective export scope. This is inspection of remote execution, not new
+local mutation execution; absent nested trees and reporter-boundary limits are
+explicit. Filesystem's current physical artifact is not yet audited here.
+
+Detailed review/audit records remain local and Git-ignored. No installed smoke
+claims real provider/keychain API use, TLS certification or hostile same-user
+containment. No new dependency, ADR, deferral, credential, billing or approval
+gate is introduced. **Step 7b and whole Step 7 are closed; Steps 8–19 remain open.**
+
+### Recorded Step 8 serial split before implementation
+
+The four rows 8a → 8b → 8c → 8d above preserve all original Step 8 IDs and
+approved contracts. Each receives an implementation commit and two NEW complete
+cumulative clean rounds after its last material correction; native/process
+security sittings remain separate. 8a supplies provenance and an inert native
+foundation. Product fatal activation waits until 8d connects every actual
+creation owner and caught/forced-exit path. The fixed migration adapter may decode
+one verified public Drizzle wrapper at its actual owned operation, never arbitrary
+provider/plugin causes or a recursive private cause tree; checkpoint origin is
+retained before native evidence is erased. No driver fork or migrator replacement
+is planned. Whole Step 8 stays open until 8d's complete cumulative acceptance.
+The central opener refactor remains Step 18, and whole-wave publication Step 19.

@@ -1,6 +1,6 @@
 # CLI Packaging Contract
 
-- **Status**: Compiled graph independently accepted on `development`; installed-package and release gates staged
+- **Status**: Compiled graph and installed package independently accepted on `development`; native fatal integration and release gates staged
 - **Date**: 2026-10-15
 - **Related**: [ADR-0111](../../decisions/0111-cli-meta-operations-use-a-lazy-packaged-runtime.md), [commands.md](commands.md), [release runbook](../../runbooks/release-a-surface.md)
 
@@ -8,8 +8,11 @@ This is the maintainer-approved canonical design contract (2026-10-16). Wave 3
 Step 7a's lazy compiled graph is independently accepted on `development` after two
 new complete cumulative clean reviews and a separate security sitting. The
 published release retains its historical single bundle.
-Step 7b owns actual tarball/install/platform acceptance, Step 8 owns native fatal
-integration, and Step 9 owns maps and archival custody.
+Step 7b and whole Step 7 are independently accepted at `c836ffe6`, including the
+same-tarball current Linux/macOS/Windows and exact Node 22.0.0 Linux consumers.
+The [acceptance register](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-7b-and-whole-step-7-acceptance--2026-10-16)
+attributes reviews, artifacts and remaining broader CI separately. Step 8 owns
+native fatal integration, and Step 9 owns maps and archival custody.
 No release, production recipient setup or asset upload is performed by this document.
 
 ## Finite runtime package

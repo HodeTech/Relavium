@@ -211,3 +211,16 @@ identities have supported pure leaves; no new runtime dependency or security pol
 is introduced. Context/module continuity does not claim the native registered-owner
 integration assigned to Step 8. Original-TS maps and custody remain Step 9. Neither
 this note nor local compiled controls close whole Step 7 or claim a new release.
+
+## Compiled and installed implementation landing — 2026-10-16
+
+Step 7a, Step 7b and whole Step 7 are independently accepted on `development`
+at `c836ffe6`. Two NEW complete cumulative clean rounds after the final correction
+cover the entire Step 6 boundary to reviewed source; a separate clean security
+sitting covers the affected installed lifetime boundaries. Actual required
+consumers bind one tarball across current Linux/macOS/Windows and exact Node
+22.0.0 Linux. The [acceptance register](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-7b-and-whole-step-7-acceptance--2026-10-16)
+owns precise source/artifact/review/gate attribution and broader CI status.
+Earlier pending notes retain their historical scope. Native fatal ownership,
+original-TS maps/custody, JSON help and whole-wave acceptance remain Steps 8,
+9, 10 and 19 respectively. No release or production custody setup is inferred.

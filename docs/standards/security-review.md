@@ -605,6 +605,27 @@ platform consumers, native owner/fatal integration, maps/custody and whole-wave
 publication retain Steps 7b, 8, 9 and 19. No real provider, keychain, credential,
 billing or release operation is performed.
 
+### Sitting: Wave 3 installed-consumer lifetime and publication (2026-10-16)
+
+A NEW independent affected cumulative sitting is **clean** at `c836ffe6`, after
+the completed-consumer correction. Fresh execution passes **61 tooling tests**
+and **nine independent copied-launcher refusal probes**, with zero skips. A real
+copied SQLite addon loads only in the joined worker; its cleanup owner forbids
+native loading. Wrong process/source/artifact/runtime identities, early success
+followed by failure, oversized/symlink reports and required cleanup failure refuse.
+Secondary cleanup or sink failure preserves Error/null/undefined primary outcomes.
+The parent reads the complete report and both separate complete correctness rounds.
+
+The sitting independently checks actual successful Windows/aggregate job logs,
+the original remote tarball and all four strict public receipts. Public outputs
+exclude private worker identities, support paths and synthetic request bodies.
+Explicit environments, bounded shell-free processes, archive/source binding,
+unchanged grant/custody policy and exact-count/restoration obligations remain.
+The [Step 7 acceptance register](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-7b-and-whole-step-7-acceptance--2026-10-16)
+joins source and artifact evidence. This is not a new all-path generic review,
+real keychain/provider exercise, full-CI claim or native fatal-owner integration.
+Steps 8/9/10/19 and existing cooperating-host limits retain their distinct scope.
+
 ## Sandbox and tool policy (`run_command`, node tools, secret inputs)
 
 This is the **binding home** for the tool-policy rules; the rationale is

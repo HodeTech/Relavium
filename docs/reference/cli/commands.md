@@ -662,8 +662,9 @@ was approved by the maintainer. Step 6 implements the pure flag/error/observatio
 and ownership substrate, descriptor-derived current Commander grammar and the
 compatible model projection. Its discovery DTO is available as a pure function;
 production JSON help, aliases, pricing spellings, output categories and consent
-remain Step 10. Lazy entry and actual fatal/native/terminal adapters remain
-Steps 7–8. Earlier sections describe current behaviour unless stated here.
+remain Step 10. Step 7's lazy entry and installed package are independently
+accepted; actual fatal/native/terminal adapters remain Step 8. Earlier sections
+describe current behaviour unless stated here.
 
 ### Diagnostic policy
 
