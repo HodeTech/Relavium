@@ -4575,19 +4575,21 @@ The approved #213/#219 increment introduces the minimal shared `RelaviumError`
 without a new discriminant, name, context or cause policy. Existing family
 constructors and descendant parents remain unchanged. The source inventory
 replaces the historical 15/17 estimates: **96 existing error declarations**,
-including 86 module exports and ten private control-flow sentinels. Of those
+including 86 module exports and ten non-exported implementation error classes. Of those
 exports, **83 belong to production** (60 unique package-root-public identities
 and 23 implementation exports); three others belong to capture/conformance
 tooling. Public aliases/re-exports do not create another class identity.
 
 Migration changes **46 direct native-Error roots across 37 production files**.
-Their 37 existing descendants acquire the same ancestry through their current
-parents. The new base itself is additional to the 96-declaration intake. Private
-sentinels, capture/conformance errors, vendor exceptions and plain seam unions
-retain their representations. This is a scoped disposition, not a claim that
+Their 37 existing module-exported production descendants acquire the same
+ancestry through their current parents. The unchanged private `OsTimeoutError`
+also inherits it through `OsCapabilityError`; it is additional to that export-
+scoped count. The new base itself is additional to the 96-declaration intake.
+Private class sources, capture/conformance errors, vendor exceptions and plain
+seam unions retain their existing implementations. This is a scoped disposition, not a claim that
 every thrown value or private control-flow path has shared ancestry.
 
-| Package | Production classes reached | Direct roots changed | Existing roots |
+| Package | Module-exported production classes reached | Direct roots changed | Existing roots |
 | --- | ---: | ---: | --- |
 | `packages/shared` | 10 | 10 | `NonCanonicalValueError`, `ExistingAncestorError`, `MediaAdmissionError`, `CorruptRunEventError`, `RunSuspensionCorruptionError`, `AppendConflictError`, `LeaseFencedError`, `EffectTransitionError`, `EffectConflictError`, `InvalidUsageEvidenceError` |
 | `packages/llm` | 9 | 2 | `LlmConfigError`, `LlmProviderError` |
@@ -4614,7 +4616,9 @@ Six package/surface compatibility files add thirty constructor/guard controls.
 Four local fixed/removal/restored cohorts pin direct envelope correlation, full
 payload preservation, native cause forwarding and foreign structural budgets.
 Passing fixed/restored inventories are **40 / 40 / 6 / 11**; removal produces
-**2 / 10 / 3 / 1** named assertion failures. All twelve final runner receipts
+**2 / 10 / 3 / 1** failed tests. The payload cohort has nine direct AssertionErrors
+and one secondary test-local TypeError after its payload is removed; each cohort
+contains its pinned named, marker-bearing assertion failure. All twelve final runner receipts
 record zero unhandled errors, and exact source restoration is verified before
 broad author gates. The retained controls are local author evidence, not full CI,
 coverage, native-platform or whole-wave acceptance.
@@ -4628,3 +4632,23 @@ native/dist consumers; all six build tasks pass.
 Two NEW independent complete cumulative clean reviews remain required before
 Step 5. Detailed source inventories and reports remain Git-ignored. No new ADR,
 user decision, credential or external operation is needed.
+
+
+### Wave 3 Step 4 first review corrections — 2026-10-16
+
+The complete cumulative review at `b11703a0` covers all **50 changed paths /
+97 hunks** and independently passes **23 files / 730 tests**. It verifies every
+existing class member list unchanged, resolves public aliases, and audits all
+twelve causal receipts and reconstructed mutation hashes. It reports two Low
+checkpoint precision findings and no verified product defect; this sitting is
+**not a clean acceptance round**.
+
+The parent reads the full report and verifies both findings. The inventory now
+qualifies its 83-class/37-descendant counts as module-exported production and
+explicitly records the additional unchanged private `OsTimeoutError` descendant.
+The retained payload removal is accurately described as nine AssertionErrors
+and one secondary test-local TypeError, separate from the zero-unhandled runner
+receipt. Existing product and test bytes remain unchanged. These documentation
+corrections do not claim a fresh source execution; author gates retain their
+original source attribution. Two NEW complete cumulative clean reviews at the
+corrected head remain required before Step 5.
