@@ -1130,7 +1130,7 @@ remains open until they pass. The
 [final proposal reviews](phases/phase-2.5.5-hardening-and-remediation.md#second-maintainer-rereview-final-proposal-readiness--2026-10-16)
 remain proposal evidence, not implementation review. The selected encrypted archive
 method persists; production recipient/recovery belongs to Wave 4b release setup.
-No provider capture, credential, billing or upload is needed for this implementation.
+No provider capture, credential, billing or production upload is needed for this implementation.
 
 Decompose, guard and normalize every hot file a 2.6 workstream is about to land on.
 **The multi-file queue is Step 1 and runs first.** The approved

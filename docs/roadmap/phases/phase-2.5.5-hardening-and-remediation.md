@@ -5150,3 +5150,40 @@ not claimed as a fresh execution. Fresh ordered dependency emits and prepack bui
 execute in the package controls. Document/diff, isolation and DB-sync results are
 recorded before review. No new runtime dependency, ADR, deferral, credential,
 billing action, provider request or production upload is introduced.
+
+### Step 7b first cumulative review and fresh-CI corrections — 2026-10-16
+
+The first NEW complete cumulative review at `7b2b88ff` is **non-clean**: all
+97 paths / 183 hunks / 58 full new files were covered, and two actual fresh-CI
+failures were independently reproduced. Its 151 tooling tests, nine runtime files /
+255 passes and 175 compiled controls are prepared-workspace evidence, not a
+substitute for those failures. The separate security sitting found no verified
+security defect but explicitly retained the failed platform gate. Both full local
+reports are read by the parent and remain Git-ignored.
+
+1. The POSIX pnpm action installs a regular shell wrapper with its JavaScript
+   entry in the reviewed sibling package location. The resolver previously
+   supported that location only on Windows. The correction uses the same explicit
+   sibling-JS locations on POSIX, without parsing/executing shell text or weakening
+   the pinned-version check. A native layout regression proves positive resolution
+   and refusal when that sibling is absent; removing the correction breaks it.
+2. The shared/LLM compiled root/leaf controls imported their own `dist` before
+   lint/typecheck's existing `^build` graph guaranteed it. Local pre-existing outputs
+   and cached gates concealed that prerequisite. Source identity/redaction checks
+   remain in their owning packages; actual compiled identity, complete redaction
+   corpus and service-free leaf-evaluation controls move to the CLI, whose declared
+   dependencies and existing build graph already guarantee those outputs. No
+   source alias, Turbo change, skip, dependency or weakened assertion is introduced.
+   The read-only TypeScript host probe that hides only each owner's `dist` changes
+   from four unresolved self imports to zero; fresh checkout execution is a
+   separate required verification.
+
+Corrected author gates pass **647 files / 14,660 tests / 20 established skips**:
+all 17 lint/typecheck/build-prerequisite tasks are fresh, and all six workspace
+test tasks execute freshly (the five prerequisite build tasks are valid cache
+hits). **474 acceptance-tool tests** pass without skips. These results do not
+yet imply new remote consumers, a clean post-fix review, or whole Step 7 acceptance.
+The old failed push `38862829767` and its skipped consumers are not counted as
+platform evidence. The corrections require two NEW complete cumulative clean
+rounds after the final material fix, the affected security delta and real required
+same-artifact platform success. No new decision or deferral is introduced.
