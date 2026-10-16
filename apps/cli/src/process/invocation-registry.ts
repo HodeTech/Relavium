@@ -93,6 +93,7 @@ export interface OwnerCloseResult {
 export type TerminationRequest =
   | { readonly kind: 'normal' }
   | { readonly kind: 'infrastructure'; readonly code: 'cli_internal' | 'output_unavailable' }
+  | { readonly kind: 'cooperative_cancel'; readonly outcome: 1 | 4; readonly deadline: number }
   | { readonly kind: 'signal'; readonly signalNumber: number; readonly deadline?: number };
 
 export interface InvocationCloseResult {
@@ -232,6 +233,10 @@ export class InvocationRegistry {
 
   /** Publish the shared promise BEFORE entering callbacks, including reentrant failures. */
   terminate(request: TerminationRequest): Promise<InvocationCloseResult> {
+    if (request.kind === 'cooperative_cancel') {
+      if ((request.outcome !== 1 && request.outcome !== 4) || !Number.isFinite(request.deadline))
+        throw new CliError('cli_internal', '');
+    }
     if (request.kind === 'signal') {
       // Pure validation precedes sealing; a malformed internal request must not leave a pending coordinator.
       assertTerminatingSignalNumber(request.signalNumber);
@@ -474,6 +479,14 @@ export class InvocationRegistry {
       this.observations.observeFailure(request.code);
       try {
         this.#tighten(this.#now() + FATAL_TERMINATION_MS);
+      } catch {
+        this.observations.observeFailure('cli_internal');
+        this.#expire();
+      }
+    } else if (request.kind === 'cooperative_cancel') {
+      this.observations.observeCooperativeCancel(request.outcome);
+      try {
+        this.#tighten(request.deadline);
       } catch {
         this.observations.observeFailure('cli_internal');
         this.#expire();

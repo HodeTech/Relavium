@@ -1,4 +1,5 @@
 import type { ClipboardOutcome } from './clipboard.js';
+import { toUserFacing } from '../process/errors.js';
 import { openInEditor, type EditorOutcome, type OpenInEditorDeps } from './editor.js';
 import { dumpToScrollback, type DumpToScrollbackDeps } from './scrollback.js';
 import { createSuspendPort, suspendFullScreen, type SuspendPort } from './suspend.js';
@@ -21,9 +22,9 @@ import type { TranscriptEntry } from './tui/session-view-model.js';
  * registry commands whose `run` calls a `ReplCommandContext` capability, dispatched through the one existing slash
  * path. The standalone chat and the in-Home chat therefore cannot drift.
  *
- * NEVER CRASH THE REPL: every fault (no live renderer, an empty transcript, a rejected suspension, a missing
- * `$EDITOR`, a dead editor) becomes a one-line transcript notice. The terminal is restored by `suspendFullScreen`
- * regardless — see `suspend.ts` for the exit-safety contract.
+ * Known unavailable outcomes remain one-line transcript notices. An owned surface additionally observes
+ * infrastructure faults before a presentation catch consumes them. Native terminal release remains the
+ * creation owner's obligation; a settled suspension alone does not acknowledge complete restoration.
  */
 
 /** The live terminal facts, read at CALL time — a resize, or a future `--no-mouse` toggle, must never be captured. */
@@ -41,6 +42,8 @@ export interface HatchTerminal {
 }
 
 export interface HatchDeps {
+  /** An owned surface observes unexpected failures before a presentation catch can consume them. */
+  readonly onFailure?: (cause: unknown) => void;
   /** The React→core bridge carrying ink's `suspendTerminal`. `undefined` ⇒ no live full-screen renderer. */
   readonly suspendPort: SuspendPort;
   /** The transcript at call time (the store's CURRENT snapshot — never a stale capture). */
@@ -50,7 +53,7 @@ export interface HatchDeps {
   /** The live terminal facts, read at call time. */
   readonly terminal: () => HatchTerminal;
   /** Write a raw control sequence (the alt-buffer / mouse toggles). */
-  readonly writeControl: (sequence: string) => void;
+  readonly writeControl: (sequence: string) => void | Promise<void>;
   /** The scrollback dump's I/O (production: `nodeWriteOut` + `nodeWaitForContinue`). */
   readonly dump: DumpToScrollbackDeps;
   /** The `$EDITOR` ports (production: `nodeSpawnEditor` + `nodeCreateTempDocument`). */
@@ -163,17 +166,38 @@ export function createHatches(deps: HatchDeps): Hatches {
       await suspendFullScreen(
         {
           suspendTerminal: suspend,
-          writeControl: deps.writeControl,
+          writeControl: async (sequence) => {
+            try {
+              await deps.writeControl(sequence);
+            } catch (cause) {
+              deps.onFailure?.(cause);
+              throw cause;
+            }
+          },
           inkOwnsAltScreen: term.inkOwnsAltScreen,
           altActive: term.altActive,
           mouseActive: term.mouseActive,
         },
-        body,
+        async () => {
+          try {
+            await body();
+          } catch (cause) {
+            deps.onFailure?.(cause);
+            throw cause;
+          }
+        },
       );
       return true;
     } catch (error) {
-      // The terminal is already restored (suspend.ts's contract). Report the ROOT cause, never crash the REPL.
-      deps.note(`${label}: ${error instanceof Error ? error.message : String(error)}`);
+      deps.onFailure?.(error);
+      // Preserve the owned failure before its notice. Native release/ACK remains separate from presentation.
+      const message =
+        deps.onFailure === undefined
+          ? error instanceof Error
+            ? error.message
+            : String(error)
+          : toUserFacing(error).message;
+      deps.note(`${label}: ${message}`);
       return false;
     } finally {
       busy = false;

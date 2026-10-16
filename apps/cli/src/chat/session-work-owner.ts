@@ -69,6 +69,11 @@ export class SessionWorkOwner {
     return this.#firstFailure;
   }
 
+  /** Positive actual cleanup fact, shared with the invocation registry; expiry/rejection never resolves it. */
+  get retired(): Promise<OwnerRetirement> {
+    return this.#retired;
+  }
+
   readonly isStoppedFailure = (cause: unknown): boolean => cause === this.#stoppedMarker;
 
   readonly assertAdmitting = (): void => {
@@ -108,6 +113,7 @@ export class SessionWorkOwner {
 
   /** A callback-reported close fault is retained even when the manager's close promise fulfils. */
   readonly cleanupUncertain = (cause: unknown): void => {
+    this.failure(cause); // Keep an observed output disposition before any cleanup join can hold.
     this.#cleanupUncertain = true;
     this.#firstFailure ??= { cause };
     this.invocation.finiteExit.fail('cli_internal');

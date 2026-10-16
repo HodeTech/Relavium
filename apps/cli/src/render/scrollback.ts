@@ -40,7 +40,7 @@ export interface InterruptSource {
 export interface DumpToScrollbackDeps {
   /** Write to the PRIMARY buffer. MUST NOT throw and MUST NOT let the stream's async `'error'` event escape — see
    *  {@link nodeWriteOut}, the production adapter. */
-  readonly writeOut: (text: string) => void;
+  readonly writeOut: (text: string) => void | Promise<void>;
   /** Resolve when the user acknowledges (production: one keypress/line on stdin). Injected: it is pure terminal I/O. */
   readonly waitForContinue: () => Promise<void>;
 }
@@ -55,7 +55,7 @@ export async function dumpToScrollback(
 ): Promise<void> {
   const body = lines.map((line) => stripTerminalControls(line)).join('\n');
   // One write: a single syscall cannot be interleaved by another stdout writer mid-transcript.
-  deps.writeOut(
+  await deps.writeOut(
     `${DUMP_HEADER}\n${body}${body.length > 0 ? '\n' : ''}${DUMP_FOOTER}\n${DUMP_PROMPT}\n`,
   );
   await deps.waitForContinue();
@@ -96,24 +96,86 @@ export const nodeWriteOut =
  * (a piped or closed stdin) resolves rather than hangs: the dump is already in the scrollback, which is the point.
  */
 export const nodeWaitForContinue =
-  (stdin: Readable & { ref?: () => void }, interrupts: InterruptSource = process) =>
+  (
+    stdin: Readable & { ref?: () => void },
+    interrupts: InterruptSource = process,
+    signal?: AbortSignal,
+  ) =>
   (): Promise<void> =>
-    new Promise<void>((resolve) => {
-      const done = (): void => {
-        stdin.removeListener('data', done);
-        stdin.removeListener('end', done);
-        stdin.removeListener('error', done);
-        interrupts.removeListener('SIGINT', done);
-        stdin.pause();
+    new Promise<void>((resolve, reject) => {
+      const isAborted = (): boolean => signal?.aborted === true;
+      if (isAborted()) {
         resolve();
+        return;
+      }
+      let constructing = true;
+      let requested = false;
+      let finished = false;
+      let failure: { readonly cause: unknown } | undefined;
+      const removers: Array<() => void> = [];
+      const cleanup = (): void => {
+        if (constructing || !requested || finished) return;
+        finished = true; // Removal/pause callbacks may reenter done().
+        for (const remove of removers) {
+          try {
+            remove();
+          } catch (cause) {
+            failure ??= { cause };
+          }
+        }
+        try {
+          stdin.pause();
+        } catch (cause) {
+          failure ??= { cause };
+        }
+        // A failed removal is a refusal, never a positive terminal-release acknowledgement.
+        // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- Preserve the exact native removal failure; wrapping would replace the primary release refusal.
+        if (failure !== undefined) reject(failure.cause);
+        else resolve();
       };
-      stdin.ref?.();
-      stdin.resume();
-      stdin.once('data', done);
-      stdin.once('end', done);
-      stdin.once('error', done);
-      // Raw mode is OFF for the whole suspension, so Ctrl-C at this prompt arrives as a real SIGINT rather than a
-      // `\x03` byte on `data`. Treat it as "return to Relavium": without this the wait would hang, the surface's own
-      // SIGINT handler is deliberately inert here (chat-ink.tsx), and the user would have no way back but Enter.
-      interrupts.once('SIGINT', done);
+      const done = (): void => {
+        requested = true;
+        cleanup();
+      };
+      const register = (remove: () => void, acquire: () => void): void => {
+        if (requested) return;
+        // Publish the exact cleanup before entering native registration. EventEmitter's
+        // newListener hook can reenter done BEFORE the new listener has actually been added.
+        removers.push(remove);
+        acquire();
+      };
+      try {
+        register(
+          () => stdin.removeListener('data', done),
+          () => stdin.once('data', done),
+        );
+        register(
+          () => stdin.removeListener('end', done),
+          () => stdin.once('end', done),
+        );
+        register(
+          () => stdin.removeListener('error', done),
+          () => stdin.once('error', done),
+        );
+        // Raw mode is OFF here: Ctrl-C returns from the hatch, while the surface's SIGINT handler yields.
+        register(
+          () => interrupts.removeListener('SIGINT', done),
+          () => interrupts.once('SIGINT', done),
+        );
+        if (signal !== undefined) {
+          register(
+            () => signal.removeEventListener('abort', done),
+            () => signal.addEventListener('abort', done, { once: true }),
+          );
+        }
+        if (isAborted()) requested = true;
+        if (!requested) stdin.ref?.();
+        if (!requested) stdin.resume();
+      } catch (cause) {
+        failure = { cause };
+        requested = true;
+      } finally {
+        constructing = false;
+        cleanup();
+      }
     });

@@ -75,6 +75,7 @@ import { resolveChatAgentSource, type ResolvedChatAgent } from './agent-source.j
 import { sanitizeUntrustedInline } from '../render/sanitize.js';
 import { hostDeadlineTimer, hostSleep } from '../process/sleep.js';
 import type { SessionWorkOwner } from './session-work-owner.js';
+import type { SessionHostOwner } from './session-host-owner.js';
 
 const SESSION_DURABILITY_FAILURE =
   'this session could not be saved, so it will not send anything further — the transcript and cost on disk are behind what you see';
@@ -232,6 +233,8 @@ export interface SessionUsageWriter {
 }
 
 export interface BuiltChatSession {
+  /** Creation owner for surface persistence/teardown; absent in an explicitly unowned embedding. */
+  readonly hostOwner?: SessionHostOwner;
   readonly workOwner?: SessionWorkOwner;
   readonly attachUsageWriter: (writer: SessionUsageWriter) => void;
   readonly whenHostSafeToClose: () => Promise<void>;

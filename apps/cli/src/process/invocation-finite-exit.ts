@@ -17,6 +17,8 @@ export interface InvocationFiniteExit {
   readonly activateFallback: () => void;
   readonly fail: (code: 'cli_internal' | 'output_unavailable') => void;
   readonly signal: (signalNumber: number) => void;
+  /** Bound an existing forced cooperative outcome without relabelling it as an external signal. */
+  readonly cooperativeCancel: (outcome: 1 | 4) => void;
   readonly handoff: (registry: InvocationRegistry, changed: () => void) => () => void;
   readonly exitNow: () => void;
   readonly hasExited: () => boolean;
@@ -96,7 +98,8 @@ export function createInvocationFiniteExit(
       following ||
       termination === undefined ||
       (!registry.observations.hasInfrastructureFailure() &&
-        !registry.observations.hasTerminatingSignal())
+        !registry.observations.hasTerminatingSignal() &&
+        !registry.observations.hasCooperativeCancel())
     )
       return;
     following = true;
@@ -106,7 +109,8 @@ export function createInvocationFiniteExit(
       if (
         mode === 'fallback' &&
         generation === observedGeneration &&
-        registry.observations.hasTerminatingSignal() &&
+        (registry.observations.hasTerminatingSignal() ||
+          registry.observations.hasCooperativeCancel()) &&
         !registry.observations.hasInfrastructureFailure()
       )
         exitNow();
@@ -149,6 +153,18 @@ export function createInvocationFiniteExit(
         return;
       }
       void registry.terminate({ kind: 'signal', signalNumber, deadline });
+    },
+    cooperativeCancel: (outcome: 1 | 4) => {
+      if (outcome !== 1 && outcome !== 4) throw new CliError('cli_internal', '');
+      if (exited || mode === 'disposed') return;
+      activateFallback();
+      try {
+        const deadline = clock.now() + FATAL_TERMINATION_MS;
+        if (!Number.isFinite(deadline)) throw new CliError('cli_internal', '');
+        void registry.terminate({ kind: 'cooperative_cancel', outcome, deadline });
+      } catch {
+        void registry.terminate({ kind: 'infrastructure', code: 'cli_internal' });
+      }
     },
     handoff: (candidate: InvocationRegistry, callback: () => void) => {
       if (candidate !== registry || mode === 'native' || mode === 'disposed' || exited)

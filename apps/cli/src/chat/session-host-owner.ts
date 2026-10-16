@@ -35,7 +35,7 @@ export class SessionHostOwner {
         }
       }
       this.work.assertAdmitting();
-      return { ...built, workOwner: this.work };
+      return { ...built, workOwner: this.work, hostOwner: this };
     });
   }
 

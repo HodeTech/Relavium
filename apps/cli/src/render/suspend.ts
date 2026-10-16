@@ -1,4 +1,5 @@
 import { CliError } from '../process/errors.js';
+import { EgressWorkScope } from '../engine/egress-work.js';
 
 import {
   DISABLE_MOUSE,
@@ -25,10 +26,9 @@ import {
  *    for `relavium chat`, whose hoisted `AltScreenController` owns 1049 (Step 4b-3). Hence {@link
  *    SuspendFullScreenOptions.inkOwnsAltScreen}: on the chat surface we exit/re-enter 1049 ourselves, or `$EDITOR`
  *    would paint into the alt buffer and vanish on resume. Both halves ALSO early-return under
- *    `!interactive || isUnmounted || isUnmounting`, so ink's half of the work is skipped once the instance is torn
- *    down — harmless, because `unmount()` itself writes `exitAlternativeScreen + showCursor` and clears the option,
- *    and because `beginSuspend()` runs synchronously at the head of `suspendTerminal` (a mounted instance cannot
- *    become unmounted between the check and our writes).
+ *    `!interactive || isUnmounted || isUnmounting` for buffer writes. Crucially, `endSuspend()` calls
+ *    `resumeInput()` BEFORE that guard in installed Ink 7.1.0: a late continuation can restore raw input even
+ *    after unmount. An owned mount must seal and join entered suspension before its final unmount.
  * 3. ink writes **no mouse escapes at all** (verified: its whole build contains no `?1000`/`?1006`). Mouse reporting
  *    is entirely ours, so we suspend and restore it on both surfaces — leaving DECSET 1002 on while a child owns the
  *    TTY floods that child with `\x1b[<…M` reports.
@@ -57,7 +57,7 @@ export interface SuspendFullScreenOptions {
   /** ink's `useApp().suspendTerminal` — the only way to make ink release raw mode, bracketed paste, and its frame. */
   readonly suspendTerminal: SuspendTerminal;
   /** Write a raw control sequence to the TTY (production: `process.stdout.write`; tests: a capture). */
-  readonly writeControl: (sequence: string) => void;
+  readonly writeControl: (sequence: string) => void | Promise<void>;
   /**
    * `true` when ink's `alternateScreen` RENDER OPTION is on — the bare Home, where ink's own `beginSuspend`/
    * `endSuspend` exit and re-enter DECSET-1049 for us. `false` for `relavium chat` (the option is hard-`false`; the
@@ -97,11 +97,11 @@ export async function suspendFullScreen(
     // RELEASE — hand the terminal over.
     try {
       if (mouseActive) {
-        writeControl(DISABLE_MOUSE); // restore native selection + stop flooding the child with mouse reports
+        await writeControl(DISABLE_MOUSE); // Delivery precedes native handoff to a child/job stop.
         mouseSuspended = true;
       }
       if (weOwnAltScreen) {
-        writeControl(EXIT_ALT_SCREEN + SHOW_CURSOR); // ink did not: its render option is false on this surface
+        await writeControl(EXIT_ALT_SCREEN + SHOW_CURSOR); // Ink does not own this surface's buffer.
         altExited = true;
       }
       await body();
@@ -112,15 +112,15 @@ export async function suspendFullScreen(
     // RECLAIM — mirror the release, innermost-first. Each write is isolated, so one failing sequence can never skip
     // the next: a stranded DECSET-1000 (mouse reporting left on) is the worst terminal state we can leave, and it is
     // restored even when re-entering the alt buffer throws.
-    const reclaim = (sequence: string): void => {
+    const reclaim = async (sequence: string): Promise<void> => {
       try {
-        writeControl(sequence);
+        await writeControl(sequence);
       } catch (error) {
         pending ??= { error }; // only the root cause survives; a secondary write failure on a dead stdout is noise
       }
     };
-    if (altExited) reclaim(ENTER_ALT_SCREEN + HIDE_CURSOR);
-    if (mouseSuspended) reclaim(ENABLE_MOUSE);
+    if (altExited) await reclaim(ENTER_ALT_SCREEN + HIDE_CURSOR);
+    if (mouseSuspended) await reclaim(ENABLE_MOUSE);
 
     if (pending !== undefined) throw pending.error;
   });
@@ -159,6 +159,14 @@ export interface SuspendPort {
   readonly isSuspended: () => boolean;
   /** Publish and acknowledge a notice while Ink owns the terminal, excluding suspension until completion. */
   readonly withActiveTerminal: (publish: () => Promise<void>) => Promise<void>;
+  /** Reserve a mount-specific attachment before rendering; an old effect cannot detach its successor. */
+  readonly reserveAttachment: () => SuspendAttachment;
+}
+
+export interface SuspendAttachment {
+  readonly port: SuspendPort;
+  /** Synchronously stop future entry, then join full entered suspension/publication continuations. */
+  readonly sealAndJoin: () => Promise<void>;
 }
 
 /**
@@ -166,23 +174,38 @@ export interface SuspendPort {
  * forget to set it, and it is impossible for `isSuspended()` to disagree with what the terminal is actually doing.
  */
 export function createSuspendPort(): SuspendPort {
-  let suspend: SuspendTerminal | undefined;
+  interface Reservation {
+    readonly work: EgressWorkScope;
+    readonly generation: number;
+    sealed: boolean;
+  }
+  interface Attached {
+    readonly reservation: Reservation;
+    readonly suspend: SuspendTerminal;
+  }
+  let attached: Attached | undefined;
+  let legacy: SuspendAttachment | undefined;
+  let legacySealed = false;
   let suspended = false;
   let occupied = false;
+  let generation = 0;
+  let latestActivated = 0;
   const waiters = new Set<() => void>();
   const changed = (): void => {
     const pending = [...waiters];
     waiters.clear();
     for (const wake of pending) wake();
   };
-  const exclusive = async (body: () => Promise<void>): Promise<void> => {
+  const live = (expected: Attached): boolean =>
+    attached === expected && !expected.reservation.sealed;
+  const unavailable = (): CliError =>
+    new CliError('internal', 'The terminal renderer is no longer active.');
+  const exclusive = async (expected: Attached, body: () => Promise<void>): Promise<void> => {
     while (occupied) {
-      if (suspend === undefined)
-        throw new CliError('internal', 'The terminal renderer is no longer active.');
+      if (!live(expected)) throw unavailable();
       await new Promise<void>((resolve) => waiters.add(resolve));
     }
-    if (suspend === undefined)
-      throw new CliError('internal', 'The terminal renderer is no longer active.');
+    if (!live(expected)) throw unavailable();
     occupied = true;
     try {
       await body();
@@ -191,32 +214,88 @@ export function createSuspendPort(): SuspendPort {
       changed();
     }
   };
-  return {
-    attach: (next) => {
-      suspend = next;
-      changed(); // Detachment wakes pending publication/suspension so teardown cannot strand a waiter.
-    },
-    current: () => {
-      const live = suspend;
-      if (live === undefined) return undefined;
-      return (callback) => {
-        if (suspended)
-          return Promise.reject(new CliError('internal', 'The terminal is already suspended.'));
-        return exclusive(async () => {
-          if (suspend !== live)
-            throw new CliError('internal', 'The terminal renderer is no longer active.');
-          suspended = true;
-          try {
-            await live(callback);
-          } finally {
-            suspended = false;
-          }
-        });
-      };
-    },
-    isSuspended: () => suspended,
-    withActiveTerminal: exclusive,
+  const enter = (expected: Attached, body: () => Promise<void>): Promise<void> => {
+    if (!live(expected)) return Promise.reject(unavailable());
+    return expected.reservation.work.retainWork(() => exclusive(expected, body));
   };
+  const current = (): SuspendTerminal | undefined => {
+    const expected = attached;
+    if (expected === undefined || !live(expected)) return undefined;
+    return (callback) => {
+      if (suspended)
+        return Promise.reject(new CliError('internal', 'The terminal is already suspended.'));
+      return enter(expected, async () => {
+        suspended = true;
+        try {
+          await expected.suspend(callback);
+        } finally {
+          suspended = false;
+        }
+      });
+    };
+  };
+  const withActiveTerminal = (publish: () => Promise<void>): Promise<void> => {
+    const expected = attached;
+    return expected === undefined ? Promise.reject(unavailable()) : enter(expected, publish);
+  };
+  const reserveAttachment = (): SuspendAttachment => {
+    const reservation: Reservation = {
+      work: new EgressWorkScope(),
+      generation: ++generation,
+      sealed: false,
+    };
+    const port: SuspendPort = Object.freeze({
+      attach: (next: SuspendTerminal | undefined) => {
+        if (next === undefined) {
+          if (attached?.reservation === reservation) attached = undefined;
+        } else if (!reservation.sealed && reservation.generation >= latestActivated) {
+          const predecessor = attached?.reservation;
+          if (predecessor !== undefined && predecessor !== reservation) {
+            predecessor.sealed = true;
+            predecessor.work.seal();
+          }
+          latestActivated = reservation.generation;
+          attached = { reservation, suspend: next };
+        }
+        changed();
+      },
+      current: () => (attached?.reservation === reservation ? current() : undefined),
+      isSuspended: () => suspended,
+      withActiveTerminal: (publish: () => Promise<void>) =>
+        attached?.reservation === reservation
+          ? withActiveTerminal(publish)
+          : Promise.reject(unavailable()),
+      reserveAttachment,
+    });
+    return Object.freeze({
+      port,
+      sealAndJoin: () => {
+        reservation.sealed = true;
+        reservation.work.seal();
+        changed(); // Queued, not-entered work rejects; actual entered continuations remain owed.
+        return reservation.work.done;
+      },
+    });
+  };
+  return Object.freeze({
+    attach: (next: SuspendTerminal | undefined) => {
+      // The legacy embedding API keeps working; owned surfaces reserve their exact mount explicitly.
+      if (legacy === undefined || (next !== undefined && legacySealed)) {
+        if (legacy !== undefined) void legacy.sealAndJoin();
+        legacy = reserveAttachment();
+        legacySealed = false;
+      }
+      legacy.port.attach(next);
+      if (next === undefined) {
+        legacySealed = true;
+        void legacy.sealAndJoin();
+      }
+    },
+    current,
+    isSuspended: () => suspended,
+    withActiveTerminal,
+    reserveAttachment,
+  });
 }
 
 /**
@@ -271,6 +350,10 @@ export interface JobControlBinding {
   readonly requestSuspend: () => void;
   /** Remove the process listeners; safe to call more than once. */
   readonly dispose: () => void;
+  /** Drain an already-entered handoff while Ink is still mounted, before final unmount/restore. */
+  readonly finish: () => Promise<void>;
+  /** Positive listener removal and entered-work acknowledgement, never supplied by dispose alone. */
+  readonly released: Promise<void>;
 }
 
 /**
@@ -296,8 +379,24 @@ export function wireJobControl(opts: {
   readonly releaseWithoutInk?: () => boolean;
   /** Mirrors {@link releaseWithoutInk} after the stopped process is foregrounded again. */
   readonly reclaimWithoutInk?: () => void;
+  /** Owned delivery-before-stop path; the synchronous embedding ports above retain compatibility. */
+  readonly releaseWithoutInkAcknowledged?: () => Promise<boolean>;
+  readonly reclaimWithoutInkAcknowledged?: () => Promise<void>;
+  /** Transfer cleanup before any potentially allocating signal registration. */
+  readonly adopt?: (binding: JobControlBinding) => void;
+  readonly onFailure?: (cause: unknown) => void;
 }): JobControlBinding {
-  if (!opts.lifecycle.supported) return { requestSuspend: noop, dispose: noop };
+  if (!opts.lifecycle.supported) {
+    const released = Promise.resolve();
+    const binding = Object.freeze({
+      requestSuspend: noop,
+      dispose: noop,
+      finish: () => released,
+      released,
+    });
+    opts.adopt?.(binding);
+    return binding;
+  }
 
   let disposed = false;
   let suspending = false;
@@ -305,33 +404,78 @@ export function wireJobControl(opts: {
   let resolveContinue: (() => void) | undefined;
   let removeSuspend: (() => void) | undefined;
   let removeContinue: (() => void) | undefined;
+  let constructing = true;
+  let unknownRegistration = false;
+  let registrations = 0;
+  let finishing: Promise<void> | undefined;
+  const work = new EgressWorkScope();
+  let acknowledge: () => void = () => undefined;
+  let rejectRelease: (cause: unknown) => void = () => undefined;
+  const released = new Promise<void>((resolve, reject) => {
+    acknowledge = resolve;
+    rejectRelease = reject;
+  });
+  void released.catch(noop); // Embeddings may observe later; rejection supplies no positive native ACK.
+  const report = (cause: unknown): void => {
+    try {
+      opts.onFailure?.(cause);
+    } catch (observer) {
+      rejectRelease(new CliError('cli_internal', '', { cause: { primary: cause, observer } }));
+    }
+  };
 
   const removeSuspendListener = (): void => {
-    removeSuspend?.();
+    const remove = removeSuspend;
+    if (remove === undefined) return;
     removeSuspend = undefined;
+    registrations += 1;
+    try {
+      remove();
+    } catch (cause) {
+      removeSuspend = remove;
+      throw cause;
+    } finally {
+      registrations -= 1;
+    }
   };
 
   const installSuspendListener = (): void => {
     if (disposed || removeSuspend !== undefined) return;
-    removeSuspend = opts.lifecycle.onSuspend(requestSuspend);
+    registrations += 1;
+    let acquired = false;
+    try {
+      removeSuspend = opts.lifecycle.onSuspend(requestSuspend);
+      acquired = true;
+      if (disposed) removeSuspendListener();
+    } catch (cause) {
+      if (!acquired) unknownRegistration = true;
+      throw cause;
+    } finally {
+      registrations -= 1;
+    }
   };
 
   const continueSuspension = (): void => {
+    if (disposed) return;
     const resolve = resolveContinue;
     if (resolve === undefined) return; // a stray SIGCONT must not perturb an active surface
     // Re-arm BEFORE Ink resumes input/redraws. A fast second Ctrl-Z is then captured by our handler rather than
     // falling through to a default stop while the terminal is still being reclaimed.
     installSuspendListener();
+    if (disposed) return;
     resolveContinue = undefined;
     resolve();
   };
 
   /** Remove our handler just long enough for the OS default SIGTSTP action to stop the process. */
   const forwardSuspend = (): void => {
+    if (disposed) return;
     removeSuspendListener();
+    if (disposed) return;
     try {
       opts.lifecycle.suspendSelf();
-    } catch {
+    } catch (cause) {
+      report(cause);
       // A failed self-signal means there was no stop/continuation. Resolve a pending release so Ink can reclaim;
       // the finally below restores our SIGTSTP listener too.
       continueSuspension();
@@ -357,7 +501,7 @@ export function wireJobControl(opts: {
     });
   };
 
-  function requestSuspend(): void {
+  function performSuspend(): void {
     if (disposed) return;
     if (suspending) {
       // Coalesce a burst into one real follow-up stop. Dropping it would make a fast Ctrl-Z / SIGTSTP after `fg`
@@ -375,11 +519,34 @@ export function wireJobControl(opts: {
     }
 
     const suspendTerminal = opts.suspendPort.current();
+    if (disposed) return;
     if (suspendTerminal === undefined) {
+      if (opts.releaseWithoutInkAcknowledged !== undefined) {
+        suspending = true;
+        try {
+          const raw = work.retainWork(async () => {
+            if (!(await opts.releaseWithoutInkAcknowledged?.()) || disposed) return;
+            forwardSuspend();
+            if (!disposed) await opts.reclaimWithoutInkAcknowledged?.();
+          });
+          void raw
+            .then(settle, (cause: unknown) => {
+              report(cause);
+              settle();
+            })
+            .catch(report);
+        } catch (cause) {
+          report(cause);
+          settle();
+        }
+        return;
+      }
       // Before Home mounts (onboarding) there is no Ink state to release. In the chat's rebuild window there can be
       // a live hoisted alt buffer, supplied by the reversible hooks below.
       if (opts.releaseWithoutInk !== undefined && !opts.releaseWithoutInk()) return;
+      if (disposed) return;
       forwardSuspend();
+      if (disposed) return;
       opts.reclaimWithoutInk?.();
       return;
     }
@@ -387,31 +554,143 @@ export function wireJobControl(opts: {
     suspending = true;
     const waitForContinue = (): Promise<void> =>
       new Promise((resolve) => {
+        if (disposed) {
+          resolve();
+          return;
+        }
         resolveContinue = resolve;
         forwardSuspend();
       });
     // Signals cannot await a promise. Absorb a terminal-write/Ink failure here: `suspendFullScreen` has already
     // performed its own partial-state reclaim, and an unhandled rejection from a signal handler is strictly worse.
     // We intentionally do not re-raise after a failed release because terminal release never reached the safe point.
-    void opts.run(suspendTerminal, waitForContinue).catch(noop).finally(settle);
+    try {
+      const raw = work.retainWork(() => opts.run(suspendTerminal, waitForContinue));
+      void raw
+        .then(settle, (cause: unknown) => {
+          try {
+            report(cause);
+          } finally {
+            settle();
+          }
+        })
+        .catch(report);
+    } catch (cause) {
+      try {
+        report(cause);
+      } finally {
+        settle();
+      }
+    }
   }
 
-  removeContinue = opts.lifecycle.onContinue(continueSuspension);
-  installSuspendListener();
+  function requestSuspend(): void {
+    if (constructing) {
+      pendingSuspend = true;
+      return;
+    }
+    try {
+      performSuspend();
+    } catch (cause) {
+      report(cause);
+    }
+  }
 
-  return {
-    requestSuspend,
-    dispose: (): void => {
-      if (disposed) return;
-      disposed = true;
-      pendingSuspend = false;
-      // BOTH listeners, not just SIGCONT: `wireJobControl` installs the SIGTSTP one at construction, so
-      // removing only the continue handler leaked a suspend handler per binding. Every session rebuild — a
-      // `/clear`, a `/model` reseat, the onboarding→Home handoff — added another, so one Ctrl-Z eventually ran
-      // several handlers and Node warned about a listener leak.
+  const dispose = (): void => {
+    disposed = true;
+    pendingSuspend = false;
+    // BOTH listeners, not just SIGCONT: `wireJobControl` installs the SIGTSTP one at construction, so
+    // removing only the continue handler leaked a suspend handler per binding. Every session rebuild — a
+    // `/clear`, a `/model` reseat, the onboarding→Home handoff — added another, so one Ctrl-Z eventually ran
+    // several handlers and Node warned about a listener leak.
+    let failed: { readonly cause: unknown } | undefined;
+    try {
       removeSuspendListener();
-      removeContinue?.();
+    } catch (cause) {
+      failed = { cause };
+    }
+    const remove = removeContinue;
+    if (remove !== undefined) {
       removeContinue = undefined;
-    },
+      registrations += 1;
+      try {
+        remove();
+      } catch (cause) {
+        removeContinue = remove;
+        failed ??= { cause };
+      } finally {
+        registrations -= 1;
+      }
+    }
+    if (failed !== undefined) throw failed.cause;
   };
+  const finish = (): Promise<void> => {
+    if (finishing !== undefined) return finishing;
+    finishing = released;
+    let failed: { readonly cause: unknown } | undefined;
+    try {
+      dispose();
+    } catch (cause) {
+      failed = { cause };
+    }
+    // Synchronous exit fallback deliberately leaves this waiter held. An owned asynchronous
+    // finish instead drains the full reclaim BEFORE its caller unmounts/restores the terminal.
+    const resume = resolveContinue;
+    resolveContinue = undefined;
+    resume?.();
+    work.seal();
+    if (failed !== undefined) report(failed.cause);
+    void work.done.then(() => {
+      if (
+        !constructing &&
+        registrations === 0 &&
+        !unknownRegistration &&
+        removeSuspend === undefined &&
+        removeContinue === undefined
+      )
+        acknowledge();
+    });
+    return released;
+  };
+  const binding = Object.freeze({ requestSuspend, dispose, finish, released });
+  opts.adopt?.(binding);
+  let primary: { readonly cause: unknown } | undefined;
+  try {
+    if (!disposed) {
+      registrations += 1;
+      let acquired = false;
+      try {
+        removeContinue = opts.lifecycle.onContinue(() => {
+          try {
+            continueSuspension();
+          } catch (cause) {
+            report(cause);
+          }
+        });
+        acquired = true;
+      } catch (cause) {
+        if (!acquired) unknownRegistration = true;
+        throw cause;
+      } finally {
+        registrations -= 1;
+      }
+      if (disposed) dispose();
+      else installSuspendListener();
+    }
+  } catch (cause) {
+    primary = { cause };
+    try {
+      dispose();
+    } catch (cleanup) {
+      report(cleanup);
+    }
+  } finally {
+    constructing = false;
+  }
+  if (primary !== undefined) throw primary.cause;
+  if (pendingSuspend && !disposed) {
+    pendingSuspend = false;
+    queueMicrotask(requestSuspend);
+  }
+  return binding;
 }

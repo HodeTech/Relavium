@@ -1,3 +1,12 @@
+import { SessionControlWrites } from '../chat/session-control-writes.js';
+import { SessionHomeLifetime } from './session-home-lifetime.js';
+import type { SessionHostOwner } from '../chat/session-host-owner.js';
+import type { SessionWorkOwner } from '../chat/session-work-owner.js';
+import { createOwnedSessionConsentGate } from '../chat/session-consent.js';
+import { SessionInkMount } from '../chat/session-ink-mount.js';
+import { SessionInkInput } from '../chat/session-ink-input.js';
+import { SessionTerminalOwner } from '../chat/session-terminal-owner.js';
+import { SessionViewLifetime } from '../chat/session-view-lifetime.js';
 import { nativeProcessesForInvocation } from '../process/native-process-owner.js';
 import type { CliInvocation } from '../process/invocation.js';
 import { closeQuietly, warnTeardown } from '../process/close-quietly.js';
@@ -194,7 +203,13 @@ export const defaultOnboardingTerminalLifecycle: OnboardingTerminalLifecycle = {
   },
 };
 
-export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
+export function driveHome(deps: HomeDeps): Promise<ExitCode> {
+  if (deps.invocation === undefined) return driveHomeBody(deps);
+  const ownership = new SessionHomeLifetime(deps.invocation, deps.subscribeSignals);
+  return ownership.execute(() => driveHomeBody(deps, ownership));
+}
+
+async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): Promise<ExitCode> {
   const nativeProcesses = nativeProcessesForInvocation(deps.invocation);
   const grants = admitFsInvocation(deps.global);
   const now = deps.now ?? Date.now;
@@ -215,6 +230,7 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
   const mcpSecretResolver =
     deps.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env, keychain);
   const opened = (deps.openSessionStore ?? openSessionStore)(homeDir);
+  ownership?.adoptStore(opened);
   // The provider resolver + `/doctor` probes are built INSIDE the try below — once `opened.db` + the `providerStore`
   // exist — so the resolver is STORE-AWARE (a custom `base_url` rebinds to its validated endpoint, 2.5.G S9); a test
   // still injects `deps.providers` / `deps.doctorProbes` to bypass the keychain/network.
@@ -225,6 +241,12 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
   let instance:
     | Pick<ReturnType<typeof render>, 'unmount' | 'waitUntilRenderFlush' | 'waitUntilExit'>
     | undefined;
+  let ownedMount: SessionInkMount | undefined;
+  let ownedJob: SessionTerminalOwner | undefined;
+  let homeInputSealed = false;
+  let stopHomeInput = (): void => {
+    homeInputSealed = true;
+  };
   let rendererActive = true;
   let flushVisible: NoticeFlush | undefined;
   let controller: HomeController | undefined;
@@ -238,23 +260,57 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
     dbClosed = true;
     closeQuietly(deps.io, 'session store', () => opened.close());
   };
-  const writeControl =
-    deps.writeControl ??
-    ((sequence: string) => {
-      process.stdout.write(sequence);
-    });
+  const controls =
+    ownership === undefined
+      ? undefined
+      : new SessionControlWrites({
+          invocation: ownership.surface.invocation,
+          write: (text) => deps.io.writeOutAcknowledged(text),
+          failure: ownership.surface.work.cleanupUncertain,
+          parent: ownership.surface.work.work,
+        });
+  const writeControl = (sequence: string): void | Promise<void> => {
+    if (controls !== undefined) return controls.write(sequence);
+    if (deps.writeControl !== undefined) deps.writeControl(sequence);
+    else process.stdout.write(sequence);
+  };
 
   // Before Ink mounts, the first-run wizard owns raw input and cursor visibility through `@clack/prompts`. It is a
   // real full-screen-adjacent terminal owner: a raw Ctrl-Z becomes a SUB byte (not a kernel SIGTSTP), while an
   // external SIGTSTP would otherwise stop the process with Clack's raw mode and hidden cursor still live. Keep its
   // state separate from Ink's SuspendPort, then hand it off reversibly through the same job-control coordinator.
-  const onboardingTerminal = deps.onboardingTerminalLifecycle ?? defaultOnboardingTerminalLifecycle;
+  const onboardingTerminal =
+    deps.onboardingTerminalLifecycle ??
+    (ownership === undefined
+      ? defaultOnboardingTerminalLifecycle
+      : {
+          onInput: (listener: (input: string) => void) => {
+            const input = deps.io.nativeStdin;
+            if (input === undefined) throw new CliError('cli_internal', '');
+            const onData = (chunk: Buffer | string): void =>
+              listener(typeof chunk === 'string' ? chunk : chunk.toString('utf8'));
+            input.on('data', onData);
+            return () => {
+              input.removeListener('data', onData);
+            };
+          },
+          isRawMode: () => deps.io.nativeStdin?.isRaw === true,
+          setRawMode: (enabled: boolean) => {
+            const input = deps.io.nativeStdin;
+            if (input === undefined) throw new CliError('cli_internal', '');
+            input.setRawMode(enabled);
+          },
+        });
   let onboardingActive = false;
   let onboardingFinalized = false;
   let onboardingRawReleased = false;
   let onboardingCursorReleased = false;
 
   const reclaimOnboardingTerminal = (): void => {
+    if (ownership?.surface.work.signal.aborted === true) {
+      onboardingFinalized = true;
+      return;
+    }
     if (!onboardingActive || onboardingFinalized) return;
     // Restore raw input before Clack redraws/reads again. Each latch is independent: a transient cursor-write fault
     // must remain retryable and cannot make us incorrectly claim that the terminal is wholly reclaimed.
@@ -268,7 +324,7 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
     }
     if (onboardingCursorReleased) {
       try {
-        writeControl(HIDE_CURSOR);
+        void writeControl(HIDE_CURSOR);
         onboardingCursorReleased = false;
       } catch {
         // A future recovery opportunity gets another exact retry.
@@ -297,7 +353,7 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
       // conservatively re-hide the cursor in that case; a harmless extra HIDE is far safer than returning Clack to a
       // live prompt with its cursor visible.
       onboardingCursorReleased = true;
-      writeControl(SHOW_CURSOR);
+      void writeControl(SHOW_CURSOR);
       return true;
     } catch {
       // We did not stop the process, so put any partial release back immediately rather than leaving Clack half-owned.
@@ -319,7 +375,7 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
       // The overlapping exit net/finally retries the exact operation.
     }
     try {
-      writeControl(SHOW_CURSOR);
+      void writeControl(SHOW_CURSOR);
       onboardingCursorReleased = false;
     } catch {
       // The overlapping exit net/finally retries the exact operation.
@@ -357,7 +413,7 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
     }
     if (!pasteDisabled) {
       try {
-        writeControl(DISABLE_BRACKETED_PASTE);
+        void writeControl(DISABLE_BRACKETED_PASTE);
         pasteDisabled = true;
       } catch {
         // a later net retries
@@ -365,7 +421,7 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
     }
     if (!mouseDisabled) {
       try {
-        writeControl(DISABLE_MOUSE); // restore native mouse text-selection (no-op if never enabled)
+        void writeControl(DISABLE_MOUSE); // restore native mouse text-selection (no-op if never enabled)
         mouseDisabled = true;
       } catch {
         // a later net retries
@@ -377,7 +433,7 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
   // `wireHomeChatSession` hands these ports to `createChatLineHandler` — the SAME builder `relavium chat` uses — so
   // `/scrollback` and `/edit` are literally the same code on both surfaces. Unlike the chat, the bare Home mounts ink
   // with `alternateScreen: true`, so ink itself toggles DECSET-1049 across a suspension; only the mouse is ours.
-  const suspendPort = createSuspendPort();
+  const suspendPort = ownership?.suspendPort ?? createSuspendPort();
   let altScreenActive = false; // assigned once the render mode resolves; read LAZILY by `terminal()` below
   let mouseActive = false; // ditto — `--no-mouse` / `[preferences].mouse = false` leaves the alt buffer mouse-less
   // Whether the mouse is captured RIGHT NOW. Distinct from `mouseActive` (the resolved mode) since Step 6g: the Home
@@ -386,7 +442,15 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
   // ONE clipboard closure over the SAME control-write sink as the alt-buffer + mouse toggles (Step 6). `/copy` (via
   // `hatchPorts`) and copy-on-select (via `RootApp`'s `clipboard` prop, when enabled) both use it.
   const clipboard = (text: string): ClipboardOutcome =>
-    copyToClipboard({ writeControl, env: deps.io.env }, text);
+    copyToClipboard(
+      {
+        writeControl: (sequence) => {
+          void writeControl(sequence);
+        },
+        env: deps.io.env,
+      },
+      text,
+    );
   const hatchPorts: Omit<HatchDeps, 'transcript' | 'note'> = {
     suspendPort,
     writeControl,
@@ -396,18 +460,43 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
     terminal: inkOwnedTerminal(
       () => altScreenActive,
       () => mouseCaptured,
-      () => process.stdout.columns,
+      () => (ownership === undefined ? process.stdout.columns : deps.io.nativeStdout?.columns),
     ),
     clipboard,
     dump: {
-      writeOut: nodeWriteOut(process.stdout),
-      waitForContinue: nodeWaitForContinue(process.stdin),
+      writeOut:
+        ownership === undefined
+          ? nodeWriteOut(process.stdout)
+          : (text) => deps.io.writeOutAcknowledged(text),
+      waitForContinue:
+        ownership === undefined
+          ? nodeWaitForContinue(process.stdin)
+          : () => {
+              if (deps.io.nativeStdin === undefined) throw new CliError('cli_internal', '');
+              return nodeWaitForContinue(
+                deps.io.nativeStdin,
+                process,
+                ownership.surface.work.signal,
+              )();
+            },
     },
     editor: {
       env: deps.io.env,
       spawnEditor: createNodeSpawnEditor(nativeProcesses),
       createTempDocument: nodeCreateTempDocument,
       onDisposeFailed: (path, error) => {
+        if (ownership !== undefined) {
+          ownership.surface.work.cleanupUncertain(error);
+          if (ownership.surface.invocation.registry.budget.remainingMs() !== 0)
+            void ownership.surface.work.work
+              .retainWork(() =>
+                deps.io.writeErrAcknowledged(
+                  'warning: transcript temporary cleanup could not be acknowledged.\n',
+                ),
+              )
+              .catch(ownership.surface.work.failure);
+          return;
+        }
         deps.io.writeErr(
           `warning: transcript temp file teardown failed (${path}): ${
             error instanceof Error ? error.message : String(error)
@@ -416,6 +505,9 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
       },
     },
   };
+  // Keep the last synchronous restore net until actual final output acknowledgement, even after stop.
+  const setupView =
+    ownership === undefined ? undefined : new SessionViewLifetime(ownership.surface.work, false);
 
   try {
     const homeStore = createHomeStore({
@@ -470,7 +562,13 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
     // accept action on top: `currentDefault`/`currentEffort` (the ✓ markers) + `writeDefault` (the next-session
     // default model + its effort tier, ADR-0063 §1 · ADR-0066 §6).
     const models: HomeModelsPort = {
-      ...createModelCatalogPort({ db: opened.db, providers, now, uuid }),
+      ...createModelCatalogPort({
+        db: opened.db,
+        providers,
+        now,
+        uuid,
+        ...(ownership === undefined ? {} : { workOwner: ownership.surface.work }),
+      }),
       currentDefault: readEffectiveDefault,
       currentEffort: readEffectiveEffort,
       // Write to the SAME file the picker re-reads + the started session resolves (honors `--config`), so a `/models`
@@ -518,29 +616,33 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
       let frame: ReturnType<typeof setInterval> | undefined;
       let unsubscribe: (() => void) | undefined;
       let persister: SessionPersister | undefined;
+      const view = built.workOwner === undefined ? undefined : ownership?.view(built.workOwner);
       try {
-        persister = createSessionPersister({
-          usageStore: createSessionUsageStore(opened.db),
-          mode: opts.open ? 'fresh' : 'adopt',
-          attachUsageWriter: built.attachUsageWriter,
-          governor: built.governor,
-          attachDurabilityProbe: built.attachDurabilityProbe,
-          attachEffectTurnAllocator: built.attachEffectTurnAllocator,
-          store: opened.store,
-          handle: built.handle,
-          sessionId: built.sessionId,
-          agent: built.agent,
-          context: built.context,
-          now,
-          uuid,
-          // ADR-0059 per-message/session model attribution — resolve a model string → its `model_catalog.id` over
-          // the SAME db (the Home's catalog is the one the picker refreshes), degrading to NULL when uncataloged.
-          resolveModelCatalogId: makeCatalogIdResolver(opened.db, { uuid, now }),
-          // A RESUMED session continues the durable transcript past its last sequence number; a fresh one starts at 0.
-          ...(opts.initialSequenceNumber === undefined
-            ? {}
-            : { initialSequenceNumber: opts.initialSequenceNumber }),
-        });
+        persister = createSessionPersister(
+          {
+            usageStore: createSessionUsageStore(opened.db),
+            mode: opts.open ? 'fresh' : 'adopt',
+            attachUsageWriter: built.attachUsageWriter,
+            governor: built.governor,
+            attachDurabilityProbe: built.attachDurabilityProbe,
+            attachEffectTurnAllocator: built.attachEffectTurnAllocator,
+            store: opened.store,
+            handle: built.handle,
+            sessionId: built.sessionId,
+            agent: built.agent,
+            context: built.context,
+            now,
+            uuid,
+            // ADR-0059 per-message/session model attribution — resolve a model string → its `model_catalog.id` over
+            // the SAME db (the Home's catalog is the one the picker refreshes), degrading to NULL when uncataloged.
+            resolveModelCatalogId: makeCatalogIdResolver(opened.db, { uuid, now }),
+            // A RESUMED session continues the durable transcript past its last sequence number; a fresh one starts at 0.
+            ...(opts.initialSequenceNumber === undefined
+              ? {}
+              : { initialSequenceNumber: opts.initialSequenceNumber }),
+          },
+          built.hostOwner,
+        );
         // The durable effect journal (ADR-0080), wired where `history.db` is open. Without it every
         // effectful tool on the bare-`relavium` Home — `!ls`, an appending `write_file`, a non-GET
         // `http_request`, every MCP tool — is refused, which is exactly what a review found here.
@@ -565,9 +667,20 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
           { ...deps, hatchPorts },
         );
         // Subscribe the view store BEFORE opening the session so the synchronous session:started is observed.
-        unsubscribe = built.handle.subscribe((event) => store.apply(event));
-        frame = setInterval(() => store.tick(), FRAME_MS);
-        frame.unref();
+        const subscribeView = (): (() => void) =>
+          built.handle.subscribe((event) => store.apply(event));
+        const startFrame = (): (() => void) => {
+          frame = setInterval(() => store.tick(), FRAME_MS);
+          frame.unref();
+          return () => clearInterval(frame);
+        };
+        if (view === undefined) {
+          unsubscribe = subscribeView();
+          startFrame();
+        } else {
+          view.acquire(subscribeView);
+          view.acquire(startFrame);
+        }
         persister.start();
         // Open a FRESH session; a RESUMED session already landed at idle inside AgentSession.resume — start() would
         // throw and re-emitting session:started would double a terminal-less lifecycle event.
@@ -587,9 +700,19 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
           command: string,
           args: readonly string[],
         ): ReturnType<typeof built.session.runUserCommand> =>
-          built.session.runUserCommand(command, args);
+          built.workOwner === undefined
+            ? built.session.runUserCommand(command, args)
+            : built.workOwner.enter(() => built.session.runUserCommand(command, args));
+        const ownedTeardown =
+          built.hostOwner === undefined
+            ? undefined
+            : (): Promise<void> => {
+                view?.release();
+                return built.hostOwner?.work.close() ?? Promise.resolve();
+              };
         let torn = false;
         const teardown = async (): Promise<void> => {
+          if (ownedTeardown !== undefined) return ownedTeardown();
           if (torn) return; // idempotent — an error-path teardown racing an endChat must not double-close the MCP child
           torn = true;
           cancelOnce(); // the session's sole terminal — persister marks the row 'ended'
@@ -615,20 +738,27 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
           ...(opts.open
             ? {}
             : {
-                onActivated: (isActive: () => boolean) =>
-                  reconcileResumedSessionEffects({
-                    io: deps.io,
-                    db: opened.db,
-                    sessionId: built.sessionId,
-                    sanitize: sanitizeInline,
-                    deliverNotice: (text) => store.notice(text),
-                    isActive: () => rendererActive && isActive(),
-                    flushNotice: async (publish) => {
-                      if (flushVisible === undefined)
-                        throw new Error('Home renderer is not ready.');
-                      await flushVisible(publish);
-                    },
-                  }),
+                onActivated: (isActive: () => boolean) => {
+                  const activate = () =>
+                    reconcileResumedSessionEffects({
+                      io: deps.io,
+                      db: opened.db,
+                      sessionId: built.sessionId,
+                      sanitize: sanitizeInline,
+                      deliverNotice: (text) => store.notice(text),
+                      isActive: () => rendererActive && isActive(),
+                      flushNotice: async (publish) => {
+                        if (flushVisible === undefined)
+                          throw new Error('Home renderer is not ready.');
+                        await flushVisible(publish);
+                      },
+                    });
+                  return built.workOwner === undefined
+                    ? activate()
+                    : built.workOwner.enter(async () => {
+                        await activate();
+                      });
+                },
               }),
           onAbort,
           onModeChange,
@@ -638,6 +768,11 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
           runShellCommand,
         };
       } catch (err) {
+        if (built.workOwner !== undefined) {
+          built.workOwner.failure(err);
+          view?.release();
+          throw err;
+        }
         clearInterval(frame); // reclaim whatever the wiring managed to acquire before the throw
         unsubscribe?.();
         try {
@@ -650,88 +785,103 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
     };
 
     // Build + wire + START a fresh chat session (the controller sends the first message on transition).
-    const startChat = async (): Promise<HomeChatSession> => {
-      // `altScreenActive` is assigned when the render mode resolves, BEFORE the first submit that calls this. The
-      // full-screen viewport can hold a whole answer; the inline `<Static>` path keeps its trailing tail (ADR-0068
-      // Decision (c)). Read lazily, like the hatch ports, so the mode is the LIVE one.
-      const store = createChatStore(
-        deps.global.color,
-        undefined,
-        transcriptBoundFor(altScreenActive),
-      );
-      // TRIPWIRE (2.6.C): the store's transcript bound and the renderer both derive from `altScreenActive`, so they
-      // agree BY CONSTRUCTION here — this pins that, loudly, if a future edit ever gives them separate sources.
-      assertRenderStoreAgree(altScreenActive, store.getSnapshot().state.transcriptBound);
-      // The ADR-0065 §2 user-pricing overlay (2.5.G S10), read FRESH per chat from the SAME `history.db` (empty map
-      // on a read fault). The USER outranks the catalog (ADR-0071 §1).
-      const resolvePrice = readUserPricingOverlay(opened.db);
-      // Re-read the EFFECTIVE `[chat]` FRESH per chat (not the load-once `config` snapshot) so a same-session
-      // `/models` write — the model (2.5.G S7) + its effort (ADR-0066 §6) — lights up the next chat. Read it ONCE:
-      // the model and the provider persisted WITH it (ADR-0059) must come from the SAME snapshot, or a fresh model
-      // paired with a stale startup provider dials the wrong adapter → 404 (review M5). So couple them — when the
-      // fresh read supplies a model, take ITS provider (undefined ⇒ infer from the model id, NEVER back-filled from
-      // startup); only with no fresh model (a genuinely unset default, or a malformed-config read fault) fall back
-      // to the startup PAIR. The other `[chat]` settings keep the startup snapshot.
-      const effectiveChat = readEffectiveChat();
-      const freshModel = effectiveChat?.defaultModel;
-      const [defaultModel, defaultProvider] =
-        freshModel !== undefined
-          ? [freshModel, effectiveChat?.defaultProvider]
-          : [config.chat.defaultModel, config.chat.defaultProvider];
-      const built: BuiltChatSession = await (deps.buildSession ?? buildChatSession)({
-        ...(nativeProcesses === undefined ? {} : { nativeProcesses }),
-        // Consent before any stdio MCP spawn (ADR-0084 §1) — the Home opens an agent like every other path.
-        consentGate: createConsentGate({
-          io: deps.io,
-          global: deps.global,
-          homeDir,
-          prompt: createConsentPrompter(),
-        }),
-        fsPolicy,
-        chat: {
-          ...config.chat,
-          defaultModel,
-          defaultProvider,
-          reasoningEffort: effectiveChat?.reasoningEffort ?? config.chat.reasoningEffort,
-        },
-        ...(config.maxTokensEstimate === undefined
-          ? {}
-          : { maxTokensEstimate: config.maxTokensEstimate }),
-        agentRef: undefined, // the built-in default agent (zero-config first run)
-        cwd: deps.global.cwd,
-        projectConfigDir,
-        now,
-        uuid,
-        providers,
-        mcpSecretResolver,
-        mcpRegistrations: config.mcpServers,
-        ...(resolvePrice.size === 0 ? {} : { resolvePrice }),
-        // Into the chat's TRANSCRIPT, never raw stderr. `relavium chat` routes this through `emitLiveNotice` for
-        // exactly this reason (Step-4b-3 Sonnet fix): a raw write lands on the alt buffer, where ink's next frame
-        // overwrites it — the user is warned about their spend on a line that survives a single frame.
-        onBudgetWarning: (warning) => store.notice(budgetWarningText(warning)),
-        onCompactionStart: async ({ windowUnknown, signal }) => {
-          if (!windowUnknown || signal.aborted) return;
-          if (!rendererActive || flushVisible === undefined)
-            throw new Error('Home renderer is not ready.');
-          await flushVisible(() => {
-            if (signal.aborted) return;
-            const visibleStore = store;
-            if (!rendererActive || visibleStore === undefined)
-              throw new Error('Home renderer is not ready.');
-            visibleStore.notice(COMPACTION_UNKNOWN_WINDOW_NOTICE);
+    const constructChat = (
+      factory: (host?: SessionHostOwner) => Promise<HomeChatSession>,
+    ): Promise<HomeChatSession> =>
+      ownership === undefined ? factory() : ownership.hosts.construct(factory);
+    const startChat = (): Promise<HomeChatSession> =>
+      constructChat(async (host) => {
+        // `altScreenActive` is assigned when the render mode resolves, BEFORE the first submit that calls this. The
+        // full-screen viewport can hold a whole answer; the inline `<Static>` path keeps its trailing tail (ADR-0068
+        // Decision (c)). Read lazily, like the hatch ports, so the mode is the LIVE one.
+        const store = createChatStore(
+          deps.global.color,
+          undefined,
+          transcriptBoundFor(altScreenActive),
+        );
+        // TRIPWIRE (2.6.C): the store's transcript bound and the renderer both derive from `altScreenActive`, so they
+        // agree BY CONSTRUCTION here — this pins that, loudly, if a future edit ever gives them separate sources.
+        assertRenderStoreAgree(altScreenActive, store.getSnapshot().state.transcriptBound);
+        // The ADR-0065 §2 user-pricing overlay (2.5.G S10), read FRESH per chat from the SAME `history.db` (empty map
+        // on a read fault). The USER outranks the catalog (ADR-0071 §1).
+        const resolvePrice = readUserPricingOverlay(opened.db);
+        // Re-read the EFFECTIVE `[chat]` FRESH per chat (not the load-once `config` snapshot) so a same-session
+        // `/models` write — the model (2.5.G S7) + its effort (ADR-0066 §6) — lights up the next chat. Read it ONCE:
+        // the model and the provider persisted WITH it (ADR-0059) must come from the SAME snapshot, or a fresh model
+        // paired with a stale startup provider dials the wrong adapter → 404 (review M5). So couple them — when the
+        // fresh read supplies a model, take ITS provider (undefined ⇒ infer from the model id, NEVER back-filled from
+        // startup); only with no fresh model (a genuinely unset default, or a malformed-config read fault) fall back
+        // to the startup PAIR. The other `[chat]` settings keep the startup snapshot.
+        const effectiveChat = readEffectiveChat();
+        const freshModel = effectiveChat?.defaultModel;
+        const [defaultModel, defaultProvider] =
+          freshModel !== undefined
+            ? [freshModel, effectiveChat?.defaultProvider]
+            : [config.chat.defaultModel, config.chat.defaultProvider];
+        const build = (workOwner?: SessionWorkOwner) =>
+          (deps.buildSession ?? buildChatSession)({
+            ...(workOwner === undefined ? {} : { workOwner }),
+            ...(nativeProcesses === undefined ? {} : { nativeProcesses }),
+            // Consent before any stdio MCP spawn (ADR-0084 §1) — the Home opens an agent like every other path.
+            consentGate:
+              workOwner === undefined
+                ? createConsentGate({
+                    io: deps.io,
+                    global: deps.global,
+                    homeDir,
+                    prompt: createConsentPrompter(),
+                  })
+                : createOwnedSessionConsentGate(
+                    { io: deps.io, global: deps.global, homeDir },
+                    workOwner,
+                  ),
+            fsPolicy,
+            chat: {
+              ...config.chat,
+              defaultModel,
+              defaultProvider,
+              reasoningEffort: effectiveChat?.reasoningEffort ?? config.chat.reasoningEffort,
+            },
+            ...(config.maxTokensEstimate === undefined
+              ? {}
+              : { maxTokensEstimate: config.maxTokensEstimate }),
+            agentRef: undefined, // the built-in default agent (zero-config first run)
+            cwd: deps.global.cwd,
+            projectConfigDir,
+            now,
+            uuid,
+            providers,
+            mcpSecretResolver,
+            mcpRegistrations: config.mcpServers,
+            ...(resolvePrice.size === 0 ? {} : { resolvePrice }),
+            // Into the chat's TRANSCRIPT, never raw stderr. `relavium chat` routes this through `emitLiveNotice` for
+            // exactly this reason (Step-4b-3 Sonnet fix): a raw write lands on the alt buffer, where ink's next frame
+            // overwrites it — the user is warned about their spend on a line that survives a single frame.
+            onBudgetWarning: (warning) => store.notice(budgetWarningText(warning)),
+            onCompactionStart: async ({ windowUnknown, signal }) => {
+              if (!windowUnknown || signal.aborted) return;
+              if (!rendererActive || flushVisible === undefined)
+                throw new Error('Home renderer is not ready.');
+              await flushVisible(() => {
+                if (signal.aborted) return;
+                const visibleStore = store;
+                if (!rendererActive || visibleStore === undefined)
+                  throw new Error('Home renderer is not ready.');
+                visibleStore.notice(COMPACTION_UNKNOWN_WINDOW_NOTICE);
+              });
+              if (!signal.aborted && !rendererActive)
+                throw new Error('Home renderer is not ready.');
+            },
+            // Same channel, same reason (ADR-0071 §6): a tier the bound model will not take is withheld at send, and
+            // saying so on raw stderr would land on the alt buffer for one frame. `onceEffortNotice` keeps a standing
+            // condition — a stale `off` on a model that cannot disable thinking — from repeating every single turn.
+            onEffortWithheld: onceEffortNotice((note) => store.notice(note)),
+            onListenerError: (note) => store.notice(note),
+            onUnpriced: (note) => store.notice(note),
           });
-          if (!signal.aborted && !rendererActive) throw new Error('Home renderer is not ready.');
-        },
-        // Same channel, same reason (ADR-0071 §6): a tier the bound model will not take is withheld at send, and
-        // saying so on raw stderr would land on the alt buffer for one frame. `onceEffortNotice` keeps a standing
-        // condition — a stale `off` on a model that cannot disable thinking — from repeating every single turn.
-        onEffortWithheld: onceEffortNotice((note) => store.notice(note)),
-        onListenerError: (note) => store.notice(note),
-        onUnpriced: (note) => store.notice(note),
+        const built = host === undefined ? await build() : await host.build(build);
+        return wireHomeChatSession(built, store, { open: true });
       });
-      return wireHomeChatSession(built, store, { open: true });
-    };
 
     // Reseat the in-Home chat onto a NEW model (ADR-0059) — the counterpart of the standalone `chat` reseat. Reload
     // the just-torn-down session's transcript from the SHARED db and RESUME it under a model-swapped agent (dropping
@@ -741,119 +891,135 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
       sessionId: string,
       target: ReseatTarget,
       carriedTranscript: readonly TranscriptEntry[],
-    ): Promise<HomeChatSession> => {
-      const loaded = opened.store.loadFull(sessionId);
-      if (loaded === undefined || loaded.session.agentSnapshot === undefined) {
-        throw new CliError(
-          'invalid_invocation',
-          `cannot switch model: session ${sessionId} could not be reloaded for reseat`,
+    ): Promise<HomeChatSession> =>
+      constructChat(async (host) => {
+        const loaded = opened.store.loadFull(sessionId);
+        if (loaded === undefined || loaded.session.agentSnapshot === undefined) {
+          throw new CliError(
+            'invalid_invocation',
+            `cannot switch model: session ${sessionId} could not be reloaded for reseat`,
+          );
+        }
+        const newAgent = swapAgentModel(
+          loaded.session.agentSnapshot,
+          target.modelId,
+          target.provider,
+          target.reasoningEffort,
         );
-      }
-      const newAgent = swapAgentModel(
-        loaded.session.agentSnapshot,
-        target.modelId,
-        target.provider,
-        target.reasoningEffort,
-      );
-      const record: AgentSessionRecord = { ...loaded.session, agentSnapshot: newAgent };
-      const resolvePrice = readUserPricingOverlay(opened.db);
-      // The store's SEED comes from the build (it needs `built.resumeState`), so it cannot exist before the build —
-      // yet a governor/effort callback could fire DURING it. Every notice sink here goes through this one indirection:
-      // render into the transcript once the store exists, otherwise BUFFER (review M5/bot) and flush after the store
-      // is wired. The old fallback wrote to stderr, which on the alt-screen renderer ink's next frame erases — so a
-      // withheld-effort notice that fired mid-build was lost, and `onceEffortNotice` had already marked it delivered
-      // (never to repeat). `onBudgetWarning` alone used to be guarded; the other two closed over the later `const
-      // store` and would TDZ-crash under the same condition it was protected against.
-      const storeRef: { current?: ChatStoreController } = {};
-      const pendingNotes: string[] = [];
-      const noteToStore = (text: string): void => {
-        if (storeRef.current !== undefined) storeRef.current.notice(text);
-        else pendingNotes.push(text);
-      };
-      const noteBudget = (warning: ChatBudgetWarning): void =>
-        noteToStore(budgetWarningText(warning));
-      const built = await (deps.buildResumedSession ?? buildResumedChatSession)({
-        ...(nativeProcesses === undefined ? {} : { nativeProcesses }),
-        chat: config.chat,
-        fsPolicy,
-        ...(config.maxTokensEstimate === undefined
-          ? {}
-          : { maxTokensEstimate: config.maxTokensEstimate }),
-        consentGate: createConsentGate({
-          io: deps.io,
-          global: deps.global,
-          homeDir,
-          prompt: createConsentPrompter(),
-        }),
-        record,
-        messages: loaded.messages,
-        now,
-        providers,
-        mcpSecretResolver,
-        mcpRegistrations: config.mcpServers,
-        ...(resolvePrice.size === 0 ? {} : { resolvePrice }),
-        onBudgetWarning: noteBudget,
-        onCompactionStart: async ({ windowUnknown, signal }) => {
-          if (!windowUnknown || signal.aborted) return;
-          if (!rendererActive || flushVisible === undefined)
-            throw new Error('Home renderer is not ready.');
-          await flushVisible(() => {
-            if (signal.aborted) return;
-            const visibleStore = storeRef.current;
-            if (!rendererActive || visibleStore === undefined)
-              throw new Error('Home renderer is not ready.');
-            visibleStore.notice(COMPACTION_UNKNOWN_WINDOW_NOTICE);
+        const record: AgentSessionRecord = { ...loaded.session, agentSnapshot: newAgent };
+        const resolvePrice = readUserPricingOverlay(opened.db);
+        // The store's SEED comes from the build (it needs `built.resumeState`), so it cannot exist before the build —
+        // yet a governor/effort callback could fire DURING it. Every notice sink here goes through this one indirection:
+        // render into the transcript once the store exists, otherwise BUFFER (review M5/bot) and flush after the store
+        // is wired. The old fallback wrote to stderr, which on the alt-screen renderer ink's next frame erases — so a
+        // withheld-effort notice that fired mid-build was lost, and `onceEffortNotice` had already marked it delivered
+        // (never to repeat). `onBudgetWarning` alone used to be guarded; the other two closed over the later `const
+        // store` and would TDZ-crash under the same condition it was protected against.
+        const storeRef: { current?: ChatStoreController } = {};
+        const pendingNotes: string[] = [];
+        const noteToStore = (text: string): void => {
+          if (storeRef.current !== undefined) storeRef.current.notice(text);
+          else pendingNotes.push(text);
+        };
+        const noteBudget = (warning: ChatBudgetWarning): void =>
+          noteToStore(budgetWarningText(warning));
+        const build = (workOwner?: SessionWorkOwner) =>
+          (deps.buildResumedSession ?? buildResumedChatSession)({
+            ...(workOwner === undefined ? {} : { workOwner }),
+            ...(nativeProcesses === undefined ? {} : { nativeProcesses }),
+            chat: config.chat,
+            fsPolicy,
+            ...(config.maxTokensEstimate === undefined
+              ? {}
+              : { maxTokensEstimate: config.maxTokensEstimate }),
+            consentGate:
+              workOwner === undefined
+                ? createConsentGate({
+                    io: deps.io,
+                    global: deps.global,
+                    homeDir,
+                    prompt: createConsentPrompter(),
+                  })
+                : createOwnedSessionConsentGate(
+                    { io: deps.io, global: deps.global, homeDir },
+                    workOwner,
+                  ),
+            record,
+            messages: loaded.messages,
+            now,
+            providers,
+            mcpSecretResolver,
+            mcpRegistrations: config.mcpServers,
+            ...(resolvePrice.size === 0 ? {} : { resolvePrice }),
+            onBudgetWarning: noteBudget,
+            onCompactionStart: async ({ windowUnknown, signal }) => {
+              if (!windowUnknown || signal.aborted) return;
+              if (!rendererActive || flushVisible === undefined)
+                throw new Error('Home renderer is not ready.');
+              await flushVisible(() => {
+                if (signal.aborted) return;
+                const visibleStore = storeRef.current;
+                if (!rendererActive || visibleStore === undefined)
+                  throw new Error('Home renderer is not ready.');
+                visibleStore.notice(COMPACTION_UNKNOWN_WINDOW_NOTICE);
+              });
+              if (!signal.aborted && !rendererActive)
+                throw new Error('Home renderer is not ready.');
+            },
+            // A RESEAT binds a different model — precisely when a tier that was fine a moment ago stops being accepted.
+            // Through `noteToStore`, like every sink here, so none can TDZ on the store declared below.
+            onEffortWithheld: onceEffortNotice(noteToStore),
+            onListenerError: noteToStore,
+            onUnpriced: noteToStore,
           });
-          if (!signal.aborted && !rendererActive) throw new Error('Home renderer is not ready.');
-        },
-        // A RESEAT binds a different model — precisely when a tier that was fine a moment ago stops being accepted.
-        // Through `noteToStore`, like every sink here, so none can TDZ on the store declared below.
-        onEffortWithheld: onceEffortNotice(noteToStore),
-        onListenerError: noteToStore,
-        onUnpriced: noteToStore,
+        const built = host === undefined ? await build() : await host.build(build);
+        // Seed the view store with the carried model + cost/turns — a resumed session never re-emits session:started,
+        // so without this the footer shows nothing until the first new turn (mirrors chatResumeCommand).
+        const costs = opened.store.loadSessionCostBreakdown(built.sessionId);
+        const store = createChatStore(
+          deps.global.color,
+          {
+            agentRef: built.agent.id,
+            model: built.agent.model,
+            // The amount and its qualifiers share this read even if another live host settled during build.
+            cumulativeCostMicrocents: costs.totalCostMicrocents,
+            usageCoverage: costs.coverage,
+            unpricedCalls: costs.rows.reduce((sum, row) => sum + row.unpricedCalls, 0),
+            turnCount: built.resumeState.turnCount,
+            // The OUTGOING store's rendered conversation (2.6.C / F1). On the full-screen renderer the store IS the
+            // scrollback, so a reseat that seeded `[]` blanked the screen. The gate drops this on the inline renderer,
+            // where ink's `<Static>` already printed the lines and re-seeding would double-print them.
+            transcript: carriedTranscript,
+          },
+          transcriptBoundFor(altScreenActive),
+        );
+        // TRIPWIRE (2.6.C): the store's transcript bound and the renderer both derive from `altScreenActive`, so they
+        // agree BY CONSTRUCTION here — this pins that, loudly, if a future edit ever gives them separate sources.
+        assertRenderStoreAgree(altScreenActive, store.getSnapshot().state.transcriptBound);
+        storeRef.current = store; // from here a budget warning renders in the transcript, not on the alt buffer
+        // Flush any notice that fired DURING the build (an effort-withheld or unpriced note on the reseated model)
+        // into the transcript now that the store exists — it would otherwise have been written to erased stderr.
+        for (const note of pendingNotes) store.notice(note);
+        pendingNotes.length = 0;
+        return wireHomeChatSession(built, store, {
+          open: false,
+          initialSequenceNumber: built.nextSequenceNumber,
+        });
       });
-      // Seed the view store with the carried model + cost/turns — a resumed session never re-emits session:started,
-      // so without this the footer shows nothing until the first new turn (mirrors chatResumeCommand).
-      const costs = opened.store.loadSessionCostBreakdown(built.sessionId);
-      const store = createChatStore(
-        deps.global.color,
-        {
-          agentRef: built.agent.id,
-          model: built.agent.model,
-          // The amount and its qualifiers share this read even if another live host settled during build.
-          cumulativeCostMicrocents: costs.totalCostMicrocents,
-          usageCoverage: costs.coverage,
-          unpricedCalls: costs.rows.reduce((sum, row) => sum + row.unpricedCalls, 0),
-          turnCount: built.resumeState.turnCount,
-          // The OUTGOING store's rendered conversation (2.6.C / F1). On the full-screen renderer the store IS the
-          // scrollback, so a reseat that seeded `[]` blanked the screen. The gate drops this on the inline renderer,
-          // where ink's `<Static>` already printed the lines and re-seeding would double-print them.
-          transcript: carriedTranscript,
-        },
-        transcriptBoundFor(altScreenActive),
-      );
-      // TRIPWIRE (2.6.C): the store's transcript bound and the renderer both derive from `altScreenActive`, so they
-      // agree BY CONSTRUCTION here — this pins that, loudly, if a future edit ever gives them separate sources.
-      assertRenderStoreAgree(altScreenActive, store.getSnapshot().state.transcriptBound);
-      storeRef.current = store; // from here a budget warning renders in the transcript, not on the alt buffer
-      // Flush any notice that fired DURING the build (an effort-withheld or unpriced note on the reseated model)
-      // into the transcript now that the store exists — it would otherwise have been written to erased stderr.
-      for (const note of pendingNotes) store.notice(note);
-      pendingNotes.length = 0;
-      return wireHomeChatSession(built, store, {
-        open: false,
-        initialSequenceNumber: built.nextSequenceNumber,
-      });
-    };
 
     const getSize =
       deps.getSize ??
-      (() => ({ cols: process.stdout.columns ?? 80, rows: process.stdout.rows ?? 24 }));
+      (() => ({
+        cols: (ownership === undefined ? process.stdout : deps.io.nativeStdout)?.columns ?? 80,
+        rows: (ownership === undefined ? process.stdout : deps.io.nativeStdout)?.rows ?? 24,
+      }));
     const subscribeResize =
       deps.subscribeResize ??
       ((onResize: () => void) => {
-        process.stdout.on('resize', onResize);
-        return () => process.stdout.off('resize', onResize);
+        const output = ownership === undefined ? process.stdout : deps.io.nativeStdout;
+        if (output === undefined) throw new CliError('cli_internal', '');
+        output.on('resize', onResize);
+        return () => output.off('resize', onResize);
       });
     const exitProcess = deps.exit ?? ((code: number) => process.exit(code));
 
@@ -903,37 +1069,108 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
           }
         });
     };
-    unsubscribeSignals = (deps.subscribeSignals ?? defaultSubscribeSignals)(onSignal);
+    if (ownership === undefined)
+      unsubscribeSignals = (deps.subscribeSignals ?? defaultSubscribeSignals)(onSignal);
     // The LAST net. `onSignal` covers the catchable kills; this covers everything that reaches Node's `'exit'` without
     // unwinding our `finally` — a `process.exit()` from a nested command, an uncaught throw, an unhandled rejection.
     // It must be synchronous, which `restoreTerminalControls` is; the latch makes the overlap with the other nets free.
-    unsubscribeProcessExit = (deps.subscribeProcessExit ?? defaultSubscribeProcessExit)(() => {
-      disposeJobControl?.();
-      restoreTerminalControls();
-    });
+    const registerExitNet = () =>
+      (deps.subscribeProcessExit ?? defaultSubscribeProcessExit)(() => {
+        if (ownership !== undefined) {
+          // Process death permits finite captured restoration only. Never start an async
+          // delivery or treat this last retry as positive terminal/database acknowledgement.
+          try {
+            disposeJobControl?.();
+          } catch {
+            /* No asynchronous recovery during process exit. */
+          }
+          try {
+            instance?.unmount();
+          } catch {
+            /* Other finite restoration still runs. */
+          }
+          try {
+            deps.io.nativeStdin?.setRawMode(false);
+          } catch {
+            /* Attempt the captured output too. */
+          }
+          try {
+            deps.io.nativeStdout?.write(DISABLE_BRACKETED_PASTE + DISABLE_MOUSE + SHOW_CURSOR);
+          } catch {
+            /* The process is already exiting. */
+          }
+          return;
+        }
+        disposeJobControl?.();
+        restoreTerminalControls();
+      });
+    if (setupView === undefined) unsubscribeProcessExit = registerExitNet();
+    else setupView.acquire(registerExitNet);
 
     // SIGTSTP/SIGCONT are a SEPARATE, reversible lifecycle. `suspendFullScreen` gives Ink ownership of raw mode and
     // Home's alt buffer while it temporarily releases our live mouse capture; on SIGCONT Ink restores both and forces
     // a redraw. It never reaches the termination handler above, so it cannot close the db or end a live chat.
-    const jobControl = wireJobControl({
-      suspendPort,
-      lifecycle: deps.jobControlLifecycle ?? defaultJobControlLifecycle,
-      run: (suspendTerminal, waitForContinue) =>
-        suspendFullScreen(
-          {
-            suspendTerminal,
-            writeControl,
-            // Home mounts Ink with its OWN alternate-screen render option. `suspendFullScreen` must never double
-            // toggle 1049 here, even on an inline Home where `altActive` is false.
-            inkOwnsAltScreen: true,
-            altActive: altScreenActive,
-            mouseActive: mouseCaptured,
+    const jobNative: { binding?: ReturnType<typeof wireJobControl> } = {};
+    const createJob = () =>
+      wireJobControl({
+        ...(ownership === undefined
+          ? {}
+          : {
+              adopt: (binding: ReturnType<typeof wireJobControl>) => {
+                jobNative.binding = binding;
+              },
+              onFailure: ownership.surface.work.cleanupUncertain,
+            }),
+        suspendPort,
+        lifecycle: deps.jobControlLifecycle ?? defaultJobControlLifecycle,
+        run: (suspendTerminal, waitForContinue) =>
+          suspendFullScreen(
+            {
+              suspendTerminal,
+              writeControl,
+              // Home mounts Ink with its OWN alternate-screen render option. `suspendFullScreen` must never double
+              // toggle 1049 here, even on an inline Home where `altActive` is false.
+              inkOwnsAltScreen: true,
+              altActive: altScreenActive,
+              mouseActive: mouseCaptured,
+            },
+            waitForContinue,
+          ),
+        releaseWithoutInk: releaseOnboardingTerminal,
+        reclaimWithoutInk: reclaimOnboardingTerminal,
+        ...(controls === undefined
+          ? {}
+          : {
+              releaseWithoutInkAcknowledged: async () => {
+                const released = releaseOnboardingTerminal();
+                await controls.joinEntered();
+                return released;
+              },
+              reclaimWithoutInkAcknowledged: async () => {
+                reclaimOnboardingTerminal();
+                await controls.joinEntered();
+              },
+            }),
+      });
+    let jobControl: ReturnType<typeof wireJobControl>;
+    if (ownership === undefined) jobControl = createJob();
+    else {
+      ownedJob = new SessionTerminalOwner(
+        ownership.surface.invocation,
+        ownership.surface.work.assertAdmitting,
+        ownership.surface.work.failure,
+      );
+      jobControl = ownedJob.acquire((creation) => {
+        creation.adopt({
+          seal: () => jobNative.binding?.dispose(),
+          release: () => {
+            if (jobNative.binding === undefined) throw new CliError('cli_internal', '');
+            return jobNative.binding.finish();
           },
-          waitForContinue,
-        ),
-      releaseWithoutInk: releaseOnboardingTerminal,
-      reclaimWithoutInk: reclaimOnboardingTerminal,
-    });
+        });
+        return createJob();
+      });
+    }
     disposeJobControl = jobControl.dispose;
 
     // First-run onboarding (2.5.G S8): a truly KEY-LESS bare Home offers a `@clack` wizard to connect a provider
@@ -946,11 +1183,16 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
       // Clack's raw-mode listener is registered after this one, so this sees SUB first. Clack itself treats Ctrl-Z as
       // neither submit nor cancel, but consuming the byte here makes the intended POSIX handoff explicit and keeps it
       // out of every wizard prompt/secret field.
-      unsubscribeOnboardingInput = onboardingTerminal.onInput((input) => {
-        if (input.includes('\x1a')) jobControl.requestSuspend();
-      });
+      const onboardingView = ownership?.view(ownership.surface.work);
+      const registerInput = () =>
+        onboardingTerminal.onInput((input) => {
+          if (input.includes('\x1a')) jobControl.requestSuspend();
+        });
+      if (onboardingView === undefined) unsubscribeOnboardingInput = registerInput();
+      else onboardingView.acquire(registerInput);
       try {
         await runOnboardingWizard({
+          ...(ownership === undefined ? {} : { workOwner: ownership.surface.work }),
           store: providerStore,
           keychain,
           resolver: providers,
@@ -966,6 +1208,7 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
           ...(deps.onboardingPrompter === undefined ? {} : { prompter: deps.onboardingPrompter }),
         });
       } finally {
+        onboardingView?.release();
         unsubscribeOnboardingInput?.();
         unsubscribeOnboardingInput = undefined;
         // A real process cannot execute this while stopped. It makes an injected/failing lifecycle safe, and is a
@@ -975,6 +1218,7 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
       }
     }
 
+    ownership?.surface.work.assertAdmitting();
     // Bracketed paste (DECSET 2004) is enabled by ink 7's `usePaste` on mount (home-app.tsx). The defensive
     // `DISABLE_BRACKETED_PASTE` writes in `restoreTerminalControls` are belt-and-suspenders (usePaste also
     // disables on unmount) so an external signal can never leave the terminal in bracketed-paste mode.
@@ -997,6 +1241,18 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
     });
 
     return await new Promise<ExitCode>((resolve, reject) => {
+      stopHomeInput = (): void => {
+        if (homeInputSealed) return;
+        homeInputSealed = true;
+        rendererActive = false;
+        flushVisible = undefined;
+        ownership?.releaseViews();
+        if (controller !== undefined)
+          void controller
+            .teardownActive()
+            .catch((cause: unknown) => ownership?.surface.work.failure(cause));
+        resolve(EXIT_CODES.success);
+      };
       controller = createHomeController({
         startChat,
         reseatChat,
@@ -1004,12 +1260,21 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         doctorProbes,
         models,
         onExit: () => {
+          if (ownership !== undefined) stopHomeInput();
           rendererActive = false;
           resolve(EXIT_CODES.success);
         }, // a clean Home exit is exit 0
         onError: (err) => {
           rendererActive = false;
-          reject(err instanceof Error ? err : new Error(String(err)));
+          ownership?.surface.work.failure(err);
+          // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- Preserve the observed original owned cause; never format private unknown error text.
+          reject(
+            ownership === undefined
+              ? err instanceof Error
+                ? err
+                : new Error('Home controller failed.')
+              : err,
+          );
         },
       });
       const alternateScreen = renderMode === 'alt';
@@ -1027,16 +1292,62 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         mouseEnabled: mouseActive,
         configCopyOnSelect: config.copyOnSelect,
       });
+      if (ownership !== undefined) {
+        if (
+          deps.render === undefined &&
+          (deps.io.nativeStdin === undefined ||
+            deps.io.nativeStdout === undefined ||
+            deps.io.nativeStderr === undefined)
+        )
+          throw new CliError('cli_internal', '');
+        ownedMount = new SessionInkMount({
+          invocation: ownership.surface.invocation,
+          assertEntering: ownership.surface.work.assertAdmitting,
+          failure: ownership.surface.work.failure,
+          suspendPort,
+          stopInput: stopHomeInput,
+          drainNative: jobControl.finish,
+          ...(deps.render !== undefined
+            ? {}
+            : {
+                input: (() => {
+                  if (deps.io.nativeStdin === undefined) throw new CliError('cli_internal', '');
+                  return new SessionInkInput({
+                    input: deps.io.nativeStdin,
+                    invocation: ownership.surface.invocation,
+                    failure: ownership.surface.work.failure,
+                    acknowledge: (text) => deps.io.writeOutAcknowledged(text),
+                  });
+                })(),
+              }),
+        });
+      }
+      const actualController = controller;
+      const inputController: HomeController =
+        ownership === undefined
+          ? actualController
+          : {
+              ...actualController,
+              handleKey: (char, key) => {
+                if (!homeInputSealed) actualController.handleKey(char, key);
+              },
+              handlePaste: (text) => {
+                if (!homeInputSealed) actualController.handlePaste(text);
+              },
+            };
       const props: RootAppProps = {
+        inputEnabled: () => !homeInputSealed,
         onRendererReady: (flush) => {
-          flushVisible = flush;
+          if (!homeInputSealed) flushVisible = flush;
         },
         onRendererError: (error) => {
           rendererActive = false;
-          if (controller !== undefined) void controller.teardownActive().catch(() => undefined);
+          ownership?.surface.work.failure(error);
+          if (ownership === undefined && controller !== undefined)
+            void controller.teardownActive().catch(() => undefined);
           reject(error);
         },
-        controller,
+        controller: inputController,
         nowMs: now,
         color: deps.global.color,
         getSize,
@@ -1044,10 +1355,12 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         // The in-Home chat renders its transcript through the scroll viewport when mounted on the alt screen (Step 4b).
         alternateScreen,
         // `RootApp` attaches ink's `suspendTerminal` here while mounted (2.6.F Step 5d, ADR-0068 §e).
-        suspendPort,
+        suspendPort: ownedMount?.port ?? suspendPort,
         // Raw Ink mode delivers Ctrl-Z as a key event, not a process SIGTSTP. Route it into the same coordinator as
         // an external `kill -TSTP`, so both paths release/reclaim terminal state identically.
-        onSuspend: jobControl.requestSuspend,
+        onSuspend: () => {
+          if (!homeInputSealed) jobControl.requestSuspend();
+        },
         // The branded banner's durable switch (Step 5g); `HomeView` owns the empty-Home rule when it is absent.
         showBanner: config.showBanner,
         // Armed only while the in-Home chat owns the screen (Step 6g). `mouseActive` is the RESOLVED mode
@@ -1055,8 +1368,9 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         ...(mouseActive
           ? {
               setMouseCapture: (enabled: boolean) => {
+                if (enabled && homeInputSealed) return;
                 mouseCaptured = enabled; // the hatch ports read this LIVE, like `altScreenActive`
-                writeControl(enabled ? ENABLE_MOUSE : DISABLE_MOUSE);
+                void writeControl(enabled ? ENABLE_MOUSE : DISABLE_MOUSE);
               },
             }
           : {}),
@@ -1065,9 +1379,16 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         // `[preferences].copy_on_select = false`: the selection still highlights, and `/copy` still copies.
         ...(copyOnSelect ? { clipboard } : {}),
       };
-      instance =
+      const mount = () =>
         deps.render === undefined
           ? render(createElement(RootApp, props), {
+              ...(ownership === undefined
+                ? {}
+                : {
+                    stdin: deps.io.nativeStdin,
+                    stdout: deps.io.nativeStdout,
+                    stderr: deps.io.nativeStderr,
+                  }),
               exitOnCtrlC: false, // the controller drives Ctrl-C, not ink's process.exit
               patchConsole: false,
               maxFps: Math.max(1, Math.round(1000 / FRAME_MS)),
@@ -1079,16 +1400,27 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
               alternateScreen,
             })
           : deps.render(props, { alternateScreen, interactive });
-      void instance.waitUntilExit().then(
+      instance = ownedMount === undefined ? mount() : ownedMount.acquire(mount);
+      void (ownedMount?.exited ?? instance.waitUntilExit()).then(
         () => {
           rendererActive = false;
-          if (controller !== undefined) void controller.teardownActive().catch(() => undefined);
+          if (ownership === undefined && controller !== undefined)
+            void controller.teardownActive().catch(() => undefined);
           resolve(EXIT_CODES.success);
         },
         (err: unknown) => {
           rendererActive = false;
-          if (controller !== undefined) void controller.teardownActive().catch(() => undefined);
-          reject(err instanceof Error ? err : new Error('Home renderer failed.'));
+          ownership?.surface.work.failure(err);
+          if (ownership === undefined && controller !== undefined)
+            void controller.teardownActive().catch(() => undefined);
+          // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- Preserve the owned native renderer rejection after observing it.
+          reject(
+            ownership === undefined
+              ? err instanceof Error
+                ? err
+                : new Error('Home renderer failed.')
+              : err,
+          );
         },
       );
       // Mouse reporting is armed by `RootApp` as the in-Home CHAT takes the screen (`setMouseCapture`), not here:
@@ -1096,19 +1428,43 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
       // (2.6.F Step 6g). Disabled on EVERY teardown path below — the `DISABLE_MOUSE` writes are unconditional there
       // (a no-op when it was never enabled, like DISABLE_BRACKETED_PASTE).
     });
+  } catch (cause) {
+    ownership?.surface.work.failure(cause);
+    throw cause;
   } finally {
-    rendererActive = false;
-    flushVisible = undefined;
-    // The clean-exit / error / INIT-FAULT path (NOT the signal path, which exits the process directly): undo the
-    // terminal state, reclaim a live session, and close the shared db ONCE. The terminal restore swallows its own
-    // throw, so it neither turns a clean exit into a failure nor skips the teardown + close below — a faulty
-    // terminal can never leak the session or the db handle.
-    unsubscribeSignals?.();
-    unsubscribeProcessExit?.();
-    unsubscribeOnboardingInput?.();
-    disposeJobControl?.();
-    restoreTerminalControls();
-    await controller?.teardownActive().catch(() => undefined); // always reclaim a live session
-    closeDb(); // always close the shared db
+    if (ownership !== undefined) {
+      stopHomeInput();
+      ownership.releaseViews();
+      // Start every independent cleanup before awaiting any actual native acknowledgement.
+      const closing = [
+        ownedMount?.close() ?? Promise.resolve(),
+        ownedJob?.close() ?? Promise.resolve(),
+        ownership.hosts.close(),
+      ];
+      await Promise.all(closing);
+      if (ownership.surface.invocation.registry.budget.remainingMs() !== 0) {
+        try {
+          await controls?.write(DISABLE_BRACKETED_PASTE + DISABLE_MOUSE + SHOW_CURSOR);
+          await controls?.close();
+          setupView?.release();
+        } catch (cause) {
+          ownership.surface.work.cleanupUncertain(cause);
+        }
+      }
+    } else {
+      rendererActive = false;
+      flushVisible = undefined;
+      // The clean-exit / error / INIT-FAULT path (NOT the signal path, which exits the process directly): undo the
+      // terminal state, reclaim a live session, and close the shared db ONCE. The terminal restore swallows its own
+      // throw, so it neither turns a clean exit into a failure nor skips the teardown + close below — a faulty
+      // terminal can never leak the session or the db handle.
+      unsubscribeSignals?.();
+      unsubscribeProcessExit?.();
+      unsubscribeOnboardingInput?.();
+      disposeJobControl?.();
+      restoreTerminalControls();
+      await controller?.teardownActive().catch(() => undefined); // always reclaim a live session
+      closeDb(); // always close the shared db
+    }
   }
 }

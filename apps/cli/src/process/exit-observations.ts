@@ -25,6 +25,7 @@ export class ExitObservations {
   #signal: number | undefined;
   #ordinary: OrdinaryExit = EXIT_CODES.success;
   #background = false;
+  #cooperative = false;
 
   observeWorkflowSafety(value: WorkflowSafetyExit | undefined): void {
     if (value !== undefined && value !== 8 && value !== 7 && value !== 5 && value !== 6) {
@@ -74,6 +75,17 @@ export class ExitObservations {
   observeTerminatingSignal(signalNumber: number): void {
     assertTerminatingSignalNumber(signalNumber);
     this.#signal ??= signalNumber;
+  }
+
+  /** A surface's existing forced cooperative outcome, distinct from a terminating OS signal. */
+  observeCooperativeCancel(outcome: 1 | 4): void {
+    if (outcome !== 1 && outcome !== 4) throw new CliError('cli_internal', '');
+    this.#cooperative = true;
+    this.observeOutcome(outcome);
+  }
+
+  hasCooperativeCancel(): boolean {
+    return this.#cooperative;
   }
 
   /** Keepalive backstop only. This neither stops admission nor overrides an established nonzero. */

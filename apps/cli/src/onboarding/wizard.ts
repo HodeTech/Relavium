@@ -16,6 +16,9 @@ import {
 import { CliError } from '../process/errors.js';
 import type { CliIo } from '../process/io.js';
 import { KeychainUnavailableError, type KeychainStore } from '../secrets/keychain.js';
+import { nativePromptIo } from '../process/native-prompt-io.js';
+import { runSessionPrompt } from '../chat/session-prompt.js';
+import type { SessionWorkOwner } from '../chat/session-work-owner.js';
 
 /**
  * The first-run onboarding wizard (workstream **2.5.G S8**) — a `@clack/prompts` flow that turns a KEY-LESS Home
@@ -50,11 +53,13 @@ export interface ClackOnboardingDeps {
     options: readonly { value: string; label: string; hint?: string }[];
     /** Pre-highlight an option so a bare Enter takes it (2.5.G S8 — the "press Enter to continue" affordance). */
     initialValue?: string;
+    signal?: AbortSignal;
   }) => Promise<string | symbol>;
   /** A MASKED key prompt (clack `password`) — the hidden interactive key input. */
   readonly password: (opts: {
     message: string;
     validate?: (value: string | undefined) => string | undefined;
+    signal?: AbortSignal;
   }) => Promise<string | symbol>;
   /** Clack's cancel sentinel guard (Ctrl-C / ESC) — a real type guard so a non-cancel value narrows. */
   readonly isCancel: (value: unknown) => value is symbol;
@@ -91,8 +96,64 @@ const defaultPrompter: ClackOnboardingDeps = {
   },
 };
 
+/** Native prompts use captured streams. Installed Clack spinner borrows ambient stdin, so omit it. */
+export function createBoundOnboardingPrompter(io: CliIo): ClackOnboardingDeps {
+  const streams = nativePromptIo(io);
+  return {
+    intro: (title) => intro(title, { output: streams.output }),
+    outro: (message) => outro(message, { output: streams.output }),
+    note: (message, title) => note(message, title, { output: streams.output }),
+    select: (options) => select({ ...options, ...streams, options: [...options.options] }),
+    password: (options) => password({ ...options, ...streams }),
+    isCancel,
+  };
+}
+
+function ownedPrompter(deps: OnboardingDeps): ClackOnboardingDeps {
+  const owner = deps.workOwner;
+  const native =
+    deps.prompter ??
+    (owner === undefined ? defaultPrompter : createBoundOnboardingPrompter(deps.io));
+  if (owner === undefined) return native;
+  const guarded = <T>(operation: () => T): T => {
+    owner.assertAdmitting();
+    return operation();
+  };
+  return {
+    intro: (title) => guarded(() => native.intro(title)),
+    outro: (message) => guarded(() => native.outro(message)),
+    note: (message, title) => guarded(() => native.note(message, title)),
+    select: async (options) => {
+      const answer = await runSessionPrompt(
+        owner.invocation,
+        deps.io,
+        owner.assertAdmitting,
+        owner.failure,
+        (signal) => native.select({ ...options, signal }),
+        owner.signal,
+      );
+      owner.assertAdmitting();
+      return answer;
+    },
+    password: async (options) => {
+      const answer = await runSessionPrompt(
+        owner.invocation,
+        deps.io,
+        owner.assertAdmitting,
+        owner.failure,
+        (signal) => native.password({ ...options, signal }),
+        owner.signal,
+      );
+      owner.assertAdmitting();
+      return answer;
+    },
+    isCancel: native.isCancel,
+  };
+}
+
 /** The non-clack ports the wizard needs — the keychain-write path + the resolver (injected for tests). */
 export interface OnboardingDeps {
+  readonly workOwner?: SessionWorkOwner;
   /** The clack slice — omit for the real prompts; a test injects a scripted one. */
   readonly prompter?: ClackOnboardingDeps;
   readonly store: ProviderStore;
@@ -134,7 +195,7 @@ const requireKey = (value: string | undefined): string | undefined =>
  * (`select`/`password`/`note`/`outro`) propagates, and that is caught by the Home's cleanup `finally`.
  */
 export async function runOnboardingWizard(deps: OnboardingDeps): Promise<void> {
-  const p = deps.prompter ?? defaultPrompter;
+  const p = ownedPrompter(deps);
   p.intro('Welcome to Relavium');
   p.note(
     'Connect a model provider to start chatting.\nYour key is stored in your OS keychain — never on disk.',
@@ -169,6 +230,7 @@ export async function runOnboardingWizard(deps: OnboardingDeps): Promise<void> {
   // "connected" copy stays honest on the continue-anyway path. `keyToStore` is what we finally persist (the
   // originally-typed or a re-entered key). A `null` return ⇒ the user skipped mid-retry.
   const outcome = await validateWithRetry(p, deps, provider, key);
+  deps.workOwner?.assertAdmitting();
   if (outcome === null) return; // skip already surfaced its note/outro
   const { keyToStore, verified } = outcome;
 
@@ -194,6 +256,9 @@ export async function runOnboardingWizard(deps: OnboardingDeps): Promise<void> {
         keychain: deps.keychain,
         resolver: deps.resolver,
         readSecret: () => Promise.resolve(keyToStore),
+        ...(deps.workOwner === undefined
+          ? {}
+          : { assertAdmitting: deps.workOwner.assertAdmitting }),
         // `global` is read only by `provider list --json`; `set-key` never touches it — a throwaway (the wizard is
         // always interactive, never `--json`).
         global: {
@@ -205,7 +270,12 @@ export async function runOnboardingWizard(deps: OnboardingDeps): Promise<void> {
         },
       },
     );
+    deps.workOwner?.assertAdmitting();
   } catch (err) {
+    if (deps.workOwner !== undefined) {
+      deps.workOwner.failure(err);
+      deps.workOwner.assertAdmitting();
+    }
     // Distinguish the EXPECTED keychain-unavailable failure (recoverable → env-var guidance) from an UNEXPECTED
     // fault (e.g. a db write). `providerSetKey` writes to the keychain FIRST, so a keychain-unavailable failure
     // persists NOTHING; mislabeling a *post*-`keychain.set` fault (a later db upsert) as "keychain unavailable, key
@@ -248,12 +318,17 @@ export async function runOnboardingWizard(deps: OnboardingDeps): Promise<void> {
     ? `Verified and stored your ${provider} key (${keyHint(keyToStore)}) in the OS keychain.`
     : `Saved your ${provider} key (${keyHint(keyToStore)}) — it couldn't be verified now. Run /doctor to re-check.`;
   try {
+    deps.workOwner?.assertAdmitting();
     deps.writeDefaultModel(starterModel, provider);
     p.note(
       `${storedLine}\nYour default model is ${starterModel} — change it anytime with /models.`,
       'Connected',
     );
-  } catch {
+  } catch (cause) {
+    if (deps.workOwner !== undefined) {
+      deps.workOwner.failure(cause);
+      deps.workOwner.assertAdmitting();
+    }
     p.note(`${storedLine}\nPick a ${provider} model with /models to start chatting.`, 'Connected');
   }
   p.outro("You're all set — starting Relavium.");
@@ -281,11 +356,23 @@ async function validateWithRetry(
       // can't probe, so it treats the key as ok to avoid blocking the scripted flow; in production every first-run
       // key is genuinely probed, so the "Verified and stored" copy is never shown for an un-probed key.
       if (adapter === undefined) return { ok: true, detail: 'skipped', reason: 'ok' };
-      return validateProviderKey(adapter, k, KNOWN_PROVIDERS[id].testModel);
+      const owner = deps.workOwner;
+      return validateProviderKey(
+        adapter,
+        k,
+        KNOWN_PROVIDERS[id].testModel,
+        undefined,
+        owner === undefined
+          ? undefined
+          : { signal: owner.signal, work: owner.work, assertAdmitting: owner.assertAdmitting },
+      );
     });
 
   let keyToStore = key;
   for (;;) {
+    deps.workOwner?.assertAdmitting();
+    if (deps.workOwner !== undefined)
+      p.note(`Checking your ${KNOWN_PROVIDERS[provider].displayName} key…`, 'Verification');
     const sp = p.spinner?.();
     sp?.start(`Checking your ${KNOWN_PROVIDERS[provider].displayName} key…`);
     // The spinner MUST stop even if the probe rejects unexpectedly (validateProviderKey never rejects, but a future
@@ -294,6 +381,7 @@ async function validateWithRetry(
     let res: ProviderKeyValidation;
     try {
       res = await validate(provider, keyToStore);
+      deps.workOwner?.assertAdmitting();
     } finally {
       sp?.stop('Key check finished.');
     }

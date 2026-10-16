@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { CliError } from '../process/cli-error.js';
 
 import { DISABLE_MOUSE, ENABLE_MOUSE, ENTER_ALT_SCREEN, EXIT_ALT_SCREEN } from './alt-screen.js';
 import {
@@ -73,9 +74,13 @@ const harness = (
       mouseActive: true,
       inkOwnsAltScreen: false, // the `relavium chat` shape
     }),
-    writeControl: (sequence) => trace.push(sequence),
+    writeControl: (sequence) => {
+      trace.push(sequence);
+    },
     dump: {
-      writeOut: (text) => trace.push(`OUT:${text.split('\n').length}L`),
+      writeOut: (text) => {
+        trace.push(`OUT:${text.split('\n').length}L`);
+      },
       waitForContinue: () => {
         trace.push('wait');
         return Promise.resolve();
@@ -98,6 +103,41 @@ const harness = (
 };
 
 describe('/scrollback', () => {
+  it('observes failed transcript delivery before a held native reclaim can hide the failure', async () => {
+    let finishNative: () => void = () => undefined;
+    const native = new Promise<void>((resolve) => {
+      finishNative = resolve;
+    });
+    const primary = new CliError('output_unavailable', 'PRIVATE_OUTPUT_FAULT');
+    const port = createSuspendPort();
+    port.attach(async (body) => {
+      let failed: { cause: unknown } | undefined;
+      try {
+        await body();
+      } catch (cause) {
+        failed = { cause };
+      }
+      await native;
+      if (failed !== undefined) throw failed.cause;
+    });
+    const failure = vi.fn();
+    const wait = vi.fn(() => Promise.resolve());
+    const { deps, notes } = harness({
+      suspendPort: port,
+      onFailure: failure,
+      dump: { writeOut: () => Promise.reject(primary), waitForContinue: wait },
+    });
+    const dump = createHatches(deps).dumpScrollback();
+    await vi.waitFor(() =>
+      expect(failure, 'SESSION_HATCH_FAULT_BEFORE_NATIVE_RECLAIM').toHaveBeenCalledWith(primary),
+    );
+    expect(wait).not.toHaveBeenCalled();
+    expect(notes).toEqual([]);
+    finishNative();
+    await dump;
+    expect(notes.join('')).not.toContain('PRIVATE_OUTPUT_FAULT');
+  });
+
   it('suspends the renderer, dumps, waits, and restores every terminal mode — in order', async () => {
     const { deps, trace, notes } = harness();
     await createHatches(deps).dumpScrollback();

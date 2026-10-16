@@ -1,4 +1,5 @@
 import { createCliInvocation } from '../process/invocation.js';
+import { invocationFixture } from '../process/invocation.test-support.js';
 import { witnessNativeToolProcess } from './native-forwarding.test-support.js';
 import { appendGrant, fingerprint, resolveStdioSpawn } from '../engine/mcp-consent.js';
 import { mcpConsentPath } from '../engine/mcp-consent-gate.js';
@@ -277,6 +278,135 @@ describe('chatCommand', () => {
     expect(full?.session.agentSlug).toBe('relavium-chat'); // the built-in default agent
     expect(full?.messages.map((m) => m.role)).toEqual(['user', 'assistant']);
     expect(full?.messages[1]?.content[0]).toEqual({ type: 'text', text: 'hi there' });
+  });
+
+  it('keeps no-Ink job-control custody while the old host cleanup remains pending', async () => {
+    const f = invocationFixture();
+    const { d, out } = deps([], []);
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let suspend: (() => void) | undefined;
+    let continuation: (() => void) | undefined;
+    const selfStop = vi.fn(() => continuation?.());
+    const done = chatCommand(
+      { agent: undefined },
+      {
+        ...d,
+        ...INERT_HOIST,
+        invocation: f.invocation,
+        io: { ...d.io, stdoutIsTty: true },
+        jobControlLifecycle: {
+          supported: true,
+          onSuspend: (callback) => {
+            suspend = callback;
+            return () => {
+              if (suspend === callback) suspend = undefined;
+            };
+          },
+          onContinue: (callback) => {
+            continuation = callback;
+            return () => {
+              if (continuation === callback) continuation = undefined;
+            };
+          },
+          suspendSelf: selfStop,
+        },
+        buildSession: async (options) => ({
+          ...(await buildChatSession(options)),
+          whenHostSafeToClose: () => held,
+        }),
+        drive: async (ctx) => {
+          ctx.startSession();
+          await ctx.processLine('/exit');
+          return { kind: 'exit' };
+        },
+      },
+    );
+    try {
+      await vi.waitFor(() => expect(f.registry.activeOwners).toBe(3));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(suspend, 'CHAT_JOB_CUSTODY_DURING_OLD_HOST_JOIN').toBeTypeOf('function');
+      suspend?.();
+      await vi.waitFor(() => expect(selfStop).toHaveBeenCalledOnce());
+      expect(out()).toContain(EXIT_ALT_SCREEN);
+      expect(out().split(ENTER_ALT_SCREEN)).toHaveLength(3); // Initial enter and reversible gap reclaim.
+    } finally {
+      release();
+    }
+    expect(await done).toBe(EXIT_CODES.chatEnded);
+    expect(f.registry.activeOwners).toBe(0);
+  });
+
+  it('owns a real SQLite chat turn through host retirement before the shared DB tail', async () => {
+    const f = invocationFixture();
+    const { d, store, sessionId } = deps(['hello', '/exit'], [textTurn('owned reply')]);
+    const close = vi.fn(() => {
+      expect(f.registry.activeOwners, 'CHAT_NATIVE_HOST_RETIRES_BEFORE_SHARED_DB').toBe(1);
+    });
+    const result = await chatCommand(
+      { agent: undefined },
+      {
+        ...d,
+        ...INERT_HOIST,
+        invocation: f.invocation,
+        openSessionStore: () => ({ store, db: client.db, close }),
+        buildSession: (options) => {
+          expect(options.workOwner).toBeDefined();
+          expect(options.workOwner?.invocation).toBe(f.invocation);
+          return buildChatSession(options);
+        },
+        drive: async (ctx) => {
+          expect(ctx.workOwner?.invocation).toBe(f.invocation);
+          expect(ctx.subscribeInterrupt).toBeDefined();
+          return linesDriver(['hello', '/exit'])(ctx);
+        },
+      },
+    );
+    expect(result).toBe(4);
+    expect(store.loadFull(sessionId)?.messages.map((message) => message.role)).toEqual([
+      'user',
+      'assistant',
+    ]);
+    expect(close).toHaveBeenCalledOnce();
+    expect(f.registry.activeOwners).toBe(0);
+    expect(f.exit).not.toHaveBeenCalled();
+  });
+
+  it('observes an escaping driver fault before held actual-host cleanup and keeps the shared DB open', async () => {
+    const f = invocationFixture();
+    const { d, store } = deps([], []);
+    const primary = new Error('PRIVATE_OWNED_DRIVER_FAULT');
+    let release: () => void = () => undefined;
+    const safe = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const close = vi.fn();
+    const run = chatCommand(
+      { agent: undefined },
+      {
+        ...d,
+        ...INERT_HOIST,
+        invocation: f.invocation,
+        openSessionStore: () => ({ store, db: client.db, close }),
+        buildSession: async (options) => ({
+          ...(await buildChatSession(options)),
+          whenHostSafeToClose: () => safe,
+        }),
+        drive: () => {
+          throw primary;
+        },
+      },
+    );
+    const refused = expect(run).rejects.toBe(primary);
+    await vi.waitFor(() => expect(f.registry.budget.deadline()).toBe(3000));
+    expect(close, 'CHAT_DRIVER_FAULT_PRECEDES_HELD_HOST_JOIN').not.toHaveBeenCalled();
+    expect(f.registry.observations.exitCode()).toBe(9);
+    release();
+    await refused;
+    expect(close).toHaveBeenCalledOnce();
+    expect(f.registry.activeOwners).toBe(0);
   });
 
   it('routes chat SIGTSTP/SIGCONT through reversible job control, never the termination lifecycle (G0)', async () => {
@@ -1877,7 +2007,7 @@ describe('chatCommand', () => {
   }
 
   it('binds the default standalone editor to the original native registry', async () => {
-    const invocation = createCliInvocation();
+    const invocation = createCliInvocation({ exit: vi.fn(), setExitCode: vi.fn() });
     const marker = join(cwd, 'editor-started');
     const release = join(cwd, 'editor-release');
     const script = fileURLToPath(new URL('../render/fixtures/native-editor.mjs', import.meta.url));
@@ -1891,7 +2021,7 @@ describe('chatCommand', () => {
       try {
         await vi.waitFor(
           () => {
-            expect(invocation.registry.activeOwners, 'NATIVE_STANDALONE_EDITOR_FORWARDING').toBe(1);
+            expect(invocation.registry.activeOwners, 'NATIVE_STANDALONE_EDITOR_FORWARDING').toBe(4);
             expect(readFileSync(marker, 'utf8')).toBe('ready\n');
           },
           { interval: 5, timeout: 3000 },
@@ -1901,7 +2031,7 @@ describe('chatCommand', () => {
         await editing;
         ctx.suspendPort.attach(undefined);
       }
-      await vi.waitFor(() => expect(invocation.registry.activeOwners).toBe(0));
+      await vi.waitFor(() => expect(invocation.registry.activeOwners).toBe(3));
       expect(readFileSync(marker, 'utf8')).toBe('ready\nreleased\n');
       await ctx.processLine('/exit');
       return { kind: ctx.stopReason() };
@@ -1948,7 +2078,7 @@ describe('chatCommand', () => {
         grantedAt: '2026-10-16T00:00:00.000Z',
       });
       const { d, err, store } = deps([], []);
-      const invocation = createCliInvocation();
+      const invocation = createCliInvocation({ exit: vi.fn(), setExitCode: vi.fn() });
       let starts = 0;
       let nativeCreations = 0;
       const connect: NonNullable<Parameters<typeof buildChatSession>[0]['startMcpClient']> = (
@@ -1992,12 +2122,22 @@ describe('chatCommand', () => {
         drive,
         // Keep the production consent gate untouched. Fake only the post-consent connection.
         buildSession: async (options) => {
-          await witnessNativeToolProcess(options.nativeProcesses, invocation, cwd);
+          await witnessNativeToolProcess(
+            options.nativeProcesses,
+            invocation,
+            cwd,
+            drives === 0 ? 2 : 3,
+          );
           nativeCreations++;
           return buildChatSession({ ...options, startMcpClient: connect });
         },
         buildResumedSession: async (options) => {
-          await witnessNativeToolProcess(options.nativeProcesses, invocation, cwd);
+          await witnessNativeToolProcess(
+            options.nativeProcesses,
+            invocation,
+            cwd,
+            drives === 0 ? 2 : 3,
+          );
           nativeCreations++;
           return buildResumedChatSession({ ...options, startMcpClient: connect });
         },
@@ -2461,7 +2601,7 @@ describe('chatResumeCommand (2.N)', () => {
 
   it('/clear from a resumed session rebinds the SNAPSHOT agent into a fresh session (ADR-0062 §7)', async () => {
     writeOutputEstimate(cwd);
-    const invocation = createCliInvocation();
+    const invocation = createCliInvocation({ exit: vi.fn(), setExitCode: vi.fn() });
     const resumedEstimates: (number | undefined)[] = [];
     const freshEstimates: (number | undefined)[] = [];
     const store = createSessionStore(client.db);
@@ -2489,7 +2629,7 @@ describe('chatResumeCommand (2.N)', () => {
           invocation,
           drive: clearThenExit,
           buildSession: async (options) => {
-            await witnessNativeToolProcess(options.nativeProcesses, invocation, options.cwd);
+            await witnessNativeToolProcess(options.nativeProcesses, invocation, options.cwd, 2);
             freshEstimates.push(options.maxTokensEstimate);
             return buildChatSession(options);
           },
@@ -2498,6 +2638,7 @@ describe('chatResumeCommand (2.N)', () => {
               options.nativeProcesses,
               invocation,
               options.record.context.workingDir,
+              2,
             );
             resumedEstimates.push(options.maxTokensEstimate);
             return buildResumedChatSession(options);
@@ -2519,7 +2660,7 @@ describe('chatResumeCommand (2.N)', () => {
 
   it('preserves the configured estimate through a resumed-session model reseat', async () => {
     writeOutputEstimate(cwd);
-    const invocation = createCliInvocation();
+    const invocation = createCliInvocation({ exit: vi.fn(), setExitCode: vi.fn() });
     const store = createSessionStore(client.db);
     await chatCommand({ agent: undefined }, freshDeps(['hello', '/exit'], [textTurn('hi')], store));
     seedCatalogModel(client.db, 'anthropic', 'claude-sonnet-4-6');
@@ -2551,6 +2692,7 @@ describe('chatResumeCommand (2.N)', () => {
               options.nativeProcesses,
               invocation,
               options.record.context.workingDir,
+              estimates.length === 0 ? 2 : 3,
             );
             estimates.push(options.maxTokensEstimate);
             return buildResumedChatSession(options);

@@ -15,6 +15,8 @@ import {
   validateProviderKey,
 } from './providers.js';
 import type { FetchLike } from './validated-fetch.js';
+import { invocationFixture } from '../process/invocation.test-support.js';
+import { SessionWorkOwner } from '../chat/session-work-owner.js';
 
 // A test key assembled at runtime (no contiguous secret literal — leakwatch).
 const TEST_KEY = ['sk', 'prov', '90ABCDEF'].join('-');
@@ -208,6 +210,42 @@ describe('resolver.hasKey / providerHasKey (2.5.G key-awareness)', () => {
 // The shared redaction seam (used by `provider test` AND the `/doctor --deep` probe) — its security contract is
 // tested DIRECTLY here, not only through its two callers.
 describe('validateProviderKey', () => {
+  it.each(['timeout', 'stop'] as const)(
+    'retains actual provider work after the %s result wins',
+    async (end) => {
+      const f = invocationFixture();
+      const owner = new SessionWorkOwner(f.invocation, 'home', {
+        cancel: () => undefined,
+        cleanup: () => Promise.resolve(),
+      });
+      let settle: () => void = () => undefined;
+      const raw = new Promise<never>((_resolve, reject) => {
+        settle = () => reject(new Error('synthetic probe completed'));
+      });
+      const generate = vi.fn(() => raw);
+      const probe = validateProviderKey(
+        fakeProvider(generate),
+        TEST_KEY,
+        'm-test',
+        end === 'timeout' ? 5 : 10000,
+        { signal: owner.signal, work: owner.work, assertAdmitting: owner.assertAdmitting },
+      );
+      expect(generate).toHaveBeenCalledOnce();
+      if (end === 'stop') owner.stop();
+      expect(await probe).toMatchObject({ ok: false, reason: 'network' });
+      let closed = false;
+      const closing = owner.close().then(() => {
+        closed = true;
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(closed, 'ONBOARDING_PROBE_TIMEOUT_IS_NOT_NATIVE_SETTLEMENT').toBe(false);
+      expect(f.registry.activeOwners).toBe(1);
+      settle();
+      await closing;
+      expect(f.registry.activeOwners).toBe(0);
+      expect(f.exit).not.toHaveBeenCalled();
+    },
+  );
   it('reports ok with the test model on a successful ping', async () => {
     const generate = vi.fn().mockResolvedValue({});
     const result = await validateProviderKey(fakeProvider(generate), TEST_KEY, 'm-test');

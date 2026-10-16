@@ -1,5 +1,5 @@
 import type { WorkflowDefinition } from '@relavium/core';
-import type { ProviderStore } from '@relavium/db';
+import type { EgressWorkOptions, ProviderStore } from '@relavium/db';
 import {
   createCustomOpenAiProvider,
   defaultProviders,
@@ -213,7 +213,13 @@ export async function validateProviderKey(
   key: string,
   model: string,
   timeoutMs: number = VALIDATE_KEY_TIMEOUT_MS,
+  lifecycle?: {
+    readonly signal: AbortSignal;
+    readonly work: Required<Pick<EgressWorkOptions, 'retainWork'>>;
+    readonly assertAdmitting: () => void;
+  },
 ): Promise<ProviderKeyValidation> {
+  lifecycle?.assertAdmitting();
   // Defensive: an empty key would make the redaction `raw.split('').join(keyHint(''))` split on every character
   // and garble the message (no secret leaks — the key is empty — but the detail becomes nonsense). All current
   // callers resolve a non-empty key (createProviderResolver rejects `''`); this closes the footgun at the seam.
@@ -221,6 +227,15 @@ export async function validateProviderKey(
     return { ok: false, detail: 'key test failed — (no key)', reason: 'other' };
   }
   const controller = new AbortController();
+  let parentStopped: () => void = () => undefined;
+  const stopped = new Promise<ProviderKeyValidation>((resolve) => {
+    parentStopped = () => {
+      controller.abort();
+      resolve({ ok: false, detail: 'key test stopped', reason: 'network' });
+    };
+  });
+  lifecycle?.signal.addEventListener('abort', parentStopped, { once: true });
+  if (lifecycle?.signal.aborted === true) parentStopped();
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<ProviderKeyValidation>((resolve) => {
     timer = setTimeout(() => {
@@ -232,7 +247,8 @@ export async function validateProviderKey(
       });
     }, timeoutMs);
   });
-  const probe = (async (): Promise<ProviderKeyValidation> => {
+  const probeFactory = async (): Promise<ProviderKeyValidation> => {
+    lifecycle?.assertAdmitting();
     try {
       await provider.generate(
         {
@@ -254,11 +270,14 @@ export async function validateProviderKey(
         reason: classifyValidationFailure(err),
       };
     }
-  })();
+  };
   try {
-    return await Promise.race([probe, timeout]);
+    // Register the real producer before entry. The UX timeout/abort result never retires it.
+    const probe = lifecycle?.work.retainWork(probeFactory) ?? probeFactory();
+    return await Promise.race([probe, timeout, stopped]);
   } finally {
     if (timer !== undefined) clearTimeout(timer);
+    lifecycle?.signal.removeEventListener('abort', parentStopped);
   }
 }
 

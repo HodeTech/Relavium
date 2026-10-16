@@ -7,6 +7,8 @@ import { CliError } from './cli-error.js';
 export interface CliIo {
   /** Captured native TUI/prompt sink. Memory-only hosts omit it and cannot silently acquire the real TTY. */
   readonly nativeStdout?: NodeJS.WriteStream;
+  /** Captured native renderer error sink; owned TUI acquisition never borrows a later process global. */
+  readonly nativeStderr?: NodeJS.WriteStream;
   /** Native Ink input from the same captured invocation; line-only hosts retain stdin without this field. */
   readonly nativeStdin?: NodeJS.ReadStream;
   writeOut(text: string): void;
@@ -32,6 +34,7 @@ export function processIo(): CliIo {
   const { stdout, stderr, stdin } = process;
   return {
     nativeStdout: stdout,
+    nativeStderr: stderr,
     nativeStdin: stdin,
     writeOut: (text) => {
       stdout.write(text);

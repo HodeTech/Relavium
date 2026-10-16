@@ -54,6 +54,80 @@ function heldOwner(registry: InvocationRegistry, stop = vi.fn()) {
 const turn = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 describe('invocation finite exit and explicit native handoff', () => {
+  it('bounds forced cooperative chat end4 without recording a terminating signal or acknowledging held cleanup', async () => {
+    const f = fixture();
+    const life = heldOwner(f.registry);
+    f.finite.cooperativeCancel(4);
+    expect(f.registry.observations.hasTerminatingSignal()).toBe(false);
+    expect(f.registry.observations.exitCode()).toBe(4);
+    expect(f.registry.budget.deadline()).toBe(3000);
+    f.clock.advance(900);
+    f.finite.cooperativeCancel(4);
+    expect(f.registry.budget.deadline(), 'CHAT_FORCE_END_SINGLE_FINITE_BUDGET').toBe(3000);
+    f.clock.advance(3000);
+    expect(await f.finite.exited).toBe(4);
+    expect(f.registry.activeOwners).toBe(1);
+    expect(f.exit).toHaveBeenCalledExactlyOnceWith(4);
+    life.resolve({ kind: 'settled' });
+  });
+
+  it('exits forced cooperative end4 early only after every real owner retires', async () => {
+    const f = fixture();
+    const life = heldOwner(f.registry);
+    f.finite.cooperativeCancel(4);
+    await turn();
+    expect(f.exit).not.toHaveBeenCalled();
+    life.resolve({ kind: 'settled' });
+    expect(await f.finite.exited).toBe(4);
+    expect(f.exit).toHaveBeenCalledExactlyOnceWith(4);
+  });
+
+  it('a competing fatal upgrades cooperative end to9 under the same original deadline', async () => {
+    const f = fixture();
+    const life = heldOwner(f.registry);
+    f.finite.cooperativeCancel(4);
+    f.clock.advance(700);
+    f.finite.fail('cli_internal');
+    life.resolve({ kind: 'settled' });
+    await turn();
+    expect(f.registry.budget.deadline()).toBe(3000);
+    expect(f.exit, 'CHAT_FORCE_END_CANNOT_SKIP_FATAL_DIAGNOSTIC').not.toHaveBeenCalled();
+    f.clock.advance(3000);
+    expect(await f.finite.exited).toBe(9);
+  });
+
+  it('hands cooperative end4 to native finalization without a signal or spurious diagnostic', async () => {
+    const f = fixture();
+    const life = heldOwner(f.registry);
+    const stdout = new OwnedTtyOutput();
+    const stderr = new OwnedTtyOutput();
+    f.finite.cooperativeCancel(4);
+    const native = installNativeInvocation(
+      f.registry,
+      { json: true, verbosity: 'normal' },
+      {
+        stdout,
+        stderr,
+        schedule: f.clock.schedule,
+        onFatal: () => () => undefined,
+        onBackground: () => () => undefined,
+        readExitCode: () => undefined,
+        setExitCode: vi.fn(),
+        exit: vi.fn(),
+      },
+      f.finite,
+    );
+    await turn();
+    expect(f.exit).not.toHaveBeenCalled();
+    life.resolve({ kind: 'settled' });
+    expect(await f.finite.exited).toBe(4);
+    expect(f.exit).toHaveBeenCalledExactlyOnceWith(4);
+    expect(stderr.frames).toEqual([]);
+    native.dispose();
+    stdout.destroy();
+    stderr.destroy();
+  });
+
   it('starts the shared clock at the first owned fault and never exits before cleanup diagnostics can run', async () => {
     const f = fixture();
     const life = heldOwner(f.registry);

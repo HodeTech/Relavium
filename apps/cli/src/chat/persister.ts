@@ -23,6 +23,7 @@ import type {
 } from '@relavium/shared';
 
 import type { GovernorWiring, SessionUsageWriter } from './session-host.js';
+import type { SessionHostOwner } from './session-host-owner.js';
 import { deriveSessionTitle } from './session-title.js';
 
 /**
@@ -142,7 +143,11 @@ export interface SessionPersister {
   close(): void;
 }
 
-export function createSessionPersister(deps: SessionPersisterDeps): SessionPersister {
+export function createSessionPersister(
+  deps: SessionPersisterDeps,
+  owner?: SessionHostOwner,
+): SessionPersister {
+  if (owner !== undefined) return owner.createPersister(() => createSessionPersister(deps));
   const iso = (): string => new Date(deps.now()).toISOString();
 
   // Frozen at persister construction (≈ session start) — the row's creation time never changes, so it is a

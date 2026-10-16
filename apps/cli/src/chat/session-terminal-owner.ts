@@ -60,6 +60,10 @@ export class SessionTerminalOwner {
     if (this.#sealed) throw new CliError('cli_internal', '');
   }
 
+  get retired(): Promise<OwnerRetirement> {
+    return this.#retired;
+  }
+
   #acquisitionAcknowledged(): boolean {
     return this.#acquisition === 'acknowledged';
   }

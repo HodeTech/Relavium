@@ -48,6 +48,8 @@ export interface ProviderCommandArgs {
 }
 
 export interface ProviderCommandDeps {
+  /** Recheck original invocation admission after asynchronous secret reading, before credential/DB writes. */
+  readonly assertAdmitting?: () => void;
   readonly io: CliIo;
   readonly store: ProviderStore;
   readonly keychain: KeychainStore;
@@ -276,6 +278,7 @@ async function providerSetKey(args: ProviderCommandArgs, deps: ProviderCommandDe
   // a single pasted API key, by contrast, routinely arrives with a stray newline or space from a dashboard
   // copy, and the onboarding wizard already trims its own value to persist a byte-identical credential.
   const key = (await deps.readSecret()).trim(); // from stdin — never an argv flag
+  deps.assertAdmitting?.();
   const account = keychainAccount(id);
   deps.keychain.set(account, key); // KeychainUnavailableError surfaces (no silent plaintext fallback)
   // Register the row only if it's new — never overwrite a base URL the user set via `provider add --base-url`.

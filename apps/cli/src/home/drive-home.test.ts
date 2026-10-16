@@ -1,4 +1,5 @@
 import { createCliInvocation } from '../process/invocation.js';
+import { invocationFixture } from '../process/invocation.test-support.js';
 import {
   holdNativeToolProcess,
   witnessNativeToolProcess,
@@ -166,7 +167,11 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
       db: client.db,
       close: closeSpy,
     };
-    const unmount = vi.fn();
+    let acknowledgeExit: () => void = () => undefined;
+    const exited = new Promise<void>((resolve) => {
+      acknowledgeExit = resolve;
+    });
+    const unmount = vi.fn(() => acknowledgeExit());
     const writeControl = vi.fn();
     let uuidN = 0;
     const deps: HomeDeps = {
@@ -184,7 +189,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
         return {
           unmount,
           waitUntilRenderFlush: () => Promise.resolve(),
-          waitUntilExit: () => new Promise(() => {}),
+          waitUntilExit: () => exited,
         };
       },
       getSize: () => ({ cols: 120, rows: 40 }),
@@ -223,6 +228,49 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     });
     await expect(driveHome(deps)).rejects.toThrow('ink mount failed');
     expect(closeSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('observes an owned renderer failure before held host cleanup and closes the shared DB only after actual join', async () => {
+    const f = invocationFixture();
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let captured: RootAppProps | undefined;
+    let builtCount = 0;
+    const { deps, unmount } = makeDeps(
+      (props) => {
+        captured = props;
+      },
+      {
+        invocation: f.invocation,
+        buildSession: async (options) => {
+          builtCount++;
+          return { ...(await buildChatSession(options)), whenHostSafeToClose: () => held };
+        },
+      },
+    );
+    const drive = driveHome(deps).catch((cause: unknown) => cause);
+    const props = captured;
+    if (props === undefined) throw new Error('Home not mounted');
+    type(props, 'synthetic first turn');
+    props.controller.handleKey('', ENTER);
+    await vi.waitFor(() => expect(props.controller.getSnapshot().submitBusy).toBe(false));
+    await vi.waitFor(() => expect(props.controller.getSnapshot().mode).toBe('chat'));
+    const primary = new Error('PRIVATE_HOME_RENDERER_FAILURE');
+    props.onRendererError?.(primary);
+    await vi.waitFor(() => expect(unmount).toHaveBeenCalledOnce());
+    expect(f.registry.observations.exitCode()).toBe(9);
+    expect(f.registry.budget.deadline()).toBe(3000);
+    expect(closeSpy, 'HOME_ACTUAL_HOST_JOIN_BEFORE_SHARED_DATABASE').not.toHaveBeenCalled();
+    props.controller.handlePaste('/clear');
+    props.controller.handleKey('', ENTER);
+    await flush();
+    expect(builtCount).toBe(1);
+    release();
+    expect(await drive).toBe(EXIT_CODES.infrastructureFailed);
+    expect(closeSpy).toHaveBeenCalledOnce();
+    expect(f.registry.activeOwners).toBe(0);
   });
 
   it('a throwing unmount on a clean exit stays best-effort — still resolves 0 and closes the db once', async () => {
@@ -411,7 +459,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
   });
 
   it('startChat builds the default-agent session and persists its row; a clean return ends it', async () => {
-    const invocation = createCliInvocation();
+    const invocation = createCliInvocation({ exit: vi.fn(), setExitCode: vi.fn() });
     mkdirSync(join(cwd, '.relavium'), { recursive: true });
     writeFileSync(join(cwd, '.relavium', 'project.toml'), '[defaults]\nmax_tokens_estimate = 17\n');
     const estimates: (number | undefined)[] = [];
@@ -419,7 +467,12 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     const { deps } = makeDeps((p) => (captured = p), {
       invocation,
       buildSession: async (options) => {
-        await witnessNativeToolProcess(options.nativeProcesses, invocation, options.cwd);
+        await witnessNativeToolProcess(
+          options.nativeProcesses,
+          invocation,
+          options.cwd,
+          estimates.length === 0 ? 4 : 5,
+        );
         estimates.push(options.maxTokensEstimate);
         return buildChatSession(options);
       },
@@ -431,7 +484,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     type(props, 'hello');
     props.controller.handleKey('', ENTER); // submit ⇒ build + first turn
     await vi.waitFor(() =>
-      expect(invocation.registry.activeOwners, 'NATIVE_HOME_FRESH_FORWARDING').toBe(1),
+      expect(invocation.registry.activeOwners, 'NATIVE_HOME_FRESH_FORWARDING').toBe(5),
     );
     expect(props.controller.getSnapshot().mode).toBe('loading');
     await vi.waitFor(() => expect(props.controller.getSnapshot().mode).toBe('chat'));
@@ -446,7 +499,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     props.controller.handleKey('', { downArrow: true });
     props.controller.handleKey('', ENTER);
     await vi.waitFor(() =>
-      expect(invocation.registry.activeOwners, 'NATIVE_HOME_FRESH_FORWARDING').toBe(1),
+      expect(invocation.registry.activeOwners, 'NATIVE_HOME_FRESH_FORWARDING').toBe(6),
     );
     await vi.waitFor(() => expect(estimates).toEqual([17, 17]));
     expect(props.controller.getSnapshot().mode).toBe('chat');
@@ -461,7 +514,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
   });
 
   it('retains both original native reservations when a pending clear build is superseded', async () => {
-    const invocation = createCliInvocation();
+    const invocation = createCliInvocation({ exit: vi.fn(), setExitCode: vi.fn() });
     let captured: RootAppProps | undefined;
     const permits: (() => void)[] = [];
     const children: { close: () => Promise<void> }[] = [];
@@ -496,22 +549,22 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
       props.controller.handlePaste('/clear');
       props.controller.handleKey('', ENTER);
       await vi.waitFor(() => expect(permits, 'NATIVE_HOME_PENDING_FORWARDING').toHaveLength(1));
-      expect(invocation.registry.activeOwners).toBe(1);
+      expect(invocation.registry.activeOwners).toBe(6);
       expect(props.controller.getSnapshot().session).toBe(original); // first replacement still initializes
       props.controller.handleKey('c', CTRL_C); // sticky /clear starts a second replacement
       await vi.waitFor(() => expect(permits).toHaveLength(2));
-      expect(invocation.registry.activeOwners).toBe(2);
+      expect(invocation.registry.activeOwners).toBe(8);
       permits[1]?.(); // second replacement wins while both native creations remain live
       await vi.waitFor(() => expect(props.controller.getSnapshot().session).not.toBe(original));
       const winner = props.controller.getSnapshot().session;
-      expect(invocation.registry.activeOwners).toBe(2);
+      expect(invocation.registry.activeOwners).toBe(7);
       permits[0]?.(); // stale completion may close only its own native creation
-      await vi.waitFor(() => expect(invocation.registry.activeOwners).toBe(1));
+      await vi.waitFor(() => expect(invocation.registry.activeOwners).toBe(5));
       expect(props.controller.getSnapshot().session).toBe(winner);
       await vi.waitFor(() => expect(props.controller.getSnapshot().submitBusy).toBe(false));
       props.controller.handleKey('c', CTRL_C);
       await vi.waitFor(() => expect(props.controller.getSnapshot().mode).toBe('home'));
-      await vi.waitFor(() => expect(invocation.registry.activeOwners).toBe(0));
+      await vi.waitFor(() => expect(invocation.registry.activeOwners).toBe(3));
       props.controller.handleKey('c', CTRL_C);
       expect(await drivePromise).toBe(EXIT_CODES.success);
     } finally {
@@ -522,7 +575,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
   });
 
   it('binds the default Home editor to the original native registry', async () => {
-    const invocation = createCliInvocation();
+    const invocation = createCliInvocation({ exit: vi.fn(), setExitCode: vi.fn() });
     const marker = join(cwd, 'home-editor-started');
     const release = join(cwd, 'home-editor-release');
     const script = fileURLToPath(new URL('../render/fixtures/native-editor.mjs', import.meta.url));
@@ -545,14 +598,14 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
       props.controller.handleKey('', ENTER);
       await vi.waitFor(
         () => {
-          expect(invocation.registry.activeOwners, 'NATIVE_HOME_EDITOR_FORWARDING').toBe(1);
+          expect(invocation.registry.activeOwners, 'NATIVE_HOME_EDITOR_FORWARDING').toBe(5);
           expect(readFileSync(marker, 'utf8')).toBe('ready\n');
         },
         { interval: 5, timeout: 3000 },
       );
     } finally {
       writeFileSync(release, 'release');
-      await vi.waitFor(() => expect(invocation.registry.activeOwners).toBe(0), { timeout: 6000 });
+      await vi.waitFor(() => expect(invocation.registry.activeOwners).toBe(4), { timeout: 6000 });
       await vi.waitFor(() => expect(props.controller.getSnapshot().submitBusy).toBe(false));
       props.suspendPort.attach(undefined);
     }
@@ -671,7 +724,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
   });
 
   it('in-Home /models reseat: the REAL reseatChat resumes the session under the switched model, carrying the transcript (ADR-0059)', async () => {
-    const invocation = createCliInvocation();
+    const invocation = createCliInvocation({ exit: vi.fn(), setExitCode: vi.fn() });
     mkdirSync(join(cwd, '.relavium'), { recursive: true });
     writeFileSync(join(cwd, '.relavium', 'project.toml'), '[defaults]\nmax_tokens_estimate = 17\n');
     const freshEstimates: (number | undefined)[] = [];
@@ -683,7 +736,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
       invocation,
       providers: scriptedResolver([textTurn('sonnet reply'), textTurn('opus reply')]),
       buildSession: async (options) => {
-        await witnessNativeToolProcess(options.nativeProcesses, invocation, options.cwd);
+        await witnessNativeToolProcess(options.nativeProcesses, invocation, options.cwd, 4);
         freshEstimates.push(options.maxTokensEstimate);
         return buildChatSession(options);
       },
@@ -692,6 +745,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
           options.nativeProcesses,
           invocation,
           options.record.context.workingDir,
+          5,
         );
         resumedEstimates.push(options.maxTokensEstimate);
         return buildResumedChatSession(options);
@@ -727,7 +781,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     expect(effortPicker?.pending?.modelId).toBe('claude-opus-4-8');
     props.controller.handleKey('', ENTER); // apply the highlighted tier (default 'medium') ⇒ the REAL reseatChat
     await vi.waitFor(() =>
-      expect(invocation.registry.activeOwners, 'NATIVE_HOME_RESEAT_FORWARDING').toBe(1),
+      expect(invocation.registry.activeOwners, 'NATIVE_HOME_RESEAT_FORWARDING').toBe(6),
     );
     await vi.waitFor(() => expect(resumedEstimates).toEqual([17]));
     await vi.waitFor(() => expect(props.controller.getSnapshot().session).not.toBe(oldSession));

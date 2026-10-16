@@ -2,6 +2,7 @@ import { createModelCatalogStore, createProviderStore, type Db } from '@relavium
 
 import { buildMergedCatalog, type MergedCatalogView } from './model-catalog-view.js';
 import { createModelRefreshService, type RefreshReport } from './model-refresh.js';
+import type { SessionWorkOwner } from '../chat/session-work-owner.js';
 import {
   KNOWN_PROVIDERS,
   KNOWN_PROVIDER_IDS,
@@ -21,7 +22,7 @@ export interface ModelCatalogPort {
   readonly load: () => MergedCatalogView;
   /** TTL-bounded background refresh (ADR-0064 §5c) — refreshes empty/stale providers; `undefined` when none were. */
   readonly refreshIfStale: () => Promise<RefreshReport | undefined>;
-  /** Unbounded, user-initiated refresh (Ctrl+R) — every connected provider, per-provider-isolated. Never rejects. */
+  /** User-initiated refresh, per-provider-isolated; an owned invocation can refuse entry after stop. */
   readonly refresh: () => Promise<RefreshReport>;
 }
 
@@ -30,7 +31,9 @@ export function createModelCatalogPort(params: {
   readonly providers: ProviderResolver;
   readonly now: () => number;
   readonly uuid: () => string;
+  readonly workOwner?: SessionWorkOwner;
 }): ModelCatalogPort {
+  const workOwner = params.workOwner;
   const storeDeps = { uuid: params.uuid, now: params.now };
   const providerStore = createProviderStore(params.db, storeDeps);
   const catalogStore = createModelCatalogStore(params.db, storeDeps);
@@ -42,13 +45,27 @@ export function createModelCatalogPort(params: {
     knownProviderIds: KNOWN_PROVIDER_IDS,
     knownProviders: KNOWN_PROVIDERS,
     now: params.now,
+    ...(params.workOwner === undefined
+      ? {}
+      : {
+          assertAdmitting: params.workOwner.assertAdmitting,
+          onHostFailure: params.workOwner.failure,
+        }),
   });
   // Memoized: a keychain read is a SYNC native N-API call (and can pop an OS ACL prompt on first access), so it must
   // not repeat on every `/models` open + every refresh completion on the live ink render thread. The resolvable key
   // set is fixed for the process (a mid-session key change ⇒ restart), the same posture as the startup key probe.
   let keyedProviders: ReadonlySet<(typeof KNOWN_PROVIDER_IDS)[number]> | undefined;
+  const retain = <T>(operation: () => Promise<T>): Promise<T> => {
+    if (workOwner === undefined) return operation();
+    workOwner.assertAdmitting();
+    // Discovery/cache reads preserve their recoverable UI policy. Local publication,
+    // clock and key faults report through onHostFailure before any sibling join.
+    return workOwner.work.retainWork(operation);
+  };
   return {
     load: () => {
+      params.workOwner?.assertAdmitting();
       // Rebuild the UUID→slug map on every load (NOT memoized): a refresh may register a provider's FK row, and the
       // next load must resolve its live rows' provider — not drop them (mirrors the Home's load).
       const slugByUuid = new Map(providerStore.list().map((p) => [p.id, p.name] as const));
@@ -62,7 +79,15 @@ export function createModelCatalogPort(params: {
         now: params.now(),
       });
     },
-    refreshIfStale: () => refreshService.refreshIfStale(),
-    refresh: () => refreshService.refresh(),
+    refreshIfStale: () =>
+      retain(() =>
+        refreshService.refreshIfStale(
+          workOwner === undefined ? undefined : { signal: workOwner.signal },
+        ),
+      ),
+    refresh: () =>
+      retain(() =>
+        refreshService.refresh(workOwner === undefined ? undefined : { signal: workOwner.signal }),
+      ),
   };
 }

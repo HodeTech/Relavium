@@ -18,13 +18,16 @@ export class SessionSurfaceLifetime {
     invocation: CliInvocation | undefined,
     surface: SessionOwner['surface'],
     subscribeSignals = defaultSubscribeSignals,
+    cleanup?: () => Promise<void>,
   ) {
     this.invocation = invocation ?? createCliInvocation();
     this.work = new SessionWorkOwner(this.invocation, surface, {
       cancel: () => undefined,
-      cleanup: () => {
+      cleanup: async () => {
+        // Signal custody must survive a failed database release. A later signal still
+        // belongs to the original finite authority while cleanup remains uncertain.
+        await cleanup?.();
         this.#removeSignals();
-        return Promise.resolve();
       },
     });
     try {

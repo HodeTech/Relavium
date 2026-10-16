@@ -10,11 +10,16 @@ export async function runSessionPrompt<T>(
   assertEntering: () => void,
   failure: (cause: unknown) => void,
   factory: (signal: AbortSignal) => Promise<T>,
+  parent?: AbortSignal,
 ): Promise<T> {
   const cancel = new AbortController();
   const owner = new SessionTerminalOwner(invocation, assertEntering, failure);
   let raw: Promise<T> | undefined;
   let fulfilled = false;
+  let promptEntered = false;
+  const parentAborted = (): void => {
+    if (!fulfilled) cancel.abort(parent?.reason);
+  };
   try {
     owner.acquire((acquisition) => {
       acquisition.adopt({
@@ -24,6 +29,8 @@ export async function runSessionPrompt<T>(
           if (!fulfilled) cancel.abort();
         },
         release: async () => {
+          parent?.removeEventListener('abort', parentAborted);
+          if (!promptEntered) return; // Trusted fact: the native prompt factory was never entered.
           if (raw === undefined) throw new Error('Prompt acquisition was not acknowledged.');
           await raw;
           if (io.stdoutIsTty) {
@@ -32,7 +39,13 @@ export async function runSessionPrompt<T>(
           }
         },
       });
-      raw = owner.enter(() => factory(cancel.signal));
+      parent?.addEventListener('abort', parentAborted, { once: true });
+      if (parent?.aborted === true) parentAborted();
+      raw = owner.enter(() => {
+        if (cancel.signal.aborted) cancel.signal.throwIfAborted();
+        promptEntered = true;
+        return factory(cancel.signal);
+      });
     });
     if (raw === undefined) throw new Error('Prompt acquisition was not acknowledged.');
     const answer = await raw;

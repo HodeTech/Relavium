@@ -147,7 +147,8 @@ export function installNativeInvocation(
     registry.sampleWorkflowHealth();
     if (
       registry.observations.hasInfrastructureFailure() ||
-      registry.observations.hasTerminatingSignal()
+      registry.observations.hasTerminatingSignal() ||
+      registry.observations.hasCooperativeCancel()
     ) {
       exitNow();
       return;
@@ -180,7 +181,8 @@ export function installNativeInvocation(
             !hasExited() &&
             !disposed &&
             (registry.observations.hasInfrastructureFailure() ||
-              registry.observations.hasTerminatingSignal())
+              registry.observations.hasTerminatingSignal() ||
+              registry.observations.hasCooperativeCancel())
           )
             changed();
         });

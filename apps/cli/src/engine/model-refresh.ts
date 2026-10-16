@@ -89,6 +89,10 @@ export interface RefreshCatalogStore {
 }
 
 export interface ModelRefreshDeps {
+  /** Original long-lived session admission; recheck after discovery before any shared-database write. */
+  readonly assertAdmitting?: () => void;
+  /** Observe local clock/key/store faults before sibling discovery can hold the refresh result. */
+  readonly onHostFailure?: (cause: unknown) => void;
   /** The keyless `@relavium/llm` adapter for a provider id (from the injected {@link ProviderResolver}). */
   readonly resolveProvider: (id: ProviderId) => LlmProvider | undefined;
   /** Resolve a provider's key (keychain → env → throw). Thrown ⇒ the provider is skipped (`skipped-no-key`). */
@@ -192,42 +196,61 @@ export function createModelRefreshService(deps: ModelRefreshDeps): ModelRefreshS
   ): Promise<RefreshProviderResult> => {
     // Stamp the ATTEMPT before anything can throw — `refreshOne` runs only for a connected provider, and every
     // outcome (refreshed / failed / skipped-unsupported / empty) counts as an attempt for the TTL backoff (FIX 3).
-    lastAttemptAt.set(id, deps.now());
     try {
-      const adapter = deps.resolveProvider(id);
+      lastAttemptAt.set(id, deps.now());
+    } catch (cause) {
+      deps.onHostFailure?.(cause);
+      throw cause;
+    }
+    try {
+      deps.assertAdmitting?.();
+      let adapter: LlmProvider | undefined;
+      try {
+        adapter = deps.resolveProvider(id);
+      } catch (cause) {
+        deps.onHostFailure?.(cause);
+        throw cause;
+      }
       if (adapter?.listModels === undefined) {
         // No adapter, or an adapter without the optional list capability — degrade to static (ADR-0064 §1/§5).
         return { provider: id, status: 'skipped-unsupported' };
       }
       // The key reaches ONLY this call; the seam bounds + aborts + redacts it.
       const listings = await adapter.listModels(key, signal);
+      deps.assertAdmitting?.();
 
       // Ensure the FK-target `llm_providers` row exists BEFORE writing model rows (FK ordering). The metadata is
       // non-secret; the row never carries a key.
-      const meta = deps.knownProviders[id];
-      const providerUuid = deps.providerStore.upsert({
-        name: id,
-        displayName: meta.displayName,
-        baseUrl: meta.baseUrl,
-      }).id;
+      try {
+        const meta = deps.knownProviders[id];
+        const providerUuid = deps.providerStore.upsert({
+          name: id,
+          displayName: meta.displayName,
+          baseUrl: meta.baseUrl,
+        }).id;
 
-      const rows = listings.map(toLiveModel);
-      // The store counts added/updated/deactivated ATOMICALLY inside its own transaction and returns them — no
-      // before/after `listByProvider` diff (which, reading a stale `before`, would double-count under two
-      // concurrent same-provider refreshes) and two fewer queries. The tallies are LIVE-only by construction.
-      const { added, updated, deactivated } = deps.catalogStore.replaceProviderModels(
-        providerUuid,
-        rows,
-        deps.now(),
-      );
+        const rows = listings.map(toLiveModel);
+        // The store counts added/updated/deactivated ATOMICALLY inside its own transaction and returns them — no
+        // before/after `listByProvider` diff (which, reading a stale `before`, would double-count under two
+        // concurrent same-provider refreshes) and two fewer queries. The tallies are LIVE-only by construction.
+        const { added, updated, deactivated } = deps.catalogStore.replaceProviderModels(
+          providerUuid,
+          rows,
+          deps.now(),
+        );
 
-      return { provider: id, status: 'refreshed', added, updated, deactivated };
+        return { provider: id, status: 'refreshed', added, updated, deactivated };
+      } catch (cause) {
+        deps.onHostFailure?.(cause);
+        throw cause;
+      }
     } catch (err) {
       return { provider: id, status: 'failed', error: secretFreeReason(err, key) };
     }
   };
 
   const refresh = async (opts?: RefreshOptions): Promise<RefreshReport> => {
+    deps.assertAdmitting?.();
     const candidates = opts?.providers ?? deps.knownProviderIds;
     const signal = opts?.signal;
 
@@ -239,7 +262,8 @@ export function createModelRefreshService(deps: ModelRefreshDeps): ModelRefreshS
       let key: string;
       try {
         key = deps.keyFor(id);
-      } catch {
+      } catch (cause) {
+        deps.onHostFailure?.(cause);
         results.push({ provider: id, status: 'skipped-no-key' });
         continue;
       }
@@ -266,14 +290,22 @@ export function createModelRefreshService(deps: ModelRefreshDeps): ModelRefreshS
   };
 
   const refreshIfStale = async (opts?: RefreshOptions): Promise<RefreshReport | undefined> => {
+    deps.assertAdmitting?.();
     const candidates = opts?.providers ?? deps.knownProviderIds;
-    const now = deps.now();
+    let now: number;
+    try {
+      now = deps.now();
+    } catch (cause) {
+      deps.onHostFailure?.(cause);
+      throw cause;
+    }
     const stale: ProviderId[] = [];
     for (const id of candidates) {
       // Only a CONNECTED provider can be refreshed — an unconnected one is never "stale" (nothing to fetch).
       try {
         deps.keyFor(id);
-      } catch {
+      } catch (cause) {
+        deps.onHostFailure?.(cause);
         continue;
       }
       const record = deps.providerStore.get(id);
