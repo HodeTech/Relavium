@@ -1,4 +1,6 @@
 /** Provider-free ordered suspension history shared by checkpoint and interruption discovery. */
+import { RelaviumError } from './relavium-error.js';
+
 import type { BudgetAllowanceState, BudgetAuthorizationState } from './budget-authorization.js';
 import type {
   RunEvent,
@@ -18,7 +20,7 @@ export type RunSuspensionCorruption =
   | 'gate_state_conflict'
   | 'legacy_gate_join_missing'
   | 'legacy_gate_join_ambiguous';
-export class RunSuspensionCorruptionError extends Error {
+export class RunSuspensionCorruptionError extends RelaviumError {
   readonly code: RunSuspensionCorruption;
   constructor(code: RunSuspensionCorruption) {
     super('the stored gate history is inconsistent');

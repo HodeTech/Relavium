@@ -74,8 +74,13 @@ const dualBase = {
   ...timestampSeq,
 };
 
-/** The common envelope (the spec's `BaseEvent`): both correlation keys optional at the type level. */
-export const BaseEventSchema = z.object({ type: z.string(), ...dualBase });
+/**
+ * The common envelope (the spec's `BaseEvent`): both correlation keys optional at the type level,
+ * with exactly one required on parse. This is an envelope projection, not a full-event parser.
+ */
+export const BaseEventSchema = z
+  .object({ type: z.string(), ...dualBase })
+  .superRefine(refineCorrelationKey);
 export type BaseEvent = z.infer<typeof BaseEventSchema>;
 
 // --- Shared field schemas --------------------------------------------------------------------
@@ -809,7 +814,10 @@ type RunEventUnion = z.infer<typeof RunEventUnionSchema>;
  * events (every `...dualBase` member — see its definition above) declare both keys as optional, so
  * this is where neither/both is rejected.
  */
-function refineCorrelationKey(event: RunEventUnion, ctx: z.RefinementCtx): void {
+function refineCorrelationKey(
+  event: { readonly runId?: string | undefined; readonly sessionId?: string | undefined },
+  ctx: z.RefinementCtx,
+): void {
   const hasRunId = 'runId' in event && event.runId !== undefined;
   const hasSessionId = 'sessionId' in event && event.sessionId !== undefined;
   if (hasRunId === hasSessionId) {

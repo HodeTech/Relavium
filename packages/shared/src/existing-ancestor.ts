@@ -1,4 +1,6 @@
 /** Host-injected path inspection; this shared algorithm has no platform imports. */
+import { RelaviumError } from './relavium-error.js';
+
 export interface ExistingAncestorOperations {
   readonly realpath: (path: string) => Promise<string>;
   readonly lstat: (path: string) => Promise<{ isDirectory(): boolean }>;
@@ -8,7 +10,7 @@ export interface ExistingAncestorOperations {
 }
 
 /** Content-free failure: raw host errors can contain an absolute path or sensitive filename. */
-export class ExistingAncestorError extends Error {
+export class ExistingAncestorError extends RelaviumError {
   readonly reason: 'unresolvable' | 'not_directory' | 'no_ancestor';
 
   constructor(reason: ExistingAncestorError['reason']) {
