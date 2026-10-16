@@ -5085,3 +5085,68 @@ Actual registered native-owner cleanup remains Step 8, maps/custody Step 9 and
 new CLI discovery Step 10. This metadata landing does not imply new source
 execution, full CI/coverage, a release or whole-wave acceptance. No new ADR,
 dependency, deferral, billing action or user decision is introduced.
+
+## Wave 3 Step 7b implementation checkpoint — 2026-10-16
+
+Step 7a remains independently accepted at source `6ffdd63e`, with metadata
+`bc79793d`. Step 7b now implements independent archive inspection, exact installed
+package controls and required platform aggregation under ADR-0111. This checkpoint
+is author evidence, **not** independent acceptance or remote platform execution.
+Whole Step 7 remains open. Two NEW complete cumulative clean reviews from the
+Step 6 boundary, a package/CI security sitting, and actual required platform
+success remain necessary before Step 8.
+
+The [package tooling](../../../tools/cli-package/README.md) owns one fresh ordered
+dependency emit and the sole CLI prepack build. It observes one actual prepack
+build-start record and independently inspects bounded gzip/USTAR bytes without
+extraction. Every JS and migration byte matches finalized/canonical files;
+publication metadata matches pnpm's catalog/workspace transform. Negative controls
+cover malformed/truncated/oversized archives, checksums, paths, types, modes,
+hashbangs, map links, missing/extra/duplicate files and digest drift.
+
+The consumer installs a verified copy outside the workspace with pnpm 9.12.3 and
+the existing lifecycle allowlist. It compares all **69** installed public files,
+records all **17** actual runtime dependency versions/metadata digests, repeats
+**175** untouched-entry bootstrap controls and six fixed installed behaviour cases.
+Actual chat uses the installed OpenAI SDK, bundled adapter/AgentSession and native
+SQLite: two dispatches, four ordered durable transcript rows, same-session resume,
+complete cost/usage and exit 4 after each persisted assistant. Its two synthetic
+keyring constructor attempts are refused before native API access. The budget
+preflight has one separately asserted refusal; no provider dispatch occurs there.
+Actual native addons load in a separate unmodified process without a keychain API
+call. Workflow/gate discovery and fresh-process resume, invalid budget decisions,
+abort/idempotence, governed effect denial, MCP initialize version and media/CAS
+cleanup/native iterator join execute through the installed package.
+
+The new required pack → four consumers → aggregate jobs share an immutable
+tarball identity. Current `.nvmrc` (24) Linux/macOS/Windows and exact Node 22.0.0
+Linux must actually pass. Only the bounded public consumer summary is uploaded;
+support logs, transport bodies and host paths are excluded. Source/digest/origin,
+exact case inventory, dependency/file identities and runtime/platform checks
+refuse incomplete or mismatched evidence. Job success is also required through
+`ci.needs` and explicit checks under `always()`. Same-artifact consumer retries
+retain prior successful legs and replace only their latest smoke receipts, never
+the tarball. Release smoke uses the same consumer; Step 9 still owns original-TS
+maps, encrypted custody and release discovery/archive/retry integration.
+
+Local author execution on **Node 22.23.1 / macOS arm64** passes archive inspection,
+outside-workspace install, all 175 bootstrap controls and all six installed cases.
+The finalized-pipeline candidate is `a1a4d5f8…`; the separate local full-CI wrapper
+candidate is `620aa6e5…`, and both have complete local consumer results. Earlier
+`386c106b…` controls are attributed to their own artifact. These are distinct
+local candidates, not one shared remote artifact or production candidates. Local
+receipts retain their precommit source/dirty flag and cannot certify a CI leg.
+The first setup omitted the consumer's package-manager pin and Corepack selected
+pnpm 12; that failed attempt is excluded. The corrected consumer pins 9.12.3.
+The first integrated metadata reader's 128-KiB limit rejected Drizzle's actual
+larger package manifest; the bounded dependency-only limit is corrected to 1 MiB.
+Neither author setup failure is presented as a product regression or deferred work.
+
+Author gates pass **473 acceptance-tool tests** with no skips, tooling lint and
+typecheck, formatting, seam/dependency guards and default compiled/media smokes.
+The unchanged workspace suite retains **646 files / 14,659 passes / 20 established
+skips**, with eleven valid cached tasks on this tooling-only increment; this is
+not claimed as a fresh execution. Fresh ordered dependency emits and prepack build
+execute in the package controls. Document/diff, isolation and DB-sync results are
+recorded before review. No new runtime dependency, ADR, deferral, credential,
+billing action, provider request or production upload is introduced.

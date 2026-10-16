@@ -92,6 +92,34 @@ minimum Node, other platforms, original-TS symbolication or release custody.
 
 ## Build, map and candidate identity
 
+### Installed-package implementation boundary — Step 7b
+
+The tooling producer now emits dependencies without a build cache, invokes the
+sole prepack CLI build, and independently compares actual gzip/USTAR entries with
+the finalized JS and canonical migrations. Its exact public allowlist and native
+tar-header checks apply on every consumer platform. The consumer installs those
+verified bytes outside the workspace with pinned pnpm and the existing lifecycle
+allowlist, verifies installed public files, and records actual dependency versions.
+Dependency installation uses the public registry; provider transport and keychain
+API controls use synthetic data and refusals.
+
+Required workflows share one public tarball and a `compiled_package_test` receipt
+with current `.nvmrc` Linux/macOS/Windows and exact Node 22.0.0 Linux. Each repeats
+untouched-entry bootstrap controls and actual workflow, gate, budget, chat/resume,
+SQLite, native-load, MCP-version and media-cleanup behavior. Their aggregate checks
+all four actual success records and immutable artifact/source/origin identities.
+Only public consumer summaries are uploaded; detailed support logs are excluded.
+The [tooling guide](../../../tools/cli-package/README.md) describes invocation and
+bounded retry evidence. These runners are implemented; required platform execution
+and independent acceptance are recorded separately in the Wave 3 register.
+
+This intermediate receipt does not claim the full map-bearing package-test mode
+below. Original-TypeScript symbolication, private staging and release custody
+remain Step 9; native fatal-owner integration remains Step 8. No intermediate
+local result closes those obligations or certifies a release.
+
+### Candidate finalization — Step 9
+
 1. Build inlined dependencies fresh in an isolated candidate job with external
    TypeScript maps and no inline source contents. Ordinary workspace builds stay
    map-free. Disable build-cache read **and write**, including Turbo local/remote,
