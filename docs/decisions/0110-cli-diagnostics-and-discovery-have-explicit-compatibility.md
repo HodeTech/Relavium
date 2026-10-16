@@ -238,3 +238,15 @@ now follow the already-approved
 implemented by the origin/classification work. Known operational and invocation
 dispositions remain distinct. This repairs documentation drift, changes no runtime
 behaviour or decision, and grants no Step 8b or whole-Step-8 acceptance.
+
+
+## Step 8b independent acceptance — 2026-10-16
+
+The [Step 8b acceptance register](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8b-acceptance--2026-10-16)
+records two NEW complete cumulative clean correctness rounds and a NEW separate
+clean security sitting at `e16a7659`, after the canonical-reference correction.
+Unchanged runtime, raw-control and successful full-CI/same-tarball platform
+evidence remain attributed to `ab50be11` with independently verified equivalence.
+Creation-owned native process integration is accepted; workflow/terminal owners
+in 8c and all-surface fatal activation in 8d remain open. This note adds no new
+decision and does not claim whole-Step-8 or whole-Wave-3 completion.

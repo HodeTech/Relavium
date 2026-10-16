@@ -348,7 +348,8 @@ Trusted `get`, `list` and `upsert` results still expose the validated legacy map
 projection. Stored JSON must be an object with string members; malformed JSON,
 arrays, null and non-string members throw a content-free `TypeError` with message
 `Stored provider headers are invalid.` and no original parse cause. Valid own keys,
-including `__proto__`, remain own data without mutating the output prototype. These
+including `__proto__`, remain own data without mutating the output prototype.
+
 At the CLI boundary, these corruption errors use the fixed `cli_internal`
 projection (exit 9), following the [CLI failure classification](../cli/commands.md#failure-classification-and-remedies).
 They are not policy refusals or silent empty maps. The fixed projection contains

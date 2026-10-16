@@ -1135,11 +1135,12 @@ foundation](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8a-imple
 [its independent acceptance](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8a-acceptance--2026-10-16)
 at `e0a5ae19` includes two NEW complete cumulative clean rounds and a separate
 clean security sitting. [The same reviewed source's full CI subsequently completed successfully](phases/phase-2.5.5-hardening-and-remediation.md#step-8a-completed-full-ci-follow-up--2026-10-16),
-with remote totals attributed separately. [Step 8b is correcting canonical exit-classification drift](phases/phase-2.5.5-hardening-and-remediation.md#step-8b-canonical-exit-classification-correction--2026-10-16)
-identified by its new cumulative round 2. Native controls and required platform
-consumers pass at `ab50be11`; two NEW complete cumulative clean reviews after the
-documentation correction remain required. Product fatal activation remains in 8d,
-whole Step 8 stays open, and Steps 8c–19 remain staged. The
+with remote totals attributed separately. [Step 8b is independently accepted](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8b-acceptance--2026-10-16)
+at `e16a7659` after two NEW complete cumulative clean rounds and a separate clean
+security sitting following the canonical-reference correction. Full CI and all
+four required same-tarball consumers pass at `ab50be11`; independent equivalence
+checks preserve that execution attribution. Workflow/terminal integration in 8c,
+product fatal activation in 8d, whole Step 8 and Steps 9–19 remain open. The
 [final proposal reviews](phases/phase-2.5.5-hardening-and-remediation.md#second-maintainer-rereview-final-proposal-readiness--2026-10-16)
 remain proposal evidence, not implementation review. The selected encrypted archive
 method persists; production recipient/recovery belongs to Wave 4b release setup.

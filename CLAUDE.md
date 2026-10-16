@@ -186,12 +186,13 @@ Linux/macOS/Windows plus Node 22.0.0 consumers. Broader CI retains its separatel
 attributed status. Step 8a implements origin adapters and an inert native foundation;
 it is independently accepted at `e0a5ae19` after two NEW complete cumulative
 clean rounds and a separate clean security sitting.
-Step 8b's native controls and required same-tarball platform consumers pass at
-`ab50be11`. Its new cumulative round 2 identifies two canonical exit-classification
-reference drifts; their documentation correction is implemented. Two NEW complete
-cumulative clean reviews after that correction remain required. Earlier clean
-correctness/security sittings retain their exact reviewed source; whole Step 8
-and product fatal activation remain open.
+Step 8b (creation-owned native processes) is independently accepted at
+`e16a7659` after two NEW complete cumulative clean rounds and a separate clean
+security sitting following its canonical-reference correction. Its unchanged
+runtime/control evidence and successful full CI plus all four same-tarball
+platform consumers remain attributed to `ab50be11`, with independently verified
+source/dependency equivalence. Whole Step 8, workflow/terminal integration in 8c
+and product fatal activation in 8d remain open.
 Step 8 proceeds as recorded serial increments 8a–8d; native
 fatal integration remains open until all actual owners are connected.
 Later implementation and whole-wave acceptance

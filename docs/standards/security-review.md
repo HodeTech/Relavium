@@ -642,6 +642,33 @@ process-tree teardown and all-surface activation remain 8b–8d. The
 owns exact execution/platform limits; detailed review records remain local and
 Git-ignored.
 
+### Sitting: Wave 3 creation-owned native processes (2026-10-16)
+
+NEW separate complete clean sitting at
+`e16a7659d5855dcd0cb75e659573cc218152e139`, independent of both NEW cumulative
+correctness rounds after the canonical-reference correction. The unchanged base
+`d9625ff0` yields 121 complete paths / 488 zero-context hunks / 36 whole added
+files; all 48 changed test files pass 1,100 cases with one actual-Windows-only
+local skip. Six corrected independent boundary probes pass. The initial probe
+source/dist identity mismatch remains qualified in its private record. The parent
+reads the full report and all file assessments and verifies the retained pins.
+
+The sitting independently audits both complete raw native/forwarding captures,
+the original package ZIP and all four required same-tarball consumer ZIPs.
+Execution is `ab50be11`; current source/tool, dependency and runtime equivalence
+is checked separately. Actual Windows, macOS, Linux and exact Node 22.0.0 Linux
+receipts pass, and full CI 38904219484 has completed successfully. Public success
+receipts do not provide remote private per-mode journals. No real credential,
+provider call, GUI/editor session or payment is exercised.
+
+Fixed projection privacy does not certify unchanged legacy verbose stack
+confidentiality; their final integration remains 8d. Actual native close is not
+receipt ACK, synthetic native access failure is not an OS permission-fault
+experiment, and owned group/PID semantics are not universal containment. No new
+confirmed finding or deferral remains in 8b. The [acceptance register](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8b-acceptance--2026-10-16)
+joins exact pins and limits. Workflow/terminal integration in 8c, product native
+activation in 8d and whole-Wave-3 acceptance remain open.
+
 ## Sandbox and tool policy (`run_command`, node tools, secret inputs)
 
 This is the **binding home** for the tool-policy rules; the rationale is

@@ -5782,3 +5782,62 @@ separate actual status; no overall-CI-green or documentation-head execution is
 inferred. Runtime byte equivalence must be independently checked before reusing
 this attributed evidence. Step 8b acceptance, 8c–8d, whole Step 8 and later Wave 3
 work remain open; no new ADR or user decision is needed.
+
+
+## Wave 3 Step 8b acceptance — 2026-10-16
+
+**Step 8b is independently accepted on `development` at reviewed source
+`e16a7659d5855dcd0cb75e659573cc218152e139`.** After the canonical-reference
+correction, two NEW complete cumulative correctness rounds and a NEW separate
+security sitting are clean. Every sitting covers the unchanged whole-Step-7 base
+`d9625ff0a641197c6ed45968df99094a25db88d6` through that source: **121 paths /
+488 zero-context hunks / 36 whole added files**. Each independently executes all
+**48 changed test files / 1,100 passes / one actual-Windows-only local skip**.
+The parent reads every full report and per-file assessment and independently
+verifies the immutable file, diff, Git and retained-artifact pins. Final round 2's
+488 individual hunk bodies also match. Detailed reports remain local and
+Git-ignored; their final report SHA-256 values are recorded below.
+
+| Sitting | Model / effort | Report SHA-256 |
+|---------|----------------|---------------|
+| New cumulative correctness round 1 | GPT-6 Astra / xhigh | `a54e5a2d5afef0c6b73627407f6afd78cd3d2eba3143cff04a077cc6f9edd4e2` |
+| New cumulative correctness round 2 | GPT-6.1 Sol / xhigh | `5072e3563d694d9a9580e972d3e60ef24c2f6ab94a049fd500cd0ff6e53c8180` |
+| New separate security sitting | GPT-6.1 Sol / xhigh | `ea42171a24f7015818b147f248ccc421f6b6213506acf4054c808ba508817aee` |
+
+Independent additional probes pass: round 1's 16 lifecycle and 21 negative
+package-binding probes, round 2's four lifecycle/projection probes, and the
+security sitting's six corrected boundary probes. These counts are attributed
+separately, not presented as unique product-suite cases. The security probe's
+initial source/dist identity setup failure remains recorded; explicit shared
+source aliases correct that probe, without a product change or suppressed failure.
+The dangling editorial word in the database reference is removed in this acceptance
+metadata; this does not alter its already-reviewed classification contract.
+
+The parent and all three reviewers inspect the complete native and forwarding
+raw captures and all five downloaded package/report archives described in the
+[preceding evidence checkpoint](#step-8b-canonical-exit-classification-correction--2026-10-16).
+Their execution remains **`ab50be11`**, never relabelled as a run of the
+documentation-only `e16a7659`: all **1,270 source/tool entries**, **21,013 physical
+dependency files / 457 packages**, and Node/Vitest runtime identities are
+independently equivalent. Both complete captures retain 141 zero-unhandled phase
+receipts, exact restoration and their bounded inventories. Earlier failed runs
+and NONCLEAN reviews remain historical evidence, not current acceptance.
+
+Full push CI **38904219484 / attempt 1 / `ab50be11`** has now completed
+successfully: **all 15 jobs pass**, including the full filesystem cohort and
+required lint/typecheck/test/build/fences/smokes job. Actual current Windows,
+macOS and Linux plus exact Node 22.0.0 Linux consume the same tarball, with all
+four strict receipts and their aggregate passing. The parent and reviewers
+independently inspect the physical archives and public receipt bindings; remote
+private per-mode worker journals are not exported by those success receipts and
+are not inferred. The actual-Windows adverse case injects a post-bootstrap native
+access failure; it is not evidence of a real OS permission fault.
+
+The [separate security sitting](../../standards/security-review.md#sitting-wave-3-creation-owned-native-processes-2026-10-16)
+retains the distinctions between fixed diagnostic projection and unchanged legacy
+human verbose stacks, native close and receipt ACK, and owned process types and
+universal descendant containment. Global native activation is still inert.
+**Whole Step 8 is open:** 8c must connect workflow, preparation and terminal
+lifetimes; 8d must connect the remaining surfaces and all caught/fatal exits.
+Steps 9–19 and whole-wave acceptance remain staged. No new ADR, provider capture,
+credential, billing or user decision is needed. Step 8c proceeds automatically.
