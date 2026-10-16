@@ -216,6 +216,84 @@ describe('secret context at native SQLite/public boundaries (ADR-0113)', () => {
     expectNoNewSecret(client, events);
   });
 
+  it('keeps context analysis and native history on the admitted definition after caller mutation', async () => {
+    const definition = workflow(
+      `    - { id: start, type: input }
+    - { id: derive, type: transform, transform: 'ctx.greeting' }
+    - { id: out, type: output }`,
+      `    - { from: start, to: derive }
+    - { from: derive, to: out }`,
+    );
+    const frozenSnapshot = JSON.stringify(definition);
+    const { client, engine: runtime } = await fixture(definition);
+    const handle = runtime.start({ workflow: definition, inputs: INPUTS });
+    const greeting = definition.workflow.context?.find((entry) => entry.key === 'greeting');
+    if (greeting === undefined) throw new Error('missing authored greeting');
+    greeting.value = '{{inputs.token}}';
+    definition.workflow.context?.push({ key: 'later', value: '{{inputs.token}}' });
+    const { events, drained } = consume(handle);
+    await drained;
+    expect(events.at(-1)).toMatchObject({
+      type: 'run:completed',
+      outputs: { out: 'Hello Ada' },
+    });
+    expect(
+      client.sqlite
+        .prepare("SELECT output_json FROM step_executions WHERE node_id = 'derive'")
+        .all(),
+    ).toEqual([{ output_json: JSON.stringify('Hello Ada') }]);
+    expect(client.sqlite.prepare('SELECT output_json FROM runs').all()).toEqual([
+      { output_json: JSON.stringify({ out: 'Hello Ada' }) },
+    ]);
+    expect(client.sqlite.prepare('SELECT workflow_definition_snapshot FROM runs').all()).toEqual([
+      { workflow_definition_snapshot: frozenSnapshot },
+    ]);
+    expectNoNewSecret(client, events);
+  });
+
+  it('persists hydrated Error result fields through the actual standard executor', async () => {
+    const definition = workflow(
+      `    - { id: start, type: input }
+    - id: derive
+      type: transform
+      transform: 'Object.assign(new TypeError("clean diagnostic"), {info:42})'
+    - { id: out, type: output }`,
+      `    - { from: start, to: derive }
+    - { from: derive, to: out }`,
+    );
+    const { client, engine: runtime } = await fixture(definition);
+    const { events, drained } = consume(runtime.start({ workflow: definition, inputs: INPUTS }));
+    await drained;
+    const derived = events.find(
+      (event) => event.type === 'node:completed' && event.nodeId === 'derive',
+    );
+    expect(derived).toMatchObject({
+      type: 'node:completed',
+      output: {
+        info: 42,
+        name: 'TypeError',
+        message: 'clean diagnostic',
+      },
+    });
+    if (derived?.type !== 'node:completed') throw new Error('missing completed derivation');
+    if (derived.output === null || typeof derived.output !== 'object')
+      throw new Error('missing hydrated diagnostic object');
+    expect(typeof Reflect.get(derived.output, 'stack')).toBe('string');
+    expect(events.at(-1)).toMatchObject({
+      type: 'run:completed',
+      outputs: { out: derived.output },
+    });
+    expect(
+      client.sqlite
+        .prepare("SELECT output_json FROM step_executions WHERE node_id = 'derive'")
+        .all(),
+    ).toEqual([{ output_json: JSON.stringify(derived.output) }]);
+    expect(client.sqlite.prepare('SELECT output_json FROM runs').all()).toEqual([
+      { output_json: JSON.stringify({ out: derived.output }) },
+    ]);
+    expectNoNewSecret(client, events);
+  });
+
   it.each([
     ['direct context', 'ctx.alias'],
     ['computed context', 'ctx[["al", "ias"].join("")]'],
