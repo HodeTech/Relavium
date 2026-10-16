@@ -3,6 +3,8 @@ import { z } from 'zod';
 import { McpConnectTimeoutSchema } from './agent.js';
 import { URL_HAS_CREDENTIALS, nonEmptyString, nonNegativeInt, positiveInt } from './common.js';
 import { validateDeclaredEnv } from './declared-env.js';
+import { FS_ROOT_LIMITS } from './fs-root-limits.js';
+export { FS_ROOT_LIMITS } from './fs-root-limits.js';
 import {
   FS_SCOPE_TIERS,
   LLM_PROVIDERS,
@@ -20,9 +22,6 @@ export const UpdateChannelSchema = z.enum(['stable', 'beta']);
 
 /** Filesystem permission tier (built-in-tools.md) — derived from the shared tier vocabulary. */
 export const FsScopeSchema = z.enum(FS_SCOPE_TIERS);
-
-/** Shared admission/selector bounds (ADR-0105); these limits never grant a path. */
-export const FS_ROOT_LIMITS = Object.freeze({ count: 16, characters: 4096 });
 
 /** A registered network MCP server must use http(s) (`http`) or ws(s) (`websocket`) — never file:/javascript:/etc. */
 const SAFE_HTTP_URL = /^https?:\/\//i;
