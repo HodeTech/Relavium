@@ -1063,7 +1063,8 @@ function sanitizeInput(
   if (secretArgKeys !== undefined) {
     // **RECURSIVELY.** A top-level-only deletion misses `{"auth":{"api_key": …}}`, which is the ordinary
     // shape for an MCP tool whose schema this repo does not own. The shape scrub below is the second line;
-    // this is the first, and it is the one that knows the host's declared secret names.
+    // this is the first, using external declared names when supplied. Absence is unverified;
+    // no current authored mapping producer exists (tool-registry.md §Secret argument provenance).
     for (const key of Object.keys(out)) {
       out[key] = dropSecretKeysDeep(out[key], secretArgKeys);
     }

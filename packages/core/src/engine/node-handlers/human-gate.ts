@@ -7,18 +7,13 @@
  * `resume`). The handler is intentionally thin and clock-free: deadlines (`expiresAt`) are the engine's
  * job (only it holds the host clock).
  *
- * **Secrets — two layers.** A `secret`-typed `inputs.*` / `ctx.*` reference in `message_template` /
- * `assignee` is rejected at PARSE time by the secret-taint analyzer (`node-text` category; analyze.ts).
- * A `{{ run.outputs[…] }}` reference is *not* parse-gated (its content is runtime data), but is protected
- * at RUNTIME: the `input` node masks every `secret`-typed input before it enters `run.outputs` (io.ts
- * `maskSecretInputs`) and an agent prompt can't interpolate a secret (the same parse gate), so a raw
- * secret never reaches `ctx.runOutputs` for this handler to surface. Together that lets the gate text
- * resolve against raw inputs without a secret reaching the `human_gate:paused` payload — mirroring the
- * agent's `prompt_template` (agent-runner.ts).
+ * Parser taint checks and resolvePublicTemplate protect declared secret inputs/context in both gate
+ * fields. Runtime preflight also covers hand-constructed workflows. Upstream outputs are runtime data:
+ * this consumer does not scan arbitrary sensitive literals or scrub historical persisted outputs.
  */
 
-import { resolveTemplate } from '../../interpolation/resolve.js';
-import type { ResolverCapabilities, RunScope } from '../../interpolation/scope.js';
+import { resolvePublicTemplate, type PublicTemplateScope } from '../../interpolation/resolve.js';
+import type { ResolverCapabilities } from '../../interpolation/scope.js';
 import type { GateRequest, NodeExecContext, NodeExecutor, NodeOutcome } from '../node-executor.js';
 import { cancelled, failed } from './scope.js';
 
@@ -39,12 +34,11 @@ async function runHumanGate(
     return cancelled();
   }
   const { node } = config;
-  // Resolve the human-facing text against inputs + the resolved ctx.* + run.outputs (secrets are
-  // parse-gated; see file header). `ctx` is the engine-resolved workflow context (NodeExecContext.ctx),
-  // so a gate's `{{ctx.key}}` in message_template / assignee resolves (workflow-yaml-spec.md §context).
-  const scope: RunScope = {
+  // Public text resolves through the same required provenance boundary as agent preparation.
+  const scope: PublicTemplateScope = {
     inputs: ctx.inputs,
     ctx: ctx.ctx,
+    secretInputNames: ctx.secretInputNames,
     outputs: Object.fromEntries(ctx.runOutputs),
   };
   const caps = deps.resolverCapabilities ?? {};
@@ -54,11 +48,11 @@ async function runHumanGate(
     message =
       node.message_template === undefined
         ? ''
-        : await resolveTemplate(node.message_template, scope, caps, ctx.signal);
+        : await resolvePublicTemplate(node.message_template, scope, caps, ctx.signal);
     assignee =
       node.assignee === undefined
         ? undefined
-        : await resolveTemplate(node.assignee, scope, caps, ctx.signal);
+        : await resolvePublicTemplate(node.assignee, scope, caps, ctx.signal);
   } catch (err) {
     // A run cancelled mid-resolution surfaces as the throw from resolveTemplate's abort check — classify
     // it as a deliberate `cancelled` (a distinct fatal reason node retry never re-runs), not a data fault.

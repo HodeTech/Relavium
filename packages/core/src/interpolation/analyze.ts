@@ -215,7 +215,7 @@ function projectTaint(tainted: ReadonlyMap<string, string | undefined>): TaintSe
  * rescan-to-fixpoint loop: that was O(N²) over the entry count and let a small reversed-laundering
  * chain YAML stall the synchronous parse gate.
  */
-function computeTaint(spec: Workflow['workflow']): TaintSets {
+export function computeTaint(spec: Workflow['workflow']): TaintSets {
   const graph: TaintGraph = { tainted: new Map(), dependents: new Map(), queue: [] };
   for (const input of spec.inputs ?? []) {
     if (input.type === 'secret') {

@@ -11,6 +11,10 @@ import { BudgetGovernor, type GovernorEventDraft } from './budget-governor.js';
 import type { PreEgressInfo } from './agent-turn.js';
 import type { NodeExecContext, NodeStreamEvent } from './node-executor.js';
 import type { SettledAttemptDraft } from './money-durability.js';
+import {
+  createWorkflowContextProjection,
+  ownSecretInputNames,
+} from '../interpolation/provenance.js';
 import type { AgentPlanConfig } from '../run-plan.js';
 
 const MODEL = 'w7-runner-settlement';
@@ -109,8 +113,8 @@ function setup(overlay: PricingOverlay, media: boolean, amount = 16, maxTokens =
     },
     runOutputs: new Map(),
     inputs: {},
-    ctx: {},
-    secretInputNames: new Set(),
+    ctx: createWorkflowContextProjection({ values: {}, deniedKeys: [], orderedKeys: [] }),
+    secretInputNames: ownSecretInputNames([]).secretInputNames,
     toolPolicy: {},
     emit: (event) => {
       events.push(event);

@@ -26,6 +26,7 @@ export {
   WorkflowSecretLeakError,
   WorkflowGraphError,
   InterpolationError,
+  WorkflowContextError,
   SandboxError,
 } from './errors.js';
 export type {
@@ -58,8 +59,19 @@ export {
 } from './interpolation/analyze.js';
 
 // The `{{ … }}` runtime resolver (1.L2) — evaluate templates against a run scope, eager-once context.
-export { resolveTemplate, resolveContext } from './interpolation/resolve.js';
+export { resolveTemplate, resolveContext, resolvePublicTemplate } from './interpolation/resolve.js';
 export type { RunScope, ResolverCapabilities } from './interpolation/scope.js';
+export type { PublicTemplateScope } from './interpolation/resolve.js';
+export {
+  createWorkflowContextProjection,
+  createWorkflowProvenance,
+  ownSecretInputNames,
+} from './interpolation/provenance.js';
+export type {
+  WorkflowContextProjection,
+  WorkflowProvenance,
+  OwnedSecretInputNames,
+} from './interpolation/provenance.js';
 
 // DAG builder + RunPlan (1.M) — compile a validated definition into an executable, topologically
 // ordered plan; the run loop (1.N) and AgentRunner (1.O) consume it.

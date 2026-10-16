@@ -1,3 +1,7 @@
+import {
+  createWorkflowContextProjection,
+  ownSecretInputNames,
+} from '../interpolation/provenance.js';
 import { beforeAll, describe, expect, it } from 'vitest';
 
 import { createExpressionSandbox, type ExpressionSandbox } from './sandbox.js';
@@ -57,7 +61,8 @@ describe('the scan never disagrees with the sandbox (ADR-0093 §2 soundness)', (
         kind: 'transform',
         scope: {
           inputs: { a: { run: { outputs: { ghost: 1 } } }, shadow: { outputs: { ghost: 1 } } },
-          ctx: {},
+          ctx: createWorkflowContextProjection({ values: {}, deniedKeys: [], orderedKeys: [] }),
+          deniedInputNames: ownSecretInputNames([]).deniedInputNames,
           outputs: {},
         },
       });

@@ -4360,7 +4360,10 @@ describe('WorkflowEngine — workflow context (ctx.*) resolution', () => {
   edges:
     - { from: start, to: work }
     - { from: work, to: out }`;
-  const echoCtx = (c: NodeExecContext): NodeOutcome => ({ kind: 'completed', output: c.ctx });
+  const echoCtx = (c: NodeExecContext): NodeOutcome => ({
+    kind: 'completed',
+    output: c.ctx.values,
+  });
 
   it('resolves the workflow context once at start and threads ctx.* to every node', async () => {
     const events = await drain(
@@ -4401,7 +4404,7 @@ describe('WorkflowEngine — workflow context (ctx.*) resolution', () => {
     }
   });
 
-  it('threads ctx: {} when the workflow declares no context: block', async () => {
+  it('threads empty clean context values when the workflow declares no context: block', async () => {
     const events = await drain(
       engineWith({ work: echoCtx }).start({
         workflow: workflow(`  id: no-ctx

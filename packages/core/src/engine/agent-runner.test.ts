@@ -14,6 +14,10 @@ import type {
 } from '@relavium/llm';
 import { describe, expect, it, vi } from 'vitest';
 
+import {
+  createWorkflowContextProjection,
+  ownSecretInputNames,
+} from '../interpolation/provenance.js';
 import type { AgentPlanConfig, PlanVertex } from '../run-plan.js';
 import { BUILTIN_TOOLS } from '../tools/builtins.js';
 import { delegateAvailable } from '../tools/delegates.js';
@@ -251,8 +255,12 @@ function ctxFor(
       vertex,
       runOutputs,
       inputs,
-      ctx: ctxValues,
-      secretInputNames: new Set(),
+      ctx: createWorkflowContextProjection({
+        values: ctxValues,
+        deniedKeys: [],
+        orderedKeys: Object.keys(ctxValues),
+      }),
+      secretInputNames: ownSecretInputNames([]).secretInputNames,
       toolPolicy: {},
       emit: (e) => events.push(e),
       signal: {

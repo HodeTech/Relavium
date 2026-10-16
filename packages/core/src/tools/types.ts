@@ -391,7 +391,11 @@ export interface ToolDispatchContext {
    * `confirm` decision, and an absent `confirm` is fail-closed → denied. ABSENT ⇒ the workflow author-trust path, unchanged.
    */
   readonly approval?: ToolApprovalContext;
-  /** Names of effective-arg keys that are secret-tainted (ADR-0029(c)) — rejected from non-credential args. */
+  /**
+   * External effective-arg taint metadata (ADR-0029(c)); absent means unverified, not clean.
+   * No live authored mapping producer exists. A future mapped path must supply final effective-key
+   * provenance before approval/effects, including top-level parents of tainted nested values.
+   */
   readonly secretArgKeys?: ReadonlySet<string>;
   /** Engine delegate for `invoke_agent` — pure orchestration, not a ToolHost I/O capability. */
   readonly invokeAgent?: (nodeId: string, input: unknown) => Promise<unknown>;
