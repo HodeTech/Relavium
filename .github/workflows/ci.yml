@@ -169,6 +169,9 @@ jobs:
       - name: CLI bundle closure matches its declared dependencies
         run: pnpm lint:bundle-closure
 
+      - name: Compiled CLI meta paths stay outside runtime services
+        run: pnpm smoke:cli-bootstrap
+
       # Drift gate: the committed migration must match src/schema.ts. If a schema change
       # (or an upstream @relavium/shared enum change the CHECKs derive from) wasn't
       # regenerated via `pnpm --filter @relavium/db db:generate`, regenerating here produces

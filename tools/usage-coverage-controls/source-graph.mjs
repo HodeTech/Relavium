@@ -23,9 +23,12 @@ export const aliases = Object.freeze({
   '@relavium/shared': 'packages/shared/src/index.ts',
   '@relavium/shared/relavium-error': 'packages/shared/src/relavium-error.ts',
   '@relavium/shared/fs-root-limits': 'packages/shared/src/fs-root-limits.ts',
+  '@relavium/shared/terminal-safe': 'packages/shared/src/terminal-safe.ts',
   '@relavium/llm': 'packages/llm/src/index.ts',
   '@relavium/llm/adapters': 'packages/llm/src/adapters/index.ts',
+  '@relavium/llm/scrub-secrets': 'packages/llm/src/scrub-secrets.ts',
   '@relavium/core': 'packages/core/src/index.ts',
+  '@relavium/core/tool-dispatch-error': 'packages/core/src/tools/dispatch-error.ts',
   '@relavium/db': 'packages/db/src/index.ts',
   '@relavium/mcp': 'packages/mcp/src/index.ts',
 });

@@ -1,7 +1,7 @@
 /** Steps 3–5 and 7 independent production mechanisms and required named semantic witnesses. */
 const reader = 'apps/cli/src/secrets/read-secret.ts';
 const readerCases = ['apps/cli/src/secrets/read-secret.test.ts'];
-const llmError = 'packages/llm/src/llm-error.ts';
+const scrubSecretsLeaf = 'packages/llm/src/scrub-secrets.ts';
 const overlapFiles = [
   'packages/llm/src/llm-error.test.ts',
   'apps/cli/src/render/sanitize.test.ts',
@@ -148,7 +148,7 @@ export const mutations = [
   ),
   control(
     'query-names',
-    'packages/llm/src/llm-error.ts',
+    scrubSecretsLeaf,
     String.raw`/([?&](?:(?:x[-_])?api[-_]?key|api[-_]?secret|(?:access|secret)[-_]?key|(?:access|refresh|id|auth|session)[-_]?token|client[-_]?secret|key|token|auth|password|secret)=)[^&\s#]+/gi`,
     String.raw`/([?&](?:(?:x[-_])?api[-_]?key|key|token|access[-_]?token|auth|password|secret)=)[^&\s#]+/gi`,
     ['packages/llm/src/llm-error.test.ts'],
@@ -197,7 +197,7 @@ export const mutations = [
   ),
   control(
     'prefix-before-redaction',
-    'packages/llm/src/llm-error.ts',
+    scrubSecretsLeaf,
     "    const joined = remaining.replace(/\\s+/g, '');",
     '    const joined = remaining;',
     [
@@ -250,7 +250,7 @@ export const mutations = [
   ),
   control(
     'normalized-secret-probe',
-    llmError,
+    scrubSecretsLeaf,
     '  return stripTerminalControls(text);',
     '  return text;',
     overlapFiles,
@@ -265,7 +265,7 @@ export const mutations = [
   ),
   control(
     'non-query-before-query',
-    llmError,
+    scrubSecretsLeaf,
     '  return scrubQuerySecrets(scrubNonQuerySecrets(text));',
     '  return scrubNonQuerySecrets(scrubQuerySecrets(text));',
     overlapFiles,

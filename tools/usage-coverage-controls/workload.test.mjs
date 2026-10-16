@@ -27,19 +27,27 @@ import {
   permanentPhaseTimeoutMs,
 } from './workload.mjs';
 
-test('supported shared exports map to their exact owned source leaves, with unknown aliases refused', () => {
+test('supported shared, llm and core exports map to exact owned sources, with unknown aliases refused', () => {
   const repository = fileURLToPath(new URL('../../', import.meta.url));
-  const shared = JSON.parse(readFileSync(join(repository, 'packages/shared/package.json'), 'utf8'));
-  for (const [subpath, target] of Object.entries(shared.exports)) {
-    const specifier = subpath === '.' ? '@relavium/shared' : `@relavium/shared/${subpath.slice(2)}`;
-    const source = `packages/shared/src/${target.import.slice('./dist/'.length).replace(/\.js$/, '.ts')}`;
-    assert.equal(aliases[specifier], source);
-    assert.equal(relativeSource({ sourceRoot: repository }, specifier), join(repository, source));
-    assert.doesNotThrow(() => rejectUnknownAlias(specifier));
+  for (const name of ['shared', 'llm', 'core']) {
+    const info = JSON.parse(
+      readFileSync(join(repository, `packages/${name}/package.json`), 'utf8'),
+    );
+    for (const [subpath, target] of Object.entries(info.exports)) {
+      const specifier =
+        subpath === '.' ? `@relavium/${name}` : `@relavium/${name}/${subpath.slice(2)}`;
+      const source = `packages/${name}/src/${target.import.slice('./dist/'.length).replace(/\.js$/, '.ts')}`;
+      assert.equal(aliases[specifier], source);
+      assert.equal(relativeSource({ sourceRoot: repository }, specifier), join(repository, source));
+      assert.doesNotThrow(() => rejectUnknownAlias(specifier));
+    }
   }
   for (const specifier of [
     '@relavium/shared/private',
     '@relavium/shared/../core',
+    '@relavium/llm/private',
+    '@relavium/llm/scrub-secrets/private',
+    '@relavium/core/tool-dispatch-error/private',
     '@relavium/unknown',
   ])
     assert.throws(() => rejectUnknownAlias(specifier), /USAGE_UNKNOWN_WORKSPACE_ALIAS/);

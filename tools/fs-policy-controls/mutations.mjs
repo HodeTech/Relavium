@@ -111,8 +111,8 @@ mutations.push(
   control(
     'INVOCATION_ADMISSION',
     'apps/cli/src/run.ts',
-    'fsGrants: admitFsInvocation(global)',
-    'fsGrants: admitFsInvocation({ ...global, allowFsRoots: [] })',
+    'fsGrants: runtime.admitFsInvocation(global)',
+    'fsGrants: runtime.admitFsInvocation({ ...global, allowFsRoots: [] })',
     'FS_CAUSAL_INVOCATION_ADMISSION',
     [invocation],
     'invalid grants refuse',
