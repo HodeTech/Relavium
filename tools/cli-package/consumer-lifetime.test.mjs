@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { Buffer } from 'node:buffer';
 import {
   copyFileSync,
   existsSync,
@@ -14,8 +15,12 @@ import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { pathToFileURL } from 'node:url';
 import { completeConsumer } from './consumer-lifetime.mjs';
+import { REQUIRED_SMOKE_CASES } from './smoke/cases.mjs';
 
-async function fixture(t, { wrongPid = false, exitCode = 0 } = {}) {
+async function fixture(
+  t,
+  { wrongPid = false, exitCode = 0, nativeFailure = false, diagnosticSinkFailure = false } = {},
+) {
   const root = mkdtempSync(join(tmpdir(), 'relavium-consumer-lifetime-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const smoke = join(root, 'smoke'),
@@ -25,6 +30,8 @@ async function fixture(t, { wrongPid = false, exitCode = 0 } = {}) {
   for (const name of ['process.mjs', 'files.mjs'])
     copyFileSync(new URL(name, import.meta.url), join(root, name));
   copyFileSync(new URL('smoke/index.mjs', import.meta.url), join(smoke, 'index.mjs'));
+  for (const name of ['failure-diagnostic.mjs', 'cases.mjs'])
+    copyFileSync(new URL(`smoke/${name}`, import.meta.url), join(smoke, name));
   const require = createRequire(new URL('../../packages/db/package.json', import.meta.url));
   const binary = join(
     dirname(require.resolve('better-sqlite3/package.json')),
@@ -38,16 +45,33 @@ async function fixture(t, { wrongPid = false, exitCode = 0 } = {}) {
     `
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
-import { writeFileSync } from 'node:fs';
+import { closeSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { emitInstalledWorkerFailure } from './failure-diagnostic.mjs';
 const [, , packageRoot, supportRoot, artifactSha256, source] = process.argv;
 const addon = createRequire(import.meta.url)(join(packageRoot, 'native.node'));
 assert.equal(typeof addon.Database, 'function');
-writeFileSync(join(supportRoot, 'installed-smoke.json'), JSON.stringify({
+const report = {
   source, artifactSha256, pid: ${wrongPid ? '0' : 'process.pid'}, parentPid: process.ppid,
-  runtime: process.version, platform: process.platform, success: true, nativeLoaded: true
-}));
+  runtime: process.version, platform: process.platform, success: ${!nativeFailure}, nativeLoaded: true,
+  compiledUnchanged: true, ownedTempRemoved: true,
+  cases: ${JSON.stringify(REQUIRED_SMOKE_CASES.map((id) => ({ id, passed: true })))},
+};
+if (${nativeFailure}) {
+  const failed = report.cases.find((item) => item.id === 'actual-native-process-owner');
+  failed.passed = false;
+  failed.error = 'AssertionError [ERR_ASSERTION]: synthetic helper-close failure';
+  failed.evidence = { outcomes: [{ mode: 'injected-error', gate: 'helper', passed: false,
+    observed: [{ operation: 'native-helper-actual-close', pid: 4242, code: 1, signal: null }],
+    cleanup: { cliActualCloseObserved: true, sentinel: { actualCloseObserved: true, watchdogFired: false } }
+  }] };
+}
+writeFileSync(join(supportRoot, 'installed-smoke.json'), JSON.stringify(report));
 process.on('exit', () => writeFileSync(join(supportRoot, 'worker-exit'), 'observed'));
+if (${nativeFailure}) {
+  if (${diagnosticSinkFailure}) closeSync(2);
+  emitInstalledWorkerFailure(report);
+}
 setTimeout(() => { process.exitCode = ${exitCode}; }, 50);
 `,
   );
@@ -97,6 +121,59 @@ test('real addon worker closes before installation removal and success publicati
     process.dlopen = original;
   }
 });
+
+for (const diagnosticSinkFailure of [false, true])
+  test(`synthetic native-case failure in a real addon worker is joined, diagnosed and unpublished (stderr refusal: ${diagnosticSinkFailure})`, async (t) => {
+    const own = await fixture(t, { exitCode: 1, nativeFailure: true, diagnosticSinkFailure });
+    let primary,
+      published = false;
+    await assert.rejects(
+      completeConsumer({
+        exercise: async () => {
+          try {
+            return await own.run();
+          } catch (error) {
+            primary = error;
+            throw error;
+          }
+        },
+        cleanup: () => {
+          assert.equal(readFileSync(join(own.support, 'worker-exit'), 'utf8'), 'observed');
+          rmSync(own.installation, { recursive: true, force: true });
+        },
+        cleanupFailed: () => assert.fail('unexpected secondary cleanup failure'),
+        publish: () => {
+          published = true;
+        },
+      }),
+      (error) => {
+        assert.equal(error, primary);
+        assert.equal(error.result.code, 1);
+        assert.equal(error.result.signal, null);
+        assert.equal(error.result.stdout, '');
+        if (diagnosticSinkFailure) assert.equal(error.result.stderr, '');
+        else {
+          assert.ok(Buffer.byteLength(error.result.stderr) <= 8192);
+          const diagnostic = JSON.parse(error.result.stderr);
+          assert.equal(diagnostic.type, 'installed-cli-worker-failure');
+          assert.equal(diagnostic.source, 'b'.repeat(40));
+          assert.equal(diagnostic.artifactSha256, 'a'.repeat(64));
+          assert.equal(diagnostic.runtime, process.version);
+          assert.equal(diagnostic.workerPid, error.result.pid);
+          assert.equal(diagnostic.parentPid, process.pid);
+          assert.equal(diagnostic.cases.length, 1);
+          assert.equal(diagnostic.cases[0].id, 'actual-native-process-owner');
+          assert.match(diagnostic.cases[0].error, /synthetic helper-close failure/);
+          assert.equal(diagnostic.cases[0].native[0].observed[0].code, 1);
+          assert.equal(diagnostic.cases[0].native[0].cleanup.cliActualCloseObserved, true);
+        }
+        return true;
+      },
+    );
+    assert.equal(published, false);
+    assert.equal(existsSync(own.installation), false);
+    assert.equal(existsSync(join(own.support, 'installed-consumer.json')), false);
+  });
 
 for (const [name, options, expected] of [
   ['foreign PID', { wrongPid: true }, /not from the joined worker/],

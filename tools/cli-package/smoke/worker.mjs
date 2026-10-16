@@ -19,6 +19,7 @@ import { assertInstalledChat } from './chat.mjs';
 import { assertInstalledMcp, assertInstalledWorkflows } from './workflows.mjs';
 import { assertExit, explicitEnvironment, invoke, ndjson } from './process.mjs';
 import { assertInstalledNativeProcesses, InstalledNativeControlError } from './native-process.mjs';
+import { emitInstalledWorkerFailure } from './failure-diagnostic.mjs';
 
 const directory = dirname(fileURLToPath(import.meta.url));
 const repository = resolve(directory, '../../..');
@@ -275,4 +276,7 @@ const report = await exerciseInstalledSmoke({
   artifactSha256: process.argv[4],
   source: process.argv[5],
 });
-if (!report.success) process.exitCode = 1;
+if (!report.success) {
+  process.exitCode = 1;
+  emitInstalledWorkerFailure(report);
+}
