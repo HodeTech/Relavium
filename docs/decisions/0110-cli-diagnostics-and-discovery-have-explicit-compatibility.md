@@ -192,3 +192,15 @@ contracts and the nineteen-increment Wave 3 plan. Earlier proposal wording above
 records the review stage; approval is complete. Implementation, independent
 review gates and canonical promotion remain staged in that plan. Acceptance
 does not claim shipping behaviour, an actual release or production custody setup.
+
+## Step 8a partial implementation — 2026-10-16
+
+The approved storage-origin subset and fixed runtime classification are implemented
+on `development`; independent acceptance is still pending. The
+[CLI contract](../reference/cli/commands.md#step-8a-origin-adapters) owns concrete
+dispositions and the [Node database contract](../reference/shared-core/database-schema.md#node-client-failure-provenance)
+owns the read-only private-identity fact. The native coordinator remains inert
+until Step 8d connects every actual creation owner and caught/forced-exit path.
+This does not claim whole Step 8, production fatal integration or later discovery
+work complete. The [implementation checkpoint](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8a-implementation-checkpoint--2026-10-16)
+attributes local author, selected causal and installed-host evidence separately.

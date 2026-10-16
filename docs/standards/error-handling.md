@@ -47,6 +47,15 @@ of the heavy runtime-family classifier.
   `LlmError` seam contract is the one error type detailed in full below, because the fallback chains
   depend on its classification.)
 
+`@relavium/core` also exports the frozen canonical
+`TRANSIENT_ENGINE_STATE_CODES` array used by `isTransientEngineStateError`.
+Boundary projections that must avoid reading caller-controlled accessors may
+compare a captured own-data code against that same authority. Do not create a
+second transient-code list. This export adds no engine code or retry behavior.
+Database storage origin has a separate
+[read-only identity fact](../reference/shared-core/database-schema.md#node-client-failure-provenance);
+error ancestry and public construction do not grant it.
+
 ## `LlmError` classification — the contract the fallback chains depend on
 
 Every failure inside an `@relavium/llm` adapter is normalized to a single `LlmError` type

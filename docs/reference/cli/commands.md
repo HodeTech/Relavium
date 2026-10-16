@@ -580,7 +580,7 @@ Human output reports removed/retained counts and fixed retention reasons. `--jso
 `{ removed, retained, reasons }` object; retained reason counts sum to `retained`. Neither form
 contains paths, native diagnostics or file bytes. Successful maintenance, including conservatively
 retained candidates, exits `0`; missing flags/exclusive-offline refusal exits `2`; an operational
-filesystem failure exits `1`. This command never changes published CAS objects or read grants.
+filesystem failure exits `1`; unexpected and failed-output faults exit `9`. This command never changes published CAS objects or read grants.
 Exact temp grammars, ownership/recovery rules and reason vocabulary belong to the
 [physical media lifecycle contract](../shared-core/built-in-tools.md#physical-media-storage-and-limits),
 under [ADR-0106](../../decisions/0106-media-publication-requires-bounded-verified-bytes.md).
@@ -596,7 +596,7 @@ not one of them: its Ctrl-C is a cooperative cancel that exits `1`.
 | Code | Meaning |
 |------|---------|
 | `0` | Workflow completed successfully |
-| `1` | Workflow failed (a node errored and exhausted retries/fallbacks) |
+| `1` | Workflow failed, or a classified operational/history/storage refusal; see the [surface dispositions](#failure-classification-and-remedies) |
 | `2` | Invalid invocation (bad arguments, workflow not found, schema validation error) |
 | `3` | Run paused at a human gate (CI/non-interactive mode) — resume with `relavium gate` |
 | `4` | A chat session ended — via `/exit`, `/cancel` (or Ctrl-C in TTY mode), or an input-stream EOF — a user-initiated end of a `relavium chat` REPL — see [chat-session.md](chat-session.md) |
@@ -604,6 +604,11 @@ not one of them: its Ctrl-C is a cooperative cancel that exits `1`.
 | `6` | Ownership was refused before starting, or this host was fenced out and stopped without claiming an outcome ([ADR-0079](../../decisions/0079-cross-process-run-ownership-lease-and-fencing-token.md) §5, §7). Inspect current history; the successor may already have finished |
 | `7` | An external **effect** needs attention, including a prior unresolved attempt or an admitted effect whose final receipt remained unresolved after host joining ([effect-journal.md](../shared-core/effect-journal.md) §4, §8). **Do not retry**: inspect the target, then resolve the row out of band |
 | `8` | Required money receipts were not durably acknowledged. **Do not repeat paid work**: inspect `relavium logs <runId>` and the ledger before recovery. This is separate from terminal-outbox uncertainty |
+| `9` | CLI infrastructure failed, including output delivery. Inspect existing work before repeating paid/effectful operations; see the [classification and remedy contract](#failure-classification-and-remedies) |
+
+Wave 3 Step 8a implements runtime origin classification and fixed boundary projections.
+Full fatal coordination, actual workflow-health precedence on escaping faults and
+all-surface integration remain staged in Steps 8b–8d below.
 
 > Final required-money uncertainty takes priority (`8`), then effect attention (`7`), then the actual terminal/ownership disposition (`5`/`6`) and ordinary outcome. A combined `8` warning also directs the operator to inspect the effect target and resolve its row. Final health never replaces the actual terminal, its error code or durable history; it selects the command's disposition after joining admitted work.
 > The fixed final-health stderr diagnostic has `type: diagnostic`, `code`, `message`, `terminalDurability` (`durable`, `uncertain` or `none`) and `effectNeedsAttention`. It reports one highest-priority warning; a combined money/effect case includes both remedies. These fields are nondurable and never added to stdout RunEvents.
@@ -662,9 +667,12 @@ was approved by the maintainer. Step 6 implements the pure flag/error/observatio
 and ownership substrate, descriptor-derived current Commander grammar and the
 compatible model projection. Its discovery DTO is available as a pure function;
 production JSON help, aliases, pricing spellings, output categories and consent
-remain Step 10. Step 7's lazy entry and installed package are independently
-accepted; actual fatal/native/terminal adapters remain Step 8. Earlier sections
-describe current behaviour unless stated here.
+remain Step 10. Step 7's lazy entry and installed package are independently accepted. Step 8a
+implements minimal storage-origin adapters and defensive runtime projections,
+and adds an inert native invocation foundation. Product fatal/native/terminal
+activation remains pending in Step 8d, after all actual creation owners and
+caught/forced-exit paths are connected. Earlier sections describe current
+behaviour unless stated here.
 
 ### Diagnostic policy
 
@@ -768,6 +776,34 @@ that label runtime permission/capacity failures invalid invocation/2 deliberatel
 move to operational 1. Step 6 defines this mapping and Step 8 installs minimal
 boundary adapters; Step 18 centralizes them after all callers have moved.
 
+#### Step 8a origin adapters
+
+The runtime classifier queries the read-only
+[`@relavium/db` storage-origin fact](../shared-core/database-schema.md#node-client-failure-provenance).
+A public `DbOpenError('open_failed', …)`, a copied error, an errno-shaped object
+or a convincing cause does not establish storage origin. The CLI's concrete
+directory-creation, permission-hardening and export-write operations classify
+`EACCES`, `EPERM`, `ENOSPC` and `EROFS` at those owned native calls. Shared local
+opening, run/gate opening and history helpers preserve these dispositions;
+centralizing all openers remains Step 18.
+
+Recognized storage failures project the fixed `storage_unavailable` message
+and operational exit 1. Unexpected native constructor/import/ABI failures and
+unknown throws project fixed `cli_internal` and exit 9. Runtime projection
+uses own data descriptors; reflection/accessor faults fall back to the same
+fixed infrastructure diagnostic without incoming message, cause or coercion.
+Exit classification comes from the CLI policy, not a mutable error exit field.
+Typed history corruption/unreadability and known run/gate departure failures
+retain operational 1; URI/API validation, authoring and known maintenance
+refusals retain their existing invocation disposition.
+
+Session export preserves target existence/shape refusal 2. Media maintenance
+classifies maintenance failures before rendering its result; a failed result
+write is `output_unavailable`/9, not a storage or maintenance refusal. Failed
+acknowledged diagnostic writes also use `output_unavailable`/9. These boundary
+changes do not yet connect every command's escaping fault or forced exit to
+the invocation coordinator.
+
 A sticky observation record computes this total priority on return **and throw**:
 actual workflow health **8 > 7 > 5 > 6**, then fatal/output infrastructure **9**,
 then an actually terminating external signal **128+signo**, then ordinary outcome.
@@ -794,6 +830,25 @@ before this entry runs; a CLI diagnostic distinguishes the handled case, not its
 numeric value alone ([Node exit codes](https://nodejs.org/docs/latest-v22.x/api/process.html#exit-codes)).
 
 ### Invocation owners and fatal ordering
+
+**Step 8a foundation; product activation pending in 8d.** The registry now
+exposes read-only termination and remaining-budget observations so an
+explicitly installed native adapter can react to autonomous owner failure.
+The adapter observes both real output streams and uses the same absolute
+three-second infrastructure budget through owner joins, registered terminal
+restoration and final diagnostic acknowledgement. Later observations can
+upgrade disposition or shorten that deadline; they cannot renew it. Fixed
+human/JSON diagnostic formatting does not inspect a thrown value, stack or
+cause, and stderr failure has no stdout diagnostic fallback.
+
+The successor background observer keeps the process alive, emits at most five
+fixed failure records plus one suppression record, and upgrades only an
+otherwise clean exit to 9. Existing nonzero outcomes remain intact. Importing
+these modules installs no listeners. Production bootstrap still uses the
+existing net until 8d activation; fixtures explicitly install the foundation
+and register their own owners. Fixture success does not certify connection of
+production workflow, session, terminal, native-child or caught/forced-exit
+owners. The complete required integration contract follows.
 
 One invocation-owned lightweight registry is installed before dynamic imports.
 Owners register before admitting work and retire only after actual settlement.

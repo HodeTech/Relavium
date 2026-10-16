@@ -1128,9 +1128,13 @@ after two NEW complete cumulative clean rounds and a separate clean security sit
 [Step 7b and whole Step 7 are independently accepted](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-7b-and-whole-step-7-acceptance--2026-10-16)
 at `c836ffe6` after two NEW complete cumulative clean rounds, a separate clean
 security sitting and successful same-tarball current Linux/macOS/Windows and
-exact Node 22.0.0 Linux consumers. Broader CI keeps its separately attributed
-status. Step 8 proceeds as serial 8a–8d increments; whole native integration
-remains open until their actual owners and all-surface controls pass. The
+exact Node 22.0.0 Linux consumers. [The accepted c836 full CI run subsequently completed successfully](phases/phase-2.5.5-hardening-and-remediation.md#step-7-completed-full-ci-follow-up--2026-10-16),
+with its executed source and CI totals recorded separately from the historical
+acceptance observation. [Step 8a implements origin adapters and an inert native
+foundation](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8a-implementation-checkpoint--2026-10-16);
+its independent acceptance remains pending. Step 8 proceeds as serial 8a–8d
+increments, with product fatal activation in 8d and whole Step 8 still open.
+Steps 8b–19 remain pending. The
 [final proposal reviews](phases/phase-2.5.5-hardening-and-remediation.md#second-maintainer-rereview-final-proposal-readiness--2026-10-16)
 remain proposal evidence, not implementation review. The selected encrypted archive
 method persists; production recipient/recovery belongs to Wave 4b release setup.

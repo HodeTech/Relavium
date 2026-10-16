@@ -1,6 +1,6 @@
 # Database Schema (Local SQLite)
 
-> Last updated: 2026-10-13
+> Last updated: 2026-10-16
 
 - **Status**: Reference
 - **Surface**: Shared — Desktop (Tauri v2, `tauri-plugin-sql`/SQLCipher), CLI (`better-sqlite3`, [ADR-0021](../../decisions/0021-node-sqlite-driver-better-sqlite3.md)/[ADR-0050](../../decisions/0050-cli-history-db-at-rest-posture.md)), and VS Code (a wasm SQLite build). One schema, three drivers — see [Concurrency & transaction behavior](#concurrency--transaction-behavior) and [Encryption at rest](#encryption-at-rest) for the per-surface divergences.
@@ -42,6 +42,43 @@ is immediate; physical erasure requires a successful checkpoint. A busy reader a
 upgrade remain accepted residuals. See [effect-journal.md §11](effect-journal.md#11-secrets-what-a-row-may-hold).
 
 > Workflows and agents are **not** the database's source of truth. The git-committable YAML files (`.relavium.yaml` / `.agent.yaml`) are authoritative; see [../contracts/workflow-yaml-spec.md](../contracts/workflow-yaml-spec.md) and [../contracts/agent-yaml-spec.md](../contracts/agent-yaml-spec.md). The catalog tables below cache and snapshot them for fast querying, run reproducibility, and offline browsing.
+
+## Node client failure provenance
+
+`@relavium/db` exports `isOwnedStorageFailure(value: unknown): boolean` as a
+read-only origin query for the Node client. Its authority is private object
+identity recorded at an owned native database or filesystem operation, not a
+public error constructor, message, errno-shaped field or arbitrary cause.
+Callers cannot mint or decode that authority through the package's public API.
+`DbOpenError` retains its existing constructor, code/path, identity and cause
+contract; an owned failure can transfer its fact to the existing wrapper.
+
+Factory-created clients retain an exact private association with their native
+connection. SQLite classification requires the installed native `SqliteError`
+brand and an explicit storage-code allowlist; generic `SQLITE_ERROR`, malformed
+native failures and unknown codes do not qualify. Owned filesystem failures
+require the native Error shape and matching code/errno for `EACCES`, `EPERM`,
+`ENOSPC` or `EROFS`. Creation, configured PRAGMAs, migration/privacy operations
+and actual media-filesystem/SQLite-lock catches supply or transfer facts at their
+operation boundaries. This is not a classifier for arbitrary SQL or foreign
+clients.
+
+Migration continues to call the installed Drizzle migrator unchanged. At that
+one owned operation, a verified imported public `DrizzleError` may transfer a
+fact from its single own data `cause` only when that cause is the verified
+native SQLite error. There is no recursive cause traversal, driver fork,
+connection instrumentation or replacement query/transaction implementation.
+Foreign clients and wrappers without the factory's exact native association
+supply no origin authority.
+
+Checkpoint failures retain native origin before conversion to the existing
+privacy error. Busy/locked checkpoint deferral, logical versus physical
+erasure, recovery and migration locking retain their existing semantics.
+Media wrappers transfer only already-established facts; typed reason `io`
+alone grants none. Media error grammar, identity checks and retention policy
+remain unchanged. The [CLI disposition contract](../cli/commands.md#failure-classification-and-remedies)
+owns presentation and recovery advice; origin does not certify receipt
+durability, absence of effects or safe retry.
 
 ## SQLite type conventions
 

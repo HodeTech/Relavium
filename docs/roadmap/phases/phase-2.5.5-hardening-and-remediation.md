@@ -5388,3 +5388,96 @@ provider/plugin causes or a recursive private cause tree; checkpoint origin is
 retained before native evidence is erased. No driver fork or migrator replacement
 is planned. Whole Step 8 stays open until 8d's complete cumulative acceptance.
 The central opener refactor remains Step 18, and whole-wave publication Step 19.
+
+### Step 7 completed full-CI follow-up — 2026-10-16
+
+After the acceptance checkpoint above, GitHub run **38869520079 / attempt 1**
+completed successfully at the exact accepted source
+**`c836ffe616803697285f51204c78b76ce3a99814`**. The completed CI workspace suite
+reports **647 files / 14,659 passes / 21 established CI-projection skips**.
+This appends the later result to the earlier in-progress observation; it does
+not rewrite that historical checkpoint or claim execution of successor
+metadata `d9625ff0` or the Step 8a working tree. Earlier physical artifact
+audits retain their recorded scopes. Whole-wave gates repeat in Step 19.
+
+A separate completed filesystem physical audit verifies **110 controls / 330 phases**
+from that run: all completed zero-unhandled receipts, exact immutable-source pins,
+named semantic failures and byte-identical restoration. The retained tree contains
+**1,987 files / 39,697,863 bytes**; the fourteen native controls retain their
+42 phase identities and child/dependency witnesses. The **8,148 repeated phase
+cases / 361 semantic failures** are execution totals, not unique permanent cases.
+The parent reads the complete separate audit. No local re-execution or
+merge-/metadata-head execution is inferred.
+
+## Wave 3 Step 8a implementation checkpoint — 2026-10-16
+
+Step 8a implements the approved minimal storage-origin and runtime projection
+subset above accepted Step 7 metadata `d9625ff0`. The DB root exposes only the
+read-only storage-failure query; private factory/native association, native
+storage allowlisting and fixed one-wrapper Drizzle handling preserve existing
+error, migration, checkpoint and media contracts. CLI owned filesystem and
+open/maintenance/export adapters distinguish storage 1, known refusals 2,
+unknown infrastructure 9 and failed output 9 without a blanket internal-code
+rewrite. Core exports its frozen existing transient-code authority.
+
+The native registry observer, fixed early diagnostic formatter, successor
+keepalive observer and native stream/deadline adapter form an **inert product
+foundation**. Explicit native fixtures exercise registered owners, both real
+streams, restoration-before-diagnostic ordering and the common absolute
+budget. Production activation waits for Step 8d's actual owners and all
+caught/forced-exit paths; this checkpoint does not claim those are connected.
+
+Author gates, isolated causal controls, physical custody audits and independent
+review reports retain their individual source and execution attribution in
+the accompanying evidence record. **Step 8a is not accepted by this
+implementation checkpoint. Whole Step 8 and Steps 8b–19 remain open.** No new
+ADR, runtime dependency, credential, billing or provider capture is required.
+
+### Step 8a author and selected-control evidence
+
+The implementation is based on `d9625ff0`; these local checks execute its
+uncommitted Step 8a body, not pristine metadata or a published commit. Ordinary
+workspace checks pass **657 files / 14,791 tests / 20 established local skips**.
+The last complete workspace invocation reruns CLI and reuses ten valid test
+tasks; earlier affected DB/core invocations remain separately attributed.
+Two subsequent parameterized-title changes keep all 66 affected cases and their
+assertions, and the full two-file workload passes. Build/format, tools
+lint/typecheck, schema sync, seam/engine fences and **482 acceptance-tool tests**
+pass. Compiled CLI, media-packaging, overflow and budget-replay smokes pass;
+negative replay controls retain their expected fixed failure diagnostics.
+
+A fresh local prepack and outside-workspace consumer pass **175 bootstrap controls
+and six installed cases** on macOS/Node **22.23.1**. The candidate is
+`ff18f5f5812b28e313cfc2d5ea1beac3f1e5685722fe63bc34df1ba80fc549f8`,
+**422,086 bytes / 70 public files / 25 JS chunks / 17 dependencies**, with
+explicit local `dirty: true` and parent metadata `d9625ff0`. Actual consumer
+publication follows joined work and required installation removal. This is
+local-host evidence; it is not a clean remote artifact or four new platform legs.
+
+Five DB-origin controls and six CLI/native controls independently remove one
+mechanism in copied source, then restore the exact original bytes. Their
+**33 completed zero-unhandled runner receipts / 750 repeated phase cases /
+41 semantic failures with declared named witnesses** are independently audited with complete inventories,
+source/target/test body pins, runtime/stdio/dependency receipts and restoration.
+The retained local artifacts contain **222 files / 14,149,147 bytes** and
+**255 / 16,239,468 bytes**, with their raw graphs and caches removed. The two
+DB-backed CLI controls additionally require an actual native-addon receipt in
+a target worker; four pure controls expressly decline that claim. Controlled
+filesystem/pragma failures are fault injection, not measured OS failures.
+The local coordinators retain `complete: false` / `acceptance: false`: they are
+selected raw causal evidence, not a new finite-family archive or whole-wave
+certificate. The first two CLI runs refused duplicate parameterized case names;
+those refusals remain failed evidence. Permanent names were made unique before
+the final full six-control run, with no reduced count or weakened guard.
+
+The adapted CAS-shard anchor and three updated secrets workloads also pass their
+canonical fixed/removal/restored checks: **21 / 77 / 77 / 67 cases** respectively.
+These selected checks do not claim new complete filesystem/secrets-family
+execution. All copied removals leave the developer source unchanged. Existing
+actual-native fixtures test autonomous cleanup, a common deadline through the
+final write ACK, competing late stream failure, both broken pipes and terminal
+restoration ordering without safe-DB-close or universal containment claims.
+
+The implementation commits carry this candidate. Two NEW complete cumulative
+clean reviews after the last material correction and a separate security sitting remain required.
+Whole Step 8 and Steps 8b–19 remain open; no user decision is pending.

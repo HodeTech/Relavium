@@ -75,7 +75,9 @@ shared terminal stripping and the error base, LLM secret scrubbing, and core's
 tool-dispatch error base. Runtime classification remains separate from diagnostic
 rendering. Dependency/evaluation failures reach fixed early diagnostics even if
 the heavy classifier cannot load; their historical fallback exit 1 is retained
-until Step 8 integrates the approved origin and exit-9 policy.
+until Step 8d connects all creation owners and activates the native coordinator.
+Step 8a separately implements runtime storage-origin and fixed classification;
+its inert native foundation does not change this early fallback yet.
 
 The emitted graph checker parses actual JavaScript and compares every loading edge
 with the build inventory. It rejects missing/extra/unreachable/escaping chunks,
