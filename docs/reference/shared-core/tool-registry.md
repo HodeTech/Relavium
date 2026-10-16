@@ -281,8 +281,9 @@ interface ToolDispatchContext {
   // defines the interface + the invocation point, the host supplies the implementation — ADR-0037-clean).
   readonly approval?: { readonly confirm?: ConfirmActionHook };
   // The effective-arg keys whose resolved value is secret-tainted (ADR-0029(c)); the registry rejects
-  // any present one from tool args (re-applying the parse-time taint gate on the effective set). 1.O/1.V
-  // produces this; absent ⇒ no taint check (no producer yet).
+  // any present one from tool args (re-applying the parse-time taint gate on the effective set).
+  // No live authored mapping producer exists. Absent means unverified external provenance, not clean;
+  // see Secret argument provenance below before activating a future mapped path.
   readonly secretArgKeys?: ReadonlySet<string>;
   readonly invokeAgent?: (nodeId: string, input: unknown) => Promise<unknown>; // engine delegate (invoke_agent); absent ⇒ ToolUnavailableError
   readonly limits?: ToolResultLimits;      // the result-bounding ceilings; absent ⇒ DEFAULT_TOOL_RESULT_LIMITS
@@ -391,7 +392,7 @@ The canonical guardrail home is [security-review.md §Sandbox-and-tool-policy](.
 | `mcp_call` (egress `mcp`) | configured MCP **server** URL (not `allowedDomains`); secrets injected host-side | `mcp` transport runs the same SSRF primitive (0029(d); 2.R) |
 | `git_commit` | refused unless `ctx.gateApproved` (human-gate, 1.Q) in an automated workflow | `process.spawn` |
 | node `tools:` narrowing | enforced at **plan build** when the host marks the grant complete (`BuildRunPlanOptions.toolGrantsFinal`), with `resolveGrant` as the dispatch floor for a directly-constructed executor ([ADR-0094](../../decisions/0094-a-tool-grant-is-checked-when-the-plan-is-built.md)); narrow-only, 0029(b)/[ADR-0023](../../decisions/0023-strict-authored-yaml-validation.md) | — |
-| secret args | `secret`-typed values reach only credential/header fields, rejected at parse from tool text (transitive taint, 0029(c)); re-checked on the **top-level** effective-arg keys (step 3) — by contract the 1.O/1.V taint producer flattens a tainted *nested* path to a top-level deny before it reaches `secretArgKeys`; the actual secret never travels as an arg value (it is a host-resolved `credentialRef`) | host attaches a resolved `credentialRef` inside its trust boundary |
+| secret args | Parser refusal covers declared secret references in text (transitive taint, 0029(c)); externally supplied `secretArgKeys` is checked on **top-level** effective-arg keys before approvals/effects (step 3). There is no live authored mapping producer; absent metadata is unverified. See [secret argument provenance](#secret-argument-provenance) for the future mapped-path obligation | host resolves an opaque `credentialRef` inside its trust boundary |
 | FS scope tier | tool flagged `fsScoped` | `fs.*` jails to the tier + rejects path traversal |
 
 ## Result bounding and spill-to-file
@@ -501,9 +502,11 @@ tool to the catalog never widens what a given node may call. An MCP or media too
 
 ## Proposed Wave 3 HTTP authority and secret provenance
 
-**Approved design, unshipped — 2026-10-16.** [ADR-0112](../../decisions/0112-chat-network-grants-and-onboarding-state-are-operator-owned.md)
-and [ADR-0113](../../decisions/0113-secret-derived-context-keeps-provenance-at-public-sinks.md)
-were approved by the maintainer. Implementation remains staged in the Wave 3 plan.
+**HTTP authority: approved design, unshipped — 2026-10-16.**
+[ADR-0112](../../decisions/0112-chat-network-grants-and-onboarding-state-are-operator-owned.md)
+was approved by the maintainer; its HTTP implementation remains staged in the Wave 3 plan.
+The separate [secret argument provenance](#secret-argument-provenance) section describes the
+current boundary under ADR-0113. This combined heading remains for existing inbound links.
 
 HTTP policy compares canonical **hostname**, not URL host-with-port. Reuse the
 shared HTTPS authority parser and one pure DNS normalizer/comparator for both
@@ -530,15 +533,20 @@ and pending hosts share it, so failed replacement cannot restore a grant. A
 request admitted before narrowing may finish. Workflow domains remain separately
 owned and are not switched to global chat policy.
 
-At implementation landing correct both the dispatch-context secret-argument
-comment and Guardrail enforcement's “1.O/1.V producer” claim. No live authored
-tool-input mapping producer exists; agent/session config is empty. The optional
-external `secretArgKeys` is unverified when absent, not a verified clean result.
-Nonempty tainted effective arguments continue to refuse before approvals/effects.
+## Secret argument provenance
 
-Any future mapped path must fail closed on absent provenance and project taint
-after final model/mapping/config precedence to top-level keys, including nested
-parents, before approval persistence or dispatch. Marker serialization cannot
-clear provenance. This is a prerequisite for activating that feature, not a claim
-that this wave implemented or exercised it. Actual expression-context repair and
-#92's documented mapping limitation receive separate dispositions.
+**Current boundary — 2026-10-16.**
+[ADR-0113](../../decisions/0113-secret-derived-context-keeps-provenance-at-public-sinks.md)
+retains the optional external `secretArgKeys` interface. Nonempty tainted effective-argument
+keys refuse before approvals/effects. Its absence is **unverified external provenance**,
+not proof that effective arguments are clean. No live authored tool-input mapping producer
+exists: current agent/session dispatches supply empty config, and model JSON has no
+declared-input provenance. Neither this guard nor expression-context qualification detects
+arbitrary credentials pasted into model/tool text. This is the documented #92 mapping
+limitation, separate from the repaired [expression-context exposure](expression-sandbox-spec.md#secret-context-boundary).
+
+Activating any future mapped path requires fail-closed refusal of missing provenance and
+projection of taint **after final model/mapping/config precedence** to top-level effective
+argument keys, including parents of tainted nested paths, before approval persistence or
+effect dispatch. Marker serialization cannot clear provenance. That is a prerequisite for
+a future feature, not an implemented or exercised mapping producer in this wave.

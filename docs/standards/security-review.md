@@ -613,16 +613,21 @@ security invariants** a review must confirm are:
   exist *inside* the VM but are contained — they reach no host reference and no forbidden capability,
   so they are harmless; the guarantee rests on the isolation + capability removal, not on deleting
   every reflective handle to `Function`.
-- **JSON-only marshaling, immutable global.** Scope crosses the boundary as plain JSON (host
+- **JSON-only marshaling, immutable scope.** Scope crosses the boundary as plain JSON (host
   `stringify` → VM `parse`), so no live host object/getter/function leaks in and a `{"__proto__":…}`
   in model/tool-derived `run.outputs` cannot poison the prototype chain; each binding is installed
   non-writable/non-configurable over a deep-frozen value.
-- **Deterministic within caps; caps are non-idempotent safety nets.** A successful evaluation is a
-  pure function of the scope (no clock/RNG/async). The wall-clock timeout, memory, and stack caps are
-  safety nets, not results — a trip surfaces as a typed `sandbox_error`, never a stable value.
-- **Secret-free, scrubbed errors.** Secrets are never injected (ADR-0029(c) gate + an injection-time
-  filter); a `sandbox_error` message is the code + a generic string — never the expression source, a
-  variable name, a scope value, or a host stack.
+- **Deterministic within caps; caps are non-idempotent safety nets.** No clock/RNG/async is
+  supplied. Uncaught resource failures surface as typed `sandbox_error`; a caught pre-accessor
+  stack failure can return a clean fallback without an observed denial. The
+  [finite denial contract](../reference/shared-core/expression-sandbox-spec.md#private-evaluation-and-finite-denial)
+  owns this installed-VM limit; do not claim universal attempted-read detection.
+- **Declared-source exclusion and fixed public errors.** Owned provenance excludes newly
+  declared secret-input/context values before VM injection and preflights public templates.
+  Observed denied access uses the fixed private denial arm; ordinary `sandbox_error` messages
+  also exclude source/value/stack text. Private detail/cause and historical outputs can still
+  contain sensitive data and are not safe public/logging fields. Exact scope, transport and
+  historical-data limits belong to the [expression specification](../reference/shared-core/expression-sandbox-spec.md#secret-context-boundary).
 
 ## Prompt-injection posture
 

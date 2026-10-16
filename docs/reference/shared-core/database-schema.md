@@ -1332,6 +1332,23 @@ as masked slots; arbitrary retained content can nevertheless contain credentials
 sensitive material. A future desktop/cloud writer inherits these upstream field protections,
 not a promise that a pass-through writer performs universal content redaction.
 
+### Historical output and error data
+
+[ADR-0113](../../decisions/0113-secret-derived-context-keeps-provenance-at-public-sinks.md)'s
+[current context projection](expression-sandbox-spec.md#secret-context-boundary) excludes newly
+projected declared secret-input/context values from public text and expression scopes. It does
+not scrub stored history, scan values, or certify historical resume/replay data as secret-free.
+Previously persisted event, step and run outputs can contain secret-derived content, and
+restored `run.outputs` can expose it again. Historical or arbitrary authored `SandboxError.detail`
+is private potentially sensitive error text; never automatically render it as a public diagnostic.
+Arbitrary literals/user/model/tool content are not declared-source taint merely because they
+contain sensitive-looking values.
+
+Before sharing history or recovering a run, review retained outputs and the workflow's downstream
+consumers under this sensitivity limit. Current fixed denial diagnostics do not certify an older
+record or sanitize replayed content. Existing effect/money recovery requirements remain in the
+[effect journal](effect-journal.md) and [CLI recovery guidance](../cli/commands.md#exit-codes).
+
 ## Phase 2 (PostgreSQL) divergences
 
 > The following applies only to **Phase 2 cloud execution**. None of it ships in Phase 1. See [../../architecture/cloud-phase-2.md](../../architecture/cloud-phase-2.md) for the full design and the complete 14-item SQLite-vs-Postgres porting table.

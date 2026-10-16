@@ -180,7 +180,17 @@ a CLI has only strings, so `--input count=3` becomes the number `3` before the e
 is strict**: it applies defaults, rejects unknown keys, and enforces every rule above against the value it
 receives, rejecting `"3"` for a `number`. That split is what makes two surfaces behave identically.
 
-> **Secrets are never interpolated into agent text.** A `secret`-typed input may feed a tool credential/header field, but the parser **rejects** a `secret` input interpolated into a `prompt_template` or any agent/tool text — masking only covers *event* payloads, so an interpolated secret would otherwise reach the model and be persisted in the message store. The rejection is **transitive** (taint-tracked through `context` entries and any derived value — a secret cannot be laundered through an intermediate variable). This is a security tightening; see [ADR-0029](../../decisions/0029-tool-policy-hardening.md).
+> **Declared secrets are unavailable to public text and expressions.** The parser rejects a
+> `secret` input interpolated into `prompt_template` or other agent/tool text, transitively through
+> `context` entries ([ADR-0029](../../decisions/0029-tool-policy-hardening.md)). Runtime public
+> template resolution also refuses denied context/direct secret-input references before filters
+> or defaults, including hand-constructed workflows. Expressions receive denied accessors for
+> secret-derived context and supplied secret inputs, rather than raw values or direct-input display
+> markers; omitted optional secrets remain absent. Run-start/input-node/display markers remain
+> unchanged. The exact provenance and finite observed-access contract is in
+> [the expression specification](../shared-core/expression-sandbox-spec.md#secret-context-boundary).
+> The separate [tool provenance boundary](../shared-core/tool-registry.md#secret-argument-provenance)
+> does not claim a live authored tool-input mapping producer.
 
 ## Context and interpolation
 
@@ -194,7 +204,11 @@ context:
     value: '{{inputs.file_path | read_file}}'   # pipe filters are supported
 ```
 
-A direct `{{secrets.<name>}}` reference in a workflow `context` value is refused at parse time, even when no later field reads it: that namespace has no workflow-context resolver. This does not activate Proposed [ADR-0060](../../decisions/0060-session-ctx-prompt-interpolation.md). A declared caller-supplied `secret` input may still propagate through `inputs` and intermediate `ctx` entries; the existing transitive taint rule refuses a read of that value by model/human text. MCP-server `env` named-secret resolution remains its separate credential boundary.
+A direct `{{secrets.<name>}}` reference in a workflow `context` value is refused at parse time, even when no later field reads it: that namespace has no workflow-context resolver. This does not activate Proposed [ADR-0060](../../decisions/0060-session-ctx-prompt-interpolation.md). A declared caller-supplied `secret` input may still propagate during trusted raw context resolution;
+the engine qualifies that result before execution or budget preparation. Only clean strings and
+denied-key metadata enter the public context projection. Parser and runtime public-template
+consumers refuse model/human text reads, while bare expressions use the
+[VM denial contract](../shared-core/expression-sandbox-spec.md#secret-context-boundary). MCP-server `env` named-secret resolution remains its separate credential boundary.
 
 Common interpolation namespaces:
 

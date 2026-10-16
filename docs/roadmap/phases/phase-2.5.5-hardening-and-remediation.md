@@ -4318,3 +4318,60 @@ Next is Step 3, ADR-0113 secret provenance and actual VM/public-template consume
 with a dedicated security sitting. No user decision or review finding remains
 pending for Step 2. Detailed reports and working controls remain Git-ignored;
 Step 19 retains whole-wave acceptance/publication.
+
+
+### Wave 3 Step 3 author candidate — 2026-10-16
+
+**Implemented; security and independent acceptance pending.** Core source and its
+producer/VM/template regressions are committed at `8813391b`; the actual native
+SQLite integration is `aba979f4`. ADR-0113 owns the explicit low-level projection
+and direct secret-input expression compatibility change. The existing linear
+source graph supplies immutable owned context/input authority to fresh execution,
+same-process resume and cross-process budget preparation, with actual public
+prompt/human and expression consumers. Trusted raw resolution and display markers
+retain their separate contracts. No future authored tool-mapping producer is
+invented; #92's mapping limitation remains distinct from the repaired exposure.
+
+The actual QuickJS suite preserves optional-secret absence, original key order,
+clean result semantics, numeric tags and one authored serialization. A private
+VM-owned closure separates evaluation and serialization native calls in the same
+VM under the original deadline; it never exports an authored object. The first
+focused run exposed a serialization-interrupt classification regression; the
+corrected source preserves baseline result_type/non_serializable outcomes. The
+finite exhausted-stack witness returns its clean fallback without a denial; it
+carries no raw denied value. Ordinary executed/caught reads produce fixed
+secret_context with no detail/cause. Canonical source/error comments and at-rest/
+recovery guidance explicitly retain historical/arbitrary content sensitivity.
+
+Author workspace lint/typecheck/tests pass: **597 files / 13,442 passing tests /
+20 established skips** across six workspaces. Build passes all six tasks;
+platform/vendor/dependency fences, isolation and changed-source formatting pass.
+These are local author gates, not full CI/coverage/platform or whole-wave proof.
+New focused ownership/public-template/VM/transport/producer/native-SQLite files
+contribute 29/19/184/67/6/18 tests respectively. They include independently
+successful clean execution/persistence and actual same/fresh-engine secret resupply.
+
+An isolated build of the exact Step 2 core at `873da1c34` reproduces the repaired
+leak with real WorkflowEngine, standard executor, QuickJS and file-backed SQLite.
+The clean positive completes with exact outputs and nonempty rows. A successful
+ctx.alias result places the synthetic canary in public events and all three
+required columns (run_events.payload_json, step_executions.output_json and
+runs.output_json); a separate downstream human gate displays it. Cancellation of
+that separate gate graph is not used to infer run-output leakage. No live product
+source/dist was rolled back, and no provider/key/network call was made.
+
+Three local fixed/removal/restored cohorts pin context qualification, public
+whole-template refusal and the private VM latch. Removing them causes **6 / 6 /
+64 named assertion failures**, respectively; each fixed/restored inventory passes
+29 / 19 / 184 tests and restores exact source bytes. The installed runner reporter
+records zero unhandled errors in all nine final phases. The first exploratory
+cohort attempt had a mismatched named-witness check; it was rejected and retained,
+then the permanent assertion marker was made explicit before the final complete
+cohorts. This is scoped author evidence, not independent review acceptance or a
+replacement for Step 19's repeatable whole-wave publication.
+
+Dedicated secret-flow security sitting and two NEW independent complete cumulative
+clean reviews after the last material correction remain required before Step 4.
+Detailed baseline hashes, runtime identities, local probes and reports remain
+Git-ignored under docs/reviews; no production credential, paid call, release,
+archive upload or user decision is needed for this increment.

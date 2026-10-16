@@ -2,7 +2,7 @@
 
 > Status: Living
 
-> Last updated: 2026-10-11
+> Last updated: 2026-10-16
 
 - **Related**: [llm-provider-seam.md](llm-provider-seam.md), [tool-registry.md](tool-registry.md), [run-plan.md](run-plan.md), [built-in-tools.md](built-in-tools.md), [../contracts/sse-event-schema.md](../contracts/sse-event-schema.md), [../../decisions/0038-agentrunner-llm-call-boundary.md](../../decisions/0038-agentrunner-llm-call-boundary.md), [../../decisions/0039-same-provider-reasoning-replay.md](../../decisions/0039-same-provider-reasoning-replay.md), [../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md), [../../decisions/0037-engine-tool-execution-boundary.md](../../decisions/0037-engine-tool-execution-boundary.md), [../../standards/error-handling.md](../../standards/error-handling.md)
 
@@ -58,7 +58,7 @@ The runner owns the **cost path** itself — one `CostTracker` per node executio
 2. **Build the fallback plan.** The primary uses `node.model ?? agent.model`. With an authored `node.retry ?? agent.retry` budget it has one within-chain attempt; without one it has the shared runner's unauthored two-attempt default. Above-chain node retry does not multiply within-chain primary attempts ([ADR-0040](../../decisions/0040-node-retry-budget-above-the-chain.md)). Each `fallback_chain` entry keeps its own `max_attempts`. **One `FallbackChain` per node execution**, reused across the tool loop so per-provider cooldown and the [ADR-0039](../../decisions/0039-same-provider-reasoning-replay.md) strip-latch survive.
    - **Generative fork (1.AG Section C, [ADR-0045](../../decisions/0045-async-media-job-loop-poll-checkpoint-resume-cancel.md) §1/§6).** After the plan + the resolved prompt, the primary model's surface is read via `resolveMediaSurface?.(primary.model) ?? 'chat'`. A **`'generative'`** result dispatches to the separate-endpoint `generateMedia` (**one** provider, **no** chain failover — a generative call is provider-bound) and returns early: an empty-prompt / multi-modality node fails `validation`; a pre-egress budget gate runs first (gate-only — the [ADR-0028](../../decisions/0028-workflow-resource-governance.md) pre-egress governor; the token estimate is pinned to zero for a token-free generative call, see the code comment); the SYNC `{ media }` becomes the `{ text: '', media: [part] }` node output (de-inlined to a `media://` handle like the inline path); exactly **one** realized `cost:updated` is emitted (request volume × per-model media rate) — **unless a rate is missing**, which since [ADR-0089](../../decisions/0089-media-correctness-four-boundaries.md) §4 is **unpriced, not zero**: under the non-strict default the numeric total may still floor at 0 but the event carries `priced: false` and the modality is counted in `unpriced_calls`, and under the authored `strict_cost_cap` the call is **refused before provider egress**, so no realized event is emitted at all. *(This clause said "degrade-to-0" until 2026-09-02; that behaviour is exactly the `CR-55` defect — a `0` the governor cannot tell from "nothing to charge".)* A `jobId` (async LRO) is Section D. A **`'chat'`** model continues to the turn core below.
 3. **Narrow the tool grant.** `node.tools` must be a **subset** of `agent.tools` — a widening attempt ⇒ `validation` ([ADR-0029](../../decisions/0029-tool-policy-hardening.md)).
-4. **Assemble messages.** `system` = **authored text ONLY** (`agent.system_prompt` + `node.system_prompt_append`), concatenated **verbatim — 1.O does not interpolate the system role**, so an untrusted `{{ run.outputs }}` / `read_file` reference can never resolve into `system` (it ships as literal authored text). The parser still *collects* a `{{ … }}` reference in `system_prompt_append` for the parse-time **secret-taint** scan (catching a stray `{{ secrets.* }}`), but does not promise dispatch-time resolution of system fields. Only the resolved `prompt_template` — which may draw on untrusted `run.outputs` / `read_file` — lands in a **`user`** position, never `system` ([security-review.md §Prompt-injection](../../standards/security-review.md#prompt-injection-posture), the structural placement guarantee — no value-level taint carrier needed for an agent node, which cannot launder a secret into `run.outputs`). *(A future parse-time gate that admits trusted `{{ inputs }}` / `{{ ctx }}` in system fields while rejecting untrusted sources is a recorded follow-up.)*
+4. **Assemble messages.** `system` = **authored text ONLY** (`agent.system_prompt` + `node.system_prompt_append`), concatenated **verbatim — 1.O does not interpolate the system role**, so an untrusted `{{ run.outputs }}` / `read_file` reference can never resolve into `system` (it ships as literal authored text). The parser still *collects* a `{{ … }}` reference in `system_prompt_append` for the parse-time **secret-taint** scan (catching a stray `{{ secrets.* }}`), but does not promise dispatch-time resolution of system fields. Only the resolved `prompt_template` — which may draw on untrusted `run.outputs` / `read_file` — lands in a **`user`** position, never `system` ([security-review.md §Prompt-injection](../../standards/security-review.md#prompt-injection-posture), the structural placement guarantee; public prompt resolution also enforces the [qualified context boundary](#qualified-context-consumers)). *(A future parse-time gate that admits trusted `{{ inputs }}` / `{{ ctx }}` in system fields while rejecting untrusted sources is a recorded follow-up.)*
 5. **`output_schema` (node override wins over the agent default).** Lowered to `LlmRequest.responseFormat` (a **request-side hint**), **and** validated **node-side**: the seam's `responseFormat` does not guarantee a schema-conformant response (DeepSeek degrades to bare `json_object`), so the runner parses the output and a non-JSON result ⇒ `validation` ([ADR-0038](../../decisions/0038-agentrunner-llm-call-boundary.md), [error-handling.md](../../standards/error-handling.md)). The check is **two steps**: the output is parsed as JSON, then validated against the **compiled** `output_schema` — a conformance miss is `validation` (`retryable: false`), exactly as ADR-0038 required. Compilation uses the allowlist-strict JSON-Schema subset ([ADR-0092](../../decisions/0092-output-schema-is-validated-by-the-compiler-we-already-own.md); the subset is a written contract, and a schema outside it is refused at parse rather than silently unenforced). *(This clause read "parse-as-JSON; deep conformance deferred… needs a validator dependency" until 2026-09-02 — the dependency premise was false, the compiler was already in-house.)*
 6. **Run the turn core**, map its result to `NodeOutcome.completed` (`output` = the parsed structured value or the assistant text; `tokensUsed = { input, output, model }`), or map a classified `AgentTurnError` to `NodeOutcome.failed`.
 
@@ -370,32 +370,42 @@ these paths authorizes another provider call, releases an uncertain admission or
 successful settlement. The supported host admission callback is the failure boundary; a distinct
 second synchronous cleanup error is not claimed for the current built-in governor.
 
-## Proposed Wave 3 qualified context consumers
+<a id="proposed-wave-3-qualified-context-consumers"></a>
 
-**Approved design, unshipped — 2026-10-16.** [ADR-0113](../../decisions/0113-secret-derived-context-keeps-provenance-at-public-sinks.md)
-was approved by the maintainer. Exact projection, VM/input compatibility, result transport and
-finite refusal scope belong to the
-[expression specification](expression-sandbox-spec.md#proposed-wave-3-secret-context-boundary).
+## Qualified context consumers
 
-WorkflowEngine qualifies raw resolveContext output at fresh start/resume and
-standalone cross-process budget preparation before storing or invoking callbacks.
-NodeExecContext and NodePreparationContext carry the same required projection and
-owned immutable secret-input membership. The preparation Pick must actually include
-it. Public prompt/agent/human lowering rejects denied context and direct secret
-inputs before filters/defaults, including hand-constructed workflows. Preparation
-has no sandbox or unused VM-only field. Condition/transform/merge scope omits raw
-secret inputs and supplies required deniedInputNames; direct expression-input
-markers deliberately change, while input-node/display masking stays.
+**Implementation contract — 2026-10-16.** Current Step 3 source implements
+[ADR-0113](../../decisions/0113-secret-derived-context-keeps-provenance-at-public-sinks.md);
+implementation acceptance and independent review gates remain pending in the
+[Wave 3 register](../../roadmap/current.md#wave-3--clear-the-ground). Exact projection,
+public-template refusal, VM/input compatibility, result transport and finite observed-access
+semantics belong to the [expression specification](expression-sandbox-spec.md#secret-context-boundary).
 
-Migrate all actual engine producers (fresh execution, budgetPreparationContext and
-cross-process resumePreparation.context), the exported scope interface and every
-co-located double. Derive/copy secret names once per admitted workflow; no exposed
-live mutable Set or resume-time second derivation. Witness each producer and actual
-VM/template consumer. Reject absent metadata; clean embeddings explicitly create
-empty-denial projections. Trusted raw NodeExecContext.inputs and the raw resolver
-remain host APIs, not a universal custom-executor confidentiality boundary.
+`WorkflowEngine` immediately qualifies trusted raw `resolveContext` output at fresh start
+and resume, before storing context or invoking execution/preparation callbacks. Context is
+re-resolved on resume because it is not checkpointed. The admitted workflow supplies one
+owned provenance authority shared by execution and `budgetPreparationContext`. Standalone
+cross-process budget preparation creates that authority, qualifies the resolved context and
+passes both through `resumePreparation.context` / `resumePreparation.provenance`; the resumed
+execution reuses them rather than deriving a second mutable secret-name set.
 
-Update the stale buildExpressionScope/maskSecretInputs and sandbox/error-detail
-comments with their actual split duties. Existing historical persisted outputs
-remain outside the new projection guarantee and receive at-rest/recovery guidance,
-not silent rewriting. Optional tool provenance is its separate canonical boundary.
+`NodeExecContext` and `NodePreparationContext` require the same context projection and owned
+`secretInputNames` membership; the preparation Pick includes both. Agent prompt resolution
+and human-gate `message_template` / `assignee` resolution use `resolvePublicTemplate`.
+Budget preparation uses the same prompt consumer, without a VM-only metadata field. Denied
+context and direct declared secret-input references refuse before any filters, defaults or
+read capabilities, including on hand-constructed workflows that bypass the parser. Clean
+fields retain their existing resolution and user-role placement. Authored system text is
+still concatenated verbatim, not interpolated.
+
+Condition/transform/custom-merge handlers use `buildExpressionScope` with the required
+projection and explicit denied input names. Direct supplied secret inputs become VM-owned
+denied accessors; omitted optional inputs remain absent. `maskSecretInputs` retains its
+separate run-start/input-node/display marker duty. The exported raw resolver and trusted raw
+`NodeExecContext.inputs` remain host APIs; this is not a confidentiality boundary against a
+custom trusted executor or a host that fabricates provenance.
+
+Historical persisted output and private error data retain the
+[at-rest/recovery limit](database-schema.md#historical-output-and-error-data).
+Optional external tool-argument provenance has its separate
+[canonical boundary](tool-registry.md#secret-argument-provenance).

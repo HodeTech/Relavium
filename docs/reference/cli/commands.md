@@ -80,8 +80,9 @@ a pipe/redirect, or `CI`.)
   found, missing key) is written to stderr as a structured `{ "type": "error", "code", "message" }`
   envelope (distinct from the run stream's `run:failed`/`node:failed`) and exits `2`; stdout stays
   empty. A pipe consumer reads stdout for events and uses the exit code + stderr for faults.
-- **Secret-typed values stay masked** — the engine masks them as `{ "secret": true, "ref": … }`
-  before any renderer sees them; the NDJSON carries that masked shape, never a raw secret.
+- **Declared secret input slots stay masked** — the engine emits them as
+  `{ "secret": true, "ref": … }`. This does not certify arbitrary or historical event/output content;
+  see [historical output/error data](../shared-core/database-schema.md#historical-output-and-error-data).
 
 Exit codes are CI-friendly (see [Exit codes](#exit-codes)).
 
@@ -239,6 +240,10 @@ For this detector probe only, a recognised bare template reference without a pat
 
 Replays a past run's persisted `run_events` in `seq` order (the same data the desktop run-detail drawer replays) — a terse line per event in human mode. Under `--json` it emits each **raw [RunEvent](../contracts/sse-event-schema.md) as one NDJSON line** — the same `RunEvent` data `relavium run --json` streamed (this is the "raw RunEvent JSON" the run-detail replay consumes — no separate `--raw` flag). For a run paused at a gate, the `human_gate:paused` event surfaces the **`gateId`** to copy into `relavium gate <runId> --gate <gateId>`. An unknown `runId` is an invalid invocation (exit `2`).
 
+Replay retains the stored content; current declared-secret context protection does not scrub or
+certify older outputs. Apply the [historical output/error guidance](../shared-core/database-schema.md#historical-output-and-error-data)
+before sharing replay output or recovering the run.
+
 Raw historical events preserve absent fields: the reader does not synthesize `usageCoverage`,
 `cumulativeUnpricedCalls` or invocation correlation; absence cannot certify complete or free coverage.
 
@@ -307,7 +312,11 @@ printf 'api_key=%s\n' "$API_KEY" | relavium gate <runId> --approve --secret-stdi
   - What this proves is the **slot**, not the credential: the engine verifies that the same named `secret` input was re-supplied and cannot tell whether the value is the same key or a rotated one. ADR-0083 §6 states that limit rather than implying more.
 - **Idempotent.** A doubled decision — the run already finished, or the named gate was already resolved — is a clean exit-`0` no-op, never a double-advance (it leans on the engine's checkpoint/gate-state idempotency). An unknown `runId` is exit `2`. Idempotency is **per gate**, though: on a *sequential* multi-gate workflow a blind repeat *without* `--gate` (after the first decision advanced the run and it re-paused at the **next** gate) auto-fills and resolves *that* gate — so an automated retry-until-exit-`0` loop should **pin `--gate <gateId>`** to avoid resolving later gates unattended.
 
-> **Implementation status (2.G).** `relavium gate` runs in a **fresh process** from the original `run`: it reloads the run's frozen `WorkflowDefinition` + inputs from the durable history snapshot (2.H), reconstructs the paused checkpoint from the persisted event log, and calls `engine.resumeFromCheckpoint` over the same store — then drives the resumed run to its terminal (exit `0` complete / `1` failed / `3` paused again at a later gate). The recorded `decidedBy` is the constant `cli` (a deterministic, non-PII marker; the desktop/portal supply a real user id). Budget-cap pauses (`budget:paused`, [ADR-0028](../../decisions/0028-workflow-resource-governance.md)) are **not** resolved here — that is the separate [`relavium budget resume`](#relavium-budget-resume) surface. A run that declares a **`secret`-typed input** is resumed by re-supplying it on stdin with `--secret-stdin` (above); without the flag `relavium gate` still **fails closed (exit `2`)**, because secrets are never persisted in plaintext (only a masked placeholder is, ADR-0006/0036) and there is nothing to restore. The engine enforces the same rule independently — it refuses a resume whose masked slot was not filled, and refuses the placeholder itself as a value. The [`relavium gate list`](#relavium-gate-list) multi-gate listing is live (2.I).
+> **Implementation status (2.G).** `relavium gate` runs in a **fresh process** from the original `run`: it reloads the run's frozen `WorkflowDefinition` + inputs from the durable history snapshot (2.H), reconstructs the paused checkpoint from the persisted event log, and calls `engine.resumeFromCheckpoint` over the same store — then drives the resumed run to its terminal (exit `0` complete / `1` failed / `3` paused again at a later gate). The recorded `decidedBy` is the constant `cli` (a deterministic, non-PII marker; the desktop/portal supply a real user id). Budget-cap pauses (`budget:paused`, [ADR-0028](../../decisions/0028-workflow-resource-governance.md)) are **not** resolved here — that is the separate [`relavium budget resume`](#relavium-budget-resume) surface. A run that declares a **`secret`-typed input** is resumed by re-supplying it on stdin with `--secret-stdin` (above); without the flag `relavium gate` still **fails closed (exit `2`)**, because the declared input slot retains only a masked placeholder (ADR-0006/0036) and has no raw value to restore. The engine enforces the same rule independently — it refuses a resume whose masked slot was not filled, and refuses the placeholder itself as a value. The [`relavium gate list`](#relavium-gate-list) multi-gate listing is live (2.I).
+
+Current context qualification on resume does not rewrite completed outputs restored from history;
+the [historical output/error guidance](../shared-core/database-schema.md#historical-output-and-error-data)
+also applies to human and budget recovery.
 
 ### `relavium budget resume`
 
