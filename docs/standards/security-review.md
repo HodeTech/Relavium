@@ -562,6 +562,25 @@ their documented qualifications. No universal secret scrubbing, OS isolation,
 new network authority, provider/keychain operation, paid request or platform
 recertification is claimed. Full-wave publication remains Step 19.
 
+### Sitting: Wave 3 pure process and discovery boundaries (2026-10-16)
+
+A NEW independent cumulative sitting is **clean** at `f3cab0db`. Fresh execution
+passes **14 files / 340 tests**, plus one acceptance-tool test, with zero skips.
+The parent reads the full report. The [Step 6 acceptance register](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-6-acceptance--2026-10-16)
+joins this sitting with the two separate new complete correctness rounds.
+
+The sitting covers pure flag and filesystem-root syntax, exact secret forwarding,
+fixed CLI diagnostics, public descriptor projection, kind-specific owner retirement,
+reentrant cancellation and the one absolute fatal budget. Expiry does not grant
+retirement or host-safe-close acknowledgement; finite cancellation still reaches
+every live owner at zero remaining budget. Fourteen causal cohorts / 42 structured
+runner receipts and two selected existing secret controls are independently audited,
+including restoration and physical manifests. This audit is not new mutation
+execution or a complete secret-control family capture. Actual native process,
+terminal, sink and RunHandle/AgentSession adapters remain Step 8; installed package
+and whole-wave claims remain their later gates. No provider, keychain, paid request,
+new network authority or native-platform recertification is claimed.
+
 ## Sandbox and tool policy (`run_command`, node tools, secret inputs)
 
 This is the **binding home** for the tool-policy rules; the rationale is

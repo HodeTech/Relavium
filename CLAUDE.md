@@ -176,7 +176,10 @@ separate clean security sitting. Step 4 (error/envelope substrate) is independen
 accepted after two NEW complete cumulative clean rounds. Step 5 (tools and engine
 tails) is independently accepted after two NEW complete cumulative clean rounds
 following its registry-documentation correction and a separate clean security
-sitting. Step 6 (pure process/discovery substrate) is active.
+sitting. Step 6 (pure process/discovery substrate) is independently accepted after
+two NEW complete cumulative clean rounds and a separate clean security sitting.
+Step 7a (lazy runtime and finite compiled graph) is active; whole Step 7 also requires
+Step 7b's installed-tarball and required platform controls.
 Later implementation and whole-wave acceptance
 remain staged in the canonical roadmap.
 

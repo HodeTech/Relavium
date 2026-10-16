@@ -3664,6 +3664,8 @@ No credential values or request captures belong in tracked evidence.
 | 5 | **Tools and engine tails:** #93/#95/#96/#98/#97/#214/#221/#258/#259/#308, #94/#82/#87/#76/G9/#79/#274/#275. Bounds before effects, model-visible semantics, existing ordinal helper, path-local cycle guards, cancellation race and deterministic plan equivalence; certify #75/#78/#216 instead of rewriting them. |
 | 6 | **Pure process/discovery substrate:** ADR-0110 categories, shared early flag grammar, explicit exit/site inventory, enriched descriptor registry with legacy/model and new CLI projections, one closed CLI code/origin authority, storage-boundary classification inventory and kind-specific invocation owner registry. Include caught/forced-exit owners and total observation priority. Contracts precede consumers. Unit/source checks do not claim fatal/native or JSON-help integration complete. |
 | 7 | **Lazy runtime and package graph:** #43/#44/#271/ADR-0111, consuming Step 6. Guard dynamic imports from a lightweight entry; defer classifier/sanitizer/service barrels and MCP wiring; preserve filesystem → one seedFileCatalogOnce owner → DB catalog → model/cost ordering and media exception; explicitly test meta-only admission refinement. Finite flat chunks, all-output closure, real packed existing meta/run/chat/migration/identity and minimum-Node/platform controls. New JSON help waits for Step 10. |
+| 7a | **Recorded split, 2026-10-16 — source/router and finite compiled graph:** exact sanitizer leaves, guarded entry/runtime imports, untouched compiled human meta and grammar controls, actual execution admission ordering, one invocation file seed and eleven current DB-owner/quote/media/fixture controls. One split ESM build, flat layout, entry-only shebang and every-output file/import/dependency closure. Preserve affected compiled workflow/media smokes. Two NEW complete cumulative clean rounds and a scoped security sitting are required. This accepts only the compiled graph, not installed packaging or whole Step 7. |
+| 7b | **Recorded split, 2026-10-16 — exact tarball and required consumers:** independently inspect actual tar bytes/modes/public inventory; install the same digest outside the workspace; prove complete real chat/resume, workflow/migrations/native/CAS/MCP/class identity and invocation-context continuity. Required exact Node 22.0.0 and current-runtime Linux/macOS/Windows consumers aggregate the same artifact. Final cumulative reviews include all 7a changes from the Step 6 boundary. Whole Step 7 and ADR-0111's graph obligations close only after both increments; actual registered native-owner cleanup remains Step 8. |
 | 8 | **Native process integration:** #40/#41/#42/#224/#269/G35 under ADR-0110, after the early graph can catch import failures. Wire kind-specific owners, output_unavailable/cli_internal 9, known storage/history/departure classification, run-only health precedence and session join uncertainty. Preserve recoverable #228/signals; MCP PID versus tool PGID/Windows, terminal restore before stderr, total remaining fatal budget, competing faults and both sinks. Minimal I/O adapters land here; central DB refactor stays last. No false host-safe-close ACK. |
 | 9 | **Release map/custody substrate:** #46/ADR-0111, independently reviewed after the finite graph. Upstream TS maps, sole prepack final build, pre-hash trailer removal/staging, exact tarball/CLI+engine symbolication, encrypt-once candidate with permissioned prebuild discovery/reservation → pack/reuse → smoke → archive → npm → finalization. Required artifact/platform aggregation, all rerun modes, lost-staging refusal and permission-enforcing offline API controls. Dedicated archive/crypto security sitting. Fixture proof never claims production recipient/custody configuration. |
 | 10 | **CLI behaviour/discovery integration:** #45/#264/#265/#268/#13/#17/#18/#310/#309/#19 under ADR-0110, consuming Steps 6–9. Production owner category matrix, real root/subtree JSON help, pricing/chat aliases, non-echoing Commander refusal and signal-safe deletion consent. G15 is refuted and receives real engine/store/log preservation evidence, with no invented token coalescing. Repeat affected packed gates. |
@@ -4910,3 +4912,47 @@ these unit/source checks. No new dependency, ADR, decision, provider capture,
 credential, billing or external action is introduced. Steps 7–19 remain open;
 commit and two NEW independent complete cumulative clean rounds plus a separate
 scoped security sitting are required before Step 7 implementation proceeds.
+
+
+### Wave 3 Step 6 acceptance — 2026-10-16
+
+Step 6 is independently accepted at
+`f3cab0db993714006e8c318f37618e2cf2683333`, from Step 5 metadata
+`952115d3506b0078faefa10dee8dfb4236e19c1c`. Two NEW independent complete
+cumulative clean reviews cover all **38 paths / 95 zero-context hunks**, including
+all nineteen new files. Reviewers are gpt-6-astra/high (**26 files / 512 tests**, plus
+322 acceptance-tool tests) and gpt-6.1-sol/xhigh (**16 files / 395 tests**, plus
+119 related tooling tests), with zero skips and no verified finding. The parent
+reads both full reports, independently checks the evidence and records no source
+change after these rounds. Differential controls preserve all 24 original model
+entries, 29 Commander nodes and 48 old/new action payload comparisons.
+
+The separate NEW clean security sitting passes **14 files / 340 tests**, plus one
+acceptance-tool test, with zero skips. Its scope is the pure process/discovery
+substrate, not the later native fatal path. All fourteen final causal cohorts /
+42 structured zero-unhandled receipts retain named assertion witnesses, unchanged
+case inventories, exact direct target/test/reporter pins and restoration. These
+local cohorts do not claim a complete transitive dependency snapshot. Two selected
+existing secret controls each retain three physical receipts, 1,223 source/tool
+files and 457 dependency packages; they precede the last registry fix, with their
+target/test bytes unchanged, and are not a complete 41-control capture. Both full
+reviewers and the security reviewer independently audit these records.
+
+Final author evidence remains **639 files / 14,554 passing tests / 20 established
+skips**, all workspace lint/typechecks, six forced builds after causal restoration,
+322 acceptance-tool tests, source fences, DB synchronization, test isolation,
+formatting, compiled CLI smoke, bundle closure and document/diff checks. The final
+CLI test suite runs fresh; other workspaces use valid test caches. Review executions
+are independent scoped checks and are not added to the author total. This metadata
+landing does not imply new source execution, full CI/coverage, native-platform,
+installed-tarball or whole-wave acceptance.
+
+Step 7 proceeds automatically through the recorded **7a → 7b** split. The split
+preserves every original finding and acceptance obligation. Step 7a proves the
+actual finite compiled graph and catalog ordering; Step 7b adds the independently
+inspected installed artifact and required platform/minimum-runtime controls. Whole
+Step 7 remains open until both pass; Step 8 does not start after 7a alone. Registry
+identity before Step 8 means one canonical module, one bootstrap invocation object
+and preserved context identity across lazy routes. Actual registered native-owner
+stop/join evidence belongs to Step 8. No new ADR, dependency, deferral, provider
+request, credential, billing or user decision is introduced.
