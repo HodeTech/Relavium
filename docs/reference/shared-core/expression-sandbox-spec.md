@@ -363,6 +363,12 @@ or a native serialization interrupt that prevents completion of the closure, pre
 disposition: `result_type` for `condition`, `non_serializable` for `transform`/`merge_fn`.
 The native interrupt does not receive a new deadline or become a successful denial observation.
 
+Primitive results follow their original-type conversion paths without diagnostic prototype
+reads or authored JSON hooks. Thrown BigInt values also bypass `toJSON`. Boxed values and
+objects whose `toJSON` returns a scalar still undergo object JSON conversion and retain
+original-VM-type classification. Diagnostic hydration applies only when that converted JSON
+is an object/array; scalar representations do not acquire diagnostic prototype reads.
+
 Top-level result conversion retains the installed bridge's supplemental `name`, `message`,
 `stack`, `fileName` and `lineNumber` fields, including inherited/non-enumerable fields when
 the serialized result does not supply a value. The original result's JSON traversal completes

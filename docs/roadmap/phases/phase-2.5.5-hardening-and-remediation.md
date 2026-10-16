@@ -4471,3 +4471,57 @@ Fresh security revalidation and two NEW independent complete cumulative clean
 rounds after this final material fix remain required before Step 4. All earlier
 nonclean rounds remain explicitly nonclean. These author gates are not full CI,
 coverage, native-platform or whole-wave acceptance; later plan ownership remains.
+
+
+### Wave 3 Step 3 primitive-conversion correction — 2026-10-16
+
+The attempted NEW cumulative review at `a2db0b77` verifies one further High:
+primitive values enter object diagnostic hydration, invoking prototype getters
+that the accepted native primitive conversion never reads. The tool interrupts
+that agent's turn; its retained report is explicitly **partial and nonclean**, not
+complete cumulative acceptance. The separate completed security revalidation
+independently corroborates the primitive discrepancy and is also **nonclean**;
+no additional declared-secret confidentiality or authority issue is verified.
+The parent reads both reports and reproduces the ordinary API difference against
+accepted Step 2. No incomplete or earlier nonclean round counts toward acceptance.
+
+A finite Number/String/Boolean value must not invoke an unused diagnostic getter.
+Thrown primitive conversion has the same requirement; a custom BigInt `toJSON`
+previously changed ordinary private detail from `2` to `changed`. Conversion now
+branches on the original primitive type before object hydration or JSON hooks.
+Boxed values and objects yielding scalar JSON keep their separate object path;
+numeric tags, the original deadline, supplemental conversion before denial and
+inert final transport remain intact.
+
+The actual-VM parity suite grows from 243 to 309 cases. The first 54 new pre-fix
+assertion failures cover every diagnostic field on Number/String/Boolean across
+all three expression kinds and ordinary thrown String/Boolean/BigInt behavior.
+A further parent comparison exposes the same unwanted lookup after object JSON
+conversion yields a scalar: boxed Number/String/Boolean and object `toJSON`.
+Twelve additional regressions fail before the converted-shape guard and pass
+after it. Hydration now requires converted object/array data; original object
+conversion and original-type classification still apply. The corrected focused
+suite passes. These are synthetic local compatibility controls, without real
+credentials, provider calls or external targets.
+
+Fresh corrected-source author gates pass: all workspace lint/typecheck, **601 files
+/ 13,814 passing tests / 20 established skips**, six builds (five cached), source
+format/whitespace, vendor/platform/dependency fences, 601-file/six-workspace
+isolation and 3,365 relative links. Ordinary primitive and boxed/scalar old/current
+comparisons match after repair.
+
+Nine final fixed/removal/restored cohorts pin qualification, template refusal,
+finite latch, result projection, thrown projection, owned definition binding,
+actual engine hydration order, native primitive conversion and scalar hydration.
+They produce **6 / 6 / 64 / 75 / 105 / 8 / 1 / 6 / 12** named removal failures;
+fixed/restored inventories are **29 / 19 / 184 / 309 / 309 / 17 / 1 / 309 / 309**.
+All 27 final runner receipts record zero unhandled errors and exact source
+restoration precedes the final passing full suite. A truncated Vitest witness
+name rejected an exploratory attempt; it was not published as acceptance, and
+the final run pins the stable unique named assertion plus its mechanism marker.
+
+Fresh security revalidation and two NEW independent complete cumulative clean
+reviews after this final correction remain required before Step 4. The interrupted
+review is incomplete; none of the nonclean or incomplete sittings is counted.
+These local author controls do not claim full CI/coverage/native-platform,
+whole-wave acceptance, a release or new permission. Detailed records stay ignored.
