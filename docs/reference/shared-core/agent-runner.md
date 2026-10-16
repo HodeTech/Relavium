@@ -64,6 +64,13 @@ The runner owns the **cost path** itself — one `CostTracker` per node executio
 
 ## The turn loop + the failure ladder
 
+Ordinary execution and budget preparation forward the identical node signal to public prompt
+resolution and recheck cancellation after its final await, before prompt-error mapping or further
+admission. Literal/empty prompts share that boundary. A cancelled resolver settlement returns the
+existing non-retryable `cancelled` failure without provider/key/effect work; pure plan lookup may have
+already occurred. Human-gate message/assignee resolution also rechecks after its final await, so
+cancellation there cannot become a newly published pause.
+
 The core streams one turn (emitting `agent:token` per text delta, accumulating text / tool-call / reasoning parts), and on a `tool_use` stop appends the assistant turn (**including its reasoning `ContentPart`** for the same-provider replay, [ADR-0039](../../decisions/0039-same-provider-reasoning-replay.md)), dispatches each tool call, appends the results, and continues — bounded by a **runner-default max-tool-turns cap** (a DoS guard; the authored hard cap + the loud `turn_limit` surfacing is the 1.V session knob).
 
 The error mapping to the closed `ErrorCode` ([error-handling.md](../../standards/error-handling.md)) — **cancel wins** over all others:

@@ -26,14 +26,14 @@ A tool declaration in YAML has a `type` discriminator:
 | `http_request` | Outbound **HTTPS** (GET/POST/PUT/DELETE), custom headers, JSON body, streaming response. | response body / stream | **HTTPS-only**, exact-FQDN `allowedDomains` allowlist (empty/absent ⇒ disabled), private/loopback/link-local/metadata ranges blocked (SSRF) — see below. |
 | `web_search` | Web search via the configured provider (e.g. Brave Search / SearXNG). | `{ results: [{ title, url, snippet }] }` | Provider key in the secret store, not the workflow file. |
 | `git_status` | Run `git status` / `git log` / `git diff` in the workspace (read-only). | the raw `git` process result | The model picks only the subcommand; any extra flags are **author-pinned via config**, not model-supplied (a model-controlled `--no-index`/`-p --all` would read arbitrary files / dump history). |
-| `git_commit` | Create a commit with a message, optionally restricted to given pathspecs (does **not** `git add`/stage). | commit result | **Requires a `human_gate` approval** before executing in automated workflows; pathspecs are `--`-separated so a model cannot smuggle a git option. |
+| `git_commit` | Create a commit with a message, optionally restricted to given pathspecs (does **not** `git add`/stage). | commit result | **Requires `gateApproved`** at the registry boundary. Both production agent-context producers currently supply `false`, including workflows; chat confirmation cannot provide it. Review changes and commit manually. Pathspecs are `--`-separated so they cannot become Git options. |
 | `read_clipboard` | Read current clipboard text. | `string` | Powers "process what I just copied" triggers. |
 | `notify` | Send a native desktop notification (title, body, optional action buttons). | `void` | Lets an agent request attention mid-run without blocking the run. |
 | `mcp_call` | Connect to a registered MCP server and invoke one of its tools by name. | the MCP tool result as JSON | Server resolved from config; see [mcp-integration.md](mcp-integration.md). |
 | `invoke_agent` | Call another agent node in the same workflow by node id, with explicit input. | that agent's output | The dynamic-dispatch mechanism used by orchestrator agents to delegate. |
 | `read_media` | Read a produced/received media asset by its durable `media://sha256-…` handle (**whole handle** — no byte range), so a media-capable model can look at it. | a short **text descriptor** (mime type, byte length, handle) as the `tool_result`; the media itself arrives as a top-level `media` part on a **marked, engine-synthesized `user` message** appended right after it ([ADR-0089](../../decisions/0089-media-correctness-four-boundaries.md) §1) | **Scope-set authz** — the requesting `session`/`workspace` must be in the handle's `allowedScopes` ([ADR-0044](../../decisions/0044-media-access-governance-read-media-save-to-cost.md) §1); knowing a sha256 is **not** authorization; read-only (bypasses the action gate), secret-free `media_scope_denied`. The tool never touches bytes: it authorizes a handle and describes it, and the chain's egress re-materialization resolves the handle per attempt (ADR-0043 §1), so a failover or a resume re-resolves from the canonical handle. The synthesized message carries a fixed engine-authored preamble naming the tool — it must never present as the user's own words. Because the media rides the ordinary media-INPUT rail it is bounded by it: `read_media` **refuses** a video, a PDF (never inline at any size) or an image/audio handle over `INLINE_MEDIA_CEILING`, with a correctable `invalid_args` naming the limit — so the model picks another handle instead of the next request dying on a schema error after the tool has already run. A response's tool calls may deliver at most `ADMISSION_CEILINGS.mediaAttachmentsPerResponse` attachments, refused by the engine before the seam's own per-message cap. All of a response's attachments arrive on **one** synthesized message appended after the FINAL tool result — after every one of them, never interleaved between two — a tool result must stay contiguous with its siblings or the providers reject the turn. And a model that does not accept image input refuses the turn rather than being handed a descriptor for something it never received. *(The delivery path ships as of `W5`/`CR-50`. The host `MediaReadAccess` delegate and the `session`/`workspace` scope population remain unwired in production — see [deferred-tasks.md](../../roadmap/deferred-tasks.md); absent the delegate the tool fails closed with `tool_unavailable`.)* |
 
-> **Mandatory guardrails (security tightenings — [ADR-0029](../../decisions/0029-tool-policy-hardening.md)):** `run_command` only executes commands that **exactly match** the workflow's `allowedCommands` allowlist (opt-in glob via `allowedCommandGlobs`; defined under `spec.tools.allowedCommands` — see [workflow-yaml-spec.md](../contracts/workflow-yaml-spec.md#tool-policy-spectools); empty or absent ⇒ disabled). `http_request` is **HTTPS-only**, matches `allowedDomains` by **exact FQDN** (empty/absent ⇒ disabled), and **blocks private/loopback/link-local/metadata IP ranges** — the same vetted SSRF primitive applied to provider base URLs and MCP server URLs ([security-review.md](../../standards/security-review.md)). And `git_commit` is gated behind human approval in automated workflows. All are enforced by the engine, not by convention. `run_command` is the **only** allowlisted shell-exec built-in — there is no separate `run_javascript` tool (sandboxed JS evaluation is the engine's job for `condition`/`transform` expressions, not a callable tool).
+> **Mandatory guardrails (security tightenings — [ADR-0029](../../decisions/0029-tool-policy-hardening.md)):** `run_command` only executes commands that **exactly match** the workflow's `allowedCommands` allowlist (opt-in glob via `allowedCommandGlobs`; defined under `spec.tools.allowedCommands` — see [workflow-yaml-spec.md](../contracts/workflow-yaml-spec.md#tool-policy-spectools); empty or absent ⇒ disabled). `http_request` is **HTTPS-only**, matches `allowedDomains` by **exact FQDN** (empty/absent ⇒ disabled), and **blocks private/loopback/link-local/metadata IP ranges** — the same vetted SSRF primitive applied to provider base URLs and MCP server URLs ([security-review.md](../../standards/security-review.md)). `git_commit` retains its registry gate floor and is refused by current production agent producers, as the table records. All are enforced by the engine, not by convention. `run_command` is the **only** allowlisted shell-exec built-in — there is no separate `run_javascript` tool (sandboxed JS evaluation is the engine's job for `condition`/`transform` expressions, not a callable tool).
 
 > **Return shapes.** The *Returns* column is the **logical** shape. Until a provider-specific normalizer lands, `http_request` / `web_search` / `mcp_call` / `git_status` dispatch the **raw host response** (`EgressResponse` / the MCP tool result / the `git` `ProcessResult`); a downstream `transform` node shapes it. The file tools (`read_file` / `write_file` / `list_directory`) and `run_command` already return the documented shape.
 
@@ -44,6 +44,30 @@ A `tool` node (direct tool execution without an LLM) and an agent's tool call bo
 ## Config-only parameters
 
 A built-in tool's parameters split into two tiers. **LLM-visible** parameters form the JSON Schema the `ToolNormalizer` lowers to each provider's wire shape — the only parameters a model may supply. **Config-only** parameters take their **values from the node's `tool_config` / `agent_config` block** ([node-types.md](node-types.md) — `parameters`), are merged at dispatch (config wins), and **never** appear in the LLM-facing schema: a model-supplied argument can never override one. This keeps prompts small and pins safety-relevant values (a root path, a base URL, a timeout) out of the model's reach. The `ToolDef` field shape and the dispatch-time merge are canonical in [tool-registry.md](tool-registry.md); the decision is [ADR-0037](../../decisions/0037-engine-tool-execution-boundary.md).
+
+## Tool input bounds
+
+The executable validator checks the full effective arguments before policy-target construction,
+confirmation, effect preparation, dispatch hooks or host work. Limits are inclusive **UTF-8 byte**
+limits, independent of operating-system command-line capacity.
+
+| Argument | Maximum |
+| --- | --- |
+| `write_file.content` | 8 MiB (8,388,608 bytes) |
+| `http_request.body` | 1 MiB (1,048,576 bytes), when supplied |
+| `git_commit.message` | 16 KiB (16,384 bytes); still non-empty |
+| `run_command.args` | 256 entries, each at most 16 KiB, totaling at most 64 KiB (65,536 bytes) |
+
+Empty file content, HTTP body and argument entries remain valid; omitted body/arguments and an empty
+argument vector remain valid. Impossible UTF-16 lengths and argument counts are refused before byte
+scanning; the vector's cheap aggregate check precedes all member byte scans. The existing shared
+byte counter measures plausible values, including multibyte text and unmatched surrogates.
+
+The model-visible properties and array items describe their use, defaults and these limits through
+all supported dialect normalizers. JSON Schema `maxLength` is a necessary character bound, **not**
+the byte authority; descriptions communicate the UTF-8 constraint and aggregate argument limit.
+Config-only parameters remain excluded. These limits apply only to the listed arguments, without
+imposing matching-name limits on unrelated fields such as `notify.body` or `git_status` configuration.
 
 ## Tool result bounding
 
@@ -64,7 +88,7 @@ A tool that spawns a process (`run_command`, `git_*`) runs with **`shell: false`
 
 ## Filesystem permission tiers
 
-File scope is host-enforced. The desktop uses its scoped filesystem layer and Tauri v2 capabilities ([tauri-plugins.md](../desktop/tauri-plugins.md)); its native permission-dialog/capability-grant mechanism is surface-specific. The Node CLI uses the host-owned policy below ([ADR-0105](../../decisions/0105-filesystem-roots-are-invocation-grants-not-project-authority.md)). A committed path declaration alone never authorizes CLI access.
+File scope is host-enforced. `ToolDispatchContext.fsScope` describes the tier captured by the host; it does not grant per-call roots or widen an already-created filesystem capability. The immutable host policy is the authority. The desktop uses its scoped filesystem layer and Tauri v2 capabilities ([tauri-plugins.md](../desktop/tauri-plugins.md)); its native permission-dialog/capability-grant mechanism is surface-specific. The Node CLI uses the host-owned policy below ([ADR-0105](../../decisions/0105-filesystem-roots-are-invocation-grants-not-project-authority.md)). A committed path declaration alone never authorizes CLI access.
 
 | CLI tier/surface | Effective roots |
 | --- | --- |

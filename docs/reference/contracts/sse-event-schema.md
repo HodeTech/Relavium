@@ -49,6 +49,12 @@ cross-field guards retain their stricter rules. The stored run reader still drop
 an unknown nonempty discriminator independently of its body, while refusing a
 known damaged event; envelope validation does not precede discriminator selection.
 
+`RunEventBusOptions.validate` remains an exported compatibility option. Omitted or `true` validates
+the full payload before consuming a sequence number; `false` skips that payload validation and
+retains supplied fields. Both modes enforce the raw exactly-one-correlation rule before reading the
+clock, consuming a number or notifying listeners. This opt-out does not weaken persisted-store
+validation or turn an invalid payload into a valid contract event.
+
 `sequenceNumber` is monotonic per run and is the basis for **gap detection**: if a consumer sees a jump in `sequenceNumber`, it triggers a full state resync (re-read the durable run state) rather than trusting a partial view. This is what makes reconnection lossless. The **envelope** fields (`sessionId` / `runId`, `sequenceNumber`, `timestamp`) are stamped by the bus, not the producer: `WorkflowEngine` emits through the `RunEventBus`, and `AgentSession` (1.V) emits *envelope-free payload drafts* through an injected `SessionEventSink` — wiring that sink onto the bus, where the per-session `sequenceNumber` (and its same gap/resync rule) is assigned, is **1.W**. So a session's monotonic numbering is the bus's responsibility, not the session core's.
 
 ## The `RunEvent` union

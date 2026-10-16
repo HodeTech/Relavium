@@ -273,8 +273,8 @@ interface ToolDispatchContext {
   readonly grantedToolIds: ReadonlySet<ToolId>;  // the node's narrowed grant (0029(b)); dispatch refused outside it
   readonly config: ToolNodeConfig;        // resolved tool_config/agent_config block: configOnly VALUES + input/output_mapping (node-types.md)
   readonly toolPolicy: ToolPolicy;         // resolved allowedCommands/-Globs/-Domains (@relavium/shared)
-  readonly fsScope: FsScopeTier;           // 'sandboxed' | 'project' | 'full' (the @relavium/shared source of truth)
-  readonly gateApproved: boolean;          // a human-gate decision is present for this dispatch (1.Q)
+  readonly fsScope: FsScopeTier;           // descriptive host-captured tier; cannot widen the host's immutable policy
+  readonly gateApproved: boolean;          // registry gate floor; both production agent producers currently pass false
   // Per-tool approval regime (ADR-0057 EA3). PRESENT ⇒ the interactive-approval (chat) path: a governed-class
   // dispatch requires `approval.confirm`'s decision, and an absent confirm is fail-closed → denied. ABSENT ⇒
   // the workflow author-trust path (unchanged). `confirm` is the host-injected ConfirmActionHook (the engine
@@ -390,10 +390,15 @@ The canonical guardrail home is [security-review.md §Sandbox-and-tool-policy](.
 | `http_request` (egress `http`) | **HTTPS-only**, **exact-FQDN** `allowedDomains`, **empty/absent ⇒ deny-all**; an `input_mapping`-derived URL runs the same check (0029(d)) | `egress.fetch` runs the shared SSRF primitive + connect-pinning (1.AE) |
 | `web_search` (egress `search`) | untrusted-data-validated **query** (transits a query, **not** an FQDN allowlist — [security-review.md §Prompt-injection](../../standards/security-review.md#prompt-injection-posture)) | `egress.fetch` to the configured provider; key via host-resolved `credentialRef` |
 | `mcp_call` (egress `mcp`) | configured MCP **server** URL (not `allowedDomains`); secrets injected host-side | `mcp` transport runs the same SSRF primitive (0029(d); 2.R) |
-| `git_commit` | refused unless `ctx.gateApproved` (human-gate, 1.Q) in an automated workflow | `process.spawn` |
+| `git_commit` | refused unless `ctx.gateApproved`; production agent contexts currently pass false, and chat confirmation cannot substitute | `process.spawn` |
 | node `tools:` narrowing | enforced at **plan build** when the host marks the grant complete (`BuildRunPlanOptions.toolGrantsFinal`), with `resolveGrant` as the dispatch floor for a directly-constructed executor ([ADR-0094](../../decisions/0094-a-tool-grant-is-checked-when-the-plan-is-built.md)); narrow-only, 0029(b)/[ADR-0023](../../decisions/0023-strict-authored-yaml-validation.md) | — |
 | secret args | Parser refusal covers declared secret references in text (transitive taint, 0029(c)); externally supplied `secretArgKeys` is checked on **top-level** effective-arg keys before approvals/effects (step 3). There is no live authored mapping producer; absent metadata is unverified. See [secret argument provenance](#secret-argument-provenance) for the future mapped-path obligation | host resolves an opaque `credentialRef` inside its trust boundary |
-| FS scope tier | tool flagged `fsScoped` | `fs.*` jails to the tier + rejects path traversal |
+| FS scope tier | descriptive `ctx.fsScope` does not grant access | `fs.*` enforces its host-captured immutable policy + rejects path traversal |
+
+Built-in effective-argument bounds are canonical in
+[built-in tools](built-in-tools.md#tool-input-bounds). Validation precedes policy targets, confirmation,
+effect preparation and host dispatch. Registry IDs and field-only refusal lists use shared UTF-16
+code-unit ordering, independent of ambient locale.
 
 ## Result bounding and spill-to-file
 
@@ -407,6 +412,14 @@ distinct from the *event* `outputSummary`, which is truncated separately at the 
 
 The ceiling is a **byte/line** bound (no token count — that needs a provider-specific tokenizer, which would break engine purity); concrete defaults and the marker shape are canonical in
 [built-in-tools.md](built-in-tools.md#tool-result-bounding). `ToolResultLimits` carries them into `ctx`.
+
+Observability and journal-argument projections distinguish shared siblings from ancestor cycles.
+Each walk removes a visited object when its branch finishes, including native/binary/media early
+returns. A genuine ancestor back-reference becomes `[cyclic]`; repeated non-cyclic objects are
+projected at every occurrence. The model-facing value and existing secret/media redaction policies
+are unchanged. Sanitized effective arguments also feed the existing journal identity; preserving a
+clean sibling avoids incorrectly treating distinct selections as a replay. This does not make the
+projection a lossless canonical encoding or claim detection of arbitrary sensitive text.
 
 ## Untrusted-data taint (1.T marks; 1.O places)
 

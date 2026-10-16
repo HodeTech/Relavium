@@ -25,7 +25,7 @@ The same file parses and runs **identically** on every surface — desktop canva
 schema_version: '1.0'        # required — validated for forward-compat parsing
 workflow:
   id: string                 # required, unique, kebab-case
-  version: semver            # e.g. '1.2.0'
+  version: string            # optional; Semver recommended, e.g. '1.2.0'
   name: string
   description: string
   tags: string[]
@@ -48,7 +48,7 @@ workflow:
 | --- | --- | --- |
 | `schema_version` | yes | Top-level, outside `workflow:`. Currently `'1.0'`. |
 | `workflow.id` | yes | Unique, kebab-case. |
-| `workflow.version` | recommended | Semver of the workflow itself, for human change tracking. |
+| `workflow.version` | no | Optional string for human change tracking; Semver is recommended, not format-validated. |
 | `workflow.name` / `description` / `tags` | no | Display + filtering metadata. |
 | `workflow.metadata` | no | Free-form provenance map — a real schema field, so it **survives parse → serialize round-trips** (unlike comments). Used by session export to carry the source transcript ([ADR-0026](../../decisions/0026-session-export-to-workflow.md)). |
 | `trigger` | no | Defaults to `manual`. |
@@ -194,7 +194,9 @@ receives, rejecting `"3"` for a `number`. That split is what makes two surfaces 
 
 ## Context and interpolation
 
-`context` declares named values available throughout the workflow as `{{ctx.key}}`. `{{ ... }}` interpolation is for **template fields only** — `context` values, agent `prompt_template` / `system_prompt_append`, and human-gate `assignee` / `message_template`. An **`inputs` default is NOT a template field** ([ADR-0083](../../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md) §3): it is resolved at admission, before a run exists, so `inputs`, `ctx` and `secrets` are all unavailable to it — a `{{ }}` there is an authoring error. It never resolved before either; the engine applied no defaults at all, so what changes is that the mistake is now loud. The **expression fields** are **bare sandboxed JavaScript** ([ADR-0027](../../decisions/0027-expression-sandbox.md)), *not* interpolation: they read the same run scope directly as `run.outputs["x"]` / `inputs.y` / `ctx.z` with no `{{ }}` wrapper. The three sandboxed kinds (the 1.AB `ExpressionKind`) are a `condition` node's `expression`, a `transform`, and a `merge_fn` — each `js` (a `condition`/`transform` carries `expression_type: js`; `jmespath`/`jsonlogic` are reserved and rejected at parse; a `merge_fn` is always `js`). An **edge `condition` is REJECTED at parse in v1.0** ([ADR-0093](../../decisions/0093-an-expression-sees-only-what-it-is-ordered-after.md)): the field was accepted by the schema, described as gating its edge here (twice) and in [node-types.md](../shared-core/node-types.md#edges), and **read by nothing** — so an author could write it and it silently did nothing. Branch on a `condition` NODE instead. *(This sentence described the field as "evaluated by the run loop (1.N)" until 2026-09-02; it never was.)* A context `key`, like an input `name`, must be a referenceable identifier (`[A-Za-z0-9_-]+`).
+`system_prompt_append` is literal authored system text, appended after the agent system prompt with a blank line. Braces remain literal; this does not activate Proposed ADR-0060. Existing reference/dependency and secret-taint scans remain in force.
+
+`context` declares named values available throughout the workflow as `{{ctx.key}}`. `{{ ... }}` interpolation is for **template fields only** — `context` values, agent `prompt_template`, and human-gate `assignee` / `message_template`. An **`inputs` default is NOT a template field** ([ADR-0083](../../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md) §3): it is resolved at admission, before a run exists, so `inputs`, `ctx` and `secrets` are all unavailable to it — a `{{ }}` there is an authoring error. It never resolved before either; the engine applied no defaults at all, so what changes is that the mistake is now loud. The **expression fields** are **bare sandboxed JavaScript** ([ADR-0027](../../decisions/0027-expression-sandbox.md)), *not* interpolation: they read the same run scope directly as `run.outputs["x"]` / `inputs.y` / `ctx.z` with no `{{ }}` wrapper. The three sandboxed kinds (the 1.AB `ExpressionKind`) are a `condition` node's `expression`, a `transform`, and a `merge_fn` — each `js` (a `condition`/`transform` carries `expression_type: js`; `jmespath`/`jsonlogic` are reserved and rejected at parse; a `merge_fn` is always `js`). An **edge `condition` is REJECTED at parse in v1.0** ([ADR-0093](../../decisions/0093-an-expression-sees-only-what-it-is-ordered-after.md)): the field was accepted by the schema, described as gating its edge here (twice) and in [node-types.md](../shared-core/node-types.md#edges), and **read by nothing** — so an author could write it and it silently did nothing. Branch on a `condition` NODE instead. *(This sentence described the field as "evaluated by the run loop (1.N)" until 2026-09-02; it never was.)* A context `key`, like an input `name`, must be a referenceable identifier (`[A-Za-z0-9_-]+`).
 
 ```yaml
 context:
@@ -216,7 +218,7 @@ Common interpolation namespaces:
 - `{{ctx.<key>}}` — context entries.
 - `{{run.outputs["<node-id>"]}}` — a completed node's output, in a template field; the same data is read as bare `run.outputs["<node-id>"]` (no `{{ }}`) inside a `condition` / `transform` / `merge_fn` expression.
 - `{{run.id}}` — the run's id (1.AF) — for an output node's `save_to` path template (e.g. `out/{{ run.id }}/image.png`). The interpolation engine (1.L2) recognizes the `run.id` namespace alongside `run.outputs`; it resolves only where the run id is in scope (today: `save_to`), so a `{{ run.id }}` elsewhere surfaces a typed `unresolved_reference` rather than an empty string.
-- Pipe filters: `| read_file`, `| json`, `| length`, `| default("…")`.
+- Pipe filters: `| read_file`, `| json`, `| length`, `| default("…")`. Quoted filter arguments decode only an escaped matching quote or backslash, after structural splitting. Other escapes remain literal, including Windows path segments; they do not become control characters.
 
 > **Evaluation timing.** `context` entries are evaluated **eagerly, exactly once, before any node runs**, and the resolved values are immutable and cached for the whole run. A pipe-filter failure (e.g. `read_file` on a missing path) is a **validation error** that fails the run before it starts (CLI exit code 2), never a mid-run surprise. A `context` value may reference `{{inputs.*}}` but **not** `{{run.outputs[...]}}` (no node has run yet) — doing so is a parse error.
 

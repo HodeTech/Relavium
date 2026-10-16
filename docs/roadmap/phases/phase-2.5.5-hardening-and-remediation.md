@@ -4685,3 +4685,63 @@ only test designs are preparation, not acceptance. Necessary same-defect registr
 redaction prewalks and remaining identifier-sort consumers stay in that increment.
 No new ADR, user decision, provider capture, credential or external operation is
 pending. Step 19 retains final whole-wave validation and publication.
+
+### Wave 3 Step 5 implementation checkpoint — 2026-10-16
+
+Step 5 is implemented from accepted Step 4 base
+`e60b10478f5f5200f8ef55d01a6976c2dcb9fb87`; independent security and two NEW complete
+cumulative correctness rounds are still required. This is author evidence, not
+acceptance of Step 5 or the whole wave.
+
+| Queue | Implemented or certified disposition |
+| --- | --- |
+| #95 | Executable effective-argument UTF-8 admission with cheap count, member-length and aggregate-length prechecks before byte scanning. Inclusive limits and model metadata have their [canonical home](../../reference/shared-core/built-in-tools.md#tool-input-bounds). Actual refusals precede target, confirmation, journal preparation, dispatch hook and host; small/exact-cap/mapping/config-exclusion positives reach the real journal and host. |
+| #96/#98 | All thirteen built-ins describe their 28 immediate model-visible properties and array items. Actual ToolDef parsing and all four wire normalizers retain bounds/descriptions, required distinctions and configuration exclusions; Gemini keeps its existing dialect treatment of additional properties. |
+| #94 | Both bounding walks and both registry prewalks use ancestor-path cycle guards with retirement in `finally`, including early returns. Shared siblings survive; true back-references remain finite. Real events, reference replay/conflict and native SQLite digest controls distinguish clean selections while retaining deliberate secret-projection equality. |
+| #76/G9 | Ordinary/budget prompt resolution forwards the identical signal and checks after its final await; human-gate final resolution does likewise. The actual engine race produced a pause on both delivered and stored rails before the fix, contrary to the preparation note's fence-preservation prediction. The corrected real handler returns cancelled and publishes no pause. Live execution and gate pause/resume remain positive controls. |
+| #82 | Quoted filter arguments decode only matching quote/backslash escapes after structural splitting. Exact runtime default values, structural delimiters, unknown escapes and Windows path text are pinned. Two old assertions contradicted their own intended decoded values and are corrected. |
+| #275 | A private min-heap preserves Kahn's minimum authored index across the entire ready set. An independent full-sort oracle compares complete plans/maps over generated and named graphs, derived edges and cycles. Empty workflow admission remains refused. |
+| #258/#259 | Four lookup-local parameters become `modelId`, without renaming request/payload fields. Twelve live unpinned comparator expressions use the existing UTF-16 code-unit helper, including the verified DB money/coverage model union. The private preparation note overcounted these as thirteen. Case folding, groups, ties, raw historical model names and MCP set/ordered-vector distinctions remain. The two explicitly English LLM display comparisons are unchanged. |
+| #93/#97/#214/#87 | Descriptive dispatch scope cannot widen immutable host filesystem authority; stale egress comments describe conditional host availability. Workflow version is an optional string with Semver recommended, not validated. System append remains literal authored text with existing reference/dependency/secret scans; Proposed ADR-0060 is not activated. |
+| #308 | Actual default/approval-enabled sessions and workflow-agent execution all retain `gateApproved:false`, refusing before confirm, journal prepare and process work. The message offers manual review/commit. A true-gate registry positive is explicitly synthetic, not an invented shipping workflow approval route. |
+| #79/#75/#78/#216/#274 | Equivalent abort/backoff outcomes are combined. Existing timeout/scheduling and tiered journal behaviour are certified by their owning suites, not rewritten. Public `success` remains unchanged. Exported bus `validate:false` remains compatible, with actually invalid payloads and mandatory raw correlation/counter/clock/listener controls. |
+
+Twenty-one new test files contribute 393 cases; actual git-denial controls and the
+split pre/post-preparation cancellation case add four cases in existing owners.
+Author baselines record 115 expected bound/metadata failures, alias/replay/digest
+failures, eight quoted-decoding failures, six direct gate failures, the actual
+engine pause race and forty prompt-cancellation failures. Fixture/API mistakes
+were corrected separately; they are not attributed to production. DAG, literal
+append and bus controls certify existing behaviour rather than claim old defects.
+
+The broad workspace command passes: **629 files / 14,281 passing tests / 20
+established skips**, plus all workspace lint/typecheck tasks. Standard Turbo cache
+reuse for unchanged inputs is retained; this is not a claim that every test was
+freshly executed. The two initial broad failures were stale metadata and the
+superseded pre-aborted preparation expectation; both are corrected without
+weakening the actual range/provenance/cancellation controls.
+
+Thirty-one selected local causal cohorts retain **93 zero-unhandled-error runner
+receipts**: fixed passes, a named expected assertion fails on mechanism removal,
+and exact-byte restoration passes. Each source/mutant hash and expected collected
+count is checked. Seven completed cohorts and the remaining twenty-four are
+retained separately: an initial eighth-cohort witness-label mismatch stopped the
+first capture after restoring source; that incomplete attempt is not accepted.
+Four secondary test-local errors are retained: three replay expectations whose promises
+incorrectly resolve, plus the DB poisoned-comparator error. They are distinct from zero
+runner-unhandled errors. The priority mutation checks authored-minimum semantics,
+not a benchmark; schema/guard removals do not certify unrelated mechanisms.
+The existing source-owned reporter is pinned; these selected probes do not claim
+whole-workspace provenance or remote/native-platform acceptance.
+
+Six forced builds pass without cache reuse before native author tests and again after
+source restoration. Formatting covers all 46 changed TypeScript files; seam/dependency
+fences, six-workspace test isolation and relative-link/append-only checks pass.
+The document scan checks 74 Markdown files / 3,516 relative links and 31 pre-existing
+ADRs. These gates are separate from the review rounds below.
+
+Canonical changes land only in the owning tool, YAML, runner and event contracts.
+Detailed baseline, causal and review records remain local and Git-ignored. There
+is no new dependency, engine platform import, error taxonomy, grant feature, ADR,
+provider call, credential/billing action or external publication. Final full CI,
+ordinary/enforced coverage, platform and whole-wave publication remain Step 19.
