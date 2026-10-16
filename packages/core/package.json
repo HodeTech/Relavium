@@ -9,6 +9,11 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./tool-dispatch-error": {
+      "types": "./dist/tools/dispatch-error.d.ts",
+      "import": "./dist/tools/dispatch-error.js",
+      "default": "./dist/tools/dispatch-error.js"
     }
   },
   "main": "./dist/index.js",
