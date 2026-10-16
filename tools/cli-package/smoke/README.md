@@ -48,8 +48,14 @@ aggregate. Each result has `id`, `passed`, and evidence or an error. Overall
   an error/request from the owned native acknowledgement. POSIX additionally covers
   natural leader exit while a descendant holds inherited pipes. Windows runs the
   verified absolute system taskkill with exact `/PID <owned-root> /T /F`, joins its
-  actual helper independently, ignores an executable hostile PATH shim, and refuses
-  an invalid system facility before target spawn. An unrelated owned sibling must
+  actual helper independently, and ignores an executable hostile PATH shim. Its
+  refusal mode preserves the launching SystemRoot and injects a synthetic EACCES
+  only at the exact canonical taskkill `fs.promises.access` boundary after bootstrap,
+  through the actual product verifier. It requires one fixed refusal observation,
+  zero target/helper entry, the fixed public refusal, exit 1 and a completed turn;
+  it is not an actual OS permission-fault claim. All other access paths call the
+  original native function, and healthy modes keep that function's identity.
+  An unrelated owned sibling must
   survive; external watchdogs and exact created PIDs bound and join cleanup.
   Each mode owns a fresh sibling with its own finite watchdog; watchdog cleanup
   remains failure. A copied Homebrew macOS Node also receives its fixed adjacent

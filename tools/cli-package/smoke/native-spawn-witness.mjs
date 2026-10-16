@@ -62,6 +62,7 @@ export function createNativeSpawnWitness(configuration, spawn) {
   let helperEntered = false;
   let exitReaper;
   let triggered = false;
+  let facilityAccessRefused = false;
   let pending = [];
   let gateTimer;
   let gateTicks = 0;
@@ -106,6 +107,21 @@ export function createNativeSpawnWitness(configuration, spawn) {
     };
   }
   return Object.freeze({
+    /** Synthetic verifier-boundary refusal; healthy modes retain the original native function. */
+    wrapFacilityAccess(access) {
+      if (config.mode !== 'facility-refusal') return access;
+      assert.notEqual(config.taskkill, null);
+      return async function (path, ...args) {
+        if (path !== config.taskkill) return Reflect.apply(access, this, [path, ...args]);
+        if (!facilityAccessRefused) {
+          facilityAccessRefused = true;
+          record({ operation: 'native-facility-access-refused', synthetic: true });
+        }
+        throw Object.assign(new Error('Synthetic taskkill facility access refusal'), {
+          code: 'EACCES',
+        });
+      };
+    },
     /** Undefined means refusal: the surrounding existing preload keeps its deny-all spawn rule. */
     trySpawn(executable, args, options) {
       if (executable === config.executable) {

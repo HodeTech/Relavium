@@ -36,6 +36,7 @@ const operations = new Set([
   'native-captured-exit-reap-invoked',
   'native-witness-gate-timeout',
   'native-witness-readiness-refused',
+  'native-facility-access-refused',
 ]);
 const object = (value) => (value !== null && typeof value === 'object' ? value : {});
 const list = (value, maximum) => (Array.isArray(value) ? value.slice(0, maximum) : []);
@@ -72,6 +73,7 @@ function observation(raw) {
     signal: signal(value.signal),
     detached: bool(value.detached),
     shell: bool(value.shell),
+    synthetic: bool(value.synthetic),
     error: errorText(value.reason, 128),
   };
 }

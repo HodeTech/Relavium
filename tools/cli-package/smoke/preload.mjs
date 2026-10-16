@@ -8,6 +8,7 @@ import https from 'node:https';
 import dns from 'node:dns';
 import child from 'node:child_process';
 import dgram from 'node:dgram';
+import fsPromises from 'node:fs/promises';
 import { record, denied } from './guard-log.mjs';
 import { createNativeSpawnWitness } from './native-spawn-witness.mjs';
 
@@ -37,6 +38,8 @@ const originalSpawn = child.spawn;
 const nativeWitness = process.env.RELAVIUM_PACKAGE_SMOKE_NATIVE
   ? createNativeSpawnWitness(process.env.RELAVIUM_PACKAGE_SMOKE_NATIVE, originalSpawn)
   : undefined;
+if (nativeWitness !== undefined)
+  fsPromises.access = nativeWitness.wrapFacilityAccess(fsPromises.access);
 child.spawn = (...args) => {
   const native = nativeWitness?.trySpawn(...args);
   if (native !== undefined) {

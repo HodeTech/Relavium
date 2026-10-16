@@ -255,7 +255,6 @@ export async function assertInstalledNativeProcesses(context) {
         PATH: [bin, process.env.PATH].filter(Boolean).join(delimiter),
         ...(process.platform === 'win32' ? { PATHEXT: '.exe;.cmd;.bat;.com' } : {}),
         RELAVIUM_PACKAGE_SMOKE_NATIVE: configuration,
-        ...(mode === 'facility-refusal' ? { SystemRoot: join(cwd, 'missing-system-root') } : {}),
       });
       // Each independently bounded mode owns a fresh sibling and its full finite lifetime.
       sibling = await createFixtureSentinel(cwd, environment(home));
@@ -351,10 +350,10 @@ export async function assertInstalledNativeProcesses(context) {
         );
         sibling.assertAlive();
         if (mode === 'facility-refusal') {
-          assert.equal(
-            observed.length,
-            0,
-            'Invalid Windows facility must refuse before target entry',
+          assert.deepEqual(
+            observed,
+            [{ operation: 'native-facility-access-refused', synthetic: true }],
+            'One synthetic facility access refusal must precede any target/helper entry',
           );
           assert.ok(
             (result.stdout + result.stderr).includes('Windows subprocess teardown is unavailable'),
@@ -415,6 +414,7 @@ export async function assertInstalledNativeProcesses(context) {
         Object.assign(outcome, {
           actualNativeClose: mode !== 'facility-refusal',
           syntheticNativeError: mode === 'injected-error',
+          syntheticFacilityAccessRefusal: mode === 'facility-refusal',
           ownedDescendantClosed: mode === 'injected-error' || mode === 'leader-exit',
           siblingSurvived: true,
           observed,

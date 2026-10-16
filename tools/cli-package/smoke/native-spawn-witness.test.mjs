@@ -3,22 +3,28 @@ import { Buffer } from 'node:buffer';
 import { EventEmitter } from 'node:events';
 import {
   appendFileSync,
+  constants,
   existsSync,
   mkdtempSync,
+  promises as fsPromisesViaFs,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
+import fsPromises, { access as nativeAccess } from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { setImmediate } from 'node:timers';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { assertNativeFixtureReady, createNativeSpawnWitness } from './native-spawn-witness.mjs';
+import { formatInstalledWorkerFailure } from './failure-diagnostic.mjs';
 
 /** Explicit simulated event/port tests. These execute neither product code nor Windows taskkill. */
 function harness(mode = 'injected-error', gate = 'none') {
-  const root = mkdtempSync(join(tmpdir(), 'relavium-native-witness-test-'));
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'relavium-native-witness-test-')));
   const config = {
     cwd: root,
     executable: join(root, 'git'),
@@ -221,6 +227,85 @@ test('invalid Windows facility mode refuses target entry rather than manufacturi
     assert.deepEqual(h.log(), []);
   } finally {
     await h.close();
+  }
+});
+
+test('healthy native modes preserve the original facility access function identity', async () => {
+  for (const mode of ['injected-error', 'exit-fallback', 'leader-exit']) {
+    const h = harness(mode);
+    try {
+      writeFileSync(h.config.taskkill, 'owned ordinary access fixture', { mode: 0o700 });
+      const access = h.witness.wrapFacilityAccess(fsPromises.access);
+      assert.equal(access, fsPromises.access);
+      await access(h.config.taskkill, constants.X_OK);
+      assert.deepEqual(h.log(), []);
+      assert.equal(h.calls.length, 0);
+    } finally {
+      await h.close();
+    }
+  }
+});
+
+test('synthetic facility refusal reaches real fs promises ESM access and preserves foreign native access', async () => {
+  const h = harness('facility-refusal');
+  const original = fsPromises.access;
+  const foreign = join(h.config.cwd, 'unrelated-ordinary-file');
+  try {
+    writeFileSync(h.config.taskkill, 'owned ordinary access fixture', { mode: 0o700 });
+    writeFileSync(foreign, 'unrelated ordinary access fixture', { mode: 0o700 });
+    assert.equal(nativeAccess, original);
+    assert.equal(fsPromisesViaFs.access, original);
+    await nativeAccess(h.config.taskkill, constants.X_OK);
+    await nativeAccess(foreign, constants.X_OK);
+
+    const wrapped = h.witness.wrapFacilityAccess(original);
+    fsPromises.access = wrapped;
+    syncBuiltinESMExports();
+    assert.equal(nativeAccess, wrapped);
+    assert.equal(fsPromisesViaFs.access, wrapped);
+    for (let attempt = 0; attempt < 2; attempt++)
+      await assert.rejects(nativeAccess(h.config.taskkill, constants.X_OK), (error) => {
+        assert.equal(error.code, 'EACCES');
+        assert.equal(error.message, 'Synthetic taskkill facility access refusal');
+        return true;
+      });
+    // Call the actual native API on other paths/forms, not a successful replacement port.
+    await nativeAccess(foreign, constants.X_OK);
+    await nativeAccess(Buffer.from(h.config.taskkill), constants.X_OK);
+    await original(h.config.taskkill, constants.X_OK);
+    await assert.rejects(nativeAccess(join(h.config.cwd, 'absent-file')), { code: 'ENOENT' });
+    assert.throws(
+      () => h.witness.trySpawn(h.config.executable, ['status'], h.options),
+      /Invalid facility/,
+    );
+    assert.equal(h.calls.length, 0);
+    const observed = [{ operation: 'native-facility-access-refused', synthetic: true }];
+    assert.deepEqual(h.log(), observed);
+    const diagnostic = JSON.parse(
+      formatInstalledWorkerFailure({
+        cases: [
+          {
+            id: 'actual-native-process-owner',
+            passed: false,
+            evidence: { outcomes: [{ mode: 'facility-refusal', observed: h.log() }] },
+          },
+        ],
+      }),
+    );
+    assert.deepEqual(
+      diagnostic.cases.find((item) => item.id === 'actual-native-process-owner').native[0].observed,
+      observed,
+    );
+  } finally {
+    fsPromises.access = original;
+    syncBuiltinESMExports();
+    try {
+      assert.equal(nativeAccess, original);
+      assert.equal(fsPromisesViaFs.access, original);
+      await nativeAccess(h.config.taskkill, constants.X_OK);
+    } finally {
+      await h.close();
+    }
   }
 });
 
