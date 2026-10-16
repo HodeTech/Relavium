@@ -515,6 +515,32 @@ author-build attribution. No provider/keychain/user-history access or paid reque
 was used. These sittings do not substitute for final fresh build, CI, native Windows,
 bare/enforced coverage, physical mechanism evidence or independent whole-wave rounds.
 
+### Sitting: Wave 3 declared-source secret flow — ADR-0113 (2026-10-16)
+
+A NEW independent cumulative sitting is **clean** at `5d8c0b0c`. The parent reads
+the full report and joins its mandatory checklist with the separate two NEW
+complete correctness rounds in the [Step 3 acceptance register](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-3-acceptance--2026-10-16).
+Earlier nonclean and interrupted sittings remain nonclean/incomplete; they are
+not inherited as acceptance.
+
+| Reviewed control | Actual evidence |
+|---|---|
+| Owned source classification and raw-value exclusion at actual producers | Existing linear graph, frozen definitions shared by analysis/resolution, immutable input membership, fresh/resume/quoted preparation and caller-mutation regressions |
+| Public text and isolated VM consumers | Whole-template refusal before capabilities/defaults, required empty-text metadata, actual QuickJS/standard handlers, private transport, original deadline, result/error parity and finite observed-access controls |
+| Real persistence and meaningful positives | Actual CLI host + file-backed SQLite; exact clean event/step/run outputs, nonempty scans of all three required columns, downstream gates and same/fresh-engine resupply |
+| Load-bearing controls and baseline provenance | Independent inspection of nine fixed/removal/restored cohorts / 27 zero-unhandled receipts and retained baseline source/native identities; author execution and reviewer inspection remain distinct |
+
+Fresh reviewer execution passes **19 files / 1,156 tests**, zero skips. Nine former
+primitive discrepancies now require actual baseline equality. No unresolved
+confidentiality, private-arm or ambient-authority finding is verified. Unchanged
+provider/keychain/network/desktop paths are explicitly not newly recertified;
+no real key, provider request, network target or production storage is exercised.
+Optional external tool provenance remains unverified with no current mapping
+producer. Raw trusted inputs/resolvers/custom executors and arbitrary/historical
+content retain their documented limits; no universal content scrubbing, history
+rewrite or attempted-access detector is claimed. Exact contracts remain in the
+[expression specification](../reference/shared-core/expression-sandbox-spec.md#secret-context-boundary).
+
 ## Sandbox and tool policy (`run_command`, node tools, secret inputs)
 
 This is the **binding home** for the tool-policy rules; the rationale is

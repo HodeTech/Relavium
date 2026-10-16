@@ -82,7 +82,9 @@ whose ADR-0110–0113/contracts/nineteen-increment plan were approved on 2026-10
 Its serialized multi-file Step 1 is independently accepted on `development`
 (2026-10-16); Step 2 is also accepted after two NEW clean complete cumulative rounds
 following its historical-reader corrections. Step 3 (ADR-0113 secret provenance)
-is active. Later implementation and whole-wave acceptance
+is independently accepted after two NEW complete cumulative clean rounds and a
+separate clean security sitting. Step 4 (error/envelope substrate) is active.
+Later implementation and whole-wave acceptance
 remain staged in the canonical roadmap.
 
 See [docs/roadmap/current.md](docs/roadmap/current.md) for live status.

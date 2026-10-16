@@ -269,10 +269,11 @@ error, cap-trip classification, determinism over shuffled `run.outputs` key orde
 
 ## Secret context boundary
 
-**Implementation contract — 2026-10-16.** This section describes the current Step 3 source
-under [ADR-0113](../../decisions/0113-secret-derived-context-keeps-provenance-at-public-sinks.md).
-Implementation acceptance and independent review gates remain pending in the
-[Wave 3 register](../../roadmap/current.md#wave-3--clear-the-ground).
+**Accepted implementation — 2026-10-16.** Step 3 implements
+[ADR-0113](../../decisions/0113-secret-derived-context-keeps-provenance-at-public-sinks.md),
+with two NEW complete cumulative clean reviews and a separate clean security sitting.
+The [acceptance register](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-3-acceptance--2026-10-16)
+records exact source, evidence and preserved limits; whole Wave 3 remains open.
 
 ### Owned provenance and consumers
 

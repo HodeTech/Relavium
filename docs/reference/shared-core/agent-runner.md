@@ -374,10 +374,11 @@ second synchronous cleanup error is not claimed for the current built-in governo
 
 ## Qualified context consumers
 
-**Implementation contract — 2026-10-16.** Current Step 3 source implements
-[ADR-0113](../../decisions/0113-secret-derived-context-keeps-provenance-at-public-sinks.md);
-implementation acceptance and independent review gates remain pending in the
-[Wave 3 register](../../roadmap/current.md#wave-3--clear-the-ground). Exact projection,
+**Accepted implementation — 2026-10-16.** Step 3 implements
+[ADR-0113](../../decisions/0113-secret-derived-context-keeps-provenance-at-public-sinks.md).
+The [acceptance register](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-3-acceptance--2026-10-16)
+joins two NEW complete cumulative clean reviews, the separate clean security sitting
+and exact-source evidence; whole Wave 3 remains open. Exact projection,
 public-template refusal, VM/input compatibility, result transport and finite observed-access
 semantics belong to the [expression specification](expression-sandbox-spec.md#secret-context-boundary).
 

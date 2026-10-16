@@ -199,3 +199,15 @@ on the pinned variant. It cannot reopen the engine choice.
 ## Wave 3 decision acceptance — 2026-10-16
 
 > Amended 2026-10-16: [ADR-0113](0113-secret-derived-context-keeps-provenance-at-public-sinks.md) is accepted by the maintainer. Expression scopes exclude present declared-secret inputs and secret-derived context rather than passing expression markers. Display/run-start/input-node masking remains unchanged. Executed denied access has a finite private-latch diagnosis; omitted optional inputs retain absence and no host function is introduced. The approved [execution plan](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#proposed-implementation-increments) owns implementation and review gates; this note does not claim implementation landing.
+
+
+## Wave 3 Step 3 implementation landing — 2026-10-16
+
+The ADR-0113 portion is implemented and independently accepted at `5d8c0b0c` on
+`development`, after two NEW complete cumulative clean reviews and a separate
+clean secret-flow security sitting. The [Step 3 acceptance register](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-3-acceptance--2026-10-16)
+joins every verified correction, permanent/causal evidence and precise trust/
+historical-content limits. Earlier decision-acceptance notes do not claim this
+later implementation landing. Other Wave 3 decisions and increments remain
+staged; this note does not close ADR-0112 policy work, whole-wave publication or
+merge. No historical ADR body is rewritten.

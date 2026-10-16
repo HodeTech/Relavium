@@ -134,3 +134,15 @@ future feature, deferral or claim of merge-commit execution.
 > Amended 2026-10-16: [ADR-0112](0112-chat-network-grants-and-onboarding-state-are-operator-owned.md) is accepted by the maintainer. The built-in chat HTTP tool obtains global-only, invocation-live monotonically narrowing authority, independent of tool grants, approval and SSRF. Workflow, shell, provider and MCP egress retain their separate contracts. The approved [execution plan](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#proposed-implementation-increments) owns implementation and review gates; this note does not claim implementation landing.
 
 [ADR-0113](0113-secret-derived-context-keeps-provenance-at-public-sinks.md) additionally refines this boundary: Declared-source provenance removes raw derived values before standard VM/template sinks; external secretArgKeys remains an unverified optional compatibility field with no current mapping producer.
+
+
+## Wave 3 Step 3 implementation landing — 2026-10-16
+
+The ADR-0113 portion is implemented and independently accepted at `5d8c0b0c` on
+`development`, after two NEW complete cumulative clean reviews and a separate
+clean secret-flow security sitting. The [Step 3 acceptance register](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-3-acceptance--2026-10-16)
+joins every verified correction, permanent/causal evidence and precise trust/
+historical-content limits. Earlier decision-acceptance notes do not claim this
+later implementation landing. Other Wave 3 decisions and increments remain
+staged; this note does not close ADR-0112 policy work, whole-wave publication or
+merge. No historical ADR body is rewritten.

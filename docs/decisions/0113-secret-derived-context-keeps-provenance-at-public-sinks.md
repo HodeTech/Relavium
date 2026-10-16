@@ -216,3 +216,15 @@ contracts and the nineteen-increment Wave 3 plan. Earlier proposal wording above
 records the review stage; approval is complete. Implementation, independent
 review gates and canonical promotion remain staged in that plan. Acceptance
 does not claim shipping behaviour, an actual release or production custody setup.
+
+
+## Wave 3 Step 3 implementation landing — 2026-10-16
+
+The ADR-0113 portion is implemented and independently accepted at `5d8c0b0c` on
+`development`, after two NEW complete cumulative clean reviews and a separate
+clean secret-flow security sitting. The [Step 3 acceptance register](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-3-acceptance--2026-10-16)
+joins every verified correction, permanent/causal evidence and precise trust/
+historical-content limits. Earlier decision-acceptance notes do not claim this
+later implementation landing. Other Wave 3 decisions and increments remain
+staged; this note does not close ADR-0112 policy work, whole-wave publication or
+merge. No historical ADR body is rewritten.

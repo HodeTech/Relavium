@@ -1114,7 +1114,9 @@ records completed decision gates and staged implementation.
 after two NEW independent complete clean reviews.
 [Step 2 is also accepted](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-2-acceptance--2026-10-16)
 with two NEW complete clean cumulative rounds after its historical-reader corrections;
-Step 3 (ADR-0113 secret provenance) is active. The
+[Step 3 is independently accepted](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-3-acceptance--2026-10-16)
+after two NEW complete cumulative clean rounds and a separate clean security sitting.
+Step 4 (error/envelope substrate) is active. The
 [final proposal reviews](phases/phase-2.5.5-hardening-and-remediation.md#second-maintainer-rereview-final-proposal-readiness--2026-10-16)
 remain proposal evidence, not implementation review. The selected encrypted archive
 method persists; production recipient/recovery belongs to Wave 4b release setup.

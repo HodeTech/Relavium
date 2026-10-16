@@ -96,3 +96,15 @@ future feature, deferral or claim of merge-commit execution.
 > Amended 2026-10-16: [ADR-0113](0113-secret-derived-context-keeps-provenance-at-public-sinks.md) is accepted by the maintainer. The engine owns qualified context/input provenance before standard execution and budget preparation. Trusted raw resolver/host inputs are not a public secret-free domain. The optional external tool provenance field has no current authored mapping producer and is not proof of cleanliness. The approved [execution plan](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#proposed-implementation-increments) owns implementation and review gates; this note does not claim implementation landing.
 
 [ADR-0112](0112-chat-network-grants-and-onboarding-state-are-operator-owned.md) additionally refines this boundary: The immutable admitted PolicyTarget and existing beforeDispatch seam supply the final live chat HTTP check after approval/effect preparation; tool grants and approval remain independent.
+
+
+## Wave 3 Step 3 implementation landing — 2026-10-16
+
+The ADR-0113 portion is implemented and independently accepted at `5d8c0b0c` on
+`development`, after two NEW complete cumulative clean reviews and a separate
+clean secret-flow security sitting. The [Step 3 acceptance register](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-3-acceptance--2026-10-16)
+joins every verified correction, permanent/causal evidence and precise trust/
+historical-content limits. Earlier decision-acceptance notes do not claim this
+later implementation landing. Other Wave 3 decisions and increments remain
+staged; this note does not close ADR-0112 policy work, whole-wave publication or
+merge. No historical ADR body is rewritten.

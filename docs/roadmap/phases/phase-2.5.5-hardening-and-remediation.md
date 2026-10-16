@@ -4525,3 +4525,45 @@ reviews after this final correction remain required before Step 4. The interrupt
 review is incomplete; none of the nonclean or incomplete sittings is counted.
 These local author controls do not claim full CI/coverage/native-platform,
 whole-wave acceptance, a release or new permission. Detailed records stay ignored.
+
+
+### Wave 3 Step 3 acceptance — 2026-10-16
+
+Step 3 is independently accepted at `5d8c0b0cf91604c2c270ff0351b4168508fe6041`.
+Two NEW independent complete cumulative clean reviews after the final material
+fix cover all **42 changed paths / 108 hunks**, including all thirteen added
+files and actual consumers. Selected reviewers are gpt-6-astra/high (30 files /
+1,513 independently passing tests) and gpt-6.1-sol/high (20 files / 1,193 tests).
+Both report zero findings and independently run the 26 retained ordinary
+Step-2/current comparisons with matching outcomes. The parent reads both full
+reports. Earlier nonclean sittings and the interrupted incomplete review are
+not counted. Detailed reports remain local and Git-ignored.
+
+The separate NEW secret-flow security sitting is clean at the same source,
+with **19 files / 1,156 independently passing tests**, no skips and independent
+inspection of all 27 causal phases. It traces actual producer/preparation/resume,
+VM/template, standard-handler/public-event and native SQLite boundaries; its
+mandatory checklist distinguishes unchanged/out-of-scope paths. This is a
+security disposition, not a third complete correctness round. Test counts overlap
+and are not added to author or other reviewer totals.
+
+ADR-0113 implementation and the actual context exposure are complete. #92 has
+its approved explicit documented limitation: no current authored tool-mapping
+producer exists, optional external provenance is unverified, and future mapping
+must supply final effective-argument provenance. No fake producer or general
+value-scanning guarantee is introduced. Canonical contracts preserve required
+owned low-level metadata, direct-input compatibility, optional absence/key order,
+finite observed-access semantics, native result/error conversion and trusted raw/
+historical-content limits. All verified review findings and the parent-owned
+context-definition race are repaired; no scoped review finding remains open.
+
+Final author evidence remains precisely attributed: **601 files / 13,814 passing
+tests / 20 established skips**, workspace lint/typecheck, six builds (five cached),
+fences, isolation, formatting/whitespace and relative links. Nine exact-restored
+causal cohorts and the final full passing suite precede acceptance. This metadata
+landing does not claim execution at a successor, full CI/coverage/native-platform,
+whole-wave acceptance or merge. Step 19 retains those final gates/publication.
+
+Next is Step 4's approved minimal error/envelope substrate. Read-only inventories
+for Steps 4–5 are preparation, not implementation acceptance. No user decision,
+credential, provider capture, billing or release action is pending.
