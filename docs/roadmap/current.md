@@ -1139,7 +1139,8 @@ with remote totals attributed separately. [Step 8b is independently accepted](ph
 at `e16a7659` after two NEW complete cumulative clean rounds and a separate clean
 security sitting following the canonical-reference correction. Full CI and all
 four required same-tarball consumers pass at `ab50be11`; independent equivalence
-checks preserve that execution attribution. Workflow/terminal integration in 8c,
+checks preserve that execution attribution. [Step 8c workflow/terminal integration is being verified](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8c-implementation-checkpoint--2026-10-16);
+its author, cumulative-review and security gates remain open. Workflow/terminal acceptance in 8c,
 product fatal activation in 8d, whole Step 8 and Steps 9–19 remain open. The
 [final proposal reviews](phases/phase-2.5.5-hardening-and-remediation.md#second-maintainer-rereview-final-proposal-readiness--2026-10-16)
 remain proposal evidence, not implementation review. The selected encrypted archive

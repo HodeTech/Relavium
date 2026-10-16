@@ -113,6 +113,7 @@ const stubResolver: ProviderResolver = {
 const io: CliIo = {
   writeOut: () => undefined,
   writeErr: () => undefined,
+  writeOutAcknowledged: () => Promise.resolve(),
   writeErrAcknowledged: () => Promise.resolve(),
   env: {},
   stdoutIsTty: true,

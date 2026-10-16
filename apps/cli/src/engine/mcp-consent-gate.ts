@@ -58,7 +58,10 @@ export function mcpConsentPath(homeDir: string): string {
 }
 
 /** Ask the user about one server. `true` approves; anything else refuses. Injected so tests need no TTY. */
-export type ConsentPrompter = (subject: ConsentSubject) => Promise<boolean>;
+export type ConsentPrompter = (
+  subject: ConsentSubject,
+  options?: { readonly signal?: AbortSignal },
+) => Promise<boolean>;
 
 /**
  * What the prompt shows — the WHOLE decision, as separate fields (§7).
@@ -94,6 +97,7 @@ export interface ConsentSubject {
 }
 
 export interface ConsentGateDeps {
+  readonly signal?: AbortSignal;
   readonly io: CliIo;
   readonly global: GlobalOptions;
   /** `~` — the grant log's home. */
@@ -126,17 +130,21 @@ export async function assertStdioConsent(
   cwd: string,
   deps: ConsentGateDeps,
 ): Promise<ReadonlyMap<string, ResolvedStdioSpawn>> {
+  deps.signal?.throwIfAborted();
   const stdio = refs.filter((ref) => ref.transport === 'stdio');
   const resolved = new Map<string, ResolvedStdioSpawn>();
   if (stdio.length === 0) return resolved;
 
   const subjects: Subject[] = [];
   for (const ref of stdio) {
+    deps.signal?.throwIfAborted();
     const spawn = await resolveOrRefuse(ref, cwd, deps.artifact);
+    deps.signal?.throwIfAborted();
     resolved.set(spawn.serverId, spawn);
     subjects.push({ spawn, digest: digestOrRefuse(spawn) });
   }
 
+  deps.signal?.throwIfAborted();
   const path = mcpConsentPath(deps.homeDir);
   const grants = readGrants(path);
   if (grants === undefined) {
@@ -221,17 +229,24 @@ async function askAndRecord(
   const prompt = deps.prompt;
   const now = deps.now ?? ((): string => new Date().toISOString());
   for (const [index, { spawn, digest }] of pending.entries()) {
+    deps.signal?.throwIfAborted();
     const approved =
       prompt === undefined
         ? false
-        : await prompt(subjectOf(spawn, digest, index + 1, pending.length, grants));
+        : await prompt(
+            subjectOf(spawn, digest, index + 1, pending.length, grants),
+            deps.signal === undefined ? undefined : { signal: deps.signal },
+          );
+    deps.signal?.throwIfAborted();
     if (!approved) {
       throw new CliError(
         'invalid_invocation',
         `MCP server '${safe(spawn.serverId)}' was not approved, so the run did not start.`,
       );
     }
-    recordGrant(path, spawn, digest, now());
+    const grantedAt = now();
+    deps.signal?.throwIfAborted();
+    recordGrant(path, spawn, digest, grantedAt);
   }
 }
 

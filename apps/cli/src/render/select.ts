@@ -1,3 +1,5 @@
+import { CliError } from '../process/cli-error.js';
+import type { RendererCreationOwner } from '../commands/workflow-terminal.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import { detectOutputMode, isCiEnv } from '../process/output-mode.js';
@@ -10,21 +12,33 @@ import { createJsonRenderer, createPlainRenderer, type RunRenderer } from './ren
  * attached, the NDJSON renderer under `--json`, and the plain line renderer otherwise (no-TTY / `CI=true`).
  * All three are the same `onEvent` seam over one bus — "renderer, not a fork" (2.F / 2.K).
  */
-export function selectRenderer(io: CliIo, global: GlobalOptions): RunRenderer {
+export function selectRenderer(
+  io: CliIo,
+  global: GlobalOptions,
+  creation?: RendererCreationOwner,
+): RunRenderer {
   const mode = detectOutputMode({
     stdoutIsTty: io.stdoutIsTty,
     json: global.json,
     ci: isCiEnv(io.env),
   });
   if (mode === 'tui') {
+    if (io.nativeStdout === undefined || io.nativeStdin === undefined) {
+      creation?.acknowledgeNoAcquisition();
+      throw new CliError('cli_internal', '');
+    }
     // The ink renderer takes the real stdout stream directly (not the CliIo text seam): ink needs a
     // NodeJS.WriteStream for cursor control / raw mode / terminal dimensions, which `writeOut(text)` cannot
-    // represent. This path is only reached on an interactive TTY (never in tests — captureIo is not a TTY).
+    // represent. Production reaches this only in TUI mode; native fixtures supply their own inert TTY ports.
     return createInkRenderer({
       color: global.color,
+      stdout: io.nativeStdout,
+      stdin: io.nativeStdin,
+      ...(creation === undefined ? {} : { creation }),
       writeTerminalNotice: (text) => io.writeErr(text),
     });
   }
   // 'plain' covers --json (NDJSON), CI, and no-TTY: NDJSON only under the explicit --json opt-in (ADR-0049).
+  creation?.acknowledgeNoAcquisition();
   return global.json ? createJsonRenderer(io) : createPlainRenderer(io);
 }

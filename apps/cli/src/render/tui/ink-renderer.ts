@@ -1,6 +1,7 @@
 import { render } from 'ink';
 import { createElement } from 'react';
 
+import type { RendererCreationOwner } from '../../commands/workflow-terminal.js';
 import type { RunRenderer } from '../renderer.js';
 import { RunApp } from './RunApp.js';
 import { createRunStore, type RunStore } from './run-store.js';
@@ -28,10 +29,12 @@ export interface InkMountInstance {
 }
 
 export interface InkRendererOptions {
+  readonly creation?: RendererCreationOwner;
   /** Whether to render with color (`false` under `--no-color`). */
   readonly color: boolean;
   /** The TTY stream `ink` renders to — defaults to `process.stdout` (a real terminal in the `tui` path). */
   readonly stdout?: NodeJS.WriteStream;
+  readonly stdin?: NodeJS.ReadStream;
   /** Where the persistent final summary is written after unmount — defaults to `stdout`. Injectable for tests. */
   readonly writeSummary?: (text: string) => void;
   /** Immediate fixed human outcome on stderr; independent of input and host-cleanup ACKs. */
@@ -46,6 +49,7 @@ export interface InkRendererOptions {
  */
 export function createInkRenderer(options: InkRendererOptions): RunRenderer {
   const stdout = options.stdout ?? process.stdout;
+  const stdin = options.stdin ?? process.stdin;
   const store = createRunStore(options.color);
 
   const mount =
@@ -53,6 +57,10 @@ export function createInkRenderer(options: InkRendererOptions): RunRenderer {
     ((s: RunStore): InkMountInstance =>
       render(createElement(RunApp, { store: s }), {
         stdout,
+        stdin,
+        // The CLI selector already chose TUI mode. A second global CI detector must not change
+        // that captured invocation decision or turn a live mount into a final-frame-only renderer.
+        interactive: true,
         // OUR SIGINT handler (run.ts) drives the cooperative cancel — not ink's process.exit. RunApp uses no
         // `useInput`/`useFocus`, so ink stays in COOKED mode (never raw): the kernel keeps translating Ctrl-C
         // → SIGINT, which reaches run.ts. (If a future RunApp adds input, re-verify cancel on a real TTY.)
@@ -65,11 +73,14 @@ export function createInkRenderer(options: InkRendererOptions): RunRenderer {
   // The live view is a (frame loop + ink mount) pair that can be torn down and re-created: `start` after
   // construction and on `resume`, `stop` on `suspend` and `finalize`. The store outlives every cycle, so a
   // re-mount re-projects the exact same state (2.E: ink is a thin projection of an ink-free store).
+  let sealed = false;
+  let unacknowledgedMount = false;
   let frame: ReturnType<typeof setInterval> | undefined;
   let instance: InkMountInstance | undefined;
   let stopping: Promise<void> | undefined;
 
   const start = (): void => {
+    if (sealed) return;
     // The frame loop drives the throttle (coalesced repaints) + the spinner animation. unref() so a pending
     // tick never holds the process open past the run's end.
     const f = setInterval(() => {
@@ -77,7 +88,9 @@ export function createInkRenderer(options: InkRendererOptions): RunRenderer {
     }, FRAME_MS);
     f.unref();
     try {
+      unacknowledgedMount = true;
       instance = mount(store);
+      unacknowledgedMount = false;
     } catch (err) {
       clearInterval(f); // mount threw — don't leak the frame loop (finalize won't run)
       throw err;
@@ -92,14 +105,27 @@ export function createInkRenderer(options: InkRendererOptions): RunRenderer {
       frame = undefined;
     }
     const live = instance;
-    if (live === undefined) return Promise.resolve();
+    if (live === undefined)
+      return unacknowledgedMount ? new Promise<never>(() => {}) : Promise.resolve();
     // Retain the actual capability until BOTH native acknowledgements succeed.
     const pending = Promise.resolve().then(async () => {
       // Ink registers its beforeExit handler in waitUntilExit and removes it during unmount.
       // Acquire the ACK first; acquiring it after unmount would leak one listener per mount.
-      const exiting = live.waitUntilExit();
-      void exiting.catch(() => undefined); // observe rejection even if unmount itself throws
-      live.unmount();
+      let failed: { readonly cause: unknown } | undefined;
+      let exiting: Promise<unknown> | undefined;
+      try {
+        exiting = live.waitUntilExit();
+        void exiting.catch(() => undefined);
+      } catch (cause) {
+        failed = { cause };
+      }
+      try {
+        live.unmount();
+      } catch (cause) {
+        failed ??= { cause };
+      }
+      if (failed !== undefined) throw failed.cause;
+      if (exiting === undefined) return await new Promise<never>(() => {});
       await exiting;
       if (instance === live) instance = undefined;
     });
@@ -115,14 +141,20 @@ export function createInkRenderer(options: InkRendererOptions): RunRenderer {
     return pending;
   };
 
-  start(); // initial mount (a construction throw propagates, leaving no timer — see `start`)
-
   let finalized = false;
   let finalizing: Promise<void> | undefined;
   let terminalNoticed = false;
 
-  return {
+  const renderer: RunRenderer = {
+    seal: () => {
+      sealed = true;
+      if (frame !== undefined) {
+        clearInterval(frame);
+        frame = undefined;
+      }
+    },
     onEvent: (event) => {
+      if (sealed) return;
       store.apply(event);
       if (
         !terminalNoticed &&
@@ -155,7 +187,7 @@ export function createInkRenderer(options: InkRendererOptions): RunRenderer {
     suspend: async () => {
       // Release the terminal so a `@clack/prompts` gate card (2.G) can render. Paint the latest live frame
       // first, then unmount WITHOUT writing the summary (that is finalize's job — the run is not over).
-      store.flush();
+      if (!sealed) store.flush();
       await stop();
     },
     resume: () => {
@@ -169,9 +201,10 @@ export function createInkRenderer(options: InkRendererOptions): RunRenderer {
       if (finalized) return Promise.resolve();
       if (finalizing !== undefined) return finalizing;
       const pending = Promise.resolve().then(async () => {
-        store.flush();
+        if (!sealed) store.flush();
         await stop();
         finalized = true;
+        if (sealed) return;
         // Input and host-safe ACKs precede the irreversible summary. A cosmetic write fault
         // cannot revoke those ACKs or authorize a second summary attempt.
         const write =
@@ -193,4 +226,8 @@ export function createInkRenderer(options: InkRendererOptions): RunRenderer {
       return pending;
     },
   };
+  // Transfer cleanup custody before Ink's constructor can allocate native work and then throw.
+  options.creation?.adopt(renderer);
+  start();
+  return renderer;
 }

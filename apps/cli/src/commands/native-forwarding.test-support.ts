@@ -15,6 +15,7 @@ export async function witnessNativeToolProcess(
   nativeProcesses: NativeProcessController | undefined,
   invocation: CliInvocation,
   workspaceDir: string,
+  expectedParentOwners = 0,
 ): Promise<void> {
   expect(nativeProcesses, 'NATIVE_INVOCATION_FORWARDING').toBe(
     nativeProcessesForInvocation(invocation),
@@ -26,7 +27,7 @@ export async function witnessNativeToolProcess(
     ...(nativeProcesses === undefined ? {} : { nativeProcesses }),
   });
   if (host.process === undefined) throw new Error('the real process arm is missing');
-  expect(invocation.registry.activeOwners).toBe(0);
+  expect(invocation.registry.activeOwners).toBe(expectedParentOwners);
   const pending = host.process.spawn(
     process.execPath,
     ['-e', 'setTimeout(() => process.stdout.write("native-witness"), 150)'],
@@ -34,11 +35,16 @@ export async function witnessNativeToolProcess(
     { timeoutMs: 2_000 },
   );
   await vi.waitFor(
-    () => expect(invocation.registry.activeOwners, 'NATIVE_PROCESS_ASSEMBLY_OWNERSHIP').toBe(1),
+    () =>
+      expect(invocation.registry.activeOwners, 'NATIVE_PROCESS_ASSEMBLY_OWNERSHIP').toBe(
+        expectedParentOwners + 1,
+      ),
     { interval: 1 },
   );
   expect(await pending).toMatchObject({ exitCode: 0, stdout: 'native-witness' });
-  await vi.waitFor(() => expect(invocation.registry.activeOwners).toBe(0), { interval: 1 });
+  await vi.waitFor(() => expect(invocation.registry.activeOwners).toBe(expectedParentOwners), {
+    interval: 1,
+  });
 }
 
 /** Keep an actual tool child alive across overlapping builders, bounded independently of their gates. */

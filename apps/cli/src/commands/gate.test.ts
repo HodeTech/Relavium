@@ -54,7 +54,10 @@ import {
 const { consentPrompt } = vi.hoisted(() => ({
   consentPrompt: vi.fn(() => Promise.resolve(false)),
 }));
-vi.mock('../mcp/consent-prompt.js', () => ({ createConsentPrompter: () => consentPrompt }));
+vi.mock('../mcp/consent-prompt.js', () => ({
+  createConsentPrompter: () => consentPrompt,
+  createBoundConsentPrompter: () => consentPrompt,
+}));
 
 /**
  * A WorkflowEngine stub for the closed-handle / EngineStateError paths that the real engine can't be driven
@@ -265,7 +268,12 @@ describe('gateCommand', () => {
 
   /** The injected deps for a resume over the SHARED in-memory db (no-op close — the db spans the whole test). */
   function deps(io: ReturnType<typeof captureIo>['io']): GateCommandDeps {
-    return { io, global: globalOptions(), openDb: () => ({ db, close: () => {} }) };
+    return {
+      io,
+      invocation: createCliInvocation({ exit: vi.fn(), setExitCode: vi.fn() }),
+      global: globalOptions(),
+      openDb: () => ({ db, close: () => {} }),
+    };
   }
 
   /** A read-only history store over the shared db (for asserting persisted events post-resume). */
@@ -332,6 +340,7 @@ describe('gateCommand', () => {
               options?.toolEnv?.nativeProcesses,
               invocation,
               options?.toolEnv?.workspaceDir ?? root,
+              2,
             );
             return buildEngine(options);
           },
@@ -913,7 +922,10 @@ describe('gateCommand', () => {
         expect(
           await gateCommand(
             { runId, approve: true, secretStdin: true, allowMcpStdio: [digest] },
-            commandDeps,
+            {
+              ...commandDeps,
+              invocation: createCliInvocation({ exit: vi.fn(), setExitCode: vi.fn() }),
+            },
           ),
         ).toBe(EXIT_CODES.success);
         expect(startMcpClient).toHaveBeenCalledOnce();

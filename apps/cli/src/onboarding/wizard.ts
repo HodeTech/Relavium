@@ -175,7 +175,16 @@ export async function runOnboardingWizard(deps: OnboardingDeps): Promise<void> {
   // Store via the TESTED providerSetKey path (keychain.set + the provider row + the keychain-ref, secret-free). Its
   // one stdout line is suppressed (a silent io) so the wizard's output stays uniformly clack-styled — the wizard
   // surfaces the outcome through a clack note/outro instead.
-  const silentIo: CliIo = { ...deps.io, writeOut: () => undefined, writeErr: () => undefined };
+  const silentIo: CliIo = {
+    env: deps.io.env,
+    stdoutIsTty: false,
+    stdinIsTty: deps.io.stdinIsTty,
+    stdin: deps.io.stdin,
+    writeOut: () => undefined,
+    writeErr: () => undefined,
+    writeOutAcknowledged: () => Promise.resolve(),
+    writeErrAcknowledged: () => Promise.resolve(),
+  };
   try {
     await runProviderCommand(
       { action: 'set-key', name: provider },

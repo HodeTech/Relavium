@@ -23,6 +23,8 @@ import { sanitizeInline, stringifyJsonLine } from './sanitize.js';
  */
 export interface RunRenderer {
   onEvent: (event: RunEvent) => void;
+  /** Permanent shutdown seal: prevent repaint/remount; releaseInput still owes actual native ACK. */
+  seal?: () => void;
   /**
    * Optional pause of the live view so an interactive `@clack/prompts` gate card (2.G) can own the terminal
    * mid-run: the `ink` TUI unmounts (releasing the terminal) WITHOUT writing its final summary; `resume`

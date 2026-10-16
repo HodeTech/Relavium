@@ -250,3 +250,17 @@ evidence remain attributed to `ab50be11` with independently verified equivalence
 Creation-owned native process integration is accepted; workflow/terminal owners
 in 8c and all-surface fatal activation in 8d remain open. This note adds no new
 decision and does not claim whole-Step-8 or whole-Wave-3 completion.
+
+## Step 8c partial implementation — 2026-10-16
+
+Workflow/preparation/driver and terminal ownership are implemented on
+`development`; author and independent acceptance gates remain open. The
+[canonical workflow ownership contract](../reference/cli/commands.md#workflow-and-terminal-ownership)
+owns first-fault escalation, captured input/output, actual release and
+return/throw precedence. The
+[implementation checkpoint](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8c-implementation-checkpoint--2026-10-16)
+separates ordinary regressions, native fixture evidence and pending cumulative
+reviews. Earlier Step 1 best-effort close warnings never granted retirement from
+a close throw; this integration retains unknown close obligations without
+rewriting durable workflow results. Global fatal installation and session owners
+remain 8d. No new decision, dependency, release or whole-step acceptance is added.

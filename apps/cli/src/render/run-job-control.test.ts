@@ -157,7 +157,16 @@ describe('wireRunJobControl (G0, the run/gate path)', () => {
       throw new Error('suspend removal failed');
     });
     const jc = wireRunJobControl({ write: h.write, lifecycle: h.lifecycle });
-    expect(() => jc.dispose()).toThrow('Run job-control cleanup failed.');
+    try {
+      jc.dispose();
+      expect.unreachable('The failed native removal must remain classified.');
+    } catch (error) {
+      expect(error).toMatchObject({
+        code: 'cli_internal',
+        exitCode: 9,
+        cause: { message: 'suspend removal failed' },
+      });
+    }
     expect(h.removeContinue).toHaveBeenCalledTimes(1);
     h.fireContinue();
     h.fireSuspend();

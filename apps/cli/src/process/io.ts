@@ -5,8 +5,14 @@ import { CliError } from './cli-error.js';
  * TTY, stdout, or environment. The `bin` entry wires this to `process`; tests pass a capture.
  */
 export interface CliIo {
+  /** Captured native TUI/prompt sink. Memory-only hosts omit it and cannot silently acquire the real TTY. */
+  readonly nativeStdout?: NodeJS.WriteStream;
+  /** Native Ink input from the same captured invocation; line-only hosts retain stdin without this field. */
+  readonly nativeStdin?: NodeJS.ReadStream;
   writeOut(text: string): void;
   writeErr(text: string): void;
+  /** Actual delivery to the same stdout; enqueueing or cancellation is never a restoration ACK. */
+  writeOutAcknowledged(text: string): Promise<void>;
   /** Acknowledge delivery to the same sink as writeErr; rejection never contains the stream's error text. */
   writeErrAcknowledged(text: string): Promise<void>;
   readonly env: Readonly<Record<string, string | undefined>>;
@@ -25,16 +31,19 @@ export interface CliIo {
 export function processIo(): CliIo {
   const { stdout, stderr, stdin } = process;
   return {
+    nativeStdout: stdout,
+    nativeStdin: stdin,
     writeOut: (text) => {
       stdout.write(text);
     },
     writeErr: (text) => {
       stderr.write(text);
     },
+    writeOutAcknowledged: (text) => acknowledgeWrite(stdout, text),
     writeErrAcknowledged: (text) => acknowledgeWrite(stderr, text),
     env: process.env,
-    stdoutIsTty: process.stdout.isTTY === true,
-    stdinIsTty: process.stdin.isTTY === true,
+    stdoutIsTty: stdout.isTTY === true,
+    stdinIsTty: stdin.isTTY === true,
     stdin,
   };
 }

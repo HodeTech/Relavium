@@ -1,6 +1,9 @@
 import type { CliInvocation } from '../process/invocation.js';
+import type { defaultSubscribeSignals } from '../process/signals.js';
+import { warnTeardown } from '../process/close-quietly.js';
 import { nativeProcessesForInvocation } from '../process/native-process-owner.js';
-import { closeQuietly, warnTeardown } from '../process/close-quietly.js';
+import type { RendererCreationOwner } from './workflow-terminal.js';
+import { WorkflowLifetime } from './workflow-lifetime.js';
 import { EgressWorkScope } from '../engine/egress-work.js';
 import { randomUUID } from 'node:crypto';
 
@@ -32,7 +35,6 @@ import { sweepCommittedEffects } from '../engine/effect-retention.js';
 import { createCliHost } from '../engine/host.js';
 import {
   connectWorkflowMcp,
-  workflowDeclaresMcp,
   type StdioConsentGate,
   surfaceMcpSkipped,
   type WorkflowMcpRuntime,
@@ -52,8 +54,7 @@ import type { GatePrompter } from '../gate/prompter.js';
 import { selectGatePrompter } from '../gate/select-prompter.js';
 import type { OpenedHistory } from '../history/open.js';
 import { createConsentGate } from '../engine/mcp-consent-gate.js';
-import { guardMcpTeardown } from '../engine/mcp-signal-teardown.js';
-import { createConsentPrompter } from '../mcp/consent-prompt.js';
+import { createBoundConsentPrompter } from '../mcp/consent-prompt.js';
 import { CliError } from '../process/errors.js';
 import { storageBoundaryError } from '../process/owned-storage.js';
 import { sourceLabel } from '../process/source-label.js';
@@ -99,6 +100,8 @@ export interface RunCommandArgs {
 export interface RunCommandDeps {
   /** The original bootstrap invocation; native authority stays host-only. */
   readonly invocation?: CliInvocation;
+  /** Host-owned subscription, injectable without installing ambient OS listeners in retained-owner tests. */
+  readonly subscribeSignals?: typeof defaultSubscribeSignals;
   readonly io: CliIo;
   readonly global: GlobalOptions;
   /** Injectable so tests (and the 2.K harness) drive a stub provider + the in-memory host. */
@@ -125,7 +128,11 @@ export interface RunCommandDeps {
    * Injectable renderer selector (TUI / json / plain). Defaults to the real {@link selectRenderer}; tests
    * inject a fake renderer (onEvent + finalize spies) to assert the finalize wiring without a TTY.
    */
-  readonly selectRenderer?: (io: CliIo, global: GlobalOptions) => RunRenderer;
+  readonly selectRenderer?: (
+    io: CliIo,
+    global: GlobalOptions,
+    creation?: RendererCreationOwner,
+  ) => RunRenderer;
   /**
    * Injectable interactive gate-prompter selector (2.G). Defaults to the real {@link selectGatePrompter}
    * (present only on an interactive TTY); tests inject a fake prompter to drive the inline gate-resolve path
@@ -175,7 +182,17 @@ function parseOrRefuse(yaml: string, source: string): WorkflowDefinition {
 }
 
 export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Promise<ExitCode> {
-  const nativeProcesses = nativeProcessesForInvocation(deps.invocation);
+  const lifetime = new WorkflowLifetime(deps.invocation, deps.io, deps.subscribeSignals);
+  return lifetime.execute(() => runOwned(args, deps, lifetime));
+}
+
+async function runOwned(
+  args: RunCommandArgs,
+  deps: RunCommandDeps,
+  lifetime: WorkflowLifetime,
+): Promise<ExitCode> {
+  const nativeProcesses = nativeProcessesForInvocation(lifetime.invocation);
+  lifetime.checkpoint();
   if ((deps.global.allowFsRoots?.length ?? 0) > 0) {
     throw new CliError(
       'invalid_invocation',
@@ -197,7 +214,8 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
 
   const def = parseOrRefuse(source.yaml, sourceLabel(deps.global.cwd, source.path));
   assertOrdinaryInputsAllowed(def, rawInputs);
-  const secretInputs = await readRunSecrets(args, deps, def);
+  const secretInputs = await readRunSecrets(args, deps, def, lifetime);
+  lifetime.checkpoint();
   const admitted = resolveAndValidateWorkflowInputs(
     def,
     resolveInputs(def, rawInputs, secretInputs),
@@ -208,7 +226,9 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
   }
   const inputs = admitted.inputs;
   warnSnapshotLiterals(def, deps.io);
+  lifetime.checkpoint();
   const keys = deps.resolveKeys?.();
+  lifetime.checkpoint();
   // Preserve injected precedence, sharing the admitted run's resolver with provider preflight.
   const providers = deps.providers ?? keys?.providers ?? createProviderResolver(deps.io.env);
   const mayPrompt = args.secretInputsStdin !== true;
@@ -221,6 +241,7 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
   // conditional and still surfaces at runtime, so the pre-flight never false-fails a valid run. The key
   // is read only to confirm presence here — never logged, stored, or rendered.
   for (const id of neededProviderIds(def)) {
+    lifetime.checkpoint();
     providers.keyFor(id);
   }
 
@@ -228,38 +249,13 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
   // the store cannot be opened until the definition it must freeze is known.
   let opened: OpenedHistory | undefined;
   let mcpRuntime: WorkflowMcpRuntime | undefined;
+  let mcpAcknowledged = true;
+  const reportMcpCloseFailure = (_serverId: string, cause: unknown): void => {
+    mcpAcknowledged = false;
+    lifetime.cleanupFailed(cause);
+    warnTeardown(deps.io, 'MCP');
+  };
   const mcpWork = new EgressWorkScope();
-  /**
-   * The signal guard, armed BEFORE the connect (ADR-0088 §1.3).
-   *
-   * Arming it after `connectWorkflowMcp` resolved was the first attempt, and a review found the hole: the
-   * SDK spawns each stdio child inside `start()`, so for up to 120 s per server — precisely the silent window
-   * where a user reaches for Ctrl-C — the children existed with no guard armed. Two things follow from arming
-   * early: native ownership is registered during creation, and the connect itself is given a
-   * cancel signal so a Ctrl-C during it actually stops rather than merely being survived.
-   *
-   * `reapOnly`: `driveRun` owns this surface's documented signal contract — Ctrl-C drains to `run:cancelled`
-   * and exits `1` (commands.md). This guard reaps children; it must not race that exit code.
-   */
-  const mcpConnectCancel = new AbortController();
-  // **Only when there is something to guard.** Arming unconditionally was the first attempt, and this
-  // command's own SIGINT contract test caught it: `drive.ts` identifies its handler by set-delta and asserts
-  // exactly one was added, so a guard installed for a workflow that declares no MCP server is a second
-  // listener with nothing to reap — breaking a documented invariant to protect children that do not exist.
-  const unguardMcp = workflowDeclaresMcp(def)
-    ? guardMcpTeardown(
-        async () => {
-          mcpConnectCancel.abort(); // stops an in-flight connect; a no-op once one completed
-          await mcpRuntime?.client.close();
-        },
-        // The original invocation owns native creation during the pending connect as well as after it.
-        undefined,
-        {
-          reapOnly: true,
-          ...(deps.invocation === undefined ? {} : { invocation: deps.invocation }),
-        },
-      )
-    : (): void => undefined;
   try {
     // Inbound MCP (2.R Step 3b): aggregate the `mcp_servers` declared by the workflow's INLINE agents, start
     // them fail-loud (a connect/discovery failure is an exit-2 CliError, cause stripped), and rewrite the
@@ -268,7 +264,12 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
     mcpRuntime = await connectWorkflowMcp(def, {
       ...(nativeProcesses === undefined ? {} : { nativeProcesses }),
       cwd: deps.global.cwd,
-      connectSignal: mcpConnectCancel.signal,
+      connectSignal: lifetime.signal,
+      assertAdmitting: () => lifetime.checkpoint(),
+      onFailure: (cause) => {
+        if (!lifetime.isStoppedFailure(cause)) lifetime.failure(cause);
+      },
+      onCloseError: reportMcpCloseFailure,
       work: mcpWork,
       resolveSecret:
         deps.mcpSecretResolver ?? keys?.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env),
@@ -284,10 +285,17 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
           global: deps.global,
           homeDir,
           allowedDigests: args.allowMcpStdio,
-          prompt: mayPrompt ? createConsentPrompter() : undefined,
+          signal: lifetime.signal,
+          prompt: mayPrompt
+            ? (subject, options) => {
+                const prompt = createBoundConsentPrompter(promptIo);
+                return lifetime.terminal.runPrompt(() => prompt(subject, options));
+              }
+            : undefined,
         }),
       ...(deps.startMcpClient === undefined ? {} : { startMcpClient: deps.startMcpClient }),
     });
+    lifetime.checkpoint();
     if (mcpRuntime !== undefined) surfaceMcpSkipped(deps.io, mcpRuntime.client.skipped);
     const runWorkflow = mcpRuntime?.workflow ?? def;
 
@@ -304,6 +312,7 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
     // exact graph that ran" recorded a graph that did not run. MCP-discovered tool grants are part of
     // workflow identity: a server that returns a different tool set on resume IS a divergence, and it can
     // only be seen if what was frozen is what was executed.
+    lifetime.checkpoint();
     try {
       opened = deps.openRunStore?.(runWorkflow, homeDir, deps.global.cwd);
     } catch (err) {
@@ -423,7 +432,10 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
         ...mcpOption,
       };
     }
+    lifetime.checkpoint();
     const engine = await build(engineOptions);
+    lifetime.adoptEngine(engine);
+    lifetime.checkpoint();
     // **Drain the terminal outbox before starting (ADR-0078 §4/§5).** A prior process may have produced a
     // terminal its store would not take; it is held in `~/.relavium/terminal-outbox.ndjson` and this is
     // "the next `relavium` start" that the `durabilityUncertain` exit code tells the user to wait for. Draining
@@ -437,6 +449,7 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
     // agent's `tools` already includes what its servers discovered. That makes the plan-build narrowing
     // check correct here (ADR-0094) — a node listing a tool its agent lacks is refused before the run id
     // exists, rather than partway through, after upstream nodes have spent money.
+    lifetime.checkpoint();
     const handle = engine.start({
       workflow: runWorkflow,
       eventConsumption: 'iterated',
@@ -444,15 +457,19 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
       planOptions: { toolGrantsFinal: true },
     });
 
-    // Hand the live run to the shared driver (2.G): it owns the event loop, the SIGINT cooperative-cancel
-    // contract, the renderer lifecycle (constructed inside, after SIGINT registration — output mode per
+    lifetime.adoptHandle(handle);
+
+    // Hand the live run and the already-registered command lifetime to the shared driver (2.G). It owns
+    // the primary event loop and the reserved renderer lifecycle (output mode per
     // commands.md "Output modes": ink TUI on a TTY, NDJSON under --json, plain otherwise), and the inline
     // human-gate prompt when an interactive prompter is present (CI / --json / no-TTY → no prompter → a gate
     // pause exits 3, resumable by `relavium gate`).
     const outcome = await driveRun({
+      lifetime,
       engine,
       handle,
-      makeRenderer: () => (deps.selectRenderer ?? selectRenderer)(deps.io, deps.global),
+      makeRenderer: (creation) =>
+        (deps.selectRenderer ?? selectRenderer)(deps.io, deps.global, creation),
       makeGatePrompter: () =>
         mayPrompt
           ? (deps.selectGatePrompter ?? selectGatePrompter)(deps.io, deps.global)
@@ -507,30 +524,33 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
       );
     }
     return exitCode;
+  } catch (cause) {
+    // Record before an entered MCP/DB cleanup tail can hold the rejection from execute().
+    if (!lifetime.isStoppedFailure(cause)) lifetime.failure(cause);
+    throw cause;
   } finally {
-    // Guarantee the MCP teardown runs EVEN IF the db close throws — a nested finally so neither resource leaks.
-    // Present only when an inline agent declared a server; idempotent. A teardown error must never mask the run
-    // outcome (closeAll swallows per-connection; the db close is best-effort here too).
+    // Cleanup is joined directly, never via a registry promise that depends on this finally.
+    // Neither cancellation nor a deadline certifies the engine/MCP/DB or terminal released.
     try {
-      try {
-        await mcpRuntime?.client.close().catch(() => warnTeardown(deps.io, 'MCP'));
-      } finally {
-        mcpWork.seal();
-        await mcpWork.done;
-        closeQuietly(deps.io, 'history database', () => opened?.close());
-      }
-    } finally {
-      // **Released LAST, after the MCP close has finished** — and it was released first, which left the one
-      // window that matters uncovered. `client.close()` runs the SDK's ladder against a trapping child
-      // (`stdin.end()` → 2 s → SIGTERM → 2 s → SIGKILL, ~4 s), and for all of it the children are alive. A
-      // `SIGTERM` arriving there with the guard already gone is default-handled: the process dies without
-      // `process.on('exit')`, and the children it was mid-way through reaping are orphaned at `ppid 1` — the
-      // exact failure `guardMcpTeardown` was measured against and exists to close.
-      //
-      // Safe because `closeAll` clears its connection map before awaiting, so the guard's own close racing
-      // this one finds nothing left to do. `agent run` already had this order: its MCP teardown happens inside
-      // `runOneShotTurn`, i.e. before its `unguardMcp()`. This makes the two surfaces agree.
-      unguardMcp();
+      await mcpRuntime?.client.close(reportMcpCloseFailure);
+    } catch (cause) {
+      mcpAcknowledged = false;
+      lifetime.cleanupFailed(cause);
+      warnTeardown(deps.io, 'MCP');
+    }
+    mcpWork.seal();
+    try {
+      await mcpWork.done;
+    } catch (cause) {
+      mcpAcknowledged = false;
+      lifetime.cleanupFailed(cause);
+    }
+    if (!mcpAcknowledged) await new Promise<never>(() => {});
+    try {
+      opened?.close();
+    } catch (cause) {
+      lifetime.cleanupFailed(storageBoundaryError(cause));
+      warnTeardown(deps.io, 'history database');
     }
   }
 }
@@ -547,6 +567,7 @@ async function readRunSecrets(
   args: RunCommandArgs,
   deps: RunCommandDeps,
   def: WorkflowDefinition,
+  lifetime: WorkflowLifetime,
 ): Promise<Readonly<Record<string, string>>> {
   if (!args.secretInputsStdin) return {};
   if (!(def.workflow.inputs ?? []).some((decl) => decl.type === 'secret')) {
@@ -556,5 +577,6 @@ async function readRunSecrets(
     );
   }
   const raw = await (deps.readSecretInput?.() ?? readSecretFromStdin(RUN_SECRET_STDIN_CONTEXT));
+  lifetime.checkpoint();
   return parseSecretLines(raw, 'run --secret-inputs-stdin');
 }

@@ -23,6 +23,7 @@ import { loadUserPricingOverlay } from '../engine/pricing-overlay.js';
 import { buildChatSession } from '../chat/session-host.js';
 import { scriptedResolver, textTurn } from '../chat/test-support.js';
 import { EXIT_CODES } from '../process/exit-codes.js';
+import { createCliInvocation } from '../process/invocation.js';
 import type { GlobalOptions } from '../process/options.js';
 import { captureIo, parseNdjson } from '../test-support.js';
 import { chatExportCommand } from './chat-export.js';
@@ -84,6 +85,27 @@ describe('command teardown preserves primary outcomes (#22)', () => {
     expect(warning).not.toContain('secret-token');
     expect(warning).not.toContain('/private/operator');
     expect(warning).not.toContain('\x1b');
+  }
+
+  async function assertWorkflowCloseUnacknowledged(
+    command: Promise<unknown>,
+    invocation: ReturnType<typeof createCliInvocation>,
+  ): Promise<void> {
+    let settled = false;
+    void command.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(settled).toBe(false);
+    expect(invocation.registry.activeOwners).toBe(1);
+    expect(invocation.registry.observations.exitCode()).toBe(9);
+    expect(invocation.registry.budget.deadline()).toBeTypeOf('number');
   }
 
   function seedSession(): void {
@@ -228,19 +250,23 @@ describe('command teardown preserves primary outcomes (#22)', () => {
     assertClosed(err());
   });
 
-  it('run retains a real durable successful result after native close throws', async () => {
+  it('run retains its durable successful result while an opaque native close fault withholds retirement', async () => {
     const { io, out, err } = captureIo();
-    expect(
-      await runCommand(
+    const invocation = createCliInvocation({ exit: vi.fn(), setExitCode: vi.fn() });
+    await assertWorkflowCloseUnacknowledged(
+      runCommand(
         { workflow: 'flow.yaml', input: [], allowMcpStdio: [] },
         {
           io,
+          invocation,
+          subscribeSignals: () => () => undefined,
           global: global(true),
           openRunStore: historyOpener(),
           sweepMedia: () => Promise.resolve(undefined),
         },
       ),
-    ).toBe(EXIT_CODES.success);
+      invocation,
+    );
     expect(parseNdjson(out())).toEqual(
       expect.arrayContaining([expect.objectContaining({ type: 'run:completed' })]),
     );
@@ -249,7 +275,7 @@ describe('command teardown preserves primary outcomes (#22)', () => {
     assertClosed(err());
   });
 
-  it('run preserves an engine-build failure identity even when close and its warning sink fail', async () => {
+  it('run retains the first infrastructure failure through opaque close and warning-sink faults', async () => {
     const primary = new Error('engine build failed');
     const captured = captureIo();
     const io = {
@@ -258,34 +284,46 @@ describe('command teardown preserves primary outcomes (#22)', () => {
         throw new Error('stderr closed');
       },
     };
-    await expect(
+    const invocation = createCliInvocation({ exit: vi.fn(), setExitCode: vi.fn() });
+    await assertWorkflowCloseUnacknowledged(
       runCommand(
         { workflow: 'flow.yaml', input: [], allowMcpStdio: [] },
         {
           io,
+          invocation,
+          subscribeSignals: () => () => undefined,
           global: global(true),
           openRunStore: historyOpener(),
           buildEngine: () => Promise.reject(primary),
         },
       ),
-    ).rejects.toBe(primary);
+      invocation,
+    );
     assertClosed(captured.err());
   });
 
-  it('gate preserves a missing-run invocation refusal after native close throws', async () => {
+  it('gate cannot certify release from a native close throw after missing-run refusal', async () => {
     const { io, out, err } = captureIo();
-    await expect(
+    const invocation = createCliInvocation({ exit: vi.fn(), setExitCode: vi.fn() });
+    await assertWorkflowCloseUnacknowledged(
       gateCommand(
         { runId: 'absent', approve: true },
-        { io, global: global(true), openDb: () => ({ db: client.db, close }) },
+        {
+          io,
+          invocation,
+          subscribeSignals: () => () => undefined,
+          global: global(true),
+          openDb: () => ({ db: client.db, close }),
+        },
       ),
-    ).rejects.toMatchObject({ code: 'invalid_invocation', message: 'no run found with id absent' });
+      invocation,
+    );
     expect(out()).toBe('');
     expect(err()).toBe('warning: history database teardown failed\n');
     assertClosed(err());
   });
 
-  it('gate retains idempotent success for a genuinely completed run after native close throws', async () => {
+  it('gate preserves a genuinely completed run while retaining opaque native close uncertainty', async () => {
     const first = captureIo();
     expect(
       await runCommand(
@@ -306,12 +344,20 @@ describe('command teardown preserves primary outcomes (#22)', () => {
     );
     if (started === undefined) throw new Error('expected durable run identity');
     const { io, out, err } = captureIo();
-    expect(
-      await gateCommand(
+    const invocation = createCliInvocation({ exit: vi.fn(), setExitCode: vi.fn() });
+    await assertWorkflowCloseUnacknowledged(
+      gateCommand(
         { runId: started.runId, approve: true },
-        { io, global: global(true), openDb: () => ({ db: client.db, close }) },
+        {
+          io,
+          invocation,
+          subscribeSignals: () => () => undefined,
+          global: global(true),
+          openDb: () => ({ db: client.db, close }),
+        },
       ),
-    ).toBe(EXIT_CODES.success);
+      invocation,
+    );
     expect(out()).toBe('');
     expect(err()).toContain('warning: history database teardown failed\n');
     assertClosed(err());

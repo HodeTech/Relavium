@@ -237,6 +237,7 @@ function deps(
   return {
     io,
     global,
+    invocation: createCliInvocation({ exit: vi.fn(), setExitCode: vi.fn() }),
     buildEngine: () =>
       buildEngine({
         host: createInMemoryHost(),
@@ -344,7 +345,12 @@ describe('runCommand', () => {
             invocation,
             ...(durable ? { openRunStore: historyOpenRunStore(client.db) } : {}),
             buildEngine: async (options) => {
-              await witnessNativeToolProcess(options?.toolEnv?.nativeProcesses, invocation, root);
+              await witnessNativeToolProcess(
+                options?.toolEnv?.nativeProcesses,
+                invocation,
+                root,
+                2,
+              );
               return buildEngine({
                 ...options,
                 ...(durable ? {} : { host: createInMemoryHost() }),
@@ -918,18 +924,20 @@ describe('runCommand', () => {
     expect(finalizeCalls).toBe(1);
   });
 
-  it('does not let a renderer finalize() error mask the run outcome (logs to stderr instead)', async () => {
+  it('classifies an unexpected finalize() failure as infrastructure without leaking its cause', async () => {
     const path = writeWorkflow('happy.relavium.yaml', HAPPY);
     const { io, err } = captureIo();
     const renderer: RunRenderer = {
       onEvent: () => {},
       finalize: () => Promise.reject(new Error('unmount blew up')),
     };
-    const code = await runCommand(
+    const pending = runCommand(
       { workflow: path, input: ['n=3'], allowMcpStdio: [] },
       deps(io, globalOptions(), { selectRenderer: () => renderer }),
     );
-    expect(code).toBe(EXIT_CODES.success); // the run outcome is preserved
+    await expect(pending).rejects.toThrow('unmount blew up');
+    const failure = await pending.catch((cause: unknown) => toUserFacing(cause));
+    expect(failure).toMatchObject({ code: 'cli_internal', exitCode: 9 });
     expect(err()).toContain('The run view could not write its final summary after cleanup.');
     expect(err()).not.toContain('unmount blew up');
   });
@@ -961,6 +969,46 @@ describe('runCommand', () => {
     // sequenceNumber is monotonically non-decreasing across the stream.
     const seqs = events.map((e) => e.sequenceNumber);
     expect(seqs).toEqual([...seqs].sort((a, b) => a - b));
+  });
+
+  it('keeps TTY --json native-free through terminal retirement, with no cursor bytes or job-control listeners', async () => {
+    const path = writeWorkflow('happy-json-tty.relavium.yaml', HAPPY);
+    const captured = captureIo();
+    const invocation = createCliInvocation({ exit: vi.fn(), setExitCode: vi.fn() });
+    const continued = process.listeners('SIGCONT');
+    const acknowledge = vi.fn((text: string) => captured.io.writeOutAcknowledged(text));
+    const code = await runCommand(
+      { workflow: path, input: ['n=3'], allowMcpStdio: [] },
+      {
+        ...deps(
+          {
+            ...captured.io,
+            stdoutIsTty: true,
+            stdinIsTty: true,
+            writeOutAcknowledged: acknowledge,
+          },
+          globalOptions({ json: true }),
+        ),
+        invocation,
+      },
+    );
+    expect(code).toBe(0);
+    expect(captured.out(), 'WORKFLOW_TTY_JSON_BYTES').not.toContain('\u001b');
+    const events = captured
+      .out()
+      .trimEnd()
+      .split('\n')
+      .map((line) => {
+        const raw: unknown = JSON.parse(line);
+        expect(RunEventSchema.parse(raw)).toEqual(raw);
+        return RunEventSchema.parse(raw);
+      });
+    expect(events[0]?.type).toBe('run:started');
+    expect(events.at(-1)?.type).toBe('run:completed');
+    expect(captured.out()).not.toContain('\u001b');
+    expect(acknowledge).not.toHaveBeenCalled();
+    expect(process.listeners('SIGCONT')).toEqual(continued);
+    expect(invocation.registry.activeOwners).toBe(0);
   });
 
   it('keeps stdout a pure NDJSON stream ending in run:failed (the failure stays a RunEvent, not a stderr fault)', async () => {
@@ -1113,34 +1161,32 @@ describe('runCommand', () => {
     expect(process.listeners('SIGINT')).toHaveLength(before.length);
   }, 15_000); // generous ceiling: the coordination is deterministic, but a cold/starved CI worker is slow
 
-  it('forces a clean exit-1 on a SECOND SIGINT while the cancel drains (never the bare-signal 130)', async () => {
-    // Stub process.exit to THROW (like a real exit halting the handler), so onSigint cannot fall through to a
-    // second handle.cancel() — mirroring production where process.exit never returns.
-    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number): never => {
-      throw new Error(`process.exit:${String(code)}`);
-    }) as typeof process.exit);
-    try {
-      const path = writeWorkflow('stall.relavium.yaml', STALL);
-      const { io } = captureIo();
-      const before = process.listeners('SIGINT');
-      const { buildEngine: buildStalling, reachedSlow } = makeStallingCancelEngine();
-      const pending = runCommand(
-        { workflow: path, input: [], allowMcpStdio: [] },
-        deps(io, globalOptions(), { buildEngine: buildStalling }),
-      );
-      await reachedSlow;
-      const onSigint = process.listeners('SIGINT').filter((l) => !before.includes(l))[0];
-      if (typeof onSigint !== 'function') {
-        throw new TypeError('expected run.ts to register a SIGINT handler');
-      }
-      onSigint('SIGINT'); // first press → cooperative cancel (cancelRequested = true)
-      expect(() => onSigint('SIGINT')).toThrow('process.exit:1'); // second press → forced exit
-      expect(exitSpy).toHaveBeenCalledWith(EXIT_CODES.workflowFailed);
-      const code = await pending; // the run still drains to run:cancelled from the first press
-      expect(code).toBe(EXIT_CODES.workflowFailed);
-    } finally {
-      exitSpy.mockRestore();
-    }
+  it('routes a SECOND SIGINT through shared finite exit 130 while the first cooperative cancel still drains', async () => {
+    const path = writeWorkflow('stall.relavium.yaml', STALL);
+    const { io } = captureIo();
+    const before = process.listeners('SIGINT');
+    const exit = vi.fn();
+    const invocation = createCliInvocation({ exit, setExitCode: vi.fn() });
+    const { buildEngine: buildStalling, reachedSlow } = makeStallingCancelEngine();
+    const pending = runCommand(
+      { workflow: path, input: [], allowMcpStdio: [] },
+      deps(io, globalOptions(), { buildEngine: buildStalling, invocation }),
+    );
+    await reachedSlow;
+    const onSigint = process
+      .listeners('SIGINT')
+      .filter((listener) => !before.includes(listener))[0];
+    if (typeof onSigint !== 'function')
+      throw new TypeError('expected a workflow SIGINT subscription');
+    onSigint('SIGINT');
+    expect(exit).not.toHaveBeenCalled();
+    onSigint('SIGINT');
+    expect(await invocation.finiteExit.exited).toBe(130);
+    expect(exit).toHaveBeenCalledExactlyOnceWith(130);
+    // The injected physical exit returns; it does not manufacture a cleanup ACK.
+    expect(await pending).toBe(EXIT_CODES.workflowFailed);
+    expect(invocation.registry.activeOwners).toBe(0);
+    expect(process.listeners('SIGINT')).toHaveLength(before.length);
   }, 15_000);
 
   it('cancels the still-live engine and propagates when renderer construction throws (abnormal unwind)', async () => {
@@ -1155,7 +1201,8 @@ describe('runCommand', () => {
         { workflow: path, input: [], allowMcpStdio: [] },
         deps(io, globalOptions(), {
           buildEngine: buildStalling,
-          selectRenderer: () => {
+          selectRenderer: (_io, _global, creation) => {
+            creation?.acknowledgeNoAcquisition();
             throw new Error('render boom');
           },
         }),
@@ -1462,6 +1509,7 @@ workflow:
       close: () => Promise.resolve(),
     };
     const baselineSigint = process.listenerCount('SIGINT');
+    const baselineExit = process.listenerCount('exit');
     let sigintDuringConnect = -1;
     let exitDuringConnect = -1;
 
@@ -1490,13 +1538,9 @@ workflow:
     expect(code).toBe(EXIT_CODES.success);
     // The cooperative half is armed during the connect — the window the SDK spawns children in.
     expect(sigintDuringConnect).toBeGreaterThan(baselineSigint);
-    // The synchronous reaper is PROCESS-scoped, so a per-guard delta is no longer the right claim (a guard
-    // built earlier in this file already installed it). That it exists, reads the live registry, and survives
-    // an `unguard` mid-teardown is pinned where it belongs: `mcp-signal-teardown.test.ts` for the mechanism,
-    // and `tools/cli-smoke/check.mjs` for the end-to-end orphan, which needs a real process to mean anything.
-    expect(exitDuringConnect).toBeGreaterThanOrEqual(1);
-    // The SIGNAL half is released on the normal path, where the command's own `finally` owns the teardown.
-    // The `exit` reaper is process-scoped by design and stays — see `mcp-signal-teardown.ts`.
+    // This injected connection owns no native PID/group. Do not fabricate an exit reaper.
+    // Actual native creation/retirement is covered by the physical forwarding and installed controls.
+    expect(exitDuringConnect).toBe(baselineExit);
     expect(process.listenerCount('SIGINT')).toBe(baselineSigint);
   });
 
@@ -1513,6 +1557,7 @@ workflow:
     const path = writeWorkflow('mcp-guard-teardown.relavium.yaml', MCP_WF);
     const { io } = captureIo();
     const baselineSigint = process.listenerCount('SIGINT');
+    const baselineExit = process.listenerCount('exit');
     let exitDuringClose = -1;
     let sigintDuringClose = -1;
     const conn: McpConnection = {
@@ -1547,9 +1592,8 @@ workflow:
     // The cooperative half is still armed while the children are being reaped — the ordering this test is
     // about. The synchronous reaper is process-scoped (see the note in the test above).
     expect(sigintDuringClose).toBeGreaterThan(baselineSigint);
-    expect(exitDuringClose).toBeGreaterThanOrEqual(1);
-    // …and the SIGNAL half released once the teardown is done. The exit reaper is process-scoped and stays,
-    // which is what keeps it armed through a teardown some other path's `unguard` would otherwise cut short.
+    expect(exitDuringClose).toBe(baselineExit); // No native process is created by this injected connection.
+    // The single command signal subscription retires only after the actual teardown.
     expect(process.listenerCount('SIGINT')).toBe(baselineSigint);
   });
 

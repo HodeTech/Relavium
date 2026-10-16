@@ -1,4 +1,5 @@
 import { createCliInvocation } from '../process/invocation.js';
+import { toUserFacing } from '../process/errors.js';
 import { witnessNativeToolProcess } from './native-forwarding.test-support.js';
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
@@ -218,6 +219,7 @@ async function seed(
 function deps(io: ReturnType<typeof captureIo>['io']): GateCommandDeps {
   return {
     io,
+    invocation: createCliInvocation({ exit: vi.fn(), setExitCode: vi.fn() }),
     global: {
       json: false,
       color: false,
@@ -259,7 +261,12 @@ for (const abort of [false, true]) {
           invocation,
           buildEngine: async (options) => {
             if (!abort)
-              await witnessNativeToolProcess(options?.toolEnv?.nativeProcesses, invocation, root);
+              await witnessNativeToolProcess(
+                options?.toolEnv?.nativeProcesses,
+                invocation,
+                root,
+                2,
+              );
             return buildEngine({ ...options, resolvePrice: prices });
           },
         },
@@ -856,7 +863,7 @@ it('MCP consent refusal precedes spawn, engine construction and decision writes'
 });
 
 for (const priceRefusal of [false, true]) {
-  it(`MCP close fault preserves the primary budget result (priceRefusal=${priceRefusal})`, async () => {
+  it(`MCP close fault retains actual budget history and withholds DB retirement (priceRefusal=${priceRefusal})`, async () => {
     const paused = await seed({ mcp: true });
     if (priceRefusal) prices.set(MODEL, { ...PRICE, inputPerMtokMicrocents: 2000000 });
     const before = reader().loadRunEventLogForReplay(paused.runId);
@@ -875,10 +882,12 @@ for (const priceRefusal of [false, true]) {
         return Promise.reject(new Error('PRIVATE fixture close path'));
       },
     };
+    const owned = deps(io);
     const command = budgetCommand(
       { runId: paused.runId, approveAmount: String(paused.amount) },
       {
-        ...deps(io),
+        ...owned,
+        subscribeSignals: () => () => undefined,
         openDb: () => ({
           db: client.db,
           close: () => {
@@ -889,15 +898,25 @@ for (const priceRefusal of [false, true]) {
         startMcpClient: () => Promise.resolve(mcp),
       },
     );
+    let settled = false;
+    void command.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await vi.waitFor(() => expect(closes).toBe(1));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(settled).toBe(false);
+    expect(owned.invocation?.registry.activeOwners).toBe(1);
+    expect(owned.invocation?.registry.observations.exitCode()).toBe(9);
     if (priceRefusal) {
-      await expect(command).rejects.toMatchObject({
-        code: 'invalid_invocation',
-      });
       expect(reader().loadRunEventLogForReplay(paused.runId)).toEqual(before);
       expect(calls).toBe(0);
       expect(keyReads).toBe(0);
     } else {
-      expect(await command).toBe(0);
       expect(calls).toBe(1);
       expect(keyReads).toBe(1);
       expect(reader().loadRunEventLogForReplay(paused.runId).at(-1)).toMatchObject({
@@ -905,7 +924,7 @@ for (const priceRefusal of [false, true]) {
       });
     }
     expect(closes).toBe(1);
-    expect(dbCloses).toBe(1);
+    expect(dbCloses).toBe(0);
     expect(out() + err()).not.toContain('PRIVATE');
     expect([process.listenerCount('SIGINT'), process.listenerCount('SIGTERM')]).toEqual(signals);
     expect(await createRunLeasePort(reader()).read(paused.runId)).toBeUndefined();
@@ -1206,7 +1225,7 @@ for (const phase of ['connect', 'build', 'build_without_mcp'] as const) {
         return Promise.resolve();
       },
     };
-    const code = await budgetCommand(
+    const command = budgetCommand(
       { runId: paused.runId, approveAmount: String(paused.amount) },
       {
         ...deps(io),
@@ -1237,17 +1256,22 @@ for (const phase of ['connect', 'build', 'build_without_mcp'] as const) {
         },
       },
     );
-    expect(code).toBe(1);
+    if (phase === 'connect') {
+      await expect(command).rejects.toThrow('PRIVATE aborted connect detail');
+      const result = await command.catch((cause: unknown) => toUserFacing(cause));
+      expect(result).toMatchObject({ code: 'cli_internal', exitCode: 9 });
+    } else expect(await command).toBe(1);
     expect(out()).toBe('');
-    expect(err()).toContain(
-      'resume interrupted before a decision was recorded; the gate remains pending',
-    );
+    if (phase !== 'connect')
+      expect(err()).toContain(
+        'resume interrupted before a decision was recorded; the gate remains pending',
+      );
     expect(err()).not.toContain('PRIVATE');
     expect(calls).toBe(0);
     expect(keyReads).toBe(0);
     expect(builds).toBe(phase === 'connect' ? 0 : 1);
     expect(dbCloses).toBe(1);
-    expect(closes).toBe(phase === 'build' ? 2 : 0);
+    expect(closes).toBe(phase === 'build' ? 1 : 0);
     expect(reader().loadRunEventLogForReplay(paused.runId)).toEqual(before);
     expect(await createRunLeasePort(reader()).read(paused.runId)).toBeUndefined();
     expect([process.listenerCount('SIGINT'), process.listenerCount('SIGTERM')]).toEqual(signals);

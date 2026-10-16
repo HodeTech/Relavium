@@ -894,9 +894,54 @@ it cannot launch a new async helper; a returned promise may only observe work
 already started. Joins, restoration and reap helpers do not start after expiry.
 This attempt-all cancellation rule grants no retirement or safe-close ACK.
 
+### Workflow and terminal ownership
+
+**Step 8c implementation on `development`; independent acceptance pending.**
+Workflow `run`, human-gate resume and budget resume reserve their workflow and
+terminal owners before asynchronous preparation. One signal subscription covers
+secret input, consent, MCP discovery, engine construction, execution and actual
+cleanup. First SIGINT requests cooperative cancellation; a second SIGINT or
+TERM/HUP/QUIT uses the invocation's single finite-exit capability and unchanged
+absolute budget. A late engine/handle is adopted before further work and drains
+without acquiring new input after stop. A late consent answer cannot append a
+grant or enter secrets, MCP or business work.
+
+The driver keeps one primary reader across prompts. Actual departure health can
+progress while input is held; a rejected reader is never positive primary done.
+Publish actual money/effect/terminal health before rendering, finalization and
+maintenance can throw. Typed ownership-loss diagnostics retain their existing
+remedy. Stronger actual health wins over an opaque CLI fault; a competing
+infrastructure fault wins over ordinary success or invocation refusal. No timer,
+cancel request or iterator rejection grants permission to close history.
+
+Native prompt and Ink acquisition uses the invocation's captured input and
+stdout. A partially allocating renderer or job-control constructor transfers
+cleanup custody before native entry. Permanent stop prevents remount, redraw and
+SIGCONT reclaim, then independently attempts actual prompt/input/listener release
+and acknowledged cursor restoration. Prompt rejection or a missing Ink handle
+after a failed mount is not a release ACK. A remount already entered before stop
+must settle and release its final native state. JSON/CI/plain output acquires no
+TTY job-control or cursor custody merely because stdout has a TTY flag.
+
+MCP manager close failures can arrive through its callback even when `close()`
+fulfills. They retain the MCP/workflow obligation and keep DB close behind actual
+cleanup. An opaque database-close throw also supplies no release ACK; already
+durable workflow results remain intact while the CLI records its lifetime fault.
+Secondary warnings remain fixed and value-free. Known operational errors retain
+their classifier; unknown cleanup failures do not silently become success.
+
+The first owned infrastructure fault starts the common three-second backstop
+immediately, including when cleanup holds the rejection from the outer catch.
+The staged workflow fallback permits that catch to render after actual cleanup;
+infrastructure does not use its signal-only early-exit continuation. A later
+native handoff keeps the same observer, deadline and physical-exit latch and
+invalidates queued fallback completion. This claims no diagnostic delivery ACK.
+Global fatal/background/sink installation, session owners and final acknowledged
+diagnostic ordering remain Step 8d. Whole Step 8 is still open.
+
 ### Native crash teardown scope
 
-**Step 8b implementation; independent acceptance pending.** Actual process,
+**Step 8b independently accepted on `development`.** Actual process,
 OS-helper, editor and stdio MCP creation paths now receive the original invocation's
 native controller through run/resume, standalone chat, one-shot agent and Home
 builders, including pending/replaced builds. Construction is inert. Each actual
@@ -908,8 +953,8 @@ the already-captured MCP consent gate.
 
 One removable invocation-bound exit callback iterates the existing registry's
 active native capabilities. There is no completed PID/group history or independent
-product MCP reaper collection. The compatibility signal guard retains its existing
-cooperative/grace/outcome routing until 8c/8d; connecting native creation does not
+product MCP reaper collection. Workflow routing follows the ownership section
+above; session compatibility signal guards remain staged until 8d. Connecting native creation does not
 activate the complete fatal coordinator. Source fixtures explicitly install that
 foundation when testing fatal cleanup. Workflow/session/terminal retirement and
 safe DB close remain their separate integration obligations.

@@ -38,6 +38,10 @@ function fixture(interactive = false) {
     writeErr: (text) => {
       err += text;
     },
+    writeOutAcknowledged: (text) => {
+      out += text;
+      return Promise.resolve();
+    },
     writeErrAcknowledged: (text) => {
       err += text;
       return Promise.resolve();
@@ -50,6 +54,7 @@ function fixture(interactive = false) {
   const base = createCliInvocation();
   const invocation: CliInvocation = Object.freeze({
     registry: base.registry,
+    finiteExit: base.finiteExit,
     seedFileCatalogOnce: () => {
       state.trace.push('seed');
       return Promise.resolve();

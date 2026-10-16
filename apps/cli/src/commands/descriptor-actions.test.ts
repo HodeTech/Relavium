@@ -20,6 +20,10 @@ function capture(): { io: CliIo; out: string[]; err: string[] } {
       writeErr: (text) => {
         err.push(text);
       },
+      writeOutAcknowledged: (text) => {
+        out.push(text);
+        return Promise.resolve();
+      },
       writeErrAcknowledged: (text) => {
         err.push(text);
         return Promise.resolve();

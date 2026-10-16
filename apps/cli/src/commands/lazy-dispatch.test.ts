@@ -45,6 +45,7 @@ function context(seed: () => Promise<void>): DispatchContext {
     io: {
       writeOut: () => undefined,
       writeErr: () => undefined,
+      writeOutAcknowledged: () => Promise.resolve(),
       writeErrAcknowledged: () => Promise.resolve(),
       env: {},
       stdoutIsTty: false,

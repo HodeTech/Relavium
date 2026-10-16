@@ -1,3 +1,5 @@
+import type { CliIo } from '../process/io.js';
+import { nativePromptIo } from '../process/native-prompt-io.js';
 import { confirm, isCancel, log } from '@clack/prompts';
 
 import type { ConsentPrompter, ConsentSubject } from '../engine/mcp-consent-gate.js';
@@ -20,12 +22,23 @@ export interface ClackConsentDeps {
   readonly confirm: (opts: {
     message: string;
     initialValue?: boolean;
+    signal?: AbortSignal;
   }) => Promise<boolean | symbol>;
   readonly log: { readonly message: (text: string) => void };
   readonly isCancel: (value: unknown) => value is symbol;
 }
 
 const DEFAULT_DEPS: ClackConsentDeps = { confirm, log, isCancel };
+
+/** Workflow consent uses the same captured stdout as cards, Ink and acknowledged restoration. */
+export function createBoundConsentPrompter(io: CliIo): ConsentPrompter {
+  const streams = nativePromptIo(io);
+  return createConsentPrompter({
+    confirm: (options) => confirm({ ...options, ...streams }),
+    log: { message: (message) => log.message(message, { output: streams.output }) },
+    isCancel,
+  });
+}
 
 /**
  * Render one decision and answer it.
@@ -37,11 +50,13 @@ const DEFAULT_DEPS: ClackConsentDeps = { confirm, log, isCancel };
  * A cancel (Ctrl-C / ESC) is a refusal, not an absence: the gate treats anything but `true` as "no".
  */
 export function createConsentPrompter(deps: ClackConsentDeps = DEFAULT_DEPS): ConsentPrompter {
-  return async (subject: ConsentSubject): Promise<boolean> => {
+  return async (subject: ConsentSubject, options): Promise<boolean> => {
+    if (options?.signal?.aborted) return false;
     deps.log.message(render(subject));
     const answer = await deps.confirm({
       message: `Allow MCP server '${subject.serverId}' to run this program?`,
       initialValue: false,
+      ...(options?.signal === undefined ? {} : { signal: options.signal }),
     });
     return !deps.isCancel(answer) && answer === true;
   };

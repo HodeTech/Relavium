@@ -5841,3 +5841,70 @@ universal descendant containment. Global native activation is still inert.
 lifetimes; 8d must connect the remaining surfaces and all caught/fatal exits.
 Steps 9–19 and whole-wave acceptance remain staged. No new ADR, provider capture,
 credential, billing or user decision is needed. Step 8c proceeds automatically.
+
+### Wave 3 Step 8c implementation checkpoint — 2026-10-16
+
+**Author verification in progress; not independently accepted.** The approved
+workflow/render increment connects `run`, human-gate resume and budget resume to
+the original invocation's pre-registered workflow and terminal owners. The
+[canonical CLI contract](../../reference/cli/commands.md#workflow-and-terminal-ownership)
+owns exact cancellation, health precedence, native acquisition and cleanup
+semantics. Product-wide fatal/background/sink activation and session lifetimes
+remain 8d; no whole-Step-8 or whole-wave completion is implied.
+
+The command subscription precedes secret stdin, consent, discovery and engine
+construction. An identity-owned stop checkpoint refuses later service/business
+entry, while an unrelated failure racing cancellation keeps its own classifier.
+Late handles enter the same primary driver without new UI ownership. Actual
+primary done and actual non-continue departure stay distinct; available receipt
+health progresses even while a prompt holds input. Stronger actual health
+survives render/finalize/maintenance errors and typed ownership-loss remedies are
+preserved. Neither rejected iteration nor a cleanup timer authorizes DB close.
+
+Terminal constructors pre-adopt actual native cleanup capabilities. Missing
+handles after failed mount, rejected prompts and incomplete registrations retain
+their obligation. A permanent seal blocks remount, redraw and job-control reclaim
+before independent input/listener/cursor restoration. All deferred and post-await
+restoration entries recheck the original remaining budget. Captured input/stdout
+are passed to installed Ink/Clack; the selected CLI mode explicitly controls Ink's
+interactive mode. JSON on a TTY remains native-free and contains no restoration
+control bytes.
+
+The first owned infrastructure fault now starts the same finite backstop before
+cleanup can hold it from the root catch. Signal and later native finalization
+share one observer/deadline/physical-exit latch. The staged infrastructure fallback
+permits outer diagnosis after actual cleanup; it claims no diagnostic delivery
+ACK. MCP callback-reported close failures retain the obligation even when its
+manager's `close()` fulfills. An unknown database-close throw supplies no ACK.
+Earlier Step 1 warning tests now distinguish preserved durable workflow events
+from CLI lifetime success; this is the approved later process integration, not a
+new deferral or decision.
+
+Fresh focused execution includes actual engine/SQLite health regressions, native
+Node processes around a real MCP manager with synthetic connection faults, and
+installed Ink/Clack bound to handle-free owned TTY fixtures. The native cleanup
+fixture joins actual process/pipe close, requires DB-close count zero while its
+obligation is held and rejects external-watchdog cleanup. Its local POSIX leg
+delivers real SIGTERM; the Windows source leg explicitly uses the registered
+callback because Node does not deliver that POSIX signal there. No actual Windows
+execution is inferred. No provider, keychain, editor or interactive operator
+terminal is used.
+
+A narrow read-only mechanics advisor found preparation, release, callback and
+first-fault ordering gaps; verified fixes have permanent regressions. That advice
+is **not** either complete cumulative review or the separate security sitting.
+Both NEW complete cumulative clean rounds must still cover the entire Step 8
+range from `d9625ff0a641197c6ed45968df99094a25db88d6`, after the final material fix.
+Fresh author lint/typecheck and workspace tests pass: the CLI executes 298 files /
+5,108 passing cases / 10 established skips; unchanged workspace results retain
+their cache attribution. Build and format pass. The compiled CLI smoke also
+passes, including actual MCP-child reaping and SIGINT during budget-resume
+connection. Its first run exposed a genuine typed MCP-cancellation classification
+regression; the fix and permanent regression distinguish owned cancellation from
+a competing opaque failure. The independent ordinary causal inventory is eight
+complete files / 125 passing cases, without skips. None of these author runs is
+an independent review. Fresh causal, package/platform and independent review
+gates remain open at this checkpoint. Historical 8b captures and platform
+receipts retain their original source; none is relabelled as execution of these
+changed runtime bytes. No new ADR, credential, billing, provider capture or user
+decision is pending.

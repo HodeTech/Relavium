@@ -1,6 +1,9 @@
 import type { CliInvocation } from '../process/invocation.js';
+import type { defaultSubscribeSignals } from '../process/signals.js';
+import { warnTeardown } from '../process/close-quietly.js';
 import { nativeProcessesForInvocation } from '../process/native-process-owner.js';
-import { closeQuietly, warnTeardown } from '../process/close-quietly.js';
+import { WorkflowLifetime } from './workflow-lifetime.js';
+import type { RendererCreationOwner } from './workflow-terminal.js';
 import { EgressWorkScope } from '../engine/egress-work.js';
 import { randomUUID } from 'node:crypto';
 import { statSync } from 'node:fs';
@@ -66,9 +69,7 @@ import {
   type WorkflowMcpRuntime,
 } from '../engine/mcp-servers.js';
 import { createConsentGate } from '../engine/mcp-consent-gate.js';
-import { guardMcpTeardown } from '../engine/mcp-signal-teardown.js';
-import { defaultSubscribeSignals } from '../process/signals.js';
-import { createConsentPrompter } from '../mcp/consent-prompt.js';
+import { createBoundConsentPrompter } from '../mcp/consent-prompt.js';
 import { createMcpSecretResolver, type McpSecretResolver } from '../secrets/mcp-secret.js';
 import type { GatePrompter } from '../gate/prompter.js';
 import { selectGatePrompter } from '../gate/select-prompter.js';
@@ -142,6 +143,7 @@ export interface BudgetCommandArgs extends ResumeGateArgs, BudgetDecisionFlags {
 export interface GateCommandDeps {
   /** The original bootstrap invocation; native authority stays host-only. */
   readonly invocation?: CliInvocation;
+  readonly subscribeSignals?: typeof defaultSubscribeSignals;
   readonly io: CliIo;
   readonly global: GlobalOptions;
   /** Injectable so tests drive a stub provider + the in-memory host engine. */
@@ -150,7 +152,11 @@ export interface GateCommandDeps {
   readonly providers?: ProviderResolver;
   /** Injectable history-db opener — tests pass an in-memory db; production opens `~/.relavium/history.db`. */
   readonly openDb?: (homeDir: string) => { db: Db; close: () => void };
-  readonly selectRenderer?: (io: CliIo, global: GlobalOptions) => RunRenderer;
+  readonly selectRenderer?: (
+    io: CliIo,
+    global: GlobalOptions,
+    creation?: RendererCreationOwner,
+  ) => RunRenderer;
   readonly selectGatePrompter?: (io: CliIo, global: GlobalOptions) => GatePrompter | undefined;
   /** Injectable run-end host media GC (2.S/D-GC); defaults to {@link defaultSweepMedia}. Tests spy on it. */
   readonly sweepMedia?: typeof defaultSweepMedia;
@@ -270,7 +276,19 @@ async function resumeGateCommand(
   kind: 'human' | 'budget',
   decision: GateDecision,
 ): Promise<ExitCode> {
-  const nativeProcesses = nativeProcessesForInvocation(deps.invocation);
+  const lifetime = new WorkflowLifetime(deps.invocation, deps.io, deps.subscribeSignals);
+  return lifetime.execute(() => resumeGateOwned(args, deps, kind, decision, lifetime));
+}
+
+async function resumeGateOwned(
+  args: ResumeGateArgs,
+  deps: GateCommandDeps,
+  kind: 'human' | 'budget',
+  decision: GateDecision,
+  lifetime: WorkflowLifetime,
+): Promise<ExitCode> {
+  const nativeProcesses = nativeProcessesForInvocation(lifetime.invocation);
+  lifetime.checkpoint();
   const { config, homeDir } = loadResolvedConfig({
     cwd: deps.global.cwd,
     configPath: deps.global.configPath,
@@ -283,12 +301,13 @@ async function resumeGateCommand(
   }
 
   let mcpRuntime: WorkflowMcpRuntime | undefined;
+  let mcpAcknowledged = true;
+  const reportMcpCloseFailure = (_serverId: string, cause: unknown): void => {
+    mcpAcknowledged = false;
+    lifetime.cleanupFailed(cause);
+    warnTeardown(deps.io, 'MCP');
+  };
   const mcpWork = new EgressWorkScope();
-  let unguardMcp = (): void => undefined;
-  let unguardResume = (): void => undefined;
-  let resumeEngine: WorkflowEngine | undefined;
-  const resumeCancel = new AbortController();
-  let resumeStarted = false;
   const interruptedBeforeResume = (): ExitCode => {
     deps.io.writeErr(
       'resume interrupted before a decision was recorded; the gate remains pending\n',
@@ -296,6 +315,7 @@ async function resumeGateCommand(
     return EXIT_CODES.workflowFailed;
   };
   try {
+    lifetime.checkpoint();
     const snapshot = loadRunSnapshot(opened.db, args.runId);
     if (snapshot === undefined) {
       throw new CliError('invalid_invocation', `no run found with id ${args.runId}`);
@@ -324,6 +344,7 @@ async function resumeGateCommand(
     } catch (err) {
       throwGateLoadFault(err, args.runId);
     }
+    lifetime.checkpoint();
     if (checkpoint === undefined) {
       // A run row with a snapshot but no reconstructable checkpoint (no run:started in the log) — corrupt/partial.
       throw new CliError('invalid_invocation', `run ${args.runId} has no resumable state`);
@@ -371,7 +392,9 @@ async function resumeGateCommand(
       args,
       deps,
       resumeInvocation,
+      lifetime,
     );
+    lifetime.checkpoint();
     // Consuming stdin removes prompt authority for this invocation, even with stale TTY metadata.
     const mayPrompt = args.secretStdin !== true;
     const promptIo = mayPrompt ? deps.io : { ...deps.io, stdinIsTty: false };
@@ -379,6 +402,7 @@ async function resumeGateCommand(
       kind === 'budget' && decision.decision === 'rejected'
         ? undefined
         : deps.resolveKeys?.(opened.db);
+    lifetime.checkpoint();
     const providers = deps.providers ?? keys?.providers ?? createProviderResolver(deps.io.env);
     // Media host-wiring (2.S), the SAME helper `run` uses: a gate-resumed run that produces media must wire the
     // same CAS + retention + catalog as the original run (else it would be silently text-only). The checkpointer
@@ -393,40 +417,18 @@ async function resumeGateCommand(
     // authored `output_modalities` against the CURRENT catalog, so a model that lost a capability between the
     // original run and this resume is rejected consistently (exit 2), not silently routed at runtime.
     assertWorkflowCatalogValid(workflow, wiring.workflowModelCatalog);
-    // Cancellation belongs to the resume command even when no MCP server is declared. During passive
-    // preparation Core latches cancel(runId); once registered it cancels the actual execution.
-    unguardResume = defaultSubscribeSignals(() => {
-      if (resumeCancel.signal.aborted) return;
-      resumeCancel.abort();
-      if (!resumeStarted || resumeEngine === undefined) return;
-      try {
-        resumeEngine.cancel(args.runId);
-      } catch (error) {
-        if (
-          !(error instanceof EngineStateError) ||
-          (error.code !== 'unknown_run' && error.code !== 'run_already_terminal')
-        )
-          throw error;
-        // The signal can precede registration or follow settlement. The latch is checked on handoff.
-      }
-    });
     // A budget rejection is fatal and dispatches no agent. Do not spawn tools merely to reject it.
     if (workflowDeclaresMcp(workflow) && !(kind === 'budget' && decision.decision === 'rejected')) {
-      unguardMcp = guardMcpTeardown(
-        async () => {
-          await mcpRuntime?.client.close();
-        },
-        undefined,
-        {
-          reapOnly: true,
-          ...(deps.invocation === undefined ? {} : { invocation: deps.invocation }),
-        },
-      );
       mcpRuntime = await connectWorkflowMcp(workflow, {
         ...(nativeProcesses === undefined ? {} : { nativeProcesses }),
         cwd: saveToRoot,
         preserveFrozenGrants: true,
-        connectSignal: resumeCancel.signal,
+        connectSignal: lifetime.signal,
+        assertAdmitting: () => lifetime.checkpoint(),
+        onFailure: (cause) => {
+          if (!lifetime.isStoppedFailure(cause)) lifetime.failure(cause);
+        },
+        onCloseError: reportMcpCloseFailure,
         work: mcpWork,
         registrations: config.mcpServers,
         resolveSecret:
@@ -439,18 +441,27 @@ async function resumeGateCommand(
             global: deps.global,
             homeDir,
             allowedDigests: args.allowMcpStdio ?? [],
-            prompt: mayPrompt ? createConsentPrompter() : undefined,
+            signal: lifetime.signal,
+            prompt: mayPrompt
+              ? (subject, options) => {
+                  const prompt = createBoundConsentPrompter(promptIo);
+                  return lifetime.terminal.runPrompt(() => prompt(subject, options));
+                }
+              : undefined,
           }),
         ...(deps.startMcpClient === undefined ? {} : { startMcpClient: deps.startMcpClient }),
       });
+      lifetime.checkpoint();
       if (mcpRuntime !== undefined) surfaceMcpSkipped(deps.io, mcpRuntime.client.skipped);
     }
 
+    lifetime.checkpoint();
     // The ADR-0065 §2 user-pricing overlay (2.5.G S10) — read from the SAME durable `history.db`, so the resumed
     // workflow's post-gate continuation enforces `budget.max_cost_microcents` on a user-priced model exactly like
     // the original `run` did (pre-egress + realized). Without it a gated run would silently uncap that model on the
     // far side of the gate — the very ADR-0064 §6 gap this closes. Non-fatal read (an empty map ⇒ no user pricing).
     const resolvePrice = readUserPricingOverlay(opened.db);
+    lifetime.checkpoint();
     const engine = await (deps.buildEngine ?? defaultBuildEngine)({
       ...(mcpRuntime === undefined
         ? {}
@@ -522,13 +533,12 @@ async function resumeGateCommand(
         : { mediaCostEstimate: wiring.mediaCostEstimate }),
       ...(resolvePrice.size === 0 ? {} : { resolvePrice }),
     });
-    resumeEngine = engine;
+    lifetime.adoptEngine(engine, args.runId);
     // Same drain as the `run` path (ADR-0078 §4/§5) — a gate resume is equally "the next `relavium` start",
     // and it is the one a user reaches for after seeing the `durabilityUncertain` exit code on a gated run.
-    if (resumeCancel.signal.aborted) return interruptedBeforeResume();
+    lifetime.checkpoint();
     await engine.drainTerminalOutbox().catch(() => undefined);
-    if (resumeCancel.signal.aborted) return interruptedBeforeResume();
-    resumeStarted = true;
+    lifetime.checkpoint();
     const handle = await resumeOrFail(engine, {
       runId: args.runId,
       eventConsumption: 'iterated',
@@ -538,12 +548,14 @@ async function resumeGateCommand(
       decision,
     });
 
-    if (resumeCancel.signal.aborted) handle.cancel();
+    lifetime.adoptHandle(handle);
 
     const outcome = await driveRun({
+      lifetime,
       engine,
       handle,
-      makeRenderer: () => (deps.selectRenderer ?? selectRenderer)(deps.io, deps.global),
+      makeRenderer: (creation) =>
+        (deps.selectRenderer ?? selectRenderer)(deps.io, deps.global, creation),
       // A later gate cannot read the stdin stream already consumed for re-supplied secrets.
       makeGatePrompter: () =>
         mayPrompt
@@ -615,21 +627,30 @@ async function resumeGateCommand(
   } catch (err) {
     // The pre-connect guard owns child cleanup; this command owns the run-style interruption exit.
     // Once resume has started, the handle/engine error remains authoritative.
-    if (!resumeStarted && resumeCancel.signal.aborted) return interruptedBeforeResume();
+    if (lifetime.isStoppedFailure(err)) return interruptedBeforeResume();
+    lifetime.failure(err);
     throw err;
   } finally {
     try {
-      try {
-        // Cleanup must not replace a primary refusal or a durably completed command result.
-        await mcpRuntime?.client.close().catch(() => warnTeardown(deps.io, 'MCP'));
-      } finally {
-        mcpWork.seal();
-        await mcpWork.done;
-        closeQuietly(deps.io, 'history database', () => opened.close());
-      }
-    } finally {
-      unguardMcp();
-      unguardResume();
+      await mcpRuntime?.client.close(reportMcpCloseFailure);
+    } catch (cause) {
+      mcpAcknowledged = false;
+      lifetime.cleanupFailed(cause);
+      warnTeardown(deps.io, 'MCP');
+    }
+    mcpWork.seal();
+    try {
+      await mcpWork.done;
+    } catch (cause) {
+      mcpAcknowledged = false;
+      lifetime.cleanupFailed(cause);
+    }
+    if (!mcpAcknowledged) await new Promise<never>(() => {});
+    try {
+      opened.close();
+    } catch (cause) {
+      lifetime.cleanupFailed(storageBoundaryError(cause));
+      warnTeardown(deps.io, 'history database');
     }
   }
 }
@@ -788,6 +809,7 @@ async function resolveSecretInputs(
   args: ResumeGateArgs,
   deps: GateCommandDeps,
   resumeInvocation: string | undefined,
+  lifetime: WorkflowLifetime,
 ): Promise<Record<string, unknown>> {
   const masked = Object.keys(inputs).filter(
     (key) => MaskedSecretSchema.safeParse(inputs[key]).success,
@@ -812,7 +834,9 @@ async function resolveSecretInputs(
     deps.readSecretInput ??
     ((): Promise<string> =>
       readSecretFromStdin(SECRET_STDIN_CONTEXT(args.runId, resumeInvocation)));
-  const supplied = parseSecretLines(await read(), `run ${args.runId}`);
+  const raw = await read();
+  lifetime.checkpoint();
+  const supplied = parseSecretLines(raw, `run ${args.runId}`);
   const missing = masked.filter((name) => !Object.hasOwn(supplied, name));
   if (missing.length > 0) {
     throw new CliError(

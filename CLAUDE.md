@@ -193,6 +193,8 @@ runtime/control evidence and successful full CI plus all four same-tarball
 platform consumers remain attributed to `ab50be11`, with independently verified
 source/dependency equivalence. Whole Step 8, workflow/terminal integration in 8c
 and product fatal activation in 8d remain open.
+Step 8c workflow/preparation/terminal integration is under author verification;
+no independent acceptance is inferred from its focused tests.
 Step 8 proceeds as recorded serial increments 8a–8d; native
 fatal integration remains open until all actual owners are connected.
 Later implementation and whole-wave acceptance

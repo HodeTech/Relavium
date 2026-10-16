@@ -733,6 +733,7 @@ async function startMcpClientFailLoud(
   custom: ConnectAgentMcpOptions['startMcpClient'],
   connectSignal?: AbortSignalLike,
   work?: ToolHostCallOptions,
+  onOwnedCancellation?: () => void,
 ): Promise<McpClient> {
   // The shared build token is installed only at the actual MCP construction choke.
   setMcpClientVersion(CLI_VERSION);
@@ -744,6 +745,9 @@ async function startMcpClientFailLoud(
     // A session builder without an external pre-handle owner must self-clean before propagating.
     owned?.seal();
     await owned?.done;
+    // Only the MCP boundary's typed cancellation can recover the command's owned stop identity.
+    // A generic failure racing an aborted signal retains its independent classification.
+    if (err instanceof McpAbortedError && connectSignal?.aborted) onOwnedCancellation?.();
     if (windowsTeardownRefusal(err)) {
       throw new CliError('internal', WINDOWS_TEARDOWN_UNAVAILABLE_MESSAGE);
     }
@@ -845,6 +849,12 @@ export interface ConnectWorkflowMcpOptions {
   /** Resume compares the current discovered set with the frozen grant, without widening or reordering it. */
   readonly preserveFrozenGrants?: boolean;
   readonly cwd: string;
+  /** Same invocation owner, checked again after consent and before resolving secrets/starting clients. */
+  readonly assertAdmitting?: () => void;
+  /** Observe an assembly failure before joining its cleanup, without replacing its original cause. */
+  readonly onFailure?: (cause: unknown) => void;
+  /** Actual manager close failures use this callback even when close() itself fulfills. */
+  readonly onCloseError?: (serverId: string, cause: unknown) => void;
   readonly startMcpClient?: (
     servers: readonly McpServerConfig[],
     signal?: AbortSignalLike,
@@ -928,8 +938,11 @@ export async function connectWorkflowMcp(
   }
   if (byId.size === 0) return undefined;
 
+  opts.assertAdmitting?.();
   requireGateForStdio([...byId.values()], opts.consentGate);
   const consented = await opts.consentGate?.([...byId.values()], opts.cwd, opts.artifact);
+  opts.assertAdmitting?.();
+  if (opts.connectSignal?.aborted) throw new CliError('internal', 'MCP connection was cancelled.');
   const configs = resolveServerConfigs(
     [...byId.values()],
     opts.cwd,
@@ -938,14 +951,17 @@ export async function connectWorkflowMcp(
     consented,
     opts.nativeProcesses,
   );
+  opts.assertAdmitting?.();
   const client = await startMcpClientFailLoud(
     configs,
     opts.startMcpClient,
     opts.connectSignal,
     opts.work,
+    opts.assertAdmitting,
   );
 
   try {
+    opts.assertAdmitting?.();
     // Augment each inline agent's grant with ONLY its own servers' discovered ids (a `$ref` entry passes through).
     const agents = (def.workflow.agents ?? []).map((entry) =>
       isInlineAgent(entry)
@@ -961,7 +977,13 @@ export async function connectWorkflowMcp(
     // A resumed workflow's frozen-grant check can refuse after discovery. Tear down the live
     // connection before forwarding that refusal, just as the chat builders do on assembly failure.
     // Best-effort: a teardown rejection must NOT replace the original augmentation error (preserve the primary).
-    await client.close().catch(() => undefined);
+    opts.onFailure?.(err);
+    try {
+      await client.close(opts.onCloseError);
+    } catch (cause) {
+      if (opts.onCloseError !== undefined) opts.onCloseError('', cause);
+      else opts.onFailure?.(cause);
+    }
     throw err;
   }
 }

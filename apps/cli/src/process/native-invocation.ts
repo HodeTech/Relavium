@@ -1,6 +1,7 @@
 import { createBackgroundObserver } from './background-observer.js';
 import type { DiagnosticPolicy } from './diagnostic-policy.js';
 import { formatFixedDiagnostic } from './fixed-diagnostic.js';
+import type { InvocationFiniteExit } from './invocation-finite-exit.js';
 import type { InvocationRegistry } from './invocation-registry.js';
 import { acknowledgeWrite, canWrite } from './io.js';
 
@@ -58,6 +59,7 @@ export function installNativeInvocation(
   registry: InvocationRegistry,
   policy: DiagnosticPolicy,
   ports: NativeInvocationPorts = processPorts(),
+  sharedExit?: InvocationFiniteExit,
 ): NativeInvocation {
   let finalizationPending = false;
   let changedWhilePending = false;
@@ -82,8 +84,14 @@ export function installNativeInvocation(
       registry.observations.observeFailure('cli_internal');
     }
   };
+  const hasExited = (): boolean => exited || sharedExit?.hasExited() === true;
+  if (sharedExit !== undefined) void sharedExit.exited.then((code) => finish(code));
   const exitNow = (): void => {
-    if (exited || disposed) return;
+    if (hasExited() || disposed) return;
+    if (sharedExit !== undefined) {
+      sharedExit.exitNow();
+      return;
+    }
     exited = true;
     clearTimer();
     registry.sampleWorkflowHealth();
@@ -93,8 +101,9 @@ export function installNativeInvocation(
     ports.exit(code);
   };
   const scheduleBackstop = (): void => {
+    if (sharedExit !== undefined) return;
     const deadline = registry.budget.deadline();
-    if (exited || disposed || deadline === undefined || scheduledDeadline === deadline) return;
+    if (hasExited() || disposed || deadline === undefined || scheduledDeadline === deadline) return;
     scheduledDeadline = deadline;
     clearTimer();
     const remaining = registry.budget.remainingMs();
@@ -111,14 +120,14 @@ export function installNativeInvocation(
     }
   };
   const fail = (code: 'cli_internal' | 'output_unavailable'): void => {
-    if (exited || disposed) return;
+    if (hasExited() || disposed) return;
     void registry.terminate({ kind: 'infrastructure', code });
   };
   const finalize = async (): Promise<void> => {
     const termination = registry.termination;
-    if (termination === undefined || exited || disposed) return;
+    if (termination === undefined || hasExited() || disposed) return;
     const result = await termination;
-    if (exited || disposed) return;
+    if (hasExited() || disposed) return;
     registry.sampleWorkflowHealth();
     if (result.kind === 'deadline' || registry.budget.remainingMs() === 0) {
       exitNow();
@@ -134,7 +143,7 @@ export function installNativeInvocation(
         fail('output_unavailable');
       }
     }
-    if (exited || disposed) return;
+    if (hasExited() || disposed) return;
     registry.sampleWorkflowHealth();
     if (
       registry.observations.hasInfrastructureFailure() ||
@@ -150,7 +159,7 @@ export function installNativeInvocation(
   };
   const changed = (): void => {
     scheduleBackstop();
-    if (exited || disposed) return;
+    if (hasExited() || disposed) return;
     if (finalizationPending) {
       changedWhilePending = true;
       return;
@@ -168,7 +177,7 @@ export function installNativeInvocation(
           // complete() can resolve before this finally reaction runs. Retain any competing late fault.
           if (
             changedWhilePending &&
-            !exited &&
+            !hasExited() &&
             !disposed &&
             (registry.observations.hasInfrastructureFailure() ||
               registry.observations.hasTerminatingSignal())
@@ -177,7 +186,10 @@ export function installNativeInvocation(
         });
     });
   };
-  const removeObserver = registry.observeTermination(changed);
+  const removeObserver =
+    sharedExit === undefined
+      ? registry.observeTermination(changed)
+      : sharedExit.handoff(registry, changed);
   const stdoutFailed = (): void => {
     stdoutUsable = false;
     fail('output_unavailable');
