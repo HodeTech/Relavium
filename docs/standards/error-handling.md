@@ -20,6 +20,10 @@ neither proof of a safe diagnostic nor a substitute for an existing structural
 boundary guard: independently bundled class identities can differ. Existing local
 identity and private-authority guards also retain their own contracts.
 
+The supported `@relavium/shared/relavium-error` leaf exports that same constructor
+without evaluating the schema barrel. Early process contracts use this leaf;
+runtime classifiers that recognize engine/DB families stay behind runtime loading.
+
 - Errors are **typed and discriminated**, never bare `Error` and never thrown strings
   (see [code-style-typescript.md](code-style-typescript.md)). Each error type carries a
   stable discriminant (a `kind` / `code`) callers narrow on — not `error.message`, which

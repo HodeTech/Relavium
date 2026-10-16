@@ -4823,3 +4823,90 @@ preparation, not implementation acceptance. Real fatal/native integration and
 JSON-help behaviour retain their later steps. No new ADR, user decision, provider
 capture, credential, billing or external operation is pending; Step 19 retains
 whole-wave validation and publication.
+
+### Wave 3 Step 6 implementation checkpoint — 2026-10-16
+
+**Implemented on `development`, not independently accepted.** The increment starts
+at Step 5 acceptance metadata `952115d3`. Approved ADR-0110/0111 now have a pure
+process/discovery substrate before their runtime consumers. The
+[CLI contract](../../reference/cli/commands.md#proposed-wave-3-cli-compatibility)
+owns exact classifications, descriptor fields and staged integration boundaries.
+
+One closed CLI code/origin/exit authority preserves the five existing codes for
+refusal, including operational `internal`/1, and adds distinct fixed infrastructure,
+output, storage and settings-write diagnostics. The heavy runtime classifier
+re-exports the same constructor/guard; generic unknown handling remains unchanged
+until Step 8. The shared error constructor and filesystem limits have supported
+pure package leaves without loading the schema barrel; config/root exports retain
+identity. Early flags share descriptor grammar, preserve command tokens and the
+terminator, reject nonabsolute root syntax before filesystem work, and apply exact
+DEBUG=1 with explicit quiet/verbose conflict and override rules. Semantic category
+selection is pure; production output owners remain Step 10.
+
+The one enriched descriptor authority derives the current Commander grammar,
+global help and all **24 unchanged strict alias-free model entries**, compared
+against a literal pre-refactor fixture. Twenty-nine descriptors include executable
+containers, four nonexecuting groups and the unavailable init stub. Actual actions
+receive injected dispatch, preserve every binding and await its result; finite
+implementation bindings are checked both ways. The separate explicit public DTO
+supports canonical subtrees, aliases and complete option grammar without exposing
+internal compatibility/loader state. Canonical chat aliases, pricing flags and
+key-removal force metadata are staged: production JSON help and those behaviours
+remain Step 10. Compiler-emitted import controls prove the pure local leaves;
+the separate Commander adapter guard stops at the external framework boundary,
+not at an imagined dependency-free or packed/native proof.
+
+The creation-kind registry keeps actual retirement separate from stop/join/reap
+attempts. It starts no idle session join at registration, removes settled owner
+closures, retains unacknowledged owners and bounded classifications, samples only
+actual workflow health and applies the total sticky exit order. Reentrant cleanup
+shares one operation. Classification, terminal restoration and helpers consume
+one live absolute fatal budget; expiry never grants retirement or store-close ACK.
+Every owner still receives finite synchronous cancellation at zero remaining
+budget, while new joins/restoration/reap helpers are refused. Actual native,
+RunHandle, AgentSession, sink and terminal adapters remain Step 8.
+
+The source-verified inventory covers twelve literal internal constructors, caught
+and forced-exit owners, and storage/open boundaries. It preserves supported inline
+recovery and records the constructor-time addon/ABI ambiguity inside DbOpenError:
+a blanket typed-error or arbitrary cause-tree classification is insufficient.
+Minimal origin adapters land in Step 8; central openLocalDb remains last in Step 18.
+
+Author evidence distinguishes genuine original defects from new-substrate controls.
+The original lexical baseline is **52 cases / 46 passing / six failing**; an
+intermediate lookup exposes three prototype-token failures before the private Map
+fix. New owner regressions reproduce signal-state poisoning, reentrant join order,
+classification-time renewal and skipped sibling cancellation after expiry. Test
+fixture fixes preserve exact context identity and complete unique case names;
+they are not product regressions. Initial lint failures were unused imports/fixture
+typing, corrected before the final gates.
+
+All **14 final causal cohorts / 42 structured zero-unhandled runner receipts**
+pass fixed/removal/restored checks, exact named assertion witnesses, complete
+unchanged inventories, source/test/reporter pins and byte-exact restoration.
+Earlier incomplete runs stopped on duplicate case labels or a quoted witness
+mismatch; neither is counted. Two existing secret controls were repointed to the
+real generic action/parser path without removing IDs or cases. Their retained
+isolated captures each contain one selected control / three verified receipts,
+1,223 physical source/tool files and 457 installed dependency packages; forwarding
+is 14/13/14 passing and parser projection 28/22/28. These selected captures are
+explicitly not a complete 41-control family. These captures precede the final finite-cancellation correction; their target
+source and selected test bytes are unchanged. The parent separately verified
+retained stdio, runtime receipts, evaluations and manifests. Filesystem's 110 anchors
+remain unique; no filesystem control was changed.
+
+Final author gates pass: **639 files / 14,554 passing tests / 20 established skips**,
+all workspace lint/typechecks and all six forced builds after causal restoration.
+The final CLI suite runs fresh; other workspaces reuse valid normal test caches.
+Earlier broad execution at the pre-final registry revision records 14,553 passes;
+its counts are not added to the final total. All **322 acceptance-tool tests** pass,
+alongside tooling lint/typecheck, seam/engine dependency fences, DB synchronization,
+639-file test isolation, formatting of all 35 changed code/data paths, bundle closure,
+compiled CLI smoke and document/diff checks. Native consumers use rebuilt dist,
+not ordinary-test source aliases. Two NEW complete cumulative reviews and the
+scoped security sitting remain pending; author checks do not replace them.
+No full CI/coverage, native-platform or whole-wave acceptance is inferred from
+these unit/source checks. No new dependency, ADR, decision, provider capture,
+credential, billing or external action is introduced. Steps 7–19 remain open;
+commit and two NEW independent complete cumulative clean rounds plus a separate
+scoped security sitting are required before Step 7 implementation proceeds.

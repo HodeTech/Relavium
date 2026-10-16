@@ -656,9 +656,14 @@ Numeric cost totals are known realized sums. Human totals qualify unverified his
 
 ## Proposed Wave 3 CLI compatibility
 
-**Approved design, unshipped — 2026-10-16.** [ADR-0110](../../decisions/0110-cli-diagnostics-and-discovery-have-explicit-compatibility.md)
-was approved by the maintainer. This section owns the approved exact contract;
-earlier sections describe current behaviour until implementation landing.
+**Approved design, partially implemented on `development` — 2026-10-16.**
+[ADR-0110](../../decisions/0110-cli-diagnostics-and-discovery-have-explicit-compatibility.md)
+was approved by the maintainer. Step 6 implements the pure flag/error/observation
+and ownership substrate, descriptor-derived current Commander grammar and the
+compatible model projection. Its discovery DTO is available as a pure function;
+production JSON help, aliases, pricing spellings, output categories and consent
+remain Step 10. Lazy entry and actual fatal/native/terminal adapters remain
+Steps 7–8. Earlier sections describe current behaviour unless stated here.
 
 ### Diagnostic policy
 
@@ -709,7 +714,7 @@ These are CLI dispositions, separate from engine ErrorCode. One closed
 | Standalone agent: actual turn outcome / terminating external signal | Existing 0/1; actual signal 128+signo absent stronger observed disposition |
 | Management/meta success / known operational failure | Existing 0 or classified 1; invalid invocation/schema remains 2 |
 | Typed corrupt/unreadable history or known departure-unacknowledged | Existing known operational 1/remedy, unless actual workflow health overrides |
-| Owned storage boundary: typed DbOpenError or filesystem EACCES/EPERM/ENOSPC/EROFS | Fixed `storage_unavailable`, operational 1; correct permissions/capacity before retry. No arbitrary cause text |
+| Owned storage boundary: a DbOpenError with owned storage provenance, or filesystem EACCES/EPERM/ENOSPC/EROFS | Fixed `storage_unavailable`, operational 1; correct permissions/capacity before retry. Native import/ABI failures retain infrastructure 9, including constructor-time failures wrapped as open_failed. No arbitrary cause text |
 | Failed-output/EPIPE/write acknowledgement on any surface | Fixed `output_unavailable`, exit 9 unless actual stronger workflow health overrides |
 | Unexpected CLI throw, invariant, native import/ABI or wiring failure on any surface | Fixed `cli_internal`, exit 9 unless actual stronger workflow health overrides; never chat-end 4/Home success |
 | Recoverable unhandled background rejection | Keepalive; upgrade only otherwise clean 0 to 9, preserve established nonzero outcomes |
@@ -728,10 +733,36 @@ admitted work (including session publication/join failure) does not prove absenc
 of paid/effectful work: retain inspect-before-repeat advice before correcting the
 storage issue. No healthy session receipt is inferred from its numeric exit.
 
+The Step 6 source inventory distinguishes the twelve existing literal
+`CliError('internal', ...)` constructors before runtime integration:
+
+| Existing owner | Count | Step 8 disposition |
+|---|---|---|
+| [Acknowledged stderr writer](../../../apps/cli/src/process/io.ts) | 1 | Output 9; a failed sink cannot acknowledge itself |
+| [Run departure](../../../apps/cli/src/commands/run.ts) and [gate departure](../../../apps/cli/src/commands/gate.ts) | 2 | Known operational 1, subject to actual workflow health |
+| [Media maintenance](../../../apps/cli/src/commands/media.ts) | 1 | Split actual storage 1, output 9 and unexpected 9 at their originating boundaries |
+| [Session export writer](../../../apps/cli/src/chat/export.ts) | 1 | Owned storage 1; preserve target-shape/existence refusal 2; unexpected 9 |
+| [Missing MCP consent wiring](../../../apps/cli/src/engine/mcp-servers.ts) | 1 | Infrastructure 9 before spawn |
+| [Job-control setup/disposal](../../../apps/cli/src/render/run-job-control.ts) | 2 | Infrastructure 9, with attempt-all cleanup and primary/health priority |
+| [Terminal suspension invariants](../../../apps/cli/src/render/suspend.ts) | 4 | Infrastructure 9; existing busy/no-renderer recoveries remain separate |
+
+The same inventory tracks workflow/gate/driver catches, every AgentSession/Home
+construction, submit and replacement catch, history/forced-exit and storage
+owners. The nine current CLI native-DB open invocations are four dispatch sites,
+three history helpers, gate resume and model pricing; the shared opener definition
+is not a tenth invocation. Minimal origin adapters land in Step 8 and the sole
+opener refactor remains last in Step 18. Best-effort catalog/overlay/outbox reads,
+ordinary doctor results and explicit benign engine races retain their recovery
+policies. Caught unknown faults and forced-success fallbacks require explicit
+coordinator routing; a blanket catch or broad internal-code rewrite is insufficient.
+
 Classify native storage errno only at the actual owned I/O boundary, not by
 examining arbitrary provider/plugin objects or private cause trees. Recognize
 actual typed DbOpenError without importing DB through the lightweight entry.
-The lazy runtime adapter supplies its classification. Existing CLI open wrappers
+The lazy runtime adapter supplies its classification. `DbOpenError.open_failed`
+alone cannot distinguish storage failure from an addon/ABI load inside the native
+database constructor; the actual creation boundary must supply that provenance.
+Existing CLI open wrappers
 that label runtime permission/capacity failures invalid invocation/2 deliberately
 move to operational 1. Step 6 defines this mapping and Step 8 installs minimal
 boundary adapters; Step 18 centralizes them after all callers have moved.
@@ -764,7 +795,7 @@ numeric value alone ([Node exit codes](https://nodejs.org/docs/latest-v22.x/api/
 ### Invocation owners and fatal ordering
 
 One invocation-owned lightweight registry is installed before dynamic imports.
-Owners register before admitting work and unregister only after actual settlement.
+Owners register before admitting work and retire only after actual settlement.
 Callbacks expose facts/capabilities specific to their owner, not a generic false
 health object:
 
@@ -789,6 +820,23 @@ loop backstop, not preemption of blocked JS/native work; native tests require an
 external watchdog. Normal receipt joins retain their actual protocol. A timer
 never acknowledges an owner. After expiry no unbounded async helper starts;
 finite nonawaited exit cleanup cannot certify native closure.
+
+Step 6's registry observes a creation-owned retirement promise separately from
+stop/join/reap attempts. Rejected or malformed retirement retains the owner;
+attempt completion and budget expiry never remove it. Successful retirement may
+carry a fixed failure classification, releases retained owner closures and keeps
+only bounded sticky classifications. Registering an idle session does not call
+its host-safe-close barrier: the runtime adapter first seals future admission,
+then joins actual lifetime work. Reentrant close requests share one operation;
+all stops enter before any join. Terminal restoration can progress while another
+owner's join is pending. Failure classification consumes the same absolute fatal
+budget. These are pure protocol controls, not native-close or store-close proof.
+
+A stop adapter synchronously seals its owner and makes a finite cancellation
+request even if an earlier owner consumed the budget. At zero remaining budget
+it cannot launch a new async helper; a returned promise may only observe work
+already started. Joins, restoration and reap helpers do not start after expiry.
+This attempt-all cancellation rule grants no retirement or safe-close ACK.
 
 ### Native crash teardown scope
 
@@ -831,10 +879,10 @@ order is stable. No internal executor loader paths or functions are serialized.
 
 | Descriptor | Required contract |
 |---|---|
-| Command | Canonical `path: string[]`, description, existing effect/label metadata, `availability: 'implemented' \| 'not_implemented'`, aliases, ordered positionals/options, and optional stable `executorId` |
+| Command | Canonical `path: string[]`, description, existing effect/label metadata, `availability: 'implemented' \| 'not_implemented'`, aliases, ordered positionals/options, `allowExcessArguments: boolean`, and optional stable `executorId`/existing `modeScope` |
 | Alias | Explicit token `path`, `deprecated: boolean`; canonical and flat paths register separately |
 | Positional | Name/binding key, scalar value type, required, variadic, description |
-| Option | Binding key, canonical flag spelling(s), deprecated spellings, arity (none/required/optional), placeholder/type where applicable, repetition (single/repeatable/variadic), negation, description, existing default where applicable and conflict bindings |
+| Option | Binding key, canonical flag spelling(s), deprecated spellings, value arity (none/required/optional), mandatory-presence `required: boolean` (distinct from value arity), placeholder/type where applicable, repetition (single/repeatable/variadic), negation, description, existing default where applicable and conflict bindings |
 | Global option | Same grammar plus position-independent scope; include help/version and extraction-owned flags |
 
 A container can also execute, as chat/gate/models do. Optional executor binding
