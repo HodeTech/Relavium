@@ -22,7 +22,7 @@
  * not something this pure resolver can enforce once provenance is flattened.
  */
 
-import type { AbortSignalLike, Workflow } from '@relavium/shared';
+import type { AbortSignalLike } from '@relavium/shared';
 
 import { InterpolationError } from '../errors.js';
 
@@ -101,6 +101,13 @@ export async function resolvePublicTemplate(
   );
 }
 
+/** The resolver needs only context definitions; a full trusted Workflow remains compatible. */
+export interface ContextResolutionSource {
+  readonly workflow: {
+    readonly context?: readonly { readonly key: string; readonly value: string }[] | undefined;
+  };
+}
+
 /**
  * Eagerly resolve every `context` entry exactly once into a frozen, immutable snapshot (the spec's
  * eager-once context). Entries resolve in declared order, each seeing the inputs and the already-
@@ -108,16 +115,13 @@ export async function resolvePublicTemplate(
  * @throws {InterpolationError} when a context value cannot be resolved (e.g. `read_file` on a bad path).
  */
 export async function resolveContext(
-  workflow: Workflow,
+  workflow: ContextResolutionSource,
   inputs: Readonly<Record<string, unknown>>,
   caps: ResolverCapabilities = {},
   signal?: AbortSignalLike,
 ): Promise<Readonly<Record<string, string>>> {
-  // A null-prototype accumulator so a context key named `__proto__`/`constructor` is stored as a real
-  // own property rather than being silently dropped (or mutating a prototype). NOTE for 1.R: this
-  // null-proto guard is in-memory only — when this frozen `ctx` is persisted/transported for
-  // checkpoint/resume it MUST go through `structuredClone` (which preserves the null prototype), never
-  // `JSON.stringify` → `JSON.parse`, which would re-materialize a `__proto__` key as a real setter.
+  // Store prototype-shaped keys as ordinary own data. Engine resolution uses owned definitions and
+  // immediately qualifies this trusted raw result; raw context is never carried in a checkpoint.
   const ctx = Object.create(null) as Record<string, string>;
   for (const entry of workflow.workflow.context ?? []) {
     abortIfCancelled(signal);

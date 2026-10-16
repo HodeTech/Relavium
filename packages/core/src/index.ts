@@ -61,7 +61,7 @@ export {
 // The `{{ … }}` runtime resolver (1.L2) — evaluate templates against a run scope, eager-once context.
 export { resolveTemplate, resolveContext, resolvePublicTemplate } from './interpolation/resolve.js';
 export type { RunScope, ResolverCapabilities } from './interpolation/scope.js';
-export type { PublicTemplateScope } from './interpolation/resolve.js';
+export type { PublicTemplateScope, ContextResolutionSource } from './interpolation/resolve.js';
 export {
   createWorkflowContextProjection,
   createWorkflowProvenance,

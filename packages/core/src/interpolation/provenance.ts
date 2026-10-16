@@ -4,6 +4,7 @@ import { z } from 'zod';
 
 import { WorkflowContextError } from '../errors.js';
 import { computeTaint } from './analyze.js';
+import type { ContextResolutionSource } from './resolve.js';
 
 /** Clean strings and the full original key order; denied values are never retained here. */
 export interface WorkflowContextProjection {
@@ -100,15 +101,24 @@ export function ownSecretInputNames(names: Iterable<string>): OwnedSecretInputNa
 }
 
 export interface WorkflowProvenance extends OwnedSecretInputNames {
+  /** Resolution and taint analysis use these same owned definitions for the invocation. */
+  readonly contextSource: ContextResolutionSource;
   qualifyContext(resolved: Readonly<Record<string, string>>): WorkflowContextProjection;
 }
 
 /** One linear taint authority per admitted workflow, reused by fresh/resume/preparation producers. */
 export function createWorkflowProvenance(workflow: Workflow): WorkflowProvenance {
-  const taint = computeTaint(workflow.workflow);
+  const context = (workflow.workflow.context ?? []).map(({ key, value }) =>
+    Object.freeze({ key, value }),
+  );
+  const taint = computeTaint({ ...workflow.workflow, context });
+  const contextSource = Object.freeze({
+    workflow: Object.freeze({ context: Object.freeze(context) }),
+  });
   const names = ownSecretInputNames(taint.inputs.keys());
   return Object.freeze({
     ...names,
+    contextSource,
     qualifyContext(resolved: Readonly<Record<string, string>>): WorkflowContextProjection {
       try {
         const values: Record<string, string> = {};

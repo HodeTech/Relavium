@@ -1381,7 +1381,7 @@ class RunExecution {
   async #resolveContextOrFail(): Promise<boolean> {
     try {
       const resolved = await resolveContext(
-        this.#workflow,
+        this.#provenance.contextSource,
         this.#inputs,
         this.#resolverCapabilities,
         this.#abort.signal,
@@ -6258,7 +6258,7 @@ export class WorkflowEngine {
     try {
       const provenance = createWorkflowProvenance(input.workflow);
       const resolved = await resolveContext(
-        input.workflow,
+        provenance.contextSource,
         inputs,
         this.#resolverCapabilities,
         signal,

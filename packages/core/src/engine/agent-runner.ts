@@ -485,10 +485,8 @@ async function prepareAgentDispatch(
   if (!grant.ok) return failed('validation', grant.message, false);
   const grantedToolIds = new Set(grant.ids);
 
-  const prompt =
-    node.prompt_template === undefined
-      ? { ok: true as const, text: '' }
-      : await resolvePrompt(node.prompt_template, ctx, deps);
+  // Empty public text still crosses the required provenance boundary for low-level embeddings.
+  const prompt = await resolvePrompt(node.prompt_template ?? '', ctx, deps);
   if (!prompt.ok) return failed('validation', prompt.message, false);
 
   // Inline-vs-generative routing (1.AG Section C, ADR-0045 §1): a resolved model whose `media_surface` is

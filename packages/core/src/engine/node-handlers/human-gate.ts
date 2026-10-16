@@ -45,10 +45,8 @@ async function runHumanGate(
   let message: string;
   let assignee: string | undefined;
   try {
-    message =
-      node.message_template === undefined
-        ? ''
-        : await resolvePublicTemplate(node.message_template, scope, caps, ctx.signal);
+    // An absent template does not waive required execution metadata.
+    message = await resolvePublicTemplate(node.message_template ?? '', scope, caps, ctx.signal);
     assignee =
       node.assignee === undefined
         ? undefined

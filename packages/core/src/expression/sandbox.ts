@@ -41,7 +41,11 @@ import {
 import { SandboxError, WorkflowContextError } from '../errors.js';
 import type { WorkflowContextProjection } from '../interpolation/provenance.js';
 import { buildExpressionProgram } from './program.js';
-import { readPrivateExpressionTransport, decodeExpressionPayload } from './transport.js';
+import {
+  readPrivateExpressionTransport,
+  decodeExpressionPayload,
+  decodeThrownPayload,
+} from './transport.js';
 
 /** Which authored construct the expression came from — drives the per-kind result contract. */
 export type ExpressionKind = 'condition' | 'transform' | 'merge_fn';
@@ -226,9 +230,24 @@ function runProgram(
           'runtime',
           'the expression returned invalid private result transport',
         );
+      const failedTag = context.getProp(serializationClosure, 'evaluationFailed');
+      let evaluationFailed: boolean;
+      try {
+        if (context.typeof(failedTag) !== 'boolean')
+          throw new SandboxError(
+            'runtime',
+            'the expression returned invalid private result transport',
+          );
+        evaluationFailed = context.eq(failedTag, context.true);
+      } finally {
+        failedTag.dispose();
+      }
       const serialized = context.callFunction(serializationClosure, context.undefined);
       if (serialized.error) {
         serialized.error.dispose();
+        // A failed thrown-value conversion remains an ordinary runtime fault. Its VM-owned tag
+        // cannot be selected by the authored value and grants no extra serialization time.
+        if (evaluationFailed) throw classifyError('<unavailable>', false);
         throw serializationFailure(kind);
       }
       result = serialized;
@@ -252,10 +271,7 @@ function runProgram(
         );
       if (transport.kind === 'failure') {
         if (transport.stage === 'evaluation')
-          throw classifyError(
-            { name: transport.name, message: transport.message },
-            Date.now() >= deadline,
-          );
+          throw classifyError(decodeThrownPayload(transport.payloadJson), Date.now() >= deadline);
         // Preserve original dump/validateResult disposition even when authored serialization throws.
         throw serializationFailure(kind);
       }

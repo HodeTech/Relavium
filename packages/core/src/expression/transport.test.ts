@@ -4,7 +4,11 @@ import { Buffer } from 'node:buffer';
 import { describe, expect, it } from 'vitest';
 
 import { SandboxError } from '../errors.js';
-import { decodeExpressionPayload, readPrivateExpressionTransport } from './transport.js';
+import {
+  decodeExpressionPayload,
+  decodeThrownPayload,
+  readPrivateExpressionTransport,
+} from './transport.js';
 
 const MEMORY = 16 * 1024 * 1024;
 const CANARY = 'hostile-transport-canary';
@@ -42,14 +46,47 @@ function expectFailure(
 }
 
 describe('closed private transport arms', () => {
+  it.each<[string, unknown]>([
+    ['{"name":"SyntaxError","message":"clean"}', { name: 'SyntaxError', message: 'clean' }],
+    ['"primitive failure"', 'primitive failure'],
+    ['null', null],
+    ['42', 42],
+  ])('decodes already-bounded thrown payload %s', (payload, expected) => {
+    const arm = readPrivateExpressionTransport(
+      JSON.stringify({ version: 1, kind: 'failure', stage: 'evaluation', payloadJson: payload }),
+      MEMORY,
+    );
+    expect(arm.kind).toBe('failure');
+    if (arm.kind !== 'failure' || arm.stage !== 'evaluation')
+      throw new Error('missing evaluation failure arm');
+    expect(decodeThrownPayload(arm.payloadJson)).toEqual(expected);
+  });
+
+  it('refuses malformed thrown JSON without echoing content', () => {
+    let caught: unknown;
+    try {
+      decodeThrownPayload(CANARY);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(SandboxError);
+    if (!(caught instanceof SandboxError)) throw caught;
+    expect(caught).toMatchObject({
+      code: 'sandbox_error',
+      reason: 'runtime',
+      message: 'the expression returned invalid private result transport',
+    });
+    expect(caught.detail).toBeUndefined();
+    expect(caught.cause).toBeUndefined();
+  });
+
   it.each([
     { version: 1, kind: 'denied' },
     {
       version: 1,
       kind: 'failure',
       stage: 'evaluation',
-      name: 'TypeError',
-      message: 'authored message',
+      payloadJson: '{"name":"TypeError","message":"authored message"}',
     },
     { version: 1, kind: 'failure', stage: 'serialization', originalType: 'object' },
   ])('accepts the exact $kind arm', (arm) => {

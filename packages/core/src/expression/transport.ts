@@ -22,8 +22,7 @@ const transportSchema = z.union([
       version: z.literal(1),
       kind: z.literal('failure'),
       stage: z.literal('evaluation'),
-      name: z.string(),
-      message: z.string(),
+      payloadJson: z.string(),
     })
     .strict(),
   z
@@ -110,4 +109,13 @@ export function decodeExpressionPayload(transport: SuccessTransport): unknown {
       break;
   }
   return value;
+}
+
+/** Only called after the full primitive envelope has passed the byte/shape bound. */
+export function decodeThrownPayload(payloadJson: string): unknown {
+  try {
+    return JSON.parse(payloadJson) as unknown;
+  } catch {
+    throw invalidTransport();
+  }
 }
