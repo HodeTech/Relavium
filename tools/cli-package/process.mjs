@@ -38,7 +38,7 @@ export function resolvePnpm(path = process.env.PATH ?? '', platform = process.pl
             '../pnpm/bin/pnpm.cjs',
             '../lib/node_modules/pnpm/bin/pnpm.cjs',
           ]
-        : ['pnpm', 'pnpm.cjs'];
+        : ['pnpm', 'pnpm.cjs', '../pnpm/bin/pnpm.cjs', '../lib/node_modules/pnpm/bin/pnpm.cjs'];
     for (const name of candidates) {
       const candidate = join(directory, name);
       if (!existsSync(candidate) || !statSync(candidate).isFile()) continue;

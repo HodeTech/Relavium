@@ -46,6 +46,25 @@ test('pnpm JS shim and Windows action layout resolve without executing a shell',
   }
 });
 
+test('the actual POSIX action shell-wrapper layout resolves only its reviewed Node sibling', () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'relavium-pnpm-action-layout-')));
+  try {
+    const bin = join(root, 'node_modules', '.bin');
+    const entry = join(root, 'node_modules', 'pnpm', 'bin', 'pnpm.cjs');
+    mkdirSync(bin, { recursive: true });
+    mkdirSync(join(root, 'node_modules', 'pnpm', 'bin'), { recursive: true });
+    writeFileSync(join(bin, 'pnpm'), '#!/bin/sh\nexit 99\n');
+    // The shell wrapper is neither parsed nor executed, and cannot alone confer an executable route.
+    assert.throws(() => resolvePnpm(bin, 'linux'), /PINNED_PNPM_NOT_FOUND/);
+    writeFileSync(entry, 'throw new Error("synthetic entry must not execute during resolution")');
+    assert.deepEqual(resolvePnpm(bin, 'linux'), { command: process.execPath, prefix: [entry] });
+    rmSync(entry);
+    assert.throws(() => resolvePnpm(bin, 'darwin'), /PINNED_PNPM_NOT_FOUND/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('installer preserves nonzero exit evidence and joins its actual child', async () => {
   await assert.rejects(
     runCommand(
