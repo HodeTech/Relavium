@@ -5700,3 +5700,44 @@ The editor fixture's first lint attempt correctly refuses implicit Node globals;
 explicit built-in imports fix it without weakening lint. Original failed runs and
 NONCLEAN reviews retain their scope. No new causal, actual-Windows or independent
 correction-review acceptance is inferred from these author gates.
+
+### Step 8b adverse-fixture and case-identity correction — 2026-10-16
+
+The complete cumulative review and separate security sitting at **`76fb1397`**
+remain NONCLEAN. They independently verify the original helper correction, five
+secrets inventory corrections and physical **24-control / 72-phase / 1,557-case**
+native capture, including **74 semantic failures / 72 zero-unhandled receipts**.
+The parent independently audits the same exact source/runtime/dependency bodies,
+restoration and graph removal: **1,173 retained files / 31,502,006 bytes**. This
+selected local evidence does not certify platform or whole-wave acceptance.
+
+The new Windows diagnostic isolates two passing actual-native modes and one
+failed adverse control: `facility-refusal` exits **134** before any native witness.
+The fixture changes launching SystemRoot before Node starts and therefore does
+not isolate the product verifier; the deeper abort cause is unproven. The correction
+preserves the launching environment and targets the exact taskkill access boundary
+with an explicitly labelled synthetic native fault after bootstrap. The production
+verifier and pre-entry refusal stay intact. Actual Windows success remains required.
+
+Forwarding capture **`otgxYP` remains failed overall** after nine completed
+controls. Its rejected chat fixed phase passes all **127** cases but two identities
+embed transformed function source. Stable `plain`/`json` labels now preserve those
+same two assertions and bounds; exact case-inventory guards are unchanged. Fresh
+final-source ordinary inventories, all 24 native controls and all 23 forwarding
+controls remain required.
+CI **38900819422** at `76fb1397` passes the complete secrets family, unchanged
+Windows advisory test, wire, coverage and the three other installed legs; the
+required Windows consumer and aggregate remain failed. Broader running jobs retain
+their eventual separately attributed result. Neither NONCLEAN sitting counts as a
+new clean round; final corrections require two NEW complete cumulative clean
+reviews and a NEW clean security sitting. No user decision or new ADR is pending.
+
+The subsequent adverse-fixture correction has fresh author verification: the full
+package-tools cohort passes **82/82**, the full acceptance-tool suite **507/507**,
+and the complete ordinary fifteen-file causal inventory **572/572**, with no
+skips or function-source case names. Workspace lint/typecheck passes **17/17**;
+all **11** test tasks pass (ten valid cache hits), including a fresh CLI run of
+**287 files / 5,016 passes / 10 established skips**. The seven-task build/format,
+tools lint/typecheck and source-fence checks retain their separately recorded
+results. These are author checks before the new source freeze; actual-platform,
+causal and independent final-correction acceptance are not inferred.

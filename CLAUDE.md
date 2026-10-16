@@ -186,10 +186,11 @@ Linux/macOS/Windows plus Node 22.0.0 consumers. Broader CI retains its separatel
 attributed status. Step 8a implements origin adapters and an inert native foundation;
 it is independently accepted at `e0a5ae19` after two NEW complete cumulative
 clean rounds and a separate clean security sitting.
-Step 8b's first complete cumulative review and separate security sitting are
-NONCLEAN: helper cancellation reentry and required-control inventory/fixture
-corrections are in progress. Required actual-Windows package evidence and two
-NEW complete cumulative clean reviews plus a NEW clean security sitting remain open.
+Step 8b's helper cancellation and required workload corrections are independently
+verified. Its latest complete cumulative review and separate security sitting remain
+NONCLEAN at `76fb1397`; corrections to the Windows adverse fixture and unstable
+causal case identities are implemented. Renewed platform/control evidence, two NEW
+complete cumulative clean reviews and a NEW clean security sitting remain open.
 Step 8 proceeds as recorded serial increments 8a–8d; native
 fatal integration remains open until all actual owners are connected.
 Later implementation and whole-wave acceptance
