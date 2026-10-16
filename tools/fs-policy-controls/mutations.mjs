@@ -55,7 +55,7 @@ export const mutations = [
   control(
     'CAS_SHARD',
     paths,
-    '!info.isDirectory() ||\n        info.isSymbolicLink() ||\n        realpathSync(dir) !== dir ||\n        !within(root, dir)',
+    '!info.isDirectory() ||\n        info.isSymbolicLink() ||\n        withOwnedFilesystem(() => realpathSync(dir)) !== dir ||\n        !within(root, dir)',
     'false',
     'FS_CAUSAL_CAS_shard',
     [cases],
