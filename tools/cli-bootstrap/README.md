@@ -7,6 +7,11 @@ the artifact. Its JSON result includes the entry digest, runtime/platform,
 scenario results and deduplicated native import/path/filesystem observations.
 Temporary application paths are represented as `<synthetic-fixture>`.
 
+The tooling export `runBootstrap(absolutePackageRoot)` runs those same controls on
+an explicitly selected installed package. The package consumer supplies its
+verified tarball/install identity; no selector or test hook is added to the CLI.
+The default command continues to use repository `dist`.
+
 `node --test tools/cli-bootstrap/witness.test.mjs` proves the witnesses reject
 swallowed ESM/CommonJS import failures, application FS access, native service
 dispatch, missing observations and genuine dynamic chunk loading. It also checks
@@ -38,6 +43,8 @@ is killed and joined; product subprocess dispatch is forbidden on every OS.
 Fixture snapshots prove poisoned application files/directories remain unchanged,
 including on passing controls. Cleanup removes only the exact owned mkdtemp root.
 
-These controls establish repository-compiled behavior on the runtime/OS that
-actually ran them. They do not certify installed tarballs, Node's minimum floor,
-other platforms, complete Step 7, native owner integration or archival custody.
+These controls establish selected-artifact behavior on the runtime/OS that
+actually ran them. Alone they do not certify tarball content, dependency install,
+Node's minimum floor, other platforms, complete Step 7, native owner integration
+or archival custody. Step 7b's package consumer independently supplies the
+tarball/install binding and records each actual platform execution.
