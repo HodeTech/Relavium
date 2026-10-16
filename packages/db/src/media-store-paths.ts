@@ -1,8 +1,10 @@
+import { RelaviumError } from '@relavium/shared';
+
 import { lstatSync, mkdirSync, realpathSync, statSync, type Stats } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 /** Reason-only host failure; native errors may contain private absolute filenames. */
-export class MediaStoreFilesystemError extends Error {
+export class MediaStoreFilesystemError extends RelaviumError {
   constructor(readonly reason: 'missing' | 'unsafe_path' | 'io') {
     super(
       reason === 'missing'

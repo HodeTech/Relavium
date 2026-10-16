@@ -1,4 +1,5 @@
 import {
+  RelaviumError,
   AppendConflictError,
   CorruptRunEventError,
   LeaseFencedError,
@@ -201,7 +202,7 @@ export { CorruptRunEventError, isCorruptRunEventError } from '@relavium/shared';
  * Distinct from {@link CorruptRunEventError}: that one means the DATA is damaged and upgrading will not help;
  * this one means the data is fine and this binary is too old, so the remedy is real and the user can perform it.
  */
-export class UnreadableRunEventLogError extends Error {
+export class UnreadableRunEventLogError extends RelaviumError {
   override readonly name = 'UnreadableRunEventLogError';
   readonly code = 'unreadable_run_event_log' as const;
 

@@ -4,6 +4,7 @@ import { request as httpsRequest } from 'node:https';
 import { isIP } from 'node:net';
 
 import {
+  RelaviumError,
   extractEgressAuthority,
   isMetadataOrLinkLocal,
   isPrivateOrLocalHost,
@@ -54,7 +55,7 @@ export const SAFE_EGRESS_ERROR_CODES = [
 export type SafeEgressErrorCode = (typeof SAFE_EGRESS_ERROR_CODES)[number];
 
 /** A typed egress failure. The `message` names a reason only — never the url/IP/bytes (secret-free). */
-export class SafeEgressError extends Error {
+export class SafeEgressError extends RelaviumError {
   readonly code: SafeEgressErrorCode;
   constructor(code: SafeEgressErrorCode, message: string) {
     super(message);

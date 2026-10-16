@@ -1,3 +1,5 @@
+import { RelaviumError } from '@relavium/shared';
+
 import { and, gte, isNotNull, lt } from 'drizzle-orm';
 
 import type { Db } from './client.js';
@@ -8,7 +10,7 @@ import { runEffects } from './schema.js';
 export type SessionEffectCheckpoint = 'complete' | 'deferred';
 
 /** Fixed diagnostics: driver errors and stored content must never become disclosure text. */
-export class SessionEffectPrivacyError extends Error {
+export class SessionEffectPrivacyError extends RelaviumError {
   constructor(readonly code: 'transaction_active' | 'checkpoint_failed') {
     super(
       code === 'transaction_active'

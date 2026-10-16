@@ -1,3 +1,5 @@
+import { RelaviumError } from '@relavium/shared';
+
 import { randomUUID } from 'node:crypto';
 import { constants, lstatSync, readdirSync, realpathSync, type Stats } from 'node:fs';
 import { mkdir, open, rename, rmdir, unlink } from 'node:fs/promises';
@@ -22,7 +24,7 @@ export interface MediaTemporarySweepResult {
   readonly retained: number;
   readonly reasons: Readonly<Partial<Record<MediaTemporaryRetentionReason, number>>>;
 }
-export class MediaTemporaryMaintenanceError extends Error {
+export class MediaTemporaryMaintenanceError extends RelaviumError {
   constructor(
     readonly reason: 'flags_required' | 'producer_active' | 'owner_unknown' | 'maintenance_active',
   ) {

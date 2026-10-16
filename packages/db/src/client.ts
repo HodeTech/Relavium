@@ -1,3 +1,5 @@
+import { RelaviumError } from '@relavium/shared';
+
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -73,7 +75,7 @@ export type DbOpenErrorCode =
  * carries the OS username, which a user-facing error is not supposed to leak. A caller that wants to show it
  * still can, redacted, from the field.
  */
-export class DbOpenError extends Error {
+export class DbOpenError extends RelaviumError {
   readonly code: DbOpenErrorCode;
   /** The database path that was requested. A diagnostic field — deliberately NOT part of `message`. */
   readonly path: string;
