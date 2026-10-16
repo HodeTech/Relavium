@@ -58,7 +58,7 @@ import { readUserPricingOverlay } from '../engine/pricing-overlay.js';
 import { assembleToolEnv } from '../engine/tool-host/assemble.js';
 import { createProviderResolver, type ProviderResolver } from '../engine/providers.js';
 import { openSessionStore, type OpenedSessionStore } from '../history/session-open.js';
-import { CliError } from '../process/errors.js';
+import { CliError, toCliError } from '../process/errors.js';
 import {
   isProviderKeyless,
   runOnboardingWizard,
@@ -203,10 +203,16 @@ export const defaultOnboardingTerminalLifecycle: OnboardingTerminalLifecycle = {
   },
 };
 
-export function driveHome(deps: HomeDeps): Promise<ExitCode> {
+export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
+  // Ownerless embeddings retain their original cause/cleanup contract. The product boundary
+  // always supplies the original invocation and normalizes before returning to its pure entry.
   if (deps.invocation === undefined) return driveHomeBody(deps);
-  const ownership = new SessionHomeLifetime(deps.invocation, deps.subscribeSignals);
-  return ownership.execute(() => driveHomeBody(deps, ownership));
+  try {
+    const ownership = new SessionHomeLifetime(deps.invocation, deps.subscribeSignals);
+    return await ownership.execute(() => driveHomeBody(deps, ownership));
+  } catch (cause) {
+    throw toCliError(cause);
+  }
 }
 
 async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): Promise<ExitCode> {

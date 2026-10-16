@@ -1,4 +1,5 @@
 import { createFileCatalogSeed } from './file-catalog-seed.js';
+import { SignalCustody } from './signal-custody.js';
 import { InvocationRegistry, type InvocationClock } from './invocation-registry.js';
 import {
   createInvocationFiniteExit,
@@ -10,6 +11,7 @@ export interface CliInvocation {
   readonly registry: InvocationRegistry;
   readonly finiteExit: InvocationFiniteExit;
   readonly seedFileCatalogOnce: () => Promise<void>;
+  readonly signalCustody?: SignalCustody;
 }
 
 /** Created once before guarded imports; authority is explicitly threaded, never module-global. */
@@ -24,6 +26,7 @@ export function createCliInvocation(finitePorts?: FiniteExitPorts): CliInvocatio
   const registry = new InvocationRegistry(clock);
   return Object.freeze({
     registry,
+    signalCustody: new SignalCustody(),
     finiteExit: createInvocationFiniteExit(
       registry,
       clock,
@@ -35,7 +38,9 @@ export function createCliInvocation(finitePorts?: FiniteExitPorts): CliInvocatio
       },
     ),
     seedFileCatalogOnce: createFileCatalogSeed(async () => {
+      if (registry.termination !== undefined) return;
       const { seedFileCatalog } = await import('../engine/catalog-seed.js');
+      if (registry.termination !== undefined) return;
       seedFileCatalog();
     }),
   });

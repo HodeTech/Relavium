@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from 'node:util';
+import { BOOTSTRAP_CONTROL_COUNT } from '../cli-bootstrap/inventory.mjs';
 import { ARCHIVE_LIMITS, assertPublicPackagePath } from './archive.mjs';
 import { REQUIRED_SMOKE_CASES } from './smoke/cases.mjs';
 
@@ -345,7 +346,8 @@ export function validateConsumerRecord(value, receiptValue, expected) {
   if (!isDeepStrictEqual(installedFiles, packedFiles)) refuse('INSTALLED_FILES');
   const bootstrap = exact(consumer.bootstrap, ['controls', 'entrySha256']);
   const entry = receipt.files.find((file) => file.path === 'package/dist/index.js');
-  if (bootstrap.controls !== 175 || bootstrap.entrySha256 !== entry?.sha256) refuse('BOOTSTRAP');
+  if (bootstrap.controls !== BOOTSTRAP_CONTROL_COUNT || bootstrap.entrySha256 !== entry?.sha256)
+    refuse('BOOTSTRAP');
   const smoke = exact(consumer.smoke, ['success', 'cases']);
   if (
     smoke.success !== true ||

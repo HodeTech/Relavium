@@ -37,10 +37,10 @@ export function processIo(): CliIo {
     nativeStderr: stderr,
     nativeStdin: stdin,
     writeOut: (text) => {
-      stdout.write(text);
+      writeNative(stdout, text);
     },
     writeErr: (text) => {
-      stderr.write(text);
+      writeNative(stderr, text);
     },
     writeOutAcknowledged: (text) => acknowledgeWrite(stdout, text),
     writeErrAcknowledged: (text) => acknowledgeWrite(stderr, text),
@@ -49,6 +49,15 @@ export function processIo(): CliIo {
     stdinIsTty: stdin.isTTY === true,
     stdin,
   };
+}
+
+/** Classify failures at the exact native write, without blocking entered terminal restoration. */
+function writeNative(stream: NodeJS.WriteStream, text: string): void {
+  try {
+    stream.write(text);
+  } catch (cause) {
+    throw new CliError('output_unavailable', '', { cause });
+  }
 }
 
 export function canWrite(stream: NodeJS.WriteStream): boolean {

@@ -1,6 +1,6 @@
 # CLI Packaging Contract
 
-- **Status**: Compiled graph and installed package independently accepted on `development`; native fatal integration and release gates staged
+- **Status**: Compiled graph and installed package independently accepted on `development`; Step 8d activation implemented, acceptance and release gates staged
 - **Date**: 2026-10-15
 - **Related**: [ADR-0111](../../decisions/0111-cli-meta-operations-use-a-lazy-packaged-runtime.md), [commands.md](commands.md), [release runbook](../../runbooks/release-a-surface.md)
 
@@ -73,11 +73,14 @@ DB metadata; no rebuild can repeat the invocation's file-cache attempt over it.
 Pure supported leaves retain their existing constructor/function identities:
 shared terminal stripping and the error base, LLM secret scrubbing, and core's
 tool-dispatch error base. Runtime classification remains separate from diagnostic
-rendering. Dependency/evaluation failures reach fixed early diagnostics even if
-the heavy classifier cannot load; their historical fallback exit 1 is retained
-until Step 8d connects all creation owners and activates the native coordinator.
-Step 8a separately implements runtime storage-origin and fixed classification;
-its inert native foundation does not change this early fallback yet.
+rendering. Step 8d implements the native coordinator before the first guarded
+runtime import. Dependency/evaluation failures now reach one fixed human/JSON
+diagnostic and exit 9 without loading the heavy classifier. Actual runtime
+boundaries project known parser/storage/operational errors before returning to
+the pure entry, preserving their existing exit meanings. The complete
+177-control compiled bootstrap inventory pins both deferred entry and dispatcher
+failures in both representations; installed-package binding requires the same
+inventory. Step 8d's cumulative review/security/platform acceptance remains open.
 
 The emitted graph checker parses actual JavaScript and compares every loading edge
 with the build inventory. It rejects missing/extra/unreachable/escaping chunks,

@@ -439,7 +439,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           attachments: [], // pending `@`/`!` attachments must not leak into the next chat
         });
       })
-      .catch(() => undefined); // a rejecting teardown (or read) must not surface as an unhandled rejection
+      .catch(failHome); // Escaping snapshot/continuation faults belong to the actual Home lifetime.
   };
 
   // `/clear` (ADR-0062 §7) — swap the current in-Home chat for a FRESH session, STAYING in chat (the defining

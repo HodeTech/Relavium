@@ -46,6 +46,26 @@ const released = async (stderr: NodeJS.WritableStream): Promise<void> => {
 };
 
 describe('native diagnostic acknowledgement (ADR-0098)', () => {
+  it('classifies a synchronous failure at the captured native stderr without promoting its private text', () => {
+    const stderr = new OwnedTtyOutput();
+    const cause = new Error('PRIVATE_NATIVE_WRITE_FAILURE');
+    const io = ioFor(stderr);
+    vi.spyOn(stderr, 'write').mockImplementation(() => {
+      throw cause;
+    });
+    try {
+      let caught: unknown;
+      try {
+        io.writeErr('notice');
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toMatchObject({ code: 'output_unavailable', exitCode: 9, cause });
+      expect(caught).not.toHaveProperty('message', 'PRIVATE_NATIVE_WRITE_FAILURE');
+    } finally {
+      stderr.destroy();
+    }
+  });
   it('waits for native delivery and writes to the exact captured stderr after process binding changes', async () => {
     const stderr = new DelayedOutput();
     let acknowledged = false;

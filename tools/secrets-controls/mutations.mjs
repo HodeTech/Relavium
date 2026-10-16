@@ -520,7 +520,7 @@ export const mutations = [
     '        emitOutput(SESSION_EXPORT_REVIEW_NOTICE.trimEnd());\n',
     '',
     ['apps/cli/src/commands/chat.test.ts'],
-    130,
+    133,
     "reports fixed continuity and review notice on stderr after live 'human' /export",
     'W2_EXPORT_LIVE_NOTICE',
     [
@@ -540,7 +540,7 @@ export const mutations = [
     '        emitOutput(SESSION_EXPORT_REVIEW_NOTICE.trimEnd());\n',
     '        deps.io.writeErr(SESSION_EXPORT_REVIEW_NOTICE);\n',
     ['apps/cli/src/commands/chat.test.ts'],
-    130,
+    133,
     "renders the live export 'success' through the interactive transcript",
     'W2_EXPORT_LIVE_RENDERED_NOTICE',
   ),

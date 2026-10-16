@@ -97,3 +97,34 @@ export interface UserFacingError {
   readonly message: string;
   readonly exitCode: ExitCode;
 }
+
+/** Lightweight own-data projection; never load the engine to classify an early CLI failure. */
+export function projectCliError(value: unknown): UserFacingError | undefined {
+  try {
+    if (!isCliError(value)) return undefined;
+    const code = ownData(value, 'code');
+    if (typeof code !== 'string' || !isCliCode(code)) return fixedInternalFailure();
+    const message = CLI_ERROR_POLICY[code].fixedMessage ?? ownData(value, 'message');
+    if (typeof message !== 'string') return fixedInternalFailure();
+    return { code, message, exitCode: cliErrorExitCode(code) };
+  } catch {
+    return fixedInternalFailure();
+  }
+}
+
+function ownData(value: object, key: string): unknown {
+  const descriptor = Object.getOwnPropertyDescriptor(value, key);
+  return descriptor !== undefined && 'value' in descriptor ? descriptor.value : undefined;
+}
+
+function isCliCode(value: string): value is CliErrorCode {
+  return Object.hasOwn(CLI_ERROR_POLICY, value);
+}
+
+function fixedInternalFailure(): UserFacingError {
+  return {
+    code: 'cli_internal',
+    message: CLI_ERROR_POLICY.cli_internal.fixedMessage ?? '',
+    exitCode: 9,
+  };
+}

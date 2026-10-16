@@ -35,7 +35,8 @@ the patched FS wrappers. Native `realpath[Sync].native` is preserved and guarded
 Positive controls execute the real compiled chat grant-admission path and refuse
 real deferred entry/dispatcher chunk loads. Import failures must reach the fixed
 diagnostics without the arbitrary synthetic error canary or stack. Their current
-fallback exit 1 is explicit; Step 8 owns native ABI classification and exit 9.
+native exit 9 and single fixed human/JSON diagnostic are pinned. The complete
+177-control inventory is shared with installed-package binding.
 
 Each scenario uses a fresh sanitized child environment and a finite deadline,
 with a combined UTF-8 output-byte cap. POSIX children own a process group which

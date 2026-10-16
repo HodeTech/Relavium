@@ -62,7 +62,7 @@ function consumer(leg = 'current-linux') {
     platform: leg === 'current-macos' ? 'darwin' : leg === 'current-windows' ? 'win32' : 'linux',
     arch: 'x64',
     success: true,
-    bootstrap: { controls: 175, entrySha256: 'c'.repeat(64) },
+    bootstrap: { controls: 177, entrySha256: 'c'.repeat(64) },
     installedFiles: pack.files.map(({ path, bytes, sha256 }) => ({ path, bytes, sha256 })),
     smoke: { success: true, cases: REQUIRED_SMOKE_CASES.map((id) => ({ id, passed: true })) },
     packageVersion: '0.1.1',
@@ -217,8 +217,8 @@ test('consumer refuses replay, mismatched files, failed/skipped/incomplete contr
     { platform: 'darwin' },
     { node: 'v22.0.0' },
     { node: 'v24.0.0-preview' },
-    { bootstrap: { controls: 174, entrySha256: 'c'.repeat(64) } },
-    { bootstrap: { controls: 175, entrySha256: '0'.repeat(64) } },
+    { bootstrap: { controls: 176, entrySha256: 'c'.repeat(64) } },
+    { bootstrap: { controls: 177, entrySha256: '0'.repeat(64) } },
     { installedFiles: report.installedFiles.slice(1) },
     { installedFiles: report.installedFiles.map((item) => ({ ...item, mode: 0o644 })) },
     { installedFiles: report.installedFiles.map((item) => ({ ...item, sha256: '0'.repeat(64) })) },
@@ -462,7 +462,7 @@ function filesystemFixture() {
         ...consumer(leg),
         tarballSha256: pack.tarballSha256,
         installedFiles: pack.files.map(({ path, bytes, sha256 }) => ({ path, bytes, sha256 })),
-        bootstrap: { controls: 175, entrySha256: entry.sha256 },
+        bootstrap: { controls: 177, entrySha256: entry.sha256 },
       }),
     );
   }

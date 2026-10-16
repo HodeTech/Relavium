@@ -5,7 +5,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { performance } from 'node:perf_hooks';
 import { createHash } from 'node:crypto';
 import { withFixture, toEntryUrl } from './child.mjs';
-import { metaCases, grammarCases } from './inventory.mjs';
+import { metaCases, grammarCases, BOOTSTRAP_CONTROL_COUNT } from './inventory.mjs';
 import { assertWitness, importFailureCanary } from './policy.mjs';
 
 const repository = fileURLToPath(new URL('../../', import.meta.url));
@@ -121,39 +121,44 @@ export async function runBootstrap(packageRoot = join(repository, 'apps/cli')) {
       witness: firstDenied.method,
     });
 
-    // These refuse real emitted chunks, without rewriting the compiled entry or implementation.
-    for (const [name, failRuntimeUrl, args, diagnostic] of [
-      [
-        'entry-runtime-load-failure',
-        runtimeUrl,
-        ['run', 'synthetic-absent.yaml'],
-        'relavium: a fatal internal error occurred.\n',
-      ],
-      [
-        'dispatcher-load-failure',
-        dispatchUrl,
-        ['provider', 'list'],
-        'The CLI runtime could not be loaded.',
-      ],
+    // Refuse actual emitted chunks in human and JSON mode; native activation owns exit 9.
+    for (const [name, failRuntimeUrl, args] of [
+      ['entry-runtime-load-failure', runtimeUrl, ['run', 'synthetic-absent.yaml']],
+      ['dispatcher-load-failure', dispatchUrl, ['provider', 'list']],
     ]) {
-      const result = await fixture.child([entry, ...args], { failRuntimeUrl });
-      retainEvents(result.events, fixture);
-      assert.ok(
-        result.events.some(
-          (event) => event.kind === 'load' && event.url === failRuntimeUrl && event.runtimeFailure,
-        ),
-      );
-      assert.equal(result.code, 1, name); // Native ABI classification/exit 9 is Step 8.
-      assert.equal(result.stdout, '', name);
-      assert.ok(result.stderr.includes(diagnostic), name);
-      assert.ok(!result.stderr.includes(importFailureCanary), name);
-      assert.doesNotMatch(result.stderr, /\n\s+at |file:\/\/|Error: synthetic/, name);
-      assert.equal(
-        result.events.filter((event) => event.denied && !event.runtimeFailure).length,
-        0,
-        name,
-      );
-      records.push({ name, exitCode: result.code, refusedUrl: failRuntimeUrl });
+      for (const json of [false, true]) {
+        const result = await fixture.child([entry, ...(json ? ['--json'] : []), ...args], {
+          failRuntimeUrl,
+        });
+        retainEvents(result.events, fixture);
+        assert.ok(
+          result.events.some(
+            (event) =>
+              event.kind === 'load' && event.url === failRuntimeUrl && event.runtimeFailure,
+          ),
+        );
+        assert.equal(result.code, 9, name);
+        assert.equal(result.stdout, '', name);
+        if (json) {
+          const lines = result.stderr.trim().split('\n');
+          assert.equal(lines.length, 1, name);
+          const error = JSON.parse(lines[0]);
+          assert.equal(error.type, 'error', name);
+          assert.equal(error.code, 'cli_internal', name);
+          assert.match(error.message, /Inspect existing work/, name);
+        } else {
+          assert.match(result.stderr, /^relavium: An unexpected CLI failure occurred\./, name);
+          assert.match(result.stderr, /Inspect existing work/, name);
+        }
+        assert.ok(!result.stderr.includes(importFailureCanary), name);
+        assert.doesNotMatch(result.stderr, /\n\s+at |file:\/\/|Error: synthetic/, name);
+        assert.equal(
+          result.events.filter((event) => event.denied && !event.runtimeFailure).length,
+          0,
+          name,
+        );
+        records.push({ name, json, exitCode: result.code, refusedUrl: failRuntimeUrl });
+      }
     }
   });
   assert.deepEqual(
@@ -161,6 +166,7 @@ export async function runBootstrap(packageRoot = join(repository, 'apps/cli')) {
     artifact,
     'compiled graph changed during bootstrap controls',
   );
+  assert.equal(records.length, BOOTSTRAP_CONTROL_COUNT, 'complete bootstrap control inventory');
   return {
     kind: 'compiled-cli-bootstrap',
     node: process.version,

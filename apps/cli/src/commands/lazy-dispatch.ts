@@ -38,14 +38,16 @@ for (const id of RUNTIME_IDS) {
     try {
       runtime = await loadRuntime();
     } catch (cause) {
-      throw new CliError('internal', 'The CLI runtime could not be loaded.', { cause });
+      throw new CliError('cli_internal', '', { cause });
     }
+    if (ctx.invocation?.registry.termination !== undefined) return 0;
     return runtime.executeCommand(id, input, ctx);
   });
 }
 routes.set('media.prune-temporaries', async (_id, input, ctx) => {
   const args = buildMediaPruneArgs(input);
   const { pruneTemporariesCommand } = await import('./media.js');
+  if (ctx.invocation?.registry.termination !== undefined) return 0;
   return pruneTemporariesCommand(args, ctx);
 });
 
@@ -70,6 +72,7 @@ const PRICED_IDS = new Set([
 
 /** Read the offline cache before the runtime's first metadata consumer; fixtures/media never seed it. */
 export const executeLazyCommand: DispatchCommand = async (id, input, ctx) => {
+  if (ctx.invocation?.registry.termination !== undefined) return 0;
   const route = routes.get(id);
   if (route === undefined) throw new CliError('invalid_invocation', 'unknown command.');
   if (
@@ -83,5 +86,6 @@ export const executeLazyCommand: DispatchCommand = async (id, input, ctx) => {
   }
   if (PRICED_IDS.has(id) && !(id === 'agent.run' && typeof input.options['fixture'] === 'string'))
     await ctx.invocation?.seedFileCatalogOnce();
+  if (ctx.invocation?.registry.termination !== undefined) return 0;
   return route(id, input, ctx);
 };

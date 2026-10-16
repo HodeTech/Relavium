@@ -1385,7 +1385,13 @@ export function createChatLineHandler(
   // keys (Shift+Tab / Esc) drive the SAME control. It applies the initial `ask` mode immediately, so the
   // full-capability host is never live without the fail-closed approval regime (default `ask` denies governed).
   const modeControl = createChatModeControl(built, store, { interactive });
+  const noticesStopped = (): boolean =>
+    workOwner !== undefined &&
+    (workOwner.signal.aborted || workOwner.invocation.registry.termination !== undefined);
   const emitOutput = (text: string): void => {
+    // Entered commands still settle after cancellation, but may not publish new business output.
+    // The invocation's final diagnostic belongs to its restored terminal, not this view/notice sink.
+    if (noticesStopped()) return;
     if (interactive) {
       store.notice(text);
     } else {
@@ -1436,6 +1442,7 @@ export function createChatLineHandler(
           force: true,
         });
         emitOutput(SESSION_EXPORT_REVIEW_NOTICE.trimEnd());
+        if (noticesStopped()) return;
         if (deps.global.json) {
           // Machine mode (--json, 2.Q): emit `session:exported` THROUGH the session bus, so it rides the
           // live stream's monotonic per-session sequenceNumber (a DB-derived seq would jump backward and
@@ -1447,6 +1454,7 @@ export function createChatLineHandler(
         }
       } catch (err) {
         workOwner?.failure(err);
+        if (noticesStopped()) return;
         const message =
           workOwner === undefined
             ? err instanceof Error

@@ -670,8 +670,8 @@ production JSON help, aliases, pricing spellings, output categories and consent
 remain Step 10. Step 7's lazy entry and installed package are independently accepted. Step 8a
 implements minimal storage-origin adapters and defensive runtime projections,
 and adds an inert native invocation foundation. Product fatal/native/terminal
-activation remains pending in Step 8d, after all actual creation owners and
-caught/forced-exit paths are connected. Earlier sections describe current
+activation is implemented in Step 8d on `development`; its complete cumulative
+review, separate security sitting and current platform acceptance remain open. Earlier sections describe current
 behaviour unless stated here.
 
 ### Diagnostic policy
@@ -831,7 +831,7 @@ numeric value alone ([Node exit codes](https://nodejs.org/docs/latest-v22.x/api/
 
 ### Invocation owners and fatal ordering
 
-**Step 8a foundation; product activation pending in 8d.** The registry now
+**Step 8d activation implemented; independent acceptance pending.** The registry
 exposes read-only termination and remaining-budget observations so an
 explicitly installed native adapter can react to autonomous owner failure.
 The adapter observes both real output streams and uses the same absolute
@@ -844,11 +844,15 @@ cause, and stderr failure has no stdout diagnostic fallback.
 The successor background observer keeps the process alive, emits at most five
 fixed failure records plus one suppression record, and upgrades only an
 otherwise clean exit to 9. Existing nonzero outcomes remain intact. Importing
-these modules installs no listeners. Production bootstrap still uses the
-existing net until 8d activation; fixtures explicitly install the foundation
-and register their own owners. Fixture success does not certify connection of
-production workflow, session, terminal, native-child or caught/forced-exit
-owners. The complete required integration contract follows.
+these modules installs no listeners. Product bootstrap explicitly installs the
+coordinator and retains its actual loader/run root before entering deferred
+modules. The root retires before finalization so cleanup cannot join itself.
+An invocation-owned signal-custody lease leaves each actual surface's existing
+first-Ctrl-C and suspended-terminal behaviour authoritative; the bootstrap
+fallback covers loading, admission, metadata and post-surface gaps. Known runtime
+errors are projected before returning to the pure entry. Escaping infrastructure
+faults are observed before joins and diagnosed only after restored-terminal ACK.
+Cumulative review, security and platform acceptance remain separate obligations.
 
 One invocation-owned lightweight registry is installed before dynamic imports.
 Owners register before admitting work and retire only after actual settlement.
@@ -942,9 +946,11 @@ checks admission before publication; unexpected local clock/key/publication faul
 are observed before sibling discovery joins. Optional cache reads keep their
 existing recoverable UI policy.
 
-These are **partial Step 8d implementation claims, not acceptance**. Global native,
-bootstrap, caught/fatal/background/sink activation, complete cumulative reviews,
-security and actual required platform acceptance remain open. The
+These are **Step 8d implementation claims, not acceptance**. Complete cumulative
+reviews, security and current required platform acceptance remain open. Home
+post-chat snapshot failures reach the actual lifetime; ordinary slash notices
+are suppressed after owned stop, including delayed doctor/compaction results and
+export fault catches. The
 [session substrate checkpoint](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-session-substrate-checkpoint--2026-10-16)
 and [chat/Home checkpoint](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-chat-and-home-integration-checkpoint--2026-10-17)
 record their exact scopes. Whole Step 8 remains open.
@@ -972,8 +978,8 @@ The standalone create wizard binds installed Clack prompts to captured streams
 and checks admission between answers and before writing. Its already-entered
 terminal restoration uses the original captured control capability, separately
 from guarded business output. No deadline certifies input, terminal or database
-release. Bootstrap/caught-fatal activation and complete Step 8d review, security
-and platform gates remain staged in the
+release. Bootstrap/caught-fatal activation is implemented; complete Step 8d
+review, security and platform gates remain open in the
 [implementation register](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-management-ownership-checkpoint--2026-10-17).
 
 ### Workflow and terminal ownership
@@ -1020,12 +1026,12 @@ their classifier; unknown cleanup failures do not silently become success.
 
 The first owned infrastructure fault starts the common three-second backstop
 immediately, including when cleanup holds the rejection from the outer catch.
-The staged workflow fallback permits that catch to render after actual cleanup;
-infrastructure does not use its signal-only early-exit continuation. A later
-native handoff keeps the same observer, deadline and physical-exit latch and
-invalidates queued fallback completion. This claims no diagnostic delivery ACK.
-Global fatal/background/sink installation, session owners and final acknowledged
-diagnostic ordering remain Step 8d. Whole Step 8 is still open.
+The native bootstrap takes the original observer, deadline and physical-exit
+latch before runtime entry, invalidating any queued fallback completion. Actual
+terminal restoration and the sole fixed final diagnostic require native ACK
+within the unchanged budget. A background-only selected exit 9 does not become
+a fatal shutdown merely because a completed surface returns it. Whole Step 8
+remains open until Step 8d cumulative review, security and platform acceptance.
 
 ### Native crash teardown scope
 
@@ -1042,9 +1048,9 @@ the already-captured MCP consent gate.
 One removable invocation-bound exit callback iterates the existing registry's
 active native capabilities. There is no completed PID/group history or independent
 product MCP reaper collection. Workflow routing follows the ownership section
-above; session compatibility signal guards remain staged until 8d. Connecting native creation does not
-activate the complete fatal coordinator. Source fixtures explicitly install that
-foundation when testing fatal cleanup. Workflow/session/terminal retirement and
+above; Step 8d implements the corresponding session/management lifetimes and
+activates the product coordinator. Source fixtures retain their separately
+attributed explicit foundation tests; they do not certify product activation. Workflow/session/terminal retirement and
 safe DB close remain their separate integration obligations.
 
 | Creation owner / platform | Permitted finite teardown |

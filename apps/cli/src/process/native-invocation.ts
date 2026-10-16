@@ -52,7 +52,7 @@ function processPorts(): NativeInvocationPorts {
 }
 
 /**
- * Explicitly installed native foundation. Product bootstrap activation waits for Step 8d's actual owners.
+ * Explicit native coordinator; bootstrap binds the original registry and finite-exit capability.
  * No import-time listeners, service imports, cause inspection, DB close or receipt acknowledgement.
  */
 export function installNativeInvocation(

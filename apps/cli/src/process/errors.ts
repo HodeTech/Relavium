@@ -16,8 +16,9 @@ import { EXIT_CODES } from './exit-codes.js';
 import {
   CLI_ERROR_POLICY,
   cliErrorExitCode,
+  CliError,
   isCliError,
-  type CliErrorCode,
+  projectCliError,
   type UserFacingError,
 } from './cli-error.js';
 export { CliError, isCliError } from './cli-error.js';
@@ -34,14 +35,8 @@ export function toUserFacing(value: unknown): UserFacingError {
 }
 
 function projectUserFacing(value: unknown): UserFacingError {
-  if (isCliError(value)) {
-    const code = ownData(value, 'code');
-    if (!isCliCode(code)) return fixedFailure('cli_internal');
-    const message = CLI_ERROR_POLICY[code].fixedMessage ?? ownData(value, 'message');
-    if (typeof message !== 'string') return fixedFailure('cli_internal');
-    // Policy owns the exit. Public mutation cannot manufacture a new code/exit disposition.
-    return { code, message, exitCode: cliErrorExitCode(code) };
-  }
+  const cli = projectCliError(value);
+  if (cli !== undefined) return cli;
   // Only the actual DB/native/media boundary may add this private identity fact. Constructors,
   // errno-shaped objects and convincing causes never supply storage authority to this classifier.
   if (isOwnedStorageFailure(value)) return fixedFailure('storage_unavailable');
@@ -120,14 +115,27 @@ function ownData(value: object, key: string): unknown {
   return descriptor !== undefined && 'value' in descriptor ? descriptor.value : undefined;
 }
 
-function isCliCode(value: unknown): value is CliErrorCode {
-  return typeof value === 'string' && Object.hasOwn(CLI_ERROR_POLICY, value);
-}
-
 function fixedFailure(code: 'cli_internal' | 'storage_unavailable'): UserFacingError {
   return {
     code,
     message: CLI_ERROR_POLICY[code].fixedMessage ?? '',
     exitCode: cliErrorExitCode(code),
   };
+}
+
+/** Normalize an escaping runtime error while its already-loaded classifier is available. */
+export function toCliError(value: unknown): CliError {
+  const projected = toUserFacing(value);
+  try {
+    if (
+      isCliError(value) &&
+      ownData(value, 'code') === projected.code &&
+      ownData(value, 'message') === projected.message &&
+      ownData(value, 'exitCode') === projected.exitCode
+    )
+      return value;
+  } catch {
+    // Hostile public errors cannot bypass the fixed projection.
+  }
+  return new CliError(projected.code, projected.message, { cause: value });
 }

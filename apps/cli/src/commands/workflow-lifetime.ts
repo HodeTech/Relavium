@@ -8,6 +8,7 @@ import type { OwnerRetirement } from '../process/invocation-registry.js';
 import type { CliIo } from '../process/io.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import { defaultSubscribeSignals } from '../process/signals.js';
+import { subscribeWithSignalCustody } from '../process/signal-custody.js';
 import { WorkflowTerminal } from './workflow-terminal.js';
 
 /** Single command owner: registration/signals precede its first owned asynchronous preparation. */
@@ -55,14 +56,22 @@ export class WorkflowLifetime {
       () => this.checkpoint(),
       (cause) => this.failure(cause),
     );
-    this.#removeSignals = subscribeSignals((signo) => {
-      if (signo === 2 && !this.#interrupted && this.invocation.registry.termination === undefined) {
-        this.#interrupted = true;
-        this.stop();
-      } else {
-        this.invocation.finiteExit.signal(signo);
-      }
-    });
+    this.#removeSignals = subscribeWithSignalCustody(
+      this.invocation.signalCustody,
+      subscribeSignals,
+      (signo) => {
+        if (
+          signo === 2 &&
+          !this.#interrupted &&
+          this.invocation.registry.termination === undefined
+        ) {
+          this.#interrupted = true;
+          this.stop();
+        } else {
+          this.invocation.finiteExit.signal(signo);
+        }
+      },
+    );
   }
   get signal(): AbortSignal {
     return this.#cancel.signal;

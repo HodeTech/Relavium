@@ -5,6 +5,7 @@ import type { CliInvocation } from './invocation.js';
 import type { CliIo } from './io.js';
 import { InvocationWorkOwner } from './invocation-work-owner.js';
 import { defaultSubscribeSignals } from './signals.js';
+import { subscribeWithSignalCustody } from './signal-custody.js';
 
 /** One management operation, with no AgentSession label or workflow receipt authority. */
 export class CommandLifetime {
@@ -51,7 +52,11 @@ export class CommandLifetime {
       writeErrAcknowledged: (text) => this.#deliver(() => io.writeErrAcknowledged(text)),
     };
     try {
-      this.#removeSignals = subscribeSignals((signo) => invocation.finiteExit.signal(signo));
+      this.#removeSignals = subscribeWithSignalCustody(
+        invocation.signalCustody,
+        subscribeSignals,
+        (signo) => invocation.finiteExit.signal(signo),
+      );
     } catch (cause) {
       this.work.cleanupUncertain(cause);
       throw cause;

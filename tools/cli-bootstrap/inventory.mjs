@@ -1,3 +1,5 @@
+export const BOOTSTRAP_CONTROL_COUNT = 177;
+
 /** Existing human meta grammar only. JSON help remains human until Wave 3 Step 10. */
 export const metaCases = Object.freeze([
   ['root-help', ['--help']],

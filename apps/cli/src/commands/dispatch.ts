@@ -22,7 +22,7 @@ import { openHistoryStore } from '../history/open.js';
 import { openSessionStore } from '../history/session-open.js';
 import { refreshCatalog, type CatalogRefreshResult } from '../engine/catalog-refresh.js';
 import { persistCatalogToDb, syncCatalogFromDb } from '../engine/catalog-metadata.js';
-import { CliError } from '../process/errors.js';
+import { CliError, toCliError } from '../process/errors.js';
 import { type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import { selectChatDriver } from '../render/tui/chat-ink.js';
@@ -809,6 +809,18 @@ export function isDispatchableId(id: string): boolean {
  * `gate` without a runId) surfaces as a **rejection**, never a synchronous throw — callers only need `await` / `.catch`.
  */
 export async function executeCommand(
+  id: string,
+  input: CommandInput,
+  ctx: DispatchContext,
+): Promise<ExitCode> {
+  try {
+    return await executeRuntimeCommand(id, input, ctx);
+  } catch (cause) {
+    throw toCliError(cause);
+  }
+}
+
+async function executeRuntimeCommand(
   id: string,
   input: CommandInput,
   ctx: DispatchContext,

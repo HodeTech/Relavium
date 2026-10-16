@@ -1,22 +1,10 @@
 import { chmodSync, mkdirSync, writeFileSync } from 'node:fs';
 
-import { CliError, isCliError, toUserFacing } from './errors.js';
+import { CliError, toCliError } from './errors.js';
 
 /** Project an escaping open/maintenance failure without inventing storage provenance. */
 export function storageBoundaryError(value: unknown): CliError {
-  const projected = toUserFacing(value);
-  try {
-    if (
-      isCliError(value) &&
-      Object.getOwnPropertyDescriptor(value, 'code')?.value === projected.code &&
-      Object.getOwnPropertyDescriptor(value, 'message')?.value === projected.message &&
-      Object.getOwnPropertyDescriptor(value, 'exitCode')?.value === projected.exitCode
-    )
-      return value;
-  } catch {
-    // A hostile public error cannot bypass the defensive runtime projection.
-  }
-  return new CliError(projected.code, projected.message, { cause: value });
+  return toCliError(value);
 }
 
 /** Directory creation owned by the CLI's storage/export boundary. */

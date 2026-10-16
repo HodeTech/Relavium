@@ -557,6 +557,92 @@ describe('chatCommand', () => {
       ]),
   };
 
+  it.each([false, true])(
+    'drops a late doctor report after the owned chat stops (interactive=%s)',
+    async (interactive) => {
+      const f = invocationFixture();
+      let release = (): void => undefined;
+      let entered = (): void => undefined;
+      const started = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const { d, err } = deps([], [], {
+        doctorProbes: {
+          ...fakeDoctorProbes,
+          deepProviders: async () => {
+            entered();
+            await held;
+            return [{ id: 'late', label: 'LATE_DOCTOR_REPORT', status: 'ok', detail: 'late' }];
+          },
+        },
+      });
+      const done = chatCommand(
+        { agent: undefined },
+        {
+          ...d,
+          ...INERT_HOIST,
+          invocation: f.invocation,
+          io: { ...d.io, stdoutIsTty: interactive, stdinIsTty: interactive },
+          drive: async (ctx) => {
+            ctx.startSession();
+            const report = ctx.processLine('/doctor --deep');
+            await started;
+            const notices = (): string[] =>
+              ctx.store
+                .getSnapshot()
+                .state.transcript.filter((entry) => entry.role === 'notice')
+                .map((entry) => entry.text);
+            expect(interactive ? notices().join('\n') : err()).toContain('doctor: validating');
+            ctx.workOwner?.stop();
+            release();
+            await report;
+            expect(
+              interactive ? notices().join('\n') : err(),
+              'CHAT_NO_POST_STOP_SLASH_NOTICE',
+            ).not.toContain('LATE_DOCTOR_REPORT');
+            return { kind: 'exit' };
+          },
+        },
+      );
+      try {
+        expect(await done).toBe(4);
+      } finally {
+        release();
+      }
+      expect(f.registry.activeOwners).toBe(0);
+    },
+  );
+
+  it('leaves an owned export infrastructure failure to the final diagnostic instead of publishing a slash notice', async () => {
+    const f = invocationFixture();
+    const { d, store, err } = deps([], []);
+    const failure = new Error('PRIVATE_EXPORT_READ_FAILURE');
+    const done = chatCommand(
+      { agent: undefined },
+      {
+        ...d,
+        ...INERT_HOIST,
+        invocation: f.invocation,
+        drive: async (ctx) => {
+          ctx.startSession();
+          vi.spyOn(store, 'loadFull').mockImplementationOnce(() => {
+            throw failure;
+          });
+          await ctx.processLine('/export');
+          expect(f.registry.observations.exitCode()).toBe(9);
+          expect(err(), 'CHAT_NO_POST_FAULT_EXPORT_NOTICE').not.toContain('export failed:');
+          expect(err()).not.toContain('PRIVATE_EXPORT_READ_FAILURE');
+          return { kind: 'exit' };
+        },
+      },
+    );
+    expect(await done).toBe(9);
+    expect(f.registry.activeOwners).toBe(0);
+  });
+
   it('/doctor runs the fast tier into the notice channel (stderr, non-TTY), without ending the session', async () => {
     const { d, err, store, sessionId } = deps(['/doctor', 'hello', '/exit'], [textTurn('hi')], {
       doctorProbes: fakeDoctorProbes,

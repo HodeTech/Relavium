@@ -3,15 +3,11 @@ import { CommanderError } from 'commander';
 import { executeLazyCommand } from './commands/lazy-dispatch.js';
 import type { HomeDeps } from './home/drive-home.js';
 import { shouldOpenHome } from './home/should-open-home.js';
-import {
-  CLI_ERROR_POLICY,
-  CliError,
-  isCliError,
-  type UserFacingError,
-} from './process/cli-error.js';
+import { CLI_ERROR_POLICY, CliError, projectCliError } from './process/cli-error.js';
 import { EXIT_CODES, type ExitCode } from './process/exit-codes.js';
 import type { CliIo } from './process/io.js';
 import { createCliInvocation, type CliInvocation } from './process/invocation.js';
+import type { NativeInvocation } from './process/native-invocation.js';
 import {
   extractGlobalOptions,
   resolveGlobalOptions,
@@ -28,8 +24,9 @@ const openLazyHome: OpenHome = async (deps) => {
   try {
     runtime = await import('./home/drive-home.js');
   } catch (cause) {
-    throw new CliError('internal', 'The CLI runtime could not be loaded.', { cause });
+    throw new CliError('cli_internal', '', { cause });
   }
+  if (deps.invocation?.registry.termination !== undefined) return EXIT_CODES.success;
   return runtime.driveHome(deps);
 };
 
@@ -42,6 +39,7 @@ export async function run(
   io: CliIo,
   openHome: OpenHome = openLazyHome,
   invocation: CliInvocation = createCliInvocation(),
+  native?: Pick<NativeInvocation, 'fail'>,
 ): Promise<ExitCode> {
   const { raw, rest, error: extractError } = extractGlobalOptions(argv);
   const renderCtx = { json: raw.json === true, verbose: raw.verbose === true };
@@ -54,15 +52,22 @@ export async function run(
   try {
     global = resolveGlobalOptions(raw, process.cwd(), io.env);
   } catch (err) {
-    return renderFailure(err, renderCtx, io);
+    return renderFailure(err, renderCtx, io, native);
   }
   const result: { exitCode?: ExitCode } = {};
+  const stopped = new Error('CLI preparation stopped.');
+  Object.freeze(stopped);
+  const assertPreparing = (): void => {
+    if (invocation.registry.termination !== undefined) throw stopped;
+  };
   try {
+    assertPreparing();
     const program = buildProgram(io, {
       suppressErrorOutput: renderCtx.json,
       context: { io, global, result, invocation },
       execute: async (id, input, ctx) => {
-        const admitted = await admitGlobal(ctx.global);
+        const admitted = await admitGlobal(ctx.global, assertPreparing);
+        assertPreparing();
         return executeLazyCommand(id, input, { ...ctx, global: admitted });
       },
     });
@@ -78,13 +83,15 @@ export async function run(
         io.writeOut(program.helpInformation());
         return EXIT_CODES.success;
       }
-      const admitted = await admitGlobal(global);
+      const admitted = await admitGlobal(global, assertPreparing);
       await invocation.seedFileCatalogOnce();
+      assertPreparing();
       return await openHome({ io, global: admitted, invocation });
     }
     await program.parseAsync([...rest]);
     return result.exitCode ?? EXIT_CODES.success;
   } catch (err) {
+    if (err === stopped) return EXIT_CODES.success;
     if (err instanceof CommanderError) {
       if (err.exitCode !== 0 && renderCtx.json)
         renderKnownError(
@@ -94,17 +101,22 @@ export async function run(
         );
       return err.exitCode === 0 ? EXIT_CODES.success : EXIT_CODES.invalidInvocation;
     }
-    return renderFailure(err, renderCtx, io);
+    return renderFailure(err, renderCtx, io, native);
   }
 }
 
-async function admitGlobal(global: GlobalOptions): Promise<GlobalOptions> {
+async function admitGlobal(
+  global: GlobalOptions,
+  assertPreparing: () => void,
+): Promise<GlobalOptions> {
+  assertPreparing();
   let runtime: typeof import('./engine/tool-host/fs-invocation-admission.js');
   try {
     runtime = await import('./engine/tool-host/fs-invocation-admission.js');
   } catch (cause) {
-    throw new CliError('internal', 'The CLI runtime could not be loaded.', { cause });
+    throw new CliError('cli_internal', '', { cause });
   }
+  assertPreparing();
   return Object.freeze({ ...global, fsGrants: runtime.admitFsInvocation(global) });
 }
 
@@ -125,26 +137,24 @@ function renderKnownError(
   );
 }
 
-async function renderFailure(
+function renderFailure(
   value: unknown,
   opts: { json: boolean; verbose: boolean },
   io: CliIo,
-): Promise<ExitCode> {
-  if (isCliError(value)) {
-    renderKnownError(value, opts, io);
-    return value.exitCode;
+  native?: Pick<NativeInvocation, 'fail'>,
+): ExitCode {
+  const facing = projectCliError(value) ?? projectCliError(new CliError('cli_internal', ''));
+  if (facing === undefined) return EXIT_CODES.infrastructureFailed;
+  if (facing.code === 'cli_internal' || facing.code === 'output_unavailable') {
+    if (native !== undefined) {
+      native.fail(facing.code); // Observe before joins; the native owner presents after terminal restoration.
+      return EXIT_CODES.infrastructureFailed;
+    }
+    // Pure embeddings have no native shutdown authority and still receive a fixed content-free diagnostic.
+    renderUserFacing(facing, undefined, { ...opts, verbose: false }, io);
+  } else {
+    renderUserFacing(facing, value, opts, io);
   }
-  let facing: UserFacingError;
-  try {
-    const { toUserFacing } = await import('./process/errors.js');
-    facing = toUserFacing(value);
-  } catch {
-    // Classification may itself be unavailable after a dependency import failure.
-    const fixed = new CliError('internal', 'An unexpected internal error occurred.');
-    renderKnownError(fixed, opts, io);
-    return fixed.exitCode;
-  }
-  renderUserFacing(facing, value, opts, io);
   return facing.exitCode;
 }
 

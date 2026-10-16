@@ -7,6 +7,11 @@ import { pathToFileURL } from 'node:url';
 import { withFixture, toEntryUrl } from './child.mjs';
 import { assertWitness, importFailureCanary, servicePackages } from './policy.mjs';
 import { spawnBounded } from './process.mjs';
+import { BOOTSTRAP_CONTROL_COUNT } from './inventory.mjs';
+
+test('package binding expects the complete human/JSON native-failure cohort', () => {
+  assert.equal(BOOTSTRAP_CONTROL_COUNT, 177);
+});
 
 function fixtureModule(fixture, body, name = 'fixture.mjs') {
   const path = join(fixture.root, name);

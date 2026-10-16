@@ -3,6 +3,7 @@ import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import { createCliInvocation, type CliInvocation } from '../process/invocation.js';
 import type { SessionOwner } from '../process/invocation-registry.js';
 import { defaultSubscribeSignals } from '../process/signals.js';
+import { subscribeWithSignalCustody } from '../process/signal-custody.js';
 import { SessionWorkOwner } from './session-work-owner.js';
 
 /**
@@ -31,7 +32,11 @@ export class SessionSurfaceLifetime {
       },
     });
     try {
-      this.#removeSignals = subscribeSignals((signo) => this.invocation.finiteExit.signal(signo));
+      this.#removeSignals = subscribeWithSignalCustody(
+        this.invocation.signalCustody,
+        subscribeSignals,
+        (signo) => this.invocation.finiteExit.signal(signo),
+      );
     } catch (cause) {
       this.work.cleanupUncertain(cause);
       throw cause;
