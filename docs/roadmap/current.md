@@ -1149,7 +1149,11 @@ records partial session/native-terminal integration and the remaining activation
 review/security/platform gates without claiming acceptance. The subsequent
 [management-owner checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-management-ownership-checkpoint--2026-10-17)
 records remaining command, prompt, doctor and transient-resource integration;
-bootstrap activation and complete acceptance remain staged. Step 8d proceeds automatically. The
+[native activation checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-native-activation-implementation-checkpoint--2026-10-17)
+records product bootstrap activation at `a2acba8e` and the eighth required
+installed case at `2928d8ef`. Implementation is present; two NEW complete
+cumulative clean reviews, a separate clean security sitting and current full
+CI/platform acceptance remain open. Step 8d proceeds automatically. The
 [final proposal reviews](phases/phase-2.5.5-hardening-and-remediation.md#second-maintainer-rereview-final-proposal-readiness--2026-10-16)
 remain proposal evidence, not implementation review. The selected encrypted archive
 method persists; production recipient/recovery belongs to Wave 4b release setup.

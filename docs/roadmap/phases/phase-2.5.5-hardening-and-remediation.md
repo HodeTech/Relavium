@@ -6174,3 +6174,68 @@ post-import/caught/fatal/background/sink integration, two NEW complete cumulativ
 clean rounds from `d9625ff0`, a NEW clean security sitting and required actual
 same-artifact platform evidence remain open. Whole Step 8 and Steps 9–19 remain
 open; no provider, credential, billing or user action is pending.
+
+## Wave 3 Step 8d native activation implementation checkpoint — 2026-10-17
+
+**Implemented on `development` at `a2acba8e`, with required installed controls at
+`2928d8ef`; not Step 8d acceptance.** The product entry installs the native
+coordinator before deferred runtime loading and retains the actual loader/run
+root. The original registry, finite-exit observer, absolute budget and physical
+exit latch remain one authority. Explicit signal custody preserves each actual
+surface's existing cooperative Ctrl-C behaviour while covering startup and
+post-surface gaps. Runtime classification precedes return to the pure entry;
+known operational refusals keep their meanings. Fatal classification precedes
+joins and the sole fixed diagnostic follows acknowledged terminal restoration.
+Background-only exit 9 remains recoverable rather than becoming a second fatal
+failure. The canonical [ownership contract](../../reference/cli/commands.md#invocation-owners-and-fatal-ordering)
+and [packaging contract](../../reference/cli/packaging.md) own these mechanics.
+
+The two caught-exit advisory findings are corrected: an unexpected Home snapshot
+failure after chat teardown reaches its actual lifetime, and owned slash commands
+publish no ordinary notices after stop, including delayed doctor/compaction and
+export-failure paths. Four assertions failed before the fixes; the focused 227-test
+suite then passed, including positive normal-notice and terminating-Home controls.
+Ownerless Home embeddings retain their original causes. The initial broad attempt
+exposed eight ownerless compatibility failures; the corrected boundary's 85-test
+focused run passed. Author lint/test failures are not clean review rounds.
+
+Author workspace validation passed 23/23 tasks, with 20 valid cache hits and
+fresh CLI lint/typecheck/test: 322 files, 5,314 passing tests and 10 established
+skips. Other package test inventories were replayed from valid cache. Build
+passed 6/6 (five cached packages and a fresh CLI). The finite emitted graph has
+25 JavaScript outputs, 404 inputs and 17 declared externals. Tools lint/typecheck,
+508 acceptance-tool tests, 37 focused package-tool tests, seam/purity gates,
+compiled CLI smoke and all 177 compiled bootstrap controls passed on local
+macOS/Node 22.23.1. Final publication validation remains attributed to the saved
+working-tree source records, not inferred execution of a later commit.
+
+Two selected live-export mechanisms each passed fixed/removal/restored with
+133 fixed/restored tests, their named semantic failures, byte-exact restoration
+and unchanged developer source. Each selected-family record deliberately remains
+`complete: false`; this is not the full secrets family. The new installed eighth
+case exercises real uncaught, unhandled-rejection and closed-stdout events through
+the untouched selected entry. It joins exact target/descendant readiness, retains
+the unrelated sibling, refuses a fatal diagnostic while native close delivery is
+held, and requires one fixed diagnostic after delivery. Background mode permits
+an ordinary successful turn before background-only exit 9. The local selected
+package passed 177 bootstrap controls and all eight cases; its recorded tarball
+SHA-256 is `22a0337dedbe85e2b6bf50b3245681e940d9c9480e581e736a4186aa13cb0cbe`.
+Its receipt names `a2acba8e` with the then-uncommitted, pinned control changes;
+no clean-commit or other-platform execution is inferred. Interactive restoration
+and deadline nonrenewal retain their separate source-test attribution.
+
+Local source records remain Git-ignored: the final activation record pins 33
+paths (SHA-256 `4020e5ac1d09fb97c8e02a25dd5735cc0c007e244ce0b94f709c84da3d6fd498`),
+and the installed-control record pins 12 unchanged paths
+(`8e37bc50943db3039d2ab48d3785c198dd2415543247b7823de2dbd8a9065e63`).
+Earlier author attempts, moving-source advisories and superseded evidence retain
+their original scopes. None is an independent complete cumulative or security
+review. No provider, keychain, operator-terminal, live clipboard or paid operation
+was used.
+
+**Remaining gates:** two NEW complete cumulative clean review rounds from
+`d9625ff0a641197c6ed45968df99094a25db88d6` after the final material correction,
+a NEW separate clean security sitting, fresh required full CI and the four
+current same-tarball Linux/macOS/Windows/Node-22.0.0 consumers with the eighth case.
+Whole Step 8 and Steps 9–19 remain open. No new ADR approval, provider capture,
+credential, billing or user decision is pending. Work proceeds automatically.

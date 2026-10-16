@@ -80,7 +80,10 @@ boundaries project known parser/storage/operational errors before returning to
 the pure entry, preserving their existing exit meanings. The complete
 177-control compiled bootstrap inventory pins both deferred entry and dispatcher
 failures in both representations; installed-package binding requires the same
-inventory. Step 8d's cumulative review/security/platform acceptance remains open.
+inventory. Step 8d adds an eighth required installed case for actual global
+fatal/background/output hooks and native close-delivery ordering through the
+untouched entry. Interactive restoration and deadline nonrenewal retain separate
+source controls. Step 8d's cumulative review/security/platform acceptance remains open.
 
 The emitted graph checker parses actual JavaScript and compares every loading edge
 with the build inventory. It rejects missing/extra/unreachable/escaping chunks,
