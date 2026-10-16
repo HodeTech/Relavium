@@ -83,15 +83,19 @@ export function buildExpressionProgram(expression: string, scope: ExpressionScop
     '    }return copy;',
     '  };',
     '  const snapshot=function(v){',
+    // Primitive dump paths never inspect diagnostic prototypes or authored JSON hooks.
+    '    const type=typeof v;',
+    '    if(type==="bigint" || type==="undefined" || type==="symbol")return stringify(asString(v));',
+    '    if(v===null || (type!=="object" && type!=="function"))return stringify(v);',
     '    let encoded,copy;',
     // Complete the original traversal before supplementary getters can run. The original
     // result/toJSON runs once; supplemental values follow the pinned bridge's second pass.
     '    try{encoded=stringify(v);if(typeof encoded!=="string")throw 0;copy=detach(parse(encoded));}',
     '    catch(error){const text=asString(v);try{return stringify(detach(parse(text)));}catch(ignored){return stringify(text);}}',
     '    const diagnosticKeys=["name","message","stack","fileName","lineNumber"];',
-    '    if(copy!==null){for(let i=0;i<diagnosticKeys.length;i++){const field=diagnosticKeys[i];',
+    '    if(copy!==null && typeof copy==="object"){for(let i=0;i<diagnosticKeys.length;i++){const field=diagnosticKeys[i];',
     '      if(copy[field]===undefined){let value;try{value=v[field];}catch(ignored){}',
-    '        if(value!==undefined && typeof copy==="object")define(copy,field,{value,enumerable:true,writable:true,configurable:true});',
+    '        if(value!==undefined)define(copy,field,{value,enumerable:true,writable:true,configurable:true});',
     '      }',
     '    }}',
     // Any authored supplemental values serialize before the latch. Final encoding is inert.

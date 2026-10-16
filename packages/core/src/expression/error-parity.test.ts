@@ -256,6 +256,54 @@ interface ThrownCase {
 
 const thrownCases: ThrownCase[] = [
   {
+    label: 'boxed number retains scalar conversion without prototype diagnostics',
+    value:
+      '(() => {Object.defineProperty(Number.prototype,"name",{get(){throw 42;}});return new Number(42);})()',
+    reason: 'runtime',
+    detail: '42',
+  },
+  {
+    label: 'boxed string retains scalar conversion without prototype diagnostics',
+    value:
+      '(() => {Object.defineProperty(String.prototype,"name",{get(){throw 42;}});return new String("ok");})()',
+    reason: 'runtime',
+    detail: 'ok',
+  },
+  {
+    label: 'boxed boolean retains scalar conversion without prototype diagnostics',
+    value:
+      '(() => {Object.defineProperty(Boolean.prototype,"name",{get(){throw 42;}});return new Boolean(true);})()',
+    reason: 'runtime',
+    detail: 'true',
+  },
+  {
+    label: 'object toJSON scalar retains conversion without prototype diagnostics',
+    value:
+      '(() => {Object.defineProperty(Number.prototype,"name",{get(){throw 42;}});return {toJSON(){return 42;}};})()',
+    reason: 'runtime',
+    detail: '42',
+  },
+  {
+    label: 'thrown string ignores primitive diagnostic getters',
+    value:
+      '(() => {Object.defineProperty(String.prototype,"name",{get(){throw 42;}});return "primitive";})()',
+    reason: 'runtime',
+    detail: 'primitive',
+  },
+  {
+    label: 'thrown boolean ignores primitive diagnostic getters',
+    value:
+      '(() => {Object.defineProperty(Boolean.prototype,"name",{get(){throw 42;}});return true;})()',
+    reason: 'runtime',
+    detail: 'true',
+  },
+  {
+    label: 'thrown bigint bypasses authored JSON hooks',
+    value: '(() => {BigInt.prototype.toJSON=function(){return "changed";};return 2n;})()',
+    reason: 'runtime',
+    detail: '2',
+  },
+  {
     label: 'resource classification uses ordinary traversal before hydration',
     value:
       '(() => {let n=0;return {get name(){return ++n===1?undefined:"InternalError"},get message(){return n===1?"out of memory":"stack overflow"}};})()',
@@ -461,4 +509,29 @@ describe.each(kinds)('%s supplemental callback ordering and privacy', (kind) => 
     expect(error.detail).toBeUndefined();
     expect(error.cause).toBeUndefined();
   });
+});
+
+describe.each(kinds)('%s native primitive result paths', (kind) => {
+  const values: { constructor: string; expression: string; expected: unknown }[] = [
+    { constructor: 'Number', expression: '42', expected: 42 },
+    { constructor: 'String', expression: '"ok"', expected: 'ok' },
+    { constructor: 'Boolean', expression: 'true', expected: true },
+  ];
+  for (const value of values) {
+    it.each(['name', 'message', 'stack', 'fileName', 'lineNumber'])(
+      `${value.constructor} result ignores unused %s diagnostic getter`,
+      (field) => {
+        const expression = `(() => {Object.defineProperty(${value.constructor}.prototype,"${field}",{get(){throw 42;}});return ${value.expression};})()`;
+        let result: unknown;
+        let caught: unknown;
+        try {
+          result = sandbox.evaluate({ expression, kind, scope: cleanScope() });
+        } catch (error) {
+          caught = error;
+        }
+        expect(caught, 'NATIVE_PRIMITIVE_FAST_PATH').toBeUndefined();
+        expect(result, 'NATIVE_PRIMITIVE_FAST_PATH').toEqual(value.expected);
+      },
+    );
+  }
 });
