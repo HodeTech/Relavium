@@ -243,6 +243,34 @@ test('consumer refuses replay, mismatched files, failed/skipped/incomplete contr
   );
 });
 
+test('each required platform refuses the former six-case cohort without its native owner control', () => {
+  assert.ok(REQUIRED_SMOKE_CASES.includes('actual-native-process-owner'));
+  assert.equal(REQUIRED_SMOKE_CASES.length, 7);
+  for (const leg of REQUIRED_CONSUMER_LEGS) {
+    const report = consumer(leg);
+    const cases = report.smoke.cases.filter((item) => item.id !== 'actual-native-process-owner');
+    assert.equal(cases.length, 6);
+    refuses(() =>
+      validateConsumerRecord({ ...report, smoke: { success: true, cases } }, receipt(), expected),
+    );
+    refuses(() =>
+      validateConsumerRecord(
+        {
+          ...report,
+          smoke: {
+            success: true,
+            cases: report.smoke.cases.map((item) =>
+              item.id === 'actual-native-process-owner' ? { ...item, passed: false } : item,
+            ),
+          },
+        },
+        receipt(),
+        expected,
+      ),
+    );
+  }
+});
+
 test('resolved dependency evidence records every approved package without exposing host paths', () => {
   const report = consumer();
   const dependency = report.dependencies[0];

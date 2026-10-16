@@ -40,6 +40,26 @@ aggregate. Each result has `id`, `passed`, and evidence or an error. Overall
   join the native child. No provider/key lookup is needed on this gate-only graph.
 - Run the existing parameterized actual media/CAS native cleanup witness against
   the installed entry, including the shared iterator-provenance ownership join.
+- Replay a public offline `agent run --fixture` with `git_status` through the actual
+  native process host. A private copied Node executable named `git`/`git.exe` runs
+  the fixed extensionless fixture script, which creates only its recorded child.
+  Inject a synthetic error on the real target after readiness, then observe actual
+  target and descendant closure. Delay delivery of real close events to distinguish
+  an error/request from the owned native acknowledgement. POSIX additionally covers
+  natural leader exit while a descendant holds inherited pipes. Windows runs the
+  verified absolute system taskkill with exact `/PID <owned-root> /T /F`, joins its
+  actual helper independently, ignores an executable hostile PATH shim, and refuses
+  an invalid system facility before target spawn. An unrelated owned sibling must
+  survive; external watchdogs and exact created PIDs bound and join cleanup.
+  Each mode owns a fresh sibling with its own finite watchdog; watchdog cleanup
+  remains failure. A copied Homebrew macOS Node also receives its fixed adjacent
+  `libnode.<ABI>.dylib` when present, so dyld can enter the fixture. The two same-directory
+  executables share that support file only after bounded ordinary-file byte verification;
+  an existing read-only copy is verified and reused. Readiness requires
+  the exact root, created descendant and descendant's matching PID/parent ACK;
+  a root/stdout marker alone never authorizes injection. Failed modes retain bounded
+  native stdout/stderr, partial mode records and actual cleanup observations in the
+  private report; the public receipt still carries only the required case ID/pass.
 
 Chat's key resolver is keychain-first: exactly two synthetic `Entry` constructor
 attempts are recorded and refused before native API access. The budget run has one
@@ -50,7 +70,8 @@ The external `--import` preload uses Node's `module.register` API available in
 Node 22.0. It replaces only the keyring import and exact synthetic HTTP transport,
 not shipped commands, engine code, SDK parsing or persistence. The only admitted
 network-shaped data fetch is QuickJS's local WASM data URL; the only admitted
-child spawn is the explicit MCP fixture. These are test witnesses, not a claimed
+child spawns are the explicit MCP fixture and the new native case's exact target
+and verified Windows taskkill helper. These are test witnesses, not a claimed
 security sandbox. The chat transport admits one exact synthetic OpenAI request
 shape and returns complete synthetic SSE. No real credential, provider call or
 billing setup is used.
@@ -58,11 +79,18 @@ billing setup is used.
 The exact Node 22.0 Linux and current Node 24 Linux/macOS/Windows consumers must
 execute this same runner and artifact digest. A local pass cannot substitute for
 those required platform legs. Archive inspection, bootstrap/meta controls and
-aggregate enforcement belong to the surrounding package runner. Native fatal
-integration and original-TS maps/custody retain their later Wave 3 scopes.
+aggregate enforcement belong to the surrounding package runner. The new case
+captures the actual packaged creation-registry exit callback before native entry,
+invokes that exact finite callback in a separate subcase, and observes its release
+after native close. This proves packaged creation/fallback identity; source
+forwarding controls separately prove original bootstrap object identity. The error
+is explicit native-edge fault injection, not an OS-fault claim. Fatal coordinator
+activation and live fatal budget integration retain the later Step 8d scope;
+original-TS maps/custody remain Step 9. All existing six behavior cases and 175
+bootstrap controls remain required.
 
 Narrow child-lifetime negative controls run with:
 
 ```sh
-node --test tools/cli-package/smoke/process.test.mjs
+node --test tools/cli-package/smoke/process.test.mjs tools/cli-package/smoke/native-process.test.mjs tools/cli-package/smoke/native-spawn-witness.test.mjs
 ```

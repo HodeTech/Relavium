@@ -9,6 +9,7 @@ import dns from 'node:dns';
 import child from 'node:child_process';
 import dgram from 'node:dgram';
 import { record, denied } from './guard-log.mjs';
+import { createNativeSpawnWitness } from './native-spawn-witness.mjs';
 
 register('./module-guard.mjs', import.meta.url);
 net.connect = denied('net.connect');
@@ -33,8 +34,16 @@ for (const [label, module] of [
     )
       module[name] = denied(`${label}.${name}`);
 const originalSpawn = child.spawn;
+const nativeWitness = process.env.RELAVIUM_PACKAGE_SMOKE_NATIVE
+  ? createNativeSpawnWitness(process.env.RELAVIUM_PACKAGE_SMOKE_NATIVE, originalSpawn)
+  : undefined;
 child.spawn = (...args) => {
-  // The only admitted native child is the explicit owned MCP fixture. Shell spawning stays forbidden.
+  const native = nativeWitness?.trySpawn(...args);
+  if (native !== undefined) {
+    record({ operation: 'native-owned-spawn', executable: args[0], args: args[1] });
+    return native;
+  }
+  // The separate existing MCP fixture remains exact; no generic process/shell spawning is admitted.
   const expected = process.env.RELAVIUM_PACKAGE_SMOKE_MCP;
   if (
     expected &&

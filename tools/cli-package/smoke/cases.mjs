@@ -6,4 +6,5 @@ export const REQUIRED_SMOKE_CASES = Object.freeze([
   'real-sdk-chat-persistence-resume',
   'actual-mcp-initialize-version',
   'actual-media-cas-iterator-cleanup',
+  'actual-native-process-owner',
 ]);

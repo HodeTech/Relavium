@@ -18,6 +18,7 @@ import { REQUIRED_SMOKE_CASES } from './cases.mjs';
 import { assertInstalledChat } from './chat.mjs';
 import { assertInstalledMcp, assertInstalledWorkflows } from './workflows.mjs';
 import { assertExit, explicitEnvironment, invoke, ndjson } from './process.mjs';
+import { assertInstalledNativeProcesses, InstalledNativeControlError } from './native-process.mjs';
 
 const directory = dirname(fileURLToPath(import.meta.url));
 const repository = resolve(directory, '../../..');
@@ -96,7 +97,11 @@ async function exerciseInstalledSmoke({ packageRoot, supportRoot, artifactSha256
         id: name,
         passed: false,
         elapsedMs: Date.now() - started,
-        error: String(error.stack ?? error),
+        error:
+          error instanceof InstalledNativeControlError
+            ? error.primaryFailure
+            : String(error.stack ?? error),
+        ...(error instanceof InstalledNativeControlError ? { evidence: error.evidence } : {}),
       });
     }
   }
@@ -199,6 +204,7 @@ async function exerciseInstalledSmoke({ packageRoot, supportRoot, artifactSha256
         outputBytes: result.bytes,
       };
     });
+    await runCase('actual-native-process-owner', () => assertInstalledNativeProcesses(context));
     report.guardCalls = calls();
     for (const call of report.guardCalls.filter((value) => value.operation === 'external-module')) {
       const resolved = realpathSync(fileURLToPath(call.url));
