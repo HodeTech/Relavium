@@ -5481,3 +5481,67 @@ restoration ordering without safe-DB-close or universal containment claims.
 The implementation commits carry this candidate. Two NEW complete cumulative
 clean reviews after the last material correction and a separate security sitting remain required.
 Whole Step 8 and Steps 8b–19 remain open; no user decision is pending.
+
+## Wave 3 Step 8a acceptance — 2026-10-16
+
+**Independently accepted on `development` at
+`e0a5ae19981e749a75455e6b5698c806d9f1c674`.** The parent reads both NEW
+complete cumulative clean reports, R1 (gpt-6-astra/xhigh) and R2
+(gpt-6.1-sol/xhigh). Each reviews every **61 paths / 177 zero-context hunks /
+17 complete added files** from `d9625ff0`, then independently passes all
+**24 changed test files / 481 tests / zero skips**. No material correction is
+requested, and no source or dist mutation occurs between those rounds.
+
+The separate security sitting is also clean at that exact source: **26 complete
+files / 525 passing tests / zero skips**, plus five independently authored
+probes. It verifies fixed projection/privacy, private origin identity and factory
+association, inert imports, actual native fixture observations and emitted
+DB/core-source equality. These overlapping reviewer cohorts are separate
+executions, not added together as unique test coverage. The parent reads its
+full report; this sitting does not substitute for either correctness round.
+
+Both correctness reviewers inspect the actual retained local causal coordinators,
+source/test bodies, exact removals/restorations, stdio, complete inventories,
+runtime/dependency and zero-unhandled receipts. R2 additionally reconciles all
+21,013 installed dependency file digests. The **11 controls / 33 phases /
+750 repeated cases / 41 semantic failed cases with declared named witnesses**
+keep their original uncommitted-body attribution and `complete: false` /
+`acceptance: false` local labels. The DB capture predates six unrelated CLI
+assertion-marker changes; all production and selected DB targets/tests match.
+All 1,256 CLI capture pins match current. No new family certificate or fresh
+reviewer mutation execution is inferred.
+
+### Actual current-source package and CI attribution
+
+A separate read-only audit and R2 independently inspect actual downloaded
+GitHub bytes and strict receipts against freshly queried job/source identities.
+Push run **38880157607 / attempt 1** executes the reviewed `e0a5ae19` source.
+Actual successful jobs are pack **116904676623**, current Linux **116904849909**,
+current macOS **116904849827**, current Windows **116904849911**, minimum Linux
+**116904849776**, and required aggregate **116906278121**. All four consumers
+bind **`7d02747c6f8c52b0b12ef44dab990e1658fa652b83600280a928aad22897e18e`**:
+**421,903 bytes / 70 public files / 25 JS / 17 dependencies**. Each passes
+175 bootstrap controls and six installed cases. Current runtimes are **24.21.0**;
+minimum Linux is exactly **22.0.0**. Forty-four canonical migration/public asset
+files match frozen source byte for byte. Public receipts do not export their
+private worker/cleanup logs, installation trees or native dependency bodies;
+those absent physical details are not reconstructed or independently attested.
+The separately qualified local dirty candidate is not substituted for this tarball.
+
+At this checkpoint, current wire, complete secrets, complete usage, enforced
+LLM/MCP coverage, advisory Windows and Node-floor jobs also report success.
+Filesystem controls remain in progress; the dependent main CI job and overall
+run have not yet completed. This is independent Step 8a acceptance, **not a
+whole-CI claim**. The existing run is allowed to finish; any failure remains
+actively actionable. Earlier full-CI evidence belongs to `c836ffe6`, and no
+execution of this successor acceptance-metadata commit is inferred. Whole-wave
+gates repeat at the final implementation in Step 19.
+
+Step 8a's origin adapters and inert native foundation are closed. **Whole Step 8
+remains open**, with actual creation owners in 8b, workflow health in 8c, and
+session/terminal/caught/forced-exit activation in 8d. Later 8b–8d reviews remain
+complete and cumulative from `d9625ff0`; accepting this foundation does not
+narrow those reviews. Step 18 still owns central DB-opener consolidation and
+Step 19 publication. Detailed reports/artifacts stay local and Git-ignored.
+No new ADR, dependency, deferral, credential, billing, provider or user-decision
+gate is introduced. Step 8b proceeds automatically.

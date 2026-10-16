@@ -204,3 +204,12 @@ until Step 8d connects every actual creation owner and caught/forced-exit path.
 This does not claim whole Step 8, production fatal integration or later discovery
 work complete. The [implementation checkpoint](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8a-implementation-checkpoint--2026-10-16)
 attributes local author, selected causal and installed-host evidence separately.
+
+## Step 8a independent acceptance — 2026-10-16
+
+The [Step 8a register](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8a-acceptance--2026-10-16)
+accepts the origin adapters and inert native foundation at `e0a5ae19` after two
+NEW complete cumulative clean rounds and a separate clean security sitting.
+Actual same-tarball platform controls and broader CI retain their exact source
+and completion status. Product activation, remaining owners and whole Step 8
+stay staged in 8b–8d; later review remains cumulative over the entire Step 8 range.

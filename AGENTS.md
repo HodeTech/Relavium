@@ -95,7 +95,8 @@ Step 7b and whole Step 7 are independently accepted at `c836ffe6` after two NEW
 complete cumulative clean rounds, a clean security sitting and successful exact-tarball
 Linux/macOS/Windows plus Node 22.0.0 consumers. Broader CI retains its separately
 attributed status. Step 8a implements origin adapters and an inert native foundation;
-its independent acceptance remains in progress.
+it is independently accepted at `e0a5ae19` after two NEW complete cumulative
+clean rounds and a separate clean security sitting.
 Step 8 proceeds as recorded serial increments 8a–8d; native
 fatal integration remains open until all actual owners are connected.
 Later implementation and whole-wave acceptance

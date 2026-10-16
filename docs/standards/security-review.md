@@ -626,6 +626,22 @@ joins source and artifact evidence. This is not a new all-path generic review,
 real keychain/provider exercise, full-CI claim or native fatal-owner integration.
 Steps 8/9/10/19 and existing cooperating-host limits retain their distinct scope.
 
+### Sitting: Wave 3 storage-origin and inert native foundation (2026-10-16)
+
+Separate clean sitting at `e0a5ae19981e749a75455e6b5698c806d9f1c674`, independent
+of the two complete cumulative correctness rounds. All **26 full files / 525 tests**
+pass without skips; five additional independent probes cover private-origin
+cloning, foreign client substitution, hostile reflection and inert imports.
+The sitting inspects the retained eleven local controls and all 33 completed
+zero-unhandled receipts, preserving selected/uncommitted-source attribution.
+Fixed diagnostics expose no raw throwable/cause, storage authority remains a
+read-only identity fact, and native fixture expiry supplies no receipt or safe
+DB-close ACK. No confirmed finding or new deferral remains. Production owners,
+process-tree teardown and all-surface activation remain 8b–8d. The
+[acceptance register](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8a-acceptance--2026-10-16)
+owns exact execution/platform limits; detailed review records remain local and
+Git-ignored.
+
 ## Sandbox and tool policy (`run_command`, node tools, secret inputs)
 
 This is the **binding home** for the tool-policy rules; the rationale is
