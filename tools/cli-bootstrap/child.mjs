@@ -11,7 +11,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
-import { pathToFileURL, fileURLToPath } from 'node:url';
+import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
 import { spawnBounded } from './process.mjs';
 import { maxWitnessBytes } from './policy.mjs';
@@ -78,7 +78,7 @@ export async function withFixture(run) {
           if (process.env[key] !== undefined) env[key] = process.env[key];
         if (debug) env.RELAVIUM_DEBUG = '1';
         const result = await spawnBounded(
-          ['--import', fileURLToPath(new URL('./preload.mjs', import.meta.url)), ...args],
+          ['--import', new URL('./preload.mjs', import.meta.url).href, ...args],
           { cwd: workspace, env },
           bounds,
         );

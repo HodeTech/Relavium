@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { withFixture, toEntryUrl } from './child.mjs';
 import { assertWitness, importFailureCanary, servicePackages } from './policy.mjs';
 import { spawnBounded } from './process.mjs';
@@ -22,6 +24,28 @@ test('native loader observes untouched ESM entry and tolerates Node loader reads
     assertWitness(result.events, toEntryUrl(entry));
     assert.equal(result.stdout, 'function\n');
   });
+});
+test('production child retains file-URL semantics for a preload path with URL metacharacters', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'relavium-bootstrap-url-'));
+  try {
+    const directory = join(root, 'loader # with %');
+    mkdirSync(directory);
+    // Relocate the actual implementation unchanged, so converting its preload URL
+    // to a native path breaks this control on POSIX as well as Windows.
+    for (const name of ['child.mjs', 'process.mjs', 'policy.mjs', 'preload.mjs', 'loader.mjs'])
+      copyFileSync(new URL(name, import.meta.url), join(directory, name));
+    // eslint-disable-next-line no-restricted-syntax -- Exact copied tooling module in this test-owned directory; URL metacharacters are the regression.
+    const relocated = await import(pathToFileURL(join(directory, 'child.mjs')).href);
+    await relocated.withFixture(async (fixture) => {
+      const entry = fixtureModule(fixture, "console.log('loaded with URL semantics');");
+      const result = await fixture.child([entry]);
+      assert.equal(result.code, 0, result.stderr);
+      assertWitness(result.events, toEntryUrl(entry));
+      assert.equal(result.stdout, 'loaded with URL semantics\n');
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 test('each denied ESM package/subpath is witnessed even when the application swallows it', async () => {
   await withFixture(async (fixture) => {
