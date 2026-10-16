@@ -21,7 +21,7 @@ import { McpConnectError, McpError } from './errors.js';
 import { INGRESS_BOUNDS, toolDefinitionBytes } from './ingress-bounds.js';
 import { shapeToolResult } from './result.js';
 import { SdkTransportOwner, type SdkRequestInvocation } from './sdk-work.js';
-import { McpWorkScope, mcpWorkEntryFailure } from './work-scope.js';
+import { McpLifetimeError, McpWorkScope, mcpWorkEntryFailure } from './work-scope.js';
 import { OwnedSdkClient } from './sdk-client.js';
 
 /**
@@ -47,6 +47,52 @@ export interface StdioServerSpec {
   readonly cwd?: string;
   /** The authored `connect_timeout_ms` (ADR-0088 §1.4). Absent ⇒ {@link MCP_DEADLINES.stdioConnectMs}. */
   readonly connectTimeoutMs?: number;
+  /** Optional host-owned native registration, installed before SDK start or initialize. */
+  readonly nativeObserver?: StdioNativeObserver;
+}
+
+/** SDK-free creation ownership of one stdio child's native lifetime (not full MCP work completion). */
+export interface StdioNativeLifetime {
+  /** Creation-latched PID while native close is owed; absent before spawn and after actual close. */
+  readonly readPid: () => number | undefined;
+  /** Only actual native close, or a verified empty start, acknowledges closure. */
+  readonly isClosed: () => boolean;
+  readonly whenClosed: Promise<void>;
+  /** The existing idempotent transport-owner close, including its retained MCP work. */
+  readonly close: () => Promise<void>;
+}
+
+/**
+ * Synchronous host hooks returning undefined; neither callback starts the transport or owns an SDK object.
+ * An unexpected returned value refuses admission; ordinary native Promise rejection is observed independently.
+ */
+export interface StdioNativeObserver {
+  readonly attach: (lifetime: StdioNativeLifetime) => void;
+  /** Refusal or reentrant close prevents native start; admission is checked again afterward. */
+  readonly beforeStart: () => void;
+}
+
+const observeNativePromise: unknown = Object.getOwnPropertyDescriptor(
+  Promise.prototype,
+  'then',
+)?.value;
+
+/**
+ * Refuse async/malformed hooks without reading a foreign then getter or treating it as native ACK.
+ * Intrinsic observation retains the native Promise constructor/species constraints; these trusted hooks
+ * must not return promises with hostile constructor/species accessors. Foreign protocols are not invoked.
+ */
+function invokeNativeObserver(callback: () => void): void {
+  const returned: unknown = callback();
+  if (returned === undefined) return;
+  if (typeof observeNativePromise === 'function') {
+    try {
+      Reflect.apply(observeNativePromise, returned, [() => undefined, () => undefined]);
+    } catch {
+      // Non-native promises/thenables are refused, never assimilated through arbitrary getters.
+    }
+  }
+  throw new McpLifetimeError('observer_unavailable');
 }
 
 /**
@@ -150,7 +196,9 @@ export async function openStdioConnection(
 ): Promise<McpConnection> {
   const timeoutMs = spec.connectTimeoutMs ?? MCP_DEADLINES.stdioConnectMs;
   const work = new McpWorkScope(options);
+  let owner: SdkTransportOwner | undefined;
   try {
+    const nativeObserver = spec.nativeObserver;
     const transport = new StdioClientTransport({
       command: spec.command,
       // The host-constructed env (declared vars + resolved `mcp-secret:*`). The SDK force-merges its curated
@@ -174,12 +222,32 @@ export async function openStdioConnection(
     // handler evaluates it.
     const latchedPid = latchPid(() => transport.pid ?? undefined);
     const release = registerLiveChild(latchedPid);
-    const owner = new SdkTransportOwner(transport, work, undefined, {
+    owner = new SdkTransportOwner(transport, work, undefined, {
       onAcknowledged: release,
+      beforeStart: () => {
+        if (nativeObserver !== undefined) {
+          invokeNativeObserver(() => nativeObserver.beforeStart());
+        }
+        // A host admission callback may synchronously cancel without closing the owner itself.
+        if (signal?.aborted === true) throw new McpAbortedError(serverId, 'connect');
+      },
       onStartEntered: () => {
         latchedPid.read();
       },
     });
+    const nativeOwner = owner;
+    const whenClosed = nativeOwner.nativeClosed;
+    if (whenClosed === undefined) throw new McpLifetimeError('unavailable');
+    if (nativeObserver !== undefined) {
+      invokeNativeObserver(() =>
+        nativeObserver.attach({
+          readPid: () => (nativeOwner.nativeCloseAcknowledged ? undefined : latchedPid.read()),
+          isClosed: () => nativeOwner.nativeCloseAcknowledged,
+          whenClosed,
+          close: () => nativeOwner.close(),
+        }),
+      );
+    }
     return connectSdkTransport(
       serverId,
       transport,
@@ -191,6 +259,9 @@ export async function openStdioConnection(
       owner,
     );
   } catch (error) {
+    // Attachment can refuse after acquiring the owner, including reentrant close. Never lose its
+    // empty/native obligation or replace the original callback failure with a cleanup fault.
+    if (owner !== undefined) void safeClose(owner);
     work.seal();
     throw error;
   }
