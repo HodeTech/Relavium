@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3';
+import { withOwnedSqlite } from './storage-failure-facts.js';
 
 /**
  * Cross-process serialization for the `runMigrations` batch
@@ -78,7 +79,10 @@ export function withMigrationLock<T>(
     return runReconciling(run);
   }
   try {
-    lock.pragma(`busy_timeout = ${deps.timeoutMs ?? LOCK_TIMEOUT_MS}`);
+    const configureTimeout = (): unknown =>
+      lock.pragma(`busy_timeout = ${deps.timeoutMs ?? LOCK_TIMEOUT_MS}`);
+    if (deps.openLock === undefined) withOwnedSqlite(configureTimeout);
+    else configureTimeout();
     try {
       // The acquisition. `BEGIN EXCLUSIVE` is the only statement here that can block or fail on contention.
       lock.exec('BEGIN EXCLUSIVE');
@@ -98,6 +102,7 @@ export function withMigrationLock<T>(
       }
     }
   } finally {
-    lock.close();
+    if (deps.openLock === undefined) withOwnedSqlite(() => lock.close());
+    else lock.close();
   }
 }

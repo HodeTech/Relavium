@@ -6,7 +6,14 @@ import { fileURLToPath } from 'node:url';
 
 import Database from 'better-sqlite3';
 import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
+import { migrateWithOwnedStorageFacts } from './migration-storage-origin.js';
+import {
+  hasOwnedClient,
+  rememberOwnedClient,
+  transferStorageFailure,
+  withOwnedFilesystem,
+  withOwnedSqlite,
+} from './storage-failure-facts.js';
 
 import { withMigrationLock } from './migrate-lock.js';
 import * as schema from './schema.js';
@@ -120,12 +127,12 @@ export function createClient(path = ':memory:'): DbClient {
     // Create the parent directory for a real file path so a first-run open doesn't fail on a
     // missing folder (inside the try so a filesystem error is classified the same way).
     if (path !== ':memory:') {
-      mkdirSync(dirname(path), { recursive: true });
+      withOwnedFilesystem(() => mkdirSync(dirname(path), { recursive: true }));
     }
     // A local binding as well as the outer `let`: the outer one is what the `catch` closes, and inside a
     // closure TypeScript cannot narrow it away from `undefined`, which would turn a real invariant into an
     // optional chain that silently skips the pragma.
-    const opened = new Database(path);
+    const opened = withOwnedSqlite(() => new Database(path));
     sqlite = opened;
     // The PRAGMAs and the Drizzle bind are INSIDE the try: any of them can fail (a corrupt header surfaces on
     // the first `journal_mode` write, not on open), and outside it a failure would leak the just-opened
@@ -143,12 +150,13 @@ export function createClient(path = ':memory:'): DbClient {
     // It was not: `createClient` is the shipping open path. (Setting `busy_timeout` first was measured too,
     // and does NOT help — 15/25 with it first against 17/25 with it second — so the pragma order is left as
     // it was rather than changed on a plausible-sounding theory.)
-    withBusyRetry(() => opened.pragma('journal_mode = WAL'));
-    opened.pragma('foreign_keys = ON'); // SQLite does not enforce FKs per connection by default
-    opened.pragma('busy_timeout = 5000'); // wait up to 5s for a writer lock instead of erroring
-    opened.pragma('synchronous = NORMAL'); // the recommended durability/throughput trade-off with WAL
-    opened.pragma('secure_delete = ON');
+    withBusyRetry(() => withOwnedSqlite(() => opened.pragma('journal_mode = WAL')));
+    withOwnedSqlite(() => opened.pragma('foreign_keys = ON'));
+    withOwnedSqlite(() => opened.pragma('busy_timeout = 5000'));
+    withOwnedSqlite(() => opened.pragma('synchronous = NORMAL'));
+    withOwnedSqlite(() => opened.pragma('secure_delete = ON'));
     const db = drizzle(opened, { schema });
+    rememberOwnedClient(db, opened);
     return { db, sqlite: opened, path };
   } catch (err) {
     // Close what we opened before propagating, or the connection leaks on every failed setup.
@@ -161,9 +169,11 @@ export function createClient(path = ':memory:'): DbClient {
     // and this message is surfaced verbatim to the user by the CLI's history openers — interpolating it would
     // put the OS username back in user-facing output, which is the very thing moving the path to `.path` was
     // for. The driver's own error is preserved in full via `cause` for diagnosis.
-    throw new DbOpenError('open_failed', 'could not open the SQLite database', path, {
+    const failure = new DbOpenError('open_failed', 'could not open the SQLite database', path, {
       cause: err,
     });
+    transferStorageFailure(failure, err);
+    throw failure;
   }
 }
 
@@ -197,7 +207,11 @@ export interface RunMigrationsOptions {
 export function runMigrations(db: Db, options: RunMigrationsOptions = {}): SessionEffectCheckpoint {
   requireSessionEffectTransactionOwnership(db);
   return withMigrationLock(options.dbPath, () => {
-    migrate(db, { migrationsFolder: MIGRATIONS_DIR });
+    migrateWithOwnedStorageFacts(db, MIGRATIONS_DIR);
+    if (hasOwnedClient(db)) {
+      withOwnedSqlite(() => initializeSessionEffectTurnKeys(db));
+      return withOwnedSqlite(() => clearLegacySessionEffectResults(db));
+    }
     initializeSessionEffectTurnKeys(db);
     return clearLegacySessionEffectResults(db);
   });
