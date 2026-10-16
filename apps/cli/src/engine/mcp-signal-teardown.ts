@@ -1,4 +1,5 @@
 import { defaultSubscribeSignals } from '../process/signals.js';
+import type { CliInvocation } from '../process/invocation.js';
 
 /**
  * Reap spawned MCP children when a one-shot command is signalled
@@ -56,6 +57,8 @@ export interface McpTeardownGuardDeps {
 }
 
 export interface McpTeardownGuardOptions extends McpTeardownGuardDeps {
+  /** Product native exit cleanup uses this invocation's exact creation-owned registrations. */
+  readonly invocation?: CliInvocation;
   /**
    * Reap the children but do **not** exit — for a surface that already owns a documented signal contract.
    *
@@ -71,8 +74,8 @@ export interface McpTeardownGuardOptions extends McpTeardownGuardDeps {
 }
 
 /**
- * The pids to reap synchronously if the process exits without awaiting the close. Read lazily, because a guard
- * armed BEFORE the connect — which is when the children are actually spawned — has none yet.
+ * Compatibility fixture PID observation. Product callers pass the explicit invocation instead; this list
+ * never grants kill authority when invocation-owned native registrations are available.
  */
 export type LiveChildPids = () => readonly number[];
 
@@ -93,6 +96,7 @@ export function guardMcpTeardown(
   const kill = options.killPid ?? defaultKillPid;
   const exit = options.exit ?? exitAfterFlush;
   const delay = options.delay ?? defaultDelay;
+  let released = false;
 
   // The synchronous net. It runs on EVERY exit — normal or forced — and is a no-op once the cooperative
   // teardown has finished, because a reaped child's pid no longer exists.
@@ -102,6 +106,10 @@ export function guardMcpTeardown(
   // ESRCH/EPERM, which is exactly what made the bare loop look correct — the isolation belongs to the loop,
   // which owns the guarantee, not to one implementation of the thing it calls.
   const reap = (): void => {
+    if (options.invocation !== undefined) {
+      options.invocation.registry.reapNativeAtExit();
+      return;
+    }
     for (const pid of livePids()) {
       try {
         kill(pid);
@@ -110,20 +118,25 @@ export function guardMcpTeardown(
       }
     }
   };
-  // **Installed for the PROCESS, not for this guard** — and a real-subprocess reproduction is why. Tied to the
-  // guard's lifetime, the net was removed by whichever `unguardMcp()` ran first, and on `agent run` that is
-  // the build's own `.catch`: an aborted connect rejects, the catch releases the guard, and only THEN does the
-  // cooperative half's `exit(128+signo)` run — with no net left. Measured end to end against a real
-  // `agent run` subprocess: the unguard ran, the exit net never did, host exit 143, child at `ppid 1`.
-  //
-  // "SIGKILL any MCP child this process still owns, at exit" is a process-level invariant, so binding it to a
-  // command's lifecycle is a race by construction — this is the second one in this file. An `exit` listener
-  // does not hold the event loop open, so keeping it costs nothing. Tests inject `subscribeProcessExit` and
-  // keep the old per-guard behaviour, which is what lets them drive the net directly.
+  // Product exit custody is installed/removable by the native controller when an actual owner reserves.
+  // It outlives this cooperative guard through genuine native close, including failed initialization.
+  // An explicit test subscription can drive that same registry's finite capability. Legacy direct fixtures
+  // without an invocation keep a local fallback; no historical process-wide reaper collection remains.
   const unsubscribeExit =
-    options.subscribeProcessExit === undefined
-      ? installProcessExitReaper(reap)
-      : options.subscribeProcessExit(reap);
+    options.subscribeProcessExit !== undefined
+      ? options.subscribeProcessExit(reap)
+      : options.invocation === undefined
+        ? subscribeProcessExit(reap)
+        : () => undefined;
+
+  const releaseEmptyLegacyNet = (): void => {
+    if (!released || options.invocation !== undefined) return;
+    try {
+      if (livePids().length === 0) unsubscribeExit();
+    } catch {
+      // Failed compatibility observation cannot prove the still-installed fallback empty.
+    }
+  };
 
   let tearingDown = false;
   const unsubscribeSignals = subscribe((signo) => {
@@ -132,7 +145,16 @@ export function guardMcpTeardown(
     // guarantee the process ends and the children die.
     if (tearingDown) return;
     tearingDown = true;
-    void Promise.race([close().catch(() => undefined), delay(MCP_TEARDOWN_GRACE_MS)]).then(() => {
+    // Keep synchronous close refusal from escaping the signal callback or stranding its grace path.
+    let closing: Promise<void>;
+    try {
+      // Entry remains synchronous: the command's close callback also cancels a pending initialization.
+      closing = close().catch(() => undefined);
+    } catch {
+      closing = Promise.resolve();
+    }
+    void closing.then(releaseEmptyLegacyNet);
+    void Promise.race([closing, delay(MCP_TEARDOWN_GRACE_MS)]).then(() => {
       if (options.reapOnly === true) return; // the caller owns the exit code — see `reapOnly`
       unsubscribeSignals();
       exit(signalExitCode(signo));
@@ -140,33 +162,17 @@ export function guardMcpTeardown(
   });
 
   return () => {
+    released = true;
     unsubscribeSignals();
-    // The PROCESS reaper is deliberately not removed here — see its comment above. Only an injected one is,
-    // so a test can still assert the guard cleans up what it was given.
-    if (options.subscribeProcessExit !== undefined) unsubscribeExit();
+    if (options.subscribeProcessExit !== undefined || options.invocation !== undefined)
+      unsubscribeExit();
+    else releaseEmptyLegacyNet();
   };
 }
 
-/**
- * The one process-wide `process.on('exit')` reaper: a single Node listener, running every registered reap.
- *
- * A SET rather than a single latched function, because a latch would silently ignore the second guard's
- * `livePids` — both CLI surfaces happen to pass the same registry today, and a guarantee that holds only
- * because two call sites agree is the shape this wave keeps finding. One Node listener, so a long-lived host
- * that runs many commands does not accumulate them.
- */
-const processReapers = new Set<() => void>();
-let exitListenerInstalled = false;
-
-function installProcessExitReaper(reap: () => void): () => void {
-  processReapers.add(reap);
-  if (!exitListenerInstalled) {
-    exitListenerInstalled = true;
-    process.on('exit', () => {
-      for (const run of processReapers) run();
-    });
-  }
-  return () => undefined; // never removed — see `unsubscribeExit`'s comment
+function subscribeProcessExit(reap: () => void): () => void {
+  process.on('exit', reap);
+  return () => process.off('exit', reap);
 }
 
 /**

@@ -4,6 +4,7 @@ import {
   InvocationRegistry,
   type InvocationClock,
   type InvocationCloseResult,
+  type NativeOwner,
   type OwnerRetirement,
   type RemainingBudget,
   type SessionOwner,
@@ -55,6 +56,19 @@ function session(
     stop: () => undefined,
     join: () => undefined,
     classifyFailure: () => 'cli_internal',
+    ...overrides,
+  };
+}
+
+function native(
+  retired: Promise<OwnerRetirement>,
+  overrides: Partial<NativeOwner> = {},
+): NativeOwner {
+  return {
+    ...session(retired),
+    kind: 'native-pid',
+    mayReap: () => true,
+    reap: () => undefined,
     ...overrides,
   };
 }
@@ -986,5 +1000,485 @@ describe('InvocationRegistry ownership', () => {
     existingStopTail.resolve();
     await retire(life);
     expect(registry.activeOwners).toBe(0);
+  });
+});
+
+describe('InvocationRegistry native budget and exit capabilities', () => {
+  it('delivers the current ordinary budget before native creation without taking the process observer', async () => {
+    const clock = new ManualClock();
+    const registry = new InvocationRegistry(clock);
+    const life = deferred<OwnerRetirement>();
+    const stop = vi.fn();
+    const join = vi.fn();
+    const budgets: RemainingBudget[] = [];
+    const coordinator = vi.fn();
+    const remove = registry.observeTermination(coordinator);
+    registry.register(
+      native(life.promise, {
+        stop,
+        join,
+        budgetChanged: (budget) => {
+          budgets.push(budget);
+          expect(budget.deadline()).toBeUndefined();
+          expect(budget.remainingMs()).toBeUndefined();
+        },
+      }),
+    );
+    expect(budgets).toEqual([registry.budget]);
+    expect(stop).not.toHaveBeenCalled();
+    expect(join).not.toHaveBeenCalled();
+    expect(coordinator).not.toHaveBeenCalled();
+    expect(() => registry.observeTermination(() => undefined)).toThrow();
+    expect(clock.timers.size).toBe(0);
+    await retire(life);
+    await registry.terminate({ kind: 'normal' });
+    expect(coordinator).toHaveBeenCalled();
+    remove();
+  });
+
+  it('notifies native owners only for accepted earlier deadlines and actual expiry', async () => {
+    const clock = new ManualClock();
+    const registry = new InvocationRegistry(clock);
+    const life = deferred<OwnerRetirement>();
+    const states: { deadline: number | undefined; remaining: number | undefined }[] = [];
+    registry.register(
+      native(life.promise, {
+        budgetChanged: (budget) => {
+          states.push({ deadline: budget.deadline(), remaining: budget.remainingMs() });
+        },
+      }),
+    );
+    const closing = registry.terminate({ kind: 'signal', signalNumber: 15, deadline: 1000 });
+    clock.advanceTo(100);
+    void registry.terminate({ kind: 'signal', signalNumber: 15, deadline: 1000 });
+    void registry.terminate({ kind: 'signal', signalNumber: 15, deadline: 2000 });
+    void registry.terminate({ kind: 'infrastructure', code: 'output_unavailable' });
+    expect(states).toEqual([
+      { deadline: undefined, remaining: undefined },
+      { deadline: 1000, remaining: 1000 },
+    ]);
+    void registry.terminate({ kind: 'signal', signalNumber: 15, deadline: 500 });
+    clock.advanceTo(500);
+    expect(states.slice(2)).toEqual([
+      { deadline: 500, remaining: 400 },
+      { deadline: 500, remaining: 0 },
+    ]);
+    expect(await closing).toEqual({ kind: 'deadline', unacknowledgedOwners: 1 });
+    expect(registry.activeOwners).toBe(1);
+    await retire(life);
+  });
+
+  it('tightens an already-entered ordinary helper without restarting cleanup or acknowledging native close', async () => {
+    const clock = new ManualClock();
+    const registry = new InvocationRegistry(clock);
+    const targetClosed = deferred<OwnerRetirement>();
+    const helperClosed = deferred<void>();
+    let helperStarted = false;
+    let helperCancellation = 0;
+    let disarmHelper: (() => void) | undefined;
+    const helperDeadline = 10_000;
+    const adjustHelper = (budget: RemainingBudget): void => {
+      if (!helperStarted) return;
+      disarmHelper?.();
+      const remaining = budget.remainingMs();
+      const delay = Math.min(helperDeadline - clock.time, remaining ?? Number.POSITIVE_INFINITY);
+      if (delay <= 0) {
+        helperCancellation += 1;
+        disarmHelper = undefined;
+      } else {
+        disarmHelper = clock.schedule(delay, () => {
+          helperCancellation += 1;
+          disarmHelper = undefined;
+        });
+      }
+    };
+    const stop = vi.fn();
+    const reap = vi.fn((budget: RemainingBudget) => {
+      helperStarted = true;
+      adjustHelper(budget);
+      return helperClosed.promise;
+    });
+    const lease = registry.register(
+      native(targetClosed.promise, { stop, reap, budgetChanged: adjustHelper }),
+    );
+    const ordinaryClose = lease.close();
+    expect(helperStarted).toBe(true);
+    expect([...clock.timers].map((timer) => timer.at)).toEqual([helperDeadline]);
+    expect(registry.budget.deadline()).toBeUndefined();
+    clock.advanceTo(200);
+    const closing = registry.terminate({ kind: 'infrastructure', code: 'cli_internal' });
+    expect([...clock.timers].map((timer) => timer.at)).toEqual([3200, 3200]);
+    clock.advanceTo(300);
+    void registry.terminate({ kind: 'signal', signalNumber: 15, deadline: 500 });
+    expect([...clock.timers].map((timer) => timer.at)).toEqual([500, 500]);
+    clock.advanceTo(400);
+    void registry.terminate({ kind: 'infrastructure', code: 'output_unavailable' });
+    expect([...clock.timers].map((timer) => timer.at)).toEqual([500, 500]);
+    expect(stop).toHaveBeenCalledOnce();
+    expect(reap).toHaveBeenCalledOnce();
+    clock.advanceTo(500);
+    expect(helperCancellation).toBe(1);
+    expect(await ordinaryClose).toEqual({ kind: 'unacknowledged' });
+    expect(await closing).toEqual({ kind: 'deadline', unacknowledgedOwners: 1 });
+    expect(registry.activeOwners).toBe(1);
+    helperClosed.resolve();
+    await helperClosed.promise;
+    expect(registry.activeOwners).toBe(1);
+    await retire(targetClosed);
+    expect(registry.activeOwners).toBe(0);
+  });
+
+  it('releases native budget and exit callbacks only on actual retirement', async () => {
+    const clock = new ManualClock();
+    const registry = new InvocationRegistry(clock);
+    const life = deferred<OwnerRetirement>();
+    const remaining: (number | undefined)[] = [];
+    const exitReap = vi.fn();
+    const lease = registry.register(
+      native(life.promise, {
+        budgetChanged: (budget) => remaining.push(budget.remainingMs()),
+        exitReap,
+      }),
+    );
+    const ordinaryClose = lease.close();
+    registry.reapNativeAtExit();
+    expect(exitReap).toHaveBeenCalledOnce();
+    expect(registry.activeOwners).toBe(1);
+    await retire(life);
+    expect(await ordinaryClose).toEqual({ kind: 'retired' });
+    const closing = registry.terminate({ kind: 'infrastructure', code: 'cli_internal' });
+    registry.reapNativeAtExit();
+    clock.advanceTo(3000);
+    await closing;
+    expect(remaining).toEqual([undefined]);
+    expect(exitReap).toHaveBeenCalledOnce();
+    expect(registry.activeOwners).toBe(0);
+  });
+
+  it('isolates fixed budget faults without reading their causes or skipping siblings', async () => {
+    const clock = new ManualClock();
+    const registry = new InvocationRegistry(clock);
+    const life = deferred<OwnerRetirement>();
+    const touched = vi.fn(() => {
+      throw new Error('private fault must not be inspected');
+    });
+    const privateFault = Object.defineProperties(new Error('synthetic callback failure'), {
+      message: { get: touched },
+      cause: { get: touched },
+      stack: { get: touched },
+    });
+    const classify = vi.fn(() => 'storage_unavailable' as const);
+    const stops: number[] = [];
+    const states: (number | undefined)[] = [];
+    registry.register(
+      native(life.promise, {
+        classifyFailure: classify,
+        stop: () => {
+          stops.push(1);
+        },
+        budgetChanged: (budget) => {
+          if (budget.remainingMs() !== undefined) throw privateFault;
+        },
+      }),
+    );
+    registry.register(
+      native(life.promise, {
+        stop: () => {
+          stops.push(2);
+        },
+        budgetChanged: (budget) => {
+          states.push(budget.remainingMs());
+        },
+      }),
+    );
+    const closing = registry.terminate({ kind: 'signal', signalNumber: 15, deadline: 1000 });
+    expect(stops).toEqual([1, 2]);
+    expect(states).toEqual([undefined, 1000]);
+    expect(touched).not.toHaveBeenCalled();
+    expect(classify).not.toHaveBeenCalled();
+    expect(registry.observations.infrastructureCode()).toBe('cli_internal');
+    expect(registry.failureKinds).toBe(1);
+    clock.advanceTo(1000);
+    expect(states).toEqual([undefined, 1000, 0]);
+    expect(await closing).toEqual({ kind: 'deadline', unacknowledgedOwners: 2 });
+    await retire(life);
+  });
+
+  it('revisits an earlier sibling after a reentrant tightening without restarting the process observer', async () => {
+    const clock = new ManualClock();
+    const registry = new InvocationRegistry(clock);
+    const life = deferred<OwnerRetirement>();
+    const first: (number | undefined)[] = [];
+    const second: (number | undefined)[] = [];
+    registry.register(
+      native(life.promise, {
+        budgetChanged: (budget) => {
+          first.push(budget.remainingMs());
+        },
+      }),
+    );
+    registry.register(
+      native(life.promise, {
+        budgetChanged: (budget) => {
+          second.push(budget.remainingMs());
+          if (budget.deadline() === 3000)
+            void registry.terminate({ kind: 'signal', signalNumber: 15, deadline: 1000 });
+        },
+      }),
+    );
+    const observer = vi.fn();
+    const remove = registry.observeTermination(observer);
+    const closing = registry.terminate({ kind: 'infrastructure', code: 'output_unavailable' });
+    expect(first).toEqual([undefined, 3000, 1000]);
+    expect(second).toEqual([undefined, 3000, 1000]);
+    expect(registry.budget.deadline()).toBe(1000);
+    expect(registry.failureKinds).toBe(0);
+    expect(observer).toHaveBeenCalled();
+    expect(() => registry.observeTermination(() => undefined)).toThrow();
+    await retire(life);
+    await closing;
+    remove();
+  });
+
+  it('bounds repeated self-tightening and delivers a final zero budget to every active native owner', async () => {
+    const clock = new ManualClock();
+    const registry = new InvocationRegistry(clock);
+    const life = deferred<OwnerRetirement>();
+    const sibling: (number | undefined)[] = [];
+    const reentrant: (number | undefined)[] = [];
+    registry.register(
+      native(life.promise, {
+        budgetChanged: (budget) => {
+          sibling.push(budget.remainingMs());
+        },
+      }),
+    );
+    registry.register(
+      native(life.promise, {
+        budgetChanged: (budget) => {
+          reentrant.push(budget.remainingMs());
+          const deadline = budget.deadline();
+          if (deadline !== undefined)
+            void registry.terminate({
+              kind: 'signal',
+              signalNumber: 15,
+              deadline: deadline - 0.001,
+            });
+        },
+      }),
+    );
+    const closing = registry.terminate({ kind: 'signal', signalNumber: 15, deadline: 1000 });
+    expect(reentrant).toHaveLength(4);
+    expect(sibling).toHaveLength(4);
+    expect(reentrant.at(-1)).toBe(0);
+    expect(sibling.at(-1)).toBe(0);
+    expect(registry.observations.infrastructureCode()).toBe('cli_internal');
+    expect(registry.failureKinds).toBe(1);
+    expect(await closing).toEqual({ kind: 'deadline', unacknowledgedOwners: 2 });
+    expect(registry.activeOwners).toBe(2);
+    await retire(life);
+  });
+
+  it.each(['clock', 'scheduler'] as const)(
+    'delivers fail-closed expiry after a %s fault and never reads a failed clock after expiry',
+    async (fault) => {
+      const life = deferred<OwnerRetirement>();
+      const now = vi.fn(() => {
+        if (fault === 'clock') throw new Error('private unavailable clock');
+        return 0;
+      });
+      const registry = new InvocationRegistry({
+        now,
+        schedule: () => {
+          throw new Error('private unavailable scheduler');
+        },
+      });
+      const states: { deadline: number | undefined; remaining: number | undefined }[] = [];
+      registry.register(
+        native(life.promise, {
+          budgetChanged: (budget) => {
+            states.push({ deadline: budget.deadline(), remaining: budget.remainingMs() });
+          },
+        }),
+      );
+      expect(states).toEqual([{ deadline: undefined, remaining: undefined }]);
+      const closing = registry.terminate({ kind: 'infrastructure', code: 'output_unavailable' });
+      expect(states.at(-1)).toEqual({
+        deadline: fault === 'clock' ? undefined : 3000,
+        remaining: 0,
+      });
+      const reads = now.mock.calls.length;
+      expect(registry.budget.remainingMs()).toBe(0);
+      expect(registry.budget.remainingMs()).toBe(0);
+      expect(now).toHaveBeenCalledTimes(reads);
+      expect(await closing).toEqual({ kind: 'deadline', unacknowledgedOwners: 1 });
+      await retire(life);
+    },
+  );
+
+  it('expires on a later live-budget clock read failure without throwing through the helper callback', async () => {
+    const clock = new ManualClock();
+    let failedClock = false;
+    const registry = new InvocationRegistry({
+      now: () => {
+        if (failedClock) throw new Error('private clock failure');
+        return clock.time;
+      },
+      schedule: clock.schedule,
+    });
+    const life = deferred<OwnerRetirement>();
+    const states: (number | undefined)[] = [];
+    registry.register(
+      native(life.promise, {
+        budgetChanged: (budget) => {
+          states.push(budget.remainingMs());
+        },
+      }),
+    );
+    const closing = registry.terminate({ kind: 'signal', signalNumber: 15, deadline: 1000 });
+    failedClock = true;
+    expect(registry.budget.remainingMs()).toBe(0);
+    expect(states).toEqual([undefined, 1000, 0]);
+    expect(registry.observations.infrastructureCode()).toBe('cli_internal');
+    expect(await closing).toEqual({ kind: 'deadline', unacknowledgedOwners: 1 });
+    await retire(life);
+  });
+
+  it('ignores native-shaped budget hooks on other owner kinds at runtime', async () => {
+    const registry = new InvocationRegistry(new ManualClock());
+    const life = deferred<OwnerRetirement>();
+    const budgetChanged = vi.fn();
+    const sessionOwner = { ...session(life.promise), budgetChanged };
+    const terminalOwner = {
+      ...session(life.promise),
+      kind: 'terminal' as const,
+      restore: () => undefined,
+      budgetChanged,
+    };
+    const workflowOwner = {
+      ...session(life.promise),
+      kind: 'workflow' as const,
+      readSafetyExit: () => undefined,
+      budgetChanged,
+    };
+    registry.register(sessionOwner);
+    registry.register(terminalOwner);
+    registry.register(workflowOwner);
+    const closing = registry.terminate({ kind: 'infrastructure', code: 'cli_internal' });
+    expect(budgetChanged).not.toHaveBeenCalled();
+    await retire(life);
+    await closing;
+  });
+
+  it('attempts only eligible creation-native exit callbacks without tails, acknowledgement or deadline reset', async () => {
+    const clock = new ManualClock();
+    const registry = new InvocationRegistry(clock);
+    const life = deferred<OwnerRetirement>();
+    const stop = vi.fn();
+    const join = vi.fn();
+    const reap = vi.fn();
+    const restore = vi.fn();
+    const readSafetyExit = vi.fn(() => 8 as const);
+    const foreignExit = vi.fn();
+    const trace: string[] = [];
+    for (const kind of ['native-group', 'native-pid', 'windows-live-root'] as const)
+      registry.register(
+        native(life.promise, {
+          kind,
+          stop,
+          join,
+          reap,
+          mayReap: () => kind !== 'native-pid',
+          exitReap: () => {
+            trace.push(kind);
+            registry.reapNativeAtExit();
+          },
+        }),
+      );
+    const sessionOwner = { ...session(life.promise, { stop, join }), exitReap: foreignExit };
+    const terminalOwner = {
+      ...session(life.promise, { stop, join }),
+      kind: 'terminal' as const,
+      restore,
+      exitReap: foreignExit,
+    };
+    const workflowOwner = {
+      ...session(life.promise, { stop, join }),
+      kind: 'workflow' as const,
+      readSafetyExit,
+      exitReap: foreignExit,
+    };
+    registry.register(sessionOwner);
+    registry.register(terminalOwner);
+    registry.register(workflowOwner);
+    registry.reapNativeAtExit();
+    expect(trace).toEqual(['native-group', 'windows-live-root']);
+    for (const callback of [stop, join, reap, restore, readSafetyExit, foreignExit])
+      expect(callback).not.toHaveBeenCalled();
+    expect(registry.termination).toBeUndefined();
+    expect(registry.budget.deadline()).toBeUndefined();
+    expect(clock.timers.size).toBe(0);
+    expect(registry.activeOwners).toBe(6);
+    registry.assertAdmitting();
+    await retire(life);
+    registry.reapNativeAtExit();
+    expect(trace).toEqual(['native-group', 'windows-live-root']);
+    expect(registry.activeOwners).toBe(0);
+  });
+
+  it('isolates exit eligibility and callback faults without classification, normal termination or skipped siblings', async () => {
+    const clock = new ManualClock();
+    const registry = new InvocationRegistry(clock);
+    const life = deferred<OwnerRetirement>();
+    const classify = vi.fn(() => 'storage_unavailable' as const);
+    const exit = vi.fn();
+    registry.register(
+      native(life.promise, {
+        classifyFailure: classify,
+        mayReap: () => {
+          throw new Error('private eligibility failure');
+        },
+        exitReap: exit,
+      }),
+    );
+    registry.register(
+      native(life.promise, {
+        kind: 'native-group',
+        classifyFailure: classify,
+        exitReap: () => {
+          throw new Error('private reap failure');
+        },
+      }),
+    );
+    registry.register(native(life.promise, { kind: 'windows-live-root', exitReap: exit }));
+    registry.reapNativeAtExit();
+    expect(exit).toHaveBeenCalledOnce();
+    expect(classify).not.toHaveBeenCalled();
+    expect(registry.observations.infrastructureCode()).toBe('cli_internal');
+    expect(registry.failureKinds).toBe(2);
+    expect(registry.termination).toBeUndefined();
+    expect(registry.budget.remainingMs()).toBeUndefined();
+    expect(clock.timers.size).toBe(0);
+    expect(registry.activeOwners).toBe(3);
+    await retire(life);
+  });
+
+  it('uses current exit eligibility and frozen callback identity rather than a cached PID decision', async () => {
+    const registry = new InvocationRegistry(new ManualClock());
+    const life = deferred<OwnerRetirement>();
+    let eligible = true;
+    const original = vi.fn();
+    const replacement = vi.fn();
+    const owner = native(life.promise, { mayReap: () => eligible, exitReap: original });
+    registry.register(owner);
+    expect(Reflect.set(owner, 'exitReap', replacement)).toBe(true);
+    eligible = false;
+    registry.reapNativeAtExit();
+    expect(original).not.toHaveBeenCalled();
+    eligible = true;
+    registry.reapNativeAtExit();
+    expect(original).toHaveBeenCalledOnce();
+    expect(replacement).not.toHaveBeenCalled();
+    await retire(life);
   });
 });

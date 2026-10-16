@@ -7,6 +7,8 @@ import { describe, expect, it } from 'vitest';
 import { connectAgentMcp } from '../engine/mcp-servers.js';
 import { guardMcpTeardown } from '../engine/mcp-signal-teardown.js';
 import type { ResolvedStdioSpawn } from '../engine/mcp-consent.js';
+import { createCliInvocation } from '../process/invocation.js';
+import { createNativeProcessController } from '../process/native-process-owner.js';
 
 /**
  * `#21` / [ADR-0088](../../../../docs/decisions/0088-the-mcp-boundary-is-hostile.md) §1.3 and §11 — **no orphan
@@ -130,9 +132,11 @@ describe('MCP orphan reaping — against the real child-process table', () => {
     // and any `process.exit` in the tree all terminate without awaiting `close()`. The cooperative half cannot
     // cover them; this one runs on `process.on('exit')` and must be synchronous, which is why it SIGKILLs a
     // pid rather than awaiting a transport.
+    const invocation = createCliInvocation();
     const client = await connectAgentMcp([stubbornServer()], {
       cwd: process.cwd(),
       consentGate: allowAll,
+      nativeProcesses: createNativeProcessController(invocation.registry),
     });
     // **Everything after the connect runs under a `finally`.** A failing assertion here used to leave a live
     // `SIGTERM`-trapping child behind, and this file's own later test filters the process table by fixture
@@ -145,17 +149,14 @@ describe('MCP orphan reaping — against the real child-process table', () => {
       // Drive the net directly rather than exiting this test process: the mechanism under test is the
       // callback, and a real `process.exit` here would take the runner with it.
       let fireExitNet = (): void => undefined;
-      const unguard = guardMcpTeardown(
-        () => client?.close() ?? Promise.resolve(),
-        () => client?.childPids ?? [],
-        {
-          subscribeSignals: () => () => undefined, // the cooperative half is the other test's subject
-          subscribeProcessExit: (onExit) => {
-            fireExitNet = onExit;
-            return () => undefined;
-          },
+      const unguard = guardMcpTeardown(() => client?.close() ?? Promise.resolve(), undefined, {
+        invocation,
+        subscribeSignals: () => () => undefined, // the cooperative half is the other test's subject
+        subscribeProcessExit: (onExit) => {
+          fireExitNet = onExit;
+          return () => undefined;
         },
-      );
+      });
       try {
         fireExitNet();
         // `kill` returns immediately; the process leaves the table a moment later.
@@ -172,9 +173,11 @@ describe('MCP orphan reaping — against the real child-process table', () => {
     // The ordinary path: a signal arrives, `close()` runs, the child dies. Asserted with a `reapOnly` guard —
     // the shape `relavium run` uses — so a regression that made `reapOnly` skip the teardown as well as the
     // exit would redden here.
+    const invocation = createCliInvocation();
     const client = await connectAgentMcp([stubbornServer()], {
       cwd: process.cwd(),
       consentGate: allowAll,
+      nativeProcesses: createNativeProcessController(invocation.registry),
     });
     try {
       const pid = client?.childPids[0];
@@ -184,21 +187,18 @@ describe('MCP orphan reaping — against the real child-process table', () => {
       let fireSignal = (signo: number): void => {
         signalsSeen.push(signo);
       };
-      const unguard = guardMcpTeardown(
-        () => client?.close() ?? Promise.resolve(),
-        () => client?.childPids ?? [],
-        {
-          subscribeSignals: (onSignal) => {
-            fireSignal = onSignal;
-            return () => undefined;
-          },
-          subscribeProcessExit: () => () => undefined, // the OTHER half must not be what reaps here
-          reapOnly: true,
-          exit: () => {
-            throw new Error('reapOnly must not exit — driveRun owns this surface’s exit code');
-          },
+      const unguard = guardMcpTeardown(() => client?.close() ?? Promise.resolve(), undefined, {
+        invocation,
+        subscribeSignals: (onSignal) => {
+          fireSignal = onSignal;
+          return () => undefined;
         },
-      );
+        subscribeProcessExit: () => () => undefined, // the OTHER half must not be what reaps here
+        reapOnly: true,
+        exit: () => {
+          throw new Error('reapOnly must not exit — driveRun owns this surface’s exit code');
+        },
+      });
       try {
         fireSignal(2);
         expect(signalsSeen).toEqual([]); // the guard replaced the placeholder, so the guard is what ran

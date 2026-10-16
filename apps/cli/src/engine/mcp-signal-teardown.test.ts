@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { createCliInvocation } from '../process/invocation.js';
 
 import {
   guardMcpTeardown,
@@ -239,16 +240,13 @@ describe('guardMcpTeardown — the synchronous exit net', () => {
 });
 
 describe('guardMcpTeardown — the production defaults', () => {
-  it('registers on the REAL process signals and removes them; the exit reaper is process-scoped', () => {
+  it('registers on the REAL process signals and removes them without acquiring a second native exit net', () => {
     // Every other test injects `subscribeSignals`, so the default — the four-signal subscription every
     // surface shares — was never taken. A review pointed out that with the surface binding also missing, the
     // real registration path had zero coverage from either end.
     //
-    // **The `exit` half deliberately does NOT come back off**, and this test used to assert that it did. A
-    // real-subprocess reproduction showed why that was wrong: tied to a guard's lifetime, the net was removed
-    // by whichever `unguardMcp()` ran first — on `agent run` that is the build's own `.catch`, which fires on
-    // an aborted connect BEFORE the cooperative half exits, so the reaper was gone exactly when a live child
-    // needed it. An `exit` listener does not hold the event loop open, so keeping it costs nothing.
+    // Native ownership is installed at actual creation and outlives this guard until real native close.
+    const invocation = createCliInvocation();
     const before = {
       sigint: process.listenerCount('SIGINT'),
       sigterm: process.listenerCount('SIGTERM'),
@@ -256,7 +254,7 @@ describe('guardMcpTeardown — the production defaults', () => {
       sigquit: process.listenerCount('SIGQUIT'),
       exit: process.listenerCount('exit'),
     };
-    const unguard = guardMcpTeardown(() => Promise.resolve(), none);
+    const unguard = guardMcpTeardown(() => Promise.resolve(), undefined, { invocation });
     expect(process.listenerCount('SIGINT')).toBe(before.sigint + 1);
     expect(process.listenerCount('SIGTERM')).toBe(before.sigterm + 1);
     expect(process.listenerCount('SIGHUP')).toBe(before.sighup + 1);
@@ -268,20 +266,20 @@ describe('guardMcpTeardown — the production defaults', () => {
     expect(process.listenerCount('SIGTERM')).toBe(before.sigterm);
     expect(process.listenerCount('SIGHUP')).toBe(before.sighup);
     expect(process.listenerCount('SIGQUIT')).toBe(before.sigquit);
+    expect(process.listenerCount('exit')).toBe(before.exit);
   });
 
-  it('installs exactly ONE `exit` listener however many guards run', () => {
-    // The reaper is process-scoped, so the thing to bound is accumulation: a long-lived host running many
-    // commands must not gain a listener per command. One Node listener, running a set of reaps.
+  it('does not accumulate historical exit listeners across invocation-bound guards', () => {
+    const invocation = createCliInvocation();
     const before = process.listenerCount('exit');
     const guards = [
-      guardMcpTeardown(() => Promise.resolve(), none),
-      guardMcpTeardown(() => Promise.resolve(), none),
-      guardMcpTeardown(() => Promise.resolve(), none),
+      guardMcpTeardown(() => Promise.resolve(), undefined, { invocation }),
+      guardMcpTeardown(() => Promise.resolve(), undefined, { invocation }),
+      guardMcpTeardown(() => Promise.resolve(), undefined, { invocation }),
     ];
-    expect(process.listenerCount('exit')).toBeLessThanOrEqual(before + 1);
+    expect(process.listenerCount('exit')).toBe(before);
     for (const unguard of guards) unguard();
-    expect(process.listenerCount('exit')).toBeLessThanOrEqual(before + 1);
+    expect(process.listenerCount('exit')).toBe(before);
   });
 
   it('keeps the grace short enough to serve its own stated purpose', () => {
@@ -290,6 +288,66 @@ describe('guardMcpTeardown — the production defaults', () => {
     // that a wedged transport must not turn Ctrl-C into a hung shell, so the VALUE needs an assertion too.
     expect(MCP_TEARDOWN_GRACE_MS).toBeLessThanOrEqual(5_000);
     expect(MCP_TEARDOWN_GRACE_MS).toBeGreaterThan(0);
+  });
+});
+
+describe('guardMcpTeardown — invocation native authority', () => {
+  it('delegates finite exit to the same live registry and ignores legacy PID/kill authority', () => {
+    const invocation = createCliInvocation();
+    let eligible = true;
+    const finiteExit = vi.fn();
+    const stop = vi.fn();
+    const join = vi.fn();
+    const reap = vi.fn();
+    invocation.registry.register({
+      kind: 'native-pid',
+      retired: new Promise(() => undefined),
+      stop,
+      join,
+      reap,
+      mayReap: () => eligible,
+      exitReap: finiteExit,
+      classifyFailure: () => 'cli_internal',
+    });
+    const h = harness({ invocation });
+    const unguard = guardMcpTeardown(
+      never,
+      () => {
+        throw new Error('legacy PID observation is not product kill authority');
+      },
+      h.options,
+    );
+    try {
+      h.exitNet.fire();
+      expect(finiteExit, 'MCP_GUARD_REGISTRY_EXIT').toHaveBeenCalledTimes(1);
+      expect(h.killed).toEqual([]);
+      expect(stop).not.toHaveBeenCalled();
+      expect(join).not.toHaveBeenCalled();
+      expect(reap).not.toHaveBeenCalled();
+      expect(invocation.registry.activeOwners).toBe(1);
+      expect(invocation.registry.termination).toBeUndefined();
+      eligible = false;
+      h.exitNet.fire();
+      expect(finiteExit).toHaveBeenCalledTimes(1);
+    } finally {
+      unguard();
+    }
+  });
+
+  it('preserves first-signal cooperative cleanup without invoking whole-registry termination', async () => {
+    const invocation = createCliInvocation();
+    const h = harness({ invocation, reapOnly: true });
+    const close = vi.fn(() => Promise.resolve());
+    const unguard = guardMcpTeardown(close, undefined, h.options);
+    try {
+      h.signals.fire(2);
+      await vi.waitFor(() => expect(close).toHaveBeenCalledTimes(1));
+      expect(invocation.registry.termination).toBeUndefined();
+      expect(h.exit).not.toHaveBeenCalled();
+      expect(h.killed).toEqual([]);
+    } finally {
+      unguard();
+    }
   });
 });
 

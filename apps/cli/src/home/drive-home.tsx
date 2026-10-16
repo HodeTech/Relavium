@@ -1,3 +1,4 @@
+import { nativeProcessesForInvocation } from '../process/native-process-owner.js';
 import type { CliInvocation } from '../process/invocation.js';
 import { closeQuietly, warnTeardown } from '../process/close-quietly.js';
 import { COMPACTION_UNKNOWN_WINDOW_NOTICE } from '../chat/repl-info.js';
@@ -71,7 +72,7 @@ import {
   type HomeModelsPort,
 } from '../render/tui/home-controller.js';
 import { DISABLE_MOUSE, ENABLE_MOUSE, HIDE_CURSOR, SHOW_CURSOR } from '../render/alt-screen.js';
-import { nodeCreateTempDocument, nodeSpawnEditor } from '../render/editor.js';
+import { nodeCreateTempDocument, createNodeSpawnEditor } from '../render/editor.js';
 import { inkOwnedTerminal, type HatchDeps } from '../render/hatches.js';
 import { nodeWaitForContinue, nodeWriteOut } from '../render/scrollback.js';
 import { copyToClipboard, type ClipboardOutcome } from '../render/clipboard.js';
@@ -194,6 +195,7 @@ export const defaultOnboardingTerminalLifecycle: OnboardingTerminalLifecycle = {
 };
 
 export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
+  const nativeProcesses = nativeProcessesForInvocation(deps.invocation);
   const grants = admitFsInvocation(deps.global);
   const now = deps.now ?? Date.now;
   const uuid = deps.uuid ?? randomUUID;
@@ -403,7 +405,7 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
     },
     editor: {
       env: deps.io.env,
-      spawnEditor: nodeSpawnEditor,
+      spawnEditor: createNodeSpawnEditor(nativeProcesses),
       createTempDocument: nodeCreateTempDocument,
       onDisposeFailed: (path, error) => {
         deps.io.writeErr(
@@ -677,6 +679,7 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
           ? [freshModel, effectiveChat?.defaultProvider]
           : [config.chat.defaultModel, config.chat.defaultProvider];
       const built: BuiltChatSession = await (deps.buildSession ?? buildChatSession)({
+        ...(nativeProcesses === undefined ? {} : { nativeProcesses }),
         // Consent before any stdio MCP spawn (ADR-0084 §1) — the Home opens an agent like every other path.
         consentGate: createConsentGate({
           io: deps.io,
@@ -770,6 +773,7 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
       const noteBudget = (warning: ChatBudgetWarning): void =>
         noteToStore(budgetWarningText(warning));
       const built = await (deps.buildResumedSession ?? buildResumedChatSession)({
+        ...(nativeProcesses === undefined ? {} : { nativeProcesses }),
         chat: config.chat,
         fsPolicy,
         ...(config.maxTokensEstimate === undefined

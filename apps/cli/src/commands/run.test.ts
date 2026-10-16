@@ -1,3 +1,5 @@
+import { createCliInvocation } from '../process/invocation.js';
+import { witnessNativeToolProcess } from './native-forwarding.test-support.js';
 import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -327,6 +329,37 @@ function makeStallingCancelEngine(): {
 }
 
 describe('runCommand', () => {
+  it.each([false, true])(
+    'forwards the original native owner before the engine build resolves (durable=%s)',
+    async (durable) => {
+      const invocation = createCliInvocation();
+      const path = writeWorkflow('native-forwarding.relavium.yaml', HAPPY);
+      const { io } = captureIo();
+      const client = createClient(':memory:');
+      runMigrations(client.db);
+      try {
+        const code = await runCommand(
+          { workflow: path, input: ['n=2'], allowMcpStdio: [] },
+          deps(io, globalOptions(), {
+            invocation,
+            ...(durable ? { openRunStore: historyOpenRunStore(client.db) } : {}),
+            buildEngine: async (options) => {
+              await witnessNativeToolProcess(options?.toolEnv?.nativeProcesses, invocation, root);
+              return buildEngine({
+                ...options,
+                ...(durable ? {} : { host: createInMemoryHost() }),
+              });
+            },
+          }),
+        );
+        expect(code).toBe(EXIT_CODES.success);
+        expect(invocation.registry.activeOwners).toBe(0);
+      } finally {
+        client.sqlite.close();
+      }
+    },
+  );
+
   it('warns after admission before services and preserves the actual augmented frozen workflow', async () => {
     const authoredLiteral = 'sk-runAuthoredSyntheticCredential123456789';
     const stdinLiteral = 'sk-runStdinSyntheticCredential987654321';

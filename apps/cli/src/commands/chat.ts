@@ -1,3 +1,8 @@
+import type { CliInvocation } from '../process/invocation.js';
+import {
+  nativeProcessesForInvocation,
+  type NativeProcessController,
+} from '../process/native-process-owner.js';
 import { randomUUID } from 'node:crypto';
 import { realpathSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
@@ -88,7 +93,7 @@ import type { GlobalOptions } from '../process/options.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import { detectOutputMode, isCiEnv } from '../process/output-mode.js';
 import { createAltScreenController, type AltScreenController } from '../render/alt-screen.js';
-import { nodeCreateTempDocument, nodeSpawnEditor } from '../render/editor.js';
+import { nodeCreateTempDocument, createNodeSpawnEditor } from '../render/editor.js';
 import {
   createHatches,
   hoistedTerminal,
@@ -333,6 +338,8 @@ export interface ChatDriveOutcome {
 export type ChatDriver = (ctx: ChatDriveContext) => Promise<ChatDriveOutcome>;
 
 export interface ChatCommandDeps {
+  /** The original bootstrap invocation, shared across clear and reseat. */
+  readonly invocation?: CliInvocation;
   readonly io: CliIo;
   readonly global: GlobalOptions;
   readonly providers?: ProviderResolver;
@@ -370,6 +377,8 @@ export interface ChatResumeCommandArgs {
 }
 
 export interface ChatResumeCommandDeps {
+  /** The original bootstrap invocation, shared across clear and reseat. */
+  readonly invocation?: CliInvocation;
   readonly io: CliIo;
   readonly global: GlobalOptions;
   readonly providers?: ProviderResolver;
@@ -402,6 +411,8 @@ export interface ChatResumeCommandDeps {
 
 /** The subset the shared {@link runReplLoop} needs — satisfied by both {@link ChatCommandDeps} and {@link ChatResumeCommandDeps}. */
 interface ChatReplDeps {
+  /** The original bootstrap invocation, shared across clear and reseat. */
+  readonly invocation?: CliInvocation;
   readonly io: CliIo;
   readonly global: GlobalOptions;
   readonly drive?: ChatDriver;
@@ -542,6 +553,7 @@ export function budgetWarningText(warning: ChatBudgetWarning): string {
 }
 
 export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps): Promise<ExitCode> {
+  const nativeProcesses = nativeProcessesForInvocation(deps.invocation);
   const grants = admitFsInvocation(deps.global);
   const now = deps.now ?? Date.now;
   const uuid = deps.uuid ?? randomUUID;
@@ -551,6 +563,12 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
   const { config, projectConfigDir, homeDir } = loadResolvedConfig({
     cwd: deps.global.cwd,
     configPath: deps.global.configPath,
+  });
+  const consentGate = createConsentGate({
+    io: deps.io,
+    global: deps.global,
+    homeDir,
+    prompt: createConsentPrompter(),
   });
   const fsPolicy = admitChatFsPolicy(grants, deps.global.cwd, config.chat.extraRoots);
   const keys = deps.resolveKeys?.();
@@ -572,6 +590,7 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
   const built = await (deps.buildSession ?? buildChatSession)({
     chat: config.chat,
     fsPolicy,
+    ...(nativeProcesses === undefined ? {} : { nativeProcesses }),
     ...(config.maxTokensEstimate === undefined
       ? {}
       : { maxTokensEstimate: config.maxTokensEstimate }),
@@ -579,12 +598,7 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
     // agent is opened, which is the case the gate exists for — and the one the first wiring missed by
     // covering only `relavium run`. No `--allow-mcp-stdio` here: a chat is interactive by construction, so
     // the refusal directs a scripted caller at `agent run`, which has the flag.
-    consentGate: createConsentGate({
-      io: deps.io,
-      global: deps.global,
-      homeDir,
-      prompt: createConsentPrompter(),
-    }),
+    consentGate,
     agentRef: args.agent,
     cwd: deps.global.cwd,
     projectConfigDir,
@@ -671,6 +685,8 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
   const rebuild = createClearRebuild({
     chat: config.chat,
     fsPolicy,
+    ...(nativeProcesses === undefined ? {} : { nativeProcesses }),
+    consentGate,
     ...(config.maxTokensEstimate === undefined
       ? {}
       : { maxTokensEstimate: config.maxTokensEstimate }),
@@ -695,6 +711,8 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
   const reseatRebuild = createReseatRebuild({
     chat: config.chat,
     fsPolicy,
+    ...(nativeProcesses === undefined ? {} : { nativeProcesses }),
+    consentGate,
     ...(config.maxTokensEstimate === undefined
       ? {}
       : { maxTokensEstimate: config.maxTokensEstimate }),
@@ -744,6 +762,7 @@ export async function chatResumeCommand(
   args: ChatResumeCommandArgs,
   deps: ChatResumeCommandDeps,
 ): Promise<ExitCode> {
+  const nativeProcesses = nativeProcessesForInvocation(deps.invocation);
   const now = deps.now ?? Date.now;
   const uuid = deps.uuid ?? randomUUID;
 
@@ -755,6 +774,7 @@ export async function chatResumeCommand(
   let fsPolicy: FsPathPolicy;
   let providers: ProviderResolver;
   let mcpSecretResolver: McpSecretResolver;
+  let consentGate: NonNullable<BuildChatSessionOptions['consentGate']>;
 
   let built: BuiltChatSession;
   let store: ChatStoreController;
@@ -813,19 +833,21 @@ export async function chatResumeCommand(
     // session enforces + tracks a user-priced model exactly like a fresh `chat`. Non-fatal (an empty map on a
     // read fault): a corrupt pricing row must not fail an otherwise-valid resume.
     resolvePrice = readUserPricingOverlay(opened.db);
+    consentGate = createConsentGate({
+      io: deps.io,
+      global: deps.global,
+      homeDir,
+      prompt: createConsentPrompter(),
+    });
     const resumed = await (deps.buildResumedSession ?? buildResumedChatSession)({
       chat: config.chat,
       fsPolicy,
+      ...(nativeProcesses === undefined ? {} : { nativeProcesses }),
       ...(config.maxTokensEstimate === undefined
         ? {}
         : { maxTokensEstimate: config.maxTokensEstimate }),
       // Consent before any stdio MCP spawn (ADR-0084 §1) — every path that opens an agent, not only `run`.
-      consentGate: createConsentGate({
-        io: deps.io,
-        global: deps.global,
-        homeDir,
-        prompt: createConsentPrompter(),
-      }),
+      consentGate,
       record: loaded.session,
       messages: loaded.messages,
       now,
@@ -903,6 +925,8 @@ export async function chatResumeCommand(
   const rebuild = createClearRebuild({
     chat: config.chat,
     fsPolicy,
+    consentGate,
+    ...(nativeProcesses === undefined ? {} : { nativeProcesses }),
     ...(config.maxTokensEstimate === undefined
       ? {}
       : { maxTokensEstimate: config.maxTokensEstimate }),
@@ -926,6 +950,8 @@ export async function chatResumeCommand(
   const reseatRebuild = createReseatRebuild({
     chat: config.chat,
     fsPolicy,
+    consentGate,
+    ...(nativeProcesses === undefined ? {} : { nativeProcesses }),
     ...(config.maxTokensEstimate === undefined
       ? {}
       : { maxTokensEstimate: config.maxTokensEstimate }),
@@ -1613,6 +1639,8 @@ export function createChatLineHandler(
 interface FreshChatWiringDeps {
   readonly chat: BuildChatSessionOptions['chat'];
   readonly fsPolicy?: FsPathPolicy;
+  readonly nativeProcesses?: NativeProcessController;
+  readonly consentGate?: BuildChatSessionOptions['consentGate'];
   readonly maxTokensEstimate?: number;
   readonly agent: AgentDefinition;
   readonly cwd: string;
@@ -1648,6 +1676,8 @@ async function buildFreshChatWiring(deps: FreshChatWiringDeps, intro: string): P
   const built = await deps.buildSession({
     chat: deps.chat,
     ...(deps.fsPolicy === undefined ? {} : { fsPolicy: deps.fsPolicy }),
+    ...(deps.nativeProcesses === undefined ? {} : { nativeProcesses: deps.nativeProcesses }),
+    ...(deps.consentGate === undefined ? {} : { consentGate: deps.consentGate }),
     ...(deps.maxTokensEstimate === undefined ? {} : { maxTokensEstimate: deps.maxTokensEstimate }),
     agent: deps.agent,
     agentRef: deps.agent.id, // ignored when `agent` is set, but the option key is required
@@ -1758,6 +1788,8 @@ async function buildFreshChatWiring(deps: FreshChatWiringDeps, intro: string): P
 function createClearRebuild(params: {
   readonly chat: BuildChatSessionOptions['chat'];
   readonly fsPolicy?: FsPathPolicy;
+  readonly nativeProcesses?: NativeProcessController;
+  readonly consentGate?: BuildChatSessionOptions['consentGate'];
   readonly maxTokensEstimate?: number;
   readonly agent: AgentDefinition;
   readonly projectConfigDir: string | undefined;
@@ -1776,6 +1808,8 @@ function createClearRebuild(params: {
   const wiringDeps: FreshChatWiringDeps = {
     chat: params.chat,
     ...(params.fsPolicy === undefined ? {} : { fsPolicy: params.fsPolicy }),
+    ...(params.nativeProcesses === undefined ? {} : { nativeProcesses: params.nativeProcesses }),
+    ...(params.consentGate === undefined ? {} : { consentGate: params.consentGate }),
     ...(params.maxTokensEstimate === undefined
       ? {}
       : { maxTokensEstimate: params.maxTokensEstimate }),
@@ -1881,6 +1915,8 @@ function seedResumedWiring(
 interface ReseatWiringDeps {
   readonly chat: BuildChatSessionOptions['chat'];
   readonly fsPolicy?: FsPathPolicy;
+  readonly nativeProcesses?: NativeProcessController;
+  readonly consentGate?: BuildChatSessionOptions['consentGate'];
   readonly maxTokensEstimate?: number;
   readonly now: () => number;
   readonly uuid: () => string;
@@ -1949,6 +1985,8 @@ async function buildReseatWiring(
   const resumed = await deps.buildResumedSession({
     chat: deps.chat,
     ...(deps.fsPolicy === undefined ? {} : { fsPolicy: deps.fsPolicy }),
+    ...(deps.nativeProcesses === undefined ? {} : { nativeProcesses: deps.nativeProcesses }),
+    ...(deps.consentGate === undefined ? {} : { consentGate: deps.consentGate }),
     ...(deps.maxTokensEstimate === undefined ? {} : { maxTokensEstimate: deps.maxTokensEstimate }),
     record,
     messages: loaded.messages,
@@ -2035,6 +2073,8 @@ async function buildReseatWiring(
 function createReseatRebuild(params: {
   readonly chat: BuildChatSessionOptions['chat'];
   readonly fsPolicy?: FsPathPolicy;
+  readonly nativeProcesses?: NativeProcessController;
+  readonly consentGate?: BuildChatSessionOptions['consentGate'];
   readonly maxTokensEstimate?: number;
   readonly now: () => number;
   readonly uuid: () => string;
@@ -2055,6 +2095,8 @@ function createReseatRebuild(params: {
   const wiringDeps: ReseatWiringDeps = {
     chat: params.chat,
     ...(params.fsPolicy === undefined ? {} : { fsPolicy: params.fsPolicy }),
+    ...(params.nativeProcesses === undefined ? {} : { nativeProcesses: params.nativeProcesses }),
+    ...(params.consentGate === undefined ? {} : { consentGate: params.consentGate }),
     ...(params.maxTokensEstimate === undefined
       ? {}
       : { maxTokensEstimate: params.maxTokensEstimate }),
@@ -2490,7 +2532,7 @@ export async function runReplLoop(
     clipboard: (text: string) => copyToClipboard({ writeControl, env: deps.io.env }, text),
     editor: {
       env: deps.io.env,
-      spawnEditor: nodeSpawnEditor,
+      spawnEditor: createNodeSpawnEditor(nativeProcessesForInvocation(deps.invocation)),
       createTempDocument: nodeCreateTempDocument,
       onDisposeFailed: (path, error) => {
         deps.io.writeErr(

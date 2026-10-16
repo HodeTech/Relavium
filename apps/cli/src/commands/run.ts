@@ -1,3 +1,5 @@
+import type { CliInvocation } from '../process/invocation.js';
+import { nativeProcessesForInvocation } from '../process/native-process-owner.js';
 import { closeQuietly, warnTeardown } from '../process/close-quietly.js';
 import { EgressWorkScope } from '../engine/egress-work.js';
 import { randomUUID } from 'node:crypto';
@@ -10,7 +12,6 @@ import {
   type WorkflowEngine,
   WorkflowParseError,
 } from '@relavium/core';
-import { liveMcpChildPids } from '@relavium/mcp';
 import type { MediaBilledModality } from '@relavium/shared';
 
 import { warnSnapshotLiterals } from '../authoring/snapshot-notice.js';
@@ -96,6 +97,8 @@ export interface RunCommandArgs {
 }
 
 export interface RunCommandDeps {
+  /** The original bootstrap invocation; native authority stays host-only. */
+  readonly invocation?: CliInvocation;
   readonly io: CliIo;
   readonly global: GlobalOptions;
   /** Injectable so tests (and the 2.K harness) drive a stub provider + the in-memory host. */
@@ -172,6 +175,7 @@ function parseOrRefuse(yaml: string, source: string): WorkflowDefinition {
 }
 
 export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Promise<ExitCode> {
+  const nativeProcesses = nativeProcessesForInvocation(deps.invocation);
   if ((deps.global.allowFsRoots?.length ?? 0) > 0) {
     throw new CliError(
       'invalid_invocation',
@@ -231,7 +235,7 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
    * Arming it after `connectWorkflowMcp` resolved was the first attempt, and a review found the hole: the
    * SDK spawns each stdio child inside `start()`, so for up to 120 s per server — precisely the silent window
    * where a user reaches for Ctrl-C — the children existed with no guard armed. Two things follow from arming
-   * early: the pids are read LAZILY (there are none yet at this point), and the connect itself is given a
+   * early: native ownership is registered during creation, and the connect itself is given a
    * cancel signal so a Ctrl-C during it actually stops rather than merely being survived.
    *
    * `reapOnly`: `driveRun` owns this surface's documented signal contract — Ctrl-C drains to `run:cancelled`
@@ -248,12 +252,12 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
           mcpConnectCancel.abort(); // stops an in-flight connect; a no-op once one completed
           await mcpRuntime?.client.close();
         },
-        // The live registry, not the assembled client's snapshot: `mcpRuntime` is undefined for the whole
-        // connect, which is exactly the window a child exists with no handshake yet. See `agent-run.ts` for
-        // the reproduction — this surface survives it only because `reapOnly` keeps it from exiting early,
-        // which is a property of ITS signal contract rather than of the reaper. Both now read the same source.
-        () => liveMcpChildPids(),
-        { reapOnly: true },
+        // The original invocation owns native creation during the pending connect as well as after it.
+        undefined,
+        {
+          reapOnly: true,
+          ...(deps.invocation === undefined ? {} : { invocation: deps.invocation }),
+        },
       )
     : (): void => undefined;
   try {
@@ -262,6 +266,7 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
     // workflow so each inline agent's grant includes ONLY its own servers' discovered tools. `undefined` ⇒ no
     // inline agent declared a server. The spawned children are torn down at the run terminal (the finally).
     mcpRuntime = await connectWorkflowMcp(def, {
+      ...(nativeProcesses === undefined ? {} : { nativeProcesses }),
       cwd: deps.global.cwd,
       connectSignal: mcpConnectCancel.signal,
       work: mcpWork,
@@ -325,6 +330,7 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
     // resolved `[defaults].fs_scope` (default sandboxed). The factory feeds BOTH this run path and the chat
     // path, so a workflow's read_file / write_file / run_command / git_status work (the MCP arm merges on top).
     const toolEnv = {
+      ...(nativeProcesses === undefined ? {} : { nativeProcesses }),
       workspaceDir: deps.global.cwd,
       fsScopeTier: config.fsScope ?? 'sandboxed',
     };

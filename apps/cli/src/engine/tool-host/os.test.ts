@@ -1,8 +1,13 @@
 import { EventEmitter } from 'node:events';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
-import { EgressCapabilityError } from './errors.js'; // sibling check: the os errors live in the same module
+import { EgressCapabilityError, HostDeniedError } from './errors.js'; // sibling check: the os errors live in the same module
+import type { NativeProcessController } from '../../process/native-process-owner.js';
+import {
+  WindowsTeardownUnavailableError,
+  WINDOWS_TEARDOWN_UNAVAILABLE_MESSAGE,
+} from '../../process/windows-teardown.js';
 import {
   clipboardReadPlans,
   createNodeOsCapability,
@@ -45,6 +50,7 @@ function fakeSpawn(script: readonly ScriptedCall[]): {
     queueMicrotask(() => {
       if (scripted.emitError === true) {
         child.emit('error');
+        child.emit('close', null); // failed spawn still owes its native close, as node:child_process does
         return;
       }
       if (scripted.stdout !== undefined && scripted.stdout.length > 0) {
@@ -242,7 +248,7 @@ describe('createNodeOsCapability — timeout + mid-spawn abort + the bounded buf
     const os = createNodeOsCapability({ platform: 'linux', spawnImpl }); // 3 candidates (wl-paste, xclip, xsel)
     const ac = new AbortController();
     const pending = os.readClipboard(ac.signal);
-    await Promise.resolve(); // let the first candidate spawn + register its abort listener
+    await vi.waitFor(() => expect(calls).toHaveLength(1)); // actual entry, independent of preparation awaits
     ac.abort(); // onAbort ⇒ SIGKILL ⇒ close(null) with aborted=true ⇒ reject; the loop must NOT fall through
     await expect(pending).rejects.toBeInstanceOf(Error);
     expect(calls).toHaveLength(1); // ONLY wl-paste — the abort stopped the loop; xclip/xsel never spawned
@@ -253,6 +259,57 @@ describe('createNodeOsCapability — timeout + mid-spawn abort + the bounded buf
     const { spawnImpl } = fakeSpawn([{ stdout: 'hello world', code: 0 }]); // 11 bytes
     const os = createNodeOsCapability({ platform: 'darwin', spawnImpl, maxBufferBytes: 5 });
     expect(await os.readClipboard()).toBe('hello'); // capped to the first 5 bytes
+  });
+});
+
+describe('OS candidate native-close ownership', () => {
+  it('preserves an actionable deterministic Windows facility refusal without trying a fallback', async () => {
+    const { spawnImpl, calls } = fakeSpawn([]);
+    const nativeProcesses: NativeProcessController = {
+      reserve: () =>
+        Promise.reject(
+          new WindowsTeardownUnavailableError({ cause: new Error('private-path-detail') }),
+        ),
+      observeMcp: () => Promise.reject(new Error('MCP was not requested')),
+    };
+    const os = createNodeOsCapability({ platform: 'win32', spawnImpl, nativeProcesses });
+    const failure: unknown = await os.readClipboard().catch((cause: unknown) => cause);
+    expect(failure).toBeInstanceOf(HostDeniedError);
+    expect(failure).toMatchObject({
+      message: WINDOWS_TEARDOWN_UNAVAILABLE_MESSAGE,
+      runErrorCode: 'tool_denied',
+    });
+    await expect(os.notify({ title: 'synthetic', body: 'synthetic' })).rejects.toBeInstanceOf(
+      HostDeniedError,
+    );
+    expect(calls).toHaveLength(0);
+  });
+
+  it('retains an errored candidate and starts no fallback before its actual close', async () => {
+    const children: EventEmitter[] = [];
+    class Child extends EventEmitter implements OsSpawnLike {
+      readonly stdout = new EventEmitter();
+      kill(): void {} // request is deliberately not an acknowledgement
+    }
+    const spawnImpl: OsSpawnFn = () => {
+      const child = new Child();
+      children.push(child);
+      if (children.length === 2)
+        queueMicrotask(() => {
+          child.stdout.emit('data', Buffer.from('second candidate'));
+          child.emit('close', 0);
+        });
+      return child;
+    };
+    const os = createNodeOsCapability({ platform: 'linux', spawnImpl });
+    const pending = os.readClipboard();
+    await vi.waitFor(() => expect(children).toHaveLength(1));
+    children[0]?.emit('error');
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(children).toHaveLength(1);
+    children[0]?.emit('close', null);
+    await expect(pending).resolves.toBe('second candidate');
+    expect(children).toHaveLength(2);
   });
 });
 

@@ -407,6 +407,7 @@ const executeRun: CommandExecutor = (input, ctx) =>
   runCommand(buildRunArgs(input), {
     io: ctx.io,
     global: ctx.global,
+    ...(ctx.invocation === undefined ? {} : { invocation: ctx.invocation }),
     openRunStore: openHistoryStore,
     // ADR-0107: construct native credential services only after complete input admission.
     resolveKeys: () => keyResolvers(ctx),
@@ -416,6 +417,7 @@ const executeChat: CommandExecutor = (input, ctx) =>
   chatCommand(buildChatArgs(input), {
     io: ctx.io,
     global: ctx.global,
+    ...(ctx.invocation === undefined ? {} : { invocation: ctx.invocation }),
     resolveKeys: (db) => keyResolvers(ctx, db),
     openSessionStore,
     drive: selectChatDriver,
@@ -427,6 +429,7 @@ const executeChatResume: CommandExecutor = (input, ctx) =>
     {
       io: ctx.io,
       global: ctx.global,
+      ...(ctx.invocation === undefined ? {} : { invocation: ctx.invocation }),
       resolveKeys: (db) => keyResolvers(ctx, db),
       openSessionStore,
       drive: selectChatDriver,
@@ -458,6 +461,7 @@ const executeAgentRun: CommandExecutor = (input, ctx) =>
   agentRunCommand(buildAgentRunArgs(input), {
     io: ctx.io,
     global: ctx.global,
+    ...(ctx.invocation === undefined ? {} : { invocation: ctx.invocation }),
     resolveKeys: () => keyResolvers(ctx),
   });
 
@@ -465,6 +469,7 @@ const executeGate: CommandExecutor = (input, ctx) =>
   gateCommand(buildGateArgs(input), {
     io: ctx.io,
     global: ctx.global,
+    ...(ctx.invocation === undefined ? {} : { invocation: ctx.invocation }),
     resolveKeys: (db) => keyResolvers(ctx, db),
   });
 
@@ -472,6 +477,7 @@ const executeBudget: CommandExecutor = (input, ctx) =>
   budgetCommand(buildBudgetArgs(input), {
     io: ctx.io,
     global: ctx.global,
+    ...(ctx.invocation === undefined ? {} : { invocation: ctx.invocation }),
     resolveKeys: (db) => keyResolvers(ctx, db),
   });
 

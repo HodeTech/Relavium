@@ -4,6 +4,15 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import {
+  createNativeProcessController,
+  type NativeProcessController,
+} from '../process/native-process-owner.js';
+import {
+  WindowsTeardownUnavailableError,
+  WINDOWS_TEARDOWN_UNAVAILABLE_MESSAGE,
+} from '../process/windows-teardown.js';
+
 /**
  * The `$EDITOR` half of the ADR-0068 §e copy-and-search escape hatches (2.6.F Step 5d): write the transcript to a
  * private temp file and hand the terminal to the user's editor, so they can search, select, and copy it — the
@@ -153,7 +162,9 @@ export async function openInEditor(
       return { kind: 'failed', message: `${editor.command} was terminated by ${exit.signal}` };
     }
     return { kind: 'closed', exitCode: exit.code ?? 0 };
-  } catch {
+  } catch (cause) {
+    if (cause instanceof WindowsTeardownUnavailableError)
+      return { kind: 'failed', message: WINDOWS_TEARDOWN_UNAVAILABLE_MESSAGE };
     // The editor could not be started (ENOENT / EACCES). The command NAME is the user's own env value, so echoing
     // it is safe and is the only actionable part of the message.
     return { kind: 'failed', message: `could not start ${editor.command}` };
@@ -266,17 +277,39 @@ export const nodeCreateTempDocument = async (contents: string): Promise<TempDocu
 
 /** The production {@link OpenInEditorDeps.spawnEditor}: inherit the TTY (the editor IS the foreground app while it
  *  runs) and resolve on exit. `shell: false` — see the module note. Rejects only when the child cannot be started. */
-export const nodeSpawnEditor = (
-  command: string,
-  args: readonly string[],
-  file: string,
-): Promise<EditorExit> =>
-  new Promise<EditorExit>((resolve, reject) => {
-    const child = spawn(command, [...args, file], {
-      stdio: 'inherit', // the editor owns the terminal; suspendFullScreen already handed it over
-      shell: false, // SECURITY: no shell — a metacharacter in $EDITOR is an inert argv token, never a command
-      windowsHide: false,
+export function createNodeSpawnEditor(
+  nativeProcesses: NativeProcessController = createNativeProcessController(),
+): (command: string, args: readonly string[], file: string) => Promise<EditorExit> {
+  return async (command, args, file) => {
+    const native = await nativeProcesses.reserve('pid');
+    return new Promise<EditorExit>((resolve, reject) => {
+      let child: ReturnType<typeof spawn>;
+      try {
+        native.assertAdmitting();
+        child = spawn(command, [...args, file], {
+          stdio: 'inherit', // the editor owns the terminal; suspendFullScreen already handed it over
+          shell: false, // SECURITY: metacharacters remain inert argv, never a command
+          windowsHide: false,
+        });
+      } catch (cause) {
+        native.abandon();
+        reject(
+          cause instanceof Error ? cause : new Error('The editor could not be started.', { cause }),
+        );
+        return;
+      }
+      native.bindChild(child);
+      // The public start error is unchanged, but the registered lifetime remains until native close.
+      child.once('error', (cause) => {
+        void native.stop();
+        reject(cause);
+      });
+      child.once('close', (code, signal) => {
+        void native.whenClosed.then(() => resolve({ code, signal }));
+      });
     });
-    child.once('error', reject); // ENOENT / EACCES — the command does not exist or is not executable
-    child.once('close', (code, signal) => resolve({ code, signal }));
-  });
+  };
+}
+
+/** Compatibility host with local cleanup; product constructors bind their original invocation explicitly. */
+export const nodeSpawnEditor = createNodeSpawnEditor();

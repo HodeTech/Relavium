@@ -1,3 +1,4 @@
+import type { NativeProcessController } from '../process/native-process-owner.js';
 import {
   type AgentDefinition,
   AgentSession,
@@ -88,6 +89,8 @@ const SESSION_DURABILITY_FAILURE =
  */
 
 export interface BuildChatSessionOptions {
+  /** Host-only native authority for both tool processes and MCP startup. */
+  readonly nativeProcesses?: NativeProcessController;
   /** The resolved `[chat]` block (default model, fs scope, turn cap, cost cap). */
   readonly chat: ResolvedChatConfig;
   readonly maxTokensEstimate?: number;
@@ -316,6 +319,7 @@ type SessionRuntimeOptions = Pick<
   | 'providers'
   | 'toolHost'
   | 'fsPolicy'
+  | 'nativeProcesses'
   | 'afterTurnCompaction'
   | 'onCompactionStart'
   | 'onBudgetWarning'
@@ -406,6 +410,7 @@ function buildSessionRuntime(
     profile: 'chat-read-write',
     fsScopeTier: context.fsScopeTier,
     workspaceDir: context.workingDir,
+    ...(opts.nativeProcesses === undefined ? {} : { nativeProcesses: opts.nativeProcesses }),
     ...(opts.fsPolicy === undefined ? {} : { fsPolicy: opts.fsPolicy }),
   });
   const baseHost: ToolHost = opts.toolHost ?? factoryEnv.host;
@@ -753,12 +758,17 @@ function bindChatAgent(opts: BuildChatSessionOptions): ResolvedChatAgent {
  * Exactly the fields {@link mcpOptionsFor} reads — deliberately NOT `BuildChatSessionOptions`.
  *
  * The fresh and resumed paths carry two different option types, and the mapper has no business requiring
- * either whole. Naming the five it actually consumes is what lets both satisfy it structurally, and makes a
- * sixth option impossible to add on one path only: it has to be added here, and then both call sites see it.
+ * either whole. Naming the host inputs it actually consumes is what lets both satisfy it structurally, and makes an
+ * additional option impossible to add on one path only: it has to be added here, and then both call sites see it.
  */
 type McpConnectInputs = Pick<
   BuildChatSessionOptions,
-  'consentGate' | 'startMcpClient' | 'mcpSecretResolver' | 'mcpRegistrations' | 'mcpConnectSignal'
+  | 'consentGate'
+  | 'startMcpClient'
+  | 'mcpSecretResolver'
+  | 'mcpRegistrations'
+  | 'mcpConnectSignal'
+  | 'nativeProcesses'
 >;
 
 /**
@@ -776,6 +786,7 @@ function mcpOptionsFor(
 ): ConnectAgentMcpOptions {
   return {
     cwd,
+    ...(opts.nativeProcesses === undefined ? {} : { nativeProcesses: opts.nativeProcesses }),
     ...(opts.consentGate === undefined ? {} : { consentGate: opts.consentGate }),
     // The caller's label wins (`agent run` names the ref the user typed); otherwise the path the agent was
     // actually read from — §7's "declared in <file>" for the imported-artifact case.
@@ -980,7 +991,7 @@ export interface BuiltResumedChatSession extends BuiltChatSession {
 
 export interface BuildResumedChatSessionOptions extends Pick<
   BuildChatSessionOptions,
-  'afterTurnCompaction' | 'onCompactionStart' | 'fsPolicy'
+  'afterTurnCompaction' | 'onCompactionStart' | 'fsPolicy' | 'nativeProcesses'
 > {
   /** The resolved `[chat]` block (turn cap, cost cap) — applied to the resumed session's deps. */
   readonly chat: ResolvedChatConfig;

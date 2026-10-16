@@ -1,3 +1,5 @@
+import { createCliInvocation } from '../process/invocation.js';
+import { witnessNativeToolProcess } from './native-forwarding.test-support.js';
 import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -314,6 +316,30 @@ describe('gateCommand', () => {
     }
     return { runId, gateIds };
   }
+
+  it('forwards the resuming invocation before the actual engine build resolves', async () => {
+    const { runId } = await setupPausedRun();
+    const invocation = createCliInvocation();
+    const { io } = captureIo();
+    expect(
+      await gateCommand(
+        { runId, approve: true },
+        {
+          ...deps(io),
+          invocation,
+          buildEngine: async (options) => {
+            await witnessNativeToolProcess(
+              options?.toolEnv?.nativeProcesses,
+              invocation,
+              options?.toolEnv?.workspaceDir ?? root,
+            );
+            return buildEngine(options);
+          },
+        },
+      ),
+    ).toBe(EXIT_CODES.success);
+    expect(invocation.registry.activeOwners).toBe(0);
+  });
 
   it.each([
     {

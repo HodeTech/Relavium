@@ -1,3 +1,5 @@
+import type { CliInvocation } from '../process/invocation.js';
+import { nativeProcessesForInvocation } from '../process/native-process-owner.js';
 import { closeQuietly } from '../process/close-quietly.js';
 import { randomUUID } from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
@@ -10,7 +12,6 @@ import { cassetteResolver, loadCassette } from '../chat/fixture.js';
 import { onceEffortNotice } from '../chat/effort-notice.js';
 import { buildChatSession, type BuiltChatSession } from '../chat/session-host.js';
 import { createConsentGate } from '../engine/mcp-consent-gate.js';
-import { liveMcpChildPids } from '@relavium/mcp';
 
 import { guardMcpTeardown } from '../engine/mcp-signal-teardown.js';
 import type { StdioConsentGate } from '../engine/mcp-servers.js';
@@ -65,6 +66,8 @@ export interface AgentRunCommandArgs {
 }
 
 export interface AgentRunCommandDeps {
+  /** The original bootstrap invocation; native authority stays host-only. */
+  readonly invocation?: CliInvocation;
   readonly io: CliIo;
   readonly global: GlobalOptions;
   /** Injectable provider seam (tests). Ignored when `--fixture` is given (the cassette resolver always wins). */
@@ -87,6 +90,7 @@ export async function agentRunCommand(
   args: AgentRunCommandArgs,
   deps: AgentRunCommandDeps,
 ): Promise<ExitCode> {
+  const nativeProcesses = nativeProcessesForInvocation(deps.invocation);
   const grants = admitFsInvocation(deps.global);
   const now = deps.now ?? Date.now;
   const uuid = deps.uuid ?? randomUUID;
@@ -122,8 +126,8 @@ export async function agentRunCommand(
    *
    * `buildChatSession` is where the stdio children are spawned, and a cold `npx` can hold that call for up to
    * 120 s with the terminal silent — the highest-probability window for a Ctrl-C. Arming afterwards, which was
-   * the first attempt, left exactly that window uncovered. Two things follow: the pids are read LAZILY (there
-   * are none yet here) and the connect is given a cancel signal, so a Ctrl-C during it stops rather than being
+   * the first attempt, left exactly that window uncovered. Two things follow: native ownership is registered during creation
+   * and the connect is given a cancel signal, so a Ctrl-C during it stops rather than being
    * merely survived.
    *
    * Unlike `relavium run`, this surface has no other signal handler, so the guard DOES own the exit code.
@@ -135,17 +139,16 @@ export async function agentRunCommand(
       mcpConnectCancel.abort();
       await session?.closeMcp?.();
     },
-    // **`liveMcpChildPids()`, not `session?.mcpChildPids`** — and a review reproduced why against a real
-    // subprocess. `session` is undefined for the whole connect, so on a signal there the cooperative close
-    // resolved instantly, the guard exited `128+signo`, and the exit net asked a `session` that did not exist
-    // for pids: it killed nothing while the SDK's ~4 s close ladder had barely started. Measured: the host
-    // exited 143 and the MCP child kept running at `ppid 1`. The registry is populated at SPAWN time, so the
-    // synchronous net can see a child the connect has not finished handshaking with.
-    () => liveMcpChildPids(),
+    // Native creation is registered before the builder resolves, under this original invocation.
+    undefined,
+    {
+      ...(deps.invocation === undefined ? {} : { invocation: deps.invocation }),
+    },
   );
 
   const built = await (async (): Promise<BuiltChatSession> => {
     const b = await (deps.buildSession ?? buildChatSession)({
+      ...(nativeProcesses === undefined ? {} : { nativeProcesses }),
       chat: config.chat,
       fsPolicy,
       afterTurnCompaction: false, // One-shot output has no next turn; retain active summary permission.

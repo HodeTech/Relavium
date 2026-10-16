@@ -1,3 +1,5 @@
+import { createCliInvocation } from '../process/invocation.js';
+import { witnessNativeToolProcess } from './native-forwarding.test-support.js';
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -243,6 +245,8 @@ function deps(io: ReturnType<typeof captureIo>['io']): GateCommandDeps {
 for (const abort of [false, true]) {
   it(`native SQLite budget resume is binary and amount bounded (abort=${abort})`, async () => {
     const paused = await seed();
+    const invocation = createCliInvocation();
+    const exitListeners = process.listenerCount('exit');
     const { io } = captureIo();
     expect(
       await budgetCommand(
@@ -250,9 +254,19 @@ for (const abort of [false, true]) {
           runId: paused.runId,
           ...(abort ? { abort: true } : { approveAmount: String(paused.amount) }),
         },
-        deps(io),
+        {
+          ...deps(io),
+          invocation,
+          buildEngine: async (options) => {
+            if (!abort)
+              await witnessNativeToolProcess(options?.toolEnv?.nativeProcesses, invocation, root);
+            return buildEngine({ ...options, resolvePrice: prices });
+          },
+        },
       ),
     ).toBe(abort ? 1 : 0);
+    expect(invocation.registry.activeOwners).toBe(0);
+    expect(process.listenerCount('exit')).toBe(exitListeners);
     const rows = reader().loadRunEventLogForReplay(paused.runId);
     const authorization = rows.find(
       (event) => event.type === 'budget:authorization' && event.authorization.state === 'decided',

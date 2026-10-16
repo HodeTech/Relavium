@@ -6,6 +6,14 @@ import type { ProcessCapability, ProcessResult } from '@relavium/core';
 import { isForbiddenDeclaredEnvKey, type AbortSignalLike } from '@relavium/shared';
 
 import { findOnPath } from '../find-on-path.js';
+import {
+  createNativeProcessController,
+  type NativeProcessController,
+} from '../../process/native-process-owner.js';
+import {
+  WindowsTeardownUnavailableError,
+  WINDOWS_TEARDOWN_UNAVAILABLE_MESSAGE,
+} from '../../process/windows-teardown.js';
 
 import {
   HostCapabilityError,
@@ -71,6 +79,7 @@ const WINDOWS_ENV_KEYS = [
 ] as const;
 
 export interface NodeProcessCapabilityConfig {
+  readonly nativeProcesses?: NativeProcessController;
   /** The session/run working directory (absolute) — the default spawn cwd when the tool pins none. */
   readonly workspaceDir: string;
   /** Default timeout (ms) when the tool config pins none (default {@link DEFAULT_TIMEOUT_MS}). */
@@ -115,6 +124,7 @@ export function createNodeProcessCapability(
   const defaultTimeoutMs = config.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS;
   const maxTimeoutMs = config.maxTimeoutMs ?? DEFAULT_MAX_TIMEOUT_MS;
   const maxBufferBytes = config.maxBufferBytes ?? DEFAULT_MAX_BUFFER_BYTES;
+  const nativeProcesses = config.nativeProcesses ?? createNativeProcessController();
   return {
     spawn: async (command, args, declaredEnv, opts, signal) => {
       throwIfAborted(signal);
@@ -130,6 +140,7 @@ export function createNodeProcessCapability(
         timeoutMs,
         maxBufferBytes,
         signal,
+        nativeProcesses,
       });
     },
   };
@@ -143,10 +154,23 @@ interface RunChildOptions {
   readonly timeoutMs: number;
   readonly maxBufferBytes: number;
   readonly signal: AbortSignalLike | undefined;
+  readonly nativeProcesses: NativeProcessController;
 }
 
 /** Spawn the resolved child (`shell:false`), wiring the timeout + abort kill and the bounded output capture. */
-function runChild(opts: RunChildOptions): Promise<ProcessResult> {
+async function runChild(opts: RunChildOptions): Promise<ProcessResult> {
+  const native = await opts.nativeProcesses.reserve('group').catch((cause: unknown) => {
+    if (cause instanceof WindowsTeardownUnavailableError)
+      throw new ProcessDeniedError(WINDOWS_TEARDOWN_UNAVAILABLE_MESSAGE);
+    throw cause;
+  });
+  try {
+    throwIfAborted(opts.signal);
+    native.assertAdmitting();
+  } catch (cause) {
+    native.abandon();
+    throw cause;
+  }
   const start = Date.now();
   return new Promise<ProcessResult>((resolvePromise, reject) => {
     // Check cancellation after executable/cwd resolution and argument copying, at native entry.
@@ -161,13 +185,15 @@ function runChild(opts: RunChildOptions): Promise<ProcessResult> {
         windowsHide: true,
         // POSIX: make the child a process-group leader so a timeout/abort can SIGKILL the WHOLE group (the
         // child AND any grandchildren it forked) — a single-pid kill would leak a forking subprocess. Not
-        // unref'd: we await `close`. Windows has no POSIX groups, so kill falls back to the single child.
+        // unref'd: we await actual close. Windows instead admits the verified taskkill facility first.
         detached: process.platform !== 'win32',
       });
     } catch {
+      native.abandon();
       reject(new ProcessCapabilityError('the command could not be started'));
       return;
     }
+    native.bindChild(child);
 
     const stdout = new BoundedBuffer(opts.maxBufferBytes);
     const stderr = new BoundedBuffer(opts.maxBufferBytes);
@@ -177,13 +203,14 @@ function runChild(opts: RunChildOptions): Promise<ProcessResult> {
     let failed = false;
 
     const timer = setTimeout(() => {
+      if (child.exitCode !== null || child.signalCode !== null) return;
       timedOut = true;
-      killTree(child);
+      void native.stop();
     }, opts.timeoutMs);
 
     const onAbort = (): void => {
       aborted = true;
-      killTree(child);
+      void native.stop();
     };
     if (opts.signal !== undefined) opts.signal.addEventListener('abort', onAbort);
 
@@ -205,50 +232,35 @@ function runChild(opts: RunChildOptions): Promise<ProcessResult> {
     child.on('error', () => {
       if (failed) return;
       failed = true;
-      killTree(child);
+      void native.stop();
     });
     child.on('close', (code) => {
-      finish(() => {
-        // `code === null` ⇒ the process was signal-killed. A timeout/abort kill lands here with null code; a
-        // process that exited NATURALLY at the same tick the timer fired keeps its real `code`, so gate the
-        // timeout label on a null code — a same-tick natural exit is reported with its true exit code, not a
-        // spurious timeout.
-        if (aborted) {
-          reject(new ProcessCapabilityError('the command was aborted'));
-        } else if (failed) {
-          reject(new ProcessCapabilityError('the command failed to run'));
-        } else if (timedOut && code === null) {
-          reject(new ProcessCapabilityError(`the command timed out after ${opts.timeoutMs}ms`));
-        } else {
-          // Reap the whole process group on a NORMAL exit too — a backgrounded grandchild the command forked
-          // must not outlive the tool call. killTree is idempotent on an already-exited group (the ESRCH is
-          // swallowed), so this is a no-op when nothing survives and a clean reaping when something does.
-          killTree(child);
-          resolvePromise({
-            // An (external) signal-kill exit has `code === null` — report a conventional non-zero so the model
-            // sees a failure exit rather than a misleading `0`.
-            exitCode: code ?? 1,
-            stdout: stdout.text(),
-            stderr: stderr.text(),
-            durationMs: Date.now() - start,
-          });
-        }
-      });
+      cleanup();
+      void native.whenClosed.then(() =>
+        finish(() => {
+          // POSIX cancellation reports a null code; Windows taskkill reports a nonzero native exit code.
+          // An already observed exit never starts timeout cancellation, and natural success keeps code 0.
+          if (aborted) {
+            reject(new ProcessCapabilityError('the command was aborted'));
+          } else if (failed) {
+            reject(new ProcessCapabilityError('the command failed to run'));
+          } else if (timedOut && (code === null || (process.platform === 'win32' && code !== 0))) {
+            reject(new ProcessCapabilityError(`the command timed out after ${opts.timeoutMs}ms`));
+          } else {
+            // Native ownership has joined close and its final group/helper attempt before publication.
+            resolvePromise({
+              // An (external) signal-kill exit has `code === null` — report a conventional non-zero so the model
+              // sees a failure exit rather than a misleading `0`.
+              exitCode: code ?? 1,
+              stdout: stdout.text(),
+              stderr: stderr.text(),
+              durationMs: Date.now() - start,
+            });
+          }
+        }),
+      );
     });
   });
-}
-
-/** SIGKILL the child and (on POSIX) its whole process group, so a forked grandchild can't survive the kill. */
-function killTree(child: ChildProcess): void {
-  if (process.platform !== 'win32' && child.pid !== undefined) {
-    try {
-      process.kill(-child.pid, 'SIGKILL'); // negative pid ⇒ the process group (the detached child is its leader)
-      return;
-    } catch {
-      // The group is already gone, or the kill is not permitted — fall back to the single child below.
-    }
-  }
-  child.kill('SIGKILL');
 }
 
 /** A byte-bounded UTF-8 accumulator: appends until the cap, then drops the rest and marks the output truncated. */

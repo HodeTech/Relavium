@@ -63,10 +63,22 @@ export interface NativeOwner extends OwnerBase {
   readonly mayReap: () => boolean;
   /** A request/attempt, never target close ACK. Concrete PID/PGID/facility stays in the native adapter. */
   readonly reap: (budget: RemainingBudget) => void | Promise<void>;
+  /** Adjust/cancel already-entered helper work only; synchronous notification grants no new entry or ACK. */
+  readonly budgetChanged?: (budget: RemainingBudget) => void;
+  /** Finite synchronous exit fallback only; never start an async helper or acknowledge native closure. */
+  readonly exitReap?: () => void;
 }
 
 export type InvocationOwner = WorkflowOwner | SessionOwner | TerminalOwner | NativeOwner;
-export type OwnerStage = 'stop' | 'join' | 'restore' | 'reap' | 'retirement' | 'health';
+export type OwnerStage =
+  | 'stop'
+  | 'join'
+  | 'restore'
+  | 'reap'
+  | 'retirement'
+  | 'health'
+  | 'budget'
+  | 'exit';
 
 export interface OwnerLease {
   readonly assertAdmitting: () => void;
@@ -97,6 +109,10 @@ interface Entry {
   retired: boolean;
   closeResult: Promise<OwnerCloseResult> | undefined;
   sampling: boolean;
+  budgetObserved: boolean;
+  budgetDeadline: number | undefined;
+  budgetExpired: boolean;
+  budgetReentered: boolean;
 }
 
 // Observe actual native Promise settlement, bypassing overridden then/foreign thenable protocols.
@@ -124,14 +140,16 @@ export class InvocationRegistry {
   #stopping = false;
   #terminationObserver: (() => void) | undefined;
   #notifying = false;
+  #notifyingBudget = false;
+  #budgetCallbackEntry: Entry | undefined;
+  #reapingAtExit = false;
 
   constructor(clock: InvocationClock, observations = new ExitObservations()) {
     this.#clock = clock;
     this.observations = observations;
     this.#budget = Object.freeze({
       deadline: () => this.#deadline,
-      remainingMs: () =>
-        this.#deadline === undefined ? undefined : Math.max(0, this.#deadline - this.#now()),
+      remainingMs: () => this.#remainingMs(),
     });
   }
 
@@ -184,6 +202,10 @@ export class InvocationRegistry {
       retired: false,
       closeResult: undefined,
       sampling: false,
+      budgetObserved: false,
+      budgetDeadline: undefined,
+      budgetExpired: false,
+      budgetReentered: false,
     };
     this.#entries.add(entry);
     // Registration observes lifetime only: joining an idle session here would falsely retire future turns.
@@ -196,6 +218,9 @@ export class InvocationRegistry {
     ) {
       this.#record(entry, 'retirement', 'cli_internal');
     }
+    // The native adapter sees current state before creation, without using the coordinator's observer.
+    if (this.#notifyingBudget) this.#notifyBudget(entry);
+    else this.#notifyBudgets();
     return Object.freeze({
       assertAdmitting: () => {
         this.assertAdmitting();
@@ -262,6 +287,28 @@ export class InvocationRegistry {
     this.#sampleHealth();
   }
 
+  /** Attempt only finite existing native capabilities; exit cannot await or certify any resource closed. */
+  reapNativeAtExit(): void {
+    if (this.#reapingAtExit) return;
+    this.#reapingAtExit = true;
+    try {
+      // Snapshot creation owners: callback reentry cannot add another exit obligation to this pass.
+      for (const entry of [...this.#entries]) {
+        const owner = entry.owner;
+        if (entry.retired || !isNativeOwner(owner) || owner.exitReap === undefined) continue;
+        try {
+          if (owner.mayReap() === true) owner.exitReap();
+        } catch {
+          // Exit has no async cleanup tail or diagnostic sink. Retain only the fixed observation.
+          this.#failures.add(`${owner.kind}:exit:cli_internal`);
+          this.observations.observeFailure('cli_internal');
+        }
+      }
+    } finally {
+      this.#reapingAtExit = false;
+    }
+  }
+
   #closeEntry(entry: Entry): Promise<OwnerCloseResult> {
     if (entry.closeResult !== undefined) return entry.closeResult;
     let finish: (value: OwnerCloseResult) => void = () => undefined;
@@ -285,11 +332,7 @@ export class InvocationRegistry {
     this.#attempt(entry, 'join', entry.owner.join);
     const owner = entry.owner;
     if (owner.kind === 'terminal') this.#attempt(entry, 'restore', owner.restore);
-    else if (
-      owner.kind === 'native-group' ||
-      owner.kind === 'native-pid' ||
-      owner.kind === 'windows-live-root'
-    ) {
+    else if (isNativeOwner(owner)) {
       if (!this.#canStart() || entry.retired) return;
       try {
         if (owner.mayReap()) this.#attempt(entry, 'reap', owner.reap);
@@ -456,15 +499,89 @@ export class InvocationRegistry {
     return value;
   }
 
+  #remainingMs(): number | undefined {
+    if (this.#expired) return 0;
+    if (this.#deadline === undefined) return undefined;
+    try {
+      const remaining = Math.max(0, this.#deadline - this.#now());
+      if (remaining === 0) this.#expire();
+      return this.#expired ? 0 : remaining;
+    } catch {
+      this.observations.observeFailure('cli_internal');
+      this.#expire();
+      return 0;
+    }
+  }
+
   #tighten(deadline: number): void {
     if (!Number.isFinite(deadline)) throw new CliError('cli_internal', '');
+    if (this.#expired) return;
     if (this.#deadline !== undefined && this.#deadline <= deadline) return;
     this.#deadline = deadline;
+    const callbackEntry = this.#budgetCallbackEntry;
+    if (callbackEntry !== undefined) {
+      if (callbackEntry.budgetReentered) {
+        // A callback that keeps producing tighter deadlines cannot monopolize a notification drain.
+        // Expiry is stronger than the accepted deadline; other owners still receive the final zero budget.
+        this.#expire();
+        this.#record(callbackEntry, 'budget', 'cli_internal');
+        return;
+      }
+      callbackEntry.budgetReentered = true;
+    }
     this.#disarmTimer();
+    if (this.#expired) return;
     const remaining = deadline - this.#now();
     if (remaining <= 0) this.#expire();
     else if (!this.#finished) this.#disarm = this.#clock.schedule(remaining, () => this.#expire());
+    this.#notifyBudgets();
     this.#notifyTermination();
+  }
+
+  #notifyBudgets(): void {
+    if (this.#notifyingBudget) return;
+    this.#notifyingBudget = true;
+    for (const entry of this.#entries) entry.budgetReentered = false;
+    try {
+      // Each native entry may tighten once in this drain; repeated self-tightening expires it above.
+      // Rescan current entries so a sibling already notified before a tighter reentrant request sees it.
+      let notified: boolean;
+      do {
+        notified = false;
+        for (const entry of this.#entries) if (this.#notifyBudget(entry)) notified = true;
+      } while (notified);
+    } finally {
+      this.#notifyingBudget = false;
+    }
+  }
+
+  #notifyBudget(entry: Entry): boolean {
+    const owner = entry.owner;
+    if (
+      entry.retired ||
+      !isNativeOwner(owner) ||
+      owner.budgetChanged === undefined ||
+      (entry.budgetObserved &&
+        entry.budgetDeadline === this.#deadline &&
+        entry.budgetExpired === this.#expired)
+    )
+      return false;
+    entry.budgetObserved = true;
+    entry.budgetDeadline = this.#deadline;
+    entry.budgetExpired = this.#expired;
+    const previous = this.#budgetCallbackEntry;
+    let failed = false;
+    this.#budgetCallbackEntry = entry;
+    try {
+      owner.budgetChanged(this.#budget);
+    } catch {
+      // This fixed native protocol never passes raw callback faults to a plugin/owner classifier.
+      failed = true;
+    } finally {
+      this.#budgetCallbackEntry = previous;
+    }
+    if (failed) this.#record(entry, 'budget', 'cli_internal');
+    return true;
   }
 
   #notifyTermination(): void {
@@ -493,14 +610,17 @@ export class InvocationRegistry {
       disarm?.();
     } catch {
       this.observations.observeFailure('cli_internal');
+      this.#expire();
     }
   }
 
   #expire(): void {
+    if (this.#expired) return;
     this.#expired = true;
     const waiters = [...this.#waiters];
     this.#waiters.clear();
     for (const resolve of waiters) resolve();
+    this.#notifyBudgets();
   }
 
   #canStart(): boolean {
@@ -529,6 +649,14 @@ export class InvocationRegistry {
       });
     });
   }
+}
+
+function isNativeOwner(owner: InvocationOwner): owner is NativeOwner {
+  return (
+    owner.kind === 'native-group' ||
+    owner.kind === 'native-pid' ||
+    owner.kind === 'windows-live-root'
+  );
 }
 
 function isOwnerFailureCode(value: unknown): value is OwnerFailureCode {

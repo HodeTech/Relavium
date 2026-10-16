@@ -3,6 +3,11 @@ import { tmpdir } from 'node:os';
 import { dirname } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
+import {
+  WindowsTeardownUnavailableError,
+  WINDOWS_TEARDOWN_UNAVAILABLE_MESSAGE,
+} from '../process/windows-teardown.js';
+
 /** A switchable `writeFile` fault, so the "a partial write must not strand the conversation" path is driven for real
  *  (an ENOSPC/EIO cannot be provoked portably). Everything else in `node:fs/promises` stays real. */
 const fsFault = vi.hoisted(() => ({
@@ -167,6 +172,17 @@ describe('openInEditor', () => {
       message: 'could not start vim',
     });
     expect(trace).toContain('dispose'); // the conversation is not left on disk
+  });
+
+  it('surfaces the fixed Windows facility remedy and disposes the transcript after admission refusal', async () => {
+    const { deps, trace } = harness({
+      spawnThrows: new WindowsTeardownUnavailableError({ cause: new Error('private-native-path') }),
+    });
+    await expect(openInEditor(deps, 'synthetic transcript')).resolves.toEqual({
+      kind: 'failed',
+      message: WINDOWS_TEARDOWN_UNAVAILABLE_MESSAGE,
+    });
+    expect(trace.at(-1)).toBe('dispose');
   });
 
   it('the editor is KILLED by a signal ⇒ `failed`, and the temp file is STILL disposed', async () => {

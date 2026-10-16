@@ -1,3 +1,5 @@
+import type { CliInvocation } from '../process/invocation.js';
+import { nativeProcessesForInvocation } from '../process/native-process-owner.js';
 import { closeQuietly, warnTeardown } from '../process/close-quietly.js';
 import { EgressWorkScope } from '../engine/egress-work.js';
 import { randomUUID } from 'node:crypto';
@@ -29,7 +31,6 @@ import {
   type GateDecision,
   type RunStatus,
 } from '@relavium/shared';
-import { liveMcpChildPids } from '@relavium/mcp';
 
 import { loadResolvedConfig } from '../config/load.js';
 import { openLocalDb } from '../db/open.js';
@@ -139,6 +140,8 @@ export interface GateCommandArgs extends ResumeGateArgs, GateFlags {}
 export interface BudgetCommandArgs extends ResumeGateArgs, BudgetDecisionFlags {}
 
 export interface GateCommandDeps {
+  /** The original bootstrap invocation; native authority stays host-only. */
+  readonly invocation?: CliInvocation;
   readonly io: CliIo;
   readonly global: GlobalOptions;
   /** Injectable so tests drive a stub provider + the in-memory host engine. */
@@ -267,6 +270,7 @@ async function resumeGateCommand(
   kind: 'human' | 'budget',
   decision: GateDecision,
 ): Promise<ExitCode> {
+  const nativeProcesses = nativeProcessesForInvocation(deps.invocation);
   const { config, homeDir } = loadResolvedConfig({
     cwd: deps.global.cwd,
     configPath: deps.global.configPath,
@@ -412,10 +416,14 @@ async function resumeGateCommand(
         async () => {
           await mcpRuntime?.client.close();
         },
-        () => liveMcpChildPids(),
-        { reapOnly: true },
+        undefined,
+        {
+          reapOnly: true,
+          ...(deps.invocation === undefined ? {} : { invocation: deps.invocation }),
+        },
       );
       mcpRuntime = await connectWorkflowMcp(workflow, {
+        ...(nativeProcesses === undefined ? {} : { nativeProcesses }),
         cwd: saveToRoot,
         preserveFrozenGrants: true,
         connectSignal: resumeCancel.signal,
@@ -491,7 +499,11 @@ async function resumeGateCommand(
       // on this machine, else the resumer's cwd, exactly like the `save_to` root) at the resolved `fs_scope`. So a
       // tool-using agent node on the FAR side of a human gate reads/writes the ORIGINAL project context
       // (checkpoint/resume parity), not the gate caller's directory, and not `tool_unavailable`.
-      toolEnv: { workspaceDir: saveToRoot, fsScopeTier: config.fsScope ?? 'sandboxed' },
+      toolEnv: {
+        workspaceDir: saveToRoot,
+        fsScopeTier: config.fsScope ?? 'sandboxed',
+        ...(nativeProcesses === undefined ? {} : { nativeProcesses }),
+      },
       host: createCliHost(store, {
         checkpointer,
         media: wiring.media,

@@ -1,3 +1,5 @@
+import { createCliInvocation } from '../process/invocation.js';
+import { witnessNativeToolProcess } from './native-forwarding.test-support.js';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -290,6 +292,35 @@ describe('agentRunCommand (2.Q)', () => {
   }
 
   const agentPath = (): string => join(cwd, 'coder.agent.yaml');
+
+  it.each([false, true])(
+    'forwards native tool ownership before one-shot startup resolves (offline=%s)',
+    async (offline) => {
+      const invocation = createCliInvocation();
+      writeFileSync(join(cwd, 'native-cassette.json'), JSON.stringify(CASSETTE));
+      const { d } = deps('inspect', { providers: scriptedResolver([textTurn('done')]) });
+      expect(
+        await agentRunCommand(
+          {
+            agent: agentPath(),
+            input: [],
+            allowMcpStdio: [],
+            ...(offline ? { fixture: 'native-cassette.json' } : {}),
+          },
+          {
+            ...d,
+            invocation,
+            buildSession: async (options) => {
+              await witnessNativeToolProcess(options.nativeProcesses, invocation, cwd);
+              expect(options.disableMcp).toBe(offline ? true : undefined);
+              return buildChatSession(options);
+            },
+          },
+        ),
+      ).toBe(EXIT_CODES.success);
+      expect(invocation.registry.activeOwners).toBe(0);
+    },
+  );
 
   it('runs one turn from a stdin prompt and prints the reply (exit 0)', async () => {
     mkdirSync(join(cwd, '.relavium'), { recursive: true });

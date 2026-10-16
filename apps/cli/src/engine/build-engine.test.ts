@@ -1,5 +1,8 @@
+import { createCliInvocation } from '../process/invocation.js';
+import { nativeProcessesForInvocation } from '../process/native-process-owner.js';
 import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -18,12 +21,12 @@ import {
   runMigrations,
 } from '@relavium/db';
 import { buildServerToolDefs } from '@relavium/mcp';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { buildEngine } from './build-engine.js';
 import { createCliHost } from './host.js';
 import { createHistoryCheckpointer } from './checkpointer.js';
-import { scriptedResolver, textTurn } from '../chat/test-support.js';
+import { scriptedResolver, textTurn, toolUseTurn } from '../chat/test-support.js';
 
 describe('buildEngine configured output fallback (ADR-0101)', () => {
   it.each([undefined, 17])(
@@ -294,4 +297,53 @@ ${ordinary ? '    - {from: ordinary, to: out}\n' : ''}`);
       }
     },
   );
+});
+
+describe('buildEngine native factory forwarding', () => {
+  it('registers an actual workflow tool process in the original invocation', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'relavium-engine-native-'));
+    const invocation = createCliInvocation();
+    const nativeProcesses = nativeProcessesForInvocation(invocation);
+    const register = vi.spyOn(invocation.registry, 'register');
+    try {
+      execFileSync('git', ['init', '-q'], { cwd });
+      const engine = await buildEngine({
+        host: createInMemoryHost(),
+        providers: scriptedResolver([toolUseTurn('c1', 'git_status'), textTurn('clean')]),
+        toolEnv: {
+          workspaceDir: cwd,
+          fsScopeTier: 'project',
+          ...(nativeProcesses === undefined ? {} : { nativeProcesses }),
+        },
+      });
+      expect(invocation.registry.activeOwners).toBe(0);
+      const workflow = parseWorkflow(`schema_version: '1.0'
+workflow:
+  id: native-tool
+  agents:
+    - {id: worker, model: claude-sonnet-4-6, provider: anthropic, system_prompt: inspect, tools: [git_status]}
+  nodes:
+    - {id: work, type: agent, agent_ref: worker, prompt_template: inspect}
+    - {id: out, type: output}
+  edges:
+    - {from: work, to: out}
+`);
+      const events: RunEvent[] = [];
+      for await (const event of engine.start({ workflow }).events) events.push(event);
+      const toolResult = events.find((event) => event.type === 'agent:tool_result');
+      expect(toolResult).toMatchObject({ toolId: 'git_status', success: true });
+      expect(
+        toolResult?.type === 'agent:tool_result' ? toolResult.outputSummary : undefined,
+      ).toContain('"exitCode":0');
+      expect(events.at(-1)?.type).toBe('run:completed');
+      expect(register, 'NATIVE_WORKFLOW_FACTORY_FORWARDING').toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: process.platform === 'win32' ? 'windows-live-root' : 'native-group',
+        }),
+      );
+      await vi.waitFor(() => expect(invocation.registry.activeOwners).toBe(0));
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
 });
