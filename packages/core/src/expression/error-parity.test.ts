@@ -75,6 +75,36 @@ interface ReturnedCase {
 // only its presence/type is compatible across the old and private wrappers.
 const returnedCases: ReturnedCase[] = [
   {
+    label: 'ordinary traversal precedes repeated undefined diagnostic reads',
+    expression:
+      '(() => {let n=0;return {get name(){n++;return undefined},get message(){return n}};})()',
+    expected: { message: 1 },
+  },
+  {
+    label: 'late hydrated field follows original sibling values',
+    expression:
+      '(() => {let n=0;return {get name(){return ++n===1?undefined:"later"},get message(){return n}};})()',
+    expected: { message: 1, name: 'later' },
+  },
+  {
+    label: 'undefined message does not advance original stack and name reads',
+    expression:
+      '(() => {let n=0;return {get message(){n++;return undefined},get stack(){return n},get name(){return n}};})()',
+    expected: { stack: 1, name: 1 },
+  },
+  {
+    label: 'non-diagnostic siblings complete before hydration',
+    expression:
+      '(() => {let n=0;return {get name(){return ++n===1?undefined:"post"},get tail(){n+=10;return n},get message(){return n}};})()',
+    expected: { tail: 11, message: 11, name: 'post' },
+  },
+  {
+    label: 'all supplemental getters precede supplemental value callbacks',
+    expression:
+      '(() => {let n=0;return {toJSON(){return {}},get name(){return {toJSON(k){return {key:k,n:++n}}}},get message(){return n}};})()',
+    expected: { name: { key: 'name', n: 1 }, message: 0 },
+  },
+  {
     label: 'Error metadata',
     expression: 'new Error("clean")',
     expected: { name: 'Error', message: 'clean', stack: stackString },
@@ -185,6 +215,14 @@ describe.each(kinds)('%s top-level Error result parity in actual QuickJS', (kind
       const result = sandbox.evaluate({ expression, kind, scope: cleanScope() });
       expect(result, 'NATIVE_RESULT_PROJECTION_PARITY').toEqual(expected);
       if (
+        result !== null &&
+        typeof result === 'object' &&
+        expected !== null &&
+        typeof expected === 'object'
+      ) {
+        expect(Object.keys(result), 'NATIVE_RESULT_KEY_ORDER').toEqual(Object.keys(expected));
+      }
+      if (
         expected !== null &&
         typeof expected === 'object' &&
         Reflect.get(expected, 'stack') === stackString
@@ -217,6 +255,20 @@ interface ThrownCase {
 }
 
 const thrownCases: ThrownCase[] = [
+  {
+    label: 'resource classification uses ordinary traversal before hydration',
+    value:
+      '(() => {let n=0;return {get name(){return ++n===1?undefined:"InternalError"},get message(){return n===1?"out of memory":"stack overflow"}};})()',
+    reason: 'memory',
+    detail: 'InternalError: out of memory',
+  },
+  {
+    label: 'late hydration cannot invalidate an already serialized sibling',
+    value:
+      '(() => {let n=0;return {get name(){n++;return undefined},get message(){if(n>1)throw 42;return "ok"}};})()',
+    reason: 'runtime',
+    detail: 'ok',
+  },
   {
     label: 'serialized fields replace original resource-shaped metadata',
     value:
@@ -392,5 +444,21 @@ describe.each(kinds)('%s denial wins during error conversion', (kind) => {
     expect(sandbox.evaluate({ expression, kind, scope: deniedScope() })).toEqual(
       kind === 'condition' ? true : { context: 'clean', input: 'available' },
     );
+  });
+});
+
+describe.each(kinds)('%s supplemental callback ordering and privacy', (kind) => {
+  it.each([
+    'Object.create({name:{toJSON(){try{ctx.derived;}catch{}return "clean";}}})',
+    '(() => {throw Object.create({name:{toJSON(){try{inputs.credential;}catch{}return "clean";}}});})()',
+  ])('checks denial after supplemental value conversion: %s', (expression) => {
+    const error = failure(expression, kind, deniedScope());
+    expect(error).toMatchObject({
+      code: 'sandbox_error',
+      reason: 'secret_context',
+      retryable: false,
+    });
+    expect(error.detail).toBeUndefined();
+    expect(error.cause).toBeUndefined();
   });
 });
