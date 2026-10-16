@@ -2810,9 +2810,12 @@ describe('drivePlain', () => {
     expect(processed).toEqual(['hello', '/exit']);
   });
 
-  it.each([drivePlain, driveJson])(
-    'ends without waiting for input when activation synchronously stops the session (%s)',
-    async (drive) => {
+  it.each([
+    { label: 'plain', drive: drivePlain },
+    { label: 'json', drive: driveJson },
+  ])(
+    'ends without waiting for input when activation synchronously stops the session ($label)',
+    async ({ drive }) => {
       const stdin = new PassThrough(); // deliberately never sends a line or EOF before driver completion.
       const { ctx, processed } = await plainCtx(stdin);
       const completed = vi.fn();
