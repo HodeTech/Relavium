@@ -13,13 +13,37 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { digest, instrument } from './source-graph.mjs';
+import {
+  aliases,
+  digest,
+  instrument,
+  rejectUnknownAlias,
+  relativeSource,
+} from './source-graph.mjs';
 import {
   assertNativeReadiness,
   assertPermanentWorkload,
   ordinaryPhaseTimeoutMs,
   permanentPhaseTimeoutMs,
 } from './workload.mjs';
+
+test('supported shared exports map to their exact owned source leaves, with unknown aliases refused', () => {
+  const repository = fileURLToPath(new URL('../../', import.meta.url));
+  const shared = JSON.parse(readFileSync(join(repository, 'packages/shared/package.json'), 'utf8'));
+  for (const [subpath, target] of Object.entries(shared.exports)) {
+    const specifier = subpath === '.' ? '@relavium/shared' : `@relavium/shared/${subpath.slice(2)}`;
+    const source = `packages/shared/src/${target.import.slice('./dist/'.length).replace(/\.js$/, '.ts')}`;
+    assert.equal(aliases[specifier], source);
+    assert.equal(relativeSource({ sourceRoot: repository }, specifier), join(repository, source));
+    assert.doesNotThrow(() => rejectUnknownAlias(specifier));
+  }
+  for (const specifier of [
+    '@relavium/shared/private',
+    '@relavium/shared/../core',
+    '@relavium/unknown',
+  ])
+    assert.throws(() => rejectUnknownAlias(specifier), /USAGE_UNKNOWN_WORKSPACE_ALIAS/);
+});
 
 test('the complete native/scale workload has its own calculated bound and exact inventory', () => {
   assert.equal(ordinaryPhaseTimeoutMs, 300_000);

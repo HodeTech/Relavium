@@ -309,8 +309,8 @@ export const mutations = [
   control(
     'run-action-stdin-forwarding',
     'apps/cli/src/commands/specs.ts',
-    '            secretInputsStdin: opts.secretInputsStdin,\n',
-    '',
+    '      options[option.binding] = readOption(raw, option.binding);',
+    "      options[option.binding] = executorId === 'run' && option.binding === 'secretInputsStdin' ? undefined : readOption(raw, option.binding);",
     ['apps/cli/src/commands/specs-forwarding.test.ts'],
     14,
     'SECRETS_CAUSAL_RUN_STDIN_FLAG_FORWARDED: run forwards the boolean through its real action',
@@ -404,20 +404,15 @@ export const mutations = [
   control(
     'run-commander-diagnostic-projection',
     'apps/cli/src/commands/specs.ts',
-    `    .configureOutput({
-      ...program.configureOutput(),
-      outputError: (_message, write) =>
-        write('error: invalid run arguments; use relavium run --help.\\n'),
-    })
-    .exitOverride((error) => {
-      if (error.exitCode === 0) throw error;
-      throw new CommanderError(
-        error.exitCode,
-        error.code,
-        'error: invalid run arguments; use relavium run --help.',
-      );
-    });`,
-    '    .exitOverride();',
+    `      command.configureOutput({
+        ...parent.configureOutput(),
+        outputError: (_message, write) => write(\`\${hint}\\n\`),
+      });
+      command.exitOverride((error) => {
+        if (error.exitCode === 0) throw error;
+        throw new CommanderError(error.exitCode, error.code, hint);
+      });`,
+    '      command.exitOverride();',
     ['apps/cli/src/run.test.ts'],
     28,
     'SECRETS_CAUSAL_RUN_COMMANDER_OPACITY: human keeps parser values opaque',

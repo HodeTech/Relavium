@@ -21,6 +21,8 @@ import { systemTool } from '../budget-replay-compat/system-tools.mjs';
 
 export const aliases = Object.freeze({
   '@relavium/shared': 'packages/shared/src/index.ts',
+  '@relavium/shared/relavium-error': 'packages/shared/src/relavium-error.ts',
+  '@relavium/shared/fs-root-limits': 'packages/shared/src/fs-root-limits.ts',
   '@relavium/llm': 'packages/llm/src/index.ts',
   '@relavium/llm/adapters': 'packages/llm/src/adapters/index.ts',
   '@relavium/core': 'packages/core/src/index.ts',
