@@ -1146,7 +1146,10 @@ consumers. Step 8d session/terminal integration and product fatal activation,
 whole Step 8 and Steps 9–19 remain open. Its
 [2026-10-17 chat/Home implementation checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-chat-and-home-integration-checkpoint--2026-10-17)
 records partial session/native-terminal integration and the remaining activation,
-review/security/platform gates without claiming acceptance. Step 8d proceeds automatically. The
+review/security/platform gates without claiming acceptance. The subsequent
+[management-owner checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-management-ownership-checkpoint--2026-10-17)
+records remaining command, prompt, doctor and transient-resource integration;
+bootstrap activation and complete acceptance remain staged. Step 8d proceeds automatically. The
 [final proposal reviews](phases/phase-2.5.5-hardening-and-remediation.md#second-maintainer-rereview-final-proposal-readiness--2026-10-16)
 remain proposal evidence, not implementation review. The selected encrypted archive
 method persists; production recipient/recovery belongs to Wave 4b release setup.

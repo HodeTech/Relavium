@@ -859,6 +859,7 @@ health object:
 |---|---|
 | Workflow | RunHandle departure/durability/terminal error; actual host joins and owned producer teardown |
 | Chat/Home/standalone AgentSession | Cancel/stop and existing whenHostSafeToClose join; retain rejection/publication failure. No invented RunDeparture, 5–8 or healthy receipt inference |
+| Management/maintenance command | Seal command admission, cancel captured input/probes and join actual raw work before releasing its database or maintenance resources. No AgentSession identity or workflow receipt health |
 | Terminal renderer/input | Stop redraw/input and SIGCONT reclaim; restore raw/paste/mouse/cursor/alternate-screen custody |
 | Native tool/MCP | Exact creation-specific registration, stop/join and the finite reap authority below |
 
@@ -947,6 +948,33 @@ security and actual required platform acceptance remain open. The
 [session substrate checkpoint](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-session-substrate-checkpoint--2026-10-16)
 and [chat/Home checkpoint](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-chat-and-home-integration-checkpoint--2026-10-17)
 record their exact scopes. Whole Step 8 remains open.
+
+### Management ownership implementation checkpoint
+
+**Partial Step 8d integration on `development`; not independently accepted.**
+Management dispatch and the separate media-maintenance route reserve a command
+owner before entering work. Provider verification and both model-refresh axes
+retain actual operations beyond early report/failure results. Their original
+signal and admission checks prevent credential, catalog and output publication
+after stop. Captured secret input joins its native close separately from a
+cancellation request. Deep-doctor probes belong to their actual chat/Home host;
+an ordinary failed probe remains a report, while its still-running producer
+remains owed.
+
+Command database cleanup follows roots and transferred work, with independent
+releases entered before any join. A failed close retains uncertainty and signal
+custody. Short resolver/pricing reads keep synchronous close-before-next-open
+ordering and retain their exact close capability if release fails; optional
+pricing open/read degradation remains unchanged. This is lifecycle integration,
+not the later sole-opener refactor.
+
+The standalone create wizard binds installed Clack prompts to captured streams
+and checks admission between answers and before writing. Its already-entered
+terminal restoration uses the original captured control capability, separately
+from guarded business output. No deadline certifies input, terminal or database
+release. Bootstrap/caught-fatal activation and complete Step 8d review, security
+and platform gates remain staged in the
+[implementation register](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-management-ownership-checkpoint--2026-10-17).
 
 ### Workflow and terminal ownership
 

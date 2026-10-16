@@ -6121,3 +6121,56 @@ the expected assertion failures and byte-identical restoration. These selected
 cycles do not claim completion of the entire secrets-control family. Synthetic
 TTY/input controls and local macOS smoke do not establish actual Windows session
 shutdown, operator-terminal restoration or complete Step 8d acceptance.
+
+## Wave 3 Step 8d management ownership checkpoint — 2026-10-17
+
+**Partial implementation on `development` at `9798c51c`; not Step 8d acceptance.** A focused
+read-only activation inventory found remaining management, standalone create,
+deep-doctor and media-maintenance owners. Their integration follows the existing
+ADR-0110 all-owners decision. The
+[canonical command contract](../../reference/cli/commands.md#management-ownership-implementation-checkpoint)
+owns concrete lifetime semantics; no new ADR, dependency, deferral or user
+decision is introduced.
+
+The command identity has stop/join/actual-retirement capability, without session
+or workflow health. Shared no-health work mechanics preserve existing session
+owners. Provider/model operations, captured stdin, deferred command database
+cleanup, actual create prompts and the separate maintenance route are connected.
+Every actual chat/Home doctor constructor forwards its host's raw producer
+lifetime. The report timeout is not producer settlement: the new doctor
+regression failed at that exact premature-cleanup assertion before correction.
+
+Further implementation advice found four material integration gaps, all
+corrected: spreading a class dropped the catalog signal getter; stopped business
+IO blocked create-prompt restoration; a best-effort catalog catch consumed local
+publication faults; and transient resolver/pricing handles lost failed-close
+custody. Permanent controls exercise captured installed Clack, held native stdin
+close, real SQLite with held discovery, late scaffold answers, retained
+maintenance work, exact synchronous close and failed-release uncertainty.
+The maintenance hold is an injected raw operation, not a claim of a real marker
+failure. Synthetic streams do not establish operator-terminal restoration.
+
+Earlier failed author runs remain attributed: nine lint errors stopped the first
+workspace gate, and a later CLI run failed three native-forwarding assertions
+that sampled the parent inventory before an already-closed transient resource's
+positive retirement reaction. The fixture now requires actual removal before
+measuring its strict native-parent baseline; cancellation or a timer never
+supplies that fact. All **167** chat/one-shot cases then pass. These focused
+advisories and author controls are neither required cumulative review round nor
+the separate security sitting.
+
+At the final frozen **33-path** product/test source, the complete workspace gate
+passes **23 tasks**: twenty valid cache hits and fresh CLI lint, typecheck and
+ordinary tests. Fresh CLI execution passes **320 files / 5,290 tests / ten
+established skips**. The build passes **six tasks**, with five cache hits and a
+fresh CLI build. Finite closure remains **25 JavaScript outputs / seventeen
+declared external dependencies**; compiled CLI smoke and all **175 bootstrap
+controls** pass locally on macOS/Node **22.23.1**. Unchanged package results retain
+their cache attribution. No remote CI, new same-tarball platform execution,
+whole-wave test or merge execution is inferred.
+
+The original bootstrap remains unchanged. Global native installation,
+post-import/caught/fatal/background/sink integration, two NEW complete cumulative
+clean rounds from `d9625ff0`, a NEW clean security sitting and required actual
+same-artifact platform evidence remain open. Whole Step 8 and Steps 9–19 remain
+open; no provider, credential, billing or user action is pending.
