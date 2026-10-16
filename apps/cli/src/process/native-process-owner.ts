@@ -167,6 +167,7 @@ class NativeCreation {
   #helperEntered = false;
   #helperClosed = true;
   #helperFailed = false;
+  #helperCancelling = false;
   #helperDeadline: number | undefined;
   #timerDeadline: number | undefined;
   #removeHelperTimer: (() => void) | undefined;
@@ -484,11 +485,16 @@ class NativeCreation {
   }
 
   #cancelHelper(): void {
-    if (this.#helper === undefined || this.#helperClosed) return;
+    if (this.#helper === undefined || this.#helperClosed || this.#helperCancelling) return;
+    // ChildProcess.kill can emit error synchronously. Its listener may request cancellation
+    // again; suppress that reentry while allowing a later independent finite request.
+    this.#helperCancelling = true;
     try {
       this.#helper.kill('SIGKILL');
     } catch {
       this.#failed();
+    } finally {
+      this.#helperCancelling = false;
     }
   }
 

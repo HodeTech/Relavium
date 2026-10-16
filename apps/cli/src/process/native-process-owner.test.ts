@@ -275,6 +275,45 @@ describe('creation-owned native processes', () => {
     await lease.whenClosed;
   });
 
+  it.each(['helper error', 'finite exit'])(
+    'bounds synchronous helper kill-error reentry during %s without acknowledging close',
+    async (entry) => {
+      const h = harness('win32');
+      const lease = await h.controller.reserve('pid');
+      const target = child();
+      lease.bindChild(target);
+      void lease.stop();
+      let killRequests = 0;
+      h.helperKill.mockImplementation(() => {
+        killRequests++;
+        // Node's native kill refusal emits error synchronously. Bound the simulated refusal
+        // so removing the guard yields a semantic count failure, not a stack-overflow witness.
+        if (killRequests <= 2) h.helper.emit('error', new Error('synthetic native kill refusal'));
+        return false;
+      });
+      if (entry === 'finite exit') {
+        target.emit('close', 0);
+        h.exit();
+        expect(h.registry.termination).toBeUndefined();
+      } else {
+        h.helper.emit('error', new Error('synthetic helper failure'));
+      }
+      expect(killRequests, 'WINDOWS_HELPER_CANCEL_REENTRY').toBe(1);
+      expect(h.registry.observations.exitCode()).toBe(9);
+      expect(h.registry.activeOwners, 'WINDOWS_HELPER_CANCEL_REENTRY').toBe(1);
+      target.emit('close', 0);
+      await Promise.resolve();
+      expect(h.registry.activeOwners, 'WINDOWS_HELPER_CANCEL_REENTRY').toBe(1);
+      // A later, independent exit attempt remains possible; neither failed request was an ACK.
+      h.helperKill.mockReturnValue(false);
+      h.exit();
+      expect(h.helperKill).toHaveBeenCalledTimes(2);
+      h.helper.emit('close', null);
+      await lease.whenClosed;
+      expect(h.registry.activeOwners).toBe(0);
+    },
+  );
+
   it('does not enter taskkill for a root whose exit precedes stdio close', async () => {
     const h = harness('win32');
     const lease = await h.controller.reserve('pid');

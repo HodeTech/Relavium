@@ -3,10 +3,11 @@ import {
   holdNativeToolProcess,
   witnessNativeToolProcess,
 } from '../commands/native-forwarding.test-support.js';
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
+import { fileURLToPath } from 'node:url';
 
 import {
   createClient,
@@ -522,42 +523,44 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
   it('binds the default Home editor to the original native registry', async () => {
     const invocation = createCliInvocation();
     const marker = join(cwd, 'home-editor-started');
-    const script = join(cwd, 'home-editor.cjs');
-    writeFileSync(
-      script,
-      `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'started'); setTimeout(() => {}, 200);`,
-    );
+    const release = join(cwd, 'home-editor-release');
+    const script = fileURLToPath(new URL('../render/fixtures/native-editor.mjs', import.meta.url));
     let captured: RootAppProps | undefined;
     const { deps } = makeDeps((props) => (captured = props), {
       invocation,
-      io: { ...io, env: { EDITOR: `"${process.execPath}" "${script}"` } },
+      io: { ...io, env: { EDITOR: `"${process.execPath}" "${script}" "${marker}" "${release}"` } },
     });
     const drivePromise = driveHome(deps);
     const props = captured;
     if (props?.suspendPort === undefined)
       throw new Error('default Home editor suspend port is missing');
     props.suspendPort.attach((body) => body());
-    type(props, 'hello');
-    props.controller.handleKey('', ENTER);
-    await vi.waitFor(() => expect(props.controller.getSnapshot().session).toBeDefined());
-    await vi.waitFor(() => expect(props.controller.getSnapshot().submitBusy).toBe(false));
-    props.controller.handlePaste('/edit');
-    props.controller.handleKey('', ENTER);
-    await vi.waitFor(
-      () => {
-        expect(invocation.registry.activeOwners, 'NATIVE_HOME_EDITOR_FORWARDING').toBe(1);
-        expect(existsSync(marker)).toBe(true);
-      },
-      { interval: 1 },
-    );
-    await vi.waitFor(() => expect(invocation.registry.activeOwners).toBe(0));
-    await vi.waitFor(() => expect(props.controller.getSnapshot().submitBusy).toBe(false));
-    props.suspendPort.attach(undefined);
+    try {
+      type(props, 'hello');
+      props.controller.handleKey('', ENTER);
+      await vi.waitFor(() => expect(props.controller.getSnapshot().session).toBeDefined());
+      await vi.waitFor(() => expect(props.controller.getSnapshot().submitBusy).toBe(false));
+      props.controller.handlePaste('/edit');
+      props.controller.handleKey('', ENTER);
+      await vi.waitFor(
+        () => {
+          expect(invocation.registry.activeOwners, 'NATIVE_HOME_EDITOR_FORWARDING').toBe(1);
+          expect(readFileSync(marker, 'utf8')).toBe('ready\n');
+        },
+        { interval: 5, timeout: 3000 },
+      );
+    } finally {
+      writeFileSync(release, 'release');
+      await vi.waitFor(() => expect(invocation.registry.activeOwners).toBe(0), { timeout: 6000 });
+      await vi.waitFor(() => expect(props.controller.getSnapshot().submitBusy).toBe(false));
+      props.suspendPort.attach(undefined);
+    }
+    expect(readFileSync(marker, 'utf8')).toBe('ready\nreleased\n');
     props.controller.handleKey('c', CTRL_C);
     await vi.waitFor(() => expect(props.controller.getSnapshot().mode).toBe('home'));
     props.controller.handleKey('c', CTRL_C);
     expect(await drivePromise).toBe(EXIT_CODES.success);
-  });
+  }, 10000);
 
   it('a /models write is picked up by the NEXT chat started in the SAME Home process (2.5.G S7 regression)', async () => {
     // The blocker Sonnet review caught: `startChat` closed over the load-once `config` snapshot, so a `/models`

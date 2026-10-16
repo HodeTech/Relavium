@@ -3,10 +3,19 @@ import { witnessNativeToolProcess } from './native-forwarding.test-support.js';
 import { appendGrant, fingerprint, resolveStdioSpawn } from '../engine/mcp-consent.js';
 import { mcpConsentPath } from '../engine/mcp-consent-gate.js';
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough, Readable } from 'node:stream';
+import { fileURLToPath } from 'node:url';
 
 import type { SessionStreamHandleEvent } from '@relavium/core';
 import { makeLlmError, type ProviderId, type StreamChunk } from '@relavium/llm';
@@ -1870,31 +1879,30 @@ describe('chatCommand', () => {
   it('binds the default standalone editor to the original native registry', async () => {
     const invocation = createCliInvocation();
     const marker = join(cwd, 'editor-started');
-    const script = join(cwd, 'editor.cjs');
-    writeFileSync(
-      script,
-      `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'started'); setTimeout(() => {}, 200);`,
-    );
+    const release = join(cwd, 'editor-release');
+    const script = fileURLToPath(new URL('../render/fixtures/native-editor.mjs', import.meta.url));
     const { d } = deps([], []);
     const drive: ChatDriver = async (ctx) => {
       ctx.startSession();
       ctx.store.notice('editor transcript witness');
       if (ctx.suspendPort === undefined) throw new Error('default editor suspend port is missing');
       ctx.suspendPort.attach((body) => body());
+      const editing = ctx.processLine('/edit');
       try {
-        const editing = ctx.processLine('/edit');
         await vi.waitFor(
           () => {
             expect(invocation.registry.activeOwners, 'NATIVE_STANDALONE_EDITOR_FORWARDING').toBe(1);
-            expect(existsSync(marker)).toBe(true);
+            expect(readFileSync(marker, 'utf8')).toBe('ready\n');
           },
-          { interval: 1 },
+          { interval: 5, timeout: 3000 },
         );
-        await editing;
-        await vi.waitFor(() => expect(invocation.registry.activeOwners).toBe(0));
       } finally {
+        writeFileSync(release, 'release');
+        await editing;
         ctx.suspendPort.attach(undefined);
       }
+      await vi.waitFor(() => expect(invocation.registry.activeOwners).toBe(0));
+      expect(readFileSync(marker, 'utf8')).toBe('ready\nreleased\n');
       await ctx.processLine('/exit');
       return { kind: ctx.stopReason() };
     };
@@ -1905,13 +1913,17 @@ describe('chatCommand', () => {
           ...d,
           ...INERT_HOIST,
           invocation,
-          io: { ...d.io, stdoutIsTty: true, env: { EDITOR: `"${process.execPath}" "${script}"` } },
+          io: {
+            ...d.io,
+            stdoutIsTty: true,
+            env: { EDITOR: `"${process.execPath}" "${script}" "${marker}" "${release}"` },
+          },
           drive,
         },
       ),
     ).toBe(EXIT_CODES.chatEnded);
     expect(existsSync(marker)).toBe(true);
-  });
+  }, 10000);
 
   it.each([
     ['fresh', 'clear'],
