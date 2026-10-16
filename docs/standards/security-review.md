@@ -541,6 +541,27 @@ content retain their documented limits; no universal content scrubbing, history
 rewrite or attempted-access detector is claimed. Exact contracts remain in the
 [expression specification](../reference/shared-core/expression-sandbox-spec.md#secret-context-boundary).
 
+### Sitting: Wave 3 tool admission and alias-safe projections (2026-10-16)
+
+A NEW independent cumulative sitting is **clean** at `25cac33a`. Fresh execution
+passes **18 files / 680 tests**, zero skips. The parent reads the full report and
+its subsequent two-document revalidation through `fd54e22a`; all 46 production/test
+TypeScript paths, including nineteen production files, retain identical bytes.
+The revalidation executes no new tests. The [Step 5 acceptance register](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-5-acceptance--2026-10-16)
+joins this sitting with the two separate new complete correctness rounds.
+
+The sitting traces effective UTF-8 argument admission before approval/effect/host
+work, all four ancestor-path guards, secret/media projections, actual reference
+replay and native SQLite digest distinctions, immutable filesystem authority,
+conditional HTTP host wiring, actual Git gate denial and cancellation tails.
+It independently inspects all 31 retained local causal source hashes; it does not
+claim new mutation execution. MCP private deduplication remains distinct from
+persisted consent authority. Deliberate sanitized-digest equality, string-result
+in-memory limits, optional unproduced tool provenance and arbitrary content retain
+their documented qualifications. No universal secret scrubbing, OS isolation,
+new network authority, provider/keychain operation, paid request or platform
+recertification is claimed. Full-wave publication remains Step 19.
+
 ## Sandbox and tool policy (`run_command`, node tools, secret inputs)
 
 This is the **binding home** for the tool-policy rules; the rationale is

@@ -4773,3 +4773,53 @@ changes only two documents. All production/test bytes and the 31 causal source h
 remain unchanged. Existing broad/build evidence keeps its original source and cache
 scope. Relative-link/append-only and diff checks are rerun for this document correction;
 two NEW independent complete cumulative clean rounds remain required after this fix.
+
+
+### Wave 3 Step 5 acceptance — 2026-10-16
+
+Step 5 is independently accepted at
+`fd54e22a776f13f92b520b42737928543cfe9532`. Two NEW complete cumulative clean
+reviews after the final documentation correction cover all **52 paths / 127
+hunks**, including all 21 new files, nineteen production paths, six old-test
+owners and six documents. Reviewers are gpt-6-astra/high (**35 files / 942 passing
+tests**) and gpt-6.1-sol/xhigh (**37 files / 987 tests**), both with zero skips.
+The parent reads both full reports. The original one-Medium sitting remains
+nonclean history; its three stale registry statements are corrected, with no
+verified scoped finding left open.
+
+The separate clean security sitting at `25cac33a` passes **18 files / 680 tests**.
+Its subsequent documentation-only revalidation through the accepted head is
+clean: all 46 production/test TypeScript paths and 31 causal source hashes are
+unchanged, with no new test execution inferred. The [security register](../../standards/security-review.md#sitting-wave-3-tool-admission-and-alias-safe-projections-2026-10-16)
+records its scope and limits. Both correctness reviewers independently audit
+all **31 accepted causal cohorts / 93 zero-unhandled runner receipts**, source
+and reconstructed mutant hashes, expected assertion witnesses and exact-byte
+restoration. The incomplete initial eighth capture, four secondary test-local
+errors and retrospective author baseline limits remain explicitly attributed.
+
+All Step 5 queues in the implementation table above now have independent scoped
+acceptance. Actual effective-input bounds, alias-safe event/journal projections,
+ordinal identifier consumers, final-await cancellation and authored-minimum DAG
+semantics are pinned. Existing timeout, journal, literal-append and bus compatibility
+controls are certified without inventing old defects. Actual sessions and workflow
+agents retain Git gate refusal; the approved registry positive is synthetic.
+Canonical contracts preserve conditional host availability and intentional
+projection/trust limits rather than claim new authority or lossless secrecy.
+
+Broad author evidence remains **629 files / 14,281 passing tests / 20 established
+skips**, all workspace lint/typechecks, six forced builds before native consumers
+and again after restoration, source formatting, isolation, fences and document
+checks. Normal test-cache reuse and original source attribution remain explicit.
+Reviewer selections overlap and are not added to author totals. This metadata
+landing claims no new source execution, full CI, ordinary/enforced coverage,
+native-platform acceptance, whole-wave acceptance or merge. Detailed reports
+remain local and Git-ignored.
+
+Step 6 proceeds automatically under approved ADR-0110/0111: pure early flags,
+closed code/origin and observation contracts, one descriptor authority, compatible
+legacy/model and separate CLI discovery projections, source-verified classification
+inventory and creation-specific invocation ownership. Its read-only designs are
+preparation, not implementation acceptance. Real fatal/native integration and
+JSON-help behaviour retain their later steps. No new ADR, user decision, provider
+capture, credential, billing or external operation is pending; Step 19 retains
+whole-wave validation and publication.
