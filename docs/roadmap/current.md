@@ -1111,7 +1111,10 @@ ADR-0110–0113, their linked unshipped contracts and the nineteen-increment pla
 The [approval checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-maintainer-approval-and-implementation-checkpoint--2026-10-16)
 records completed decision gates and staged implementation.
 [Step 1 is accepted](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-1-acceptance--2026-10-16)
-after two NEW independent complete clean reviews; Step 2 is active. The
+after two NEW independent complete clean reviews.
+[Step 2 is also accepted](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-2-acceptance--2026-10-16)
+with two NEW complete clean cumulative rounds after its historical-reader corrections;
+Step 3 (ADR-0113 secret provenance) is active. The
 [final proposal reviews](phases/phase-2.5.5-hardening-and-remediation.md#second-maintainer-rereview-final-proposal-readiness--2026-10-16)
 remain proposal evidence, not implementation review. The selected encrypted archive
 method persists; production recipient/recovery belongs to Wave 4b release setup.

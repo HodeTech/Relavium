@@ -80,7 +80,9 @@ implementation, review, publication, ADR approval, provider capture, credential,
 billing or user-decision gate remains. Next is [Wave 3 — Clear the ground](docs/roadmap/current.md#wave-3--clear-the-ground),
 whose ADR-0110–0113/contracts/nineteen-increment plan were approved on 2026-10-16.
 Its serialized multi-file Step 1 is independently accepted on `development`
-(2026-10-16); Step 2 is active. Later implementation and whole-wave acceptance
+(2026-10-16); Step 2 is also accepted after two NEW clean complete cumulative rounds
+following its historical-reader corrections. Step 3 (ADR-0113 secret provenance)
+is active. Later implementation and whole-wave acceptance
 remain staged in the canonical roadmap.
 
 See [docs/roadmap/current.md](docs/roadmap/current.md) for live status.
