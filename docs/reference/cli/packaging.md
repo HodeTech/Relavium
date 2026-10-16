@@ -1,12 +1,13 @@
 # CLI Packaging Contract
 
-- **Status**: Approved design — compiled graph implemented on `development`; independent acceptance, installed-package and release gates staged
+- **Status**: Compiled graph independently accepted on `development`; installed-package and release gates staged
 - **Date**: 2026-10-15
 - **Related**: [ADR-0111](../../decisions/0111-cli-meta-operations-use-a-lazy-packaged-runtime.md), [commands.md](commands.md), [release runbook](../../runbooks/release-a-surface.md)
 
 This is the maintainer-approved canonical design contract (2026-10-16). Wave 3
-Step 7a implements the lazy compiled graph on `development`; its independent
-reviews remain a gate. The published release retains its historical single bundle.
+Step 7a's lazy compiled graph is independently accepted on `development` after two
+new complete cumulative clean reviews and a separate security sitting. The
+published release retains its historical single bundle.
 Step 7b owns actual tarball/install/platform acceptance, Step 8 owns native fatal
 integration, and Step 9 owns maps and archival custody.
 No release, production recipient setup or asset upload is performed by this document.

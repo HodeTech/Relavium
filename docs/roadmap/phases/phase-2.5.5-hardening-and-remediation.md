@@ -5035,3 +5035,53 @@ bootstrap/package-boundary security sitting remain required before accepting 7a.
 Step 7b, whole Step 7 and Steps 8–19 remain open. No new ADR, runtime dependency,
 provider capture, credential, billing action, external release or user decision
 is introduced. No full CI/coverage or native-platform publication is claimed.
+
+
+### Wave 3 Step 7a acceptance — 2026-10-16
+
+Step 7a is independently accepted at
+`6ffdd63ef1eb621efa5b7cbe2749011e367fcf04`, from Step 6 metadata
+`b09008e76b3c31e4cf0c51e93b3788e07ea117bb`. Two NEW independent complete
+cumulative clean reviews cover every one of **60 paths / 127 zero-context hunks**,
+including all 28 full new files. Reviewers are gpt-6-astra/high (**18 files /
+547 passing tests**) and gpt-6.1-sol/xhigh (**16 files / 538 passing tests**), both
+with zero skips, plus ninety tooling tests each. Both independently execute all
+175 compiled controls and the 24-output / 375-input / seventeen-dependency closure.
+The parent reads both complete reports. Neither round finds an actionable defect;
+no material source change follows them.
+
+The separate clean security sitting executes **10 files / 391 tests**, with two
+established Windows-only skips, 86 tool tests, 175 compiled controls and four extra
+debug/JSON failure controls. It checks exact extraction, loader/admission/privacy/
+catalog boundaries and all retained scoped evidence. Both complete reviewers and
+the security reviewer independently audit all eighteen direct causal receipts and
+all fifteen selected physical phases. Direct target/test/reporter pins remain
+narrower than the five isolated physical captures; the latter retain their
+precommit base, differing broader source inventories and 457 dependency packages.
+No whole-family or all-final-source equivalence is inferred. The second reviewer
+also verifies the dependency inventory's 21,013 actual files.
+
+Final author gates retain **646 files / 14,659 passes / 20 established skips**,
+all workspace lint/typechecks, six forced builds, 408 acceptance-tool tests,
+formatting/isolation/fences/DB synchronization, compiled smokes and document/diff
+checks. Scoped reviewer totals are separate and not added to author counts.
+Every final compiled JS digest remains unchanged throughout both reviews and the
+security sitting. A separate unhooked local three-spawn-per-case comparison records
+56–59 ms medians against the fresh 427–433 ms Step 6 baseline on the same Node
+22.23.1 host; all six existing human-output forms retain exact stdout bytes.
+The seventh case is the approved absent-root help refinement, exit 2 → 0. These
+measurements are not a portable threshold or installed-package benchmark.
+
+This accepts the **compiled graph only**. Whole Step 7 remains open. Step 7b starts
+automatically with actual tar inspection, external same-digest installation,
+complete chat/resume, migration/native/MCP/CAS/class/context controls and required
+exact Node 22.0.0 Linux plus current `.nvmrc` (24) Linux/macOS/Windows consumers.
+A read-only synthetic transport feasibility probe against unchanged repository
+dist already observes two real SDK dispatches, two refused keyring constructors,
+four durable transcript rows, same-session resume and exit 4 twice. The parent
+reads its full ignored report. That probe is preparation, not installed-tarball,
+minimum-runtime or platform acceptance; no real credential/service is used.
+Actual registered native-owner cleanup remains Step 8, maps/custody Step 9 and
+new CLI discovery Step 10. This metadata landing does not imply new source
+execution, full CI/coverage, a release or whole-wave acceptance. No new ADR,
+dependency, deferral, billing action or user decision is introduced.

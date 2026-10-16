@@ -581,6 +581,30 @@ terminal, sink and RunHandle/AgentSession adapters remain Step 8; installed pack
 and whole-wave claims remain their later gates. No provider, keychain, paid request,
 new network authority or native-platform recertification is claimed.
 
+### Sitting: Wave 3 guarded runtime and emitted package boundaries (2026-10-16)
+
+A NEW independent cumulative sitting is **clean** at `6ffdd63e`. Fresh execution
+passes **10 files / 391 tests**, with two established Windows-only skips, and
+**86 tooling tests**, zero skips. The untouched compiled entry passes 175 native
+controls plus four additional debug/JSON import-failure controls on macOS /
+Node 22.23.1. All 24 emitted JS digests match the accepted artifact; all seventeen
+external dependencies remain declared. The parent reads the complete report.
+The [Step 7a acceptance register](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-7a-acceptance--2026-10-16)
+joins this sitting with both separate complete correctness rounds.
+
+The sitting verifies exact scrubber/error-base extraction, root/leaf identities,
+unchanged filesystem authority, admission before service composition, one offline
+catalog attempt and current DB cutover, fixed literal loader edges and all-output
+closure. Native witnesses remain observable after swallowed refusal and constrain
+synthetic paths, network, subprocesses, output bytes and owned cleanup. It audits
+eighteen direct causal receipts and fifteen selected physical phases, preserving
+their different source/dependency and precommit scopes. It does not claim fresh
+mutation execution or complete family capture. Existing finite redaction and
+cooperating-host limits remain explicit. Installed tarballs, minimum/current
+platform consumers, native owner/fatal integration, maps/custody and whole-wave
+publication retain Steps 7b, 8, 9 and 19. No real provider, keychain, credential,
+billing or release operation is performed.
+
 ## Sandbox and tool policy (`run_command`, node tools, secret inputs)
 
 This is the **binding home** for the tool-policy rules; the rationale is

@@ -1123,8 +1123,10 @@ after two NEW complete cumulative clean rounds following its registry-documentat
 correction and a separate clean security sitting.
 [Step 6 is independently accepted](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-6-acceptance--2026-10-16)
 after two NEW complete cumulative clean rounds and a separate clean security sitting.
-Step 7a (lazy runtime and finite compiled graph) is active; Step 7b must also prove
-the installed tarball and required platform controls before whole Step 7 closes. The
+[Step 7a is independently accepted](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-7a-acceptance--2026-10-16)
+after two NEW complete cumulative clean rounds and a separate clean security sitting.
+Step 7b's installed-tarball and required platform controls are active; whole Step 7
+remains open until they pass. The
 [final proposal reviews](phases/phase-2.5.5-hardening-and-remediation.md#second-maintainer-rereview-final-proposal-readiness--2026-10-16)
 remain proposal evidence, not implementation review. The selected encrypted archive
 method persists; production recipient/recovery belongs to Wave 4b release setup.

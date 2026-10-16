@@ -178,8 +178,10 @@ tails) is independently accepted after two NEW complete cumulative clean rounds
 following its registry-documentation correction and a separate clean security
 sitting. Step 6 (pure process/discovery substrate) is independently accepted after
 two NEW complete cumulative clean rounds and a separate clean security sitting.
-Step 7a (lazy runtime and finite compiled graph) is active; whole Step 7 also requires
-Step 7b's installed-tarball and required platform controls.
+Step 7a (lazy runtime and finite compiled graph) is independently accepted after
+two NEW complete cumulative clean rounds and a separate clean security sitting.
+Step 7b's installed-tarball and required platform controls are active; whole Step 7
+remains open until they pass.
 Later implementation and whole-wave acceptance
 remain staged in the canonical roadmap.
 
