@@ -25,7 +25,6 @@ import { persistCatalogToDb, syncCatalogFromDb } from '../engine/catalog-metadat
 import { CliError } from '../process/errors.js';
 import { type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
-import type { GlobalOptions } from '../process/options.js';
 import { selectChatDriver } from '../render/tui/chat-ink.js';
 import type { KeychainStore } from '../secrets/keychain.js';
 import { createMcpSecretResolver } from '../secrets/mcp-secret.js';
@@ -61,39 +60,27 @@ import { pruneTemporariesCommand, type MediaPruneArgs } from './media.js';
 
 /**
  * The shared **command dispatch table** ([ADR-0056](../../../../docs/decisions/0056-cli-in-app-slash-command-system-and-manifest.md),
- * 2.5.C). Every surface — the `commander` actions ([specs.ts](specs.ts)), and (later in 2.5.C) the `/` palette
- * and the in-REPL slash commands — calls {@link executeCommand} keyed by the manifest id, so the per-command
- * dependency wiring (keychain, provider resolver, the durable stores) lives in exactly ONE place and the surfaces
- * can never diverge. Each entry is a {@link CommandExecutor} that turns a uniform {@link CommandInput} into the
+ * 2.5.C). Commander actions ([specs.ts](specs.ts)) call {@link executeCommand} with stable descriptor executor
+ * ids. Per-command dependency wiring (keychain, provider resolver, durable stores) lives here; the in-REPL
+ * registry remains separate. Each entry is a {@link CommandExecutor} that turns a uniform {@link CommandInput} into the
  * command core's typed args (the pure `build*Args` functions — unit-tested) and assembles its production deps.
  *
  * The `build*Args` extraction is the only behaviour-sensitive change vs the old inline `register*` bodies, so it
  * is kept pure and exhaustively tested; the dep assembly below is copied verbatim from those bodies.
  */
 
-/** A parsed option value as a surface hands it in — a string, a boolean flag, a repeatable list, or absent. */
-export type CommandOptionValue = string | boolean | readonly string[] | undefined;
-
-/**
- * The uniform, surface-agnostic parsed input a command executor consumes (commander argv, or a slash line). It is
- * deliberately LOW-LEVEL: an option value is just a string / boolean / repeatable list, with no per-command
- * schema. Each command's pure `build*Args` extractor below owns the interpretation; a slash/palette surface
- * (2.5.C) builds a `CommandInput` against the manifest's arg shapes, so option arity (a repeatable `--input` vs a
- * single `--out`) is resolved from the manifest, never guessed from this shape.
- */
-export interface CommandInput {
-  readonly positionals: readonly string[];
-  readonly options: Readonly<Record<string, CommandOptionValue>>;
-}
-
-/** The runtime channels a command needs; the boundary reads the returned {@link ExitCode}. */
-export interface DispatchContext {
-  readonly io: CliIo;
-  readonly global: GlobalOptions;
-}
-
-/** One command's executor — uniform input + context in, an exit code out. */
-export type CommandExecutor = (input: CommandInput, ctx: DispatchContext) => Promise<ExitCode>;
+import type {
+  CommandExecutor,
+  CommandInput,
+  CommandOptionValue,
+  DispatchContext,
+} from './input.js';
+export type {
+  CommandExecutor,
+  CommandInput,
+  CommandOptionValue,
+  DispatchContext,
+} from './input.js';
 
 // ── input extractors (pure) ─────────────────────────────────────────────────
 

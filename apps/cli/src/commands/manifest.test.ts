@@ -140,7 +140,7 @@ describe('command manifest (ADR-0056)', () => {
     }
   });
 
-  it('the destructive annotation marks credential removal (the one destructive entry today)', () => {
+  it('the destructive annotation marks credential removal and legacy media maintenance', () => {
     const destructive = COMMAND_MANIFEST.filter((entry) => entry.effect === 'destructive');
     expect(destructive.map((entry) => entry.id)).toEqual([
       'media.prune-temporaries',

@@ -15,6 +15,10 @@ import {
 import { describe, expect, it } from 'vitest';
 
 import { CliError, isCliError, toUserFacing } from './errors.js';
+import {
+  CliError as LightweightCliError,
+  isCliError as isLightweightCliError,
+} from './cli-error.js';
 import { EXIT_CODES } from './exit-codes.js';
 
 describe('EXIT_CODES', () => {
@@ -34,11 +38,34 @@ describe('EXIT_CODES', () => {
       effectNeedsAttention: 7,
       // ADR-0103 — required money receipts are not confirmed, independently of terminal durability.
       moneyDurabilityUncertain: 8,
+      infrastructureFailed: 9,
     });
   });
 });
 
 describe('CliError', () => {
+  it('keeps the runtime compatibility re-exports on the exact lightweight class and guard identity', () => {
+    expect(CliError).toBe(LightweightCliError);
+    expect(isCliError).toBe(isLightweightCliError);
+    expect(isCliError(new LightweightCliError('internal', 'known refusal'))).toBe(true);
+  });
+
+  it.each([
+    'cli_internal',
+    'output_unavailable',
+    'storage_unavailable',
+    'config_write_refused',
+  ] as const)(
+    'retains the fixed %s diagnostic even if the native Error message is mutated',
+    (code) => {
+      const value = new CliError(code, 'PRIVATE_CONSTRUCTOR_TEXT');
+      const expected = value.message;
+      value.message = 'PRIVATE_MUTATED_TEXT';
+      expect(toUserFacing(value)).toEqual({ code, message: expected, exitCode: value.exitCode });
+      expect(JSON.stringify(toUserFacing(value))).not.toContain('PRIVATE_');
+    },
+  );
+
   it('maps invalid_invocation and not_implemented to exit 2', () => {
     expect(new CliError('invalid_invocation', 'bad').exitCode).toBe(EXIT_CODES.invalidInvocation);
     expect(new CliError('not_implemented', 'soon').exitCode).toBe(EXIT_CODES.invalidInvocation);

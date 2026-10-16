@@ -1,3 +1,4 @@
+import { executeCommand } from './commands/dispatch.js';
 import { CommanderError } from 'commander';
 
 import { resolveHomeDir } from './config/load.js';
@@ -65,6 +66,7 @@ export async function run(
   const program = buildProgram(io, {
     suppressErrorOutput: renderCtx.json,
     context: { io, global, result },
+    execute: executeCommand,
   });
 
   // Bare invocation — no subcommand after extraction (only `[node, script]`, optionally a lone `--`).

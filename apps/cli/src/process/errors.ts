@@ -1,5 +1,3 @@
-import { RelaviumError } from '@relavium/shared';
-
 import {
   AgentParseError,
   EngineStateError,
@@ -14,66 +12,17 @@ import {
   SessionMessageBoundaryError,
 } from '@relavium/db';
 
-import { EXIT_CODES, type ExitCode } from './exit-codes.js';
+import { EXIT_CODES } from './exit-codes.js';
 
-/**
- * The closed set of CLI-level error codes — callers and tests narrow on `.code`, never on
- * `.message` (error-handling.md). Run-level outcomes (a workflow failing, a gate pausing)
- * are NOT modelled here: they come from the engine's terminal `RunEvent` and are mapped to
- * exit codes by `relavium run` (2.D). These codes are the CLI's own faults.
- */
-export type CliErrorCode =
-  /** Bad args / unknown command|option / missing arg / not found / schema error → exit 2. */
-  | 'invalid_invocation'
-  /** A malformed/invalid configuration layer (TOML syntax or schema) → exit 2. */
-  | 'config_error'
-  /** A documented command whose implementing workstream has not landed yet → exit 2. */
-  | 'not_implemented'
-  /**
-   * Another process holds a live lease on the run — this invocation refused rather than becoming a second
-   * side-effect producer (ADR-0079 §7) → exit 6. The only TRANSIENT code here: it is worth retrying
-   * unchanged, which is exactly what distinguishes it from `invalid_invocation`.
-   */
-  | 'run_owned_elsewhere'
-  /** An unexpected CLI fault → exit 1 (the user-facing message stays generic). */
-  | 'internal';
-
-const EXIT_CODE_BY_ERROR: Readonly<Record<CliErrorCode, ExitCode>> = {
-  invalid_invocation: EXIT_CODES.invalidInvocation,
-  config_error: EXIT_CODES.invalidInvocation,
-  not_implemented: EXIT_CODES.invalidInvocation,
-  run_owned_elsewhere: EXIT_CODES.runOwnedElsewhere,
-  internal: EXIT_CODES.workflowFailed,
-};
-
-/**
- * A typed, discriminated CLI error (error-handling.md) — mirrors the engine's
- * `EngineStateError` shape. Carries a stable `code` and the `exitCode` it maps to; the
- * `message` is **user-facing** and must never contain a secret, raw payload, stack trace,
- * or internal path.
- */
-export class CliError extends RelaviumError {
-  readonly code: CliErrorCode;
-  readonly exitCode: ExitCode;
-
-  constructor(code: CliErrorCode, message: string, opts?: { readonly cause?: unknown }) {
-    super(message, opts?.cause === undefined ? undefined : { cause: opts.cause });
-    this.name = 'CliError';
-    this.code = code;
-    this.exitCode = EXIT_CODE_BY_ERROR[code];
-  }
-}
-
-export function isCliError(value: unknown): value is CliError {
-  return value instanceof CliError;
-}
-
-/** A user-safe projection of any thrown value — what the renderer prints. */
-export interface UserFacingError {
-  readonly code: CliErrorCode;
-  readonly message: string;
-  readonly exitCode: ExitCode;
-}
+import {
+  CLI_ERROR_POLICY,
+  cliErrorExitCode,
+  isCliError,
+  type CliErrorCode,
+  type UserFacingError,
+} from './cli-error.js';
+export { CliError, isCliError } from './cli-error.js';
+export type { CliErrorCode, UserFacingError } from './cli-error.js';
 
 /**
  * Map any thrown value to a user-safe projection. A `CliError` passes through; anything else
@@ -82,7 +31,11 @@ export interface UserFacingError {
  */
 export function toUserFacing(value: unknown): UserFacingError {
   if (isCliError(value)) {
-    return { code: value.code, message: value.message, exitCode: value.exitCode };
+    return {
+      code: value.code,
+      message: CLI_ERROR_POLICY[value.code].fixedMessage ?? value.message,
+      exitCode: value.exitCode,
+    };
   }
   // ADR-0108: the disabled header field is an invocation refusal. Keep this projection fixed rather than
   // promoting the incoming message: structurally compatible errors can originate from another bundle.
@@ -151,7 +104,7 @@ export function toUserFacing(value: unknown): UserFacingError {
     // The engine's message is already user-safe by its own contract ("secret-free… never carries run
     // inputs"), and for an admission refusal it carries the echo-safe half of each issue — so it is
     // promoted as-is rather than re-flattened from `value.issues` here.
-    return { code, message: value.message, exitCode: EXIT_CODE_BY_ERROR[code] };
+    return { code, message: value.message, exitCode: cliErrorExitCode(code) };
   }
   if (value instanceof AgentParseError) {
     // **A sibling of the arm below, and it needed its own.** `AgentParseError extends Error`, not
@@ -166,7 +119,7 @@ export function toUserFacing(value: unknown): UserFacingError {
     return {
       code: 'invalid_invocation',
       message: value.message,
-      exitCode: EXIT_CODE_BY_ERROR['invalid_invocation'],
+      exitCode: cliErrorExitCode('invalid_invocation'),
     };
   }
   if (value instanceof WorkflowParseError) {
@@ -183,7 +136,7 @@ export function toUserFacing(value: unknown): UserFacingError {
     return {
       code: 'invalid_invocation',
       message: value.message,
-      exitCode: EXIT_CODE_BY_ERROR['invalid_invocation'],
+      exitCode: cliErrorExitCode('invalid_invocation'),
     };
   }
   return {

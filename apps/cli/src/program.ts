@@ -1,6 +1,8 @@
 import { Command } from 'commander';
 
 import { registerCommands, type CommandContext } from './commands/specs.js';
+import { GLOBAL_OPTION_DESCRIPTORS } from './commands/descriptors.js';
+import type { DispatchCommand } from './commands/input.js';
 import type { CliIo } from './process/io.js';
 
 export interface BuildProgramOptions {
@@ -8,6 +10,8 @@ export interface BuildProgramOptions {
   readonly suppressErrorOutput?: boolean;
   /** The runtime context the real commands need; absent ⇒ commands stay help-only stubs. */
   readonly context?: CommandContext;
+  /** Inject runtime dispatch; constructing grammar never imports or starts services. */
+  readonly execute?: DispatchCommand;
 }
 
 /**
@@ -25,16 +29,14 @@ export const CLI_VERSION =
  */
 const GLOBAL_OPTIONS_HELP = `
 Global options (usable anywhere on the command line):
-  --json            emit machine-readable NDJSON output (disables the TUI)
-  --color           force colored output on
-  --no-color        disable colored output
-  --cwd <dir>       run as if started in <dir>
-  --config <path>   use an explicit config file
-  --allow-fs-root <absolute-directory>  grant a chat/Home/agent-run root (repeatable, max 16)
-  --no-alt-screen   keep the inline renderer (no full-screen alt screen)
-  --no-mouse        disable mouse reporting (restores native click-drag selection)
-  -v, --verbose     print verbose diagnostics to stderr
-  -q, --quiet       suppress non-essential output
+${GLOBAL_OPTION_DESCRIPTORS.filter((option) => option.owner === 'extractor')
+  .map((option) => {
+    const name =
+      option.spellings.join(', ') +
+      (option.arity === 'none' ? '' : ` <${option.placeholder ?? 'value'}>`);
+    return `  ${name.padEnd(Math.max(18, name.length + 2))}${option.description}`;
+  })
+  .join('\n')}
 
 Color precedence: --color/--no-color > NO_COLOR (any value ⇒ off) > FORCE_COLOR (0/false ⇒ off) > on.`;
 
@@ -72,6 +74,6 @@ export function buildProgram(io: CliIo, options?: BuildProgramOptions): Command 
   // NB: no `program.action()` — a default action would make `commander` treat an unknown
   // subcommand as a positional argument (swallowing the unknown-command error). The bare
   // invocation (no subcommand) is handled in run.ts, which prints help and exits 0.
-  registerCommands(program, options?.context);
+  registerCommands(program, options?.context, options?.execute);
   return program;
 }

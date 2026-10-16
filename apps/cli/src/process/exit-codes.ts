@@ -44,6 +44,8 @@ export const EXIT_CODES = {
   effectNeedsAttention: 7,
   /** Required money receipts were not durably acknowledged; never automatically repeat paid work. */
   moneyDurabilityUncertain: 8,
+  /** Unexpected CLI infrastructure or failed output; inspect admitted work before repeating it. */
+  infrastructureFailed: 9,
 } as const;
 
 export type ExitCode = (typeof EXIT_CODES)[keyof typeof EXIT_CODES];
