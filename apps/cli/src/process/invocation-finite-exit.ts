@@ -13,6 +13,8 @@ export interface FiniteExitPorts {
 
 /** One explicitly activated exit authority, shared by workflow signals and the later native adapter. */
 export interface InvocationFiniteExit {
+  /** A real command activates the sole observer before native owners can fail autonomously. */
+  readonly activateFallback: () => void;
   readonly fail: (code: 'cli_internal' | 'output_unavailable') => void;
   readonly signal: (signalNumber: number) => void;
   readonly handoff: (registry: InvocationRegistry, changed: () => void) => () => void;
@@ -89,7 +91,14 @@ export function createInvocationFiniteExit(
       return;
     }
     const termination = registry.termination;
-    if (mode !== 'fallback' || following || termination === undefined) return;
+    if (
+      mode !== 'fallback' ||
+      following ||
+      termination === undefined ||
+      (!registry.observations.hasInfrastructureFailure() &&
+        !registry.observations.hasTerminatingSignal())
+    )
+      return;
     following = true;
     const observedGeneration = generation;
     void termination.then(() => {
@@ -97,6 +106,7 @@ export function createInvocationFiniteExit(
       if (
         mode === 'fallback' &&
         generation === observedGeneration &&
+        registry.observations.hasTerminatingSignal() &&
         !registry.observations.hasInfrastructureFailure()
       )
         exitNow();
@@ -107,16 +117,20 @@ export function createInvocationFiniteExit(
     observing = true;
     removeObserver = registry.observeTermination(changed);
   };
+  const activateFallback = (): void => {
+    if (exited || mode === 'disposed') throw new CliError('cli_internal', '');
+    if (mode !== 'idle') return; // A native handoff keeps the same observer and exit authority.
+    mode = 'fallback';
+    generation += 1;
+    observe();
+  };
   return Object.freeze({
+    activateFallback,
     fail: (code: 'cli_internal' | 'output_unavailable') => {
       if (code !== 'cli_internal' && code !== 'output_unavailable')
         throw new CliError('cli_internal', '');
       if (exited || mode === 'disposed') return;
-      if (mode === 'idle') {
-        mode = 'fallback';
-        generation += 1;
-        observe();
-      }
+      activateFallback();
       // Fast cleanup leaves outer diagnostic rendering time; only the unchanged absolute backstop
       // exits this staged fallback. The later native handoff owns positive diagnostic ACK/early exit.
       void registry.terminate({ kind: 'infrastructure', code });
@@ -124,11 +138,7 @@ export function createInvocationFiniteExit(
     signal: (signalNumber: number) => {
       assertTerminatingSignalNumber(signalNumber);
       if (exited || mode === 'disposed') return;
-      if (mode === 'idle') {
-        mode = 'fallback';
-        generation += 1;
-        observe();
-      }
+      activateFallback();
       let deadline: number;
       try {
         deadline = clock.now() + FATAL_TERMINATION_MS;

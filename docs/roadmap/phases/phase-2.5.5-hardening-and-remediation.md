@@ -5908,3 +5908,37 @@ gates remain open at this checkpoint. Historical 8b captures and platform
 receipts retain their original source; none is relabelled as execution of these
 changed runtime bytes. No new ADR, credential, billing, provider capture or user
 decision is pending.
+
+### Wave 3 Step 8c first cumulative review corrections — 2026-10-16
+
+**Not accepted; new complete cumulative reviews required after the corrections.**
+The first complete cumulative correctness and separate security audits cover
+`d9625ff0a641197c6ed45968df99094a25db88d6` through `9e4cac77`: 164 paths /
+770 zero-context hunks / 54 whole added files. Their NONCLEAN findings are
+independently verified; neither audit is counted as clean implementation acceptance.
+
+| Verified concern | Correction and evidence boundary |
+|---|---|
+| MCP asynchronous close at zero common budget | Recheck the live remaining budget immediately before first cooperative close. Keep finite owned PID cancellation and retain actual native-close uncertainty. Six separate Linux/Windows protocol cases cover attached, late-attach and liveness-reentrant expiry; simulated ports claim no actual Windows execution. |
+| Autonomous native fault lacks workflow physical exit | Workflow creation explicitly activates the same fallback observer before owner/native entry. Activation alone starts no timer; ordinary termination cannot exit. An actual WorkflowLifetime with simulated Windows native handles pins autonomous helper failure, the original deadline, physical exit 9 exactly once and retained obligations until actual closure. Global/session activation remains 8d. |
+| Callback removal reaches watchdog before its semantic witness | The native test observes actual premature command-settlement IPC alongside actual child close, validates readiness/stdio before the named assertion, then joins its owned fixture in finally. The watchdog cannot witness acceptance. Both run/gate callback removal controls require fresh complete-cohort execution. |
+| Intentional gate unit fault uses real exit ports | Inject explicit fake physical-exit ports for the opaque opener-failure unit case. Actual child-process exit controls stay intact. Slower CI exposed the old fixture via one unhandled process.exit(9); the red coverage/Node-floor jobs remain attributed to `9e4cac77`. |
+| Canonical MCP reference calls accepted 8b pending | Promote the stale current-status qualifier to accepted 8b; no security contract or 8c/8d acceptance changes. |
+
+The rejected first causal capture retains eight completed mechanisms and the
+failed ninth removal: the coordinator correctly refuses a missing semantic
+marker, restores bytes and removes the copied graph. Overall acceptance remains
+false. It is not relabelled as final corrected-source evidence. The first
+clean-source freeze and its local records remain immutable.
+
+Focused correction execution passes 129 cases across five complete files. Fresh
+workspace checks pass, including the CLI's 298 files / 5,116 passing cases /
+10 established skips; unchanged workspaces retain cache attribution. Final
+compiled/package/platform, corrected causal and NEW independent review gates
+remain open. The first source's four same-tarball platform consumers pass and
+all 71 members are independently verified, but its overall CI is red and none of
+that execution is transferred to these changed runtime bytes.
+
+These corrections implement the approved deadline/ownership contract without a
+new decision, dependency or deferral. Source and evidence scopes remain explicit;
+whole Step 8, 8d and Steps 9–19 are still open. No user action is pending.

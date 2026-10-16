@@ -264,3 +264,17 @@ reviews. Earlier Step 1 best-effort close warnings never granted retirement from
 a close throw; this integration retains unknown close obligations without
 rewriting durable workflow results. Global fatal installation and session owners
 remain 8d. No new decision, dependency, release or whole-step acceptance is added.
+
+## Step 8c first cumulative review corrections — 2026-10-16
+
+The [correction register](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8c-first-cumulative-review-corrections--2026-10-16)
+records two verified runtime gaps in the first implementation: MCP cooperative
+close entered after common expiry, and an autonomous native fault lacked the
+workflow's physical-exit observer. The corrections fulfil the approved
+[workflow ownership contract](../reference/cli/commands.md#workflow-and-terminal-ownership),
+preserve inert construction, actual cleanup uncertainty and the single native
+handoff, and add no new policy. Test-witness/exit-port and canonical-status
+corrections remain separately attributed. The old NONCLEAN audits and rejected
+capture grant no acceptance; two NEW complete cumulative clean reviews and a NEW
+clean security sitting are required after the final correction. Step 8d remains
+staged.

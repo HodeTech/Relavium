@@ -496,6 +496,52 @@ describe('creation-owned native processes', () => {
     await vi.waitFor(() => expect(h.registry.activeOwners).toBe(0));
   });
 
+  it.each(
+    (['linux', 'win32'] as const).flatMap((platform) =>
+      (['attached', 'late-attach', 'liveness-reentry'] as const).map((boundary) => ({
+        platform,
+        boundary,
+      })),
+    ),
+  )(
+    'keeps finite cancellation without a fresh MCP close after expiry on $platform at $boundary',
+    async ({ platform, boundary }) => {
+      const h = harness(platform);
+      const observer = await h.controller.observeMcp();
+      const nativeClosed = deferred<void>();
+      let closed = false;
+      const close = vi.fn(() => Promise.resolve());
+      const lifetime = {
+        readPid: () => 70,
+        isClosed: () => closed,
+        whenClosed: nativeClosed.promise,
+        close,
+      };
+      if (boundary !== 'late-attach') observer.attach(lifetime);
+      if (boundary === 'liveness-reentry')
+        h.signal.mockImplementation((_pid, signal) => {
+          if (signal === 0)
+            void h.registry.terminate({ kind: 'signal', signalNumber: 15, deadline: 0 });
+        });
+      const termination = h.registry.terminate(
+        boundary === 'liveness-reentry'
+          ? { kind: 'normal' }
+          : { kind: 'signal', signalNumber: 15, deadline: 0 },
+      );
+      if (boundary === 'late-attach') observer.attach(lifetime);
+      expect(close, 'NATIVE_COOPERATIVE_BUDGET').not.toHaveBeenCalled();
+      expect(h.registry.budget.remainingMs()).toBe(0);
+      expect(h.request).not.toHaveBeenCalled();
+      expect(h.signal).toHaveBeenCalledWith(70, 'SIGKILL');
+      expect(h.signal.mock.calls.every(([pid]) => pid > 0)).toBe(true);
+      expect(await termination).toMatchObject({ kind: 'deadline', unacknowledgedOwners: 1 });
+      expect(h.registry.activeOwners).toBe(1);
+      closed = true;
+      nativeClosed.resolve();
+      await vi.waitFor(() => expect(h.registry.activeOwners).toBe(0));
+    },
+  );
+
   it('releases a bridge refusal before SDK attachment without losing an attached native obligation', async () => {
     const h = harness();
     const observer = await h.controller.observeMcp();

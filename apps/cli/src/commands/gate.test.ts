@@ -246,6 +246,7 @@ describe('gateCommand', () => {
         {
           io: captureIo().io,
           global: globalOptions(),
+          invocation: createCliInvocation({ exit: vi.fn(), setExitCode: vi.fn() }),
           openDb: () => {
             throw cause;
           },

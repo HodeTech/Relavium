@@ -37,6 +37,7 @@ export class WorkflowLifetime {
   ) {
     Object.freeze(this.#stoppedMarker);
     this.invocation = invocation ?? createCliInvocation();
+    this.invocation.finiteExit.activateFallback();
     this.#retired = new Promise((resolve) => {
       this.#resolveRetired = resolve;
     });

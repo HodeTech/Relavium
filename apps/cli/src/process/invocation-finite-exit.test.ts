@@ -101,6 +101,20 @@ describe('invocation finite exit and explicit native handoff', () => {
     remove();
     expect(f.exit).not.toHaveBeenCalled();
   });
+  it('explicit fallback activation stays timer-free and never exits for ordinary termination', async () => {
+    const f = fixture();
+    f.finite.activateFallback();
+    f.finite.activateFallback();
+    expect(f.clock.timers.size).toBe(0);
+    expect(f.registry.termination).toBeUndefined();
+    await f.registry.terminate({ kind: 'normal' });
+    await turn();
+    expect(f.exit, 'WORKFLOW_ORDINARY_NO_EXIT').not.toHaveBeenCalled();
+    expect(f.clock.timers.size).toBe(0);
+    f.finite.signal(15);
+    expect(await f.finite.exited).toBe(143);
+    expect(f.exit).toHaveBeenCalledExactlyOnceWith(143);
+  });
   it.each([2, 15, 1, 3])(
     'physically bounds signal %s without acknowledging a held owner',
     async (signal) => {

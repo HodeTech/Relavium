@@ -36,6 +36,10 @@ describe('actual workflow cleanup failures behind the shared physical signal dea
       const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
         (resolve) => child.once('close', (code, signal) => resolve({ code, signal })),
       );
+      let reportPremature = (): void => undefined;
+      const premature = new Promise<void>((resolve) => {
+        reportPremature = resolve;
+      });
       const messages: string[] = [];
       child.on('message', (message: unknown) => {
         const type: unknown =
@@ -44,6 +48,7 @@ describe('actual workflow cleanup failures behind the shared physical signal dea
             : undefined;
         if (typeof type !== 'string') return;
         messages.push(type);
+        if (type === 'unexpected-settlement') reportPremature();
         if (type === 'ready') child.send({ type: 'go' });
         if (type === 'cleanup-entered') {
           // Windows does not deliver POSIX SIGTERM: enter the exact registered signal callback there.
@@ -58,12 +63,20 @@ describe('actual workflow cleanup failures behind the shared physical signal dea
         child.kill('SIGKILL');
       }, 9000);
       try {
-        const exit = await closed;
+        const result = await Promise.race([
+          closed.then((exit) => ({ kind: 'closed' as const, exit })),
+          premature.then(() => ({ kind: 'premature' as const })),
+        ]);
         expect(watchdogFired, stderr).toBe(false);
         expect(messages.slice(0, 2), stderr).toEqual(['ready', 'cleanup-entered']);
         expect(stdout).toBe('');
         expect(stderr).toBe(''); // Runtime/setup/native-child contamination cannot supply the semantic witness.
-        expect(exit, 'WORKFLOW_NATIVE_CLOSE_ACK').toEqual({ code: 9, signal: null });
+        // Premature command settlement is the semantic failure itself. The finally below joins
+        // this already-owned fixture; its watchdog/kill can never supply the acceptance witness.
+        expect(result, 'WORKFLOW_NATIVE_CLOSE_ACK').toEqual({
+          kind: 'closed',
+          exit: { code: 9, signal: null },
+        });
         expect(messages, stderr).toEqual(['ready', 'cleanup-entered']);
         const witness: unknown = JSON.parse(readFileSync(join(root, 'exit.json'), 'utf8'));
         expect(witness).toMatchObject({

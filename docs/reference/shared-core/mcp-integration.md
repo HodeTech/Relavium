@@ -168,7 +168,7 @@ per supplied reporter; its default remains best-effort reporting, not semantic r
 
 ### Creation-owned native stdio lifetime
 
-**Wave 3 Step 8b implementation; independent acceptance pending.**
+**Wave 3 Step 8b independently accepted on `development`.**
 `StdioServerSpec.nativeObserver` is an optional trusted, SDK-free host projection.
 Its synchronous `attach` receives a creation-latched PID reader, known-close
 reader, actual native `whenClosed` promise and the existing idempotent full-owner

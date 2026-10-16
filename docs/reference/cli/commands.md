@@ -898,7 +898,11 @@ This attempt-all cancellation rule grants no retirement or safe-close ACK.
 
 **Step 8c implementation on `development`; independent acceptance pending.**
 Workflow `run`, human-gate resume and budget resume reserve their workflow and
-terminal owners before asynchronous preparation. One signal subscription covers
+terminal owners before asynchronous preparation. The command explicitly activates
+the existing single fallback observer before native creation; an autonomous native
+fault needs no later business rejection or signal to start physical termination.
+Activation alone starts no timer, and ordinary retirement grants no physical-exit
+authority. One signal subscription covers
 secret input, consent, MCP discovery, engine construction, execution and actual
 cleanup. First SIGINT requests cooperative cancellation; a second SIGINT or
 TERM/HUP/QUIT uses the invocation's single finite-exit capability and unchanged

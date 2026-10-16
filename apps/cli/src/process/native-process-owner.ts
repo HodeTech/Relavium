@@ -318,7 +318,11 @@ class NativeCreation {
       else if (this.#kind === 'group') this.#signalGroup();
       else this.#signalPid();
     }
-    if (!this.#cooperativeEntered && this.#target.cooperativeClose !== undefined) {
+    if (
+      !this.#cooperativeEntered &&
+      this.#target.cooperativeClose !== undefined &&
+      this.#remaining() !== 0
+    ) {
       this.#cooperativeEntered = true;
       try {
         void this.#target.cooperativeClose().catch(() => this.#failed());
