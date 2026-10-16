@@ -1,4 +1,5 @@
 import type { ModelCatalogLiveModel, ReplaceProviderModelsResult } from '@relavium/db';
+import { byCodeUnit } from '@relavium/shared';
 import type { AbortSignalLike, LlmProvider, ModelListing, ProviderId } from '@relavium/llm';
 
 import { keyHint } from './providers.js';
@@ -260,7 +261,7 @@ export function createModelRefreshService(deps: ModelRefreshDeps): ModelRefreshS
     });
 
     // Deterministic order regardless of settle timing (a stable report for the human table + the --json stream).
-    results.sort((a, b) => a.provider.localeCompare(b.provider));
+    results.sort((a, b) => byCodeUnit(a.provider, b.provider));
     return { providers: results };
   };
 

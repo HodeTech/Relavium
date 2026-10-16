@@ -9,6 +9,7 @@ import {
   statSync,
 } from 'node:fs';
 import { basename, join } from 'node:path';
+import { byCodeUnit } from '@relavium/shared';
 
 import {
   AgentParseError,
@@ -102,7 +103,7 @@ export function discoverCatalog(opts: {
   }
 
   const entries = names.map((name) => readEntry(join(dir, name), opts.cwd, opts.kind, root));
-  return entries.sort((a, b) => a.slug.localeCompare(b.slug));
+  return entries.sort((a, b) => byCodeUnit(a.slug, b.slug));
 }
 
 /** A `valid: false` catalog entry whose slug falls back to the filename stem — the secret-free, path-free shape. */

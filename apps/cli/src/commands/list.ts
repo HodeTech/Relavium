@@ -1,4 +1,5 @@
 import type { Db, RunRecord } from '@relavium/db';
+import { byCodeUnit } from '@relavium/shared';
 
 import { loadResolvedConfig } from '../config/load.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
@@ -148,7 +149,7 @@ function renderHuman(
     // Untagged sinks to the bottom; named tags sort alphabetically.
     if (a === UNTAGGED) return 1;
     if (b === UNTAGGED) return -1;
-    return a.localeCompare(b);
+    return byCodeUnit(a, b);
   });
   for (const tag of tags) {
     const header = tag === UNTAGGED ? UNTAGGED : `#${tag}`;

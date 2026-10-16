@@ -24,6 +24,7 @@ import {
 } from '@relavium/mcp';
 import { nodeEgressDeps, type LocalEndpoint } from '@relavium/db';
 import {
+  byCodeUnit,
   extractEgressAuthority,
   isForbiddenDeclaredEnvKey,
   isMetadataOrLinkLocal,
@@ -961,11 +962,9 @@ function withWorkflowMcpGrant(
  * collapse first-wins, silently granting (or denying) BOTH the SSRF relaxation — so it must fail loud.
  */
 function serverFingerprint(ref: McpServerRef): string {
-  const env = Object.entries(ref.env ?? {}).sort(([a], [b]) => a.localeCompare(b));
+  const env = Object.entries(ref.env ?? {}).sort(([a], [b]) => byCodeUnit(a, b));
   const allowlist =
-    ref.tools_allowlist === undefined
-      ? null
-      : [...ref.tools_allowlist].sort((a, b) => a.localeCompare(b));
+    ref.tools_allowlist === undefined ? null : [...ref.tools_allowlist].sort(byCodeUnit);
   return JSON.stringify({
     t: ref.transport,
     c: ref.command ?? null,
