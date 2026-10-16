@@ -1,3 +1,5 @@
+import { RelaviumError } from '@relavium/shared';
+
 import {
   AgentParseError,
   EngineStateError,
@@ -50,7 +52,7 @@ const EXIT_CODE_BY_ERROR: Readonly<Record<CliErrorCode, ExitCode>> = {
  * `message` is **user-facing** and must never contain a secret, raw payload, stack trace,
  * or internal path.
  */
-export class CliError extends Error {
+export class CliError extends RelaviumError {
   readonly code: CliErrorCode;
   readonly exitCode: ExitCode;
 
