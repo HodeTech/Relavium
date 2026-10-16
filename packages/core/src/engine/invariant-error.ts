@@ -21,6 +21,8 @@
  * is secret-free — it describes the structural breach, never a draft payload.
  */
 
+import { RelaviumError } from '@relavium/shared';
+
 /** Stable discriminant for a run-loop substrate invariant breach — narrow on this, never on `message`. */
 export type RunLoopInvariantCode =
   | 'both_correlation_keys' // an event draft carried BOTH runId and sessionId (exactly one is required)
@@ -30,7 +32,7 @@ export type RunLoopInvariantCode =
   | 'media_store_unavailable' // a media-bearing event was emitted but no MediaStore was injected (1.AF, I3)
   | 'event_too_large'; // a NON-terminal durable event exceeded CR-32's size bound (ADR-0087 §2); a terminal is exempt
 
-export class RunLoopInvariantError extends Error {
+export class RunLoopInvariantError extends RelaviumError {
   readonly code: RunLoopInvariantCode;
 
   constructor(code: RunLoopInvariantCode, message: string) {

@@ -14,6 +14,8 @@
  * against a run scope.
  */
 
+import { RelaviumError } from '@relavium/shared';
+
 export type WorkflowParseErrorCode =
   | 'invalid_yaml'
   | 'schema_validation'
@@ -81,7 +83,7 @@ export interface SecretLeak {
 }
 
 /** Base for every parser error — callers narrow on `code`, never on `message`. */
-export abstract class WorkflowParseError extends Error {
+export abstract class WorkflowParseError extends RelaviumError {
   abstract readonly code: WorkflowParseErrorCode;
   /** A workspace-relative source label, when the caller supplied one (never an absolute path). */
   readonly source?: string;
@@ -219,7 +221,7 @@ export type InterpolationErrorCode =
  * message names the offending reference (its verbatim `{{ … }}`) and never a resolved value; an
  * absolute path from a host `readFile` failure stays on the `cause` (for logs), never in the message.
  */
-export class InterpolationError extends Error {
+export class InterpolationError extends RelaviumError {
   readonly code: InterpolationErrorCode;
   /** The offending `{{ … }}` occurrence, verbatim — names the reference, never a resolved value. */
   readonly location?: string;
@@ -239,7 +241,7 @@ export class InterpolationError extends Error {
 }
 
 /** Missing/malformed explicit provenance at a public execution boundary (ADR-0113). */
-export class WorkflowContextError extends Error {
+export class WorkflowContextError extends RelaviumError {
   readonly code = 'validation';
   readonly retryable = false;
   constructor() {
@@ -277,7 +279,7 @@ export type SandboxErrorReason =
  * Both are **non-enumerable** (like a thrown error's `cause`), so a naive `JSON.stringify(err)` /
  * spread cannot leak them. Callers narrow on {@link reason} / {@link retryable}, never on `message`.
  */
-export class SandboxError extends Error {
+export class SandboxError extends RelaviumError {
   /** The closed-enum run `ErrorCode` this maps to (sse-event-schema.md). */
   readonly code = 'sandbox_error';
   /** Stable fault discriminant — the one field policy (retry vs fail) branches on. */

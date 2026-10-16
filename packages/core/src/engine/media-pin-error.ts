@@ -23,7 +23,7 @@
  * also why the reason has to be this specific.
  */
 
-import { MediaAdmissionError } from '@relavium/shared';
+import { RelaviumError, MediaAdmissionError } from '@relavium/shared';
 
 import { ADMISSION_CEILINGS } from '../limits.js';
 
@@ -66,7 +66,7 @@ interface CapturedPinFailure {
 // A prototype, public JS constructor call or mutable Error field cannot register this authority.
 const PIN_FAILURES = new WeakMap<object, CapturedPinFailure>();
 
-export class NodeMediaPinError extends Error {
+export class NodeMediaPinError extends RelaviumError {
   override readonly name = 'NodeMediaPinError';
   readonly failure: NodeFailure;
 

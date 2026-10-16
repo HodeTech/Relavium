@@ -1,3 +1,5 @@
+import { RelaviumError } from '@relavium/shared';
+
 const TOKEN = Symbol('dispatch-allowance');
 
 /** Opaque process-local ownership; the book's WeakMap is authoritative, not the object's shape. */
@@ -7,7 +9,7 @@ export interface DispatchAllowanceToken {
 
 export type AllowanceRefusal = 'owner_invalid' | 'in_flight' | 'exhausted';
 
-export class InvalidDispatchAllowanceError extends Error {
+export class InvalidDispatchAllowanceError extends RelaviumError {
   readonly code = 'invalid_dispatch_allowance';
   constructor(
     readonly reason:

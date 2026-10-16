@@ -14,7 +14,7 @@ import { schemaIssueReason } from './schema-issue.js';
 import { LineCounter, YAMLParseError } from 'yaml';
 import type { ZodIssue } from 'zod';
 
-import { AgentSchema, type Agent } from '@relavium/shared';
+import { RelaviumError, AgentSchema, type Agent } from '@relavium/shared';
 
 import { MAX_SOURCE_CHARS } from './parser.js';
 import { outputSchemaRefusals } from './output-schema.js';
@@ -34,7 +34,7 @@ export interface ParseAgentOptions {
  * For an `agent_syntax` YAML fault the `line`/`column` (1-based) of the fault are attached when the loader
  * reports a position — parity with `WorkflowSyntaxError` (errors.ts) — and are also folded into the message.
  */
-export class AgentParseError extends Error {
+export class AgentParseError extends RelaviumError {
   readonly code: 'agent_syntax' | 'agent_validation';
   readonly fields: readonly string[];
   /** 1-based line of a YAML syntax fault, when the loader reports a position (`agent_syntax` only). */

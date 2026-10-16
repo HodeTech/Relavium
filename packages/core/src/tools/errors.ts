@@ -8,6 +8,8 @@
  * [tool-registry.md](../../../../docs/reference/shared-core/tool-registry.md#error-taxonomy) and ADR-0037.
  */
 
+import { RelaviumError } from '@relavium/shared';
+
 import type { ErrorCode } from '@relavium/shared';
 
 import type { ToolId } from './types.js';
@@ -25,7 +27,7 @@ export type ToolErrorCode =
   | 'cancelled'; // the run's AbortSignal fired during the tool — the cooperative-cancel path
 
 /** Base for every tool-dispatch error — narrow on {@link code}, never on `message`. */
-export abstract class ToolDispatchError extends Error {
+export abstract class ToolDispatchError extends RelaviumError {
   /** The tool-error discriminant. */
   abstract readonly code: ToolErrorCode;
   /** The closed run `ErrorCode` this maps to (sse-event-schema.md). */

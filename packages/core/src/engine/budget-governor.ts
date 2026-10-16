@@ -1,3 +1,5 @@
+import { RelaviumError } from '@relavium/shared';
+
 import {
   estimateResolvedRequestCost,
   outputTokensReservation,
@@ -88,7 +90,7 @@ export type BudgetExceededReason =
  * Thrown when a priced pre-egress projection exceeds a configured `on_exceed: fail` cap, or when strict-cost mode
  * refuses an unpriced prospective call. The turn/run adapter maps this to the `budget_exceeded` `ErrorCode`.
  */
-export class BudgetExceededError extends Error {
+export class BudgetExceededError extends RelaviumError {
   override readonly name = 'BudgetExceededError';
   /**
    * The stable discriminant (D10). Callers narrow on `.code`, never on `.name` or `.message` — and never on
@@ -128,7 +130,7 @@ export class BudgetExceededError extends Error {
  * `on_exceed: pause_for_approval` is set. The agent runner maps this to a `paused` node outcome
  * (reusing the human-gate seam) so the run can be resumed via `engine.resume(runId, gateId, decision)`.
  */
-export class BudgetPauseError extends Error {
+export class BudgetPauseError extends RelaviumError {
   override readonly name = 'BudgetPauseError';
   /** The stable discriminant (D10) — see {@link BudgetExceededError.code}. */
   readonly code = 'budget_paused' as const;
@@ -295,7 +297,7 @@ export function isBudgetPauseError(value: unknown): value is BudgetPauseError {
  * consuming cap capacity when this throws — §2: "a persistence failure never releases capacity; it fails the
  * active owner loudly while preserving the conservative reservation in memory for the terminal path."
  */
-export class CommitmentDurabilityError extends Error {
+export class CommitmentDurabilityError extends RelaviumError {
   override readonly name = 'CommitmentDurabilityError';
   readonly code = 'commitment_not_durable' as const;
 
