@@ -1,6 +1,6 @@
-import { RelaviumError } from '@relavium/shared';
+import { RelaviumError } from '@relavium/shared/relavium-error';
 
-import { ToolDispatchError } from '@relavium/core';
+import { ToolDispatchError } from '@relavium/core/tool-dispatch-error';
 import type { AbortSignalLike, ErrorCode } from '@relavium/shared';
 
 /**

@@ -1,5 +1,5 @@
-import { scrubSecrets } from '@relavium/llm';
-import { stripTerminalControls } from '@relavium/shared';
+import { scrubSecrets } from '@relavium/llm/scrub-secrets';
+import { stripTerminalControls } from '@relavium/shared/terminal-safe';
 
 // Re-exported so every existing consumer keeps this import path while the IMPLEMENTATION lives in
 // `@relavium/shared` — see its header for why it moved (ADR-0088 §7.1).

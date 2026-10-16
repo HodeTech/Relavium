@@ -1,3 +1,4 @@
+import type { CliInvocation } from '../process/invocation.js';
 import type { ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
@@ -10,6 +11,8 @@ export interface CommandInput {
 }
 
 export interface DispatchContext {
+  /** One bootstrap owner, retained through lazy routes; native owner adapters land separately. */
+  readonly invocation?: CliInvocation;
   readonly io: CliIo;
   readonly global: GlobalOptions;
 }

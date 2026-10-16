@@ -260,7 +260,7 @@ function install(
  * Cache the payload, filtered to the FOUR providers we have an adapter for.
  *
  * models.dev ships 166 providers and ~5,600 models — the 2–3 MB blob ADR-0071 §3 explicitly declined to vendor. We
- * consume four of them, and `seedCatalog` re-reads + re-parses this file on EVERY invocation, including `--help`.
+ * consume four of them, and a priced invocation seeds this file at most once, after filesystem admission. Meta operations never read it.
  * Caching the whole thing taxes the cheapest, hottest commands with a parse we throw almost all of away. Filtering
  * to the mapped providers keeps the file small AND keeps it RAW-per-provider, so a future release that fixes a
  * normalization bug still repairs the cache on the next load.

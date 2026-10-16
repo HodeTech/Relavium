@@ -1,4 +1,4 @@
-import { CliError } from './errors.js';
+import { CliError } from './cli-error.js';
 
 /**
  * The CLI's IO seam — injected so the command and process logic is testable with no real

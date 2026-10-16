@@ -13,6 +13,7 @@ import {
   openStdioConnection,
   openWebSocketConnection,
   startMcpClient as defaultStartMcpClient,
+  setMcpClientVersion,
   type HttpServerSpec,
   type ManagerSkippedTool,
   type McpClient,
@@ -38,6 +39,7 @@ import {
   type McpServerRegistration,
 } from '@relavium/shared';
 
+import { CLI_VERSION } from '../version.js';
 import { EgressWorkScope } from './egress-work.js';
 import { CliError } from '../process/errors.js';
 import { createMcpFetch, type McpFetch, type McpFetchConfig } from './mcp-fetch.js';
@@ -692,6 +694,8 @@ async function startMcpClientFailLoud(
   connectSignal?: AbortSignalLike,
   work?: ToolHostCallOptions,
 ): Promise<McpClient> {
+  // The shared build token is installed only at the actual MCP construction choke.
+  setMcpClientVersion(CLI_VERSION);
   const start = custom ?? defaultStartMcpClient;
   const owned = work === undefined ? new EgressWorkScope() : undefined;
   try {

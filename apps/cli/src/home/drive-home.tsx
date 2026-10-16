@@ -1,3 +1,4 @@
+import type { CliInvocation } from '../process/invocation.js';
 import { closeQuietly, warnTeardown } from '../process/close-quietly.js';
 import { COMPACTION_UNKNOWN_WINDOW_NOTICE } from '../chat/repl-info.js';
 import { randomUUID } from 'node:crypto';
@@ -104,6 +105,8 @@ import { defaultSubscribeSignals } from '../process/signals.js';
  *   block is bracketed literal text (no embedded newline submits early); the controller strips the markers.
  */
 export interface HomeDeps {
+  /** The same bootstrap invocation used by the guarded lazy route. */
+  readonly invocation?: CliInvocation;
   readonly io: CliIo;
   readonly global: GlobalOptions;
   readonly providers?: ProviderResolver;
