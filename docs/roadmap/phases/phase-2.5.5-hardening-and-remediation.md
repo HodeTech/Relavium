@@ -5187,3 +5187,54 @@ The old failed push `38862829767` and its skipped consumers are not counted as
 platform evidence. The corrections require two NEW complete cumulative clean
 rounds after the final material fix, the affected security delta and real required
 same-artifact platform success. No new decision or deferral is introduced.
+
+### Step 7b second cumulative review and native CI corrections — 2026-10-16
+
+The second NEW complete cumulative review at `cd78816a` covers **98 paths /
+185 hunks / 59 full new files** and is **non-clean**. It independently verifies
+both prior fixes but reproduces the required Windows consumer's preload failure.
+Its 152 tooling tests, eight runtime files / 106 passes and 175 local compiled
+controls do not substitute for Windows acceptance. The separate correction
+security sitting is clean in its stated affected scope; neither report accepts
+whole Step 7. The parent reads both complete reports.
+
+Actual push `38864509846` produces a clean-source tarball and successful current
+Linux, exact Node 22.0.0 Linux and current macOS consumers. Windows and the required
+aggregate fail. The separate required usage gate also fails; a diagnostic agent
+verifies the retained worker error against the uploaded exact-source manifests.
+Neither failure is attributed to transient scheduling or reported as success.
+
+- Windows `--import` must receive an ESM file URL, rather than a drive-qualified
+  native path. The bootstrap child now retains the existing URL. Its permanent
+  native regression relocates the unchanged tooling implementation beneath URL
+  metacharacters; converting back to a path makes that exact test fail on POSIX
+  too. An isolated copied-source fixed/removal/restored control exits 0/1/0 with
+  the expected module-resolution assertion; production source is not mutated.
+- The nested replay loader lacked the newly supported pure subpaths although the
+  outer usage loader already knew them. The actual current producer failed before
+  its semantic cases on `@relavium/shared/terminal-safe`. Five exact leaf mappings
+  are added, preserving manifest membership, physical-root and opposite-mode
+  refusal. Actual current/frozen workers exercise all five current leaves, the
+  historical terminal-safe leaf, four absent-frozen refusals and unknown-subpath
+  refusal. Module-body audits pin the loaded leaves; no frozen archive, dependency
+  byte, replay prefix, positive control or semantic refusal is replaced.
+
+An independently cloned `development` tree at `cd78816a`, with no prior dist/cache
+and distinct sibling HOME/TMP/cwd roots, passes all 17 fresh lint/typecheck/build
+tasks and all six fresh workspace test tasks: **647 files / 14,659 passes /
+21 established CI-mode skips**. Five prerequisite builds are valid subsequent
+cache hits. The earlier clone run had a test-harness HOME/TMP ancestry collision
+and is retained as failed verification, not accepted. The ordinary prepared
+workspace result remains separately **14,660 passes / 20 skips**; the additional
+CI-mode projection skip is existing conditional behavior, not a new source skip.
+
+The two native corrections pass **475 acceptance-tool tests**, tools typecheck,
+lint and formatting, the 175 compiled bootstrap controls and the actual full
+replay smoke (**16 refusals / two legacy controls / zero fetches**). The selected
+owner-basis causal control has fixed/removal/restored inventories 2/2/2, with the
+expected one semantic removal failure; it is not the complete usage matrix.
+The first lint attempt rejects computed fixture imports; the correction retains
+literal leaf imports and explicitly justifies only the owned URL-path fixture.
+Two NEW complete cumulative clean rounds after these final material fixes,
+affected security review and real required same-artifact platform success remain
+necessary. No new decision, dependency or deferral is introduced.
