@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 import {
   jsonSchemaMetadataSchema,
+  findDuplicates,
   kebabIdSchema,
   nonEmptyString,
   positiveInt,
@@ -142,7 +143,7 @@ export const AgentNodeSchema = z
   })
   .strict();
 
-export const HumanGateNodeSchema = z
+const HumanGateNodeFields = z
   .object({
     id: kebabIdSchema,
     type: z.literal('human_gate'),
@@ -154,6 +155,22 @@ export const HumanGateNodeSchema = z
   })
   .strict();
 
+/** Keep the cross-field rule identical on the exported leaf and the discriminated union. */
+function validateHumanGateTimeout(
+  node: z.infer<typeof HumanGateNodeFields>,
+  ctx: z.RefinementCtx,
+): void {
+  if (node.timeout_action !== undefined && node.timeout_ms === undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['timeout_action'],
+      message: 'timeout_action requires timeout_ms',
+    });
+  }
+}
+
+export const HumanGateNodeSchema = HumanGateNodeFields.superRefine(validateHumanGateTimeout);
+
 /** A branch of a `condition` node: `when` value → `target_node`. */
 export const ConditionBranchSchema = z
   .object({
@@ -162,7 +179,7 @@ export const ConditionBranchSchema = z
   })
   .strict();
 
-export const ConditionNodeSchema = z
+const ConditionNodeFields = z
   .object({
     id: kebabIdSchema,
     type: z.literal('condition'),
@@ -175,6 +192,23 @@ export const ConditionNodeSchema = z
     retry: RetrySchema.optional(), // above-chain node-retry budget (ADR-0040) — the expression runs in the sandbox
   })
   .strict();
+
+/** One author-only condition rule, shared by direct leaf and full-document admission. */
+function validateConditionMatches(
+  node: z.infer<typeof ConditionNodeFields>,
+  ctx: z.RefinementCtx,
+): void {
+  const matches = node.branches.map(({ when }) => `${typeof when}:${String(when)}`);
+  if (findDuplicates(matches).length > 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['branches'],
+      message: 'duplicate branch when value(s)',
+    });
+  }
+}
+
+export const ConditionNodeSchema = ConditionNodeFields.superRefine(validateConditionMatches);
 
 export const TransformNodeSchema = z
   .object({
@@ -192,7 +226,12 @@ export const ParallelNodeSchema = z
     id: kebabIdSchema,
     type: z.literal('parallel'),
     // Authoritative for branch membership; the parser materializes a fan-out edge per entry.
-    parallel_of: z.array(kebabIdSchema).min(1),
+    parallel_of: z
+      .array(kebabIdSchema)
+      .min(1)
+      .refine((members) => findDuplicates(members).length === 0, {
+        message: 'duplicate parallel_of member(s)',
+      }),
   })
   .strict();
 
@@ -217,15 +256,24 @@ export const OutputNodeSchema = z
   })
   .strict();
 
-/** The authored node discriminated union. */
-export const NodeSchema = z.discriminatedUnion('type', [
+/**
+ * Node fields for frozen workflow snapshots. Retains the prior full-workflow parallel
+ * uniqueness rule; newly authored condition/gate checks are composed separately below.
+ */
+export const NodeSnapshotSchema = z.discriminatedUnion('type', [
   InputNodeSchema,
   AgentNodeSchema,
-  HumanGateNodeSchema,
-  ConditionNodeSchema,
+  HumanGateNodeFields,
+  ConditionNodeFields,
   TransformNodeSchema,
   ParallelNodeSchema,
   MergeNodeSchema,
   OutputNodeSchema,
 ]);
+
+/** The authored node union, with the same cross-field authorities as its exported leaves. */
+export const NodeSchema = NodeSnapshotSchema.superRefine((node, ctx) => {
+  if (node.type === 'human_gate') validateHumanGateTimeout(node, ctx);
+  if (node.type === 'condition') validateConditionMatches(node, ctx);
+});
 export type WorkflowNode = z.infer<typeof NodeSchema>;

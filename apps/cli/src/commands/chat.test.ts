@@ -1,8 +1,22 @@
+import { createCliInvocation } from '../process/invocation.js';
+import { invocationFixture } from '../process/invocation.test-support.js';
+import { witnessNativeToolProcess } from './native-forwarding.test-support.js';
+import { appendGrant, fingerprint, resolveStdioSpawn } from '../engine/mcp-consent.js';
+import { mcpConsentPath } from '../engine/mcp-consent-gate.js';
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough, Readable } from 'node:stream';
+import { fileURLToPath } from 'node:url';
 
 import type { SessionStreamHandleEvent } from '@relavium/core';
 import { makeLlmError, type ProviderId, type StreamChunk } from '@relavium/llm';
@@ -266,6 +280,135 @@ describe('chatCommand', () => {
     expect(full?.messages[1]?.content[0]).toEqual({ type: 'text', text: 'hi there' });
   });
 
+  it('keeps no-Ink job-control custody while the old host cleanup remains pending', async () => {
+    const f = invocationFixture();
+    const { d, out } = deps([], []);
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let suspend: (() => void) | undefined;
+    let continuation: (() => void) | undefined;
+    const selfStop = vi.fn(() => continuation?.());
+    const done = chatCommand(
+      { agent: undefined },
+      {
+        ...d,
+        ...INERT_HOIST,
+        invocation: f.invocation,
+        io: { ...d.io, stdoutIsTty: true },
+        jobControlLifecycle: {
+          supported: true,
+          onSuspend: (callback) => {
+            suspend = callback;
+            return () => {
+              if (suspend === callback) suspend = undefined;
+            };
+          },
+          onContinue: (callback) => {
+            continuation = callback;
+            return () => {
+              if (continuation === callback) continuation = undefined;
+            };
+          },
+          suspendSelf: selfStop,
+        },
+        buildSession: async (options) => ({
+          ...(await buildChatSession(options)),
+          whenHostSafeToClose: () => held,
+        }),
+        drive: async (ctx) => {
+          ctx.startSession();
+          await ctx.processLine('/exit');
+          return { kind: 'exit' };
+        },
+      },
+    );
+    try {
+      await vi.waitFor(() => expect(f.registry.activeOwners).toBe(3));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(suspend, 'CHAT_JOB_CUSTODY_DURING_OLD_HOST_JOIN').toBeTypeOf('function');
+      suspend?.();
+      await vi.waitFor(() => expect(selfStop).toHaveBeenCalledOnce());
+      expect(out()).toContain(EXIT_ALT_SCREEN);
+      expect(out().split(ENTER_ALT_SCREEN)).toHaveLength(3); // Initial enter and reversible gap reclaim.
+    } finally {
+      release();
+    }
+    expect(await done).toBe(EXIT_CODES.chatEnded);
+    expect(f.registry.activeOwners).toBe(0);
+  });
+
+  it('owns a real SQLite chat turn through host retirement before the shared DB tail', async () => {
+    const f = invocationFixture();
+    const { d, store, sessionId } = deps(['hello', '/exit'], [textTurn('owned reply')]);
+    const close = vi.fn(() => {
+      expect(f.registry.activeOwners, 'CHAT_NATIVE_HOST_RETIRES_BEFORE_SHARED_DB').toBe(1);
+    });
+    const result = await chatCommand(
+      { agent: undefined },
+      {
+        ...d,
+        ...INERT_HOIST,
+        invocation: f.invocation,
+        openSessionStore: () => ({ store, db: client.db, close }),
+        buildSession: (options) => {
+          expect(options.workOwner).toBeDefined();
+          expect(options.workOwner?.invocation).toBe(f.invocation);
+          return buildChatSession(options);
+        },
+        drive: async (ctx) => {
+          expect(ctx.workOwner?.invocation).toBe(f.invocation);
+          expect(ctx.subscribeInterrupt).toBeDefined();
+          return linesDriver(['hello', '/exit'])(ctx);
+        },
+      },
+    );
+    expect(result).toBe(4);
+    expect(store.loadFull(sessionId)?.messages.map((message) => message.role)).toEqual([
+      'user',
+      'assistant',
+    ]);
+    expect(close).toHaveBeenCalledOnce();
+    expect(f.registry.activeOwners).toBe(0);
+    expect(f.exit).not.toHaveBeenCalled();
+  });
+
+  it('observes an escaping driver fault before held actual-host cleanup and keeps the shared DB open', async () => {
+    const f = invocationFixture();
+    const { d, store } = deps([], []);
+    const primary = new Error('PRIVATE_OWNED_DRIVER_FAULT');
+    let release: () => void = () => undefined;
+    const safe = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const close = vi.fn();
+    const run = chatCommand(
+      { agent: undefined },
+      {
+        ...d,
+        ...INERT_HOIST,
+        invocation: f.invocation,
+        openSessionStore: () => ({ store, db: client.db, close }),
+        buildSession: async (options) => ({
+          ...(await buildChatSession(options)),
+          whenHostSafeToClose: () => safe,
+        }),
+        drive: () => {
+          throw primary;
+        },
+      },
+    );
+    const refused = expect(run).rejects.toBe(primary);
+    await vi.waitFor(() => expect(f.registry.budget.deadline()).toBe(3000));
+    expect(close, 'CHAT_DRIVER_FAULT_PRECEDES_HELD_HOST_JOIN').not.toHaveBeenCalled();
+    expect(f.registry.observations.exitCode()).toBe(9);
+    release();
+    await refused;
+    expect(close).toHaveBeenCalledOnce();
+    expect(f.registry.activeOwners).toBe(0);
+  });
+
   it('routes chat SIGTSTP/SIGCONT through reversible job control, never the termination lifecycle (G0)', async () => {
     const { d } = deps([], [textTurn('unused')]);
     const writes: string[] = [];
@@ -413,6 +556,92 @@ describe('chatCommand', () => {
         { id: 'mcp', label: 'MCP servers', status: 'warn', detail: 'none configured' },
       ]),
   };
+
+  it.each([false, true])(
+    'drops a late doctor report after the owned chat stops (interactive=%s)',
+    async (interactive) => {
+      const f = invocationFixture();
+      let release = (): void => undefined;
+      let entered = (): void => undefined;
+      const started = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const { d, err } = deps([], [], {
+        doctorProbes: {
+          ...fakeDoctorProbes,
+          deepProviders: async () => {
+            entered();
+            await held;
+            return [{ id: 'late', label: 'LATE_DOCTOR_REPORT', status: 'ok', detail: 'late' }];
+          },
+        },
+      });
+      const done = chatCommand(
+        { agent: undefined },
+        {
+          ...d,
+          ...INERT_HOIST,
+          invocation: f.invocation,
+          io: { ...d.io, stdoutIsTty: interactive, stdinIsTty: interactive },
+          drive: async (ctx) => {
+            ctx.startSession();
+            const report = ctx.processLine('/doctor --deep');
+            await started;
+            const notices = (): string[] =>
+              ctx.store
+                .getSnapshot()
+                .state.transcript.filter((entry) => entry.role === 'notice')
+                .map((entry) => entry.text);
+            expect(interactive ? notices().join('\n') : err()).toContain('doctor: validating');
+            ctx.workOwner?.stop();
+            release();
+            await report;
+            expect(
+              interactive ? notices().join('\n') : err(),
+              'CHAT_NO_POST_STOP_SLASH_NOTICE',
+            ).not.toContain('LATE_DOCTOR_REPORT');
+            return { kind: 'exit' };
+          },
+        },
+      );
+      try {
+        expect(await done).toBe(4);
+      } finally {
+        release();
+      }
+      expect(f.registry.activeOwners).toBe(0);
+    },
+  );
+
+  it('leaves an owned export infrastructure failure to the final diagnostic instead of publishing a slash notice', async () => {
+    const f = invocationFixture();
+    const { d, store, err } = deps([], []);
+    const failure = new Error('PRIVATE_EXPORT_READ_FAILURE');
+    const done = chatCommand(
+      { agent: undefined },
+      {
+        ...d,
+        ...INERT_HOIST,
+        invocation: f.invocation,
+        drive: async (ctx) => {
+          ctx.startSession();
+          vi.spyOn(store, 'loadFull').mockImplementationOnce(() => {
+            throw failure;
+          });
+          await ctx.processLine('/export');
+          expect(f.registry.observations.exitCode()).toBe(9);
+          expect(err(), 'CHAT_NO_POST_FAULT_EXPORT_NOTICE').not.toContain('export failed:');
+          expect(err()).not.toContain('PRIVATE_EXPORT_READ_FAILURE');
+          return { kind: 'exit' };
+        },
+      },
+    );
+    expect(await done).toBe(9);
+    expect(f.registry.activeOwners).toBe(0);
+  });
 
   it('/doctor runs the fast tier into the notice channel (stderr, non-TTY), without ending the session', async () => {
     const { d, err, store, sessionId } = deps(['/doctor', 'hello', '/exit'], [textTurn('hi')], {
@@ -1863,6 +2092,154 @@ describe('chatCommand', () => {
     return p;
   }
 
+  it('binds the default standalone editor to the original native registry', async () => {
+    const invocation = createCliInvocation({ exit: vi.fn(), setExitCode: vi.fn() });
+    const marker = join(cwd, 'editor-started');
+    const release = join(cwd, 'editor-release');
+    const script = fileURLToPath(new URL('../render/fixtures/native-editor.mjs', import.meta.url));
+    const { d } = deps([], []);
+    const drive: ChatDriver = async (ctx) => {
+      ctx.startSession();
+      ctx.store.notice('editor transcript witness');
+      if (ctx.suspendPort === undefined) throw new Error('default editor suspend port is missing');
+      ctx.suspendPort.attach((body) => body());
+      const editing = ctx.processLine('/edit');
+      try {
+        await vi.waitFor(
+          () => {
+            expect(invocation.registry.activeOwners, 'NATIVE_STANDALONE_EDITOR_FORWARDING').toBe(4);
+            expect(readFileSync(marker, 'utf8')).toBe('ready\n');
+          },
+          { interval: 5, timeout: 3000 },
+        );
+      } finally {
+        writeFileSync(release, 'release');
+        await editing;
+        ctx.suspendPort.attach(undefined);
+      }
+      await vi.waitFor(() => expect(invocation.registry.activeOwners).toBe(3));
+      expect(readFileSync(marker, 'utf8')).toBe('ready\nreleased\n');
+      await ctx.processLine('/exit');
+      return { kind: ctx.stopReason() };
+    };
+    expect(
+      await chatCommand(
+        { agent: undefined },
+        {
+          ...d,
+          ...INERT_HOIST,
+          invocation,
+          io: {
+            ...d.io,
+            stdoutIsTty: true,
+            env: { EDITOR: `"${process.execPath}" "${script}" "${marker}" "${release}"` },
+          },
+          drive,
+        },
+      ),
+    ).toBe(EXIT_CODES.chatEnded);
+    expect(existsSync(marker)).toBe(true);
+  }, 10000);
+
+  it.each([
+    ['fresh', 'clear'],
+    ['fresh', 'reseat'],
+    ['resumed', 'clear'],
+    ['resumed', 'reseat'],
+  ] as const)(
+    'retains the real consent gate and native authority through a %s standalone %s rebuild',
+    async (entry, replacement) => {
+      const agentPath = writeMcpAgent();
+      const spawn = await resolveStdioSpawn(
+        { serverId: 'fs', provenance: { kind: 'inline' }, command: 'node', args: [], env: {} },
+        cwd,
+      );
+      appendGrant(mcpConsentPath(home), {
+        v: 1,
+        digest: fingerprint(spawn),
+        command: spawn.command,
+        args: [...spawn.args],
+        envNames: [],
+        cwd: spawn.cwd,
+        grantedAt: '2026-10-16T00:00:00.000Z',
+      });
+      const { d, err, store } = deps([], []);
+      const invocation = createCliInvocation({ exit: vi.fn(), setExitCode: vi.fn() });
+      let starts = 0;
+      let nativeCreations = 0;
+      const connect: NonNullable<Parameters<typeof buildChatSession>[0]['startMcpClient']> = (
+        servers,
+      ) => {
+        starts++;
+        return realStartMcpClient(
+          servers.map((server) => ({ ...server, open: () => Promise.resolve(mcpConn().conn) })),
+        );
+      };
+      let drives = 0;
+      const drive: ChatDriver = async (ctx) => {
+        ctx.startSession();
+        await ctx.onActivated?.(() => !ctx.shouldStop());
+        if (drives++ === 0) {
+          if (replacement === 'clear') return { kind: 'clear' };
+          ctx.onReseat?.({ modelId: 'claude-opus-4-8', provider: 'anthropic' });
+          return { kind: ctx.stopReason() };
+        }
+        await ctx.processLine('/exit');
+        return { kind: ctx.stopReason() };
+      };
+      let originalSessionId = '';
+      if (entry === 'resumed') {
+        await chatCommand(
+          { agent: agentPath },
+          {
+            ...d,
+            drive: linesDriver(['/exit']),
+            buildSession: (options) => buildChatSession({ ...options, startMcpClient: connect }),
+          },
+        );
+        originalSessionId = store.listSessions()[0]?.id ?? '';
+        expect(originalSessionId).not.toBe('');
+      }
+      const nativeDeps: ChatCommandDeps & ChatResumeCommandDeps = {
+        ...d,
+        ...INERT_HOIST,
+        invocation,
+        io: { ...d.io, stdoutIsTty: true },
+        drive,
+        // Keep the production consent gate untouched. Fake only the post-consent connection.
+        buildSession: async (options) => {
+          await witnessNativeToolProcess(
+            options.nativeProcesses,
+            invocation,
+            cwd,
+            drives === 0 ? 2 : 3,
+          );
+          nativeCreations++;
+          return buildChatSession({ ...options, startMcpClient: connect });
+        },
+        buildResumedSession: async (options) => {
+          await witnessNativeToolProcess(
+            options.nativeProcesses,
+            invocation,
+            cwd,
+            drives === 0 ? 2 : 3,
+          );
+          nativeCreations++;
+          return buildResumedChatSession({ ...options, startMcpClient: connect });
+        },
+      };
+      if (entry === 'resumed') {
+        await chatResumeCommand({ sessionId: originalSessionId }, nativeDeps);
+      } else {
+        await chatCommand({ agent: agentPath }, nativeDeps);
+      }
+      expect(nativeCreations, 'NATIVE_STANDALONE_BUILD_FORWARDING').toBe(2);
+      expect(starts, 'CONSENT_REBUILD_FORWARDING').toBe(entry === 'resumed' ? 3 : 2);
+      expect(drives).toBe(2);
+      expect(err()).not.toContain('without a consent gate');
+    },
+  );
+
   it('an MCP-declaring chat agent: surfaces dropped tools to stderr and tears the connection down at REPL teardown (2.R)', async () => {
     // chat.ts's OWN command-level MCP wiring: surfaceMcpSkipped (→ stderr, never the stdout chrome) + the
     // closeMcp teardown in runReplLoop's finally. Drives the REAL buildChatSession over a fake connection.
@@ -2310,6 +2687,7 @@ describe('chatResumeCommand (2.N)', () => {
 
   it('/clear from a resumed session rebinds the SNAPSHOT agent into a fresh session (ADR-0062 §7)', async () => {
     writeOutputEstimate(cwd);
+    const invocation = createCliInvocation({ exit: vi.fn(), setExitCode: vi.fn() });
     const resumedEstimates: (number | undefined)[] = [];
     const freshEstimates: (number | undefined)[] = [];
     const store = createSessionStore(client.db);
@@ -2334,12 +2712,20 @@ describe('chatResumeCommand (2.N)', () => {
         { sessionId: 'id-0' },
         {
           ...d,
+          invocation,
           drive: clearThenExit,
-          buildSession: (options) => {
+          buildSession: async (options) => {
+            await witnessNativeToolProcess(options.nativeProcesses, invocation, options.cwd, 2);
             freshEstimates.push(options.maxTokensEstimate);
             return buildChatSession(options);
           },
-          buildResumedSession: (options) => {
+          buildResumedSession: async (options) => {
+            await witnessNativeToolProcess(
+              options.nativeProcesses,
+              invocation,
+              options.record.context.workingDir,
+              2,
+            );
             resumedEstimates.push(options.maxTokensEstimate);
             return buildResumedChatSession(options);
           },
@@ -2360,6 +2746,7 @@ describe('chatResumeCommand (2.N)', () => {
 
   it('preserves the configured estimate through a resumed-session model reseat', async () => {
     writeOutputEstimate(cwd);
+    const invocation = createCliInvocation({ exit: vi.fn(), setExitCode: vi.fn() });
     const store = createSessionStore(client.db);
     await chatCommand({ agent: undefined }, freshDeps(['hello', '/exit'], [textTurn('hi')], store));
     seedCatalogModel(client.db, 'anthropic', 'claude-sonnet-4-6');
@@ -2382,10 +2769,17 @@ describe('chatResumeCommand (2.N)', () => {
         { sessionId: 'id-0' },
         {
           ...d,
+          invocation,
           ...INERT_HOIST,
           io: { ...d.io, stdoutIsTty: true },
           drive,
-          buildResumedSession: (options) => {
+          buildResumedSession: async (options) => {
+            await witnessNativeToolProcess(
+              options.nativeProcesses,
+              invocation,
+              options.record.context.workingDir,
+              estimates.length === 0 ? 2 : 3,
+            );
             estimates.push(options.maxTokensEstimate);
             return buildResumedChatSession(options);
           },
@@ -2644,9 +3038,12 @@ describe('drivePlain', () => {
     expect(processed).toEqual(['hello', '/exit']);
   });
 
-  it.each([drivePlain, driveJson])(
-    'ends without waiting for input when activation synchronously stops the session (%s)',
-    async (drive) => {
+  it.each([
+    { label: 'plain', drive: drivePlain },
+    { label: 'json', drive: driveJson },
+  ])(
+    'ends without waiting for input when activation synchronously stops the session ($label)',
+    async ({ drive }) => {
       const stdin = new PassThrough(); // deliberately never sends a line or EOF before driver completion.
       const { ctx, processed } = await plainCtx(stdin);
       const completed = vi.fn();

@@ -284,8 +284,12 @@ export const FallbackChainEntrySchema = z
   .strict();
 export type FallbackChainEntry = z.infer<typeof FallbackChainEntrySchema>;
 
-/** A reusable agent definition (`.agent.yaml` or an inline `agents:` entry). */
-export const AgentSchema = z
+/**
+ * Frozen session snapshots retain the structural admission contract they were written under.
+ * New authored fallback uniqueness is intentionally applied only by AgentSchema below; history
+ * must preserve old ordered entries and their attempt budgets, not deduplicate or reject them.
+ */
+export const AgentSnapshotSchema = z
   .object({
     id: kebabIdSchema,
     name: z.string().optional(),
@@ -324,9 +328,24 @@ export const AgentSchema = z
     if (duplicates.length > 0) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: `duplicate mcp_servers id(s): ${duplicates.join(', ')}`,
+        message: 'duplicate mcp_servers identity',
         path: ['mcp_servers'],
       });
     }
   });
+/** A reusable agent definition (`.agent.yaml` or an inline `agents:` entry). */
+export const AgentSchema = AgentSnapshotSchema.superRefine((agent, ctx) => {
+  // Identity is the model/provider pair within the fallback list, not the attempt count.
+  // Equality with the primary is permitted; tuple encoding avoids delimiter collisions.
+  const fallbacks = (agent.fallback_chain ?? []).map(({ model, provider }) =>
+    JSON.stringify([model, provider]),
+  );
+  if (findDuplicates(fallbacks).length > 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['fallback_chain'],
+      message: 'duplicate fallback_chain model/provider pair(s)',
+    });
+  }
+});
 export type Agent = z.infer<typeof AgentSchema>;

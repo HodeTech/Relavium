@@ -22,9 +22,14 @@ import { CliError } from '../process/errors.js';
 export interface RunJobControl {
   /** Detach the listeners. Idempotent; safe to call from a `finally` that also runs on the throw path. */
   readonly dispose: () => void;
+  /** Actual completed registration/removal, independently of an early dispose request. */
+  readonly released?: Promise<void>;
 }
 
 export interface WireRunJobControlOptions {
+  readonly adopt?: (control: RunJobControl) => void;
+  /** Observe the original self-stop failure before reversible listener recovery consumes it. */
+  readonly onFailure?: (cause: unknown) => void;
   /** Where the cursor codes go — the same seam the renderers write through, so tests capture them. */
   readonly write: (text: string) => void;
   /** Injectable signal registration (`defaultJobControlLifecycle` in production; a fake in tests). */
@@ -33,101 +38,139 @@ export interface WireRunJobControlOptions {
 
 export function wireRunJobControl(opts: WireRunJobControlOptions): RunJobControl {
   const lifecycle = opts.lifecycle ?? defaultJobControlLifecycle;
-  // Windows has no job control: `chmod`-style no-op rather than a half-wired handler (ADR-0050's precedent for
-  // a documented per-platform divergence).
-  if (!lifecycle.supported) {
-    return { dispose: () => undefined };
-  }
-
   let disposed = false;
-  let cleanupComplete = false;
-  let continueRemoved = false;
-  let removeSuspend: () => void = () => undefined;
-  /**
-   * Is the suspend listener currently attached?
-   *
-   * Load-bearing, not bookkeeping. Both re-attach sites are reachable without an intervening detach — a second
-   * SIGCONT with no SIGTSTP between them, or a `suspendSelf` that throws and is then followed by one — and an
-   * unconditional re-attach would register a SECOND listener while OVERWRITING `removeSuspend` with the new
-   * handle. The first listener then leaks for the process's life and the next Ctrl-Z runs the handler twice,
-   * writing `SHOW_CURSOR` and raising SIGTSTP twice over.
-   */
+  let constructing = true;
+  let unknownRegistration = false;
+  let registrations = 0;
   let attached = false;
-  const attach = (): void => {
-    if (disposed || attached) return;
-    removeSuspend = lifecycle.onSuspend(onSuspend);
-    attached = true;
+  let continueRegistered = false;
+  let removeSuspend: () => void = () => undefined;
+  let removeContinue: () => void = () => undefined;
+  let acknowledge: () => void = () => undefined;
+  const released = new Promise<void>((resolve) => {
+    acknowledge = resolve;
+  });
+  const acknowledgeReleased = (): void => {
+    if (
+      disposed &&
+      !constructing &&
+      registrations === 0 &&
+      !unknownRegistration &&
+      !attached &&
+      !continueRegistered
+    )
+      acknowledge();
   };
-  const detach = (): void => {
+  const detached = (): void => {
     if (!attached) return;
-    removeSuspend();
     attached = false;
+    registrations += 1; // Removal reentry cannot recurse into or acknowledge the same entered remover.
+    try {
+      removeSuspend();
+    } catch (cause) {
+      attached = true;
+      throw cause;
+    } finally {
+      registrations -= 1;
+    }
+    acknowledgeReleased();
+  };
+  const dispose = (): void => {
+    disposed = true; // Callback and future-registration admission closes before either native remover.
+    let failed: { readonly cause: unknown } | undefined;
+    try {
+      detached();
+    } catch (cause) {
+      failed = { cause };
+    }
+    try {
+      if (continueRegistered) {
+        continueRegistered = false;
+        registrations += 1;
+        try {
+          removeContinue();
+        } catch (cause) {
+          continueRegistered = true;
+          throw cause;
+        } finally {
+          registrations -= 1;
+        }
+      }
+    } catch (cause) {
+      failed ??= { cause };
+    }
+    if (failed !== undefined) throw new CliError('cli_internal', '', { cause: failed.cause });
+    acknowledgeReleased();
   };
   const onSuspend = (): void => {
     if (disposed) return;
-    // Restore the cursor BEFORE the process stops. Once stopped we run no code, so there is no later chance —
-    // and the shell the user lands in inherits whatever state we left.
     opts.write(SHOW_CURSOR);
-    // DETACH before re-raising. `suspendSelf` sends SIGTSTP to our own pid, and a signal with a handler
-    // installed runs the handler instead of taking the default stop action — so raising while still attached
-    // re-enters this function forever and the process never actually stops. Removing the listener lets the
-    // default action run; SIGCONT reattaches it below.
-    detach();
+    if (disposed) return;
+    detached();
+    if (disposed) return;
     try {
-      // Re-raise so the process actually stops. Without this the handler swallows Ctrl-Z and the run keeps
-      // going, which is worse than the bug being fixed: the user pressed a key that did nothing.
       lifecycle.suspendSelf();
-    } catch {
-      // The raise failed, so we are still running and still need Ctrl-Z to work — put the handler back.
+    } catch (cause) {
+      opts.onFailure?.(cause);
       attach();
     }
   };
-  attach();
-  let removeContinue: () => void;
-  try {
-    removeContinue = lifecycle.onContinue(() => {
-      if (disposed) return;
-      // Reattach FIRST: the suspend handler detached itself before raising, so without this a second Ctrl-Z
-      // would take the default action with no cursor restore — exactly the bug this file exists to fix.
-      attach();
-      // Foregrounded: ink is drawing again, so hide the cursor as it expects. If the run already finished while
-      // we were stopped, the extra hide is harmless — the renderer's own teardown shows it again.
-      opts.write(HIDE_CURSOR);
-    });
-  } catch (error) {
-    disposed = true;
+  const attach = (): void => {
+    if (disposed || attached) return;
+    registrations += 1; // A reentrant stop cannot retire a registration whose remover is not returned yet.
+    let acquired = false;
     try {
-      detach();
-    } catch (cleanupError) {
-      throw new CliError('internal', 'Run job-control setup failed.', {
-        cause: { registrationError: error, cleanupError },
-      });
+      removeSuspend = lifecycle.onSuspend(onSuspend);
+      acquired = true;
+      attached = true;
+      if (disposed) detached();
+    } catch (cause) {
+      if (!acquired) unknownRegistration = true;
+      throw cause;
+    } finally {
+      registrations -= 1;
     }
-    throw error;
-  }
-
-  return {
-    dispose: () => {
-      if (cleanupComplete) return;
-      // Retire callbacks before either removal. A failed removal retains its capability for retry.
-      disposed = true;
-      let failure: { readonly cause: unknown } | undefined;
-      try {
-        detach();
-      } catch (cause) {
-        failure = { cause };
-      }
-      try {
-        if (!continueRemoved) {
-          removeContinue();
-          continueRemoved = true;
-        }
-      } catch (cause) {
-        failure ??= { cause };
-      }
-      if (failure !== undefined)
-        throw new CliError('internal', 'Run job-control cleanup failed.', { cause: failure.cause });
-      cleanupComplete = true;
-    },
+    if (disposed) dispose();
   };
+  const control = Object.freeze({ dispose, released });
+  opts.adopt?.(control); // Ownership precedes the first potentially allocating native registration.
+  let primaryFailure: { readonly cause: unknown } | undefined;
+  let cleanupFailure: { readonly cause: unknown } | undefined;
+  try {
+    if (lifecycle.supported && !disposed) {
+      attach();
+      if (!disposed) {
+        registrations += 1;
+        try {
+          removeContinue = lifecycle.onContinue(() => {
+            if (disposed) return;
+            attach();
+            if (!disposed) opts.write(HIDE_CURSOR);
+          });
+          continueRegistered = true;
+        } catch (cause) {
+          unknownRegistration = true;
+          throw cause;
+        } finally {
+          registrations -= 1;
+        }
+      }
+    }
+  } catch (cause) {
+    primaryFailure = { cause };
+    disposed = true;
+  } finally {
+    constructing = false;
+    if (disposed || !lifecycle.supported) {
+      try {
+        dispose();
+      } catch (cause) {
+        cleanupFailure = { cause };
+      }
+    }
+  }
+  if (primaryFailure !== undefined && cleanupFailure === undefined) throw primaryFailure.cause;
+  if (primaryFailure !== undefined || cleanupFailure !== undefined)
+    throw new CliError('cli_internal', '', { cause: { primaryFailure, cleanupFailure } });
+  return control;
 }

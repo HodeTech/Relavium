@@ -1,5 +1,7 @@
 import { register } from 'node:module';
 
+process.send?.({ phase: 'loader-entry' });
+
 // register() is available at the supported Node 22.13 floor; registerHooks() is not.
 // Causal children inherit the phase runtime and must use its pinned source/dependency loader.
 if (process.env['RELAVIUM_USAGE_RUNTIME'] === undefined)

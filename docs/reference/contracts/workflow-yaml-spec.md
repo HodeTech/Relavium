@@ -25,7 +25,7 @@ The same file parses and runs **identically** on every surface — desktop canva
 schema_version: '1.0'        # required — validated for forward-compat parsing
 workflow:
   id: string                 # required, unique, kebab-case
-  version: semver            # e.g. '1.2.0'
+  version: string            # optional; Semver recommended, e.g. '1.2.0'
   name: string
   description: string
   tags: string[]
@@ -48,7 +48,7 @@ workflow:
 | --- | --- | --- |
 | `schema_version` | yes | Top-level, outside `workflow:`. Currently `'1.0'`. |
 | `workflow.id` | yes | Unique, kebab-case. |
-| `workflow.version` | recommended | Semver of the workflow itself, for human change tracking. |
+| `workflow.version` | no | Optional string for human change tracking; Semver is recommended, not format-validated. |
 | `workflow.name` / `description` / `tags` | no | Display + filtering metadata. |
 | `workflow.metadata` | no | Free-form provenance map — a real schema field, so it **survives parse → serialize round-trips** (unlike comments). Used by session export to carry the source transcript ([ADR-0026](../../decisions/0026-session-export-to-workflow.md)). |
 | `trigger` | no | Defaults to `manual`. |
@@ -180,11 +180,23 @@ a CLI has only strings, so `--input count=3` becomes the number `3` before the e
 is strict**: it applies defaults, rejects unknown keys, and enforces every rule above against the value it
 receives, rejecting `"3"` for a `number`. That split is what makes two surfaces behave identically.
 
-> **Secrets are never interpolated into agent text.** A `secret`-typed input may feed a tool credential/header field, but the parser **rejects** a `secret` input interpolated into a `prompt_template` or any agent/tool text — masking only covers *event* payloads, so an interpolated secret would otherwise reach the model and be persisted in the message store. The rejection is **transitive** (taint-tracked through `context` entries and any derived value — a secret cannot be laundered through an intermediate variable). This is a security tightening; see [ADR-0029](../../decisions/0029-tool-policy-hardening.md).
+> **Declared secrets are unavailable to public text and expressions.** The parser rejects a
+> `secret` input interpolated into `prompt_template` or other agent/tool text, transitively through
+> `context` entries ([ADR-0029](../../decisions/0029-tool-policy-hardening.md)). Runtime public
+> template resolution also refuses denied context/direct secret-input references before filters
+> or defaults, including hand-constructed workflows. Expressions receive denied accessors for
+> secret-derived context and supplied secret inputs, rather than raw values or direct-input display
+> markers; omitted optional secrets remain absent. Run-start/input-node/display markers remain
+> unchanged. The exact provenance and finite observed-access contract is in
+> [the expression specification](../shared-core/expression-sandbox-spec.md#secret-context-boundary).
+> The separate [tool provenance boundary](../shared-core/tool-registry.md#secret-argument-provenance)
+> does not claim a live authored tool-input mapping producer.
 
 ## Context and interpolation
 
-`context` declares named values available throughout the workflow as `{{ctx.key}}`. `{{ ... }}` interpolation is for **template fields only** — `context` values, agent `prompt_template` / `system_prompt_append`, and human-gate `assignee` / `message_template`. An **`inputs` default is NOT a template field** ([ADR-0083](../../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md) §3): it is resolved at admission, before a run exists, so `inputs`, `ctx` and `secrets` are all unavailable to it — a `{{ }}` there is an authoring error. It never resolved before either; the engine applied no defaults at all, so what changes is that the mistake is now loud. The **expression fields** are **bare sandboxed JavaScript** ([ADR-0027](../../decisions/0027-expression-sandbox.md)), *not* interpolation: they read the same run scope directly as `run.outputs["x"]` / `inputs.y` / `ctx.z` with no `{{ }}` wrapper. The three sandboxed kinds (the 1.AB `ExpressionKind`) are a `condition` node's `expression`, a `transform`, and a `merge_fn` — each `js` (a `condition`/`transform` carries `expression_type: js`; `jmespath`/`jsonlogic` are reserved and rejected at parse; a `merge_fn` is always `js`). An **edge `condition` is REJECTED at parse in v1.0** ([ADR-0093](../../decisions/0093-an-expression-sees-only-what-it-is-ordered-after.md)): the field was accepted by the schema, described as gating its edge here (twice) and in [node-types.md](../shared-core/node-types.md#edges), and **read by nothing** — so an author could write it and it silently did nothing. Branch on a `condition` NODE instead. *(This sentence described the field as "evaluated by the run loop (1.N)" until 2026-09-02; it never was.)* A context `key`, like an input `name`, must be a referenceable identifier (`[A-Za-z0-9_-]+`).
+`system_prompt_append` is literal authored system text, appended after the agent system prompt with a blank line. Braces remain literal; this does not activate Proposed ADR-0060. Existing reference/dependency and secret-taint scans remain in force.
+
+`context` declares named values available throughout the workflow as `{{ctx.key}}`. `{{ ... }}` interpolation is for **template fields only** — `context` values, agent `prompt_template`, and human-gate `assignee` / `message_template`. An **`inputs` default is NOT a template field** ([ADR-0083](../../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md) §3): it is resolved at admission, before a run exists, so `inputs`, `ctx` and `secrets` are all unavailable to it — a `{{ }}` there is an authoring error. It never resolved before either; the engine applied no defaults at all, so what changes is that the mistake is now loud. The **expression fields** are **bare sandboxed JavaScript** ([ADR-0027](../../decisions/0027-expression-sandbox.md)), *not* interpolation: they read the same run scope directly as `run.outputs["x"]` / `inputs.y` / `ctx.z` with no `{{ }}` wrapper. The three sandboxed kinds (the 1.AB `ExpressionKind`) are a `condition` node's `expression`, a `transform`, and a `merge_fn` — each `js` (a `condition`/`transform` carries `expression_type: js`; `jmespath`/`jsonlogic` are reserved and rejected at parse; a `merge_fn` is always `js`). An **edge `condition` is REJECTED at parse in v1.0** ([ADR-0093](../../decisions/0093-an-expression-sees-only-what-it-is-ordered-after.md)): the field was accepted by the schema, described as gating its edge here (twice) and in [node-types.md](../shared-core/node-types.md#edges), and **read by nothing** — so an author could write it and it silently did nothing. Branch on a `condition` NODE instead. *(This sentence described the field as "evaluated by the run loop (1.N)" until 2026-09-02; it never was.)* A context `key`, like an input `name`, must be a referenceable identifier (`[A-Za-z0-9_-]+`).
 
 ```yaml
 context:
@@ -194,7 +206,11 @@ context:
     value: '{{inputs.file_path | read_file}}'   # pipe filters are supported
 ```
 
-A direct `{{secrets.<name>}}` reference in a workflow `context` value is refused at parse time, even when no later field reads it: that namespace has no workflow-context resolver. This does not activate Proposed [ADR-0060](../../decisions/0060-session-ctx-prompt-interpolation.md). A declared caller-supplied `secret` input may still propagate through `inputs` and intermediate `ctx` entries; the existing transitive taint rule refuses a read of that value by model/human text. MCP-server `env` named-secret resolution remains its separate credential boundary.
+A direct `{{secrets.<name>}}` reference in a workflow `context` value is refused at parse time, even when no later field reads it: that namespace has no workflow-context resolver. This does not activate Proposed [ADR-0060](../../decisions/0060-session-ctx-prompt-interpolation.md). A declared caller-supplied `secret` input may still propagate during trusted raw context resolution;
+the engine qualifies that result before execution or budget preparation. Only clean strings and
+denied-key metadata enter the public context projection. Parser and runtime public-template
+consumers refuse model/human text reads, while bare expressions use the
+[VM denial contract](../shared-core/expression-sandbox-spec.md#secret-context-boundary). MCP-server `env` named-secret resolution remains its separate credential boundary.
 
 Common interpolation namespaces:
 
@@ -202,7 +218,7 @@ Common interpolation namespaces:
 - `{{ctx.<key>}}` — context entries.
 - `{{run.outputs["<node-id>"]}}` — a completed node's output, in a template field; the same data is read as bare `run.outputs["<node-id>"]` (no `{{ }}`) inside a `condition` / `transform` / `merge_fn` expression.
 - `{{run.id}}` — the run's id (1.AF) — for an output node's `save_to` path template (e.g. `out/{{ run.id }}/image.png`). The interpolation engine (1.L2) recognizes the `run.id` namespace alongside `run.outputs`; it resolves only where the run id is in scope (today: `save_to`), so a `{{ run.id }}` elsewhere surfaces a typed `unresolved_reference` rather than an empty string.
-- Pipe filters: `| read_file`, `| json`, `| length`, `| default("…")`.
+- Pipe filters: `| read_file`, `| json`, `| length`, `| default("…")`. Quoted filter arguments decode only an escaped matching quote or backslash, after structural splitting. Other escapes remain literal, including Windows path segments; they do not become control characters.
 
 > **Evaluation timing.** `context` entries are evaluated **eagerly, exactly once, before any node runs**, and the resolved values are immutable and cached for the whole run. A pipe-filter failure (e.g. `read_file` on a missing path) is a **validation error** that fails the run before it starts (CLI exit code 2), never a mid-run surprise. A `context` value may reference `{{inputs.*}}` but **not** `{{run.outputs[...]}}` (no node has run yet) — doing so is a parse error.
 
@@ -306,6 +322,8 @@ Each node has an `id` (kebab-case, unique within the workflow) and a `type`. The
   timeout_action: reject             # reject | approve  (escalate is reserved — see note)
 ```
 
+`timeout_action` requires `timeout_ms` at both standalone node and complete workflow admission. A timeout without an action keeps the safe default `reject`; omitting both sets no timeout.
+
 `timeout_action: approve` auto-approves on timeout — dangerous; use sparingly. **`escalate` is reserved in v1.0**: real escalation needs a Phase-2 notification system, so the validator rejects it for now (use `reject` or `approve`); a timeout then resolves with `decidedBy: 'timeout'`. Because parallel branches may each reach a gate, **multiple gates can be pending at once** — each carries an independent timeout and the surfaces show a pending-gate queue (`relavium gate list`). The gate lifecycle (suspend → notify → resume) is described in [sse-event-schema.md](sse-event-schema.md) and [../../architecture/execution-model.md](../../architecture/execution-model.md).
 
 ### `condition` node
@@ -322,7 +340,7 @@ Each node has an `id` (kebab-case, unique within the workflow) and a `type`. The
   default: synthesize-report  # taken when no `when` matches the evaluated result
 ```
 
-A condition node evaluates `expression` **once** and selects the branch whose `when` value **strictly equals** (`===`, no type coercion) the result; `when` values must be a boolean, string, or number. If no `when` matches and no `default` is set, the run fails with a typed "no branch matched" error rather than stalling. The `when` values are also the named output handles, referenceable from edges as `nodeId:when` (see [Edges](#edges)).
+A condition node evaluates `expression` **once** and selects the branch whose `when` value **strictly equals** (`===`, no type coercion) the result; `when` values must be a boolean, string, or number and unique within the branch list under that typed equality. For example, `true` and `"true"` differ, while numeric `0` and `-0` are duplicates. If no `when` matches and no `default` is set, the run fails with a typed "no branch matched" error rather than stalling. The `when` values are also the named output handles, referenceable from edges as `nodeId:when` (see [Edges](#edges)).
 
 The `expression:` string is a **sandboxed JavaScript expression** — in v1.0 the only `expression_type` is **`js`**, evaluated in a deterministic, resource-capped sandbox (no I/O, no ambient globals, no wall-clock/RNG; [ADR-0027](../../decisions/0027-expression-sandbox.md)). `jmespath` and `jsonlogic` are **reserved** (each would add an undeclared dependency) and deferred to a future ADR. **There is no Python evaluator** — the engine is pure TypeScript ([ADR-0003](../../decisions/0003-pure-ts-engine-not-langgraph-python.md)). The `expression_type` set is owned by [node-types.md](../shared-core/node-types.md#per-type-engine-config); the full sandbox contract — scope, allow-list, caps, determinism, and the `sandbox_error` taxonomy — is owned by [expression-sandbox-spec.md](../shared-core/expression-sandbox-spec.md). Note an expression's **JS syntax is checked at evaluation, not at parse** — a typo'd `expression` parses fine and fails the first time its node runs, so test workflows before production. (An `expression_type` other than `js`, by contrast, **is** rejected at parse.)
 
@@ -353,6 +371,8 @@ A sandboxed JavaScript expression (`expression_type: js`) whose result becomes t
 `merge_strategy` is the **authoritative** name for the aggregation behavior; the canvas (`AggregatorNode`) and engine (`fan_in_config`) carry the same value — see the [merge-strategy reconciliation table](../shared-core/node-types.md#merge-strategy-reconciliation). `best_of_n` (a secondary-LLM picker) is **reserved, not v1.0**, and is not a valid `merge_strategy` value in `'1.0'`. A custom `merge_fn` is a **bare `js` expression** (not a function) evaluated in the [expression sandbox](../shared-core/expression-sandbox-spec.md); it receives `branches` — the branch outputs in the engine's **stable `branchNodeIds` order** (never arrival order, so the merge is deterministic) — plus `run.outputs`. That order is defined by [run-plan.md §fan-in branch order](../shared-core/run-plan.md) — its one canonical home, and deliberately not restated here: three documents carried their own copy of the pairing rule and all three drifted from the code at once.
 
 > **Indices into `branches` are relative, not absolute.** A branch a `condition` routed away from is **omitted** from the array (the survivors keep their relative order), so `branches[1]` is not pinned to any particular authored node. Write a `merge_fn` that tolerates a shorter array — or reach for `object_merge`, which is keyed rather than positional — whenever a branch can be skipped.
+
+`parallel_of` members must be unique at standalone node and complete workflow admission; a duplicate cannot represent a second execution of the same branch.
 
 > **`parallel_of` is authoritative for branch membership.** On a `parallel` node, `parallel_of: [...]` alone defines which nodes are the concurrent branches; the parser materializes a fan-out edge to each listed node, so explicit `from: fan-out` edges are **not required**. The complete example below writes them out for readability, but they are redundant with `parallel_of` and must not contradict it — if both are present they must agree (the validator rejects an explicit fan-out edge to a node not in `parallel_of`).
 
@@ -656,6 +676,7 @@ workflow:
 ## Validation and versioning rules
 
 - The file is parsed and validated against `WorkflowSchema` (Zod, in `@relavium/shared`) at load time; invalid files throw a `WorkflowValidationError` and never start a run.
+- Authored validation diagnostics name field paths and schema-derived reasons (expected types/literals, enum choices and structural constraints). Field locators may name validated declared identifiers; reasons do not echo rejected scalar/enum/literal payloads. Standalone agent parsing uses the same reason authority while preserving `AgentParseError.fields`. Duplicate MCP-registration diagnostics do not repeat the registration identities.
 - `schema_version` is the migration anchor. The format is a public API: breaking changes require a new `schema_version` and a migration tool. Add new optional fields freely; never repurpose or remove an existing one within `'1.0'`.
 - Node `id`s must be unique within a workflow and are referenced by edges, conditions, templates, and `run.outputs`.
 - Relavium resolves configured provider credentials from the OS keychain at call time and does not insert those values into YAML. Arbitrary authored strings can nevertheless contain credentials: schema validation is not content redaction. `secret` inputs are caller-supplied values admitted under [ADR-0083](../../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md), not automatic keychain lookups. MCP-server `env` uses its separate named-secret resolver; author `{{secrets.*}}` placeholders rather than literals. The CLI's [bounded authoring/snapshot review](../cli/commands.md#relavium-import--relavium-export) emits value-free notices at create/import/run and preserves the parsed document and admitted augmented snapshot faithfully. A clean review is not proof that the content is safe to share. See [key custody and content retention](../desktop/keychain-and-secrets.md).

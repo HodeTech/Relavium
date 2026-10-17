@@ -1,5 +1,12 @@
 import type { ModelCatalogLiveModel, ReplaceProviderModelsResult } from '@relavium/db';
-import type { AbortSignalLike, LlmProvider, ModelListing, ProviderId } from '@relavium/llm';
+import { byCodeUnit } from '@relavium/shared';
+import type {
+  AbortSignalLike,
+  LlmInvocationOptions,
+  LlmProvider,
+  ModelListing,
+  ProviderId,
+} from '@relavium/llm';
 
 import { keyHint } from './providers.js';
 
@@ -88,6 +95,12 @@ export interface RefreshCatalogStore {
 }
 
 export interface ModelRefreshDeps {
+  /** Original invocation's transitive SDK/transport work; never part of catalog data. */
+  readonly invocationOptions?: LlmInvocationOptions;
+  /** Original long-lived session admission; recheck after discovery before any shared-database write. */
+  readonly assertAdmitting?: () => void;
+  /** Observe local clock/key/store faults before sibling discovery can hold the refresh result. */
+  readonly onHostFailure?: (cause: unknown) => void;
   /** The keyless `@relavium/llm` adapter for a provider id (from the injected {@link ProviderResolver}). */
   readonly resolveProvider: (id: ProviderId) => LlmProvider | undefined;
   /** Resolve a provider's key (keychain → env → throw). Thrown ⇒ the provider is skipped (`skipped-no-key`). */
@@ -103,7 +116,8 @@ export interface ModelRefreshDeps {
 }
 
 export interface ModelRefreshService {
-  /** Force-refresh every connected provider (or `opts.providers`), per-provider-isolated. Never rejects. The
+  /** Force-refresh every connected provider (or `opts.providers`), with isolated discovery failures.
+   *  Original-owner admission refusals reject rather than admitting more work after stop. The
    *  UNBOUNDED, user-initiated refresh (no TTL backoff) — this is what a one-shot CLI invocation must use
    *  (`relavium models` / `models refresh` do). */
   refresh(opts?: RefreshOptions): Promise<RefreshReport>;
@@ -183,50 +197,97 @@ export function createModelRefreshService(deps: ModelRefreshDeps): ModelRefreshS
   // `refresh()` always attempts.
   const lastAttemptAt = new Map<ProviderId, number>();
 
-  /** Refresh ONE connected provider (its key already resolved). NEVER throws — a fault becomes `status:'failed'`. */
+  /** Refresh one already-selected provider; stopped admission rejects before any new attempt work. */
   const refreshOne = async (
     id: ProviderId,
     key: string,
     signal: AbortSignalLike | undefined,
   ): Promise<RefreshProviderResult> => {
+    deps.assertAdmitting?.();
     // Stamp the ATTEMPT before anything can throw — `refreshOne` runs only for a connected provider, and every
     // outcome (refreshed / failed / skipped-unsupported / empty) counts as an attempt for the TTL backoff (FIX 3).
-    lastAttemptAt.set(id, deps.now());
     try {
-      const adapter = deps.resolveProvider(id);
+      lastAttemptAt.set(id, deps.now());
+    } catch (cause) {
+      deps.onHostFailure?.(cause);
+      throw cause;
+    }
+    try {
+      deps.assertAdmitting?.();
+      let adapter: LlmProvider | undefined;
+      try {
+        adapter = deps.resolveProvider(id);
+      } catch (cause) {
+        deps.onHostFailure?.(cause);
+        throw cause;
+      }
+      deps.assertAdmitting?.();
       if (adapter?.listModels === undefined) {
         // No adapter, or an adapter without the optional list capability — degrade to static (ADR-0064 §1/§5).
         return { provider: id, status: 'skipped-unsupported' };
       }
       // The key reaches ONLY this call; the seam bounds + aborts + redacts it.
-      const listings = await adapter.listModels(key, signal);
+      let transferFailure: { readonly cause: unknown } | undefined;
+      const invocationOptions = deps.invocationOptions;
+      const ownedOptions: LlmInvocationOptions | undefined =
+        invocationOptions === undefined
+          ? undefined
+          : {
+              retainWork: (factory) => {
+                try {
+                  return invocationOptions.retainWork(factory);
+                } catch (cause) {
+                  transferFailure = { cause };
+                  deps.onHostFailure?.(cause);
+                  throw cause;
+                }
+              },
+            };
+      let listings: ModelListing[];
+      try {
+        listings = await adapter.listModels(key, signal, ownedOptions);
+      } catch (cause) {
+        // A host-entry refusal is not a vendor diagnostic. Its original owner
+        // observes it above; do not inspect or render the opaque throwable.
+        if (transferFailure !== undefined && Object.is(cause, transferFailure.cause))
+          return { provider: id, status: 'failed', error: 'refresh failed' };
+        throw cause;
+      }
+      deps.assertAdmitting?.();
 
       // Ensure the FK-target `llm_providers` row exists BEFORE writing model rows (FK ordering). The metadata is
       // non-secret; the row never carries a key.
-      const meta = deps.knownProviders[id];
-      const providerUuid = deps.providerStore.upsert({
-        name: id,
-        displayName: meta.displayName,
-        baseUrl: meta.baseUrl,
-      }).id;
+      try {
+        const meta = deps.knownProviders[id];
+        const providerUuid = deps.providerStore.upsert({
+          name: id,
+          displayName: meta.displayName,
+          baseUrl: meta.baseUrl,
+        }).id;
+        deps.assertAdmitting?.();
 
-      const rows = listings.map(toLiveModel);
-      // The store counts added/updated/deactivated ATOMICALLY inside its own transaction and returns them — no
-      // before/after `listByProvider` diff (which, reading a stale `before`, would double-count under two
-      // concurrent same-provider refreshes) and two fewer queries. The tallies are LIVE-only by construction.
-      const { added, updated, deactivated } = deps.catalogStore.replaceProviderModels(
-        providerUuid,
-        rows,
-        deps.now(),
-      );
+        const rows = listings.map(toLiveModel);
+        // The store counts added/updated/deactivated ATOMICALLY inside its own transaction and returns them — no
+        // before/after `listByProvider` diff (which, reading a stale `before`, would double-count under two
+        // concurrent same-provider refreshes) and two fewer queries. The tallies are LIVE-only by construction.
+        const { added, updated, deactivated } = deps.catalogStore.replaceProviderModels(
+          providerUuid,
+          rows,
+          deps.now(),
+        );
 
-      return { provider: id, status: 'refreshed', added, updated, deactivated };
+        return { provider: id, status: 'refreshed', added, updated, deactivated };
+      } catch (cause) {
+        deps.onHostFailure?.(cause);
+        throw cause;
+      }
     } catch (err) {
       return { provider: id, status: 'failed', error: secretFreeReason(err, key) };
     }
   };
 
   const refresh = async (opts?: RefreshOptions): Promise<RefreshReport> => {
+    deps.assertAdmitting?.();
     const candidates = opts?.providers ?? deps.knownProviderIds;
     const signal = opts?.signal;
 
@@ -235,13 +296,17 @@ export function createModelRefreshService(deps: ModelRefreshDeps): ModelRefreshS
     const results: RefreshProviderResult[] = [];
     const connected: { readonly id: ProviderId; readonly key: string }[] = [];
     for (const id of candidates) {
+      deps.assertAdmitting?.();
       let key: string;
       try {
         key = deps.keyFor(id);
-      } catch {
+      } catch (cause) {
+        deps.onHostFailure?.(cause);
+        deps.assertAdmitting?.();
         results.push({ provider: id, status: 'skipped-no-key' });
         continue;
       }
+      deps.assertAdmitting?.();
       connected.push({ id, key });
     }
 
@@ -260,21 +325,32 @@ export function createModelRefreshService(deps: ModelRefreshDeps): ModelRefreshS
     });
 
     // Deterministic order regardless of settle timing (a stable report for the human table + the --json stream).
-    results.sort((a, b) => a.provider.localeCompare(b.provider));
+    results.sort((a, b) => byCodeUnit(a.provider, b.provider));
     return { providers: results };
   };
 
   const refreshIfStale = async (opts?: RefreshOptions): Promise<RefreshReport | undefined> => {
+    deps.assertAdmitting?.();
     const candidates = opts?.providers ?? deps.knownProviderIds;
-    const now = deps.now();
+    let now: number;
+    try {
+      now = deps.now();
+    } catch (cause) {
+      deps.onHostFailure?.(cause);
+      throw cause;
+    }
     const stale: ProviderId[] = [];
     for (const id of candidates) {
+      deps.assertAdmitting?.();
       // Only a CONNECTED provider can be refreshed — an unconnected one is never "stale" (nothing to fetch).
       try {
         deps.keyFor(id);
-      } catch {
+      } catch (cause) {
+        deps.onHostFailure?.(cause);
+        deps.assertAdmitting?.();
         continue;
       }
+      deps.assertAdmitting?.();
       const record = deps.providerStore.get(id);
       const refreshedAt =
         record === undefined ? undefined : deps.catalogStore.providerRefreshedAt(record.id);

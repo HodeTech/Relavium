@@ -23,6 +23,7 @@ import type {
 } from '@relavium/shared';
 
 import type { GovernorWiring, SessionUsageWriter } from './session-host.js';
+import type { SessionHostOwner } from './session-host-owner.js';
 import { deriveSessionTitle } from './session-title.js';
 
 /**
@@ -142,7 +143,11 @@ export interface SessionPersister {
   close(): void;
 }
 
-export function createSessionPersister(deps: SessionPersisterDeps): SessionPersister {
+export function createSessionPersister(
+  deps: SessionPersisterDeps,
+  owner?: SessionHostOwner,
+): SessionPersister {
+  if (owner !== undefined) return owner.createPersister(() => createSessionPersister(deps));
   const iso = (): string => new Date(deps.now()).toISOString();
 
   // Frozen at persister construction (≈ session start) — the row's creation time never changes, so it is a
@@ -458,11 +463,9 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
         // self-detach so the bus listener does not leak if the REPL's close() is skipped on an early exit.
         //
         // Through `persistDurably`, like every other write here (`CR-01`) — but be precise about WHAT that
-        // buys, because the obvious reading is wrong. The latch half is inert on this arm: `session:cancelled`
-        // is emitted only by `AgentSession.cancel()`, which sets `#status = 'cancelled'`, and every later
-        // egress entry point is already refused by `#assertSendable()` with `not_active`. Nothing reads
-        // `durabilityFailure` again. It is wrapped for SYMMETRY with its siblings — one arm reaching the store
-        // bare is how the next reader concludes the wrapper is optional.
+        // buys: `session:cancelled` is emitted by `AgentSession.cancel()`, so later egress is already
+        // refused. The retained latch still matters to the session's actual cleanup owner: a failed
+        // final write must survive terminal cancellation and cannot become a clean close verdict.
         //
         // **The `finally` is the load-bearing half.** Before it, a throwing write jumped straight over the two
         // unsubscribe lines and left this persister attached to the bus — so every later event re-entered a
@@ -478,8 +481,25 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
           unsubscribe = undefined;
         }
         return;
-      default:
+      // Lifecycle/display-only events have no transcript or money write here. Coverage has its
+      // acknowledged writer; reasoning remains live-only, never persisted as assistant text.
+      case 'session:started':
+      case 'session:turn_started':
+      case 'session:exported':
+      case 'session:compacting':
+      case 'session:compaction_failed':
+      case 'session:compaction_budget_refused':
+      case 'agent:reasoning':
+      case 'agent:tool_result':
+      case 'agent:approval_requested':
+      case 'cost:usage_pending':
+      case 'cost:usage_disposition':
+      case 'budget:estimate_committed':
         return;
+      default: {
+        const exhaustive: never = event;
+        return exhaustive;
+      }
     }
   };
 

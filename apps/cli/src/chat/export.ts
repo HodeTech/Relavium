@@ -1,4 +1,3 @@
-import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 
 import { serializeWorkflow, sessionToWorkflow } from '@relavium/core';
@@ -6,6 +5,12 @@ import type { SessionStore } from '@relavium/db';
 import type { AgentSessionRecord } from '@relavium/shared';
 
 import { CliError } from '../process/errors.js';
+import {
+  mkdirForStorage,
+  writeFileForStorage,
+  storageBoundaryError,
+} from '../process/owned-storage.js';
+import { sourceLabel } from '../process/source-label.js';
 
 /**
  * Session → workflow export (2.P / [ADR-0026](../../../../docs/decisions/0026-session-export-to-workflow.md)) —
@@ -24,7 +29,7 @@ import { CliError } from '../process/errors.js';
 
 /** Fixed, value-free successful-export notice: interactive transcript or plain/JSON stderr. */
 export const SESSION_EXPORT_REVIEW_NOTICE =
-  'note: exported workflow is a scaffold; conversation context is not reproduced. Compaction summaries, trimming and omitted context may not transfer. Review retained user/assistant text, @-attached files, !-shell output and authored agent literals before committing.\n';
+  'note: exported workflow is a scaffold; conversation context is not reproduced. Compaction summaries, trimming and omitted context may not transfer. Review retained user/assistant text, @-attached files, !-shell output and authored agent literals before committing. Historical agent snapshots may require edits to pass current validation before running.\n';
 
 export interface ExportSessionOptions {
   readonly store: SessionStore;
@@ -72,37 +77,50 @@ export function exportSession(opts: ExportSessionOptions): ExportResult {
     opts.outPath === undefined
       ? join(opts.cwd, `${opts.sessionId}.relavium.yaml`)
       : resolve(opts.cwd, opts.outPath);
+  const label = sourceLabel(opts.cwd, path);
   try {
     // Create the parent directory (so `--out exports/wf.yaml` just works) before writing the scaffold.
-    mkdirSync(dirname(path), { recursive: true });
+    mkdirForStorage(dirname(path));
     // Atomic create: `wx` fails with EEXIST if the target already exists — no TOCTOU window between a
     // separate existence check and the write; `w` truncates/overwrites under `--force`.
-    writeFileSync(path, yaml, { encoding: 'utf8', flag: opts.force ? 'w' : 'wx' });
+    writeFileForStorage(path, yaml, opts.force);
   } catch (err) {
-    const code =
-      err instanceof Error && 'code' in err ? (err as NodeJS.ErrnoException).code : undefined;
+    const code = exportTargetCode(err);
     // An existing target without `--force` (EEXIST) is the no-overwrite fault; a structurally-invalid
     // `--out` (a directory → EISDIR; a file used as a dir → ENOTDIR) is also an INVOCATION fault (exit 2).
-    // Other write faults (permissions, disk) propagate.
+    // Other native write faults retain their cause behind a fixed safe diagnostic.
     if (code === 'EEXIST') {
       throw new CliError(
         'invalid_invocation',
-        `${path} already exists — pass --force to overwrite`,
+        `${label} already exists — pass --force to overwrite`,
         { cause: err },
       );
     }
     if (code === 'EISDIR' || code === 'ENOTDIR') {
       throw new CliError(
         'invalid_invocation',
-        `cannot write ${path}: the target path is not a file`,
+        `cannot write ${label}: the target path is not a file`,
         { cause: err },
       );
     }
-    throw err;
+    throw storageBoundaryError(err);
   }
 
   // The session is append-only; the next event/seq is one past the durable MAX (a fold, not a spread).
   const sequenceNumber =
     loaded.messages.reduce((max, m) => Math.max(max, m.sequenceNumber), -1) + 1;
   return { path, workflowId: definition.workflow.id, sequenceNumber, record: loaded.session };
+}
+
+/** Target-shape refusals are admitted only from the export's actual mkdir/write catch. */
+function exportTargetCode(error: unknown): unknown {
+  try {
+    if (typeof error === 'object' && error !== null) {
+      const descriptor = Object.getOwnPropertyDescriptor(error, 'code');
+      if (descriptor !== undefined && 'value' in descriptor) return descriptor.value;
+    }
+  } catch {
+    // An accessor/proxy is not evidence of a native target refusal.
+  }
+  return undefined;
 }

@@ -1,4 +1,4 @@
-import { extractHttpsHost } from '@relavium/shared';
+import { RelaviumError, extractHttpsHost } from '@relavium/shared';
 
 import type { CapabilityFlags, ProviderId } from './types.js';
 
@@ -20,7 +20,7 @@ export type LlmConfigErrorCode =
   | 'invalid_base_url';
 
 /** Base for the seam's thrown config errors — narrow on `code`, never on `message`. */
-export abstract class LlmConfigError extends Error {
+export abstract class LlmConfigError extends RelaviumError {
   abstract readonly code: LlmConfigErrorCode;
 }
 

@@ -1,3 +1,9 @@
+import { fileURLToPath } from 'node:url';
+import type { StdioNativeLifetime } from '@relavium/mcp';
+import type { NativeProcessController } from '../process/native-process-owner.js';
+import { resolveStdioSpawn } from '../engine/mcp-consent.js';
+import { createCliInvocation } from '../process/invocation.js';
+import { nativeProcessesForInvocation } from '../process/native-process-owner.js';
 import { prepareOutputCapPlan } from '@relavium/llm';
 import type { PreEgressInfo } from '@relavium/core';
 import { execFileSync } from 'node:child_process';
@@ -327,7 +333,11 @@ describe('buildChatSession', () => {
     const repo = mkdtempSync(join(tmpdir(), 'relavium-git-'));
     try {
       execFileSync('git', ['init', '-q'], { cwd: repo }); // `git status` needs no user identity (unlike commits)
+      const invocation = createCliInvocation();
+      const nativeProcesses = nativeProcessesForInvocation(invocation);
+      const register = vi.spyOn(invocation.registry, 'register');
       const built = await build({
+        ...(nativeProcesses === undefined ? {} : { nativeProcesses }),
         cwd: repo,
         providers: scriptedResolver([callWithArgs('c1', 'git_status', {}), textTurn('clean')]),
       });
@@ -354,6 +364,12 @@ describe('buildChatSession', () => {
       // …and the post-tool answer streamed, so the loop completed after the fold.
       const tokens = events.flatMap((e) => (e.type === 'agent:token' ? [e.token] : [])).join('');
       expect(tokens).toContain('clean');
+      expect(register, 'NATIVE_SESSION_FACTORY_FORWARDING').toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: process.platform === 'win32' ? 'windows-live-root' : 'native-group',
+        }),
+      );
+      await vi.waitFor(() => expect(invocation.registry.activeOwners).toBe(0));
     } finally {
       rmSync(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
@@ -811,6 +827,41 @@ describe('buildResumedChatSession (2.N)', () => {
       ).toBe(false);
     } finally {
       spy.mockRestore();
+    }
+  });
+
+  it('registers the resumed session real process factory under the original invocation', async () => {
+    const repo = mkdtempSync(join(tmpdir(), 'relavium-resumed-native-'));
+    const invocation = createCliInvocation();
+    const nativeProcesses = nativeProcessesForInvocation(invocation);
+    const register = vi.spyOn(invocation.registry, 'register');
+    try {
+      execFileSync('git', ['init', '-q'], { cwd: repo });
+      const built = await buildResumedChatSession({
+        chat: EMPTY_CHAT,
+        record: record({ context: { workingDir: repo, fsScopeTier: 'project' } }),
+        messages: [],
+        now: () => Date.parse(ISO),
+        providers: scriptedResolver([callWithArgs('c1', 'git_status', {}), textTurn('clean')]),
+        ...(nativeProcesses === undefined ? {} : { nativeProcesses }),
+      });
+      expect(invocation.registry.activeOwners).toBe(0); // construction alone creates no native owner
+      await built.session.sendMessage('inspect the repository');
+      built.session.cancel();
+      const events = await built.recordedEvents;
+      const toolResult = events.find((event) => event.type === 'agent:tool_result');
+      expect(toolResult).toMatchObject({ toolId: 'git_status', success: true });
+      expect(
+        toolResult?.type === 'agent:tool_result' ? toolResult.outputSummary : undefined,
+      ).toContain('"exitCode":0');
+      expect(register, 'NATIVE_SESSION_FACTORY_FORWARDING').toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: process.platform === 'win32' ? 'windows-live-root' : 'native-group',
+        }),
+      );
+      await vi.waitFor(() => expect(invocation.registry.activeOwners).toBe(0));
+    } finally {
+      rmSync(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });
 
@@ -1723,4 +1774,105 @@ it('reads the attached initial usage snapshot once across a streamed turn', asyn
   await built.session.sendMessage('stream');
   await built.whenHostSafeToClose();
   expect(initialCoverage).toHaveBeenCalledTimes(1);
+});
+
+describe('session MCP native owner forwarding during pending startup', () => {
+  it.each(['fresh', 'resumed'] as const)(
+    '%s forwards authority before the actual SDK initializer resolves',
+    async (surface) => {
+      const invocation = createCliInvocation();
+      const native = nativeProcessesForInvocation(invocation);
+      if (native === undefined) throw new Error('missing native invocation controller');
+      let lifetime: StdioNativeLifetime | undefined;
+      const nativeProcesses: NativeProcessController = {
+        reserve: native.reserve,
+        observeMcp: async () => {
+          const observer = await native.observeMcp();
+          return {
+            ...observer,
+            attach: (value) => {
+              lifetime = value;
+              observer.attach(value);
+            },
+          };
+        },
+      };
+      const cwd = process.cwd();
+      const server = fileURLToPath(
+        new URL('../../../../packages/mcp/test-fixtures/silent-mcp-server.mjs', import.meta.url),
+      );
+      const ref = {
+        id: 'pending-native',
+        transport: 'stdio' as const,
+        command: process.execPath,
+        args: [server],
+        connect_timeout_ms: 10_000,
+      };
+      const consented = await resolveStdioSpawn(
+        {
+          serverId: ref.id,
+          provenance: { kind: 'inline' },
+          command: ref.command,
+          args: ref.args,
+          env: {},
+        },
+        cwd,
+      );
+      const abort = new AbortController();
+      const agent = { ...buildDefaultChatAgent('claude-sonnet-4-6'), mcp_servers: [ref] };
+      const common = {
+        chat: EMPTY_CHAT,
+        now: () => 0,
+        providers: scriptedResolver([]),
+        nativeProcesses,
+        mcpConnectSignal: abort.signal,
+        consentGate: () => Promise.resolve(new Map([[ref.id, consented]])),
+      };
+      const record: AgentSessionRecord = {
+        id: 'pending-resume',
+        agentSlug: agent.id,
+        agentSnapshot: agent,
+        context: { workingDir: cwd, fsScopeTier: 'project' },
+        status: 'ended',
+        totalInputTokens: 0,
+        totalOutputTokens: 0,
+        totalCostMicrocents: 0,
+        totalConservativeMicrocents: 0,
+        createdAt: '2026-10-16T00:00:00.000Z',
+        updatedAt: '2026-10-16T00:00:00.000Z',
+      };
+      const opening =
+        surface === 'fresh'
+          ? buildFreshSession({
+              ...common,
+              agent,
+              agentRef: undefined,
+              cwd,
+              projectConfigDir: undefined,
+              uuid: () => 'pending-fresh',
+            })
+          : buildRestoredSession({ ...common, record, messages: [] });
+      const outcome = opening.catch((error: unknown) => error);
+      try {
+        await vi.waitFor(() =>
+          expect(lifetime?.readPid(), 'NATIVE_SESSION_MCP_FORWARDING').toBeTypeOf('number'),
+        );
+        expect(invocation.registry.activeOwners).toBe(1);
+        expect(lifetime?.isClosed()).toBe(false);
+        // The builder has no returned session/client yet. The original registry still owns its native child.
+        invocation.registry.reapNativeAtExit();
+        expect(invocation.registry.activeOwners).toBe(1); // a reap request does not acknowledge close
+        abort.abort();
+        await outcome;
+        await lifetime?.whenClosed;
+        await vi.waitFor(() => expect(invocation.registry.activeOwners).toBe(0));
+      } finally {
+        invocation.registry.reapNativeAtExit();
+        abort.abort();
+        await outcome;
+        await lifetime?.close();
+      }
+    },
+    15_000,
+  );
 });

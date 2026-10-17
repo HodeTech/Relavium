@@ -1,35 +1,75 @@
 import assert from 'node:assert/strict';
 import { Buffer } from 'node:buffer';
+import { execFileSync } from 'node:child_process';
 import {
+  existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   realpathSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import Module, { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { digest, instrument } from './source-graph.mjs';
+import { permanentFiles } from './mutations.mjs';
+import {
+  aliases,
+  captureSource,
+  digest,
+  instrument,
+  rejectUnknownAlias,
+  relativeSource,
+} from './source-graph.mjs';
 import {
   assertNativeReadiness,
   assertPermanentWorkload,
   ordinaryPhaseTimeoutMs,
   permanentPhaseTimeoutMs,
+  permanentWorkload,
 } from './workload.mjs';
+
+test('supported shared, llm and core exports map to exact owned sources, with unknown aliases refused', () => {
+  const repository = fileURLToPath(new URL('../../', import.meta.url));
+  for (const name of ['shared', 'llm', 'core']) {
+    const info = JSON.parse(
+      readFileSync(join(repository, `packages/${name}/package.json`), 'utf8'),
+    );
+    for (const [subpath, target] of Object.entries(info.exports)) {
+      const specifier =
+        subpath === '.' ? `@relavium/${name}` : `@relavium/${name}/${subpath.slice(2)}`;
+      const source = `packages/${name}/src/${target.import.slice('./dist/'.length).replace(/\.js$/, '.ts')}`;
+      assert.equal(aliases[specifier], source);
+      assert.equal(relativeSource({ sourceRoot: repository }, specifier), join(repository, source));
+      assert.doesNotThrow(() => rejectUnknownAlias(specifier));
+    }
+  }
+  for (const specifier of [
+    '@relavium/shared/private',
+    '@relavium/shared/../core',
+    '@relavium/llm/private',
+    '@relavium/llm/scrub-secrets/private',
+    '@relavium/core/tool-dispatch-error/private',
+    '@relavium/unknown',
+  ])
+    assert.throws(() => rejectUnknownAlias(specifier), /USAGE_UNKNOWN_WORKSPACE_ALIAS/);
+});
 
 test('the complete native/scale workload has its own calculated bound and exact inventory', () => {
   assert.equal(ordinaryPhaseTimeoutMs, 300_000);
   assert.equal(permanentPhaseTimeoutMs, 300_000 + 71 * 20_000 + 600_000);
   const result = {
-    tests: Array.from({ length: 435 }),
+    tests: Array.from({ length: 446 }),
     runtime: { nativeChildren: 71, readinessTimeoutChildren: 1 },
   };
   assert.doesNotThrow(() => assertPermanentWorkload(result));
-  for (const count of [0, 433, 434, 436]) {
+  for (const count of [0, 440, 445, 447]) {
     assert.throws(
       () => assertPermanentWorkload({ ...result, tests: Array.from({ length: count }) }),
       /Permanent case inventory drift/,
@@ -54,6 +94,115 @@ test('the complete native/scale workload has its own calculated bound and exact 
         }),
       /Missing\/extra native timeout control/,
     );
+});
+
+test('the pinned permanent inventory matches actual installed Vitest collection', () => {
+  const repository = realpathSync(fileURLToPath(new URL('../../', import.meta.url)));
+  const scratch = realpathSync(mkdtempSync(join(tmpdir(), 'relavium-usage-inventory-')));
+  const graph = join(scratch, 'source');
+  const output = join(scratch, 'collected.json');
+  const config = join(scratch, 'vitest.config.mjs');
+  try {
+    captureSource(repository, graph);
+    const homes = [
+      '',
+      ...new Set(
+        [...Object.values(aliases), ...permanentFiles].map((file) => file.split('/src/')[0]),
+      ),
+    ];
+    // Exercise a clean install-only tree even when the developer has build outputs.
+    // Link public external packages only: workspace aliases must resolve the copied source.
+    for (const home of homes) {
+      assert.equal(existsSync(join(graph, home, 'dist')), false);
+      const original = join(repository, home, 'node_modules');
+      const destination = join(graph, home, 'node_modules');
+      mkdirSync(destination, { recursive: true });
+      if (!existsSync(original)) continue;
+      for (const entry of readdirSync(original)) {
+        if (entry.startsWith('.') || entry === '@relavium') continue;
+        const target = realpathSync(join(original, entry));
+        assert.ok(statSync(target).isDirectory());
+        symlinkSync(
+          target,
+          join(destination, entry),
+          process.platform === 'win32' ? 'junction' : 'dir',
+        );
+      }
+    }
+    const common = {
+      root: graph,
+      test: {
+        environment: 'node',
+        include: permanentFiles,
+        passWithNoTests: false,
+        fileParallelism: false,
+        maxWorkers: 1,
+      },
+    };
+    const collect = () =>
+      execFileSync(
+        process.execPath,
+        [
+          join(repository, 'node_modules/vitest/vitest.mjs'),
+          'list',
+          '--config',
+          config,
+          `--json=${output}`,
+        ],
+        { cwd: graph, timeout: 30_000, maxBuffer: 4 * 1024 * 1024, stdio: 'pipe' },
+      );
+    writeFileSync(config, `export default ${JSON.stringify(common)};`);
+    assert.throws(
+      collect,
+      (cause) =>
+        cause instanceof Error &&
+        'stderr' in cause &&
+        /Failed to resolve|Cannot find|Failed to load/.test(String(cause.stderr)),
+      'A source-only collector without aliases must refuse missing workspace packages',
+    );
+    const mappings = Object.entries(aliases)
+      .map(
+        ([name, path]) =>
+          `{find:new RegExp(${JSON.stringify('^' + name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$')}),replacement:${JSON.stringify(join(graph, path))}}`,
+      )
+      .join(',');
+    const forbidden = homes
+      .filter(Boolean)
+      .map((home) => join(repository, home).replaceAll('\\', '/') + '/');
+    writeFileSync(
+      config,
+      `import {existsSync,realpathSync} from 'node:fs';
+      export default {...${JSON.stringify(common)},resolve:{alias:[${mappings}]},
+      plugins:[{name:'no-original-workspace',enforce:'pre',transform(_code,id){
+        const file=id.split('?')[0];if(existsSync(file)){
+          const physical=realpathSync(file).replaceAll('\\\\','/');
+          if(${JSON.stringify(forbidden)}.some(root=>physical.startsWith(root)))
+            throw new Error('PERMANENT_COLLECTOR_WORKSPACE_ESCAPE');
+        }
+      }}]};`,
+    );
+    // Vitest's optional --json argument is a filename, including the literal string "true".
+    // Always give an owned output path: no filter may become the reporter's destination.
+    collect();
+    const collected = JSON.parse(readFileSync(output, 'utf8'));
+    assert.ok(Array.isArray(collected));
+    assert.equal(
+      collected.length,
+      permanentWorkload.cases,
+      'Permanent collected case inventory drift',
+    );
+    assert.deepEqual(
+      [
+        ...new Set(
+          collected.map((item) => relative(graph, realpathSync(item.file)).replaceAll('\\', '/')),
+        ),
+      ].sort(),
+      [...permanentFiles].sort(),
+      'Permanent collected file inventory drift',
+    );
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
 });
 
 test('only the loaded-but-unready timeout control may omit a real readiness barrier', () => {

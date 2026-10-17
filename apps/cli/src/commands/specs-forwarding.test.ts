@@ -15,11 +15,10 @@ import { captureIo } from '../test-support.js';
 // `vi.hoisted` runs before the hoisted `vi.mock` + the imports, so the mock factory can close over this fn. The
 // generic signature (not named params) types `mock.calls` as the (id, input, ctx) tuple with no unused bindings.
 const { executeCommand } = vi.hoisted(() => ({
-  executeCommand: vi.fn<(id: string, input: unknown, ctx: unknown) => Promise<number>>(() =>
+  executeCommand: vi.fn<(id: string, input: unknown, ctx: unknown) => Promise<0>>(() =>
     Promise.resolve(0),
   ),
 }));
-vi.mock('./dispatch.js', () => ({ executeCommand }));
 
 /** Parse `argv` through the real commander program (with a live context) and return the dispatched (id, input). */
 function drive(argv: readonly string[]): { id: unknown; input: unknown } {
@@ -36,7 +35,7 @@ function drive(argv: readonly string[]): { id: unknown; input: unknown } {
     },
     result: {},
   };
-  const program = buildProgram(io, { context });
+  const program = buildProgram(io, { context, execute: executeCommand });
   program.exitOverride();
   // `.parse` (sync) invokes the action, which calls executeCommand synchronously BEFORE its first await — so the
   // mock has recorded the call by the time parse returns, even though the action's promise is not awaited here.

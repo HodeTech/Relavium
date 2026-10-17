@@ -2,7 +2,8 @@
 
 > Status: Living
 
-> Last updated: 2026-10-11 — W8 merged in PR #92; phase closure preserves approved deferrals.
+> Last updated: 2026-10-15 — Wave 2 merged in PR #94; existing approved deferrals remain.
+> The [merge checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#wave-2-merge-checkpoint--2026-10-15) records completed prerequisites; full M/N lifecycle and other scheduled work remain with their owners.
 >
 > Earlier triage: the Phase-2.6 rewrite triaged every open item, the 2026-07-19 full-project
 > review added the deliberately-unscheduled block at the end, Phase 2.6.5's `W1` and `W2` residual
@@ -2167,3 +2168,14 @@ future test cannot silently re-acquire it.
   beyond the two genuine hits it already spun off (`isDispatchableId`, the `@relavium/llm/adapters` subpath
   export) — already tracked under the quality dead-code cleanup work; the remaining ~150 hits are confirmed
   false positives, not deferred work. *(polish · packages/db/src/media-write.ts; #245)*
+
+## Wave 3 approved later-wave ownership — 2026-10-16
+
+- [ ] **Scheduled → Wave 5a: alt-screen word wrapping (#61).** The maintainer
+  approved retaining character-wrap replacement with render-v2/D18 and picker
+  positioning #60, so that renderer restructuring and the palette sweep occur
+  once. Wave 3 still owns grapheme/tab/resize/cache/editor bounds; this disposition
+  does not waive Phase 2.5.5.I's eventual word-wrap/full acceptance. The
+  [approved execution plan](phases/phase-2.5.5-hardening-and-remediation.md#proposed-implementation-increments)
+  and [Wave 5a owner](current.md#wave-5a--paint-before-you-build) retain the split; close only
+  after actual word-wrap implementation and regression evidence land.

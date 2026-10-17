@@ -1,6 +1,6 @@
 # ADR-0051: CLI distribution — an engine-inlined ESM bundle that externalizes every third-party dependency
 
-- **Status**: Accepted
+- **Status**: Accepted (single-output constraint partially replaced by ADR-0111)
 - **Date**: 2026-06-24
 - **Related**: [ADR-0047](0047-cli-framework-commander-ink-clack.md) (commander/ink/`@clack/prompts` + `tsup` single-bundle — this ADR finalizes the bundle boundary 0047 deferred to 2.L), [ADR-0019](0019-cli-node-keychain-library.md) (`@napi-rs/keyring`), [ADR-0021](0021-node-sqlite-driver-better-sqlite3.md) (`better-sqlite3`), [ADR-0027](0027-expression-sandbox.md) (the quickjs JS sandbox), [ADR-0011](0011-internal-llm-abstraction.md) (the in-house `@relavium/llm` this protects), [ADR-0067](0067-node-supported-floor-22-reaffirm-better-sqlite3.md) (the `>=22` floor — see the amendment note)
 
@@ -147,3 +147,7 @@ intended precedent for the desktop (`.dmg`) and VS Code (`.vsix`) surfaces.
   [tech-stack.md](../tech-stack.md), the [commands.md Install section](../reference/cli/commands.md), and
   references this ADR from [phase-2-cli.md §2.L](../roadmap/phases/phase-2-cli.md) so the model is not
   ADR-only.
+
+## Wave 3 decision acceptance — 2026-10-16
+
+> Amended 2026-10-16: [ADR-0111](0111-cli-meta-operations-use-a-lazy-packaged-runtime.md) is accepted by the maintainer. Only the single-output constraint is partially replaced by finite engine-inlined runtime chunks with complete closure and packed-platform checks. Licensing rather than source secrecy, private engine packages and no public plaintext source maps remain accepted. Exact release-map encrypted custody is a distribution policy, not secrecy for this public source repository. The approved [execution plan](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#proposed-implementation-increments) owns implementation and review gates; this note does not claim implementation landing.

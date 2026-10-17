@@ -131,6 +131,7 @@ interface MountedHome {
 function mountHome(
   store: ChatStoreController,
   opts: {
+    inputEnabled?: () => boolean;
     alternateScreen?: boolean;
     startChat?: () => Promise<HomeChatSession>;
     reseatChat?: (
@@ -174,6 +175,7 @@ function mountHome(
   assertRenderStoreAgree(opts.alternateScreen === true, store.getSnapshot().state.transcriptBound);
   const harness = render(
     <RootApp
+      {...(opts.inputEnabled === undefined ? {} : { inputEnabled: opts.inputEnabled })}
       controller={c}
       nowMs={() => Date.now()}
       color={opts.color ?? false}
@@ -519,6 +521,39 @@ describe('RootApp — mouse selection in the in-Home chat', () => {
     store.notice('CCCC');
     return store;
   };
+
+  it('seals mouse, paste and job-control dispatch while the native tree remains mounted', async () => {
+    let enabled = true;
+    const copied: string[] = [];
+    const onSuspend = vi.fn();
+    const m = mountHome(seedThree(), {
+      alternateScreen: true,
+      inputEnabled: () => enabled,
+      onSuspend,
+      clipboard: (text) => {
+        copied.push(text);
+        return { kind: 'written', characters: text.length };
+      },
+    });
+    await enterChat(m.c);
+    await waitFor(() => (m.harness.lastFrame() ?? '').includes('AAAA'));
+    m.harness.stdin.write('\x1a');
+    await settleFrames();
+    expect(onSuspend).toHaveBeenCalledOnce();
+    m.harness.stdin.write('\x1b[<0;1;1M');
+    await settleFrames();
+    m.harness.stdin.write('\x1b[<32;3;1M');
+    await settleFrames();
+    enabled = false;
+    m.harness.stdin.write('\x1b[<0;3;1m');
+    m.harness.stdin.write(bracketed('SEALED_HOME_PASTE'));
+    m.harness.stdin.write('\x1a');
+    await settleFrames();
+    expect(copied, 'HOME_NATIVE_INPUT_SEAL_INCLUDES_MOUSE_COPY').toEqual([]);
+    expect(onSuspend).toHaveBeenCalledOnce();
+    expect(m.harness.lastFrame()).not.toContain('SEALED_HOME_PASTE');
+    expect(m.c.getSnapshot().mode).toBe('chat');
+  });
 
   it('a DRAG in the in-Home chat copies exactly the cells it covered', async () => {
     const copied: string[] = [];

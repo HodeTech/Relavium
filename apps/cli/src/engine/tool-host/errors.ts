@@ -1,4 +1,6 @@
-import { ToolDispatchError } from '@relavium/core';
+import { RelaviumError } from '@relavium/shared/relavium-error';
+
+import { ToolDispatchError } from '@relavium/core/tool-dispatch-error';
 import type { AbortSignalLike, ErrorCode } from '@relavium/shared';
 
 /**
@@ -12,7 +14,7 @@ import type { AbortSignalLike, ErrorCode } from '@relavium/shared';
  * **reason only** — never a path, the bytes, the command, or an env value (the I3 boundary). Maps to the
  * retryable `tool_failed`. `name` is set from the concrete subclass so stacks/logs read accurately.
  */
-export class HostCapabilityError extends Error {
+export class HostCapabilityError extends RelaviumError {
   constructor(message: string) {
     super(message);
     this.name = new.target.name;

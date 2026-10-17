@@ -1,4 +1,9 @@
-import { UsageCoverageSchema, UsageModelSchema, type UsageCoverage } from '@relavium/shared';
+import {
+  byCodeUnit,
+  UsageCoverageSchema,
+  UsageModelSchema,
+  type UsageCoverage,
+} from '@relavium/shared';
 import { and, asc, eq } from 'drizzle-orm';
 
 import type { TxDb } from './client.js';
@@ -64,7 +69,7 @@ export function readSessionCoverage(tx: TxDb, sessionId: string): SessionUsageSn
   return {
     coverage,
     models: [...models]
-      .sort(([a], [b]) => a.localeCompare(b))
+      .sort(([a], [b]) => byCodeUnit(a, b))
       .map(([model, modelCoverage]) => ({ model, coverage: modelCoverage })),
   };
 }

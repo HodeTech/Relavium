@@ -46,6 +46,26 @@ const released = async (stderr: NodeJS.WritableStream): Promise<void> => {
 };
 
 describe('native diagnostic acknowledgement (ADR-0098)', () => {
+  it('classifies a synchronous failure at the captured native stderr without promoting its private text', () => {
+    const stderr = new OwnedTtyOutput();
+    const cause = new Error('PRIVATE_NATIVE_WRITE_FAILURE');
+    const io = ioFor(stderr);
+    vi.spyOn(stderr, 'write').mockImplementation(() => {
+      throw cause;
+    });
+    try {
+      let caught: unknown;
+      try {
+        io.writeErr('notice');
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toMatchObject({ code: 'output_unavailable', exitCode: 9, cause });
+      expect(caught).not.toHaveProperty('message', 'PRIVATE_NATIVE_WRITE_FAILURE');
+    } finally {
+      stderr.destroy();
+    }
+  });
   it('waits for native delivery and writes to the exact captured stderr after process binding changes', async () => {
     const stderr = new DelayedOutput();
     let acknowledged = false;
@@ -74,8 +94,8 @@ describe('native diagnostic acknowledgement (ADR-0098)', () => {
       try {
         const done = ioFor(stderr).writeErrAcknowledged('notice\n');
         const assertion = expect(done).rejects.toMatchObject({
-          code: 'internal',
-          message: 'The diagnostic output could not be acknowledged.',
+          code: 'output_unavailable',
+          exitCode: 9,
         });
         if (kind === 'callback') stderr.complete?.(new Error('SECRET_NATIVE_FAILURE'));
         else stderr.destroy(kind === 'destroy' ? new Error('SECRET_NATIVE_FAILURE') : undefined);
@@ -107,7 +127,9 @@ describe('native diagnostic acknowledgement (ADR-0098)', () => {
       }
       const io = ioFor(stderr);
       stderr.destroy(new Error('SECRET_FILE_FAILURE'));
-      await expect(io.writeErrAcknowledged('notice\n')).rejects.toMatchObject({ code: 'internal' });
+      await expect(io.writeErrAcknowledged('notice\n')).rejects.toMatchObject({
+        code: 'output_unavailable',
+      });
       await released(stderr);
       expect(stderr.closed).toBe(true);
     } finally {
@@ -121,7 +143,7 @@ describe('native diagnostic acknowledgement (ADR-0098)', () => {
     stderr.destroy();
     await new Promise<void>((resolve) => setImmediate(resolve));
     await expect(ioFor(stderr).writeErrAcknowledged('notice\n')).rejects.toMatchObject({
-      code: 'internal',
+      code: 'output_unavailable',
     });
     expect(stderr.frames).toEqual([]);
     await released(stderr);

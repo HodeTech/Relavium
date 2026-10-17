@@ -1,3 +1,4 @@
+import type { NativeProcessController } from '../process/native-process-owner.js';
 import {
   type AgentRunnerDeps,
   BUILTIN_TOOLS,
@@ -70,7 +71,11 @@ export interface BuildEngineOptions {
    * a tool needing a capability is cleanly `tool_unavailable`. `run.ts` passes the launch cwd + the resolved
    * `fs_scope`. The MCP arm is merged on top below.
    */
-  readonly toolEnv?: { readonly workspaceDir: string; readonly fsScopeTier: FsScopeTier };
+  readonly toolEnv?: {
+    readonly workspaceDir: string;
+    readonly fsScopeTier: FsScopeTier;
+    readonly nativeProcesses?: NativeProcessController;
+  };
   /**
    * The ADR-0065 §2 user-pricing overlay (2.5.G S10) — a `ReadonlyMap<modelId, ModelPricing>` the caller (`run.ts`)
    * projects from the `model_catalog` `source='user'` rows. Threaded into BOTH the workflow PRE-EGRESS governor
@@ -135,6 +140,9 @@ export async function buildEngine(options: BuildEngineOptions = {}): Promise<Wor
           profile: 'workflow-read-write',
           fsScopeTier: options.toolEnv.fsScopeTier,
           workspaceDir: options.toolEnv.workspaceDir,
+          ...(options.toolEnv.nativeProcesses === undefined
+            ? {}
+            : { nativeProcesses: options.toolEnv.nativeProcesses }),
         }).host;
   const toolHost: ToolHost =
     options.mcp === undefined ? baseToolHost : { ...baseToolHost, mcp: options.mcp.capability };

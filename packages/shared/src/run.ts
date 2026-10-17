@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import { RelaviumError } from './relavium-error.js';
+
 import { nonEmptyString, nonNegativeInt } from './common.js';
 import { EXECUTION_MODES } from './constants.js';
 import { ErrorCodeSchema, type RunEvent } from './run-event.js';
@@ -70,6 +72,32 @@ export const RunSchema = z
     updatedAt: nonNegativeInt,
   })
   .superRefine((run, ctx) => {
+    // The logical view permits missing legacy timestamps/error/output fields. Contradictory
+    // present fields are refused; this schema is not the persisted RunRow reader.
+    const terminal =
+      run.status === 'completed' || run.status === 'failed' || run.status === 'cancelled';
+    if (run.completedAt !== undefined && !terminal) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['completedAt'],
+        message: 'completedAt requires a terminal status',
+      });
+    }
+    if (run.startedAt !== undefined && run.status === 'pending') {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['startedAt'],
+        message: 'startedAt is not permitted while pending',
+      });
+    }
+    if (run.error !== undefined && run.status !== 'failed') {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['error'],
+        message: 'error requires failed status',
+      });
+    }
+
     // Temporal invariants: a run cannot finish before it starts, or be updated before it was created.
     if (
       run.startedAt !== undefined &&
@@ -162,7 +190,7 @@ export interface RunFence {
  * Typed rather than a bare `Error` (error-handling.md): the engine has to tell "the write failed" from "the
  * write was REFUSED because someone else moved the log", and only the second one means another writer exists.
  */
-export class AppendConflictError extends Error {
+export class AppendConflictError extends RelaviumError {
   override readonly name = 'AppendConflictError';
   readonly runId: string;
   readonly expectedLastSequenceNumber: number;
@@ -204,7 +232,7 @@ export function isAppendConflictError(value: unknown): value is AppendConflictEr
  * owner any more, and you must stop" — including stopping short of the terminal, because the run's real
  * outcome now belongs to somebody else (ADR-0079 §5).
  */
-export class LeaseFencedError extends Error {
+export class LeaseFencedError extends RelaviumError {
   override readonly name = 'LeaseFencedError';
   readonly runId: string;
   readonly ownerId: string;
@@ -483,7 +511,7 @@ export function blocksResume(record: {
  * `ToolEffectNeedsAttentionError` exists for, and a store that swallowed it reported durable success for an
  * effect nothing recorded.
  */
-export class EffectTransitionError extends Error {
+export class EffectTransitionError extends RelaviumError {
   override readonly name = 'EffectTransitionError';
   readonly identity: EffectIdentity;
   readonly attemptedState: EffectState;
@@ -508,7 +536,7 @@ export function isEffectTransitionError(value: unknown): value is EffectTransiti
 }
 
 /** Another attempt already holds this {@link EffectIdentity} — the concurrency collision, not a fault. */
-export class EffectConflictError extends Error {
+export class EffectConflictError extends RelaviumError {
   override readonly name = 'EffectConflictError';
   readonly identity: EffectIdentity;
 

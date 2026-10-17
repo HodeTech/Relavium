@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { AgentSchema } from './agent.js';
+import { AgentSnapshotSchema } from './agent.js';
 import { kebabIdSchema, nonEmptyString, nonNegativeInt } from './common.js';
 import { SessionContextSchema, StopReasonSchema } from './run-event.js';
 import {
@@ -127,7 +127,7 @@ export const AgentSessionSchema = z.object({
   /** The catalog `agents.id` this session resolved to, when the agent was a stored catalog entry. */
   agentId: nonEmptyString.optional(),
   /** Frozen agent config for reproducibility (`agent_sessions.agent_snapshot`). */
-  agentSnapshot: AgentSchema.optional(),
+  agentSnapshot: AgentSnapshotSchema.optional(),
   title: nonEmptyString.optional(),
   /** The session's configured **primary** model (resolved at start) — a `model_catalog` id reference (not a
    *  raw model string); a per-turn model may differ under fallback, recorded on each `SessionMessage.modelId`. */

@@ -5,14 +5,16 @@
  * and never on `message` (docs/standards/error-handling.md). The user-facing fields — `message`,
  * `issues`, `field`, `leaks`, the `source` label, and the line/column — name the offending
  * field/node/symbol and never carry an authored value, a stack trace, or an absolute path. An
- * internal `cause`, where attached, is a non-secret diagnostic (a YAML rule, or a host `readFile`
- * error) kept for logs per error-handling.md; the raw ZodError is deliberately NOT attached, as it
- * can carry an authored `received` value.
+ * internal cause/detail, where attached, can contain sensitive authored or historical text and must
+ * not be rendered or assumed safe to log. The raw ZodError is deliberately NOT attached, as it can
+ * carry an authored `received` value.
  *
  * Two families: the parse-time {@link WorkflowParseError} (syntax / schema / secret-leak), thrown by
  * `parseWorkflow`; and the runtime {@link InterpolationError}, thrown while resolving a template
  * against a run scope.
  */
+
+import { RelaviumError } from '@relavium/shared';
 
 export type WorkflowParseErrorCode =
   | 'invalid_yaml'
@@ -81,7 +83,7 @@ export interface SecretLeak {
 }
 
 /** Base for every parser error — callers narrow on `code`, never on `message`. */
-export abstract class WorkflowParseError extends Error {
+export abstract class WorkflowParseError extends RelaviumError {
   abstract readonly code: WorkflowParseErrorCode;
   /** A workspace-relative source label, when the caller supplied one (never an absolute path). */
   readonly source?: string;
@@ -201,6 +203,7 @@ function summarizeLeaks(leaks: readonly SecretLeak[]): string {
 
 /** Stable discriminant for a runtime interpolation failure — callers narrow on `code`, not `message`. */
 export type InterpolationErrorCode =
+  | 'secret_reference' // a public template names a declared denied input/context key
   | 'unresolved_reference' // a `{{ … }}` head/path resolved to no value (and no `| default(…)` rescued it)
   | 'unknown_namespace' // a reference reads from a namespace the resolver does not serve (e.g. `secrets`)
   | 'unknown_filter' // a pipe filter name is not in the registry
@@ -218,7 +221,7 @@ export type InterpolationErrorCode =
  * message names the offending reference (its verbatim `{{ … }}`) and never a resolved value; an
  * absolute path from a host `readFile` failure stays on the `cause` (for logs), never in the message.
  */
-export class InterpolationError extends Error {
+export class InterpolationError extends RelaviumError {
   readonly code: InterpolationErrorCode;
   /** The offending `{{ … }}` occurrence, verbatim — names the reference, never a resolved value. */
   readonly location?: string;
@@ -237,6 +240,16 @@ export class InterpolationError extends Error {
   }
 }
 
+/** Missing/malformed explicit provenance at a public execution boundary (ADR-0113). */
+export class WorkflowContextError extends RelaviumError {
+  readonly code = 'validation';
+  readonly retryable = false;
+  constructor() {
+    super('workflow context provenance is missing or invalid');
+    this.name = 'WorkflowContextError';
+  }
+}
+
 /**
  * Why an expression-sandbox evaluation failed (1.AB) — callers narrow on `reason`, never on
  * `message`. The retryable/fatal split is a pure function of this discriminant
@@ -252,6 +265,7 @@ export type SandboxErrorReason =
   | 'stack' // the stack cap tripped (fatal)
   | 'result_type' // a `condition` result was not a boolean/string/number (fatal)
   | 'non_serializable' // a `transform`/`merge_fn` result was not JSON-serializable (fatal)
+  | 'secret_context' // an executed denied accessor; fixed content-free refusal (fatal)
   | 'scope'; // the injected scope was itself not serializable — an engine/caller fault (fatal)
 
 /**
@@ -260,11 +274,12 @@ export type SandboxErrorReason =
  * member `sandbox_error`. The user-facing `message` is a fixed, generic, secret-free string per
  * `reason` — it never echoes the expression source, a variable name, a scope value, or a host stack.
  * Any raw diagnostic (the quickjs `dump()` of the thrown value) is kept on the internal-only
- * {@link detail} for logs, and a host `cause` on the standard `cause` — neither is the user message.
+ * {@link detail}, and a host `cause` on the standard `cause` — neither is the user message or a
+ * universally safe logging field. The secret_context arm attaches neither.
  * Both are **non-enumerable** (like a thrown error's `cause`), so a naive `JSON.stringify(err)` /
  * spread cannot leak them. Callers narrow on {@link reason} / {@link retryable}, never on `message`.
  */
-export class SandboxError extends Error {
+export class SandboxError extends RelaviumError {
   /** The closed-enum run `ErrorCode` this maps to (sse-event-schema.md). */
   readonly code = 'sandbox_error';
   /** Stable fault discriminant — the one field policy (retry vs fail) branches on. */
@@ -272,9 +287,9 @@ export class SandboxError extends Error {
   /** A pure function of {@link reason}: only a wall-clock `timeout` trip is retryable. */
   readonly retryable: boolean;
   /**
-   * Internal-only diagnostic (the scrubbed quickjs error text) for logs keyed by a correlation id —
-   * never surfaced as the user message. May carry expression-derived text, never a secret (secrets
-   * are filtered out of the scope before evaluation).
+   * Private diagnostic which may contain sensitive authored or historical text. Never render it or
+   * assume it is safe to log. Newly projected denied values are excluded from the VM; this does not
+   * scrub arbitrary authored literals or previously persisted outputs.
    */
   readonly detail?: string;
 
@@ -289,7 +304,7 @@ export class SandboxError extends Error {
     this.retryable = reason === 'timeout';
     if (opts?.detail !== undefined) {
       // Non-enumerable so it does not ride JSON.stringify(err)/spread (matching `cause`'s precedent) —
-      // a structural guard for the documented internal-only, secret-free contract, not just a comment.
+      // a structural guard for the private diagnostic contract, not proof that its content is harmless.
       Object.defineProperty(this, 'detail', {
         value: opts.detail,
         enumerable: false,

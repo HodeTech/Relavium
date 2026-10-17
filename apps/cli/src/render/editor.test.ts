@@ -1,23 +1,38 @@
+import { invocationFixture } from '../process/invocation.test-support.js';
+import { SessionWorkOwner } from '../chat/session-work-owner.js';
+import { toUserFacing } from '../process/errors.js';
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
+import {
+  WindowsTeardownUnavailableError,
+  WINDOWS_TEARDOWN_UNAVAILABLE_MESSAGE,
+} from '../process/windows-teardown.js';
+
 /** A switchable `writeFile` fault, so the "a partial write must not strand the conversation" path is driven for real
  *  (an ENOSPC/EIO cannot be provoked portably). Everything else in `node:fs/promises` stays real. */
 const fsFault = vi.hoisted(() => ({
   writeFileError: undefined as Error | undefined,
+  mkdtempError: undefined as Error | undefined,
+  rmWait: undefined as Promise<void> | undefined,
   rmError: undefined as Error | undefined,
 }));
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
   return {
     ...actual,
+    mkdtemp: async (...args: Parameters<typeof actual.mkdtemp>) => {
+      if (fsFault.mkdtempError !== undefined) throw fsFault.mkdtempError;
+      return actual.mkdtemp(...args);
+    },
     writeFile: async (...args: Parameters<typeof actual.writeFile>) => {
       if (fsFault.writeFileError !== undefined) throw fsFault.writeFileError;
       return actual.writeFile(...args);
     },
     rm: async (...args: Parameters<typeof actual.rm>) => {
+      await fsFault.rmWait;
       if (fsFault.rmError !== undefined) throw fsFault.rmError;
       return actual.rm(...args);
     },
@@ -167,6 +182,17 @@ describe('openInEditor', () => {
       message: 'could not start vim',
     });
     expect(trace).toContain('dispose'); // the conversation is not left on disk
+  });
+
+  it('surfaces the fixed Windows facility remedy and disposes the transcript after admission refusal', async () => {
+    const { deps, trace } = harness({
+      spawnThrows: new WindowsTeardownUnavailableError({ cause: new Error('private-native-path') }),
+    });
+    await expect(openInEditor(deps, 'synthetic transcript')).resolves.toEqual({
+      kind: 'failed',
+      message: WINDOWS_TEARDOWN_UNAVAILABLE_MESSAGE,
+    });
+    expect(trace.at(-1)).toBe('dispose');
   });
 
   it('the editor is KILLED by a signal ⇒ `failed`, and the temp file is STILL disposed', async () => {
@@ -442,4 +468,137 @@ describe('openInEditor — the cleanup block cannot break the never-throws contr
     expect(outcome.kind).toBe('closed');
     expect(reported).toHaveLength(1);
   });
+});
+
+describe('owned native transcript preparation failure observation', () => {
+  for (const operation of ['directory', 'write'] as const) {
+    it.each(['EACCES', 'EPERM', 'ENOSPC', 'EROFS'])(
+      `${operation} keeps actual native %s operational`,
+      async (code) => {
+        const cause = Object.assign(new Error('PRIVATE_NATIVE_TEXT'), { code });
+        const observed: unknown[] = [];
+        if (operation === 'directory') fsFault.mkdtempError = cause;
+        else fsFault.writeFileError = cause;
+        const before = pendingTempDirCount();
+        try {
+          const outcome = await openInEditor(
+            {
+              env: { EDITOR: 'must-not-spawn' },
+              spawnEditor: () => Promise.reject(new Error('unexpected spawn')),
+              createTempDocument: (contents) =>
+                nodeCreateTempDocument(contents, (failure) => {
+                  observed.push(failure);
+                }),
+            },
+            'PRIVATE_TRANSCRIPT',
+          );
+          expect(outcome.kind).toBe('failed');
+          expect(observed).toHaveLength(1);
+          expect(toUserFacing(observed[0])).toMatchObject({
+            code: 'storage_unavailable',
+            exitCode: 1,
+          });
+          expect(JSON.stringify(toUserFacing(observed[0]))).not.toContain('PRIVATE_');
+          expect(pendingTempDirCount()).toBe(before);
+        } finally {
+          fsFault.mkdtempError = undefined;
+          fsFault.writeFileError = undefined;
+        }
+      },
+    );
+  }
+
+  it('observes a native write fault before held partial removal without inventing cleanup acknowledgement', async () => {
+    const f = invocationFixture();
+    const cleanup = vi.fn(() => Promise.resolve());
+    const owner = new SessionWorkOwner(f.invocation, 'chat', { cancel: () => {}, cleanup });
+    const before = pendingTempDirCount();
+    let release: () => void = () => {};
+    fsFault.rmWait = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const cause = new TypeError('PRIVATE_NATIVE_WRITE_FAULT');
+    fsFault.writeFileError = cause;
+    let settled = false;
+    const editor = owner.enter(() =>
+      openInEditor(
+        {
+          env: { EDITOR: 'must-not-spawn' },
+          spawnEditor: () => Promise.reject(new Error('unexpected spawn')),
+          createTempDocument: (contents) => nodeCreateTempDocument(contents, owner.failure),
+        },
+        'PRIVATE_TRANSCRIPT',
+      ),
+    );
+    const observed = editor.then((outcome) => {
+      settled = true;
+      return outcome;
+    });
+    let closing: Promise<void> | undefined;
+    try {
+      await vi.waitFor(() => expect(f.registry.termination).toBeDefined());
+      expect(owner.firstFailure?.cause).toBe(cause);
+      expect(f.registry.observations.exitCode()).toBe(9);
+      expect(pendingTempDirCount()).toBe(before + 1);
+      closing = owner.close();
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      expect(cleanup).not.toHaveBeenCalled();
+      expect(f.registry.activeOwners).toBe(1);
+    } finally {
+      fsFault.writeFileError = undefined;
+      fsFault.rmWait = undefined;
+      release();
+      await observed;
+      await (closing ?? owner.close());
+    }
+    expect(pendingTempDirCount()).toBe(before);
+    expect(cleanup).toHaveBeenCalledOnce();
+    expect(f.registry.activeOwners).toBe(0);
+  });
+
+  it('a throwing observer preserves the original rejection and still reclaims the partial transcript', async () => {
+    const cause = new TypeError('original native fault');
+    fsFault.writeFileError = cause;
+    const before = pendingTempDirCount();
+    try {
+      await expect(
+        nodeCreateTempDocument('PRIVATE_TRANSCRIPT', () => {
+          throw new Error('observer fault');
+        }),
+      ).rejects.toBe(cause);
+      expect(pendingTempDirCount()).toBe(before);
+    } finally {
+      fsFault.writeFileError = undefined;
+    }
+  });
+});
+
+it('a failed partial removal reports cleanup uncertainty, preserves the primary write failure and retains the exit net', async () => {
+  const primary = new TypeError('primary write fault');
+  const secondary = new Error('partial removal fault');
+  const observed: unknown[] = [];
+  const before = pendingTempDirCount();
+  fsFault.writeFileError = primary;
+  fsFault.rmError = secondary;
+  try {
+    await expect(
+      nodeCreateTempDocument(
+        'PRIVATE_TRANSCRIPT',
+        (failure) => {
+          observed.push(failure);
+        },
+        (failure) => {
+          observed.push(failure);
+        },
+      ),
+    ).rejects.toBe(primary);
+    expect(observed).toEqual([primary, secondary]);
+    expect(pendingTempDirCount()).toBe(before + 1);
+  } finally {
+    fsFault.writeFileError = undefined;
+    fsFault.rmError = undefined;
+    disposePendingTempDirs();
+  }
+  expect(pendingTempDirCount()).toBe(0);
 });

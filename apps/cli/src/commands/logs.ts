@@ -1,3 +1,5 @@
+import type { LocalDbNoticeContext } from '../db/checkpoint-notice.js';
+import { acquireCommandResource, type CommandLifetime } from '../process/command-lifetime.js';
 import type { Db } from '@relavium/db';
 import type { RunEvent } from '@relavium/shared';
 
@@ -18,9 +20,14 @@ export interface LogsCommandArgs {
 const MAX_REPORTED_SKIPS = 8;
 
 export interface LogsCommandDeps {
+  readonly commandLifetime?: CommandLifetime;
   readonly io: CliIo;
   readonly global: GlobalOptions;
-  readonly openDb?: (homeDir: string) => { db: Db; close: () => void };
+  readonly openDb?: (
+    homeDir: string,
+    captureClose?: (close: () => void) => void,
+    noticeContext?: LocalDbNoticeContext,
+  ) => { db: Db; close: () => void };
 }
 
 /**
@@ -34,7 +41,12 @@ export function logsCommand(args: LogsCommandArgs, deps: LogsCommandDeps): ExitC
     cwd: deps.global.cwd,
     configPath: deps.global.configPath,
   });
-  const { reader, close } = openHistoryReader(homeDir, deps.openDb);
+  const { reader, close } = acquireCommandResource(deps.commandLifetime, (captureClose) =>
+    openHistoryReader(homeDir, deps.openDb, captureClose, {
+      io: deps.io,
+      invocation: deps.commandLifetime?.invocation,
+    }),
+  );
   try {
     const run = reader.loadRun(args.runId);
     if (run === undefined) {
@@ -72,7 +84,7 @@ export function logsCommand(args: LogsCommandArgs, deps: LogsCommandDeps): ExitC
     }
     return EXIT_CODES.success;
   } finally {
-    close();
+    if (deps.commandLifetime === undefined) close();
   }
 }
 

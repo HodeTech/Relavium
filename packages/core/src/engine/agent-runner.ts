@@ -61,8 +61,8 @@ import {
 
 import { MAX_REPORTED_WIDENINGS } from '../dag.js';
 import { outputSchemaMiss } from '../output-schema.js';
-import { resolveTemplate } from '../interpolation/resolve.js';
-import type { ResolverCapabilities, RunScope } from '../interpolation/scope.js';
+import { resolvePublicTemplate, type PublicTemplateScope } from '../interpolation/resolve.js';
+import type { ResolverCapabilities } from '../interpolation/scope.js';
 import type { AgentPlanConfig } from '../run-plan.js';
 import { authoredSystemPrompt, type AuthoredSystemPrompt } from './authored-system-prompt.js';
 import { modelVisibleDescription } from '../tools/types.js';
@@ -485,10 +485,9 @@ async function prepareAgentDispatch(
   if (!grant.ok) return failed('validation', grant.message, false);
   const grantedToolIds = new Set(grant.ids);
 
-  const prompt =
-    node.prompt_template === undefined
-      ? { ok: true as const, text: '' }
-      : await resolvePrompt(node.prompt_template, ctx, deps);
+  // Empty public text still crosses the required provenance boundary for low-level embeddings.
+  const prompt = await resolvePrompt(node.prompt_template ?? '', ctx, deps);
+  if (ctx.signal.aborted) return failed('cancelled', 'run cancelled', false);
   if (!prompt.ok) return failed('validation', prompt.message, false);
 
   // Inline-vs-generative routing (1.AG Section C, ADR-0045 §1): a resolved model whose `media_surface` is
@@ -1577,20 +1576,26 @@ function chainCapabilities(deps: AgentRunnerDeps): ChainCapabilities {
 
 async function resolvePrompt(
   template: string,
-  ctx: Pick<NodeExecContext, 'inputs' | 'ctx' | 'runOutputs'>,
+  ctx: Pick<NodeExecContext, 'inputs' | 'ctx' | 'secretInputNames' | 'runOutputs' | 'signal'>,
   deps: AgentRunnerDeps,
 ): Promise<{ ok: true; text: string } | { ok: false; message: string }> {
   // The resolved prompt may draw on untrusted run.outputs / read_file — it lands in a USER message
   // (assembleMessages), never `system`. `ctx` is the resolved workflow-context namespace
   // (`NodeExecContext.ctx`), folded once at run start by the engine; a prompt resolves against
   // inputs + ctx + run.outputs.
-  const scope: RunScope = {
+  const scope: PublicTemplateScope = {
     inputs: ctx.inputs,
     ctx: ctx.ctx,
+    secretInputNames: ctx.secretInputNames,
     outputs: Object.fromEntries(ctx.runOutputs),
   };
   try {
-    const text = await resolveTemplate(template, scope, deps.resolverCapabilities ?? {});
+    const text = await resolvePublicTemplate(
+      template,
+      scope,
+      deps.resolverCapabilities ?? {},
+      ctx.signal,
+    );
     return { ok: true, text };
   } catch (err) {
     return {

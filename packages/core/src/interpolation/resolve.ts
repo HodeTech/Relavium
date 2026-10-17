@@ -9,10 +9,10 @@
  * resolved a single time, in declared order (so a later entry may read an earlier one), into a frozen
  * snapshot. Resolution never mutates the scope and never reaches the filesystem directly.
  *
- * What this module does NOT do: it never resolves a `secret` into agent/human text — the parse-time
- * taint gate (`analyzeSecretTaint`) already rejected that, and {@link RunScope} carries no `secrets`
- * namespace. The whole-string JS fields (`condition`/`transform`/`merge_fn`) are not templates; they
- * belong to the expression sandbox (1.AB), not here.
+ * The trusted raw resolveTemplate/resolveContext APIs preserve their host contract, including raw
+ * declared values. Public agent/human text must use resolvePublicTemplate: its whole-template preflight
+ * rejects declared secret input/context references before capabilities or filters, including callers
+ * that constructed a workflow without the parser. Bare JS belongs to the expression sandbox.
  *
  * Provenance: `resolveTemplate` returns a plain string, flattening any `read_file`- / `run.outputs`-
  * derived (untrusted) content together with literals — it carries no taint marker. The structural
@@ -22,7 +22,7 @@
  * not something this pure resolver can enforce once provenance is flattened.
  */
 
-import type { AbortSignalLike, Workflow } from '@relavium/shared';
+import type { AbortSignalLike } from '@relavium/shared';
 
 import { InterpolationError } from '../errors.js';
 
@@ -30,6 +30,11 @@ import { filterFn } from './filters.js';
 import { getByPath } from './path.js';
 import { parseTemplate, type InterpolationReference } from './references.js';
 import type { ResolverCapabilities, RunScope } from './scope.js';
+import {
+  createWorkflowContextProjection,
+  ownSecretInputNames,
+  type WorkflowContextProjection,
+} from './provenance.js';
 
 /**
  * Resolve an authored template string to concrete text. A literal segment passes through verbatim; a
@@ -57,6 +62,52 @@ export async function resolveTemplate(
   return out;
 }
 
+/** Public text consumers must carry explicit owned provenance, even for hand-built workflows. */
+export interface PublicTemplateScope {
+  readonly inputs: Readonly<Record<string, unknown>>;
+  readonly ctx: WorkflowContextProjection;
+  readonly secretInputNames: ReadonlySet<string>;
+  readonly outputs: Readonly<Record<string, unknown>>;
+}
+
+export async function resolvePublicTemplate(
+  text: string,
+  scope: PublicTemplateScope,
+  caps: ResolverCapabilities = {},
+  signal?: AbortSignalLike,
+): Promise<string> {
+  const ctx = createWorkflowContextProjection(scope.ctx);
+  const names = ownSecretInputNames(scope.secretInputNames);
+  const denied = new Set(ctx.deniedKeys);
+  // Inspect the whole template before any filter/read capability or fallback can run.
+  for (const segment of parseTemplate(text)) {
+    if (segment.kind !== 'reference') continue;
+    const ref = segment.reference;
+    if (
+      (ref.kind === 'ctx' && denied.has(ref.identifier)) ||
+      (ref.kind === 'inputs' && names.secretInputNames.has(ref.identifier))
+    ) {
+      throw new InterpolationError(
+        'secret_reference',
+        'secret-derived values are unavailable to text templates',
+      );
+    }
+  }
+  return resolveTemplate(
+    text,
+    { inputs: scope.inputs, ctx: ctx.values, outputs: scope.outputs },
+    caps,
+    signal,
+  );
+}
+
+/** The resolver needs only context definitions; a full trusted Workflow remains compatible. */
+export interface ContextResolutionSource {
+  readonly workflow: {
+    readonly context?: readonly { readonly key: string; readonly value: string }[] | undefined;
+  };
+}
+
 /**
  * Eagerly resolve every `context` entry exactly once into a frozen, immutable snapshot (the spec's
  * eager-once context). Entries resolve in declared order, each seeing the inputs and the already-
@@ -64,16 +115,13 @@ export async function resolveTemplate(
  * @throws {InterpolationError} when a context value cannot be resolved (e.g. `read_file` on a bad path).
  */
 export async function resolveContext(
-  workflow: Workflow,
+  workflow: ContextResolutionSource,
   inputs: Readonly<Record<string, unknown>>,
   caps: ResolverCapabilities = {},
   signal?: AbortSignalLike,
 ): Promise<Readonly<Record<string, string>>> {
-  // A null-prototype accumulator so a context key named `__proto__`/`constructor` is stored as a real
-  // own property rather than being silently dropped (or mutating a prototype). NOTE for 1.R: this
-  // null-proto guard is in-memory only — when this frozen `ctx` is persisted/transported for
-  // checkpoint/resume it MUST go through `structuredClone` (which preserves the null prototype), never
-  // `JSON.stringify` → `JSON.parse`, which would re-materialize a `__proto__` key as a real setter.
+  // Store prototype-shaped keys as ordinary own data. Engine resolution uses owned definitions and
+  // immediately qualifies this trusted raw result; raw context is never carried in a checkpoint.
   const ctx = Object.create(null) as Record<string, string>;
   for (const entry of workflow.workflow.context ?? []) {
     abortIfCancelled(signal);

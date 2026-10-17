@@ -63,6 +63,7 @@ function captureIo(): { readonly io: CliIo; readonly stderr: () => string } {
       writeErr: (text) => {
         writes.push(text);
       },
+      writeOutAcknowledged: () => Promise.resolve(),
       writeErrAcknowledged: (text) => {
         writes.push(text);
         return Promise.resolve();

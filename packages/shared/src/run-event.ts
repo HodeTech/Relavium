@@ -74,8 +74,13 @@ const dualBase = {
   ...timestampSeq,
 };
 
-/** The common envelope (the spec's `BaseEvent`): both correlation keys optional at the type level. */
-export const BaseEventSchema = z.object({ type: z.string(), ...dualBase });
+/**
+ * The common envelope (the spec's `BaseEvent`): both correlation keys optional at the type level,
+ * with exactly one required on parse. This is an envelope projection, not a full-event parser.
+ */
+export const BaseEventSchema = z
+  .object({ type: z.string(), ...dualBase })
+  .superRefine(refineCorrelationKey);
 export type BaseEvent = z.infer<typeof BaseEventSchema>;
 
 // --- Shared field schemas --------------------------------------------------------------------
@@ -201,8 +206,8 @@ export const AgentTokenEventSchema = z.object({
  * counterpart of `agent:token`: a **dual-envelope** event (`runId` on a run, `sessionId` on a session)
  * the correlation-agnostic turn core emits per `reasoning_delta` chunk. Carries the delta `text` + the
  * emitting `model` — never the ephemeral same-provider `signature` (a same-turn continuity token that is
- * never written to an event or log, ADR-0030). A surface renders it as a collapsible "thinking" panel; a
- * consumer that does not care ignores it forward-compatibly (an additive `type`, no `assertNever`).
+ * never written to an event or log, ADR-0030). Surfaces render a bounded thinking region; consumers of the closed event union
+ * explicitly handle it or name their deliberate ignore disposition. No signature becomes display data.
  */
 export const AgentReasoningEventSchema = z.object({
   type: z.literal('agent:reasoning'),
@@ -809,7 +814,10 @@ type RunEventUnion = z.infer<typeof RunEventUnionSchema>;
  * events (every `...dualBase` member — see its definition above) declare both keys as optional, so
  * this is where neither/both is rejected.
  */
-function refineCorrelationKey(event: RunEventUnion, ctx: z.RefinementCtx): void {
+function refineCorrelationKey(
+  event: { readonly runId?: string | undefined; readonly sessionId?: string | undefined },
+  ctx: z.RefinementCtx,
+): void {
   const hasRunId = 'runId' in event && event.runId !== undefined;
   const hasSessionId = 'sessionId' in event && event.sessionId !== undefined;
   if (hasRunId === hasSessionId) {

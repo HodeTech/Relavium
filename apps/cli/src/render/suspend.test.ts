@@ -40,7 +40,9 @@ const harness = (
         trace.push('ink:end');
       }
     },
-    writeControl: (sequence) => trace.push(sequence),
+    writeControl: (sequence) => {
+      trace.push(sequence);
+    },
     inkOwnsAltScreen: false, // the `relavium chat` default (the hoist owns 1049)
     altActive: true,
     mouseActive: true,
@@ -55,6 +57,41 @@ const body = (trace: string[]) => (): Promise<void> => {
 };
 
 describe('suspendFullScreen — `relavium chat` (ink does NOT own the alt screen)', () => {
+  it('waits for actual release delivery before running a child and joins reclaim delivery before native resume', async () => {
+    let deliver: () => void = () => undefined;
+    const delivery = new Promise<void>((resolve) => {
+      deliver = resolve;
+    });
+    let reclaimed: () => void = () => undefined;
+    const reclaim = new Promise<void>((resolve) => {
+      reclaimed = resolve;
+    });
+    const body = vi.fn(() => Promise.resolve());
+    const resumed = vi.fn();
+    const running = suspendFullScreen(
+      {
+        suspendTerminal: async (callback) => {
+          await callback();
+          resumed();
+        },
+        writeControl: (text) =>
+          text === DISABLE_MOUSE ? delivery : text === ENABLE_MOUSE ? reclaim : Promise.resolve(),
+        inkOwnsAltScreen: false,
+        altActive: false,
+        mouseActive: true,
+      },
+      body,
+    );
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(body, 'SESSION_NATIVE_RELEASE_DELIVERY_BEFORE_CHILD').not.toHaveBeenCalled();
+    deliver();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(body).toHaveBeenCalledOnce();
+    expect(resumed, 'SESSION_NATIVE_RECLAIM_DELIVERY_BEFORE_RESUME').not.toHaveBeenCalled();
+    reclaimed();
+    await running;
+    expect(resumed).toHaveBeenCalledOnce();
+  });
   it('exits + re-enters the alt buffer ITSELF, and does so INSIDE ink’s suspension window', async () => {
     const { opts, trace } = harness({ inkOwnsAltScreen: false });
     await suspendFullScreen(opts, body(trace));
@@ -255,7 +292,9 @@ describe('suspendFullScreen — re-entrancy is the SURFACE’s job to gate', () 
     const trace: string[] = [];
     const opts: SuspendFullScreenOptions = {
       suspendTerminal: () => Promise.reject(already), // beginSuspend threw before the callback ran
-      writeControl: (sequence) => trace.push(sequence),
+      writeControl: (sequence) => {
+        trace.push(sequence);
+      },
       inkOwnsAltScreen: false,
       altActive: true,
       mouseActive: true,
@@ -272,6 +311,132 @@ describe('suspendFullScreen — re-entrancy is the SURFACE’s job to gate', () 
  * reclaim later re-enters the alt buffer on the user's SHELL. The flag is owned by the PORT, wrapped around the ink
  * call it hands out, so no caller can forget to maintain it.
  */
+describe('mount-specific suspend attachment lifetime', () => {
+  it('seals queued work but joins the complete entered native continuation after the body returned', async () => {
+    const port = createSuspendPort();
+    const mount = port.reserveAttachment();
+    let finishNative: () => void = () => undefined;
+    const native = new Promise<void>((resolve) => {
+      finishNative = resolve;
+    });
+    let bodyReturned = false;
+    mount.port.attach(async (body) => {
+      await body();
+      bodyReturned = true;
+      await native;
+    });
+    const suspension = mount.port.current()?.(() => Promise.resolve());
+    const publish = vi.fn(() => Promise.resolve());
+    const queued = port.withActiveTerminal(publish);
+    const refused = expect(queued).rejects.toThrow('no longer active');
+    let joined = false;
+    const drain = mount.sealAndJoin();
+    void drain.then(() => {
+      joined = true;
+    });
+    await refused;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(bodyReturned).toBe(true);
+    expect(port.current()).toBeUndefined();
+    expect(port.isSuspended()).toBe(true);
+    expect(publish).not.toHaveBeenCalled();
+    expect(joined, 'SESSION_SUSPEND_DRAIN_INCLUDES_NATIVE_END_CONTINUATION').toBe(false);
+    finishNative();
+    await suspension;
+    await drain;
+    expect(port.isSuspended()).toBe(false);
+  });
+
+  it('keeps old detach and old access scoped to their own mount after a successor attached', async () => {
+    const port = createSuspendPort();
+    const old = port.reserveAttachment();
+    const successor = port.reserveAttachment();
+    const oldNative = vi.fn(async (body: () => Promise<void>) => body());
+    const newNative = vi.fn(async (body: () => Promise<void>) => body());
+    old.port.attach(oldNative);
+    const stale = old.port.current();
+    successor.port.attach(newNative);
+    old.port.attach(oldNative);
+    old.port.attach(undefined);
+    expect(old.port.current(), 'SESSION_OLD_MOUNT_CANNOT_ACQUIRE_SUCCESSOR').toBeUndefined();
+    await expect(stale?.(() => Promise.resolve())).rejects.toThrow('no longer active');
+    await port.current()?.(() => Promise.resolve());
+    expect(oldNative).not.toHaveBeenCalled();
+    expect(newNative).toHaveBeenCalledOnce();
+    await old.sealAndJoin();
+    await successor.sealAndJoin();
+  });
+
+  it('revoking old attachment custody still joins its already-entered native continuation', async () => {
+    const port = createSuspendPort();
+    const old = port.reserveAttachment();
+    const successor = port.reserveAttachment();
+    let finishNative: () => void = () => undefined;
+    const native = new Promise<void>((resolve) => {
+      finishNative = resolve;
+    });
+    old.port.attach(async (body) => {
+      await body();
+      await native;
+    });
+    const entered = old.port.current()?.(() => Promise.resolve());
+    const next = vi.fn(async (body: () => Promise<void>) => body());
+    successor.port.attach(next);
+    old.port.attach(async (body) => body());
+    let joined = false;
+    const drain = old.sealAndJoin().then(() => {
+      joined = true;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(joined, 'SESSION_SUPERSEDED_MOUNT_RETAINS_NATIVE_JOIN').toBe(false);
+    expect(old.port.current()).toBeUndefined();
+    finishNative();
+    await entered;
+    await drain;
+    await successor.port.current()?.(() => Promise.resolve());
+    expect(next).toHaveBeenCalledOnce();
+    await successor.sealAndJoin();
+  });
+
+  it('joins actual in-flight publication acknowledgement and refuses late attachment after seal', async () => {
+    const port = createSuspendPort();
+    const mount = port.reserveAttachment();
+    mount.port.attach(async (body) => body());
+    let acknowledge: () => void = () => undefined;
+    const acknowledgement = new Promise<void>((resolve) => {
+      acknowledge = resolve;
+    });
+    const publication = port.withActiveTerminal(() => acknowledgement);
+    let joined = false;
+    const drain = mount.sealAndJoin();
+    void drain.then(() => {
+      joined = true;
+    });
+    mount.port.attach(async (body) => body());
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(joined, 'SESSION_PUBLICATION_ACK_PRECEDES_FINAL_UNMOUNT').toBe(false);
+    expect(port.current()).toBeUndefined();
+    acknowledge();
+    await publication;
+    await drain;
+  });
+
+  it('permits the next normal mount after the prior attachment was sealed and joined', async () => {
+    const port = createSuspendPort();
+    const old = port.reserveAttachment();
+    old.port.attach(async (body) => body());
+    await old.sealAndJoin();
+    const next = port.reserveAttachment();
+    const publish = vi.fn(async () => {});
+    next.port.attach(async (body) => body());
+    await port.withActiveTerminal(publish);
+    expect(publish).toHaveBeenCalledOnce();
+    old.port.attach(undefined);
+    expect(port.current()).toBeDefined();
+    await next.sealAndJoin();
+  });
+});
+
 describe('createSuspendPort — the suspension window', () => {
   it('keeps publication exclusive until acknowledgement and then services the queued suspension', async () => {
     const port = createSuspendPort();
@@ -380,6 +545,25 @@ describe('createSuspendPort — the suspension window', () => {
  * stop the Vitest worker, so the harness proves the release → self-stop → CONT → reclaim ordering without a shell.
  */
 describe('wireJobControl (G0)', () => {
+  it('waits for a no-Ink release acknowledgement and joins reentry without self-stopping after disposal', async () => {
+    const h = harness();
+    let delivered: (released: boolean) => void = () => undefined;
+    const delivery = new Promise<boolean>((resolve) => {
+      delivered = resolve;
+    });
+    const binding = wireJobControl({
+      suspendPort: h.port,
+      lifecycle: h.lifecycle,
+      run: () => Promise.reject(new Error('no Ink here')),
+      releaseWithoutInkAcknowledged: () => delivery,
+    });
+    binding.requestSuspend();
+    expect(h.suspendSelf, 'SESSION_NO_INK_RELEASE_ACK_BEFORE_SELF_STOP').not.toHaveBeenCalled();
+    const closing = binding.finish();
+    delivered(true);
+    await closing;
+    expect(h.suspendSelf).not.toHaveBeenCalled();
+  });
   interface Harness {
     readonly trace: string[];
     readonly port: ReturnType<typeof createSuspendPort>;
@@ -439,7 +623,9 @@ describe('wireJobControl (G0)', () => {
         suspendFullScreen(
           {
             suspendTerminal,
-            writeControl: (sequence) => h.trace.push(sequence),
+            writeControl: (sequence) => {
+              h.trace.push(sequence);
+            },
             inkOwnsAltScreen: false,
             altActive: true,
             mouseActive: true,
@@ -447,6 +633,109 @@ describe('wireJobControl (G0)', () => {
           waitForContinue,
         ),
     });
+
+  it('owned finish drains an entered job handoff and full native redraw before acknowledging release', async () => {
+    const h = harness();
+    let redraw: () => void = () => undefined;
+    const redrawn = new Promise<void>((resolve) => {
+      redraw = resolve;
+    });
+    h.port.attach(async (body) => {
+      await body();
+      await redrawn;
+      h.trace.push('native:redraw');
+    });
+    const binding = bind(h);
+    h.fireSuspend();
+    await flush();
+    const released = binding.finish();
+    expect(binding.finish()).toBe(released);
+    let acknowledged = false;
+    void released.then(() => {
+      acknowledged = true;
+    });
+    await flush();
+    expect(h.trace).toContain(ENTER_ALT_SCREEN + HIDE_CURSOR);
+    expect(h.trace).not.toContain('native:redraw');
+    expect(acknowledged, 'SESSION_JOB_FINISH_INCLUDES_NATIVE_RECLAIM').toBe(false);
+    h.fireSuspend();
+    h.fireContinue();
+    expect(h.suspendSelf).toHaveBeenCalledOnce();
+    redraw();
+    await released;
+    expect(h.trace.at(-1)).toBe('native:redraw');
+  });
+
+  it('an asynchronous finish can drain after the synchronous exit fallback disposed listeners', async () => {
+    const h = harness();
+    h.port.attach(async (body) => body());
+    const binding = bind(h);
+    h.fireSuspend();
+    await flush();
+    binding.dispose();
+    expect(h.trace).not.toContain(ENTER_ALT_SCREEN + HIDE_CURSOR);
+    await binding.finish();
+    expect(h.trace).toContain(ENTER_ALT_SCREEN + HIDE_CURSOR);
+    expect(h.removeContinue).toHaveBeenCalledOnce();
+  });
+
+  it('transfers construction custody before signal registration and retains unknown partial registration', async () => {
+    const h = harness();
+    let adopted: ReturnType<typeof wireJobControl> | undefined;
+    const cause = new Error('PRIVATE_SIGNAL_REGISTRATION_FAILURE');
+    expect(() =>
+      wireJobControl({
+        suspendPort: h.port,
+        lifecycle: {
+          ...h.lifecycle,
+          onContinue: () => {
+            expect(adopted).toBeDefined();
+            throw cause;
+          },
+        },
+        run: () => Promise.resolve(),
+        adopt: (binding) => {
+          adopted = binding;
+        },
+      }),
+    ).toThrow(cause);
+    if (adopted === undefined) throw new Error('missing native construction custody');
+    let acknowledged = false;
+    void adopted.finish().then(() => {
+      acknowledged = true;
+    });
+    await flush();
+    expect(acknowledged, 'SESSION_JOB_PARTIAL_REGISTRATION_NEVER_ACKS').toBe(false);
+  });
+
+  it('a native remover can reenter finish without allowing later self-stop or terminal reclaim', async () => {
+    const h = harness();
+    const reclaim = vi.fn();
+    const original = h.lifecycle.onSuspend;
+    const binding = wireJobControl({
+      suspendPort: h.port,
+      lifecycle: {
+        ...h.lifecycle,
+        onSuspend: (listener) => {
+          const remove = original(listener);
+          return () => {
+            remove();
+            void binding?.finish();
+          };
+        },
+      },
+      run: () => Promise.reject(new Error('no Ink in this fixture')),
+      releaseWithoutInk: () => true,
+      reclaimWithoutInk: reclaim,
+    });
+    binding.requestSuspend();
+    await binding.finish();
+    expect(
+      h.suspendSelf,
+      'SESSION_REENTRANT_JOB_FINISH_PREVENTS_NATIVE_STOP',
+    ).not.toHaveBeenCalled();
+    expect(reclaim, 'SESSION_REENTRANT_JOB_FINISH_PREVENTS_LATE_RECLAIM').not.toHaveBeenCalled();
+  });
 
   it('releases terminal state BEFORE self-stop, then reclaims and redraws only after SIGCONT', async () => {
     const h = harness();

@@ -1,3 +1,4 @@
+import { ownSessionSubscriber } from '../../chat/session-presentation.js';
 import { Box, Static, Text, render, useApp, useInput, usePaste, useWindowSize } from 'ink';
 import {
   createElement,
@@ -12,6 +13,10 @@ import {
 } from 'react';
 
 import type { SuspendPort } from '../suspend.js';
+import { createSuspendPort } from '../suspend.js';
+import { SessionInkMount } from '../../chat/session-ink-mount.js';
+import { SessionInkInput } from '../../chat/session-ink-input.js';
+import { CliError } from '../../process/cli-error.js';
 import type { NoticeFlush } from '../../engine/effect-retention.js';
 import { useVisibleRenderFlush } from './render-acknowledgement.js';
 import {
@@ -207,6 +212,8 @@ function TranscriptLine(
 }
 
 interface ChatAppProps {
+  /** Synchronous invocation seal; the tree stays mounted until entered native work joins. */
+  readonly inputEnabled?: () => boolean;
   readonly store: ChatStoreController;
   /** Successful terminal setup and a flushed frame make this transcript eligible for disclosure. */
   readonly onActivated?: (flushNotice: NoticeFlush) => void | Promise<void>;
@@ -592,6 +599,7 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
 }
 
 export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
+  const acceptsInput = (): boolean => props.inputEnabled?.() !== false;
   const storeRef = useRef(props.store);
   storeRef.current = props.store;
   const [acknowledgement] = useState(() => createTranscriptAcknowledgement(() => storeRef.current));
@@ -773,11 +781,13 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     if (reader === undefined) return;
     void reader.list(dir).then(
       (candidates) => {
+        if (!acceptsInput()) return;
         const open = mentionRef.current;
         if (open !== undefined && open.dir === dir)
           applyMention({ ...open, candidates, loading: false });
       },
       () => {
+        if (!acceptsInput()) return;
         const open = mentionRef.current;
         if (open !== undefined && open.dir === dir)
           applyMention({ ...open, candidates: [], loading: false });
@@ -795,12 +805,13 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   // refusal, a binary file, oversize, since-deleted) surfaces a STATIC, secret-free note — never the raw error. A
   // large/truncated file adds an honest soft size note (the fs 8 MiB cap is the hard ceiling).
   const acceptMention = (path: string): void => {
+    if (!acceptsInput()) return;
     const reader = props.mentionReader;
     if (reader === undefined) return;
     const gen = submitGenRef.current; // capture: a submit since accept ⇒ the buffer moved on (drop the marker/attachment)
     void reader.read(path).then(
       ({ content, sizeBytes }) => {
-        if (submitGenRef.current !== gen) return; // the buffer was submitted since accept — never touch the next message
+        if (!acceptsInput() || submitGenRef.current !== gen) return; // a sealed mount cannot publish late input
         applyEditor((current) => {
           historyRef.current = resetHistoryNav(historyRef.current); // a real edit ends history navigation
           return insertAtCursor(current, `${mentionMarker(path)} `);
@@ -810,7 +821,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         if (warn !== undefined) props.store.note(warn);
       },
       () => {
-        if (submitGenRef.current !== gen) return;
+        if (!acceptsInput() || submitGenRef.current !== gen) return;
         props.store.note('@ mention could not read that file (refused, binary, or too large)');
       },
     );
@@ -825,7 +836,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     mode: ChatMode,
     gen: number,
   ): void => {
-    if (submitGenRef.current !== gen) return;
+    if (!acceptsInput() || submitGenRef.current !== gen) return;
     if (outcome.kind === 'ran') {
       addAttachment({
         kind: 'command',
@@ -850,6 +861,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   // Run a tokenized `!`-shell command through the session boundary (runUserCommand). The buffer is already cleared
   // by the submit case; the outcome injects/notes below. A truly unexpected rejection (e.g. a state guard) notes.
   const runShell = (parsed: ShellCommand): void => {
+    if (!acceptsInput()) return;
     const runner = props.runShellCommand;
     if (runner === undefined) return;
     const gen = submitGenRef.current;
@@ -863,7 +875,8 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       },
       () => {
         applyShellBusy(false);
-        if (submitGenRef.current === gen) props.store.note('! shell command failed unexpectedly');
+        if (acceptsInput() && submitGenRef.current === gen)
+          props.store.note('! shell command failed unexpectedly');
       },
     );
   };
@@ -872,6 +885,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   // Apply a refresh result INTO the same picker generation that kicked it (drop a stale/closed/reopened one via the
   // epoch); keep the user's filter/selection, surface the per-provider partial-failure banner. Never crash the REPL.
   const applyPickerRefresh = (epoch: number, report: RefreshReport | undefined): void => {
+    if (!acceptsInput()) return;
     const port = props.modelPicker;
     const open = modelPickerRef.current;
     if (epoch !== pickerEpochRef.current || open === undefined || port === undefined) return;
@@ -893,6 +907,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     });
   };
   const runPickerRefresh = (refresh: () => Promise<RefreshReport | undefined>): void => {
+    if (!acceptsInput()) return;
     const epoch = pickerEpochRef.current; // capture THIS generation so a reopened picker never adopts this result
     const open = modelPickerRef.current;
     if (open === undefined) return;
@@ -956,6 +971,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     step: Extract<ModelPickerStep, { kind: 'accept' }>,
     open: ModelPickerState,
   ): void => {
+    if (!acceptsInput()) return;
     if (step.modelId === open.currentDefault) {
       if (step.reasoningEffort === undefined || step.reasoningEffort === open.currentEffort) {
         const at =
@@ -1006,6 +1022,10 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         // Clear the transient hint only on a REAL interaction — the fold returns the SAME state ref for an inert key.
         applyModelPicker(step.state === open ? open : { ...step.state, hint: undefined });
         return;
+      default: {
+        const exhaustive: never = step;
+        return exhaustive;
+      }
     }
   };
 
@@ -1041,6 +1061,10 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       case 'state':
         applyEffortPicker(step.state);
         return;
+      default: {
+        const exhaustive: never = step;
+        return exhaustive;
+      }
     }
   };
 
@@ -1059,6 +1083,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   }, [app, suspendPort]);
 
   const submit = (message: string, display?: string): void => {
+    if (!acceptsInput()) return;
     if (!activationReady.current && message !== '/cancel' && message !== '/exit') return;
     // A typed `/models` opens the reseat picker overlay (ADR-0059) instead of sending — interactive only (the port
     // is wired). Covers a directly-typed `/models` AND a chat-palette selection (both route through `submit`).
@@ -1108,6 +1133,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   // in flight, no keyboard-owning overlay/submode, and NO pending approval (read FRESH from the store). This also
   // closes the standalone-chat paste gap — it never enabled DECSET 2004 before; usePaste enables it natively now.
   usePaste((text) => {
+    if (!acceptsInput()) return;
     if (!activationReady.current) return;
     const pasted = text.replace(/\r\n?/g, '\n');
     if (pasted.length === 0) return;
@@ -1198,6 +1224,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   };
 
   useInput((char, key) => {
+    if (!acceptsInput()) return;
     // Raw Ink input represents Ctrl-Z as Ctrl+`z` (and a few test streams retain the literal SUB byte). It must win
     // over mouse parsing, overlays, and approval routing: job control is never prompt text and never consent.
     if (char === '\x1a' || (key.ctrl === true && key.meta !== true && char.toLowerCase() === 'z')) {
@@ -1655,7 +1682,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
 export function finalizeInkExit(
   exited: Promise<void>,
   ops: {
-    readonly teardown: () => void;
+    readonly teardown: () => unknown;
     readonly outcome: () => ChatDriveOutcome;
   },
 ): Promise<ChatDriveOutcome> {
@@ -1674,7 +1701,8 @@ export function finalizeInkExit(
  *    back to the conversation it had just ended (whole-phase Opus review). The MCP-skipped diagnostic already took
  *    this route (chat.ts); the intro did not.
  *
- * `driveInk` mounts real ink and cannot be unit-tested, so the decision lives here, where it can be.
+ * The placement decision is directly testable here; driver integration tests also mount installed Ink
+ * over captured native streams.
  */
 export function emitIntro(
   intro: string | undefined,
@@ -1715,7 +1743,9 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
     writeOut: (text) => ctx.io.writeOut(text),
   });
   // Mirror the live stream into the view store the component projects.
-  const unsubscribe = ctx.handle.subscribe((event) => ctx.store.apply(event));
+  const unsubscribe = ctx.handle.subscribe(
+    ownSessionSubscriber(ctx.workOwner, (event) => ctx.store.apply(event)),
+  );
   const frame = setInterval(() => ctx.store.tick(), FRAME_MS);
   frame.unref();
 
@@ -1729,7 +1759,15 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
     };
     rejectExit = (err) => {
       active = false;
-      reject(err instanceof Error ? err : new Error('Chat driver failed.'));
+      ctx.workOwner?.failure(err); // Observe before finalizeInkExit can wait on native terminal ACK.
+      // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- Owned failures retain the original opaque cause after observation, including non-Error native rejections.
+      reject(
+        ctx.workOwner === undefined
+          ? err instanceof Error
+            ? err
+            : new Error('Chat driver failed.')
+          : err,
+      );
     };
   });
 
@@ -1747,6 +1785,7 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
   // abort. Removed LAST in the finally (after unmount), so a Ctrl-C during unmount still hits us.
   // Hoisted so the SIGINT handler can unmount ink (restoring the terminal) before a forced exit.
   let instance: ReturnType<typeof render> | undefined;
+  let ownedMount: SessionInkMount | undefined;
   // The full-screen render mode (2.6.F, ADR-0068 §e). driveInk only runs on a TTY (selectChatDriver), so the output
   // mode is 'tui'; the resolver still short-circuits a 'plain' path to inline defensively, then applies
   // `--no-alt-screen` → `[preferences].alt_screen` (ctx.altScreen) → the phase default (alt-ON since Step 4b-3). This
@@ -1772,7 +1811,15 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
     }
   };
   const onSigint = (): void => {
+    if (ctx.workOwner?.signal.aborted === true) {
+      resolveExit();
+      return;
+    }
     if (cancelRequested) {
+      if (ctx.workOwner !== undefined) {
+        ctx.workOwner.invocation.finiteExit.cooperativeCancel(EXIT_CODES.chatEnded);
+        return;
+      }
       // A second SIGINT while the cooperative /cancel is still draining (e.g. a provider ignoring the abort):
       // unmount ink FIRST so the terminal is restored from raw mode, then tear the live MCP connections down
       // (best-effort, BOUNDED — a forced quit must not orphan a spawned stdio child, but must also not hang on a
@@ -1805,68 +1852,133 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
     if (ctx.suspendPort?.isSuspended() === true) return;
     onSigint();
   };
-  process.on('SIGINT', onSigintGated);
+  let removeInterrupt = (): void => undefined;
+  let driverStopped = false;
+  const stopDriverInput = (): void => {
+    if (driverStopped) return;
+    driverStopped = true;
+    active = false;
+    clearInterval(frame);
+    let failed: { readonly cause: unknown } | undefined;
+    try {
+      unsubscribe();
+    } catch (cause) {
+      failed = { cause };
+    }
+    try {
+      removeInterrupt();
+    } catch (cause) {
+      failed ??= { cause };
+    }
+    resolveExit();
+    if (failed !== undefined) throw failed.cause;
+  };
 
   try {
+    removeInterrupt =
+      ctx.subscribeInterrupt === undefined
+        ? (() => {
+            process.on('SIGINT', onSigintGated);
+            return () => {
+              process.removeListener('SIGINT', onSigintGated);
+            };
+          })()
+        : ctx.subscribeInterrupt(onSigintGated);
+    const workOwner = ctx.workOwner;
+    if (workOwner !== undefined) {
+      const { nativeStdin, nativeStdout, nativeStderr } = ctx.io;
+      if (nativeStdin === undefined || nativeStdout === undefined || nativeStderr === undefined)
+        throw new CliError('cli_internal', '');
+      ownedMount = new SessionInkMount({
+        invocation: workOwner.invocation,
+        assertEntering: workOwner.assertAdmitting,
+        failure: workOwner.failure,
+        suspendPort: ctx.suspendPort ?? createSuspendPort(),
+        stopInput: stopDriverInput,
+        drainNative: ctx.finishJobControl ?? (() => Promise.resolve()),
+        input: new SessionInkInput({
+          input: nativeStdin,
+          invocation: workOwner.invocation,
+          acknowledge: (text) => ctx.io.writeOutAcknowledged(text),
+          failure: workOwner.failure,
+        }),
+      });
+      ctx.adoptTerminalMount?.(ownedMount);
+    }
     // Opening a fresh session only emits its lifecycle event. Disclosure/retention waits for a committed mount.
     // Keep setup under the same cleanup ownership as render(), including a throwing startSession hook.
+    ctx.workOwner?.assertAdmitting();
     ctx.startSession();
-    instance = render(
-      createElement(ChatApp, {
-        store: ctx.store,
-        onActivated,
-        // The COMPONENT prop `alternateScreen` (ADR-0068 §c) selects the transcript viewport (vs `<Static>`) — kept
-        // as the resolved mode. It is INDEPENDENT of ink's render OPTION below (now hard `false`, Step 4b-3): ink
-        // renders full-screen via log-update regardless, and the hoisted `runReplLoop` owns the alt-buffer toggle.
-        alternateScreen,
-        onSubmit: ctx.processLine,
-        shouldStop: ctx.shouldStop,
-        onExit: () => resolveExit(),
-        // An unexpected turn-core throw rejects `exited` → the finally tears down + the rejection propagates out
-        // of the command (mapped to exit 1), matching the plain driver where the throw escapes the for-await loop.
-        onError: (err) => rejectExit(err),
-        // ADR-0057 mode/abort wiring — the REPL loop always supplies these. onModeChange defaults to a no-op so a
-        // driver wired without it degrades to a fixed mode; onAbort is passed through AS-IS (optional) so the
-        // 'abort' handler can reject a pending approval when it is absent (never a dead Esc — see ChatApp).
-        onAbort: ctx.onAbort,
-        onModeChange: ctx.onModeChange ?? ((): void => undefined),
-        // ADR-0066 §5 effort setter — passed AS-IS (optional); absent ⇒ the `/models` effort sub-step is not offered.
-        onSetEffort: ctx.onSetEffort,
-        // `/models` reseat (ADR-0059) — the REPL loop wires both onReseat + the picker port only for an interactive
-        // session; passed AS-IS (optional) so a driver wired without them simply has no `/models` overlay.
-        onReseat: ctx.onReseat,
-        modelPicker: ctx.modelPicker,
-        // `@`-mention completion (2.5.D, ADR-0061) — the REPL loop wires it only for an interactive session; passed
-        // AS-IS (optional) so an absent reader degrades `@` to a literal char (never a dead key — see ChatApp).
-        mentionReader: ctx.mentionReader,
-        // `!`-shell runner (2.5.D, ADR-0061) — interactive-only; absent ⇒ a leading `!` is a literal message.
-        runShellCommand: ctx.runShellCommand,
-        suspendPort: ctx.suspendPort,
-        onSuspend: ctx.onSuspend,
-        clipboard: ctx.clipboard,
-      }),
-      {
-        // OUR /cancel (Ctrl-C) handler drives the cooperative cancel — never ink's process.exit.
-        exitOnCtrlC: false,
-        patchConsole: false,
-        maxFps: Math.max(1, Math.round(1000 / FRAME_MS)),
-        // Ink's ambient CI predicate differs from ADR-0054. Own the selected mode so a flushed
-        // dynamic disclosure is written before its evidence is swept, including CI='' opt-out.
-        interactive: outputMode === 'tui',
-        // ink render OPTION is HARD `false` (2.6.F Step 4b-3, ADR-0068 §c): ink must NOT toggle DECSET-1049 per
-        // session — the hoisted `runReplLoop` enters the alt buffer ONCE above the loop and exits ONCE, so a `/clear`
-        // / reseat re-drive no longer flips the terminal (the flicker). ink still full-screen-renders via log-update.
-        alternateScreen: false,
-      },
-    );
+    const mount = () =>
+      render(
+        createElement(ChatApp, {
+          inputEnabled: () => active && !driverStopped,
+          store: ctx.store,
+          onActivated,
+          // The COMPONENT prop `alternateScreen` (ADR-0068 §c) selects the transcript viewport (vs `<Static>`) — kept
+          // as the resolved mode. It is INDEPENDENT of ink's render OPTION below (now hard `false`, Step 4b-3): ink
+          // renders full-screen via log-update regardless, and the hoisted `runReplLoop` owns the alt-buffer toggle.
+          alternateScreen,
+          onSubmit: ctx.processLine,
+          shouldStop: ctx.shouldStop,
+          onExit: () => resolveExit(),
+          // An unexpected turn-core throw reaches the original owner before native teardown, matching
+          // the plain driver's escaping cause. Classified outcomes retain their existing surface policy.
+          onError: (err) => rejectExit(err),
+          // ADR-0057 mode/abort wiring — the REPL loop always supplies these. onModeChange defaults to a no-op so a
+          // driver wired without it degrades to a fixed mode; onAbort is passed through AS-IS (optional) so the
+          // 'abort' handler can reject a pending approval when it is absent (never a dead Esc — see ChatApp).
+          onAbort: ctx.onAbort,
+          onModeChange: ctx.onModeChange ?? ((): void => undefined),
+          // ADR-0066 §5 effort setter — passed AS-IS (optional); absent ⇒ the `/models` effort sub-step is not offered.
+          onSetEffort: ctx.onSetEffort,
+          // `/models` reseat (ADR-0059) — the REPL loop wires both onReseat + the picker port only for an interactive
+          // session; passed AS-IS (optional) so a driver wired without them simply has no `/models` overlay.
+          onReseat: ctx.onReseat,
+          modelPicker: ctx.modelPicker,
+          // `@`-mention completion (2.5.D, ADR-0061) — the REPL loop wires it only for an interactive session; passed
+          // AS-IS (optional) so an absent reader degrades `@` to a literal char (never a dead key — see ChatApp).
+          mentionReader: ctx.mentionReader,
+          // `!`-shell runner (2.5.D, ADR-0061) — interactive-only; absent ⇒ a leading `!` is a literal message.
+          runShellCommand: ctx.runShellCommand,
+          suspendPort: ownedMount?.port ?? ctx.suspendPort,
+          onSuspend: ctx.onSuspend,
+          clipboard: ctx.clipboard,
+        }),
+        {
+          ...(workOwner === undefined
+            ? {}
+            : {
+                stdin: ctx.io.nativeStdin,
+                stdout: ctx.io.nativeStdout,
+                stderr: ctx.io.nativeStderr,
+              }),
+          // OUR /cancel (Ctrl-C) handler drives the cooperative cancel — never ink's process.exit.
+          exitOnCtrlC: false,
+          patchConsole: false,
+          maxFps: Math.max(1, Math.round(1000 / FRAME_MS)),
+          // Ink's ambient CI predicate differs from ADR-0054. Own the selected mode so a flushed
+          // dynamic disclosure is written before its evidence is swept, including CI='' opt-out.
+          interactive: outputMode === 'tui',
+          // ink render OPTION is HARD `false` (2.6.F Step 4b-3, ADR-0068 §c): ink must NOT toggle DECSET-1049 per
+          // session — the hoisted `runReplLoop` enters the alt buffer ONCE above the loop and exits ONCE, so a `/clear`
+          // / reseat re-drive no longer flips the terminal (the flicker). ink still full-screen-renders via log-update.
+          alternateScreen: false,
+        },
+      );
+    instance = ownedMount === undefined ? mount() : ownedMount.acquire(mount);
     // Ink owns passive input/render failures. Observe its terminal promise rather than leave the
     // driver alive after an error boundary has unmounted the disclosure surface.
-    void instance.waitUntilExit().then(resolveExit, rejectExit);
+    void (ownedMount?.exited ?? instance.waitUntilExit()).then(resolveExit, (cause: unknown) => {
+      ctx.workOwner?.failure(cause);
+      rejectExit(cause);
+    });
 
     return finalizeInkExit(exited, {
       // Tear down + UNMOUNT (restores raw mode + cursor; with the option false it does NOT exit the alt buffer — the
       // hoisted runReplLoop owns that). A throw here must not mask the outcome nor skip the SIGINT-listener removal.
       teardown: () => {
+        if (ownedMount !== undefined) return ownedMount.close();
         active = false;
         clearInterval(frame);
         unsubscribe();
@@ -1875,7 +1987,8 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
         } catch {
           // swallow — never mask the outcome nor skip the SIGINT-listener removal below.
         }
-        process.removeListener('SIGINT', onSigintGated);
+        removeInterrupt();
+        return undefined;
       },
       // The end-of-session summary rides on the outcome (Step 4b-3): the hoisted runReplLoop prints it AFTER the
       // single alt-buffer exit, on the primary buffer (ADR-0068 §c). Only a real end (`/exit`) carries one; a `/clear`
@@ -1886,12 +1999,22 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
           : { kind: ctx.stopReason() },
     });
   } catch (err) {
+    ctx.workOwner?.failure(err);
+    try {
+      stopDriverInput();
+    } catch (cause) {
+      ctx.workOwner?.cleanupUncertain(cause);
+    }
+    if (ownedMount !== undefined)
+      return ownedMount.close().then(() => {
+        throw err;
+      });
     // render() threw synchronously — clean up the interval, subscription, and SIGINT handler set up above so
     // none leaks past the throw (the finally above is never reached when render() throws).
     active = false;
     clearInterval(frame);
     unsubscribe();
-    process.removeListener('SIGINT', onSigintGated);
+    removeInterrupt();
     throw err;
   }
 }

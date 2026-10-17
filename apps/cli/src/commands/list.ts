@@ -1,4 +1,7 @@
+import type { LocalDbNoticeContext } from '../db/checkpoint-notice.js';
+import { acquireCommandResource, type CommandLifetime } from '../process/command-lifetime.js';
 import type { Db, RunRecord } from '@relavium/db';
+import { byCodeUnit } from '@relavium/shared';
 
 import { loadResolvedConfig } from '../config/load.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
@@ -15,10 +18,15 @@ export interface ListCommandArgs {
 }
 
 export interface ListCommandDeps {
+  readonly commandLifetime?: CommandLifetime;
   readonly io: CliIo;
   readonly global: GlobalOptions;
   /** Injectable history-db opener — tests pass an in-memory db; production opens `~/.relavium/history.db`. */
-  readonly openDb?: (homeDir: string) => { db: Db; close: () => void };
+  readonly openDb?: (
+    homeDir: string,
+    captureClose?: (close: () => void) => void,
+    noticeContext?: LocalDbNoticeContext,
+  ) => { db: Db; close: () => void };
   /** Injectable catalog scanner — tests pass a fixture catalog without touching the filesystem. */
   readonly discoverCatalog?: typeof discoverCatalog;
 }
@@ -63,13 +71,18 @@ export function listCommand(args: ListCommandArgs, deps: ListCommandDeps): ExitC
   // would open the db for nothing. So overlay history only for valid entries (lookupHistory below).
   const lastBySlug = new Map<string, RunRecord>();
   if (kind === 'workflows' && entries.some((entry) => entry.valid)) {
-    const { reader, close } = openHistoryReader(homeDir, deps.openDb);
+    const { reader, close } = acquireCommandResource(deps.commandLifetime, (captureClose) =>
+      openHistoryReader(homeDir, deps.openDb, captureClose, {
+        io: deps.io,
+        invocation: deps.commandLifetime?.invocation,
+      }),
+    );
     try {
       for (const summary of reader.loadLatestRunPerWorkflow()) {
         lastBySlug.set(summary.slug, summary.lastRun);
       }
     } finally {
-      close();
+      if (deps.commandLifetime === undefined) close();
     }
   }
   // A valid workflow entry's trusted last run, or `undefined` (an invalid entry never picks up an overlay).
@@ -148,7 +161,7 @@ function renderHuman(
     // Untagged sinks to the bottom; named tags sort alphabetically.
     if (a === UNTAGGED) return 1;
     if (b === UNTAGGED) return -1;
-    return a.localeCompare(b);
+    return byCodeUnit(a, b);
   });
   for (const tag of tags) {
     const header = tag === UNTAGGED ? UNTAGGED : `#${tag}`;

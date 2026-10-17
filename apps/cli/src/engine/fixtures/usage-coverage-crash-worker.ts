@@ -349,7 +349,21 @@ async function runSession() {
     await built.session.compact('manual');
   }
   if (late) announce('INTERRUPTED');
-  await built.whenHostSafeToClose();
+  if (cut === 'refuse-pending' || cut === 'lock-hold') {
+    // This direct-host fixture owns administrative disposal after actual producer joins. The
+    // production invocation must retain this refused durability barrier, including on repeated reads.
+    const refused = await built.whenHostSafeToClose().then(
+      () => undefined,
+      (cause: unknown) => ({ cause }),
+    );
+    if (refused === undefined) throw new Error('expected retained session accounting refusal');
+    const repeated = await built.whenHostSafeToClose().then(
+      () => undefined,
+      (cause: unknown) => ({ cause }),
+    );
+    if (repeated === undefined || repeated.cause !== refused.cause || invocations !== 0)
+      throw new Error('session accounting refusal was cleared or permitted provider egress');
+  } else await built.whenHostSafeToClose();
   if (
     late &&
     client.sqlite

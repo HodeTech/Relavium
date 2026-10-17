@@ -10,11 +10,12 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { GlobalConfigSchema } from '@relavium/shared';
+import { GlobalConfigSchema, ProjectConfigSchema } from '@relavium/shared';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { z } from 'zod';
 
 import { ConfigError } from './errors.js';
-import { loadConfigFile, loadResolvedConfig } from './load.js';
+import { formatZodError, loadConfigFile, loadResolvedConfig } from './load.js';
 
 describe('loadConfigFile', () => {
   let dir: string;
@@ -23,6 +24,20 @@ describe('loadConfigFile', () => {
   });
   afterEach(() => {
     rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('reports the numeric bound through an actual config-file rejection', () => {
+    const file = join(dir, 'project.toml');
+    writeFileSync(file, '[chat]\ncompact_threshold = 1234567\n');
+    try {
+      loadConfigFile(file, ProjectConfigSchema);
+      expect.fail('out-of-range config must refuse');
+    } catch (error) {
+      if (!(error instanceof ConfigError)) throw error;
+      expect(error.code).toBe('config_error');
+      expect(error.message).toContain('chat.compact_threshold: must be <= 1');
+      expect(error.message).not.toContain('1234567');
+    }
   });
 
   it('parses and validates a global config', () => {
@@ -255,5 +270,31 @@ describe('loadResolvedConfig', () => {
     } finally {
       rmSync(elsewhere, { recursive: true, force: true });
     }
+  });
+});
+
+describe('schema-derived numeric config reasons (#32)', () => {
+  it.each([
+    [z.number().min(0), -1234567, '>= 0'],
+    [z.number().gt(0), 0, '> 0'],
+    [z.number().max(1), 1234567, '<= 1'],
+    [z.number().lt(1), 1, '< 1'],
+  ] as const)(
+    'shows the actual numeric bound with its inclusion rule (%#)',
+    (schema, value, expected) => {
+      const result = z.object({ threshold: schema }).safeParse({ threshold: value });
+      expect(result.success).toBe(false);
+      if (result.success) throw new Error('the out-of-range fixture must reject');
+      expect(formatZodError(result.error)).toBe(`threshold: must be ${expected}`);
+      expect(formatZodError(result.error)).not.toContain('1234567');
+    },
+  );
+
+  it('shows a genuine config bound without the rejected value', () => {
+    const result = ProjectConfigSchema.safeParse({ chat: { compact_threshold: 1234567 } });
+    expect(result.success).toBe(false);
+    if (result.success) throw new Error('invalid chat threshold must reject');
+    expect(formatZodError(result.error)).toBe('chat.compact_threshold: must be <= 1');
+    expect(formatZodError(result.error)).not.toContain('1234567');
   });
 });

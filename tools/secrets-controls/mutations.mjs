@@ -1,7 +1,7 @@
 /** Steps 3–5 and 7 independent production mechanisms and required named semantic witnesses. */
 const reader = 'apps/cli/src/secrets/read-secret.ts';
 const readerCases = ['apps/cli/src/secrets/read-secret.test.ts'];
-const llmError = 'packages/llm/src/llm-error.ts';
+const scrubSecretsLeaf = 'packages/llm/src/scrub-secrets.ts';
 const overlapFiles = [
   'packages/llm/src/llm-error.test.ts',
   'apps/cli/src/render/sanitize.test.ts',
@@ -148,7 +148,7 @@ export const mutations = [
   ),
   control(
     'query-names',
-    'packages/llm/src/llm-error.ts',
+    scrubSecretsLeaf,
     String.raw`/([?&](?:(?:x[-_])?api[-_]?key|api[-_]?secret|(?:access|secret)[-_]?key|(?:access|refresh|id|auth|session)[-_]?token|client[-_]?secret|key|token|auth|password|secret)=)[^&\s#]+/gi`,
     String.raw`/([?&](?:(?:x[-_])?api[-_]?key|key|token|access[-_]?token|auth|password|secret)=)[^&\s#]+/gi`,
     ['packages/llm/src/llm-error.test.ts'],
@@ -197,7 +197,7 @@ export const mutations = [
   ),
   control(
     'prefix-before-redaction',
-    'packages/llm/src/llm-error.ts',
+    scrubSecretsLeaf,
     "    const joined = remaining.replace(/\\s+/g, '');",
     '    const joined = remaining;',
     [
@@ -250,7 +250,7 @@ export const mutations = [
   ),
   control(
     'normalized-secret-probe',
-    llmError,
+    scrubSecretsLeaf,
     '  return stripTerminalControls(text);',
     '  return text;',
     overlapFiles,
@@ -265,7 +265,7 @@ export const mutations = [
   ),
   control(
     'non-query-before-query',
-    llmError,
+    scrubSecretsLeaf,
     '  return scrubQuerySecrets(scrubNonQuerySecrets(text));',
     '  return scrubNonQuerySecrets(scrubQuerySecrets(text));',
     overlapFiles,
@@ -309,8 +309,8 @@ export const mutations = [
   control(
     'run-action-stdin-forwarding',
     'apps/cli/src/commands/specs.ts',
-    '            secretInputsStdin: opts.secretInputsStdin,\n',
-    '',
+    '      options[option.binding] = readOption(raw, option.binding);',
+    "      options[option.binding] = executorId === 'run' && option.binding === 'secretInputsStdin' ? undefined : readOption(raw, option.binding);",
     ['apps/cli/src/commands/specs-forwarding.test.ts'],
     14,
     'SECRETS_CAUSAL_RUN_STDIN_FLAG_FORWARDED: run forwards the boolean through its real action',
@@ -344,10 +344,10 @@ export const mutations = [
   control(
     'run-default-secret-reader',
     'apps/cli/src/commands/run.ts',
-    '  const raw = await (deps.readSecretInput?.() ?? readSecretFromStdin(RUN_SECRET_STDIN_CONTEXT));',
+    '  const raw = await read();',
     "  const raw = await (deps.readSecretInput?.() ?? Promise.resolve(''));",
     ['apps/cli/src/commands/run.test.ts'],
-    76,
+    83,
     'uses the real default reader exactly once and suppresses even an injected gate selector',
     'SECRETS_CAUSAL_RUN_DEFAULT_READER',
   ),
@@ -367,7 +367,7 @@ export const mutations = [
     '    const mayPrompt = args.secretStdin !== true;',
     '    const mayPrompt = true;',
     ['apps/cli/src/commands/gate.test.ts'],
-    61,
+    71,
     'refuses unapproved stdio after a real read despite stale TTY, without prompting or writing a grant',
     'SECRETS_CAUSAL_RESUME_CONSUMED_STDIN_CONSENT',
   ),
@@ -404,20 +404,15 @@ export const mutations = [
   control(
     'run-commander-diagnostic-projection',
     'apps/cli/src/commands/specs.ts',
-    `    .configureOutput({
-      ...program.configureOutput(),
-      outputError: (_message, write) =>
-        write('error: invalid run arguments; use relavium run --help.\\n'),
-    })
-    .exitOverride((error) => {
-      if (error.exitCode === 0) throw error;
-      throw new CommanderError(
-        error.exitCode,
-        error.code,
-        'error: invalid run arguments; use relavium run --help.',
-      );
-    });`,
-    '    .exitOverride();',
+    `      command.configureOutput({
+        ...parent.configureOutput(),
+        outputError: (_message, write) => write(\`\${hint}\\n\`),
+      });
+      command.exitOverride((error) => {
+        if (error.exitCode === 0) throw error;
+        throw new CommanderError(error.exitCode, error.code, hint);
+      });`,
+    '      command.exitOverride();',
     ['apps/cli/src/run.test.ts'],
     28,
     'SECRETS_CAUSAL_RUN_COMMANDER_OPACITY: human keeps parser values opaque',
@@ -478,7 +473,7 @@ export const mutations = [
     "    .normalize('NFKD')\n",
     '',
     ['packages/core/src/export/serializer.test.ts'],
-    24,
+    25,
     'normalizes supported Unicode title forms into deterministic ASCII IDs that round-trip',
     'WAVE2_EXPORT_ASCII_NORMALIZATION',
   ),
@@ -488,7 +483,7 @@ export const mutations = [
     '  return slug.length > 0 ? slug : fallbackWorkflowId(record.id);',
     "  return slug.length > 0 ? slug : 'exported-session';",
     ['packages/core/src/export/serializer.test.ts'],
-    24,
+    25,
     'uses exact session identity for absent or unusable titles and preserves production UUIDs',
     'WAVE2_EXPORT_IDENTITY_FALLBACK',
   ),
@@ -498,7 +493,7 @@ export const mutations = [
     '  return `${SESSION_ID_PREFIX}id-${encoded}`;',
     '  return `${SESSION_ID_PREFIX}${sessionId}`;',
     ['packages/core/src/export/serializer.test.ts'],
-    24,
+    25,
     'bounds odd external session identities with deterministic legal encoding and faithful metadata',
     'WAVE2_EXPORT_EXTERNAL_ID_FALLBACK',
   ),
@@ -508,7 +503,7 @@ export const mutations = [
     '    deps.io.writeErr(SESSION_EXPORT_REVIEW_NOTICE);\n',
     '',
     ['apps/cli/src/commands/chat-export.test.ts'],
-    15,
+    16,
     "reports fixed continuity and review notice on stderr after successful 'human' export",
     'W2_EXPORT_COMMAND_NOTICE',
     [
@@ -525,7 +520,7 @@ export const mutations = [
     '        emitOutput(SESSION_EXPORT_REVIEW_NOTICE.trimEnd());\n',
     '',
     ['apps/cli/src/commands/chat.test.ts'],
-    122,
+    133,
     "reports fixed continuity and review notice on stderr after live 'human' /export",
     'W2_EXPORT_LIVE_NOTICE',
     [
@@ -545,7 +540,7 @@ export const mutations = [
     '        emitOutput(SESSION_EXPORT_REVIEW_NOTICE.trimEnd());\n',
     '        deps.io.writeErr(SESSION_EXPORT_REVIEW_NOTICE);\n',
     ['apps/cli/src/commands/chat.test.ts'],
-    122,
+    133,
     "renders the live export 'success' through the interactive transcript",
     'W2_EXPORT_LIVE_RENDERED_NOTICE',
   ),
@@ -586,7 +581,7 @@ export const mutations = [
     '  warnSnapshotLiterals(def, deps.io);\n',
     '',
     ['apps/cli/src/commands/run.test.ts'],
-    76,
+    83,
     'warns after admission before services and preserves the actual augmented frozen workflow',
     'SNAPSHOT_CAUSAL_RUN_CALLER',
   ),

@@ -59,6 +59,8 @@ import type { SuspendPort } from '../suspend.js';
 import type { NoticeFlush } from '../../engine/effect-retention.js';
 
 export interface RootAppProps {
+  /** Synchronous native teardown seal, including mouse and paste routes before controller dispatch. */
+  readonly inputEnabled?: () => boolean;
   /** Publishes a mounted render acknowledgement bound to this Ink tree and its exact output stream. */
   readonly onRendererReady?: (flushVisible: NoticeFlush) => void;
   readonly onRendererError?: (error: Error) => void;
@@ -409,6 +411,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
   };
 
   useInput((input, key) => {
+    if (props.inputEnabled?.() === false) return;
     // Ink raw mode parses Ctrl-Z as Ctrl+`z` (some harnesses surface the literal SUB byte). Consume it BEFORE mouse,
     // overlays, and the Home controller so it can neither type into a prompt nor answer a pending approval.
     if (
@@ -439,7 +442,9 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
   // Bracketed paste arrives on ink 7's native `usePaste` channel (separate from `useInput`): the whole paste is
   // one `text` event, so a multi-line block appends verbatim and a pasted approval token never reaches the key
   // reducers (ADR-0068). The controller gates it (drops behind an overlay / pending approval / mid-turn).
-  usePaste((text) => controller.handlePaste(text));
+  usePaste((text) => {
+    if (props.inputEnabled?.() !== false) controller.handlePaste(text);
+  });
   const flushVisible = useVisibleRenderFlush(
     props.onRendererError,
     props.suspendPort,

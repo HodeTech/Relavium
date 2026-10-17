@@ -1,3 +1,6 @@
+import { createCliInvocation } from '../../process/invocation.js';
+import { nativeProcessesForInvocation } from '../../process/native-process-owner.js';
+import { witnessNativeToolProcess } from '../../commands/native-forwarding.test-support.js';
 import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -23,6 +26,22 @@ afterEach(async () => {
 });
 
 describe('assembleToolEnv', () => {
+  it('carries native authority inertly, then registers a real process in the original invocation', async () => {
+    const invocation = createCliInvocation();
+    const nativeProcesses = nativeProcessesForInvocation(invocation);
+    const exitListeners = process.listenerCount('exit');
+    assembleToolEnv({
+      profile: 'chat-read-write',
+      fsScopeTier: 'project',
+      workspaceDir: workspace,
+      ...(nativeProcesses === undefined ? {} : { nativeProcesses }),
+    });
+    expect(invocation.registry.activeOwners).toBe(0);
+    expect(process.listenerCount('exit')).toBe(exitListeners);
+    await witnessNativeToolProcess(nativeProcesses, invocation, workspace);
+    expect(process.listenerCount('exit')).toBe(exitListeners);
+  });
+
   it('chat-read-only: fs reads a real file but write_file fail-closes as tool_unavailable; process is wired', async () => {
     await writeFile(join(workspace, 'a.txt'), 'hello');
     const { host, policy } = assembleToolEnv({

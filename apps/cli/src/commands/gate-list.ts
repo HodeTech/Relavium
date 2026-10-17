@@ -1,3 +1,5 @@
+import type { LocalDbNoticeContext } from '../db/checkpoint-notice.js';
+import { acquireCommandResource, type CommandLifetime } from '../process/command-lifetime.js';
 import type { Db, RunHistoryReader } from '@relavium/db';
 
 import { loadResolvedConfig } from '../config/load.js';
@@ -24,9 +26,14 @@ export interface GateListCommandArgs {
 }
 
 export interface GateListCommandDeps {
+  readonly commandLifetime?: CommandLifetime;
   readonly io: CliIo;
   readonly global: GlobalOptions;
-  readonly openDb?: (homeDir: string) => { db: Db; close: () => void };
+  readonly openDb?: (
+    homeDir: string,
+    captureClose?: (close: () => void) => void,
+    noticeContext?: LocalDbNoticeContext,
+  ) => { db: Db; close: () => void };
 }
 
 /**
@@ -46,7 +53,12 @@ export function gateListCommand(args: GateListCommandArgs, deps: GateListCommand
     cwd: deps.global.cwd,
     configPath: deps.global.configPath,
   });
-  const { reader, close } = openHistoryReader(homeDir, deps.openDb);
+  const { reader, close } = acquireCommandResource(deps.commandLifetime, (captureClose) =>
+    openHistoryReader(homeDir, deps.openDb, captureClose, {
+      io: deps.io,
+      invocation: deps.commandLifetime?.invocation,
+    }),
+  );
   try {
     // Per-run isolation (`readPerRunOrDegrade`) for the no-arg ALL-RUNS form: one damaged run used to abort the
     // whole listing. With an explicit `runId` there is only one run, so degrading would silently answer "no
@@ -82,7 +94,7 @@ export function gateListCommand(args: GateListCommandArgs, deps: GateListCommand
     renderGateRows(deps.io, rows, args.runId);
     return EXIT_CODES.success;
   } finally {
-    close();
+    if (deps.commandLifetime === undefined) close();
   }
 }
 

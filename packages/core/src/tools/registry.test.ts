@@ -190,7 +190,7 @@ describe('ToolRegistry — happy path and outcome shape', () => {
     const reg = registry();
     expect(reg.has('read_file')).toBe(true);
     expect(reg.has('nope')).toBe(false);
-    expect(reg.list()).toEqual([...BUILTIN_TOOL_IDS].sort((a, b) => a.localeCompare(b)));
+    expect(reg.list()).toEqual(BUILTIN_TOOL_IDS);
     expect(reg.list()).toHaveLength(13);
   });
 
@@ -386,18 +386,48 @@ describe('ToolRegistry — http_request egress policy', () => {
 
 describe('ToolRegistry — git_commit human-gate', () => {
   it('blocks git_commit without a gate approval', async () => {
-    const err = await rejectsWith<ToolPolicyError>(
-      registry().dispatch(call('git_commit', { message: 'x' }), ctx({ gateApproved: false })),
+    const spawn = vi.fn<NonNullable<ToolHost['process']>['spawn']>(() =>
+      Promise.resolve({ exitCode: 0, stdout: '', stderr: '', durationMs: 0 }),
     );
+    const context = ctx({ gateApproved: false });
+    const prepare = vi.fn(context.effects.prepare);
+    const reg = registry(stubHost({ process: { spawn } }));
+    const err: unknown = await reg
+      .dispatch(call('git_commit', { message: 'x' }), {
+        ...context,
+        effects: { ...context.effects, prepare },
+      })
+      .catch((error: unknown) => error);
+    expect(err).toBeInstanceOf(ToolPolicyError);
+    if (!(err instanceof ToolPolicyError)) throw new Error('missing gate refusal');
     expect(err.reason).toBe('gate_required');
+    expect(err.message).toMatch(/chat cannot provide.*review.*commit manually/i);
+    expect(prepare).not.toHaveBeenCalled();
+    expect(spawn).not.toHaveBeenCalled();
   });
 
   it('allows git_commit once a gate approval is present', async () => {
-    const out = await registry().dispatch(
-      call('git_commit', { message: 'x' }),
-      ctx({ gateApproved: true }),
+    // Synthetic registry-level floor only: neither production context producer supplies true today.
+    const spawn = vi.fn<NonNullable<ToolHost['process']>['spawn']>(() =>
+      Promise.resolve({ exitCode: 0, stdout: 'committed', stderr: '', durationMs: 1 }),
+    );
+    const context = ctx({ gateApproved: true });
+    const prepare = vi.fn(context.effects.prepare);
+    const settle = vi.fn(context.effects.settle);
+    const out = await registry(stubHost({ process: { spawn } })).dispatch(
+      call('git_commit', { message: 'x', files: ['src/a.ts'] }),
+      { ...context, effects: { ...context.effects, prepare, settle } },
     );
     expect(out.events.result.success).toBe(true);
+    expect(spawn).toHaveBeenCalledWith(
+      'git',
+      ['commit', '-m', 'x', '--', 'src/a.ts'],
+      {},
+      {},
+      undefined,
+    );
+    expect(prepare).toHaveBeenCalledTimes(1);
+    expect(settle).toHaveBeenCalledTimes(1);
   });
 });
 

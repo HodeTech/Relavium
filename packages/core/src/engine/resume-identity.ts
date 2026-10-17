@@ -22,7 +22,7 @@
 import {
   isReferenceableInputName,
   MaskedSecretSchema,
-  WorkflowSchema,
+  WorkflowSnapshotSchema,
   type ExecutionMode,
   type Workflow,
 } from '@relavium/shared';
@@ -190,7 +190,7 @@ function inputMismatchMessage(first: { name?: string; message: string } | undefi
  * being asked.
  *
  * **Each side is normalized according to how much it is trusted.** The frozen JSON is durable data of unknown
- * provenance, so it goes through `WorkflowSchema` — a value that will not parse as a workflow is
+ * provenance, so it goes through `WorkflowSnapshotSchema` — a value that will not parse as a workflow is
  * `admission_record_unreadable`, which is a different fact from "it differs" and has a different remedy. The
  * supplied side is already a parsed `Workflow` by type, so it only takes the JSON round trip the column
  * imposed on the other side: `JSON.stringify` drops `undefined`-valued keys, and comparing a live object
@@ -212,7 +212,7 @@ export function verifyFrozenWorkflowContent(
   } catch {
     return unreadable('the frozen workflow definition for this run is not valid JSON');
   }
-  const normalizedFrozen = WorkflowSchema.safeParse(frozen);
+  const normalizedFrozen = WorkflowSnapshotSchema.safeParse(frozen);
   if (!normalizedFrozen.success) {
     // Value-free: the reason list would carry authored content from a workflow this process did not write.
     return unreadable(
@@ -234,7 +234,7 @@ export function verifyFrozenWorkflowContent(
     };
   }
   // The FROZEN side takes the same guarded round trip as the supplied one — and it is the side that needed
-  // it more. `WorkflowSchema` accepts a `metadata` record of `z.unknown()` without recursing into it, so a
+  // it more. `WorkflowSnapshotSchema` accepts a `metadata` record of `z.unknown()` without recursing into it, so a
   // snapshot carrying a deeply nested value passes validation and then blows the stack inside
   // `JSON.stringify`. A review measured that: a ~60,000-deep array under `workflow.metadata` threw a raw
   // `RangeError` out of `resumeFromCheckpoint`, past the typed seam (the CLI reported "an unexpected internal

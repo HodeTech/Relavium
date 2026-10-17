@@ -6,8 +6,10 @@
  * surface `cause` verbatim in a structured `--json` envelope or a `RunEvent` — it strips it at that boundary.
  */
 
+import { RelaviumError } from '@relavium/shared';
+
 /** Base class for every `@relavium/mcp` error. */
-export class McpError extends Error {
+export class McpError extends RelaviumError {
   constructor(message: string, options?: { cause?: unknown }) {
     super(message, options);
     this.name = 'McpError';

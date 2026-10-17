@@ -1,6 +1,6 @@
 # Phase 2.5.5 — Hardening and Remediation
 
-> Status: 🚧 **Open — Wave 2 Steps 1–8 accepted on development; publication and later waves remain separate.** Live progress and execution order are canonical in
+> Status: 🚧 **Open — Wave 2 Steps 1–8 and review corrections merged to main as PR #94 (2026-10-15); later waves remain open.** Live progress and execution order are canonical in
 > [../current.md](../current.md#execution-order--phase-255--phase-26-temporary); this banner does not
 > restate them. A full-project multi-agent code review completed
 > 2026-07-19 at HEAD `f88b0e8` — 377 findings, 373 surviving two-lens adversarial
@@ -179,9 +179,9 @@ reached.
   something that already ships. It does change a small, enumerated set of **public CLI contracts** as
   remediation: noun-verb aliases for `chat-resume`/`chat-list`/`chat-export` (`#309`), a confirmation /
   `--force` gate on `provider remove-key` (`#19`), a dedicated exit code for an unclassified internal
-  fault (`G35`), `--help --json` (`#13`), and the `--quiet`/`--verbose` precedence (`#45`). Each is
-  additive or alias-preserving, and each lands with its `reference/cli/commands.md` update — see the
-  EXIT:4 reading recorded in [../current.md](../current.md).
+  fault (`G35`), `--help --json` (`#13`), and the `--quiet`/`--verbose` precedence (`#45`). The exact compatibility changes, including deliberate exit/consent/debug changes,
+  are approved in [ADR-0110](../../decisions/0110-cli-diagnostics-and-discovery-have-explicit-compatibility.md);
+  they are not all merely additive. Each lands with its canonical CLI reference update.
 
 ## Work breakdown
 
@@ -195,7 +195,7 @@ reached.
 - ✅ **DONE (Wave 1, PR #81, 2026-07-30 — G38 · `reservedAdmissions` ledger in `budget-governor.ts`).** **Add a reservation/admission step to `BudgetGovernor`'s pre-egress check.** `checkPreEgress` (`packages/core/src/engine/budget-governor.ts`) is a pure read against a snapshot that is only updated post-hoc after `cost:updated` lands, with no reservation/admission-control step — two or more parallel agent-node branches under `max_parallel` can each pass `checkPreEgress` against the same stale snapshot, letting the sum exceed `max_cost_microcents` even with `on_exceed:'fail'`. Add an in-flight reserved-cost ledger that is checked and updated atomically at dispatch time, and add a test combining budget + `max_parallel` (none exists today). *(L · `packages/core/src/engine/budget-governor.ts` · G38)*
 - ✅ **DONE (Phase 2.6.5 `CR-22`, 2026-08-27)** — closed early, out of wave order, because `W2`'s liveness item owns the same function. **Compute the remaining timeout budget on every resume instead of re-arming a fresh timer.** `#armRunTimeout` (`packages/core/src/engine/engine.ts`) re-arms a full-duration timer on every checkpoint/gate/media-job resume instead of computing remaining budget from `#elapsedMs()`, unlike the checkpoint's own `startEpochMs` and the media-job absolute-deadline pattern it should mirror — a workflow with `timeout_ms` can run far longer than authored if it pauses and resumes repeatedly. Fix `#armRunTimeout` to compute the remaining budget from elapsed wall-clock time on every re-arm. *(M · `packages/core/src/engine/engine.ts` · #75)*
 - **Thread the missing `AbortSignal` into `resolvePrompt` and recheck cancellation in `human-gate.ts`.** `resolvePrompt` (`packages/core/src/engine/agent-runner.ts:868`) omits the `AbortSignal` that every other call site passes into `resolveTemplate`, so cancellation during prompt-template resolution is not observed. Separately, `human-gate.ts` (`packages/core/src/engine/node-handlers/human-gate.ts`) is the one node handler doing real async work yet has no post-resolution `ctx.signal.aborted` recheck before returning `'paused'` — a cancelled run can emit `human_gate:paused` right before `run:cancelled`. Add the signal to `resolvePrompt` and the recheck to `human-gate.ts` in one pass. *(M · `packages/core/src/engine/agent-runner.ts`, `packages/core/src/engine/node-handlers/human-gate.ts` · #76, G9)*
-- **Extract a shared `messageFor` diagnostic helper for `parser.ts` and `agent-parser.ts`.** `parser.ts`'s `messageFor` has no case for Zod's `invalid_literal` code, so a `schema_version` mismatch reports only "invalid value" with no expected-value indication. `agent-parser.ts`'s `AgentParseError` carries only field paths, never reason text, so distinct error kinds report identically on the `.agent.yaml` authoring surface — a gap distinct from 2.6.B's visibility-wiring task. Extract `messageFor` into a schema-agnostic helper consumed by both `parser.ts` and `agent-parser.ts`. *(M · `packages/core/src/parser.ts`, `packages/core/src/agent-parser.ts` · #85, #86)*
+- ✅ **DONE ([Wave 3 Step 2](#wave-3-step-2-acceptance--2026-10-16)).** **Extract a shared `messageFor` diagnostic helper for `parser.ts` and `agent-parser.ts`.** `parser.ts`'s `messageFor` has no case for Zod's `invalid_literal` code, so a `schema_version` mismatch reports only "invalid value" with no expected-value indication. `agent-parser.ts`'s `AgentParseError` carries only field paths, never reason text, so distinct error kinds report identically on the `.agent.yaml` authoring surface — a gap distinct from 2.6.B's visibility-wiring task. Extract `messageFor` into a schema-agnostic helper consumed by both `parser.ts` and `agent-parser.ts`. *(M · `packages/core/src/parser.ts`, `packages/core/src/agent-parser.ts` · #85, #86)*
 - **Reconcile `system_prompt_append`'s documented interpolation with its verbatim-append implementation.** `workflow-yaml-spec.md` documents `system_prompt_append` as an interpolation target, but `agent-runner.ts` appends it verbatim by design (ADR-0038 anti-injection), while `packages/core/src/dag.ts` still wires it into real scheduling/taint-scan sites — an author using `{{ }}` there gets literal unresolved text sent to the model with zero error. Fix by either correcting the spec or adding a parse-time rejection of `{{ }}` syntax in that field. *(M · `packages/core/src/engine/agent-runner.ts`, `docs/reference/*/workflow-yaml-spec.md` · #87)*
 - ✅ **DONE (Wave 1, PR #81, 2026-07-30 — G39/G47/G49 · `warningArmed` re-arm + projected `thresholdPct`).** **Re-arm `budget:warning` on continued overage and compute `thresholdPct` from the projected post-call total.** `#warningEmitted` (`packages/core/src/engine/budget-governor.ts:112`) is a one-shot lifetime boolean, so a long-lived `AgentSession`/chat process gets exactly one `budget:warning` ever and then silently proceeds no matter how far over cap spend climbs. Separately, `thresholdPct` is computed from pre-call cumulative spend rather than the projected post-call amount, so a single large call that jumps past the cap reports a near-0% warning. Fix both in the same pass: re-arm the warning on continued overage, and derive `thresholdPct` from the projected post-call total. *(M · `packages/core/src/engine/budget-governor.ts` · G39, G47, G49)*
 - **Give `assertNoTaintedArgs()` an actual producer for `ctx.secretArgKeys`.** `ctx.secretArgKeys` — the runtime ADR-0029(c) taint-check input that `assertNoTaintedArgs()` (`packages/core/src/tools/registry.ts`, `packages/core/src/tools/types.ts`) correctly enforces when present — has no producer anywhere in the engine, so the check is inert everywhere, including on the `AgentSession`/chat path with no static-analysis backstop. Either wire a producer that actually populates `ctx.secretArgKeys`, or explicitly record this as a tracked, known gap in the ADR. *(M · `packages/core/src/tools/registry.ts`, `packages/core/src/engine/agent-session.ts` · #92)*
@@ -204,13 +204,13 @@ reached.
 - **Remove cycle-guard `WeakSet` entries on recursion unwind.** `redactInlineMediaForText`/`redactSecretShapedWalk` (`packages/core/src/tools/bounding.ts`) add to the shared cycle-guard `WeakSet` but never remove on the way back out of recursion, so any object referenced twice non-cyclically renders as a bogus `[cyclic]` in observability output. Remove the object from the `WeakSet` when recursion unwinds and add a regression test. *(S · `packages/core/src/tools/bounding.ts` · #94)*
 - **Decide the real backpressure granularity for `RunHandle` and `SessionHandle` in one pass.** `RunHandle.whenConsumersReady()` (`packages/core/src/engine/run-handle.ts`) is only awaited once per node dispatch, never within a single node's own streaming duration, so a long token/reasoning stream against a stalled consumer buffers unboundedly. `SessionHandle.whenConsumersReady`/`whenDrained` (`packages/core/src/engine/session-handle.ts`) is implemented identically but has zero callers anywhere. Decide and implement the actual granularity needed for both handles together. *(M · `packages/core/src/engine/run-handle.ts`, `packages/core/src/engine/session-handle.ts` · #77, G48)*
 - **Unescape the quoted filter-argument text `parseArg` returns.** `parseArg` (`packages/core/src/interpolation/references.ts`) returns the raw backslash-escaped text of a quoted filter argument instead of unescaping it, contradicted by its own test's comment. Fix `parseArg` to unescape the quoted argument text per its documented contract, and correct the misleading test comment. *(S · `packages/core/src/interpolation/references.ts` · #82)*
-- **Apply `findDuplicates` and `superRefine` to the seven remaining schemas that skipped them.** The repo's own `findDuplicates` helper (`packages/shared/src/common.ts`) is applied to node ids/input names/context keys/`mcp_servers` ids, but not to `ParallelNodeSchema.parallel_of` (`packages/shared/src/node.ts`), `ConditionBranchSchema`'s `when` values across `branches[]` (`packages/shared/src/node.ts`), or `AgentSchema.fallback_chain`'s `(model,provider)` pairs (`packages/shared/src/agent.ts`) despite the same schema's `mcp_servers` dedup a few lines away. Separately, `superRefine` cross-field invariant enforcement exists in `packages/shared` but was never applied consistently: `HumanGateNodeSchema` (`packages/shared/src/node.ts`) has no `superRefine` linking `timeout_action` to `timeout_ms` even though the analogous emitted-event schema in `run-event.ts` already rejects exactly this combination; `WorkflowInputSchema` (`packages/shared/src/workflow.ts`) never checks default/enum values are type-consistent with the declared type; `SessionMessageSchema` (`packages/shared/src/session.ts`) has no `superRefine` correlating `compaction` with `role:'system'`; `RunSchema`'s `superRefine` (`packages/shared/src/run.ts:72`) checks temporal ordering but not status/field consistency. One PR applying both existing dispatch-table patterns to all seven remaining schemas. *(M · `packages/shared/src/{node,agent,workflow,session,run,common}.ts` · #89, #90, G18, #212, G16, G17, #210, #211)*
+- ✅ **DONE ([Wave 3 Step 2](#wave-3-step-2-acceptance--2026-10-16)).** **Apply consistent duplicate/cross-field admission; certify existing input and session guards.** Shared leaf/full admission now enforces the approved duplicate, human-gate timeout and logical Run status matrices. Existing input defaults/enums and session compaction-role rules are certified. Historical session/workflow readers retain their former contracts; no rows are migrated or silently repaired. *(M · `packages/shared/src/{node,agent,workflow,session,run,common}.ts` · #89, #90, G18, #212, G16, G17, #210, #211)*
 - **Extend `analyzeSecretTaint`'s leak-reporting loop to cover context-value sites.** `analyzeSecretTaint` (`packages/core/src/interpolation/analyze.ts`) deliberately skips context-value sites in its leak-reporting loop, so a direct `{{secrets.*}}` reference never read elsewhere is not reported at parse time — the workflow only fails later, differently-shaped, at run start. Not an actual secret leak, but a real completeness gap in the "reject before a run starts, uniformly" contract. *(S · `packages/core/src/interpolation/analyze.ts` · G22)*
-- **Delete the unused `BaseEventSchema`/`HumanGateEvent` exports or wire `BaseEventSchema` to validate the envelope it claims to model.** Both are public exports from `packages/shared/src/run-event.ts`, pinned by `index.test.ts`'s public-surface list, with zero consumers anywhere — and `BaseEventSchema` isn't even used to validate the envelope it claims to model. Delete the unused exports and pinning entries, or wire `BaseEventSchema` to actually validate the run-event envelope. *(S · `packages/shared/src/run-event.ts` · #213)*
+- ✅ **DONE ([Wave 3 Step 4](#wave-3-step-4-acceptance--2026-10-16)).** **Retain and validate the public event envelope without stripping full payloads.** `BaseEventSchema` shares the full run family's parsed exactly-one-correlation check; `BaseEvent` and `HumanGateEvent` remain exported. Complete payload, strict accounting, lenient opposite-key and stored forward-reader contracts are preserved. *(S · `packages/shared/src/run-event.ts` · #213)*
 - **Correct `ctx.fsScope`'s wiring, blocked on a maintainer call.** `ctx.fsScope` is threaded through every dispatch context in `packages/core/src/tools/{types,registry,builtins}.ts` and `packages/core/src/engine/agent-session.ts`, but `enforcePolicy()` (`packages/core/src/tools/registry.ts`) has no `fsScoped` branch and no `FsCapability` method signature accepts it. **Blocked on a maintainer decision**: is this a deliberate "one host instance = one immutable scope" design, in which case only the doc comment needs correcting, or should it be threaded into `FsCapability`'s method signatures to support future per-turn scope escalation? *(S · `packages/core/src/tools/registry.ts` · #93)*
 - **Correct three stale engine doc comments to match current code.** `checkpoint.ts`'s module doc (`packages/core/src/engine/checkpoint.ts`) claims a "runId+nodeId+retryCount idempotency key" bounds resumed side effects; no such key exists. `builtins.ts`'s top comment still says egress is "not wired yet"; it shipped. `workflow-yaml-spec.md` documents `workflow.version` as Semver-format-enforced; `WorkflowSpecSchema` enforces no format. One sweep correcting each. *(S · `packages/core/src/engine/checkpoint.ts`, `packages/core/src/tools/builtins.ts`, `docs/reference/*/workflow-yaml-spec.md` · #78, #97, #214)*
 - **Remove the dead `RunEventBusOptions.validate` escape hatch and replace `kahnOrder`'s full re-sort with a priority structure.** `RunEventBusOptions.validate` (`packages/core/src/engine/event-bus.ts`) is documented as a hot-path escape hatch but no caller ever sets it — dead config, negligible cost today. `kahnOrder` (`packages/core/src/dag.ts`) re-sorts the entire ready-list on every pop instead of using a priority queue, also negligible at today's node counts. Both essentially-free cleanups; batch into one pass and revisit priority-queueing only if 2.6.P's subworkflows push node counts up. *(S · `packages/core/src/engine/event-bus.ts`, `packages/core/src/dag.ts` · #274, #275)*
-- **Introduce a shared `RelaviumError` base class and migrate the 15 hand-rolled error classes onto it.** Error classes across `packages/core`, `packages/llm`, `packages/mcp`, and `apps/cli` (`BudgetExceededError`, `EngineStateError`, `RunLoopInvariantError`, and others) share no common base, each re-implementing its own conventions. `packages/shared` is the correct home. Introduce a minimal `RelaviumError` base class and migrate the existing classes onto it, preserving each class's existing `.code`/discriminant behavior. *(M · `packages/shared/src/*.ts` · #219)*
+- ✅ **DONE ([Wave 3 Step 4](#wave-3-step-4-acceptance--2026-10-16)).** **Introduce minimal shared native error ancestry while retaining each family's contract.** The current export-scoped inventory replaces the historical 15/17 estimate: 46 roots across 37 files reach 83 module-exported production classes, with the additional unchanged private timeout descendant recorded separately. Constructors, names, discriminants, context/cause and structural/private-authority guards are preserved. *(M · `packages/shared/src/relavium-error.ts` and existing package families · #219)*
 - **Chat-to-workflow export hardening: continuity caveat and non-ASCII slug fallback; certify existing tool-content exclusion.** W7/PR #90 and Accepted [ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) structurally exclude model-issued tool arguments/results from durable session rows and exported scaffolds. The earlier raw-tool-result export claim and its proposed opt-in/redaction decision are superseded by that contract; do not add a raw-content flag. Wave 2 still adds a clear continuity/review notice and deterministic ASCII title normalization with a session-identity fallback. Retained user/assistant text, `@` attachments and `!` output can remain sensitive: this is not universal transcript masking. Certify producer→SQLite→export rejection fixtures with #115; the [Wave 2 decision package](#decisions-presented-together-before-implementation) records D14/D15. *(M · `packages/core/src/export/serializer.ts` · #80, #81, #83)*
 - **Give `BudgetExceededError`/`BudgetPauseError` a `.code` field, blocked on a maintainer call.** These two errors (`packages/core/src/engine/budget-governor.ts`) expose no `.code`, unlike `EngineStateError`/`RunLoopInvariantError` in the same directory that `docs/standards/error-handling.md` names as the canonical model. Not a functional bug today. **Blocked on a maintainer decision**: should these errors adopt the `.code` convention, or is `instanceof`-narrowing an accepted exception for this pair? *(S · `packages/core/src/engine/budget-governor.ts` · G50)*
 - **Collapse two always-co-occurring branches in `engine.ts`'s `#dispatch` retry-sleep handling.** Purely cosmetic dead-code/maintenance-trap: two branches that always co-occur, one unreachable dead weight. No behavioral bug, but real, trivially-scheduled cleanup. *(S · `packages/core/src/engine/engine.ts` · #79)*
@@ -309,24 +309,24 @@ This workstream is `apps/cli`'s outermost layer — the process/runtime host eve
 
 **Tasks:**
 
-- **Close the five remaining gaps in the CLI's outermost crash/signal safety net.** `processIo()` (`apps/cli/src/process/io.ts`) has no EPIPE handling, so a `--json` consumer that closes its reader early dumps a raw stack trace instead of a structured envelope. `buildProgram()` in `apps/cli/src/run.ts` is the one synchronous step inside `run()` not wrapped in the standard error path, despite `run()`'s own JSDoc promising it never rejects. There is zero `process.on('unhandledRejection'|'uncaughtException', ...)` registration anywhere in production `apps/cli/src` — an async error escaping `run()`'s own promise chain falls straight to Node's default handler, and `process.on('exit')` never reaps detached `run_command` child process groups or closes DB/MCP connections on a crash. The last-resort crash message in `apps/cli/src/index.ts` unconditionally writes plain text to stderr with no `--json` check, the sole exception to the CLI's otherwise-universal structured-envelope convention. Fix all five in `index.ts`/`run.ts`/`process/io.ts` together: add EPIPE handling, wrap `buildProgram()`, register the missing global handlers with child-process reaping and DB/MCP close-on-exit, and make the last-resort message honor `--json`. *(L · apps/cli/src/index.ts, apps/cli/src/run.ts, apps/cli/src/process/io.ts · #40, #41, #42, #224, #269)*
-- **Carry `const exhaustive: never` from `engine.ts` to the three sibling switches it was never propagated to, two of which drop live data.** `apps/cli/src/chat/persister.ts`'s event switch — the sole writer of `agent_sessions`/`session_costs` — silently drops any unhandled event kind via a bare `default`, a real money/data risk. Four picker key-routing switches in `apps/cli/src/render/tui/chat-ink.tsx` and `apps/cli/src/render/tui/home-controller.ts` lack the same guard on the reseat surface that already caused a data-loss-class bug. `apps/cli/src/render/tui/run-view-model.ts`'s `reduceRunEvent` silently drops `agent:reasoning` with no state field to hold it, so `relavium run` never shows reasoning that `chat` already renders — the exact bug class the guard in `apps/cli/src/chat/session-host.ts`'s `engine.ts`-derived pattern was invented to prevent, recurring on a different driver. Apply `const exhaustive: never` uniformly across all six sites. *(M · apps/cli/src/chat/persister.ts · #300, #301, G3)*
+- **Close the five remaining gaps in the CLI's outermost crash/signal safety net.** `processIo()` (`apps/cli/src/process/io.ts`) has no EPIPE handling, so a `--json` consumer that closes its reader early dumps a raw stack trace instead of a structured envelope. `buildProgram()` in `apps/cli/src/run.ts` is the one synchronous step inside `run()` not wrapped in the standard error path, despite `run()`'s own JSDoc promising it never rejects. There is zero `process.on('unhandledRejection'|'uncaughtException', ...)` registration anywhere in production `apps/cli/src` — an async error escaping `run()`'s own promise chain falls straight to Node's default handler, and `process.on('exit')` never reaps detached `run_command` child process groups or closes DB/MCP connections on a crash. The last-resort crash message in `apps/cli/src/index.ts` unconditionally writes plain text to stderr with no `--json` check, the sole exception to the CLI's otherwise-universal structured-envelope convention. Fix all five in `index.ts`/`run.ts`/`process/io.ts` together: add EPIPE handling, wrap `buildProgram()`, register the missing global handlers with child-process reaping and DB/MCP close-on-exit, and make the last-resort message honor `--json`. *(L · apps/cli/src/index.ts, apps/cli/src/run.ts, apps/cli/src/process/io.ts · #40, #41, #42, #224, #269)* **Source correction — 2026-10-15:** the recoverable rejection net already exists and keeps alive; preserve it. Proposed ADR-0110 adds fatal/early-import/output handling through registered owners. Do not close DB/MCP from exit without actual owner ACK or claim universal descendant containment; see the revised preflight and canonical proposed teardown scope.
+- ✅ **DONE — Wave 3 Step 1, 2026-10-16** ([acceptance](#wave-3-step-1-acceptance--2026-10-16)). **Carry `const exhaustive: never` from `engine.ts` to the three sibling switches it was never propagated to, two of which drop live data.** `apps/cli/src/chat/persister.ts`'s event switch — the sole writer of `agent_sessions`/`session_costs` — silently drops any unhandled event kind via a bare `default`, a real money/data risk. Four picker key-routing switches in `apps/cli/src/render/tui/chat-ink.tsx` and `apps/cli/src/render/tui/home-controller.ts` lack the same guard on the reseat surface that already caused a data-loss-class bug. `apps/cli/src/render/tui/run-view-model.ts`'s `reduceRunEvent` silently drops `agent:reasoning` with no state field to hold it, so `relavium run` never shows reasoning that `chat` already renders — the exact bug class the guard in `apps/cli/src/chat/session-host.ts`'s `engine.ts`-derived pattern was invented to prevent, recurring on a different driver. Apply `const exhaustive: never` uniformly across all six sites. *(M · apps/cli/src/chat/persister.ts · #300, #301, G3)*
 - **Centralize `openLocalDb` wrap-and-redact instead of leaving it well-wrapped at only 3 of 8+ call sites.** On the `run`/`chat`/`gate` paths the well-wrapped open happens AFTER an earlier unwrapped one, making the clean `CliError` message largely unreachable in practice. Separately, `packages/db/src/client.ts` interpolates a raw absolute path into its error with no redaction backstop, unlike `packages/llm`'s `scrubSecrets`. Move the wrap-and-redact logic inside `openLocalDb` itself so every caller gets it for free instead of re-implementing it. *(M · packages/db/src/client.ts · #278, #280)*
 - **Wire `agent-run.ts`'s missing SIGINT handler and make chat's existing one actually abort the session.** `apps/cli/src/commands/agent-run.ts` registers zero SIGINT handler, so Ctrl-C orphans spawned MCP child processes. `drivePlain`/`driveJson`'s SIGINT handlers (chat driver) only close readline and never call `session.abort()`, letting the billed generation run to completion. Register a handler in `agent-run.ts` mirroring `driveRun`'s teardown, and make the chat handlers call `abort()`. *(M · apps/cli/src/commands/agent-run.ts · #21, #23)*
 - **Wrap `gate.ts`'s two idempotent-resume success paths in the same `--json` branch every other command uses.** Both write plain human text to stdout unconditionally, breaking the NDJSON contract for scripted callers, and neither path is tested. No dependency on the 2.6.K resume-core extraction — fix in place. *(S · apps/cli/src/commands/gate.ts · #20)*
 - **Fix `/doctor`'s hardcoded probe profile, which misreports the exact thing it exists to diagnose.** `apps/cli/src/chat/doctor.ts` probes tool-host wiring with a hardcoded profile instead of the session's actual one, so it always misreports `egress`/`os` capability as unwired regardless of the real config. Probe with the session's actual profile. *(S · apps/cli/src/chat/doctor.ts · G43)*
 - **Implement `--help --json`'s promised `COMMAND_MANIFEST` serialization, or correct the docs that claim it exists.** Doc comments in `apps/cli/src/commands/manifest.ts` and user-facing docs both claim `--help --json` emits `COMMAND_MANIFEST` as JSON; no code path serializes it, confirmed by a passing test that asserts help stays human text. Either implement the missing serialization or amend the docs to match reality. *(M · apps/cli/src/commands/manifest.ts · #13)*
 - **Defer the CLI's eager `driveHome` import and unconditional `seedCatalog()` call behind command-need, closing the ~400ms `--help`/`--version` tax.** `apps/cli/src/run.ts`'s static import of `driveHome` pulls in its full transitive graph — ink, react, the home controller, the DB layer, the native keychain binding — on every process start, even for `--help`/`--version`. `seedCatalog()` (`apps/cli/src/engine/catalog-refresh.ts`) does an unconditional sync read/parse/validate of the cached model catalog before checking whether pricing data is even needed. Measured ~390-410ms wall time for `--version` against ~30ms bare Node startup; a separate measurement centered on `dispatch.ts` confirmed the same root cause independently. Gate both behind a dynamic import keyed on actual command need; likely requires enabling `splitting: true` in `apps/cli/tsup.config.ts`, which currently emits a single bundle file. *(L · apps/cli/src/run.ts · #43, #44, #271)*
-- **Extend `authoring.ts`'s cwd-relative `displayPath` error-path discipline to `resolve.ts`, `catalog.ts`, and `chat/export.ts`.** `apps/cli/src/authoring/authoring.ts`'s `readAuthoredFile` already renders filesystem errors against a cwd-relative `displayPath` instead of the raw absolute path; `apps/cli/src/workflows/resolve.ts` and `apps/cli/src/workflows/catalog.ts` never adopted it, and neither did the filesystem `CliError`s in `apps/cli/src/commands/chat-export.ts`. Apply `displayPath` at all three remaining sites so no command leaks the user's absolute home-directory path into an error message. *(M · apps/cli/src/workflows/resolve.ts · #4, G11)*
-- **Fix `resolve.ts`'s 1x UTF-8 byte multiplier, which undersizes the load cap for non-ASCII workflow files.** `apps/cli/src/workflows/resolve.ts` compares `stats.size` directly against `MAX_SOURCE_CHARS` (a 1x multiplier); `authoring.ts` and `catalog.ts` both correctly use `MAX_SOURCE_CHARS * 4` to account for UTF-8's up-to-4-bytes-per-char worst case. On the `relavium run` load path this means a dense multibyte YAML file well under the real char cap can be wrongly rejected as oversized. Apply the same `* 4` multiplier used by its two siblings. *(S · apps/cli/src/workflows/resolve.ts · #3)*
-- **Extend `chat.ts`'s `closeQuietly()` helper to the four sibling commands still using an unguarded `.close()`.** `apps/cli/src/commands/chat.ts` wraps every store-close in `closeQuietly()` so a close-time throw can never overwrite a successful exit code; `apps/cli/src/commands/run.ts`, `apps/cli/src/commands/gate.ts`, `apps/cli/src/commands/chat-export.ts`, and `apps/cli/src/commands/chat-list.ts` all still call `.close()`/`opened.close()` unguarded. Extract the helper to a shared location and import it into all four. *(S · apps/cli/src/commands/chat.ts · #22)*
+- ✅ **DONE — Wave 3 Step 1, 2026-10-16** ([acceptance](#wave-3-step-1-acceptance--2026-10-16)). **Extend `authoring.ts`'s cwd-relative `displayPath` error-path discipline to `resolve.ts`, `catalog.ts`, and `chat/export.ts`.** `apps/cli/src/authoring/authoring.ts`'s `readAuthoredFile` already renders filesystem errors against a cwd-relative `displayPath` instead of the raw absolute path; `apps/cli/src/workflows/resolve.ts` and `apps/cli/src/workflows/catalog.ts` never adopted it, and neither did the filesystem `CliError`s in `apps/cli/src/commands/chat-export.ts`. Apply `displayPath` at all three remaining sites so no command leaks the user's absolute home-directory path into an error message. *(M · apps/cli/src/workflows/resolve.ts · #4, G11)*
+- ✅ **DONE — Wave 3 Step 1, 2026-10-16** ([acceptance](#wave-3-step-1-acceptance--2026-10-16)). **Fix `resolve.ts`'s 1x UTF-8 byte multiplier, which undersizes the load cap for non-ASCII workflow files.** `apps/cli/src/workflows/resolve.ts` compares `stats.size` directly against `MAX_SOURCE_CHARS` (a 1x multiplier); `authoring.ts` and `catalog.ts` both correctly use `MAX_SOURCE_CHARS * 4` to account for UTF-8's up-to-4-bytes-per-char worst case. On the `relavium run` load path this means a dense multibyte YAML file well under the real char cap can be wrongly rejected as oversized. Apply the same `* 4` multiplier used by its two siblings. *(S · apps/cli/src/workflows/resolve.ts · #3)*
+- ✅ **DONE — Wave 3 Step 1, 2026-10-16** ([acceptance](#wave-3-step-1-acceptance--2026-10-16)). **Extend `chat.ts`'s `closeQuietly()` helper to the four sibling commands still using an unguarded `.close()`.** `apps/cli/src/commands/chat.ts` wraps every store-close in `closeQuietly()` so a close-time throw can never overwrite a successful exit code; `apps/cli/src/commands/run.ts`, `apps/cli/src/commands/gate.ts`, `apps/cli/src/commands/chat-export.ts`, and `apps/cli/src/commands/chat-list.ts` all still call `.close()`/`opened.close()` unguarded. Extract the helper to a shared location and import it into all four. *(S · apps/cli/src/commands/chat.ts · #22)*
 - **Close `agent run`'s two UX-parity gaps against its sibling drivers in one pass.** `apps/cli/src/commands/agent-run.ts` blocks silently on a TTY with no piped stdin and prints no banner, unlike `chat`/`create` which both print one. `makePlainPrinter` (shared with `apps/cli/src/commands/chat.ts`'s plain-printer path) has no `cost:updated` case or final cost line for `agent run`'s non-JSON output, unlike `run`'s TUI/plain renderer. Both are the same shape of gap — `agent run` is the newest, least-mature driver — so add the stdin-TTY banner `create` already has and the cost line `run` already prints in the same change. *(S · apps/cli/src/commands/agent-run.ts · #24, #26)*
 - **Add a dedicated exit code for unclassified internal faults, or amend the docs that call exit code 1 "workflow failed."** Exit code 1 is documented as meaning a failed workflow but is silently reused for any unclassified internal fault from any command, so a script branching on exit code cannot distinguish "your workflow failed" from "the CLI itself broke." Add a dedicated code or correct the documented contract. *(S · apps/cli/src/index.ts · G35)*
-- **Resolve `--quiet`/`--verbose`/`RELAVIUM_DEBUG` into one coherent diagnostic-flag system and point the CLI's generic error fallbacks at it.** `--quiet` has exactly one consumer, and that consumer hardcodes the value away — a complete no-op. `--verbose` only gates `err.stack` on a top-level crash and has zero effect during a live session. `RELAVIUM_DEBUG` is undocumented and is a second, inconsistently-named escape hatch alongside `--verbose`. Both of the CLI's generic "internal error" fallback messages never mention `--verbose` or `RELAVIUM_DEBUG` as a way to get more detail — the same incoherence, seen from the user's side of the same broken flag system. Wire `--quiet` to actually suppress output, extend `--verbose` to gate live-session diagnostics, fold `RELAVIUM_DEBUG` into `--verbose`'s precedence chain, and append the resulting hint to both generic fallback messages in the same change; the fallback-message fix cannot be written correctly until the flag relationship is settled. **Blocked: maintainer decision needed on the final `--quiet`/`--verbose`/`RELAVIUM_DEBUG` precedence and behavior before this can be implemented.** *(M · apps/cli/src/index.ts · #45, #264, #265, #268)*
-- **Rule on `logs`' human-mode token replay, then implement it.** `relavium logs`' human-mode output replays raw per-event `agent:token`/`agent:reasoning` events instead of coalescing them into a single stream, unlike every other renderer in the CLI (chat/run TUI already coalesce). **Blocked: maintainer decision needed on whether `relavium logs` human-mode should coalesce streamed token/reasoning events or intentionally stay raw as a deliberate design choice for this command.** Implement whichever the maintainer picks. *(M · apps/cli/src/commands/logs.ts · G15)*
+- **Resolve `--quiet`/`--verbose`/`RELAVIUM_DEBUG` into one coherent diagnostic-flag system and point the CLI's generic error fallbacks at it.** `--quiet` has exactly one consumer, and that consumer hardcodes the value away — a complete no-op. `--verbose` only gates `err.stack` on a top-level crash and has zero effect during a live session. `RELAVIUM_DEBUG` is undocumented and is a second, inconsistently-named escape hatch alongside `--verbose`. Both of the CLI's generic "internal error" fallback messages never mention `--verbose` or `RELAVIUM_DEBUG` as a way to get more detail — the same incoherence, seen from the user's side of the same broken flag system. Wire `--quiet` to actually suppress output, extend `--verbose` to gate live-session diagnostics, fold `RELAVIUM_DEBUG` into `--verbose`'s precedence chain, and append the resulting hint to both generic fallback messages in the same change; the fallback-message fix cannot be written correctly until the flag relationship is settled. **Approved 2026-10-16 in ADR-0110:** quiet+verbose conflict, explicit flags over exact DEBUG=1, independent JSON representation and preserved requested data/safety categories. Implementation remains staged. *(M · apps/cli/src/index.ts · #45, #264, #265, #268)*
+- **Certify durable-only logs (G15; source correction — 2026-10-15).** The earlier token-firehose premise is refuted: shipping token/reasoning emission is live-only and logs reads durable rows. No coalescing decision or new persistence is required. Preserve actual replay with a real engine/store/log regression and JSON sequence-gap controls; the [reopened preflight](#maintainer-review-reopened-the-proposal--2026-10-15) records the evidence. *(M · apps/cli/src/commands/logs.ts · G15)*
 - **Attach `GLOBAL_OPTIONS_HELP` to every subcommand's `--help`, not just the root program's.** `apps/cli/src/program.ts` defines `GLOBAL_OPTIONS_HELP` (documenting the position-independent flags `commander` itself doesn't parse, like `--json`/`--cwd`/`--verbose`) and attaches it only to the root program; `commander` does not propagate it to subcommand help output, so `relavium run --help` never shows it. Attach the same help text to each subcommand, or add an explicit pointer to `relavium --help`. *(S · apps/cli/src/program.ts · #17)*
 - **Add a `--force` gate or interactive confirmation to `provider remove-key`, the manifest's sole `effect: 'destructive'` command.** `apps/cli/src/commands/provider.ts`'s `remove-key` action has no confirmation gate at all, unlike the create/import/export family, which all require explicit confirmation for destructive effects. Add the same pattern here. *(S · apps/cli/src/commands/provider.ts · #19)*
-- **Make `formatZodError` show numeric bounds for `too_small`/`too_big` the same way it already does for `invalid_enum_value`.** `apps/cli/src/config/load.ts`'s `formatZodError` includes the schema-derived bound value in enum-mismatch messages but withholds it for out-of-range numeric errors, so a `config.toml` value outside its valid range gets a less actionable message than a bad enum choice. Include the bound consistently across both error kinds. *(S · apps/cli/src/config/load.ts · #32)*
+- ✅ **DONE ([Wave 3 Step 2](#wave-3-step-2-acceptance--2026-10-16)).** **Make `formatZodError` show schema-derived numeric bounds.** `apps/cli/src/config/load.ts`'s `formatZodError` includes the schema-derived bound value in enum-mismatch messages but withholds it for out-of-range numeric errors, so a `config.toml` value outside its valid range gets a less actionable message than a bad enum choice. Include the bound consistently across both error kinds. *(S · apps/cli/src/config/load.ts · #32)*
 - **Add a direct unit test for `selectGatePrompter`'s TTY/json/CI routing decision.** `apps/cli/src/render/tui/home-controller.ts`'s `selectGatePrompter` has no direct test of its own, unlike its structurally identical sibling `apps/cli/src/home/should-open-home.ts`, which is tested. Add a test mirroring the sibling's coverage. *(S · apps/cli/src/render/tui/home-controller.ts · G37)*
 - **Add a test for the positive `--verbose`-without-`--json` stack-dump branch, found untested independently twice.** `apps/cli/src/index.ts`'s render-error path has a branch that prints the stack trace when `--verbose` is set without `--json`; it has zero direct test coverage, flagged by two independent review passes. Add one test asserting the branch actually prints the stack. *(S · apps/cli/src/index.ts · G36, G46)*
 - **Delete the byte-identical duplicate interface declaration in `models-pricing.ts`.** `apps/cli/src/commands/models-pricing.ts` declares the same interface twice with no functional difference. One-line deletion, no behavior change. *(S · apps/cli/src/commands/models-pricing.ts · G14)*
@@ -335,11 +335,11 @@ This workstream is `apps/cli`'s outermost layer — the process/runtime host eve
 - **Make the two-process lock-contention test fail loudly instead of silently skipping under a bare `pnpm test`.** The test silently skips (not fails) inside `apps/cli` when `@relavium/db`'s dist build is missing, dropping WAL-mode coverage with no red CI signal. Make the missing-dist condition a hard failure. *(S · apps/cli/src (cross-process lock test) · #47)*
 - **Add direct tests for `seedRun`'s own misuse guard-rails.** `seedRun`'s guard-rails against an empty gates array and a duplicate `gateId` have zero test coverage of their own, so a regression in either guard would silently seed the wrong fixture with no signal. Add tests asserting both throw as documented. *(S · apps/cli/src (seedRun fixture helper) · #48)*
 - **Give the palette step's swallowed rejection a comment or a user-visible trace.** A command-palette step's `run()` rejection is discarded with a bare `.catch(() => undefined)`, unlike sibling `.catch` sites elsewhere in the CLI that document why the rejection is safe to drop. Add the same justification, or surface the failure. *(S · apps/cli/src/render/tui/home-controller.ts · #281)*
-- **Settle `--input`'s four-way flag-namespace collision with one maintainer naming decision.** `--input` currently means a workflow input `k=v` pair on `run`, a reserved/rejected `{{ctx.*}}` session variable on `agent run`, an arbitrary JSON/string gate payload on `gate`, and a USD-per-million-token price on `models pricing` — all sharing one flat `CommandInput.options` key across `apps/cli/src/commands/dispatch.ts` and `apps/cli/src/commands/specs.ts`, found independently in both files. **Blocked: maintainer decision needed — rename the pricing flags (e.g. `--input-price`/`--output-price`) versus explicitly documenting the per-command collision in each manifest entry** — one decision resolves both files at once; do not patch them independently. *(S · apps/cli/src/commands/dispatch.ts · #18, #310)*
+- **Settle `--input`'s four-way flag-namespace collision with one maintainer naming decision.** `--input` currently means a workflow input `k=v` pair on `run`, a reserved/rejected `{{ctx.*}}` session variable on `agent run`, an arbitrary JSON/string gate payload on `gate`, and a USD-per-million-token price on `models pricing` — all sharing one flat `CommandInput.options` key across `apps/cli/src/commands/dispatch.ts` and `apps/cli/src/commands/specs.ts`, found independently in both files. **Approved 2026-10-16 in ADR-0110:** canonical `--input-price`/`--output-price` with deprecated old aliases and pre-normalization conflict refusal; intentionally retain/document the other command-scoped input meanings — one decision resolves both files at once; do not patch them independently. *(S · apps/cli/src/commands/dispatch.ts · #18, #310)*
 - **Convert the three remaining bare `throw new Error()` sites to the project's typed `CliError`.** `apps/cli/src/chat/fixture.ts`'s cassette provider and `apps/cli/src/engine/host.ts`'s checkpointer wiring guard both throw a bare `Error` instead of `CliError`. `apps/cli/src/onboarding/wizard.ts`'s internal choice-validation guard does the same, contradicting its own docstring's claimed propagation contract, even though `CliError` is already imported in that file for a different branch. Convert all three in one mechanical pass. *(S · apps/cli/src/onboarding/wizard.ts · G2, #12, #54)*
 - **Generate and privately archive a per-release sourcemap so a `RELAVIUM_DEBUG` crash stack can be symbolicated.** `apps/cli/tsup.config.ts` correctly ships `sourcemap: false` per ADR-0051 (no original source in the published `dist/`), but no separate, privately-retained sourcemap exists anywhere in the release pipeline, so a `RELAVIUM_DEBUG` stack trace prints mangled minified names with no way to map them back. Generate a sourcemap at release-build time and archive it outside the published artifact. *(M · apps/cli/tsup.config.ts · #46)*
 
-**Acceptance:** Ctrl-C during `agent run`/`chat` actually cancels the in-flight generation via `session.abort()` and tears down spawned MCP child processes the same way `run`'s driver already does; `gate.ts`'s two idempotent-resume success paths honor `--json`; `persister.ts`, the four picker switches, and `run-view-model.ts`'s `reduceRunEvent` all carry `const exhaustive: never` and `relavium run` renders `agent:reasoning` events; `openLocalDb` wraps and redacts at every call site, not just 3 of 8+; `/doctor` probes with the session's real profile; `--help --json` either emits a real `COMMAND_MANIFEST` or the docs no longer claim it does; `--version`/`--help` no longer pay the ~400ms `driveHome`/`seedCatalog()` tax; `resolve.ts` uses the same `* 4` UTF-8 byte multiplier as `authoring.ts`/`catalog.ts`; no command leaks an absolute filesystem path into an error message; the CLI has a process-level `unhandledRejection`/`uncaughtException` net that reaps orphaned children and closes DB/MCP on crash, `buildProgram()` is wrapped, EPIPE no longer dumps a raw stack, and the last-resort crash message honors `--json`; `provider remove-key` requires confirmation like its sibling destructive commands; and every closed test-coverage gap (`selectGatePrompter`, the verbose-stack branch, `seedRun`'s guard-rails, the cross-process skip) has a red-on-regression test. **Required ADR: none new — the `--quiet`/`--verbose`/`RELAVIUM_DEBUG` precedence decision and the `--input` namespace decision are maintainer calls recorded as amendments to existing CLI diagnostic/flag conventions, not new architectural decisions.**
+**Acceptance:** Ctrl-C during `agent run`/`chat` actually cancels the in-flight generation via `session.abort()` and tears down spawned MCP child processes the same way `run`'s driver already does; `gate.ts`'s two idempotent-resume success paths honor `--json`; `persister.ts`, the four picker switches, and `run-view-model.ts`'s `reduceRunEvent` all carry `const exhaustive: never` and `relavium run` renders `agent:reasoning` events; `openLocalDb` wraps and redacts at every call site, not just 3 of 8+; `/doctor` probes with the session's real profile; `--help --json` either emits a real `COMMAND_MANIFEST` or the docs no longer claim it does; `--version`/`--help` no longer pay the ~400ms `driveHome`/`seedCatalog()` tax; `resolve.ts` uses the same `* 4` UTF-8 byte multiplier as `authoring.ts`/`catalog.ts`; no command leaks an absolute filesystem path into an error message; the existing recoverable rejection net is preserved and the approved process-owner/fatal policy attempts bounded native cleanup without false DB/MCP close ACK or universal descendant-containment claims, `buildProgram()` is wrapped, EPIPE no longer dumps a raw stack, and the last-resort crash message honors `--json`; `provider remove-key` requires confirmation like its sibling destructive commands; and every closed test-coverage gap (`selectGatePrompter`, the verbose-stack branch, `seedRun`'s guard-rails, the cross-process skip) has a red-on-regression test. **Required ADRs: ADR-0110–0113, accepted 2026-10-16.** Their explicit compatibility, packaging/custody, operator policy and provenance decisions replace the old no-new-ADR assumption; implementation remains staged in the approved Wave 3 plan.
 
 ### 2.5.5.F — Documentation & roadmap accuracy
 
@@ -448,7 +448,7 @@ This substream is the development-process substrate itself — `.github/workflow
 | In-phase | Completed by | Outcome |
 |----------|--------------|---------|
 | ✅ M2.5.5-1 Safety-critical propagation fixes *(met 2026-07-30, PR #81 — its two CRITICALs, #91 and #228, are closed. ADR-0074 §1 was open at that date and CLOSED on 2026-08-09 with `/cost --release`; the "Wave 1.5" framing this note used was retracted — that work was PR #81's own closing list, not a later wave. See [current.md](../current.md).)* | 2.5.5.A + 2.5.5.C | Two of the three CRITICAL findings closed (`#91` the unredacted approval-preview secret leak; `#228` the chat-persister unhandled-rejection crash — the third, `#56`, lands with 2.5.5.I under M2.5.5-2); the budget governor's concurrency gap and the two-process migration race are fixed |
-| M2.5.5-2 Security-surface hardening — D accepted, I open ([Wave 2 sign-off](#wave-2-closing-register--2026-10-13)) | 2.5.5.D + 2.5.5.I | MCP tool-poisoning/config-secret-hijack gaps closed; the third CRITICAL (`#56`) closed as terminal-control sanitization reaches `relavium run`, the error boundary, and the approval card; `chat.ts`/`home-controller.ts` decomposed ahead of 2.6.E/2.6.G |
+| M2.5.5-2 Security-surface hardening — D complete on main (PR #94), I open ([merge checkpoint](#wave-2-merge-checkpoint--2026-10-15)) | 2.5.5.D + 2.5.5.I | MCP tool-poisoning/config-secret-hijack gaps closed; the third CRITICAL (`#56`) closed as terminal-control sanitization reaches `relavium run`, the error boundary, and the approval card; `chat.ts`/`home-controller.ts` decomposed ahead of 2.6.E/2.6.G |
 | M2.5.5-3 CLI operator-safety net | 2.5.5.E | The outermost crash/signal/error boundary behaves uniformly across every command; `--version`/`--help` startup tax closed |
 | M2.5.5-4 Money-safety & process substrate | 2.5.5.B + 2.5.5.H | The three LLM adapters share guard/classification parity and `FallbackChain` is the sole retry authority; CI actually executes the compiled binary and the coverage/dependency/logging gates match what they claim to enforce |
 | M2.5.5-5 Documentation & hygiene close-out | 2.5.5.F + 2.5.5.G | No canonical doc names a retired data source or an unbuilt surface as shipped; the naming/duplication/dead-code sweep is closed |
@@ -513,7 +513,7 @@ directly as a 2.6.A work item). **Intra-phase:** the five file overlaps recorded
 
 ## Exit criteria
 
-**Wave 2 disposition — 2026-10-13:** criteria 1–3 are accepted on `development`; the [closing register](#wave-2-closing-register--2026-10-13) joins their direct regressions and threat sittings. Whole-phase criteria 4–8 remain open.
+**Wave 2 disposition — 2026-10-15:** criteria 1–3 are satisfied on `main` following the merge of PR #94; the [merge checkpoint](#wave-2-merge-checkpoint--2026-10-15) joins their direct regressions, threat sittings and final corrections. Whole-phase criteria 4–8 remain open.
 
 1. All three CRITICAL findings (`#91` the `previewFor()` secret leak; `#228` the chat-persister
    unhandled rejection; `#56` the unsanitized `relavium run` TUI) are closed and regression-tested.
@@ -523,8 +523,10 @@ directly as a 2.6.A work item). **Intra-phase:** the five file overlaps recorded
    config-layer secret-hijack gap are closed or explicitly, permanently documented as accepted
    residuals.
 4. `pnpm turbo run lint typecheck test` stays green throughout, with no widening of the
-   `LLMProvider` seam, no new platform import into `packages/core`, and no change to the
-   `--json`/CI machine-output contract.
+   `LLMProvider` seam or new platform import into `packages/core`. Machine-output
+   compatibility changes are limited to the explicitly approved ADR-0110 scope
+   (diagnostics/exits, JSON discovery, aliases and consent); existing run-event
+   stdout and actual workflow-outcome contracts remain accepted.
 5. All items in a given sub-stream's `**Tasks:**` list are either shipped or explicitly
    re-deferred with a recorded reason (routed to Phase 2.6, `deferred-tasks.md`, or declined
    with rationale in the traceability appendix).
@@ -1041,7 +1043,7 @@ Raised by a reviewer, then disproved by both verifiers reading the code. Recorde
 
 ## Wave 2 preflight and proposed execution plan — 2026-10-12
 
-> Current disposition — 2026-10-13: all eight steps are accepted on `development`; the [closing register](#wave-2-closing-register--2026-10-13) controls current acceptance. The dated preflight/checkpoint states below remain historical.
+> Current disposition — 2026-10-15: all eight steps and review corrections merged to `main` as PR #94; the [merge checkpoint](#wave-2-merge-checkpoint--2026-10-15) controls current completion. The dated preflight/checkpoint states below remain historical.
 
 **Status: maintainer approved ADR-0105–0108 and the eight-step plan on 2026-10-12.
 Steps 1–6 are accepted after independent cumulative reviews and required gates; Step 7 proceeds.**
@@ -2902,7 +2904,9 @@ Two NEW clean complete cumulative whole-wave rounds remain required.
 
 ### Wave 2 closing register — 2026-10-13
 
-**Steps 1–8 are accepted on `development`; publication is separate from merge.**
+> Current disposition — 2026-10-15: Steps 1–8 and maintainer corrections are complete on `main` after PR #94 merged. The [merge checkpoint](#wave-2-merge-checkpoint--2026-10-15) joins final source reviews and execution; the dated evidence below retains its original scope.
+
+**Original acceptance — 2026-10-13: Steps 1–8 accepted on `development`, before merge.**
 This is the joint Phase 2.5.5/2.6 “Shut the doors” wave. It does not reopen the
 merged Phase 2.6.5 W2/W8 interlude or close all of Phase 2.5.5/2.6.
 
@@ -3481,3 +3485,4832 @@ together, including the entire increment-4 diff. PR #94 owns their actual verdic
 and the required final CI/coverage/platform/physical-evidence publication; the old
 nonclean round contributes no clean acceptance. No new ADR, deferral or user action
 is introduced, and Wave 3 remains subsequent work.
+
+### Wave 2 merge checkpoint — 2026-10-15
+
+[PR #94](https://github.com/HodeTech/Relavium/pull/94) merged to `main` at
+**17:50:23 UTC (20:50:23 Europe/Istanbul)**, merge commit
+`ab08209ea0fd4681a9ed760811c6b1acfc6501b9`. Its final reviewed head is
+`4cdfe011fc62841e6daba3b39391d0d1e540c4dc`; the merge tree is byte-identical
+to that source. **All eight Wave 2 steps and the maintainer corrections are
+complete on `main`.** ADR-0105–0109 remain Accepted. The forty-ID
+[disposition ledger](#wave-2-individual-dispositions--certification-in-progress),
+[original closing register](#wave-2-closing-register--2026-10-13),
+[first corrections](#pr-94-systematic-review-corrections--2026-10-13),
+[lower-priority corrections](#pr-94-lower-priority-review-corrections--2026-10-13)
+and [additional corrections](#pr-94-additional-systematic-review--2026-10-15)
+retain their exact source scopes and historical receipts.
+
+#### Completed scope
+
+| Area | Complete on `main` |
+| --- | --- |
+| Filesystem authority | Invocation-only grants and narrowing selectors, credential floors, shared ancestor walk, catalog containment, exact scratch-floor prerequisite and composition, literal glob admission. |
+| Secrets and config trust | Bounded owned stdin, first-run secret delivery and argv refusal, native bridge failure privacy, finite scrubbing and faithful-snapshot warnings. |
+| Persistence and export | Revalidated structural session/tool-content refusal, secret-taint context sites, export continuity/slug and completion notices. |
+| Media and native lifecycle | Verified bounded bytes before publication, CAS/temp ownership and recovery, explicit iterator provenance, generated-result streaming and valid Opus/Vorbis/FLAC handling. |
+| Provider-header gate | Nonempty-map refusal, inert legacy rows, explicit logical clear and SDK/public-projection exclusion; live header activation remains gated. |
+| Review corrections and evidence | Runner-error rejection, finite immutable node-bound pin diagnostics, safe declared-input reasons, native DB journal validation, all 151 filesystem/secrets anchors and complete refreshed controls. |
+
+The four implementation increments from the 2026-10-15 review, including the
+pin-error followup and final removal-anchor synchronization, have **two NEW
+independent complete clean cumulative correction rounds** at `4cdfe011`. Each
+round covers all **67 correction paths / 188 hunks / 24 complete new files**,
+including the entire increment-4 subset (34 paths / 94 hunks / 11 new files).
+These are scoped correction reviews, not a new review of every original PR path.
+Original whole-wave acceptance and earlier correction rounds retain their separate
+attribution. Root joined the complete reports and file/blob/diff inventories;
+detailed review records remain local and Git-ignored.
+
+#### Final reviewed-source execution
+
+Full local `pnpm run ci`, ordinary coverage and enforced coverage pass at
+`4cdfe011`. Both local coverage commands execute freshly and record **588 files /
+12,983 passing tests / 20 explicit skips**. Published CI coverage records
+**12,982 passes / 21 skips**, with the established additional CI-only skip;
+thresholds are unchanged. Matching workspace/build/lint cache reuse is recorded
+separately and is not described as fresh execution.
+
+All nine jobs in each [push CI](https://github.com/HodeTech/Relavium/actions/runs/38771189079)
+and [PR CI](https://github.com/HodeTech/Relavium/actions/runs/38771197426) pass,
+including the required aggregate, Node 22.13.0 floor, native Windows and acceptance
+jobs. SonarCloud succeeds with quality gate OK; demonstrated false positives have
+individual reasons, with no rule/gate weakening. Other nonblocking maintainability
+suggestions remain visible. PR checkout `24f66e27` has the same Git tree; literal-head
+physical evidence comes from push CI. These results do not claim new execution
+of the merge commit or this documentation-only successor.
+
+Selected native Windows evidence includes DB 58 files / 1,031 passes, filesystem
+12 files / 323 passes / 18 platform skips, and shared/CLI media 14/8 files /
+399/87 passes, plus CAS, packaging and headless EOF4 controls. This is not whole-repository
+Windows coverage. The required native DB journal contains 97 records, ten workers
+and nine modes; actual identities, stages, original readiness bounds and joined
+outcomes pass independent validation. All 321 acceptance-tool tests pass.
+
+Complete local and literal-head push exports were independently inspected:
+
+| Family | Controls | Phase records / case executions | Outcome authority |
+| --- | ---: | --- | --- |
+| Filesystem | 110 | 330 / 8,148 | 330 completed runner receipts, zero runner errors. |
+| Secrets | 41 | 123 / 8,451 | 123 completed runner receipts, zero runner errors. |
+| Wire | 4 | 9 / 216 | Same 24-case installed-SDK HTTP inventory. |
+| Usage | 23 | 70 / 3,738 | Includes 435 permanent cases and 71 native children. |
+
+Frozen Git blobs, exact removal bytes, complete inventories, named semantic
+witnesses, restoration, process/runtime joins and retained bounds pass. Qualified
+secondary removal effects cannot replace causal witnesses. Filesystem/secrets
+retain their 2,000-file/64-MiB bounds; usage/wire retain their separate existing
+20,000-file/256-MiB bounds and outcome authorities. Remote dependency pins/loader
+receipts are joined without claiming local rehashing of remote installed bytes.
+Earlier partial, failed, selected or prior-head runs do not count as final acceptance.
+
+#### Exit status and next work
+
+**Phase 2.5.5 exit criteria 1–3 and sub-stream D acceptance are satisfied on `main`
+by PR #94.** M2.5.5-2's D half is complete; its I half remains open. Whole-phase
+exit criteria 4–8, later Waves 3–7 and full Phase 2.5.5/2.6 remain open.
+Full M/N production lifecycle, future live headers and existing approved limits
+retain their [canonical deferred homes](../deferred-tasks.md); closure creates no
+new deferral or architectural decision. Finite structural media verification,
+cooperating-host filesystem assumptions, one loaded shared-module iterator domain
+and sensitive retained content remain explicit.
+
+Wave 2 has no remaining implementation, review, publication, ADR approval, provider
+capture, key, billing or user-decision gate. Next is [Wave 3 — Clear the ground](../current.md#wave-3--clear-the-ground),
+starting with its fresh document/decision preflight and serialized multi-file queue:
+shared close handling, safe path presentation and exhaustiveness guards. The
+remaining decomposition, viewport, shared-schema and CLI/process queues follow
+their existing order; Wave 3's unresolved recommendations are not approvals.
+This merge-status update starts no Wave 3 implementation and changes no release version.
+
+### Wave 3 preflight and proposed execution plan — 2026-10-15
+
+**Source baseline:** `development` at `702cdc9c59c688a48a240c2961bbf16b491e0ace`.
+Wave 2 is merged; this is its documentation successor. Wave 3 is in document/decision
+preflight, with no implementation accepted or started by this entry. The current
+[Wave 3 queue](../current.md#wave-3--clear-the-ground) owns scope groupings and
+later-wave boundaries; the numbered increments below own proposed execution order
+and review gates. A/E/G/I above retain scope and acceptance. No release, new provider capture, credential or
+paid test is required. Detailed working reports stay local and Git-ignored.
+
+Three independently scoped agents examined CLI/process, shared/core and chat/Home/
+viewport documents and actual sources/tests. The parent read their complete reports
+and independently reran the source/QuickJS context-taint probe. Existing focused
+checks passed 8 files / 260 tests (shared/core) and 5 files / 59 tests (CLI), with
+no full CI, coverage, platform run or implementation acceptance inferred. These
+preflight agents are not either of the two fresh implementation review rounds.
+
+#### Preflight corrections and already-satisfied work
+
+| Finding(s) | Current evidence and disposition |
+|---|---|
+| D10/G50, G38/G39/G47/G49, #91 | Existing typed budget guards, reservation/warning and redacted preview controls remain accepted; preserve, do not reimplement. |
+| #75 | W2/CR-22 already derives remaining run deadlines. Preserve actual clock/cancel semantics. |
+| #77/G48 | W8 closes the original stream-consumption blocker. Preserve ADR-0087's actual contract and approved exact-capacity residuals. |
+| #211, G16 | ADR-0083 already validates input defaults/enums; W7 already enforces compaction-role/structural session rows on read and write. No legacy reader tightening. |
+| #89/parallel half of #212 | Full WorkflowSchema rejects duplicate parallel members; exported leaf/union schema still needs consistent enforcement. Centralize without duplicate diagnostics. |
+| G22, #80/#81/#83/#115 | Wave 2 context namespace refusal and W7/Wave 2 structural persistence/export/caveat/slug work are complete. The new context-to-JavaScript leak is distinct. |
+| #78, #280 DB half | Checkpoint comments already name the tiered journal; DbOpenError already has fixed path-free messages. Remaining CLI open/error wrapping lands last. |
+| #21 MCP half, #42 rejection half | W4 already reaps MCP and #228 already installs the recoverable rejection net. Remaining active-session abort and fatal/EPIPE/process-group work remain. |
+| G36/G37/G46, #20 | Direct verbose and selector tests exist. Idempotent gate JSON routing exists but needs direct regressions. Revalidate, do not claim absent code. |
+| G34/G44/#56/#57, G0/#50 | Wave 1 terminal sanitization and job-control/onboarding ordering are closed and preserved by Wave 2. |
+| #93 | ADR-0105 already decides immutable host filesystem authority. Clarify descriptive dispatch tier; no per-turn grant expansion. |
+| #216 | Remaining `success` is canonical event data, not an internal competing result shape. Keep the wire exception; no event rename. |
+| #303/#304 | Exact catalog round-trip fixture already exists; revalidate it. Compiler assertion sites moved from MCP to shared in W6. |
+| #125/D26 | Bare Home cannot invoke `/cost`; live in-Home chat uses the real shared DB-backed implementation. Proposed disposition is chat-only plus parity regression, not selection of an arbitrary historical session. |
+| #274/#239 | Tested exported `validate:false` and the adapters subpath are public surfaces, not proven dead APIs. Proposed compatibility disposition retains/document them. Local dead exports #240/#241 can be removed after consumer audit. |
+
+The old E paragraph's “Required ADR: none new” does not authorize changed public
+CLI contracts, trust boundaries or distribution/storage decisions. The phase's
+current exit criterion 8 applies. The old shared count of “seven remaining” and
+the old god-file sizes are historical: current chat/Home/chat-ink are 2,822/1,604/
+1,906 lines. The correct existing identifier comparator is shared `byCodeUnit`;
+the token heuristic is now in LLM `request-estimator`, not an adapter module.
+
+#### Decisions presented together before implementation
+
+All entries below are **proposed**, not maintainer rulings. Approval covers the
+concrete public/API/secrets plan as well as the new ADRs. No proposed choice silently
+changes a currently Accepted ADR or a canonical reference before approval.
+
+| Decision | Recommended choice and compatibility boundary |
+|---|---|
+| ADR-0110: D19/D20/D22, #13/#19/#309, G15/G35 | [Explicit CLI compatibility](../../decisions/0110-cli-diagnostics-and-discovery-have-explicit-compatibility.md): retain quiet+verbose conflict; exact DEBUG=1 alias; preserve JSON/safety data; unexpected/output infrastructure exit 9 with distinct diagnostics; versioned explicit JSON help; alias-preserving pricing/chat syntax; key-delete consent; G15 refuted with durable-only replay preservation. Genuine run outcomes and exits 3–8/signals keep their contracts. D22's old two-exception shorthand must be reconciled to this explicit enumerated scope. |
+| ADR-0111: #43/#44/#46/#271 | [Lazy packaged runtime](../../decisions/0111-cli-meta-operations-use-a-lazy-packaged-runtime.md): lightweight descriptor-only meta graph; engine-inlined finite chunks, complete closure guard and packed platform controls; exact-byte private sourcemaps. The maintainer selected public-recipient encrypted CI archival; GnuPG, pinned recipient and per-version ciphertext retention are proposed mechanics. Public plaintext artifacts are prohibited. |
+| ADR-0112: G30/#34/#49/#52/#55 | [Operator-owned chat policy and preferences](../../decisions/0112-chat-network-grants-and-onboarding-state-are-operator-owned.md): global-only domain authority, exact DNS/deny-all/approval/SSRF floors; explicit unavailable-keychain acknowledgement with current-state recheck; truthful model-write recovery; non-retryable final-component link refusal and honest recovery; live monotonically narrowing invocation HTTP authority even after failed Home replacement. |
+| ADR-0113: #92 and reproduced leak | [Declared-source context provenance](../../decisions/0113-secret-derived-context-keeps-provenance-at-public-sinks.md): reuse existing linear taint graph, preserve trusted raw resolution, qualify context/input provenance before executor/preparation; remove raw denied values, refuse templates and diagnose executed VM denied access with an explicitly finite latch; required owned projection. Record unsupported future tool mappings honestly rather than fabricate a producer. |
+| D18, D26/#125, #311 | Keep chat-ink restructuring with Wave 5a; keep cost chat-only with both real surfaces tested; correct Commander parser-path token echo and add static help; preserve dispatcher privacy. These are explicit dispositions, not new features or undisclosed deferrals. |
+| #89/#90/G18/#210/G17 | Apply missing duplicate/cross-field guards at leaf and full boundaries. Condition equality is typed (`true` differs from `'true'`; 0 equals -0). Duplicate fallback tuples are provider+model within the fallback list; do not forbid equality with the primary. Timeout without action retains default reject; action without timeout refuses. |
+| G17 RunSchema detail | Preserve optional legacy timestamps and outputs. Reject completedAt on nonterminal states, startedAt on pending, and error outside failed; retain temporal checks. Terminal records need not invent timestamps/error fields. Do not adopt a stricter logical schema as a DB reader or migrate historical rows. Existing tests accepting contradictory present fields must change deliberately. |
+| #213/#219, #217/#222/#239/#274 | Retain named event exports while sharing the actual exactly-one-correlation envelope validation without payload stripping. Add a minimal shared error base, preserving constructor/name/code/kind/reason/context/cause/guards and existing structural boundary checks; inventory current classes, not historical 15. Add ModelFeature with deprecated Capability alias; retain Accepted ToolHost *Capability names, use Port for new orchestration interfaces. Retain documented adapters/validate compatibility surfaces. |
+| #95 tool input caps | UTF-8 byte limits: write content 8 MiB, HTTP body 1 MiB, git message 16 KiB; run args ≤256, each ≤16 KiB and aggregate ≤64 KiB. Add cheap length prechecks, real byte refinement and accurate model metadata. These are proposed new limits, not promises of OS command-line capacity. Refuse before approval/effect/host work. |
+| #87/#82/#275 | Document system_prompt_append as literal, preserving taint scans and intentional brace text; do not activate Proposed ADR-0060 or interpolate instructions. Decode quoted argument quote/backslash escapes without eval or blanket Windows-path reinterpretation. Use an in-house priority structure preserving Kahn's authored-index order, with equivalence tests. |
+| G4/#65/#64/#66/#63 | Bound input history to 500 and width memoization to 1,024 entries; 8-cell tabs before wrapping; latest-size frame coalescing with immediate narrowing safety, not stale-width debounce. Both chat surfaces enforce 80×24 and disable hidden affirmative approvals while retaining reject/abort/resize. No transcript trimming or new Unicode table. |
+
+The live synthetic security reproduction is a declared secret input → context alias
+→ bare JS transform → output. Three events expose the canary while run:started is
+correctly masked. It is not covered by an approved deferral. The owning permanent
+regressions and a dedicated secret-flow sitting must accompany its correction.
+No credential values or request captures belong in tracked evidence.
+
+#### Proposed implementation increments
+
+| Step | Scope, finding IDs and principal verification |
+|---|---|
+| 1 | **Serialized multi-file queue first:** shared close handling #22 (four named siblings plus newer owned journal sites) → safe source labels #4/G11 plus #3's UTF-8 source admission parity → exhaustive session/picker/run switches #300/#301/G3 and actual reasoning rendering. Preserve primary outcomes and host-safe-close ownership. For #3, use the sibling 4× byte precheck plus authoritative parser character bound; test a dense multibyte source above the old byte cap but below the character cap, ASCII character overflow and true byte overflow. Add native error and mounted output regressions. |
+| 2 | **Shared admission and diagnostics:** #89/#90/#212/G18/#210/G17, certify #211/G16; shared parser reason helper #85/#86 and config numeric bounds #32. Approved status/duplicate matrices, direct leaf/full parse tests and no value-bearing diagnostics. |
+| 3 | **Secret provenance:** ADR-0113/#92, fresh/resume/preparation/condition/transform/merge paths, engine-owned context/input provenance and actual VM/template consumers; direct secret-input marker compatibility, finite denial latch and single serialized payload with exact result parity. Real SQLite columns, clean positives and historical-output limitation. Dedicated security sitting, no future mapping implementation. |
+| 4 | **Error/envelope substrate:** #213/#219, actual migrated-class inventory and cross-bundle structural guards. Preserve exported names/discriminants, constructor/cause behaviour and event payloads. Convert only supported error classes, not vendor errors or plain seam unions. |
+| 5 | **Tools and engine tails:** #93/#95/#96/#98/#97/#214/#221/#258/#259/#308, #94/#82/#87/#76/G9/#79/#274/#275. Bounds before effects, model-visible semantics, existing ordinal helper, path-local cycle guards, cancellation race and deterministic plan equivalence; certify #75/#78/#216 instead of rewriting them. |
+| 6 | **Pure process/discovery substrate:** ADR-0110 categories, shared early flag grammar, explicit exit/site inventory, enriched descriptor registry with legacy/model and new CLI projections, one closed CLI code/origin authority, storage-boundary classification inventory and kind-specific invocation owner registry. Include caught/forced-exit owners and total observation priority. Contracts precede consumers. Unit/source checks do not claim fatal/native or JSON-help integration complete. |
+| 7 | **Lazy runtime and package graph:** #43/#44/#271/ADR-0111, consuming Step 6. Guard dynamic imports from a lightweight entry; defer classifier/sanitizer/service barrels and MCP wiring; preserve filesystem → one seedFileCatalogOnce owner → DB catalog → model/cost ordering and media exception; explicitly test meta-only admission refinement. Finite flat chunks, all-output closure, real packed existing meta/run/chat/migration/identity and minimum-Node/platform controls. New JSON help waits for Step 10. |
+| 7a | **Recorded split, 2026-10-16 — source/router and finite compiled graph:** exact sanitizer leaves, guarded entry/runtime imports, untouched compiled human meta and grammar controls, actual execution admission ordering, one invocation file seed and eleven current DB-owner/quote/media/fixture controls. One split ESM build, flat layout, entry-only shebang and every-output file/import/dependency closure. Preserve affected compiled workflow/media smokes. Two NEW complete cumulative clean rounds and a scoped security sitting are required. This accepts only the compiled graph, not installed packaging or whole Step 7. |
+| 7b | **Recorded split, 2026-10-16 — exact tarball and required consumers:** independently inspect actual tar bytes/modes/public inventory; install the same digest outside the workspace; prove complete real chat/resume, workflow/migrations/native/CAS/MCP/class identity and invocation-context continuity. Required exact Node 22.0.0 and current-runtime Linux/macOS/Windows consumers aggregate the same artifact. Final cumulative reviews include all 7a changes from the Step 6 boundary. Whole Step 7 and ADR-0111's graph obligations close only after both increments; actual registered native-owner cleanup remains Step 8. |
+| 8 | **Native process integration:** #40/#41/#42/#224/#269/G35 under ADR-0110, after the early graph can catch import failures. Wire kind-specific owners, output_unavailable/cli_internal 9, known storage/history/departure classification, run-only health precedence and session join uncertainty. Preserve recoverable #228/signals; MCP PID versus tool PGID/Windows, terminal restore before stderr, total remaining fatal budget, competing faults and both sinks. Minimal I/O adapters land here; central DB refactor stays last. No false host-safe-close ACK. |
+| 8a | **Recorded split, 2026-10-16 — origin and inert native foundation:** private factory/I/O storage facts and read-only classification, fixed projections, observable registry termination and one live absolute budget through diagnostic ACK. Preserve actual migration/checkpoint origin at fixed native/vendor boundaries; no arbitrary cause-tree classification. Native fixtures explicitly install the coordinator; product activation waits for all creation owners. |
+| 8b | **Recorded split — creation-owned native processes:** tool POSIX group versus MCP PID, actual close/retirement, verified absolute Windows teardown admission and helper lifetime; connect OS/editor helpers and replace independent reapers without claiming full descendant containment. |
+| 8c | **Recorded split — workflow and render integration:** run/gate/budget/driver owners, real return/throw health priority, cancellation, terminal/job-control leases and force-quit routing. No timer certifies DB close or receipt settlement. |
+| 8d | **Recorded split — sessions, terminal and activation:** fresh/resumed/one-shot/Home/pending/replaced session lifetimes, retained publication failure and shared actual cleanup promises; connect caught slash/rebuild faults, restore terminal custody before diagnosis, then activate early coordinator/background/sink integration. Actual native/platform/packed controls and complete cumulative Step 8 acceptance follow. |
+| 9 | **Release map/custody substrate:** #46/ADR-0111, independently reviewed after the finite graph. Upstream TS maps, sole prepack final build, pre-hash trailer removal/staging, exact tarball/CLI+engine symbolication, encrypt-once candidate with permissioned prebuild discovery/reservation → pack/reuse → smoke → archive → npm → finalization. Required artifact/platform aggregation, all rerun modes, lost-staging refusal and permission-enforcing offline API controls. Dedicated archive/crypto security sitting. Fixture proof never claims production recipient/custody configuration. |
+| 10 | **CLI behaviour/discovery integration:** #45/#264/#265/#268/#13/#17/#18/#310/#309/#19 under ADR-0110, consuming Steps 6–9. Production owner category matrix, real root/subtree JSON help, pricing/chat aliases, non-echoing Commander refusal and signal-safe deletion consent. G15 is refuted and receives real engine/store/log preservation evidence, with no invented token coalescing. Repeat affected packed gates. |
+| 11 | **Chat normalization and abort:** #236/#237/#242/#307 → #218 → #21/#23. Canonical token/money source with approved additive LLM export, preserved two-decimal cap formatting and real immediate abort while a turn is blocked. Audit Home's imports. |
+| 12 | **Chat decomposition:** #220/#244 after preceding chat fixes. Split lifecycle/drivers, line handler, printers and reseat/clear ownership. Preserve compatibility entry points, W7/W8 receipts, unknown-usage, full-screen bounds, disclosure activation and cancellation. |
+| 13 | **Chat domain policy:** G30/ADR-0112 after decomposition, all fresh/resume/Home/agent/rebuild paths. Invocation-live policy owner shared by old/pending hosts, post-approval/post-prepare target guard, pinned global selection, suspension/recovery and latest-only build publication. Actual failed/overlapping Home rebuild and approval-race controls, alongside no-authority/SSRF/ports; separate egress/config-trust security sitting. |
+| 14 | **Home controller:** certify G37, fix #281, record/test #125/D26 before #215/#243 decomposition; then #217/#222 scoped naming. Overlay discriminated union, subcontrollers, stale async work/focus/approval invariants and both live cost surfaces. |
+| 15 | **Viewport/input:** #58/#62/G40/G51 → #65 → #64/#66, then #63/#69/G4/G55. Grapheme-correct editing/truncation, tabs, bounded caches, safe resizing, TERM=dumb and both small-terminal surfaces, input history and mouse bounds. CJK measurement and real emitted rows. |
+| 16 | **Onboarding and overlays:** #49/#52/#51/#53/#55/G5/G52/G41/G53 and #34 under ADR-0112. Real next-model/ephemeral invocation binding across clear/reseat, recoverable persistence, explicit acknowledgement/current keyless nudge, shared pre-read writer symlink refusal, surfaced typed recovery and deterministic existing-file comment-loss notices. Hidden-approval safety/color-off; keychain/config security sitting. |
+| 17 | **Remaining CLI/hygiene:** #24/#26/G43/G2/#12/#54/G14/#11/#47/#48/#240/#241/#311/G54/#303/#304; certify #20/G36/G46. One-shot coverage-aware cost/banner, actual-host doctor, typed faults, no silent missing-dist skip, guard misuse, attachment estimate and compiler checks. #239 remains the approved documented compatibility surface. |
+| 18 | **openLocalDb LAST:** #278/#280 across every moved caller. Centralize the already-integrated classification/wrapping with fixed safe errors, attempt-all secondary cleanup, preserved causes, privacy/checkpoint notices and exact writer lifetimes. Actual command-family failure probes; no duplicate wrapper left behind. |
+| 19 | **Whole-wave acceptance and publication:** every item disposition; A/E/G and M2.5.5-3 evidence; ordinary/enforced coverage and required CI/build/fences/smokes/causal/platform checks at attributed source; measure and promote core's ≥90% line/branch floor to required CI as testing.md requires after Wave 3 coverage work, fixing meaningful missing coverage before closure. Two new whole-wave cumulative reviews, canonical doc/ADR landings and PR. I/whole phases/later product waves stay open. |
+
+Steps are dependency-safe increments, not permission to parallel-edit shared hot
+files. Within each row, arrows remain strict. The process/packaging sequence replaces the old fatal-before-lazy assumption: pure contracts → guarded lazy graph → native fatal integration → map/archive custody → remaining CLI behaviour. It is nineteen increments, with no parallel edits of shared hot files. Step 1 completes before all other
+code. Home cost is disposed or implemented before its decomposition; viewport
+geometry work never races editor/cache work. If review exposes a necessary smaller
+increment, split it with unchanged ID coverage and record the split before proceeding.
+
+For **every** increment: implement with meaningful regressions, run required author
+checks, commit; perform a new independent complete cumulative review, verify/fix
+findings and commit; perform a second new independent complete cumulative review.
+A material fix invalidates preceding clean rounds: obtain two new clean complete
+rounds after the final fix. Only then advance automatically. Review agent models
+and effort follow criticality; neither this preflight nor an old agent round is
+implementation acceptance. Final publication does not infer merge or execution at
+an untested successor revision.
+
+#### Existing later-wave ownership and approval gate
+
+The renderer restructuring decision D18 and character-wrap #61 retain Wave 5a
+ownership. #61 needs a formal linked deferral record when this proposed disposition
+is approved; it is not permission to silently relax I's final acceptance. Picker
+position #60 and full I sign-off remain Wave 5a. Full M/N tools/child lifecycle,
+CR-70/93, CR-95 continuation, exact-capacity residuals, Wave 4b retention/release
+and the remaining whole-phase criteria retain their current canonical owners.
+
+**Gate:** maintainer approval of ADR-0110–0113 and this concrete plan. Archive-method
+selection is complete; production recipient/storage setup is a separate actual-release
+prerequisite, not an approval or credential needed to review these proposals.
+No dependent code is authorized merely by a recommendation,
+preflight test pass or a clean proposal review. Approval is requested because the
+user explicitly requires it for new ADRs and implement-task step 3 requires it for
+public API/Accepted-decision/secrets changes. No product step is complete yet.
+
+#### Proposal review disposition — 2026-10-15
+
+Two new independent complete cumulative round-1 reviews of all seven proposal paths
+at `bd1da978` independently verify one Medium: the still-open E #3 UTF-8 resolver
+byte-cap correction was not assigned. Step 1 now owns it with multibyte, character-
+overflow and byte-overflow controls; it is neither deferred nor silently closed.
+The parent also makes #115's existing Wave 2 certification explicit, places G35's
+exit definition with its first process consumers, and states the required core
+coverage promotion without an optional close-out interpretation.
+The four ADR proposals have no additional verified round-1 finding. This correction
+requires fresh complete cumulative proposal review; it is not maintainer approval,
+implementation acceptance or a clean implementation round.
+
+The fresh complete cumulative round-2 review at `6f47c13b` is clean across all seven
+paths and all four ADRs. The maintainer then selected public-recipient encrypted CI
+archival as the method only. ADR-0111 now specifies isolated GnuPG tooling, pinned
+recipient identity and exact ciphertext retention beyond expiring workflow artifacts;
+no plaintext map, production key setup, upload, ADR acceptance or code implementation
+is inferred. At that source checkpoint, fresh complete cumulative reviews of the
+final proposal were still required; their outcome follows.
+
+#### Final proposal readiness — 2026-10-15
+
+Two NEW independent complete cumulative final reviews at `39967075` cover all
+seven proposal paths and all four ADRs, including the selected encrypted archive
+mechanism. Authority/security (`gpt-6.1-sol`, high) and compatibility/execution
+(`gpt-6-sol`, high) each report zero verified findings. The parent reads both full
+reports and verifies all A/E/G/I IDs have explicit owners/dispositions, all seventeen
+steps remain ordered, and the final proposal preserves the corrected #3 controls.
+These are proposal-readiness reviews, not product implementation or whole-wave acceptance.
+
+Document validation resolves 2,882 relative links/anchors across the 56 Markdown
+files changed since the Wave 2 base; exact Wave 3 scope is seven documentation paths.
+All 109 pre-existing ADR files are byte-identical to baseline `702cdc9c`; four new
+ADRs remain Proposed. Diff whitespace passes. The existing 319 focused preflight
+test passes and the synthetic security reproduction remain attributed to their
+original unchanged-source runs; no new CI/platform/coverage/release execution is inferred.
+
+This receipt/current-status update changes no reviewed ADR mechanism or proposed
+implementation step. **Document preflight is ready for maintainer review. Approval
+of ADR-0110–0113 and the concrete plan is the only current implementation gate.**
+The archive-method choice is complete; production recipient/retention configuration
+belongs to actual release preparation. No provider request, key access, billing,
+archive upload or code implementation has started. Detailed reports remain local
+and Git-ignored, and no proposal round substitutes for a future implementation review.
+
+#### Maintainer review reopened the proposal — 2026-10-15
+
+**Current status: revised proposal, not approved; no implementation started.**
+The clean proposal reports at 39967075/20af0617 are historical and were insufficient
+source verification. Both submitted reviews reopen readiness. Three source audits
+(CLI/process, packaging, chat/taint) and offline feasibility probes below replace
+unsupported premises; they are not implementation acceptance or final proposal rounds.
+
+| Reviewed concern | Verified disposition / revised mechanism |
+|---|---|
+| Public repo versus source-map secrecy | Remove symbol/layout secrecy premise; retain the maintainer-selected encrypted archive as distribution/custody policy, consistent with ADR-0051. |
+| G15 shipping token replay | Refuted by live-bus emit and durable-store/log code. Preserve actual replay and add engine/store/log regression; no invented token persistence/coalescing. Historical inventory remains provenance. |
+| Exit 9 / broad internal / surfaces / EPIPE | Inventory each site; known history/departure/operational failure remains classified 1, real outcomes/signals retain meanings, generic CLI/wiring failure is 9. EPIPE is operational output_unavailable, not unknown. Canonical surface table and inspect-before-retry remedy are proposed. |
+| Fatal ownership, health, early flags and lazy entry | One lightweight invocation-owned registry, actual retirement promises, return/throw health precedence, responsive fatal backstop without false store ACK; pure contracts precede graph, native integration follows graph. Windows is an explicit native acceptance obligation. |
+| Quiet/verbose/debug/non-echo | Real output-owner taxonomy and safe bounded projection; no raw arbitrary stack/cause guarantee. Exact DEBUG=1 and Commander parser non-echo are explicit compatibility changes. |
+| Help manifest / aliases / #18/#310 | One enriched descriptor authority, compatible legacy model projection and complete new CLI DTO; groups may execute, flags retain source presence until conflicts checked. Remaining command-scoped input meanings deliberately stay. |
+| D19/D22 / ADR-0049 versus ADR-0056 / exit criterion 4 | Proposed decision rows explicitly replace the old ladder/two-exception shorthand. At acceptance append both ADR forward notes and reconcile phase criterion 4/E's no-new-ADR claim before code; event rails remain unchanged. |
+| Pack/prepack/maps/symbolication | Sole final CLI prepack build, upstream maps chained to original TS, known tsup trailer removed before receipt, maps staged outside package; exact packed CLI and engine source-location controls. |
+| Randomized encryption / archive permissions / retries | Encrypt once, retain original tgz/ciphertext/binding receipt, verify/reuse on retry, refuse conflicts/unrecoverable expiry. Separate trusted-tag archive job and dry-run dispatch; production setup remains Wave 4b. |
+| Catalog / ADR-0072 / media | Preserve filesystem admission before cache fallback, DB overlay before first model/cost read; never late-replace DB prices. Add actual catalog-order/long-tail/empty-DB/repeated-host controls and media maintenance exception. |
+| Source-map/platform/crypto gates | New proposed packaging reference owns receipts/retention/retry; required packed OS plus public minimum Node controls and dedicated crypto/CI-custody sitting. Existing workspace floor is not packed-floor proof. |
+| HTTP policy freshness / surface claims / threat scope | Global-only chat_http policy, immutable initial and monotonically narrowing accepted invocation ceilings, real rereads on every rebuild, no startup fallback on read error. Default Home/ask denials stay; custom granted chat supplies the positive. Other shell/MCP/provider authority remains separate. |
+| Config links / acknowledgement / rollback | Final-component link write refusal is path-free and non-retryable, read remains allowed; manual/ephemeral recovery, no false Connected or Retry loop. Ancestor/hardlink/owner-race limitations explicit. Typed current key availability precedes remembered UX state; exact old-binary key removal/exit 2 is canonical. |
+| Secret context / engine boundary / preparation / silent marker | Actual leak reproduced. Qualify once before executor/preparation, retain trusted raw resolver locally/publicly, require one projection; real public-template consumer replaces dead preparation plumbing. VM denied access fails loudly with private sticky latch and checked serialization; direct-input marker contract stays. |
+| Optional tool provenance / canonical producer contradiction | Absence remains explicitly unverified compatibility state; no live mapping producer or fabricated empty one. Name both tool-registry passages for correction and retain future fail-closed mapping prerequisite. |
+| Taint acceptance / details / mutation | Actual engine+standard executor+QuickJS+SQLite columns, downstream gate and condition oracle with exact successful positive controls; fixed secret_context reason. Copy/freeze arrays, not mutable Sets; error detail is not universally safe. Existing parser/tool controls labelled preservation. |
+| Canonical homes / traceability / acceptance timing | Proposed exact contracts live in commands/config/expression/runner/tool/packaging references, with rationale in ADRs. All listed CLI IDs have owners. New ADR acceptance notes precede dependent code; old Accepted bodies are not rewritten. |
+
+Source audits at 20af0617 include 7 focused CLI suites / 127 passing tests.
+Actual engine/standard-executor/QuickJS probes reproduce direct/computed/serialized/
+nested/custom-merge leaks and the condition oracle. Native SQLite positive and
+negative runs both complete: the canary reaches three run-event rows, two step
+output rows and one run output row; downstream human-gate exposure is confirmed.
+Direct/transitive model/human context templates already refuse and remain controls.
+The initial VM private-latch alternative passes the originally enumerated
+feasibility checks but its ordinary final envelope is later shown forgeable through
+inherited toJSON at host dump. The correction record below supersedes any broader
+feasibility inference; clean-read/key-only positives remain historical evidence. An in-memory installed TypeScript→esbuild map-chain probe maps a synthetic
+engine frame to its original TS location without embedded sources. These probes
+are design evidence, not integrated fixes, full CI, native Windows or release proof.
+
+**Approval scope:** the revised four Proposed ADRs, linked unshipped canonical
+contracts and nineteen-increment plan, including fail-loud context semantics,
+monotonic HTTP rebuild grants, non-retryable link writes, operational EPIPE versus
+generic 9, and exact-byte encrypted custody. Archive method selection persists.
+Fresh complete cumulative proposal reviews and maintainer approval remain pending;
+no product task, production recipient, provider/key/billing or upload is claimed.
+
+#### Revised proposal round 1 corrections — 2026-10-15
+
+Two NEW complete cumulative source-based reviews of all fourteen proposal paths
+at 86400811 independently request changes. Both verify final-envelope host-dump
+forgery, public build-cache map exposure and living G15 task inconsistency.
+Authority review additionally verifies missing owned-frame provenance and positive
+Windows facility/scope. All five are corrected in the proposal before approval:
+
+- The VM control envelope uses null-prototype captured serialization and primitive
+  string transport, then host typeof/getString/parse/strict arm validation. Author
+  bindings stay const. The parent's six revised feasibility controls pass, including
+  prototype-poisoned envelope, caught reads, latch reset, returned getter, exact clean
+  result and reassignment refusal; the earlier wrapper is not certification.
+- Map-enabled dependency builds belong only to isolated uncached candidate stages,
+  with ordinary workspace builds map-free and all cache/artifact/failure paths
+  covered by planted-marker controls. Public source does not change custody policy.
+- Verbose frames emit only closed build-owned canonical relative file identities
+  plus numeric locations; arbitrary valid-looking stack paths/functions are dropped.
+- Windows uses verified trusted absolute taskkill/fixed owned-root argv, with
+  actual close joining, bounded completion and admission refusal if unavailable.
+  Live tree/group cleanup is best effort; detached/root-exited/PID-race containment
+  is explicitly unclaimed. Existing M/N ownership is preserved. This scope requires
+  maintainer approval with ADR-0110, not an inferred acceptance of a universal claim.
+- Living E G15 and crash acceptance now point to current source/policy; the frozen
+  historical inventory is not rewritten.
+
+Reviews remain nonclean history. These corrections require two NEW complete
+cumulative clean proposal rounds after their final material fix. No implementation,
+Windows native gate, public archive, full CI/coverage or ADR approval is inferred.
+
+#### Revised proposal round 2 clarification — 2026-10-15
+
+The NEW complete cumulative review at 35935273 verifies the five round-1
+corrections and reports one Medium: package-test and release-candidate modes
+were implicit. The canonical packaging contract now separates them. Required
+PR/push/manual tests keep map verification local, discard private outputs and share
+only the exact tarball/package-test hash receipt without production keys. Actual
+trusted-tag release requires production encryption in its originating pack job
+before any handoff, retains the original three-asset candidate and never promotes
+a test artifact whose maps were discarded. No recipient-less or fixture-key
+product release is authorized. Existing retry/no-overwrite rules still apply.
+
+The focused 127-test pass, actual engine/SQLite probe and six primitive-envelope
+controls retain that review's exact 35935273 attribution; no product fix/CI/Windows
+execution is claimed. This material clarification requires two NEW complete
+cumulative clean proposal rounds at its corrected head before approval is requested.
+
+#### Revised proposal readiness after source corrections — 2026-10-15
+
+> **Historical readiness superseded — 2026-10-16.** The maintainer rereview below
+> demonstrates source/contract gaps present at this checkpoint. Its reported clean
+> rounds are retained as history, not current readiness or implementation approval.
+
+Two NEW independent COMPLETE cumulative reviews are clean at exact reviewed source
+49ba03eecf9856e3d6f0bda6528f4a48d94a34e8: round 3 (gpt-6.1-sol, high) and round 4
+(gpt-6-sol, high). Each covers all fourteen proposal paths, all four ADRs, the
+nineteen-increment plan and related actual source/Accepted contracts, rather than
+only the most recent correction. Each records zero verified material findings.
+The parent reads both complete reports. Nonclean rounds at 86400811 and 35935273
+remain historical and are not counted as clean; the old 39967075 readiness claim
+is superseded by this source-corrected proposal.
+
+Exact-head six-control installed-QuickJS primitive-envelope feasibility passes
+in both final rounds; round 3 also reruns actual engine/standard-executor/SQLite
+positive and negative intake. These reproduce the **existing unfixed** exposure,
+not a product correction. The prior 7-suite/127-test and synthetic TS-map-chain
+results keep their actual execution attribution. Source inventory proves only
+documentation changed, all 109 prior numbered ADRs remain byte-identical to
+702cdc9c, and ADR-0110–0113 remain Proposed. Parent doc validation resolves 3,033
+relative links/anchors across the 61 Markdown files changed since the older
+Wave 2 base; final reviewer scope remains fourteen proposal paths. Diff whitespace
+passes. No full CI, coverage, native Windows, exact pack/release or provider/key/
+billing execution is inferred.
+
+This final receipt and current-status update add no mechanism or step to the
+reviewed proposal. **Ready for maintainer approval of the four Proposed ADRs,
+their explicitly unshipped canonical contracts and nineteen-increment plan.**
+Approval includes the fail-loud qualified context boundary, monotonically narrowing
+HTTP rebuild authority, non-retryable intentional-link write refusal, explicit
+CLI compatibility and finite native teardown scope, and separated package-test/
+encrypted-release custody modes. The selected archive method remains unchanged.
+
+No implementation is authorized by a clean proposal review. After explicit
+approval, update ADR statuses/index and append the specified Accepted-ADR forward
+notes before dependent code, then start serialized Step 1 and its required review
+loop. Production recipient/recovery configuration remains an actual Wave 4b release
+prerequisite; no production key, provider capture, billing or upload is needed for
+the current approval. Detailed reports remain local and Git-ignored.
+
+#### Second maintainer rereview and proposal corrections — 2026-10-16
+
+**Current status: revised Proposed decisions; source preflight reopened, no product
+implementation.** The two submitted rereviews show that the a8708a65/49ba03ee clean
+proposal records did not establish adequate source coverage. Those readiness claims
+are superseded, not counted toward the corrected proposal. No assertion that all
+old partial findings became implemented fixes is made. The four decisions and
+nineteen-step plan still require new complete cumulative reviews and maintainer
+approval before code.
+
+Three scoped source intakes (CLI, packaging, chat/context) and parent verification
+support the dispositions below. They are not full clean proposal rounds. The
+chat/context agent supplied source observations and retained synthetic evidence,
+then its turn was stopped by automatic cybersecurity review; it produced no final
+clean review. It is not counted as completed or retried to evade that restriction.
+The parent can continue normal documentation work using inspected source/evidence.
+No release/API mutation, paid call, key access, provider capture or product edit
+occurred. The chosen encrypted archive method is retained.
+
+| Submitted concern | Revised proposal or verified disposition; implementation owner |
+|---|---|
+| A: EPIPE 1 versus workflow failure | Classified output infrastructure now uses output_unavailable/9; unexpected uses cli_internal/9. Known operational 1 remains explicitly scoped. Commands owns the table/remedy; Steps 6/8/10. |
+| Chat/Home/agent fictitious joined 5–8 | Run-only RunHandle health; session cancel/join/publication failure, no new session-health DTO. Failed chat turns keep REPL live, unknown caught faults reach coordinator. Steps 6/8/11/12/14. |
+| POSIX MCP group / root-exit semantics | Creation-specific tool PGID versus SDK MCP PID, narrow actual lifetime adapter and explicit PID/PGID uncertainty. Windows verified taskkill only for still-owned live root. Steps 6/8; no SDK transport rewrite or universal containment claim. |
+| Fatal race, budget, stderr and catches | Sticky total observation order, one cleanup/deadline including taskkill/restore/flush, terminal restore before stderr, never diagnostic stdout. Existing total budget text was already present; synchronous-after-expiry ambiguity is corrected. Inventory slash/rebuild/one-shot/forced-exit catches and unknown origin. Steps 6/8. |
+| DB failure classification before final refactor | Native typed DbOpenError/owned errno operational mapping and minimal adapters precede native integration; invalid schema remains 2, import/ABI fault 9. Existing wrappers' runtime-IO 2→1 change is explicit. Step 18 only centralizes the already-required contract. |
+| Pricing binding and own remedies | Legacy model/executor input/output bindings remain; canonical shell spellings track source presence before conflicts. Update every generated hint/example so it does not recommend deprecated pricing/chat aliases. Step 10. |
+| Release retry permissions / final writer | Concrete admission→draft-visible Actions-read discovery/reservation→fresh pack or reuse→smoke→archive→npm→finalize graph; only custody jobs get Contents write, top-level deny default, read-only publish consumes verified tarball/receipt. All reruns discover before build. Step 9. |
+| Lost candidate / randomized encryption | Reserve original version/source/attempt before first build; incomplete/lost candidate requires recovery, never new encryption/replacement. Retain all three assets beyond Actions expiry. Permission-enforcing fake service tests actual state controller and call counts; no live tag needed. Step 9. |
+| Maps / finalizer / chunks / public floor | Installed compiler overrides and concrete dependency order, prepack map enable, missing-upstream refusal and repository-relative finalization, entry-only hashbang/modes, exact-tarball required aggregate on supported OSes and Node 22.0.0. Steps 7/9 and final repeat. |
+| Help admission / catalog | Missing directory no longer blocks meta once pure grammar passes: explicit ADR-0105 refinement. One invocation seed owner and eleven current DB-overlay sites, including quote/fixture/media exceptions. Step 7. |
+| Public-source encryption proportionality / settings | Preserve selected distribution/custody policy, acknowledge availability cost and revisit only with maintainer policy change. Current repository defaults/immutability are not protection; explicit workflow permissions/concurrency/no-overwrite are required. Step 9; production setup remains Wave 4b. |
+| Home build-first / failed and overlapping rebuilds | One live narrowing owner shared by all hosts; post-approval/post-prepare check uses owned PolicyTarget. A validated removal survives failed replacement; stale build cannot restore policy/selection. Step 13 before later Home decomposition acceptance. |
+| Policy source / errors / widening / IP aliases | Pin lexical global selection/home once, initial missing versus transient error distinctions, suspend rather than falsely revoke on read fault, no startup fallback, fixed ignored-widening notice. ASCII validation before fold and alternate IP rejection; workflow policy stays separate. Step 13. |
+| Ephemeral selection / UX acknowledgement / shared writer | Invocation binding survives clear/reseat and latest-only publication; current key state outranks portable UX preference. Shared lstat refusal before read/chmod for all writers, actionable Home/wizard diagnostics, existing-file comment-loss notice, old-binary rollback cannot promise new meta behavior. Steps 13/16. |
+| B: direct secret marker asymmetry | Deliberately replace direct expression-input markers with the same denied-value contract as ctx; public templates also refuse direct secret inputs even for hand-constructed workflows. Display/input-node markers remain. Step 3, requiring approval of this explicit compatibility change. |
+| C/F: accessor rationale / error identity | ADR-0093 before-money ordering stays; runtime privacy excludes raw values, latch diagnoses executed denied reads. Existing sandbox_error gains fixed secret_context reason, not a new engine ErrorCode. Step 3. |
+| Latch resource bypass / serialization | Document caught pre-accessor stack failure as finite semantic limit, not confidentiality failure. One authored payload serialization before latch check; outer primitive-only envelope cannot run author serialization again. Actual numeric/boxed/object parity and bounded transport are required. Step 3. |
+| Mutable secret Set / actual producer inventory | One owned mutation-incapable membership facade plus immutable array; fresh, budget preparation and cross-process resume plus all low-level scope/test producers migrate. Correct stale scope/error comments and private-detail claims. Step 3. |
+| Old durable outputs / tool provenance | No automatic historical scrubbing or claim legacy run.outputs is secret-free. Land at-rest/recovery guidance. Optional external tool provenance remains explicitly unverified; nonexistent mapping producer not fabricated. Actual repaired exposure and #92 limitation stay distinct. Step 3. |
+| D/E/G: metadata / partial index / Proposed references | Standard Status/Date/Related only. At approval add clause-specific partial Status/index/forward notes; promote each exact reference only at implementing increment acceptance, not ADR acceptance. Explicit landing checklist below. |
+| Claimed broken Wave 2 anchors | Refuted: explicit HTML alias wave-2-individual-dispositions--certification-in-progress exists and preserves both links. Do not manufacture a repair/deferral. |
+
+**Evidence scope.** Source remains product-identical to 702cdc9c. Installed synthetic
+TypeScript/tsup/esbuild controls verify map chaining, silent missing-upstream fallback
+and entry/chunk mode behavior; these are not actual packed product/release controls.
+Existing actual-engine intake confirms direct-input marker comparison completes
+false and hand-built human-template input can expose the synthetic canary. Installed
+QuickJS emulation reproduces caught pre-accessor stack failure in eight of eight
+intake cases without raw values in the VM. Parent additionally executes 36 actual
+baseline sandbox result cases across condition/transform/merge: top-level NaN,
+±Infinity and -0 stay numbers, boxed primitive is rejected, Map/Set is {}, and
+cycle/nonserializable results refuse. Those observations constrain the proposal;
+no new implementation or final VM mechanism is certified. No full CI/coverage,
+Windows, actual product tarball, GPG/production custody or published API validation
+is inferred. Working reports/probes remain local and ignored.
+
+**Canonical landing checklist (required, not a future unowned debt):**
+
+1. At explicit approval: change only new ADR statuses/index, append old clause-specific
+   notes and partial Accepted/index annotations for ADR-0047/0049/0051; ADR-0049
+   names §5 infrastructure/pre-run exceptions as well as §6 explicit JSON help. Append the
+   listed refinements, including ADR-0105 meta admission and ADR-0027/0083 direct-input
+   compatibility/ADR-0093 rationale. Reconcile D19/D22, E no-new-ADR statement and
+   phase criterion 4 before dependent code. Keep historical bodies intact.
+2. Step 3: merge actual secret-boundary/producer behavior into expression-sandbox,
+   agent-runner, workflow/tool contracts; replace both contradictory tool provenance
+   passages and stale source comments. Update at-rest/recovery guidance. Preserve
+   unimplemented remainder as explicitly Proposed.
+3. Steps 6–10: promote implemented commands, groups/flags/pricing remedies, errors/
+   exits and packaging sections; reconcile phase CLI acceptance plus chat-session.md,
+   home.md and current command text. Step 9 updates release-a-surface.md for exact
+   graph/map/modes/recovery. No shipped claim for a merely approved mechanism.
+4. Steps 13/16: promote exact config/tool/chat/Home policy, selection and writer
+   sections as their code is accepted, including rollback and surfaced remedies.
+5. Step 19: inventory all Proposed sections in commands.md, packaging.md,
+   config-spec.md, tool-registry.md, expression-sandbox-spec.md and agent-runner.md.
+   Merge/remove every completed proposal section/banner and reconcile overlapping
+   old current text; any genuine unimplemented scope stays visibly open. Repeat
+   link/anchor, append-only and exact-head source/evidence checks. No blanket
+   “all references describe shipping code” claim before this inventory passes.
+
+These edits need fresh complete cumulative source-based proposal reviews. No
+implementation is authorized by prior clean reports or source feasibility probes.
+The maintainer must approve the revised four ADRs/contracts/plan before Step 1;
+archive method selection is already complete, and no production key is requested.
+
+#### Second rereview proposal round 1 corrections — 2026-10-16
+
+The NEW complete cumulative source review at 86ff88a8 covers all fourteen proposal
+paths and verifies three Medium findings. They are corrected in the proposal:
+
+- Native failed-jobs rerun skips successful discovery. Fresh pack now requires a
+  same-current-attempt discovery/reservation; stale fresh output refuses before
+  build. Explicit retry matrix separates exact reuse/downstream retries from
+  rerun-all discovery and unrecoverable incomplete reservations.
+- Reuse has encrypted maps only and cannot rerun plaintext map/symbolication
+  checks. Those checks belong to the fresh originating pack; retry verifies its
+  trusted successful identity/completion evidence and exact digests, then reruns
+  tarball smoke. No CI private key or fictitious fresh symbolication is added.
+- Lexically sorting context changes clean expression results and loses clean/
+  denied interleaving. Owned orderedKeys preserves actual resolved own-key order;
+  input presence/enumeration also stays intact. Mutation controls include facade
+  callback back-references, not only missing Set.clear on the wrapper.
+
+Canonical operational-1 recovery also carries inspection advice after admitted
+work, consistent with the existing ADR uncertainty rule. These are documentation
+corrections, not fixes to running product code. ADRs remain Proposed. The nonclean
+round is retained; two NEW complete cumulative clean proposal rounds are required
+after this final material correction before asking for approval.
+
+#### Second rereview proposal round 2 wording closure — 2026-10-16
+
+The NEW complete cumulative source review at 741d0db4 (gpt-6.1-sol, xhigh)
+verifies all three prior Mediums resolved and records no new material finding.
+Two optional Low cautions are also closed: absent declared-secret input accessors
+retain non-enumerability, and ADR-0049’s partial-replacement instructions name
+§5 infrastructure/pre-run exceptions as well as §6 explicit JSON help. These
+clarify the already explicit behavior matrix rather than introduce another rule.
+The earlier complete round at 86ff88a8 used gpt-6-astra, xhigh.
+
+For an unambiguous final checkpoint, obtain two NEW independent complete cumulative
+reviews of all fourteen paths at the wording-corrected source. Neither round 1’s
+three Mediums nor round 2’s optional cautions are hidden or relabeled zero issues.
+All four ADRs remain Proposed; code, platform, production custody and whole-wave
+acceptance are still future implementation gates.
+
+#### Final proposal rounds reopened omitted-input presence — 2026-10-16
+
+Two NEW independent complete cumulative reviews at c6166331 (gpt-6-astra/high and
+gpt-6.1-sol/high) independently verify one shared Medium. Non-enumerable denied
+accessors for omitted optional secret inputs still change hasOwn/in, own-property
+names/descriptors and direct reads. They contradict the promised own-presence
+parity. Both rounds are nonclean; the authority report's initial clean assessment
+was superseded by its independently verified addendum and is not counted.
+
+The corrected proposal creates **no property/accessor for an omitted optional
+secret input**. VM denial applies to present admitted secret values; absence
+retains undefined and all ordinary reflective observations. Public-template
+secret references still use declaration-based refusal before filters/defaults.
+Secret defaults remain forbidden, and missing-required/nonsecret-default admission
+is not changed. Actual implementation controls must pair supplied-secret denial
+with omitted-input hasOwn/in/keys/descriptors/Reflect (where supported)/undefined
+parity. The earlier non-enumerable proposal notes above are historical, superseded
+by this correction rather than used as current authority.
+
+No product code or new confidentiality guarantee is introduced. Both complete
+reports were read in full. After this material correction two NEW independent
+complete cumulative clean proposal rounds are required before requesting approval.
+All four ADRs remain Proposed and production/release/provider/key/billing work
+remains outside this preflight.
+
+#### Live roadmap scheduling correction — 2026-10-16
+
+Two NEW independent complete cumulative reviews at effab2ac (gpt-6-astra/high and
+gpt-6-sol/high) confirm omitted-input absence parity and independently verify one
+shared Medium: current.md still permits the post-first queues and tails in “any
+order”, while the proposed nineteen-increment plan requires serial gated advance.
+Both reports are nonclean and have been read in full; neither counts toward final
+readiness.
+
+The live roadmap now labels its original groups as scope/dependency inventory and
+links the numbered increments as the sole proposed execution/review authority.
+The phase introduction no longer delegates execution back to those groups. Source-
+corrected preservation dispositions, viewport coalescing, pending formal #61
+record and later full-I ownership remain explicit; no work is silently closed or
+newly deferred. This is a planning consistency correction, not a change to the
+already proposed nineteen-step sequence or any product source.
+
+Two NEW independent complete cumulative clean rounds at the corrected source are
+required. ADR-0110–0113 remain Proposed, and maintainer approval precedes code.
+
+#### Second maintainer rereview final proposal readiness — 2026-10-16
+
+Two NEW independent COMPLETE cumulative reviews are clean at exact source
+76065d2d12f53b728fc40954eceb2d58f2efd7ff: authority (gpt-6-astra/high) and
+compatibility (gpt-6.1-sol/high). Each independently covers all fourteen proposal
+paths, all four full ADRs, all nineteen increments and the relevant actual source/
+Accepted contracts. Both report zero verified findings; the parent reads both
+full reports. They follow the last material scheduling correction, not merely its
+two changed files. No earlier nonclean or superseded verdict counts toward them.
+
+The complete rounds at 86ff88a8, c6166331 and effab2ac remain nonclean history;
+741d0db4’s two optional Low cautions were corrected before these final rounds.
+The c6166331 authority report’s initial clean verdict was explicitly superseded
+and is not counted. Earlier a8708a65/49ba03ee readiness remains superseded.
+
+Current proposal decisions now consistently specify distinct CLI output/internal
+9 with actual run-only health precedence and owner-kind teardown; exact originating
+map evidence and permissioned reservation/retry/finalization; invocation-live HTTP
+narrowing across failed Home builds; and owned context/input exclusion with one
+result serialization, finite observed-access diagnosis and exact value/key/absence
+parity. Declared-secret template refusal, forbidden secret defaults, legacy-output
+limits and unsupported tool-mapping scope stay explicit. The numbered plan owns
+execution, while original roadmap groups are scope inventory.
+
+Actual final-round validation includes diff whitespace, independent relative-file
+checks and unchanged product/old ADR inventories. Compatibility additionally runs
+nine existing schema/manifest/options/source-label/viewport suites: 255 tests pass
+at 76065d2d, with no skips. These are unchanged-source preservation/preflight tests,
+not tests of future implementation. Prettier skips ignored Markdown and is not
+formatting evidence. Parent link/anchor validation covers 61 changed Markdown
+files and 3,037 relative links/anchors with zero errors; all 109 earlier numbered
+ADRs remain byte-identical to baseline 702cdc9c and four new ADRs remain Proposed.
+No full CI/coverage, native teardown/Windows, actual product pack/map/GPG release,
+security-sitting, provider/key/billing or production-custody acceptance is inferred.
+Detailed review/probe records remain local and Git-ignored.
+
+**Ready for maintainer review and explicit approval of ADR-0110–0113, their
+unshipped canonical contracts and the nineteen-increment plan.** No product code
+has started. The selected encrypted archive method persists; actual production
+recipient/recovery configuration belongs to Wave 4b, not this approval. Approval
+is still required by the user’s new-ADR instruction and implement-task plan gate.
+
+This receipt/current-status update changes no reviewed decision, mechanism or
+implementation step. After approval, update new ADR statuses/index and append
+clause-specific Accepted-ADR notes before dependent code, then start Step 1 and
+its implementation/commit/two-new-clean-review loop. Later increments advance
+automatically after their gates. Whole-wave acceptance and PR remain Step 19;
+full I/whole phases and existing approved later-wave scope are not closed here.
+
+### Wave 3 maintainer approval and implementation checkpoint — 2026-10-16
+
+The maintainer explicitly approved final ADR-0110–0113, their linked unshipped
+canonical contracts and all nineteen increments. Their statuses/index are Accepted;
+clause-specific partial replacements and forward notes were recorded before
+dependent code. ADR-0047/0051 retain framework, licensing/private-engine and
+no-public-map rules outside the replaced single-output constraint; ADR-0049
+retains actual outcomes/stdout outside the enumerated §5/§6 changes. D19/D22,
+E's old no-new-ADR assertion and exit criterion 4 are reconciled.
+
+Step 1 is active on `development`; no product implementation or implementation
+review acceptance is claimed by this checkpoint. Every increment still requires
+author gates, commits and two NEW independent complete cumulative clean reviews
+after its last material fix. Later increments advance automatically after those
+gates. The previously recorded proposal reviews remain proposal-only evidence.
+
+The approved #61 character-wrap disposition is now linked in
+[deferred-tasks.md](../deferred-tasks.md#wave-3-approved-later-wave-ownership--2026-10-16):
+Wave 5a owns it alongside D18/#60; full I acceptance is not waived. Production
+recipient/recovery setup remains a Wave 4b actual-release prerequisite. No ADR
+approval, provider capture, key, billing or upload is pending for Wave 3.
+
+### Wave 3 Step 1 author candidate — 2026-10-16
+
+The serialized queue is implemented in its approved order: shared safe synchronous
+close handling (#22), source labels/UTF-8 admission (#4/G11/#3), then six exhaustive
+session/picker/run switches (#300/#301/G3) and actual live reasoning projection.
+The four named command siblings, existing chat owners, Home and the newer one-shot
+journal retain their lifetime joins. The transient pricing-reader owner also uses
+the same helper rather than allowing close to override its non-fatal read contract.
+Fixed owned-label warnings neither inspect native error text nor retry on stdout;
+a failed warning sink cannot replace the primary outcome. Native error causes stay
+private behind safe source labels. Reasoning has an independent bounded display
+buffer and never becomes persisted assistant text. No event/exit/usage contract is
+renamed; the later process/discovery changes remain unshipped.
+
+Author gates pass: all workspace lint/typecheck and 590 test files, 13,020 passing
+tests plus 20 established skips; all six build tasks pass. Seam-fence and changed-
+file strict-TypeScript screens, diff whitespace and 3,329 relative links/anchors
+also pass. Four local removal controls break 21/7/1/3 designated regressions for
+close handling, source admission/labels, export diagnostics and reasoning;
+each source is restored byte-identically, followed by the passing complete author
+suite. Filtered removal runs' unselected tests are not platform skips or coverage.
+These are local author checks, not full CI/coverage/platform or whole-wave evidence.
+
+**Historical author-stage review gate (now satisfied below):** commit the author candidate, then obtain two NEW independent
+complete cumulative clean Step 1 rounds after the last material fix. No Step 1
+acceptance or permission to advance to Step 2 is inferred from author checks alone.
+Detailed working logs remain local and Git-ignored.
+
+### Wave 3 Step 1 acceptance — 2026-10-16
+
+Step 1 is independently accepted at `c610a4ad4947aca122cd4f0df807166735df67b3`.
+Two NEW complete cumulative clean rounds cover all 31 changed paths and actual
+consumers: gpt-6-astra/high (13 files / 250 independent passing tests) followed by
+gpt-6.1-sol/high (27 files / 866 independent passing tests plus four Windows-path
+semantic controls). Both report zero findings; the parent read both full reports.
+They are new implementation reviews, separate from proposal acceptance.
+
+All scoped #22/#4/G11/#3/#300/#301/G3 work is complete. The author gates retain
+their actual attribution: 590 files / 13,020 passing tests / 20 established skips,
+all workspace lint/typecheck and six build tasks. Test-isolation additionally
+confirms all 590 collected files belong to the six intended workspaces; source
+formatting, seam fence, whitespace and relative links pass. The earlier author
+file-count sum was mistakenly recorded as 690 and is corrected to 590 here and
+in that receipt; component execution, test counts and reviewed product bytes
+are unchanged. This metadata/landing update is not a new product revision or a
+claim of whole-wave CI, coverage, platform or successor execution.
+
+Next is Step 2: shared admission/diagnostics and preserved existing guards.
+No user decision or review fix is pending for Step 1. Detailed reports and local
+removal logs remain Git-ignored; Step 19 retains whole-wave acceptance/publication.
+
+### Wave 3 Step 2 author candidate — 2026-10-16
+
+Shared authored admission now rejects duplicate parallel members, typed condition
+matches and fallback model/provider tuples (#89/#90/#212/G18). One human-gate
+cross-field authority validates both the exported leaf and NodeSchema union
+(#210); timeout without action retains default rejection. Full workflow admission
+no longer reports parallel duplicates twice. Primary-equal fallback entries and
+different provider/model tuples remain permitted. Logical RunSchema refuses only
+contradictory present lifecycle fields (G17), retaining missing legacy fields,
+optional outputs and the existing temporal checks. No persisted-row reader or
+migration is tightened. Existing input-default/enum and compaction-role guards
+(#211/G16) are preserved and revalidated by their actual shared/DB suites.
+
+The two core parsers share schema-derived reasons (#85/#86), including expected
+schema literals and useful standalone agent reasons with unchanged fields/code.
+Duplicate MCP reasons no longer reflect registration identities; strict unknown-
+key diagnostics remain linear. Config range diagnostics report their real bound
+and inclusion rule (#32), through the existing loader/writer formatter. Canonical
+authored/config/logical-run references are updated; no dependency or event code is
+added. The old ceiling fixture now uses distinct fallback identities so it still
+isolates chain length and every entry's attempt ceiling rather than failing the
+new earlier duplicate guard.
+
+Required author gates pass: 591 files / 13,101 passing tests / 20 established
+skips, all workspace lint/typecheck and six builds. Formatting, seam fence,
+test-isolation (591 files / six workspaces), whitespace and relative links pass.
+Six local removal controls break 25/3/9/3/3/6 intended regressions for node, agent,
+run, literal, standalone reasons and config-bound mechanisms; source bytes are
+restored exactly before the complete passing author suite. Filtered unselected
+cases are not platform skips. This is not full CI/coverage/platform or whole-wave
+acceptance. **Independent complete cumulative review is pending**; obtain two NEW
+clean rounds after the final material fix before Step 3. Working logs remain local
+and Git-ignored.
+
+
+### Wave 3 Step 2 review correction — 2026-10-16
+
+The first complete cumulative review at `7912c5e7` reports one verified High:
+AgentSessionSchema embedded the newly tightened AgentSchema, so a historically
+valid duplicate fallback snapshot failed loadSession, listSessions and loadFull.
+The parent reads the full report and confirms the real SQLite reproduction and
+baseline-positive control. The author candidate's reader-preservation claim was
+therefore premature; this round is not clean and does not permit Step 3.
+
+AgentSnapshotSchema now owns the historical structural/MCP checks, while
+AgentSchema composes the fresh-authoring fallback uniqueness refinement.
+AgentSessionSchema uses the snapshot contract: history reads and session updates
+retain ordered entries and their different attempt budgets, without deduplicating
+or rewriting them. Fresh standalone/inline authoring still refuses duplicate
+model/provider tuples. The canonical database reference names that boundary.
+
+Permanent shared and real SQLite regressions cover fresh rejection, legacy
+load/list/full reads, unchanged snapshot bytes after a session update, and retained
+structural/MCP rejection. Removing the snapshot separation breaks both designated
+regressions; exact byte restoration passes both. Seven focused files / 294 tests
+also pass. Final author gates pass at the corrected source: all workspace
+lint/typecheck, 591 files / 13,103 passing tests / 20 established skips and six
+build tasks. Source formatting, fences, whitespace and 3,337 relative links pass.
+These remain local author gates, not full CI/coverage/native-platform certification.
+Two NEW complete cumulative clean rounds after this material fix are required;
+no earlier round is counted as acceptance. Detailed reports/logs remain local and
+Git-ignored.
+
+
+### Wave 3 Step 2 frozen-workflow correction — 2026-10-16
+
+The NEW complete cumulative review at `09e5927d` confirms one High and one Medium;
+the parent reads the full report and verifies both actual consumer paths. The
+session-reader correction stands, but the engine's frozen-content identity check
+and CLI gate reader still applied fresh WorkflowSchema rules to historical runs.
+Unchanged inline fallback duplicates, repeated condition matches and inactive
+orphan timeout actions were valid at the Step 2 base. This round is not clean;
+no earlier review is counted toward acceptance.
+
+WorkflowSnapshotSchema now composes the same structural fields and shared
+whole-document invariants with historical agent/node contracts. It omits only the
+new author-only fallback/condition/gate checks. Prior strict fields, duplicate
+identities, input default/enum checks, parallel member uniqueness, custom merge
+requirements and parallel-edge consistency remain enforced. Actual CLI gate and
+engine frozen-identity readers use this contract; fresh parsers retain strict
+WorkflowSchema/AgentSchema/leaf admission. Historical content remains the identity
+authority, without automatic graph repair or fallback deduplication.
+
+Permanent controls cover the real frozen-content verifier and actual CLI → engine
+→ SQLite pause/resume for all three shapes, exact completed output, first-declared
+condition selection, inactive timeout action, preserved original events/snapshot
+and continued corrupt parallel-member refusal. Shared snapshot controls retain
+seven prior rejection classes. Session export faithfully preserves old fallback
+order/budgets; canonical mapping and serializer comments now qualify the current-
+authoring round-trip guarantee, a permanent test pins explicit repair/current
+refusal, and the shared successful-export notice names required historical review.
+The exporter neither rewrites history nor silently deduplicates the snapshot.
+
+Final author gates pass: all workspace lint/typecheck, 591 files / 13,119 passing
+tests / 20 established skips, six build tasks (five cached), seam/dependency fences,
+test-isolation across all six workspaces, source formatting, whitespace and 3,338
+relative links. Nine fresh mechanism removals break 25/3/9/3/3/6/1/3/3 designated
+regressions for node, agent, run, literal, standalone reasons, config bounds,
+historical session, engine frozen identity and CLI gate readers; every source is
+restored byte-identically before the final passing author suite. Filtered cases
+are not platform skips. This is local author evidence, not full CI, coverage,
+native-platform or whole-wave certification. Two NEW independent complete clean
+cumulative Step 2 rounds after this final material fix remain required before
+Step 3. Detailed reports/controls remain local and Git-ignored.
+
+
+### Wave 3 Step 2 acceptance — 2026-10-16
+
+Step 2 is independently accepted at `4048526fbf2585560cd12dbdf11fc3412d4be9d5`.
+Two NEW complete cumulative clean rounds after the final material fix cover all
+34 changed paths and actual consumers: gpt-6.1-sol/high (16 files / 545 independent
+passing tests, baseline compatibility and wrapper controls) followed by
+gpt-6-astra/high (17 files / 585 independent passing tests, 21 workflow + five
+agent baseline comparisons, 40 wrapper assertions, actual SQLite preservation and
+10 runtime/source correspondence checks). Both report zero findings. The parent
+reads both full reports and verifies the original session-reader, frozen-workflow
+reader and export-contract findings are resolved; the two earlier nonclean rounds
+are not counted toward acceptance.
+
+All scoped #89/#90/#212/G18/#210/G17/#85/#86/#32 work is complete; #211/G16 are
+certified existing guards. The author evidence retains its actual scope: 591 files
+/ 13,119 passing tests / 20 established skips, workspace lint/typecheck, six builds
+(five cached), fences, 591-file/six-workspace isolation, formatting/whitespace and
+relative links. Nine causal removals and exact restoration precede the final
+passing author suite. Reviewer executions are separate from those author gates;
+no full CI/coverage/native-platform, successor execution or whole-wave acceptance
+is inferred from this metadata landing.
+
+Next is Step 3, ADR-0113 secret provenance and actual VM/public-template consumers,
+with a dedicated security sitting. No user decision or review finding remains
+pending for Step 2. Detailed reports and working controls remain Git-ignored;
+Step 19 retains whole-wave acceptance/publication.
+
+
+### Wave 3 Step 3 author candidate — 2026-10-16
+
+**Implemented; security and independent acceptance pending.** Core source and its
+producer/VM/template regressions are committed at `8813391b`; the actual native
+SQLite integration is `aba979f4`. ADR-0113 owns the explicit low-level projection
+and direct secret-input expression compatibility change. The existing linear
+source graph supplies immutable owned context/input authority to fresh execution,
+same-process resume and cross-process budget preparation, with actual public
+prompt/human and expression consumers. Trusted raw resolution and display markers
+retain their separate contracts. No future authored tool-mapping producer is
+invented; #92's mapping limitation remains distinct from the repaired exposure.
+
+The actual QuickJS suite preserves optional-secret absence, original key order,
+clean result semantics, numeric tags and one authored serialization. A private
+VM-owned closure separates evaluation and serialization native calls in the same
+VM under the original deadline; it never exports an authored object. The first
+focused run exposed a serialization-interrupt classification regression; the
+corrected source preserves baseline result_type/non_serializable outcomes. The
+finite exhausted-stack witness returns its clean fallback without a denial; it
+carries no raw denied value. Ordinary executed/caught reads produce fixed
+secret_context with no detail/cause. Canonical source/error comments and at-rest/
+recovery guidance explicitly retain historical/arbitrary content sensitivity.
+
+Author workspace lint/typecheck/tests pass: **597 files / 13,442 passing tests /
+20 established skips** across six workspaces. Build passes all six tasks;
+platform/vendor/dependency fences, isolation and changed-source formatting pass.
+These are local author gates, not full CI/coverage/platform or whole-wave proof.
+New focused ownership/public-template/VM/transport/producer/native-SQLite files
+contribute 29/19/184/67/6/18 tests respectively. They include independently
+successful clean execution/persistence and actual same/fresh-engine secret resupply.
+
+An isolated build of the exact Step 2 core at `873da1c34` reproduces the repaired
+leak with real WorkflowEngine, standard executor, QuickJS and file-backed SQLite.
+The clean positive completes with exact outputs and nonempty rows. A successful
+ctx.alias result places the synthetic canary in public events and all three
+required columns (run_events.payload_json, step_executions.output_json and
+runs.output_json); a separate downstream human gate displays it. Cancellation of
+that separate gate graph is not used to infer run-output leakage. No live product
+source/dist was rolled back, and no provider/key/network call was made.
+
+Three local fixed/removal/restored cohorts pin context qualification, public
+whole-template refusal and the private VM latch. Removing them causes **6 / 6 /
+64 named assertion failures**, respectively; each fixed/restored inventory passes
+29 / 19 / 184 tests and restores exact source bytes. The installed runner reporter
+records zero unhandled errors in all nine final phases. The first exploratory
+cohort attempt had a mismatched named-witness check; it was rejected and retained,
+then the permanent assertion marker was made explicit before the final complete
+cohorts. This is scoped author evidence, not independent review acceptance or a
+replacement for Step 19's repeatable whole-wave publication.
+
+Dedicated secret-flow security sitting and two NEW independent complete cumulative
+clean reviews after the last material correction remain required before Step 4.
+Detailed baseline hashes, runtime identities, local probes and reports remain
+Git-ignored under docs/reviews; no production credential, paid call, release,
+archive upload or user decision is needed for this increment.
+
+
+### Wave 3 Step 3 review corrections — 2026-10-16
+
+The first complete cumulative review of `3222a8c6` is **not clean**: two High
+findings identify lost native top-level Error result metadata and changed ordinary
+thrown-value classification; one Medium identifies missing required provenance
+validation when agent/human templates are absent. The separate secret-flow
+security sitting corroborates the classification finding and is also **not clean**.
+Neither counts toward acceptance. The parent reads both full reports, independently
+compares the pinned Step 2 runtime and verifies the findings before correction.
+
+The private VM converter now preserves the pinned bridge's supplemental diagnostic
+fields and ordinary thrown-value normalization under the original shared deadline.
+Authored result/error conversion completes before the private denial check; only
+inert detached JSON reaches final encoding and the bounded primitive transport.
+Boxed values, nonfinite numbers, failed/cyclic/stateful conversion and denial during
+Error getters/toJSON have permanent actual-QuickJS controls. Stack frame text
+reflects the private wrapper and is not a stable ABI. Empty agent and human text
+still validates required owned provenance; absent assignee and existing cancellation
+contracts remain intact. New files contribute 216 parity and 38 empty-template
+regressions; the original red runs independently expose the repaired mechanisms.
+
+An additional parent reproduction finds a live context-definition ownership gap:
+a caller changes an originally clean definition after start, while taint analysis
+retains the earlier definition; successful node output exposes the synthetic
+canary. Taint analysis and raw resolution now consume the same frozen owned
+context definitions in fresh, resumed and budget-preparation paths. This is a
+context-definition snapshot, not a claim that every workflow field is immutable.
+Seventeen permanent actual-engine controls cover immediate and suspended-read
+mutations, same-process resume and trusted raw-resolver compatibility. Actual
+file-backed SQLite also pins the successful clean mutation control and native
+Error-result persistence, with nonempty event/step/run rows.
+
+Final corrected-source author gates pass: all workspace lint/typecheck, **600 files
+/ 13,720 passing tests / 20 established skips**, six-workspace isolation, source
+formatting/whitespace, dependency/vendor/platform fences and 3,365 relative links
+across 72 changed Markdown files. All six build tasks pass (five cached).
+Six fresh fixed/removal/restored cohorts pin context qualification,
+public-template refusal, finite VM latch, native result projection, thrown-value
+projection and actual engine definition binding. Removals produce **6 / 6 / 64 /
+60 / 81 / 8** named assertion failures; fixed/restored inventories are **29 / 19 /
+184 / 216 / 216 / 17**. All eighteen final runner receipts report zero unhandled
+errors and all sources restore byte-identically before the final full author suite.
+An exploratory witness-name mismatch was rejected rather than certified.
+
+These remain local author controls, not full CI/coverage/native-platform or
+whole-wave certification. A fresh security revalidation and two NEW independent
+complete cumulative clean rounds after the last material correction remain
+required before Step 4. Baseline evidence, detailed reports and local controls
+stay Git-ignored. No new decision, credential, paid call or release is pending.
+
+
+### Wave 3 Step 3 conversion-order correction — 2026-10-16
+
+The NEW complete cumulative review at `1728c9b4` is **not clean**: one High
+finding shows diagnostic hydration occurring before ordinary JSON traversal
+finishes. The fresh security revalidation independently corroborates it; no
+additional declared-secret confidentiality or ambient-authority defect is verified.
+The parent reads both complete reports and reproduces the issue against the
+isolated accepted Step 2 runtime. Neither review counts toward acceptance.
+
+An undefined diagnostic getter changes a later sibling value from 1 to 2;
+the actual WorkflowEngine/standard executor consequently fails a previously
+successful output schema. The same sequencing defect changes an ordinary thrown
+object from memory to stack classification. A separate supplemental object's
+`toJSON` can also run before later diagnostic getters, changing their values.
+These are one converter-order defect, not three independently counted findings.
+
+The converter now completes the original JSON traversal once, then reads all
+missing diagnostic fields in the pinned bridge's fixed order, then serializes
+supplemental values before the private denial check. It removes the eager root
+replacer and boxed-value emulation. Final encoding still contains detached JSON
+only; the original authored `toJSON` is not invoked again, no successful authored
+object is dumped after denial observation, and the original VM deadline remains.
+Permanent actual-VM controls pin sibling values/key order, supplemental callback
+ordering, ordinary thrown classification and denied supplemental conversion.
+The parity suite grows from 216 to 243 cases; its pre-fix run has 16 genuine
+assertion failures. A separate real-engine output-schema test fails before repair
+and completes with exact output after it. Eleven independent old/current probes
+also match after correction. Detailed raw probes remain local and Git-ignored.
+
+Fresh final author gates pass on the restored corrected source: all workspace
+lint/typecheck, **601 files / 13,748 passing tests / 20 established skips**, all
+six build tasks (five cached), fences, 601-file/six-workspace isolation, changed-
+source formatting/whitespace and 3,365 relative links. Seven fresh causal cohorts
+produce **6 / 6 / 64 / 75 / 84 / 8 / 1** named removal failures, with passing
+fixed/restored inventories **29 / 19 / 184 / 243 / 243 / 17 / 1**, respectively.
+All 21 final runner receipts record zero unhandled errors; every source restores
+byte-identically before the final passing full author suite. The seventh cohort
+pins the actual engine output-schema success rather than a fabricated converter.
+
+Fresh security revalidation and two NEW independent complete cumulative clean
+rounds after this final material fix remain required before Step 4. All earlier
+nonclean rounds remain explicitly nonclean. These author gates are not full CI,
+coverage, native-platform or whole-wave acceptance; later plan ownership remains.
+
+
+### Wave 3 Step 3 primitive-conversion correction — 2026-10-16
+
+The attempted NEW cumulative review at `a2db0b77` verifies one further High:
+primitive values enter object diagnostic hydration, invoking prototype getters
+that the accepted native primitive conversion never reads. The tool interrupts
+that agent's turn; its retained report is explicitly **partial and nonclean**, not
+complete cumulative acceptance. The separate completed security revalidation
+independently corroborates the primitive discrepancy and is also **nonclean**;
+no additional declared-secret confidentiality or authority issue is verified.
+The parent reads both reports and reproduces the ordinary API difference against
+accepted Step 2. No incomplete or earlier nonclean round counts toward acceptance.
+
+A finite Number/String/Boolean value must not invoke an unused diagnostic getter.
+Thrown primitive conversion has the same requirement; a custom BigInt `toJSON`
+previously changed ordinary private detail from `2` to `changed`. Conversion now
+branches on the original primitive type before object hydration or JSON hooks.
+Boxed values and objects yielding scalar JSON keep their separate object path;
+numeric tags, the original deadline, supplemental conversion before denial and
+inert final transport remain intact.
+
+The actual-VM parity suite grows from 243 to 309 cases. The first 54 new pre-fix
+assertion failures cover every diagnostic field on Number/String/Boolean across
+all three expression kinds and ordinary thrown String/Boolean/BigInt behavior.
+A further parent comparison exposes the same unwanted lookup after object JSON
+conversion yields a scalar: boxed Number/String/Boolean and object `toJSON`.
+Twelve additional regressions fail before the converted-shape guard and pass
+after it. Hydration now requires converted object/array data; original object
+conversion and original-type classification still apply. The corrected focused
+suite passes. These are synthetic local compatibility controls, without real
+credentials, provider calls or external targets.
+
+Fresh corrected-source author gates pass: all workspace lint/typecheck, **601 files
+/ 13,814 passing tests / 20 established skips**, six builds (five cached), source
+format/whitespace, vendor/platform/dependency fences, 601-file/six-workspace
+isolation and 3,365 relative links. Ordinary primitive and boxed/scalar old/current
+comparisons match after repair.
+
+Nine final fixed/removal/restored cohorts pin qualification, template refusal,
+finite latch, result projection, thrown projection, owned definition binding,
+actual engine hydration order, native primitive conversion and scalar hydration.
+They produce **6 / 6 / 64 / 75 / 105 / 8 / 1 / 6 / 12** named removal failures;
+fixed/restored inventories are **29 / 19 / 184 / 309 / 309 / 17 / 1 / 309 / 309**.
+All 27 final runner receipts record zero unhandled errors and exact source
+restoration precedes the final passing full suite. A truncated Vitest witness
+name rejected an exploratory attempt; it was not published as acceptance, and
+the final run pins the stable unique named assertion plus its mechanism marker.
+
+Fresh security revalidation and two NEW independent complete cumulative clean
+reviews after this final correction remain required before Step 4. The interrupted
+review is incomplete; none of the nonclean or incomplete sittings is counted.
+These local author controls do not claim full CI/coverage/native-platform,
+whole-wave acceptance, a release or new permission. Detailed records stay ignored.
+
+
+### Wave 3 Step 3 acceptance — 2026-10-16
+
+Step 3 is independently accepted at `5d8c0b0cf91604c2c270ff0351b4168508fe6041`.
+Two NEW independent complete cumulative clean reviews after the final material
+fix cover all **42 changed paths / 108 hunks**, including all thirteen added
+files and actual consumers. Selected reviewers are gpt-6-astra/high (30 files /
+1,513 independently passing tests) and gpt-6.1-sol/high (20 files / 1,193 tests).
+Both report zero findings and independently run the 26 retained ordinary
+Step-2/current comparisons with matching outcomes. The parent reads both full
+reports. Earlier nonclean sittings and the interrupted incomplete review are
+not counted. Detailed reports remain local and Git-ignored.
+
+The separate NEW secret-flow security sitting is clean at the same source,
+with **19 files / 1,156 independently passing tests**, no skips and independent
+inspection of all 27 causal phases. It traces actual producer/preparation/resume,
+VM/template, standard-handler/public-event and native SQLite boundaries; its
+mandatory checklist distinguishes unchanged/out-of-scope paths. This is a
+security disposition, not a third complete correctness round. Test counts overlap
+and are not added to author or other reviewer totals.
+
+ADR-0113 implementation and the actual context exposure are complete. #92 has
+its approved explicit documented limitation: no current authored tool-mapping
+producer exists, optional external provenance is unverified, and future mapping
+must supply final effective-argument provenance. No fake producer or general
+value-scanning guarantee is introduced. Canonical contracts preserve required
+owned low-level metadata, direct-input compatibility, optional absence/key order,
+finite observed-access semantics, native result/error conversion and trusted raw/
+historical-content limits. All verified review findings and the parent-owned
+context-definition race are repaired; no scoped review finding remains open.
+
+Final author evidence remains precisely attributed: **601 files / 13,814 passing
+tests / 20 established skips**, workspace lint/typecheck, six builds (five cached),
+fences, isolation, formatting/whitespace and relative links. Nine exact-restored
+causal cohorts and the final full passing suite precede acceptance. This metadata
+landing does not claim execution at a successor, full CI/coverage/native-platform,
+whole-wave acceptance or merge. Step 19 retains those final gates/publication.
+
+Next is Step 4's approved minimal error/envelope substrate. Read-only inventories
+for Steps 4–5 are preparation, not implementation acceptance. No user decision,
+credential, provider capture, billing or release action is pending.
+
+
+### Wave 3 Step 4 error/envelope substrate — implementation checkpoint, 2026-10-16
+
+The approved #213/#219 increment introduces the minimal shared `RelaviumError`
+without a new discriminant, name, context or cause policy. Existing family
+constructors and descendant parents remain unchanged. The source inventory
+replaces the historical 15/17 estimates: **96 existing error declarations**,
+including 86 module exports and ten non-exported implementation error classes. Of those
+exports, **83 belong to production** (60 unique package-root-public identities
+and 23 implementation exports); three others belong to capture/conformance
+tooling. Public aliases/re-exports do not create another class identity.
+
+Migration changes **46 direct native-Error roots across 37 production files**.
+Their 37 existing module-exported production descendants acquire the same
+ancestry through their current parents. The unchanged private `OsTimeoutError`
+also inherits it through `OsCapabilityError`; it is additional to that export-
+scoped count. The new base itself is additional to the 96-declaration intake.
+Private class sources, capture/conformance errors, vendor exceptions and plain
+seam unions retain their existing implementations. This is a scoped disposition, not a claim that
+every thrown value or private control-flow path has shared ancestry.
+
+| Package | Module-exported production classes reached | Direct roots changed | Existing roots |
+| --- | ---: | ---: | --- |
+| `packages/shared` | 10 | 10 | `NonCanonicalValueError`, `ExistingAncestorError`, `MediaAdmissionError`, `CorruptRunEventError`, `RunSuspensionCorruptionError`, `AppendConflictError`, `LeaseFencedError`, `EffectTransitionError`, `EffectConflictError`, `InvalidUsageEvidenceError` |
+| `packages/llm` | 9 | 2 | `LlmConfigError`, `LlmProviderError` |
+| `packages/core` | 29 | 16 | `AgentParseError`, `SessionStateError`, `AgentTurnError`, `BudgetExceededError`, `BudgetPauseError`, `CommitmentDurabilityError`, `InvalidDispatchAllowanceError`, `EngineStateError`, `RunLoopInvariantError`, `NodeMediaPinError`, `LedgerDurabilityError`, `WorkflowParseError`, `InterpolationError`, `WorkflowContextError`, `SandboxError`, `ToolDispatchError` |
+| `packages/db` | 12 | 12 | `DbOpenError`, `MediaStoreFilesystemError`, `MediaTemporaryMaintenanceError`, `MediaWriteError`, `ModelCatalogCapabilitiesError`, `ProviderHeaderPolicyError`, `UnreadableRunEventLogError`, `SafeEgressError`, `SessionEffectPrivacyError`, `SessionEffectTurnError`, `SessionMessageBoundaryError`, `SessionUsageError` |
+| `packages/mcp` | 8 | 1 | `McpError` |
+| `apps/cli` | 15 | 5 | `StdioResolutionError`, `ConsentStoreError`, `HostCapabilityError`, `CliError`, `KeychainUnavailableError` |
+
+Existing structural budget, corruption, unreadable-history, provider-header and
+media-admission boundary classifiers retain their individual acceptance rules.
+Local identity guards and private WeakMap authority also remain unchanged; the
+base is neither a safe-message classifier nor cross-bundle authority. New foreign
+class tests are explicitly simulations, not execution of a second packed bundle.
+
+The retained `BaseEventSchema` now uses the same parsed correlation refinement
+as the full run family. Direct both/neither cases fail; declared full event
+payloads remain intact. Generic envelope projection is not substituted for a full
+event. Lenient opposite-key/future-field stripping, strict accounting boundaries,
+nine cross-field guards and unknown-discriminator forward reading are preserved.
+The authored envelope suite first reports exactly two assertion failures on the
+unchanged implementation and passes all forty controls after repair.
+
+Six package/surface compatibility files add thirty constructor/guard controls.
+Four local fixed/removal/restored cohorts pin direct envelope correlation, full
+payload preservation, native cause forwarding and foreign structural budgets.
+Passing fixed/restored inventories are **40 / 40 / 6 / 11**; removal produces
+**2 / 10 / 3 / 1** failed tests. The payload cohort has nine direct AssertionErrors
+and one secondary test-local TypeError after its payload is removed; each cohort
+contains its pinned named, marker-bearing assertion failure. All twelve final runner receipts
+record zero unhandled errors, and exact source restoration is verified before
+broad author gates. The retained controls are local author evidence, not full CI,
+coverage, native-platform or whole-wave acceptance.
+
+Broad author checks pass: **608 files / 13,884 passing tests / 20 established
+skips**, all workspace lint/typecheck, source formatting/whitespace, vendor and
+platform/dependency fences, 608-file/six-workspace isolation and 3,511 relative
+links across 74 changed Markdown files. Dependency outputs are built before
+native/dist consumers; all six build tasks pass.
+
+Two NEW independent complete cumulative clean reviews remain required before
+Step 5. Detailed source inventories and reports remain Git-ignored. No new ADR,
+user decision, credential or external operation is needed.
+
+
+### Wave 3 Step 4 first review corrections — 2026-10-16
+
+The complete cumulative review at `b11703a0` covers all **50 changed paths /
+97 hunks** and independently passes **23 files / 730 tests**. It verifies every
+existing class member list unchanged, resolves public aliases, and audits all
+twelve causal receipts and reconstructed mutation hashes. It reports two Low
+checkpoint precision findings and no verified product defect; this sitting is
+**not a clean acceptance round**.
+
+The parent reads the full report and verifies both findings. The inventory now
+qualifies its 83-class/37-descendant counts as module-exported production and
+explicitly records the additional unchanged private `OsTimeoutError` descendant.
+The retained payload removal is accurately described as nine AssertionErrors
+and one secondary test-local TypeError, separate from the zero-unhandled runner
+receipt. Existing product and test bytes remain unchanged. These documentation
+corrections do not claim a fresh source execution; author gates retain their
+original source attribution. Two NEW complete cumulative clean reviews at the
+corrected head remain required before Step 5.
+
+
+### Wave 3 Step 4 acceptance — 2026-10-16
+
+Step 4 is independently accepted at `b16c3b4c29a82396c8f060f6e3ed199e2f340476`.
+Two NEW complete cumulative clean reviews after the final correction cover all
+**50 changed paths / 97 hunks**, including the eight additions, unchanged error
+descendants and actual consumers. Selected reviewers are gpt-6.1-sol/high
+(**26 files / 819 passing tests**) and gpt-6-astra/high (**29 files / 1,214 tests**),
+with zero skips in their independent runs. The parent reads both complete reports.
+The earlier two-Low sitting remains nonclean; both verified documentation findings
+are fixed, with no scoped review finding left open.
+
+The minimal error base and direct envelope correction satisfy #219/#213. Every
+existing class member list is unchanged; export-scoped counts, private inherited
+timeout, structural versus local authority and native versus plain seam values
+are explicit. Full payload and historical-reader controls remain effective.
+Both reviewers independently audit all twelve retained causal receipts, source
+and reconstructed mutant hashes; the secondary test-local payload TypeError is
+accurately separated from zero runner-unhandled errors.
+
+Author evidence retains its original scope: **608 files / 13,884 passing tests /
+20 established skips**, workspace lint/typecheck, six builds, source formatting,
+fences, isolation and relative links. Reviewer counts overlap and are not added
+to author counts. This metadata landing does not claim new source execution,
+full CI/coverage/native-platform, whole-wave acceptance or merge. Detailed
+reports remain local and Git-ignored.
+
+Step 5's tools/engine-tail implementation now proceeds automatically. Its read-
+only test designs are preparation, not acceptance. Necessary same-defect registry
+redaction prewalks and remaining identifier-sort consumers stay in that increment.
+No new ADR, user decision, provider capture, credential or external operation is
+pending. Step 19 retains final whole-wave validation and publication.
+
+### Wave 3 Step 5 implementation checkpoint — 2026-10-16
+
+Step 5 is implemented from accepted Step 4 base
+`e60b10478f5f5200f8ef55d01a6976c2dcb9fb87`; independent security and two NEW complete
+cumulative correctness rounds are still required. This is author evidence, not
+acceptance of Step 5 or the whole wave.
+
+| Queue | Implemented or certified disposition |
+| --- | --- |
+| #95 | Executable effective-argument UTF-8 admission with cheap count, member-length and aggregate-length prechecks before byte scanning. Inclusive limits and model metadata have their [canonical home](../../reference/shared-core/built-in-tools.md#tool-input-bounds). Actual refusals precede target, confirmation, journal preparation, dispatch hook and host; small/exact-cap/mapping/config-exclusion positives reach the real journal and host. |
+| #96/#98 | All thirteen built-ins describe their 28 immediate model-visible properties and array items. Actual ToolDef parsing and all four wire normalizers retain bounds/descriptions, required distinctions and configuration exclusions; Gemini keeps its existing dialect treatment of additional properties. |
+| #94 | Both bounding walks and both registry prewalks use ancestor-path cycle guards with retirement in `finally`, including early returns. Shared siblings survive; true back-references remain finite. Real events, reference replay/conflict and native SQLite digest controls distinguish clean selections while retaining deliberate secret-projection equality. |
+| #76/G9 | Ordinary/budget prompt resolution forwards the identical signal and checks after its final await; human-gate final resolution does likewise. The actual engine race produced a pause on both delivered and stored rails before the fix, contrary to the preparation note's fence-preservation prediction. The corrected real handler returns cancelled and publishes no pause. Live execution and gate pause/resume remain positive controls. |
+| #82 | Quoted filter arguments decode only matching quote/backslash escapes after structural splitting. Exact runtime default values, structural delimiters, unknown escapes and Windows path text are pinned. Two old assertions contradicted their own intended decoded values and are corrected. |
+| #275 | A private min-heap preserves Kahn's minimum authored index across the entire ready set. An independent full-sort oracle compares complete plans/maps over generated and named graphs, derived edges and cycles. Empty workflow admission remains refused. |
+| #258/#259 | Four lookup-local parameters become `modelId`, without renaming request/payload fields. Twelve live unpinned comparator expressions use the existing UTF-16 code-unit helper, including the verified DB money/coverage model union. The private preparation note overcounted these as thirteen. Case folding, groups, ties, raw historical model names and MCP set/ordered-vector distinctions remain. The two explicitly English LLM display comparisons are unchanged. |
+| #93/#97/#214/#87 | Descriptive dispatch scope cannot widen immutable host filesystem authority; stale egress comments describe conditional host availability. Workflow version is an optional string with Semver recommended, not validated. System append remains literal authored text with existing reference/dependency/secret scans; Proposed ADR-0060 is not activated. |
+| #308 | Actual default/approval-enabled sessions and workflow-agent execution all retain `gateApproved:false`, refusing before confirm, journal prepare and process work. The message offers manual review/commit. A true-gate registry positive is explicitly synthetic, not an invented shipping workflow approval route. |
+| #79/#75/#78/#216/#274 | Equivalent abort/backoff outcomes are combined. Existing timeout/scheduling and tiered journal behaviour are certified by their owning suites, not rewritten. Public `success` remains unchanged. Exported bus `validate:false` remains compatible, with actually invalid payloads and mandatory raw correlation/counter/clock/listener controls. |
+
+Twenty-one new test files contribute 393 cases; actual git-denial controls and the
+split pre/post-preparation cancellation case add four cases in existing owners.
+Author-reported baselines describe 115 expected bound/metadata failures, alias/replay/digest
+failures, eight quoted-decoding failures, six direct gate failures, the actual
+engine pause race and forty prompt-cancellation failures. Fixture/API mistakes
+were corrected separately; they are not attributed to production. DAG, literal
+append and bus controls certify existing behaviour rather than claim old defects. Original raw baseline
+outputs were tool-response observations, not retained physical runner reports. The
+retrospective ignored author note discloses that limit; fresh broad/causal records
+below are independently retained. Later comparator-observer test refinements are
+attributed to final source rather than earlier author hashes.
+
+The broad workspace command passes: **629 files / 14,281 passing tests / 20
+established skips**, plus all workspace lint/typecheck tasks. Standard Turbo cache
+reuse for unchanged inputs is retained; this is not a claim that every test was
+freshly executed. The two initial broad failures were stale metadata and the
+superseded pre-aborted preparation expectation; both are corrected without
+weakening the actual range/provenance/cancellation controls.
+
+Thirty-one selected local causal cohorts retain **93 zero-unhandled-error runner
+receipts**: fixed passes, a named expected assertion fails on mechanism removal,
+and exact-byte restoration passes. Each source/mutant hash and expected collected
+count is checked. Seven completed cohorts and the remaining twenty-four are
+retained separately: an initial eighth-cohort witness-label mismatch stopped the
+first capture after restoring source; that incomplete attempt is not accepted.
+Four secondary test-local errors are retained: three replay expectations whose promises
+incorrectly resolve, plus the DB poisoned-comparator error. They are distinct from zero
+runner-unhandled errors. The priority mutation checks authored-minimum semantics,
+not a benchmark; schema/guard removals do not certify unrelated mechanisms.
+The existing source-owned reporter is pinned; these selected probes do not claim
+whole-workspace provenance or remote/native-platform acceptance.
+
+Six forced builds pass without cache reuse before native author tests and again after
+source restoration. Formatting covers all 46 changed TypeScript files; seam/dependency
+fences, six-workspace test isolation and relative-link/append-only checks pass.
+The document scan checks 74 Markdown files / 3,516 relative links and 31 pre-existing
+ADRs. These gates are separate from the review rounds below.
+
+Canonical changes land only in the owning tool, YAML, runner and event contracts.
+Detailed baseline, causal and review records remain local and Git-ignored. There
+is no new dependency, engine platform import, error taxonomy, grant feature, ADR,
+provider call, credential/billing action or external publication. Final full CI,
+ordinary/enforced coverage, platform and whole-wave publication remain Step 19.
+
+
+### Wave 3 Step 5 first review correction — 2026-10-16
+
+The first complete cumulative correctness review at `25cac33a` covers all 52 paths /
+124 hunks and freshly passes 35 files / 942 tests, direct four-package typechecks
+and all 46 changed TypeScript lint targets. Its result is **nonclean**: one verified
+Medium canonical-documentation finding, with no production defect. It is not either
+of the required clean rounds.
+
+The parent reads the full report and confirms all three stale statements: summaries
+are produced by registry bounding, not truncated in the bus, and network availability
+is profile-dependent rather than waiting for historical 1.AE. The canonical registry
+reference now describes the actual chat-read-write wiring, retains the read-only and
+workflow omissions, and states the string-seam/spill limitation accurately. No runtime
+capability or workflow network feature is added. The author checkpoint also makes raw
+baseline-retention and later test-observer attribution explicit.
+
+The separate independent security sitting at `25cac33a` passes 18 files / 680 tests,
+zero skips, with no verified finding. Its evidence is source-pinned; this correction
+changes only two documents. All production/test bytes and the 31 causal source hashes
+remain unchanged. Existing broad/build evidence keeps its original source and cache
+scope. Relative-link/append-only and diff checks are rerun for this document correction;
+two NEW independent complete cumulative clean rounds remain required after this fix.
+
+
+### Wave 3 Step 5 acceptance — 2026-10-16
+
+Step 5 is independently accepted at
+`fd54e22a776f13f92b520b42737928543cfe9532`. Two NEW complete cumulative clean
+reviews after the final documentation correction cover all **52 paths / 127
+hunks**, including all 21 new files, nineteen production paths, six old-test
+owners and six documents. Reviewers are gpt-6-astra/high (**35 files / 942 passing
+tests**) and gpt-6.1-sol/xhigh (**37 files / 987 tests**), both with zero skips.
+The parent reads both full reports. The original one-Medium sitting remains
+nonclean history; its three stale registry statements are corrected, with no
+verified scoped finding left open.
+
+The separate clean security sitting at `25cac33a` passes **18 files / 680 tests**.
+Its subsequent documentation-only revalidation through the accepted head is
+clean: all 46 production/test TypeScript paths and 31 causal source hashes are
+unchanged, with no new test execution inferred. The [security register](../../standards/security-review.md#sitting-wave-3-tool-admission-and-alias-safe-projections-2026-10-16)
+records its scope and limits. Both correctness reviewers independently audit
+all **31 accepted causal cohorts / 93 zero-unhandled runner receipts**, source
+and reconstructed mutant hashes, expected assertion witnesses and exact-byte
+restoration. The incomplete initial eighth capture, four secondary test-local
+errors and retrospective author baseline limits remain explicitly attributed.
+
+All Step 5 queues in the implementation table above now have independent scoped
+acceptance. Actual effective-input bounds, alias-safe event/journal projections,
+ordinal identifier consumers, final-await cancellation and authored-minimum DAG
+semantics are pinned. Existing timeout, journal, literal-append and bus compatibility
+controls are certified without inventing old defects. Actual sessions and workflow
+agents retain Git gate refusal; the approved registry positive is synthetic.
+Canonical contracts preserve conditional host availability and intentional
+projection/trust limits rather than claim new authority or lossless secrecy.
+
+Broad author evidence remains **629 files / 14,281 passing tests / 20 established
+skips**, all workspace lint/typechecks, six forced builds before native consumers
+and again after restoration, source formatting, isolation, fences and document
+checks. Normal test-cache reuse and original source attribution remain explicit.
+Reviewer selections overlap and are not added to author totals. This metadata
+landing claims no new source execution, full CI, ordinary/enforced coverage,
+native-platform acceptance, whole-wave acceptance or merge. Detailed reports
+remain local and Git-ignored.
+
+Step 6 proceeds automatically under approved ADR-0110/0111: pure early flags,
+closed code/origin and observation contracts, one descriptor authority, compatible
+legacy/model and separate CLI discovery projections, source-verified classification
+inventory and creation-specific invocation ownership. Its read-only designs are
+preparation, not implementation acceptance. Real fatal/native integration and
+JSON-help behaviour retain their later steps. No new ADR, user decision, provider
+capture, credential, billing or external operation is pending; Step 19 retains
+whole-wave validation and publication.
+
+### Wave 3 Step 6 implementation checkpoint — 2026-10-16
+
+**Implemented on `development`, not independently accepted.** The increment starts
+at Step 5 acceptance metadata `952115d3`. Approved ADR-0110/0111 now have a pure
+process/discovery substrate before their runtime consumers. The
+[CLI contract](../../reference/cli/commands.md#proposed-wave-3-cli-compatibility)
+owns exact classifications, descriptor fields and staged integration boundaries.
+
+One closed CLI code/origin/exit authority preserves the five existing codes for
+refusal, including operational `internal`/1, and adds distinct fixed infrastructure,
+output, storage and settings-write diagnostics. The heavy runtime classifier
+re-exports the same constructor/guard; generic unknown handling remains unchanged
+until Step 8. The shared error constructor and filesystem limits have supported
+pure package leaves without loading the schema barrel; config/root exports retain
+identity. Early flags share descriptor grammar, preserve command tokens and the
+terminator, reject nonabsolute root syntax before filesystem work, and apply exact
+DEBUG=1 with explicit quiet/verbose conflict and override rules. Semantic category
+selection is pure; production output owners remain Step 10.
+
+The one enriched descriptor authority derives the current Commander grammar,
+global help and all **24 unchanged strict alias-free model entries**, compared
+against a literal pre-refactor fixture. Twenty-nine descriptors include executable
+containers, four nonexecuting groups and the unavailable init stub. Actual actions
+receive injected dispatch, preserve every binding and await its result; finite
+implementation bindings are checked both ways. The separate explicit public DTO
+supports canonical subtrees, aliases and complete option grammar without exposing
+internal compatibility/loader state. Canonical chat aliases, pricing flags and
+key-removal force metadata are staged: production JSON help and those behaviours
+remain Step 10. Compiler-emitted import controls prove the pure local leaves;
+the separate Commander adapter guard stops at the external framework boundary,
+not at an imagined dependency-free or packed/native proof.
+
+The creation-kind registry keeps actual retirement separate from stop/join/reap
+attempts. It starts no idle session join at registration, removes settled owner
+closures, retains unacknowledged owners and bounded classifications, samples only
+actual workflow health and applies the total sticky exit order. Reentrant cleanup
+shares one operation. Classification, terminal restoration and helpers consume
+one live absolute fatal budget; expiry never grants retirement or store-close ACK.
+Every owner still receives finite synchronous cancellation at zero remaining
+budget, while new joins/restoration/reap helpers are refused. Actual native,
+RunHandle, AgentSession, sink and terminal adapters remain Step 8.
+
+The source-verified inventory covers twelve literal internal constructors, caught
+and forced-exit owners, and storage/open boundaries. It preserves supported inline
+recovery and records the constructor-time addon/ABI ambiguity inside DbOpenError:
+a blanket typed-error or arbitrary cause-tree classification is insufficient.
+Minimal origin adapters land in Step 8; central openLocalDb remains last in Step 18.
+
+Author evidence distinguishes genuine original defects from new-substrate controls.
+The original lexical baseline is **52 cases / 46 passing / six failing**; an
+intermediate lookup exposes three prototype-token failures before the private Map
+fix. New owner regressions reproduce signal-state poisoning, reentrant join order,
+classification-time renewal and skipped sibling cancellation after expiry. Test
+fixture fixes preserve exact context identity and complete unique case names;
+they are not product regressions. Initial lint failures were unused imports/fixture
+typing, corrected before the final gates.
+
+All **14 final causal cohorts / 42 structured zero-unhandled runner receipts**
+pass fixed/removal/restored checks, exact named assertion witnesses, complete
+unchanged inventories, source/test/reporter pins and byte-exact restoration.
+Earlier incomplete runs stopped on duplicate case labels or a quoted witness
+mismatch; neither is counted. Two existing secret controls were repointed to the
+real generic action/parser path without removing IDs or cases. Their retained
+isolated captures each contain one selected control / three verified receipts,
+1,223 physical source/tool files and 457 installed dependency packages; forwarding
+is 14/13/14 passing and parser projection 28/22/28. These selected captures are
+explicitly not a complete 41-control family. These captures precede the final finite-cancellation correction; their target
+source and selected test bytes are unchanged. The parent separately verified
+retained stdio, runtime receipts, evaluations and manifests. Filesystem's 110 anchors
+remain unique; no filesystem control was changed.
+
+Final author gates pass: **639 files / 14,554 passing tests / 20 established skips**,
+all workspace lint/typechecks and all six forced builds after causal restoration.
+The final CLI suite runs fresh; other workspaces reuse valid normal test caches.
+Earlier broad execution at the pre-final registry revision records 14,553 passes;
+its counts are not added to the final total. All **322 acceptance-tool tests** pass,
+alongside tooling lint/typecheck, seam/engine dependency fences, DB synchronization,
+639-file test isolation, formatting of all 35 changed code/data paths, bundle closure,
+compiled CLI smoke and document/diff checks. Native consumers use rebuilt dist,
+not ordinary-test source aliases. Two NEW complete cumulative reviews and the
+scoped security sitting remain pending; author checks do not replace them.
+No full CI/coverage, native-platform or whole-wave acceptance is inferred from
+these unit/source checks. No new dependency, ADR, decision, provider capture,
+credential, billing or external action is introduced. Steps 7–19 remain open;
+commit and two NEW independent complete cumulative clean rounds plus a separate
+scoped security sitting are required before Step 7 implementation proceeds.
+
+
+### Wave 3 Step 6 acceptance — 2026-10-16
+
+Step 6 is independently accepted at
+`f3cab0db993714006e8c318f37618e2cf2683333`, from Step 5 metadata
+`952115d3506b0078faefa10dee8dfb4236e19c1c`. Two NEW independent complete
+cumulative clean reviews cover all **38 paths / 95 zero-context hunks**, including
+all nineteen new files. Reviewers are gpt-6-astra/high (**26 files / 512 tests**, plus
+322 acceptance-tool tests) and gpt-6.1-sol/xhigh (**16 files / 395 tests**, plus
+119 related tooling tests), with zero skips and no verified finding. The parent
+reads both full reports, independently checks the evidence and records no source
+change after these rounds. Differential controls preserve all 24 original model
+entries, 29 Commander nodes and 48 old/new action payload comparisons.
+
+The separate NEW clean security sitting passes **14 files / 340 tests**, plus one
+acceptance-tool test, with zero skips. Its scope is the pure process/discovery
+substrate, not the later native fatal path. All fourteen final causal cohorts /
+42 structured zero-unhandled receipts retain named assertion witnesses, unchanged
+case inventories, exact direct target/test/reporter pins and restoration. These
+local cohorts do not claim a complete transitive dependency snapshot. Two selected
+existing secret controls each retain three physical receipts, 1,223 source/tool
+files and 457 dependency packages; they precede the last registry fix, with their
+target/test bytes unchanged, and are not a complete 41-control capture. Both full
+reviewers and the security reviewer independently audit these records.
+
+Final author evidence remains **639 files / 14,554 passing tests / 20 established
+skips**, all workspace lint/typechecks, six forced builds after causal restoration,
+322 acceptance-tool tests, source fences, DB synchronization, test isolation,
+formatting, compiled CLI smoke, bundle closure and document/diff checks. The final
+CLI test suite runs fresh; other workspaces use valid test caches. Review executions
+are independent scoped checks and are not added to the author total. This metadata
+landing does not imply new source execution, full CI/coverage, native-platform,
+installed-tarball or whole-wave acceptance.
+
+Step 7 proceeds automatically through the recorded **7a → 7b** split. The split
+preserves every original finding and acceptance obligation. Step 7a proves the
+actual finite compiled graph and catalog ordering; Step 7b adds the independently
+inspected installed artifact and required platform/minimum-runtime controls. Whole
+Step 7 remains open until both pass; Step 8 does not start after 7a alone. Registry
+identity before Step 8 means one canonical module, one bootstrap invocation object
+and preserved context identity across lazy routes. Actual registered native-owner
+stop/join evidence belongs to Step 8. No new ADR, dependency, deferral, provider
+request, credential, billing or user decision is introduced.
+
+
+### Wave 3 Step 7a implementation checkpoint — 2026-10-16
+
+**Implemented on `development`, not independently accepted.** The recorded 7a → 7b
+split starts at Step 6 acceptance metadata `b09008e7`. This increment implements
+only the guarded lazy source/runtime and finite compiled graph under ADR-0111.
+[Packaging](../../reference/cli/packaging.md#compiled-graph-implementation-boundary--step-7a)
+owns its current boundary; installed packaging, native fatal integration, maps/
+custody and new JSON help retain Steps 7b, 8, 9 and 10 respectively.
+
+The real bootstrap constructs one invocation before guarded imports and threads
+that exact object through actions and interactive Home. Existing error and
+sanitizer implementations have pure supported leaves, retaining root identities.
+An initial grant-admission graph reached the core/provider barrel through its error
+base; the exact existing ToolDispatchError base is extracted without changing the
+family or private filesystem authority. Directory admission now precedes optional
+file-cache seeding and the lazy runtime. Meta uses the same grammar but does not
+stat an absent absolute grant. Pure syntax/size/count checks remain; no ad-hoc
+help-token parser or model/user-derived import path is introduced.
+
+One invocation-owned total file-cache attempt is lazy, concurrent/reentrant safe
+and remains attempted after missing/torn/import failure. Nine priced executor
+routes and Home use it before first runtime metadata access; current eleven DB
+consumers remain unchanged and install the latest admitted DB tail. History,
+provider management, authoring and media do not load an unused file cache; an
+actual string agent fixture skips it. New tests distinguish injected action/
+context observers from actual SQLite/cache/cost helper integration. Existing
+agent fixture tests also pass; no eleven-surface end-to-end claim is made.
+MCP installs the same build version token only at its actual construction choke.
+
+One actual tsup invocation emits **24 flat ESM files / 375 inputs**, with all
+seventeen third-party runtime dependencies external. The entry alone has a
+hashbang and executable POSIX mode. The new emitted checker parses every JS
+loading edge and compares independent file/import inventories, dependency parity,
+reachability and single input contribution. Seventy-six negative/positive tool
+controls include actual esbuild split fixtures. Windows explicitly reports graph
+scope without fabricating POSIX mode observations; actual tar headers belong 7b.
+
+The untouched final compiled entry passes **175 native controls** on Node 22.23.1 /
+macOS: forty current human meta forms × JSON/plain × absent-root/no-root, twelve
+grammar refusals, real grant admission before services and two guarded deferred
+import failures. Native witnesses forbid service/config/cache/grant/network/
+subprocess activity and retain all 24 unchanged JS digests. Ten self-controls pin
+these witnesses, descendant boundaries, UTF-8 output bounds and child termination.
+This is repository-dist evidence, not an installed artifact, minimum Node or other
+platform certification. Existing compiled workflow/budget/MCP-signal and native
+media ownership smokes also pass; their deliberate failure controls are not
+claimed as successful generation tests.
+
+All **six final local causal cohorts / eighteen structured zero-unhandled receipts**
+pass named assertions, complete unique inventories, direct target/test/reporter
+pins and byte-exact restoration. Earlier partial execution stops on ambiguous
+new test labels and is not counted; labels are made unique without changing
+assertions. Four existing secret controls and one filesystem invocation control
+retain IDs, mutation bodies and workloads after target moves. Their selected
+physical captures each have three verified receipts and 457 dependency packages;
+source inventories are 1,239, 1,239, 1,240, 1,240 and 1,248 files respectively.
+These precommit snapshots name base `b09008e7` and their physical source pins,
+not a future committed head or complete 41/110-control family. The parent verifies
+stdio, runtime receipts, evaluations, manifests and restoration independently.
+
+Final author gates pass **646 files / 14,659 tests / 20 established skips**, all
+workspace lint/typechecks and six forced builds after causal restoration. The
+final CLI suite runs fresh; ten of eleven test/build tasks reuse valid normal
+caches in the workspace gate. All **408 acceptance-tool tests**, tools lint/
+typecheck, seam/engine fences, DB synchronization, 646-file isolation, changed
+code/data formatting, bundle closure, compiled smokes and document/diff checks pass.
+Initial author failures are corrected test return typing, await-free async doubles,
+the moved JSON-renderer lint requirement and one stale mutation anchor. A later
+tooling run overlaps separately invoked coordinator captures and misattributes
+their global temporary directories as a leak; serialized final execution passes.
+No source cleanliness or gate is inferred from either failed run.
+
+Two NEW independent complete cumulative clean reviews and a separate sanitizer/
+bootstrap/package-boundary security sitting remain required before accepting 7a.
+Step 7b, whole Step 7 and Steps 8–19 remain open. No new ADR, runtime dependency,
+provider capture, credential, billing action, external release or user decision
+is introduced. No full CI/coverage or native-platform publication is claimed.
+
+
+### Wave 3 Step 7a acceptance — 2026-10-16
+
+Step 7a is independently accepted at
+`6ffdd63ef1eb621efa5b7cbe2749011e367fcf04`, from Step 6 metadata
+`b09008e76b3c31e4cf0c51e93b3788e07ea117bb`. Two NEW independent complete
+cumulative clean reviews cover every one of **60 paths / 127 zero-context hunks**,
+including all 28 full new files. Reviewers are gpt-6-astra/high (**18 files /
+547 passing tests**) and gpt-6.1-sol/xhigh (**16 files / 538 passing tests**), both
+with zero skips, plus ninety tooling tests each. Both independently execute all
+175 compiled controls and the 24-output / 375-input / seventeen-dependency closure.
+The parent reads both complete reports. Neither round finds an actionable defect;
+no material source change follows them.
+
+The separate clean security sitting executes **10 files / 391 tests**, with two
+established Windows-only skips, 86 tool tests, 175 compiled controls and four extra
+debug/JSON failure controls. It checks exact extraction, loader/admission/privacy/
+catalog boundaries and all retained scoped evidence. Both complete reviewers and
+the security reviewer independently audit all eighteen direct causal receipts and
+all fifteen selected physical phases. Direct target/test/reporter pins remain
+narrower than the five isolated physical captures; the latter retain their
+precommit base, differing broader source inventories and 457 dependency packages.
+No whole-family or all-final-source equivalence is inferred. The second reviewer
+also verifies the dependency inventory's 21,013 actual files.
+
+Final author gates retain **646 files / 14,659 passes / 20 established skips**,
+all workspace lint/typechecks, six forced builds, 408 acceptance-tool tests,
+formatting/isolation/fences/DB synchronization, compiled smokes and document/diff
+checks. Scoped reviewer totals are separate and not added to author counts.
+Every final compiled JS digest remains unchanged throughout both reviews and the
+security sitting. A separate unhooked local three-spawn-per-case comparison records
+56–59 ms medians against the fresh 427–433 ms Step 6 baseline on the same Node
+22.23.1 host; all six existing human-output forms retain exact stdout bytes.
+The seventh case is the approved absent-root help refinement, exit 2 → 0. These
+measurements are not a portable threshold or installed-package benchmark.
+
+This accepts the **compiled graph only**. Whole Step 7 remains open. Step 7b starts
+automatically with actual tar inspection, external same-digest installation,
+complete chat/resume, migration/native/MCP/CAS/class/context controls and required
+exact Node 22.0.0 Linux plus current `.nvmrc` (24) Linux/macOS/Windows consumers.
+A read-only synthetic transport feasibility probe against unchanged repository
+dist already observes two real SDK dispatches, two refused keyring constructors,
+four durable transcript rows, same-session resume and exit 4 twice. The parent
+reads its full ignored report. That probe is preparation, not installed-tarball,
+minimum-runtime or platform acceptance; no real credential/service is used.
+Actual registered native-owner cleanup remains Step 8, maps/custody Step 9 and
+new CLI discovery Step 10. This metadata landing does not imply new source
+execution, full CI/coverage, a release or whole-wave acceptance. No new ADR,
+dependency, deferral, billing action or user decision is introduced.
+
+## Wave 3 Step 7b implementation checkpoint — 2026-10-16
+
+Step 7a remains independently accepted at source `6ffdd63e`, with metadata
+`bc79793d`. Step 7b now implements independent archive inspection, exact installed
+package controls and required platform aggregation under ADR-0111. This checkpoint
+is author evidence, **not** independent acceptance or remote platform execution.
+Whole Step 7 remains open. Two NEW complete cumulative clean reviews from the
+Step 6 boundary, a package/CI security sitting, and actual required platform
+success remain necessary before Step 8.
+
+The [package tooling](../../../tools/cli-package/README.md) owns one fresh ordered
+dependency emit and the sole CLI prepack build. It observes one actual prepack
+build-start record and independently inspects bounded gzip/USTAR bytes without
+extraction. Every JS and migration byte matches finalized/canonical files;
+publication metadata matches pnpm's catalog/workspace transform. Negative controls
+cover malformed/truncated/oversized archives, checksums, paths, types, modes,
+hashbangs, map links, missing/extra/duplicate files and digest drift.
+
+The consumer installs a verified copy outside the workspace with pnpm 9.12.3 and
+the existing lifecycle allowlist. It compares all **69** installed public files,
+records all **17** actual runtime dependency versions/metadata digests, repeats
+**175** untouched-entry bootstrap controls and six fixed installed behaviour cases.
+Actual chat uses the installed OpenAI SDK, bundled adapter/AgentSession and native
+SQLite: two dispatches, four ordered durable transcript rows, same-session resume,
+complete cost/usage and exit 4 after each persisted assistant. Its two synthetic
+keyring constructor attempts are refused before native API access. The budget
+preflight has one separately asserted refusal; no provider dispatch occurs there.
+Actual native addons load in a separate unmodified process without a keychain API
+call. Workflow/gate discovery and fresh-process resume, invalid budget decisions,
+abort/idempotence, governed effect denial, MCP initialize version and media/CAS
+cleanup/native iterator join execute through the installed package.
+
+The new required pack → four consumers → aggregate jobs share an immutable
+tarball identity. Current `.nvmrc` (24) Linux/macOS/Windows and exact Node 22.0.0
+Linux must actually pass. Only the bounded public consumer summary is uploaded;
+support logs, transport bodies and host paths are excluded. Source/digest/origin,
+exact case inventory, dependency/file identities and runtime/platform checks
+refuse incomplete or mismatched evidence. Job success is also required through
+`ci.needs` and explicit checks under `always()`. Same-artifact consumer retries
+retain prior successful legs and replace only their latest smoke receipts, never
+the tarball. Release smoke uses the same consumer; Step 9 still owns original-TS
+maps, encrypted custody and release discovery/archive/retry integration.
+
+Local author execution on **Node 22.23.1 / macOS arm64** passes archive inspection,
+outside-workspace install, all 175 bootstrap controls and all six installed cases.
+The finalized-pipeline candidate is `a1a4d5f8…`; the separate local full-CI wrapper
+candidate is `620aa6e5…`, and both have complete local consumer results. Earlier
+`386c106b…` controls are attributed to their own artifact. These are distinct
+local candidates, not one shared remote artifact or production candidates. Local
+receipts retain their precommit source/dirty flag and cannot certify a CI leg.
+The first setup omitted the consumer's package-manager pin and Corepack selected
+pnpm 12; that failed attempt is excluded. The corrected consumer pins 9.12.3.
+The first integrated metadata reader's 128-KiB limit rejected Drizzle's actual
+larger package manifest; the bounded dependency-only limit is corrected to 1 MiB.
+Neither author setup failure is presented as a product regression or deferred work.
+
+Author gates pass **473 acceptance-tool tests** with no skips, tooling lint and
+typecheck, formatting, seam/dependency guards and default compiled/media smokes.
+The unchanged workspace suite retains **646 files / 14,659 passes / 20 established
+skips**, with eleven valid cached tasks on this tooling-only increment; this is
+not claimed as a fresh execution. Fresh ordered dependency emits and prepack build
+execute in the package controls. Document/diff, isolation and DB-sync results are
+recorded before review. No new runtime dependency, ADR, deferral, credential,
+billing action, provider request or production upload is introduced.
+
+### Step 7b first cumulative review and fresh-CI corrections — 2026-10-16
+
+The first NEW complete cumulative review at `7b2b88ff` is **non-clean**: all
+97 paths / 183 hunks / 58 full new files were covered, and two actual fresh-CI
+failures were independently reproduced. Its 151 tooling tests, nine runtime files /
+255 passes and 175 compiled controls are prepared-workspace evidence, not a
+substitute for those failures. The separate security sitting found no verified
+security defect but explicitly retained the failed platform gate. Both full local
+reports are read by the parent and remain Git-ignored.
+
+1. The POSIX pnpm action installs a regular shell wrapper with its JavaScript
+   entry in the reviewed sibling package location. The resolver previously
+   supported that location only on Windows. The correction uses the same explicit
+   sibling-JS locations on POSIX, without parsing/executing shell text or weakening
+   the pinned-version check. A native layout regression proves positive resolution
+   and refusal when that sibling is absent; removing the correction breaks it.
+2. The shared/LLM compiled root/leaf controls imported their own `dist` before
+   lint/typecheck's existing `^build` graph guaranteed it. Local pre-existing outputs
+   and cached gates concealed that prerequisite. Source identity/redaction checks
+   remain in their owning packages; actual compiled identity, complete redaction
+   corpus and service-free leaf-evaluation controls move to the CLI, whose declared
+   dependencies and existing build graph already guarantee those outputs. No
+   source alias, Turbo change, skip, dependency or weakened assertion is introduced.
+   The read-only TypeScript host probe that hides only each owner's `dist` changes
+   from four unresolved self imports to zero; fresh checkout execution is a
+   separate required verification.
+
+Corrected author gates pass **647 files / 14,660 tests / 20 established skips**:
+all 17 lint/typecheck/build-prerequisite tasks are fresh, and all six workspace
+test tasks execute freshly (the five prerequisite build tasks are valid cache
+hits). **474 acceptance-tool tests** pass without skips. These results do not
+yet imply new remote consumers, a clean post-fix review, or whole Step 7 acceptance.
+The old failed push `38862829767` and its skipped consumers are not counted as
+platform evidence. The corrections require two NEW complete cumulative clean
+rounds after the final material fix, the affected security delta and real required
+same-artifact platform success. No new decision or deferral is introduced.
+
+### Step 7b second cumulative review and native CI corrections — 2026-10-16
+
+The second NEW complete cumulative review at `cd78816a` covers **98 paths /
+185 hunks / 59 full new files** and is **non-clean**. It independently verifies
+both prior fixes but reproduces the required Windows consumer's preload failure.
+Its 152 tooling tests, eight runtime files / 106 passes and 175 local compiled
+controls do not substitute for Windows acceptance. The separate correction
+security sitting is clean in its stated affected scope; neither report accepts
+whole Step 7. The parent reads both complete reports.
+
+Actual push `38864509846` produces a clean-source tarball and successful current
+Linux, exact Node 22.0.0 Linux and current macOS consumers. Windows and the required
+aggregate fail. The separate required usage gate also fails; a diagnostic agent
+verifies the retained worker error against the uploaded exact-source manifests.
+Neither failure is attributed to transient scheduling or reported as success.
+
+- Windows `--import` must receive an ESM file URL, rather than a drive-qualified
+  native path. The bootstrap child now retains the existing URL. Its permanent
+  native regression relocates the unchanged tooling implementation beneath URL
+  metacharacters; converting back to a path makes that exact test fail on POSIX
+  too. An isolated copied-source fixed/removal/restored control exits 0/1/0 with
+  the expected module-resolution assertion; production source is not mutated.
+- The nested replay loader lacked the newly supported pure subpaths although the
+  outer usage loader already knew them. The actual current producer failed before
+  its semantic cases on `@relavium/shared/terminal-safe`. Five exact leaf mappings
+  are added, preserving manifest membership, physical-root and opposite-mode
+  refusal. Actual current/frozen workers exercise all five current leaves, the
+  historical terminal-safe leaf, four absent-frozen refusals and unknown-subpath
+  refusal. Module-body audits pin the loaded leaves; no frozen archive, dependency
+  byte, replay prefix, positive control or semantic refusal is replaced.
+
+An independently cloned `development` tree at `cd78816a`, with no prior dist/cache
+and distinct sibling HOME/TMP/cwd roots, passes all 17 fresh lint/typecheck/build
+tasks and all six fresh workspace test tasks: **647 files / 14,659 passes /
+21 established CI-mode skips**. Five prerequisite builds are valid subsequent
+cache hits. The earlier clone run had a test-harness HOME/TMP ancestry collision
+and is retained as failed verification, not accepted. The ordinary prepared
+workspace result remains separately **14,660 passes / 20 skips**; the additional
+CI-mode projection skip is existing conditional behavior, not a new source skip.
+
+The two native corrections pass **475 acceptance-tool tests**, tools typecheck,
+lint and formatting, the 175 compiled bootstrap controls and the actual full
+replay smoke (**16 refusals / two legacy controls / zero fetches**). The selected
+owner-basis causal control has fixed/removal/restored inventories 2/2/2, with the
+expected one semantic removal failure; it is not the complete usage matrix.
+The first lint attempt rejects computed fixture imports; the correction retains
+literal leaf imports and explicitly justifies only the owned URL-path fixture.
+Two NEW complete cumulative clean rounds after these final material fixes,
+affected security review and real required same-artifact platform success remain
+necessary. No new decision, dependency or deferral is introduced.
+
+### Step 7b third cumulative review and completed-consumer correction — 2026-10-16
+
+The third NEW complete cumulative review at `eb21b86c` covers **103 paths /
+193 hunks / 59 full new files** and is **non-clean**. It verifies the prior four
+corrections, then independently reproduces the actual Windows consumer's outer
+cleanup failure. All 175 bootstrap controls and six installed cases finish, but
+`consume.mjs` still hosts installed SQLite native loads and fails to remove its
+installation. A success receipt/summary was written before that required removal.
+The real success-only upload and separate job-result aggregate refuse the failed
+job. Its local 153 tooling / 106 runtime / 175 compiled passes do not close this
+failure. The parent reads the full report and the separate native security sitting.
+
+The correction runs the complete installed cohort in one bounded native worker,
+joins actual process closure, and binds its bounded private report to the observed
+worker PID, parent, source, artifact and runtime. The cleanup process imports no
+installed native module. Required installation removal precedes both success
+receipt and summary. An exercise failure retains its exact primary value through
+secondary cleanup or diagnostic failure; a cleanup-only failure prevents success.
+Seven permanent controls include a real copied SQLite addon in the worker,
+forbidden native loading in the parent, worker exit before removal/publication,
+wrong PID, nonzero-after-early-report, cleanup refusal and Error/null/undefined
+primary retention. Existing timeout/output/join controls remain required.
+
+Actual CI `38866746303` passes the **complete usage causal gate**, correcting the
+nested replay alias failure. Pack, current Linux/macOS and exact Node 22.0.0 Linux
+also pass, with the same remote `5cc4e96e…` artifact; Windows/aggregate remain
+failed at this historical source. Independently downloaded tar bytes and three
+successful receipts bind to clean source `eb21b86c`; no four-leg or full-CI pass
+is inferred. The local `df7935b2…` candidate is separately attributed.
+
+The same run exposes four stale secrets-workload declarations after Step 2's
+historical-reader regressions: the gate file contains 65, not 61 cases; each of
+three serializer controls contains 25, not 24. A separate source-fenced actual
+collection audits all **41 secrets declarations / 23 files / 1,041 cases** and
+all **110 filesystem declarations / 38 files / 658 cases**. Only those four
+counts differ. Their exact counts are corrected without weakening whole-file
+equality, runtime receipts, semantic markers, restoration or source provenance.
+The four selected fixed/removal/restored cohorts retain **65/25/25/25** cases per
+phase, with **3/2/3/2** expected semantic removal failures and byte-identical
+restoration. Selected runs remain incomplete-family evidence.
+
+The first author tooling run exposes a separate test-isolation assumption:
+coordinator tests compare all matching names in the shared OS temp root while
+four real selected controls create/remove their own roots concurrently. Each
+coordinator fixture now supplies and scans its own TMPDIR/TMP/TEMP directory;
+the scratch-leak assertion remains exact. No other invocation's temp state is
+treated as this fixture's cleanup failure. The corrected **482 acceptance-tool
+tests** pass with zero skips. Initial author lint catches a moved summary binding
+and an unsafe-finally form; fixed lexical bindings and explicit primary capture
+pass lint without rule suppression. The earlier consumer attempt with that binding
+error remains failed evidence; its corrected local retry passes all 175/six cases.
+
+Affected security and two NEW complete cumulative clean rounds after these
+material corrections, plus actual required same-artifact platform success, remain
+open. No new ADR, dependency, deferral, credential or provider action is introduced.
+
+## Wave 3 Step 7b and whole Step 7 acceptance — 2026-10-16
+
+**Accepted on `development` at `c836ffe616803697285f51204c78b76ce3a99814`.**
+The parent reads both NEW complete cumulative clean reports after the final
+native-worker, workload and coordinator-isolation corrections. R4 uses
+gpt-6-astra/high; R5 uses gpt-6.1-sol/xhigh. Each independently covers all
+**107 paths / 211 zero-context hunks / 62 full added files** from the accepted
+Step 6 boundary `b09008e7`, including all Step 7a work and every correction.
+Each freshly passes **160 tooling tests, eight runtime files / 106 tests,
+six actual coordinator tests and 175 untouched compiled bootstrap controls**,
+with zero skips. Closure remains **24 JS / 375 inputs / 17 external dependencies**;
+the hidden-own-dist resolution probe has zero unresolved self imports.
+Finding-bearing R1–R3 and interrupted attempts are not counted clean.
+
+The separate NEW completed-consumer security sitting is clean at the same source:
+**61 tooling tests and nine independent copied-launcher negative probes**.
+The parent reads the whole report. Exact child closure precedes installation
+removal, and required removal precedes public success. This gate is distinct
+from both complete correctness rounds and from Step 8 product fatal ownership.
+
+### Author, artifact and actual required platform evidence
+
+The final author **482 acceptance-tool tests** pass with zero skips; tools
+lint/typecheck/format/fences pass. Ordinary workspace checks retain the valid
+**647 files / 14,660 passes / 20 established skips** cache attribution and the
+separate earlier fresh clone's **647 / 14,659 / 21 established CI-projection
+skips**. Neither is relabeled as a new fresh final-source full suite. Fresh
+reviewer checks above independently exercise the affected current source.
+Earlier build, selected causal and failed attempts keep their original scopes.
+
+GitHub push run **38869520079 / attempt 1** is the exact reviewed source.
+Actual successful jobs are pack **116870449731**, current Linux **116870634562**,
+current macOS **116870634638**, current Windows **116870634595**, exact minimum
+Linux **116870634584**, and required packed aggregate **116871821131**.
+All four consumers bind the same original tarball:
+`9926f8eab1686f3e541052f1af22b832658166126c7a6ac72b908e2f7f18c228`.
+Current legs run **v24.21.0**; the minimum leg runs **v22.0.0**. Both complete
+reviewers independently inspect actual bytes and strict receipts against actual
+API job/source/origin identity; R5 downloads its own copies. The parent also
+independently inspects original bytes and all four receipts. Each leg passes
+175 bootstrap controls and six installed cases. Historical Windows failures
+remain failed evidence, not accepted runs.
+
+The separately produced local candidate is
+`d707f89adbb71490a5c03b59cc095bce1ff6dda7b265df9c83d4ab965c09d7ed`,
+**69 public files / 24 JS / 17 dependencies**, at the same source. Its completed
+175/six consumer, joined worker and absent installation are independently checked;
+its explicit local `dirty: true`/isolated-Git-HOME qualification is retained.
+It is never substituted for the clean GitHub artifact or a remote platform leg.
+
+### Broader CI and physical evidence retain separate attribution
+
+At this acceptance checkpoint, actual current wire, complete secrets, complete
+usage, coverage and advisory platform jobs are successful; filesystem controls
+and the overall CI run remain **in progress**. Required Step 7 package/platform
+gates above are complete. No whole-CI or successor-metadata execution is inferred.
+The current CI run is allowed to finish without a superseding push; any later
+failure remains actionable. Whole-wave source/coverage/platform gates repeat in
+Step 19 after later implementation.
+
+A separate read-only physical audit downloads current wire, secrets and usage
+artifacts from that run and validates exact source, counts, semantic witnesses,
+restoration and retained bounds: wire **four mechanisms / 24 cases**;
+secrets **41 controls / 123 phases**, including the repaired **65/25/25/25**
+cohorts and all 123 zero-unhandled completed runtime receipts; usage **23 controls /
+eight groups**, with **435 permanent cases / 71 native children / one ordered
+readiness-timeout control**. Raw source/body/dependency journals are joined within
+their respective export scope. This is inspection of remote execution, not new
+local mutation execution; absent nested trees and reporter-boundary limits are
+explicit. Filesystem's current physical artifact is not yet audited here.
+
+Detailed review/audit records remain local and Git-ignored. No installed smoke
+claims real provider/keychain API use, TLS certification or hostile same-user
+containment. No new dependency, ADR, deferral, credential, billing or approval
+gate is introduced. **Step 7b and whole Step 7 are closed; Steps 8–19 remain open.**
+
+### Recorded Step 8 serial split before implementation
+
+The four rows 8a → 8b → 8c → 8d above preserve all original Step 8 IDs and
+approved contracts. Each receives an implementation commit and two NEW complete
+cumulative clean rounds after its last material correction; native/process
+security sittings remain separate. 8a supplies provenance and an inert native
+foundation. Product fatal activation waits until 8d connects every actual
+creation owner and caught/forced-exit path. The fixed migration adapter may decode
+one verified public Drizzle wrapper at its actual owned operation, never arbitrary
+provider/plugin causes or a recursive private cause tree; checkpoint origin is
+retained before native evidence is erased. No driver fork or migrator replacement
+is planned. Whole Step 8 stays open until 8d's complete cumulative acceptance.
+The central opener refactor remains Step 18, and whole-wave publication Step 19.
+
+### Step 7 completed full-CI follow-up — 2026-10-16
+
+After the acceptance checkpoint above, GitHub run **38869520079 / attempt 1**
+completed successfully at the exact accepted source
+**`c836ffe616803697285f51204c78b76ce3a99814`**. The completed CI workspace suite
+reports **647 files / 14,659 passes / 21 established CI-projection skips**.
+This appends the later result to the earlier in-progress observation; it does
+not rewrite that historical checkpoint or claim execution of successor
+metadata `d9625ff0` or the Step 8a working tree. Earlier physical artifact
+audits retain their recorded scopes. Whole-wave gates repeat in Step 19.
+
+A separate completed filesystem physical audit verifies **110 controls / 330 phases**
+from that run: all completed zero-unhandled receipts, exact immutable-source pins,
+named semantic failures and byte-identical restoration. The retained tree contains
+**1,987 files / 39,697,863 bytes**; the fourteen native controls retain their
+42 phase identities and child/dependency witnesses. The **8,148 repeated phase
+cases / 361 semantic failures** are execution totals, not unique permanent cases.
+The parent reads the complete separate audit. No local re-execution or
+merge-/metadata-head execution is inferred.
+
+## Wave 3 Step 8a implementation checkpoint — 2026-10-16
+
+Step 8a implements the approved minimal storage-origin and runtime projection
+subset above accepted Step 7 metadata `d9625ff0`. The DB root exposes only the
+read-only storage-failure query; private factory/native association, native
+storage allowlisting and fixed one-wrapper Drizzle handling preserve existing
+error, migration, checkpoint and media contracts. CLI owned filesystem and
+open/maintenance/export adapters distinguish storage 1, known refusals 2,
+unknown infrastructure 9 and failed output 9 without a blanket internal-code
+rewrite. Core exports its frozen existing transient-code authority.
+
+The native registry observer, fixed early diagnostic formatter, successor
+keepalive observer and native stream/deadline adapter form an **inert product
+foundation**. Explicit native fixtures exercise registered owners, both real
+streams, restoration-before-diagnostic ordering and the common absolute
+budget. Production activation waits for Step 8d's actual owners and all
+caught/forced-exit paths; this checkpoint does not claim those are connected.
+
+Author gates, isolated causal controls, physical custody audits and independent
+review reports retain their individual source and execution attribution in
+the accompanying evidence record. **Step 8a is not accepted by this
+implementation checkpoint. Whole Step 8 and Steps 8b–19 remain open.** No new
+ADR, runtime dependency, credential, billing or provider capture is required.
+
+### Step 8a author and selected-control evidence
+
+The implementation is based on `d9625ff0`; these local checks execute its
+uncommitted Step 8a body, not pristine metadata or a published commit. Ordinary
+workspace checks pass **657 files / 14,791 tests / 20 established local skips**.
+The last complete workspace invocation reruns CLI and reuses ten valid test
+tasks; earlier affected DB/core invocations remain separately attributed.
+Two subsequent parameterized-title changes keep all 66 affected cases and their
+assertions, and the full two-file workload passes. Build/format, tools
+lint/typecheck, schema sync, seam/engine fences and **482 acceptance-tool tests**
+pass. Compiled CLI, media-packaging, overflow and budget-replay smokes pass;
+negative replay controls retain their expected fixed failure diagnostics.
+
+A fresh local prepack and outside-workspace consumer pass **175 bootstrap controls
+and six installed cases** on macOS/Node **22.23.1**. The candidate is
+`ff18f5f5812b28e313cfc2d5ea1beac3f1e5685722fe63bc34df1ba80fc549f8`,
+**422,086 bytes / 70 public files / 25 JS chunks / 17 dependencies**, with
+explicit local `dirty: true` and parent metadata `d9625ff0`. Actual consumer
+publication follows joined work and required installation removal. This is
+local-host evidence; it is not a clean remote artifact or four new platform legs.
+
+Five DB-origin controls and six CLI/native controls independently remove one
+mechanism in copied source, then restore the exact original bytes. Their
+**33 completed zero-unhandled runner receipts / 750 repeated phase cases /
+41 semantic failures with declared named witnesses** are independently audited with complete inventories,
+source/target/test body pins, runtime/stdio/dependency receipts and restoration.
+The retained local artifacts contain **222 files / 14,149,147 bytes** and
+**255 / 16,239,468 bytes**, with their raw graphs and caches removed. The two
+DB-backed CLI controls additionally require an actual native-addon receipt in
+a target worker; four pure controls expressly decline that claim. Controlled
+filesystem/pragma failures are fault injection, not measured OS failures.
+The local coordinators retain `complete: false` / `acceptance: false`: they are
+selected raw causal evidence, not a new finite-family archive or whole-wave
+certificate. The first two CLI runs refused duplicate parameterized case names;
+those refusals remain failed evidence. Permanent names were made unique before
+the final full six-control run, with no reduced count or weakened guard.
+
+The adapted CAS-shard anchor and three updated secrets workloads also pass their
+canonical fixed/removal/restored checks: **21 / 77 / 77 / 67 cases** respectively.
+These selected checks do not claim new complete filesystem/secrets-family
+execution. All copied removals leave the developer source unchanged. Existing
+actual-native fixtures test autonomous cleanup, a common deadline through the
+final write ACK, competing late stream failure, both broken pipes and terminal
+restoration ordering without safe-DB-close or universal containment claims.
+
+The implementation commits carry this candidate. Two NEW complete cumulative
+clean reviews after the last material correction and a separate security sitting remain required.
+Whole Step 8 and Steps 8b–19 remain open; no user decision is pending.
+
+## Wave 3 Step 8a acceptance — 2026-10-16
+
+**Independently accepted on `development` at
+`e0a5ae19981e749a75455e6b5698c806d9f1c674`.** The parent reads both NEW
+complete cumulative clean reports, R1 (gpt-6-astra/xhigh) and R2
+(gpt-6.1-sol/xhigh). Each reviews every **61 paths / 177 zero-context hunks /
+17 complete added files** from `d9625ff0`, then independently passes all
+**24 changed test files / 481 tests / zero skips**. No material correction is
+requested, and no source or dist mutation occurs between those rounds.
+
+The separate security sitting is also clean at that exact source: **26 complete
+files / 525 passing tests / zero skips**, plus five independently authored
+probes. It verifies fixed projection/privacy, private origin identity and factory
+association, inert imports, actual native fixture observations and emitted
+DB/core-source equality. These overlapping reviewer cohorts are separate
+executions, not added together as unique test coverage. The parent reads its
+full report; this sitting does not substitute for either correctness round.
+
+Both correctness reviewers inspect the actual retained local causal coordinators,
+source/test bodies, exact removals/restorations, stdio, complete inventories,
+runtime/dependency and zero-unhandled receipts. R2 additionally reconciles all
+21,013 installed dependency file digests. The **11 controls / 33 phases /
+750 repeated cases / 41 semantic failed cases with declared named witnesses**
+keep their original uncommitted-body attribution and `complete: false` /
+`acceptance: false` local labels. The DB capture predates six unrelated CLI
+assertion-marker changes; all production and selected DB targets/tests match.
+All 1,256 CLI capture pins match current. No new family certificate or fresh
+reviewer mutation execution is inferred.
+
+### Actual current-source package and CI attribution
+
+A separate read-only audit and R2 independently inspect actual downloaded
+GitHub bytes and strict receipts against freshly queried job/source identities.
+Push run **38880157607 / attempt 1** executes the reviewed `e0a5ae19` source.
+Actual successful jobs are pack **116904676623**, current Linux **116904849909**,
+current macOS **116904849827**, current Windows **116904849911**, minimum Linux
+**116904849776**, and required aggregate **116906278121**. All four consumers
+bind **`7d02747c6f8c52b0b12ef44dab990e1658fa652b83600280a928aad22897e18e`**:
+**421,903 bytes / 70 public files / 25 JS / 17 dependencies**. Each passes
+175 bootstrap controls and six installed cases. Current runtimes are **24.21.0**;
+minimum Linux is exactly **22.0.0**. Forty-four canonical migration/public asset
+files match frozen source byte for byte. Public receipts do not export their
+private worker/cleanup logs, installation trees or native dependency bodies;
+those absent physical details are not reconstructed or independently attested.
+The separately qualified local dirty candidate is not substituted for this tarball.
+
+At this checkpoint, current wire, complete secrets, complete usage, enforced
+LLM/MCP coverage, advisory Windows and Node-floor jobs also report success.
+Filesystem controls remain in progress; the dependent main CI job and overall
+run have not yet completed. This is independent Step 8a acceptance, **not a
+whole-CI claim**. The existing run is allowed to finish; any failure remains
+actively actionable. Earlier full-CI evidence belongs to `c836ffe6`, and no
+execution of this successor acceptance-metadata commit is inferred. Whole-wave
+gates repeat at the final implementation in Step 19.
+
+Step 8a's origin adapters and inert native foundation are closed. **Whole Step 8
+remains open**, with actual creation owners in 8b, workflow health in 8c, and
+session/terminal/caught/forced-exit activation in 8d. Later 8b–8d reviews remain
+complete and cumulative from `d9625ff0`; accepting this foundation does not
+narrow those reviews. Step 18 still owns central DB-opener consolidation and
+Step 19 publication. Detailed reports/artifacts stay local and Git-ignored.
+No new ADR, dependency, deferral, credential, billing, provider or user-decision
+gate is introduced. Step 8b proceeds automatically.
+
+### Step 8a completed full CI follow-up — 2026-10-16
+
+The previously pending push run **38880157607 / attempt 1** subsequently
+reports **success** for the exact reviewed source
+`e0a5ae19981e749a75455e6b5698c806d9f1c674`. The parent queries the completed
+job identities and reads main job **116919762337**: lint/typecheck, build,
+format, isolation and CLI/media/overflow/budget-replay smoke gates pass.
+The serialized workspace execution records **657 files / 14,790 passing tests /
+21 established CI skips**: eleven dialect capability cases, nine filesystem
+platform cases and one CI-only Ink projection case. These are remote execution
+totals, separate from the earlier local 14,791 / twenty-skip observation.
+
+Filesystem, secrets, usage, wire, enforced LLM/MCP coverage and all required
+same-tarball consumers/aggregate also report success. The earlier physical
+package audit retains its exact six-case scope and artifact identity; a
+successful job status does not imply a new independent download/audit of its
+private causal artifacts. No execution of acceptance metadata `a5742dd9`, the
+subsequent Step 8b working tree or its added seventh installed case is inferred.
+The historical in-progress checkpoint above remains unchanged. Step 8b is in
+implementation; whole Step 8 and later whole-wave gates remain open.
+
+## Wave 3 Step 8b implementation checkpoint — 2026-10-16
+
+Step 8b implements actual native creation ownership above accepted Step 8a
+metadata `a5742dd9`. Every product creation receives the original invocation's
+native controller before asynchronous initialization: workflow and gate/budget
+resume, one-shot live/offline agents, fresh/resumed chat, pending/replaced Home
+hosts, OS helpers and both default editor bindings. Native attachment is reserved
+before entry; a public error or successful cancellation request does not retire
+the target. The [CLI contract](../../reference/cli/commands.md#native-crash-teardown-scope)
+owns platform and helper semantics. The [MCP contract](../../reference/shared-core/mcp-integration.md#creation-owned-native-stdio-lifetime)
+separates actual native closure from full SDK/work completion. A separately
+reproduced standalone clear/reseat omission now carries the existing consent
+gate alongside the same native authority, without bypassing approval.
+
+Registry entries carry live budget notifications and finite exit hooks, with
+one removable creation-owned exit callback and no completed PID history or
+independent process-wide reaper set. Windows admission verifies its absolute
+installation facility before native entry; target and already-entered helper
+remain separate obligations. Existing cooperative signal/grace behaviour is
+preserved. Product fatal activation and workflow/session/terminal health remain
+8c–8d; native closure alone does not acknowledge storage or receipts.
+
+### Step 8b author evidence and remaining gates
+
+The local uncommitted candidate passes serialized workspace checks:
+**664 files / 14,943 passing tests / 21 declared local/platform skips**. CLI and MCP
+execute freshly; nine other test tasks reuse valid cache entries. Build/format,
+tools lint/typecheck, schema sync, seam/engine fences, isolation and the finite
+**26-JS / 380-input / 17-dependency** closure pass. The complete acceptance-tool
+command passes **496 tests** after the fixture corrections below. Its earlier execution correctly refused source
+custody after a concurrent author script edit; that failed run remains failed
+evidence and is followed by the successful frozen-source rerun. Compiled CLI,
+media-packaging, bootstrap, overflow-capture and budget-replay smokes also pass.
+
+The seventh required installed case exercises actual creation-owned native
+cleanup through the public offline agent route. Two early local executions
+remain failed evidence: a copied Homebrew Node lacked its adjacent ABI dylib,
+then two same-directory copies tried to overwrite that read-only support file.
+The corrected fixture verifies and reuses the exact ordinary support bytes;
+its permanent actual regression runs both copies and verifies the descendant's
+own PID/parent readiness. Separate sentinel, altered-byte, symlink, callback and
+delayed-close controls pass. No product mechanism changes for these fixture fixes.
+
+A fresh local tarball and corrected outside-workspace consumer pass **175
+bootstrap controls and all seven installed cases** on macOS/Node **22.23.1**:
+**`39f47a9e006d924c551867522fd65d445074e6cf9f9bf92974f8afe241a5547f`**,
+**425,640 bytes / 71 public files / 26 JS / 17 dependencies**. The parent
+independently inspects exact archive file bytes/modes, source/runtime bindings,
+all three actual native subcases and joined worker/installation removal.
+Synthetic native error, finite creation-exit callback and natural POSIX leader
+exit each retain real close obligations, leave their unrelated owned sibling
+alive and complete without external-watchdog cleanup. This candidate explicitly
+records `dirty: true` at parent metadata `a5742dd9`; it is local-host evidence,
+not execution of a pristine successor commit or four new platform legs.
+Earlier Step 8a six-case platform evidence is not substituted. Windows
+simulation is not actual Windows execution; current platform receipts must
+bind the same new tarball.
+
+Two isolated causal preparations cover 23 native mechanisms and 23 forwarding
+sites; they are still unexecuted and unpinned at this checkpoint. Full source,
+runtime, complete-cohort and physical dependency custody must be fixed before
+execution. Any resulting local selected evidence remains distinct from a
+whole-wave or family certificate. Two NEW complete cumulative clean reviews
+from `d9625ff0` and a separate native/process security sitting remain required.
+**Step 8b is not accepted. Whole Step 8 and Steps 8c–19 remain open.** No new
+ADR, dependency, credential, billing, provider or user-decision gate is introduced.
+
+
+## Wave 3 Step 8b first review and CI corrections — 2026-10-16
+
+The complete cumulative review of `d9625ff0` → `e6e91039` covers **112 paths /
+456 hunks / 33 whole added files** and is **NONCLEAN**. Independent ordinary
+execution passes **1,076 tests / 45 files**, with one actual-Windows-only local
+skip. The separate security sitting is also NONCLEAN and independently reproduces
+the same helper-cancellation reentry. Neither sitting counts towards the two new
+clean rounds required after the final material correction.
+
+Node's actual `ChildProcess.kill` error protocol reproduces 1,296 nested helper
+kill requests from one native refusal, using an inert simulated native handle
+and no PID operation. The correction guards synchronous cancellation reentry,
+allows later independent finite requests and still owes both actual native closes.
+Two permanent semantic cases cover helper error and finite exit. The independent
+real-Node-protocol correction probe observes one request; it is local simulation,
+not actual Windows execution or a new native-close acknowledgement.
+
+Required CI run **38893418852**, exact source `e6e91039`, fails secrets, usage and
+the current-Windows installed consumer. Linux/macOS/current and Linux/Node 22.0
+installed legs pass but do not substitute for Windows or the four-leg aggregate.
+Five secrets declarations are refreshed against complete ordinary inventories:
+run **79**, gate **68**, chat **127**, preserving every witness and strict guard.
+The usage permanent cohort contains **440**, rather than 435, cases; all 23
+mechanisms and 71 native fixture lifetimes in the original failed capture retain
+their exact partial scope. A generated temporary editor script was correctly
+refused by the inherited physical source fence. Both editor tests now use one
+tracked ESM fixture with explicit readiness/release and watchdog-failure evidence;
+no source-fence, NODE_OPTIONS or acceptance timeout is weakened.
+
+The original Windows worker exits 1 with empty stderr before the launcher can
+read its private report; the failing case/mode is therefore still unknown. A
+failure-only, bounded synthetic-test diagnostic now projects canonical identities,
+failed cases and native cleanup facts to stderr after existing cleanup. It grants
+no success or receipt and preserves actual worker join and installation removal.
+The advisory Windows filesystem test separately exceeds its unchanged five-second
+bound; no product defect or timeout-relaxation justification is inferred.
+
+The original native capture completes **23 controls / 69 phases / 1,380 repeated
+cases** and is independently physically audited. Original forwarding capture
+remains **failed overall**, after seven completed controls: three existing budget
+cases declare 20 seconds and correctly refuse the causal guard's 15-second ceiling.
+The corrected private declaration uses the complete 68-case gate file to prove
+its shared physical human/budget forwarding site; all 38 ordinary budget cases,
+including their existing bounds, remain mandatory. No successful replacement
+capture is claimed. Final correction source requires all **24 native controls**
+(including cancellation reentry), all **23 forwarding controls**, fresh author
+checks, actual platform checks, two NEW complete cumulative clean reviews and a
+NEW clean separate security sitting. **Step 8b and whole Step 8 remain open.**
+No ADR approval, user decision, provider, keychain, billing or credential is pending.
+
+
+### Step 8b first-correction author gates — 2026-10-16
+
+The corrected uncommitted body above parent `e6e91039` passes serialized workspace
+checks: **664 files / 14,945 passing tests / 21 declared local/platform skips**;
+CLI's **287 files / 5,016 passes / ten skips** run freshly, while ten other test
+tasks reuse valid caches. All 17 lint/typecheck tasks, seven build/format tasks,
+**505 acceptance-tool tests**, tools lint/typecheck, schema sync, isolation,
+seam/dependency/finite-bundle guards and compiled CLI/media/overflow/replay smokes
+pass. Fresh complete native/forwarding ordinary selection passes **15 files /
+572 tests / zero skips**, including all 38 budget cases with unchanged bounds.
+The editor fixture's first lint attempt correctly refuses implicit Node globals;
+explicit built-in imports fix it without weakening lint. Original failed runs and
+NONCLEAN reviews retain their scope. No new causal, actual-Windows or independent
+correction-review acceptance is inferred from these author gates.
+
+### Step 8b adverse-fixture and case-identity correction — 2026-10-16
+
+The complete cumulative review and separate security sitting at **`76fb1397`**
+remain NONCLEAN. They independently verify the original helper correction, five
+secrets inventory corrections and physical **24-control / 72-phase / 1,557-case**
+native capture, including **74 semantic failures / 72 zero-unhandled receipts**.
+The parent independently audits the same exact source/runtime/dependency bodies,
+restoration and graph removal: **1,173 retained files / 31,502,006 bytes**. This
+selected local evidence does not certify platform or whole-wave acceptance.
+
+The new Windows diagnostic isolates two passing actual-native modes and one
+failed adverse control: `facility-refusal` exits **134** before any native witness.
+The fixture changes launching SystemRoot before Node starts and therefore does
+not isolate the product verifier; the deeper abort cause is unproven. The correction
+preserves the launching environment and targets the exact taskkill access boundary
+with an explicitly labelled synthetic native fault after bootstrap. The production
+verifier and pre-entry refusal stay intact. Actual Windows success remains required.
+
+Forwarding capture **`otgxYP` remains failed overall** after nine completed
+controls. Its rejected chat fixed phase passes all **127** cases but two identities
+embed transformed function source. Stable `plain`/`json` labels now preserve those
+same two assertions and bounds; exact case-inventory guards are unchanged. Fresh
+final-source ordinary inventories, all 24 native controls and all 23 forwarding
+controls remain required.
+CI **38900819422** at `76fb1397` passes the complete secrets family, unchanged
+Windows advisory test, wire, coverage and the three other installed legs; the
+required Windows consumer and aggregate remain failed. Broader running jobs retain
+their eventual separately attributed result. Neither NONCLEAN sitting counts as a
+new clean round; final corrections require two NEW complete cumulative clean
+reviews and a NEW clean security sitting. No user decision or new ADR is pending.
+
+The subsequent adverse-fixture correction has fresh author verification: the full
+package-tools cohort passes **82/82**, the full acceptance-tool suite **507/507**,
+and the complete ordinary fifteen-file causal inventory **572/572**, with no
+skips or function-source case names. Workspace lint/typecheck passes **17/17**;
+all **11** test tasks pass (ten valid cache hits), including a fresh CLI run of
+**287 files / 5,016 passes / 10 established skips**. The seven-task build/format,
+tools lint/typecheck and source-fence checks retain their separately recorded
+results. These are author checks before the new source freeze; actual-platform,
+causal and independent final-correction acceptance are not inferred.
+
+### Step 8b canonical exit-classification correction — 2026-10-16
+
+The new complete cumulative correctness round 1 and separate security sitting at
+**`ab50be11`** are clean, but new cumulative round 2 is **NONCLEAN**: the
+[provider-header reference](../../reference/shared-core/database-schema.md#interim-provider-header-policy)
+and [Home reference](../../reference/cli/home.md#the-tty-gate-when-the-home-opens)
+still describe unexpected failures as exit 1. The parent verifies both against
+actual classification and the permanent provider-header/Home regressions, then
+corrects the references to the already-approved CLI contract. Known operational 1,
+invalid invocation 2 and staged caught/fatal integration remain distinct. No
+runtime, test, tool, dependency or decision changes in this correction.
+
+All three sittings cover **120 paths / 485 hunks / 36 complete added files** from
+the unchanged whole-Step-7 base `d9625ff0`; each independently executes all
+**48 changed test files / 1,100 passes / one actual-Windows-only local skip** and
+inspects both complete retained raw captures. The parent reads the full reports
+and ledgers before accepting their dispositions. The earlier clean sittings do
+not accept this subsequent documentation correction; two NEW complete cumulative
+clean rounds remain required.
+
+Executed native/control and platform evidence remains attributed to `ab50be11`:
+**24 native controls / 72 phases / 1,557 repeated cases / 74 semantic failures**,
+**23 forwarding controls / 69 phases / 4,383 repeated cases / 39 semantic failures**,
+and **141 zero-unhandled completed receipts**. The parent and all three reviewers
+independently inspect actual source/dependency/runtime pins, exact restoration,
+strict full inventories, bounded retention and removed graphs. Native retains
+**1,173 files / 31,501,966 bytes**; forwarding **972 / 56,727,016**, with 207 MCP
+fixture pin checks and no fabricated per-phase fixture-body custody.
+
+CI **38904219484** executes the same **425,556-byte** tarball
+`cc269b86836876e4cb931bf62ad5dddf79591263d12c2ca1863ec7a2af58c0c6` on current
+Windows/macOS/Linux and exact Node 22.0.0 Linux; all four consumers and the required
+aggregate pass **175 bootstrap controls / seven installed cases** each. The parent
+and reviewers independently bind all five downloaded ZIPs to API digests and
+inspect all 71 public tar members and strict reports. Public success receipts do
+not export remote private per-mode journals. Broader CI completion retains its
+separate actual status; no overall-CI-green or documentation-head execution is
+inferred. Runtime byte equivalence must be independently checked before reusing
+this attributed evidence. Step 8b acceptance, 8c–8d, whole Step 8 and later Wave 3
+work remain open; no new ADR or user decision is needed.
+
+
+## Wave 3 Step 8b acceptance — 2026-10-16
+
+**Step 8b is independently accepted on `development` at reviewed source
+`e16a7659d5855dcd0cb75e659573cc218152e139`.** After the canonical-reference
+correction, two NEW complete cumulative correctness rounds and a NEW separate
+security sitting are clean. Every sitting covers the unchanged whole-Step-7 base
+`d9625ff0a641197c6ed45968df99094a25db88d6` through that source: **121 paths /
+488 zero-context hunks / 36 whole added files**. Each independently executes all
+**48 changed test files / 1,100 passes / one actual-Windows-only local skip**.
+The parent reads every full report and per-file assessment and independently
+verifies the immutable file, diff, Git and retained-artifact pins. Final round 2's
+488 individual hunk bodies also match. Detailed reports remain local and
+Git-ignored; their final report SHA-256 values are recorded below.
+
+| Sitting | Model / effort | Report SHA-256 |
+|---------|----------------|---------------|
+| New cumulative correctness round 1 | GPT-6 Astra / xhigh | `a54e5a2d5afef0c6b73627407f6afd78cd3d2eba3143cff04a077cc6f9edd4e2` |
+| New cumulative correctness round 2 | GPT-6.1 Sol / xhigh | `5072e3563d694d9a9580e972d3e60ef24c2f6ab94a049fd500cd0ff6e53c8180` |
+| New separate security sitting | GPT-6.1 Sol / xhigh | `ea42171a24f7015818b147f248ccc421f6b6213506acf4054c808ba508817aee` |
+
+Independent additional probes pass: round 1's 16 lifecycle and 21 negative
+package-binding probes, round 2's four lifecycle/projection probes, and the
+security sitting's six corrected boundary probes. These counts are attributed
+separately, not presented as unique product-suite cases. The security probe's
+initial source/dist identity setup failure remains recorded; explicit shared
+source aliases correct that probe, without a product change or suppressed failure.
+The dangling editorial word in the database reference is removed in this acceptance
+metadata; this does not alter its already-reviewed classification contract.
+
+The parent and all three reviewers inspect the complete native and forwarding
+raw captures and all five downloaded package/report archives described in the
+[preceding evidence checkpoint](#step-8b-canonical-exit-classification-correction--2026-10-16).
+Their execution remains **`ab50be11`**, never relabelled as a run of the
+documentation-only `e16a7659`: all **1,270 source/tool entries**, **21,013 physical
+dependency files / 457 packages**, and Node/Vitest runtime identities are
+independently equivalent. Both complete captures retain 141 zero-unhandled phase
+receipts, exact restoration and their bounded inventories. Earlier failed runs
+and NONCLEAN reviews remain historical evidence, not current acceptance.
+
+Full push CI **38904219484 / attempt 1 / `ab50be11`** has now completed
+successfully: **all 15 jobs pass**, including the full filesystem cohort and
+required lint/typecheck/test/build/fences/smokes job. Actual current Windows,
+macOS and Linux plus exact Node 22.0.0 Linux consume the same tarball, with all
+four strict receipts and their aggregate passing. The parent and reviewers
+independently inspect the physical archives and public receipt bindings; remote
+private per-mode worker journals are not exported by those success receipts and
+are not inferred. The actual-Windows adverse case injects a post-bootstrap native
+access failure; it is not evidence of a real OS permission fault.
+
+The [separate security sitting](../../standards/security-review.md#sitting-wave-3-creation-owned-native-processes-2026-10-16)
+retains the distinctions between fixed diagnostic projection and unchanged legacy
+human verbose stacks, native close and receipt ACK, and owned process types and
+universal descendant containment. Global native activation is still inert.
+**Whole Step 8 is open:** 8c must connect workflow, preparation and terminal
+lifetimes; 8d must connect the remaining surfaces and all caught/fatal exits.
+Steps 9–19 and whole-wave acceptance remain staged. No new ADR, provider capture,
+credential, billing or user decision is needed. Step 8c proceeds automatically.
+
+### Wave 3 Step 8c implementation checkpoint — 2026-10-16
+
+**Author verification in progress; not independently accepted.** The approved
+workflow/render increment connects `run`, human-gate resume and budget resume to
+the original invocation's pre-registered workflow and terminal owners. The
+[canonical CLI contract](../../reference/cli/commands.md#workflow-and-terminal-ownership)
+owns exact cancellation, health precedence, native acquisition and cleanup
+semantics. Product-wide fatal/background/sink activation and session lifetimes
+remain 8d; no whole-Step-8 or whole-wave completion is implied.
+
+The command subscription precedes secret stdin, consent, discovery and engine
+construction. An identity-owned stop checkpoint refuses later service/business
+entry, while an unrelated failure racing cancellation keeps its own classifier.
+Late handles enter the same primary driver without new UI ownership. Actual
+primary done and actual non-continue departure stay distinct; available receipt
+health progresses even while a prompt holds input. Stronger actual health
+survives render/finalize/maintenance errors and typed ownership-loss remedies are
+preserved. Neither rejected iteration nor a cleanup timer authorizes DB close.
+
+Terminal constructors pre-adopt actual native cleanup capabilities. Missing
+handles after failed mount, rejected prompts and incomplete registrations retain
+their obligation. A permanent seal blocks remount, redraw and job-control reclaim
+before independent input/listener/cursor restoration. All deferred and post-await
+restoration entries recheck the original remaining budget. Captured input/stdout
+are passed to installed Ink/Clack; the selected CLI mode explicitly controls Ink's
+interactive mode. JSON on a TTY remains native-free and contains no restoration
+control bytes.
+
+The first owned infrastructure fault now starts the same finite backstop before
+cleanup can hold it from the root catch. Signal and later native finalization
+share one observer/deadline/physical-exit latch. The staged infrastructure fallback
+permits outer diagnosis after actual cleanup; it claims no diagnostic delivery
+ACK. MCP callback-reported close failures retain the obligation even when its
+manager's `close()` fulfills. An unknown database-close throw supplies no ACK.
+Earlier Step 1 warning tests now distinguish preserved durable workflow events
+from CLI lifetime success; this is the approved later process integration, not a
+new deferral or decision.
+
+Fresh focused execution includes actual engine/SQLite health regressions, native
+Node processes around a real MCP manager with synthetic connection faults, and
+installed Ink/Clack bound to handle-free owned TTY fixtures. The native cleanup
+fixture joins actual process/pipe close, requires DB-close count zero while its
+obligation is held and rejects external-watchdog cleanup. Its local POSIX leg
+delivers real SIGTERM; the Windows source leg explicitly uses the registered
+callback because Node does not deliver that POSIX signal there. No actual Windows
+execution is inferred. No provider, keychain, editor or interactive operator
+terminal is used.
+
+A narrow read-only mechanics advisor found preparation, release, callback and
+first-fault ordering gaps; verified fixes have permanent regressions. That advice
+is **not** either complete cumulative review or the separate security sitting.
+Both NEW complete cumulative clean rounds must still cover the entire Step 8
+range from `d9625ff0a641197c6ed45968df99094a25db88d6`, after the final material fix.
+Fresh author lint/typecheck and workspace tests pass: the CLI executes 298 files /
+5,108 passing cases / 10 established skips; unchanged workspace results retain
+their cache attribution. Build and format pass. The compiled CLI smoke also
+passes, including actual MCP-child reaping and SIGINT during budget-resume
+connection. Its first run exposed a genuine typed MCP-cancellation classification
+regression; the fix and permanent regression distinguish owned cancellation from
+a competing opaque failure. The independent ordinary causal inventory is eight
+complete files / 125 passing cases, without skips. None of these author runs is
+an independent review. Fresh causal, package/platform and independent review
+gates remain open at this checkpoint. Historical 8b captures and platform
+receipts retain their original source; none is relabelled as execution of these
+changed runtime bytes. No new ADR, credential, billing, provider capture or user
+decision is pending.
+
+### Wave 3 Step 8c first cumulative review corrections — 2026-10-16
+
+**Not accepted; new complete cumulative reviews required after the corrections.**
+The first complete cumulative correctness and separate security audits cover
+`d9625ff0a641197c6ed45968df99094a25db88d6` through `9e4cac77`: 164 paths /
+770 zero-context hunks / 54 whole added files. Their NONCLEAN findings are
+independently verified; neither audit is counted as clean implementation acceptance.
+
+| Verified concern | Correction and evidence boundary |
+|---|---|
+| MCP asynchronous close at zero common budget | Recheck the live remaining budget immediately before first cooperative close. Keep finite owned PID cancellation and retain actual native-close uncertainty. Six separate Linux/Windows protocol cases cover attached, late-attach and liveness-reentrant expiry; simulated ports claim no actual Windows execution. |
+| Autonomous native fault lacks workflow physical exit | Workflow creation explicitly activates the same fallback observer before owner/native entry. Activation alone starts no timer; ordinary termination cannot exit. An actual WorkflowLifetime with simulated Windows native handles pins autonomous helper failure, the original deadline, physical exit 9 exactly once and retained obligations until actual closure. Global/session activation remains 8d. |
+| Callback removal reaches watchdog before its semantic witness | The native test observes actual premature command-settlement IPC alongside actual child close, validates readiness/stdio before the named assertion, then joins its owned fixture in finally. The watchdog cannot witness acceptance. Both run/gate callback removal controls require fresh complete-cohort execution. |
+| Intentional gate unit fault uses real exit ports | Inject explicit fake physical-exit ports for the opaque opener-failure unit case. Actual child-process exit controls stay intact. Slower CI exposed the old fixture via one unhandled process.exit(9); the red coverage/Node-floor jobs remain attributed to `9e4cac77`. |
+| Canonical MCP reference calls accepted 8b pending | Promote the stale current-status qualifier to accepted 8b; no security contract or 8c/8d acceptance changes. |
+
+The rejected first causal capture retains eight completed mechanisms and the
+failed ninth removal: the coordinator correctly refuses a missing semantic
+marker, restores bytes and removes the copied graph. Overall acceptance remains
+false. It is not relabelled as final corrected-source evidence. The first
+clean-source freeze and its local records remain immutable.
+
+Focused correction execution passes 129 cases across five complete files. Fresh
+workspace checks pass, including the CLI's 298 files / 5,116 passing cases /
+10 established skips; unchanged workspaces retain cache attribution. Final
+compiled/package/platform, corrected causal and NEW independent review gates
+remain open. The first source's four same-tarball platform consumers pass and
+all 71 members are independently verified, but its overall CI is red and none of
+that execution is transferred to these changed runtime bytes.
+
+These corrections implement the approved deadline/ownership contract without a
+new decision, dependency or deferral. Source and evidence scopes remain explicit;
+whole Step 8, 8d and Steps 9–19 are still open. No user action is pending.
+
+## Wave 3 Step 8c acceptance — 2026-10-16
+
+**Step 8c is independently accepted on `development` at reviewed source
+`dbab25d85a2c4ae97c252cdaaf47921648e245af`.** Following the verified first-round
+corrections, two NEW complete cumulative correctness rounds and a NEW separate
+security sitting are clean. Each covers the mandatory whole-Step-7 base
+`d9625ff0a641197c6ed45968df99094a25db88d6` through that source: **164 paths /
+770 zero-context hunks / 54 whole added files**. Detailed reports remain local
+and Git-ignored; their final report digests are recorded below.
+
+| Sitting | Model / effort | Fresh execution | Report SHA-256 |
+|---|---|---|---|
+| New cumulative correctness round 1 | GPT-6 Astra / xhigh | 65 files / 1,396 passes / one actual-Windows-only local skip; 50 tooling tests and four independent inert probes | `e786051ba38f3cf840ae15a73111d3b4ed25a03203835184ce834f692fcfc8f7` |
+| New cumulative correctness round 2 | GPT-6.1 Sol / xhigh | 65 files / 1,396 passes / one actual-Windows-only local skip; 50 tooling tests and four independent inert probes | `0f272955baf1b2a1176a7160f75436710548ce34cf38e472393d6c7c55d9716e` |
+| New separate security sitting | GPT-6.1 Sol / xhigh | 26 files / 380 passes / one actual-Windows-only local skip; 22 tooling tests | `f9776b8f4499877d085400069bedfa7c82adcc153cb643f2c1fed61e15ade2e7` |
+
+The parent reads all three complete reports and every substantive path assessment,
+then independently verifies every current file pin and all 770 individual hunk
+bodies and hashes. Round 2's final 147-file report inventory and seal also match.
+Its draft assessment inaccuracies are corrected after source reinspection; the
+parent reads all 39 corrected assessments. This report correction changes no
+product bytes, test execution or finding disposition. Independent test totals
+above are separate executions, not a deduplicated product-suite total.
+
+Fresh author lint/typecheck and workspace tests pass, with the CLI executing
+298 files / 5,116 passing cases / 10 established skips; unchanged workspace
+results retain cache attribution. Build, formatting and the compiled CLI smoke
+pass. The final complete ordinary ownership cohort passes 10 files / 171 cases
+without skips. The last assertion-label correction is included in that cohort
+and both fresh correctness-review cohorts; no new full local coverage execution
+is inferred.
+
+The corrected-source selected causal capture is complete: **13 mechanisms /
+39 fixed-removal-restored phases / 597 repeated executions / 21 named semantic
+witnesses / 22 actual removal assertion failures**. Every completed phase has a
+zero-unhandled runner receipt, the exact full inventory and byte-identical
+restoration. The freeze digest is
+`f0e60563dbe4ae4df95ff2a9a83a843b9f8be7895ba4e3b3ea99a3ca919178a4`.
+The parent and all three reviewers independently inspect the actual raw receipts,
+1,288 source/tool pins, 21,013 dependency files / 457 packages, runtime identities
+and retained graph bodies. The bounded retained inventory is **825 files /
+43,528,270 bytes**; copied graphs and caches are removed. Six run/gate callback
+phases have actual target-process SQLite-addon load receipts. The selected capture
+does not claim whole-wave acceptance or fresh reviewer mutation execution.
+
+The rejected first capture, its failed ninth removal and its immutable source
+freeze remain historical, with acceptance false. Earlier NONCLEAN reviews are
+not reused as clean sittings. Their first-source CI has two real failed jobs and
+was subsequently cancelled by the corrected-source push; its four successful
+package consumers do not become execution evidence for the changed runtime.
+
+Full push CI **38936742126 / attempt 1 / `dbab25d8`** completes successfully:
+all **15 jobs** pass, including required lint/typecheck/test/build/fences/smokes,
+coverage, filesystem, secrets, wire and usage controls. Current Windows, macOS
+and Linux and exact Node 22.0.0 Linux consume the same **429,116-byte** tarball,
+SHA-256 `529942465b79c6d147c4f45ea5b22dea1efe14770f12715f2487ff0b69e34c54`.
+All four consumers and their required aggregate pass **175 bootstrap controls /
+seven installed cases** each. The current-runtime consumers use Node 24.21.0.
+The parent and reviewers independently inspect all five physical package/report
+ZIPs, all 71 public tar members and matching installed inventories, all 26
+reachable JavaScript outputs and seventeen declared external dependencies.
+No SonarCloud result, merge-commit execution or remote private worker journal is
+inferred from this push run or its public success receipts.
+
+The [separate security sitting](../../standards/security-review.md#sitting-wave-3-workflow-and-terminal-ownership-2026-10-16)
+retains exact evidence limits: local simulated Windows protocol controls do not
+claim actual OS execution, actual platform packaging does not prove 8d global
+activation, and the workflow-cleanup fixture uses a real SQLite/MCP manager with
+synthetic connections rather than an actual MCP subprocess. The installed native
+case exercises creation-owned offline agent tooling, not the new autonomous
+WorkflowLifetime fault on actual Windows. Actual native close and persistence
+ACK remain distinct. Fixed diagnostics do not certify unchanged legacy verbose
+stack confidentiality.
+
+The [workflow ownership contract](../../reference/cli/commands.md#workflow-and-terminal-ownership)
+is accepted for 8c. **Whole Step 8 remains open:** Step 8d connects all remaining
+session/preparation/terminal lifetimes and caught/fatal/background/sink paths,
+then supplies its own cumulative and actual-platform acceptance. Steps 9–19 and
+whole-wave publication remain staged. No new ADR, deferral, provider capture,
+credential, billing or user decision is needed. Step 8d proceeds automatically.
+
+## Wave 3 Step 8d session substrate checkpoint — 2026-10-16
+
+**Implementation checkpoint on `development`, not Step 8d acceptance.**
+The session work/surface/host owners and a per-acquisition terminal owner are
+implemented. Standalone one-shot `agent run` connects its input, consent,
+construction, actual producer/accounting/MCP cleanup, warning delivery and shared
+database lifetime. The [canonical CLI contract](../../reference/cli/commands.md#session-ownership-implementation-checkpoint)
+describes this partial scope. The SDK-free optional failed-start MCP lifecycle
+reports close uncertainty before waiting on siblings and preserves their actual
+raw lifetimes; its [canonical home](../../reference/shared-core/mcp-integration.md#failed-start-cleanup-lifecycle)
+records compatibility and the common budget.
+
+Scoped read-only implementation advice found terminal-write observation behind
+a held provider, lost failed-start MCP close uncertainty, pre-cleanup setup fault
+ordering, late consent writes, lease capture before acknowledgement, repeated
+Clack close and lost output-failure classification. Each is corrected with
+permanent regressions. These advisory reads are **not** either required complete
+cumulative clean round or the separate security sitting. Earlier failed author
+attempts remain failed evidence; no warning/timeout is relabelled as cleanup ACK.
+
+At the frozen author source, before the final two late-consent integration
+controls, the fresh ordinary CLI suite passes **304 files / 5,178 tests /
+10 established skips**. Production bytes remain unchanged when those two
+controls are added; the focused agent cohort passes all **37 tests**. The complete
+MCP suite passes **20 files / 242 tests**.
+Workspace lint/typecheck passes **17 tasks**, with twelve existing cache hits and
+five fresh executions. The CLI build, seam/dependency fences, finite bundle closure,
+compiled bootstrap and compiled CLI smoke pass. Closure remains **26 JavaScript
+outputs / seventeen external dependencies**. The installed-Clack regression uses
+synthetic streams; terminal-owner controls use captured clocks/deferred work.
+Neither proves operator TTY restoration or actual Windows session shutdown.
+The final `CI=true` workspace lint/typecheck/test gate passes **23 tasks**:
+twenty valid cache hits and fresh CLI lint, typecheck and tests. That fresh CLI
+execution includes both late-consent controls: **304 files / 5,179 tests /
+11 established CI-projection skips**. Other packages' replayed test inventories
+remain cache-attributed, rather than a fresh whole-repository execution. No new
+remote CI, packed-platform, whole-wave or merge execution is inferred.
+
+Remaining Step 8d work is actual fresh/resume/clear/reseat and superseded chat/Home
+host integration; entered Ink suspension, persistent alternate-screen/job-control
+and wizard custody; then native/bootstrap/caught/fatal/background/sink activation.
+Two NEW complete cumulative clean rounds from the original `d9625ff0` boundary,
+a separate NEW clean security sitting and actual required platform evidence are
+still owed after final integration. **Whole Step 8 and Steps 9–19 remain open.**
+No new ADR, deferral, credential, provider call, billing or user decision is needed.
+
+## Wave 3 Step 8d chat and Home integration checkpoint — 2026-10-17
+
+**Partial implementation on `development` at `f39a360d`; not Step 8d acceptance.** The
+[canonical session ownership contract](../../reference/cli/commands.md#session-ownership-implementation-checkpoint)
+now describes actual fresh/resume/clear/reseat and pending/superseded Home
+construction, per-instance host/view/persister lifetime, captured Ink/prompt input,
+shared database cleanup and persistent terminal/job-control integration.
+One-shot acceptance is not inferred from the earlier substrate checkpoint.
+
+Source advisory reads identify and correct the following mechanisms. They are
+implementation advice, not either required complete cumulative clean round or
+the separate security sitting. Reports remain local and Git-ignored. The first
+53-path pin remains historical; subsequent fixes have their own source identity.
+Changes made during advisory reads are explicitly outside those earlier hashes.
+
+| Observed mechanism | Correction and permanent evidence |
+|---|---|
+| Readable-listener removal reentry consumes a pre-existing occurrence | Recheck actual multiplicity before every bounded removal. The real EventEmitter regression first fails at the baseline-preservation assertion, then passes. |
+| Mounted input continues while native teardown waits | Gate root key/paste/submit handling before dispatch, including Home mouse copy. Installed Ink with a held native drain first reproduces a second Ctrl-Z dispatch, then passes after sealing. |
+| Pending/replaced or equal-ID hosts are confused with the current UI pointer | Retain every actual builder invocation through post-build setup and all actual roots/children. Existing physical native forwarding controls retain separate instance/child counts. |
+| Validation timeout or catalog completion permits early database close | Move shared close into surface cleanup after all roots/transferred work. Actual Home lifetime regressions retain held fake generation/discovery and refuse post-stop catalog writes. |
+| Failed database close drops signal custody | Remove the signal subscription only after shared cleanup succeeds. A later terminating signal retains the original infrastructure disposition and deadline. |
+| Partial view/exit-net/input registration or a failed remover supplies false release | Transfer custody before registration, guard empty construction, attempt sibling releases independently and retain uncertainty. Keep the synchronous exit net through final control ACK. |
+| Unknown local catalog faults wait behind a held sibling | Report clock/key/publication faults at their actual boundary. Preserve optional cache-read recovery and ordinary provider-discovery isolation. |
+| Old-host cleanup has no job-control handler; final publication starts after expiry | Hand off gap custody before waiting on receipts/MCP. Check remaining budget at each final publication; retain failed output classification before sibling joins. |
+| Control enqueue is treated as native handoff | Retain exact captured delivery promises and await release/reclaim before native continuation. Final persistent-buffer restoration follows all actual child mounts and bindings. |
+| Wizard or consent continuation writes after stop | Bind native prompts and cancellation, omit the installed ambient-input spinner, retain raw validation, and recheck admission after every relevant await and before credential writes. |
+
+No new dependency, ADR, deferral, paid provider call, credential or user decision
+is introduced. The bootstrap remains unchanged and native product-wide fatal
+activation is still staged. Complete Step 8d acceptance still requires two NEW
+complete cumulative clean rounds from `d9625ff0`, a separate NEW clean security
+sitting and actual required same-artifact platform evidence. Whole Step 8 and
+Steps 9–19 remain open; work proceeds automatically.
+
+The final frozen partial source has **56 product/tool paths**, with no source
+drift across the author gates. Fresh ordinary CLI execution passes **314 files /
+5,266 tests / ten established skips**. The workspace lint/typecheck/test gate
+passes **23 tasks**, comprising twenty valid cache hits and three fresh CLI tasks;
+other packages' cached inventories are not a fresh whole-repository execution.
+The build passes **six tasks**, with five cache hits and a fresh CLI build.
+Tool lint, seam and engine-dependency fences, compiled CLI smoke and all **175
+compiled bootstrap controls** pass on macOS/Node **22.23.1**. The finite packaged
+graph has **25 JavaScript outputs / seventeen declared external dependencies**.
+Both affected secrets controls (`export-live-review-notice` and
+`export-live-interactive-notice-routing`) pass separate isolated
+fixed/removal/restored cycles against the complete **130-case** chat file, with
+the expected assertion failures and byte-identical restoration. These selected
+cycles do not claim completion of the entire secrets-control family. Synthetic
+TTY/input controls and local macOS smoke do not establish actual Windows session
+shutdown, operator-terminal restoration or complete Step 8d acceptance.
+
+## Wave 3 Step 8d management ownership checkpoint — 2026-10-17
+
+**Partial implementation on `development` at `9798c51c`; not Step 8d acceptance.** A focused
+read-only activation inventory found remaining management, standalone create,
+deep-doctor and media-maintenance owners. Their integration follows the existing
+ADR-0110 all-owners decision. The
+[canonical command contract](../../reference/cli/commands.md#management-ownership-implementation-checkpoint)
+owns concrete lifetime semantics; no new ADR, dependency, deferral or user
+decision is introduced.
+
+The command identity has stop/join/actual-retirement capability, without session
+or workflow health. Shared no-health work mechanics preserve existing session
+owners. Provider/model operations, captured stdin, deferred command database
+cleanup, actual create prompts and the separate maintenance route are connected.
+Every actual chat/Home doctor constructor forwards its host's raw producer
+lifetime. The report timeout is not producer settlement: the new doctor
+regression failed at that exact premature-cleanup assertion before correction.
+
+Further implementation advice found four material integration gaps, all
+corrected: spreading a class dropped the catalog signal getter; stopped business
+IO blocked create-prompt restoration; a best-effort catalog catch consumed local
+publication faults; and transient resolver/pricing handles lost failed-close
+custody. Permanent controls exercise captured installed Clack, held native stdin
+close, real SQLite with held discovery, late scaffold answers, retained
+maintenance work, exact synchronous close and failed-release uncertainty.
+The maintenance hold is an injected raw operation, not a claim of a real marker
+failure. Synthetic streams do not establish operator-terminal restoration.
+
+Earlier failed author runs remain attributed: nine lint errors stopped the first
+workspace gate, and a later CLI run failed three native-forwarding assertions
+that sampled the parent inventory before an already-closed transient resource's
+positive retirement reaction. The fixture now requires actual removal before
+measuring its strict native-parent baseline; cancellation or a timer never
+supplies that fact. All **167** chat/one-shot cases then pass. These focused
+advisories and author controls are neither required cumulative review round nor
+the separate security sitting.
+
+At the final frozen **33-path** product/test source, the complete workspace gate
+passes **23 tasks**: twenty valid cache hits and fresh CLI lint, typecheck and
+ordinary tests. Fresh CLI execution passes **320 files / 5,290 tests / ten
+established skips**. The build passes **six tasks**, with five cache hits and a
+fresh CLI build. Finite closure remains **25 JavaScript outputs / seventeen
+declared external dependencies**; compiled CLI smoke and all **175 bootstrap
+controls** pass locally on macOS/Node **22.23.1**. Unchanged package results retain
+their cache attribution. No remote CI, new same-tarball platform execution,
+whole-wave test or merge execution is inferred.
+
+The original bootstrap remains unchanged. Global native installation,
+post-import/caught/fatal/background/sink integration, two NEW complete cumulative
+clean rounds from `d9625ff0`, a NEW clean security sitting and required actual
+same-artifact platform evidence remain open. Whole Step 8 and Steps 9–19 remain
+open; no provider, credential, billing or user action is pending.
+
+## Wave 3 Step 8d native activation implementation checkpoint — 2026-10-17
+
+**Implemented on `development` at `a2acba8e`, with required installed controls at
+`2928d8ef`; not Step 8d acceptance.** The product entry installs the native
+coordinator before deferred runtime loading and retains the actual loader/run
+root. The original registry, finite-exit observer, absolute budget and physical
+exit latch remain one authority. Explicit signal custody preserves each actual
+surface's existing cooperative Ctrl-C behaviour while covering startup and
+post-surface gaps. Runtime classification precedes return to the pure entry;
+known operational refusals keep their meanings. Fatal classification precedes
+joins and the sole fixed diagnostic follows acknowledged terminal restoration.
+Background-only exit 9 remains recoverable rather than becoming a second fatal
+failure. The canonical [ownership contract](../../reference/cli/commands.md#invocation-owners-and-fatal-ordering)
+and [packaging contract](../../reference/cli/packaging.md) own these mechanics.
+
+The two caught-exit advisory findings are corrected: an unexpected Home snapshot
+failure after chat teardown reaches its actual lifetime, and owned slash commands
+publish no ordinary notices after stop, including delayed doctor/compaction and
+export-failure paths. Four assertions failed before the fixes; the focused 227-test
+suite then passed, including positive normal-notice and terminating-Home controls.
+Ownerless Home embeddings retain their original causes. The initial broad attempt
+exposed eight ownerless compatibility failures; the corrected boundary's 85-test
+focused run passed. Author lint/test failures are not clean review rounds.
+
+Author workspace validation passed 23/23 tasks, with 20 valid cache hits and
+fresh CLI lint/typecheck/test: 322 files, 5,314 passing tests and 10 established
+skips. Other package test inventories were replayed from valid cache. Build
+passed 6/6 (five cached packages and a fresh CLI). The finite emitted graph has
+25 JavaScript outputs, 404 inputs and 17 declared externals. Tools lint/typecheck,
+508 acceptance-tool tests, 37 focused package-tool tests, seam/purity gates,
+compiled CLI smoke and all 177 compiled bootstrap controls passed on local
+macOS/Node 22.23.1. Final publication validation remains attributed to the saved
+working-tree source records, not inferred execution of a later commit.
+
+Two selected live-export mechanisms each passed fixed/removal/restored with
+133 fixed/restored tests, their named semantic failures, byte-exact restoration
+and unchanged developer source. Each selected-family record deliberately remains
+`complete: false`; this is not the full secrets family. The new installed eighth
+case exercises real uncaught, unhandled-rejection and closed-stdout events through
+the untouched selected entry. It joins exact target/descendant readiness, retains
+the unrelated sibling, refuses a fatal diagnostic while native close delivery is
+held, and requires one fixed diagnostic after delivery. Background mode permits
+an ordinary successful turn before background-only exit 9. The local selected
+package passed 177 bootstrap controls and all eight cases; its recorded tarball
+SHA-256 is `22a0337dedbe85e2b6bf50b3245681e940d9c9480e581e736a4186aa13cb0cbe`.
+Its receipt names `a2acba8e` with the then-uncommitted, pinned control changes;
+no clean-commit or other-platform execution is inferred. Interactive restoration
+and deadline nonrenewal retain their separate source-test attribution.
+
+Local source records remain Git-ignored: the final activation record pins 33
+paths (SHA-256 `4020e5ac1d09fb97c8e02a25dd5735cc0c007e244ce0b94f709c84da3d6fd498`),
+and the installed-control record pins 12 unchanged paths
+(`8e37bc50943db3039d2ab48d3785c198dd2415543247b7823de2dbd8a9065e63`).
+Earlier author attempts, moving-source advisories and superseded evidence retain
+their original scopes. None is an independent complete cumulative or security
+review. No provider, keychain, operator-terminal, live clipboard or paid operation
+was used.
+
+**Remaining gates:** two NEW complete cumulative clean review rounds from
+`d9625ff0a641197c6ed45968df99094a25db88d6` after the final material correction,
+a NEW separate clean security sitting, fresh required full CI and the four
+current same-tarball Linux/macOS/Windows/Node-22.0.0 consumers with the eighth case.
+Whole Step 8 and Steps 9–19 remain open. No new ADR approval, provider capture,
+credential, billing or user decision is pending. Work proceeds automatically.
+
+## Wave 3 Step 8d first cumulative review and corrections — 2026-10-17
+
+**Complete cumulative round 1 is NONCLEAN at `e3b0b673`; Step 8d is not accepted.**
+Three independent reviewers inspected every path from
+`d9625ff0a641197c6ed45968df99094a25db88d6`: 69 session/terminal paths,
+117 workflow/management paths and 69 native/tooling/documentation paths.
+Their coverage records join exactly 255 distinct paths without omission or
+intersection. The local Git-ignored aggregate has SHA-256
+`ff119d6d7d733a1bbf827ddb9d93206a5baa59ca9a5ea74043bbc89b6bcc7fff`.
+A clean individual slice does not turn this nonclean round into acceptance.
+
+All three verified findings are corrected in the subsequent working source:
+
+- Fresh workflow and gate-resume default secret readers now use the original
+  captured native stdin and workflow cancellation/failure ownership. The first
+  cooperative Ctrl-C closes the actual open input pipe; command retirement and
+  gate DB closure follow actual stdin close, without entering keys or the engine.
+  Two permanent native-child regressions use an actual POSIX SIGINT on macOS and
+  the exact registered callback on Windows. Removing only cancellation forwarding
+  breaks both regressions; watchdog termination remains failure, never an ACK.
+  Human-gate resume is physically exercised; the shared budget-resume helper is
+  covered by its existing command tests rather than claimed as a new native probe.
+- The installed Windows bootstrap cohort now requires five actual target/helper
+  creations; the other cohort/platform combinations retain three. At the old head,
+  all three Windows modes passed their native lifetime assertions before the wrong
+  aggregate count refused publication. This does not certify the corrected head.
+- The secrets-control README now records the actual 133-case live-chat inventory.
+
+Required CI at the old head also refused the minimum-Node installed case. An
+independently downloaded official Node 22.0.0 macOS runtime, verified against its
+published SHA-256, reproduced the failure: the exact experimental JSON-module
+warning was mistaken for a premature product diagnostic. The warning now remains
+in raw private stderr and a separately named runtime observation; only the exact
+owned-PID/version/two-line frame can be separated. Unknown, partial, duplicate and
+wrong-identity stderr still fails. Three permanent tooling tests cover that fence.
+The unchanged old package then passed all 177 bootstrap and eight installed cases
+locally on Node 22.0.0; its SHA-256 is
+`5d50070afbfe2f61efa6f59c64238ea374b48ba745b78b5b885cdb69da761ff0`.
+This is a tooling correction on an old package, not corrected-product or Linux
+acceptance. The old remote artifact retains its different recorded digest.
+
+Four advisory Node-22.13 test failures reproduced on Node 22.0.0: older native
+streams do not emit the `removeListener` event used by those injection fixtures.
+The fixtures now inject reentry/refusal after the actual native remover returns,
+independently of that optional runtime event. The callback-multiplicity control
+also requires positive reentry. Both original-Node and minimum-Node 32-test cohorts
+pass. Product removal logic is unchanged. Existing secret-reader fixtures now
+supply captured sources rather than replacing ambient process stdin; named causal
+witnesses and fixed test inventories remain unchanged.
+
+Author validation after the corrections passes workspace lint/typecheck (17 tasks,
+15 cached) and tests (11 tasks, ten cached packages and a fresh CLI execution).
+Fresh CLI results are 323 files, 5,316 passing tests and ten established skips.
+Build passes all six tasks, finite emitted-graph closure and 177 bootstrap controls
+pass, as do tools lint/typecheck, 511 acceptance-tool tests and seam/purity gates.
+Initial broad validation exposed four remaining ambient-stdin fixture failures;
+those are corrected and the fresh workspace run is green. Earlier failed attempts
+and source-change-contaminated selected controls remain failure evidence.
+
+The default-reader and consumed-stdin consent mechanisms each pass their fresh
+fixed/removal/restored cycles with 80 and 68 fixed/restored cases respectively,
+exact named failures and byte-identical restoration. Both selected-family reports
+retain `complete: false` and verify unchanged developer sources; neither is the
+full secrets family. Test-isolation controls and the compiled CLI smoke also pass.
+
+Two NEW complete cumulative clean review rounds after the final correction, a NEW
+separate clean security sitting and fresh required full CI/four same-artifact
+platform consumers remain open. Whole Step 8 and Steps 9–19 remain open. No new
+ADR approval, credential, provider, billing or user action is pending.
+
+
+## Wave 3 Step 8d second cumulative review and native-input corrections — 2026-10-17
+
+**Complete cumulative round 2 is NONCLEAN at `98259c97`; Step 8d remains open.**
+Three independent reviewers inspected all 262 paths from `d9625ff0`: 70
+session/terminal paths, 121 workflow/management paths and 71 native/tooling/docs
+paths. Their inventories join without omission or overlap. The local Git-ignored
+aggregate SHA-256 is `7d805b33457b732acbecd05bea77de9b143875c02be047e4f3da5bc496dc7a7c`.
+Two verified High findings, followed by one verified High supplemental finding,
+are corrected in the subsequent source. A clean slice, supplemental advisory or
+passing author test is not a complete clean review round.
+
+- Plain/JSON chat now reserves partial native readline cleanup before construction
+  or iterator entry. The actual entered driver remains owned through cancellation,
+  late continuations, callback removal and input pause. Eight full-command
+  regressions failed before correction; separate retained-continuation and failed
+  removal controls cover the original finite-exit path without inventing cleanup
+  ACK. Prior input callbacks remain intact.
+- Both catalog-refresh axes recheck their original admission before each credential
+  candidate, database read and clock stamp. An unexpected first-key failure can no
+  longer start another candidate after synchronous owner stop. Ordinary typed
+  missing-key discovery still continues. Three negative controls failed before
+  correction; two ordinary-discovery controls remain positive.
+- The focused supplemental audit reproduced early secret refusal retiring before
+  actual native close: both partial iterator setup and the ordinary 65,537-byte
+  refusal. The reader now reserves native close observation before iterator entry,
+  independently requests destruction before awaiting iterator cleanup and joins
+  actual close delivery on every consumed non-TTY outcome. Operator TTY refusal
+  remains before consumption; generic iterables retain their awaited-return/primary
+  failure contract. Two held-`_destroy` regressions failed before correction.
+  Close-observer failure still requests destruction but retains uncertainty and
+  database ownership through the original physical exit. No second timeout is added.
+
+The author's first secret-reader repair prematurely acknowledged `Socket.closed`;
+existing actual workflow/gate pipe tests caught both missing close-delivery events.
+The public flag can become true before native close delivery. The repair now uses
+its owned event receipt; an unobserved preclosed source retains uncertainty. Four
+permanent native-pipe controls hold actual close delivery across factory refusal,
+cap refusal, cancellation and preclosed input. No public flag, iterator return,
+internal state bit or elapsed deadline supplies delivery ACK. The focused advisory
+was initially clean on a narrower probe set; its appended follow-up records this
+miss and corrected scope. Neither advisory counts as an acceptance/security round.
+
+At `98259c97`, all four required same-tarball remote consumers and their aggregate
+passed, including current Windows and Node 22.0.0. This is historical execution,
+not execution of the subsequent corrections. Broader CI refused the usage inventory
+and the Windows advisory job. The usage suite passed all 23 mechanisms and 446
+permanent cases before rejecting its stale 440-case pin; the corrected guard pins
+446 and independently collects the actual 17 test files. Native-child inventory
+remains 71. Four intentional fatal-exit filesystem fixtures now use their existing
+injected finite clock/exit ports instead of accidentally exiting the real test
+worker three seconds later. Production timing and physical exit are unchanged.
+The concurrency outbox now belongs to the test's own temporary directory. This
+hermetic change is not claimed to explain the separately observed Windows 5s
+coexistence timeout; its timeout remains unchanged and fresh platform execution is
+required.
+
+At the final frozen fifteen-path product/test/tooling source, author workspace
+lint/typecheck passes all seventeen tasks (fifteen valid cache hits); tests pass all
+eleven tasks, with ten cached packages and fresh CLI execution: **327 files, 5,343
+passing tests and ten established skips**. Build passes six tasks (five cached).
+Tools lint/typecheck, all **512 acceptance-tool tests**, test isolation, seam/purity,
+finite emitted-graph closure, **177 compiled bootstrap controls** and compiled CLI
+smoke pass locally on macOS/Node 22.23.1. The local Git-ignored author source pin
+has SHA-256 `9b2441993c2fb6bf39d174c5352f45d9ea60066bab84ccd0222d5d15c2714354`.
+
+Removing only entered-readline retention or only native-secret close joining breaks
+the corresponding named semantic regressions; both exact restorations pass. The
+existing generic-iterator cleanup mechanism also passes its fixed/removal/restored
+cycle with 31 fixed/restored cases. That selected-family report retains
+`complete: false`; this is not full-family or remote/platform acceptance.
+Earlier failed tool invocations, loader/fixture corrections, the first
+full workspace's two close-order failures and narrower historical evidence retain
+their scopes. Test collection initially overwrote one test file; the author restored
+its exact HEAD bytes immediately. The new collector always writes an explicitly
+owned temporary output path, so no test filter can become its report destination.
+No unintended test-content change remains.
+
+Two NEW complete cumulative clean rounds after the final material fix, a NEW
+separate clean security sitting, fresh full CI and the four same-artifact platform
+consumers remain open. Whole Step 8 and Steps 9–19 remain open. No user decision,
+ADR approval, credential, provider capture or billing action is pending.
+
+
+## Wave 3 Step 8d third cumulative review and partial-acquisition corrections — 2026-10-17
+
+**Complete cumulative round 3 is NONCLEAN at `ec8ba368`; Step 8d remains open.**
+Three independent complete slices join all 269 cumulative paths from `d9625ff0`
+without omission or overlap: 73 session/terminal, 125 workflow/management and
+71 native/tooling/docs. The local Git-ignored aggregate SHA-256 is
+`ceb0e5610e795f23fda760599e2cea96caf409c60f6a08f200b49b3c65748d0d`.
+A clean slice is not a clean round. One verified Blocker and two verified High
+findings require the subsequent corrections below.
+
+- The permanent usage collector now copies the actual source graph into an owned
+  install-only tree, with no build outputs or workspace-package links. It uses
+  the canonical source aliases and refuses transformations into the original
+  workspace. A no-alias negative control establishes that the local built graph
+  cannot supply the proof. Actual collection still pins 17 files / 446 cases;
+  the independent runtime native-child inventory stays 71. Required install-only
+  CI jobs gain no build prerequisite or weakened gate.
+- Secret stdin and one-shot agent input share captured native close observation
+  before iterator acquisition. EOF, partial setup, cancellation and unobserved
+  preclosed sources cannot supply close ACK from public flags. Independent native
+  cancellation and callback removal retain their own uncertainty. A failed abort
+  listener removal still joins actual close and cannot retire the input. The
+  caller's operator-TTY refusal remains before consumption.
+- Every shipping database route now transfers its actual native close capability
+  to its original owner immediately after SQLite construction, before PRAGMAs,
+  hardening, migrations or store construction can throw. Production-injected
+  openers forward the same optional handoff. Legacy returned methods preserve
+  their receiver; returned wrappers cannot replace an early native capability.
+  Workflow, management, chat/Home, one-shot journal and transient resolver/pricing
+  owners retain their existing identities and cleanup order. The sole-opener
+  refactor remains Step 18. Primary and secondary startup failures survive
+  together; failed release cannot inherit operational storage provenance.
+- Optional pricing degradation no longer swallows unknown acquisition or native
+  cleanup faults. A later successful release can retire the actual resource while
+  retaining the earlier infrastructure observation. A one-shot database tail
+  closes before its surface removes signal custody; unknown partial construction
+  retains that custody through the same original finite-exit obligation.
+
+Thirty-three real SQLite controls exercise management, workflow/gate, fresh and
+resumed chat, Home, one-shot journal and optional pricing paths. Sixteen native
+failure cases break at named semantic assertions when only original-owner handoff
+is removed; exact restoration passes all 33. The native-constructor controls fail
+before the pre-PRAGMA fix and pass afterward. Four actual agent child controls
+cover EOF, iterator-factory refusal, cancellation and preclosed input; restoring
+only the previous agent reader breaks the EOF ownership assertion. The first
+removal attempt instead hit an unhandled IPC EPIPE and is excluded: the parent
+fixture now observes release-send failure and the repeated removal reaches the
+semantic assertion. The 31-case secret iterator cleanup mechanism retains its
+fixed/removal/restored proof, with the selected-family report explicitly
+`complete: false`.
+
+CI run `38984767780` at `ec8ba368` remains failed. Its install-only filesystem and
+secrets jobs exposed the collector defect before their families ran. Coverage
+exposed a Node-24-incompatible test continuation: a closed readline interface
+cannot be resumed there. The corrected control resumes its captured native input,
+proves that late activity happened, and retains all final cleanup assertions.
+Independent Node 24 focused execution passes. This is a test correction, not a
+relaxation of product sealing or native cleanup.
+
+That run's current-Windows advisory and Linux/Windows/Node-22.0.0 packed consumers
+pass. Its macOS packed leg remains failed with an unexpected infrastructure 9;
+its initiating cause is not established. The exact package and matching official
+Node 24.21.0 pass eleven instrumented local cohorts and one untouched eight-case
+cohort, but the local OS differs from the remote image. These local passes neither
+replace the remote failure nor establish a flake. No package assertion, native
+close/readiness control or watchdog is relaxed.
+
+At the final frozen 42-path product/test/tooling source, author workspace
+lint/typecheck passes seventeen tasks (fifteen cached); tests pass eleven tasks
+(ten cached), with fresh CLI execution of **332 files / 5,394 passing tests /
+eleven reported skips**. Build passes six tasks (five cached); the finite CLI
+graph has 25 outputs / 407 inputs / seventeen declared externals. Tools
+lint/typecheck, all **512 acceptance-tool tests**, seam/purity, test isolation,
+**177 compiled bootstrap controls** and compiled CLI smoke pass. Node 24.19.0
+passes twelve focused native-input/readline cases; official Node 22.0.0 passes
+43 focused reader/acquisition cases. These are author checks, not remote package
+or independent-review acceptance. The local Git-ignored source pin SHA-256 is
+`4a7cb298512fba75fb35ae616feae765f532705b04f7d784b5d4cebc82acdcc1`.
+
+Earlier lint/type/fixture failures and the full workspace's two obsolete
+immediate-retirement controls retain their historical scopes. Those injected
+unknown-open controls now use fake physical-exit ports, verify retained signal
+custody and independently joined MCP cleanup, and cannot terminate the real test
+worker. No timeout, production shutdown budget or required gate was increased.
+
+Two NEW complete cumulative clean rounds after the last material fix,
+a NEW separate clean security sitting, fresh full CI and all four same-artifact
+platform consumers remain required. Whole Step 8 and Steps 9–19 remain open.
+No user decision, ADR approval, provider, key, billing or capture action is pending.
+
+### Wave 3 Step 8d fourth cumulative review and native-resource corrections — 2026-10-17
+
+**Implementation correction checkpoint; not Step 8d acceptance.** Three NEW
+complete cumulative reviewers cover all **279 paths / 1,506 zero-context hunks**
+at `db825377a6b213d8a63a1ed0b39a2a63b9193982`, against the unchanged cumulative base
+`d9625ff0a641197c6ed45968df99094a25db88d6`. Their disjoint 73/129/77-path slices
+join exactly, with every assigned physical source hash checked. The session slice
+is scoped CLEAN; workflow/management and native/tools/docs are NONCLEAN, with
+three verified High findings. The local Git-ignored aggregate SHA-256 is
+`13554160ab36a9fd076e5b26dc14e0983e9ce4ad0aeea70a378a90e14b9278fd`.
+Rounds 1–4 remain NONCLEAN; a clean slice is not whole-increment acceptance.
+
+- **WM-R4-1, consumed one-shot input:** the default `agent run` gate previously
+  treated stale TTY metadata as permission to prompt after mandatory stdin had
+  reached actual EOF/close. An actual command/default-builder/installed-Clack
+  reviewer probe remained pending without spawning MCP until its original signal
+  cancelled it. The corrected default has no second input authority; unapproved
+  stdio refuses before prompt/client construction. The paired exact-digest control
+  succeeds through the real builder and manager without writing a grant. Explicit
+  injected host consent retains its own authority.
+- **WM-R4-2, expired successful-client cleanup:** workflow late publication and
+  all three actual run/human-gate/budget-resume finalizers now use the original
+  remaining budget, as the agent connector already did. Expiry cannot start a new
+  asynchronous SDK close or release the database/signals. Paired actual-manager
+  controls exercise zero remaining time and a close entered with one millisecond
+  remaining; the latter holds real close acknowledgement before actual SQLite
+  release. The original absolute deadline is unchanged.
+- **N4-01, auxiliary SQLite custody:** the migration lock creates a second native
+  connection, distinct from history. Its close capability is now captured before
+  PRAGMA/lock acquisition and added to the one composite already transferred to
+  the original opener owner. Failed auxiliary release does not skip independent
+  main release, retire the owner, remove signals or gain operational storage
+  provenance. Primary and cleanup causes survive. Actual installed-driver
+  held-iterator close refusal, opaque/storage-shaped injections, later successful
+  release and normal two-connection closure have permanent controls. The held
+  iterator is an injected schedule, not a claim that ordinary migration creates
+  it or that an OS disk fault was measured.
+
+Independent reviewer execution remains scoped: 697 session tests; 56 workflow
+preparation/acquisition tests; 117 native source tests, 54 tooling tests and three
+actual-handle reproductions. Counts overlap author selections and are not summed
+into a new whole-suite claim. Root independently reproduced all three lock-close
+cases. Author regression execution passes 289 CLI cases in ten complete files
+and fourteen DB cases in three complete files before final whole-workspace gates.
+Five separate author removal exercises break the named forwarding, native lock
+handoff, consumed-input and workflow close controls; each restores exact original
+bytes. The initial malformed forwarding mutation and the initial obscured native
+witness are rejected harness attempts, retained locally and not acceptance
+results. Filtered unselected cases are not product skips or whole-suite execution.
+
+The CLI declares the already-catalogued SQLite development type package for its
+actual native-handle tests; no runtime package or resolved version changes.
+Frozen offline lockfile validation and CLI/DB typechecks pass. Canonical behavior
+belongs in the [CLI lifecycle contract](../../reference/cli/commands.md#management-ownership-implementation-checkpoint)
+and [database contract](../../reference/shared-core/database-schema.md#concurrency--transaction-behavior).
+
+At source `db825377`, required packed Linux/macOS/Windows and minimum Node 22.0.0
+consumers and their aggregate pass in run `38989000942`. Broader CI was still
+running at this checkpoint. These new remote passes do not rewrite the earlier
+unexplained `ec8ba368` macOS failure or count as post-correction evidence.
+Two NEW complete cumulative clean rounds after the last material fix, a NEW
+separate clean security sitting, fresh full CI and all four same-artifact package
+consumers remain required. Whole Step 8 and Steps 9–19 remain open. No user,
+ADR, provider, key, billing or capture decision is pending.
+
+**Final author source gates for this correction.** Workspace lint/typecheck passes
+seventeen tasks (fifteen cached); tests pass eleven tasks (nine cached), with
+fresh CLI **334 files / 5,407 passing tests / eleven existing reported skips**
+and fresh DB **64 files / 1,062 passing tests / no skips**. Build passes six tasks
+(five cached); bundle closure remains 25 outputs / 407 inputs / seventeen declared
+externals. All 512 acceptance-tool tests, tools lint/typecheck, schema sync,
+format, seam/purity, test isolation, 177 compiled bootstrap controls and compiled
+CLI smoke pass. The final five removal exercises restore exact bytes; restored
+execution passes 246 CLI and fourteen DB cases with no failures/skips. Earlier
+author lint failures are corrected, not waived. The local 18-path product/test/
+configuration source pin SHA-256 is `c33fe30d7ee58825a924e2d1ac81f64a94ab0c474cc8d2b890ab9dae407585d0`. These are author gates;
+independent cumulative review, security and post-correction remote acceptance
+remain open.
+
+### Wave 3 Step 8d fifth cumulative review and deferred-close correction — 2026-10-17
+
+**NONCLEAN; no Step 8d acceptance.** Three NEW complete cumulative reviewers cover
+all **285 paths / 1,526 zero-context hunks** at
+`ad743ba5819361ad070a27ee31f0fb5751b823d4`, against the same `d9625ff0` base.
+Root independently verifies every physical file, complete diff and individual
+hunk hash, with disjoint 73/131/81-path coverage. The local Git-ignored aggregate
+SHA-256 is `56250341253e61c55c6788f142a1998bde576ffb378bc582be8f660c91d34adc`.
+Session/terminal is scoped CLEAN; the other two slices corroborate the same High
+**WM-R5-1**, counted once. R4's three original schedules are repaired; all first
+five complete rounds remain NONCLEAN.
+
+The helper admitted a successful MCP manager close with one millisecond left,
+but the manager deferred actual connection entry and discarded the lifecycle
+budget after successful startup. An already queued microtask could consume that
+millisecond before transport/SDK close began. Root and both relevant reviewers
+reproduce the paired helper schedule; independent reviewer probes additionally
+exercise actual `runCommand`, the real manager and real SQLite. These are
+synthetic connections/fake clock schedules, not native MCP subprocesses. They
+establish forbidden late close entry, not a renewed deadline, false ACK or survival
+past physical exit.
+
+The manager now retains the same live budget across deferred successful close
+and checks it at every actual transport-close factory. Successful-client reporters
+remain distinct from failed-start observers, preserving once-per-callback delivery
+and the shared reentrant close promise. Permanent controls cover queued expiry,
+remaining-time positive acknowledgement, per-connection exhaustion and reporter
+identity; actual run/human/budget finalizers add the queued-expiry schedule beside
+their zero/one-millisecond pairs. No shutdown budget or timeout increases.
+Canonical semantics live in the [MCP integration contract](../../reference/shared-core/mcp-integration.md#failed-start-cleanup-lifecycle).
+
+Reviewer execution retains its separate scopes: 697 session tests; 405 workflow
+cases plus two selected budget cases; 159 native cases and 66 tool cases; four
+shared defect-observation probes. These overlapping counts are not a new suite
+aggregate or the separate security sitting. The root-read complete reports remain
+local and ignored.
+
+At `ad743ba5`, all four packed consumers/aggregate pass. Root downloads the actual
+five GitHub artifacts, verifies each GitHub ZIP digest, rechecks tar bytes/public
+inventory and all seventy installed files per consumer, and binds every report
+to the actual remote run/attempt/source. The common tarball SHA-256 is
+`487870990752ce6559f9cdec979702bff0a8ba8670e439223f434e3f6c40554f`;
+the independent local physical-audit record SHA-256 is
+`e0f503fb4adf29f414f54e7cad40d7bc9a5f29bf53e13455ee00c270cb2f37a2`.
+This is artifact inspection, not a new remote consumer execution. Current Node
+consumers use 24.21.0; the separate minimum leg is exactly 22.0.0.
+
+Broader CI `38991418424` is not accepted: required secrets controls correctly
+reject an obsolete 80-case run-file pin after R4 added two cases, and the Windows
+advisory times out once in benign-alias resume (5,143 ms against 5,000). The
+secrets pins are updated to the actual final 83 run / 71 gate cases, including
+this correction's added schedule, while exact-count/identity/runtime-error and
+fixed/removal/restored checks remain strict. No control or assertion is removed.
+The same Windows case passed at prior `db825377` in 437 ms; local macOS controls
+do not explain or clear the current Windows failure. Fresh Windows evidence
+remains required; no timeout relaxation or inferred product repair is recorded.
+
+Two NEW complete cumulative clean rounds after the last material correction,
+a NEW clean separate security sitting and fresh full CI/platform evidence remain
+required. Whole Step 8 and Steps 9–19 remain open. No new ADR or user decision,
+provider, credential, billing or production custody setup is needed here.
+
+
+**Final author gates for the R5 correction.** Seventeen workspace lint/typecheck
+tasks pass (twelve cached); eleven test tasks pass (nine cached), with fresh CLI
+**334 files / 5,410 passing tests / eleven established reported skips** and fresh
+MCP **twenty files / 246 passing tests / no skips**. Build/format passes seven
+tasks (five cached); all 512 acceptance-tool tests, tools lint/typecheck, schema
+sync, seam/purity, test isolation, 25-output bundle closure, 177 compiled bootstrap
+controls and compiled CLI smoke pass. The new regressions first break at the two
+named MCP assertions and all three actual workflow-finalizer assertions before
+the fix; their corrected complete/selected executions pass. Filtered unselected
+cases are not product skips or whole-suite evidence.
+
+Three affected secrets controls independently pass fixed/removal/restored at
+83/71/83 complete-file cases, **nine phases / 711 executions**. Each removal
+breaks its named witness, every restored source digest equals its fixed digest,
+and the isolated graph reports developer sources unchanged. This selected run
+honestly retains `complete: false`; it is not acceptance of the full secrets
+family. An initial unsupported argument invocation is a rejected setup, not a
+product result. The local causal-summary SHA-256 is
+`aca1ee8f4a921f86afdcc175b9a247d516aaae4766c7e1739c5314206157a551`;
+the seven-path product/test/control author pin SHA-256 is
+`92bd5f22ec12fd8fda5db4e577044d0baa53bfdced9275f579025e7116c0385f`.
+
+Separate read-only Windows triage finds no verified defect. The unchanged
+original eight-case suite passes locally, and an immutable `ad743ba5` snapshot
+verifies all eight acquired native handles close with zero remaining product
+owners. Local macOS timings cannot explain the remote Windows timeout. The local
+triage report SHA-256 is
+`edf43b42f6ab90043e05cf2445d213bdf71146aed32a798de1a37c690a0d4702`.
+These are author/triage records; rounds 1–5 remain NONCLEAN and new cumulative
+review, separate security and post-correction CI/platform acceptance remain open.
+
+
+### Wave 3 Step 8d sixth cumulative review and first-fault correction — 2026-10-17
+
+**NONCLEAN; implementation correction, not acceptance.** Three NEW complete
+cumulative reviewers cover all **285 paths / 1,526 zero-context hunks** at
+`4b7ba2164d119d72a0fccaea742a6e261f03576f`, against the same `d9625ff0` base.
+Root reads every full report and independently rejoins all 73/131/81 physical
+file, complete diff and individual hunk hashes. The local ignored aggregate
+SHA-256 is `daf8739b459e0fda0e47320a1480d6681599916ac6fef57739252f3c4700482d`.
+All three slices are NONCLEAN. Three verified High findings, independently
+corroborated and counted once each, require correction:
+
+- **WM-R6-1:** a successfully initialized manager retains an actual connection
+  close refusal but reports it only after every sibling close settles. Actual
+  `runCommand`, the default engine, real SQLite and the actual manager reproduce
+  no infrastructure observation/deadline/exit at a manually advanced 10,000 ms;
+  releasing the held sibling then creates the first deadline at 13,000. Root
+  independently reruns the same three-probe source selection. Its initial wrong
+  configuration collected zero tests and is rejected setup, not evidence. The
+  two paired R5 controls independently confirm its deferred-budget fix.
+- **F1:** the current chat reference still promises crash exit 1 and excludes
+  infrastructure 9 from its one-shot wording. The correction preserves ordinary
+  classified failed turns, deliberate chat end and invalid invocation, while
+  linking the canonical infrastructure/remedy contract. This adjacent unchanged
+  reference was supporting context, not an extra assigned path in the review.
+- **F2:** the current Home reference still promises immediate second-signal exit
+  and timer-bounded cleanup followed by DB closure. The corrected product reference
+  describes the original deadline and actual joins, keeps infrastructure precedence
+  visible, and distinguishes the ownerless library compatibility path.
+
+Successful MCP reporters are now registered before shared cleanup, notified once
+per failed server as each fault occurs, and replay retained faults immediately
+when attached late. Mark-before-callback prevents duplicate reentry. Every actual
+close remains joined; a reporter exception is retained until those joins settle,
+and failed-start observation remains separate. The original live budget still
+controls actual entry. Four new manager schedules and an actual workflow/SQLite
+regression pass; replacing only the manager with its pre-fix bytes breaks exactly
+five permanent cases, then restores the fixed bytes. This is an author removal
+exercise, not a new formal whole-family causal certificate. The run/gate secrets
+workloads remain 83/71; no control inventory is weakened.
+
+Reviewer scopes remain distinct and overlap author selections: 697 session cases;
+467 workflow cases plus three probes; 163 native source cases, 66 tooling cases,
+four paired correction probes and three shared probes. This is neither full CI
+nor the separately required security sitting. All first six rounds remain NONCLEAN.
+
+At `4b7ba216`, minimum/current Linux and current Windows installed consumers pass;
+required macOS and therefore the packed aggregate fail. The new Windows advisory
+passes, including all eight benign-alias cases, without changing the old 5-second
+bound. This does not explain the prior `ad743ba5` timeout. The current macOS
+injected-error control returns fixed infrastructure 9 where ordinary native
+outcomes still require 0/1. Actual target/descendant readiness, native close,
+listener removal and fixture/sentinel cleanup are recorded, without a watchdog;
+the initiating fault remains unknown. Node there is actually **24.20.0**, not a
+version inferred from another platform's current-runtime leg.
+
+Independent immutable-source triage verifies the actual tarball
+`0a1a38868a581806d026bd707e43634b39d790ac2cfcda7d3cd4b183763b56a3`, all
+seventy installed files and official Node 24.20.0. Thirty-one local injected-error
+executions and 96 native subcases pass, including an unchanged complete eight-case
+worker. Local macOS 27.0.1 differs from the CI host's 26.6.2. Invalid canonical-path/
+module-context attempts and their cleanup limits are retained separately. These
+passes do not clear either failed macOS source. The ignored triage report SHA-256
+is `db3004eb5f27425c54c6c68a1afcb44790219348f229885b59b8814a28831069`,
+and its 89-file evidence manifest SHA-256 is
+`80b045f29009e523e41056fe2f424c98ca78946d0ca101f892d36d70632927b2`.
+
+The existing installed-test witness adds passive actual signal/uncaught-occurrence
+observations with bounded native-origin facts and a required terminal completeness
+record. It forwards the original receiver, arguments, result and throwable,
+retains observation failure without masking the native result, and adds no
+product handler/registry/exit authority. No exit, acknowledgement, readiness,
+watchdog or timeout assertion is relaxed. The new tooling is locally exercised
+against the unchanged old tarball with its complete eight-case worker and all
+seventy installed bytes preserved; this is tooling validation, not a newly built
+post-manager-fix artifact or remote platform acceptance. Required future macOS
+execution remains open; no unobserved errno is normalized or declared harmless.
+
+Two NEW complete cumulative clean reviews after the last material correction,
+a NEW separate clean security sitting and fresh full CI/all four exact-package
+platform consumers remain required. Whole Step 8 and Steps 9–19 remain open.
+No ADR approval, user decision, provider, credential, billing, capture or production
+recipient setup is pending. Root continues automatically.
+
+
+**Final author gates for the R6 correction.** Seventeen workspace lint/typecheck
+tasks pass (twelve cached); eleven workspace test tasks pass (nine cached).
+Fresh CLI execution is **335 files / 5,412 passing tests / ten reported skips**;
+fresh MCP is **twenty files / 250 passing tests / no skips**. The previously
+CI-skipped local wrap-shape case runs and passes in this non-CI author environment;
+this explains the changed CLI skip count without deleting or weakening a case.
+All **516 acceptance-tool tests**, tools lint/typecheck, schema sync, seam/purity,
+714-file test isolation, build/format, 25-output closure, 177 compiled bootstrap
+controls and compiled CLI smoke pass. Build/format has seven tasks, five cached.
+The initial copied-tool fixture import failures and missing performance import
+lint failure are repaired, not waived. A missing old temporary artifact path is
+rejected local setup before install; the retained artifact is used for the valid
+new-diagnostic worker. Root independently verifies all 89 sealed triage files.
+
+The ten-path product/test/tool author pin SHA-256 is
+`794c04657e8ef264f718805cc53d0c02a922b20474aa0160df5322e5208e9c3f`.
+These are author gates; independent cumulative review, security and fresh required
+remote acceptance remain open. At the previous source, wire/usage/secrets controls,
+coverage and Node-floor/Windows advisories have passed while filesystem controls
+are still running; required macOS/packed aggregation remain failed. No whole-CI
+success or post-correction artifact evidence is inferred from that partial run.
+
+### Wave 3 Step 8d seventh cumulative review and native-outcome correction — 2026-10-17
+
+**Implemented correction; independent acceptance remains open.** Three NEW
+read-only reviewers assess the complete original `d9625ff0` base through
+`86f0422ac1d5010986f89e48dc8ddcb8f7547936`. Root independently recomputes all
+288 physical-file hashes, full zero-context diffs and 1,534 individual hunk hashes,
+then verifies disjoint complete coverage: session/terminal 73 paths / 505 hunks,
+workflow/management 132 / 791, native/tools/docs 83 / 238. R7 is **NONCLEAN**, with
+one confirmed Medium tooling finding, `WNT-R7-1`; the other two complete slices
+are clean. No clean slice is inherited as a new whole review. The local aggregate
+SHA-256 is `b9f0144911010f50cec5ddabdc85c252dc6194e8f234e84e7cc5bcf37e337292`.
+All seven historical complete rounds remain NONCLEAN.
+
+The required macOS job `117286651653`, run `38995305462`, at the reviewed source
+now records the actual initiating native fact. The same explicitly created
+detached group receives a successful SIGKILL, then a SIGKILL refusal with own
+`EPERM`/`-1`; actual target close follows, then the final reap receives `ESRCH`/`-3`.
+The passive diagnostic is complete, and product infrastructure 9 is retained.
+Prior successful signaling or later absence cannot erase a real refusal. The
+product's two final reaps and non-ESRCH failure rule remain unchanged. The
+unconditional nonbootstrap smoke expectation rejects 9 before its remaining
+postconditions run. Two independent readings and an actual-source protocol probe
+corroborate this control defect. Current XNU source suggests a possible group-state
+explanation, but the runner's exact kernel/member states are unverified; no
+harmlessness, zombie-cause or flake conclusion is drawn.
+
+The [installed-package control](../../../tools/cli-package/README.md) now accepts only
+that narrowly witnessed Darwin injected-error **failure outcome**: complete
+three-signal evidence tied to the actual creation, exact infrastructure 9 with one
+fixed `cli_internal` diagnostic, actual target/delivered closure and **zero**
+completed turns. Fault-free cases retain 0/1 and one completed turn. All original
+readiness, descendant absence, sibling survival, watchdog, timing, cleanup,
+compiled-byte and forbidden-service assertions still execute. Missing/foreign/
+extra fault evidence or an unexplained 9 refuses. This is correct failure
+classification, not ordinary success or retrospective acceptance of a failed CI
+run. The permanent validator has thirty adverse vectors; a separate native-owner
+preservation case pins sticky 9 through explicitly simulated native close without
+adding a product fix.
+
+Root safely downloads the exact reviewed package, verifies GitHub ZIP digest
+`2aed0e470de56b5948137d93249deef63679ffac7a3d57ff8433e63778007d14`,
+tarball `7b20f20ba6d073fcb50f682e6a1cde7f19042e0dd2797e09c9733f59f39e9acc`
+and all seventy installed files. A synthetic native-edge EPERM after an actual
+successful group kill makes the original control fail semantically. It establishes
+actual infrastructure cancellation with zero completed turns. The corrected
+control then executes all three nonbootstrap modes, preserving every postcondition:
+9 for the witnessed refusal and ordinary 0/0 for the other modes. A separate
+unchanged-installation complete eight-case worker passes. Both retain byte identity
+and actual owned cleanup; the installation is removed. These are local author
+controls on Node 24.20.0, not fresh remote 24.21.0 or full-CI acceptance. An initial
+experimental injection also affected an unrelated mode and is correctly rejected;
+that invalid experiment is retained separately rather than counted as a pass.
+
+**Separate fixture-lifetime corrections.** Fresh Windows advisory job
+`117286543561` fails a native DB readiness wait, the CLI native-writer case deadline
+and the following root-alias expectation (0 expected, 2 observed). The required
+Windows packed consumer passes at this source; it does not clear the advisory.
+Three restricted actual-source/native probes establish pre-existing fixture
+problems: error/exit was treated as child retirement, and a raw timed-out test can
+enter the next case's mocked home. Holding that late native maintenance operation
+reproduces `maintenance_active`/2 at the next root. This is a feasible source
+schedule, not proof of the remote failure's exact cause. The local full workspace
+run separately exposes two acquisition-test files: a first-case timeout, then
+close count four instead of two, plus an acquisition admission wait failure. Two
+restricted actual SQLite probes reproduce late-import reuse of the next mock and
+preserve exact count two when the original case is sealed.
+
+Corrections retain the existing five-second readiness/case limits, one-second
+admission wait, exact outcomes and close-count assertions. Native fixture cleanup
+joins actual **close**, with runner-owned cleanup before home replacement. The
+writer captures its original signal/home, seals after timeout and uses one
+remaining case budget instead of renewed phase budgets. Bounded fixed phase,
+exit/close and diagnostic-code facts improve future failure attribution. The DB
+fixture's real started-child error regression requires cancellation and actual
+close; restoring the erroneous error-as-ended guard fails its named semantic
+assertion and byte-exact restoration is retained. Acquisition cases now retain
+their raw scenario through runner cleanup, check the original captured signal
+and an explicit cleanup seal after imports/before native admission, join pending
+startup before mock reset and retain every exact native disposal capability.
+Pure module transformation is prepared before the unchanged semantic case timer.
+Deliberately unacknowledged failed-close product results remain pending; manual
+harness disposal is never a product ACK. No product runtime or accepted decision
+is changed by these fixture repairs.
+
+The ignored Windows triage report/evidence SHA-256 values are
+`6edb030e22389ac53c85ea64fc056be9258a34cfdc34477ad26b82feb68a16db` /
+`6d22bf164ac290e61a0280d8f9a195bc392457fab0244680f9aced89c07f711f`;
+the acquisition triage values are
+`af7f63d915e800280950cbd6f93a7d25b85b87b053f58a5cdbaf7abf5da877e3` /
+`ac2f71b9a91e0d6e5aa7ce4c726ab71dff440bdbcca0aa6c4989aab99966df49`.
+Their original sources and scope limits are preserved; they do not review the
+subsequent author corrections. Initial author import/context setup mistakes are
+repaired before the valid focused controls, not waived as successful executions.
+Author validation continues on the corrected source. Historical red runs remain
+red; no exact Windows readiness/root-cause diagnosis is inferred from local green.
+
+Two NEW complete cumulative clean rounds after the final material correction,
+a NEW separate clean security sitting and fresh full CI plus all four actual
+same-artifact consumers remain required. Whole Step 8 and Steps 9–19 remain open.
+No ADR approval, user decision, billing, provider/keychain operation, capture,
+production recipient or release upload is pending. Work continues automatically.
+
+**Final author gates for the R7 correction.** The corrected source passes all
+seventeen workspace lint/typecheck tasks (fifteen cached) and eleven workspace
+test tasks (nine cached). Fresh DB execution is **64 files / 1,062 passing tests**;
+fresh CLI is **335 files / 5,413 passing tests / ten established local skips**.
+All **547 acceptance-tool tests**, final tools lint/typecheck, schema sync,
+seam/purity, 714-file test-isolation/ownership, seven build/format tasks
+(five cached), 25-output compiled closure and 177 compiled bootstrap controls pass.
+The earlier full-suite, context-setup and cleanup-lint failures remain retained
+and repaired; they are not waived or counted as positive controls.
+
+The eleven-path source seal SHA-256 is
+`c5e27edb6dce7c57dceca4abaa1590c7f6e263d0b0e55614b96f7f64350212ac`;
+all sealed bytes are independently checked unchanged after final gates. The
+separate eight-case exact-package author worker and selected native/fixture
+removals retain the narrower scopes recorded above. Fresh required remote CI,
+all four actual same-artifact platforms, two NEW clean cumulative reviews and a
+NEW clean security sitting remain open. This author checkpoint grants no Step 8d,
+whole Step 8 or later-increment acceptance.
+
+
+### Wave 3 Step 8d eighth cumulative review and coexistence-fixture correction — 2026-10-17
+
+**R8 is complete and NONCLEAN; Step 8d and whole Step 8 remain open.** The root
+read all three new cumulative reports and independently recomputed every physical
+file, complete U0 diff and hunk identity at frozen `09740575`, from the original
+Step 8 base `d9625ff0`. Coverage is disjoint and complete: **293 paths / 1,578 hunks**.
+The inventory SHA-256 is
+`aca454b00ff8b040f3b1880f1e98291c829c57a71bf270c26e1e3819ec96affe`;
+the independently joined aggregate is
+`5cfac59a82a137bfc1c762e69e21da36ea4ab54b9feddc9ea97dc0063a440736`.
+
+| Complete cumulative slice | Paths / hunks | Fresh execution, separately attributed | Verdict |
+|---|---:|---|---|
+| Session/terminal | 73 / 505 | 35 files / 697 passes, zero skips | CLEAN |
+| Workflow/management | 134 / 809 | 37 files / 489 passes, one established non-Windows skip | CLEAN |
+| Native/tools/docs | 86 / 264 | 19 source files / 228 passes; 101 tooling passes | NONCLEAN: WNT-R8-1 |
+
+Selections overlap between reviewers; no deduplicated combined test total is
+claimed. These source/protocol executions do not certify operator TTYs, actual
+Windows execution, full CI or the separately required security sitting. Report
+SHA-256 values, in table order, are
+`e61f634eca969f2bf689d5764781fa68d415ac2c929114b44204fa2b56b99c6a`,
+`1720af1abf90314aecafda914c3b433070e838e349eebdd73f2b684c5ac56367` and
+`ad15f1da99581e2f569c0ee29895d0de452e4d298691bfd6da78c88bb8b0b9ec`.
+Their independently checked coverage-ledger hashes are
+`feda555fbc16596bb51b0f62f58585d98f7d3764ae033eb4549bc9dcfddd3691`,
+`1362e03eb660d1803d9e7711e59944d917d96aedecac790e1dac028b9e21652c` and
+`6baf0efcd3594b4051cb655ed66b487ea3048ee345b96016054a298443afc579`.
+Records remain local and Git-ignored.
+
+**WNT-R8-1, Medium, independently corroborated.** The current one-shot command
+summary omitted infrastructure exit 9 and promised unconditional MCP reaping,
+contradicting the implemented finite cleanup contract and the same canonical
+file's detailed sections. The correction qualifies ordinary outcomes and links
+[the one-shot contract](../../reference/cli/commands.md#relavium-agent-run) to
+its sole failure/teardown authorities. It changes no product runtime policy and
+introduces no ADR decision or universal descendant-containment claim.
+
+**Fresh physical package evidence at the reviewed source.** Push CI
+`38998232222`, attempt 1, records successful pack, all four installed consumers
+and required aggregation at `09740575`. The root downloaded and SHA-checked all
+five GitHub ZIPs, bounded their extraction, independently inspected every tar
+member and reran strict receipt aggregation against observed job/source/origin
+metadata. The native reviewer separately inspected those physical bytes and
+receipts. The actual tarball is **445,642 bytes / 70 public files**, SHA-256
+`f0c2d8abccaeed8df245bfb08c86da0faaf71d67e69bb68c678d91d452915b5b`.
+Current Linux/macOS/Windows use Node 24.21.0; minimum Linux uses exact Node 22.0.0.
+Each report binds eight installed cases and 177 bootstrap controls to that same
+artifact. Root physical-audit SHA-256:
+`7a0d38ff0cbd8904773b5d1fe0dd95790e3aab540080171953350025e91ca9e0`.
+Inspection is not a new consumer execution or final-source acceptance.
+
+**Separate Windows advisory remains failed.** Job `117295420447` in that run
+passes the previously repaired DB/media suites but times out the first
+coexistence case at its original **5,000 ms** bound (reported duration 10,452 ms).
+The cross-process case passes. The remote log contains no identifying phase;
+SQLite contention, WebAssembly startup and scheduler delay are not established
+causes. No flake, waiver or retrospective pass is inferred.
+
+A new independent ignored triage uses exact current source, actual file SQLite
+and real `runCommand`. Six separately retained controls reproduce two fixture
+gaps: setup before the cleanup scope leaks the first native connection on an
+injected setup fault; Vitest timeout aborts its context but leaves the raw run
+and both connections live. Explicit raw release/join permits the original run
+assertions to pass after the timeout. Guarded setup closes the original handle
+while retaining the same injected failure. A captured context-abort bridge to
+shipping cooperative stop prevents engine entry, retains the failed timeout,
+returns actual run 1 with no events and joins both closes. These local causal
+facts do not explain the remote delay. The original source/probe/config/log
+bytes are independently hash-verified; triage report/manifest SHA-256 values are
+`11c31edbda2e3aadbd37550603ffb215ffa673644d9b3dd8d1d8a22fc0b1c124` /
+`62bec05ae9782f5cc74280438003c7b3111eca01ebb108930e0e9becff9ca722`.
+One preliminary duplicate baseline is explicitly excluded from the six controls.
+
+The author correction retains the raw case before entry and awaits it from
+runner `afterEach`. Exact SQLite close capabilities are captured before factory
+setup; migration and the second open remain within cleanup ownership. The test
+context abort reaches the original cooperative run stop; rejection of one writer
+still joins both actual writers before either native close. Fixed bounded phase
+timings contain no path, transcript or raw failure text. Three permanent controls
+pin actual setup cleanup, a held real build's cancellation/late settlement and
+preservation of the original fault alongside a native cleanup failure. The
+unchanged normal run, NDJSON, transcript and cross-process assertions remain.
+Neither case/readiness bounds nor workload scheduling are extended. No speculative
+WebAssembly warmup or serialization change is applied. Author gates and fresh
+final-source Windows evidence are required; the initiating remote delay remains
+unclassified.
+
+Two NEW complete cumulative clean rounds after the last material correction, a
+NEW separate clean security sitting and fresh full CI plus all four actual
+same-artifact platforms remain required. Historical R1–R8 and failed CI results
+keep their source scopes. No Step 8d, whole Step 8 or later-step acceptance is
+inferred. No user decision, ADR approval, credential, billing, provider capture,
+production recipient or release upload is pending. Work continues automatically.
+
+
+**Final author gates for the R8 correction.** All seventeen workspace lint/typecheck
+tasks pass (fifteen cached); all eleven workspace test tasks pass (ten cached).
+The fresh CLI run records **335 files / 5,416 passes / ten established local skips**.
+Final build/format has seven successful tasks (five cached). Seam/engine-dependency
+fences, 714-file isolation/ownership, 25-output/407-input/17-external compiled
+closure, 177 bootstrap controls and compiled CLI smoke pass. No runtime source,
+manifest, lockfile, tool or ADR body changes in this correction. A mistaken
+nonexistent purity-script invocation and the initial test lint failure are retained
+as invalid/failed attempts, then corrected before the final gates; neither is
+counted as a pass.
+
+The final test-source seal is
+`503966adb470b0d32db8039a1b52c36579f503ae6df6251ea56d1cabd86564f1`;
+its exact source bytes are independently checked unchanged after all gates. Two
+selected author removals independently disable actual native close and cooperative
+stop delivery in private byte copies. Each breaks its precise named semantic
+assertion; neither setup/timeout/nonzero alone certifies removal. The complete
+five-case fixed and byte-restored files pass. Filtered removal runs each execute
+one case with four explicit selection skips, not a full-file acceptance. Final
+causal-result SHA-256:
+`34ef08c1aceb2dffeef8ceaaf8b183363563316ebf479581902f05f5ceeb8fe7`.
+Initial copy-config over-selection and a rejected non-unique mutation anchor are
+excluded from that causal matrix. These author controls do not replace independent
+reviews or explain the remote Windows timeout. Fresh final-source CI/platforms,
+two NEW clean cumulative rounds and a NEW clean security sitting remain required.
+
+### Wave 3 Step 8d ninth cumulative review and caught-fault correction — 2026-10-17
+
+**R9 is complete and NONCLEAN; Step 8d and whole Step 8 remain open.** The root
+read all three new complete reports and independently recomputed every physical
+file, full U0 diff and hunk from original Step 8 base `d9625ff0` to frozen
+`40086e71`. Coverage is disjoint and complete: **293 paths / 1,588 hunks**.
+Inventory SHA-256:
+`2f5f938dca6c091169835b30dead1d8d5712c6ce37a08438f4af48a754548993`;
+independently joined aggregate:
+`bd36912c9c8ff457aa09c61a3a44cc3a8616930d8bd69862943a5826a23b0d1c`.
+
+| Complete cumulative slice | Paths / hunks | Fresh execution, separately attributed | Verdict |
+|---|---:|---|---|
+| Session/terminal | 73 / 505 | 35 complete files / 697 passes; separate actual Home/onboarding probe / two passes, zero skips | NONCLEAN: ST-R9-1, High |
+| Workflow/management | 134 / 818 | 68 complete files / 1,276 passes, one established host skip; independent eight-case probe has six precise failures and two positive passes | NONCLEAN: R9-WM-01, High |
+| Native/tools/docs | 86 / 265 | 18 source files / 191 passes; 101 tooling passes; four independent signal probes, zero skips | NONCLEAN: WNT-R9-1, Medium |
+
+Selections overlap; no combined deduplicated execution total is inferred. In
+table order, report SHA-256 values are
+`69efbdc45f67a337e529437c1c0f0cc233a4a04e6d3acd73c93e6e3d73e793ee`,
+`371e07d09011adeaf07b11fc1c5b1be4f39123e4b0393d77b8f08c86258dbbca` and
+`8d9fb2c8f4f3a1350984f37ce0d66cd2979532cb9d4ec077f4ae9d15de605b53`.
+Checked coverage-ledger hashes are
+`25b5eb65f629db004a268f0e88fe5d8ee6095aa42fd62fb526682935d9de975d`,
+`a0511bc6f1ad4ddfdeccd5bf466510b605352d5d2857899ea055ed192f4b1373` and
+`30bfc7da2c83dc8065a92d06d1be02662774108c2863836176674846bce1d9df`.
+Records remain local and Git-ignored. Native evidence distinguishes fresh source
+parents from existing-dist child fixtures. Failed reviewer setup attempts receive
+no acceptance credit. Root replays have separate copies; reviewers regenerated
+their final reports after an overwritten probe output path.
+
+**ST-R9-1, High, independently reproduced.** The real Home default writer can
+throw unexpectedly before its filesystem refusal adapter. Inline picker recovery
+consumed the fault without notifying the original owner, permitting Home exit 0.
+The owned callback now checks admission and observes failure before UI recovery.
+Known typed config refusals remain inline; ownerless compatibility is preserved.
+Onboarding already observes the same fault correctly and needs no runtime change.
+
+**R9-WM-01, High, independently reproduced through shipping dispatch.** Passive
+one-shot render faults were isolated by the event bus and reduced to warnings.
+Failed rendering also prevented recording a turn error, changing failed-turn 1
+into success 0. Captured writes now classify actual sink refusal and notify the
+original surface owner. The subscriber records the turn error independently,
+seals rendering before cancellation reentry and observes its exceptions before
+bus isolation. Mandatory host ownership and admission checks prevent turn entry
+after a start-render fault. Actual producer, usage, MCP and native database joins
+still precede retirement. No workflow health is manufactured. The proof uses an
+injected captured-sink refusal with actual dispatch/cassette/SQLite, not OS EPIPE.
+
+**WNT-R9-1, Medium.** The canonical exit summary now distinguishes cooperative
+first SIGINT from second SIGINT and terminating HUP/QUIT/TERM, linking existing
+outcome precedence. No runtime signal policy changes.
+
+**Permanent and causal evidence.** Thirteen new cases cover direct and shipping
+dispatch, plain and JSON output, successful and failed turns, known Home config
+refusal, unexpected actual-writer failure and a held host-close/database join.
+Two complete current-source files pass **113 tests**, zero skips. The same tests
+against a private immutable `40086e71` archive produce exactly **ten named semantic
+failures / 103 passes**, zero skips. Both executions have owned runner completion
+receipts with **zero unhandled errors**. No tracked runtime mutation, timeout,
+import failure or mere nonzero exit certifies causal proof. Control artifact:
+`cc4ee289b92054b526a4219f079033090955518a13ae23e4f51ebdd6a454836f`.
+Fixture finally blocks join actual drives even when semantic assertions fail.
+An initial test-only generic mock type error was corrected; an unsupported Python
+extraction option was a preparation failure. Neither receives passing credit.
+
+**Separately attributed reviewed-source platforms.** Push run `39000420576`,
+attempt 1, passes pack, all four same-artifact consumers, required aggregation
+and Windows advisory at `40086e71`. Root and native reviewer independently inspect
+all five ZIPs, 70 public tar members and four bound receipts. Tarball: **445,642
+bytes**, SHA-256
+`3517a497fd5f1dca8d042cfefbc824b4fcb8394acb548e3d9b166f77ee28e283`;
+physical audit:
+`278d7aa1f8319b241b5767b9044de85b8673cd43c4f80563dbea7542e1d93e26`.
+Actual Windows coexistence passes all five cases at the unchanged five-second
+bound. These results precede the runtime corrections. The earlier `09740575`
+timeout remains failed with exact cause unclassified; a later pass does not
+explain it. Required broader CI retains its own observed status.
+
+Two NEW complete cumulative clean rounds after the last material correction, a
+NEW separate clean security sitting and fresh final-source full CI plus all four
+actual same-artifact platforms remain required. R1–R9 retain NONCLEAN verdicts.
+No Step 8d, whole Step 8, later-step or whole-wave acceptance is inferred. No user
+decision, ADR approval, credential, billing, provider capture, production recipient
+or release upload is pending. Implementation continues automatically.
+
+
+**Final author gates for the R9 correction.** All seventeen workspace lint/typecheck
+tasks pass (fifteen cached); all eleven workspace test tasks pass (ten cached).
+The fresh CLI run records **335 files / 5,429 passes / ten established local skips**.
+Build/format passes all seven tasks (six cached). Seam and engine-dependency
+fences, 714-file isolation/ownership, 25-output/407-input/17-external compiled
+closure, 177 bootstrap controls and compiled CLI smoke pass. Product/test source
+and the canonical exit summary are sealed separately from append-only status
+records; seal SHA-256:
+`4ba3e9799c4f2382256425fdc2c83b1fb76c0befae899c5ca5662028d884aced`.
+Source pins are checked unchanged after the gates. This does not replace the
+required new independent reviews, separate security or final-source CI/platforms.
+
+
+### Wave 3 Step 8d tenth cumulative review and original-owner corrections — 2026-10-17
+
+**NONCLEAN; implementation corrections in progress.** Source `4c0fa5b7` has a
+NEW complete cumulative review from base `d9625ff0`: all **293 physical paths /
+1,600 full U0 hunks** independently rehashed and joined without overlap or omission.
+Session/terminal: 73/509, NONCLEAN; workflow/management: 134/825, NONCLEAN;
+native/tools/docs: 86/266, scoped CLEAN. The interrupted session sitting was
+completed independently from retained captures plus fresh source review/execution;
+no interrupted predecessor completion or earlier clean credit is inherited.
+Root independently joined every physical file, full patch and hunk identity.
+Aggregate SHA-256:
+`e11fe25dbf8011952ebb5ebae4bb35cba82b4fe8a7dcbf1246cbfc5776b17a22`.
+Detailed reports/ledgers remain local and Git-ignored.
+
+| Confirmed finding | Correction and preservation |
+| --- | --- |
+| ST-R10-1 — passive Home/plain/JSON/Ink session consumers hide failures behind bus isolation | Observe through original owner before local recovery; seal before reentrant cancellation; classify captured business output and retain independent restoration capabilities |
+| ST-R10-2 — export provenance catch also encloses native timestamp failure | Compute timestamp outside best-effort row write; preserve already-written scaffold and existing row-write warning policy |
+| ST-R10-3 — native `/edit` setup failure becomes an inline editor outcome before owner observation | Observe concrete native creation/write before partial cleanup; preserve known errno/editor refusal and never-throws outcome compatibility; report partial-cleanup uncertainty |
+| R10-WM-01 — gate/budget checkpoint native failure becomes invocation 2 | Preserve original cause; keep existing typed suspension corruption operational 1 with fixed history-inspection advice; unexpected native failure remains infrastructure 9 |
+
+Fresh reviewer verification records 35 assigned session files / **699 passes**,
+68 assigned workflow files / **1,287 passes and one established host skip**, and
+20 native source files / **304 passes**, with **101 Node tests** separately.
+Counts retain their own cohorts; overlap is not added into a unique whole-project
+claim. Session probes freshly reproduce all three findings, seven cases across
+four physical files with zero runner-unhandled errors. Workflow native checkpoint
+controls have four precise expected9 failures / four passing known-history/missing-run
+controls; valid-row fold controls separately characterize the old noncanonical
+mapping. Root independently reproduces Home/plain/JSON/Ink, export, checkpoint and
+native editor observations with owned zero-unhandled reporter receipts. These are
+injected offline/native-boundary scenarios, not live provider or naturally observed
+OS corruption claims.
+
+**Separately attributed source platforms.** At `4c0fa5b7`, push run `39002571093`
+passes pack, required package aggregation and all four same-artifact consumers.
+Root and native reviewer independently inspect five ZIPs, 70 public tar members
+and four bound receipts. Tarball: **445,764 bytes**, SHA-256
+`6ff96978bf39cba43a817fa1f739ad5897355ccd2af6d3f800a0285c49968cb5`;
+physical audit SHA-256:
+`8d35a9f645dc3058da71baf8db56619e3aaa87631a860951c36038fcb0585130`.
+Its Windows advisory fails the benign-alias filesystem case at its unchanged
+5,000-ms bound (reported 5,418 ms; 322 passes / eighteen Windows skips). The remote
+initiating phase/cause remains **unknown**. Broader required CI retains its actual
+separate status; these platform passes precede the R10 corrections.
+
+Separate isolated macOS/native-SQLite triage proves that runner timeout does not
+join pending raw work, mutable fixture identity can affect late reads, and an actual
+read fault bypasses an unguarded close. Eight unchanged original cases plus three
+controls pass; two intentionally held original-bound timeout controls remain RED;
+two real missing-table read controls pass. All fresh owned launchers/children join,
+all source/dependency pins remain fixed, and no watchdog fires. This does not explain
+or waive the remote Windows failure. The correction retains immutable case identity,
+bridges runner abort to the original invocation, joins raw work before HOME/root
+removal, and protects manual native reads/writes with `finally`. No timeout widening,
+new skip, speculative warmup or serialization is introduced.
+
+Author correction gates, permanent old-runtime causal checks, two NEW complete
+cumulative clean rounds after the last material fix, a NEW separate clean security
+sitting and fresh final-source full CI plus all four same-artifact consumers remain
+required. R1–R10 retain NONCLEAN verdicts. No Step 8d, whole Step 8, later-step or
+whole-wave acceptance is inferred. No new ADR, user decision, provider capture,
+credential, billing, production recipient or release upload is pending.
+
+
+**R10 correction author gates.** Workspace lint/typecheck/test passes all **23
+tasks** (twenty cached); the fresh CLI cohort records **341 files / 5,475 passes /
+ten established skips**. Build/format passes all seven tasks (five cached).
+Seam and engine-dependency fences, tools typecheck, **720-file** isolation/ownership,
+compiled **25-output / 408-input / 17-external** closure, **177** bootstrap controls
+and compiled CLI smoke pass. No dependency-manifest change or core/LLM/DB/MCP/shared runtime
+source delta is introduced. All 490 relative file targets in the five changed Markdown
+homes resolve; mandatory managed Turbo headings and fenced examples are preserved.
+
+Permanent controls execute twelve identical test files against an immutable
+`4c0fa5b7` Git archive and the corrected source. Old runtime: **29 precise semantic
+assertion failures / 228 passes**; corrected source: **261 passes**, including four
+additional helper tests. Both owned runner receipts report zero unhandled errors;
+actual execution sessions join. No tracked runtime is mutated for these controls.
+The original no-collection dependency-link attempt receives no passing credit.
+A final Prettier-only comment indentation change in one test is independently
+verified to preserve the complete TypeScript executable-token sequence; the original
+execution pins and explicit format-equivalence receipt remain local. Causal record
+SHA-256: `baf2ada2043e876a911e73d5e19f253617c1194687004511d1eb2c5a6ec72e16`.
+
+Material source/test/canonical-contract seal SHA-256: `bea2dbf25e58cf75ffa7f4421d1926f6b9f51fe5c7df4093e974c080cd23011f`.
+Append-only status records are excluded from that seal to avoid a circular hash.
+Initial test expectation/type/lint/format failures were corrected and retain their
+failed attribution; only the successful final commands above receive credit.
+These author gates do not replace two NEW complete cumulative clean rounds, the
+NEW separate clean security sitting or fresh final-source full CI and all four
+same-artifact consumers. Step 8d and whole Step 8 remain open.
+
+
+### Wave 3 Step 8d eleventh cumulative review and advisory-owner corrections — 2026-10-17
+
+**NONCLEAN; corrections committed at `d8e6b4d5`.** Three NEW independent sittings
+review frozen `b9bc7118` cumulatively from `d9625ff0`: all **302 physical paths /
+1,650 U0 hunks** are independently rehashed and joined without overlap or omission.
+Session/terminal: 79/532; workflow/management: 136/834; native/tools/docs: 87/284.
+All three verdicts are NONCLEAN. Root reads all reports, corroborates the runtime
+findings, and independently verifies every physical/full-diff/hunk identity.
+Aggregate SHA-256:
+`9eb66529d81ceef58303f6971517b54742bd1794ebbb752322b1739f3dc2e8a3`.
+Detailed reports and physical ledgers remain local and Git-ignored.
+
+| Confirmed finding | Correction and preservation |
+| --- | --- |
+| ST-R11-1 — budget/unpriced notifications consume output/view faults before original-owner observation | Bind the synchronous notification family at shared runtime creation; observe its own original cause before governor/bus recovery and seal before cancellation reentry. Preserve healthy warnings, successful passive-error reporting, ownerless compatibility and original restoration capabilities |
+| R11-WM-01 — missing local MCP consent wiring remains operational 1 despite the accepted infrastructure-9 inventory | Use existing fixed `cli_internal` at this exact pre-start guard. Preserve known consent/cancellation outcomes and actual workflow health priority; do not reinterpret `internal` globally |
+| WNT-R11-1 — filesystem workspace declaration expects eight cases after two permanent controls were added | Refresh only the complete workload pin to ten; preserve named semantic assertions, exact inventory, runtime-error refusal and original bounds |
+| WNT-R11-2 — command-export declaration and README still expect fifteen cases | Refresh to sixteen, preserving the new timestamp regression, full-file witness and restoration requirements |
+
+Fresh assigned reviewer execution: session **40 files / 744 passes**, workflow
+**70 files / 1,301 passes / one established platform skip**, native **19 files /
+201 passes**, with a separate **16-pass** command-export file and **101 Node tests**.
+Every reported cohort has zero runner-unhandled errors and actual joined execution;
+overlapping checks are not added into a unique project total. The 61-file / 1,726-case
+union is collection evidence for 151 declarations, not execution of that mutation
+family. Only two workload count mismatches were found.
+
+Actual owned chat-resume plain/JSON and Home controls reproduce hidden notification
+faults with real SQLite and scripted offline providers. Effort, manual compaction
+acknowledgement and installed Ink error controls retain their distinct successful
+owner-observation evidence. The missing-consent guard refuses before spawn on both
+actual lifetime routes, but originally selects the wrong classification. Shipping
+callers currently supply consent; no CLI route to unconsented spawning is claimed.
+
+**Permanent causal evidence.** Three identical new regression files execute against
+the corrected source and an immutable `b9bc7118` Git archive. All **1,736 original
+tracked blobs** in that archive are independently reverified; only the three new
+test files are explicitly overlaid. Old runtime: **eight precise assertion failures /
+eight passes**. Corrected runtime: **sixteen passes**, zero skips. Both actual sessions
+join and owned reporter receipts record zero unhandled errors. The healthy pairs,
+original cause, provider entry counts, durable replies, native DB close and zero
+remaining owners are checked. Parent source aliases and shared installed dependencies
+are explicit; no Windows, provider-call or operator-TTY evidence is inferred.
+Causal record SHA-256:
+`e55cf4054a155db9dd844d13f7854687742ac06ec49f9f0984a7a0c0dbb9ed40`.
+Additional actual session-host reporter tests preserve successful passive reporting
+while observing a failure in the reporter itself; helper tests pin cancellation
+reentry, stopped entry and ownerless compatibility.
+
+**Separately attributed platform evidence.** Reviewed-source push run `39006313132`
+attempt 1 completes with **failure**. Both required causal families reject the stale
+counts, and the main required job refuses their failed dependency. Coverage, wire,
+usage, minimum-installable-Node and peer checks pass in their own scopes. Pack,
+all four installed consumers and required package aggregation pass. Root and native
+reviewer independently inspect five ZIPs, 70 public members and four bound receipts.
+Tarball: **446,001 bytes**, SHA-256
+`98e6b32548904d59588a14e28b478c8bc62d6c21761ef3e001e24275679a8e77`;
+physical audit SHA-256:
+`5af82c23fb67d39877e96705cdd73d9a794a479180c64c730a02c4d8f420f58c`.
+The current-runtime legs report Node 24.21.0; the minimum consumer is exactly 22.0.0.
+Package passes do not make full CI green.
+
+The separate Windows advisory fails the benign-alias fixture at **5,108 ms** against
+the unchanged **5,000-ms** bound (324 passes / eighteen established skips). Its
+initiating phase/cause remains **unknown**, as do the earlier attributed failures.
+Read-only source inspection and separately joined original/proposed native probes
+prove that a manual fixture snapshot redundantly runs migration/checkpoint maintenance.
+Both complete ten-case files pass locally with zero unhandled errors and all native
+connections closed; benign-case connections change from four main/four lock to four
+main/three lock. The private snapshot helper now uses the existing real SQLite/store
+read with `finally` close. Default fresh/resume openers and all semantic assertions
+remain intact. The actual missing-table control still proves native close on read
+failure. Bounded fixed-label/elapsed-number abort diagnostics record no paths, values
+or raw causes and grant no cleanup acknowledgement. This removes demonstrated
+unnecessary test work; it does not claim to explain or repair the remote timeout.
+No warmup, serialization, skip or timeout increase is introduced.
+
+**Correction author gates.** Final workspace lint/typecheck/test passes all **23
+tasks** (twenty cached), with fresh CLI **344 files / 5,496 passes / ten established
+skips**. Build/format passes seven tasks (five cached). Seam and engine-dependency
+fences, tools typecheck, **723-file** isolation/ownership, compiled **25-output /
+408-input / 17-external** closure, **177** bootstrap controls and compiled CLI smoke
+pass. Initial test-only type/lint failures and a misspelled helper-command attempt
+receive no passing credit; successful final commands are separately retained.
+The fourteen material source/test/tool/contract files remain unchanged through these
+gates. Material seal SHA-256:
+`c6f121b7b035b5d166afc6d2428c724ab55ce19552945802ddbe13ab1fd195dd`.
+Append-only status records are excluded to avoid a circular hash.
+
+Complete filesystem/secrets causal republication, two NEW clean complete cumulative
+rounds after the last material fix, a NEW separate clean security sitting and fresh
+final-source full CI plus all four same-artifact consumers remain required. R1–R11
+retain NONCLEAN verdicts. Step 8d, whole Step 8 and later increments remain open.
+No new ADR, maintainer decision, key, billing, provider capture, production recipient
+or release upload is pending. Implementation continues automatically.
+
+
+### Wave 3 Step 8d twelfth cumulative review and cooperative-terminal correction — 2026-10-17
+
+**R12 is complete and NONCLEAN; Step 8d and whole Step 8 remain open.** Three NEW
+independent reviewers cover `d9625ff0a641197c6ed45968df99094a25db88d6` →
+`518082b1d407fd8c23b0384e9ec150c05630b832`: 81/138/87 disjoint physical paths and
+543/839/290 complete cumulative hunks, respectively. The root reads all three
+reports and independently recomputes physical, full-diff and every hunk identity:
+**306 paths / 1,672 hunks**, no gap or overlap. Inventory SHA-256 is
+`7d30d6427380b5adbb8f6ffb577d34da3c08ea89e954917c74c074f93025e151`;
+aggregate SHA-256 is `37cf2c88e988355ff33c18afed0f2a7e622ce3bfd859f40f0829c5de61f13953`.
+All detailed reports remain local and Git-ignored.
+
+| Group | New whole-file execution | Verdict / confirmed finding |
+|---|---|---|
+| Session / terminal | 42 TypeScript files / 757 passes / no skips or unhandled errors | NONCLEAN, High `ST-R12-1`: healthy owned JSON EOF, exit and cancel omit their sole real terminal |
+| Workflow / management | 72 TypeScript files / 1,397 passes / one established Windows skip / no unhandled errors | NONCLEAN, High `R12-WM-01`: workflow pricing/effort callback faults become success or ordinary failure instead of original-owner infrastructure failure |
+| Native / tooling / docs | 19 TypeScript files / 201 passes, eight Node suites / 101 passes, no skips or unhandled errors | Scoped CLEAN; no new finding; all 151 declaration anchors and collected workloads reconcile |
+
+All reviewer runners actually join. Source aliases, existing-dist native child
+imports, synthetic OS ports, intentionally held legacy test promises and absence
+of a complete independent opening dependency inventory retain their explicit
+report qualifications. Passing ordinary suites do not disprove the two precise
+semantic reproductions or establish a separate security sitting.
+
+**Confirmed corrections, `3d937244`.** Cooperative session cancellation publishes
+the actual synchronous terminal before sealing output, observes the original
+persister refusal, and stops the same work owner in all cases. Fatal registry stop
+still seals first; stopped subscribers are never reopened. Held provider/accounting
+work remains owed after the terminal. Workflow notification binding uses the same
+passive-notification boundary as sessions, before core advisory recovery. Actual
+workflow health and the original captured terminal-restoration capabilities remain
+independent; the fixed [CLI contract](../../reference/cli/commands.md#cooperative-session-finalization-and-passive-notifications)
+is canonical. No new ADR, code category, dependency or user decision is introduced.
+
+Permanent source integration covers 22 JSON cases across fresh/resume, EOF, exit,
+cancel, first cooperative SIGINT, ownerless compatibility and terminal-output
+refusal; eight workflow cases pair healthy/faulted pricing and effort diagnostics
+on fresh runs and actual SQLite gate resumes in both output modes. Five shared
+notification cases preserve original argument identity, reentry sealing and actual
+8/7/5/6 priority. Existing actual host/persister suites now also exercise cooperative
+cancellation with a held producer and a refused terminal write. The old source is
+an immutable archive (SHA-256
+`e3995764a3e8f11c8054fc46df2022c00049e514523bbe5b39c4dc10da83e427`), with all
+1,739 tracked blobs independently verified. The identical two new command suites
+produce **24 precise assertion failures / six healthy positives / zero skips or
+unhandled errors** against it. Later helper-only tests are not falsely claimed as
+runnable against an absent old export. Fixed-candidate controls pass 65 cases in
+five complete files; the existing eight-file sibling cohort passes 238 cases.
+Regression-control receipt SHA-256 is
+`db6a6e1691a1d6a8280f048e23c3852c6d44b2d5d9ccc93c7a13dd346c1461f9`.
+
+**Native fixture and Windows qualification.** The old source's Windows advisory
+job `117325099391` in run `39008265384` fails a different case:
+`fs-invocation.test.ts` clear/reseat, **7,617 ms / original 5,000-ms bound**.
+All ten workspace-admission cases, including the old benign-alias case, pass.
+Neither the initiating phase nor raw-pending state is established: installed
+Vitest can reject while the body is pending or after overlong synchronous work
+settles. No historical Windows failure is retrospectively passed or explained.
+
+Separate original and observer-only whole-file controls both pass 19 cases.
+Instrumented controls retain real native calls: three main clients / three
+migration passes / six close returns become three / two / five, with zero returned
+main clients still open. A real missing-table read still propagates and closes
+its exact native connection. This removes only redundant observer maintenance;
+default product fresh/resume openers, all assertions and original time bounds
+remain. The final clear/reseat fixture passes the original invocation into the
+command, retains its raw operation and abort custody, refuses a later case while
+prior work/owners remain live, and keeps its root/environment through actual
+retirement. Its 32-entry fixed-label trace diagnoses progress without certifying
+cleanup. A separate deliberately held local builder triggers the unchanged
+five-second timeout: the root/HOME remain present with two owners before release,
+then disappear only after the actual raw join and zero owners. That probe remains
+an expected timeout, not a passing liveness test or remote-cause explanation.
+
+**Completed historical causal republication at `518082b1`.** Both full families
+actually join before any correction is applied. Root and an independent follow-up
+auditor verify exact frozen source/declaration membership, named mutation
+witnesses, source/evaluation/runtime/stdio bindings and complete physical trees:
+
+| Family | Controls / phases | Physical files / bytes | Runner unhandled errors |
+|---|---|---|---|
+| Filesystem | 110 / 330 | 1,987 / 43,687,739 | 0 |
+| Secrets | 41 / 123 | 745 / 27,883,106 | 0 |
+
+All exports satisfy their unchanged 2,000-file / 64-MiB physical limits. Original
+source pins join frozen Git blobs; dependency metadata does not retain dependency
+bodies, deleted execution graphs are not recreated, and a missing opening physical
+dependency inventory does not acquire an equality claim. Independent follow-up
+receipt SHA-256 is
+`f333751144d8dd2c153a3a094a2bbbf4dba7ee2593ad23a3595f554a7ccfb076`;
+its separate seal is `41cad778a257b99d4f9ea7928516f43c0139ed94a2acbb547f5a9245bdc93bb5`.
+Earlier sealed R12 reports are unchanged. These controls do not certify the later
+correction source.
+
+The same historical run's four installed consumers and aggregate pass. Root and
+independent audit inspect five ZIPs, all 70 public tar members and four receipt
+origins for tarball SHA-256
+`e9c2feb13b887835e8a685c5ea2c6e6bd80605513669d52abcb4bae746df2381`
+(**446,105 bytes**): current Linux/macOS/Windows Node 24.21.0 and minimum Linux
+Node 22.0.0, each with 177 bootstrap controls and eight installed cases. This is
+physical inspection of published execution, not another execution or full-CI
+acceptance. Its Windows advisory retains the separate failed status above.
+
+**Correction author gates.** Final `pnpm turbo run lint typecheck test` passes all
+23 tasks (20 cached), including fresh **347 CLI files / 5,533 passes / ten established
+skips**. Fences, engine-dependency and tooling type checks, 726-file isolation and
+build pass; compiled closure remains 25 outputs / 409 inputs / 17 externals.
+Untouched compiled bootstrap passes 177 controls on local Node 22.23.1/Darwin;
+compiled workflow/MCP/budget smoke passes. The 13-file correction source seal SHA-256 is
+`af282cfd6f2585737e4565cc0a842b810e38f6b1f777799c914737c9af19e4e8`.
+These are author checks, not independent acceptance. R1–R12 retain NONCLEAN
+verdicts. Two NEW complete cumulative CLEAN rounds after the last material fix,
+a NEW separate clean security sitting and fresh full CI plus all four same-artifact
+package consumers remain required. Steps 9–19 have not started; no credential,
+provider capture, billing, production archive recipient or user decision is pending.
+
+### Wave 3 Step 8d thirteenth cumulative review and checkpoint-notice correction — 2026-10-17
+
+**R13 is complete and NONCLEAN; Step 8d and whole Step 8 remain open.** The
+cumulative range is `d9625ff0a641197c6ed45968df99094a25db88d6` →
+`c15aa3148b887b94bf9731ff4dc0027bbe71aac9`: **310 paths / 1,706 hunks**, with no
+gap or overlap. Session/terminal covers 82/544; workflow/management 139/870;
+native/tooling/docs 89/292. The workflow group explicitly attributes five complete
+test bodies / 83 hunks to a fourth, named supplementary reviewer; the primary
+personally reads the other 134 bodies / 787 hunks. This is one complete sitting,
+not an extra clean round or borrowed execution. Root reads all four reports and
+recomputes every physical/full-diff/hunk identity. Inventory SHA-256 is
+`3b32cb00c4e0727f3a17fe35f0878045d33e92641e5437073c887146f9b59460`;
+aggregate SHA-256 is `c0fc759b768fbd2920b3631e5ed5834df516e24e02043b6290a11b6879844166`.
+Opening/closing freeze is identical across 1,743 tracked blobs, 21,165 physical
+dependency files / 1,215 lexical symlinks and 466 existing dist files. Mutable
+caches are excluded; symlinks are not followed. Detailed records remain local and
+Git-ignored.
+
+Fresh whole-file executions pass: session/terminal 43 files / 781 tests;
+workflow/management 73 / 1,405 with one established Windows-only skip;
+native/tooling 20 TypeScript files / 206 tests plus eight Node suites / 101 tests.
+All actual launchers join, with zero reported unhandled errors. Source aliases,
+existing-dist native children and synthetic IO/clock/Windows ports retain their
+explicit report limits. These executions do not establish a separate security
+sitting or final-source CI.
+
+**Confirmed High `WM-R13-01`, corrected at `afb3b932`.** Default deferred-checkpoint
+notices reacquire process IO, suppress acknowledged-write failure and lose pending
+delivery custody. Independent reviewer and root probes each use real SQLite,
+actual command/native coordination and synthetic native write outcomes: one
+healthy positive / three precise assertion failures / zero unhandled errors.
+The correction forwards the original captured IO and invocation through default
+workflow/session/management factories. It observes synchronous failure before the
+opener returns, observes asynchronous rejection on settlement and owns the actual
+pending write independently of the successfully transferred DB connection. Native
+close, a stop request or deadline never becomes a delivery acknowledgement.
+Known workflow-health priority and ownerless best-effort compatibility remain;
+the [CLI contract](../../reference/cli/commands.md#cooperative-session-finalization-and-passive-notifications)
+is canonical. This is the approved Step 8d boundary, not Step 18 centralization or
+a new ADR, dependency, public package seam or decision.
+
+Permanent controls include real default factories and an actual management
+command, held delivery after DB close, synchronous/asynchronous failures,
+reentry, finite termination and existing workflow-health priority. The identical
+22 regression cases produce precise AssertionErrors on an immutable `c15aa314`
+archive while ten unchanged opener controls pass. The fixed candidate passes
+632 tests in 22 whole files; actual child waits and zero run-end unhandled errors
+are recorded. Native SQLite creation/migrations are real; only checkpoint
+`deferred` disposition is forced. These are not observations of kernel EPIPE or
+actual OS process exit. Candidate parent aliases do not claim to rewrite every
+native child's existing-dist imports. Validation receipt SHA-256 is
+`fffcd6398f9dbd8b3ca0edb64a3214fa9743c5b78e7541fc1ec38353505f0767`.
+
+**Author gates on the applied correction:** `pnpm turbo run lint typecheck test`
+passes all 23 tasks (20 cached), with fresh **349 CLI files / 5,566 passing tests /
+ten established skips**. Build passes six tasks (five cached); format, fences,
+engine dependencies, tooling typecheck and 728-file isolation pass. Compiled
+closure is 25 outputs / 410 inputs / 17 externals. Untouched compiled bootstrap
+passes 177 controls on local Node 22.23.1/Darwin, and compiled workflow/MCP/budget
+smoke passes. These are author checks, not independent acceptance.
+
+At the older reviewed source `c15aa314`, all four installed consumers and Windows
+advisory pass in run `39010171558`; full CI is still in progress when recorded.
+Root and an independent reviewer inspect five ZIPs, all 70 public tar members and
+four receipt origins for tarball SHA-256
+`23c8efff4dcd3155445e6827f6a9181b0402e29603168492731741c19f5cf7fc`
+(446,233 bytes). Current Linux/macOS/Windows use Node 24.21.0; minimum Linux uses
+22.0.0, each with 177 bootstrap controls and eight installed cases. This is
+physical inspection of published execution, not another execution or acceptance
+of the later correction. Earlier failed/cancelled CI and Windows jobs retain their
+separate source attribution; no unknown initiating cause is invented.
+
+R1–R13 remain NONCLEAN. Two NEW complete cumulative CLEAN rounds after the last
+material correction, a NEW separate clean security sitting and fresh full CI plus
+all four same-artifact consumers remain required. Steps 9–19 have not started;
+no credential, billing, provider capture, production recipient or user decision is
+pending.
+
+### Wave 3 Step 8d fourteenth cumulative review and disclosure-retention corrections — 2026-10-17
+
+**R14 is complete and NONCLEAN; Step 8d and whole Step 8 remain open.** The
+cumulative range is `d9625ff0a641197c6ed45968df99094a25db88d6` →
+`dcc23cfbf3aa497b5100e8353fdd58a9b92fbe9d`: **314 paths / 1,715 hunks** in six
+disjoint groups. Seven named reviewers read their assigned complete current
+production/test/support bodies and every cumulative/deleted hunk. The native
+87-path group explicitly combines its 55-path primary and 32-path supplement;
+neither borrows personal reading or execution, and the supplement is not an extra
+round. Large normative/register files retain their changed-section/context
+qualification. Root reads all seven reports and independently recomputes every
+physical/full-diff/hunk identity. Inventory SHA-256 is
+`492d5c7cd7f640e74b96c008d249e44036d6ab2d99fe7d8e7ceb7cfc42b20fc2`;
+aggregate SHA-256 is `2f374a8c11700bfa4e8c9509e9b5a8ed51b5b24ca10b2981be51090162f48352`.
+Opening/closing freezes are identical across 1,746 tracked blobs, 21,165 physical
+dependency files, 1,215 lexical symlinks and 466 existing dist files. Detailed
+records remain local and Git-ignored.
+
+**Two High surface findings, corrected at `d6d2fbdd`.** `R14-CHAT-1` and
+`R14-HOME-1` independently reproduce the same disclosure-recovery gap: raw notice
+failure is recovered, and fallback stderr delivery can remain pending after the
+session/database and invocation owners retire. The shared retention boundary now
+observes actual publication/render/sink failure before advisory recovery and
+retains entered delivery through the original session or workflow owner. Failed
+disclosure keeps audit evidence; successful maintenance warnings remain best
+effort. Safe committed one-shot cleanup remains permitted after stop. Ownerless
+library compatibility and actual workflow-health priority remain unchanged.
+Root additionally reproduces this warning gap through actual `run` and `gate`
+commands; both shipping callers now retain the same original delivery ownership.
+The [CLI contract](../../reference/cli/commands.md#cooperative-session-finalization-and-passive-notifications)
+owns the behaviour. This needs no new ADR, dependency, public seam or decision.
+
+Identical actual chat/run/gate regressions on an immutable `dcc23cfb` archive yield
+**eight precise assertion failures / seven positive controls**; the corrected
+source passes all fifteen. Real Home/reseat/SQLite controls add seven cases;
+substituting only the exact frozen retention helper into that candidate graph
+breaks its three output-fault assertions and preserves four controls. That is a
+helper-removal control, not original-whole-source execution. Held successful
+acknowledgements, no-publish renderers, recoverable disclosure-read refusal and
+ownerless compatibility remain separately exercised. Providers, renderer ports,
+exit clocks and sink faults are synthetic; SQLite and command/host execution are
+real. Existing-dist native children and source-alias parents retain their limits.
+
+**Two Medium findings are corrected.** `R14-MS-1` is fixed in the same CLI commit:
+workspace fixture setup refuses an unretired predecessor before global mutation;
+teardown shares its actual join, seals entry and restores only its captured
+current fixture. Two new permanent controls pass, and the complete file passes
+12/12. Real-runner original/corrected schedules retain the original five-second
+test / ten-second hook bounds. Deliberate predecessor timeout/refusal remains
+failed evidence; only the corrected later recovery passes. No historical Windows
+initiating cause is inferred. `W3-8D-R14-TD-01` is corrected at `e218ba0e`: installed
+worker diagnostics project a fixed private-detail label for all arbitrary error
+text, retaining useful closed native/case facts and the unchanged raw private
+report. The actual child-stderr → assertion → wrapper → projection regression and
+nested-field controls fail on frozen code; all 31 focused fixed tests pass. The
+five baseline failures include three changed label expectations, not five claimed
+independent causal mechanisms. This is synthetic test-output custody, not an
+observed production credential leak.
+
+**Applied-source author gates pass.** `pnpm turbo run lint typecheck test` passes
+23 tasks (20 cached); fresh CLI execution passes **352 files / 5,590 tests / ten
+established skips**. A separate post-build complete CLI run confirms the same
+counts and zero machine-reported unhandled errors, with the actual child joined.
+All 549 acceptance-tool tests pass. Build passes six tasks (five cached); format,
+fences, engine dependencies, tooling lint/typecheck and 731-file isolation pass.
+Compiled closure remains 25 outputs / 410 inputs / 17 externals. Compiled bootstrap
+passes 177 controls on local Darwin / Node 22.23.1, and workflow/MCP/budget CLI smoke
+passes. Initial test-only typing/lint/format failures were corrected before these
+final gates; no assertion or timeout was weakened. Author validation SHA-256 is
+`d29ab254051d3c6fed7b1ee2de44c3858e6c0b3e9baefb51323896703d4f0e7c`.
+
+At reviewed `dcc23cfb`, run `39012759605` has successful pack, all four required
+same-artifact consumers, their aggregate and Windows advisory. Root and an
+independent reviewer physically inspect five ZIPs, all 70 tar members and four
+receipts: tarball SHA-256 `e7e72e016d90be0a4767aa05974e38963f5bbd277203a2b0926430982d223c2a`,
+446,189 bytes, 177 bootstrap controls and eight installed cases per consumer.
+Full CI is still in progress at the filesystem causal job when recorded. These
+old-source results do not accept the later correction. The superseded `c15aa314`
+run was cancelled before full CI finished; its existing platform successes and
+all earlier failed Windows outcomes retain their original attribution.
+
+R1–R14 remain NONCLEAN. Two NEW complete cumulative CLEAN rounds after the last
+material fix, a NEW separate clean security sitting and fresh full CI plus all
+four same-artifact consumers remain required. Steps 9–19 have not started. No
+credential, provider capture, billing, production archive recipient or user
+decision is pending; implementation continues automatically on `development`.
+
+### Wave 3 Step 8d fifteenth cumulative review and Home doctor correction — 2026-10-17
+
+**R15 is complete and NONCLEAN; Step 8d and whole Step 8 remain open.** Seven NEW
+reviewers cover the complete cumulative `d9625ff0` → `eb5d61af` range: **318 paths /
+1,737 hunks** across seven disjoint groups. Root reads every original report and
+independently rehashes every physical body, full diff and hunk. Large normative,
+register and generated files retain explicit changed-section/context qualifications.
+Inventory SHA-256 is `26c345c208da564889ed53a5b03ab5fab06ff61236986080d3c13449e7fb49bf`;
+aggregate SHA-256 is `6b61ce20970adb1967e10ee9ab502c1100680178796fa17ef383b4f601b031ad`.
+Opening/closing freezes are identical across 1,749 tracked blobs, 21,165 physical
+dependency files, 1,215 lexical symlinks and 466 existing dist files. Detailed
+reports, the root reading receipt and all failed/corrected harness attempts remain
+local and Git-ignored. Recognizing an explicitly qualified ledger field alias did
+not rewrite any sealed report or relax personal reading requirements.
+
+**High `R15-HOME-01` is corrected at `151abaf5`.** Bare Home's final `/doctor`
+notification could throw into palette recovery, leave input admitted and exit 0.
+The original Home invocation now observes common controller-notification failures
+before that recovery and owns the complete entered report through formatting and
+publication. Unexpected report/formatter/listener faults retain private original
+causes and select infrastructure 9. Known check refusals stay inline; stale reports
+cannot overwrite newer interaction, and ownerless compatibility remains intact.
+The [canonical CLI contract](../../reference/cli/commands.md#cooperative-session-finalization-and-passive-notifications)
+owns the behaviour. No new ADR, runtime dependency or public provider seam is needed.
+
+Eight new permanent actual Home/SQLite cases pass. The identical new suite on an
+immutable archive of all 1,749 reviewed blobs yields **five precise assertion
+failures / three positive controls**: checking/final publication and formatting
+faults wrongly exit 0, while held/late-rejected report work retires too early.
+All eight pass on the correction. A separate limited author-side reviewer runs
+six fresh signal/fatal reentry, stale-report and common-notification controls,
+all passing with an explicit zero-unhandled receipt and actual child join. That
+check is not a complete cumulative round or security sitting. Renderer, probe,
+held-report and fault ports remain synthetic around real Home/ownership/SQLite;
+no live provider, operator TTY or packaged-platform execution is inferred.
+
+**Blocker `W3-8D-R15-TD-01` is corrected at `1ed15ab8`.** Two fixture-isolation
+tests made the complete workspace workload 12, but its declaration still expected
+10. Required CI correctly refused that drift. Only the exact declaration changes;
+whole-file identity, named witnesses, error receipts, original bounds and byte-exact
+restoration stay enforced. The applied-source selected control passes fixed 12/12,
+breaks seven assertions on removal, and passes restored 12/12, with actual joined
+children and zero runner-reported unhandled errors in all three phases. This
+selected diagnostic run retains `complete: false`; it is not the entire family.
+The immutable physical source manifest records precommit author bytes and is kept
+separate from the reviewed predecessor's Git label. Independently collected 61
+files / 1,728 cases identify only this one mismatch across all 151 filesystem and
+secrets declarations. An inherited secrets README count is also corrected from
+24 to the existing 25 serializer cases; it predates the cumulative base and is not
+a new R15 finding or runtime change.
+
+**Applied-source author gates pass.** `pnpm turbo run lint typecheck test` passes
+23 tasks (20 cached): **353 CLI files / 5,598 passing tests / ten established skips**.
+A separate post-build complete CLI run has the same counts, an explicit zero
+unhandled-errors receipt and an actually joined launcher. All **549 acceptance-tool
+tests** pass. Build passes six tasks (five cached); tools lint/typecheck, formatting,
+fences, engine dependencies and 732-file isolation pass. Compiled closure stays
+25 outputs / 410 inputs / 17 externals. Actual local Darwin / Node 22.23.1 compiled
+bootstrap passes 177 controls; workflow/MCP/budget CLI smoke passes. No production
+assertion or timeout is weakened. Initial isolated lint and reviewer-harness
+mistakes retain failed evidence and are not counted as product failures or passes.
+
+At reviewed `eb5d61af`, CI `39015097996` completes failure: the filesystem job
+rejects 12 versus 10, and the required job rejects that failed dependency before
+its test phases. This is one defect with a downstream gate consequence, not a
+second observed CLI-test failure. The other thirteen jobs succeed. Root and an
+independent reviewer physically inspect five ZIPs, all 70 public members and four
+receipts for one 446,375-byte tarball, SHA-256
+`54069bb0ddfe4dfe72bde0f711627cc915647fce970d748bb8b94c7f24d7ec8e`.
+Current Linux/macOS/Windows and exact Node 22.0.0 consumers each record 177 bootstrap
+controls and eight installed cases. These predecessor successes do not accept the
+correction. The earlier `dcc23cfb` CI is cancelled by the superseding push; its
+completed platform results retain that source, as do every earlier failed Windows
+result and unknown initiating cause.
+
+R1–R15 remain NONCLEAN. Two NEW complete cumulative CLEAN rounds after the last
+material fix, a NEW separate clean security sitting and fresh full CI plus all
+four same-artifact consumers remain required. Steps 9–19 have not started. No
+credential, provider capture, billing, production archive recipient or user
+decision is pending; implementation continues automatically on `development`.
+
+
+### Wave 3 Step 8d sixteenth cumulative review and compaction-delivery correction — 2026-10-17
+
+**R16 is complete and NONCLEAN; Step 8d and whole Step 8 remain open.** Seven NEW
+reviewers personally cover the complete cumulative `d9625ff0` → `71a91042` range:
+**319 paths / 1,744 hunks** in seven disjoint groups. Root reads every original
+report and independently verifies every physical body, complete U0 diff and hunk.
+Large normative/register/generated files retain their explicit changed-section
+and surrounding-context qualifications. Inventory SHA-256 is
+`5551022806d84ab5d4e08909ccbb64fbaa27949a0ed24bf4a6f48e0c1416a9a9`;
+aggregate SHA-256 is
+`95fd0fdc8fa34e96ff12657967adccbea894448fd33304b14027a8a8715e31c0`.
+Opening and closing freezes match across 1,750 tracked blobs, 21,165 physical
+dependency files, 1,215 lexical symlinks and 466 existing dist files. All seven
+original reports, identities, actual runner joins, failed/corrected harness
+attempts and the root reading receipt remain local and Git-ignored. This complete
+round supplies no clean-round, security or whole-step acceptance.
+
+**High `R16-C1` is corrected at `ea996d6c`.** Core intentionally races compaction's
+interactive disclosure wait against operation cancellation. The shared CLI session
+runtime previously forwarded the surface callback without retaining its original
+publication/flush operation. Cancelling manual compaction could therefore return
+exit 4, close the shared store and retire every owner while an acknowledged native
+write remained pending; a later failed callback still left exit 4. Root independently
+reproduces two precise cancellation failures and two positive controls through
+actual chat, session construction, SQLite and production `acknowledgeWrite`, with
+zero explicit runner-reported unhandled errors and an actual exit-1 launcher join.
+The output callback schedule, provider, driver and lifecycle ports are controlled;
+this is neither an operator-TTY nor naturally occurring OS-error measurement.
+
+The shared runtime now captures the callback and original host once, reserves its
+root before callback entry, and retains the exact returned Promise, normalizing
+only a void result. Core's prompt cancellation and no-post-cancel-summary admission
+remain unchanged. The entered publication or visible-render flush stays owed until
+actual settlement, and its late failure reaches the original owner before passive
+recovery. A full host stop refuses notices that never entered; operation abort
+still permits another turn. Fresh/resumed/clear/reseat and Home share this boundary.
+Absent callbacks and ownerless embeddings retain compatibility; one-shot execution
+gains no sink or enabled after-turn compaction. The
+[canonical CLI contract](../../reference/cli/commands.md#cooperative-session-finalization-and-passive-notifications)
+owns the behaviour. No new ADR, dependency, error code or provider seam is needed.
+
+Ten new permanent actual fresh/resumed chat cases cover cancellation × native
+acknowledgement success/failure, plus a subsequent admitted and durably persisted
+turn while the cancelled disclosure is held. They assert actual SQLite closure,
+original owner retention, late output disposition and no resumed old-summary
+request. All ten pass on the correction; the identical suite with only the shared
+runtime restored to immutable reviewed bytes yields **six precise ownership
+assertion failures / four positive controls**. Four complete focused files pass
+**99 tests**, with explicit zero-unhandled receipts and actual joined launchers.
+The archive contains all 1,750 independently Git-verified predecessor blobs;
+separate plain source copies introduce no branch/worktree/index or shared-source
+mutation. Initial author harness resolution, escaped-error expectation and fixture
+SQL mistakes remain retained and are neither product findings nor passing evidence.
+
+**Applied author gates pass.** Workspace lint/typecheck/test passes 23 tasks
+(20 cached), including **354 CLI files / 5,608 passing tests / ten established
+skips**. Build passes six tasks (five cached). A separate post-build complete CLI
+run has the same counts, an explicit zero-unhandled receipt and actual launcher
+exit 0. Tools typecheck, formatting, fences, engine dependency and DB-sync checks
+pass. All 549 acceptance-tool tests pass. Test isolation collects 733 files with
+its existing ownership probes intact.
+Compiled closure verifies 25 outputs / 410 inputs / 17 externals; the untouched
+local Darwin / Node 22.23.1 bootstrap passes 177 controls and compiled workflow,
+MCP signal-cleanup and budget CLI smoke passes. Original bounds and assertions
+remain intact. Author checks do not replace independent review or current required
+platform acceptance.
+
+At the original reviewed `71a91042`, current Linux/macOS/Windows and exact Node
+22.0.0 consumers pass. Root and an independent reviewer separately inspect five
+ZIPs and all 70 public members/receipts for the same 446,408-byte tarball, SHA-256
+`cf80bd3aa00b42996bde53b56d9a59aae515fec48116b573d3d2cbbd68b22740`.
+Each consumer records 177 bootstrap controls and eight installed cases. The Node
+22.13 workspace floor, Windows advisory, wire, usage, secrets and coverage jobs
+also pass; when R16 closes, the filesystem causal family and final required job
+have not completed. Root independently inspects the 41-control / 123-phase secrets
+archive, its 745 files / 26,909,694 bytes, source/runtime/stdio/evaluation receipts
+and explicit zero-error results. These predecessor passes do not accept the new
+correction or imply an unobserved final CI result. Every failed, superseded or
+cancelled run retains its own source and initiating-cause qualification.
+
+R1–R16 remain NONCLEAN. Two NEW complete cumulative CLEAN rounds after the last
+material fix, a NEW separate clean security sitting and fresh full CI plus all four
+same-artifact consumers remain required. Steps 9–19 have not started. No credential,
+provider capture, billing, production archive recipient or user decision is pending;
+implementation continues automatically on `development`.
+
+### Wave 3 Step 8d seventeenth cumulative review and onboarding correction — 2026-10-17
+
+**R17 is complete and NONCLEAN; Step 8d and whole Step 8 remain open.** Seven NEW
+independent slices cover cumulative `d9625ff0` → `2891e8fd`: **320 paths / 1,746
+hunks**. Root reads all original reports and independently rechecks every physical
+body, complete U0 diff and hunk identity. Large normative/generated files retain
+their explicit current-context qualifications. Inventory SHA-256 is
+`bfd6948823aa421950325313ef3a2107c96affb8346307abcca0ab15580c5ce2`;
+aggregate SHA-256 is
+`30d64beb43d63817da0c3771388e9ec2cfb41865b0de618aa17975447968b7ae`.
+Opening and closing freezes match across 1,751 tracked files, 21,165 captured
+physical dependency files, 1,215 lexical links and 466 existing dist files.
+Detailed reports, runtime receipts, rejected synthetic suspicions and root's
+original-report reading receipt remain local and Git-ignored.
+
+**High `R17-HOME-H1` is corrected at `1dec7a8d`.** Home onboarding could consume an
+opaque native raw-mode release/reclaim error inside reversible recovery, then end
+successfully without infrastructure observation. Root independently reproduces
+both failures and a healthy control through actual Home, SQLite and the default
+captured terminal adapter. The correction observes the original cause at the two
+live recovery boundaries before preserving their existing retry/refusal behaviour.
+Unexpected faults select existing infrastructure 9 and stop new business entry;
+classified refusals and ownerless compatibility remain intact. Failed reversible
+operations grant no cleanup ACK: the original prompt and full cursor delivery
+still precede actual terminal/database retirement. The
+[canonical CLI contract](../../reference/cli/commands.md#cooperative-session-finalization-and-passive-notifications)
+owns this behaviour. No new ADR, dependency, error code or provider seam is needed.
+
+Nine permanent controls cover healthy, release/reclaim, held-prompt, classified
+refusal and ownerless paths. The exact fixed suite passes; removing only the
+observations causes **four precise original-owner assertion failures / five
+positive controls**. Fixed and restored six-file runs each pass **147 tests**;
+all three phases have explicit zero-unhandled receipts and actual launcher joins.
+Native faults, prompt completion and renderer release use controlled ports; this
+is not an operator-TTY or naturally occurring OS-error measurement. Initial author
+harness API/renderer mistakes and an unused-observer candidate remain retained
+without acceptance credit. Final causal receipt SHA-256 is
+`c2740a48cea959cfb43db6c28368b496e49be6f9606887c04ab2577935c8aff0`.
+
+Applied author workspace lint/typecheck/test passes 23 tasks (20 cached), including
+**355 CLI files / 5,617 passes / ten established skips**. Build passes six tasks
+(five cached). A separate post-build full CLI run has the same counts, explicit
+zero unhandled errors and an actual exit-0 launcher join. All **549 acceptance-tool
+tests**, tools typecheck, formatting, fences, engine dependency and DB-sync checks
+pass. Isolation collects 734 files with ownership probes intact. Compiled closure
+verifies 25 outputs / 410 inputs / 17 externals; actual Darwin / Node 22.23.1
+bootstrap passes 177 controls, and workflow/MCP/budget CLI smoke passes. Markdown
+remains governed by the documentation standard, outside Prettier's configured scope.
+
+At predecessor `2891e8fd`, all four same-tarball consumers and all causal families
+pass in [CI run 39020071201](https://github.com/HodeTech/Relavium/actions/runs/39020071201);
+its final required job is still running when recorded. Root and a NEW reviewer
+separately inspect five physical ZIPs and the exact 446,459-byte tarball and its
+receipts. These results do not execute the correction. Earlier cancelled/failed
+runs keep their own source and initiating-cause qualifications. Two NEW complete
+cumulative CLEAN rounds after the last material fix, a NEW separate clean security
+sitting and fresh final-source full CI plus all four installed consumers remain
+required. Steps 9–19 have not started; no credential, provider capture, billing,
+production recipient or user decision is pending.
+
+### Wave 3 Step 8d eighteenth cumulative review and self-stop/CI corrections — 2026-10-17
+
+**R18 is complete and NONCLEAN; Step 8d and whole Step 8 remain open.** Seven NEW
+independent slices cover cumulative `d9625ff0` → `1f3cce50`: **321 paths / 1,749
+hunks**. Root reads every original report and substantive file assessment, then
+independently rechecks physical bodies, complete diffs and ordered hunk identities.
+Opening/closing freezes match all 1,752 tracked files, 21,165 physical dependency
+files, 1,215 lexical links and 466 dist files. Aggregate SHA-256 is
+`3f839514f8a8690a1cc91ad06731d3f9be7c1adf9d61d024f6e624424ab3c3eb`.
+Original detailed reports, qualified normative-context reads, a corrected historical
+test attribution and root validation notes remain local and Git-ignored.
+
+**High `R18-HOME-1` is corrected at `f23e0da7`.** The run/gate self-stop catch
+could consume an unexpected native fault, reattach and return success. Actual
+engine/driver/original-lifetime controls independently reproduce that gap. The
+production caller now forwards unexpected failure to its original owner before
+recovery; classified refusals and ownerless behaviour stay recoverable. Actual
+native/primary/cursor ACKs still govern retirement. The
+[canonical workflow/terminal contract](../../reference/cli/commands.md#workflow-and-terminal-ownership)
+owns the behaviour. Three actual driver controls and two helper controls are
+permanent. Seven-file fixed/restored runs pass 75 cases; removing the observation
+breaks two precise assertions and removing only the driver link breaks one, with
+all remaining controls passing. Every phase has explicit zero-unhandled and actual
+OS-join receipts. These controlled native faults are not operator-TTY measurements.
+
+**High `TD18-CI1` is corrected at `df6e6631`.** GitHub positively annotates the
+predecessor [required job](https://github.com/HodeTech/Relavium/actions/runs/39020071201/job/117365513223)
+as exceeding its 15-minute limit: its successful serial prefix leaves only 24s
+when replay begins, despite six sequential workers retaining individual 45s bounds.
+The main outer watchdog is now 25 minutes, pinned by the existing scheduling
+regression. The separate floor watchdog, serialization, native execution evidence,
+all inner test/readiness/replay bounds and success-only dependencies are unchanged.
+This later evidence resolves that job's initiating cause; its earlier still-running
+checkpoint remains historical. No failed test or complete CI success is inferred.
+
+Applied author workspace lint/typecheck/test and build pass. The CLI records
+**356 files / 5,622 passes / ten established skips**; a separate post-build full
+CLI run has the same counts, explicit zero unhandled errors and actual Node exit 0.
+All **549 acceptance-tool tests**, tools/static/format/DB-sync/fence checks pass;
+isolation collects 735 files. Compiled closure verifies 25 outputs / 410 inputs /
+17 externals, Darwin/Node 22.23.1 bootstrap passes 177 controls and CLI smoke passes.
+Cached tasks retain their qualification; Markdown remains outside Prettier's scope.
+
+At reviewed `1f3cce50`, all four same-artifact consumers, coverage and Windows
+advisory pass in [CI run 39022803277](https://github.com/HodeTech/Relavium/actions/runs/39022803277);
+full CI remains in progress when recorded. Root independently inspects five ZIPs,
+70 public files and the 446,477-byte tarball. Those results do not execute or accept
+the corrections. Two NEW complete cumulative CLEAN rounds after the last material
+fix, NEW separate clean security and fresh corrected-source full CI plus all four
+installed consumers remain required. Steps 9–19 have not started. No credential,
+provider capture, billing, production recipient or user decision is pending.
+
+### Wave 3 Step 8d nineteenth cumulative review and late-publication correction — 2026-10-17
+
+**R19 is complete and NONCLEAN; Step 8d and whole Step 8 remain open.** Seven NEW
+independent slices cover cumulative `d9625ff0` → `261bb82d`: **324 paths / 1,754
+hunks**. The base is Step 7's installed-package acceptance, so these cumulative
+reads include all Step 8 increments. Root reads every original report and all
+substantive file assessments, then independently rechecks physical bodies, complete
+diffs and ordered hunk identities. Opening/closing freezes match 1,753 tracked
+files, 21,165 physical dependency files, 1,215 lexical links and 466 dist files.
+Aggregate SHA-256 is
+`a6082615586c27ef9171f6fed464cf28ced93ca47a92e52b6de7a2a92f0b4bca`.
+The root closure receipt is
+`ceceb5448aa58de4d798a2c7a6cd94f4a20f620604ee5ee263042508fa271a2f`.
+Original reports, a byte-identical bridge-ledger filename alias, qualified document
+reads and runtime receipts remain local and Git-ignored.
+
+**Medium `R19-HOME-M1` and supplemental `R19-HOME-M2` are corrected at
+`6cc8bc53`.** An already-entered shell rejection could append a warning after
+owned stop. A neighbouring mention-list fulfilment could install new file
+suggestions. Both become visible when installed Ink completes an outstanding
+native suspension, before final unmount. Independent original-lifetime/driver
+reproductions preserve the original exit 9 and actual cleanup joins; these are
+post-stop business-publication defects, not evidence of a credential, filesystem
+authority, accounting or native-ACK bypass. Existing assigned chat-path conclusions
+retain their exact scope and do not certify the neighbouring ChatApp callbacks.
+The [canonical session/terminal contract](../../reference/cli/commands.md#session-ownership-implementation-checkpoint)
+owns the corrected publication rule.
+
+Both callbacks now recheck the original live input seal before publishing.
+The rejection-side mention callback follows the same seal. Live classified shell
+warnings remain inline; local busy cleanup and actual native restoration still
+complete. Four permanent installed-Ink cases exercise shell/listing results in
+live and stopped sessions. Fixed and byte-restored five-file runs pass **27 cases**.
+Removing only the shell guard or only the successful-listing guard produces its
+precise rendered-output failure, with **26 positive controls** still passing.
+Every phase has explicit zero-unhandled evidence, actual Node `wait` and outer
+execution joins. Synthetic native streams do not claim an operator-TTY test.
+No assertion or readiness/native bound is widened. No new ADR, API or dependency
+is introduced.
+
+Applied author workspace lint/typecheck/test and build pass; cached dependency
+tasks retain that qualification. A separately joined post-build full CLI records
+**357 files / 5,626 passes / ten established skips**, explicit zero unhandled errors
+and actual Node exit 0. The initial direct run overlaps dependency builds and is
+supplementary rather than final post-build evidence. Format, isolation (736 files),
+seam and engine-dependency gates pass. Compiled closure verifies 25 outputs / 410
+inputs / 17 externals; local bootstrap and CLI smoke pass. Markdown remains outside
+Prettier's scope. These are author checks, not independent acceptance.
+
+At predecessor `261bb82d`, all four same-artifact consumers, coverage and Windows
+advisory pass in [CI run 39025094399](https://github.com/HodeTech/Relavium/actions/runs/39025094399);
+full CI remains in progress when recorded. Root independently inspects five ZIPs,
+70 public files and the 446,514-byte tarball, SHA-256
+`55da92eec03851114d9d5aa945d84b8f2316d74bbe5d5a3a274b991bbb81a68f`.
+Those results do not execute or accept this correction. R1–R19 retain NONCLEAN
+verdicts. Two NEW complete cumulative CLEAN rounds after the last material fix,
+NEW separate clean security and fresh corrected-source full CI plus all four
+installed consumers remain required. Steps 9–19 have not started. No credential,
+provider capture, billing, production recipient or user decision is pending.
+
+
+### Wave 3 Step 8d twentieth cumulative review and stopped-result/maintenance corrections — 2026-10-17
+
+**R20 is complete and NONCLEAN; Step 8d and whole Step 8 remain open.** Seven NEW
+independent slices cover cumulative `d9625ff0` → `4eee7c68`: **325 paths / 1,759
+hunks**. The base is Step 7 installed-package acceptance, not the Step 8c boundary.
+Root reads all original reports and every substantive assessment, then verifies
+physical/Git bodies, complete diffs and ordered hunks. Opening/closing freezes
+match all 1,754 tracked files, 21,165 dependency files, 1,215 lexical links and
+466 dist files. Aggregate SHA-256 is
+`07261862e1830f0bf60fa31e5282536109d660691e2f5409971cdf825c52ee5a`;
+root closure is `5740cb79de2f3253cec556bd68aaa943ad2c8dee576189e74002b84cd3b3fd01`.
+Original reviews, a byte-identical workflow-ledger filename alias, append-only
+caller-path metadata correction, qualified document reads and runtime receipts
+remain local and Git-ignored. Index blob/mode membership is unchanged; a Git
+stat-cache byte hash is not a staged-content identity.
+
+**Medium `R20-HOME-1` is corrected at `50d7309f`.** Deferred mention/file/shell
+results and model-refresh banners could mutate Home business state after its
+permanent stop, while entered native suspension still kept the view mounted.
+The monotonic exit seal now joins session identity/epoch checks before those
+publications. Live classified notices, local busy cleanup and actual producer,
+suspension and native restoration joins remain intact. No new credential,
+provider, database-authority or accounting bypass is claimed. Existing clear/end
+latches already prevented a demonstrated new host; clear/rebuild controls preserve
+that behaviour. The [canonical session contract](../../reference/cli/commands.md#session-ownership-implementation-checkpoint)
+owns publication. Six actual installed-Home/RootApp cases and ten controller cases
+cover live/stopped results. Two separate Home guard removals produce five and two
+precise failures; fixed/restored 24-file runs pass **424 cases** with no unhandled
+errors and actual Node/outer execution joins. Synthetic streams are not operator TTYs.
+
+**Medium `WFA-R20-01` is corrected in the same commit.** Actual subscribed-signal,
+engine, SQLite and default CAS probes show new media GC can enter at remaining
+budget zero before queued physical exit. Root independently reproduces it; no data
+loss or delayed physical deadline is inferred. The same original budget now guards
+new effect retention and shared media-GC entry for run, gate and budget resume.
+Already-entered sweeps remain joined; no deadline is renewed and no engine,
+receipt, input, MCP, database or terminal acknowledgement is skipped. The
+[canonical workflow contract](../../reference/cli/commands.md#workflow-and-terminal-ownership)
+owns this rule. Permanent actual run/gate/budget live/expired journeys preserve
+unresolved rows and distinguish DB/raw-sweep closure from still-owed expired
+terminal restoration. Five independent guard/forwarding removals cause four,
+one, two, one and two precise failures; each restored two-file run passes all
+**28 cases**, with explicit zero-unhandled and actual Node/outer joins. Initial
+author fixture/anchor corrections are retained honestly; no product assertion,
+readiness bound or native/test watchdog is weakened. No new dependency or public
+engine/provider seam is introduced.
+
+Applied author workspace lint/typecheck/test and build pass; cached dependency
+tasks retain that qualification. A separate post-build complete CLI run passes
+**360 files / 5,649 cases / ten established skips**, explicit zero unhandled errors,
+actual Node exit 0 and outer execution exit 0. Format, isolation (739 files), seam
+and engine-dependency checks pass. Compiled closure verifies 25 outputs / 410 inputs /
+17 externals; local bootstrap passes 177 controls and compiled CLI smoke passes.
+These are author checks, not independent acceptance; Markdown is outside Prettier.
+
+At reviewed predecessor `4eee7c68`, all four same-artifact consumers, coverage and
+Windows advisory pass in [CI run 39028149301](https://github.com/HodeTech/Relavium/actions/runs/39028149301).
+Full CI remains in progress when recorded. Root independently inspects five ZIPs,
+70 public files and the 446,626-byte tarball, SHA-256
+`31ff784e2b81aef980187bd3609905f66eeef9cc7ac6ff01ad56b5a0eb7122ab`.
+Those results do not execute or accept the correction. R1–R20 retain NONCLEAN
+verdicts. Two NEW complete cumulative CLEAN rounds after the last material fix,
+NEW separate clean security and fresh corrected-source full CI plus all four
+same-artifact consumers remain required. Steps 9–19 have not started. No user,
+credential, provider capture, billing or production-recipient decision is pending.
+
+
+### Wave 3 Step 8d R21–R22 discovery ownership correction — 2026-10-17
+
+**Step 8d and whole Step 8 remain OPEN.** The reviewed source is `c491836a`,
+from cumulative Step 7 base `d9625ff0`; R21 and R22 each cover all **330 paths /
+1,789 ordered cumulative hunks** across seven disjoint semantic slices. Root
+reads all original reports and every per-path substantive assessment, rechecks
+physical/Git/full-diff/hunk identities and closes each full source/dependency/dist
+freeze. Model/effort records are parent-dispatch attribution, not independent
+backend attestation. R21 is CLEAN. Its six explicit workflow test-description
+errata are independently compared against all six full current test bodies; the
+original overbroad descriptions supply no evidence. R22 is NONCLEAN: one Medium
+**MS22-1**, bounded model-discovery result versus actual SDK/transport retirement.
+
+The management command's actual resolver, custom OpenAI adapter, installed SDK
+and native SQLite reproduce the gap at the unchanged public model-list timeout.
+With only the supported offline fetch held across abort, the command returns 0,
+closes SQLite and retires all owners while the transport remains unsettled. Root
+independently executes the probe-derived negative and an independently authored
+normal completed-transport positive, with explicit empty runtime-error channel,
+actual Node OS wait and outer tool join. This proves early owner release; it does
+not prove a late SQLite write, actual remote abort failure, socket leak, paid call
+or native Windows failure. Home/chat applicability follows the shared catalog
+port and is covered by the permanent correction controls.
+
+The correction uses the existing invocation-local work mechanism rather than a
+new decision: optional existing ownership authority reaches live discovery, all
+three dialects, management and shared Home/chat refreshes. The key probe forwards
+its existing authority to generation. SDK collection, pagination and controlled
+fetch descendants retain actual completion separately from the bounded report.
+Future entry retires at the same boundary; no provider retry, paid authorization,
+engine health, deadline or database-close acknowledgement is invented. Existing
+two-argument and ownerless calls remain compatible. The observable Gemini SDK
+list/pager lifetime does not certify opaque native undici close or untransferred
+foreign descendants; the [provider seam](../../reference/shared-core/llm-provider-seam.md#model-discovery--the-listmodels-capability-adr-0064)
+owns that concrete limit.
+
+Twenty-nine new permanent cases exercise actual installed SDKs and SQLite,
+normal success, unchanged public timeout, original-owner retirement, pre-stopped
+entry, late rejection, an opaque transfer refusal, explicit transport descendants,
+management, both shared picker refresh modes and key validation. Nine independent
+mechanism removals fail named semantic assertions and every restoration passes,
+with explicit zero unhandled errors and actual Node/outer joins. Collector/parent
+removals run their complete seven-case unit file; the seven SDK/client/host
+removals run all three complete files / 29 cases. Source restoration is byte-exact
+and the product tree is unchanged by those isolated controls. Initial broad
+collector removal was rejected for three real SDK unhandled errors; a later
+negative was rejected because its test sampled only one microtask. The permanent
+assertion now observes a complete clock turn. Neither contaminated nor ineffective
+negative execution is acceptance evidence; no assertion or deadline is weakened.
+
+At predecessor `c491836a`, a separate clean security sitting and successful full
+[CI run 39030793953](https://github.com/HodeTech/Relavium/actions/runs/39030793953)
+retain their exact source scopes. All fifteen jobs pass, including all four
+same-tarball consumers and the Windows advisory. Root physically checks the five
+package ZIPs and **70 public files**, including the **446,702-byte** tarball with
+SHA-256 `28c8fd16c9a72b08bcf78af2482f92ee0b57c9bcd1f1919ab3fa3bb547dd2df5`.
+Root also independently validates current-source retained filesystem (**110 /
+330 phases**) and secrets (**41 / 123 phases**) archives against exact declaration
+sets, runtime-error, source-manifest, evaluation, stdio and physical retention
+checks. This inspects published evidence; it does not execute a new causal matrix.
+These results do not accept the later material correction. Two NEW complete
+cumulative clean rounds, NEW separate clean security and fresh corrected-source
+full CI plus all four same-artifact consumers remain required. Steps 9–19 have
+not started; no user decision, credential, billing or provider capture is pending.
+
+Applied author lint/typecheck passes all **17 tasks** (six cache hits); the
+serialized workspace test pipeline passes all **11 tasks** (seven cache hits).
+The complete CLI suite reports **361 files / 5,655 passes / ten established
+skips**. Build and format pass seven tasks (five cache hits). Test isolation
+collects 742 files, seam and engine-dependency checks pass, compiled closure
+verifies 25 outputs / 410 inputs / 17 externals, bootstrap passes 177 controls
+and compiled CLI smoke passes. Every actual subprocess and the outer orchestrator
+is joined with exit 0. Existing cache, synthetic/native and platform qualifications
+remain; these author gates are not the two required independent reviews or new
+whole-CI/platform acceptance. All 151 current filesystem/secrets source anchors
+remain unique; that static check is not a new causal-family execution.
+
+### Wave 3 Step 8d R23 joined-maintenance correction — 2026-10-17
+
+**R23 is complete and NONCLEAN; Step 8d and whole Step 8 remain OPEN.** Eight
+NEW independent reviewers cover all **340 paths / 1,834 ordered cumulative
+hunks**, from Step 7 installed-package acceptance `d9625ff0` to `e7fe93c5`.
+Root reads all eight original reports and every substantive path assessment,
+rechecks full diff/hunk/current-body identities and verifies unchanged opening
+and closing source/dependency/dist freezes. Explicit test-description and support
+path clarifications qualify the original reports; they do not silently rewrite
+them or confer unsupported runtime coverage. Model/effort identifies parent
+dispatch, not independently attested backend execution.
+
+Two Medium findings are independently reproduced before implementation:
+
+- **R23-WA-01:** a rejected grace/orphan deletion, or synchronous deletion-entry
+  refusal after a prior entry, lets the best-effort sweep return while a sibling
+  deletion is pending. The actual workflow command closes SQLite and retires its
+  original owners before that sibling settles. Healthy held-sibling controls keep
+  the command/database/owners alive until release.
+- **R23-NB-1:** a rejected CAS shard lets `listHandles` and the same default
+  terminal sweep settle while another entered shard continuation remains held.
+  The real command/engine/SQLite path reproduces early release; the healthy
+  counterpart retains ownership.
+
+The parallel helpers predate Step 7. These findings contradict Step 8's new
+joined-maintenance guarantee and actual owner integration; they do not claim the
+old parallel algorithm or run exit code originated in this wave. Deletion ports
+are controlled promises/throws. The shard fixture starts a real native read and
+holds its adapter continuation; the sibling EIO is synthetic. No late database
+access, data loss, real pending OS unlink, measured filesystem latency, remote
+provider failure or native Windows failure is inferred.
+
+The correction observes and joins every entered deletion and launched shard
+branch before propagating its original failure. Synchronous deletion-entry
+refusal starts no later deletion and still joins earlier entries. Existing
+best-effort outcomes, admission, timeout, absolute termination budget and native
+close acknowledgement retain their meanings. The [CLI ownership contract](../../reference/cli/commands.md#workflow-and-terminal-ownership)
+owns the concrete requirement; no new decision or approval is needed.
+
+Ten NEW permanent cases include six grace/orphan healthy/rejection/synchronous
+command controls, two actual-shard command controls, and two unit controls that
+also pin original-cause identity and no later entry after a synchronous refusal.
+Author causal validation runs both complete files / 35 cases in seven phases:
+fixed, three independent mechanism removals and each restoration. All fixed and
+restored phases pass; removals fail seven named semantic assertions across
+**245 case executions**. Every phase records an empty explicit runtime-error
+channel, completed Vitest close and actual Node OS wait; the outer orchestrator
+also exits 0. Product source/index remain unchanged by isolated controls and
+restoration is byte-exact. An earlier candidate setup failed before collecting
+tests because it misread the alias manifest shape; it supplies no acceptance
+evidence. These are author controls, not a fresh independent review or platform
+matrix. Detailed reports and runtime records remain local and Git-ignored.
+
+Earlier clean R21/security/CI evidence belongs to `c491836a`; R23 belongs to
+`e7fe93c5`. At the latter source, all fifteen jobs in
+[CI run 39037060129](https://github.com/HodeTech/Relavium/actions/runs/39037060129)
+complete successfully. All four physically inspected same-tarball consumers pass:
+current Linux/macOS/Windows and minimum Node 22.0.0. The five
+downloaded ZIPs agree on the 70-file public package and **446,599-byte** tarball,
+SHA-256 `887559ac65bd6d23e40719a1a6e7261cb8db1efc3bf2249e77c2e06295f34dc4`.
+These results precede this material maintenance correction and do not accept it.
+Two NEW complete cumulative clean rounds, NEW separate clean security and fresh
+corrected-source full CI plus all four actual same-artifact consumers remain
+required. Steps 9–19 have not started; no user decision, credential, billing or
+provider capture is pending.
+
+#### R23 maintenance-correction author gates
+
+Lint/typecheck passes all 17 tasks (12 cache hits); serialized workspace tests
+pass all 11 tasks (nine cache hits). The changed DB and CLI suites execute:
+DB reports **64 files / 1,062 passes**, CLI **362 files / 5,665 passes / ten
+established skips**. Cached sibling results retain their cache attribution.
+Build/format passes seven tasks (five cache hits), test isolation collects 743
+files, seam and engine-dependency checks pass, finite compiled closure verifies
+25 outputs / 410 inputs / 17 externals, bootstrap passes 177 controls and compiled
+CLI smoke passes. Every author subprocess and the outer orchestrator is joined
+with exit 0. These checks are author validation, not the two NEW independent
+reviews, NEW security sitting or fresh full-CI/platform acceptance still required.
+
+### Wave 3 Step 8d R24 builder-fixture correction — 2026-10-17
+
+**R24 is complete and NONCLEAN; Step 8d and whole Step 8 remain OPEN.** Eight
+NEW independent reviewers cover all **342 paths / 1,842 ordered cumulative
+hunks** from Step 7 installed-package acceptance `d9625ff0` to `cef520d4`.
+Root reads every original report and all 342 substantive path assessments,
+rechecks physical/Git/full-diff/ordered-hunk identities and independently matches
+opening/closing tracked, installed-dependency and existing-dist freezes. Explicit
+root qualifications narrow an overbroad Home test description and distinguish the
+Windows advisory from required CI; originals remain unchanged. Exact-scope fresh
+runtime records retain their empty error channels, actual Node/outer joins and
+source/native/synthetic/platform limits. Invalid broad-scope attempts receive no
+acceptance credit. Model/effort identifies parent dispatch, not backend attestation.
+
+**MS-R24-1 (Medium)** concerns the direct fresh/resume builder-admission test,
+not a demonstrated product lifetime defect. In native Windows
+[job 117421092884](https://github.com/HodeTech/Relavium/actions/runs/39041270052/job/117421092884),
+full chat seeding takes **7,574.7133 ms** before the existing **5,000 ms** case
+bound aborts. The captured native-open interval does not establish its underlying
+latency cause or completion of individual builder assertions. That source-native
+Windows job is advisory and is not a dependency of required `ci`; the original
+review's broader required-CI wording is explicitly qualified.
+
+The correction replaces only this direct-constructor case's disk-backed chat
+startup with an actual **in-memory SQLite SessionStore create/load roundtrip**.
+A schema-valid frozen agent, canonical working directory and empty transcript
+reach the same real fresh and resumed builders. The record's context, agent and
+messages are asserted, and the exact SQLite connection closes in `finally`.
+Both original `invalid_invocation` checks and every no-provider/key/UUID/MCP
+assertion remain, along with the original case name, five-second deadline,
+captured abort/join ownership and every surrounding real disk-backed command,
+persistence and resumed-host lifecycle test. There is no new ADR or deferral.
+
+Author focus under **CI=true** passes four complete files / **228 cases**, with
+explicit `onFinished` errors=[], completed Vitest close, actual Node OS wait and
+outer exec join. Separate isolated controls run the complete 12-case workspace
+file through five phases: fixed, fresh-entry guard removal/restoration and
+resumed-entry guard removal/restoration. Each removal fails the exact original
+builder-refusal case with its semantic assertion; fixed/restored phases pass.
+All **60 case executions** preserve original bounds and exact case membership,
+empty runtime-error channels and actual joins. Restoration is byte-exact and the
+controls leave developer source/index unchanged. An initial wrapper escaping
+error fails before collecting tests and supplies no acceptance credit. These are
+author controls, not native Windows or independent review acceptance.
+
+At `cef520d4`, all four required same-tarball package consumers pass and their
+five downloaded ZIPs are independently inspected against CI origin, native tar
+headers, public/installed files and exact shared digest: **446,752 bytes / 70
+public files**, SHA-256
+`070e437c2c7ea02bd3ce72a8bef1f77cf58c3809af77edefc10ecd82e71309a1`.
+Downloaded filesystem/secrets evidence independently verifies **110 / 41 controls**
+and **330 / 123 phases**, their exact declaration sets, retained source/runtime/
+stdio/evaluation records and physical bounds. This is retained-evidence inspection,
+not a new mutation execution. Those package/control results precede this fixture
+correction; the Windows advisory remains failed and required CI retains its own
+attributed outcome. None confers later-source acceptance.
+
+Two NEW complete cumulative clean rounds after the final material correction, a
+NEW separate clean security sitting and fresh full CI plus all four actual
+same-artifact consumers remain required. Steps 9–19 have not started. No user
+approval, provider capture, credential, billing or production release operation
+is pending. Detailed review and runtime records remain local and Git-ignored.
+
+#### R24 builder-fixture author gates
+
+Lint/typecheck passes all 17 tasks (15 cache hits); serialized workspace tests
+pass all 11 tasks (ten cache hits). The changed CLI suite executes **362 files /
+5,665 passes / ten established skips**; unchanged siblings retain cache attribution.
+Build/format, test isolation, SDK seam, engine-dependency and finite bundle closure
+pass, along with all 177 compiled bootstrap controls and compiled CLI smoke.
+Every author subprocess and the outer orchestrator joins with exit 0. The later
+independent review/security/full-CI/platform gates above remain required.
+
+### Wave 3 Step 8d and whole Step 8 acceptance — 2026-10-17
+
+**Step 8d and whole Step 8 are independently ACCEPTED on `development` at
+`c83c8575b0baaa9bf20765b03dffb00623ed96c6`.** This closes session, Home,
+one-shot, pending/replaced host, terminal and product fatal/output/background
+integration under [ADR-0110](../../decisions/0110-cli-diagnostics-and-discovery-have-explicit-compatibility.md).
+The original remaining budget never supplies a native-close, receipt, terminal
+delivery or database-safe-close acknowledgement. Classified turn failures and
+existing recovery/signal meanings remain separate from infrastructure 9.
+
+After the R24 fixture correction, **R25 and R26 are two NEW complete cumulative
+CLEAN correctness rounds**, each covering all **342 disjoint paths / 1,842 ordered
+hunks** from accepted Step 7 `d9625ff0` through `c83c8575`. Each round uses eight
+fresh independent reviewers. Root personally reads all eight original reports
+and every path assessment, independently verifies physical/Git/full-diff/ordered
+hunk identities and raw runtime/error/join records, then closes the whole round.
+Opening and closing freezes match all **1,761 tracked files, 21,165 installed
+dependency files, 1,215 lexical dependency symlinks and 466 existing dist files**;
+the index's membership/blob/mode equals HEAD. Root closure receipt SHA-256:
+R25 `d423c086ca2e9adbd594cec57a879b923c498c43330c0669d8eda5277222b273`;
+R26 `dac98a610c3c32811dd87dc97c6e7657b6fd853cf59d1b673ef8ee3259b6646b`.
+
+The complete source reviews retain their runtime qualifications. In particular,
+R25's tooling arithmetic wrapper and R26's Home collection wrapper actually exit
+nonzero; their failed harness receipts stay failed. Root independently checks the
+complete passing product-case records and explicit empty error channels, records
+the collection/arithmetic limitations and does not invent missing callback
+history or rerun a successful suite merely to repair metadata. Original reports
+remain unchanged; explicit supplements narrow imprecise fixture descriptions.
+Parent source aliases do not certify native-child source/dist equivalence.
+Existing-dist checks, synthetic seams, local platform skips and actual OS/outer
+joins keep their individual attribution. Overlapping review suites are reported
+separately.
+
+A **NEW separate CLEAN security sitting** reviews the cumulative ownership,
+provenance and fixed-diagnostic boundaries. Its full report and every semantic
+scope/exclusion assessment are independently read and verified by root. Fresh
+execution covers **75 complete files / 1,105 passes / one actual-Windows-only
+local skip**, with explicit runtime errors=[], completed Vitest close and actual
+Node/outer joins. This is a focused security audit, not full-body correctness
+certification of all 342 paths. The [security sitting](../../standards/security-review.md#sitting-wave-3-sessionterminal-ownership-and-fatal-activation-2026-10-17)
+records its scope and limits.
+
+At the same reviewed source, [full CI run 39044664485](https://github.com/HodeTech/Relavium/actions/runs/39044664485)
+completes **15/15 jobs successfully**. Main CI records lint/typecheck **17/17**
+tasks (five cache hits), serialized workspace tests **11/11** (five cache hits)
+and build **6/6** (six cache hits). Reported workspace totals are **743 files /
+15,635 passes / 22 established skips**; cached results retain their cache
+attribution. Formatting, isolation, seam/dependency/bundle fences, 177 bootstrap
+controls, compiled CLI/overflow smokes and replay compatibility pass. Replay
+records **16 strict refusals / two positive controls / zero fetches**. Required
+engine coverage also passes; core's later required-floor promotion remains
+Step 19. The separate source-native Windows advisory succeeds, including the
+12-case direct-builder file within its unchanged five-second case bound; it
+remains advisory rather than a dependency of required `ci`.
+
+All four actual installed consumers succeed against one independently inspected
+tarball: current Linux/macOS/Windows on **Node 24.21.0** and minimum Linux on
+**Node 22.0.0**. The archive is **446,750 bytes / 70 public files**, SHA-256
+`a64f4ff2cbd444d6bc37e6b0938c42e0a6ebca0ddcd7905799c718346764558f`.
+The five downloaded producer/consumer ZIPs are checked against actual CI origin,
+native tar headers/modes, public and installed inventories, source and digest.
+Downloaded current-source filesystem/secrets controls independently verify
+**110 / 41 controls and 330 / 123 phases**, exact declaration sets, retained
+source/runtime/stdio/evaluation/restoration and physical bounds, with zero
+unhandled errors. Archive inspection is not a new local control execution.
+
+No operator TTY, live provider, keychain, paid call, production release, opaque
+native undici dispatcher closure or universal descendant containment is inferred.
+Actual native closure is not receipt durability. Earlier NONCLEAN rounds and
+failed/old-source CI observations remain historical; later documentation commits
+are not claimed executed by source CI. Detailed reports and physical records
+remain local and Git-ignored. No new ADR, decision, dependency or deferral is added.
+
+**Steps 1–8 are accepted on `development`; Steps 9–19 have NOT STARTED.** The
+maintainer requested closure and a timestamped private handoff for another agent;
+this session starts no Step 9 work and opens no PR. Next is approved Step 9's
+release map/custody substrate in the [nineteen-increment plan](#proposed-implementation-increments).
+Whole Wave 3 and whole Phase 2.5.5/2.6 remain open.
+
+### Wave 3 Steps 1–8 scoped publication — 2026-10-17
+
+After Step 8d acceptance and the private handoff, the maintainer explicitly
+requested a PR for the completed work so far. This authorizes an initial
+`development` → `main` PR containing accepted **Steps 1–8**; it does not close
+Wave 3 or start Steps 9–19. It refines the original Step 19 publication timing
+at the maintainer's request without changing any implementation acceptance gate.
+The existing Step 8d closure above remains a historical pre-publication checkpoint.
+
+The reviewed runtime source remains `c83c8575`; `00fb72d2` and this publication
+checkpoint change documentation only. Existing source CI and scoped reviews keep
+their exact attribution. New push/PR checks must be reported at their actual head;
+no prior result is presented as their execution. Detailed handoff/review records
+remain local and Git-ignored. Another agent should inspect the PR/merge state
+before Step 9: commits on the same `development` head extend the open PR's scope.
+Whole-wave reviews, core coverage promotion and the remaining Step 19 obligations
+are still required after later increments.

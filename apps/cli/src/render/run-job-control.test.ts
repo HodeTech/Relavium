@@ -71,6 +71,53 @@ describe('wireRunJobControl (G0, the run/gate path)', () => {
     }
   });
 
+  it('observes the original failed self-stop before recovery can reattach', () => {
+    const h = harness();
+    const cause = new TypeError('private self-stop fault');
+    h.suspendSelf.mockImplementation(() => {
+      throw cause;
+    });
+    const observed: unknown[] = [];
+    const jc = wireRunJobControl({
+      write: h.write,
+      lifecycle: h.lifecycle,
+      onFailure: (original) => {
+        observed.push(original);
+        expect(h.attaches()).toBe(1);
+        jc.dispose();
+      },
+    });
+    h.fireSuspend();
+    expect(observed).toEqual([cause]);
+    expect(h.attaches()).toBe(1);
+    h.fireSuspend();
+    h.fireContinue();
+    expect(h.suspendSelf).toHaveBeenCalledTimes(1);
+    expect(h.out()).toBe(SHOW_CURSOR);
+    expect(h.removeSuspend).toHaveBeenCalledTimes(1);
+    expect(h.removeContinue).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves ownerless reversible recovery after a self-stop refusal', () => {
+    const h = harness();
+    h.suspendSelf.mockImplementationOnce(() => {
+      throw new Error('self-stop refused');
+    });
+    const jc = wireRunJobControl({ write: h.write, lifecycle: h.lifecycle });
+    try {
+      h.fireSuspend();
+      expect(h.attaches()).toBe(2);
+      h.fireSuspend();
+      expect(h.suspendSelf).toHaveBeenCalledTimes(2);
+      h.fireContinue();
+      expect(h.out()).toBe(SHOW_CURSOR + SHOW_CURSOR + HIDE_CURSOR);
+    } finally {
+      jc.dispose();
+    }
+    expect(h.removeSuspend).toHaveBeenCalledTimes(3);
+    expect(h.removeContinue).toHaveBeenCalledTimes(1);
+  });
+
   it('DETACHES before re-raising, or the self-sent SIGTSTP re-enters this handler forever', () => {
     // `suspendSelf` sends SIGTSTP to our own pid, and a signal with a handler installed runs the handler
     // instead of taking the default stop action. Raising while still attached therefore re-enters this
@@ -157,7 +204,16 @@ describe('wireRunJobControl (G0, the run/gate path)', () => {
       throw new Error('suspend removal failed');
     });
     const jc = wireRunJobControl({ write: h.write, lifecycle: h.lifecycle });
-    expect(() => jc.dispose()).toThrow('Run job-control cleanup failed.');
+    try {
+      jc.dispose();
+      expect.unreachable('The failed native removal must remain classified.');
+    } catch (error) {
+      expect(error).toMatchObject({
+        code: 'cli_internal',
+        exitCode: 9,
+        cause: { message: 'suspend removal failed' },
+      });
+    }
     expect(h.removeContinue).toHaveBeenCalledTimes(1);
     h.fireContinue();
     h.fireSuspend();

@@ -9,7 +9,7 @@ An **agent** is a named, reusable LLM configuration: which model, which provider
 
 Agents are **git-committable** and shareable. An agent may live as its own `.agent.yaml` file (so it can be reused across workflows) or be declared inline inside a workflow's `agents:` array. Both forms validate against the same schema.
 
-> **Strict validation.** `AgentSchema` rejects unknown/mistyped keys (e.g. `temprature`) rather than silently dropping them ([ADR-0023](../../decisions/0023-strict-authored-yaml-validation.md)). `temperature` is bounded to a finite `[0, 2]`, and a declared MCP `url` must use an `http(s)`/`ws(s)` scheme.
+> **Strict validation.** `AgentSchema` rejects unknown/mistyped keys (e.g. `temprature`) rather than silently dropping them ([ADR-0023](../../decisions/0023-strict-authored-yaml-validation.md)). `temperature` is bounded to a finite `[0, 2]`, and a declared MCP `url` must use an `http(s)`/`ws(s)` scheme. The standalone parser retains field paths and uses the same [authored diagnostic reasons](workflow-yaml-spec.md#validation-and-versioning-rules) as workflow parsing.
 
 ## Schema
 
@@ -64,7 +64,7 @@ fallback_chain:             # ordered alternates tried after the primary is exha
 | `mcp_servers` | no | See [../shared-core/mcp-integration.md](../shared-core/mcp-integration.md). |
 | `memory` | no | `none`, `window` (with positive integer `window_size`) or `summary`; omitted preserves the full working transcript. Enforced by `AgentSession`; see [Conversational memory](#conversational-memory). **No effect on a workflow `agent` node**, including a node produced by session export: the node executes one turn. |
 | `retry` | no | Node-retry budget **above** the fallback chain — re-runs the whole node on a retryable failure, up to `max` total attempts ([ADR-0040](../../decisions/0040-node-retry-budget-above-the-chain.md)). `max` may not exceed **10** ([ADR-0086](../../decisions/0086-absolute-admission-ceilings-on-authored-values.md), which supersedes ADR-0040's "intentionally unbounded" clause). |
-| `fallback_chain` | no | Switch to a *different* model/provider **within an attempt** (the within-chain failover); the node `retry` budget then re-runs the whole chain above it. At most **5** entries, each with `max_attempts` at most **10** ([ADR-0086](../../decisions/0086-absolute-admission-ceilings-on-authored-values.md)) — the two multiply, so both are bounded. |
+| `fallback_chain` | no | The `(provider, model)` pair must be unique within the fallback list, irrespective of `max_attempts`; equality with the primary is permitted. Switch to a *different* model/provider **within an attempt** (the within-chain failover); the node `retry` budget then re-runs the whole chain above it. At most **5** entries, each with `max_attempts` at most **10** ([ADR-0086](../../decisions/0086-absolute-admission-ceilings-on-authored-values.md)) — the two multiply, so both are bounded. |
 | `tools` | no | The tools this agent may call. A single model RESPONSE may request at most **16** tool calls ([ADR-0086](../../decisions/0086-absolute-admission-ceilings-on-authored-values.md) §2) — a turn over that is refused before any of them is dispatched, so no effect fires. This is the model's width, not the author's; there is no field to raise it. |
 
 ## Conversational memory

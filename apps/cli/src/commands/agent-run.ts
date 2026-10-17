@@ -1,5 +1,13 @@
+import { ownSessionOutput } from '../chat/session-presentation.js';
+import { acquireNativeResource } from '../process/acquire-native-resource.js';
+import type { CliInvocation } from '../process/invocation.js';
+import { SessionHostOwner } from '../chat/session-host-owner.js';
+import { SessionSurfaceLifetime } from '../chat/session-surface-lifetime.js';
+import type { SessionWorkOwner } from '../chat/session-work-owner.js';
+import { nativeProcessesForInvocation } from '../process/native-process-owner.js';
 import { randomUUID } from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
+import { CapturedNativeInput } from '../process/native-input.js';
 
 import type { SessionStreamHandleEvent } from '@relavium/core';
 
@@ -9,11 +17,8 @@ import { cassetteResolver, loadCassette } from '../chat/fixture.js';
 import { onceEffortNotice } from '../chat/effort-notice.js';
 import { buildChatSession, type BuiltChatSession } from '../chat/session-host.js';
 import { createConsentGate } from '../engine/mcp-consent-gate.js';
-import { liveMcpChildPids } from '@relavium/mcp';
 
-import { guardMcpTeardown } from '../engine/mcp-signal-teardown.js';
 import type { StdioConsentGate } from '../engine/mcp-servers.js';
-import { createConsentPrompter } from '../mcp/consent-prompt.js';
 import { loadResolvedConfig } from '../config/load.js';
 import { admitFsInvocation, admitChatFsPolicy } from '../engine/tool-host/fs-admission.js';
 import { surfaceMcpSkipped } from '../engine/mcp-servers.js';
@@ -25,11 +30,12 @@ import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import { createMcpSecretResolver, type McpSecretResolver } from '../secrets/mcp-secret.js';
 import { makePlainPrinter } from './chat.js';
-import { sanitizeInline, sanitizeUntrustedInline, stringifyJsonLine } from '../render/sanitize.js';
+import { stringifyJsonLine } from '../render/sanitize.js';
 import {
   createEffectJournalPort,
   createEffectJournalStore,
   createSessionUsageStore,
+  SessionEffectTurnError,
   type SessionUsageReceipt,
 } from '@relavium/db';
 import { openSessionStore } from '../history/session-open.js';
@@ -43,8 +49,9 @@ import type { UsageInvocation } from '@relavium/shared';
  * deterministic + offline. `--json` emits the NDJSON `session:*` stream; otherwise the assistant reply streams
  * in human form. Its transcript is not persisted or resumable; hidden owner metadata records usage coverage,
  * realized cost and effects (ADR-0104). Exit: the turn's outcome — `0` on
- * success, `1` on a turn error; an invocation fault (no prompt / unknown agent / bad cassette / `--input`) is
- * `2`. `--input` is **reserved** — rejected until session `{{ctx.*}}` prompt interpolation lands (deferred-tasks.md).
+ * success, `1` on a classified turn error; an invocation fault (no prompt / unknown agent / bad cassette /
+ * `--input`) is `2`. Unexpected infrastructure failure is `9`, with cleanup owned by the original invocation.
+ * `--input` is **reserved** — rejected until session `{{ctx.*}}` prompt interpolation lands (deferred-tasks.md).
  */
 
 export interface AgentRunCommandArgs {
@@ -64,6 +71,8 @@ export interface AgentRunCommandArgs {
 }
 
 export interface AgentRunCommandDeps {
+  /** The original bootstrap invocation; native authority stays host-only. */
+  readonly invocation?: CliInvocation;
   readonly io: CliIo;
   readonly global: GlobalOptions;
   /** Injectable provider seam (tests). Ignored when `--fixture` is given (the cassette resolver always wins). */
@@ -86,280 +95,298 @@ export async function agentRunCommand(
   args: AgentRunCommandArgs,
   deps: AgentRunCommandDeps,
 ): Promise<ExitCode> {
-  const grants = admitFsInvocation(deps.global);
-  const now = deps.now ?? Date.now;
-  const uuid = deps.uuid ?? randomUUID;
-  const { config, projectConfigDir, homeDir } = loadResolvedConfig({
-    cwd: deps.global.cwd,
-    configPath: deps.global.configPath,
+  let closeJournal: (() => void) | undefined;
+  const lifetime = new SessionSurfaceLifetime(deps.invocation, 'agent', undefined, () => {
+    // The original surface releases its native database only after its host/root/tails join,
+    // and before its signal custody can be removed.
+    closeJournal?.();
+    return Promise.resolve();
   });
-
-  const fsPolicy = admitChatFsPolicy(grants, deps.global.cwd, config.chat.extraRoots);
-
-  // Validate the invocation + read the one-shot prompt from stdin (the two pre-run faults live in the helper).
-  const message = await resolveOneShotInput(args, deps);
-
-  // A `--fixture` replays a cassette (offline, no keychain) and takes precedence over any injected/real seam;
-  // otherwise tests inject `providers`, and production resolves keys via the env/keychain (like `relavium run`).
-  const offline = args.fixture !== undefined;
-  const keys = offline ? undefined : deps.resolveKeys?.();
-  const providers =
-    args.fixture === undefined
-      ? (deps.providers ?? keys?.providers ?? createProviderResolver(deps.io.env))
-      : cassetteResolver(loadCassette(args.fixture, deps.global.cwd));
-  // The ADR-0065 §2 user-pricing overlay (2.5.G S10) — so a one-shot live turn enforces + tracks a user-priced
-  // model. SKIPPED under `--fixture`: cassette pricing stays deterministic and fully offline. Usage coverage
-  // and realized attribution still use the local database, without consulting the user pricing overlay.
-  const resolvePrice = offline ? undefined : loadUserPricingOverlay(homeDir);
-
-  // An unknown `<agent>` (path or id) throws a typed CliError here (exit 2), before any turn. The build is
-  // async (2.R): it connects the agent's inline stdio `mcp_servers` (a connect failure is a fail-loud exit-2
-  // CliError, cause stripped) before the one-shot turn runs. In `--fixture` (cassette) mode the run must be
-  // FULLY offline: no `[[mcp_servers]]` registrations and an env-only secret resolver (never the keychain).
-  /**
-   * The signal guard, armed BEFORE the session build (ADR-0088 §1.3).
-   *
-   * `buildChatSession` is where the stdio children are spawned, and a cold `npx` can hold that call for up to
-   * 120 s with the terminal silent — the highest-probability window for a Ctrl-C. Arming afterwards, which was
-   * the first attempt, left exactly that window uncovered. Two things follow: the pids are read LAZILY (there
-   * are none yet here) and the connect is given a cancel signal, so a Ctrl-C during it stops rather than being
-   * merely survived.
-   *
-   * Unlike `relavium run`, this surface has no other signal handler, so the guard DOES own the exit code.
-   */
-  const mcpConnectCancel = new AbortController();
-  let session: BuiltChatSession | undefined;
-  const unguardMcp = guardMcpTeardown(
-    async () => {
-      mcpConnectCancel.abort();
-      await session?.closeMcp?.();
-    },
-    // **`liveMcpChildPids()`, not `session?.mcpChildPids`** — and a review reproduced why against a real
-    // subprocess. `session` is undefined for the whole connect, so on a signal there the cooperative close
-    // resolved instantly, the guard exited `128+signo`, and the exit net asked a `session` that did not exist
-    // for pids: it killed nothing while the SDK's ~4 s close ladder had barely started. Measured: the host
-    // exited 143 and the MCP child kept running at `ppid 1`. The registry is populated at SPAWN time, so the
-    // synchronous net can see a child the connect has not finished handshaking with.
-    () => liveMcpChildPids(),
+  return lifetime.execute(() =>
+    agentRunOwned(
+      args,
+      {
+        ...deps,
+        invocation: lifetime.invocation,
+        io: ownSessionOutput(deps.io, lifetime.work),
+      },
+      lifetime,
+      (close) => {
+        closeJournal = close;
+      },
+    ),
   );
+}
 
-  const built = await (async (): Promise<BuiltChatSession> => {
-    const b = await (deps.buildSession ?? buildChatSession)({
-      chat: config.chat,
-      fsPolicy,
-      afterTurnCompaction: false, // One-shot output has no next turn; retain active summary permission.
-      ...(config.maxTokensEstimate === undefined
-        ? {}
-        : { maxTokensEstimate: config.maxTokensEstimate }),
-      // **Consent before any stdio MCP spawn** (ADR-0084 §1). A one-shot `agent run` opens an agent artifact
-      // — often an imported one — which is exactly the case the gate exists for; `--fixture` replays offline
-      // and declares no servers, so the gate never fires there.
-      mcpArtifact: args.agent,
-      consentGate:
-        deps.consentGate ??
-        createConsentGate({
-          io: deps.io,
-          global: deps.global,
-          homeDir,
-          allowedDigests: args.allowMcpStdio,
-          prompt: createConsentPrompter(),
-        }),
-      // ADR-0071 §6: a one-shot invoke has no transcript and no picker, so a withheld tier would otherwise vanish
-      // completely — the turn runs, the authored knob does nothing, and the bill arrives at the provider's default.
-      // STDERR, never stdout: `--json` owns stdout, and a warning line mid-stream is a parse error downstream.
-      onEffortWithheld: onceEffortNotice((note) => deps.io.writeErr(`warning: ${note}\n`)),
-      // stderr, never stdout: `--json` owns stdout and a notice must not corrupt the NDJSON stream.
-      onListenerError: (note) => deps.io.writeErr(`warning: ${note}\n`),
-      onUnpriced: (note) => deps.io.writeErr(`warning: ${note}\n`),
-      agentRef: args.agent,
+async function agentRunOwned(
+  args: AgentRunCommandArgs,
+  deps: AgentRunCommandDeps,
+  lifetime: SessionSurfaceLifetime,
+  captureJournalClose: (close: () => void) => void,
+): Promise<ExitCode> {
+  const hostOwner = new SessionHostOwner(lifetime.invocation, 'agent');
+  try {
+    const nativeProcesses = nativeProcessesForInvocation(deps.invocation);
+    const grants = admitFsInvocation(deps.global);
+    const now = deps.now ?? Date.now;
+    const uuid = deps.uuid ?? randomUUID;
+    const { config, projectConfigDir, homeDir } = loadResolvedConfig({
       cwd: deps.global.cwd,
-      projectConfigDir,
-      now,
-      uuid,
-      providers,
-      mcpSecretResolver: offline
-        ? createMcpSecretResolver(deps.io.env)
-        : (deps.mcpSecretResolver ??
-          keys?.mcpSecretResolver ??
-          createMcpSecretResolver(deps.io.env)),
-      mcpRegistrations: offline ? [] : config.mcpServers,
-      ...(resolvePrice === undefined ? {} : { resolvePrice }),
-      // FULLY offline in `--fixture` (cassette) mode: disable inbound MCP entirely so an agent's inline
-      // `mcp_servers` are never connected (no config build, no spawn, no dial). The cassette already carries any
-      // recorded tool results, so the replay needs no live MCP.
-      ...(offline ? { disableMcp: true } : {}),
-      mcpConnectSignal: mcpConnectCancel.signal,
+      configPath: deps.global.configPath,
     });
-    session = b; // now the guard's lazy reads see a live client
-    return b;
-  })().catch((err: unknown) => {
-    // The build threw — nothing was returned, so the `finally` below never runs. Release the guard here or it
-    // outlives the command it was protecting.
-    unguardMcp();
-    throw err;
-  });
 
-  // ADR-0074 §4: `agent run` has no resumable transcript or restored cap. Its hidden ADR-0104 owner records
-  // coverage and realized money, while conservative commitments retain the explicit one-shot no-op. Attach an
-  // explicit no-op so the governor's emit resolves: without it every commitment would reject, mark the session
-  // durability-broken, and the §2 barrier would fail a turn for a session nobody was ever going to resume. The
-  // in-memory debit still consumes cap capacity for this process, which is the whole of what a one-shot needs.
-  built.governor?.attachConservativeWriter(() => Promise.resolve());
+    const fsPolicy = admitChatFsPolicy(grants, deps.global.cwd, config.chat.extraRoots);
 
-  // **ADR-0074 §4's no-op precedent does NOT transfer to effects, and the difference is the whole point.**
-  // A conservative commitment has nowhere to go because nothing will ever resume this invocation. An external
-  // effect is carried forward by the TARGET, not by the run — a ticket filed here still exists tomorrow — so a
-  // no-op journal would be fail-open on exactly the guarantee CR-12 exists to give, and leaving it unattached
-  // would refuse every effectful tool on this surface.
-  //
-  // The same hidden owner supplies effect correlation and durable usage coverage. It never grants transcript
-  // discovery or resume permission; an exact opaque owner receipt is required to attach usage writes.
-  // Opened INSIDE a guard that owns `built`: from `buildChatSession` onward the process may hold live MCP
-  // child processes, and `closeMcp` is otherwise only reachable through `runOneShotTurn`'s `finally`. A store
-  // open that throws here (a locked or unwritable `history.db`) would take the one path that skips it,
-  // orphaning those children for the lifetime of the shell.
-  let journalStore: ReturnType<typeof openSessionStore>;
-  try {
-    journalStore = openSessionStore(homeDir);
-  } catch (cause) {
-    await built.closeMcp?.().catch(() => undefined);
-    unguardMcp();
-    throw cause;
-  }
-  let handedOff = false;
-  let ownedEffectSessionId: string | undefined;
-  const usageStore = createSessionUsageStore(journalStore.db);
-  const receipts = new Map<UsageInvocation, SessionUsageReceipt>();
-  try {
-    // A fresh hidden owner retains usage uncertainty without a transcript or resume privilege.
-    const owner = (() => {
-      try {
-        return usageStore.createFreshOneShotOwner({ sessionId: built.sessionId, now: now() });
-      } catch (cause) {
-        throw new CliError(
-          'invalid_invocation',
-          'one-shot session identity could not be reserved',
-          { cause },
-        );
-      }
-    })();
-    ownedEffectSessionId = owner.sessionId;
-    const producerId = randomUUID();
-    let dispatch = 0;
-    let failure: Error | undefined;
-    const write = (operation: () => void): void => {
-      if (failure !== undefined) throw failure;
-      try {
-        operation();
-      } catch (cause) {
-        failure = cause instanceof Error ? cause : new Error('One-shot usage persistence failed');
-        throw failure;
-      }
-    };
-    built.attachDurabilityProbe(() => failure);
-    built.attachUsageWriter({
-      readSnapshot: () => {
-        const snapshot = journalStore.store.loadSessionCostBreakdown(owner.sessionId);
-        return {
-          cumulativeCostMicrocents: snapshot.totalCostMicrocents,
-          cumulativeUnpricedCalls: snapshot.rows.reduce((sum, row) => sum + row.unpricedCalls, 0),
-          usageCoverage: snapshot.coverage,
-        };
+    // Validate the invocation + read the one-shot prompt from stdin (the two pre-run faults live in the helper).
+    const message = await resolveOneShotInput(args, deps, lifetime);
+    lifetime.work.assertAdmitting();
+
+    // A `--fixture` replays a cassette (offline, no keychain) and takes precedence over any injected/real seam;
+    // otherwise tests inject `providers`, and production resolves keys via the env/keychain (like `relavium run`).
+    const offline = args.fixture !== undefined;
+    const keys = offline ? undefined : deps.resolveKeys?.();
+    const providers =
+      args.fixture === undefined
+        ? (deps.providers ?? keys?.providers ?? createProviderResolver(deps.io.env))
+        : cassetteResolver(loadCassette(args.fixture, deps.global.cwd));
+    // The ADR-0065 §2 user-pricing overlay (2.5.G S10) — so a one-shot live turn enforces + tracks a user-priced
+    // model. SKIPPED under `--fixture`: cassette pricing stays deterministic and fully offline. Usage coverage
+    // and realized attribution still use the local database, without consulting the user pricing overlay.
+    const resolvePrice = offline
+      ? undefined
+      : loadUserPricingOverlay(homeDir, deps.io, deps.invocation);
+
+    // An unknown `<agent>` (path or id) throws a typed CliError here (exit 2), before any turn. The build is
+    // async (2.R): it connects the agent's inline stdio `mcp_servers` (a connect failure is a fail-loud exit-2
+    // CliError, cause stripped) before the one-shot turn runs. In `--fixture` (cassette) mode the run must be
+    // FULLY offline: no `[[mcp_servers]]` registrations and an env-only secret resolver (never the keychain).
+    const built = await hostOwner.build((workOwner) =>
+      (deps.buildSession ?? buildChatSession)({
+        workOwner,
+        ...(nativeProcesses === undefined ? {} : { nativeProcesses }),
+        chat: config.chat,
+        fsPolicy,
+        afterTurnCompaction: false, // One-shot output has no next turn; retain active summary permission.
+        ...(config.maxTokensEstimate === undefined
+          ? {}
+          : { maxTokensEstimate: config.maxTokensEstimate }),
+        // **Consent before any stdio MCP spawn** (ADR-0084 §1). A one-shot `agent run` opens an agent artifact
+        // — often an imported one — which is exactly the case the gate exists for; `--fixture` replays offline
+        // and declares no servers, so the gate never fires there.
+        mcpArtifact: args.agent,
+        consentGate:
+          deps.consentGate ??
+          createConsentGate({
+            // Mandatory one-shot input has consumed and closed this stream. A captured TTY flag
+            // grants no second read; only an existing grant or an explicit digest may authorize MCP.
+            io: { ...deps.io, stdinIsTty: false },
+            global: deps.global,
+            homeDir,
+            allowedDigests: args.allowMcpStdio,
+            signal: workOwner.signal,
+          }),
+        // ADR-0071 §6: a one-shot invoke has no transcript and no picker, so a withheld tier would otherwise vanish
+        // completely — the turn runs, the authored knob does nothing, and the bill arrives at the provider's default.
+        // STDERR, never stdout: `--json` owns stdout, and a warning line mid-stream is a parse error downstream.
+        onEffortWithheld: onceEffortNotice((note) => deps.io.writeErr(`warning: ${note}\n`)),
+        // stderr, never stdout: `--json` owns stdout and a notice must not corrupt the NDJSON stream.
+        onListenerError: (note) => deps.io.writeErr(`warning: ${note}\n`),
+        onUnpriced: (note) => deps.io.writeErr(`warning: ${note}\n`),
+        agentRef: args.agent,
+        cwd: deps.global.cwd,
+        projectConfigDir,
+        now,
+        uuid,
+        providers,
+        mcpSecretResolver: offline
+          ? createMcpSecretResolver(deps.io.env)
+          : (deps.mcpSecretResolver ??
+            keys?.mcpSecretResolver ??
+            createMcpSecretResolver(deps.io.env)),
+        mcpRegistrations: offline ? [] : config.mcpServers,
+        ...(resolvePrice === undefined ? {} : { resolvePrice }),
+        // FULLY offline in `--fixture` (cassette) mode: disable inbound MCP entirely so an agent's inline
+        // `mcp_servers` are never connected (no config build, no spawn, no dial). The cassette already carries any
+        // recorded tool results, so the replay needs no live MCP.
+        ...(offline ? { disableMcp: true } : {}),
+        mcpConnectSignal: workOwner.signal,
+      }),
+    );
+
+    // ADR-0074 §4: `agent run` has no resumable transcript or restored cap. Its hidden ADR-0104 owner records
+    // coverage and realized money, while conservative commitments retain the explicit one-shot no-op. Attach an
+    // explicit no-op so the governor's emit resolves: without it every commitment would reject, mark the session
+    // durability-broken, and the §2 barrier would fail a turn for a session nobody was ever going to resume. The
+    // in-memory debit still consumes cap capacity for this process, which is the whole of what a one-shot needs.
+    built.governor?.attachConservativeWriter(() => Promise.resolve());
+
+    // **ADR-0074 §4's no-op precedent does NOT transfer to effects, and the difference is the whole point.**
+    // A conservative commitment has nowhere to go because nothing will ever resume this invocation. An external
+    // effect is carried forward by the TARGET, not by the run — a ticket filed here still exists tomorrow — so a
+    // no-op journal would be fail-open on exactly the guarantee CR-12 exists to give, and leaving it unattached
+    // would refuse every effectful tool on this surface.
+    //
+    // The same hidden owner supplies effect correlation and durable usage coverage. It never grants transcript
+    // discovery or resume permission; an exact opaque owner receipt is required to attach usage writes.
+    // The host reservation already owns every entered builder/MCP operation. The outer surface root also
+    // owns this database from acquisition through actual host cleanup, including setup failures before a turn.
+    lifetime.work.assertAdmitting();
+    const journalStore = acquireNativeResource(
+      (captureClose) =>
+        openSessionStore(homeDir, captureClose, {
+          io: deps.io,
+          invocation: deps.invocation,
+        }),
+      {
+        assertAdmitting: lifetime.work.assertAdmitting,
+        captureClose: captureJournalClose,
+        cleanupUncertain: lifetime.work.cleanupUncertain,
+        isStoppedFailure: lifetime.work.isStoppedFailure,
       },
-      initialCoverage: () => {
-        const snapshot = usageStore.loadCoverage(owner.sessionId);
-        if (snapshot === undefined) throw new Error('One-shot usage owner unavailable');
-        return { ...snapshot, started: true, highWater: 0 };
-      },
-      begin: (draft) => {
-        let receipt: SessionUsageReceipt | undefined;
-        write(() => {
-          receipt = usageStore.beginInvocation(
-            {
+    );
+    let ownedEffectSessionId: string | undefined;
+    const usageStore = createSessionUsageStore(journalStore.db);
+    const receipts = new Map<UsageInvocation, SessionUsageReceipt>();
+    try {
+      // A fresh hidden owner retains usage uncertainty without a transcript or resume privilege.
+      const owner = (() => {
+        const timestamp = now();
+        if (!Number.isSafeInteger(timestamp) || timestamp < 0)
+          throw new CliError('cli_internal', '');
+        try {
+          return usageStore.createFreshOneShotOwner({ sessionId: built.sessionId, now: timestamp });
+        } catch (cause) {
+          if (!(cause instanceof SessionEffectTurnError) || cause.code !== 'history_invalid')
+            throw cause;
+          throw new CliError(
+            'invalid_invocation',
+            'one-shot session identity could not be reserved',
+            { cause },
+          );
+        }
+      })();
+      ownedEffectSessionId = owner.sessionId;
+      const producerId = randomUUID();
+      let dispatch = 0;
+      let failure: Error | undefined;
+      const write = (operation: () => void): void => {
+        if (failure !== undefined) throw failure;
+        try {
+          operation();
+        } catch (cause) {
+          failure = cause instanceof Error ? cause : new Error('One-shot usage persistence failed');
+          throw failure;
+        }
+      };
+      built.attachDurabilityProbe(() => failure);
+      built.attachUsageWriter({
+        readSnapshot: () => {
+          const snapshot = journalStore.store.loadSessionCostBreakdown(owner.sessionId);
+          return {
+            cumulativeCostMicrocents: snapshot.totalCostMicrocents,
+            cumulativeUnpricedCalls: snapshot.rows.reduce((sum, row) => sum + row.unpricedCalls, 0),
+            usageCoverage: snapshot.coverage,
+          };
+        },
+        initialCoverage: () => {
+          const snapshot = usageStore.loadCoverage(owner.sessionId);
+          if (snapshot === undefined) throw new Error('One-shot usage owner unavailable');
+          return { ...snapshot, started: true, highWater: 0 };
+        },
+        begin: (draft) => {
+          let receipt: SessionUsageReceipt | undefined;
+          write(() => {
+            receipt = usageStore.beginInvocation(
+              {
+                sessionId: owner.sessionId,
+                model: draft.model,
+                producerId,
+                // The producer scopes this ordinal; authored agent IDs are unbounded business identity.
+                dispatchId: String(++dispatch),
+                round: draft.round,
+                chainAttempt: draft.chainAttempt,
+              },
+              owner,
+            );
+          });
+          if (receipt === undefined) throw new Error('One-shot usage receipt unavailable');
+          receipts.set(receipt.invocation, receipt);
+          return Promise.resolve(receipt.invocation);
+        },
+        disposition: (draft) => {
+          const receipt = receipts.get(draft.invocation);
+          if (receipt === undefined) throw new Error('One-shot usage receipt unavailable');
+          write(() => {
+            usageStore.disposition(receipt, draft.disposition);
+            if (draft.receiptPending !== true) {
+              usageStore.retire(receipt);
+              receipts.delete(draft.invocation);
+            }
+          });
+        },
+        record: (draft) => {
+          const receipt =
+            draft.invocation === undefined ? undefined : receipts.get(draft.invocation);
+          if (receipt === undefined)
+            throw new Error('One-shot actual cost requires its live receipt');
+          write(() => {
+            const accepted = journalStore.store.recordSessionCost({
+              id: randomUUID(),
               sessionId: owner.sessionId,
               model: draft.model,
-              producerId,
-              // The producer scopes this ordinal; authored agent IDs are unbounded business identity.
-              dispatchId: String(++dispatch),
-              round: draft.round,
-              chainAttempt: draft.chainAttempt,
-            },
-            owner,
-          );
-        });
-        if (receipt === undefined) throw new Error('One-shot usage receipt unavailable');
-        receipts.set(receipt.invocation, receipt);
-        return Promise.resolve(receipt.invocation);
-      },
-      disposition: (draft) => {
-        const receipt = receipts.get(draft.invocation);
-        if (receipt === undefined) throw new Error('One-shot usage receipt unavailable');
-        write(() => {
-          usageStore.disposition(receipt, draft.disposition);
-          if (draft.receiptPending !== true) {
-            usageStore.retire(receipt);
-            receipts.delete(draft.invocation);
-          }
-        });
-      },
-      record: (draft) => {
-        const receipt = draft.invocation === undefined ? undefined : receipts.get(draft.invocation);
-        if (receipt === undefined)
-          throw new Error('One-shot actual cost requires its live receipt');
-        write(() => {
-          const accepted = journalStore.store.recordSessionCost({
-            id: randomUUID(),
-            sessionId: owner.sessionId,
-            model: draft.model,
-            inputTokens: draft.inputTokens,
-            outputTokens: draft.outputTokens,
-            costMicrocents: draft.costMicrocents,
-            priced: draft.priced,
-            ts: now(),
-            usageReceipt: receipt,
+              inputTokens: draft.inputTokens,
+              outputTokens: draft.outputTokens,
+              costMicrocents: draft.costMicrocents,
+              priced: draft.priced,
+              ts: now(),
+              usageReceipt: receipt,
+            });
+            if (!accepted) throw new Error('One-shot actual cost acknowledgement refused');
+            receipts.delete(receipt.invocation);
           });
-          if (!accepted) throw new Error('One-shot actual cost acknowledgement refused');
-          receipts.delete(receipt.invocation);
-        });
-      },
-    });
-    built.attachEffectTurnAllocator((id) => {
-      if (id !== owner.sessionId) throw new Error('One-shot effect owner mismatch');
-      return owner.effectTurnKey;
-    });
-    built.attachEffectJournal((correlation) =>
-      createEffectJournalPort(
-        createEffectJournalStore(journalStore.db, { uuid: randomUUID, now: Date.now }),
-        correlation,
-        { providerAttempt: 1, toolCallId: 'agent-run' },
-      ),
-    );
-    // Render the live stream + run the single turn + tear down — a classified turn failure maps to exit 1.
-    handedOff = true;
-    const turnErrorCode = await runOneShotTurn(built, message, deps);
-    return turnErrorCode === undefined ? EXIT_CODES.success : EXIT_CODES.workflowFailed;
-  } finally {
-    // Removed first: from here `runOneShotTurn`'s own teardown owns the children on every unwinding path.
-    unguardMcp();
-    try {
-      if (!handedOff) await built.closeMcp?.();
+        },
+      });
+      built.attachEffectTurnAllocator((id) => {
+        if (id !== owner.sessionId) throw new Error('One-shot effect owner mismatch');
+        return owner.effectTurnKey;
+      });
+      built.attachEffectJournal((correlation) =>
+        createEffectJournalPort(
+          createEffectJournalStore(journalStore.db, { uuid: randomUUID, now: Date.now }),
+          correlation,
+          { providerAttempt: 1, toolCallId: 'agent-run' },
+        ),
+      );
+      // Render the live stream + run the single turn + tear down — a classified turn failure maps to exit 1.
+      hostOwner.work.assertAdmitting();
+      const turnErrorCode = await hostOwner.work.enter(() =>
+        runOneShotTurn(built, message, deps, hostOwner.work),
+      );
+      return turnErrorCode === undefined ? EXIT_CODES.success : EXIT_CODES.workflowFailed;
+    } catch (cause) {
+      // Setup can fail before a turn root exists. Observe the original fault BEFORE awaiting host cleanup:
+      // a held MCP close must not delay starting the common fatal budget. Known refusals stay classified.
+      hostOwner.work.failure(cause);
+      throw cause;
     } finally {
-      try {
-        if (ownedEffectSessionId !== undefined)
-          sweepOneShotSessionEffects(deps.io, journalStore.db, ownedEffectSessionId);
-      } finally {
-        try {
-          await built.whenHostSafeToClose();
-        } finally {
-          try {
-            for (const receipt of receipts.values()) usageStore.retire(receipt);
-            receipts.clear();
-          } finally {
-            journalStore.close();
-          }
-        }
-      }
+      // Real root/producer/accounting/MCP cleanup precedes retention, receipt retirement and DB close.
+      await hostOwner.work.close();
+      if (
+        lifetime.invocation.registry.budget.remainingMs() !== 0 &&
+        ownedEffectSessionId !== undefined
+      )
+        sweepOneShotSessionEffects(deps.io, journalStore.db, ownedEffectSessionId, lifetime.work);
+      for (const receipt of receipts.values()) usageStore.retire(receipt);
+      receipts.clear();
     }
+  } catch (cause) {
+    // Recover only the exact preparation owner's cancellation identity. An unrelated fault racing
+    // an aborted signal keeps its own classification and starts the original fatal budget.
+    if (hostOwner.work.isStoppedFailure(cause)) lifetime.work.assertAdmitting();
+    if (!lifetime.work.isStoppedFailure(cause)) lifetime.work.failure(cause);
+    throw cause;
+  } finally {
+    await hostOwner.work.close();
   }
 }
 
@@ -367,6 +394,7 @@ export async function agentRunCommand(
 async function resolveOneShotInput(
   args: AgentRunCommandArgs,
   deps: AgentRunCommandDeps,
+  lifetime: SessionSurfaceLifetime,
 ): Promise<string> {
   // `--input k=v` is REJECTED for now: a session does not yet interpolate `{{ctx.*}}` into the agent prompt
   // (the engine passes `system_prompt` verbatim; wiring `resolveTemplate` into the session turn core is a
@@ -379,7 +407,12 @@ async function resolveOneShotInput(
     );
   }
   // The one-shot prompt is the piped stdin; an empty stdin is a clean invocation fault (nothing to run).
-  const message = (await readAllStdin(deps.io.stdin)).trim();
+  const message = (
+    await readAllStdin(deps.io.stdin, {
+      signal: lifetime.work.signal,
+      onFailure: lifetime.work.failure,
+    })
+  ).trim();
   if (message.length === 0) {
     throw new CliError(
       'invalid_invocation',
@@ -391,16 +424,18 @@ async function resolveOneShotInput(
 
 /**
  * Render the live stream (NDJSON under `--json`, else the plain token/tool printer), run the single turn, and
- * tear down — returning the classified turn-error code (or `undefined` on success). The whole post-build region
- * is inside the try so any fault still hits the finally (the session OWNS the MCP connections; teardown there is
- * best-effort and must never override the computed exit code) rather than orphaning the spawned children.
+ * return the classified turn-error code (or `undefined` on success). Cancellation and subscription release
+ * belong to this turn; the creation owner separately joins actual producer/accounting/MCP cleanup. An
+ * unexpected failure is reported before cancellation and never converted to a classified turn outcome.
  */
 async function runOneShotTurn(
   built: BuiltChatSession,
   message: string,
   deps: AgentRunCommandDeps,
+  owner: SessionWorkOwner,
 ): Promise<string | undefined> {
   let turnErrorCode: string | undefined;
+  let renderingStopped = false;
   const renderer: (event: SessionStreamHandleEvent) => void = deps.global.json
     ? (event) => deps.io.writeOut(`${stringifyJsonLine(event)}\n`)
     : // A ONE-SHOT: the session is cancelled in `finally` right after, so suppress the session-continuity recovery
@@ -410,9 +445,18 @@ async function runOneShotTurn(
   try {
     surfaceMcpSkipped(deps.io, built.mcpSkipped);
     unsubscribe = built.handle.subscribe((event) => {
-      renderer(event);
       if (event.type === 'session:turn_completed' && event.error !== undefined) {
         turnErrorCode = event.error.code;
+      }
+      if (renderingStopped || owner.signal.aborted) return;
+      try {
+        owner.assertAdmitting();
+        renderer(event);
+      } catch (cause) {
+        // The bus deliberately isolates passive subscribers. Observe here, before its warning-only
+        // handler can consume the fault; seal first because cancellation can synchronously emit again.
+        renderingStopped = true;
+        owner.failure(cause);
       }
     });
     // ADR-0057: `agent run` is a NON-interactive one-shot over the SAME full-capability chat-read-write host
@@ -430,57 +474,54 @@ async function runOneShotTurn(
       prompt: nonInteractiveApprovalPrompt('in a one-shot agent run'),
     });
     applyChatMode(modeEnv, 'ask');
+    owner.assertAdmitting();
     built.session.start();
+    owner.assertAdmitting();
     await built.session.sendMessage(message);
-  } catch (err) {
-    // An UNCLASSIFIED turn error re-raised by the turn core (e.g. an under-recorded `--fixture` cassette whose
-    // next `stream()` call is unscripted) rejects `sendMessage`. Map it to a clean exit 1 here rather than
-    // letting a raw rejection surface as an opaque boundary "internal error". The detail goes to stderr (never
-    // a stack as primary output); under --json the failing `session:turn_completed.error` is already on stdout.
-    turnErrorCode ??= 'internal';
-    if (!deps.global.json) {
-      deps.io.writeErr(`turn failed: ${err instanceof Error ? err.message : String(err)}\n`);
-    }
+    owner.assertAdmitting();
+  } catch (cause) {
+    owner.failure(cause);
+    throw cause;
   } finally {
-    built.session.cancel(); // the session's terminal (session:cancelled) — closes the one-shot cleanly
     try {
-      await built.whenHostSafeToClose();
+      built.session.cancel();
+    } catch (cause) {
+      owner.cleanupUncertain(cause);
     } finally {
       unsubscribe();
-      // Tear down the MCP connections (2.R) after the one-shot turn; present only when `mcp_servers` is declared.
-      // Best-effort: a teardown rejection must NOT override the computed one-shot exit code (warn, don't throw).
-      // **Per-server, through the manager's own reporter.** The `.catch` below is a backstop and used to be the
-      // only mechanism — which meant it never fired: `closeAll` swallows each connection's rejection unless a
-      // reporter is supplied, so a wedged transport produced silence. `sanitizeUntrustedInline` because the
-      // cause is the SDK's, and it can carry a spawn command or a path.
-      await built
-        .closeMcp?.((serverId, cause) => {
-          deps.io.writeErr(
-            `warning: MCP server '${sanitizeInline(serverId)}' teardown failed: ${sanitizeUntrustedInline(
-              cause instanceof Error ? cause.message : String(cause),
-            )}\n`,
-          );
-        })
-        .catch((e: unknown) => {
-          deps.io.writeErr(
-            `warning: MCP teardown failed: ${sanitizeUntrustedInline(e instanceof Error ? e.message : String(e))}\n`,
-          );
-        });
     }
   }
   return turnErrorCode;
 }
 
 /** Read the whole input stream to EOF as UTF-8 text (the one-shot prompt). Exported for a focused unit test. */
-export async function readAllStdin(stream: NodeJS.ReadableStream): Promise<string> {
+export async function readAllStdin(
+  stream: NodeJS.ReadableStream,
+  options?: { readonly signal: AbortSignal; readonly onFailure: (cause: unknown) => void },
+): Promise<string> {
   // Decode binary chunks through a StringDecoder so a multi-byte UTF-8 character split ACROSS a chunk boundary
   // is buffered (not mangled into replacement chars); `decoder.end()` flushes any trailing partial sequence. A
   // test stream yields strings (a Buffer is itself a Uint8Array subclass), handled by the String fallback.
   const decoder = new StringDecoder('utf8');
   let data = '';
-  for await (const chunk of stream) {
-    data += chunk instanceof Uint8Array ? decoder.write(Buffer.from(chunk)) : String(chunk);
+  const signal = options?.signal;
+  signal?.throwIfAborted();
+  const input = new CapturedNativeInput(stream, options, 'One-shot input stopped.');
+  try {
+    input.open();
+    for await (const chunk of stream) {
+      data += chunk instanceof Uint8Array ? decoder.write(Buffer.from(chunk)) : String(chunk);
+    }
+    signal?.throwIfAborted();
+    data += decoder.end();
+    return data;
+  } catch (cause) {
+    // Only this owned native destroy identity can recover the invocation's cancellation reason.
+    // An unrelated read fault racing an aborted signal keeps its original infrastructure diagnosis.
+    if (cause === input.cancelled) signal?.throwIfAborted();
+    options?.onFailure(cause);
+    throw cause;
+  } finally {
+    await input.close();
   }
-  data += decoder.end();
-  return data;
 }

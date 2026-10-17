@@ -45,6 +45,11 @@ export function RunApp(props: Readonly<{ store: RunStore }>): ReactElement {
   const activeLines =
     state.activeTokens === '' ? [] : state.activeTokens.split('\n').slice(-MAX_ACTIVE_TOKEN_LINES);
 
+  const reasoningLines =
+    state.activeReasoning === ''
+      ? []
+      : state.activeReasoning.split('\n').slice(-MAX_ACTIVE_TOKEN_LINES);
+
   return (
     <Box flexDirection="column">
       {/* Per-node status list */}
@@ -56,6 +61,18 @@ export function RunApp(props: Readonly<{ store: RunStore }>): ReactElement {
           );
         })}
       </Box>
+
+      {/* Live-only reasoning has the same bounded rows/control sanitization as answer text. */}
+      {activeNode !== undefined && reasoningLines.length > 0 ? (
+        <Box flexDirection="column" marginTop={1}>
+          <Text {...dimProps(color)}>thinking · {sanitizeInline(activeNode.nodeId)}</Text>
+          {reasoningLines.map((line, i) => (
+            <Text key={i} {...dimProps(color)} wrap="truncate-end">
+              {stripTerminalControls(line)}
+            </Text>
+          ))}
+        </Box>
+      ) : null}
 
       {/* The active node's live token stream (trailing lines) */}
       {activeNode !== undefined && activeLines.length > 0 ? (

@@ -90,11 +90,11 @@ flowchart TD
 | 0044 | [Media access & spend governance — `read_media` scope-set authz, the byte-delivery gate, the `save_to` write port, and the per-modality media cost (amends 0028 and 0029)](0044-media-access-governance-read-media-save-to-cost.md) | Accepted | 2026-06-18 |
 | 0045 | [Engine-owned async media-job loop (1.AG/A5) — the `generateMedia`/`pollMediaJob` poll/checkpoint/resume/cancel LRO, the `media_job:submitted` derived state, inline-vs-generative routing, and media-cost realization (amends 0031, 0036, 0040)](0045-async-media-job-loop-poll-checkpoint-resume-cancel.md) | Accepted | 2026-06-20 |
 | 0046 | [Inline media-out routes through `generate()`; the streaming media triad is host-deferred (amends 0031, 0038)](0046-inline-media-out-via-generate-streaming-triad-deferred.md) | Accepted | 2026-06-20 |
-| 0047 | [CLI framework — `commander` + `ink` + `@clack/prompts`, confined to `apps/cli`](0047-cli-framework-commander-ink-clack.md) | Accepted | 2026-06-22 |
+| 0047 | [CLI framework — `commander` + `ink` + `@clack/prompts`, confined to `apps/cli`](0047-cli-framework-commander-ink-clack.md) | Accepted (single-output constraint partially replaced by ADR-0111) | 2026-06-22 |
 | 0048 | [TOML parser for config files — `smol-toml`, confined to the `apps/cli` config loader](0048-toml-config-parser.md) | Accepted | 2026-06-22 |
-| 0049 | [CLI machine-output contract (`--json` NDJSON stream + stderr diagnostics)](0049-cli-machine-output-contract.md) | Accepted | 2026-06-22 |
+| 0049 | [CLI machine-output contract (`--json` NDJSON stream + stderr diagnostics)](0049-cli-machine-output-contract.md) | Accepted (§5 infrastructure/storage and §6 explicit JSON help partially replaced by ADR-0110) | 2026-06-22 |
 | 0050 | [CLI run-history `history.db` is unencrypted at rest, guarded by OS file permissions (refines 0005/0008 for the Node/CLI surface)](0050-cli-history-db-at-rest-posture.md) | Accepted | 2026-06-23 |
-| 0051 | [CLI distribution — an engine-inlined ESM bundle that externalizes every third-party dependency (finalizes 0047's bundle boundary)](0051-cli-distribution-thin-bundle-private-engine.md) | Accepted | 2026-06-24 |
+| 0051 | [CLI distribution — an engine-inlined ESM bundle that externalizes every third-party dependency (finalizes 0047's bundle boundary)](0051-cli-distribution-thin-bundle-private-engine.md) | Accepted (single-output constraint partially replaced by ADR-0111) | 2026-06-24 |
 | 0052 | [Inbound MCP client — the `@relavium/mcp` package boundary, host-injected connection lifecycle, host-side tool registration, a dependency-free schema→validator compiler, and the agent↔config reference linkage (implements 0034)](0052-inbound-mcp-client-package-lifecycle-registration.md) | Accepted | 2026-06-26 |
 | 0053 | [MCP network-transport (`sse`/`websocket`) egress security — SSRF enforcement on the one shared primitive, and the explicit per-server local-endpoint opt-in](0053-mcp-network-transport-egress-security.md) | Accepted | 2026-06-26 |
 | 0054 | [Bare `relavium` invocation opens an interactive Home (TTY only), preserving the meta-op contract](0054-cli-bare-invocation-interactive-home.md) | Accepted | 2026-06-29 |
@@ -153,6 +153,10 @@ flowchart TD
 | 0107 | [First-run secret inputs use bounded stdin](0107-first-run-secret-inputs-use-bounded-stdin.md) | Accepted | 2026-10-12 |
 | 0108 | [Provider headers stay gated until keychain custody](0108-provider-headers-stay-gated-until-keychain-custody.md) | Accepted | 2026-10-12 |
 | 0109 | [Native media close ownership is explicit iterator provenance](0109-native-media-close-ownership-is-explicit-iterator-provenance.md) | Accepted | 2026-10-13 |
+| 0110 | [CLI diagnostics and discovery have explicit compatibility](0110-cli-diagnostics-and-discovery-have-explicit-compatibility.md) | Accepted | 2026-10-15 |
+| 0111 | [CLI meta-operations use a lazy packaged runtime](0111-cli-meta-operations-use-a-lazy-packaged-runtime.md) | Accepted | 2026-10-15 |
+| 0112 | [Chat network grants and onboarding state are operator-owned](0112-chat-network-grants-and-onboarding-state-are-operator-owned.md) | Accepted | 2026-10-15 |
+| 0113 | [Secret-derived context keeps provenance at public sinks](0113-secret-derived-context-keeps-provenance-at-public-sinks.md) | Accepted | 2026-10-15 |
 
 ## Creating a new ADR
 

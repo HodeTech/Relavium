@@ -1,14 +1,133 @@
 import { describe, expect, it } from 'vitest';
 
 import { WORKFLOW_NODE_TYPES } from './constants.js';
-import { NodeSchema } from './node.js';
+import {
+  ConditionNodeSchema,
+  HumanGateNodeSchema,
+  NodeSchema,
+  ParallelNodeSchema,
+} from './node.js';
+
+describe.each([
+  ['parallel leaf', ParallelNodeSchema],
+  ['node union', NodeSchema],
+] as const)('%s membership admission', (_label, schema) => {
+  it('refuses a repeated branch without echoing the branch identity', () => {
+    const member = 'private-branch-sentinel';
+    const result = schema.safeParse({
+      id: 'fan',
+      type: 'parallel',
+      parallel_of: [member, 'other', member],
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues).toHaveLength(1);
+      expect(result.error.issues[0]?.path).toEqual(['parallel_of']);
+      expect(result.error.issues[0]?.message).toContain('duplicate');
+      expect(result.error.message).not.toContain(member);
+    }
+  });
+
+  it('retains declared order for distinct branches', () => {
+    const node = { id: 'fan', type: 'parallel', parallel_of: ['z-last', 'a-first'] };
+    expect(schema.parse(node)).toEqual(node);
+  });
+});
+
+describe.each([
+  ['condition leaf', ConditionNodeSchema],
+  ['node union', NodeSchema],
+] as const)('%s branch admission', (_label, schema) => {
+  const condition = { id: 'choose', type: 'condition', expression: 'inputs.choice' };
+
+  it.each([true, false, 0, 7, 'private-when-sentinel'])(
+    'refuses duplicate typed when value (%s)',
+    (when) => {
+      const result = schema.safeParse({
+        ...condition,
+        branches: [
+          { when, target_node: 'first' },
+          { when, target_node: 'second' },
+        ],
+      });
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.issues).toHaveLength(1);
+        expect(result.error.issues[0]?.path).toEqual(['branches']);
+        expect(result.error.issues[0]?.message).toContain('duplicate');
+        expect(result.error.message).not.toContain('private-when-sentinel');
+      }
+    },
+  );
+
+  it('refuses -0 and 0 as the same numeric branch match', () => {
+    const result = schema.safeParse({
+      ...condition,
+      branches: [
+        { when: -0, target_node: 'first' },
+        { when: 0, target_node: 'second' },
+      ],
+    });
+    expect(result.success).toBe(false);
+    if (!result.success)
+      expect(result.error.issues.map((issue) => issue.path)).toEqual([['branches']]);
+  });
+
+  it('preserves boolean/string and number/string distinctions and permits a shared target', () => {
+    const node = {
+      ...condition,
+      branches: [
+        { when: true, target_node: 'same' },
+        { when: 'true', target_node: 'same' },
+        { when: 0, target_node: 'same' },
+        { when: '0', target_node: 'same' },
+      ],
+    };
+    expect(schema.parse(node)).toEqual(node);
+  });
+});
+
+describe.each([
+  ['human gate leaf', HumanGateNodeSchema],
+  ['node union', NodeSchema],
+] as const)('%s timeout admission', (_label, schema) => {
+  const gate = { id: 'approval', type: 'human_gate', gate_type: 'approval' };
+
+  it.each(['approve', 'reject'])(
+    'refuses orphan timeout_action=%s at the action field',
+    (timeout_action) => {
+      const result = schema.safeParse({ ...gate, timeout_action });
+      expect(result.success).toBe(false);
+      if (!result.success)
+        expect(result.error.issues).toEqual([
+          expect.objectContaining({
+            path: ['timeout_action'],
+            message: 'timeout_action requires timeout_ms',
+          }),
+        ]);
+    },
+  );
+
+  it('permits an untimed gate and timeout without an explicit action', () => {
+    expect(schema.parse(gate)).toEqual(gate);
+    expect(schema.parse({ ...gate, timeout_ms: 1 })).toEqual({ ...gate, timeout_ms: 1 });
+  });
+
+  it.each(['approve', 'reject'])(
+    'permits timeout_action=%s with a valid timeout',
+    (timeout_action) => {
+      const node = { ...gate, timeout_action, timeout_ms: 1 };
+      expect(schema.parse(node)).toEqual(node);
+    },
+  );
+});
 
 describe('NodeSchema', () => {
   it('the union has exactly the eight authored node types', () => {
     // Each type's acceptance is proven by "accepts a minimal valid node of each type"
     // below (so a rename fails there); the count catches an extra/missing variant without
     // reading Zod internals.
-    expect(NodeSchema.options).toHaveLength(WORKFLOW_NODE_TYPES.length);
+    expect(NodeSchema.innerType().options).toHaveLength(WORKFLOW_NODE_TYPES.length);
   });
 
   it('accepts a minimal valid node of each authored type', () => {
@@ -247,8 +366,8 @@ describe('NodeSchema', () => {
   });
 
   it('accepts a custom merge with no merge_fn at the node level (the cross-field rule lives at WorkflowSchema)', () => {
-    // A discriminated-union member can't carry a cross-field refinement, so `merge_strategy:custom`
-    // without `merge_fn` is intentionally accepted here and only rejected at WorkflowSchema level.
+    // This existing exception is deliberate: `merge_strategy:custom` without `merge_fn`
+    // remains accepted here and is rejected at the complete WorkflowSchema boundary.
     expect(NodeSchema.safeParse({ id: 'm', type: 'merge', merge_strategy: 'custom' }).success).toBe(
       true,
     );
@@ -320,7 +439,7 @@ describe('NodeSchema', () => {
   });
 
   it('rejects the reserved timeout_action escalate (v1.0 allows only reject / approve)', () => {
-    const gate = { id: 'g', type: 'human_gate', gate_type: 'approval' };
+    const gate = { id: 'g', type: 'human_gate', gate_type: 'approval', timeout_ms: 1 };
     expect(NodeSchema.safeParse({ ...gate, timeout_action: 'escalate' }).success).toBe(false);
     expect(NodeSchema.safeParse({ ...gate, timeout_action: 'reject' }).success).toBe(true);
     expect(NodeSchema.safeParse({ ...gate, timeout_action: 'approve' }).success).toBe(true);

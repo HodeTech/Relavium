@@ -12,6 +12,7 @@ import { CliError, isCliError } from '../process/errors.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
+import type { InvocationWorkOwner } from '../process/invocation-work-owner.js';
 import { writeRecordLines } from '../render/records.js';
 import { stripTerminalControls } from '../render/tui/chat-projection.js';
 import {
@@ -48,6 +49,9 @@ export interface ProviderCommandArgs {
 }
 
 export interface ProviderCommandDeps {
+  readonly workOwner?: Pick<InvocationWorkOwner, 'signal' | 'work' | 'assertAdmitting'>;
+  /** Recheck original invocation admission after asynchronous secret reading, before credential/DB writes. */
+  readonly assertAdmitting?: () => void;
   readonly io: CliIo;
   readonly store: ProviderStore;
   readonly keychain: KeychainStore;
@@ -116,7 +120,14 @@ async function verifyProvider(
     }
     throw err;
   }
-  const result = await validateProviderKey(provider, key, KNOWN_PROVIDERS[id].testModel);
+  const result = await validateProviderKey(
+    provider,
+    key,
+    KNOWN_PROVIDERS[id].testModel,
+    undefined,
+    deps.workOwner,
+  );
+  deps.assertAdmitting?.();
   // The failure detail is a REMOTE endpoint's error body — clean + bound it at the source so both the human row and
   // the `--json` `verifyDetail` carry the safe value (the key is already redacted by `validateProviderKey`).
   return { verified: result.ok, detail: result.ok ? null : cleanDetail(result.detail) };
@@ -276,6 +287,7 @@ async function providerSetKey(args: ProviderCommandArgs, deps: ProviderCommandDe
   // a single pasted API key, by contrast, routinely arrives with a stray newline or space from a dashboard
   // copy, and the onboarding wizard already trims its own value to persist a byte-identical credential.
   const key = (await deps.readSecret()).trim(); // from stdin — never an argv flag
+  deps.assertAdmitting?.();
   const account = keychainAccount(id);
   deps.keychain.set(account, key); // KeychainUnavailableError surfaces (no silent plaintext fallback)
   // Register the row only if it's new — never overwrite a base URL the user set via `provider add --base-url`.
@@ -312,7 +324,8 @@ async function providerTest(args: ProviderCommandArgs, deps: ProviderCommandDeps
   const model = args.model ?? KNOWN_PROVIDERS[id].testModel;
   // The live ping + the defensive key-redaction live in `validateProviderKey` (the seam), shared with the
   // `/doctor --deep` probe so the secret-scrubbing has one tested home.
-  const result = await validateProviderKey(provider, key, model);
+  const result = await validateProviderKey(provider, key, model, undefined, deps.workOwner);
+  deps.assertAdmitting?.();
   // The detail is a REMOTE endpoint's message — clean + bound it before it reaches the TTY (a rogue endpoint must
   // not inject a cursor jump / bidi spoof via the failure line or the success ping). The key is already redacted.
   if (!result.ok) {

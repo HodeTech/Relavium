@@ -2,7 +2,7 @@ import { lstatSync, realpathSync, statSync, type Stats } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 import type { FsScopeTier } from '@relavium/core';
-import { FS_ROOT_LIMITS } from '@relavium/shared';
+import { FS_ROOT_LIMITS } from '@relavium/shared/fs-root-limits';
 
 import { HostDeniedError } from './errors.js';
 

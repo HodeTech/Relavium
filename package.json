@@ -19,7 +19,7 @@
     "coverage": "vitest run --coverage",
     "coverage:enforced": "node tools/coverage-gate/run.mjs",
     "ci:workspaces": "turbo run lint typecheck && turbo run test --concurrency=1",
-    "ci": "pnpm lint:test-isolation && pnpm ci:workspaces && pnpm db:sync-check && pnpm typecheck:tools && pnpm lint:tools && turbo run build format:check && pnpm lint:fence-check && pnpm lint:engine-deps && pnpm lint:bundle-closure && pnpm smoke:cli && pnpm smoke:media-packaging && pnpm smoke:overflow-capture && pnpm smoke:budget-replay && pnpm test:acceptance-tools && pnpm check:wire-mutations && pnpm check:usage-mutations && pnpm check:fs-mutations && pnpm check:secrets-mutations",
+    "ci": "pnpm lint:test-isolation && pnpm ci:workspaces && pnpm db:sync-check && pnpm typecheck:tools && pnpm lint:tools && turbo run build format:check && pnpm lint:fence-check && pnpm lint:engine-deps && pnpm lint:bundle-closure && pnpm smoke:cli-package && pnpm smoke:cli-bootstrap && pnpm smoke:cli && pnpm smoke:media-packaging && pnpm smoke:overflow-capture && pnpm smoke:budget-replay && pnpm test:acceptance-tools && pnpm check:wire-mutations && pnpm check:usage-mutations && pnpm check:fs-mutations && pnpm check:secrets-mutations",
     "lint:test-isolation": "node tools/test-isolation/check.mjs && node tools/test-isolation/check-ownership.mjs",
     "lint:fence-check": "node tools/lint-fixtures/assert-fence.mjs",
     "lint:engine-deps": "node tools/engine-deps/check.mjs",
@@ -36,9 +36,13 @@
     "smoke:budget-replay": "node tools/budget-replay-compat/check.mjs",
     "check:wire-mutations": "node tools/wire-conformance/check.mjs",
     "check:usage-mutations": "node tools/usage-coverage-controls/check.mjs",
-    "test:acceptance-tools": "node --test tools/ci/windows-headless-smoke.test.mjs tools/ci/workspace-scheduling.test.mjs tools/ci/require-native-db-diagnostics.test.mjs tools/usage-coverage-controls/outcome.test.mjs tools/usage-coverage-controls/workload.test.mjs tools/ci/require-w8-acceptance.test.mjs tools/acceptance-evidence/export.test.mjs tools/wire-conformance/provenance.test.mjs tools/causal-controls/outcome.test.mjs tools/causal-controls/process.test.mjs tools/causal-controls/provenance.test.mjs tools/causal-controls/retention.test.mjs tools/causal-controls/run.test.mjs tools/causal-controls/timeout-policy.test.mjs",
+    "test:acceptance-tools": "node --test tools/ci/windows-headless-smoke.test.mjs tools/ci/workspace-scheduling.test.mjs tools/ci/require-native-db-diagnostics.test.mjs tools/usage-coverage-controls/outcome.test.mjs tools/usage-coverage-controls/workload.test.mjs tools/ci/require-w8-acceptance.test.mjs tools/acceptance-evidence/export.test.mjs tools/wire-conformance/provenance.test.mjs tools/causal-controls/outcome.test.mjs tools/causal-controls/process.test.mjs tools/causal-controls/provenance.test.mjs tools/causal-controls/retention.test.mjs tools/causal-controls/run.test.mjs tools/causal-controls/timeout-policy.test.mjs tools/bundle-closure/closure.test.mjs tools/cli-bootstrap/witness.test.mjs tools/ci/require-packed-cli.test.mjs tools/cli-package/archive.test.mjs tools/cli-package/binding.test.mjs tools/cli-package/process.test.mjs tools/cli-package/files.test.mjs tools/cli-package/smoke/process.test.mjs tools/cli-package/smoke/failure-diagnostic.test.mjs tools/cli-package/smoke/native-process.test.mjs tools/cli-package/smoke/runtime-stderr.test.mjs tools/cli-package/smoke/native-spawn-witness.test.mjs tools/cli-package/pipeline.test.mjs tools/cli-package/consumer-lifetime.test.mjs",
     "check:fs-mutations": "node tools/fs-policy-controls/check.mjs",
-    "check:secrets-mutations": "node tools/secrets-controls/check.mjs"
+    "check:secrets-mutations": "node tools/secrets-controls/check.mjs",
+    "smoke:cli-bootstrap": "node tools/cli-bootstrap/check.mjs",
+    "package:cli:pack": "node tools/cli-package/pack.mjs",
+    "package:cli:consume": "node tools/cli-package/consume.mjs",
+    "smoke:cli-package": "node tools/cli-package/check.mjs"
   },
   "devDependencies": {
     "@eslint/js": "catalog:",

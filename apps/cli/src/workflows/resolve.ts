@@ -4,15 +4,11 @@ import { isAbsolute, join, resolve, sep } from 'node:path';
 import { MAX_SOURCE_CHARS } from '@relavium/core';
 
 import { CliError } from '../process/errors.js';
+import { sourceLabel } from '../process/source-label.js';
 
-/**
- * Pre-read byte ceiling for a YAML source file (workflow or agent) — the core parser's authoritative char
- * cap ({@link MAX_SOURCE_CHARS}), reused (not re-declared) so this guard never desyncs from it. UTF-8
- * bytes ≥ chars, so rejecting a file whose `stat` size exceeds the char cap is conservative and lets
- * us bail BEFORE slurping it into memory; the parser then re-applies the exact char cap (a multibyte
- * file slightly under this byte ceiling may still trip there — the authoritative check).
- */
-const MAX_YAML_SOURCE_BYTES = MAX_SOURCE_CHARS;
+/** UTF-8 uses at most four bytes per source character. Match the sibling catalog precheck;
+ *  the pure parser remains authoritative for the character ceiling after decoding. */
+const MAX_YAML_SOURCE_BYTES = MAX_SOURCE_CHARS * 4;
 
 export interface WorkflowSource {
   /** The absolute path the YAML was read from (also the parse-error label, made cwd-relative). */
@@ -59,15 +55,18 @@ export function resolveYamlSource(
 ): WorkflowSource {
   const candidates = candidatePaths(arg, opts);
   for (const candidate of candidates) {
-    const yaml = tryRead(candidate, opts.kind);
+    const yaml = tryRead(candidate, opts.kind, opts.cwd);
     if (yaml !== undefined) {
       return { path: candidate, yaml };
     }
   }
-  const where = candidates.length > 0 ? candidates.join(', ') : '(no project .relavium/ found)';
+  const where =
+    candidates.length > 0
+      ? candidates.map((path) => sourceLabel(opts.cwd, path)).join(', ')
+      : '(no project .relavium/ found)';
   throw new CliError(
     'invalid_invocation',
-    `${opts.kind} '${arg}' not found — looked for: ${where}.`,
+    `${opts.kind} '${sourceLabel(opts.cwd, resolve(opts.cwd, arg))}' not found — looked for: ${where}.`,
   );
 }
 
@@ -109,7 +108,8 @@ function candidatePaths(
  * found". The size cap is enforced from `stat` before the file is read into memory. `kind` names the
  * artifact in the diagnostic ('workflow' / 'agent').
  */
-function tryRead(path: string, kind: string): string | undefined {
+function tryRead(path: string, kind: string, cwd: string): string | undefined {
+  const label = sourceLabel(cwd, path);
   let stats: Stats;
   try {
     stats = statSync(path);
@@ -117,23 +117,23 @@ function tryRead(path: string, kind: string): string | undefined {
     if (errnoCode(err) === 'ENOENT') {
       return undefined; // this candidate does not exist — try the next
     }
-    throw new CliError('invalid_invocation', `${kind} file '${path}' could not be read.`, {
+    throw new CliError('invalid_invocation', `${kind} file '${label}' could not be read.`, {
       cause: err,
     });
   }
   if (!stats.isFile()) {
-    throw new CliError('invalid_invocation', `${kind} path '${path}' is not a regular file.`);
+    throw new CliError('invalid_invocation', `${kind} path '${label}' is not a regular file.`);
   }
   if (stats.size > MAX_YAML_SOURCE_BYTES) {
     throw new CliError(
       'invalid_invocation',
-      `${kind} file '${path}' exceeds the ${MAX_YAML_SOURCE_BYTES}-byte size limit.`,
+      `${kind} file '${label}' exceeds the ${MAX_YAML_SOURCE_BYTES}-byte size limit.`,
     );
   }
   try {
     return readFileSync(path, 'utf8');
   } catch (err) {
-    throw new CliError('invalid_invocation', `${kind} file '${path}' could not be read.`, {
+    throw new CliError('invalid_invocation', `${kind} file '${label}' could not be read.`, {
       cause: err,
     });
   }

@@ -1,9 +1,11 @@
+import { RelaviumError } from './relavium-error.js';
+
 /**
  * One platform-free corruption error for durable and in-memory run-history readers.
  * The database package re-exports this public error for existing consumers; core must not import db.
  * Discovery and strict replay refuse known damaged rows rather than infer partial authority.
  */
-export class CorruptRunEventError extends Error {
+export class CorruptRunEventError extends RelaviumError {
   override readonly name = 'CorruptRunEventError';
   readonly code = 'corrupt_run_event' as const;
 

@@ -1,6 +1,10 @@
 import type { AbortSignalLike } from '@relavium/shared';
 import { describe, expect, it } from 'vitest';
 
+import {
+  createWorkflowContextProjection,
+  ownSecretInputNames,
+} from '../../interpolation/provenance.js';
 import type { NodeExecContext, NodeOutcome } from '../node-executor.js';
 import type { HumanGatePlanConfig, PlanVertex } from '../../run-plan.js';
 import { createHumanGateNodeExecutor } from './human-gate.js';
@@ -53,8 +57,12 @@ function ctxFor(
     vertex,
     runOutputs: opts.runOutputs ?? new Map(),
     inputs: opts.inputs ?? {},
-    ctx: opts.ctx ?? {},
-    secretInputNames: new Set(),
+    ctx: createWorkflowContextProjection({
+      values: opts.ctx ?? {},
+      deniedKeys: [],
+      orderedKeys: Object.keys(opts.ctx ?? {}),
+    }),
+    secretInputNames: ownSecretInputNames([]).secretInputNames,
     toolPolicy: {},
     emit: () => undefined,
     signal: opts.signal ?? LIVE,

@@ -125,6 +125,70 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     vi.restoreAllMocks();
   });
 
+  it('reports an unexpected snapshot failure after chat teardown instead of returning a healthy Home', async () => {
+    let stopped = false;
+    const made = makeSession({ stop: () => stopped });
+    const failure = new Error('PRIVATE_HOME_SNAPSHOT_FAILURE');
+    const onError = vi.fn();
+    const onExit = vi.fn();
+    const read = vi.fn(() => EMPTY);
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat: () => Promise.resolve(made.session),
+      homeStore: { read },
+      onExit,
+      onError,
+    });
+    type(c, 'hello');
+    c.handleKey('', ENTER);
+    await flush();
+    expect(c.getSnapshot().mode).toBe('chat');
+    read.mockImplementation(() => {
+      throw failure;
+    });
+    stopped = true;
+    type(c, '/exit');
+    c.handleKey('', ENTER);
+    await flush();
+    expect(made.teardown).toHaveBeenCalledOnce();
+    expect(onError, 'HOME_POST_CHAT_SNAPSHOT_FAILURE_IS_OBSERVED').toHaveBeenCalledExactlyOnceWith(
+      failure,
+    );
+    expect(onExit).not.toHaveBeenCalled();
+  });
+
+  it('does not refresh the Home snapshot after terminating during a held chat teardown', async () => {
+    let stopped = false;
+    let release = (): void => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const made = makeSession({ stop: () => stopped });
+    made.teardown.mockReturnValue(held);
+    const onError = vi.fn();
+    const read = vi.fn(() => EMPTY);
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat: () => Promise.resolve(made.session),
+      homeStore: { read },
+      onExit: vi.fn(),
+      onError,
+    });
+    type(c, 'hello');
+    c.handleKey('', ENTER);
+    await flush();
+    stopped = true;
+    type(c, '/exit');
+    c.handleKey('', ENTER);
+    await flush();
+    const terminating = c.teardownActive();
+    release();
+    await terminating;
+    await flush();
+    expect(read).toHaveBeenCalledOnce();
+    expect(onError).not.toHaveBeenCalled();
+  });
+
   it('types into the buffer and reflects it in the snapshot', () => {
     const c = createHomeController({
       doctorProbes: STUB_DOCTOR_PROBES,

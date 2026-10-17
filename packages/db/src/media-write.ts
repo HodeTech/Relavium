@@ -3,6 +3,7 @@ import { lstat, mkdir, realpath, rename, rm, writeFile } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
 
 import {
+  RelaviumError,
   deepestExistingReal,
   type AbortSignalLike,
   type MediaWritePort,
@@ -39,7 +40,7 @@ export function createFilesystemMediaWrite(scopeRoot: string): MediaWritePort {
 }
 
 /** A media-write failure naming a reason only (never a path / the bytes) — mirrors `MediaEgressError`. */
-export class MediaWriteError extends Error {
+export class MediaWriteError extends RelaviumError {
   constructor(message: string) {
     super(message);
     this.name = 'MediaWriteError';

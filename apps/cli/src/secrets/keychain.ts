@@ -10,6 +10,8 @@
  * header at call time; the `llm_providers` row stores only the `account` ref ([ADR-0006](../../../../docs/decisions/0006-os-keychain-for-api-keys.md)).
  */
 
+import { RelaviumError } from '@relavium/shared';
+
 const DEFAULT_KEY_ID = 'default';
 
 /** The keychain `account` for a provider key — `{providerId}:{keyId}` (keychain-and-secrets.md §Entry naming). */
@@ -26,7 +28,7 @@ export function keychainAccount(providerId: string, keyId: string = DEFAULT_KEY_
  * plaintext store, so this does not violate the no-silent-plaintext-fallback rule —
  * keychain-and-secrets.md §Operational notes.)
  */
-export class KeychainUnavailableError extends Error {
+export class KeychainUnavailableError extends RelaviumError {
   constructor(message: string, options?: { cause?: unknown }) {
     super(message, options);
     this.name = 'KeychainUnavailableError';

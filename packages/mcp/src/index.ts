@@ -67,6 +67,8 @@ export {
   setMcpClientVersion,
   type ConnectBound,
   type StdioServerSpec,
+  type StdioNativeLifetime,
+  type StdioNativeObserver,
 } from './sdk-stdio.js';
 export { openHttpConnection, type HttpServerSpec } from './sdk-http.js';
 export { openSseConnection, type SseServerSpec } from './sdk-sse.js';
@@ -76,4 +78,5 @@ export {
   type McpClient,
   type McpServerConfig,
   type ManagerSkippedTool,
+  type McpStartupLifecycle,
 } from './manager.js';

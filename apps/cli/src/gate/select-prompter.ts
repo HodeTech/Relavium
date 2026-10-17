@@ -1,7 +1,7 @@
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import { isInteractiveTerminal } from '../process/output-mode.js';
-import { createClackGatePrompter } from './clack-prompter.js';
+import { createBoundClackGatePrompter } from './clack-prompter.js';
 import type { GatePrompter } from './prompter.js';
 
 /**
@@ -23,6 +23,6 @@ export function selectGatePrompter(io: CliIo, global: GlobalOptions): GatePrompt
     json: global.json,
     env: io.env,
   })
-    ? createClackGatePrompter()
+    ? createBoundClackGatePrompter(io)
     : undefined;
 }

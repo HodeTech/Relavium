@@ -88,25 +88,30 @@ function redactInlineMediaForText(value: unknown, seen: WeakSet<object>): unknow
     return '[cyclic]';
   }
   seen.add(value);
-  if (Array.isArray(value)) {
-    return value.map((item) => redactInlineMediaForText(item, seen));
+  try {
+    if (Array.isArray(value)) {
+      return value.map((item) => redactInlineMediaForText(item, seen));
+    }
+    if (isBinaryBuffer(value)) {
+      return '[binary buffer omitted]'; // a raw Uint8Array/ArrayBuffer — never JSON the decimal byte values
+    }
+    if (!isPlainObject(value)) {
+      return value; // Date/RegExp/Map/Set/class instance — leave for JSON.stringify's native handling
+    }
+    if (isCanonicalBase64Source(value)) {
+      const data = value['data'];
+      // Report the base64 CHARACTER length (≈1.33× the byte count), not "bytes" — observability only.
+      return { kind: 'base64', base64Length: typeof data === 'string' ? data.length : 0 };
+    }
+    const out: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value)) {
+      out[key] = redactInlineMediaForText(item, seen);
+    }
+    return out;
+  } finally {
+    // Only an ancestor is cyclic; a completed sibling can legitimately share this object.
+    seen.delete(value);
   }
-  if (isBinaryBuffer(value)) {
-    return '[binary buffer omitted]'; // a raw Uint8Array/ArrayBuffer — never JSON the decimal byte values
-  }
-  if (!isPlainObject(value)) {
-    return value; // Date/RegExp/Map/Set/class instance — leave for JSON.stringify's native handling
-  }
-  if (isCanonicalBase64Source(value)) {
-    const data = value['data'];
-    // Report the base64 CHARACTER length (≈1.33× the byte count), not "bytes" — observability only.
-    return { kind: 'base64', base64Length: typeof data === 'string' ? data.length : 0 };
-  }
-  const out: Record<string, unknown> = {};
-  for (const [key, item] of Object.entries(value)) {
-    out[key] = redactInlineMediaForText(item, seen);
-  }
-  return out;
 }
 
 /**
@@ -346,19 +351,23 @@ function redactSecretShapedWalk(value: unknown, seen: WeakSet<object>): unknown 
   if (typeof value !== 'object' || value === null) return value;
   if (seen.has(value)) return '[cyclic]'; // break the cycle (mirrors redactInlineMedia) — never re-emit the ref
   seen.add(value);
-  if (Array.isArray(value)) return redactArgVector(value, seen);
-  if (!isPlainObject(value)) return value; // Date/RegExp/Map/… — leave for native handling
-  const out: Record<string, unknown> = {};
-  // Scrub the KEY too (a secret-shaped key is redacted; a normal name is unchanged — see the doc above). A
-  // display-only field, so a rare collision of two keys both redacting to `[redacted]` losing one is acceptable.
-  for (const [key, item] of Object.entries(value)) {
-    // **The key decides, whatever the value's shape.** Checked BEFORE the walk, because the walk only
-    // inspects strings by shape — so a numeric PIN, a nested credential object, or a high-entropy opaque
-    // token with no recognisable prefix all survive it. `null`/`undefined` are left alone so an absent
-    // field does not become a phantom `[redacted]` in a diagnostic.
-    out[redactSecretShapedText(key)] = redactUnderKey(key, item, seen);
+  try {
+    if (Array.isArray(value)) return redactArgVector(value, seen);
+    if (!isPlainObject(value)) return value; // Date/RegExp/Map/… — leave for native handling
+    const out: Record<string, unknown> = {};
+    // Scrub the KEY too (a secret-shaped key is redacted; a normal name is unchanged — see the doc above). A
+    // display-only field, so a rare collision of two keys both redacting to `[redacted]` losing one is acceptable.
+    for (const [key, item] of Object.entries(value)) {
+      // **The key decides, whatever the value's shape.** Checked BEFORE the walk, because the walk only
+      // inspects strings by shape — so a numeric PIN, a nested credential object, or a high-entropy opaque
+      // token with no recognisable prefix all survive it. `null`/`undefined` are left alone so an absent
+      // field does not become a phantom `[redacted]` in a diagnostic.
+      out[redactSecretShapedText(key)] = redactUnderKey(key, item, seen);
+    }
+    return out;
+  } finally {
+    seen.delete(value);
   }
-  return out;
 }
 
 /** Render any result to the text the model would see (a string is itself; else compact JSON). Inline

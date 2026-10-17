@@ -2,6 +2,10 @@ import { isCancel, select, text } from '@clack/prompts';
 import { LLM_PROVIDERS } from '@relavium/shared';
 
 import type { AuthoredKind, CreatePrompter, CreateSpec } from './authoring.js';
+import type { CliIo } from '../process/io.js';
+import type { InvocationWorkOwner } from '../process/invocation-work-owner.js';
+import { CliError } from '../process/cli-error.js';
+import { runSessionPrompt } from '../chat/session-prompt.js';
 
 /**
  * The `@clack/prompts`-backed {@link CreatePrompter} (2.J, [ADR-0047](../../../../docs/decisions/0047-cli-framework-commander-ink-clack.md))
@@ -46,6 +50,31 @@ const defaultDeps: ClackCreateDeps = {
     }),
   isCancel,
 };
+
+/** Production prompts use the original captured terminal and retain actual Clack input release. */
+export function createOwnedClackPrompter(io: CliIo, owner: InvocationWorkOwner): CreatePrompter {
+  const input = io.nativeStdin;
+  const output = io.nativeStdout;
+  if (input === undefined || output === undefined) throw new CliError('cli_internal', '');
+  const prompt = async (factory: (signal: AbortSignal) => Promise<string | symbol>) => {
+    const answer = await runSessionPrompt(
+      owner.invocation,
+      io,
+      owner.assertAdmitting,
+      owner.failure,
+      factory,
+      owner.signal,
+    );
+    owner.assertAdmitting();
+    return answer;
+  };
+  return createClackPrompter({
+    select: (opts) =>
+      prompt((signal) => select({ ...opts, options: [...opts.options], input, output, signal })),
+    text: (opts) => prompt((signal) => text({ ...opts, input, output, signal })),
+    isCancel,
+  });
+}
 
 /** A clack `validate` callback that rejects an empty / whitespace-only / unset submit. Exported for unit test. */
 export const required =

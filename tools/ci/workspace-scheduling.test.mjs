@@ -77,7 +77,7 @@ test('required and local CI share all workspace tasks and uncached per-invocatio
   assert.equal(workspace.run, 'pnpm ci:workspaces');
   assert.equal(workspace.if, undefined);
   assert.equal(workspace['continue-on-error'], undefined);
-  assert.equal(ci['timeout-minutes'], 15);
+  assert.equal(ci['timeout-minutes'], 25);
   const variable = 'RELAVIUM_DB_NATIVE_DIAGNOSTICS';
   assert.deepEqual(turbo.config.tasks['@relavium/db#test'].env, [variable]);
   assert.deepEqual(turbo.config.tasks['@relavium/db#test'].dependsOn, [

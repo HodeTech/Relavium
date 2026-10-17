@@ -22,7 +22,8 @@ import { runProviderCommand, type ProviderCommandDeps } from './provider.js';
 const BASE_URL = 'https://wave7-command.example/v1';
 const POLICY_MESSAGE = 'Provider headers are disabled until keychain custody is implemented.';
 const CORRUPT_MESSAGE = 'Stored provider headers are invalid.';
-const INTERNAL_MESSAGE = 'An unexpected internal error occurred.';
+const INTERNAL_MESSAGE =
+  'An unexpected CLI failure occurred. Use --verbose for safe diagnostics. Inspect existing work before repeating paid or effectful operations.';
 const MALFORMED_HEADERS = '{"x-wave7-malformed-opaque":"cedar-river-legacy",';
 const NONSTRING_HEADERS = '{"x-wave7-nonstring-opaque":37}';
 const ERROR_SENTINELS = [
@@ -309,9 +310,9 @@ describe('ADR-0108 provider-header command projections', () => {
             });
             assertNoLegacy(JSON.stringify(ownProperties));
             expect(projected).toEqual({
-              code: policy ? 'invalid_invocation' : 'internal',
+              code: policy ? 'invalid_invocation' : 'cli_internal',
               message: policy ? POLICY_MESSAGE : INTERNAL_MESSAGE,
-              exitCode: policy ? 2 : 1,
+              exitCode: policy ? 2 : 9,
             });
             expect(fetch).not.toHaveBeenCalled();
             expect(globalThis.fetch).not.toHaveBeenCalled();

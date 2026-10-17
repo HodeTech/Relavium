@@ -19,10 +19,13 @@ import type {
 import type { GatePrompter } from '../gate/prompter.js';
 import { budgetIdentifier, budgetPromptContext, type BudgetPromptContext } from '../gate/budget.js';
 import { sanitizeUntrustedInline, stringifyJsonLine } from '../render/sanitize.js';
-import { CliError } from '../process/errors.js';
+import { CliError, toUserFacing } from '../process/errors.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
+import { detectOutputMode, isCiEnv } from '../process/output-mode.js';
 import type { CliIo } from '../process/io.js';
 import type { RunRenderer } from '../render/renderer.js';
+import type { RendererCreationOwner } from './workflow-terminal.js';
+import { WorkflowLifetime } from './workflow-lifetime.js';
 import { wireRunJobControl } from '../render/run-job-control.js';
 
 /**
@@ -54,14 +57,14 @@ function rethrowDriveFailure(original: unknown): never {
 }
 
 export interface DriveRunDeps {
+  readonly lifetime?: WorkflowLifetime;
   readonly engine: WorkflowEngine;
   readonly handle: RunHandle;
   /**
-   * Constructs the renderer — called INSIDE, after the SIGINT handler is registered, so a renderer-construction
-   * throw (e.g. `ink`'s `render()`) still unwinds through the same finally (cancel the live run, remove the
-   * listener) instead of leaving a running engine with no cooperative-cancel handler.
+   * Construct after the command reserves its workflow/terminal owners and signal subscription. The
+   * creation token transfers native rollback custody before a partially allocating constructor can throw.
    */
-  readonly makeRenderer: () => RunRenderer;
+  readonly makeRenderer: (creation: RendererCreationOwner) => RunRenderer;
   /** Present only in the interactive TUI path; absent (or `undefined`) → a human-gate pause breaks to the
    * gate-paused exit `3` (the callers pass `selectGatePrompter(...)`, which is `GatePrompter | undefined`). */
   readonly gatePrompter?: GatePrompter | undefined;
@@ -77,28 +80,39 @@ export interface DriveRunDeps {
  * `engine.start`) and `relavium gate` (a resumed `engine.resumeFromCheckpoint`), so the two never fork the
  * event loop, the SIGINT contract, or the renderer teardown (2.G).
  *
- * It: registers the cooperative-cancel SIGINT handler (`process.on`, never `once` — see below), feeds every
- * event to the renderer, resolves an interactive human gate **inline** when a {@link GatePrompter} is present
- * (suspend the TUI → prompt → `engine.resume` → re-mount, all on the same in-memory run), and on a
- * non-interactive pause breaks to the gate-paused exit. The renderer is finalized even on a throw, and the
- * SIGINT handler removed LAST — so `ink`'s `signal-exit` never becomes the sole SIGINT listener mid-teardown
- * (which would re-raise → exit 130; the 2.E Ctrl-C contract).
+ * The command's existing lifetime owns signals through preparation and cleanup. This driver keeps one
+ * primary reader across inline gate prompts, temporary input release and actual departure. Cooperative
+ * cancellation may still paint the final outcome; finite/infrastructure shutdown permanently seals view
+ * entry and joins actual native release independently of summary rendering. The command removes its
+ * subscription only after actual cleanup, so Ink cannot become the sole signal listener mid-teardown.
  */
 export async function driveRun(deps: DriveRunDeps): Promise<RunOutcome | undefined> {
   const { engine, handle, makeRenderer, io } = deps;
+  const lifetime = deps.lifetime ?? new WorkflowLifetime(undefined, io);
+  lifetime.adoptEngine(engine, handle.runId);
+  lifetime.adoptHandle(handle);
+  const terminal = lifetime.terminal;
   let gatePrompter = deps.gatePrompter;
   let outcome: RunOutcome | undefined;
   let cancelRequested = false;
-  let interrupted = false;
   let streamEnded = false;
+  let primaryDone = false;
+  let finalDurability: RunDurability | undefined;
+  let finalTerminalError: ErrorCode | undefined;
+  let healthRead = false;
   let inlineRefused = false;
   let inlineTerminating = false;
   let activePrompt: AbortController | undefined;
   let renderer: RunRenderer | undefined;
-  let driveError: unknown;
+  let driveError: { readonly cause: unknown } | undefined;
+  const recordFault = (cause: unknown): void => {
+    if (lifetime.isStoppedFailure(cause)) return;
+    driveError ??= { cause };
+    lifetime.failure(cause);
+  };
   let inputReleased = false;
   let inputReleaseFailed = false;
-  let departure: RunDeparture | undefined;
+  let departure: Exclude<RunDeparture, { readonly kind: 'continue' }> | undefined;
   let departureWork: Promise<RunDeparture> | undefined;
   let revision = 0;
   const waiters = new Set<() => void>();
@@ -110,7 +124,12 @@ export async function driveRun(deps: DriveRunDeps): Promise<RunOutcome | undefin
   >();
   let pause: RunPausedEvent | undefined;
   const mayPrompt = (): boolean =>
-    !cancelRequested && !inlineRefused && !inlineTerminating && !isTerminalOutcome(outcome);
+    !lifetime.stopped &&
+    !terminal.sealed &&
+    !cancelRequested &&
+    !inlineRefused &&
+    !inlineTerminating &&
+    !isTerminalOutcome(outcome);
   const wake = (): void => {
     revision += 1;
     const pending = [...waiters];
@@ -133,7 +152,7 @@ export async function driveRun(deps: DriveRunDeps): Promise<RunOutcome | undefin
           : message + '\n',
       );
     } catch {
-      // A diagnostic sink failure cannot authorize closing an unacknowledged owner.
+      lifetime.failure(new CliError('output_unavailable', ''));
     }
   };
   const joined = async <T>(work: Promise<T>): Promise<T> => {
@@ -158,19 +177,18 @@ export async function driveRun(deps: DriveRunDeps): Promise<RunOutcome | undefin
     );
     return await new Promise<never>(() => {});
   };
-  const requestCancellation = (): void => {
-    if (cancelRequested) return;
+  const onStop = (): void => {
     cancelRequested = true;
     activePrompt?.abort();
-    handle.cancel();
     wake();
   };
-  const onSigint = (): void => {
-    if (interrupted) process.exit(EXIT_CODES.workflowFailed);
-    interrupted = true;
-    requestCancellation();
+  const requestCancellation = (): void => {
+    if (cancelRequested) return;
+    onStop();
+    lifetime.stop();
   };
-  process.on('SIGINT', onSigint);
+  lifetime.signal.addEventListener('abort', onStop);
+  if (lifetime.stopped) requestCancellation();
   let jobControl: ReturnType<typeof wireRunJobControl> | undefined;
   let iterator: AsyncIterator<RunEvent> | undefined;
   const beginDeparture = (): Promise<RunDeparture> => {
@@ -178,11 +196,34 @@ export async function driveRun(deps: DriveRunDeps): Promise<RunOutcome | undefin
     const pending = Promise.resolve().then(() => handle.depart());
     departureWork = pending;
     // Observe rejection immediately, including while an input owner is still settling.
-    void pending.then(
-      () => {},
-      () => {},
-    );
+    void pending.then((claim) => {
+      if (claim.kind !== 'continue') {
+        departure = claim;
+        publishHealth();
+      }
+    }, recordFault);
     return pending;
+  };
+  const publishHealth = (): void => {
+    if (primaryDone && !healthRead) {
+      healthRead = true;
+      // Neither getter is authority until positive primary done; attempt both independently.
+      try {
+        finalDurability = handle.durability();
+      } catch (cause) {
+        recordFault(cause);
+      }
+      try {
+        finalTerminalError = handle.terminalError();
+      } catch (cause) {
+        recordFault(cause);
+      }
+    }
+    const exit = outcomeToExitCode(outcome, finalDurability, finalTerminalError, departure);
+    lifetime.publish(
+      exit === 8 || exit === 7 || exit === 5 || exit === 6 ? exit : undefined,
+      primaryDone && departure !== undefined,
+    );
   };
   // Exactly one primary reader remains live across prompts, input ACKs and host joins.
   // There is no event spool: only the current pause and pending gate projections are retained.
@@ -191,7 +232,10 @@ export async function driveRun(deps: DriveRunDeps): Promise<RunOutcome | undefin
       iterator = handle.events[Symbol.asyncIterator]();
       for (;;) {
         const next = await iterator.next();
-        if (next.done) break;
+        if (next.done) {
+          primaryDone = true;
+          break;
+        }
         const event = next.value;
         if (event.runId !== handle.runId) continue;
         outcome = nextOutcome(outcome, event);
@@ -234,18 +278,23 @@ export async function driveRun(deps: DriveRunDeps): Promise<RunOutcome | undefin
           void beginDeparture();
         }
         try {
-          renderer?.onEvent(event);
+          if (!terminal.sealed) renderer?.onEvent(event);
         } catch (error) {
-          driveError ??= error;
+          recordFault(error);
           requestCancellation();
         }
         wake();
       }
     } catch (error) {
-      driveError ??= error;
+      recordFault(error);
       requestCancellation();
+      // A rejected reader is never primary done, but available departure health must progress even
+      // while an entered prompt ignores abort. The same owned promise still gates actual cleanup.
+      void beginDeparture();
     } finally {
       streamEnded = true;
+      void beginDeparture();
+      publishHealth();
       wake();
     }
   })();
@@ -254,11 +303,12 @@ export async function driveRun(deps: DriveRunDeps): Promise<RunOutcome | undefin
     if (inputReleaseFailed && renderer?.releaseInput === undefined)
       return await retainUnacknowledged();
     try {
-      await joined(Promise.resolve().then(() => renderer?.releaseInput?.()));
+      await joined(terminal.releaseInput());
       inputReleased = true;
       inputReleaseFailed = false;
       return true;
-    } catch {
+    } catch (cause) {
+      recordFault(cause);
       inputReleaseFailed = true;
       diagnostic(
         'cleanup_failed',
@@ -271,11 +321,31 @@ export async function driveRun(deps: DriveRunDeps): Promise<RunOutcome | undefin
   let safe = false;
   try {
     try {
-      jobControl = wireRunJobControl({ write: (text) => io.writeOut(text) });
-      if (deps.makeGatePrompter !== undefined) gatePrompter = deps.makeGatePrompter();
-      renderer = makeRenderer();
+      if (!lifetime.stopped && !terminal.sealed) {
+        if (
+          detectOutputMode({
+            stdoutIsTty: io.stdoutIsTty,
+            json: deps.json === true,
+            ci: isCiEnv(io.env),
+          }) === 'tui'
+        )
+          jobControl = terminal.createJobControl((adopt) =>
+            wireRunJobControl({
+              write: (text) => io.writeOut(text),
+              adopt,
+              onFailure: (cause) => {
+                // A recoverable self-stop refusal is not the run's eventual outcome.
+                // Unexpected native faults must reach its original owner before reattachment.
+                if (toUserFacing(cause).exitCode === EXIT_CODES.infrastructureFailed)
+                  lifetime.failure(cause);
+              },
+            }),
+          );
+        if (deps.makeGatePrompter !== undefined) gatePrompter = deps.makeGatePrompter();
+        renderer = terminal.createRenderer(makeRenderer);
+      }
     } catch (error) {
-      driveError = error;
+      recordFault(error);
       requestCancellation();
     }
     for (;;) {
@@ -304,6 +374,10 @@ export async function driveRun(deps: DriveRunDeps): Promise<RunOutcome | undefin
                   inputReleaseFailed = true;
                 },
                 signal: controller.signal,
+                runPrompt: (invoke) => terminal.runPrompt(invoke),
+                runViewOperation: (invoke, mayAcquire) =>
+                  terminal.runViewOperation(invoke, mayAcquire),
+                failed: recordFault,
               },
               renderer,
               gatePrompter,
@@ -317,7 +391,7 @@ export async function driveRun(deps: DriveRunDeps): Promise<RunOutcome | undefin
             gates.delete(gate.gateId);
           } else inlineRefused = true;
         } catch (error) {
-          driveError ??= error;
+          recordFault(error);
           requestCancellation();
         } finally {
           if (activePrompt === controller) activePrompt = undefined;
@@ -342,7 +416,10 @@ export async function driveRun(deps: DriveRunDeps): Promise<RunOutcome | undefin
         });
         if (claim.kind !== 'continue') {
           departure = claim;
+          publishHealth();
           await joined(primary);
+          publishHealth();
+          if (!primaryDone) return await retainUnacknowledged();
           safe = true;
           break;
         }
@@ -350,19 +427,21 @@ export async function driveRun(deps: DriveRunDeps): Promise<RunOutcome | undefin
         // Continue preserves the same reader and live view. Retry only after actual progress.
         if (!isTerminalOutcome(outcome) && !streamEnded) {
           try {
-            await renderer?.resume?.();
+            await terminal.runViewOperation(() => renderer?.resume?.());
             inputReleased = false;
           } catch (error) {
-            driveError ??= error;
+            recordFault(error);
             requestCancellation();
           }
         }
       }
       await progressAfter(seen);
     }
+    publishHealth();
     try {
-      await renderer?.finalize?.();
-    } catch {
+      if (!terminal.sealed) await terminal.runViewOperation(() => renderer?.finalize?.(), false);
+    } catch (cause) {
+      recordFault(cause);
       diagnostic('cleanup_failed', 'The run view could not write its final summary after cleanup.');
     }
     if (departure !== undefined) {
@@ -370,50 +449,55 @@ export async function driveRun(deps: DriveRunDeps): Promise<RunOutcome | undefin
         io,
         deps.json === true,
         departure,
-        handle.durability(),
+        finalDurability ?? 'durable',
         outcome,
-        handle.terminalError(),
+        finalTerminalError,
       );
     }
     if (driveError !== undefined) {
       const finalExitCode = outcomeToExitCode(
         outcome,
-        handle.durability(),
-        handle.terminalError(),
+        finalDurability,
+        finalTerminalError,
         departure,
       );
       if (
         departure !== undefined &&
         (finalExitCode === EXIT_CODES.moneyDurabilityUncertain ||
-          finalExitCode === EXIT_CODES.effectNeedsAttention)
+          finalExitCode === EXIT_CODES.effectNeedsAttention ||
+          finalExitCode === EXIT_CODES.durabilityUncertain ||
+          finalExitCode === EXIT_CODES.runOwnedElsewhere)
       ) {
         diagnostic(
           'cleanup_failed',
           'The command also failed while driving the run; final receipt health takes priority.',
         );
-      } else return rethrowDriveFailure(driveError);
+      } else return rethrowDriveFailure(driveError.cause);
     }
     return outcome;
   } finally {
     // This finally is reachable only after the actual input, engine and primary ACKs.
     // An unacknowledged input owner deliberately retains SIGINT and command resources.
-    if (safe && departure?.kind !== 'continue') {
+    if (safe && departure !== undefined) {
       try {
         jobControl?.dispose();
-      } catch {
+      } catch (cause) {
+        recordFault(cause);
         diagnostic('cleanup_failed', 'The run job-control listeners could not be released.');
       } finally {
-        process.removeListener('SIGINT', onSigint);
+        lifetime.signal.removeEventListener('abort', onStop);
       }
       try {
         await iterator?.return?.();
-      } catch {
+      } catch (cause) {
+        recordFault(cause);
         diagnostic(
           'cleanup_failed',
           'The primary reader could not finish its local cleanup after run departure.',
         );
       }
     }
+    if (deps.lifetime === undefined && safe) await lifetime.finish();
   }
 }
 
@@ -423,6 +507,14 @@ interface InlineGateLifecycle {
   readonly expectTerminal: () => void;
   readonly inputReleaseFailed: () => void;
   readonly signal: AbortSignal;
+  readonly runPrompt: (
+    invoke: () => ReturnType<GatePrompter['prompt']>,
+  ) => ReturnType<GatePrompter['prompt']>;
+  readonly failed: (cause: unknown) => void;
+  readonly runViewOperation: (
+    invoke: () => void | Promise<void>,
+    mayAcquire?: boolean,
+  ) => Promise<void>;
 }
 
 async function promptUntilStopped(
@@ -451,7 +543,7 @@ async function resolveGateInline(
 ): Promise<boolean> {
   let decision: Awaited<ReturnType<GatePrompter['prompt']>>;
   try {
-    await renderer.suspend?.();
+    await lifecycle.runViewOperation(() => renderer.suspend?.(), false);
   } catch (error) {
     lifecycle.inputReleaseFailed();
     throw error;
@@ -459,19 +551,23 @@ async function resolveGateInline(
   try {
     if (!lifecycle.mayPrompt()) return true;
     decision = await promptUntilStopped(
-      () => prompter.prompt(event, budget, lifecycle.signal),
+      () => lifecycle.runPrompt(() => prompter.prompt(event, budget, lifecycle.signal)),
       lifecycle.signal,
     );
+  } catch (cause) {
+    // Preserve the prompt failure before a competing restoration failure enters its finally.
+    lifecycle.failed(cause);
+    throw cause;
   } finally {
     // Re-mount best-effort: a re-mount failure (ink's render() throwing) must NOT mask the prompt's decision
     // or its error — a throwing `finally` would replace the try's outcome. Surface it to stderr and move on,
     // exactly like driveRun's teardown (finalize) guard above.
     try {
-      if (lifecycle.mayPrompt()) await renderer.resume?.();
+      if (lifecycle.mayPrompt()) await lifecycle.runViewOperation(() => renderer.resume?.());
     } catch (resumeErr) {
-      io.writeErr(
-        `failed to restore the live view after the gate prompt: ${resumeErr instanceof Error ? resumeErr.message : String(resumeErr)}\n`,
-      );
+      lifecycle.failed(resumeErr);
+      lifecycle.requestCancellation();
+      io.writeErr('The live view could not be restored after the gate prompt.\n');
     }
   }
   if (lifecycle.signal.aborted) return true;

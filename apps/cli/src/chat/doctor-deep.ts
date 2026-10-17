@@ -10,6 +10,7 @@ import {
 } from '../engine/providers.js';
 import { sanitizeInline } from '../render/tui/chat-projection.js';
 import { okCheck, warnCheck, failCheck, type DoctorCheck } from './doctor.js';
+import type { SessionWorkOwner } from './session-work-owner.js';
 
 /**
  * The `/doctor --deep` probes (2.5.C S5).
@@ -30,6 +31,8 @@ import { okCheck, warnCheck, failCheck, type DoctorCheck } from './doctor.js';
 // ── provider-key validation ──────────────────────────────────────────────────
 
 export interface ProviderProbeDeps {
+  /** A report timeout does not settle the actual provider operation or release its host. */
+  readonly workOwner?: Pick<SessionWorkOwner, 'signal' | 'work' | 'assertAdmitting'>;
   readonly resolver: ProviderResolver;
   /** The candidate provider ids to consider (default: every known provider, {@link KNOWN_PROVIDER_IDS}). Each is
    *  validated ONLY if its key actually resolves (keychain ∪ env) — the filter runs lazily INSIDE the probe so
@@ -42,11 +45,13 @@ export interface ProviderProbeDeps {
 /** Build the `--deep` provider probe: validate each CONFIGURED key with a bounded live ping. */
 export function buildProviderProbe(deps: ProviderProbeDeps): () => Promise<readonly DoctorCheck[]> {
   return async () => {
+    deps.workOwner?.assertAdmitting();
     const candidates = deps.candidateIds ?? KNOWN_PROVIDER_IDS;
     // Resolve each candidate's key ONCE (keychain → env → skip). All reads happen here, lazily, when the probe
     // runs — never at assembly. A provider with no key is simply not configured, so it is skipped (not failed).
     const configured: { readonly id: ProviderId; readonly key: string }[] = [];
     for (const id of candidates) {
+      deps.workOwner?.assertAdmitting();
       try {
         configured.push({ id, key: deps.resolver.keyFor(id) });
       } catch {
@@ -75,6 +80,7 @@ async function probeProvider(
     key,
     KNOWN_PROVIDERS[id].testModel,
     deps.timeoutMs,
+    deps.workOwner,
   );
   return result.ok
     ? okCheck(`provider:${id}`, id, result.detail)

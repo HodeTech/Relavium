@@ -27,6 +27,7 @@ import type {
   CapabilityFlags,
   LlmError,
   LlmErrorKind,
+  LlmInvocationOptions,
   LlmMessage,
   LlmProvider,
   LlmRequest,
@@ -49,6 +50,7 @@ import {
   toModelListing,
   readRetryAfter,
 } from './shared.js';
+import { ProviderInvocationWork, type ProviderFetch } from './invocation-work.js';
 
 /**
  * The reference adapter over `@anthropic-ai/sdk` (1.C) — the seam fence's first real consumer and
@@ -623,7 +625,7 @@ function buildRequestOptions(req: LlmRequest): { signal?: AbortSignal } {
  */
 export interface AnthropicAdapterDeps {
   /** Inject a `fetch` (the replayer/recorder) in place of the network. */
-  readonly fetch?: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
+  readonly fetch?: ProviderFetch;
   /**
    * Override the SDK's own retry count. **Defaults to `0`** — the vendor SDK's built-in retry is deliberately
    * OFF in production, because `FallbackChain` owns the retry/fallback policy (ADR-0011: "the runner — not the
@@ -871,12 +873,17 @@ async function* streamChunks(
  * abort-aware and ceiling-bounded; until that lands, no retry is the safer of the two failure modes.
  */
 export function createAnthropicAdapter(deps: AnthropicAdapterDeps = {}): LlmProvider {
-  const createClient = (key: string, maxRetries = deps.maxRetries ?? 0): Anthropic =>
-    new Anthropic({
+  const createClient = (
+    key: string,
+    maxRetries = deps.maxRetries ?? 0,
+    work?: ProviderInvocationWork,
+  ): Anthropic => {
+    const sdkFetch = work?.bindFetch(deps.fetch ?? globalThis.fetch) ?? deps.fetch;
+    return new Anthropic({
       apiKey: key,
       // Keep the official factory route independent of ANTHROPIC_BASE_URL.
       baseURL: 'https://api.anthropic.com',
-      ...(deps.fetch === undefined ? {} : { fetch: deps.fetch }),
+      ...(sdkFetch === undefined ? {} : { fetch: sdkFetch }),
       // ALWAYS passed, never conditionally: an absent option means the SDK's own default (2), which is
       // exactly the pre-emption #276 is about. Explicit beats implicit. Floored, because a negative value
       // makes the SDK's retry loop unbounded (`retriesRemaining - 1` stays truthy at -1).
@@ -885,6 +892,7 @@ export function createAnthropicAdapter(deps: AnthropicAdapterDeps = {}): LlmProv
       // documented default (the runner owns retry policy — ADR-0011).
       maxRetries: Number.isFinite(maxRetries) ? Math.max(0, Math.trunc(maxRetries)) : 0,
     });
+  };
 
   return {
     id: PROVIDER,
@@ -955,19 +963,25 @@ export function createAnthropicAdapter(deps: AnthropicAdapterDeps = {}): LlmProv
      * mapped INSIDE the adapter to a canonical `ModelListing` (no vendor type escapes), and a per-row parse
      * failure drops only that row. Bounded + abortable + secret-free via `boundedListModels`.
      */
-    async listModels(key: string, signal?: AbortSignalLike): Promise<ModelListing[]> {
+    async listModels(
+      key: string,
+      signal?: AbortSignalLike,
+      options?: LlmInvocationOptions,
+    ): Promise<ModelListing[]> {
       return boundedListModels({
         provider: PROVIDER,
         key,
         signal,
+        options,
         classify: anthropicErrorToLlmError,
-        collect: async (innerSignal) => {
-          const client = createClient(key);
+        collect: async (innerSignal, work) => {
+          const client = createClient(key, undefined, work);
           const listings: ModelListing[] = [];
           const seen = new Set<string>();
           let rawCount = 0;
           let droppedForShape = 0;
-          for await (const info of client.models.list(undefined, { signal: innerSignal })) {
+          const source = client.models.list(undefined, { signal: innerSignal });
+          for await (const info of work?.ownIterator(source) ?? source) {
             rawCount += 1;
             if (!isRecord(info)) {
               droppedForShape += 1; // a non-object row (e.g. a null in `data`) — drop it, never dereference

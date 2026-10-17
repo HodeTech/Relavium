@@ -13,6 +13,8 @@
  * (a UUID / opaque id, never a secret) and never carries run inputs, a node output, or a host stack.
  */
 
+import { RelaviumError } from '@relavium/shared';
+
 import type { InputAdmissionIssue } from './input-admission.js';
 
 /** Stable discriminant for an engine-API-boundary fault — narrow on this, never on `message`. */
@@ -53,9 +55,9 @@ export type EngineStateErrorCode =
  * will fail identically forever. A surface uses this to tell a caller "try again shortly" from "never call
  * this again" — the CLI maps it to its own exit code (ADR-0079 §7).
  */
-export const TRANSIENT_ENGINE_STATE_CODES: readonly EngineStateErrorCode[] = [
+export const TRANSIENT_ENGINE_STATE_CODES: readonly EngineStateErrorCode[] = Object.freeze([
   'run_owned_elsewhere',
-];
+]);
 
 /** Whether an {@link EngineStateError} is worth retrying unchanged. */
 export function isTransientEngineStateError(error: EngineStateError): boolean {
@@ -67,7 +69,7 @@ export function isTransientEngineStateError(error: EngineStateError): boolean {
  * `cancel`; it never appears on the event stream (a run that *began* and then failed surfaces as a
  * `run:failed` event with an `ErrorCode`, not this).
  */
-export class EngineStateError extends Error {
+export class EngineStateError extends RelaviumError {
   readonly code: EngineStateErrorCode;
   /** The run this fault concerns, when applicable — a `runId` (UUID), never a secret. */
   readonly runId?: string;

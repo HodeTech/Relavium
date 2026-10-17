@@ -1,3 +1,5 @@
+import type { CliIo } from '../process/io.js';
+import { nativePromptIo } from '../process/native-prompt-io.js';
 import { confirm, isCancel, note, text } from '@clack/prompts';
 import type { HumanGatePausedEvent } from '@relavium/shared';
 
@@ -40,6 +42,17 @@ const defaultDeps: ClackPromptDeps = {
   text: (opts) => text(opts),
   isCancel,
 };
+
+/** Workflow defaults retain the original invocation's terminal, including cards and prompt input. */
+export function createBoundClackGatePrompter(io: CliIo): GatePrompter {
+  const streams = nativePromptIo(io);
+  return createClackGatePrompter({
+    note: (message, title) => note(message, title, { output: streams.output }),
+    confirm: (options) => confirm({ ...options, ...streams }),
+    text: (options) => text({ ...options, ...streams }),
+    isCancel,
+  });
+}
 
 const GATE_TITLE: Record<HumanGatePausedEvent['gateType'], string> = {
   approval: 'Approval gate',

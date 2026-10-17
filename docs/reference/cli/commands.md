@@ -1,6 +1,6 @@
 # CLI Command Reference (`relavium`)
 
-> Last updated: 2026-10-15
+> Last updated: 2026-10-17
 
 - **Status**: Reference (partial — surface defined, exact flags to be finalized as the CLI is built)
 - **Surface**: CLI (`relavium`)
@@ -12,7 +12,7 @@ The `relavium` CLI is the terminal surface of the platform and the fastest way t
 ## Install & distribution
 
 - **Package**: published to npm as `relavium`, installed globally. The artifact is an **engine-inlined ESM bundle** — the proprietary `@relavium/*` engine is bundled in; every third-party dependency (including the prebuilt native addons) installs normally ([ADR-0051](../../decisions/0051-cli-distribution-thin-bundle-private-engine.md)). A global install needs no compiler toolchain.
-- **Build**: TypeScript bundled with `tsup` to a single ESM `bin`; released via the `Release CLI` workflow (pack → cross-OS install-smoke on macOS/Linux/Windows → npm publish with provenance), see [release-a-surface.md](../../runbooks/release-a-surface.md).
+- **Build**: TypeScript bundled with `tsup` to one executable ESM entry. Wave 3 Step 7a implements finite lazy chunks on `development`; installed-package/platform acceptance and release custody remain staged in the [packaging contract](packaging.md). The published single-bundle release uses the `Release CLI` workflow (pack → cross-OS install-smoke on macOS/Linux/Windows → npm publish with provenance), see [release-a-surface.md](../../runbooks/release-a-surface.md).
 - **Stack**: `commander.js` for argument parsing, `ink` (React for terminals) for the interactive TUI, `@clack/prompts` for setup wizards.
 - **API keys**: stored in the OS keychain via `@napi-rs/keyring` (macOS Keychain / Windows Credential Manager / Linux libsecret) — never plaintext, and never the archived `keytar` (see [ADR-0019](../../decisions/0019-cli-node-keychain-library.md) and [add-a-provider-key.md](../../runbooks/add-a-provider-key.md)).
 - **Workflow discovery**: reads workflows from the `.relavium/` directory in the project root, or from an explicit path argument.
@@ -28,7 +28,7 @@ The CLI auto-detects its environment and switches presentation accordingly:
 
 | Mode | When | Behavior |
 |------|------|----------|
-| **Interactive TUI** | TTY attached, no `--json` | `ink`-rendered live view: animated per-node status, streaming token output for the active node, final cost/duration summary |
+| **Interactive TUI** | TTY attached, no `--json` | `ink`-rendered live view: animated per-node status, separate bounded live reasoning and answer output for the active node, final cost/duration summary |
 | **Plain** | No TTY or `CI=true` (and no `--json`) | The TUI is disabled; a terse line-per-lifecycle-event human renderer writes to stdout |
 | **NDJSON** | `--json` (anywhere on the command line) | The machine contract: stdout is a pure NDJSON stream — [RunEvent](../contracts/sse-event-schema.md)s for `run` / `gate` / `budget resume`, or [SessionEvent](../contracts/sse-event-schema.md#session-event-namespace)s for `chat` / `agent run` — and all diagnostics go to stderr. See [The `--json` machine-output contract](#the---json-machine-output-contract) |
 
@@ -80,8 +80,9 @@ a pipe/redirect, or `CI`.)
   found, missing key) is written to stderr as a structured `{ "type": "error", "code", "message" }`
   envelope (distinct from the run stream's `run:failed`/`node:failed`) and exits `2`; stdout stays
   empty. A pipe consumer reads stdout for events and uses the exit code + stderr for faults.
-- **Secret-typed values stay masked** — the engine masks them as `{ "secret": true, "ref": … }`
-  before any renderer sees them; the NDJSON carries that masked shape, never a raw secret.
+- **Declared secret input slots stay masked** — the engine emits them as
+  `{ "secret": true, "ref": … }`. This does not certify arbitrary or historical event/output content;
+  see [historical output/error data](../shared-core/database-schema.md#historical-output-and-error-data).
 
 Exit codes are CI-friendly (see [Exit codes](#exit-codes)).
 
@@ -239,6 +240,10 @@ For this detector probe only, a recognised bare template reference without a pat
 
 Replays a past run's persisted `run_events` in `seq` order (the same data the desktop run-detail drawer replays) — a terse line per event in human mode. Under `--json` it emits each **raw [RunEvent](../contracts/sse-event-schema.md) as one NDJSON line** — the same `RunEvent` data `relavium run --json` streamed (this is the "raw RunEvent JSON" the run-detail replay consumes — no separate `--raw` flag). For a run paused at a gate, the `human_gate:paused` event surfaces the **`gateId`** to copy into `relavium gate <runId> --gate <gateId>`. An unknown `runId` is an invalid invocation (exit `2`).
 
+Replay retains the stored content; current declared-secret context protection does not scrub or
+certify older outputs. Apply the [historical output/error guidance](../shared-core/database-schema.md#historical-output-and-error-data)
+before sharing replay output or recovering the run.
+
 Raw historical events preserve absent fields: the reader does not synthesize `usageCoverage`,
 `cumulativeUnpricedCalls` or invocation correlation; absence cannot certify complete or free coverage.
 
@@ -307,7 +312,11 @@ printf 'api_key=%s\n' "$API_KEY" | relavium gate <runId> --approve --secret-stdi
   - What this proves is the **slot**, not the credential: the engine verifies that the same named `secret` input was re-supplied and cannot tell whether the value is the same key or a rotated one. ADR-0083 §6 states that limit rather than implying more.
 - **Idempotent.** A doubled decision — the run already finished, or the named gate was already resolved — is a clean exit-`0` no-op, never a double-advance (it leans on the engine's checkpoint/gate-state idempotency). An unknown `runId` is exit `2`. Idempotency is **per gate**, though: on a *sequential* multi-gate workflow a blind repeat *without* `--gate` (after the first decision advanced the run and it re-paused at the **next** gate) auto-fills and resolves *that* gate — so an automated retry-until-exit-`0` loop should **pin `--gate <gateId>`** to avoid resolving later gates unattended.
 
-> **Implementation status (2.G).** `relavium gate` runs in a **fresh process** from the original `run`: it reloads the run's frozen `WorkflowDefinition` + inputs from the durable history snapshot (2.H), reconstructs the paused checkpoint from the persisted event log, and calls `engine.resumeFromCheckpoint` over the same store — then drives the resumed run to its terminal (exit `0` complete / `1` failed / `3` paused again at a later gate). The recorded `decidedBy` is the constant `cli` (a deterministic, non-PII marker; the desktop/portal supply a real user id). Budget-cap pauses (`budget:paused`, [ADR-0028](../../decisions/0028-workflow-resource-governance.md)) are **not** resolved here — that is the separate [`relavium budget resume`](#relavium-budget-resume) surface. A run that declares a **`secret`-typed input** is resumed by re-supplying it on stdin with `--secret-stdin` (above); without the flag `relavium gate` still **fails closed (exit `2`)**, because secrets are never persisted in plaintext (only a masked placeholder is, ADR-0006/0036) and there is nothing to restore. The engine enforces the same rule independently — it refuses a resume whose masked slot was not filled, and refuses the placeholder itself as a value. The [`relavium gate list`](#relavium-gate-list) multi-gate listing is live (2.I).
+> **Implementation status (2.G).** `relavium gate` runs in a **fresh process** from the original `run`: it reloads the run's frozen `WorkflowDefinition` + inputs from the durable history snapshot (2.H), reconstructs the paused checkpoint from the persisted event log, and calls `engine.resumeFromCheckpoint` over the same store — then drives the resumed run to its terminal (exit `0` complete / `1` failed / `3` paused again at a later gate). The recorded `decidedBy` is the constant `cli` (a deterministic, non-PII marker; the desktop/portal supply a real user id). Budget-cap pauses (`budget:paused`, [ADR-0028](../../decisions/0028-workflow-resource-governance.md)) are **not** resolved here — that is the separate [`relavium budget resume`](#relavium-budget-resume) surface. A run that declares a **`secret`-typed input** is resumed by re-supplying it on stdin with `--secret-stdin` (above); without the flag `relavium gate` still **fails closed (exit `2`)**, because the declared input slot retains only a masked placeholder (ADR-0006/0036) and has no raw value to restore. The engine enforces the same rule independently — it refuses a resume whose masked slot was not filled, and refuses the placeholder itself as a value. The [`relavium gate list`](#relavium-gate-list) multi-gate listing is live (2.I).
+
+Current context qualification on resume does not rewrite completed outputs restored from history;
+the [historical output/error guidance](../shared-core/database-schema.md#historical-output-and-error-data)
+also applies to human and budget recovery.
 
 ### `relavium budget resume`
 
@@ -458,8 +467,8 @@ echo "review it" | relavium agent run code-reviewer --fixture ./fixtures/review.
 - `--allow-mcp-stdio <digest>` (repeatable) authorizes a **local MCP program** for this invocation only. `agent run` is the one-shot, pipeline-facing member of the chat family — its stdin carries the prompt, so it can never prompt for consent, and an agent declaring an unapproved `stdio` MCP server exits `2` before anything spawns. See [Local MCP servers need consent](#local-mcp-servers-need-consent).
 - `--allow-fs-root` uses the [global invocation contract](#global-options), including when no selector config exists.
 - **The transcript is not persisted** — a stateless invoke (no transcript or resumable session; only an already-tombstoned durable effect-identity bookkeeping row), unlike the REPL. It does still **open `history.db`** to attach the effect journal ([effect-journal.md](../shared-core/effect-journal.md)): an external effect is carried forward by the target, not by the run, so an unattached journal would refuse every effectful tool on this surface. Its effect metadata is read at teardown for the owned committed-row sweep, never for replay. A `history.db` that cannot be opened fails the invocation.
-- The exit code is the **turn's outcome**: `0` on success, `1` on a turn error; an invocation fault is `2`. It is **never** `4` (that is the interactive REPL's session-ended code). A termination **signal** exits `128+signo` (`130` on Ctrl-C) after tearing any MCP servers down — this surface has no cooperative-cancel contract to preserve, unlike `run` ([ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md) §1.3).
-- **Ctrl-C leaves no orphan.** Any `stdio` MCP server this invocation spawned is reaped before the process exits, including on a `kill`, a closed terminal window, or a second impatient Ctrl-C.
+- Ordinary exits reflect the **turn's outcome**: `0` on success, `1` on a classified turn error; an invocation fault is `2`. Unexpected infrastructure or output failure uses `9`. It is **never** `4` (the interactive REPL's session-ended code). A termination **signal** retains `128+signo` (`130` on Ctrl-C) unless a stronger observed failure applies; see [failure classification and remedies](#failure-classification-and-remedies). This one-shot surface has no workflow receipt/effect health authority for exits `5`–`8`.
+- **Teardown stays with the original invocation.** Cancellation requests do not acknowledge MCP or database closure, including on a second Ctrl-C. The finite backstop preserves cleanup uncertainty; it cannot guarantee that every descendant is reaped. See [native crash teardown scope](#native-crash-teardown-scope) for actual-close, process-ownership and containment limits.
 
 ### `relavium provider`
 
@@ -571,23 +580,24 @@ Human output reports removed/retained counts and fixed retention reasons. `--jso
 `{ removed, retained, reasons }` object; retained reason counts sum to `retained`. Neither form
 contains paths, native diagnostics or file bytes. Successful maintenance, including conservatively
 retained candidates, exits `0`; missing flags/exclusive-offline refusal exits `2`; an operational
-filesystem failure exits `1`. This command never changes published CAS objects or read grants.
+filesystem failure exits `1`; unexpected and failed-output faults exit `9`. This command never changes published CAS objects or read grants.
 Exact temp grammars, ownership/recovery rules and reason vocabulary belong to the
 [physical media lifecycle contract](../shared-core/built-in-tools.md#physical-media-storage-and-limits),
 under [ADR-0106](../../decisions/0106-media-publication-requires-bounded-verified-bytes.md).
 
 ## Exit codes
 
-CI relies on deterministic exit codes. The table is the closed set for `run` and `gate`; the signal codes
-`128+signo` (`129` SIGHUP, `130` SIGINT, `131` SIGQUIT, `143` SIGTERM) belong to the surfaces that end **on** a
-signal rather than draining through one — the interactive Home and `agent run`. `relavium run` is deliberately
-not one of them: its Ctrl-C is a cooperative cancel that exits `1`.
+CI relies on deterministic exit codes. The table covers ordinary `run` and `gate` outcomes. A first workflow
+SIGINT requests cooperative cancellation, normally exiting `1` unless a stronger observation applies. A second
+SIGINT or a terminating SIGHUP, SIGQUIT or SIGTERM uses `128+signo` (`130`, `129`, `131` or `143`), subject to
+the [observed health and infrastructure precedence](#failure-classification-and-remedies). Home and `agent run`
+also retain their [owned signal dispositions](#invocation-owners-and-fatal-ordering).
 
 
 | Code | Meaning |
 |------|---------|
 | `0` | Workflow completed successfully |
-| `1` | Workflow failed (a node errored and exhausted retries/fallbacks) |
+| `1` | Workflow failed, or a classified operational/history/storage refusal; see the [surface dispositions](#failure-classification-and-remedies) |
 | `2` | Invalid invocation (bad arguments, workflow not found, schema validation error) |
 | `3` | Run paused at a human gate (CI/non-interactive mode) — resume with `relavium gate` |
 | `4` | A chat session ended — via `/exit`, `/cancel` (or Ctrl-C in TTY mode), or an input-stream EOF — a user-initiated end of a `relavium chat` REPL — see [chat-session.md](chat-session.md) |
@@ -595,6 +605,12 @@ not one of them: its Ctrl-C is a cooperative cancel that exits `1`.
 | `6` | Ownership was refused before starting, or this host was fenced out and stopped without claiming an outcome ([ADR-0079](../../decisions/0079-cross-process-run-ownership-lease-and-fencing-token.md) §5, §7). Inspect current history; the successor may already have finished |
 | `7` | An external **effect** needs attention, including a prior unresolved attempt or an admitted effect whose final receipt remained unresolved after host joining ([effect-journal.md](../shared-core/effect-journal.md) §4, §8). **Do not retry**: inspect the target, then resolve the row out of band |
 | `8` | Required money receipts were not durably acknowledged. **Do not repeat paid work**: inspect `relavium logs <runId>` and the ledger before recovery. This is separate from terminal-outbox uncertainty |
+| `9` | CLI infrastructure failed, including output delivery. Inspect existing work before repeating paid/effectful operations; see the [classification and remedy contract](#failure-classification-and-remedies) |
+
+Wave 3 Step 8 implements runtime origin classification, fixed boundary projections,
+fatal coordination and actual workflow-health precedence on escaping faults.
+[Step 8d and whole Step 8 are independently accepted on `development`](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-and-whole-step-8-acceptance--2026-10-17);
+the surface and ownership contracts below describe that implementation.
 
 > Final required-money uncertainty takes priority (`8`), then effect attention (`7`), then the actual terminal/ownership disposition (`5`/`6`) and ordinary outcome. A combined `8` warning also directs the operator to inspect the effect target and resolve its row. Final health never replaces the actual terminal, its error code or durable history; it selects the command's disposition after joining admitted work.
 > The fixed final-health stderr diagnostic has `type: diagnostic`, `code`, `message`, `terminalDurability` (`durable`, `uncertain` or `none`) and `effectNeedsAttention`. It reports one highest-priority warning; a combined money/effect case includes both remedies. These fields are nondurable and never added to stdout RunEvents.
@@ -644,3 +660,676 @@ For a complete walkthrough (key handling, gates, artifacts, exit-code checks), s
 ## Qualified usage and cost totals
 
 Numeric cost totals are known realized sums. Human totals qualify unverified history, pending invocations, unknown usage and missing prices; machine records expose usageCoverage and independent price information. Unknown usage at a numeric zero is never free. The /cost panel includes models with uncertainty but no realized-money row; estimate release leaves usage uncertainty intact. Resumed/reseated views seed the existing durable coverage instead of a fresh zero. Compaction notices distinguish known observed tokens from complete summary usage. See the [seam](../shared-core/llm-provider-seam.md#6-usage), [event contract](../contracts/sse-event-schema.md), and [database contract](../shared-core/database-schema.md).
+
+## Proposed Wave 3 CLI compatibility
+
+**Approved design, partially implemented on `development` — 2026-10-17.**
+[ADR-0110](../../decisions/0110-cli-diagnostics-and-discovery-have-explicit-compatibility.md)
+was approved by the maintainer. Step 6 implements the pure flag/error/observation
+and ownership substrate, descriptor-derived current Commander grammar and the
+compatible model projection. Its discovery DTO is available as a pure function;
+production JSON help, aliases, pricing spellings, output categories and consent
+remain Step 10. Step 7's lazy entry and installed package are independently accepted. Step 8a
+implements minimal storage-origin adapters and defensive runtime projections,
+and adds an inert native invocation foundation. Product fatal/native/terminal
+activation is [independently accepted in Step 8d and whole Step 8](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-and-whole-step-8-acceptance--2026-10-17)
+on `development`. The remaining Step 10 behaviour described in this proposed
+section is still unshipped. Earlier sections describe current behaviour unless
+stated here.
+
+### Diagnostic policy
+
+Resolve one policy before runtime imports. `--quiet` plus `--verbose` is exit 2.
+Either explicit flag wins over the environment; absent flags use verbose only
+for exact `RELAVIUM_DEBUG=1`, otherwise normal. The older any-defined predicate
+is intentionally narrowed. JSON selects representation independently; CI/TTY
+select interactivity, never implicitly JSON.
+
+| Output category | Quiet human mode | JSON mode |
+|---|---|---|
+| Requested result, assistant answer, help/version, log/list/output data | Preserve | Preserve every contractual record |
+| Final outcome/cost/usage/estimate/unpriced qualifications; approval, warning, denial, receipt/effect/ownership disclosure and remedy | Preserve | Preserve existing data/structured stderr diagnostic |
+| Decorative banner/spinner/progress and optional informational notice | Suppress at owner | Never remove actual events; optional noncontractual notices may be suppressed |
+| Deprecated alias | One bounded compatibility warning, preserved | One structured stderr notice, no extra stdout record |
+| Verbose detail | Quiet disables it | Bounded safe structured detail, never a human stack dump |
+
+Every production write/render owner needs an explicit category. Do not globally
+filter IO or implicitly approve a prompt. Reasoning follows its existing content
+control. Verbose exposes only owned fixed classifications and bounded validated
+frame locations, with no stack first-line message, arbitrary cause/detail, argv,
+request or credential text. Unknown throws, projection/getter faults and broken
+sinks fall back to a fixed message; do not coerce arbitrary objects. The ordinary
+generic failure points to `--verbose`.
+
+Frame syntax alone is not provenance: Error.stack is writable. Emit only an exact
+owned shipped-artifact/source-file identity from a pure static/build-generated
+allowlist, as its canonical relative ID plus bounded positive line/column.
+Drop function labels, absolute install/user paths, URL queries/fragments,
+eval/anonymous/sourceURL and unknown/external frames. Do not open maps/config or
+inspect causes to validate frames. Early failures with no owned match get fixed
+classification only. Bound descriptor-safe stack acquisition and parsing; hostile
+accessor/proxy/coercion faults produce no detail. Include arbitrary canaries in
+syntactically valid frame paths as negative controls.
+
+### Failure classification and remedies
+
+These are CLI dispositions, separate from engine ErrorCode. One closed
+`CliErrorCode`/classification authority in the pure process layer owns the new
+`cli_internal`, `output_unavailable`, `storage_unavailable` and
+`config_write_refused` codes; ADR-0112 does not create a parallel error union.
+
+| Surface / origin | Proposed disposition |
+|---|---|
+| Workflow run/gate/budget resume: actual terminal or pause | Existing 0/1/3; actual RunHandle health has the precedence below |
+| Chat/chat resume: classified failed turn / deliberate end | Failed turn stays in the REPL; deliberate end is 4. No invented session 5–8 health channel |
+| Home: clean shell end / nested chat end / terminating external signal | Existing 0; consumes nested 4; actual signal 128+signo absent stronger observed disposition |
+| Standalone agent: actual turn outcome / terminating external signal | Existing 0/1; actual signal 128+signo absent stronger observed disposition |
+| Management/meta success / known operational failure | Existing 0 or classified 1; invalid invocation/schema remains 2 |
+| Typed corrupt/unreadable history or known departure-unacknowledged | Existing known operational 1/remedy, unless actual workflow health overrides |
+| Owned storage boundary: a DbOpenError with owned storage provenance, or filesystem EACCES/EPERM/ENOSPC/EROFS | Fixed `storage_unavailable`, operational 1; correct permissions/capacity before retry. Native import/ABI failures retain infrastructure 9, including constructor-time failures wrapped as open_failed. No arbitrary cause text |
+| Failed-output/EPIPE/write acknowledgement on any surface | Fixed `output_unavailable`, exit 9 unless actual stronger workflow health overrides |
+| Unexpected CLI throw, invariant, native import/ABI or wiring failure on any surface | Fixed `cli_internal`, exit 9 unless actual stronger workflow health overrides; never chat-end 4/Home success |
+| Recoverable unhandled background rejection | Keepalive; upgrade only otherwise clean 0 to 9, preserve established nonzero outcomes |
+| Fatal exception / rejected invocation | Stop admission and enter one bounded fatal shutdown; compute disposition from actual observations |
+
+Do not remap broad `CliErrorCode.internal` wholesale. Inventory each constructor,
+catch and direct forced-exit site before integration: workflow/gate departure,
+agent-run catch, chat slash/export/workflows/cost/doctor/compact and rebuild catches,
+Home initial/submit/clear/reseat arms, persister backstop and signal/force-quit
+paths. Known operational refusal stays inline where supported; unexpected faults
+must reach the invocation coordinator even if a balanced internal turn event was
+emitted first. That engine event alone cannot convert an escaping CLI fault to
+an ordinary turn outcome. Programmer-invalid DB URI is not a normal CLI
+storage-open failure; preserve its API validation boundary. Operational 1 after
+admitted work (including session publication/join failure) does not prove absence
+of paid/effectful work: retain inspect-before-repeat advice before correcting the
+storage issue. No healthy session receipt is inferred from its numeric exit.
+
+The Step 6 source inventory distinguishes the twelve existing literal
+`CliError('internal', ...)` constructors before runtime integration:
+
+| Existing owner | Count | Step 8 disposition |
+|---|---|---|
+| [Acknowledged stderr writer](../../../apps/cli/src/process/io.ts) | 1 | Output 9; a failed sink cannot acknowledge itself |
+| [Run departure](../../../apps/cli/src/commands/run.ts) and [gate departure](../../../apps/cli/src/commands/gate.ts) | 2 | Known operational 1, subject to actual workflow health |
+| [Media maintenance](../../../apps/cli/src/commands/media.ts) | 1 | Split actual storage 1, output 9 and unexpected 9 at their originating boundaries |
+| [Session export writer](../../../apps/cli/src/chat/export.ts) | 1 | Owned storage 1; preserve target-shape/existence refusal 2; unexpected 9 |
+| [Missing MCP consent wiring](../../../apps/cli/src/engine/mcp-servers.ts) | 1 | Infrastructure 9 before spawn |
+| [Job-control setup/disposal](../../../apps/cli/src/render/run-job-control.ts) | 2 | Infrastructure 9, with attempt-all cleanup and primary/health priority |
+| [Terminal suspension invariants](../../../apps/cli/src/render/suspend.ts) | 4 | Infrastructure 9; existing busy/no-renderer recoveries remain separate |
+
+The same inventory tracks workflow/gate/driver catches, every AgentSession/Home
+construction, submit and replacement catch, history/forced-exit and storage
+owners. The nine current CLI native-DB open invocations are four dispatch sites,
+three history helpers, gate resume and model pricing; the shared opener definition
+is not a tenth invocation. Minimal origin adapters land in Step 8 and the sole
+opener refactor remains last in Step 18. Best-effort catalog/overlay/outbox reads,
+ordinary doctor results and explicit benign engine races retain their recovery
+policies. Caught unknown faults and forced-success fallbacks require explicit
+coordinator routing; a blanket catch or broad internal-code rewrite is insufficient.
+
+Classify native storage errno only at the actual owned I/O boundary, not by
+examining arbitrary provider/plugin objects or private cause trees. Recognize
+actual typed DbOpenError without importing DB through the lightweight entry.
+The lazy runtime adapter supplies its classification. `DbOpenError.open_failed`
+alone cannot distinguish storage failure from an addon/ABI load inside the native
+database constructor; the actual creation boundary must supply that provenance.
+Existing CLI open wrappers
+that label runtime permission/capacity failures invalid invocation/2 deliberately
+move to operational 1. Step 6 defines this mapping and Step 8 installs minimal
+boundary adapters; Step 18 centralizes them after all callers have moved.
+
+#### Step 8a origin adapters
+
+The runtime classifier queries the read-only
+[`@relavium/db` storage-origin fact](../shared-core/database-schema.md#node-client-failure-provenance).
+A public `DbOpenError('open_failed', …)`, a copied error, an errno-shaped object
+or a convincing cause does not establish storage origin. The CLI's concrete
+directory-creation, permission-hardening, export-write and native editor temporary-directory/private-transcript-write operations classify
+`EACCES`, `EPERM`, `ENOSPC` and `EROFS` at those owned native calls. Shared local
+opening, run/gate opening and history helpers preserve these dispositions;
+centralizing all openers remains Step 18.
+
+Recognized storage failures project the fixed `storage_unavailable` message
+and operational exit 1. Unexpected native constructor/import/ABI failures and
+unknown throws project fixed `cli_internal` and exit 9. Runtime projection
+uses own data descriptors; reflection/accessor faults fall back to the same
+fixed infrastructure diagnostic without incoming message, cause or coercion.
+Exit classification comes from the CLI policy, not a mutable error exit field.
+Typed history corruption/unreadability, including the shared checkpoint suspension-corruption family, and known run/gate departure failures
+retain operational 1; URI/API validation, authoring and known maintenance
+refusals retain their existing invocation disposition.
+
+Session export preserves target existence/shape refusal 2. Media maintenance
+classifies maintenance failures before rendering its result; a failed result
+write is `output_unavailable`/9, not a storage or maintenance refusal. Failed
+acknowledged diagnostic writes also use `output_unavailable`/9. These boundary
+changes do not yet connect every command's escaping fault or forced exit to
+the invocation coordinator.
+
+A sticky observation record computes this total priority on return **and throw**:
+actual workflow health **8 > 7 > 5 > 6**, then fatal/output infrastructure **9**,
+then an actually terminating external signal **128+signo**, then ordinary outcome.
+5 and 6 remain the existing terminal-uncertainty versus fencing dispositions, not
+new session statuses. First workflow SIGINT remains cooperative run cancellation
+(normally 1); raw-mode chat Ctrl-C remains deliberate end 4. The recoverable
+background net is the separate keepalive rule in the table.
+
+The first termination request latches admission-stop and one cleanup operation.
+Later observed faults may upgrade the final disposition, never duplicate cleanup,
+renew a deadline or downgrade 9 to a signal/session-end result. A fault first
+observed after synchronous process exit cannot be included retrospectively.
+
+Exit **9** means CLI infrastructure could not complete reliably, including output
+delivery. It does not say the workflow failed. `cli_internal` and
+`output_unavailable` distinguish unexpected failure from classified broken output.
+After admitted paid/effectful work, **do not automatically repeat it**: inspect
+logs/ledger and external targets before recovery. It certifies neither absence of
+work nor receipt durability. Session surfaces expose stop/join and retained
+publication failures, not RunDeparture health; their 9 remedy carries the same
+uncertainty. If stderr fails, no diagnostic delivery is claimed; stdout is never a
+fallback diagnostic sink. Node may itself exit 9 for invalid runtime arguments
+before this entry runs; a CLI diagnostic distinguishes the handled case, not its
+numeric value alone ([Node exit codes](https://nodejs.org/docs/latest-v22.x/api/process.html#exit-codes)).
+
+### Invocation owners and fatal ordering
+
+**Step 8d activation independently accepted on `development`.** The [acceptance register](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-and-whole-step-8-acceptance--2026-10-17)
+records exact-source reviews, security and platform evidence. The registry
+exposes read-only termination and remaining-budget observations so an
+explicitly installed native adapter can react to autonomous owner failure.
+The adapter observes both real output streams and uses the same absolute
+three-second infrastructure budget through owner joins, registered terminal
+restoration and final diagnostic acknowledgement. Later observations can
+upgrade disposition or shorten that deadline; they cannot renew it. Fixed
+human/JSON diagnostic formatting does not inspect a thrown value, stack or
+cause, and stderr failure has no stdout diagnostic fallback.
+
+The successor background observer keeps the process alive, emits at most five
+fixed failure records plus one suppression record, and upgrades only an
+otherwise clean exit to 9. Existing nonzero outcomes remain intact. Importing
+these modules installs no listeners. Product bootstrap explicitly installs the
+coordinator and retains its actual loader/run root before entering deferred
+modules. The root retires before finalization so cleanup cannot join itself.
+An invocation-owned signal-custody lease leaves each actual surface's existing
+first-Ctrl-C and suspended-terminal behaviour authoritative; the bootstrap
+fallback covers loading, admission, metadata and post-surface gaps. Known runtime
+errors are projected before returning to the pure entry. Escaping infrastructure
+faults are observed before joins and diagnosed only after restored-terminal ACK.
+Cumulative review, security and platform acceptance remain separate obligations.
+
+One invocation-owned lightweight registry is installed before dynamic imports.
+Owners register before admitting work and retire only after actual settlement.
+Callbacks expose facts/capabilities specific to their owner, not a generic false
+health object:
+
+| Owner | Available observations / actions |
+|---|---|
+| Workflow | RunHandle departure/durability/terminal error; actual host joins and owned producer teardown |
+| Chat/Home/standalone AgentSession | Cancel/stop and existing whenHostSafeToClose join; retain rejection/publication failure. No invented RunDeparture, 5–8 or healthy receipt inference |
+| Management/maintenance command | Seal command admission, cancel captured input/probes and join actual raw work before releasing its database or maintenance resources. No AgentSession identity or workflow receipt health |
+| Terminal renderer/input | Stop redraw/input and SIGCONT reclaim; restore raw/paste/mouse/cursor/alternate-screen custody |
+| Native tool/MCP | Exact creation-specific registration, stop/join and the finite reap authority below |
+
+Stop every owner even if one callback fails, before awaiting one of them. Release
+terminal custody before the final fixed stderr diagnostic and its acknowledgement;
+otherwise alternate-screen restoration can erase it. Restoration control bytes use
+the existing terminal control sink, not diagnostic stdout. Keep host/DB close
+behind actual joins; fatal process termination does not grant safe store close.
+
+Model discovery preserves the distinction between its bounded public report and
+actual SDK/transport completion. The management refresh and shared Home/chat
+catalog port transfer their original work authority through the
+[provider seam](../shared-core/llm-provider-seam.md#model-discovery--the-listmodels-capability-adr-0064),
+as does the key-validation probe. A completed or timed-out report cannot release
+the database or signal custody while an admitted descendant remains pending.
+Normal cleanup may still wait after reporting a timeout; no new deadline or
+safe-close acknowledgement is invented.
+
+The fatal deadline is three seconds from the first infrastructure fault, including
+join, native helper/reap, restore and flush. Every callback/helper receives only the
+remaining common monotonic budget; no serial per-owner renewal. An already earlier
+bounded signal teardown can shorten it, never extend it. It is a responsive-event-
+loop backstop, not preemption of blocked JS/native work; native tests require an
+external watchdog. Normal receipt joins retain their actual protocol. A timer
+never acknowledges an owner. After expiry no unbounded async helper starts;
+finite nonawaited exit cleanup cannot certify native closure.
+
+Step 6's registry observes a creation-owned retirement promise separately from
+stop/join/reap attempts. Rejected or malformed retirement retains the owner;
+attempt completion and budget expiry never remove it. Successful retirement may
+carry a fixed failure classification, releases retained owner closures and keeps
+only bounded sticky classifications. Registering an idle session does not call
+its host-safe-close barrier: the runtime adapter first seals future admission,
+then joins actual lifetime work. Reentrant close requests share one operation;
+all stops enter before any join. Terminal restoration can progress while another
+owner's join is pending. Failure classification consumes the same absolute fatal
+budget. These are pure protocol controls, not native-close or store-close proof.
+
+A stop adapter synchronously seals its owner and makes a finite cancellation
+request even if an earlier owner consumed the budget. At zero remaining budget
+it cannot launch a new async helper; a returned promise may only observe work
+already started. Joins, restoration and reap helpers do not start after expiry.
+This attempt-all cancellation rule grants no retirement or safe-close ACK.
+
+### Session ownership implementation checkpoint
+
+**Step 8d independently accepted on `development`.** See the [acceptance register](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-and-whole-step-8-acceptance--2026-10-17).
+Standalone `agent run` now reserves its surface and host owners before asynchronous
+input, consent or session construction. The original invocation owns captured
+stdin cancellation, late builder adoption, producer/accounting joins, MCP cleanup
+and the shared database tail. A rejected durability barrier, callback-reported
+MCP close fault or database-close throw retains cleanup uncertainty; cancellation
+and the common fatal deadline do not acknowledge those obligations. Classified
+turn failures retain exit 1, invocation refusals retain exit 2, and unexpected
+infrastructure failures use exit 9. This surface has no workflow health authority
+to invent exits 5–8.
+
+Interactive session MCP consent uses captured prompt streams and the host cancellation signal.
+A late answer cannot append a grant. Prompt custody joins actual completion and
+acknowledged cursor delivery; a fulfilled Clack prompt is not aborted again during
+normal cleanup. Best-effort retention warnings retain their actual delivery tail
+and output-failure classification. The optional builder ownership port preserves
+accounting/publication failures across repeated host-safe-close checks.
+
+One-shot `agent run` first consumes and closes its mandatory prompt input. Its
+default MCP gate therefore has no remaining stdin prompt authority, even if
+captured TTY metadata still says interactive. An existing persistent grant or
+exact `--allow-mcp-stdio` digest can authorize the declared server; otherwise the
+gate refuses with exit 2 before starting a client. An explicitly supplied host
+consent gate retains its own authority; the default never reopens ambient input.
+
+Fresh, resumed, cleared and reseated standalone chats, and every actual pending,
+late or superseded Home chat, now retain their construction and post-build
+persistence/view setup independently of the UI's selected session. Equal durable
+session IDs do not identify an instance's cleanup. The shared database closes in
+the surface's final cleanup stage, after host roots and transferred producer,
+accounting, prompt, catalog and output work. Signal custody remains until that
+cleanup succeeds; a failed database close cannot remove the original signal path.
+
+Each actual Ink mount reserves custody before render, synchronously seals key,
+paste, mouse and submit dispatch, and joins complete entered suspension and
+job-control continuations before unmount and captured-input release. Native exit
+and final control delivery are separate acknowledgements. The persistent chat
+buffer retains all actual mounts and job bindings until their positive retirement;
+no-Ink job-control custody covers old-host cleanup as well as rebuild. Control
+delivery precedes native handoff and final buffer restoration precedes summary
+publication. Every new final write checks the original remaining budget.
+
+Home onboarding binds informational output and each select/password prompt to
+captured streams. The installed spinner's ambient-input path is excluded; a fixed
+verification notice supplies progress. Actual provider validation remains retained
+after its UX timeout or cancellation result. Every continuation rechecks admission,
+including the provider command's internal post-secret-read boundary before keychain
+and database mutation. Catalog discovery is joined before database cleanup and
+checks admission before publication; unexpected local clock/key/publication faults
+are observed before sibling discovery joins. Optional cache reads keep their
+existing recoverable UI policy.
+
+These contracts are covered by [Step 8d acceptance](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-and-whole-step-8-acceptance--2026-10-17), including complete
+cumulative reviews, separate security and current required platform evidence. Home
+post-chat snapshot failures reach the actual lifetime; ordinary slash notices
+are suppressed after owned stop, including delayed doctor/compaction results and
+export fault catches. Standalone shell rejection notices and directory-completion
+results also recheck the live input seal before publication; an already-entered
+native suspension still drains completely before unmount. Live classified refusals
+retain their inline warning, and clearing local busy state does not authorize a
+new notice. Home applies its permanent exit seal to deferred directory/file results,
+shell results and model refresh banners before changing business state. Local busy
+cleanup and already-entered producer/native joins still complete after that seal. The
+[session substrate checkpoint](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-session-substrate-checkpoint--2026-10-16)
+and [chat/Home checkpoint](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-chat-and-home-integration-checkpoint--2026-10-17)
+record their historical implementation scopes; the final acceptance above closes whole Step 8.
+
+### Management ownership implementation checkpoint
+
+**Step 8d independently accepted on `development`.** See the [acceptance register](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-and-whole-step-8-acceptance--2026-10-17).
+Management dispatch and the separate media-maintenance route reserve a command
+owner before entering work. Provider verification and both model-refresh axes
+retain actual operations beyond early report/failure results. Their original
+signal and admission checks prevent credential, catalog and output publication
+after stop. Captured secret input reserves close observation before iterator
+acquisition and joins actual native close on success, early refusal and failure,
+separately from `iterator.return()` or a cancellation/destruction request. A
+partially acquired iterator cannot retire the command or release its database
+while the consumed pipe remains live. A public `closed` flag does not establish
+close delivery; an unobserved preclosed source retains cleanup uncertainty.
+TTY refusal remains before consumption;
+non-native iterable sources retain their separate awaited-return contract.
+Headless plain/JSON chat likewise owns partial native readline construction and
+retains entered driver continuations through final callback removal and input
+pause. Deep-doctor probes belong to their actual chat/Home host;
+an ordinary failed probe remains a report, while its still-running producer
+remains owed.
+
+Command database cleanup follows roots and transferred work, with independent
+releases entered before any join. A failed close retains uncertainty and signal
+custody. Short resolver/pricing reads keep synchronous close-before-next-open
+ordering and retain their exact close capability if release fails; classified
+operational pricing refusals may still degrade. This is lifecycle integration,
+not the later sole-opener refactor.
+
+The original command, workflow or session surface captures a database's actual
+close capability before native setup, including partial acquisition through
+injected production openers. Returned wrappers cannot replace that capability.
+Release follows the owner's existing host/root/tail joins and precedes removal
+of its signal custody. A failed or unobservable release retains the same original
+finite-exit obligation. SQLite construction details have their canonical home in
+the [database contract](../shared-core/database-schema.md#concurrency--transaction-behavior).
+Optional pricing reads may degrade a classified operational storage refusal;
+unknown acquisition faults and failed native cleanup remain infrastructure 9.
+A later successful release permits retirement without erasing an earlier
+infrastructure observation.
+
+The standalone create wizard binds installed Clack prompts to captured streams
+and checks admission between answers and before writing. Its already-entered
+terminal restoration uses the original captured control capability, separately
+from guarded business output. No deadline certifies input, terminal or database
+release. Bootstrap/caught-fatal activation and management ownership are covered
+by the final [Step 8d acceptance](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-and-whole-step-8-acceptance--2026-10-17); earlier implementation checkpoints
+retain their historical scopes.
+
+### Workflow and terminal ownership
+
+Optional terminal effect retention and media GC check the original invocation
+remaining budget immediately before new maintenance. At zero they leave rows and
+bytes for a later eligible pass. An already-entered media sweep remains joined,
+including every entered grace/orphan deletion and CAS-shard enumeration branch
+when a sibling rejects. A synchronous deletion-entry refusal stops new entries
+but still joins previously entered deletions. Only then may the original failure
+reach the best-effort caller; an aggregate rejection alone never acknowledges
+sibling completion. This skips no engine, receipt, input, MCP or native
+database-close acknowledgement and never resets the absolute termination deadline.
+
+**Step 8c independently accepted on `development`.** The
+[acceptance register](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8c-acceptance--2026-10-16)
+records exact reviewed-source, causal, CI and platform evidence.
+Workflow `run`, human-gate resume and budget resume reserve their workflow and
+terminal owners before asynchronous preparation. The command explicitly activates
+the existing single fallback observer before native creation; an autonomous native
+fault needs no later business rejection or signal to start physical termination.
+Activation alone starts no timer, and ordinary retirement grants no physical-exit
+authority. One signal subscription covers
+secret input, consent, MCP discovery, engine construction, execution and actual
+cleanup. First SIGINT requests cooperative cancellation; a second SIGINT or
+TERM/HUP/QUIT uses the invocation's single finite-exit capability and unchanged
+absolute budget. A late engine/handle is adopted before further work and drains
+without acquiring new input after stop. A late consent answer cannot append a
+grant or enter secrets, MCP or business work.
+
+A successfully constructed MCP client returned after stop, and the finalizers
+of `run`, human-gate resume and budget resume, share the invocation's original
+remaining budget. At zero they retain the unacknowledged client and database
+obligations without entering another asynchronous SDK close. A close entered
+before expiry still needs its actual acknowledgement before history can close
+and signal custody can be removed; neither expiry nor a cancellation request is
+that acknowledgement.
+
+The driver keeps one primary reader across prompts. Actual departure health can
+progress while input is held; a rejected reader is never positive primary done.
+Publish actual money/effect/terminal health before rendering, finalization and
+maintenance can throw. Typed ownership-loss diagnostics retain their existing
+remedy. Stronger actual health wins over an opaque CLI fault; a competing
+infrastructure fault wins over ordinary success or invocation refusal. No timer,
+cancel request or iterator rejection grants permission to close history.
+
+Native prompt and Ink acquisition uses the invocation's captured input and
+stdout. A partially allocating renderer or job-control constructor transfers
+cleanup custody before native entry. Permanent stop prevents remount, redraw and
+SIGCONT reclaim, then independently attempts actual prompt/input/listener release
+and acknowledged cursor restoration. Prompt rejection or a missing Ink handle
+after a failed mount is not a release ACK. A remount already entered before stop
+must settle and release its final native state. JSON/CI/plain output acquires no
+TTY job-control or cursor custody merely because stdout has a TTY flag.
+
+Run/gate self-stop failures reach the original workflow owner before reversible
+listener recovery consumes them. An unexpected fault selects infrastructure 9
+and seals business rendering and reattachment; an already classified self-stop
+refusal retains its recoverable outcome. Ownerless bindings keep their existing
+recovery behaviour. A failed self-signal supplies no native-release or cursor
+delivery acknowledgement.
+
+MCP manager close failures can arrive through its callback even when `close()`
+fulfills. They retain the MCP/workflow obligation and keep DB close behind actual
+cleanup. An opaque database-close throw also supplies no release ACK; already
+durable workflow results remain intact while the CLI records its lifetime fault.
+Secondary warnings remain fixed and value-free. Known operational errors retain
+their classifier; unknown cleanup failures do not silently become success.
+
+The first owned infrastructure fault starts the common three-second backstop
+immediately, including when cleanup holds the rejection from the outer catch.
+The native bootstrap takes the original observer, deadline and physical-exit
+latch before runtime entry, invalidating any queued fallback completion. Actual
+terminal restoration and the sole fixed final diagnostic require native ACK
+within the unchanged budget. A background-only selected exit 9 does not become
+a fatal shutdown merely because a completed surface returns it. Whole Step 8 is
+[independently accepted](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-and-whole-step-8-acceptance--2026-10-17) with its cumulative review, security and
+actual-platform qualifications.
+
+### Native crash teardown scope
+
+**Step 8b independently accepted on `development`.** Actual process,
+OS-helper, editor and stdio MCP creation paths now receive the original invocation's
+native controller through run/resume, standalone chat, one-shot agent and Home
+builders, including pending/replaced builds. Construction is inert. Each actual
+creation registers before asynchronous facility verification and rechecks
+admission before native entry. Actual target and cleanup-helper close remain
+independent retirement obligations; command rejection and successful cancellation
+requests supply neither acknowledgement. Standalone clear/reseat also preserve
+the already-captured MCP consent gate.
+
+One removable invocation-bound exit callback iterates the existing registry's
+active native capabilities. There is no completed PID/group history or independent
+product MCP reaper collection. Workflow routing follows the ownership section
+above; Step 8d implements the corresponding session/management lifetimes and
+activates the product coordinator. Source fixtures retain their separately
+attributed explicit foundation tests; those fixtures alone do not certify product
+activation. Workflow/session/terminal retirement and safe DB close have separate
+acknowledgement obligations, covered by the accepted 8c/8d integration above.
+
+| Creation owner / platform | Permitted finite teardown |
+|---|---|
+| POSIX run_command | Its explicitly detached owned process group; retain the group token through bounded final reap even if the leader closes |
+| POSIX SDK-backed MCP | Its owned live PID only; SDK spawn is not detached. Never cast PID to negative PGID or kill the CLI's group; descendants are unclaimed |
+| Other POSIX child | Only the creation-specific PID/group authority actually registered; no ambient scan |
+| Windows supported child/MCP | Verified absolute taskkill with fixed `/PID <owned-live-root> /T /F`, shell=false; no cached closed root or image/remote/wildcard selectors |
+
+Resolve [taskkill](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/taskkill)
+from the trusted OS installation root, canonicalize/verify that fixed regular
+executable before tool/MCP spawn; never use workspace/PATH or model-supplied roots.
+Missing/invalid facility refuses Windows subprocess admission, with a fixed
+remedy. The OS root is trusted launching environment, not protection against an
+already hostile launching user/process. The helper is itself owned and its runtime
+fits the same remaining deadline; a successful request is not target close ACK.
+Its ordinary operational request limit is fixed at entry, independently of a
+later fatal deadline. Owner-scoped budget notifications only shorten/cancel that
+already-entered helper; expiry without a numeric deadline is zero remaining time.
+They cannot create another helper or renew either bound. Helper failure retains
+the fixed infrastructure diagnosis and permits only finite cancellation of the
+already-owned root/helper while their actual close remains owed. If the root
+finished cooperatively before a nonzero taskkill result, that closed/now-absent
+root does not create a new failure. Finite process-exit cleanup launches no helper
+or normal asynchronous shutdown, including when its own cancellation attempt fails.
+
+Use actual owner close observations. MCP's latched live PID list alone is not a
+ChildProcess handle or race-free liveness proof: a narrow owner adapter must expose
+its known-close/lifetime state, gate fallback on current ownership and perform a
+best-effort immediate liveness check. Preserve PID-reuse uncertainty. A closed
+Windows root cannot be used for `/T`; an explicitly created POSIX group may still
+need final reap after leader close, but bounded PGID retention is not reuse-proof.
+Escaped/reparented/detached descendants and PID/PGID races are uncontained; do not
+claim universal no-orphan behavior. Existing M/N isolation remains its own work.
+
+Required native controls distinguish POSIX group versus MCP PID, leader/root exit,
+actual close versus request, competing faults/signals, hostile Windows PATH,
+invalid facility, timeout and both failed sinks. Full Windows job-object/native
+containment would require a separate approved decision; none is added here.
+
+### Discovery DTO and one descriptor authority
+
+The new CLI-only DTO is `{ type: 'command_manifest', version: 1, path: string[],
+globalOptions: OptionDescriptor[], commands: CommandDescriptor[] }`. Root uses
+an empty path; command help resolves aliases then returns the canonical selected
+subtree including its executable/group root and descendants. Authored descriptor
+order is stable. No internal executor loader paths or functions are serialized.
+
+| Descriptor | Required contract |
+|---|---|
+| Command | Canonical `path: string[]`, description, existing effect/label metadata, `availability: 'implemented' \| 'not_implemented'`, aliases, ordered positionals/options, `allowExcessArguments: boolean`, and optional stable `executorId`/existing `modeScope` |
+| Alias | Explicit token `path`, `deprecated: boolean`; canonical and flat paths register separately |
+| Positional | Name/binding key, scalar value type, required, variadic, description |
+| Option | Binding key, canonical flag spelling(s), deprecated spellings, value arity (none/required/optional), mandatory-presence `required: boolean` (distinct from value arity), placeholder/type where applicable, repetition (single/repeatable/variadic), negation, description, existing default where applicable and conflict bindings |
+| Global option | Same grammar plus position-independent scope; include help/version and extraction-owned flags |
+
+A container can also execute, as chat/gate/models do. Optional executor binding
+does not force a leaf/group exclusive union. One enriched descriptor registry
+derives Commander grammar, this DTO, help and legacy `COMMAND_MANIFEST`; the
+legacy strict alias-free model projection and stable IDs remain compatible.
+Finite lazy executor bindings are checked both ways against descriptors.
+No second authored list of commands/arguments is permitted.
+
+Canonical paths are `chat resume`, `chat list`, `chat export`; flat aliases keep
+working. Canonical pricing flags are `--input-price` and `--output-price`, with
+old `--input`/`--output` deprecated. Preserve separate source-spelling presence
+until conflict checks; both spellings for one quantity refuse even when equal.
+Only then normalize to stable executor/model binding keys `input` and `output`
+and existing decimal parsing. Model DTO calls are not shell alias usage. Workflow input,
+reserved standalone-agent input and gate payload meanings stay command-scoped.
+All product-generated remedies/examples use canonical pricing/chat spellings;
+retained aliases do not cause the product to recommend its own deprecated syntax.
+
+Explicit `--help --json` (including `-h`) prints one DTO and exits 0, without
+services. Resolve known command/subcommand/alias grammar and `--` terminator;
+help may omit required values/positionals but cannot excuse unknown grammar.
+`--version --json` and bare `--json` remain human meta output. Unknown
+commands/options/excess args/value errors use fixed stderr hints, no arbitrary
+token echo or Commander suggestions. JSON last-resort errors are structured too.
+
+### Key removal and durable log preservation
+
+`provider remove-key` prompts only when stdin **and** stdout are TTY, JSON is
+off and CI is off. Prompt defaults no; `--force` skips it. Headless without force
+refuses with exit 2 **before DB/keychain construction**, and direct command-core
+calls enforce consent as well. Decline/Esc/prompt cancellation exits 0 without
+deletion; actual process signals retain their contract. Check abort/admission
+again after awaited consent immediately before synchronous delete. Preserve
+keychain-first/reference-clear order and truthful absent-key result, without
+claiming a cross-store transaction. Never read the credential for confirmation.
+
+G15 is refuted as a current shipping defect. Preserve human durable-event replay
+and actual JSON stored sequence/gaps. The engine/store/log regression must prove
+live fragments are emitted live but absent from durable history; no token
+coalescer or new persistence is authorized by that historical finding.
+
+
+#### Step 8d passive consumers and editor preparation
+
+Surface-owned session view/printer/JSON callbacks observe an unexpected failure
+through their original invocation before passive bus isolation can consume it.
+The callback seals before cancellation reentry; the core bus keeps its listener
+isolation. Headless business writes use the captured output origin, while entered
+terminal restoration retains its independent original capabilities. Actual producer,
+accounting, native close and output delivery remain independently owed.
+
+The native editor temp helper observes unexpected creation/write failures before
+partial removal can hold. Its existing classified `EditorOutcome` compatibility
+contract remains: missing editor and known operational refusals stay inline;
+unexpected native faults select infrastructure 9 through the original owner.
+Actual spawn ENOENT/EACCES remain inline only at concrete spawn origins. Rejected
+admission after ordinary stop is separate from a native spawn fault. Partial-removal
+failure reports cleanup uncertainty while retaining the exit net and original
+primary failure; observation does not acknowledge cleanup. Ownerless compatibility
+callers retain the existing outcome contract.
+
+A completed export's auxiliary provenance-row write remains best effort. Timestamp
+construction is outside that recovery scope, so an unexpected clock/format fault
+cannot become successful provenance recovery or cause a second scaffold write.
+Checkpoint loading likewise preserves original causes: typed inconsistent history
+remains operational 1 with inspection advice; an unexpected driver/wiring failure
+selects infrastructure 9 before original-owner cleanup.
+
+Budget, unpriced-model, withheld-effort and passive-error notification callbacks
+are bound at shared session-runtime creation to that actual host's owner. A failure
+in notification output or view publication is observed before advisory recovery;
+it stops further business admission without disabling captured terminal restoration.
+Successful passive-error reporting keeps its existing recoverable policy: the
+reported error argument alone does not become an infrastructure fault. Ownerless
+embeddings keep their callback compatibility. Missing local-MCP consent wiring
+uses the existing fixed infrastructure-9 classification before any native start;
+ordinary consent refusal and known cancellation retain their distinct outcomes.
+
+
+### Cooperative session finalization and passive notifications
+
+Normal owned JSON chat finalization (EOF, `/exit`, `/cancel` and first cooperative
+SIGINT) publishes the real synchronous `session:cancelled` while its original
+subscriber/output capability is still admitted, then seals further work in all
+cases. It observes the original persister refusal before waiting for producer tails.
+This terminal is not a provider/accounting/native cleanup acknowledgement: those
+actual joins still precede writer and database release. Fatal registry stopping
+seals admission before cancellation; cooperative finalization does not reopen an
+already-stopped callback or permit postfatal business output. A terminal-output
+failure retains the existing `output_unavailable` disposition and its private cause.
+
+Workflow effort, unpriced-model/modality and legacy-media-hold notifications bind
+to the original command lifetime before entering passive core recovery. The
+notification's own sink or formatter failure is observed before that recovery,
+seals reentrant delivery, and selects existing infrastructure disposition `9`
+unless actual workflow health `8 > 7 > 5 > 6` takes priority. Healthy warnings and
+successful reporting of an existing passive error retain their established
+behaviour. This does not turn the reported argument into a new fatal fault or
+replace captured terminal-restoration capabilities. Actual producer, receipt,
+input and native cleanup joins remain required.
+
+Deferred-checkpoint privacy notices use the original invocation's captured stderr
+and retain the actual delivery operation independently of the opened database.
+The successful open still transfers its connection to the caller; notice failure
+neither closes that connection nor repeats maintenance. A synchronous write fault
+seals invocation admission before the opener returns, and an asynchronous fault
+is observed when its delivery rejects. Both retain `output_unavailable` and exit
+`9`, subject to the same actual workflow-health priority. Database closure, stop
+requests and deadline expiry never acknowledge a pending notice delivery.
+Ownerless library calls retain their existing best-effort behaviour. A custom
+opener delegating to the default factories forwards the explicit notice context,
+alongside its existing native-close handoff.
+
+Resumed chat and Home effect disclosures bind publication, render acknowledgement
+and fallback stderr delivery to the original session owner before advisory
+recovery. Failed publication retains the audit rows and selects
+`output_unavailable`; an entered delivery remains owned until its actual
+settlement. Run/gate and one-shot retention warnings use their original command
+or session owner in the same way. A maintenance refusal with successful warning
+delivery remains best effort, and stopped one-shot cleanup still sweeps only its
+committed rows. Neither database closure nor an outer recovered helper promise
+acknowledges a pending notification. Ownerless library calls retain their existing
+best-effort behaviour.
+
+Home controller notifications observe their own unexpected listener failures through
+the original Home invocation before palette or other advisory recovery. Bare-Home
+`/doctor` retains its complete entered report operation through formatting and final
+publication; exiting Home does not acknowledge a still-pending report. Unexpected
+formatter, report or listener faults select infrastructure `9` with private original
+causes, while known diagnostic-check refusals remain an inline report. An obsolete
+report still cannot overwrite a newer prompt or session. Ownerless controller
+embeddings retain their existing compatibility behaviour.
+
+Compaction disclosures bind their complete returned publication or render-flush
+operation to the original host before core starts waiting for acknowledgement.
+Cancelling compaction may release its interactive wait and unused admission; the
+entered delivery still precedes host retirement and shared database closure. A
+late publication or flush fault reaches that original owner even after the
+compaction result is consumed. Unexpected faults select infrastructure `9`, and
+native sink refusal retains `output_unavailable`. An operation
+abort permits a subsequent turn but cannot restart the cancelled summary request.
+Full owner stop refuses notices that have not entered. Fresh, resumed, cleared,
+reseated and Home hosts share this boundary; absent callbacks and ownerless
+embeddings retain their existing behaviour, and one-shot execution gains no notice.
+
+Home onboarding observes an unexpected raw-input release or reclaim failure through
+the original invocation before reversible job-control recovery consumes it. The
+original private cause selects infrastructure `9` and stops further business entry;
+a classified operational refusal retains its existing inline behaviour. Failed
+reversible mode changes supply no final terminal-release acknowledgement. The
+original prompt and full cursor delivery must still settle before terminal and
+shared database release. Ownerless embeddings retain their existing best-effort
+recovery, and the finite process-exit restoration net grants no cleanup ACK.

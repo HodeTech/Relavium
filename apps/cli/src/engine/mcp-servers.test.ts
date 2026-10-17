@@ -848,7 +848,7 @@ describe('the consent gate is REQUIRED, not optional (ADR-0084 §1)', () => {
           return Promise.resolve(fakeClient());
         },
       }),
-    ).rejects.toThrow(/without a consent gate/);
+    ).rejects.toMatchObject({ code: 'cli_internal', exitCode: 9 });
     expect(started).toBe(0);
   });
 
@@ -874,7 +874,7 @@ describe('connectWorkflowMcp (run path)', () => {
     (toolIdsByServer: ReadonlyMap<string, readonly string[]>) => (): Promise<McpClient> =>
       Promise.resolve(fakeClient({ toolIdsByServer }));
 
-  it('refuses a stdio declaration when no gate was wired, naming the server (ADR-0084 §1)', async () => {
+  it('refuses missing stdio consent wiring as fixed infrastructure failure (ADR-0084 §1)', async () => {
     const def = wf(
       `    - { id: scanner, model: claude-sonnet-4-6, provider: anthropic, system_prompt: go, mcp_servers: [{ id: fs, transport: stdio, command: node }] }\n`,
     );
@@ -887,7 +887,7 @@ describe('connectWorkflowMcp (run path)', () => {
           return fakeStart(new Map())();
         },
       }),
-    ).rejects.toThrow(/without a consent gate.*fs|fs.*without a consent gate/s);
+    ).rejects.toMatchObject({ code: 'cli_internal', exitCode: 9 });
     expect(started).toBe(0);
   });
 

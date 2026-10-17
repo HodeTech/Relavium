@@ -1,4 +1,5 @@
 import {
+  RelaviumError,
   MEDIA_SURFACES,
   MODEL_CATALOG_SOURCES,
   type MediaSurface,
@@ -301,7 +302,7 @@ function toListing(row: ModelCatalogRow): ModelCatalogListing {
  * isolates a single corrupt row: the host D15 capability projection swallows THIS to defer one model, but must
  * let a genuine store fault propagate. Names a reason only — never the column bytes.
  */
-export class ModelCatalogCapabilitiesError extends Error {
+export class ModelCatalogCapabilitiesError extends RelaviumError {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
     this.name = 'ModelCatalogCapabilitiesError';

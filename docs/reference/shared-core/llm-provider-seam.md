@@ -266,7 +266,7 @@ interface LlmProvider {
   // Relavium ModelListing (no vendor models.list() type crosses). OPTIONAL (a provider without a list endpoint
   // omits it → host degrades to static-only). Bounded + abortable + secret-free; one bad row is dropped, a
   // breaking endpoint change throws a classified, key-redacted LlmProviderError. See "Model discovery" below.
-  listModels?(key: string, signal?: AbortSignalLike): Promise<ModelListing[]>;
+  listModels?(key: string, signal?: AbortSignalLike, options?: LlmInvocationOptions): Promise<ModelListing[]>;
 }
 
 // The per-modality capability matrix (ADR-0031 decision #3). Input composability is unconstrained
@@ -1225,7 +1225,7 @@ acceptance remain required; implementation of this contract alone does not close
 
 ### Model discovery — the `listModels?` capability ([ADR-0064](../../decisions/0064-live-model-catalog.md))
 
-`listModels?(key, signal?): Promise<ModelListing[]>` is an **optional, capability-varying** method (the same
+`listModels?(key, signal?, options?): Promise<ModelListing[]>` is an **optional, capability-varying** method (the same
 pattern as `generateMedia?` / `contextLimit?`): a provider without a live list endpoint omits it and the host
 degrades to the generated catalog snapshot ([catalog/snapshot.ts](../../../packages/llm/src/catalog/snapshot.ts)) for that provider. It
 returns **live discovery** — which model ids a given `key` can actually reach (tier/allowlist-gated). The live
@@ -1261,6 +1261,36 @@ inbound / strict outbound**: unknown vendor fields are ignored (additive drift i
 that yields no `id` is **dropped** at the mapper boundary, never throwing (one malformed row degrades a single
 model, not the whole provider); a breaking endpoint/shape change throws, which the host's per-provider refresh
 isolation catches. A per-provider filter keeps only **chat-capable text models**.
+
+**Original-invocation lifetime.** The optional third argument reuses
+`LlmInvocationOptions.retainWork`; existing two-argument implementations remain
+assignable. It is trusted process-local authority, never request/catalog data,
+and discovery invokes neither paid-invocation nor native-repair callbacks.
+The shared bounded helper transfers an aggregate before SDK construction and
+retains its exact collection promise. The existing public timeout stays bounded;
+success, timeout or cancellation retires future SDK entry without acknowledging
+already-entered work. Pagination reads and iterator cleanup retain their own
+actual completion.
+
+OpenAI-compatible (including DeepSeek and custom endpoints) and Anthropic clients
+bind the same aggregate into their fetch closures. An explicitly transferred
+transport/native-close child can outlive the SDK response and still holds the
+original owner. Gemini forwards the same authority into its transport; its
+default SDK list operation and pager are retained. The installed Gemini SDK has
+no supported per-client fetch hook for this API: these observable SDK operations
+do not certify opaque native undici socket-close acknowledgement or descendants
+an arbitrary foreign implementation fails to transfer. No global fetch override
+is installed by the product.
+
+Management and the shared Home/chat catalog port pass their original owner to
+every explicit/TTL refresh, separately retaining mapping and cache publication.
+The key-validation probe likewise forwards its existing work authority to
+`generate`. A bounded report may therefore be available while normal process
+retirement still waits for actual work. Original signal/fatal deadlines are not
+renewed, expiry grants no database-close permission, and post-stop discovery
+cannot publish fresh catalog rows. Calls without an owner retain their existing
+bounded API. Ignoring the optional argument supplies no hidden-work completion
+guarantee for a foreign implementation.
 
 Per-provider list-models endpoint contracts:
 

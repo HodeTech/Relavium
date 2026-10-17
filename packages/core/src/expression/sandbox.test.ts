@@ -7,6 +7,10 @@ import { beforeAll, describe, expect, it } from 'vitest';
 
 import { SandboxError } from '../errors.js';
 import {
+  createWorkflowContextProjection,
+  ownSecretInputNames,
+} from '../interpolation/provenance.js';
+import {
   createExpressionSandbox,
   hostErrorToSandbox,
   type EvaluateInput,
@@ -20,8 +24,24 @@ beforeAll(async () => {
   sandbox = await createExpressionSandbox();
 });
 
-function mkScope(partial?: Partial<ExpressionScope>): ExpressionScope {
-  return { inputs: {}, ctx: {}, outputs: {}, ...partial };
+function mkScope(
+  partial?: Partial<Omit<ExpressionScope, 'ctx' | 'deniedInputNames'>> & {
+    ctx?: Readonly<Record<string, string>>;
+    deniedInputNames?: readonly string[];
+  },
+): ExpressionScope {
+  const values = partial?.ctx ?? {};
+  return {
+    inputs: {},
+    outputs: {},
+    ...partial,
+    ctx: createWorkflowContextProjection({
+      values,
+      deniedKeys: [],
+      orderedKeys: Object.keys(values),
+    }),
+    deniedInputNames: ownSecretInputNames(partial?.deniedInputNames ?? []).deniedInputNames,
+  };
 }
 
 /** Run an evaluation expected to fail, returning the thrown SandboxError. */
@@ -639,7 +659,12 @@ describe('the scope namespaces have no prototype inside the VM', () => {
   // allows and cannot resolve — could find a truthy value for a node id that does not exist, and a
   // `condition` comparing it takes the wrong branch. ADR-0093's contract is that an absent output is
   // `undefined`; this pins that it holds inside the VM, not only at the boundary.
-  const scope = { inputs: { a: 1 }, ctx: { k: 'v' }, outputs: { real: 1 }, branches: [1, 2] };
+  const scope = mkScope({
+    inputs: { a: 1 },
+    ctx: { k: 'v' },
+    outputs: { real: 1 },
+    branches: [1, 2],
+  });
   const evaluate = (expression: string): unknown =>
     sandbox.evaluate({ expression, kind: 'merge_fn', scope });
 

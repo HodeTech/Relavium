@@ -2,6 +2,7 @@ import {
   collectDurableMediaHandles,
   type BudgetAllowanceState,
   type AgentTokenEvent,
+  type AgentReasoningEvent,
   type NodeCompletedEvent,
   type RunEvent,
   type UsageCoverage,
@@ -78,6 +79,8 @@ export interface RunViewState {
   readonly activeModel: string | undefined;
   /** The active node's streamed token text — bounded to the trailing {@link MAX_TOKEN_CHARS}. */
   readonly activeTokens: string;
+  /** Live reasoning tail, separate from answer text and never a durable transcript. */
+  readonly activeReasoning: string;
   /** Recent compact, secret-free tool-call / tool-result lines — bounded to {@link MAX_TOOL_LINES}. */
   readonly toolLines: readonly string[];
   /** The run-wide cost running total (integer micro-cents — 1e-8 USD; database-schema.md). */
@@ -121,6 +124,7 @@ export function initialRunViewState(): RunViewState {
     nodes: {},
     activeModel: undefined,
     activeTokens: '',
+    activeReasoning: '',
     toolLines: [],
     cumulativeCostMicrocents: 0,
     gapDetected: false,
@@ -247,7 +251,10 @@ function clip(text: string, max = 80): string {
  * token somehow precedes its `node:started` — otherwise RunApp's `nodes[activeNodeId]` is undefined and the
  * live region hides the tokens. Only upserts when the node is absent, so a real status is never clobbered.
  */
-function reduceAgentToken(base: RunViewState, event: AgentTokenEvent): RunViewState {
+function reduceAgentDelta(
+  base: RunViewState,
+  event: AgentTokenEvent | AgentReasoningEvent,
+): RunViewState {
   const switching = event.nodeId !== base.activeNodeId;
   const ensureNode =
     base.nodes[event.nodeId] === undefined
@@ -258,7 +265,18 @@ function reduceAgentToken(base: RunViewState, event: AgentTokenEvent): RunViewSt
     ...ensureNode,
     activeNodeId: event.nodeId,
     activeModel: event.model,
-    activeTokens: appendTokens(switching ? '' : base.activeTokens, event.token),
+    activeTokens:
+      event.type === 'agent:token'
+        ? appendTokens(switching ? '' : base.activeTokens, event.token)
+        : switching
+          ? ''
+          : base.activeTokens,
+    activeReasoning:
+      event.type === 'agent:reasoning'
+        ? appendTokens(switching ? '' : base.activeReasoning, event.text)
+        : switching
+          ? ''
+          : base.activeReasoning,
   };
 }
 
@@ -288,7 +306,8 @@ function reduceNodeCompleted(base: RunViewState, event: NodeCompletedEvent): Run
 /**
  * Reduce one canonical {@link RunEvent} into the next immutable {@link RunViewState}. Pure: no I/O, no
  * mutation of `state`. A token reduce is shallow (only the active buffer changes) so a high token rate
- * stays cheap. Unknown/forward event types fall through (the run-event union is intentionally lenient).
+ * stays cheap. Every member of the validated closed RunEvent union has an explicit disposition;
+ * a newly added member must be handled or deliberately ignored here.
  */
 export function reduceRunEvent(state: RunViewState, event: RunEvent): RunViewState {
   const seq = trackSeq(state, event);
@@ -326,10 +345,12 @@ export function reduceRunEvent(state: RunViewState, event: RunEvent): RunViewSta
         activeNodeId: event.nodeId,
         activeModel: undefined,
         activeTokens: '', // a new node's output region starts clean
+        activeReasoning: '',
       };
 
     case 'agent:token':
-      return reduceAgentToken(base, event);
+    case 'agent:reasoning':
+      return reduceAgentDelta(base, event);
 
     case 'agent:tool_call':
       return {
@@ -504,9 +525,16 @@ export function reduceRunEvent(state: RunViewState, event: RunEvent): RunViewSta
         warnings: pushBounded(base.warnings, `run timed out (${event.elapsedMs}ms)`, MAX_WARNINGS),
       };
 
-    default:
-      // Forward-compatible: a future RunEvent variant is reflected only in the seq/gap tracking above.
+    // Coverage is folded by the run store; approval is owned by the active gate prompter.
+    case 'cost:coverage_started':
+    case 'cost:usage_pending':
+    case 'cost:usage_disposition':
+    case 'agent:approval_requested':
       return base;
+    default: {
+      const exhaustive: never = event;
+      return exhaustive;
+    }
   }
 }
 

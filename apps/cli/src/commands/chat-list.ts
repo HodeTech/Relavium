@@ -1,3 +1,6 @@
+import type { LocalDbNoticeContext } from '../db/checkpoint-notice.js';
+import { acquireCommandResource, type CommandLifetime } from '../process/command-lifetime.js';
+import { closeQuietly } from '../process/close-quietly.js';
 import type { AgentSessionRecord } from '@relavium/shared';
 
 import { loadResolvedConfig } from '../config/load.js';
@@ -9,10 +12,15 @@ import { sanitizeInline } from '../render/tui/chat-projection.js';
 import { writeRecordLines } from '../render/records.js';
 
 export interface ChatListCommandDeps {
+  readonly commandLifetime?: CommandLifetime;
   readonly io: CliIo;
   readonly global: GlobalOptions;
   /** Injectable session-store opener — tests pass an in-memory store; production opens `~/.relavium/history.db`. */
-  readonly openSessionStore?: (homeDir: string) => OpenedSessionStore;
+  readonly openSessionStore?: (
+    homeDir: string,
+    captureClose?: (close: () => void) => void,
+    noticeContext?: LocalDbNoticeContext,
+  ) => OpenedSessionStore;
 }
 
 /**
@@ -28,7 +36,12 @@ export function chatListCommand(deps: ChatListCommandDeps): ExitCode {
     cwd: deps.global.cwd,
     configPath: deps.global.configPath,
   });
-  const opened = (deps.openSessionStore ?? openSessionStore)(homeDir);
+  const opened = acquireCommandResource(deps.commandLifetime, (captureClose) =>
+    (deps.openSessionStore ?? openSessionStore)(homeDir, captureClose, {
+      io: deps.io,
+      invocation: deps.commandLifetime?.invocation,
+    }),
+  );
   try {
     if (deps.global.json) {
       opened.store.visitSessionSummaries((session) => {
@@ -54,7 +67,8 @@ export function chatListCommand(deps: ChatListCommandDeps): ExitCode {
     }
     return EXIT_CODES.success;
   } finally {
-    opened.close();
+    if (deps.commandLifetime === undefined)
+      closeQuietly(deps.io, 'session store', () => opened.close());
   }
 }
 

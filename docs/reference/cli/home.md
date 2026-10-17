@@ -1,6 +1,6 @@
 # `relavium` — Bare-invocation interactive Home
 
-> Last updated: 2026-07-02
+> Last updated: 2026-10-17
 
 - **Status**: Reference — the Home surface is delivered by **2.5.B** (the bare-invocation Home, the read-only management strip over `history.db`, the single-ink-tree mode machine, one SIGINT/SIGTERM lifecycle, and bracketed paste); the in-app slash palette / `/help` / `/doctor` + the context-aware footer landed in **2.5.C**; and the reseat-less mode keymap (`Shift+Tab` / `/mode`) + the fail-closed per-tool approval + the `Esc` mid-turn abort landed in **2.5.E** ([ADR-0057](../../decisions/0057-cli-chat-modes-and-per-tool-approval.md)) — all **extend** this same canonical home. The Home-side **`/models` picker** landed in **2.5.G**: in the bare Home an accepted pick writes the global `[preferences].default_model` (+ the effort tier) for the *next* session ([ADR-0063](../../decisions/0063-cli-config-write-contract.md) §1, [ADR-0064](../../decisions/0064-live-model-catalog.md)); in the in-Home **chat** the same picker **reseats** the live session instead ([chat-session.md](chat-session.md#model-reseat-models)).
 - **Surface**: CLI (a bare `relavium` with no subcommand, on a TTY)
@@ -23,7 +23,16 @@ stdoutIsTty && stdinIsTty && !json && !isCiEnv(env)
 - `--json` never opens the Home (the machine contract wins).
 - The CI guard reuses the existing `isCiEnv` helper ([output-mode.ts](../../../apps/cli/src/process/output-mode.ts)), which treats any **non-empty** `CI` other than `false`/`0` as CI (`CI=true`/`CI=1` count; `CI=false`/`CI=0`/empty opt out) — so a runner that sets `CI=1` or allocates a pseudo-TTY cannot accidentally open an interactive Home and stall the pipeline.
 
-**Every non-interactive path is byte-for-byte unchanged**: a piped, `--json`, or CI bare invocation prints `program.helpInformation()` and exits `0`, exactly as before ([ADR-0049](../../decisions/0049-cli-machine-output-contract.md) — `--help` / `--version` / a bare no-command invocation are exit-`0` meta-operations). The Home adds a TTY-gated branch and **no** new IO surface. A Home build/config fault renders like any command fault (a config/invocation `CliError` → exit `2`; any unexpected throw, or an `internal` fault, → exit `1` with a generic message, no raw leak).
+**Every non-interactive path is byte-for-byte unchanged**: a piped, `--json`, or CI bare invocation prints `program.helpInformation()` and exits `0`, exactly as before ([ADR-0049](../../decisions/0049-cli-machine-output-contract.md) — `--help` / `--version` / a bare no-command invocation are exit-`0` meta-operations). The Home adds a TTY-gated branch and **no** new IO surface.
+
+A Home build/config fault uses the same [CLI failure classification](commands.md#failure-classification-and-remedies)
+as a command: invalid config/invocation remains exit `2`, known operational faults
+retain exit `1`, and an unexpected escaping throw uses the fixed `cli_internal`
+projection and exit `9`, without its incoming message, cause or stack in that
+projection. The legacy broad `internal` code is not remapped wholesale. Step 8d
+implements caught Home/session fault integration and the complete fatal coordinator;
+it is [independently accepted on `development`](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-and-whole-step-8-acceptance--2026-10-17). This does not turn a
+classified failed chat turn into a fatal CLI failure.
 
 ## First-run onboarding wizard (2.5.G S8)
 
@@ -135,14 +144,14 @@ Below **80×24** the Home **degrades** to a single line — `Terminal too small 
 
 ## Signal lifecycle & exit codes
 
-The Home owns **one signal lifecycle (SIGINT/SIGTERM/SIGHUP/SIGQUIT)** covering the Home, the in-Home chat, and MCP teardown (`closeMcp`), plus a synchronous `process.on('exit')` net behind all of them:
+The invocation-backed Home shares **one signal lifecycle (SIGINT/SIGTERM/SIGHUP/SIGQUIT)** across the Home, pending/replaced chat hosts and MCP teardown. Its actual owners follow the [canonical invocation ordering](commands.md#invocation-owners-and-fatal-ordering); the synchronous native exit reap is a last-resort request, not a cleanup acknowledgement:
 
 | Outcome | How | Exit code |
 | --- | --- | --- |
 | **Clean Home exit** | Ctrl-C / EOF in `home` mode | `0` |
-| **Signal-driven** | an external SIGINT / SIGTERM / SIGHUP / SIGQUIT (`kill -INT`, closing the terminal window, a parent's signal) | `128 + signo` — **`130`** (SIGINT) / **`143`** (SIGTERM) / **`129`** (SIGHUP) / **`131`** (SIGQUIT) |
+| **Signal-driven, without a stronger infrastructure fault** | an external SIGINT / SIGTERM / SIGHUP / SIGQUIT (`kill -INT`, closing the terminal window, a parent's signal) | `128 + signo` — **`130`** (SIGINT) / **`143`** (SIGTERM) / **`129`** (SIGHUP) / **`131`** (SIGQUIT); infrastructure faults follow the [canonical precedence](commands.md#failure-classification-and-remedies) |
 
-On an external signal the handler restores the terminal (unmount ink, disable bracketed paste, disable mouse reporting), tears the live chat — or an in-flight build — down **bounded** (a stuck MCP teardown can't hang the exit; a second signal force-exits immediately), closes the db once, and exits `128+signo` so a shell pipeline still detects the interruption.
+An external signal stops admission and requests terminal restoration and cleanup of every actual host, including an in-flight build. Repeated signals share the original finite deadline and cannot restart cleanup or force an immediate second-signal exit. The physical exit backstop bounds the invocation; it does not certify terminal, MCP or database release. The shared database closes only after actual host/work settlement, and failed or held cleanup retains its owners and signal custody. Infrastructure faults may strengthen the final disposition; read the [canonical remedies](commands.md#failure-classification-and-remedies) before repeating uncertain work. The ownerless library compatibility path is not this product invocation lifecycle.
 
 A keyboard Ctrl-C does **not** normally reach the process as SIGINT (raw mode), so the controller handles it (Home → `0`, chat → `/cancel`). There is **one exception**: while a `/scrollback` or `/edit` suspension owns the terminal, ink has turned raw mode off and the kernel delivers a real SIGINT. That signal belongs to the hatch — the Home's handler drops it (`suspendPort.isSuspended()`), the hatch's own listener resumes the renderer, and the session survives. An external SIGTERM/SIGHUP/SIGQUIT still tears down, suspended or not.
 

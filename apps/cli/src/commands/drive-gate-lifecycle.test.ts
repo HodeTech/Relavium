@@ -1,9 +1,11 @@
+import { toUserFacing } from '../process/errors.js';
 import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setImmediate as turn } from 'node:timers/promises';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
+import { createCliInvocation } from '../process/invocation.js';
 import { reconstructCheckpointState, type RunStore } from '@relavium/core';
 import {
   createClient,
@@ -193,6 +195,7 @@ for (const mode of [
                   },
                 }
               : {}),
+            invocation: createCliInvocation({ exit: vi.fn(), setExitCode: vi.fn() }),
             openRunStore: (workflow) => {
               const store = createRunHistoryStore(db.db, {
                 uuid: randomUUID,
@@ -361,7 +364,8 @@ for (const mode of [
           .catch((error) => {
             commandError = error;
             settled = true;
-            if (mode === 'suspend-error') return 1;
+            if (mode === 'suspend-error' || mode === 'finalize-error-signal')
+              return toUserFacing(error).exitCode;
             throw error;
           });
         if (terminalDuringPrompt) {
@@ -475,11 +479,13 @@ for (const mode of [
           const events = store.loadRunEventLogForReplay(runId);
           const terminal = events.at(-1)?.type;
           if (mode === 'suspend-error') expect(commandError).toBe(suspendError);
+          if (mode === 'finalize-error-signal') expect(commandError).toBe(stopError);
           expect(lateWrites).toBe(0);
           expect(closes).toBe(1);
           expect(await createRunLeasePort(store).read(runId)).toBeUndefined();
           expect(process.listenerCount('SIGINT')).toBe(signalBaseline);
-          expect(summaries).toHaveLength(1);
+          const infrastructureFault = mode === 'suspend-error' || mode === 'finalize-error-signal';
+          expect(summaries).toHaveLength(infrastructureFault ? 0 : 1);
           if (mode === 'stable-pause') {
             expect(exit).toBe(3);
             expect(terminal).toBe('run:paused');
@@ -514,10 +520,10 @@ for (const mode of [
                 ).toMatchObject({ settled: false, open: true, closes: 0, summaries: 0 });
             }
           } else {
-            expect(exit).toBe(1);
+            expect(exit).toBe(mode === 'suspend-error' || mode === 'finalize-error-signal' ? 9 : 1);
             expect(calls).toBe(0);
             expect(terminal).toBe('run:cancelled');
-            expect(summaries[0]).toContain('run cancelled');
+            if (!infrastructureFault) expect(summaries[0]).toContain('run cancelled');
             expect(trace.indexOf('close')).toBeGreaterThan(trace.indexOf('acked-run:cancelled'));
             if (signalDuringSuspend)
               expect(prompts, 'cancellation during Ink suspend must suppress first card').toBe(0);

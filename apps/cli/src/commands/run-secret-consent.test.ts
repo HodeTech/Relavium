@@ -15,7 +15,10 @@ import { captureIo } from '../test-support.js';
 import { runCommand } from './run.js';
 
 const { prompt } = vi.hoisted(() => ({ prompt: vi.fn(() => Promise.resolve(false)) }));
-vi.mock('../mcp/consent-prompt.js', () => ({ createConsentPrompter: () => prompt }));
+vi.mock('../mcp/consent-prompt.js', () => ({
+  createConsentPrompter: () => prompt,
+  createBoundConsentPrompter: () => prompt,
+}));
 
 let root: string;
 let priorHome: string | undefined;

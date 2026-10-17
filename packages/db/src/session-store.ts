@@ -1,4 +1,5 @@
 import {
+  RelaviumError,
   AgentSessionSchema,
   canonicalJson,
   SessionMessageSchema,
@@ -71,7 +72,7 @@ export interface SessionMessageMeta {
   readonly finishReason?: string;
 }
 
-export class SessionMessageBoundaryError extends Error {
+export class SessionMessageBoundaryError extends RelaviumError {
   readonly code: 'message_invalid' | 'metadata_invalid';
   constructor(code: 'message_invalid' | 'metadata_invalid') {
     // Unknown property names and JSON syntax diagnostics can themselves contain tool content. Refusal

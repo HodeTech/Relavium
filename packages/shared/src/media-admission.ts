@@ -1,3 +1,5 @@
+import { RelaviumError } from './relavium-error.js';
+
 import { MEDIA_HANDLE_PATTERN, mediaModalityOf, type DurableMediaMeta } from './content.js';
 
 export const MAX_MEDIA_OBJECT_BYTES = 25 * 1024 * 1024;
@@ -51,7 +53,7 @@ const MESSAGES: Readonly<Record<MediaAdmissionErrorCode, string>> = {
 function isMediaAdmissionErrorCode(value: unknown): value is MediaAdmissionErrorCode {
   return typeof value === 'string' && Object.hasOwn(MESSAGES, value);
 }
-export class MediaAdmissionError extends Error {
+export class MediaAdmissionError extends RelaviumError {
   readonly code: MediaAdmissionErrorCode;
   constructor(code: MediaAdmissionErrorCode) {
     super(MESSAGES[code]);

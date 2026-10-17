@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 import { createClient, createSessionStore, runMigrations, type DbClient } from '@relavium/db';
 import { AgentSchema, type AgentSessionRecord, type SessionMessage } from '@relavium/shared';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { OpenedSessionStore } from '../history/session-open.js';
 import { EXIT_CODES } from '../process/exit-codes.js';
@@ -103,6 +103,9 @@ describe('chatExportCommand (2.P)', () => {
       );
       expect(notice.trim().split('\n')).toHaveLength(1);
       expect(`${out()}${notice}`).not.toContain('PRIVATE_');
+      expect(err()).toContain(
+        'Historical agent snapshots may require edits to pass current validation before running.',
+      );
       expect(out()).not.toContain('scaffold;');
       expect(readFileSync(join(cwd, 's1.relavium.yaml'), 'utf8')).toContain(
         'PRIVATE_USER_SENTINEL',
@@ -134,6 +137,19 @@ describe('chatExportCommand (2.P)', () => {
     expect(out()).toBe('');
     expect(readFileSync(path, 'utf8')).toBe('existing artifact');
     expect(opened.store.loadFull('s1')?.session.status).toBe('active');
+  });
+
+  it('preserves the written artifact but does not swallow a native invalid-timestamp fault as provenance refusal', () => {
+    const { io, out, err } = captureIo();
+    const update = vi.spyOn(opened.store, 'updateSession');
+    expect(() =>
+      chatExportCommand({ sessionId: 's1', force: false }, { ...deps(io), now: () => Number.NaN }),
+    ).toThrow(RangeError);
+    expect(update).not.toHaveBeenCalled();
+    expect(existsSync(join(cwd, 's1.relavium.yaml'))).toBe(true);
+    expect(err()).not.toContain('could not mark the session exported');
+    expect(out()).toBe('');
+    update.mockRestore();
   });
 
   it('writes the scaffold, marks the session exported, and prints the path (exit 0)', () => {

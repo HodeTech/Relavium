@@ -515,6 +515,222 @@ author-build attribution. No provider/keychain/user-history access or paid reque
 was used. These sittings do not substitute for final fresh build, CI, native Windows,
 bare/enforced coverage, physical mechanism evidence or independent whole-wave rounds.
 
+### Sitting: Wave 3 declared-source secret flow — ADR-0113 (2026-10-16)
+
+A NEW independent cumulative sitting is **clean** at `5d8c0b0c`. The parent reads
+the full report and joins its mandatory checklist with the separate two NEW
+complete correctness rounds in the [Step 3 acceptance register](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-3-acceptance--2026-10-16).
+Earlier nonclean and interrupted sittings remain nonclean/incomplete; they are
+not inherited as acceptance.
+
+| Reviewed control | Actual evidence |
+|---|---|
+| Owned source classification and raw-value exclusion at actual producers | Existing linear graph, frozen definitions shared by analysis/resolution, immutable input membership, fresh/resume/quoted preparation and caller-mutation regressions |
+| Public text and isolated VM consumers | Whole-template refusal before capabilities/defaults, required empty-text metadata, actual QuickJS/standard handlers, private transport, original deadline, result/error parity and finite observed-access controls |
+| Real persistence and meaningful positives | Actual CLI host + file-backed SQLite; exact clean event/step/run outputs, nonempty scans of all three required columns, downstream gates and same/fresh-engine resupply |
+| Load-bearing controls and baseline provenance | Independent inspection of nine fixed/removal/restored cohorts / 27 zero-unhandled receipts and retained baseline source/native identities; author execution and reviewer inspection remain distinct |
+
+Fresh reviewer execution passes **19 files / 1,156 tests**, zero skips. Nine former
+primitive discrepancies now require actual baseline equality. No unresolved
+confidentiality, private-arm or ambient-authority finding is verified. Unchanged
+provider/keychain/network/desktop paths are explicitly not newly recertified;
+no real key, provider request, network target or production storage is exercised.
+Optional external tool provenance remains unverified with no current mapping
+producer. Raw trusted inputs/resolvers/custom executors and arbitrary/historical
+content retain their documented limits; no universal content scrubbing, history
+rewrite or attempted-access detector is claimed. Exact contracts remain in the
+[expression specification](../reference/shared-core/expression-sandbox-spec.md#secret-context-boundary).
+
+### Sitting: Wave 3 tool admission and alias-safe projections (2026-10-16)
+
+A NEW independent cumulative sitting is **clean** at `25cac33a`. Fresh execution
+passes **18 files / 680 tests**, zero skips. The parent reads the full report and
+its subsequent two-document revalidation through `fd54e22a`; all 46 production/test
+TypeScript paths, including nineteen production files, retain identical bytes.
+The revalidation executes no new tests. The [Step 5 acceptance register](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-5-acceptance--2026-10-16)
+joins this sitting with the two separate new complete correctness rounds.
+
+The sitting traces effective UTF-8 argument admission before approval/effect/host
+work, all four ancestor-path guards, secret/media projections, actual reference
+replay and native SQLite digest distinctions, immutable filesystem authority,
+conditional HTTP host wiring, actual Git gate denial and cancellation tails.
+It independently inspects all 31 retained local causal source hashes; it does not
+claim new mutation execution. MCP private deduplication remains distinct from
+persisted consent authority. Deliberate sanitized-digest equality, string-result
+in-memory limits, optional unproduced tool provenance and arbitrary content retain
+their documented qualifications. No universal secret scrubbing, OS isolation,
+new network authority, provider/keychain operation, paid request or platform
+recertification is claimed. Full-wave publication remains Step 19.
+
+### Sitting: Wave 3 pure process and discovery boundaries (2026-10-16)
+
+A NEW independent cumulative sitting is **clean** at `f3cab0db`. Fresh execution
+passes **14 files / 340 tests**, plus one acceptance-tool test, with zero skips.
+The parent reads the full report. The [Step 6 acceptance register](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-6-acceptance--2026-10-16)
+joins this sitting with the two separate new complete correctness rounds.
+
+The sitting covers pure flag and filesystem-root syntax, exact secret forwarding,
+fixed CLI diagnostics, public descriptor projection, kind-specific owner retirement,
+reentrant cancellation and the one absolute fatal budget. Expiry does not grant
+retirement or host-safe-close acknowledgement; finite cancellation still reaches
+every live owner at zero remaining budget. Fourteen causal cohorts / 42 structured
+runner receipts and two selected existing secret controls are independently audited,
+including restoration and physical manifests. This audit is not new mutation
+execution or a complete secret-control family capture. Actual native process,
+terminal, sink and RunHandle/AgentSession adapters remain Step 8; installed package
+and whole-wave claims remain their later gates. No provider, keychain, paid request,
+new network authority or native-platform recertification is claimed.
+
+### Sitting: Wave 3 guarded runtime and emitted package boundaries (2026-10-16)
+
+A NEW independent cumulative sitting is **clean** at `6ffdd63e`. Fresh execution
+passes **10 files / 391 tests**, with two established Windows-only skips, and
+**86 tooling tests**, zero skips. The untouched compiled entry passes 175 native
+controls plus four additional debug/JSON import-failure controls on macOS /
+Node 22.23.1. All 24 emitted JS digests match the accepted artifact; all seventeen
+external dependencies remain declared. The parent reads the complete report.
+The [Step 7a acceptance register](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-7a-acceptance--2026-10-16)
+joins this sitting with both separate complete correctness rounds.
+
+The sitting verifies exact scrubber/error-base extraction, root/leaf identities,
+unchanged filesystem authority, admission before service composition, one offline
+catalog attempt and current DB cutover, fixed literal loader edges and all-output
+closure. Native witnesses remain observable after swallowed refusal and constrain
+synthetic paths, network, subprocesses, output bytes and owned cleanup. It audits
+eighteen direct causal receipts and fifteen selected physical phases, preserving
+their different source/dependency and precommit scopes. It does not claim fresh
+mutation execution or complete family capture. Existing finite redaction and
+cooperating-host limits remain explicit. Installed tarballs, minimum/current
+platform consumers, native owner/fatal integration, maps/custody and whole-wave
+publication retain Steps 7b, 8, 9 and 19. No real provider, keychain, credential,
+billing or release operation is performed.
+
+### Sitting: Wave 3 installed-consumer lifetime and publication (2026-10-16)
+
+A NEW independent affected cumulative sitting is **clean** at `c836ffe6`, after
+the completed-consumer correction. Fresh execution passes **61 tooling tests**
+and **nine independent copied-launcher refusal probes**, with zero skips. A real
+copied SQLite addon loads only in the joined worker; its cleanup owner forbids
+native loading. Wrong process/source/artifact/runtime identities, early success
+followed by failure, oversized/symlink reports and required cleanup failure refuse.
+Secondary cleanup or sink failure preserves Error/null/undefined primary outcomes.
+The parent reads the complete report and both separate complete correctness rounds.
+
+The sitting independently checks actual successful Windows/aggregate job logs,
+the original remote tarball and all four strict public receipts. Public outputs
+exclude private worker identities, support paths and synthetic request bodies.
+Explicit environments, bounded shell-free processes, archive/source binding,
+unchanged grant/custody policy and exact-count/restoration obligations remain.
+The [Step 7 acceptance register](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-7b-and-whole-step-7-acceptance--2026-10-16)
+joins source and artifact evidence. This is not a new all-path generic review,
+real keychain/provider exercise, full-CI claim or native fatal-owner integration.
+Steps 8/9/10/19 and existing cooperating-host limits retain their distinct scope.
+
+### Sitting: Wave 3 storage-origin and inert native foundation (2026-10-16)
+
+Separate clean sitting at `e0a5ae19981e749a75455e6b5698c806d9f1c674`, independent
+of the two complete cumulative correctness rounds. All **26 full files / 525 tests**
+pass without skips; five additional independent probes cover private-origin
+cloning, foreign client substitution, hostile reflection and inert imports.
+The sitting inspects the retained eleven local controls and all 33 completed
+zero-unhandled receipts, preserving selected/uncommitted-source attribution.
+Fixed diagnostics expose no raw throwable/cause, storage authority remains a
+read-only identity fact, and native fixture expiry supplies no receipt or safe
+DB-close ACK. No confirmed finding or new deferral remains. Production owners,
+process-tree teardown and all-surface activation remain 8b–8d. The
+[acceptance register](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8a-acceptance--2026-10-16)
+owns exact execution/platform limits; detailed review records remain local and
+Git-ignored.
+
+### Sitting: Wave 3 creation-owned native processes (2026-10-16)
+
+NEW separate complete clean sitting at
+`e16a7659d5855dcd0cb75e659573cc218152e139`, independent of both NEW cumulative
+correctness rounds after the canonical-reference correction. The unchanged base
+`d9625ff0` yields 121 complete paths / 488 zero-context hunks / 36 whole added
+files; all 48 changed test files pass 1,100 cases with one actual-Windows-only
+local skip. Six corrected independent boundary probes pass. The initial probe
+source/dist identity mismatch remains qualified in its private record. The parent
+reads the full report and all file assessments and verifies the retained pins.
+
+The sitting independently audits both complete raw native/forwarding captures,
+the original package ZIP and all four required same-tarball consumer ZIPs.
+Execution is `ab50be11`; current source/tool, dependency and runtime equivalence
+is checked separately. Actual Windows, macOS, Linux and exact Node 22.0.0 Linux
+receipts pass, and full CI 38904219484 has completed successfully. Public success
+receipts do not provide remote private per-mode journals. No real credential,
+provider call, GUI/editor session or payment is exercised.
+
+Fixed projection privacy does not certify unchanged legacy verbose stack
+confidentiality; their final integration remains 8d. Actual native close is not
+receipt ACK, synthetic native access failure is not an OS permission-fault
+experiment, and owned group/PID semantics are not universal containment. No new
+confirmed finding or deferral remains in 8b. The [acceptance register](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8b-acceptance--2026-10-16)
+joins exact pins and limits. Workflow/terminal integration in 8c, product native
+activation in 8d and whole-Wave-3 acceptance remain open.
+
+### Sitting: Wave 3 workflow and terminal ownership (2026-10-16)
+
+A NEW separate complete cumulative sitting is **clean** at
+`dbab25d85a2c4ae97c252cdaaf47921648e245af`, independent of both NEW clean
+correctness rounds after the first implementation's verified corrections. The
+mandatory base `d9625ff0` yields **164 paths / 770 zero-context hunks / 54 whole
+added files**. Fresh execution passes **26 files / 380 tests**, with one
+actual-Windows-only local skip, and **22 tooling tests**. The parent reads the
+complete report and every substantive assessment, and independently verifies all
+file/hunk and retained-artifact pins. The report SHA-256 is
+`f9776b8f4499877d085400069bedfa7c82adcc153cb643f2c1fed61e15ade2e7`.
+
+The sitting independently audits all **13 mechanisms / 39 completed raw causal
+phases**, their zero-unhandled receipts, source/dependency/runtime identities,
+exact restoration and bounded physical inventory. It also inspects the original
+package and all four same-tarball consumer ZIPs. Full CI **38936742126** now
+passes all fifteen jobs at the reviewed source. Actual current Windows, macOS,
+Linux and exact Node 22.0.0 Linux installed consumers pass; local simulated
+Windows protocol controls remain separately attributed. Public success receipts
+provide no remote private per-mode worker journal.
+
+The [acceptance register](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8c-acceptance--2026-10-16)
+records exact counts, digests and limits. The native workflow-cleanup fixture
+uses actual SQLite and an MCP manager with synthetic connections, not a real MCP
+subprocess. The installed native case proves creation-owned offline agent
+tooling, not the autonomous WorkflowLifetime fault on actual Windows. Actual
+native closure is not persistence ACK; expiry never grants store-close permission.
+Fixed projections do not certify unchanged legacy verbose stacks. No real
+provider, keychain, editor, operator TTY or payment is exercised. No confirmed
+finding or new deferral remains in 8c. Session/terminal integration, global native
+activation and final acknowledged diagnosis remain Step 8d; whole Step 8 and
+whole-wave acceptance are still open.
+
+### Sitting: Wave 3 session/terminal ownership and fatal activation (2026-10-17)
+
+A NEW separate sitting is **CLEAN** at
+`c83c8575b0baaa9bf20765b03dffb00623ed96c6`, independent of the two NEW
+complete cumulative correctness rounds. Its inventory spans Step 7 `d9625ff0`
+through the current **342 paths / 1,842 hunks**, with full bodies for 71 critical
+ownership/tooling paths and explicit changed-caller/test/document scope and
+exclusions elsewhere. This focused sitting is not a full-body correctness
+review of all 342 paths. Root reads the complete original report and every scope
+assessment/exclusion and independently verifies source and artifact pins.
+Report SHA-256: `caa33566005c53a9036f589224584d38a0284cf7d9d2c4628434fc014261d325`.
+
+Fresh execution covers **75 complete files / 1,105 passes / one actual-Windows-only
+local skip**, with explicit runtime errors=[], completed Vitest close and actual
+Node/outer joins. The audit covers captured input/output and secret custody,
+fixed fault projection, original-owner native PID/PGID authority, partial
+acquisition and transferred work, MCP consent/discovery, session/Home/terminal
+restoration and receipt-versus-cleanup acknowledgement boundaries. No confirmed
+finding or new deferral remains. [Final Step 8 acceptance](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-and-whole-step-8-acceptance--2026-10-17) separately
+joins successful full CI and all four actual same-tarball consumers at this source.
+
+Parent aliases do not prove native-child source/dist equivalence. Existing-dist
+smokes, simulated Windows protocols and synthetic output/prompt edges retain
+their qualifications. No operator TTY, real provider/keychain, paid operation,
+opaque native undici close, universal descendant containment, unchanged legacy
+verbose-stack secrecy or complete vulnerability-database audit is certified.
+Actual native close is not a receipt ACK; expiry never grants DB-safe-close
+permission. Steps 9–19 and whole-Wave-3 acceptance remain open.
+
 ## Sandbox and tool policy (`run_command`, node tools, secret inputs)
 
 This is the **binding home** for the tool-policy rules; the rationale is
@@ -613,16 +829,21 @@ security invariants** a review must confirm are:
   exist *inside* the VM but are contained — they reach no host reference and no forbidden capability,
   so they are harmless; the guarantee rests on the isolation + capability removal, not on deleting
   every reflective handle to `Function`.
-- **JSON-only marshaling, immutable global.** Scope crosses the boundary as plain JSON (host
+- **JSON-only marshaling, immutable scope.** Scope crosses the boundary as plain JSON (host
   `stringify` → VM `parse`), so no live host object/getter/function leaks in and a `{"__proto__":…}`
   in model/tool-derived `run.outputs` cannot poison the prototype chain; each binding is installed
   non-writable/non-configurable over a deep-frozen value.
-- **Deterministic within caps; caps are non-idempotent safety nets.** A successful evaluation is a
-  pure function of the scope (no clock/RNG/async). The wall-clock timeout, memory, and stack caps are
-  safety nets, not results — a trip surfaces as a typed `sandbox_error`, never a stable value.
-- **Secret-free, scrubbed errors.** Secrets are never injected (ADR-0029(c) gate + an injection-time
-  filter); a `sandbox_error` message is the code + a generic string — never the expression source, a
-  variable name, a scope value, or a host stack.
+- **Deterministic within caps; caps are non-idempotent safety nets.** No clock/RNG/async is
+  supplied. Uncaught resource failures surface as typed `sandbox_error`; a caught pre-accessor
+  stack failure can return a clean fallback without an observed denial. The
+  [finite denial contract](../reference/shared-core/expression-sandbox-spec.md#private-evaluation-and-finite-denial)
+  owns this installed-VM limit; do not claim universal attempted-read detection.
+- **Declared-source exclusion and fixed public errors.** Owned provenance excludes newly
+  declared secret-input/context values before VM injection and preflights public templates.
+  Observed denied access uses the fixed private denial arm; ordinary `sandbox_error` messages
+  also exclude source/value/stack text. Private detail/cause and historical outputs can still
+  contain sensitive data and are not safe public/logging fields. Exact scope, transport and
+  historical-data limits belong to the [expression specification](../reference/shared-core/expression-sandbox-spec.md#secret-context-boundary).
 
 ## Prompt-injection posture
 

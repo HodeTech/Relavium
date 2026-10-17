@@ -11,7 +11,11 @@
 
 import { byCodeUnit, type ErrorCode, type MaskedSecret } from '@relavium/shared';
 
-import { SandboxError } from '../../errors.js';
+import { SandboxError, WorkflowContextError } from '../../errors.js';
+import {
+  createWorkflowContextProjection,
+  ownSecretInputNames,
+} from '../../interpolation/provenance.js';
 import type { ExpressionScope } from '../../expression/sandbox.js';
 import type { NodeExecContext, NodeOutcome } from '../node-executor.js';
 
@@ -47,12 +51,10 @@ export function cancelled(): NodeOutcome {
  * silently false. It draws the boundary that dag.ts's parse-time scan then enforces, and it makes the
  * scope a static, plan-derived property that is identical on a replay by construction.
  *
- * **Secret invariant (load-bearing):** this does NOT re-mask — it passes node outputs through verbatim.
- * The guarantee that `run.outputs` never carries a raw `secret`-typed value rests entirely on the
- * **`input` handler masking at the ingress** (io.ts `maskSecretInputs`) and on every expression handler
- * reading inputs through {@link buildExpressionScope} (also masked). Any future node-type handler that
- * writes `ctx.inputs`-derived data into its returned output MUST mask it (`maskSecretInputs`) first, or a
- * raw secret would enter `run.outputs` here unmasked and then a `node:completed` event payload.
+ * This projection preserves upstream outputs verbatim; it does not scrub historical or arbitrary
+ * sensitive content. Newly declared secret inputs/context are excluded by buildExpressionScope and
+ * the VM provenance boundary. The input handler separately preserves display markers. Trusted custom
+ * executors and previously persisted outputs remain outside that exclusion guarantee (ADR-0113).
  */
 export function outputsRecord(
   runOutputs: ReadonlyMap<string, unknown>,
@@ -83,11 +85,8 @@ export function outputsRecord(
 export { byCodeUnit };
 
 /**
- * Replace every `secret`-typed input with its {@link MaskedSecret} marker (`{ secret: true, ref }`),
- * leaving non-secret inputs untouched. The single masking point shared by the `input` node's output and
- * the expression sandbox's `inputs` namespace, so a raw secret value never leaves a handler — neither
- * into an event payload nor into a `condition`/`transform`/`merge_fn` expression (CLAUDE.md rule 6; the
- * sandbox's "secrets are never injected — the caller filters" contract).
+ * Replace every declared secret input with its display/input-node MaskedSecret marker. Expressions
+ * use buildExpressionScope's separate denied-key protocol; these markers are not VM values.
  */
 export function maskSecretInputs(
   inputs: Readonly<Record<string, unknown>>,
@@ -105,20 +104,25 @@ export function maskSecretInputs(
 }
 
 /**
- * The one canonical scope a 1.P expression sees. `branches` is supplied only for a `merge_fn`. The
- * `inputs` namespace is **secret-masked** ({@link maskSecretInputs}) so a `secret`-typed input is the
- * marker object, never the raw value — an expression that reads it cannot launder a secret into an
- * output (ADR-0027; the sandbox's "secrets are never injected" contract). `ctx` is the **resolved**
- * workflow-context namespace (`NodeExecContext.ctx`), folded once at run start by the engine and threaded
- * here, so a bare `ctx.key` read resolves — mirroring the AgentRunner's `RunScope` (agent-runner.ts).
+ * The canonical expression scope owns the clean context projection and secret-input membership.
+ * Present denied inputs become private null placeholders without reading their raw values; the VM
+ * replaces those slots with denied accessors. Omitted optional inputs remain absent. Branch outputs
+ * and transitive upstream outputs retain their existing semantics.
  */
 export function buildExpressionScope(
   ctx: NodeExecContext,
   branches?: readonly unknown[],
 ): ExpressionScope {
+  const names = ownSecretInputNames(ctx.secretInputNames);
+  const inputs: Record<string, unknown> = { __proto__: null };
+  for (const key of Object.keys(ctx.inputs)) {
+    // Do not read a denied value, including a caller accessor. Null is private transport only.
+    inputs[key] = names.secretInputNames.has(key) ? null : ctx.inputs[key];
+  }
   return {
-    inputs: maskSecretInputs(ctx.inputs, ctx.secretInputNames),
-    ctx: ctx.ctx,
+    inputs: Object.freeze(inputs),
+    deniedInputNames: names.deniedInputNames,
+    ctx: createWorkflowContextProjection(ctx.ctx),
     outputs: outputsRecord(ctx.runOutputs, ctx.vertex.ancestors),
     ...(branches === undefined ? {} : { branches }),
   };
@@ -131,6 +135,7 @@ export function buildExpressionScope(
  * handler, surfaced as a non-retryable `internal` failure rather than swallowed.
  */
 export function mapThrownToFailure(err: unknown): NodeOutcome {
+  if (err instanceof WorkflowContextError) return failed(err.code, err.message, err.retryable);
   if (err instanceof SandboxError) {
     return failed(err.code, err.message, err.retryable);
   }

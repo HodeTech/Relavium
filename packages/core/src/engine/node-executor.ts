@@ -1,3 +1,4 @@
+import type { WorkflowContextProjection } from '../interpolation/provenance.js';
 /**
  * The `NodeExecutor` seam (1.N) — the boundary the run loop dispatches each ready vertex through, and
  * the contract the later workstreams **fill**: the `AgentRunner` (1.O) for `agent` vertices and the
@@ -175,20 +176,12 @@ export interface NodeExecContext {
   readonly runOutputs: ReadonlyMap<string, unknown>;
   /** The run-wide inputs (the `input` namespace); a `secret`-typed input is carried per the taint rules. */
   readonly inputs: Readonly<Record<string, unknown>>;
+  /** Engine-owned clean context strings and explicit denied-key/order metadata (ADR-0113). */
+  readonly ctx: WorkflowContextProjection;
   /**
-   * The resolved workflow `context:` namespace (the `ctx.*` reads) — the engine resolves it **once** at run
-   * start (the spec's eager-once context; `resolveContext`) and threads the frozen result here, so a bare
-   * `ctx.key` JS read in a `condition`/`transform`/`merge_fn` expression (and an agent prompt) sees the real
-   * value, not `undefined`. `{}` when the workflow declares no `context:`. Values are strings (resolved
-   * templates); a `secret`-derived context value is gated at parse by the taint analyzer, never here.
-   */
-  readonly ctx: Readonly<Record<string, string>>;
-  /**
-   * The names of `secret`-typed inputs (`inputs.<name>` declared `type: secret`). A handler that emits
-   * inputs into a node output (the `input` node) or into the expression sandbox (`condition`/`transform`/
-   * `merge_fn`) MUST mask/omit these so a raw secret never reaches an event payload or an expression — the
-   * engine masks `inputs` only for `run:started`, so the handler is the second gate (CLAUDE.md rule 6;
-   * sse-event-schema.md; the sandbox's "secrets are never injected — the caller filters" contract).
+   * Engine-owned immutable declared secret-input membership. Public templates preflight references;
+   * expression scope construction excludes raw values and supplies denied keys. Input-node/display
+   * output retains markers. Raw inputs remain trusted host data, not safe custom-executor output.
    */
   readonly secretInputNames: ReadonlySet<string>;
   /**

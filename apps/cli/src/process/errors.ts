@@ -1,89 +1,55 @@
 import {
   AgentParseError,
   EngineStateError,
-  isTransientEngineStateError,
+  TRANSIENT_ENGINE_STATE_CODES,
   WorkflowParseError,
 } from '@relavium/core';
 import {
-  isCorruptRunEventError,
+  DbOpenError,
+  isOwnedStorageFailure,
   isProviderHeaderPolicyError,
-  isUnreadableRunEventLogError,
   ProviderHeaderPolicyError,
   SessionMessageBoundaryError,
 } from '@relavium/db';
+import { RunSuspensionCorruptionError } from '@relavium/shared';
 
-import { EXIT_CODES, type ExitCode } from './exit-codes.js';
+import { EXIT_CODES } from './exit-codes.js';
+import {
+  CLI_ERROR_POLICY,
+  cliErrorExitCode,
+  CliError,
+  isCliError,
+  projectCliError,
+  type UserFacingError,
+} from './cli-error.js';
+export { CliError, isCliError } from './cli-error.js';
+export type { CliErrorCode, UserFacingError } from './cli-error.js';
 
-/**
- * The closed set of CLI-level error codes — callers and tests narrow on `.code`, never on
- * `.message` (error-handling.md). Run-level outcomes (a workflow failing, a gate pausing)
- * are NOT modelled here: they come from the engine's terminal `RunEvent` and are mapped to
- * exit codes by `relavium run` (2.D). These codes are the CLI's own faults.
- */
-export type CliErrorCode =
-  /** Bad args / unknown command|option / missing arg / not found / schema error → exit 2. */
-  | 'invalid_invocation'
-  /** A malformed/invalid configuration layer (TOML syntax or schema) → exit 2. */
-  | 'config_error'
-  /** A documented command whose implementing workstream has not landed yet → exit 2. */
-  | 'not_implemented'
-  /**
-   * Another process holds a live lease on the run — this invocation refused rather than becoming a second
-   * side-effect producer (ADR-0079 §7) → exit 6. The only TRANSIENT code here: it is worth retrying
-   * unchanged, which is exactly what distinguishes it from `invalid_invocation`.
-   */
-  | 'run_owned_elsewhere'
-  /** An unexpected CLI fault → exit 1 (the user-facing message stays generic). */
-  | 'internal';
-
-const EXIT_CODE_BY_ERROR: Readonly<Record<CliErrorCode, ExitCode>> = {
-  invalid_invocation: EXIT_CODES.invalidInvocation,
-  config_error: EXIT_CODES.invalidInvocation,
-  not_implemented: EXIT_CODES.invalidInvocation,
-  run_owned_elsewhere: EXIT_CODES.runOwnedElsewhere,
-  internal: EXIT_CODES.workflowFailed,
-};
-
-/**
- * A typed, discriminated CLI error (error-handling.md) — mirrors the engine's
- * `EngineStateError` shape. Carries a stable `code` and the `exitCode` it maps to; the
- * `message` is **user-facing** and must never contain a secret, raw payload, stack trace,
- * or internal path.
- */
-export class CliError extends Error {
-  readonly code: CliErrorCode;
-  readonly exitCode: ExitCode;
-
-  constructor(code: CliErrorCode, message: string, opts?: { readonly cause?: unknown }) {
-    super(message, opts?.cause === undefined ? undefined : { cause: opts.cause });
-    this.name = 'CliError';
-    this.code = code;
-    this.exitCode = EXIT_CODE_BY_ERROR[code];
-  }
-}
-
-export function isCliError(value: unknown): value is CliError {
-  return value instanceof CliError;
-}
-
-/** A user-safe projection of any thrown value — what the renderer prints. */
-export interface UserFacingError {
-  readonly code: CliErrorCode;
-  readonly message: string;
-  readonly exitCode: ExitCode;
-}
-
-/**
- * Map any thrown value to a user-safe projection. A `CliError` passes through; anything else
- * is an unexpected fault reported generically as `internal` — its raw message/stack is never
- * promoted to primary output (the renderer may still write the stack to stderr under `--verbose`).
- */
+/** Safe runtime projection; a hostile reflection/classifier fault is itself infrastructure failure. */
 export function toUserFacing(value: unknown): UserFacingError {
-  if (isCliError(value)) {
-    return { code: value.code, message: value.message, exitCode: value.exitCode };
+  try {
+    return projectUserFacing(value);
+  } catch {
+    // Never coerce the incoming object, inspect its cause or retry a hostile accessor.
+    return fixedFailure('cli_internal');
   }
-  // ADR-0108: the disabled header field is an invocation refusal. Keep this projection fixed rather than
-  // promoting the incoming message: structurally compatible errors can originate from another bundle.
+}
+
+function projectUserFacing(value: unknown): UserFacingError {
+  const cli = projectCliError(value);
+  if (cli !== undefined) return cli;
+  // Only the actual DB/native/media boundary may add this private identity fact. Constructors,
+  // errno-shaped objects and convincing causes never supply storage authority to this classifier.
+  if (isOwnedStorageFailure(value)) return fixedFailure('storage_unavailable');
+  if (value instanceof DbOpenError && ownData(value, 'code') === 'uri_unsupported') {
+    return {
+      code: 'invalid_invocation',
+      message:
+        "SQLite URI paths are not supported by createClient — pass ':memory:' or a filesystem path",
+      exitCode: EXIT_CODES.invalidInvocation,
+    };
+  }
+  // This DB guard already requires own data descriptors, retaining stable cross-bundle compatibility.
   if (isProviderHeaderPolicyError(value)) {
     return {
       code: 'invalid_invocation',
@@ -91,9 +57,7 @@ export function toUserFacing(value: unknown): UserFacingError {
       exitCode: EXIT_CODES.invalidInvocation,
     };
   }
-  // SessionMessageBoundaryError is raised by both read and write validation. The DB type has no
-  // session id, and its cause/message must never become a transcript diagnostic. A refused read can
-  // be recovered from a safe history backup; a refused write must not claim the row was persisted.
+  // Read and write validation share this fixed message; neither message/body nor cause is inspected.
   if (value instanceof SessionMessageBoundaryError) {
     return {
       code: 'invalid_invocation',
@@ -102,91 +66,85 @@ export function toUserFacing(value: unknown): UserFacingError {
       exitCode: EXIT_CODES.invalidInvocation,
     };
   }
-  // A damaged `run_events` row (ADR-0074 §5 / ADR-0050). The generic fallback below would report a corrupt row
-  // out of a 4,000-event log as `An unexpected internal error occurred.` — no run, no row, no next step. The
-  // store's typed error already carries the run id, the `seq`, and the `event_type`, none of which is user
-  // content or a secret, so promote them and name the recovery. Still exit 1: the read genuinely failed.
-  // No remedy is prescribed because the CLI genuinely has none for a single bad row: there is no run-delete
-  // command, and upgrading does not repair corruption (that is the OTHER half of §5 — a skipped row, which is
-  // reported as a note, not an error). Naming the run and the row is the actionable part; it is what makes the
-  // failure diagnosable at all, and what lets a user restore just that history DB from a backup.
-  // ADR-0075: this binary is too OLD to replay the run, which is a different thing from the data being
-  // damaged — and the difference is the whole value of the message. The remedy is real and the user can
-  // perform it, so it is named. Exit 1: the resume genuinely did not happen.
-  if (isUnreadableRunEventLogError(value)) {
+  if (value instanceof RunSuspensionCorruptionError) {
     return {
       code: 'internal',
-      // The store's message already carries the run, the count and the leading `seq` values, and none of it
-      // is user content or a secret. Adding what is still POSSIBLE matters as much as the refusal: the run is
-      // not lost, and every read-only surface still shows it.
-      message: `${value.message} Its history is still readable — \`relavium logs\` and \`status\` are unaffected.`,
+      message:
+        'The stored gate history is inconsistent. Inspect its history before resuming or repeating the run.',
       exitCode: EXIT_CODES.workflowFailed,
     };
   }
-  if (isCorruptRunEventError(value)) {
-    return {
-      code: 'internal',
-      // Says only what is true. It claimed "the rest of your history is unaffected", which held for the DATA but
-      // not for AVAILABILITY: the Home / `status` / `gate list` fan a per-run read over many runs, and one throw
-      // used to take the whole listing down with it. `readPerRunOrDegrade` now bounds that to the one run, so
-      // those surfaces stay usable — but this message is reached by the per-run commands, where the read really
-      // did fail, so it promises nothing about them.
-      message: `${value.message}. Other runs are still listable.`,
-      exitCode: EXIT_CODES.workflowFailed,
-    };
+  // History permits compatible errors from another bundle. Preflight own data directly rather than
+  // calling structural guards that read arbitrary code/message accessors. The typed store messages are
+  // echo-safe by their contract and retain their existing operational-1 recovery advice.
+  if (value instanceof Error) {
+    const code = ownData(value, 'code');
+    const message =
+      code === 'unreadable_run_event_log' || code === 'corrupt_run_event'
+        ? ownData(value, 'message')
+        : undefined;
+    if (typeof message === 'string' && code === 'unreadable_run_event_log') {
+      return {
+        code: 'internal',
+        message: `${message} Its history is still readable — \`relavium logs\` and \`status\` are unaffected.`,
+        exitCode: EXIT_CODES.workflowFailed,
+      };
+    }
+    if (typeof message === 'string' && code === 'corrupt_run_event') {
+      return {
+        code: 'internal',
+        message: `${message}. Other runs are still listable.`,
+        exitCode: EXIT_CODES.workflowFailed,
+      };
+    }
   }
-  // A typed engine API-boundary refusal that reached the process boundary un-wrapped. `gate.ts` wraps its
-  // own `resumeFromCheckpoint` call, but `relavium run` calls `engine.start()` directly — and since ADR-0083
-  // that call throws `input_admission_failed` for an input the CLI's own coercion layer deliberately does not
-  // check (`inputs.ts`: "deep per-field validation stays the engine's"). Without this arm, `--input
-  // severity=99` against `max: 10` printed `An unexpected internal error occurred.` and exited 1 instead of
-  // naming the field and exiting 2. Mapped the same way `gate.ts` maps it: transient keeps its own code and
-  // exit, every other engine-state refusal is a permanent invocation fault.
   if (value instanceof EngineStateError) {
-    const code: CliErrorCode = isTransientEngineStateError(value)
+    const engineCode = ownData(value, 'code');
+    const message = ownData(value, 'message');
+    if (typeof engineCode !== 'string' || typeof message !== 'string')
+      return fixedFailure('cli_internal');
+    // Read the existing engine authority against the captured data, never invoke a getter on the error.
+    const code = TRANSIENT_ENGINE_STATE_CODES.some((candidate) => candidate === engineCode)
       ? 'run_owned_elsewhere'
       : 'invalid_invocation';
-    // The engine's message is already user-safe by its own contract ("secret-free… never carries run
-    // inputs"), and for an admission refusal it carries the echo-safe half of each issue — so it is
-    // promoted as-is rather than re-flattened from `value.issues` here.
-    return { code, message: value.message, exitCode: EXIT_CODE_BY_ERROR[code] };
+    return { code, message, exitCode: cliErrorExitCode(code) };
   }
-  if (value instanceof AgentParseError) {
-    // **A sibling of the arm below, and it needed its own.** `AgentParseError extends Error`, not
-    // `WorkflowParseError`, so a malformed standalone agent file fell straight through to the generic
-    // `internal` arm: `chat --agent`, the Home browser and `agent run` all answered an unloadable agent
-    // with "An unexpected internal error occurred." and exit 1 — the code reserved for a run that ran and
-    // failed, not for a file that could never run.
-    //
-    // The message is promoted, and it is safe to promote because the source label the CLI hands `parseAgent`
-    // is already cwd-relative at every call site (agent-source.ts, catalog.ts, authoring.ts). An absolute
-    // path in a user-facing error is exactly what the WorkflowIssue contract forbids.
-    return {
-      code: 'invalid_invocation',
-      message: value.message,
-      exitCode: EXIT_CODE_BY_ERROR['invalid_invocation'],
-    };
+  // Parser/graph messages carry validated source labels/identifiers, never authored values.
+  if (value instanceof AgentParseError || value instanceof WorkflowParseError) {
+    const message = ownData(value, 'message');
+    if (typeof message !== 'string') return fixedFailure('cli_internal');
+    return { code: 'invalid_invocation', message, exitCode: EXIT_CODES.invalidInvocation };
   }
-  if (value instanceof WorkflowParseError) {
-    // An AUTHORING fault — a parse error, or a graph fault from `buildRunPlan` (`WorkflowGraphError`
-    // extends this): a cycle, an unknown edge target, an admission ceiling, a widened tool grant. Every one
-    // of them fell through to the generic `internal` arm below, so `relavium run` answered a malformed
-    // workflow with "An unexpected internal error occurred." and exit 1 — the code `commands.md` reserves
-    // for "the workflow ran and failed", not for a file that could never run.
-    //
-    // Promoted as-is, on the same reasoning the `EngineStateError` arm above records: a `GraphIssue`'s
-    // message is echo-safe by its own contract (`errors.ts` — "never an authored value"), and
-    // `parseOrRefuse` already maps this exact family to `invalid_invocation` when the fault happens to
-    // surface from `parseWorkflow` instead. The two paths now agree.
-    return {
-      code: 'invalid_invocation',
-      message: value.message,
-      exitCode: EXIT_CODE_BY_ERROR['invalid_invocation'],
-    };
-  }
+  return fixedFailure('cli_internal');
+}
+
+/** Local to this projection: no property reads, inherited values, getters or coercion. */
+function ownData(value: object, key: string): unknown {
+  const descriptor = Object.getOwnPropertyDescriptor(value, key);
+  return descriptor !== undefined && 'value' in descriptor ? descriptor.value : undefined;
+}
+
+function fixedFailure(code: 'cli_internal' | 'storage_unavailable'): UserFacingError {
   return {
-    code: 'internal',
-    message: 'An unexpected internal error occurred.',
-    exitCode: EXIT_CODES.workflowFailed,
+    code,
+    message: CLI_ERROR_POLICY[code].fixedMessage ?? '',
+    exitCode: cliErrorExitCode(code),
   };
+}
+
+/** Normalize an escaping runtime error while its already-loaded classifier is available. */
+export function toCliError(value: unknown): CliError {
+  const projected = toUserFacing(value);
+  try {
+    if (
+      isCliError(value) &&
+      ownData(value, 'code') === projected.code &&
+      ownData(value, 'message') === projected.message &&
+      ownData(value, 'exitCode') === projected.exitCode
+    )
+      return value;
+  } catch {
+    // Hostile public errors cannot bypass the fixed projection.
+  }
+  return new CliError(projected.code, projected.message, { cause: value });
 }

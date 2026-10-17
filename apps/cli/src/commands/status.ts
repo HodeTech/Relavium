@@ -1,3 +1,5 @@
+import type { LocalDbNoticeContext } from '../db/checkpoint-notice.js';
+import { acquireCommandResource, type CommandLifetime } from '../process/command-lifetime.js';
 import type { RunEvent } from '@relavium/shared';
 
 import type { Db, RunHistoryReader, RunRecord, StepRecord } from '@relavium/db';
@@ -22,9 +24,14 @@ import { createFileTerminalOutbox } from '../engine/terminal-outbox.js';
 import { terminalOutboxPath } from '../history/open.js';
 
 export interface StatusCommandDeps {
+  readonly commandLifetime?: CommandLifetime;
   readonly io: CliIo;
   readonly global: GlobalOptions;
-  readonly openDb?: (homeDir: string) => { db: Db; close: () => void };
+  readonly openDb?: (
+    homeDir: string,
+    captureClose?: (close: () => void) => void,
+    noticeContext?: LocalDbNoticeContext,
+  ) => { db: Db; close: () => void };
   /** Injected in tests; production reads `~/.relavium/terminal-outbox.ndjson` through the file outbox. */
   readonly readTerminalOutbox?: (homeDir: string) => Promise<readonly RunEvent[]>;
 }
@@ -81,7 +88,12 @@ export async function statusCommand(deps: StatusCommandDeps): Promise<ExitCode> 
     cwd: deps.global.cwd,
     configPath: deps.global.configPath,
   });
-  const { reader, close } = openHistoryReader(homeDir, deps.openDb);
+  const { reader, close } = acquireCommandResource(deps.commandLifetime, (captureClose) =>
+    openHistoryReader(homeDir, deps.openDb, captureClose, {
+      io: deps.io,
+      invocation: deps.commandLifetime?.invocation,
+    }),
+  );
   // Runs whose TERMINAL is held in the outbox (ADR-0078 §4/§5) — read, never drained.
   //
   // A run in that state is still `running` in the derived projection, so it appears here as an ordinary
@@ -140,7 +152,7 @@ export async function statusCommand(deps: StatusCommandDeps): Promise<ExitCode> 
     }
     return EXIT_CODES.success;
   } finally {
-    close();
+    if (deps.commandLifetime === undefined) close();
   }
 }
 

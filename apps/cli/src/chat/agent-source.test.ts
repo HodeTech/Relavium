@@ -163,9 +163,24 @@ describe('resolveChatAgent', () => {
     }
   });
 
+  it('accepts dense multibyte source through the actual chat-agent resolver', () => {
+    const path = join(dir, 'dense.agent.yaml');
+    const yaml = `${AGENT_YAML}\n#${'文'.repeat(Math.floor(MAX_SOURCE_CHARS / 2))}\n`;
+    expect(Buffer.byteLength(yaml)).toBeGreaterThan(MAX_SOURCE_CHARS);
+    expect(yaml.length).toBeLessThan(MAX_SOURCE_CHARS);
+    writeFileSync(path, yaml);
+    const agent = resolveChatAgent(path, {
+      cwd: dir,
+      projectConfigDir: undefined,
+      defaultModel: undefined,
+    });
+    expect(agent.id).toBe('coder');
+    expect(agent.system_prompt).toBe('You are a focused coding assistant.');
+  });
+
   it('rejects an oversized .agent.yaml before reading it (the agent kind of the shared size cap)', () => {
     const path = join(dir, 'huge.agent.yaml');
-    writeFileSync(path, 'a'.repeat(MAX_SOURCE_CHARS + 1)); // one byte over the shared cap
+    writeFileSync(path, 'a'.repeat(MAX_SOURCE_CHARS * 4 + 1)); // one byte over the UTF-8 precheck
     let caught: unknown;
     try {
       resolveChatAgent(path, { cwd: dir, projectConfigDir: undefined, defaultModel: undefined });

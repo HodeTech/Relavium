@@ -374,6 +374,7 @@ export class FilesystemMediaStore implements MediaStore {
       throw this.#paths.error(error);
     });
     this.#paths.root(false);
+    let failure: { readonly cause: unknown } | undefined;
     const perShard = await Promise.all(
       shards
         .filter(
@@ -396,8 +397,16 @@ export class FilesystemMediaStore implements MediaStore {
             if (info !== undefined) found.push({ handle, mtimeMs: info.mtimeMs });
           }
           return found;
-        }),
+        })
+        .map((work) =>
+          work.catch((cause: unknown) => {
+            // Propagate the original typed failure only after every launched shard has settled.
+            failure ??= { cause };
+            return [];
+          }),
+        ),
     );
+    if (failure !== undefined) throw failure.cause;
     return perShard.flat();
   }
 }

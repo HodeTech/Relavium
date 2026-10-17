@@ -42,6 +42,7 @@ import { UnsupportedCapabilityError, UnsupportedRequestDataError } from '../erro
 import type {
   CapabilityFlags,
   LlmError,
+  LlmInvocationOptions,
   LlmMessage,
   LlmProvider,
   LlmRequest,
@@ -55,6 +56,7 @@ import type {
   ToolDef,
   UsageEvidence,
 } from '../types.js';
+import { ProviderInvocationWork } from './invocation-work.js';
 
 import {
   CONTEXT_SEAM_DEFAULTS,
@@ -260,7 +262,11 @@ export interface GeminiTransport {
    * the vendor-type-free {@link GeminiModelInfo}; the conformance harness injects a replay. `signal` aborts
    * the in-flight list request (a client-only cancel — see the SDK's `abortSignal` note).
    */
-  listModels(key: string, signal?: AbortSignalLike): Promise<GeminiModelInfo[]>;
+  listModels(
+    key: string,
+    signal?: AbortSignalLike,
+    options?: LlmInvocationOptions,
+  ): Promise<GeminiModelInfo[]>;
   /**
    * Imagen generative image endpoint (1.AH A2). The default wraps `ai.models.generateImages`; the
    * conformance harness injects a replay. Required so a transport honestly declares the generative
@@ -797,24 +803,35 @@ const sdkTransport: GeminiTransport = {
     const client = createSdkClient(key);
     return await client.models.generateContentStream(request);
   },
-  async listModels(key: string, signal?: AbortSignalLike): Promise<GeminiModelInfo[]> {
-    const client = createSdkClient(key);
-    // models.list() returns an auto-paginating Pager<Model>; `for await` follows nextPageToken. Each row is
-    // normalized to the vendor-type-free GeminiModelInfo here so no @google/genai Model type crosses the seam.
-    const pager = await client.models.list({
-      config: isAbortSignal(signal) ? { abortSignal: signal } : {},
-    });
-    const rows: GeminiModelInfo[] = [];
-    for await (const model of pager) {
-      rows.push({
-        name: model.name,
-        displayName: model.displayName,
-        inputTokenLimit: model.inputTokenLimit,
-        outputTokenLimit: model.outputTokenLimit,
-        supportedActions: model.supportedActions,
-      });
+  async listModels(
+    key: string,
+    signal?: AbortSignalLike,
+    options?: LlmInvocationOptions,
+  ): Promise<GeminiModelInfo[]> {
+    const work = options === undefined ? undefined : new ProviderInvocationWork(options, signal);
+    try {
+      const client = createSdkClient(key);
+      // models.list() returns an auto-paginating Pager<Model>; `for await` follows nextPageToken. Each row is
+      // normalized to the vendor-type-free GeminiModelInfo here so no @google/genai Model type crosses the seam.
+      const invoke = () =>
+        client.models.list({
+          config: isAbortSignal(signal) ? { abortSignal: signal } : {},
+        });
+      const pager = await (work === undefined ? invoke() : work.retainWork(invoke));
+      const rows: GeminiModelInfo[] = [];
+      for await (const model of work?.ownIterator(pager) ?? pager) {
+        rows.push({
+          name: model.name,
+          displayName: model.displayName,
+          inputTokenLimit: model.inputTokenLimit,
+          outputTokenLimit: model.outputTokenLimit,
+          supportedActions: model.supportedActions,
+        });
+      }
+      return rows;
+    } finally {
+      work?.retire();
     }
-    return rows;
   },
   async generateImages(request: GeminiImageRequest, key: string): Promise<GeminiImageResponse> {
     const client = createSdkClient(key);
@@ -1370,14 +1387,19 @@ export function createGeminiAdapter(deps: GeminiAdapterDeps = {}): LlmProvider {
      * `ModelListing` (`supportedActions` must include `generateContent`, `models/` prefix stripped); a
      * per-row parse failure drops only that row. Bounded + abortable + secret-free via `boundedListModels`.
      */
-    async listModels(key: string, signal?: AbortSignalLike): Promise<ModelListing[]> {
+    async listModels(
+      key: string,
+      signal?: AbortSignalLike,
+      options?: LlmInvocationOptions,
+    ): Promise<ModelListing[]> {
       return boundedListModels({
         provider: PROVIDER,
         key,
         signal,
+        options,
         classify: geminiErrorToLlmError,
-        collect: async (innerSignal) => {
-          const rows = await transport.listModels(key, innerSignal);
+        collect: async (innerSignal, work) => {
+          const rows = await transport.listModels(key, innerSignal, work);
           const listings: ModelListing[] = [];
           const seen = new Set<string>();
           let rawCount = 0;

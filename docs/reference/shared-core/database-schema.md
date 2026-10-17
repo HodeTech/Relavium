@@ -1,6 +1,6 @@
 # Database Schema (Local SQLite)
 
-> Last updated: 2026-10-13
+> Last updated: 2026-10-16
 
 - **Status**: Reference
 - **Surface**: Shared — Desktop (Tauri v2, `tauri-plugin-sql`/SQLCipher), CLI (`better-sqlite3`, [ADR-0021](../../decisions/0021-node-sqlite-driver-better-sqlite3.md)/[ADR-0050](../../decisions/0050-cli-history-db-at-rest-posture.md)), and VS Code (a wasm SQLite build). One schema, three drivers — see [Concurrency & transaction behavior](#concurrency--transaction-behavior) and [Encryption at rest](#encryption-at-rest) for the per-surface divergences.
@@ -42,6 +42,43 @@ is immediate; physical erasure requires a successful checkpoint. A busy reader a
 upgrade remain accepted residuals. See [effect-journal.md §11](effect-journal.md#11-secrets-what-a-row-may-hold).
 
 > Workflows and agents are **not** the database's source of truth. The git-committable YAML files (`.relavium.yaml` / `.agent.yaml`) are authoritative; see [../contracts/workflow-yaml-spec.md](../contracts/workflow-yaml-spec.md) and [../contracts/agent-yaml-spec.md](../contracts/agent-yaml-spec.md). The catalog tables below cache and snapshot them for fast querying, run reproducibility, and offline browsing.
+
+## Node client failure provenance
+
+`@relavium/db` exports `isOwnedStorageFailure(value: unknown): boolean` as a
+read-only origin query for the Node client. Its authority is private object
+identity recorded at an owned native database or filesystem operation, not a
+public error constructor, message, errno-shaped field or arbitrary cause.
+Callers cannot mint or decode that authority through the package's public API.
+`DbOpenError` retains its existing constructor, code/path, identity and cause
+contract; an owned failure can transfer its fact to the existing wrapper.
+
+Factory-created clients retain an exact private association with their native
+connection. SQLite classification requires the installed native `SqliteError`
+brand and an explicit storage-code allowlist; generic `SQLITE_ERROR`, malformed
+native failures and unknown codes do not qualify. Owned filesystem failures
+require the native Error shape and matching code/errno for `EACCES`, `EPERM`,
+`ENOSPC` or `EROFS`. Creation, configured PRAGMAs, migration/privacy operations
+and actual media-filesystem/SQLite-lock catches supply or transfer facts at their
+operation boundaries. This is not a classifier for arbitrary SQL or foreign
+clients.
+
+Migration continues to call the installed Drizzle migrator unchanged. At that
+one owned operation, a verified imported public `DrizzleError` may transfer a
+fact from its single own data `cause` only when that cause is the verified
+native SQLite error. There is no recursive cause traversal, driver fork,
+connection instrumentation or replacement query/transaction implementation.
+Foreign clients and wrappers without the factory's exact native association
+supply no origin authority.
+
+Checkpoint failures retain native origin before conversion to the existing
+privacy error. Busy/locked checkpoint deferral, logical versus physical
+erasure, recovery and migration locking retain their existing semantics.
+Media wrappers transfer only already-established facts; typed reason `io`
+alone grants none. Media error grammar, identity checks and retention policy
+remain unchanged. The [CLI disposition contract](../cli/commands.md#failure-classification-and-remedies)
+owns presentation and recovery advice; origin does not certify receipt
+durability, absence of effects or safe retry.
 
 ## SQLite type conventions
 
@@ -311,9 +348,12 @@ Trusted `get`, `list` and `upsert` results still expose the validated legacy map
 projection. Stored JSON must be an object with string members; malformed JSON,
 arrays, null and non-string members throw a content-free `TypeError` with message
 `Stored provider headers are invalid.` and no original parse cause. Valid own keys,
-including `__proto__`, remain own data without mutating the output prototype. These
-corruption errors remain unexpected CLI `internal` failures (exit 1), not policy
-refusals or silent empty maps.
+including `__proto__`, remain own data without mutating the output prototype.
+
+At the CLI boundary, these corruption errors use the fixed `cli_internal`
+projection (exit 9), following the [CLI failure classification](../cli/commands.md#failure-classification-and-remedies).
+They are not policy refusals or silent empty maps. The fixed projection contains
+no stored header names or values.
 
 The provider-list human and NDJSON paths, with or without `--verify`, omit the
 header map and its names/values. Diagnostic projections must also omit them. The
@@ -484,9 +524,18 @@ CREATE INDEX idx_workflows_active      ON workflows (is_active, updated_at DESC)
 
 One row per workflow execution. `workflow_definition_snapshot` freezes the exact graph that ran, so a run can be replayed or inspected even after the YAML file changes. Cost is stored as integer micro-cents.
 
+Frozen run definitions use `WorkflowSnapshotSchema` at the CLI gate reader and engine
+resume-identity boundary. It shares current structural fields and the prior whole-document
+invariants, including parallel member uniqueness, strict keys, input defaults/enums,
+merge requirements and edge consistency. Newly introduced author-only fallback tuple,
+condition-match and orphan gate-action refusals do not make an unchanged historical run
+unreadable. Fresh parsing still uses WorkflowSchema; frozen content is neither repaired
+nor normalized to evade its exact identity comparison.
+
+
 > **"The exact graph that ran" includes MCP-discovered tool grants.** A surface that augments the parsed workflow before starting the engine — `relavium run` unions each inline agent's `tools` grant with the tools its declared `mcp_servers` discovered — must freeze the **augmented** definition, not the authored one. It did not, until [ADR-0083](../../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md) §5: on every workflow with `mcp_servers`, the column recorded a graph that never ran, and a cross-process `relavium gate` rebuilt the run from it. The grants are part of workflow identity, so an MCP server returning a different tool set on resume is a divergence — and one that can only be detected if what was frozen is what was executed.
 
-> **Logical `Run` vs persisted `RunRow`.** `@relavium/shared` exports `RunSchema` — the **narrow, engine-/surface-facing** view of a run (status, trigger, inputs/outputs, token + cost totals, timestamps). This `runs` table is the **persistence** shape and carries additional columns that are a database concern, modeled by `@relavium/db` as a distinct `RunRow` mirroring the DDL below: `workflow_definition_snapshot` (the frozen graph for replay/resume), `trigger_metadata`, `workflow_path`/`project_root`, and the `deleted_at` soft-delete cursor. Those are intentionally absent from the logical `RunSchema`; a consumer that needs them reads the `RunRow`. The split keeps the engine view free of storage details while `@relavium/db` owns the row ↔ column mapping.
+> **Logical `Run` vs persisted `RunRow`.** `@relavium/shared` exports `RunSchema` — the **narrow, engine-/surface-facing** view of a run (status, trigger, inputs/outputs, token + cost totals, timestamps). This `runs` table is the **persistence** shape and carries additional columns that are a database concern, modeled by `@relavium/db` as a distinct `RunRow` mirroring the DDL below: `workflow_definition_snapshot` (the frozen graph for replay/resume), `trigger_metadata`, `workflow_path`/`project_root`, and the `deleted_at` soft-delete cursor. Those are intentionally absent from the logical `RunSchema`; a consumer that needs them reads the `RunRow`. The split keeps the engine view free of storage details while `@relavium/db` owns the row ↔ column mapping. The logical validator permits missing legacy `startedAt`/`completedAt`, error and outputs; when present, `completedAt` requires completed/failed/cancelled status, `startedAt` is forbidden while pending, and `error` requires failed status. Existing temporal checks still apply. These are logical-view admission rules, not new SQL constraints, migrations or stricter persisted-row readers.
 
 | Column | Type | Constraints |
 |--------|------|-------------|
@@ -723,6 +772,11 @@ share a shape family but must not be merged, because a session and a run have di
 
 One row per chat session. `context_json` freezes the `SessionContext` (active file, selection,
 session variables); `agent_snapshot` freezes the agent config the session ran against.
+Its `AgentSnapshotSchema` retains the existing structural and MCP-identity checks.
+Fresh [agent authoring](../contracts/agent-yaml-spec.md#retry-vs-fallback) additionally
+rejects duplicate fallback model/provider tuples through `AgentSchema`; that new
+rule does not invalidate historical snapshots. History loading and session updates
+preserve their ordered fallback entries and attempt budgets without deduplication.
 
 | Column | Type | Constraints |
 |--------|------|-------------|
@@ -1278,6 +1332,26 @@ Byte/format verification and exact host shapes live in the
 
 ## Concurrency & transaction behavior
 
+The Node factory `createClient(path, captureClose?)` can hand its idempotent native
+close capability to the original host synchronously, immediately after the SQLite
+constructor and before PRAGMAs or Drizzle setup. CLI openers forward this optional
+handoff before hardening, migrations or store construction can fail. A setup
+failure attempts native release and preserves its primary cause. If release also
+fails, both causes survive in an `AggregateError`; the escaping open failure does
+not inherit operational storage provenance. A returned handle, swallowed cleanup
+error or elapsed shutdown budget is not evidence of native release. CLI ownership
+and refusal projection follow the [CLI lifecycle contract](../cli/commands.md#management-ownership-implementation-checkpoint).
+
+`runMigrations(db, { dbPath, captureClose? })` forwards the separate migration-lock
+connection's idempotent native close immediately after its constructor and before
+its PRAGMA or lock acquisition. The CLI opener transfers one composite close to
+its original owner before main-connection setup, adds each auxiliary capability
+to that same composite, and returns the same capability. It attempts independent
+releases even if another fails, removes only successfully released capabilities,
+and retains failed releases for the original owner's cleanup. A lock-close
+failure preserves any migration failure alongside it and never acquires
+operational SQLite provenance, even if the native error is storage-shaped.
+
 `history.db` is a **single shared file** two concurrent `relavium` processes may write at once — e.g. a `run` persisting events while a `chat` refreshes the live model catalog ([ADR-0064](../../decisions/0064-live-model-catalog.md) §5). The Node/CLI path (`better-sqlite3`, [ADR-0021](../../decisions/0021-node-sqlite-driver-better-sqlite3.md), re-affirmed by [ADR-0067](../../decisions/0067-node-supported-floor-22-reaffirm-better-sqlite3.md)) hardens this at the connection and the transaction level; this is the one canonical home for the policy that `packages/db/src/retry.ts` and the store doc-comments cite.
 
 - **Connection PRAGMAs** ([`client.ts`](../../../packages/db/src/client.ts)): `journal_mode = WAL` (readers never block the single writer, and vice-versa), `busy_timeout = 5000` (SQLite's built-in busy handler waits up to 5 s for a contended lock before returning `SQLITE_BUSY`), `synchronous = NORMAL` (the recommended durability/throughput trade-off under WAL), and `foreign_keys = ON`.
@@ -1317,6 +1391,23 @@ Raw provider credentials are not a history field, and declared secret inputs are
 as masked slots; arbitrary retained content can nevertheless contain credentials or other
 sensitive material. A future desktop/cloud writer inherits these upstream field protections,
 not a promise that a pass-through writer performs universal content redaction.
+
+### Historical output and error data
+
+[ADR-0113](../../decisions/0113-secret-derived-context-keeps-provenance-at-public-sinks.md)'s
+[current context projection](expression-sandbox-spec.md#secret-context-boundary) excludes newly
+projected declared secret-input/context values from public text and expression scopes. It does
+not scrub stored history, scan values, or certify historical resume/replay data as secret-free.
+Previously persisted event, step and run outputs can contain secret-derived content, and
+restored `run.outputs` can expose it again. Historical or arbitrary authored `SandboxError.detail`
+is private potentially sensitive error text; never automatically render it as a public diagnostic.
+Arbitrary literals/user/model/tool content are not declared-source taint merely because they
+contain sensitive-looking values.
+
+Before sharing history or recovering a run, review retained outputs and the workflow's downstream
+consumers under this sensitivity limit. Current fixed denial diagnostics do not certify an older
+record or sanitize replayed content. Existing effect/money recovery requirements remain in the
+[effect journal](effect-journal.md) and [CLI recovery guidance](../cli/commands.md#exit-codes).
 
 ## Phase 2 (PostgreSQL) divergences
 

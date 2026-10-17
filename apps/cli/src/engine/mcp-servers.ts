@@ -2,6 +2,7 @@ import type { WorkflowDefinition, ToolHostCallOptions } from '@relavium/core';
 import {
   MCP_DEADLINES,
   McpAbortedError,
+  McpConnectError,
   McpDeadlineError,
   McpError,
   openWindow,
@@ -13,17 +14,20 @@ import {
   openStdioConnection,
   openWebSocketConnection,
   startMcpClient as defaultStartMcpClient,
+  setMcpClientVersion,
   type HttpServerSpec,
   type ManagerSkippedTool,
   type McpClient,
   type McpConnection,
   type McpServerConfig,
+  type McpStartupLifecycle,
   type SseServerSpec,
   type StdioServerSpec,
   type WebSocketServerSpec,
 } from '@relavium/mcp';
 import { nodeEgressDeps, type LocalEndpoint } from '@relavium/db';
 import {
+  byCodeUnit,
   extractEgressAuthority,
   isForbiddenDeclaredEnvKey,
   isMetadataOrLinkLocal,
@@ -37,13 +41,23 @@ import {
   type McpServerRegistration,
 } from '@relavium/shared';
 
+import { CLI_VERSION } from '../version.js';
 import { EgressWorkScope } from './egress-work.js';
 import { CliError } from '../process/errors.js';
 import { createMcpFetch, type McpFetch, type McpFetchConfig } from './mcp-fetch.js';
 import type { ResolvedStdioSpawn } from './mcp-consent.js';
 import type { CliIo } from '../process/io.js';
+import type { RemainingBudget } from '../process/invocation-registry.js';
 import { sanitizeInline } from '../render/tui/chat-projection.js';
 import type { McpSecretResolver } from '../secrets/mcp-secret.js';
+import {
+  createNativeProcessController,
+  type NativeProcessController,
+} from '../process/native-process-owner.js';
+import {
+  WINDOWS_TEARDOWN_UNAVAILABLE_MESSAGE,
+  WindowsTeardownUnavailableError,
+} from '../process/windows-teardown.js';
 
 /**
  * Resolve an agent's inline `mcp_servers` into a live {@link McpClient} (2.R — CLI host wiring). This is the
@@ -64,11 +78,20 @@ import type { McpSecretResolver } from '../secrets/mcp-secret.js';
 export interface ConnectAgentMcpOptions {
   /** The session/run working directory — the spawned server's `cwd` (relative server paths resolve here). */
   readonly cwd: string;
+  /** The preparation owner is rechecked after consent and before secrets, native entry or publication. */
+  readonly assertAdmitting?: () => void;
+  /** Observe a construction fault before its actual cleanup can hold propagation. */
+  readonly onFailure?: (cause: unknown) => void;
+  /** A fulfilled manager close does not erase callback-reported transport uncertainty. */
+  readonly onCloseError?: (serverId: string, cause: unknown) => void;
+  /** The existing invocation budget; an expired cleanup cannot launch another asynchronous close. */
+  readonly budget?: RemainingBudget;
   /** Injectable connect-all (tests pass a fake that never spawns); defaults to the real `startMcpClient`. */
   readonly startMcpClient?: (
     servers: readonly McpServerConfig[],
     signal?: AbortSignalLike,
     options?: ToolHostCallOptions,
+    lifecycle?: McpStartupLifecycle,
   ) => Promise<McpClient>;
   /**
    * Cancels the connect and the discovery walk (ADR-0088 §1.1).
@@ -80,6 +103,8 @@ export interface ConnectAgentMcpOptions {
   readonly connectSignal?: AbortSignalLike;
   /** Transfer startup/connection descendants before entry, including bounded failed opens. */
   readonly work?: ToolHostCallOptions;
+  /** Creation-owned stdio native lifetime; network transports create no native process owner. */
+  readonly nativeProcesses?: NativeProcessController;
   /**
    * Resolve a `{{secrets.<name>}}` placeholder in a server `env` value (2.R Step 4, ADR-0052 §6). When absent,
    * any `{{…}}` in an `env` value is rejected loud (a placeholder is never passed to the child as a literal).
@@ -288,6 +313,7 @@ export function resolveServerConfigs(
    * command, which is the un-gated path every unit fixture uses.
    */
   consented?: ReadonlyMap<string, ResolvedStdioSpawn>,
+  nativeProcesses?: NativeProcessController,
 ): McpServerConfig[] {
   const openStdio = openers.stdio ?? openStdioConnection;
   const makeFetch = openers.makeFetch ?? createMcpFetch;
@@ -308,7 +334,15 @@ export function resolveServerConfigs(
     }
     configs.push(
       ref.transport === 'stdio'
-        ? buildStdioConfig(ref.id, ref, cwd, resolveSecret, openStdio, consented?.get(ref.id))
+        ? buildStdioConfig(
+            ref.id,
+            ref,
+            cwd,
+            resolveSecret,
+            openStdio,
+            consented?.get(ref.id),
+            nativeProcesses,
+          )
         : buildNetworkConfig(ref.id, ref.transport, ref, network, makeFetch, resolveHost),
     );
   }
@@ -330,6 +364,7 @@ function buildStdioConfig(
   resolveSecret: McpSecretResolver | undefined,
   openStdio: OpenStdioConnection,
   consented?: ResolvedStdioSpawn,
+  nativeProcesses?: NativeProcessController,
 ): McpServerConfig {
   // The schema's `superRefine` already guarantees `command` for a stdio transport; re-assert so the spawn spec
   // is total without a non-null assertion (a defensive, typed failure rather than an undefined spawn).
@@ -357,6 +392,9 @@ function buildStdioConfig(
   }
   const env = buildChildEnv(serverId, ref.env, resolveSecret);
   const args = ref.args;
+  // Direct host fixtures retain local cleanup; product paths pass the invocation's same controller.
+  // Construction is inert, including on Windows; actual facility/owner admission belongs in open().
+  const native = nativeProcesses ?? createNativeProcessController();
   return {
     id: serverId,
     ...toolsAllowlistFields(ref),
@@ -366,21 +404,30 @@ function buildStdioConfig(
     // `McpServerConfig.open` doc records one layer down, and it was still true HERE until a review found it:
     // a Ctrl-C during a cold `npx` reached this point and stopped nothing, orphaning the child — because
     // `client.childPids` stays empty until a connect fully succeeds, so neither reaper had a pid either.
-    open: (signal, work) =>
-      openStdio(
-        serverId,
-        {
-          command,
-          env,
-          cwd,
-          ...(args === undefined ? {} : { args }),
-          ...(ref.connect_timeout_ms === undefined
-            ? {}
-            : { connectTimeoutMs: ref.connect_timeout_ms }),
-        },
-        signal,
-        work,
-      ),
+    open: async (signal, work) => {
+      const observer = await native.observeMcp();
+      try {
+        return await openStdio(
+          serverId,
+          {
+            command,
+            env,
+            cwd,
+            nativeObserver: observer,
+            ...(args === undefined ? {} : { args }),
+            ...(ref.connect_timeout_ms === undefined
+              ? {}
+              : { connectTimeoutMs: ref.connect_timeout_ms }),
+          },
+          signal,
+          work,
+        );
+      } finally {
+        // An external work retainer or injected opener can refuse before SDK attachment.
+        // Only that still-empty reservation may be abandoned; attached native work remains owed.
+        observer.abandonIfUnattached();
+      }
+    },
   };
 }
 
@@ -645,12 +692,8 @@ function requireGateForStdio(
   gate: StdioConsentGate | undefined,
 ): void {
   if (gate !== undefined) return;
-  const stdio = refs.filter((ref) => ref.transport === 'stdio').map((ref) => ref.id);
-  if (stdio.length === 0) return;
-  throw new CliError(
-    'internal',
-    `refusing to start local MCP program(s) (${stdio.join(', ')}): this surface reached the MCP host without a consent gate. This is a wiring defect, not a configuration one.`,
-  );
+  if (!refs.some((ref) => ref.transport === 'stdio')) return;
+  throw new CliError('cli_internal', '');
 }
 
 /**
@@ -664,6 +707,7 @@ export async function connectAgentMcp(
   mcpServers: readonly McpServerRef[] | undefined,
   opts: ConnectAgentMcpOptions,
 ): Promise<McpClient | undefined> {
+  opts.assertAdmitting?.();
   // Resolve any by-name `ref` entries to inline against the config registrations (Step 4b) BEFORE building the
   // stdio configs — so the rest of the pipeline always sees a self-contained, inline server.
   const inline = (mcpServers ?? []).map((entry) =>
@@ -673,9 +717,50 @@ export async function connectAgentMcp(
   // declare a server with no `[[mcp_servers]]` registration at all — the imported-artifact case.
   requireGateForStdio(inline, opts.consentGate);
   const consented = await opts.consentGate?.(inline, opts.cwd, opts.artifact);
-  const configs = resolveServerConfigs(inline, opts.cwd, opts.resolveSecret, {}, consented);
+  opts.assertAdmitting?.();
+  if (opts.connectSignal?.aborted) throw new CliError('internal', 'MCP connection was cancelled.');
+  const configs = resolveServerConfigs(
+    inline,
+    opts.cwd,
+    opts.resolveSecret,
+    {},
+    consented,
+    opts.nativeProcesses,
+  );
   if (configs.length === 0) return undefined;
-  return startMcpClientFailLoud(configs, opts.startMcpClient, opts.connectSignal, opts.work);
+  opts.assertAdmitting?.();
+  const client = await startMcpClientFailLoud(
+    configs,
+    opts.startMcpClient,
+    opts.connectSignal,
+    opts.work,
+    opts.assertAdmitting,
+    opts.onFailure,
+    startupLifecycle(opts),
+  );
+  try {
+    opts.assertAdmitting?.();
+    return client;
+  } catch (cause) {
+    opts.onFailure?.(cause);
+    await closePreparedMcp(client, opts.onCloseError, opts.budget);
+    throw cause;
+  }
+}
+
+/** Expiry is no permission to enter another cleanup or to pretend this client has closed. */
+export async function closePreparedMcp(
+  client: McpClient,
+  onCloseError?: (serverId: string, cause: unknown) => void,
+  budget?: RemainingBudget,
+): Promise<void> {
+  if (budget?.remainingMs() === 0) await new Promise<never>(() => {});
+  try {
+    await client.close(onCloseError);
+  } catch (cause) {
+    if (onCloseError === undefined) throw cause;
+    onCloseError('', cause);
+  }
 }
 
 /**
@@ -690,15 +775,31 @@ async function startMcpClientFailLoud(
   custom: ConnectAgentMcpOptions['startMcpClient'],
   connectSignal?: AbortSignalLike,
   work?: ToolHostCallOptions,
+  onOwnedCancellation?: () => void,
+  onFailure?: (cause: unknown) => void,
+  lifecycle?: McpStartupLifecycle,
 ): Promise<McpClient> {
+  // The shared build token is installed only at the actual MCP construction choke.
+  setMcpClientVersion(CLI_VERSION);
   const start = custom ?? defaultStartMcpClient;
   const owned = work === undefined ? new EgressWorkScope() : undefined;
   try {
-    return await start(configs, connectSignal, work ?? owned);
+    return await (lifecycle === undefined
+      ? start(configs, connectSignal, work ?? owned)
+      : start(configs, connectSignal, work ?? owned, lifecycle));
   } catch (err) {
+    // Typed MCP refusals retain their existing public classifier below. An opaque failure must
+    // reach its owner before a self-cleanup lifetime can hold this rejection indefinitely.
+    if (!(err instanceof McpError) && !windowsTeardownRefusal(err)) onFailure?.(err);
     // A session builder without an external pre-handle owner must self-clean before propagating.
     owned?.seal();
     await owned?.done;
+    // Only the MCP boundary's typed cancellation can recover the command's owned stop identity.
+    // A generic failure racing an aborted signal retains its independent classification.
+    if (err instanceof McpAbortedError && connectSignal?.aborted) onOwnedCancellation?.();
+    if (windowsTeardownRefusal(err)) {
+      throw new CliError('internal', WINDOWS_TEARDOWN_UNAVAILABLE_MESSAGE);
+    }
     if (err instanceof McpError) {
       throw new CliError(
         'invalid_invocation',
@@ -709,6 +810,14 @@ async function startMcpClientFailLoud(
   } finally {
     owned?.seal();
   }
+}
+
+/** Inspect only the known manager wrapper's own data cause; never render or traverse native details. */
+function windowsTeardownRefusal(error: unknown): boolean {
+  if (error instanceof WindowsTeardownUnavailableError) return true;
+  if (!(error instanceof McpConnectError)) return false;
+  const cause: unknown = Object.getOwnPropertyDescriptor(error, 'cause')?.value;
+  return cause instanceof WindowsTeardownUnavailableError;
 }
 
 /**
@@ -789,15 +898,25 @@ export interface ConnectWorkflowMcpOptions {
   /** Resume compares the current discovered set with the frozen grant, without widening or reordering it. */
   readonly preserveFrozenGrants?: boolean;
   readonly cwd: string;
+  /** Same invocation owner, checked again after consent and before resolving secrets/starting clients. */
+  readonly assertAdmitting?: () => void;
+  /** Observe an assembly failure before joining its cleanup, without replacing its original cause. */
+  readonly onFailure?: (cause: unknown) => void;
+  /** Actual manager close failures use this callback even when close() itself fulfills. */
+  readonly onCloseError?: (serverId: string, cause: unknown) => void;
+  readonly budget?: RemainingBudget;
   readonly startMcpClient?: (
     servers: readonly McpServerConfig[],
     signal?: AbortSignalLike,
     options?: ToolHostCallOptions,
+    lifecycle?: McpStartupLifecycle,
   ) => Promise<McpClient>;
   /** Cancels the connect and the discovery walk (ADR-0088 §1.1) — see {@link ConnectAgentMcpOptions.connectSignal}. */
   readonly connectSignal?: AbortSignalLike;
   /** Transfer startup/connection descendants before entry, including bounded failed opens. */
   readonly work?: ToolHostCallOptions;
+  /** Creation-owned stdio native lifetime; see {@link ConnectAgentMcpOptions.nativeProcesses}. */
+  readonly nativeProcesses?: NativeProcessController;
   /** Resolve `{{secrets.<name>}}` in a server `env` value (2.R Step 4, ADR-0052 §6); see {@link ConnectAgentMcpOptions}. */
   readonly resolveSecret?: McpSecretResolver;
   /** The merged config `[[mcp_servers]]` registrations (Step 4b) — resolves a by-name `ref` entry; see {@link ConnectAgentMcpOptions}. */
@@ -870,23 +989,32 @@ export async function connectWorkflowMcp(
   }
   if (byId.size === 0) return undefined;
 
+  opts.assertAdmitting?.();
   requireGateForStdio([...byId.values()], opts.consentGate);
   const consented = await opts.consentGate?.([...byId.values()], opts.cwd, opts.artifact);
+  opts.assertAdmitting?.();
+  if (opts.connectSignal?.aborted) throw new CliError('internal', 'MCP connection was cancelled.');
   const configs = resolveServerConfigs(
     [...byId.values()],
     opts.cwd,
     opts.resolveSecret,
     {},
     consented,
+    opts.nativeProcesses,
   );
+  opts.assertAdmitting?.();
   const client = await startMcpClientFailLoud(
     configs,
     opts.startMcpClient,
     opts.connectSignal,
     opts.work,
+    opts.assertAdmitting,
+    opts.onFailure,
+    startupLifecycle(opts),
   );
 
   try {
+    opts.assertAdmitting?.();
     // Augment each inline agent's grant with ONLY its own servers' discovered ids (a `$ref` entry passes through).
     const agents = (def.workflow.agents ?? []).map((entry) =>
       isInlineAgent(entry)
@@ -902,9 +1030,25 @@ export async function connectWorkflowMcp(
     // A resumed workflow's frozen-grant check can refuse after discovery. Tear down the live
     // connection before forwarding that refusal, just as the chat builders do on assembly failure.
     // Best-effort: a teardown rejection must NOT replace the original augmentation error (preserve the primary).
-    await client.close().catch(() => undefined);
+    opts.onFailure?.(err);
+    try {
+      await closePreparedMcp(client, opts.onCloseError, opts.budget);
+    } catch (cause) {
+      if (opts.onCloseError !== undefined) opts.onCloseError('', cause);
+      else opts.onFailure?.(cause);
+    }
     throw err;
   }
+}
+
+function startupLifecycle(
+  opts: Pick<ConnectAgentMcpOptions, 'onCloseError' | 'budget'>,
+): McpStartupLifecycle | undefined {
+  if (opts.onCloseError === undefined && opts.budget === undefined) return undefined;
+  return {
+    ...(opts.onCloseError === undefined ? {} : { onCloseError: opts.onCloseError }),
+    ...(opts.budget === undefined ? {} : { budget: opts.budget }),
+  };
 }
 
 /** True for an inline agent definition (carries an `id`), false for a `{ $ref }` external reference. */
@@ -961,11 +1105,9 @@ function withWorkflowMcpGrant(
  * collapse first-wins, silently granting (or denying) BOTH the SSRF relaxation — so it must fail loud.
  */
 function serverFingerprint(ref: McpServerRef): string {
-  const env = Object.entries(ref.env ?? {}).sort(([a], [b]) => a.localeCompare(b));
+  const env = Object.entries(ref.env ?? {}).sort(([a], [b]) => byCodeUnit(a, b));
   const allowlist =
-    ref.tools_allowlist === undefined
-      ? null
-      : [...ref.tools_allowlist].sort((a, b) => a.localeCompare(b));
+    ref.tools_allowlist === undefined ? null : [...ref.tools_allowlist].sort(byCodeUnit);
   return JSON.stringify({
     t: ref.transport,
     c: ref.command ?? null,

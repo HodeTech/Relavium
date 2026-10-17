@@ -1,4 +1,4 @@
-import { cpSync, readFileSync, rmSync } from 'node:fs';
+import { chmodSync, cpSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 
 import { defineConfig } from 'tsup';
 
@@ -11,15 +11,15 @@ const { version } = JSON.parse(
 /**
  * The CLI distribution bundle (2.L, [ADR-0051](../../docs/decisions/0051-cli-distribution-thin-bundle-private-engine.md)).
  *
- * INLINE only the proprietary `@relavium/*` engine packages (`noExternal`); EXTERNALIZE every third-party
+ * INLINE only the `@relavium/*` engine packages (`noExternal`); EXTERNALIZE every third-party
  * dependency — they are declared in `package.json` and installed normally by npm (the prebuilt native addons
  * `better-sqlite3` + `@napi-rs/keyring` cannot be bundled; the quickjs WASM + the vendor SDKs + `ink`/`react`
  * are bundler-hostile). `tools/bundle-closure/check.mjs` guards that this `external` list equals the declared
  * runtime `dependencies`, so the two can never drift.
  *
- * `sourcemap: false` + `minify: true`: the published `dist/` must ship **no** original engine source — a source
- * map would embed the inlined engine's TypeScript into the tarball and defeat keeping it unpublished (ADR-0051).
- * The shebang banner makes `dist/index.js` directly executable as the `relavium` bin.
+ * `sourcemap: false` + `minify: true`: the published `dist/` must ship no source tree or maps. This is the npm
+ * distribution boundary, not a claim that the public repository's sources are secret (ADR-0111).
+ * The entry-source shebang makes `dist/index.js` directly executable as the `relavium` bin.
  */
 const THIRD_PARTY_EXTERNAL = [
   '@anthropic-ai/sdk',
@@ -53,6 +53,7 @@ export default defineConfig({
   clean: true,
   sourcemap: false,
   minify: true,
+  splitting: true,
   // Emit esbuild's metafile (`dist/metafile-esm.json`) — the authoritative record of every externalized import,
   // read by `tools/bundle-closure/check.mjs` to guard that the `external` list ≡ the declared `dependencies`. It
   // is EXCLUDED from the published tarball (the `files` negation in package.json): its `inputs` would reveal the
@@ -65,11 +66,14 @@ export default defineConfig({
   // bundled `relavium --version` reports the real version with no runtime file read. Source runs (tsx/vitest)
   // have no define and fall back to a dev sentinel.
   define: { __RELAVIUM_CLI_VERSION__: JSON.stringify(version) },
-  banner: { js: '#!/usr/bin/env node' },
   // The inlined `@relavium/db` resolves its drizzle migrations via `new URL('../drizzle', import.meta.url)`,
   // which — once bundled — points beside THIS bundle, not the db package. So ship the migration set alongside
   // `dist/` (`files: ["dist","drizzle"]`); `<pkg>/drizzle` is then what the bundled db code finds at runtime.
   onSuccess: async () => {
+    // Only the executable entry owns a hashbang; lazy chunks are regular flat ESM files.
+    for (const file of readdirSync('./dist')) {
+      if (file.endsWith('.js')) chmodSync(`./dist/${file}`, file === 'index.js' ? 0o755 : 0o644);
+    }
     // Clean first: cpSync merges (recursive) and never deletes, so a migration removed/renamed in the source
     // would otherwise linger here and ship stale. Recreate from the source of truth each build.
     rmSync('./drizzle', { recursive: true, force: true });

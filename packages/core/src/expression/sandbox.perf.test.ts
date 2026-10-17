@@ -9,6 +9,10 @@
  */
 import { describe, expect, it } from 'vitest';
 
+import {
+  createWorkflowContextProjection,
+  ownSecretInputNames,
+} from '../interpolation/provenance.js';
 import { createExpressionSandbox, DEFAULT_SANDBOX_LIMITS, type EvaluateInput } from './sandbox.js';
 
 const EVALS = 500;
@@ -29,7 +33,12 @@ describe('expression sandbox — perf spike', () => {
       expression: 'run.outputs["scan"].score < inputs.threshold && ctx.mode === "strict"',
       scope: {
         inputs: { threshold: 7 },
-        ctx: { mode: 'strict' },
+        ctx: createWorkflowContextProjection({
+          values: { mode: 'strict' },
+          deniedKeys: [],
+          orderedKeys: ['mode'],
+        }),
+        deniedInputNames: ownSecretInputNames([]).deniedInputNames,
         outputs: { scan: { score: 3 } },
       },
     };
