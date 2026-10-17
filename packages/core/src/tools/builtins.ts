@@ -471,6 +471,7 @@ const gitCommitTool = defineBuiltin({
     properties: {
       message: {
         type: 'string',
+        minLength: 1,
         maxLength: COMMIT_MESSAGE_MAX_BYTES,
         description: 'Non-empty commit message, at most 16 KiB of UTF-8 bytes.',
       },
@@ -479,6 +480,7 @@ const gitCommitTool = defineBuiltin({
         description: 'Optional file pathspecs to include in the commit.',
         items: {
           type: 'string',
+          minLength: 1,
           description: 'A non-empty file pathspec that does not begin with a hyphen.',
         },
       },
@@ -579,6 +581,7 @@ const webSearchTool = defineBuiltin({
     properties: {
       query: {
         type: 'string',
+        minLength: 1,
         description: 'Non-empty search query sent to the configured search provider.',
       },
       maxResults: {
@@ -658,7 +661,11 @@ const notifyTool = defineBuiltin({
   llmVisibleParams: {
     type: 'object',
     properties: {
-      title: { type: 'string', description: 'Non-empty title shown in the desktop notification.' },
+      title: {
+        type: 'string',
+        minLength: 1,
+        description: 'Non-empty title shown in the desktop notification.',
+      },
       body: { type: 'string', description: 'Notification body text; an empty body is allowed.' },
     },
     required: ['title', 'body'],

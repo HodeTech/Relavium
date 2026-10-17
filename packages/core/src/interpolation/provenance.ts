@@ -111,6 +111,7 @@ export function createWorkflowProvenance(workflow: Workflow): WorkflowProvenance
   const context = (workflow.workflow.context ?? []).map(({ key, value }) =>
     Object.freeze({ key, value }),
   );
+  const declaredContextKeys = new Set(context.map(({ key }) => key));
   const taint = computeTaint({ ...workflow.workflow, context });
   const contextSource = Object.freeze({
     workflow: Object.freeze({ context: Object.freeze(context) }),
@@ -126,6 +127,7 @@ export function createWorkflowProvenance(workflow: Workflow): WorkflowProvenance
         const deniedKeys: string[] = [];
         const orderedKeys = Object.keys(resolved);
         for (const key of orderedKeys) {
+          if (!declaredContextKeys.has(key)) throw new WorkflowContextError();
           if (taint.ctx.has(key)) deniedKeys.push(key);
           else {
             const value = resolved[key];

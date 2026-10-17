@@ -1,4 +1,4 @@
-import { INLINE_MEDIA_CEILING } from '@relavium/shared';
+import { INLINE_MEDIA_CEILING, compileJsonSchemaToZod } from '@relavium/shared';
 import type { Scope } from '@relavium/shared';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -106,6 +106,32 @@ const CASES: readonly ToolCase[] = [
 ];
 
 describe('built-in catalog', () => {
+  it.each([
+    { id: 'git_commit', valid: { message: 'commit' }, empty: { message: '' } },
+    {
+      id: 'git_commit',
+      valid: { message: 'commit', files: ['a.ts'] },
+      empty: { message: 'commit', files: [''] },
+    },
+    { id: 'web_search', valid: { query: 'search' }, empty: { query: '' } },
+    { id: 'notify', valid: { title: 'notice', body: '' }, empty: { title: '', body: '' } },
+  ])('advertises $id nonempty strings in the model-facing validator', ({ id, valid, empty }) => {
+    const compiled = compileJsonSchemaToZod(
+      tool(id).llmVisibleParams,
+      {
+        maxDepth: 16,
+        maxNodes: 2000,
+        maxEnumMembers: 1000,
+        maxProperties: 500,
+        maxStringBytes: 65536,
+        maxPropertyNameBytes: 256,
+      },
+      'strict',
+    );
+    if (!compiled.ok) throw new Error(`builtin schema refused: ${compiled.reason}`);
+    expect(compiled.schema.safeParse(valid).success).toBe(true);
+    expect(compiled.schema.safeParse(empty).success).toBe(false);
+  });
   it('registers 13 unique built-ins, all sourced "builtin"', () => {
     expect(BUILTIN_TOOLS).toHaveLength(13);
     expect(new Set(BUILTIN_TOOL_IDS).size).toBe(13);

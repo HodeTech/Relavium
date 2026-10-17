@@ -51,6 +51,23 @@ function expectInvalid(action: () => unknown): void {
 }
 
 describe('createWorkflowProvenance — declared-source authority', () => {
+  it('refuses undeclared resolved keys before reading their values', () => {
+    const authority = createWorkflowProvenance(workflow());
+    expectInvalid(() => authority.qualifyContext({ public: 'safe', undeclared: CANARY }));
+    let reads = 0;
+    const resolved: Record<string, string> = { public: 'safe' };
+    Object.defineProperty(resolved, 'undeclared', {
+      enumerable: true,
+      get() {
+        reads += 1;
+        return CANARY;
+      },
+    });
+    expectInvalid(() => authority.qualifyContext(resolved));
+    expect(reads).toBe(0);
+    // A refused external projection cannot taint the owned authority's next valid resolution.
+    expect(authority.qualifyContext({ public: 'safe' }).values).toEqual({ public: 'safe' });
+  });
   it('removes direct and transitive derived values while preserving trusted raw resolution', async () => {
     const definition = workflow();
     const authority = createWorkflowProvenance(definition);

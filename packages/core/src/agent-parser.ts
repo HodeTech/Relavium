@@ -8,7 +8,7 @@ import { schemaIssueReason } from './schema-issue.js';
  * Pure by contract (like `parseWorkflow`): it takes text, never a path — the host surface (CLI catalog scan
  * 2.I, the authoring commands 2.J) reads the file and passes the string plus an optional workspace-relative
  * label. An agent file is plain config (model/provider/system_prompt/tools); it carries no secret VALUES (keys
- * live in the keychain, ADR-0006), but the error still echoes only field *paths*, never an authored value.
+ * live in the keychain, ADR-0006). Errors expose field paths and fixed schema reasons, never authored values.
  */
 
 import { LineCounter, YAMLParseError } from 'yaml';
