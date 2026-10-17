@@ -61,7 +61,10 @@ jobs:
     if: ${{ always() }}
     name: lint · typecheck · test
     runs-on: ubuntu-latest
-    timeout-minutes: 15 # a hung step fails fast instead of inheriting the 360-min default
+    # A cold lint/typecheck plus serialized workspace run takes about 12.5 minutes, before
+    # build, tool checks and the replay smoke's six sequential, individually bounded 45s workers.
+    # Keep a finite outer watchdog without truncating those unchanged native/test bounds.
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
