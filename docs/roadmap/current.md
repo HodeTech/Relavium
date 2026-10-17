@@ -1300,6 +1300,16 @@ joined post-build CLI checks pass (354 files / 5,608 passes / ten established sk
 zero unhandled errors). R1–R16 remain NONCLEAN. Two NEW complete cumulative clean
 rounds, NEW separate security and fresh final-source CI/platforms remain required.
 Steps 9–19 have not started; no user decision is pending.
+The [seventeenth cumulative review and onboarding correction](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-seventeenth-cumulative-review-and-onboarding-correction--2026-10-17)
+records complete NONCLEAN coverage of 320 paths / 1,746 rehashed hunks at `2891e8fd`.
+`1dec7a8d` observes original Home raw-mode release/reclaim faults before reversible
+recovery consumes them. Nine actual Home/SQLite controls pass; removal produces
+four precise failures with five positive controls. Applied workspace, build,
+separate joined post-build CLI (355 files / 5,617 passes / ten established skips,
+zero unhandled errors), 549 acceptance-tool tests and compiled smokes pass.
+R1–R17 remain NONCLEAN. Two NEW complete cumulative clean rounds, NEW separate
+security and fresh final-source CI/platforms remain required. Steps 9–19 have not
+started; no user decision is pending.
 Step 8d proceeds automatically. The
 [final proposal reviews](phases/phase-2.5.5-hardening-and-remediation.md#second-maintainer-rereview-final-proposal-readiness--2026-10-16)
 remain proposal evidence, not implementation review. The selected encrypted archive

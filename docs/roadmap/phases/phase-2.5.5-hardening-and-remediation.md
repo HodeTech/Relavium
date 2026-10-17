@@ -7747,3 +7747,63 @@ material fix, a NEW separate clean security sitting and fresh full CI plus all f
 same-artifact consumers remain required. Steps 9–19 have not started. No credential,
 provider capture, billing, production archive recipient or user decision is pending;
 implementation continues automatically on `development`.
+
+### Wave 3 Step 8d seventeenth cumulative review and onboarding correction — 2026-10-17
+
+**R17 is complete and NONCLEAN; Step 8d and whole Step 8 remain open.** Seven NEW
+independent slices cover cumulative `d9625ff0` → `2891e8fd`: **320 paths / 1,746
+hunks**. Root reads all original reports and independently rechecks every physical
+body, complete U0 diff and hunk identity. Large normative/generated files retain
+their explicit current-context qualifications. Inventory SHA-256 is
+`bfd6948823aa421950325313ef3a2107c96affb8346307abcca0ab15580c5ce2`;
+aggregate SHA-256 is
+`30d64beb43d63817da0c3771388e9ec2cfb41865b0de618aa17975447968b7ae`.
+Opening and closing freezes match across 1,751 tracked files, 21,165 captured
+physical dependency files, 1,215 lexical links and 466 existing dist files.
+Detailed reports, runtime receipts, rejected synthetic suspicions and root's
+original-report reading receipt remain local and Git-ignored.
+
+**High `R17-HOME-H1` is corrected at `1dec7a8d`.** Home onboarding could consume an
+opaque native raw-mode release/reclaim error inside reversible recovery, then end
+successfully without infrastructure observation. Root independently reproduces
+both failures and a healthy control through actual Home, SQLite and the default
+captured terminal adapter. The correction observes the original cause at the two
+live recovery boundaries before preserving their existing retry/refusal behaviour.
+Unexpected faults select existing infrastructure 9 and stop new business entry;
+classified refusals and ownerless compatibility remain intact. Failed reversible
+operations grant no cleanup ACK: the original prompt and full cursor delivery
+still precede actual terminal/database retirement. The
+[canonical CLI contract](../../reference/cli/commands.md#cooperative-session-finalization-and-passive-notifications)
+owns this behaviour. No new ADR, dependency, error code or provider seam is needed.
+
+Nine permanent controls cover healthy, release/reclaim, held-prompt, classified
+refusal and ownerless paths. The exact fixed suite passes; removing only the
+observations causes **four precise original-owner assertion failures / five
+positive controls**. Fixed and restored six-file runs each pass **147 tests**;
+all three phases have explicit zero-unhandled receipts and actual launcher joins.
+Native faults, prompt completion and renderer release use controlled ports; this
+is not an operator-TTY or naturally occurring OS-error measurement. Initial author
+harness API/renderer mistakes and an unused-observer candidate remain retained
+without acceptance credit. Final causal receipt SHA-256 is
+`c2740a48cea959cfb43db6c28368b496e49be6f9606887c04ab2577935c8aff0`.
+
+Applied author workspace lint/typecheck/test passes 23 tasks (20 cached), including
+**355 CLI files / 5,617 passes / ten established skips**. Build passes six tasks
+(five cached). A separate post-build full CLI run has the same counts, explicit
+zero unhandled errors and an actual exit-0 launcher join. All **549 acceptance-tool
+tests**, tools typecheck, formatting, fences, engine dependency and DB-sync checks
+pass. Isolation collects 734 files with ownership probes intact. Compiled closure
+verifies 25 outputs / 410 inputs / 17 externals; actual Darwin / Node 22.23.1
+bootstrap passes 177 controls, and workflow/MCP/budget CLI smoke passes. Markdown
+remains governed by the documentation standard, outside Prettier's configured scope.
+
+At predecessor `2891e8fd`, all four same-tarball consumers and all causal families
+pass in [CI run 39020071201](https://github.com/HodeTech/Relavium/actions/runs/39020071201);
+its final required job is still running when recorded. Root and a NEW reviewer
+separately inspect five physical ZIPs and the exact 446,459-byte tarball and its
+receipts. These results do not execute the correction. Earlier cancelled/failed
+runs keep their own source and initiating-cause qualifications. Two NEW complete
+cumulative CLEAN rounds after the last material fix, a NEW separate clean security
+sitting and fresh final-source full CI plus all four installed consumers remain
+required. Steps 9–19 have not started; no credential, provider capture, billing,
+production recipient or user decision is pending.
