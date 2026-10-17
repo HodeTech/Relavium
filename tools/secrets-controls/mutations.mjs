@@ -347,9 +347,16 @@ export const mutations = [
     '  const raw = await read();',
     "  const raw = await (deps.readSecretInput?.() ?? Promise.resolve(''));",
     ['apps/cli/src/commands/run.test.ts'],
-    83,
-    'uses the real default reader exactly once and suppresses even an injected gate selector',
+    84,
+    'uses the real native default reader once and suppresses an injected gate selector',
     'SECRETS_CAUSAL_RUN_DEFAULT_READER',
+    [
+      {
+        target:
+          'uses the real structural default reader once and suppresses an injected gate selector',
+        marker: 'SECRETS_CAUSAL_RUN_DEFAULT_READER',
+      },
+    ],
   ),
   control(
     'run-consumed-stdin-prompt-authority',
@@ -367,7 +374,7 @@ export const mutations = [
     '    const mayPrompt = args.secretStdin !== true;',
     '    const mayPrompt = true;',
     ['apps/cli/src/commands/gate.test.ts'],
-    71,
+    73,
     'refuses unapproved stdio after a real read despite stale TTY, without prompting or writing a grant',
     'SECRETS_CAUSAL_RESUME_CONSUMED_STDIN_CONSENT',
   ),
@@ -581,7 +588,7 @@ export const mutations = [
     '  warnSnapshotLiterals(def, deps.io);\n',
     '',
     ['apps/cli/src/commands/run.test.ts'],
-    83,
+    84,
     'warns after admission before services and preserves the actual augmented frozen workflow',
     'SNAPSHOT_CAUSAL_RUN_CALLER',
   ),

@@ -4,7 +4,7 @@
 Step 4 first-run input matrix, Step 5 snapshot/export and Step 7 provider-header controls on physical source
 copies. `--mechanism <declared-id>`
 supports diagnosis only; selected runs retain `complete: false`. The current manifest
-declares **41 independent controls and 276 required named assertion witnesses**.
+declares **41 independent controls and 277 required named assertion witnesses**.
 These counts describe the workload; a declaration is not evidence that its removal
 passed. Actual fixed/removal/restored results belong to the coordinator's summary.
 
@@ -66,14 +66,18 @@ The eleven Step 4 controls remove separate production mechanisms:
 | `run-commander-diagnostic-projection` | Remove the run-local human-output and thrown-error projection while retaining Commander exception handling; all four parser-diagnostic modes must expose the opaque payload to their named assertion. |
 | `run-core-admission-before-services` | Remove the pure pre-service core admission while retaining final engine validation; secret length/pattern/format and ordinary min/max/enum failures must violate the native zero-key-factory assertion in all four output modes. |
 
-The Step 4 declarations require 51 additional named assertion witnesses. Every
+The Step 4 declarations require 52 additional named assertion witnesses. Every
 selected workload remains a complete test file: 33 input cases, 14 action-forwarding
-cases, 32 dispatch cases, 83 run-command cases, three run-consent cases, 71 gate cases,
+cases, 32 dispatch cases, 84 run-command cases, three run-consent cases, 73 gate cases,
 28 top-level parser cases, or 131 native integration cases, as declared per control.
 The coordinator independently enforces exact case counts, unique complete case
 identities and identical fixed/removal/restored inventories. It accepts only a
 completed `AssertionError` carrying the expected marker in each selected target;
 setup/import errors, thrown mock blockers or a failure elsewhere cannot substitute.
+The default-reader control requires both native and structurally equivalent stdin
+reader witnesses. An ordinary tooling test independently pins the corrected complete-file
+counts and both reader witnesses. The coordinator still validates actual collection in each
+phase; collection never supplies or rewrites its expected counts.
 
 The native suite keeps the actual top-level parser/dispatch, default stdin reader,
 engine, production history openers and SQLite persistence. It observes both the
@@ -121,7 +125,7 @@ permanent negative cases; no notice is produced before a successful export.
 
 Four snapshot controls remove the finite scrubber detection site and the actual
 `create`, `import`, and `run` warning calls. Each has a named value-free assertion in
-its complete 10-case detector, 11-case create, 11-case import or 83-case run file.
+its complete 10-case detector, 11-case create, 11-case import or 84-case run file.
 The adjacent tests check preserved authored files and admitted run snapshots, JSON
 stdout, and scan-budget/incomplete notices. These controls certify warning delivery
 for the planted supported shapes at these entry points, not universal secret

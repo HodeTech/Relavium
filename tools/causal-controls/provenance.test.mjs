@@ -265,3 +265,34 @@ test('every declared filesystem and secrets anchor matches current production so
     assertSelectedAnchors(controls, repository, files);
   }
 });
+
+test('secrets workload corrections retain independent complete-count and reader-witness pins', () => {
+  assert.equal(secretsControls.length, 41);
+  assert.equal(
+    secretsControls.reduce((count, control) => count + 1 + (control.witnesses ?? []).length, 0),
+    277,
+  );
+  for (const [id, file, expectedTests] of [
+    ['run-default-secret-reader', 'apps/cli/src/commands/run.test.ts', 84],
+    ['snapshot-run-warning', 'apps/cli/src/commands/run.test.ts', 84],
+    ['gate-consumed-stdin-prompt-authority', 'apps/cli/src/commands/gate.test.ts', 73],
+  ]) {
+    const control = secretsControls.find((entry) => entry.id === id);
+    assert.ok(control, `${id}: missing control`);
+    assert.deepEqual(control.files, [file]);
+    assert.equal(control.expectedTests, expectedTests, `${id}: complete workload drift`);
+  }
+  const reader = secretsControls.find((entry) => entry.id === 'run-default-secret-reader');
+  assert.equal(
+    reader.target,
+    'uses the real native default reader once and suppresses an injected gate selector',
+  );
+  assert.equal(reader.marker, 'SECRETS_CAUSAL_RUN_DEFAULT_READER');
+  assert.deepEqual(reader.witnesses, [
+    {
+      target:
+        'uses the real structural default reader once and suppresses an injected gate selector',
+      marker: 'SECRETS_CAUSAL_RUN_DEFAULT_READER',
+    },
+  ]);
+});
