@@ -503,7 +503,7 @@ export const mutations = [
     '    deps.io.writeErr(SESSION_EXPORT_REVIEW_NOTICE);\n',
     '',
     ['apps/cli/src/commands/chat-export.test.ts'],
-    15,
+    16,
     "reports fixed continuity and review notice on stderr after successful 'human' export",
     'W2_EXPORT_COMMAND_NOTICE',
     [

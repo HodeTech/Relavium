@@ -90,6 +90,43 @@ async function fixture(
 }
 
 describe('actual session builder, persister and host cleanup ownership', () => {
+  it.each([false, true])(
+    'owns reporter failure %s without fatalizing a successfully reported passive fault',
+    async (faulted) => {
+      const cause = new TypeError('PRIVATE_REPORTER_FAILURE');
+      const notes: string[] = [];
+      const f = await fixture((opts) => ({
+        ...opts,
+        onListenerError: (note) => {
+          if (faulted) throw cause;
+          notes.push(note);
+        },
+      }));
+      const remove = f.built.handle.subscribe((event) => {
+        if (event.type === 'session:turn_started') throw new Error('synthetic passive listener');
+      });
+      try {
+        f.persister.beginUserTurn('synthetic prompt');
+        await f.owner.work.enter(() => f.built.session.sendMessage('synthetic prompt'));
+        expect(f.owner.work.firstFailure?.cause, 'REPORTER_ORIGINAL_CAUSE').toBe(
+          faulted ? cause : undefined,
+        );
+        expect(f.invocation.registry.observations.exitCode()).toBe(faulted ? 9 : 0);
+        expect(
+          f.store.loadMessages(f.built.sessionId).filter((message) => message.role === 'assistant'),
+        ).toHaveLength(faulted ? 0 : 1);
+        if (!faulted)
+          expect(notes).toContainEqual(expect.stringContaining('synthetic passive listener'));
+      } finally {
+        remove();
+        await f.owner.work.close();
+        f.persister.close();
+        f.client.sqlite.close();
+      }
+      expect(f.invocation.registry.activeOwners).toBe(0);
+    },
+  );
+
   it('joins the complete real session and records its final terminal before releasing the host', async () => {
     const f = await fixture();
     try {

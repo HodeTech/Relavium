@@ -1210,3 +1210,13 @@ cannot become successful provenance recovery or cause a second scaffold write.
 Checkpoint loading likewise preserves original causes: typed inconsistent history
 remains operational 1 with inspection advice; an unexpected driver/wiring failure
 selects infrastructure 9 before original-owner cleanup.
+
+Budget, unpriced-model, withheld-effort and passive-error notification callbacks
+are bound at shared session-runtime creation to that actual host's owner. A failure
+in notification output or view publication is observed before advisory recovery;
+it stops further business admission without disabling captured terminal restoration.
+Successful passive-error reporting keeps its existing recoverable policy: the
+reported error argument alone does not become an infrastructure fault. Ownerless
+embeddings keep their callback compatibility. Missing local-MCP consent wiring
+uses the existing fixed infrastructure-9 classification before any native start;
+ordinary consent refusal and known cancellation retain their distinct outcomes.

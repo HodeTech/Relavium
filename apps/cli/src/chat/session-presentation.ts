@@ -9,13 +9,21 @@ export function ownSessionSubscriber(
   owner: SessionWorkOwner | undefined,
   consume: (event: SessionStreamHandleEvent) => void,
 ): (event: SessionStreamHandleEvent) => void {
+  return ownSessionNotification(owner, consume);
+}
+
+/** Observe a notification's own failure before an advisory producer can recover from it. */
+export function ownSessionNotification<Value>(
+  owner: SessionWorkOwner | undefined,
+  consume: (value: Value) => void,
+): (value: Value) => void {
   if (owner === undefined) return consume;
   let stopped = false;
-  return (event) => {
+  return (value) => {
     if (stopped || owner.signal.aborted) return;
     try {
       owner.assertAdmitting();
-      consume(event);
+      consume(value);
     } catch (cause) {
       stopped = true;
       owner.failure(cause);

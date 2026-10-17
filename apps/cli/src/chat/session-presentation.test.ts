@@ -4,7 +4,11 @@ import type { SessionStreamHandleEvent } from '@relavium/core';
 import { CliError } from '../process/errors.js';
 import { invocationFixture } from '../process/invocation.test-support.js';
 import { captureIo } from '../test-support.js';
-import { ownSessionOutput, ownSessionSubscriber } from './session-presentation.js';
+import {
+  ownSessionNotification,
+  ownSessionOutput,
+  ownSessionSubscriber,
+} from './session-presentation.js';
 import { SessionWorkOwner } from './session-work-owner.js';
 
 const event: SessionStreamHandleEvent = {
@@ -18,6 +22,64 @@ const event: SessionStreamHandleEvent = {
 };
 
 describe('owned passive session presentation', () => {
+  it('observes the notification failure before advisory recovery and reentrant cancellation', async () => {
+    const f = invocationFixture();
+    let notify: (value: string) => void = () => {};
+    const owner = new SessionWorkOwner(f.invocation, 'chat', {
+      cancel: () => notify('cancel notification'),
+      cleanup: () => Promise.resolve(),
+    });
+    const cause = new TypeError('PRIVATE_NOTIFICATION_FAILURE');
+    const consume = vi.fn(() => {
+      throw cause;
+    });
+    notify = ownSessionNotification(owner, consume);
+    try {
+      expect(() => notify('warning')).not.toThrow();
+      notify('late warning');
+      expect(consume).toHaveBeenCalledOnce();
+      expect(owner.firstFailure?.cause).toBe(cause);
+      expect(f.registry.observations.exitCode()).toBe(9);
+    } finally {
+      await owner.close();
+    }
+    expect(f.registry.activeOwners).toBe(0);
+  });
+
+  it('reports an existing passive error successfully without classifying that argument as a fatal fault', async () => {
+    const f = invocationFixture();
+    const owner = new SessionWorkOwner(f.invocation, 'chat', {
+      cancel: () => {},
+      cleanup: () => Promise.resolve(),
+    });
+    const notes: unknown[] = [];
+    const report = ownSessionNotification(owner, (error: unknown) => {
+      notes.push(error);
+    });
+    const reported = new TypeError('existing passive error');
+    try {
+      report(reported);
+      expect(notes).toEqual([reported]);
+      expect(owner.firstFailure).toBeUndefined();
+      expect(f.registry.termination).toBeUndefined();
+      owner.stop();
+      report(new Error('late callback must not enter'));
+      expect(notes).toEqual([reported]);
+    } finally {
+      await owner.close();
+    }
+    expect(f.registry.activeOwners).toBe(0);
+  });
+
+  it('preserves ownerless notification identity and the original thrown cause', () => {
+    const cause = new Error('ownerless advisory');
+    const consume = () => {
+      throw cause;
+    };
+    expect(ownSessionNotification(undefined, consume)).toBe(consume);
+    expect(() => ownSessionNotification(undefined, consume)('warning')).toThrow(cause);
+  });
+
   it('seals before failure cancellation reenters the passive callback', async () => {
     const f = invocationFixture();
     let subscriber: (event: SessionStreamHandleEvent) => void = () => {};

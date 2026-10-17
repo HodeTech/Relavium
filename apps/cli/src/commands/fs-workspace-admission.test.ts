@@ -1,4 +1,3 @@
-import * as sessionOpen from '../history/session-open.js';
 import { invocationFixture } from '../process/invocation.test-support.js';
 import type { CliInvocation } from '../process/invocation.js';
 import {
@@ -14,7 +13,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createClient } from '@relavium/db';
+import { createClient, createSessionStore } from '@relavium/db';
 
 import { buildChatSession, buildResumedChatSession } from '../chat/session-host.js';
 import { scriptedResolver } from '../chat/test-support.js';
@@ -27,13 +26,38 @@ import { captureIo } from '../test-support.js';
 import { chatCommand, chatResumeCommand, type ChatDriver } from './chat.js';
 
 const effects = vi.hoisted(() => ({ history: 0, keys: 0 }));
+type WorkspacePhase =
+  | 'native-open-enter'
+  | 'native-open-return'
+  | 'seed-enter'
+  | 'seed-return'
+  | 'read-enter'
+  | 'read-closed'
+  | 'alias-retarget-enter'
+  | 'alias-retarget-return'
+  | 'resume-enter'
+  | 'resume-return'
+  | 'runner-abort';
+interface PhaseEntry {
+  readonly phase: WorkspacePhase;
+  readonly elapsedMs: number;
+}
+const phaseTrace = vi.hoisted((): { active: ((phase: WorkspacePhase) => void) | undefined } => ({
+  active: undefined,
+}));
 vi.mock('../db/open.js', async (original) => {
   const native = await original<typeof import('../db/open.js')>();
   return {
     ...native,
     openLocalDb: (...args: Parameters<typeof native.openLocalDb>) => {
+      const trace = phaseTrace.active;
       effects.history += 1;
-      return native.openLocalDb(...args);
+      trace?.('native-open-enter');
+      try {
+        return native.openLocalDb(...args);
+      } finally {
+        trace?.('native-open-return');
+      }
     },
   };
 });
@@ -54,6 +78,8 @@ interface WorkspaceCase {
   readonly pending: Set<Promise<void>>;
   readonly removeAbort: () => void;
   readonly assertCurrent: () => void;
+  readonly trace: (phase: WorkspacePhase) => void;
+  readonly abortSnapshot: () => readonly PhaseEntry[] | undefined;
 }
 let currentCase: WorkspaceCase;
 beforeEach((context) => {
@@ -65,7 +91,16 @@ beforeEach((context) => {
   symlinkSync(workspace, sensitiveAlias, 'junction');
   writeFileSync(join(workspace, 'id_ed25519'), 'synthetic key sentinel');
   const { invocation } = invocationFixture();
+  const started = performance.now();
+  const phases: PhaseEntry[] = [];
+  let aborted: readonly PhaseEntry[] | undefined;
+  const trace = (phase: WorkspacePhase): void => {
+    if (phases.length < 32) phases.push({ phase, elapsedMs: performance.now() - started });
+  };
+  phaseTrace.active = trace;
   const onAbort = (): void => {
+    trace('runner-abort');
+    aborted ??= phases.map((entry) => ({ ...entry }));
     invocation.finiteExit.signal(15);
   };
   context.signal.addEventListener('abort', onAbort, { once: true });
@@ -77,6 +112,8 @@ beforeEach((context) => {
     invocation,
     signal: context.signal,
     pending: new Set(),
+    trace,
+    abortSnapshot: () => aborted,
     removeAbort: () => context.signal.removeEventListener('abort', onAbort),
     assertCurrent: () => {
       context.signal.throwIfAborted();
@@ -89,11 +126,17 @@ beforeEach((context) => {
 });
 afterEach(async () => {
   const fixture = currentCase;
+  const aborted = fixture.abortSnapshot();
+  if (aborted !== undefined) {
+    // Fixed labels/numbers only. A timeout snapshot is diagnostic, never a native-close receipt.
+    console.error(JSON.stringify({ kind: 'workspace-case-abort-phases', phases: aborted }));
+  }
   // Runner timeout is cancellation, not raw settlement. Preserve this case's HOME/root until the actual join.
   await Promise.allSettled([...fixture.pending]);
   if (fixture.invocation.registry.termination !== undefined)
     await fixture.invocation.registry.termination;
   fixture.removeAbort();
+  phaseTrace.active = undefined;
   expect(fixture.invocation.registry.activeOwners).toBe(0);
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
@@ -108,13 +151,19 @@ function ownCase(body: (fixture: WorkspaceCase) => Promise<void>): Promise<void>
   fixture.pending.add(raw);
   return raw;
 }
-function readSession(fixture: WorkspaceCase) {
+function readSession(
+  fixture: WorkspaceCase,
+  open: (path: string) => ReturnType<typeof createClient> = createClient,
+) {
   fixture.assertCurrent();
-  const opened = sessionOpen.openSessionStore(fixture.home);
+  fixture.trace('read-enter');
+  // Observe the existing real database without repeating writable migration/checkpoint maintenance.
+  const client = open(join(fixture.home, '.relavium', 'history.db'));
   try {
-    return opened.store.loadFull('workspace-floor-session');
+    return createSessionStore(client.db).loadFull('workspace-floor-session');
   } finally {
-    opened.close();
+    client.sqlite.close();
+    fixture.trace('read-closed');
   }
 }
 const global = (cwd: string): GlobalOptions => ({
@@ -131,6 +180,7 @@ const exitDriver: ChatDriver = async (ctx) => {
 };
 async function seed(fixture: WorkspaceCase, cwd: string): Promise<void> {
   fixture.assertCurrent();
+  fixture.trace('seed-enter');
   await chatCommand(
     { agent: undefined },
     {
@@ -142,6 +192,7 @@ async function seed(fixture: WorkspaceCase, cwd: string): Promise<void> {
       drive: exitDriver,
     },
   );
+  fixture.trace('seed-return');
   fixture.assertCurrent();
 }
 
@@ -226,8 +277,11 @@ describe('secret workspace admission before canonical persistence', () => {
       await seed(fixture, alias);
       const before = readSession(fixture);
       expect(before?.session.context.workingDir).toBe(workspace);
+      fixture.trace('alias-retarget-enter');
       rmSync(alias);
       symlinkSync(home, alias, 'junction');
+      fixture.trace('alias-retarget-return');
+      fixture.trace('resume-enter');
       expect(
         await chatResumeCommand(
           { sessionId: 'workspace-floor-session' },
@@ -240,6 +294,7 @@ describe('secret workspace admission before canonical persistence', () => {
           },
         ),
       ).toBe(4);
+      fixture.trace('resume-return');
     });
   });
 
@@ -388,24 +443,22 @@ it('runner-abort ownership joins a held resumed builder before fixture removal a
 it('a real SQLite read failure still closes the manually acquired session store', () =>
   ownCase(async (fixture) => {
     await seed(fixture, fixture.workspace);
-    const original = sessionOpen.openSessionStore;
     let native: ReturnType<typeof createClient>['sqlite'] | undefined;
-    const spy = vi.spyOn(sessionOpen, 'openSessionStore').mockImplementation((home) => {
-      const opened = original(home);
-      native = opened.db.$client;
+    const open = (path: string) => {
+      const client = createClient(path);
+      native = client.sqlite;
       try {
         native.prepare('DROP TABLE agent_sessions').run();
       } catch (cause) {
-        opened.close();
+        native.close();
         throw cause;
       }
-      return opened;
-    });
+      return client;
+    };
     try {
-      expect(() => readSession(fixture)).toThrow(/no such table/);
+      expect(() => readSession(fixture, open)).toThrow(/no such table/);
       expect(native?.open).toBe(false);
     } finally {
-      spy.mockRestore();
       if (native?.open === true) native.close();
     }
   }));

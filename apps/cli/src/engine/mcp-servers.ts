@@ -692,12 +692,8 @@ function requireGateForStdio(
   gate: StdioConsentGate | undefined,
 ): void {
   if (gate !== undefined) return;
-  const stdio = refs.filter((ref) => ref.transport === 'stdio').map((ref) => ref.id);
-  if (stdio.length === 0) return;
-  throw new CliError(
-    'internal',
-    `refusing to start local MCP program(s) (${stdio.join(', ')}): this surface reached the MCP host without a consent gate. This is a wiring defect, not a configuration one.`,
-  );
+  if (!refs.some((ref) => ref.transport === 'stdio')) return;
+  throw new CliError('cli_internal', '');
 }
 
 /**

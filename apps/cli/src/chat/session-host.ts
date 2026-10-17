@@ -76,6 +76,7 @@ import { sanitizeUntrustedInline } from '../render/sanitize.js';
 import { hostDeadlineTimer, hostSleep } from '../process/sleep.js';
 import type { SessionWorkOwner } from './session-work-owner.js';
 import type { SessionHostOwner } from './session-host-owner.js';
+import { ownSessionNotification } from './session-presentation.js';
 
 const SESSION_DURABILITY_FAILURE =
   'this session could not be saved, so it will not send anything further — the transcript and cost on disk are behind what you see';
@@ -173,7 +174,8 @@ export interface BuildChatSessionOptions {
   /**
    * Sink for an `on_exceed: 'warn'` pre-egress budget warning. A session has no `budget:warning` event in
    * its namespace, so the surface (the REPL) is the warning channel — the command wires this to surface a
-   * one-line notice. Absent ⇒ a no-op (the warn stays non-blocking either way).
+   * one-line notice. Absent ⇒ a no-op. The warning stays advisory; an owned output/view failure is a separate
+   * invocation failure and is observed before the governor recovers from this callback.
    */
   readonly onBudgetWarning?: (warning: ChatBudgetWarning) => void;
   /**
@@ -196,8 +198,9 @@ export interface BuildChatSessionOptions {
    * on screen and the in-memory transcript is intact).
    *
    * Absent ⇒ **not** a no-op, unlike the sinks above. A dropped durable write must never be silent
-   * (`docs/standards/error-handling.md`), so the runtime still surfaces it out-of-band, where the process-level
-   * `unhandledRejection` net in `index.ts` reports it and keeps the process alive.
+   * (`docs/standards/error-handling.md`), so the runtime still surfaces it out-of-band to the process-level
+   * failure boundary. Owned notification faults are observed before advisory recovery; successfully reported
+   * passive failures retain their existing recoverable policy.
    */
   readonly onListenerError?: (note: string) => void;
   /**
@@ -381,8 +384,26 @@ function buildSessionRuntime(
   attachDurabilityProbe: (probe: () => Error | undefined) => void;
 } {
   let durabilityProbe: () => Error | undefined = () => undefined;
+  // Bind once to this actual host, including callbacks captured before fresh/resume/rebuild publication.
+  // Only a callback's own failure is observed: reporting an existing passive error is still supported.
+  const onBudgetWarning =
+    opts.onBudgetWarning === undefined
+      ? undefined
+      : ownSessionNotification(opts.workOwner, opts.onBudgetWarning);
+  const onUnpriced =
+    opts.onUnpriced === undefined
+      ? undefined
+      : ownSessionNotification(opts.workOwner, opts.onUnpriced);
+  const onEffortWithheld =
+    opts.onEffortWithheld === undefined
+      ? undefined
+      : ownSessionNotification(opts.workOwner, opts.onEffortWithheld);
+  const onListenerError =
+    opts.onListenerError === undefined
+      ? undefined
+      : ownSessionNotification(opts.workOwner, opts.onListenerError);
   // #228: a passive subscriber that throws — the chat persister failing a durable `history.db` write — is
-  // isolated by `deliver()` either way, so the turn itself is never broken. What was missing is where the
+  // isolated by `deliver()` either way, so successful surface reporting preserves the turn. What was missing is where the
   // failure GOES: with no sink the bus re-throws it out-of-band, and Node kills the process on the resulting
   // unhandled rejection, asynchronously, after the reply was already on screen. Wiring the sink turns that into
   // a reported, survivable event. When the surface supplied no `onListenerError` the sink deliberately re-throws
@@ -390,7 +411,7 @@ function buildSessionRuntime(
   const bus = new RunEventBus({
     now: () => new Date(opts.now()).toISOString(),
     onListenerError: (error, event) => {
-      const report = opts.onListenerError;
+      const report = onListenerError;
       if (report === undefined) {
         // Rethrowing from the sink is not a shrug — `RunEventBus.#reportListenerError` catches a throwing sink
         // and routes it to `#surfaceOutOfBand`, i.e. exactly the no-sink path, which is the fallback we want.
@@ -459,10 +480,10 @@ function buildSessionRuntime(
   };
   const governor = buildGovernorWiring(
     opts.chat,
-    opts.onBudgetWarning,
+    onBudgetWarning,
     opts.resolvePrice,
     providers.endpointKind,
-    opts.onUnpriced,
+    onUnpriced,
     opts.maxTokensEstimate,
   );
   // The session event sink (1.W): a draft → bus → stamped sequenceNumber/timestamp. Hoisted so a SURFACE
@@ -652,11 +673,11 @@ function buildSessionRuntime(
     withheldByCap: reasoningWithheldByCapFor,
     // …and when the gate withholds, SAY SO. The engine cannot print; it hands back the verdict (which carries the
     // tiers the model would take) and the surface turns it into the one sentence every path uses.
-    ...(opts.onEffortWithheld === undefined
+    ...(onEffortWithheld === undefined
       ? {}
       : {
           onEffortWithheld: (result: EffortGateResult, model: string) => {
-            opts.onEffortWithheld?.(effortWithheldNote(result, model));
+            onEffortWithheld(effortWithheldNote(result, model));
           },
         }),
     registry,
