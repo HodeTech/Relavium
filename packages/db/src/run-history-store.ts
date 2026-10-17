@@ -1435,7 +1435,7 @@ function stepMatch(runId: string, nodeId: string, attemptNumber: number | undefi
 /** A paused run's frozen workflow snapshot + inputs, read by id (just the bits a cross-process resume rebuilds from). */
 export interface RunResumeSnapshot {
   /** `JSON.stringify(WorkflowDefinition)` — the frozen `runs.workflow_definition_snapshot` (the events don't
-   * carry the graph). The caller re-validates it with the shared `WorkflowSchema` before resuming. */
+   * carry the graph). The caller re-validates it with the shared `WorkflowSnapshotSchema` before resuming. */
   readonly workflowDefinitionSnapshot: string;
   /** `JSON.stringify(inputs)` from `run:started` (`runs.input_json`) — restored on resume so a post-gate node
    * that reads `{{ inputs.x }}` sees the value the run started with (the events don't replay the inputs). */
