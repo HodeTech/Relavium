@@ -123,7 +123,7 @@ test('literal/comment/regex/template import-looking text and hashbang text are d
     'const data = ["require(\\"nope\\")", "#!", /import("nope")/, `import("nope")`];\n' +
       '/* import("nope"); require("nope"); */ console.log(data);',
   );
-  checkBundleClosure(value);
+  assert.doesNotThrow(() => checkBundleClosure(value));
 });
 
 test('removing an emitted lazy chunk refuses even with complete build metadata', () => {

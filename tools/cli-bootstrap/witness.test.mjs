@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -8,6 +8,52 @@ import { withFixture, toEntryUrl } from './child.mjs';
 import { assertWitness, importFailureCanary, servicePackages } from './policy.mjs';
 import { spawnBounded } from './process.mjs';
 import { BOOTSTRAP_CONTROL_COUNT } from './inventory.mjs';
+import ts from 'typescript';
+
+// Inspect the actual assertion operands: a copied test regex could pass after either
+// acceptance runner regressed. Parsing never imports or executes the native harness.
+for (const [path, markers] of [
+  ['./check.mjs', ['file://', 'Error: synthetic']],
+  ['../cli-package/smoke/native-process.mjs', ['file://', 'PRIVATE_INSTALLED_']],
+]) {
+  test(`${path}: actual failure-output guard stays within each stack line`, () => {
+    const source = ts.createSourceFile(
+      path,
+      readFileSync(new URL(path, import.meta.url), 'utf8'),
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.JS,
+    );
+    const literals = [];
+    const visit = (node) => {
+      if (
+        ts.isCallExpression(node) &&
+        node.expression.getText(source) === 'assert.doesNotMatch' &&
+        node.arguments[0]?.getText(source) === 'result.stderr'
+      ) {
+        assert.ok(ts.isRegularExpressionLiteral(node.arguments[1]));
+        literals.push(node.arguments[1].text);
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(source);
+    assert.equal(literals.length, 1, 'the real stderr assertion must remain present');
+    const literal = literals[0];
+    const end = literal.lastIndexOf('/');
+    const guard = new RegExp(literal.slice(1, end), literal.slice(end + 1));
+    for (const frame of ['\n    at fn (synthetic:1:1)', '\n\tat fn', '\r\n \tat fn'])
+      assert.match(`diagnostic${frame}\ntrailer`, guard);
+    for (const marker of markers) assert.match(`prefix ${marker} suffix`, guard);
+    for (const text of [
+      '{"code":"cli_internal","message":"fixed diagnostic"}\n',
+      '\n\nat unindented text',
+      '\n \n\tat-without-space',
+      '\n'.repeat(16_384) + 'ordinary diagnostic',
+      '\n' + ' '.repeat(16_384) + 'ordinary diagnostic',
+    ])
+      assert.doesNotMatch(text, guard);
+  });
+}
 
 test('package binding expects the complete human/JSON native-failure cohort', () => {
   assert.equal(BOOTSTRAP_CONTROL_COUNT, 177);

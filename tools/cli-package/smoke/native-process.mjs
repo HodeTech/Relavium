@@ -534,7 +534,7 @@ export async function assertInstalledNativeProcesses(context, { bootstrap = fals
               'Background-only observation changed a successful turn',
             );
           }
-          assert.doesNotMatch(result.stderr, /PRIVATE_INSTALLED_|\n\s+at |file:\/\//);
+          assert.doesNotMatch(result.stderr, /PRIVATE_INSTALLED_|\n[\t ]+at |file:\/\//);
         }
         assert.equal(watchdogFired, false, 'External fixture watchdog supplied native cleanup');
         assert.equal(

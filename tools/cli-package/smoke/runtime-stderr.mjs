@@ -8,7 +8,7 @@ export function projectRuntimeStderr(stderr, { runtime, pid }) {
     pid <= 0 ||
     first < 0 ||
     (first > 0 && stderr[first - 1] !== '\n') ||
-    stderr.indexOf(warning, first + warning.length) !== -1
+    stderr.includes(warning, first + warning.length)
   )
     return { diagnostics: stderr, runtimeWarnings: [] };
   return {

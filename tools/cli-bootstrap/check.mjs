@@ -114,7 +114,7 @@ export async function runBootstrap(packageRoot = join(repository, 'apps/cli')) {
       'fs',
       'real execution did not reach filesystem admission before services',
     );
-    assert.ok(firstDenied.paths.some((path) => path === fixture.workspace));
+    assert.ok(firstDenied.paths.includes(fixture.workspace));
     records.push({
       name: 'real-execution-fs-before-service',
       exitCode: admission.code,
@@ -151,7 +151,7 @@ export async function runBootstrap(packageRoot = join(repository, 'apps/cli')) {
           assert.match(result.stderr, /Inspect existing work/, name);
         }
         assert.ok(!result.stderr.includes(importFailureCanary), name);
-        assert.doesNotMatch(result.stderr, /\n\s+at |file:\/\/|Error: synthetic/, name);
+        assert.doesNotMatch(result.stderr, /\n[\t ]+at |file:\/\/|Error: synthetic/, name);
         assert.equal(
           result.events.filter((event) => event.denied && !event.runtimeFailure).length,
           0,
