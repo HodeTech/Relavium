@@ -316,3 +316,14 @@ the [canonical discovery contract](../reference/shared-core/llm-provider-seam.md
 Step 8d and whole Step 8 remain open until the corrected source has two new
 complete cumulative clean reviews, a new separate security sitting and fresh
 full CI plus all four same-artifact package consumers.
+
+## Step 8 implementation landing — 2026-10-17
+
+[Step 8d and whole Step 8 are independently accepted on `development`](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-and-whole-step-8-acceptance--2026-10-17)
+at `c83c8575`, after two NEW complete cumulative CLEAN rounds following the final
+fixture correction, a NEW separate CLEAN security sitting and successful full CI
+plus all four actual same-tarball consumers. Earlier dated implementation and
+failed-review checkpoints retain their historical scopes. This lands native
+owner/session/terminal/fatal integration; it does not claim Step 10's unshipped
+CLI compatibility work or whole-Wave-3 acceptance. No new decision or deferral
+is added.

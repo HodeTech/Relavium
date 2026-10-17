@@ -1,6 +1,6 @@
 # `relavium` — Bare-invocation interactive Home
 
-> Last updated: 2026-10-16
+> Last updated: 2026-10-17
 
 - **Status**: Reference — the Home surface is delivered by **2.5.B** (the bare-invocation Home, the read-only management strip over `history.db`, the single-ink-tree mode machine, one SIGINT/SIGTERM lifecycle, and bracketed paste); the in-app slash palette / `/help` / `/doctor` + the context-aware footer landed in **2.5.C**; and the reseat-less mode keymap (`Shift+Tab` / `/mode`) + the fail-closed per-tool approval + the `Esc` mid-turn abort landed in **2.5.E** ([ADR-0057](../../decisions/0057-cli-chat-modes-and-per-tool-approval.md)) — all **extend** this same canonical home. The Home-side **`/models` picker** landed in **2.5.G**: in the bare Home an accepted pick writes the global `[preferences].default_model` (+ the effort tier) for the *next* session ([ADR-0063](../../decisions/0063-cli-config-write-contract.md) §1, [ADR-0064](../../decisions/0064-live-model-catalog.md)); in the in-Home **chat** the same picker **reseats** the live session instead ([chat-session.md](chat-session.md#model-reseat-models)).
 - **Surface**: CLI (a bare `relavium` with no subcommand, on a TTY)
@@ -31,8 +31,8 @@ retain exit `1`, and an unexpected escaping throw uses the fixed `cli_internal`
 projection and exit `9`, without its incoming message, cause or stack in that
 projection. The legacy broad `internal` code is not remapped wholesale. Step 8d
 implements caught Home/session fault integration and the complete fatal coordinator;
-its independent acceptance remains pending. This does not turn a classified failed
-chat turn into a fatal CLI failure.
+it is [independently accepted on `development`](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-and-whole-step-8-acceptance--2026-10-17). This does not turn a
+classified failed chat turn into a fatal CLI failure.
 
 ## First-run onboarding wizard (2.5.G S8)
 

@@ -8216,3 +8216,83 @@ Build/format, test isolation, SDK seam, engine-dependency and finite bundle clos
 pass, along with all 177 compiled bootstrap controls and compiled CLI smoke.
 Every author subprocess and the outer orchestrator joins with exit 0. The later
 independent review/security/full-CI/platform gates above remain required.
+
+### Wave 3 Step 8d and whole Step 8 acceptance — 2026-10-17
+
+**Step 8d and whole Step 8 are independently ACCEPTED on `development` at
+`c83c8575b0baaa9bf20765b03dffb00623ed96c6`.** This closes session, Home,
+one-shot, pending/replaced host, terminal and product fatal/output/background
+integration under [ADR-0110](../../decisions/0110-cli-diagnostics-and-discovery-have-explicit-compatibility.md).
+The original remaining budget never supplies a native-close, receipt, terminal
+delivery or database-safe-close acknowledgement. Classified turn failures and
+existing recovery/signal meanings remain separate from infrastructure 9.
+
+After the R24 fixture correction, **R25 and R26 are two NEW complete cumulative
+CLEAN correctness rounds**, each covering all **342 disjoint paths / 1,842 ordered
+hunks** from accepted Step 7 `d9625ff0` through `c83c8575`. Each round uses eight
+fresh independent reviewers. Root personally reads all eight original reports
+and every path assessment, independently verifies physical/Git/full-diff/ordered
+hunk identities and raw runtime/error/join records, then closes the whole round.
+Opening and closing freezes match all **1,761 tracked files, 21,165 installed
+dependency files, 1,215 lexical dependency symlinks and 466 existing dist files**;
+the index's membership/blob/mode equals HEAD. Root closure receipt SHA-256:
+R25 `d423c086ca2e9adbd594cec57a879b923c498c43330c0669d8eda5277222b273`;
+R26 `dac98a610c3c32811dd87dc97c6e7657b6fd853cf59d1b673ef8ee3259b6646b`.
+
+The complete source reviews retain their runtime qualifications. In particular,
+R25's tooling arithmetic wrapper and R26's Home collection wrapper actually exit
+nonzero; their failed harness receipts stay failed. Root independently checks the
+complete passing product-case records and explicit empty error channels, records
+the collection/arithmetic limitations and does not invent missing callback
+history or rerun a successful suite merely to repair metadata. Original reports
+remain unchanged; explicit supplements narrow imprecise fixture descriptions.
+Parent source aliases do not certify native-child source/dist equivalence.
+Existing-dist checks, synthetic seams, local platform skips and actual OS/outer
+joins keep their individual attribution. Overlapping review suites are reported
+separately.
+
+A **NEW separate CLEAN security sitting** reviews the cumulative ownership,
+provenance and fixed-diagnostic boundaries. Its full report and every semantic
+scope/exclusion assessment are independently read and verified by root. Fresh
+execution covers **75 complete files / 1,105 passes / one actual-Windows-only
+local skip**, with explicit runtime errors=[], completed Vitest close and actual
+Node/outer joins. This is a focused security audit, not full-body correctness
+certification of all 342 paths. The [security sitting](../../standards/security-review.md#sitting-wave-3-sessionterminal-ownership-and-fatal-activation-2026-10-17)
+records its scope and limits.
+
+At the same reviewed source, [full CI run 39044664485](https://github.com/HodeTech/Relavium/actions/runs/39044664485)
+completes **15/15 jobs successfully**. Main CI records lint/typecheck **17/17**
+tasks (five cache hits), serialized workspace tests **11/11** (five cache hits)
+and build **6/6** (six cache hits). Reported workspace totals are **743 files /
+15,635 passes / 22 established skips**; cached results retain their cache
+attribution. Formatting, isolation, seam/dependency/bundle fences, 177 bootstrap
+controls, compiled CLI/overflow smokes and replay compatibility pass. Replay
+records **16 strict refusals / two positive controls / zero fetches**. Required
+engine coverage also passes; core's later required-floor promotion remains
+Step 19. The separate source-native Windows advisory succeeds, including the
+12-case direct-builder file within its unchanged five-second case bound; it
+remains advisory rather than a dependency of required `ci`.
+
+All four actual installed consumers succeed against one independently inspected
+tarball: current Linux/macOS/Windows on **Node 24.21.0** and minimum Linux on
+**Node 22.0.0**. The archive is **446,750 bytes / 70 public files**, SHA-256
+`a64f4ff2cbd444d6bc37e6b0938c42e0a6ebca0ddcd7905799c718346764558f`.
+The five downloaded producer/consumer ZIPs are checked against actual CI origin,
+native tar headers/modes, public and installed inventories, source and digest.
+Downloaded current-source filesystem/secrets controls independently verify
+**110 / 41 controls and 330 / 123 phases**, exact declaration sets, retained
+source/runtime/stdio/evaluation/restoration and physical bounds, with zero
+unhandled errors. Archive inspection is not a new local control execution.
+
+No operator TTY, live provider, keychain, paid call, production release, opaque
+native undici dispatcher closure or universal descendant containment is inferred.
+Actual native closure is not receipt durability. Earlier NONCLEAN rounds and
+failed/old-source CI observations remain historical; later documentation commits
+are not claimed executed by source CI. Detailed reports and physical records
+remain local and Git-ignored. No new ADR, decision, dependency or deferral is added.
+
+**Steps 1–8 are accepted on `development`; Steps 9–19 have NOT STARTED.** The
+maintainer requested closure and a timestamped private handoff for another agent;
+this session starts no Step 9 work and opens no PR. Next is approved Step 9's
+release map/custody substrate in the [nineteen-increment plan](#proposed-implementation-increments).
+Whole Wave 3 and whole Phase 2.5.5/2.6 remain open.

@@ -607,9 +607,10 @@ also retain their [owned signal dispositions](#invocation-owners-and-fatal-order
 | `8` | Required money receipts were not durably acknowledged. **Do not repeat paid work**: inspect `relavium logs <runId>` and the ledger before recovery. This is separate from terminal-outbox uncertainty |
 | `9` | CLI infrastructure failed, including output delivery. Inspect existing work before repeating paid/effectful operations; see the [classification and remedy contract](#failure-classification-and-remedies) |
 
-Wave 3 Step 8a implements runtime origin classification and fixed boundary projections.
-Full fatal coordination, actual workflow-health precedence on escaping faults and
-all-surface integration remain staged in Steps 8b–8d below.
+Wave 3 Step 8 implements runtime origin classification, fixed boundary projections,
+fatal coordination and actual workflow-health precedence on escaping faults.
+[Step 8d and whole Step 8 are independently accepted on `development`](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-and-whole-step-8-acceptance--2026-10-17);
+the surface and ownership contracts below describe that implementation.
 
 > Final required-money uncertainty takes priority (`8`), then effect attention (`7`), then the actual terminal/ownership disposition (`5`/`6`) and ordinary outcome. A combined `8` warning also directs the operator to inspect the effect target and resolve its row. Final health never replaces the actual terminal, its error code or durable history; it selects the command's disposition after joining admitted work.
 > The fixed final-health stderr diagnostic has `type: diagnostic`, `code`, `message`, `terminalDurability` (`durable`, `uncertain` or `none`) and `effectNeedsAttention`. It reports one highest-priority warning; a combined money/effect case includes both remedies. These fields are nondurable and never added to stdout RunEvents.
@@ -662,7 +663,7 @@ Numeric cost totals are known realized sums. Human totals qualify unverified his
 
 ## Proposed Wave 3 CLI compatibility
 
-**Approved design, partially implemented on `development` — 2026-10-16.**
+**Approved design, partially implemented on `development` — 2026-10-17.**
 [ADR-0110](../../decisions/0110-cli-diagnostics-and-discovery-have-explicit-compatibility.md)
 was approved by the maintainer. Step 6 implements the pure flag/error/observation
 and ownership substrate, descriptor-derived current Commander grammar and the
@@ -671,9 +672,10 @@ production JSON help, aliases, pricing spellings, output categories and consent
 remain Step 10. Step 7's lazy entry and installed package are independently accepted. Step 8a
 implements minimal storage-origin adapters and defensive runtime projections,
 and adds an inert native invocation foundation. Product fatal/native/terminal
-activation is implemented in Step 8d on `development`; its complete cumulative
-review, separate security sitting and current platform acceptance remain open. Earlier sections describe current
-behaviour unless stated here.
+activation is [independently accepted in Step 8d and whole Step 8](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-and-whole-step-8-acceptance--2026-10-17)
+on `development`. The remaining Step 10 behaviour described in this proposed
+section is still unshipped. Earlier sections describe current behaviour unless
+stated here.
 
 ### Diagnostic policy
 
@@ -832,7 +834,8 @@ numeric value alone ([Node exit codes](https://nodejs.org/docs/latest-v22.x/api/
 
 ### Invocation owners and fatal ordering
 
-**Step 8d activation implemented; independent acceptance pending.** The registry
+**Step 8d activation independently accepted on `development`.** The [acceptance register](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-and-whole-step-8-acceptance--2026-10-17)
+records exact-source reviews, security and platform evidence. The registry
 exposes read-only termination and remaining-budget observations so an
 explicitly installed native adapter can react to autonomous owner failure.
 The adapter observes both real output streams and uses the same absolute
@@ -911,7 +914,7 @@ This attempt-all cancellation rule grants no retirement or safe-close ACK.
 
 ### Session ownership implementation checkpoint
 
-**Partial Step 8d implementation on `development`; not independently accepted.**
+**Step 8d independently accepted on `development`.** See the [acceptance register](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-and-whole-step-8-acceptance--2026-10-17).
 Standalone `agent run` now reserves its surface and host owners before asynchronous
 input, consent or session construction. The original invocation owns captured
 stdin cancellation, late builder adoption, producer/accounting joins, MCP cleanup
@@ -963,8 +966,8 @@ checks admission before publication; unexpected local clock/key/publication faul
 are observed before sibling discovery joins. Optional cache reads keep their
 existing recoverable UI policy.
 
-These are **Step 8d implementation claims, not acceptance**. Complete cumulative
-reviews, security and current required platform acceptance remain open. Home
+These contracts are covered by [Step 8d acceptance](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-and-whole-step-8-acceptance--2026-10-17), including complete
+cumulative reviews, separate security and current required platform evidence. Home
 post-chat snapshot failures reach the actual lifetime; ordinary slash notices
 are suppressed after owned stop, including delayed doctor/compaction results and
 export fault catches. Standalone shell rejection notices and directory-completion
@@ -976,11 +979,11 @@ shell results and model refresh banners before changing business state. Local bu
 cleanup and already-entered producer/native joins still complete after that seal. The
 [session substrate checkpoint](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-session-substrate-checkpoint--2026-10-16)
 and [chat/Home checkpoint](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-chat-and-home-integration-checkpoint--2026-10-17)
-record their exact scopes. Whole Step 8 remains open.
+record their historical implementation scopes; the final acceptance above closes whole Step 8.
 
 ### Management ownership implementation checkpoint
 
-**Partial Step 8d integration on `development`; not independently accepted.**
+**Step 8d independently accepted on `development`.** See the [acceptance register](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-and-whole-step-8-acceptance--2026-10-17).
 Management dispatch and the separate media-maintenance route reserve a command
 owner before entering work. Provider verification and both model-refresh axes
 retain actual operations beyond early report/failure results. Their original
@@ -1022,9 +1025,9 @@ The standalone create wizard binds installed Clack prompts to captured streams
 and checks admission between answers and before writing. Its already-entered
 terminal restoration uses the original captured control capability, separately
 from guarded business output. No deadline certifies input, terminal or database
-release. Bootstrap/caught-fatal activation is implemented; complete Step 8d
-review, security and platform gates remain open in the
-[implementation register](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-management-ownership-checkpoint--2026-10-17).
+release. Bootstrap/caught-fatal activation and management ownership are covered
+by the final [Step 8d acceptance](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-and-whole-step-8-acceptance--2026-10-17); earlier implementation checkpoints
+retain their historical scopes.
 
 ### Workflow and terminal ownership
 
@@ -1099,8 +1102,9 @@ The native bootstrap takes the original observer, deadline and physical-exit
 latch before runtime entry, invalidating any queued fallback completion. Actual
 terminal restoration and the sole fixed final diagnostic require native ACK
 within the unchanged budget. A background-only selected exit 9 does not become
-a fatal shutdown merely because a completed surface returns it. Whole Step 8
-remains open until Step 8d cumulative review, security and platform acceptance.
+a fatal shutdown merely because a completed surface returns it. Whole Step 8 is
+[independently accepted](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-and-whole-step-8-acceptance--2026-10-17) with its cumulative review, security and
+actual-platform qualifications.
 
 ### Native crash teardown scope
 
@@ -1119,8 +1123,9 @@ active native capabilities. There is no completed PID/group history or independe
 product MCP reaper collection. Workflow routing follows the ownership section
 above; Step 8d implements the corresponding session/management lifetimes and
 activates the product coordinator. Source fixtures retain their separately
-attributed explicit foundation tests; they do not certify product activation. Workflow/session/terminal retirement and
-safe DB close remain their separate integration obligations.
+attributed explicit foundation tests; those fixtures alone do not certify product
+activation. Workflow/session/terminal retirement and safe DB close have separate
+acknowledgement obligations, covered by the accepted 8c/8d integration above.
 
 | Creation owner / platform | Permitted finite teardown |
 |---|---|

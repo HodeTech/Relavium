@@ -203,8 +203,9 @@ acceptance is recorded in [current.md](../../roadmap/current.md).
 
 ### Failed-start cleanup lifecycle
 
-**Wave 3 Step 8d partial implementation on `development`; independent acceptance
-is pending.** `startMcpClient` accepts an optional fourth `McpStartupLifecycle`
+**Wave 3 Step 8d independently accepted on `development`.** The [acceptance register](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-and-whole-step-8-acceptance--2026-10-17)
+records cumulative reviews, security and platform evidence. `startMcpClient`
+accepts an optional fourth `McpStartupLifecycle`
 argument, separately from its existing third work-transfer argument. Its
 `onCloseError(serverId, cause)` observes each failed-start connection close
 refusal immediately, including while a different close is held. Its read-only
@@ -234,8 +235,8 @@ The CLI forwards this lifecycle through the actual default manager. Custom
 starters that delegate to `startMcpClient` must forward the fourth argument to
 retain the same failed-start observations. No vendor handle, PID authority,
 receipt success or new engine error code is carried by this channel. Final
-session/terminal integration and global activation remain Step 8d in the
-[execution plan](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#proposed-implementation-increments).
+session/terminal integration and global activation are covered by [Step 8d
+acceptance](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-and-whole-step-8-acceptance--2026-10-17).
 
 ### Discovery and result ingress bounds
 

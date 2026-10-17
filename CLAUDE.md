@@ -194,27 +194,20 @@ platform consumers remain attributed to `ab50be11`, with independently verified
 source/dependency equivalence. Step 8c workflow/preparation/terminal integration
 is independently accepted at `dbab25d8` after two NEW complete cumulative clean
 rounds, a separate clean security sitting and successful full CI. All four
-same-tarball platform consumers pass at that reviewed source. Whole Step 8 remains open.
-Step 8d session/terminal integration and product fatal activation are implemented
-but not independently accepted. R21 is complete CLEAN at `c491836a`; R22–R24
-are NONCLEAN. R24 covers all 342 paths / 1,842 cumulative hunks at `cef520d4`.
-Its one Medium finding is test preparation: the direct-builder guard spends its
-unchanged five-second case bound on unrelated disk-backed chat seeding. The actual
-Windows source-native advisory fails; required CI is a separate job. The correction
-uses a real in-memory SQLite SessionStore roundtrip only for that case, preserving
-all original guard/no-service assertions, abort ownership and surrounding native
-disk lifecycle cases. Author CI-mode focus passes 228 cases; independent fresh
-and resume guard removals fail the exact case and byte-exact restorations pass.
-This is author evidence, not independent acceptance. Earlier clean review,
-security, CI and same-artifact consumers retain their exact reviewed-source
-attribution. Two NEW complete cumulative clean rounds, a NEW separate clean
-security sitting and fresh corrected-source full CI plus all four same-artifact
-consumers remain required. Steps 9–19 have not started; no new decision or
-approval is needed.
-Step 8 proceeds as recorded serial increments 8a–8d; native
-fatal integration remains open until all actual owners are connected.
-Later implementation and whole-wave acceptance
-remain staged in the canonical roadmap.
+same-tarball platform consumers pass at that reviewed source.
+**Step 8d and whole Step 8 are independently accepted on `development` at
+`c83c8575` — 2026-10-17.** Two NEW complete cumulative CLEAN rounds (R25/R26)
+each cover all 342 paths / 1,842 ordered hunks after the final fixture correction.
+A NEW separate clean security sitting and all fifteen full-CI jobs pass at that
+reviewed source, as do all four actual same-tarball platform consumers. Original
+failed reviewer-preparation records and source/native/platform limits remain
+explicit; source CI does not certify later documentation commits. The
+[acceptance register](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-and-whole-step-8-acceptance--2026-10-17)
+joins exact evidence and historical corrections. Steps 1–8 are accepted;
+Steps 9–19 have NOT STARTED. The maintainer requested a timestamped private
+handoff for another agent; this session starts no Step 9 work or PR. No provider,
+credential, billing or new ADR approval is pending. Later implementation and
+whole-wave acceptance remain staged in the canonical roadmap.
 
 For live status, per-PR history, milestone dates, and open obligations, see the canonical
 home [docs/roadmap/current.md](docs/roadmap/current.md);

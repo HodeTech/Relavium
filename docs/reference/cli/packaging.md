@@ -1,6 +1,6 @@
 # CLI Packaging Contract
 
-- **Status**: Compiled graph and installed package independently accepted on `development`; Step 8d activation implemented, acceptance and release gates staged
+- **Status**: Compiled graph, installed package and Step 8 native activation independently accepted on `development`; Step 9 map/custody and release gates remain staged
 - **Date**: 2026-10-15
 - **Related**: [ADR-0111](../../decisions/0111-cli-meta-operations-use-a-lazy-packaged-runtime.md), [commands.md](commands.md), [release runbook](../../runbooks/release-a-surface.md)
 
@@ -85,8 +85,8 @@ fatal/background/output hooks and native close-delivery ordering through the
 untouched entry. Interactive restoration and deadline nonrenewal retain separate
 source controls. The exact owned Node 22.0.0 experimental JSON-module warning is
 retained separately from product diagnostics; unknown runtime output still fails
-the diagnostic grammar and ordering controls. Step 8d's cumulative
-review/security/platform acceptance remains open.
+the diagnostic grammar and ordering controls. [Step 8d and whole Step 8 acceptance](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-and-whole-step-8-acceptance--2026-10-17)
+records cumulative reviews, separate security and actual same-artifact platforms.
 
 The emitted graph checker parses actual JavaScript and compares every loading edge
 with the build inventory. It rejects missing/extra/unreachable/escaping chunks,
@@ -136,8 +136,8 @@ and independent acceptance are recorded separately in the Wave 3 register.
 
 This intermediate receipt does not claim the full map-bearing package-test mode
 below. Original-TypeScript symbolication, private staging and release custody
-remain Step 9; native fatal-owner integration remains Step 8. No intermediate
-local result closes those obligations or certifies a release.
+remain Step 9. Native fatal-owner integration is covered by [Step 8 acceptance](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-and-whole-step-8-acceptance--2026-10-17).
+No intermediate local result closes Step 9 or certifies a release.
 
 ### Candidate finalization — Step 9
 

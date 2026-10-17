@@ -1,7 +1,7 @@
 # Current state
 
 > Status: Living
-> Last updated: 2026-10-15
+> Last updated: 2026-10-17
 
 - **Related**: [README.md](README.md), [phases/phase-2.5-cli-consolidation.md](phases/phase-2.5-cli-consolidation.md), [phases/phase-2.5.5-hardening-and-remediation.md](phases/phase-2.5.5-hardening-and-remediation.md), [phases/phase-2-cli.md](phases/phase-2-cli.md), [deferred-tasks.md](deferred-tasks.md), [../project-structure.md](../project-structure.md), [../tech-stack.md](../tech-stack.md)
 
@@ -1142,8 +1142,13 @@ four required same-tarball consumers pass at `ab50be11`; independent equivalence
 checks preserve that execution attribution. [Step 8c workflow/terminal integration is independently accepted](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8c-acceptance--2026-10-16)
 at `dbab25d8` after two NEW complete cumulative clean rounds, a separate clean
 security sitting and successful full CI plus all four same-tarball platform
-consumers. Step 8d session/terminal integration and product fatal activation are
-implemented but their acceptance remains open; whole Step 8 and Steps 9–19 remain open. Its
+consumers. [Step 8d and whole Step 8 are independently accepted](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-and-whole-step-8-acceptance--2026-10-17)
+at `c83c8575` after two NEW complete cumulative CLEAN rounds, a NEW separate
+clean security sitting and successful full CI plus all four actual same-tarball
+consumers. Steps 1–8 are accepted on `development`; Steps 9–19 have NOT STARTED.
+The maintainer requested a private handoff for another agent; no Step 9 work or PR
+is started in this session. The checkpoints below are historical observations;
+their then-open gates are resolved only by the final acceptance linked above. The earlier
 [2026-10-17 chat/Home implementation checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-chat-and-home-integration-checkpoint--2026-10-17)
 records partial session/native-terminal integration and the remaining activation,
 review/security/platform gates without claiming acceptance. The subsequent
@@ -1151,9 +1156,9 @@ review/security/platform gates without claiming acceptance. The subsequent
 records remaining command, prompt, doctor and transient-resource integration;
 [native activation checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-native-activation-implementation-checkpoint--2026-10-17)
 records product bootstrap activation at `a2acba8e` and the eighth required
-installed case at `2928d8ef`. Implementation is present; two NEW complete
-cumulative clean reviews, a separate clean security sitting and current full
-CI/platform acceptance remain open. The
+installed case at `2928d8ef`. At that checkpoint, two NEW complete cumulative
+clean reviews, separate security and current full CI/platform acceptance were
+still required. Subsequent historical rounds retain their exact source scopes. The
 [first cumulative round and correction register](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-first-cumulative-review-and-corrections--2026-10-17)
 records complete NONCLEAN coverage of all 255 paths and the verified corrections;
 no clean-round acceptance is inferred. The [second cumulative round and native-input corrections](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-second-cumulative-review-and-native-input-corrections--2026-10-17)
@@ -1377,6 +1382,14 @@ lifecycle cases remain. CI-mode focus passes 228 cases; two independent entry-gu
 removals fail the exact case and every restoration passes. Two NEW complete
 cumulative clean rounds, NEW separate security and fresh corrected-source full
 CI/all four same-artifact consumers remain required. No user decision is pending.
+
+**Latest status — 2026-10-17:** the [final Step 8d / whole Step 8 acceptance](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-and-whole-step-8-acceptance--2026-10-17)
+closes those gates at `c83c8575`: R25/R26 each cover all 342 paths / 1,842 hunks
+and are CLEAN; separate security is CLEAN; full CI completes 15/15 jobs and all
+four actual same-tarball consumers succeed. Earlier failed/partial records remain
+historical and are not relabelled. Steps 9–19 remain unstarted for the next agent;
+no new decision, credential, billing or release operation is needed to begin Step 9.
+
 The [final proposal reviews](phases/phase-2.5.5-hardening-and-remediation.md#second-maintainer-rereview-final-proposal-readiness--2026-10-16)
 remain proposal evidence, not implementation review. The selected encrypted archive
 method persists; production recipient/recovery belongs to Wave 4b release setup.

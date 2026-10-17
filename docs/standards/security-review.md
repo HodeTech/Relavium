@@ -702,6 +702,35 @@ finding or new deferral remains in 8c. Session/terminal integration, global nati
 activation and final acknowledged diagnosis remain Step 8d; whole Step 8 and
 whole-wave acceptance are still open.
 
+### Sitting: Wave 3 session/terminal ownership and fatal activation (2026-10-17)
+
+A NEW separate sitting is **CLEAN** at
+`c83c8575b0baaa9bf20765b03dffb00623ed96c6`, independent of the two NEW
+complete cumulative correctness rounds. Its inventory spans Step 7 `d9625ff0`
+through the current **342 paths / 1,842 hunks**, with full bodies for 71 critical
+ownership/tooling paths and explicit changed-caller/test/document scope and
+exclusions elsewhere. This focused sitting is not a full-body correctness
+review of all 342 paths. Root reads the complete original report and every scope
+assessment/exclusion and independently verifies source and artifact pins.
+Report SHA-256: `caa33566005c53a9036f589224584d38a0284cf7d9d2c4628434fc014261d325`.
+
+Fresh execution covers **75 complete files / 1,105 passes / one actual-Windows-only
+local skip**, with explicit runtime errors=[], completed Vitest close and actual
+Node/outer joins. The audit covers captured input/output and secret custody,
+fixed fault projection, original-owner native PID/PGID authority, partial
+acquisition and transferred work, MCP consent/discovery, session/Home/terminal
+restoration and receipt-versus-cleanup acknowledgement boundaries. No confirmed
+finding or new deferral remains. [Final Step 8 acceptance](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-and-whole-step-8-acceptance--2026-10-17) separately
+joins successful full CI and all four actual same-tarball consumers at this source.
+
+Parent aliases do not prove native-child source/dist equivalence. Existing-dist
+smokes, simulated Windows protocols and synthetic output/prompt edges retain
+their qualifications. No operator TTY, real provider/keychain, paid operation,
+opaque native undici close, universal descendant containment, unchanged legacy
+verbose-stack secrecy or complete vulnerability-database audit is certified.
+Actual native close is not a receipt ACK; expiry never grants DB-safe-close
+permission. Steps 9–19 and whole-Wave-3 acceptance remain open.
+
 ## Sandbox and tool policy (`run_command`, node tools, secret inputs)
 
 This is the **binding home** for the tool-policy rules; the rationale is
