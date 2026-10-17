@@ -126,8 +126,12 @@ function redactInlineMediaForText(value: unknown, seen: WeakSet<object>): unknow
  * no-backtracking-RegExp / no-ReDoS posture.
  */
 export function redactSecretShapedText(text: string): string {
-  return (
-    text
+  let withoutUserinfo = text;
+  // Both URL rules require this exact delimiter. Skip only those rules when it is absent: their
+  // bounded scheme prefixes otherwise retry at every letter of a multi-megabyte argument. Other
+  // credential rules still scan the whole value, including its tail; no display bound applies here.
+  if (text.includes('://')) {
+    withoutUserinfo = text
       // **URL userinfo — `scheme://user:pass@host`.** The single most common shape a real credential takes in a
       // tool argument: a database connection string, a Redis URL, a webhook with an embedded token. It has no
       // `key=value` and no well-known prefix, so every other pattern here misses it — a review REPRODUCED the
@@ -144,7 +148,10 @@ export function redactSecretShapedText(text: string): string {
       // The rule above cannot see any of them: it requires a `:` with a non-empty right side. The `{16,}`
       // floor is what keeps `https://example.com` and a short vanity handle out — a credential in this
       // position is long, and a userinfo short enough to fall under the floor carries little to recover.
-      .replace(/([a-z][\w+.-]{0,31}:\/\/)[^/@\s"',}\]]{16,256}@/gi, '$1[redacted]@')
+      .replace(/([a-z][\w+.-]{0,31}:\/\/)[^/@\s"',}\]]{16,256}@/gi, '$1[redacted]@');
+  }
+  return (
+    withoutUserinfo
       // …and a token in a URL QUERY. `?token=…` is already caught by the `key=value` rule below, but the
       // SIGNED-URL shape — a long opaque value under an unrecognised parameter name — is not, and a
       // pre-signed S3 URL or a webhook `?t=<token>` is exactly that. Bounded to a long value so an ordinary

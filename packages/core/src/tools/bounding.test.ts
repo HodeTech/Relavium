@@ -335,6 +335,26 @@ describe('redactSecretShapedText', () => {
     expect(redactSecretShapedText('count = 42')).toBe('count = 42'); // not a secret-ish key
   });
 
+  it('scrubs every non-URL credential family after a long public prefix and preserves the full tail', () => {
+    // No URL delimiter occurs in these values. Skipping impossible userinfo matches must not bypass
+    // another credential family or truncate the journal input to the display projection's 16 KiB.
+    const prefix = `${'a'.repeat(32 * 1024)}\n`;
+    const cases = [
+      [`?opaque=${'Q'.repeat(24)}`, '?opaque=[redacted]'],
+      ['-----BEGIN PRIVATE KEY-----opaque-----END PRIVATE KEY-----', '[redacted]'],
+      ['Bearer abcdefghijklmnop', 'Bearer [redacted]'],
+      ['password="ordinary opaque value"', '[redacted]'],
+      [`sk-${'A'.repeat(16)}`, '[redacted]'],
+    ];
+    for (const [credential, expected] of cases) {
+      for (const tail of ['public-tail-A', 'public-tail-B']) {
+        expect(redactSecretShapedText(`${prefix}${credential}\n${tail}`)).toBe(
+          `${prefix}${expected}\n${tail}`,
+        );
+      }
+    }
+  });
+
   it('over-redaction is the safe direction — a benign `token: <long>` is swept up (documented tradeoff)', () => {
     // A DISPLAY-field false positive is acceptable (the model's copy is untouched). This pins the deliberate
     // over-redaction so a future "tighten precision" change is a conscious test edit, not a silent secret leak.
@@ -446,6 +466,15 @@ describe('redactSecretShapedText — URL userinfo (ADR-0080 §11)', () => {
     expect(redactSecretShapedText('https://sk_live_ABCDEFGHIJKLMNOP:@api.stripe.com/v1/x')).toBe(
       'https://[redacted]@api.stripe.com/v1/x',
     );
+  });
+
+  it('still finds both userinfo forms after a long public prefix', () => {
+    const prefix = `${'a'.repeat(32 * 1024)}\n`;
+    for (const userinfo of ['user:opaque-password', 'opaque-token-value-without-colon']) {
+      expect(redactSecretShapedText(`${prefix}custom+scheme://${userinfo}@host.example/tail`)).toBe(
+        `${prefix}custom+scheme://[redacted]@host.example/tail`,
+      );
+    }
   });
 
   it('leaves a credential-free URL untouched — the negative control', () => {
