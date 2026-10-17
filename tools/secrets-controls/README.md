@@ -102,7 +102,7 @@ parse/export mechanisms: direct unsupported `secrets.*` context refusal, title N
 normalization, session-identity fallback for an unusable title, and bounded legal
 encoding for an odd external session id. The context removal must fail an unread
 direct-reference parser case; the complete analysis file has 22 cases. Each export-ID
-removal must fail its own serializer assertion in the complete 24-case file. Separate
+removal must fail its own serializer assertion in the complete 25-case file. Separate
 positive tests retain legitimate secret-input context propagation, faithful metadata,
 and deterministic parse/serialize behavior. These controls do not certify universal
 transliteration or uniqueness of generated IDs.

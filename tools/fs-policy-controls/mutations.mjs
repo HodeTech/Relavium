@@ -253,7 +253,7 @@ for (const mutation of mutations) {
       : file === floorCases[0]
         ? 14
         : file === workspaceCases
-          ? 10
+          ? 12
           : file === cooperativeCases
             ? 6
             : file === windowsWinnerCases
