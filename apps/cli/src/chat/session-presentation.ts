@@ -1,6 +1,7 @@
 import type { SessionStreamHandleEvent } from '@relavium/core';
 
 import { CliError } from '../process/errors.js';
+import { ownNotification } from '../process/owned-notification.js';
 import type { CliIo } from '../process/io.js';
 import type { SessionWorkOwner } from './session-work-owner.js';
 
@@ -17,18 +18,7 @@ export function ownSessionNotification<Value>(
   owner: SessionWorkOwner | undefined,
   consume: (value: Value) => void,
 ): (value: Value) => void {
-  if (owner === undefined) return consume;
-  let stopped = false;
-  return (value) => {
-    if (stopped || owner.signal.aborted) return;
-    try {
-      owner.assertAdmitting();
-      consume(value);
-    } catch (cause) {
-      stopped = true;
-      owner.failure(cause);
-    }
-  };
+  return ownNotification(owner, consume);
 }
 
 /** Business output only. Entered terminal restoration retains the original captured capabilities. */

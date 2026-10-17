@@ -1387,7 +1387,7 @@ export function createChatLineHandler(
     if (!cancelled) {
       cancelled = true;
       if (built.hostOwner === undefined) built.session.cancel();
-      else built.hostOwner.work.stop(); // Observe an owned terminal-write refusal before producer joins.
+      else built.hostOwner.cancel(); // Publish the real cooperative terminal before stopping output admission.
     }
   };
   // Whether an interactive prompt (the ink UI / Home controller) can answer an approval — the ink view is

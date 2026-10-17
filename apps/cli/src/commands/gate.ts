@@ -31,6 +31,7 @@ import {
   MaskedSecretSchema,
   WorkflowSnapshotSchema,
   type GateDecision,
+  type MediaBilledModality,
   type RunStatus,
 } from '@relavium/shared';
 
@@ -418,8 +419,12 @@ async function resumeGateOwned(
     // resolveSaveToRoot), else the resumer's cwd — so a same-machine resume writes under the original dir, while
     // a resume on a different machine / after that dir was deleted falls back gracefully instead of failing.
     const saveToRoot = resolveSaveToRoot(snapshot.projectRoot, deps.global.cwd);
-    const wiring = buildMediaEngineWiring(opened.db, homeDir, saveToRoot, config, (m) =>
-      deps.io.writeErr(`${m}\n`),
+    const wiring = buildMediaEngineWiring(
+      opened.db,
+      homeDir,
+      saveToRoot,
+      config,
+      lifetime.notification((m: string) => deps.io.writeErr(`${m}\n`)),
     );
     // D15 catalog load-check on the resume path too (the SAME helper `run` uses) — re-validate the snapshot's
     // authored `output_modalities` against the CURRENT catalog, so a model that lost a capability between the
@@ -498,22 +503,26 @@ async function resumeGateOwned(
       // ADR-0071 §6: the far side of a gate re-runs agent nodes, so an authored tier the bound model rejects is
       // withheld here too — and this surface has no other safety net (no picker, no footer, no client-side check).
       // stderr, never stdout (`--json`).
-      onEffortWithheld: onceEffortNotice((note) => deps.io.writeErr(`warning: ${note}\n`)),
+      onEffortWithheld: onceEffortNotice(
+        lifetime.notification((note: string) => deps.io.writeErr(`warning: ${note}\n`)),
+      ),
       // ADR-0071 §K7: a resumed agent node on an unpriced model degrades to `allow`, so `budget.max_cost_microcents`
       // did not apply to it — say so on stderr (never stdout, `--json`). `budget.strict_cost_cap` blocks instead.
-      onUnpriced: (model, capMicrocents, modalities) =>
-        deps.io.writeErr(
-          `warning: ${unpricedModelNote(model, capMicrocents, 'budget.strict_cost_cap', modalities)}\n`,
-        ),
+      onUnpriced: lifetime.notification(
+        (model: string, capMicrocents: number, modalities?: readonly MediaBilledModality[]) =>
+          deps.io.writeErr(
+            `warning: ${unpricedModelNote(model, capMicrocents, 'budget.strict_cost_cap', modalities)}\n`,
+          ),
+      ),
       // ADR-0074 §3: new egress is HELD while a resumed media job submitted by an older Relavium settles — its
       // cost basis was not recorded, so the cap cannot be trusted until the job reports its real charge. Say so,
       // or a resume looks like an unexplained stall. stderr, never stdout (`--json` stays a pure event stream).
       // stderr, never stdout, so `--json` stays a pure event stream. The SENTENCE is
       // {@link legacyMediaJobHoldNotice} so it can be pinned directly — this sink reached the terminal for the
       // first time only when the engine wiring was fixed, and nothing had ever rendered it.
-      onLegacyMediaJobHold: (nodeIds) => {
+      onLegacyMediaJobHold: lifetime.notification((nodeIds: readonly string[]) => {
         deps.io.writeErr(legacyMediaJobHoldNotice(nodeIds));
-      },
+      }),
       // 2.5.A (ADR-0055): wire the SAME read+write fs + process ToolHost the `relavium run` path wires, jailed
       // to the ORIGINAL run's project root (`saveToRoot` — the original `runs.project_root` when it still exists
       // on this machine, else the resumer's cwd, exactly like the `save_to` root) at the resolved `fs_scope`. So a

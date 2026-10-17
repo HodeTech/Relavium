@@ -368,19 +368,17 @@ async function runOwned(
     // run succeeds, the knob does nothing, and the bill arrives at the provider's default tier.
     // `onceEffortNotice`: the gate is consulted on EVERY agent-node execution, so an agent inside a `loop` would
     // otherwise print the same warning on every iteration. A withheld tier is a standing condition, not an event.
-    const onEffortWithheld = onceEffortNotice((note: string): void =>
-      deps.io.writeErr(`warning: ${note}\n`),
+    const onEffortWithheld = onceEffortNotice(
+      lifetime.notification((note: string): void => deps.io.writeErr(`warning: ${note}\n`)),
     );
     // ADR-0071 §K7: a turn ran on a model we could not price, so `budget.max_cost_microcents` did not apply. The
     // governor already dedups per model. STDERR, never stdout (`--json`). `budget.strict_cost_cap` blocks instead.
-    const onUnpriced = (
-      model: string,
-      capMicrocents: number,
-      modalities?: readonly MediaBilledModality[],
-    ): void =>
-      deps.io.writeErr(
-        `warning: ${unpricedModelNote(model, capMicrocents, 'budget.strict_cost_cap', modalities)}\n`,
-      );
+    const onUnpriced = lifetime.notification(
+      (model: string, capMicrocents: number, modalities?: readonly MediaBilledModality[]): void =>
+        deps.io.writeErr(
+          `warning: ${unpricedModelNote(model, capMicrocents, 'budget.strict_cost_cap', modalities)}\n`,
+        ),
+    );
     let engineOptions: BuildEngineOptions = {
       providers,
       toolEnv,
@@ -393,8 +391,12 @@ async function runOwned(
       // Bound to a `const` so the closures below keep the narrowing: `opened` is a `let` assigned inside
       // this same try, and TypeScript cannot prove it is still set by the time a callback runs.
       const history = opened;
-      const wiring = buildMediaEngineWiring(history.db, homeDir, deps.global.cwd, config, (m) =>
-        deps.io.writeErr(`${m}\n`),
+      const wiring = buildMediaEngineWiring(
+        history.db,
+        homeDir,
+        deps.global.cwd,
+        config,
+        lifetime.notification((m: string) => deps.io.writeErr(`${m}\n`)),
       );
       mediaCasRoot = wiring.media.casRoot; // hoisted for the run-end host media GC below
       // D15 load-check (ADR-0044 §2 / ADR-0045 §1): an incapable / malformed-generative authored `output_modalities`

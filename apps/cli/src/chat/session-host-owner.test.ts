@@ -147,50 +147,66 @@ describe('actual session builder, persister and host cleanup ownership', () => {
     }
   });
 
-  it('retains actual provider work after cancellation instead of treating the session terminal as quiescence', async () => {
-    const started = gate();
-    const producer = gate();
-    const provider = {
-      ...scriptedProvider([]),
-      stream: async function* () {
-        started.release();
-        await producer.promise;
-        yield* textTurn('late synthetic reply');
-      },
-    };
-    const f = await fixture((opts) => ({
-      ...opts,
-      providers: { resolveProvider: () => provider, keyFor: () => 'synthetic-test-key' },
-    }));
-    let turn: Promise<void> | undefined;
-    try {
-      f.persister.beginUserTurn('synthetic prompt');
-      turn = f.owner.work.enter(() => f.built.session.sendMessage('synthetic prompt'));
-      await started.promise;
-      let retired = false;
-      const closing = f.owner.work.close();
-      void closing.then(() => {
-        retired = true;
+  it.each([false, true])(
+    'retains actual provider work after cancellation (cooperative %s), independently of its terminal',
+    async (cooperative) => {
+      const started = gate();
+      const producer = gate();
+      const provider = {
+        ...scriptedProvider([]),
+        stream: async function* () {
+          started.release();
+          await producer.promise;
+          yield* textTurn('late synthetic reply');
+        },
+      };
+      const f = await fixture((opts) => ({
+        ...opts,
+        providers: { resolveProvider: () => provider, keyFor: () => 'synthetic-test-key' },
+      }));
+      let turn: Promise<void> | undefined;
+      const terminalAdmission: boolean[] = [];
+      const unsubscribe = f.built.handle.subscribe((event) => {
+        if (event.type === 'session:cancelled')
+          terminalAdmission.push(!f.owner.work.signal.aborted);
       });
-      await reactions();
-      expect(f.store.loadSession(f.built.sessionId)?.status).toBe('ended');
-      expect(retired, 'SESSION_NATIVE_ROOT_OUTLIVES_CANCEL_TERMINAL').toBe(false);
-      expect(f.invocation.registry.activeOwners).toBe(1);
-      producer.release();
-      await turn;
-      await reactions();
-      expect(f.owner.work.firstFailure).toBeUndefined();
-      await closing;
-      await reactions();
-      expect(f.invocation.registry.activeOwners).toBe(0);
-      expect(f.store.loadMessages(f.built.sessionId)).toHaveLength(0);
-    } finally {
-      producer.release();
-      await turn;
-      f.persister.close();
-      f.client.sqlite.close();
-    }
-  });
+      try {
+        f.persister.beginUserTurn('synthetic prompt');
+        turn = f.owner.work.enter(() => f.built.session.sendMessage('synthetic prompt'));
+        await started.promise;
+        let retired = false;
+        if (cooperative) f.owner.cancel();
+        const closing = f.owner.work.close();
+        expect(terminalAdmission, 'SESSION_COOPERATIVE_TERMINAL_BEFORE_SEAL').toEqual([
+          cooperative,
+        ]);
+        expect(() =>
+          f.owner.work.enter(() => f.built.session.sendMessage('must not enter')),
+        ).toThrow();
+        void closing.then(() => {
+          retired = true;
+        });
+        await reactions();
+        expect(f.store.loadSession(f.built.sessionId)?.status).toBe('ended');
+        expect(retired, 'SESSION_NATIVE_ROOT_OUTLIVES_CANCEL_TERMINAL').toBe(false);
+        expect(f.invocation.registry.activeOwners).toBe(1);
+        producer.release();
+        await turn;
+        await reactions();
+        expect(f.owner.work.firstFailure).toBeUndefined();
+        await closing;
+        await reactions();
+        expect(f.invocation.registry.activeOwners).toBe(0);
+        expect(f.store.loadMessages(f.built.sessionId)).toHaveLength(0);
+      } finally {
+        unsubscribe();
+        producer.release();
+        await turn;
+        f.persister.close();
+        f.client.sqlite.close();
+      }
+    },
+  );
 
   it('retains a real terminal persistence refusal through actual cleanup and repeated barriers', async () => {
     const f = await fixture();
@@ -217,50 +233,54 @@ describe('actual session builder, persister and host cleanup ownership', () => {
     }
   });
 
-  it('starts the common fatal budget for a refused terminal write before a held provider tail joins', async () => {
-    const started = gate();
-    const producer = gate();
-    const provider = {
-      ...scriptedProvider([]),
-      stream: async function* () {
-        started.release();
-        await producer.promise;
-        yield* textTurn('late synthetic reply');
-      },
-    };
-    const f = await fixture((opts) => ({
-      ...opts,
-      providers: { resolveProvider: () => provider, keyFor: () => 'synthetic-test-key' },
-    }));
-    let turn: Promise<void> | undefined;
-    try {
-      f.client.sqlite.exec(
-        "CREATE TRIGGER refuse_held_terminal BEFORE UPDATE ON agent_sessions WHEN NEW.status = 'ended' BEGIN SELECT RAISE(ABORT, 'synthetic_held_terminal_refusal'); END",
-      );
-      f.persister.beginUserTurn('synthetic prompt');
-      turn = f.owner.work.enter(() => f.built.session.sendMessage('synthetic prompt'));
-      await started.promise;
-      void f.owner.work.close();
-      await reactions();
-      expect(f.persister.durabilityFailure).toBeDefined();
-      expect(
-        f.invocation.registry.budget.deadline(),
-        'SESSION_TERMINAL_FAILURE_BEFORE_HELD_PROVIDER_JOIN',
-      ).toBe(3000);
-      expect(f.invocation.registry.observations.exitCode()).toBe(9);
-      expect(f.invocation.registry.activeOwners).toBe(1);
-      producer.release();
-      await turn;
-      await reactions();
-      expect(f.invocation.registry.activeOwners).toBe(1);
-    } finally {
-      producer.release();
-      await turn;
-      // Actual test-owned work has settled; this administrative close grants no product ACK.
-      f.persister.close();
-      f.client.sqlite.close();
-    }
-  });
+  it.each([false, true])(
+    'starts the fatal budget on terminal refusal before held producer joins (cooperative %s)',
+    async (cooperative) => {
+      const started = gate();
+      const producer = gate();
+      const provider = {
+        ...scriptedProvider([]),
+        stream: async function* () {
+          started.release();
+          await producer.promise;
+          yield* textTurn('late synthetic reply');
+        },
+      };
+      const f = await fixture((opts) => ({
+        ...opts,
+        providers: { resolveProvider: () => provider, keyFor: () => 'synthetic-test-key' },
+      }));
+      let turn: Promise<void> | undefined;
+      try {
+        f.client.sqlite.exec(
+          "CREATE TRIGGER refuse_held_terminal BEFORE UPDATE ON agent_sessions WHEN NEW.status = 'ended' BEGIN SELECT RAISE(ABORT, 'synthetic_held_terminal_refusal'); END",
+        );
+        f.persister.beginUserTurn('synthetic prompt');
+        turn = f.owner.work.enter(() => f.built.session.sendMessage('synthetic prompt'));
+        await started.promise;
+        if (cooperative) f.owner.cancel();
+        void f.owner.work.close();
+        await reactions();
+        expect(f.persister.durabilityFailure).toBeDefined();
+        expect(
+          f.invocation.registry.budget.deadline(),
+          'SESSION_TERMINAL_FAILURE_BEFORE_HELD_PROVIDER_JOIN',
+        ).toBe(3000);
+        expect(f.invocation.registry.observations.exitCode()).toBe(9);
+        expect(f.invocation.registry.activeOwners).toBe(1);
+        producer.release();
+        await turn;
+        await reactions();
+        expect(f.invocation.registry.activeOwners).toBe(1);
+      } finally {
+        producer.release();
+        await turn;
+        // Actual test-owned work has settled; this administrative close grants no product ACK.
+        f.persister.close();
+        f.client.sqlite.close();
+      }
+    },
+  );
 
   it('preserves a committed native charge when its post-ACK publication fails', async () => {
     let acknowledged = false;

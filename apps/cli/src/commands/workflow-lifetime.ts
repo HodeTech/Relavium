@@ -10,6 +10,7 @@ import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import { defaultSubscribeSignals } from '../process/signals.js';
 import { subscribeWithSignalCustody } from '../process/signal-custody.js';
 import { WorkflowTerminal } from './workflow-terminal.js';
+import { ownNotification } from '../process/owned-notification.js';
 
 /** Single command owner: registration/signals precede its first owned asynchronous preparation. */
 export class WorkflowLifetime {
@@ -125,6 +126,17 @@ export class WorkflowLifetime {
     if (safety !== undefined && (this.#safety === undefined || rank[safety] > rank[this.#safety]))
       this.#safety = safety;
     this.#hostSafe ||= hostSafe;
+  }
+  /** Observe advisory sink/formatter faults before engine recovery, using this original owner. */
+  notification<Args extends unknown[]>(consume: (...args: Args) => void): (...args: Args) => void {
+    return ownNotification(
+      {
+        signal: this.signal,
+        assertAdmitting: () => this.checkpoint(),
+        failure: (cause) => this.failure(cause),
+      },
+      consume,
+    );
   }
   failure(cause: unknown): void {
     if (this.isStoppedFailure(cause)) return;

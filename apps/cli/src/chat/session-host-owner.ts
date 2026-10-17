@@ -49,6 +49,17 @@ export class SessionHostOwner {
     return persister;
   }
 
+  /** Cooperative end publishes its real terminal before sealing output; fatal stop stays sealed. */
+  cancel(): void {
+    try {
+      this.#cancel();
+    } catch (cause) {
+      this.work.cleanupUncertain(cause);
+    } finally {
+      this.work.stop();
+    }
+  }
+
   #cancel(): void {
     const built = this.#built;
     if (built === undefined || this.#cancelled === built) return;
