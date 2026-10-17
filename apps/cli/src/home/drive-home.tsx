@@ -340,7 +340,8 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       try {
         onboardingTerminal.setRawMode(true);
         onboardingRawReleased = false;
-      } catch {
+      } catch (cause) {
+        ownership?.surface.work.failure(cause);
         // A future recovery opportunity gets another exact retry.
       }
     }
@@ -377,7 +378,8 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       onboardingCursorReleased = true;
       void writeControl(SHOW_CURSOR);
       return true;
-    } catch {
+    } catch (cause) {
+      ownership?.surface.work.failure(cause);
       // We did not stop the process, so put any partial release back immediately rather than leaving Clack half-owned.
       reclaimOnboardingTerminal();
       return false;

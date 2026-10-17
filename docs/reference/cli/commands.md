@@ -1287,3 +1287,12 @@ abort permits a subsequent turn but cannot restart the cancelled summary request
 Full owner stop refuses notices that have not entered. Fresh, resumed, cleared,
 reseated and Home hosts share this boundary; absent callbacks and ownerless
 embeddings retain their existing behaviour, and one-shot execution gains no notice.
+
+Home onboarding observes an unexpected raw-input release or reclaim failure through
+the original invocation before reversible job-control recovery consumes it. The
+original private cause selects infrastructure `9` and stops further business entry;
+a classified operational refusal retains its existing inline behaviour. Failed
+reversible mode changes supply no final terminal-release acknowledgement. The
+original prompt and full cursor delivery must still settle before terminal and
+shared database release. Ownerless embeddings retain their existing best-effort
+recovery, and the finite process-exit restoration net grants no cleanup ACK.
