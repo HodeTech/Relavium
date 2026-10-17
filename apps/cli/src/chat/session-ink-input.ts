@@ -13,7 +13,7 @@ export class SessionInkInput {
   readonly #acknowledge: (text: string) => Promise<void>;
   readonly #failure: (cause: unknown) => void;
   readonly #listeners = new Set<unknown>();
-  #baseline = new Map<unknown, number>();
+  readonly #baseline = new Map<unknown, number>();
   readonly #remove: NodeJS.ReadStream['removeListener'];
   readonly #readable: () => readonly unknown[];
   #entered = false;

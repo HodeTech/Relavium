@@ -86,10 +86,8 @@ export class WorkflowTerminal {
       this.#prompts.delete(settled);
       settle();
       this.#fail(cause);
-      return new Promise<T>((_resolve, reject) => {
-        // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- Preserve the opaque constructor failure without forging terminal release.
-        reject(cause);
-      });
+      // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- Preserve the opaque constructor failure without forging terminal release.
+      return Promise.reject<T>(cause);
     }
     return raw.then((value) => {
       this.#prompts.delete(settled);

@@ -230,6 +230,18 @@ function globalOptions(): GlobalOptions {
 }
 
 describe('gateCommand', () => {
+  let client: DbClient;
+  let db: Db;
+
+  beforeEach(() => {
+    client = createClient(':memory:');
+    runMigrations(client.db);
+    db = client.db;
+  });
+  afterEach(() => {
+    if (client.sqlite.open) client.sqlite.close();
+  });
+
   it('classifies actual history corruption as storage 1 before any resume', async () => {
     mkdirSync(join(home, '.relavium'));
     writeFileSync(join(home, '.relavium', 'history.db'), 'PRIVATE_CORRUPT_HISTORY');
@@ -275,18 +287,6 @@ describe('gateCommand', () => {
     expect(await control.invocation.finiteExit.exited).toBe(9);
     expect(control.registry.activeOwners).toBe(1);
     expect(settled).toBe(false);
-  });
-
-  let client: DbClient;
-  let db: Db;
-
-  beforeEach(() => {
-    client = createClient(':memory:');
-    runMigrations(client.db);
-    db = client.db;
-  });
-  afterEach(() => {
-    if (client.sqlite.open) client.sqlite.close();
   });
 
   /** The injected deps for a resume over the SHARED in-memory db (no-op close — the db spans the whole test). */
