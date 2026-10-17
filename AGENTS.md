@@ -107,21 +107,19 @@ is independently accepted at `dbab25d8` after two NEW complete cumulative clean
 rounds, a separate clean security sitting and successful full CI. All four
 same-tarball platform consumers pass at that reviewed source. Whole Step 8 remains open.
 Step 8d session/terminal integration and product fatal activation are implemented
-but not independently accepted. Its first fifteen complete cumulative rounds are
-NONCLEAN. R15 independently verifies all 318 paths / 1,737 cumulative hunks at
-`eb5d61af`. Its Home doctor publication High is corrected at `151abaf5`: original
-notification faults are observed before advisory recovery and complete report work
-remains owned through actual settlement. The required-CI workload blocker is
-corrected at `1ed15ab8`, retaining the exact 12-case count and all causal assertions.
-Author gates pass (353 CLI files / 5,598 passes / ten established skips and 549
-acceptance-tool tests), including a separately joined post-build CLI run with zero
-unhandled errors. The affected control passes fixed/restored 12/12 and breaks seven
-assertions on removal. All four same-artifact consumers and Windows advisory pass
-at reviewed `eb5d61af`; its full CI fails the stale workload and downstream dependency
-gate, so those results do not certify the correction. Earlier failed Windows runs
-retain their outcomes and unknown initiating causes. Two NEW complete cumulative
-clean rounds, a NEW separate clean security sitting and fresh full CI plus all four
-same-artifact package consumers remain required.
+but not independently accepted. Its first sixteen complete cumulative rounds are
+NONCLEAN. R16 independently verifies all 319 paths / 1,744 cumulative hunks at
+`71a91042` and confirms one High cancelled-compaction delivery gap. `ea996d6c`
+binds the complete publication/flush callback to the original host before core's
+cancellation race, preserving late failure and actual delivery before retirement.
+Ten permanent fresh/resumed chat/SQLite cases pass, including a new turn after
+operation abort; the identical suite exposes six precise predecessor failures
+with four positive controls. Author workspace and separate joined post-build CLI
+gates pass (354 files / 5,608 passes / ten established skips, zero unhandled errors).
+Original-source package/CI results retain their own source and do not accept this
+correction. Earlier failed Windows runs retain their outcomes and unknown initiating
+causes. Two NEW complete cumulative clean rounds, a NEW separate clean security
+sitting and fresh full CI plus all four same-artifact package consumers remain required.
 Step 8 proceeds as recorded serial increments 8a–8d; native
 fatal integration remains open until all actual owners are connected.
 Later implementation and whole-wave acceptance

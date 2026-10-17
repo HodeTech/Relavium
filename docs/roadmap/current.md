@@ -1290,6 +1290,16 @@ but its full CI fails the stale workload and downstream dependency gate. Those
 results do not accept the correction. R1–R15 remain NONCLEAN; two NEW complete
 cumulative clean rounds, separate security and fresh final-source CI/platforms
 remain required. Steps 9–19 have not started. No user decision is pending.
+The [sixteenth cumulative review and compaction-delivery correction](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-sixteenth-cumulative-review-and-compaction-delivery-correction--2026-10-17)
+records complete NONCLEAN coverage of 319 paths / 1,744 rehashed hunks at `71a91042`.
+`ea996d6c` retains the original compaction publication/flush callback through actual
+settlement after core cancellation. Ten actual fresh/resumed chat/SQLite controls
+pass, including a subsequent turn after abort; predecessor code breaks six precise
+ownership assertions with four positive controls. Applied workspace and separately
+joined post-build CLI checks pass (354 files / 5,608 passes / ten established skips,
+zero unhandled errors). R1–R16 remain NONCLEAN. Two NEW complete cumulative clean
+rounds, NEW separate security and fresh final-source CI/platforms remain required.
+Steps 9–19 have not started; no user decision is pending.
 Step 8d proceeds automatically. The
 [final proposal reviews](phases/phase-2.5.5-hardening-and-remediation.md#second-maintainer-rereview-final-proposal-readiness--2026-10-16)
 remain proposal evidence, not implementation review. The selected encrypted archive

@@ -7660,3 +7660,90 @@ material fix, a NEW separate clean security sitting and fresh full CI plus all
 four same-artifact consumers remain required. Steps 9–19 have not started. No
 credential, provider capture, billing, production archive recipient or user
 decision is pending; implementation continues automatically on `development`.
+
+
+### Wave 3 Step 8d sixteenth cumulative review and compaction-delivery correction — 2026-10-17
+
+**R16 is complete and NONCLEAN; Step 8d and whole Step 8 remain open.** Seven NEW
+reviewers personally cover the complete cumulative `d9625ff0` → `71a91042` range:
+**319 paths / 1,744 hunks** in seven disjoint groups. Root reads every original
+report and independently verifies every physical body, complete U0 diff and hunk.
+Large normative/register/generated files retain their explicit changed-section
+and surrounding-context qualifications. Inventory SHA-256 is
+`5551022806d84ab5d4e08909ccbb64fbaa27949a0ed24bf4a6f48e0c1416a9a9`;
+aggregate SHA-256 is
+`95fd0fdc8fa34e96ff12657967adccbea894448fd33304b14027a8a8715e31c0`.
+Opening and closing freezes match across 1,750 tracked blobs, 21,165 physical
+dependency files, 1,215 lexical symlinks and 466 existing dist files. All seven
+original reports, identities, actual runner joins, failed/corrected harness
+attempts and the root reading receipt remain local and Git-ignored. This complete
+round supplies no clean-round, security or whole-step acceptance.
+
+**High `R16-C1` is corrected at `ea996d6c`.** Core intentionally races compaction's
+interactive disclosure wait against operation cancellation. The shared CLI session
+runtime previously forwarded the surface callback without retaining its original
+publication/flush operation. Cancelling manual compaction could therefore return
+exit 4, close the shared store and retire every owner while an acknowledged native
+write remained pending; a later failed callback still left exit 4. Root independently
+reproduces two precise cancellation failures and two positive controls through
+actual chat, session construction, SQLite and production `acknowledgeWrite`, with
+zero explicit runner-reported unhandled errors and an actual exit-1 launcher join.
+The output callback schedule, provider, driver and lifecycle ports are controlled;
+this is neither an operator-TTY nor naturally occurring OS-error measurement.
+
+The shared runtime now captures the callback and original host once, reserves its
+root before callback entry, and retains the exact returned Promise, normalizing
+only a void result. Core's prompt cancellation and no-post-cancel-summary admission
+remain unchanged. The entered publication or visible-render flush stays owed until
+actual settlement, and its late failure reaches the original owner before passive
+recovery. A full host stop refuses notices that never entered; operation abort
+still permits another turn. Fresh/resumed/clear/reseat and Home share this boundary.
+Absent callbacks and ownerless embeddings retain compatibility; one-shot execution
+gains no sink or enabled after-turn compaction. The
+[canonical CLI contract](../../reference/cli/commands.md#cooperative-session-finalization-and-passive-notifications)
+owns the behaviour. No new ADR, dependency, error code or provider seam is needed.
+
+Ten new permanent actual fresh/resumed chat cases cover cancellation × native
+acknowledgement success/failure, plus a subsequent admitted and durably persisted
+turn while the cancelled disclosure is held. They assert actual SQLite closure,
+original owner retention, late output disposition and no resumed old-summary
+request. All ten pass on the correction; the identical suite with only the shared
+runtime restored to immutable reviewed bytes yields **six precise ownership
+assertion failures / four positive controls**. Four complete focused files pass
+**99 tests**, with explicit zero-unhandled receipts and actual joined launchers.
+The archive contains all 1,750 independently Git-verified predecessor blobs;
+separate plain source copies introduce no branch/worktree/index or shared-source
+mutation. Initial author harness resolution, escaped-error expectation and fixture
+SQL mistakes remain retained and are neither product findings nor passing evidence.
+
+**Applied author gates pass.** Workspace lint/typecheck/test passes 23 tasks
+(20 cached), including **354 CLI files / 5,608 passing tests / ten established
+skips**. Build passes six tasks (five cached). A separate post-build complete CLI
+run has the same counts, an explicit zero-unhandled receipt and actual launcher
+exit 0. Tools typecheck, formatting, fences, engine dependency and DB-sync checks
+pass. All 549 acceptance-tool tests pass. Test isolation collects 733 files with
+its existing ownership probes intact.
+Compiled closure verifies 25 outputs / 410 inputs / 17 externals; the untouched
+local Darwin / Node 22.23.1 bootstrap passes 177 controls and compiled workflow,
+MCP signal-cleanup and budget CLI smoke passes. Original bounds and assertions
+remain intact. Author checks do not replace independent review or current required
+platform acceptance.
+
+At the original reviewed `71a91042`, current Linux/macOS/Windows and exact Node
+22.0.0 consumers pass. Root and an independent reviewer separately inspect five
+ZIPs and all 70 public members/receipts for the same 446,408-byte tarball, SHA-256
+`cf80bd3aa00b42996bde53b56d9a59aae515fec48116b573d3d2cbbd68b22740`.
+Each consumer records 177 bootstrap controls and eight installed cases. The Node
+22.13 workspace floor, Windows advisory, wire, usage, secrets and coverage jobs
+also pass; when R16 closes, the filesystem causal family and final required job
+have not completed. Root independently inspects the 41-control / 123-phase secrets
+archive, its 745 files / 26,909,694 bytes, source/runtime/stdio/evaluation receipts
+and explicit zero-error results. These predecessor passes do not accept the new
+correction or imply an unobserved final CI result. Every failed, superseded or
+cancelled run retains its own source and initiating-cause qualification.
+
+R1–R16 remain NONCLEAN. Two NEW complete cumulative CLEAN rounds after the last
+material fix, a NEW separate clean security sitting and fresh full CI plus all four
+same-artifact consumers remain required. Steps 9–19 have not started. No credential,
+provider capture, billing, production archive recipient or user decision is pending;
+implementation continues automatically on `development`.
