@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 import {
   effectScope,
@@ -340,6 +340,16 @@ describe('the effect journal store', () => {
   describe('the port digests its args through the SHARED canonical form (ADR-0084 §3 landing)', () => {
     const port = (): ReturnType<typeof createEffectJournalPort> =>
       createEffectJournalPort(store, RUN, ATTEMPT);
+
+    it('refuses even unchanged small legacy args whose unversioned digest cannot prove the original projection', async () => {
+      const legacy = createHash('sha256').update('{"body":"x","path":"/tmp/a"}').digest('hex');
+      store.prepare(ID, RUN, ATTEMPT, 3, legacy);
+      store.settle(ID, 'committed', { receipt: 'legacy' });
+      await expect(
+        port().prepare(ID.slot, ID.toolId, 3, { path: '/tmp/a', body: 'x' }),
+      ).rejects.toSatisfy(isEffectConflictError);
+      expect(store.recordsFor(RUN)).toHaveLength(1);
+    });
 
     it('a realistic redacted argument shape digests, and key ORDER cannot change it', async () => {
       // `canonicalJson` moved to `@relavium/shared` and grew refusals it never had. This is the behaviour

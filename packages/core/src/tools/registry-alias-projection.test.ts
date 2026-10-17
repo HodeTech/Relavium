@@ -79,6 +79,62 @@ const METADATA = [
   { name: 'nonempty', keys: new Set(['confidentialNote']), omitDeclared: true },
 ];
 
+describe('PR #95 journal identity retains long redacted arguments', () => {
+  it('LONG_ARGS_CONFLICT replays identical args but refuses a changed same-length tail at the same slot', async () => {
+    const h = harness();
+    const prefix = 'x'.repeat(20 * 1024);
+    const firstPayload = { text: `${prefix}first` };
+    const changedPayload = { text: `${prefix}other` };
+    expect(firstPayload.text.length).toBe(changedPayload.text.length);
+    const first = await h.registry.dispatch(call(firstPayload), h.context);
+    const replay = await h.registry.dispatch(call(firstPayload), h.context);
+    expect(replay.output).toEqual(first.output);
+    expect(h.received).toEqual([firstPayload]);
+    await expect(
+      h.registry.dispatch(call(changedPayload), h.context),
+      'LONG_ARGS_CONFLICT',
+    ).rejects.toMatchObject({ name: 'ToolEffectConflictError', retryable: false });
+    expect(h.received).toEqual([firstPayload]);
+    await h.registry.dispatch(call(changedPayload), { ...h.context, effectSlot: 1 });
+    expect(h.received).toEqual([firstPayload, changedPayload]);
+    expect(vi.mocked(h.effects.prepare).mock.calls[0]?.[3], 'LONG_ARGS_FULL_PREPARE').toEqual({
+      payload: firstPayload,
+    });
+    const display = JSON.stringify(first.events.call.toolInput);
+    expect(display.length).toBeLessThan(17 * 1024);
+    expect(display).not.toContain('first');
+  });
+
+  it('LONG_ARGS_REDACTION removes declared and shaped secrets beyond the display boundary before hashing', async () => {
+    const h = harness();
+    const prefix = 'x'.repeat(20 * 1024);
+    const payload = {
+      text: `${prefix} Bearer SYNTHETIC_LONG_BEARER_CANARY`,
+      confidentialNote: 'SYNTHETIC_DECLARED_LONG_CANARY',
+      nested: { password: 'SYNTHETIC_PASSWORD_LONG_CANARY' },
+    };
+    const outcome = await h.registry.dispatch(call(payload), {
+      ...h.context,
+      secretArgKeys: new Set(['confidentialNote']),
+    });
+    const projected = vi.mocked(h.effects.prepare).mock.calls[0]?.[3];
+    expect(projected, 'LONG_ARGS_REDACTED_FULL_VALUE').toEqual({
+      payload: { text: `${prefix} Bearer [redacted]`, nested: { password: '[redacted]' } },
+    });
+    for (const projection of [projected, outcome.events.call.toolInput]) {
+      const text = JSON.stringify(projection);
+      for (const canary of [
+        'SYNTHETIC_LONG_BEARER_CANARY',
+        'SYNTHETIC_DECLARED_LONG_CANARY',
+        'SYNTHETIC_PASSWORD_LONG_CANARY',
+      ])
+        expect(text, 'LONG_ARGS_NO_SECRET_ORACLE').not.toContain(canary);
+    }
+    expect(h.received[0]).toBe(payload);
+    expect(payload.text).toContain('SYNTHETIC_LONG_BEARER_CANARY');
+  });
+});
+
 describe.each(METADATA)(
   'W3S5 #94 actual registry joins with $name external metadata',
   ({ keys, omitDeclared }) => {

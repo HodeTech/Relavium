@@ -25,7 +25,7 @@ const EXPECTED_CANONICAL = {
 };
 
 function sha256(text: string): string {
-  return createHash('sha256').update(text).digest('hex');
+  return `v2:${createHash('sha256').update(text).digest('hex')}`;
 }
 
 function registryFixture(effects: EffectDispatchPort) {
@@ -110,7 +110,7 @@ describe.each(METADATA)(
         );
         expect(rows).toHaveLength(2);
         expect(rows.map((row) => row.state)).toEqual(['committed', 'committed']);
-        for (const row of rows) expect(row.args_digest).toMatch(/^[0-9a-f]{64}$/);
+        for (const row of rows) expect(row.args_digest).toMatch(/^v2:[0-9a-f]{64}$/);
         expect(rows[0]?.args_digest, 'PHYSICAL_ALIAS_DIGEST_DISTINCT').not.toBe(
           rows[1]?.args_digest,
         );
@@ -257,4 +257,120 @@ describe('W3S5 #94 physical journal deliberate secret-projection equality', () =
       client.sqlite.close();
     }
   });
+});
+
+describe('PR #95 full redacted journal digest', () => {
+  it('PHYSICAL_LONG_ARGS hashes the non-secret tail, preserves replay and refuses changed same-slot args', async () => {
+    const client = createClient(':memory:');
+    try {
+      runMigrations(client.db);
+      let ids = 0;
+      const store = createEffectJournalStore(client.db, {
+        uuid: () => `long-${++ids}`,
+        now: () => 6,
+      });
+      const effects = recordingPort(
+        createEffectJournalPort(
+          store,
+          { kind: 'run', runId: 'r-long', nodeId: 'n', attempt: 1 },
+          { providerAttempt: 1, toolCallId: 'long-call' },
+        ),
+      );
+      const h = registryFixture(effects);
+      const context = { ...h.context, secretArgKeys: new Set(['confidentialNote']) };
+      const prefix = 'x'.repeat(20 * 1024);
+      const payload = (tail: string, credential: string) => ({
+        text: `${prefix}${tail} Bearer ${credential}`,
+        password: credential,
+        confidentialNote: credential,
+      });
+      const firstPayload = payload('first', 'SYNTHETIC_LONG_SECRET_ONE');
+      const otherPayload = payload('other', 'SYNTHETIC_LONG_SECRET_TWO');
+      expect(firstPayload.text.length).toBe(otherPayload.text.length);
+      const first = await h.registry.dispatch(call(firstPayload), context);
+      const replay = await h.registry.dispatch(
+        call(payload('first', 'SYNTHETIC_LONG_SECRET_TWO')),
+        context,
+      );
+      expect(replay.output).toEqual(first.output);
+      expect(h.received).toHaveLength(1);
+      await expect(
+        h.registry.dispatch(call(otherPayload), context),
+        'PHYSICAL_LONG_ARGS_CONFLICT',
+      ).rejects.toMatchObject({ name: 'ToolEffectConflictError', retryable: false });
+      expect(h.received).toHaveLength(1);
+      await h.registry.dispatch(call(otherPayload), { ...context, effectSlot: 1 });
+      expect(h.received).toEqual([firstPayload, otherPayload]);
+
+      const rows = PhysicalRowsSchema.parse(
+        client.sqlite
+          .prepare('SELECT slot, state, args_digest FROM run_effects ORDER BY slot')
+          .all(),
+      );
+      // Independent canonical bytes, including the entire non-secret tail, not the display preview.
+      const expected = (tail: string) =>
+        sha256(`{"payload":{"password":"[redacted]","text":"${prefix}${tail} Bearer [redacted]"}}`);
+      expect(rows, 'PHYSICAL_LONG_ARGS_DIGEST').toEqual([
+        { slot: 0, state: 'committed', args_digest: expected('first') },
+        { slot: 1, state: 'committed', args_digest: expected('other') },
+      ]);
+      expect(rows[0]?.args_digest).not.toBe(rows[1]?.args_digest);
+      for (const args of effects.prepare.mock.calls) {
+        const projection = JSON.stringify(args[3]);
+        expect(projection).not.toContain('SYNTHETIC_LONG_SECRET');
+        expect(projection).not.toContain('confidentialNote');
+        expect(projection).toContain('Bearer [redacted]');
+      }
+      expect(JSON.stringify(first.events.call.toolInput).length).toBeLessThan(17 * 1024);
+      expect(
+        JSON.stringify(client.sqlite.prepare('SELECT * FROM run_effects').all()),
+      ).not.toContain('SYNTHETIC_LONG_SECRET');
+    } finally {
+      client.sqlite.close();
+    }
+  });
+
+  it.each(['original', 'literal-preview'] as const)(
+    'PHYSICAL_LEGACY_LONG_ARGS refuses the %s against an old truncated digest',
+    async (kind) => {
+      const client = createClient(':memory:');
+      try {
+        runMigrations(client.db);
+        const store = createEffectJournalStore(client.db, {
+          uuid: () => 'legacy-long',
+          now: () => 6,
+        });
+        const effects = createEffectJournalPort(
+          store,
+          { kind: 'run', runId: 'r-legacy-long', nodeId: 'n', attempt: 1 },
+          { providerAttempt: 1, toolCallId: 'legacy-call' },
+        );
+        const text = `${'x'.repeat(20 * 1024)}first`;
+        const preview = `${text.slice(0, 16 * 1024)}…[${String(text.length)} chars total]`;
+        // Seed actual pre-correction bytes, never through the current digest-producing port.
+        const legacyDigest = createHash('sha256')
+          .update(JSON.stringify({ payload: { text: preview } }))
+          .digest('hex');
+        store.prepare(
+          { scope: 'run:r-legacy-long:n', slot: 0, toolId: 'alias_publish' },
+          { kind: 'run', runId: 'r-legacy-long', nodeId: 'n', attempt: 1 },
+          { providerAttempt: 1, toolCallId: 'legacy-call' },
+          3,
+          legacyDigest,
+        );
+        await effects.settle(0, 'alias_publish', 'committed', { receipt: 'legacy result' });
+        const h = registryFixture(effects);
+        await expect(
+          h.registry.dispatch(call({ text: kind === 'original' ? text : preview }), h.context),
+          'PHYSICAL_LEGACY_LONG_ARGS_REFUSAL',
+        ).rejects.toMatchObject({ name: 'ToolEffectConflictError', retryable: false });
+        expect(h.received).toEqual([]);
+        expect(
+          store.recordsFor({ kind: 'run', runId: 'r-legacy-long', nodeId: 'n', attempt: 1 }),
+        ).toHaveLength(1);
+      } finally {
+        client.sqlite.close();
+      }
+    },
+  );
 });

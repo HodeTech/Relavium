@@ -343,7 +343,7 @@ async function prepareEffect(
       ctx.effectSlot,
       def.id,
       tier,
-      sanitizeInput(def, effective, ctx.secretArgKeys),
+      sanitizeInput(def, effective, ctx.secretArgKeys, 'journal'),
     ] as const;
     return await (ctx.effectAttempt === undefined
       ? ctx.effects.prepare(...args)
@@ -615,7 +615,10 @@ async function dispatch(
     mediaAttachments: markUntrusted(mediaAttachments),
     truncated: bounded.truncated,
     events: {
-      call: { toolId: def.id, toolInput: sanitizeInput(def, effective, ctx.secretArgKeys) },
+      call: {
+        toolId: def.id,
+        toolInput: sanitizeInput(def, effective, ctx.secretArgKeys, 'display'),
+      },
       result: { toolId: def.id, success: true, outputSummary: bounded.summary },
     },
   };
@@ -1056,6 +1059,7 @@ function sanitizeInput(
   def: ToolDef,
   effective: Record<string, unknown>,
   secretArgKeys: ReadonlySet<string> | undefined,
+  purpose: 'display' | 'journal',
 ): Readonly<Record<string, unknown>> {
   const out: Record<string, unknown> = { ...effective };
   for (const key of def.configOnlyParams ?? []) {
@@ -1078,8 +1082,8 @@ function sanitizeInput(
   // `secretArgKeys` deletion above only covers KNOWN top-level key names, so a model-set credential in an
   // arbitrary place (an `http_request` `Authorization` header value, a token in the body or url query) would
   // otherwise pass through — `redactSecretShapedValue` scrubs it by shape, keeping the object keys (header
-  // names) intact. Symmetric to the `outputSummary` scrub on the result side — display-only, the dispatch
-  // already ran on the real args.
+  // names) intact. This projection also protects the journal's digest from credential equality oracles.
+  // Neither projection changes the real args passed to the host.
   //
   // **Walked ONCE over the whole object, not per key.** A per-key loop handed the walker each VALUE with
   // its key already stripped, so the key-name rule — the one that catches an opaque credential with no
@@ -1087,7 +1091,10 @@ function sanitizeInput(
   // A tool's own TOP-LEVEL secretish parameter, which is exactly what an MCP server declares freely, went
   // through untouched into both the durable digest and the event stream. A review recovered `api_key`
   // verbatim from a real dispatch.
-  const walked = redactSecretShapedValue(redactInlineMedia(boundArgsForScan(out)));
+  // A display preview may omit a tail; the journal's collision guard may not. Both still exclude
+  // declared secrets and credential/media-shaped values BEFORE the host computes its digest.
+  const projection = purpose === 'display' ? boundArgsForDisplay(out) : out;
+  const walked = redactSecretShapedValue(redactInlineMedia(projection));
   // The walk preserves plain-object shape, so this is the same record with scrubbed members; the guard is
   // a boundary check rather than a cast, and the fallback can only be reached if the walk ever stops
   // returning an object for an object input.
@@ -1095,24 +1102,19 @@ function sanitizeInput(
 }
 
 /**
- * The ceiling on how much of a single argument string the scrub will look at.
- *
- * The result side already truncates before scrubbing (`makeSummary`); the args side did not, so every
- * effectful dispatch ran seven full-string passes over an UNCAPPED value — plausibly megabytes, via a
- * `write_file` `content` sourced from a prior large `read_file`, or an `http_request` `body`. Each pass is
- * linear (bounded quantifiers, no nesting — measured, not assumed), so this is avoidable synchronous CPU on
- * the dispatch hot path rather than a ReDoS. The cap is generous: a credential is short, and the tail of a
- * megabyte payload carries no diagnostic value the head does not.
+ * The display-only string preview ceiling. The journal scans the full redacted argument set, bounded by
+ * tool admission, because an omitted non-secret tail may distinguish one effect from another.
  */
 const ARG_SCAN_MAX_CHARS = 16 * 1024;
 
 /**
- * Truncate over-long STRING leaves before the scrub walks them, so the redaction cost is bounded per
- * argument. The marker is explicit and carries the true length — a silently shortened value in a durable
- * digest would be indistinguishable from a genuinely shorter one, and telling two calls apart is the
- * digest's whole job.
+ * Truncate display STRING leaves with an explicit true-length marker. This is never a journal input:
+ * equal-length values can differ after the retained prefix and must not replay each other's result.
  */
-function boundArgsForScan(value: unknown, seen: WeakSet<object> = new WeakSet<object>()): unknown {
+function boundArgsForDisplay(
+  value: unknown,
+  seen: WeakSet<object> = new WeakSet<object>(),
+): unknown {
   if (typeof value === 'string') {
     return value.length <= ARG_SCAN_MAX_CHARS
       ? value
@@ -1122,11 +1124,11 @@ function boundArgsForScan(value: unknown, seen: WeakSet<object> = new WeakSet<ob
   if (seen.has(value)) return '[cyclic]';
   seen.add(value);
   try {
-    if (Array.isArray(value)) return value.map((item) => boundArgsForScan(item, seen));
+    if (Array.isArray(value)) return value.map((item) => boundArgsForDisplay(item, seen));
     const proto: unknown = Object.getPrototypeOf(value);
     if (proto !== Object.prototype && proto !== null) return value;
     const out: Record<string, unknown> = {};
-    for (const [key, item] of Object.entries(value)) out[key] = boundArgsForScan(item, seen);
+    for (const [key, item] of Object.entries(value)) out[key] = boundArgsForDisplay(item, seen);
     return out;
   } finally {
     seen.delete(value);
