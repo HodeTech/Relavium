@@ -196,6 +196,13 @@ proved-empty scope. A successful client's close joins startup descendants as wel
 CLI run/resume hosts retain this aggregate before connect and keep their signal guard until its
 cleanup acknowledgement, including failure before a client or engine handle exists.
 
+For owned CLI sessions, both the invocation signal and an optional caller startup
+signal limit discovery. Subscription entry is synchronous. Abort delivery is
+independent of input-listener cleanup: both removals are attempted even when one
+fails. Cleanup of partial registration is attempted after the registering call returns.
+Any failed or unknown unlink is retained as cleanup uncertainty by the original
+invocation owner; consumer settlement or bounded refusal does not retire that owner.
+
 The engine's [departure contract](../../architecture/shared-core-engine.md#internal-departure-foundations-adr-0103)
 owns all run actors and final receipt health. MCP connection close supplies its own actual-work
 acknowledgement; a bounded public failure does not substitute for it. Consolidated independent

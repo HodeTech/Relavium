@@ -104,8 +104,10 @@ both native PIDs alive, permits the fixture's ordinary successful turn, and ends
 with background-only exit 9. Each independent mode retains its own sibling,
 watchdog, actual close and exact-PID cleanup evidence. These are plain one-shot
 activation/ACK-order controls: interactive terminal restoration and absolute
-budget nonrenewal retain their separately attributed source controls. Whole
-Step 8d acceptance remains open. Original-TS maps/custody remain Step 9. The current ten
+budget nonrenewal retain their separately attributed source controls. [Step 8d and whole
+Step 8 acceptance](../../../docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-and-whole-step-8-acceptance--2026-10-17)
+retains its reviewed-source attribution. PR #95's corrected ten-case source still requires
+fresh same-artifact platform evidence. Original-TS maps/custody remain Step 9. The current ten
 behavior cases and 177 bootstrap controls are required. Windows bootstrap modes
 require five actual target/helper creations (two fatal, one background, two output);
 the other platform/cohort combinations require three.

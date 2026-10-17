@@ -8413,3 +8413,31 @@ tests test the native test harness and are not presented as additional product-p
 coverage. Separate tarball builds may differ in metadata ordering: existing acceptance
 certifies one chosen immutable archive, not independently reproducible builds.
 Detailed per-finding evidence, controls and review records remain local and Git-ignored.
+
+The first fresh cumulative correction round at `0d963a1a` is **NONCLEAN**:
+all 89 corrective paths / 171 default-context hunks were assigned without gaps.
+The library assignment is clean (18 paths; 259 independent focused tests). CLI
+review covers 39 paths and 538 focused tests but reproduces a High in the new
+MCP signal composition: a foreign listener-removal failure suppresses cancellation.
+Tooling/docs review covers 32 paths and 137 focused tests, with one stale Step 8d
+status sentence. These are complete scoped reviews, not whole-PR recertification.
+
+The subsequent correction delivers abort independently of cleanup, attempts both
+input removals, rolls back partial registration after its entry returns, and retains
+failed unlink as uncertainty on the original owner. Fresh/resumed actual-manager
+regressions fail before the repair; neither bounded refusal nor a connection-close
+result fabricates that owner's retirement. The tooling guide now links historical
+Step 8 acceptance and separates fresh corrected-source publication evidence.
+
+Push CI at `0d963a1a` also exposes stale secrets workload declarations, an exact-cap
+redaction timeout on the minimum Node line and a Windows concurrency-fixture timeout.
+The declarations now retain both native/structural reader witnesses with explicit
+complete-file counts; no coordinator gate is loosened. A necessary-delimiter prefilter
+skips only impossible URL-userinfo matches, retaining every other full-value redaction
+pass and the unchanged 8 MiB fixture. URL-containing values retain their prior cost.
+The native fixture separates child initialization from the held-lock write handshake
+and joins actual child close before deleting its database, including failure/abort.
+Its unchanged timeout, two 40-write bursts and all row assertions remain. Local
+validation of these repairs does not establish a Windows or minimum-Node CI result.
+Two NEW complete cumulative clean rounds, a NEW separate security sitting and fresh
+corrected-source CI/platform evidence remain required after this nonclean round.
