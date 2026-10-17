@@ -115,48 +115,20 @@ function redactInlineMediaForText(value: unknown, seen: WeakSet<object>): unknow
 }
 
 /**
- * Redact secret-SHAPED substrings from a text projection bound for an **observability field** (the event
- * `outputSummary` / `toolInput`) — NOT the model-facing value (the model must still see the real tool result
+ * Redact secret-SHAPED substrings from observability and journal projections — NOT the model-facing value
+ * (the model must still see the real tool result
  * and its own args). A model can put a live credential in an `http_request` header/body, and a tool result can
  * carry one (a `read_clipboard`, an egress response body, a `.env` read); either would otherwise ride the
  * `--json` machine stream (ADR-0049) / a log verbatim. High-recall and deliberately conservative (a false
- * positive redacts a non-secret in a DISPLAY field only — never the model's copy): it targets `Authorization`
+ * positive changes the projection, never the model/dispatch copy). Journal consumers deliberately treat
+ * recognized credential projections as equal; see effect-journal.md §11. It targets `Authorization`
  * schemes, `…secret…=value` pairs, and well-known token shapes (OpenAI/AWS/GitHub/Slack/Google/JWT). Every
- * pattern is LINEAR — bounded repetition + single character classes, no nested quantifiers — per the engine's
+ * pattern uses bounded context or disjoint character runs, with no ambiguous nested repetition — per the engine's
  * no-backtracking-RegExp / no-ReDoS posture.
  */
 export function redactSecretShapedText(text: string): string {
-  let withoutUserinfo = text;
-  // Both URL rules require this exact delimiter. Skip only those rules when it is absent: their
-  // bounded scheme prefixes otherwise retry at every letter of a multi-megabyte argument. Other
-  // credential rules still scan the whole value, including its tail; no display bound applies here.
-  if (text.includes('://')) {
-    withoutUserinfo = text
-      // **URL userinfo — `scheme://user:pass@host`.** The single most common shape a real credential takes in a
-      // tool argument: a database connection string, a Redis URL, a webhook with an embedded token. It has no
-      // `key=value` and no well-known prefix, so every other pattern here misses it — a review REPRODUCED the
-      // gap by recovering a stored `run_effects` digest from guessed plaintext. That matters more since
-      // ADR-0080: the same projection now feeds a durable, never-swept digest, which is a permanent offline
-      // oracle rather than a line in an ephemeral event stream. The host is deliberately KEPT — it is the
-      // diagnostic half, and it is not the secret.
-      .replace(
-        /([a-z][\w+.-]{0,31}:\/\/)[^/@\s:"',}\]]{0,256}:[^/@\s"',}\]]{1,256}@/gi,
-        '$1[redacted]@',
-      )
-      // …and the COLON-LESS form — `scheme://TOKEN@host`. A webhook with an embedded bearer, a Stripe-style
-      // key-as-username (`https://sk_live_…:@api.stripe.com`, whose password half is empty), `curl -u tok:`.
-      // The rule above cannot see any of them: it requires a `:` with a non-empty right side. The `{16,}`
-      // floor is what keeps `https://example.com` and a short vanity handle out — a credential in this
-      // position is long, and a userinfo short enough to fall under the floor carries little to recover.
-      .replace(/([a-z][\w+.-]{0,31}:\/\/)[^/@\s"',}\]]{16,256}@/gi, '$1[redacted]@');
-  }
   return (
-    withoutUserinfo
-      // …and a token in a URL QUERY. `?token=…` is already caught by the `key=value` rule below, but the
-      // SIGNED-URL shape — a long opaque value under an unrecognised parameter name — is not, and a
-      // pre-signed S3 URL or a webhook `?t=<token>` is exactly that. Bounded to a long value so an ordinary
-      // `?limit=10` or `?q=cats` is untouched; the parameter NAME is kept as the diagnostic half.
-      .replace(/([?&][\w.-]{1,64}=)[^\s&"',}\]]{24,512}/g, '$1[redacted]')
+    redactOpaqueQueryValues(redactUrlUserinfo(text))
       // A PEM private-key block (multi-line, space-separated markers the `private_key` key-pattern can't see).
       // The body span is bounded (`{0,20000}?`, lazy) so an unterminated block can't drive an unbounded scan.
       .replace(
@@ -165,18 +137,22 @@ export function redactSecretShapedText(text: string): string {
       )
       // An `Authorization`-style scheme + its token: `Bearer <t>` / `Basic <t>` / `Token <t>`. The token class
       // `[\w.~+/-]` is base64url + padding (`\w` folds `[A-Za-z0-9_]`).
-      .replace(/\b(bearer|basic|token)\s+[\w.~+/-]{8,}={0,2}/gi, '$1 [redacted]')
+      // For every open-ended token minimum below, a bounded lookahead enforces the same floor before
+      // one simple greedy run. V8 can exhaust its RegExp stack on an admitted-scale `{N,}` run; the
+      // equivalent `(?=class{N})class+` form keeps the whole value instead of clipping a credential.
+      .replace(/\b(bearer|basic|token)\s+(?=[\w.~+/-]{8})[\w.~+/-]+={0,2}/gi, '$1 [redacted]')
       // A secret-ish key (bounded wrappers keep this ReDoS-safe) + `=`/`:` + its value. The optional `["']?`
       // BEFORE the separator catches the JSON `"access_token":"…"` shape (an OAuth/egress response body). The
-      // value has two branches: a QUOTED value consumes lazily through the FIRST matching closing quote (so a
-      // passphrase with interior spaces — `"hunter2 dragon"` — is redacted whole, however long, not just up to
-      // the first space), bounded by the line (`[^\r\n]`); an UNQUOTED value runs to the next whitespace/
-      // delimiter. Lazy `*?` with a single-class body + a fixed backref is linear (finds the first close) ⇒
-      // ReDoS-safe. Kept a single analyzable LITERAL (not composed via `new RegExp`) so Sonar's static
+      // value has QUOTED and UNQUOTED branches. A quoted value ends at the first UNESCAPED matching quote,
+      // including JSON's escaped quotes/backslashes; otherwise a valid password such as `a\"secret-tail`
+      // left its tail exposed. The two alternatives inside each repetition are disjoint: a backslash
+      // consumes exactly the following non-newline character, while the ordinary class excludes it.
+      // No ambiguous nested repetition/backref is needed. Unquoted values retain their delimiter and
+      // minimum-length policy. Kept a single analyzable LITERAL (not composed via `new RegExp`) so Sonar's static
       // super-linear-runtime (S5852) check still covers this security-critical pattern; its keyword-alternation
       // breadth is deliberate (and `apikey` is dropped — `api[_-]?key` already subsumes it).
       .replace(
-        /\b[\w-]{0,32}(?:password|passwd|secret|token|api[_-]?key|authorization|access[_-]?key|private[_-]?key|client[_-]?secret)[\w-]{0,16}["']?\s*[=:]\s*(?:(["'])[^\r\n]*?\1|[^\s"',;&]{6,})/gi,
+        /\b[\w-]{0,32}(?:password|passwd|secret|token|api[_-]?key|authorization|access[_-]?key|private[_-]?key|client[_-]?secret)[\w-]{0,16}["']?\s*[=:]\s*(?:"(?:[^"\\\r\n]|\\[^\r\n])*"|'(?:[^'\\\r\n]|\\[^\r\n])*'|(?=[^\s"',;&]{6})[^\s"',;&]+)/gi,
         '[redacted]',
       )
       // Well-known standalone credential shapes (OpenAI, Stripe, AWS incl. STS ASIA/ABIA, GitHub token + PAT,
@@ -192,10 +168,72 @@ export function redactSecretShapedText(text: string): string {
       // the tighter `[A-Za-z0-9]` / `[A-Za-z0-9-]` families keep their narrower class (no `_`).
       .replace(
         // NOSONAR — the per-regex complexity is the deliberate, documented exception explained above
-        /\b(?:sk-[A-Za-z0-9]{16,}|sk_(?:live|test)_[A-Za-z0-9]{16,}|A[KSB]IA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_\w{20,}|glpat-[\w-]{16,}|xox[baprs]-[A-Za-z0-9-]{10,}|AIza[\w-]{30,}|ya29\.[\w-]{20,}|hf_[A-Za-z0-9]{20,}|npm_[A-Za-z0-9]{20,}|eyJ[\w-]{10,}\.[\w-]{10,}\.[\w-]{6,})/g,
+        /\b(?:sk-(?=[A-Za-z0-9]{16})[A-Za-z0-9]+|sk_(?:live|test)_(?=[A-Za-z0-9]{16})[A-Za-z0-9]+|A[KSB]IA[0-9A-Z]{16}|gh[pousr]_(?=[A-Za-z0-9]{20})[A-Za-z0-9]+|github_pat_(?=\w{20})\w+|glpat-(?=[\w-]{16})[\w-]+|xox[baprs]-(?=[A-Za-z0-9-]{10})[A-Za-z0-9-]+|AIza(?=[\w-]{30})[\w-]+|ya29\.(?=[\w-]{20})[\w-]+|hf_(?=[A-Za-z0-9]{20})[A-Za-z0-9]+|npm_(?=[A-Za-z0-9]{20})[A-Za-z0-9]+|eyJ(?=[\w-]{10})[\w-]+\.(?=[\w-]{10})[\w-]+\.(?=[\w-]{6})[\w-]+)/g,
         '[redacted]',
       )
   );
+}
+
+/**
+ * Signed-URL/webhook values can be opaque credentials under an unrecognised query key.
+ * Preserve short values, parameter names and public delimiters/fragments. Once recognized,
+ * mask the whole value: a fixed-length prefix leaves a permanent credential equality oracle.
+ * Scan delimiters separately instead of matching a multi-megabyte repeated value in V8's
+ * RegExp stack. Both cursors advance; short unrecognized values add only bounded overlap.
+ */
+function redactOpaqueQueryValues(text: string): string {
+  if (!text.includes('?') && !text.includes('&')) return text;
+  const prefix = /[?&][\w.-]{1,64}=/g;
+  const delimiter = /[\s&#"',}\]]/g;
+  const parts: string[] = [];
+  let cursor = 0;
+  for (let match = prefix.exec(text); match !== null; match = prefix.exec(text)) {
+    const valueStart = prefix.lastIndex;
+    delimiter.lastIndex = valueStart;
+    const valueEnd = delimiter.exec(text)?.index ?? text.length;
+    if (valueEnd - valueStart < 24) continue;
+    parts.push(text.slice(cursor, valueStart), '[redacted]');
+    cursor = valueEnd;
+    prefix.lastIndex = valueEnd;
+  }
+  if (parts.length === 0) return text;
+  parts.push(text.slice(cursor));
+  return parts.join('');
+}
+
+/**
+ * One whole authority, with its last `@` separating userinfo from the host. Prefix-only
+ * matches can mask the first password fragment and leave another `@` plus a credential
+ * tail in the durable digest. Delimiters stop before paths, queries, fragments or adjacent
+ * JSON fields; a short colonless vanity handle retains the existing non-secret policy.
+ */
+function redactUrlUserinfo(text: string): string {
+  // This necessary delimiter also avoids retrying a scheme prefix across large non-URL values.
+  if (!text.includes('://')) return text;
+  const scheme = /[a-z][\w+.-]{0,31}:\/\//gi;
+  const delimiter = /[/\s?#"',}\]]/g;
+  const parts: string[] = [];
+  let cursor = 0;
+  for (let match = scheme.exec(text); match !== null; match = scheme.exec(text)) {
+    const authorityStart = scheme.lastIndex;
+    delimiter.lastIndex = authorityStart;
+    const end = delimiter.exec(text)?.index ?? text.length;
+    const authority = text.slice(authorityStart, end);
+    const at = authority.lastIndexOf('@');
+    if (at < 0) continue;
+    const userinfo = authority.slice(0, at);
+    const colon = userinfo.indexOf(':');
+    const hasPassword = colon >= 0 && colon < userinfo.length - 1;
+    if (!hasPassword && userinfo.length < 16) continue;
+    parts.push(text.slice(cursor, authorityStart), '[redacted]');
+    cursor = authorityStart + at;
+    // Do not consume the host while examining it: `host;other://...` must leave the next
+    // scheme available to this scanner, rather than swallowing `other:` at its first slash.
+    scheme.lastIndex = cursor + 1;
+  }
+  if (parts.length === 0) return text;
+  parts.push(text.slice(cursor));
+  return parts.join('');
 }
 
 /**
@@ -204,7 +242,7 @@ export function redactSecretShapedText(text: string): string {
  * model-set credential in a header VALUE / body / url-query never rides the observability stream. Object KEYS
  * are scrubbed with the SAME detector as values (a normal header name — `Authorization`, `X-Trace` — is not
  * secret-SHAPED, so it passes through unchanged; only a model that placed a live-token-shaped string in a KEY
- * position is redacted, closing that leak path too). Cycle-safe; display-only.
+ * position is redacted, closing that leak path too). Cycle-safe; model/dispatch values stay unchanged.
  */
 export function redactSecretShapedValue(value: unknown): unknown {
   return redactSecretShapedWalk(value, new WeakSet<object>());

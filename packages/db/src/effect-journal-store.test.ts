@@ -341,15 +341,19 @@ describe('the effect journal store', () => {
     const port = (): ReturnType<typeof createEffectJournalPort> =>
       createEffectJournalPort(store, RUN, ATTEMPT);
 
-    it('refuses even unchanged small legacy args whose unversioned digest cannot prove the original projection', async () => {
-      const legacy = createHash('sha256').update('{"body":"x","path":"/tmp/a"}').digest('hex');
-      store.prepare(ID, RUN, ATTEMPT, 3, legacy);
-      store.settle(ID, 'committed', { receipt: 'legacy' });
-      await expect(
-        port().prepare(ID.slot, ID.toolId, 3, { path: '/tmp/a', body: 'x' }),
-      ).rejects.toSatisfy(isEffectConflictError);
-      expect(store.recordsFor(RUN)).toHaveLength(1);
-    });
+    it.each(['', 'v2:'])(
+      'refuses unchanged small legacy args in the %j digest domain',
+      async (prefix) => {
+        const legacy =
+          prefix + createHash('sha256').update('{"body":"x","path":"/tmp/a"}').digest('hex');
+        store.prepare(ID, RUN, ATTEMPT, 3, legacy);
+        store.settle(ID, 'committed', { receipt: 'legacy' });
+        await expect(
+          port().prepare(ID.slot, ID.toolId, 3, { path: '/tmp/a', body: 'x' }),
+        ).rejects.toSatisfy(isEffectConflictError);
+        expect(store.recordsFor(RUN)).toHaveLength(1);
+      },
+    );
 
     it('a realistic redacted argument shape digests, and key ORDER cannot change it', async () => {
       // `canonicalJson` moved to `@relavium/shared` and grew refusals it never had. This is the behaviour

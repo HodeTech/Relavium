@@ -246,6 +246,65 @@ describe('boundForModel', () => {
 });
 
 describe('redactSecretShapedText', () => {
+  it.each([
+    { prefix: 'Bearer ', minimum: 8, expected: 'Bearer [redacted]' },
+    { prefix: 'Basic ', minimum: 8, expected: 'Basic [redacted]' },
+    { prefix: 'Token ', minimum: 8, expected: 'Token [redacted]' },
+    { prefix: 'password=', minimum: 6, expected: '[redacted]' },
+    { prefix: 'sk-', minimum: 16, expected: '[redacted]' },
+    { prefix: 'sk_live_', minimum: 16, expected: '[redacted]' },
+    { prefix: 'ghp_', minimum: 20, expected: '[redacted]' },
+    { prefix: 'github_pat_', minimum: 20, expected: '[redacted]' },
+    { prefix: 'glpat-', minimum: 16, expected: '[redacted]' },
+    { prefix: 'xoxb-', minimum: 10, expected: '[redacted]' },
+    { prefix: 'AIza', minimum: 30, expected: '[redacted]' },
+    { prefix: 'ya29.', minimum: 20, expected: '[redacted]' },
+    { prefix: 'hf_', minimum: 20, expected: '[redacted]' },
+    { prefix: 'npm_', minimum: 20, expected: '[redacted]' },
+  ])(
+    'CREDENTIAL_FLOOR preserves the $minimum-character floor for $prefix',
+    ({ prefix, minimum, expected }) => {
+      for (const length of [minimum - 1, minimum, minimum + 1]) {
+        const raw = prefix + 'A'.repeat(length);
+        expect(redactSecretShapedText(raw), 'CREDENTIAL_FLOOR').toBe(
+          length < minimum ? raw : expected,
+        );
+      }
+    },
+  );
+
+  it('JWT_FLOORS preserves all three segment minimums', () => {
+    const floors = [10, 10, 6];
+    for (const [index, minimum] of floors.entries()) {
+      for (const length of [minimum - 1, minimum]) {
+        const segments = floors.map((floor, i) => 'A'.repeat(i === index ? length : floor));
+        const raw = `eyJ${segments.join('.')}`;
+        expect(redactSecretShapedText(raw), 'JWT_FLOORS').toBe(
+          length < minimum ? raw : '[redacted]',
+        );
+      }
+    }
+  });
+
+  it.each(['bearer', 'unquoted', 'openai-shaped', 'jwt-shaped', 'escaped-quoted'] as const)(
+    'ADMITTED_CREDENTIAL_WHOLE masks the whole admitted-scale %s value without a RegExp stack failure',
+    (kind) => {
+      const large = 'A'.repeat(7_500_000);
+      const values = {
+        bearer: `Bearer ${large}`,
+        unquoted: `password=${large}`,
+        'openai-shaped': `sk-${large}`,
+        'jwt-shaped': `eyJ${large}.BBBBBBBBBBBB.CCCCCCCCCCCC`,
+        'escaped-quoted': `password="${'\\"'.repeat(3_750_000)}"`,
+      };
+      const raw = values[kind];
+      expect(() => redactSecretShapedText(raw), 'ADMITTED_CREDENTIAL_WHOLE').not.toThrow();
+      expect(redactSecretShapedText(raw), 'ADMITTED_CREDENTIAL_WHOLE').toBe(
+        kind === 'bearer' ? 'Bearer [redacted]' : '[redacted]',
+      );
+    },
+  );
+
   it('redacts Authorization schemes, secret=value pairs, and known token shapes', () => {
     // `Authorization: Bearer <tok>` is caught by BOTH the scheme pattern and the `authorization=value` pattern;
     // the over-redaction is the safe direction — assert the token is gone, not an exact shape.
@@ -280,6 +339,65 @@ describe('redactSecretShapedText', () => {
     const out = redactSecretShapedText('{"password":"hunter2 dragon rider"}');
     expect(out).not.toContain('dragon');
     expect(out).not.toContain('rider');
+  });
+
+  it.each([24, 512, 513, 600, 32 * 1024])(
+    'OPAQUE_QUERY_WHOLE redacts all %i characters while preserving the next parameter and public text',
+    (length) => {
+      const prefix = `${'x'.repeat(20 * 1024)}\nhttps://public.invalid/?opaque=`;
+      for (const suffix of ['A', 'B']) {
+        expect(
+          redactSecretShapedText(
+            `${prefix}${'Q'.repeat(length - 1)}${suffix}&limit=10\npublic-tail`,
+          ),
+          'OPAQUE_QUERY_WHOLE',
+        ).toBe(`${prefix}[redacted]&limit=10\npublic-tail`);
+      }
+      expect(redactSecretShapedText('?opaque=short&limit=10')).toBe('?opaque=short&limit=10');
+    },
+  );
+
+  it('QUERY_FRAGMENT_BOUNDARY does not count or redact a public fragment as part of an opaque query value', () => {
+    const fragment = '#public@example.invalid';
+    expect(
+      redactSecretShapedText(`?opaque=${'Q'.repeat(23)}${fragment}`),
+      'QUERY_FRAGMENT_BOUNDARY',
+    ).toBe(`?opaque=${'Q'.repeat(23)}${fragment}`);
+    expect(
+      redactSecretShapedText(`?opaque=${'Q'.repeat(600)}${fragment}`),
+      'QUERY_FRAGMENT_BOUNDARY',
+    ).toBe(`?opaque=[redacted]${fragment}`);
+  });
+
+  it('ADMITTED_QUERY_WHOLE masks a multi-megabyte admitted-scale value without a RegExp stack failure', () => {
+    const text = `?opaque=${'Q'.repeat(7_500_000)}#public-fragment`;
+    expect(() => redactSecretShapedText(text), 'ADMITTED_QUERY_WHOLE').not.toThrow();
+    expect(redactSecretShapedText(text), 'ADMITTED_QUERY_WHOLE').toBe(
+      '?opaque=[redacted]#public-fragment',
+    );
+  });
+
+  it.each([
+    'ordinary"SYNTHETIC_QUOTED_TAIL',
+    'ordinary\\"SYNTHETIC_QUOTED_TAIL',
+    'ordinary\\\\"SYNTHETIC_QUOTED_TAIL',
+    'ordinary\\',
+    "ordinary'single quote and space",
+  ])('ESCAPED_SECRET_WHOLE consumes the complete JSON password %j', (password) => {
+    const text = JSON.stringify({ password, payee: 'alice@example.invalid' });
+    expect(redactSecretShapedText(text), 'ESCAPED_SECRET_WHOLE').toBe(
+      '{"[redacted],"payee":"alice@example.invalid"}',
+    );
+    expect(JSON.parse(text)).toEqual({ password, payee: 'alice@example.invalid' });
+  });
+
+  it('redacts escaped single quotes and resumes after the real closing quote', () => {
+    expect(redactSecretShapedText("password='ordinary\\'SECRET_TAIL'; count=42")).toBe(
+      '[redacted]; count=42',
+    );
+    expect(redactSecretShapedText('password="backslash\\\\"; count=42')).toBe(
+      '[redacted]; count=42',
+    );
   });
 
   it('redacts a PEM private-key block (space-separated markers the key-pattern cannot see)', () => {
@@ -426,6 +544,49 @@ describe('redactSecretShapedValue', () => {
 });
 
 describe('redactSecretShapedText — URL userinfo (ADR-0080 §11)', () => {
+  it.each([';', '|'])(
+    'USERINFO_BOUNDARY retains the next scheme after a public host and %s separator',
+    (separator) => {
+      expect(
+        redactSecretShapedText(
+          `https://u:p@one.invalid${separator}custom://u:second-password@two.invalid/path`,
+        ),
+        'USERINFO_BOUNDARY',
+      ).toBe(`https://[redacted]@one.invalid${separator}custom://[redacted]@two.invalid/path`);
+    },
+  );
+  it.each(['A', 'B'])(
+    'USERINFO_WHOLE masks through the last @ without retaining the credential tail %s',
+    (suffix) => {
+      expect(
+        redactSecretShapedText(
+          `https://a:p@SYNTHETIC_USERINFO_TAIL_${suffix}@api.invalid:8443/x?q=public@example.invalid#public@example.invalid`,
+        ),
+        'USERINFO_WHOLE',
+      ).toBe(
+        'https://[redacted]@api.invalid:8443/x?q=public@example.invalid#public@example.invalid',
+      );
+      expect(redactSecretShapedText(`custom://a::@api.invalid/x`)).toBe(
+        'custom://[redacted]@api.invalid/x',
+      );
+    },
+  );
+
+  it('keeps short vanity userinfo and public query/fragment @ while masking a whole long authority', () => {
+    for (const text of [
+      'https://vanity@api.invalid/x',
+      'https://api.invalid?public=alice@example.invalid',
+      'https://api.invalid#alice@example.invalid',
+    ])
+      expect(redactSecretShapedText(text)).toBe(text);
+    expect(redactSecretShapedText(`https://${'u'.repeat(600)}@api.invalid/x`)).toBe(
+      'https://[redacted]@api.invalid/x',
+    );
+    expect(redactSecretShapedText('https://u:p@[::1]:8443/x')).toBe(
+      'https://[redacted]@[::1]:8443/x',
+    );
+  });
+
   it('strips `user:pass@` from a URL while KEEPING the host', () => {
     // The shape every other pattern here misses: no `key=value`, no well-known prefix. A review recovered a
     // stored `run_effects` digest from guessed plaintext through exactly this gap — and since ADR-0080 the
