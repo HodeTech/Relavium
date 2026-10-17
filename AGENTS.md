@@ -107,20 +107,21 @@ is independently accepted at `dbab25d8` after two NEW complete cumulative clean
 rounds, a separate clean security sitting and successful full CI. All four
 same-tarball platform consumers pass at that reviewed source. Whole Step 8 remains open.
 Step 8d session/terminal integration and product fatal activation are implemented
-but not independently accepted. Its first eleven complete cumulative rounds are
-NONCLEAN. R11 independently verifies all 302 paths / 1,650 cumulative hunks at
-`b9bc7118`: advisory notification failures bypass their original owner, missing MCP
-consent wiring has a noncanonical exit, and two causal workload declarations are stale.
-Corrections at `d8e6b4d5` preserve successful passive reporting, classified refusals,
-original restoration capabilities and actual producer/native/accounting joins.
-The fixture snapshot no longer repeats migration/checkpoint maintenance; actual default
-fresh/resume openers, original assertions and five-second bounds remain. Fixed-label,
-bounded abort diagnostics do not certify cleanup or explain old platform failures.
-All four same-artifact consumers pass at the reviewed source, but required CI and its
-Windows advisory fail separately. The initiating Windows phase/cause remains unknown,
-including earlier `4c0fa5b7` and `09740575` failures. Author correction gates pass
-(344 CLI files / 5,496 passes / ten established skips); complete causal republication,
-new independent review/security and final-source CI/platform acceptance remain pending.
+but not independently accepted. Its first twelve complete cumulative rounds are
+NONCLEAN. R12 independently verifies all 306 paths / 1,672 cumulative hunks at
+`518082b1`: cooperative JSON finalization seals output before its real terminal,
+and workflow advisory faults bypass their original invocation. Corrections at
+`3d937244` publish cooperative terminals before sealing, observe workflow
+notifications before passive recovery and retain original fatal/output boundaries,
+actual workflow-health priority and producer/native/accounting joins. The clear/reseat
+fixture keeps the original operation/root through actual retirement and removes only
+redundant observer maintenance, preserving default product openers and five-second bounds.
+The old source's full filesystem (110 controls) and secrets (41) families pass with
+independent physical/source/runtime/evaluation audits. Its four same-artifact
+consumers pass; its different clear/reseat Windows advisory failure remains failed,
+with initiating phase/cause unclassified. Author correction gates pass
+(347 CLI files / 5,533 passes / ten established skips). New independent reviews,
+a separate security sitting and final-source CI/platform acceptance remain pending.
 Two NEW complete cumulative clean rounds after the last material fix, a NEW
 separate clean security sitting and fresh full CI plus all four same-artifact
 package consumers remain required.

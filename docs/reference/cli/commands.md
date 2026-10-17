@@ -1220,3 +1220,26 @@ reported error argument alone does not become an infrastructure fault. Ownerless
 embeddings keep their callback compatibility. Missing local-MCP consent wiring
 uses the existing fixed infrastructure-9 classification before any native start;
 ordinary consent refusal and known cancellation retain their distinct outcomes.
+
+
+### Cooperative session finalization and passive notifications
+
+Normal owned JSON chat finalization (EOF, `/exit`, `/cancel` and first cooperative
+SIGINT) publishes the real synchronous `session:cancelled` while its original
+subscriber/output capability is still admitted, then seals further work in all
+cases. It observes the original persister refusal before waiting for producer tails.
+This terminal is not a provider/accounting/native cleanup acknowledgement: those
+actual joins still precede writer and database release. Fatal registry stopping
+seals admission before cancellation; cooperative finalization does not reopen an
+already-stopped callback or permit postfatal business output. A terminal-output
+failure retains the existing `output_unavailable` disposition and its private cause.
+
+Workflow effort, unpriced-model/modality and legacy-media-hold notifications bind
+to the original command lifetime before entering passive core recovery. The
+notification's own sink or formatter failure is observed before that recovery,
+seals reentrant delivery, and selects existing infrastructure disposition `9`
+unless actual workflow health `8 > 7 > 5 > 6` takes priority. Healthy warnings and
+successful reporting of an existing passive error retain their established
+behaviour. This does not turn the reported argument into a new fatal fault or
+replace captured terminal-restoration capabilities. Actual producer, receipt,
+input and native cleanup joins remain required.

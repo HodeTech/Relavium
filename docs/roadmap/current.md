@@ -1240,6 +1240,21 @@ separately, with the latter's initiating phase still unknown. Author gates pass
 (344 CLI files / 5,496 passes / ten established skips). Complete causal republication,
 two NEW clean cumulative rounds, separate security and final-source CI/platforms
 remain required. No user decision is pending.
+The [twelfth cumulative review and cooperative-terminal correction](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-twelfth-cumulative-review-and-cooperative-terminal-correction--2026-10-17)
+records complete NONCLEAN coverage of 306 paths / 1,672 independently rehashed
+hunks at `518082b1`. Two High gaps in normal JSON finalization and workflow advisory
+ownership are corrected at `3d937244`, with 24 precise old-runtime failures and six
+healthy controls. Cooperative terminal delivery, existing fatal admission, actual
+workflow health and cleanup joins remain separate. The clear/reseat fixture retains
+actual raw-work/root custody and avoids redundant observer maintenance under its
+original five-second bound. Both complete causal families pass at the reviewed old
+source (110 filesystem / 41 secrets controls), with independent retained-evidence
+audits; its four package consumers pass. Its different Windows clear/reseat failure
+remains failed and unexplained. Final author lint/typecheck/test gates pass
+(347 CLI files / 5,533 passing tests / ten established skips). Two NEW clean cumulative
+rounds, NEW separate security and fresh final-source CI/platforms remain required.
+Steps 1–7 and 8a–8c are accepted; 8d remains open and Steps 9–19 have not started.
+No user decision is pending.
 Step 8d proceeds automatically. The
 [final proposal reviews](phases/phase-2.5.5-hardening-and-remediation.md#second-maintainer-rereview-final-proposal-readiness--2026-10-16)
 remain proposal evidence, not implementation review. The selected encrypted archive

@@ -7297,3 +7297,120 @@ final-source full CI plus all four same-artifact consumers remain required. R1�
 retain NONCLEAN verdicts. Step 8d, whole Step 8 and later increments remain open.
 No new ADR, maintainer decision, key, billing, provider capture, production recipient
 or release upload is pending. Implementation continues automatically.
+
+
+### Wave 3 Step 8d twelfth cumulative review and cooperative-terminal correction — 2026-10-17
+
+**R12 is complete and NONCLEAN; Step 8d and whole Step 8 remain open.** Three NEW
+independent reviewers cover `d9625ff0a641197c6ed45968df99094a25db88d6` →
+`518082b1d407fd8c23b0384e9ec150c05630b832`: 81/138/87 disjoint physical paths and
+543/839/290 complete cumulative hunks, respectively. The root reads all three
+reports and independently recomputes physical, full-diff and every hunk identity:
+**306 paths / 1,672 hunks**, no gap or overlap. Inventory SHA-256 is
+`7d30d6427380b5adbb8f6ffb577d34da3c08ea89e954917c74c074f93025e151`;
+aggregate SHA-256 is `37cf2c88e988355ff33c18afed0f2a7e622ce3bfd859f40f0829c5de61f13953`.
+All detailed reports remain local and Git-ignored.
+
+| Group | New whole-file execution | Verdict / confirmed finding |
+|---|---|---|
+| Session / terminal | 42 TypeScript files / 757 passes / no skips or unhandled errors | NONCLEAN, High `ST-R12-1`: healthy owned JSON EOF, exit and cancel omit their sole real terminal |
+| Workflow / management | 72 TypeScript files / 1,397 passes / one established Windows skip / no unhandled errors | NONCLEAN, High `R12-WM-01`: workflow pricing/effort callback faults become success or ordinary failure instead of original-owner infrastructure failure |
+| Native / tooling / docs | 19 TypeScript files / 201 passes, eight Node suites / 101 passes, no skips or unhandled errors | Scoped CLEAN; no new finding; all 151 declaration anchors and collected workloads reconcile |
+
+All reviewer runners actually join. Source aliases, existing-dist native child
+imports, synthetic OS ports, intentionally held legacy test promises and absence
+of a complete independent opening dependency inventory retain their explicit
+report qualifications. Passing ordinary suites do not disprove the two precise
+semantic reproductions or establish a separate security sitting.
+
+**Confirmed corrections, `3d937244`.** Cooperative session cancellation publishes
+the actual synchronous terminal before sealing output, observes the original
+persister refusal, and stops the same work owner in all cases. Fatal registry stop
+still seals first; stopped subscribers are never reopened. Held provider/accounting
+work remains owed after the terminal. Workflow notification binding uses the same
+passive-notification boundary as sessions, before core advisory recovery. Actual
+workflow health and the original captured terminal-restoration capabilities remain
+independent; the fixed [CLI contract](../../reference/cli/commands.md#cooperative-session-finalization-and-passive-notifications)
+is canonical. No new ADR, code category, dependency or user decision is introduced.
+
+Permanent source integration covers 22 JSON cases across fresh/resume, EOF, exit,
+cancel, first cooperative SIGINT, ownerless compatibility and terminal-output
+refusal; eight workflow cases pair healthy/faulted pricing and effort diagnostics
+on fresh runs and actual SQLite gate resumes in both output modes. Five shared
+notification cases preserve original argument identity, reentry sealing and actual
+8/7/5/6 priority. Existing actual host/persister suites now also exercise cooperative
+cancellation with a held producer and a refused terminal write. The old source is
+an immutable archive (SHA-256
+`e3995764a3e8f11c8054fc46df2022c00049e514523bbe5b39c4dc10da83e427`), with all
+1,739 tracked blobs independently verified. The identical two new command suites
+produce **24 precise assertion failures / six healthy positives / zero skips or
+unhandled errors** against it. Later helper-only tests are not falsely claimed as
+runnable against an absent old export. Fixed-candidate controls pass 65 cases in
+five complete files; the existing eight-file sibling cohort passes 238 cases.
+Regression-control receipt SHA-256 is
+`db6a6e1691a1d6a8280f048e23c3852c6d44b2d5d9ccc93c7a13dd346c1461f9`.
+
+**Native fixture and Windows qualification.** The old source's Windows advisory
+job `117325099391` in run `39008265384` fails a different case:
+`fs-invocation.test.ts` clear/reseat, **7,617 ms / original 5,000-ms bound**.
+All ten workspace-admission cases, including the old benign-alias case, pass.
+Neither the initiating phase nor raw-pending state is established: installed
+Vitest can reject while the body is pending or after overlong synchronous work
+settles. No historical Windows failure is retrospectively passed or explained.
+
+Separate original and observer-only whole-file controls both pass 19 cases.
+Instrumented controls retain real native calls: three main clients / three
+migration passes / six close returns become three / two / five, with zero returned
+main clients still open. A real missing-table read still propagates and closes
+its exact native connection. This removes only redundant observer maintenance;
+default product fresh/resume openers, all assertions and original time bounds
+remain. The final clear/reseat fixture passes the original invocation into the
+command, retains its raw operation and abort custody, refuses a later case while
+prior work/owners remain live, and keeps its root/environment through actual
+retirement. Its 32-entry fixed-label trace diagnoses progress without certifying
+cleanup. A separate deliberately held local builder triggers the unchanged
+five-second timeout: the root/HOME remain present with two owners before release,
+then disappear only after the actual raw join and zero owners. That probe remains
+an expected timeout, not a passing liveness test or remote-cause explanation.
+
+**Completed historical causal republication at `518082b1`.** Both full families
+actually join before any correction is applied. Root and an independent follow-up
+auditor verify exact frozen source/declaration membership, named mutation
+witnesses, source/evaluation/runtime/stdio bindings and complete physical trees:
+
+| Family | Controls / phases | Physical files / bytes | Runner unhandled errors |
+|---|---|---|---|
+| Filesystem | 110 / 330 | 1,987 / 43,687,739 | 0 |
+| Secrets | 41 / 123 | 745 / 27,883,106 | 0 |
+
+All exports satisfy their unchanged 2,000-file / 64-MiB physical limits. Original
+source pins join frozen Git blobs; dependency metadata does not retain dependency
+bodies, deleted execution graphs are not recreated, and a missing opening physical
+dependency inventory does not acquire an equality claim. Independent follow-up
+receipt SHA-256 is
+`f333751144d8dd2c153a3a094a2bbbf4dba7ee2593ad23a3595f554a7ccfb076`;
+its separate seal is `41cad778a257b99d4f9ea7928516f43c0139ed94a2acbb547f5a9245bdc93bb5`.
+Earlier sealed R12 reports are unchanged. These controls do not certify the later
+correction source.
+
+The same historical run's four installed consumers and aggregate pass. Root and
+independent audit inspect five ZIPs, all 70 public tar members and four receipt
+origins for tarball SHA-256
+`e9c2feb13b887835e8a685c5ea2c6e6bd80605513669d52abcb4bae746df2381`
+(**446,105 bytes**): current Linux/macOS/Windows Node 24.21.0 and minimum Linux
+Node 22.0.0, each with 177 bootstrap controls and eight installed cases. This is
+physical inspection of published execution, not another execution or full-CI
+acceptance. Its Windows advisory retains the separate failed status above.
+
+**Correction author gates.** Final `pnpm turbo run lint typecheck test` passes all
+23 tasks (20 cached), including fresh **347 CLI files / 5,533 passes / ten established
+skips**. Fences, engine-dependency and tooling type checks, 726-file isolation and
+build pass; compiled closure remains 25 outputs / 409 inputs / 17 externals.
+Untouched compiled bootstrap passes 177 controls on local Node 22.23.1/Darwin;
+compiled workflow/MCP/budget smoke passes. The 13-file correction source seal SHA-256 is
+`af282cfd6f2585737e4565cc0a842b810e38f6b1f777799c914737c9af19e4e8`.
+These are author checks, not independent acceptance. R1–R12 retain NONCLEAN
+verdicts. Two NEW complete cumulative CLEAN rounds after the last material fix,
+a NEW separate clean security sitting and fresh full CI plus all four same-artifact
+package consumers remain required. Steps 9–19 have not started; no credential,
+provider capture, billing, production archive recipient or user decision is pending.
