@@ -7492,3 +7492,90 @@ material correction, a NEW separate clean security sitting and fresh full CI plu
 all four same-artifact consumers remain required. Steps 9–19 have not started;
 no credential, billing, provider capture, production recipient or user decision is
 pending.
+
+### Wave 3 Step 8d fourteenth cumulative review and disclosure-retention corrections — 2026-10-17
+
+**R14 is complete and NONCLEAN; Step 8d and whole Step 8 remain open.** The
+cumulative range is `d9625ff0a641197c6ed45968df99094a25db88d6` →
+`dcc23cfbf3aa497b5100e8353fdd58a9b92fbe9d`: **314 paths / 1,715 hunks** in six
+disjoint groups. Seven named reviewers read their assigned complete current
+production/test/support bodies and every cumulative/deleted hunk. The native
+87-path group explicitly combines its 55-path primary and 32-path supplement;
+neither borrows personal reading or execution, and the supplement is not an extra
+round. Large normative/register files retain their changed-section/context
+qualification. Root reads all seven reports and independently recomputes every
+physical/full-diff/hunk identity. Inventory SHA-256 is
+`492d5c7cd7f640e74b96c008d249e44036d6ab2d99fe7d8e7ceb7cfc42b20fc2`;
+aggregate SHA-256 is `2f374a8c11700bfa4e8c9509e9b5a8ed51b5b24ca10b2981be51090162f48352`.
+Opening/closing freezes are identical across 1,746 tracked blobs, 21,165 physical
+dependency files, 1,215 lexical symlinks and 466 existing dist files. Detailed
+records remain local and Git-ignored.
+
+**Two High surface findings, corrected at `d6d2fbdd`.** `R14-CHAT-1` and
+`R14-HOME-1` independently reproduce the same disclosure-recovery gap: raw notice
+failure is recovered, and fallback stderr delivery can remain pending after the
+session/database and invocation owners retire. The shared retention boundary now
+observes actual publication/render/sink failure before advisory recovery and
+retains entered delivery through the original session or workflow owner. Failed
+disclosure keeps audit evidence; successful maintenance warnings remain best
+effort. Safe committed one-shot cleanup remains permitted after stop. Ownerless
+library compatibility and actual workflow-health priority remain unchanged.
+Root additionally reproduces this warning gap through actual `run` and `gate`
+commands; both shipping callers now retain the same original delivery ownership.
+The [CLI contract](../../reference/cli/commands.md#cooperative-session-finalization-and-passive-notifications)
+owns the behaviour. This needs no new ADR, dependency, public seam or decision.
+
+Identical actual chat/run/gate regressions on an immutable `dcc23cfb` archive yield
+**eight precise assertion failures / seven positive controls**; the corrected
+source passes all fifteen. Real Home/reseat/SQLite controls add seven cases;
+substituting only the exact frozen retention helper into that candidate graph
+breaks its three output-fault assertions and preserves four controls. That is a
+helper-removal control, not original-whole-source execution. Held successful
+acknowledgements, no-publish renderers, recoverable disclosure-read refusal and
+ownerless compatibility remain separately exercised. Providers, renderer ports,
+exit clocks and sink faults are synthetic; SQLite and command/host execution are
+real. Existing-dist native children and source-alias parents retain their limits.
+
+**Two Medium findings are corrected.** `R14-MS-1` is fixed in the same CLI commit:
+workspace fixture setup refuses an unretired predecessor before global mutation;
+teardown shares its actual join, seals entry and restores only its captured
+current fixture. Two new permanent controls pass, and the complete file passes
+12/12. Real-runner original/corrected schedules retain the original five-second
+test / ten-second hook bounds. Deliberate predecessor timeout/refusal remains
+failed evidence; only the corrected later recovery passes. No historical Windows
+initiating cause is inferred. `W3-8D-R14-TD-01` is corrected at `e218ba0e`: installed
+worker diagnostics project a fixed private-detail label for all arbitrary error
+text, retaining useful closed native/case facts and the unchanged raw private
+report. The actual child-stderr → assertion → wrapper → projection regression and
+nested-field controls fail on frozen code; all 31 focused fixed tests pass. The
+five baseline failures include three changed label expectations, not five claimed
+independent causal mechanisms. This is synthetic test-output custody, not an
+observed production credential leak.
+
+**Applied-source author gates pass.** `pnpm turbo run lint typecheck test` passes
+23 tasks (20 cached); fresh CLI execution passes **352 files / 5,590 tests / ten
+established skips**. A separate post-build complete CLI run confirms the same
+counts and zero machine-reported unhandled errors, with the actual child joined.
+All 549 acceptance-tool tests pass. Build passes six tasks (five cached); format,
+fences, engine dependencies, tooling lint/typecheck and 731-file isolation pass.
+Compiled closure remains 25 outputs / 410 inputs / 17 externals. Compiled bootstrap
+passes 177 controls on local Darwin / Node 22.23.1, and workflow/MCP/budget CLI smoke
+passes. Initial test-only typing/lint/format failures were corrected before these
+final gates; no assertion or timeout was weakened. Author validation SHA-256 is
+`d29ab254051d3c6fed7b1ee2de44c3858e6c0b3e9baefb51323896703d4f0e7c`.
+
+At reviewed `dcc23cfb`, run `39012759605` has successful pack, all four required
+same-artifact consumers, their aggregate and Windows advisory. Root and an
+independent reviewer physically inspect five ZIPs, all 70 tar members and four
+receipts: tarball SHA-256 `e7e72e016d90be0a4767aa05974e38963f5bbd277203a2b0926430982d223c2a`,
+446,189 bytes, 177 bootstrap controls and eight installed cases per consumer.
+Full CI is still in progress at the filesystem causal job when recorded. These
+old-source results do not accept the later correction. The superseded `c15aa314`
+run was cancelled before full CI finished; its existing platform successes and
+all earlier failed Windows outcomes retain their original attribution.
+
+R1–R14 remain NONCLEAN. Two NEW complete cumulative CLEAN rounds after the last
+material fix, a NEW separate clean security sitting and fresh full CI plus all
+four same-artifact consumers remain required. Steps 9–19 have not started. No
+credential, provider capture, billing, production archive recipient or user
+decision is pending; implementation continues automatically on `development`.

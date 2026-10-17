@@ -1266,6 +1266,18 @@ The older source's four installed consumers and Windows advisory pass; its full
 CI was still running when recorded. These do not certify the correction. R1–R13
 remain NONCLEAN; two NEW complete cumulative clean rounds, separate security and
 fresh final-source CI/platforms are required. No user decision is pending.
+The [fourteenth cumulative review and disclosure-retention corrections](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-fourteenth-cumulative-review-and-disclosure-retention-corrections--2026-10-17)
+record complete NONCLEAN coverage of 314 paths / 1,715 independently rehashed
+hunks at `dcc23cfb`. Two High disclosure instances share a common ownership gap;
+`d6d2fbdd` fixes it across chat/Home/run/gate and fixes workspace fixture isolation.
+`e218ba0e` keeps arbitrary installed-test error text in its private report. Actual
+old-source/removal controls break the corresponding assertions; author gates pass
+(352 CLI files / 5,590 passes / ten established skips; 549 acceptance-tool tests).
+A separate joined post-build CLI run reports zero unhandled errors. At the older
+reviewed source, all four installed consumers and Windows advisory pass; full CI
+was pending at the filesystem causal job when recorded. R1–R14 remain NONCLEAN;
+two NEW complete clean cumulative rounds, separate security and fresh final-source
+CI/platforms remain required. Steps 9–19 have not started. No user decision is pending.
 Step 8d proceeds automatically. The
 [final proposal reviews](phases/phase-2.5.5-hardening-and-remediation.md#second-maintainer-rereview-final-proposal-readiness--2026-10-16)
 remain proposal evidence, not implementation review. The selected encrypted archive

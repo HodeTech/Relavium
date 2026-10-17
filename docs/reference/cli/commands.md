@@ -1255,3 +1255,14 @@ requests and deadline expiry never acknowledge a pending notice delivery.
 Ownerless library calls retain their existing best-effort behaviour. A custom
 opener delegating to the default factories forwards the explicit notice context,
 alongside its existing native-close handoff.
+
+Resumed chat and Home effect disclosures bind publication, render acknowledgement
+and fallback stderr delivery to the original session owner before advisory
+recovery. Failed publication retains the audit rows and selects
+`output_unavailable`; an entered delivery remains owned until its actual
+settlement. Run/gate and one-shot retention warnings use their original command
+or session owner in the same way. A maintenance refusal with successful warning
+delivery remains best effort, and stopped one-shot cleanup still sweeps only its
+committed rows. Neither database closure nor an outer recovered helper promise
+acknowledges a pending notification. Ownerless library calls retain their existing
+best-effort behaviour.

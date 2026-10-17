@@ -196,18 +196,19 @@ is independently accepted at `dbab25d8` after two NEW complete cumulative clean
 rounds, a separate clean security sitting and successful full CI. All four
 same-tarball platform consumers pass at that reviewed source. Whole Step 8 remains open.
 Step 8d session/terminal integration and product fatal activation are implemented
-but not independently accepted. Its first thirteen complete cumulative rounds are
-NONCLEAN. R13 independently verifies all 310 paths / 1,706 cumulative hunks at
-`c15aa314`, with explicitly attributed supplementary reading. Its High checkpoint-notice
-finding is corrected at `afb3b932`: the original captured IO observes failed writes,
-and the actual pending delivery remains owned independently of database closure.
-Real SQLite/default-factory/management-command regressions fail on the old source;
-fixed author gates pass (349 CLI files / 5,566 passes / ten established skips).
-All four same-artifact consumers and the Windows advisory pass at the older reviewed
-source; these results do not certify the correction. Earlier failed Windows runs
-retain their original outcomes and unknown initiating causes. New independent
-reviews, a separate security sitting and final-source CI/platform acceptance remain pending.
-Two NEW complete cumulative clean rounds after the last material fix, a NEW
+but not independently accepted. Its first fourteen complete cumulative rounds are
+NONCLEAN. R14 independently verifies all 314 paths / 1,715 cumulative hunks at
+`dcc23cfb`, with explicitly attributed supplementary reading. Two High disclosure
+findings and the workspace-fixture isolation finding are corrected at `d6d2fbdd`;
+the installed-test diagnostic projection is corrected at `e218ba0e`. Actual
+chat/Home/run/gate regressions preserve evidence and original pending-delivery
+ownership; safe committed cleanup and known operational outcomes remain intact.
+Author gates pass (352 CLI files / 5,590 passes / ten established skips and 549
+acceptance-tool tests), with a separately joined post-build CLI run and zero
+unhandled errors. All four same-artifact consumers and Windows advisory pass at
+the older reviewed source; full CI was pending there when recorded. Those results
+do not certify the correction. Earlier failed Windows runs retain their outcomes
+and unknown initiating causes. Two NEW complete cumulative clean rounds, a NEW
 separate clean security sitting and fresh full CI plus all four same-artifact
 package consumers remain required.
 Step 8 proceeds as recorded serial increments 8a–8d; native
