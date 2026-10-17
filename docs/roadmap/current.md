@@ -1146,8 +1146,10 @@ consumers. [Step 8d and whole Step 8 are independently accepted](phases/phase-2.
 at `c83c8575` after two NEW complete cumulative CLEAN rounds, a NEW separate
 clean security sitting and successful full CI plus all four actual same-tarball
 consumers. Steps 1–8 are accepted on `development`; Steps 9–19 have NOT STARTED.
-The maintainer requested a private handoff for another agent; no Step 9 work or PR
-is started in this session. The checkpoints below are historical observations;
+Following the private handoff, the maintainer authorized an initial PR for completed
+Steps 1–8. Steps 9–19 and whole-wave acceptance remain separate. Check that PR's
+status before later commits on `development`, which would extend its review scope.
+The checkpoints below are historical observations;
 their then-open gates are resolved only by the final acceptance linked above. The earlier
 [2026-10-17 chat/Home implementation checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-chat-and-home-integration-checkpoint--2026-10-17)
 records partial session/native-terminal integration and the remaining activation,

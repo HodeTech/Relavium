@@ -204,10 +204,12 @@ failed reviewer-preparation records and source/native/platform limits remain
 explicit; source CI does not certify later documentation commits. The
 [acceptance register](docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-and-whole-step-8-acceptance--2026-10-17)
 joins exact evidence and historical corrections. Steps 1–8 are accepted;
-Steps 9–19 have NOT STARTED. The maintainer requested a timestamped private
-handoff for another agent; this session starts no Step 9 work or PR. No provider,
-credential, billing or new ADR approval is pending. Later implementation and
-whole-wave acceptance remain staged in the canonical roadmap.
+Steps 9–19 have NOT STARTED. After the private handoff, the maintainer authorized
+an initial PR for completed Steps 1–8. This is a scoped publication checkpoint;
+whole-wave acceptance remains Step 19. Later work stays with the next agent.
+Check that PR's status before committing Step 9 on `development`, because new
+commits extend its review scope. No provider, credential, billing or new ADR
+approval is pending for the approved implementation plan.
 
 For live status, per-PR history, milestone dates, and open obligations, see the canonical
 home [docs/roadmap/current.md](docs/roadmap/current.md);

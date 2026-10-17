@@ -8296,3 +8296,21 @@ maintainer requested closure and a timestamped private handoff for another agent
 this session starts no Step 9 work and opens no PR. Next is approved Step 9's
 release map/custody substrate in the [nineteen-increment plan](#proposed-implementation-increments).
 Whole Wave 3 and whole Phase 2.5.5/2.6 remain open.
+
+### Wave 3 Steps 1–8 scoped publication — 2026-10-17
+
+After Step 8d acceptance and the private handoff, the maintainer explicitly
+requested a PR for the completed work so far. This authorizes an initial
+`development` → `main` PR containing accepted **Steps 1–8**; it does not close
+Wave 3 or start Steps 9–19. It refines the original Step 19 publication timing
+at the maintainer's request without changing any implementation acceptance gate.
+The existing Step 8d closure above remains a historical pre-publication checkpoint.
+
+The reviewed runtime source remains `c83c8575`; `00fb72d2` and this publication
+checkpoint change documentation only. Existing source CI and scoped reviews keep
+their exact attribution. New push/PR checks must be reported at their actual head;
+no prior result is presented as their execution. Detailed handoff/review records
+remain local and Git-ignored. Another agent should inspect the PR/merge state
+before Step 9: commits on the same `development` head extend the open PR's scope.
+Whole-wave reviews, core coverage promotion and the remaining Step 19 obligations
+are still required after later increments.
