@@ -7579,3 +7579,84 @@ material fix, a NEW separate clean security sitting and fresh full CI plus all
 four same-artifact consumers remain required. Steps 9–19 have not started. No
 credential, provider capture, billing, production archive recipient or user
 decision is pending; implementation continues automatically on `development`.
+
+### Wave 3 Step 8d fifteenth cumulative review and Home doctor correction — 2026-10-17
+
+**R15 is complete and NONCLEAN; Step 8d and whole Step 8 remain open.** Seven NEW
+reviewers cover the complete cumulative `d9625ff0` → `eb5d61af` range: **318 paths /
+1,737 hunks** across seven disjoint groups. Root reads every original report and
+independently rehashes every physical body, full diff and hunk. Large normative,
+register and generated files retain explicit changed-section/context qualifications.
+Inventory SHA-256 is `26c345c208da564889ed53a5b03ab5fab06ff61236986080d3c13449e7fb49bf`;
+aggregate SHA-256 is `6b61ce20970adb1967e10ee9ab502c1100680178796fa17ef383b4f601b031ad`.
+Opening/closing freezes are identical across 1,749 tracked blobs, 21,165 physical
+dependency files, 1,215 lexical symlinks and 466 existing dist files. Detailed
+reports, the root reading receipt and all failed/corrected harness attempts remain
+local and Git-ignored. Recognizing an explicitly qualified ledger field alias did
+not rewrite any sealed report or relax personal reading requirements.
+
+**High `R15-HOME-01` is corrected at `151abaf5`.** Bare Home's final `/doctor`
+notification could throw into palette recovery, leave input admitted and exit 0.
+The original Home invocation now observes common controller-notification failures
+before that recovery and owns the complete entered report through formatting and
+publication. Unexpected report/formatter/listener faults retain private original
+causes and select infrastructure 9. Known check refusals stay inline; stale reports
+cannot overwrite newer interaction, and ownerless compatibility remains intact.
+The [canonical CLI contract](../../reference/cli/commands.md#cooperative-session-finalization-and-passive-notifications)
+owns the behaviour. No new ADR, runtime dependency or public provider seam is needed.
+
+Eight new permanent actual Home/SQLite cases pass. The identical new suite on an
+immutable archive of all 1,749 reviewed blobs yields **five precise assertion
+failures / three positive controls**: checking/final publication and formatting
+faults wrongly exit 0, while held/late-rejected report work retires too early.
+All eight pass on the correction. A separate limited author-side reviewer runs
+six fresh signal/fatal reentry, stale-report and common-notification controls,
+all passing with an explicit zero-unhandled receipt and actual child join. That
+check is not a complete cumulative round or security sitting. Renderer, probe,
+held-report and fault ports remain synthetic around real Home/ownership/SQLite;
+no live provider, operator TTY or packaged-platform execution is inferred.
+
+**Blocker `W3-8D-R15-TD-01` is corrected at `1ed15ab8`.** Two fixture-isolation
+tests made the complete workspace workload 12, but its declaration still expected
+10. Required CI correctly refused that drift. Only the exact declaration changes;
+whole-file identity, named witnesses, error receipts, original bounds and byte-exact
+restoration stay enforced. The applied-source selected control passes fixed 12/12,
+breaks seven assertions on removal, and passes restored 12/12, with actual joined
+children and zero runner-reported unhandled errors in all three phases. This
+selected diagnostic run retains `complete: false`; it is not the entire family.
+The immutable physical source manifest records precommit author bytes and is kept
+separate from the reviewed predecessor's Git label. Independently collected 61
+files / 1,728 cases identify only this one mismatch across all 151 filesystem and
+secrets declarations. An inherited secrets README count is also corrected from
+24 to the existing 25 serializer cases; it predates the cumulative base and is not
+a new R15 finding or runtime change.
+
+**Applied-source author gates pass.** `pnpm turbo run lint typecheck test` passes
+23 tasks (20 cached): **353 CLI files / 5,598 passing tests / ten established skips**.
+A separate post-build complete CLI run has the same counts, an explicit zero
+unhandled-errors receipt and an actually joined launcher. All **549 acceptance-tool
+tests** pass. Build passes six tasks (five cached); tools lint/typecheck, formatting,
+fences, engine dependencies and 732-file isolation pass. Compiled closure stays
+25 outputs / 410 inputs / 17 externals. Actual local Darwin / Node 22.23.1 compiled
+bootstrap passes 177 controls; workflow/MCP/budget CLI smoke passes. No production
+assertion or timeout is weakened. Initial isolated lint and reviewer-harness
+mistakes retain failed evidence and are not counted as product failures or passes.
+
+At reviewed `eb5d61af`, CI `39015097996` completes failure: the filesystem job
+rejects 12 versus 10, and the required job rejects that failed dependency before
+its test phases. This is one defect with a downstream gate consequence, not a
+second observed CLI-test failure. The other thirteen jobs succeed. Root and an
+independent reviewer physically inspect five ZIPs, all 70 public members and four
+receipts for one 446,375-byte tarball, SHA-256
+`54069bb0ddfe4dfe72bde0f711627cc915647fce970d748bb8b94c7f24d7ec8e`.
+Current Linux/macOS/Windows and exact Node 22.0.0 consumers each record 177 bootstrap
+controls and eight installed cases. These predecessor successes do not accept the
+correction. The earlier `dcc23cfb` CI is cancelled by the superseding push; its
+completed platform results retain that source, as do every earlier failed Windows
+result and unknown initiating cause.
+
+R1–R15 remain NONCLEAN. Two NEW complete cumulative CLEAN rounds after the last
+material fix, a NEW separate clean security sitting and fresh full CI plus all
+four same-artifact consumers remain required. Steps 9–19 have not started. No
+credential, provider capture, billing, production archive recipient or user
+decision is pending; implementation continues automatically on `development`.

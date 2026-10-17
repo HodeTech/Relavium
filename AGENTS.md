@@ -107,21 +107,21 @@ is independently accepted at `dbab25d8` after two NEW complete cumulative clean
 rounds, a separate clean security sitting and successful full CI. All four
 same-tarball platform consumers pass at that reviewed source. Whole Step 8 remains open.
 Step 8d session/terminal integration and product fatal activation are implemented
-but not independently accepted. Its first fourteen complete cumulative rounds are
-NONCLEAN. R14 independently verifies all 314 paths / 1,715 cumulative hunks at
-`dcc23cfb`, with explicitly attributed supplementary reading. Two High disclosure
-findings and the workspace-fixture isolation finding are corrected at `d6d2fbdd`;
-the installed-test diagnostic projection is corrected at `e218ba0e`. Actual
-chat/Home/run/gate regressions preserve evidence and original pending-delivery
-ownership; safe committed cleanup and known operational outcomes remain intact.
-Author gates pass (352 CLI files / 5,590 passes / ten established skips and 549
-acceptance-tool tests), with a separately joined post-build CLI run and zero
-unhandled errors. All four same-artifact consumers and Windows advisory pass at
-the older reviewed source; full CI was pending there when recorded. Those results
-do not certify the correction. Earlier failed Windows runs retain their outcomes
-and unknown initiating causes. Two NEW complete cumulative clean rounds, a NEW
-separate clean security sitting and fresh full CI plus all four same-artifact
-package consumers remain required.
+but not independently accepted. Its first fifteen complete cumulative rounds are
+NONCLEAN. R15 independently verifies all 318 paths / 1,737 cumulative hunks at
+`eb5d61af`. Its Home doctor publication High is corrected at `151abaf5`: original
+notification faults are observed before advisory recovery and complete report work
+remains owned through actual settlement. The required-CI workload blocker is
+corrected at `1ed15ab8`, retaining the exact 12-case count and all causal assertions.
+Author gates pass (353 CLI files / 5,598 passes / ten established skips and 549
+acceptance-tool tests), including a separately joined post-build CLI run with zero
+unhandled errors. The affected control passes fixed/restored 12/12 and breaks seven
+assertions on removal. All four same-artifact consumers and Windows advisory pass
+at reviewed `eb5d61af`; its full CI fails the stale workload and downstream dependency
+gate, so those results do not certify the correction. Earlier failed Windows runs
+retain their outcomes and unknown initiating causes. Two NEW complete cumulative
+clean rounds, a NEW separate clean security sitting and fresh full CI plus all four
+same-artifact package consumers remain required.
 Step 8 proceeds as recorded serial increments 8a–8d; native
 fatal integration remains open until all actual owners are connected.
 Later implementation and whole-wave acceptance

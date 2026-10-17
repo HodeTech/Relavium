@@ -1266,3 +1266,12 @@ delivery remains best effort, and stopped one-shot cleanup still sweeps only its
 committed rows. Neither database closure nor an outer recovered helper promise
 acknowledges a pending notification. Ownerless library calls retain their existing
 best-effort behaviour.
+
+Home controller notifications observe their own unexpected listener failures through
+the original Home invocation before palette or other advisory recovery. Bare-Home
+`/doctor` retains its complete entered report operation through formatting and final
+publication; exiting Home does not acknowledge a still-pending report. Unexpected
+formatter, report or listener faults select infrastructure `9` with private original
+causes, while known diagnostic-check refusals remain an inline report. An obsolete
+report still cannot overwrite a newer prompt or session. Ownerless controller
+embeddings retain their existing compatibility behaviour.

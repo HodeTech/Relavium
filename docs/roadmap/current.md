@@ -1278,6 +1278,18 @@ reviewed source, all four installed consumers and Windows advisory pass; full CI
 was pending at the filesystem causal job when recorded. R1–R14 remain NONCLEAN;
 two NEW complete clean cumulative rounds, separate security and fresh final-source
 CI/platforms remain required. Steps 9–19 have not started. No user decision is pending.
+The [fifteenth cumulative review and Home doctor correction](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-fifteenth-cumulative-review-and-home-doctor-correction--2026-10-17)
+records complete NONCLEAN coverage of 318 paths / 1,737 independently rehashed
+hunks at `eb5d61af`. `151abaf5` fixes the High Home doctor publication/work gap;
+`1ed15ab8` fixes the required-CI workload blocker without weakening the 12-case
+coordinator. Fixed/restored runs pass 12/12 and removal breaks seven assertions.
+Author gates pass (353 CLI files / 5,598 passes / ten established skips; 549
+acceptance-tool tests), with a joined post-build CLI run and explicit zero unhandled
+errors. The reviewed source's four installed consumers and Windows advisory pass,
+but its full CI fails the stale workload and downstream dependency gate. Those
+results do not accept the correction. R1–R15 remain NONCLEAN; two NEW complete
+cumulative clean rounds, separate security and fresh final-source CI/platforms
+remain required. Steps 9–19 have not started. No user decision is pending.
 Step 8d proceeds automatically. The
 [final proposal reviews](phases/phase-2.5.5-hardening-and-remediation.md#second-maintainer-rereview-final-proposal-readiness--2026-10-16)
 remain proposal evidence, not implementation review. The selected encrypted archive
