@@ -107,18 +107,21 @@ is independently accepted at `dbab25d8` after two NEW complete cumulative clean
 rounds, a separate clean security sitting and successful full CI. All four
 same-tarball platform consumers pass at that reviewed source. Whole Step 8 remains open.
 Step 8d session/terminal integration and product fatal activation are implemented
-but not independently accepted. Its first eighteen complete cumulative rounds are
-NONCLEAN. R18 verifies all 321 paths / 1,749 cumulative hunks at `1f3cce50`
-and confirms two High gaps: caught workflow self-stop faults and the required
-CI job's outer time budget. `f23e0da7` observes the original self-stop failure
-before reversible recovery; `df6e6631` sizes only the main CI watchdog at 25 minutes.
-Classified refusals, ownerless recovery, actual cleanup ACKs and all inner test,
-native and replay bounds remain intact. Author workspace/build and separately
-joined post-build CLI gates pass (356 files / 5,622 passes / ten established skips,
-zero unhandled errors), along with all 549 acceptance-tool tests and compiled smokes.
-Predecessor platform/CI results retain their source and do not accept these fixes.
-Two NEW complete cumulative clean rounds, a NEW separate clean security sitting
-and fresh full CI plus all four same-artifact consumers remain required.
+but not independently accepted. Its first nineteen complete cumulative rounds are
+NONCLEAN. R19 verifies all 324 paths / 1,754 cumulative hunks at `261bb82d`
+and confirms two Medium late-publication gaps: shell refusal notices and directory
+completion results after owned stop. `6cc8bc53` rechecks the live input seal before
+these results publish; live warnings, local cleanup and actual native closure stay
+intact. Four permanent installed-Ink cases cover both live and stopped paths;
+removing either guard breaks its precise rendered-output assertion. Fixed/restored
+five-file runs pass 27 cases with zero unhandled errors and actual process joins.
+Author workspace/build and joined post-build CLI gates pass (357 files / 5,626
+passes / ten established skips, zero unhandled errors), together with static and
+compiled smokes. Predecessor source `261bb82d` has four successful same-tarball
+consumers; its full CI remains in progress when recorded and does not accept the
+correction. Two NEW complete cumulative clean rounds, a NEW separate clean
+security sitting and fresh corrected-source full CI plus all four same-artifact
+consumers remain required. Steps 9–19 have not started; no user decision is pending.
 Step 8 proceeds as recorded serial increments 8a–8d; native
 fatal integration remains open until all actual owners are connected.
 Later implementation and whole-wave acceptance

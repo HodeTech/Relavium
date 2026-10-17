@@ -1321,6 +1321,18 @@ ten established skips, zero unhandled errors), together with 549 acceptance-tool
 tests and compiled smokes. R1–R18 remain NONCLEAN. Two NEW complete cumulative
 clean rounds, NEW separate security and fresh corrected-source CI/platforms remain
 required. Steps 9–19 have not started; no user decision is pending.
+The [nineteenth cumulative review and late-publication correction](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-nineteenth-cumulative-review-and-late-publication-correction--2026-10-17)
+records complete NONCLEAN coverage of 324 paths / 1,754 rehashed hunks at `261bb82d`.
+Two Medium gaps let shell refusal notices and directory completion results publish
+after owned stop. `6cc8bc53` seals both results while retaining live warnings and
+actual native cleanup. Four installed-Ink controls and two independent guard
+removals pin the behaviour; fixed/restored five-file runs pass all 27 cases with
+zero unhandled errors and actual process joins. Applied workspace/build and joined
+post-build CLI gates pass (357 files / 5,626 passes / ten established skips, zero
+unhandled errors), with static and compiled smokes. R1–R19 remain NONCLEAN; two
+NEW complete cumulative clean rounds, NEW separate security and corrected-source
+full CI/platforms remain required. Steps 9–19 have not started; no user decision
+is pending.
 Step 8d proceeds automatically. The
 [final proposal reviews](phases/phase-2.5.5-hardening-and-remediation.md#second-maintainer-rereview-final-proposal-readiness--2026-10-16)
 remain proposal evidence, not implementation review. The selected encrypted archive

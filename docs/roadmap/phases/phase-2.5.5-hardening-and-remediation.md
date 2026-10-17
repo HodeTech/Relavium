@@ -7859,3 +7859,63 @@ the corrections. Two NEW complete cumulative CLEAN rounds after the last materia
 fix, NEW separate clean security and fresh corrected-source full CI plus all four
 installed consumers remain required. Steps 9–19 have not started. No credential,
 provider capture, billing, production recipient or user decision is pending.
+
+### Wave 3 Step 8d nineteenth cumulative review and late-publication correction — 2026-10-17
+
+**R19 is complete and NONCLEAN; Step 8d and whole Step 8 remain open.** Seven NEW
+independent slices cover cumulative `d9625ff0` → `261bb82d`: **324 paths / 1,754
+hunks**. The base is Step 7's installed-package acceptance, so these cumulative
+reads include all Step 8 increments. Root reads every original report and all
+substantive file assessments, then independently rechecks physical bodies, complete
+diffs and ordered hunk identities. Opening/closing freezes match 1,753 tracked
+files, 21,165 physical dependency files, 1,215 lexical links and 466 dist files.
+Aggregate SHA-256 is
+`a6082615586c27ef9171f6fed464cf28ced93ca47a92e52b6de7a2a92f0b4bca`.
+The root closure receipt is
+`ceceb5448aa58de4d798a2c7a6cd94f4a20f620604ee5ee263042508fa271a2f`.
+Original reports, a byte-identical bridge-ledger filename alias, qualified document
+reads and runtime receipts remain local and Git-ignored.
+
+**Medium `R19-HOME-M1` and supplemental `R19-HOME-M2` are corrected at
+`6cc8bc53`.** An already-entered shell rejection could append a warning after
+owned stop. A neighbouring mention-list fulfilment could install new file
+suggestions. Both become visible when installed Ink completes an outstanding
+native suspension, before final unmount. Independent original-lifetime/driver
+reproductions preserve the original exit 9 and actual cleanup joins; these are
+post-stop business-publication defects, not evidence of a credential, filesystem
+authority, accounting or native-ACK bypass. Existing assigned chat-path conclusions
+retain their exact scope and do not certify the neighbouring ChatApp callbacks.
+The [canonical session/terminal contract](../../reference/cli/commands.md#session-ownership-implementation-checkpoint)
+owns the corrected publication rule.
+
+Both callbacks now recheck the original live input seal before publishing.
+The rejection-side mention callback follows the same seal. Live classified shell
+warnings remain inline; local busy cleanup and actual native restoration still
+complete. Four permanent installed-Ink cases exercise shell/listing results in
+live and stopped sessions. Fixed and byte-restored five-file runs pass **27 cases**.
+Removing only the shell guard or only the successful-listing guard produces its
+precise rendered-output failure, with **26 positive controls** still passing.
+Every phase has explicit zero-unhandled evidence, actual Node `wait` and outer
+execution joins. Synthetic native streams do not claim an operator-TTY test.
+No assertion or readiness/native bound is widened. No new ADR, API or dependency
+is introduced.
+
+Applied author workspace lint/typecheck/test and build pass; cached dependency
+tasks retain that qualification. A separately joined post-build full CLI records
+**357 files / 5,626 passes / ten established skips**, explicit zero unhandled errors
+and actual Node exit 0. The initial direct run overlaps dependency builds and is
+supplementary rather than final post-build evidence. Format, isolation (736 files),
+seam and engine-dependency gates pass. Compiled closure verifies 25 outputs / 410
+inputs / 17 externals; local bootstrap and CLI smoke pass. Markdown remains outside
+Prettier's scope. These are author checks, not independent acceptance.
+
+At predecessor `261bb82d`, all four same-artifact consumers, coverage and Windows
+advisory pass in [CI run 39025094399](https://github.com/HodeTech/Relavium/actions/runs/39025094399);
+full CI remains in progress when recorded. Root independently inspects five ZIPs,
+70 public files and the 446,514-byte tarball, SHA-256
+`55da92eec03851114d9d5aa945d84b8f2316d74bbe5d5a3a274b991bbb81a68f`.
+Those results do not execute or accept this correction. R1–R19 retain NONCLEAN
+verdicts. Two NEW complete cumulative CLEAN rounds after the last material fix,
+NEW separate clean security and fresh corrected-source full CI plus all four
+installed consumers remain required. Steps 9–19 have not started. No credential,
+provider capture, billing, production recipient or user decision is pending.
