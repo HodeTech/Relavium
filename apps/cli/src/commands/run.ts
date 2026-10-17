@@ -1,3 +1,4 @@
+import type { LocalDbNoticeContext } from '../db/checkpoint-notice.js';
 import { acquireNativeResource } from '../process/acquire-native-resource.js';
 import type { CliInvocation } from '../process/invocation.js';
 import type { defaultSubscribeSignals } from '../process/signals.js';
@@ -127,6 +128,7 @@ export interface RunCommandDeps {
     homeDir: string,
     projectRoot: string,
     captureClose?: (close: () => void) => void,
+    noticeContext?: LocalDbNoticeContext,
   ) => OpenedHistory;
   /**
    * Injectable renderer selector (TUI / json / plain). Defaults to the real {@link selectRenderer}; tests
@@ -323,7 +325,11 @@ async function runOwned(
       const openRunStore = deps.openRunStore;
       if (openRunStore !== undefined) {
         opened = acquireNativeResource(
-          (captureClose) => openRunStore(runWorkflow, homeDir, deps.global.cwd, captureClose),
+          (captureClose) =>
+            openRunStore(runWorkflow, homeDir, deps.global.cwd, captureClose, {
+              io: deps.io,
+              invocation: lifetime.invocation,
+            }),
           {
             assertAdmitting: () => lifetime.checkpoint(),
             captureClose: (close) => {

@@ -1,3 +1,4 @@
+import type { LocalDbNoticeContext } from '../db/checkpoint-notice.js';
 import { acquireCommandResource, type CommandLifetime } from '../process/command-lifetime.js';
 import { closeQuietly } from '../process/close-quietly.js';
 import { SessionExportedEventSchema } from '@relavium/shared';
@@ -35,6 +36,7 @@ export interface ChatExportCommandDeps {
   readonly openSessionStore?: (
     homeDir: string,
     captureClose?: (close: () => void) => void,
+    noticeContext?: LocalDbNoticeContext,
   ) => OpenedSessionStore;
   /** Wall-clock (ms) for the `exported` row timestamp + the event timestamp (injectable for tests). */
   readonly now?: () => number;
@@ -50,7 +52,10 @@ export function chatExportCommand(
     configPath: deps.global.configPath,
   });
   const opened = acquireCommandResource(deps.commandLifetime, (captureClose) =>
-    (deps.openSessionStore ?? openSessionStore)(homeDir, captureClose),
+    (deps.openSessionStore ?? openSessionStore)(homeDir, captureClose, {
+      io: deps.io,
+      invocation: deps.commandLifetime?.invocation,
+    }),
   );
   try {
     const result = exportSession({

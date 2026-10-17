@@ -163,6 +163,10 @@ describe('file-to-DB catalog cutover (ADR-0071/0072/0111)', () => {
       writeErr: (text) => {
         errors.push(text);
       },
+      writeErrAcknowledged: (text) => {
+        errors.push(text);
+        return Promise.resolve();
+      },
     });
     expect(overlay).toBeDefined();
     expect(errors).toEqual([]);

@@ -1,3 +1,4 @@
+import type { LocalDbNoticeContext } from '../db/checkpoint-notice.js';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 
@@ -49,8 +50,9 @@ export function openHistoryStore(
   homeDir: string,
   projectRoot: string,
   captureClose?: (close: () => void) => void,
+  noticeContext?: LocalDbNoticeContext,
 ): OpenedHistory {
-  const { db, close } = openLocalDb(homeDir, undefined, captureClose);
+  const { db, close } = openLocalDb(homeDir, undefined, captureClose, noticeContext);
   const store = createRunHistoryStore(db, {
     uuid: () => randomUUID(),
     now: () => Date.now(),

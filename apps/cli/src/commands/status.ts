@@ -1,3 +1,4 @@
+import type { LocalDbNoticeContext } from '../db/checkpoint-notice.js';
 import { acquireCommandResource, type CommandLifetime } from '../process/command-lifetime.js';
 import type { RunEvent } from '@relavium/shared';
 
@@ -29,6 +30,7 @@ export interface StatusCommandDeps {
   readonly openDb?: (
     homeDir: string,
     captureClose?: (close: () => void) => void,
+    noticeContext?: LocalDbNoticeContext,
   ) => { db: Db; close: () => void };
   /** Injected in tests; production reads `~/.relavium/terminal-outbox.ndjson` through the file outbox. */
   readonly readTerminalOutbox?: (homeDir: string) => Promise<readonly RunEvent[]>;
@@ -87,7 +89,10 @@ export async function statusCommand(deps: StatusCommandDeps): Promise<ExitCode> 
     configPath: deps.global.configPath,
   });
   const { reader, close } = acquireCommandResource(deps.commandLifetime, (captureClose) =>
-    openHistoryReader(homeDir, deps.openDb, captureClose),
+    openHistoryReader(homeDir, deps.openDb, captureClose, {
+      io: deps.io,
+      invocation: deps.commandLifetime?.invocation,
+    }),
   );
   // Runs whose TERMINAL is held in the outbox (ADR-0078 §4/§5) — read, never drained.
   //

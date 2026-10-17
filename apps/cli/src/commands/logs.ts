@@ -1,3 +1,4 @@
+import type { LocalDbNoticeContext } from '../db/checkpoint-notice.js';
 import { acquireCommandResource, type CommandLifetime } from '../process/command-lifetime.js';
 import type { Db } from '@relavium/db';
 import type { RunEvent } from '@relavium/shared';
@@ -25,6 +26,7 @@ export interface LogsCommandDeps {
   readonly openDb?: (
     homeDir: string,
     captureClose?: (close: () => void) => void,
+    noticeContext?: LocalDbNoticeContext,
   ) => { db: Db; close: () => void };
 }
 
@@ -40,7 +42,10 @@ export function logsCommand(args: LogsCommandArgs, deps: LogsCommandDeps): ExitC
     configPath: deps.global.configPath,
   });
   const { reader, close } = acquireCommandResource(deps.commandLifetime, (captureClose) =>
-    openHistoryReader(homeDir, deps.openDb, captureClose),
+    openHistoryReader(homeDir, deps.openDb, captureClose, {
+      io: deps.io,
+      invocation: deps.commandLifetime?.invocation,
+    }),
   );
   try {
     const run = reader.loadRun(args.runId);

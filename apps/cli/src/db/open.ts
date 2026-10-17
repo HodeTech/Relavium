@@ -11,6 +11,7 @@ import {
 import { processIo } from '../process/io.js';
 import { CHECKPOINT_DEFERRED } from './privacy-notice.js';
 import { CliError } from '../process/cli-error.js';
+import { deliverCheckpointNotice, type LocalDbNoticeContext } from './checkpoint-notice.js';
 
 /** An opened local database plus the close capability for all of its actual native connections. */
 export interface OpenedDb {
@@ -26,8 +27,9 @@ export interface OpenedDb {
  */
 export function openLocalDb(
   homeDir: string,
-  notice: (text: string) => void | Promise<void> = (text) => processIo().writeErrAcknowledged(text),
+  notice?: (text: string) => void | Promise<void>,
   captureClose?: (close: () => void) => void,
+  noticeContext?: LocalDbNoticeContext,
 ): OpenedDb {
   const dir = globalConfigDir(homeDir);
   mkdirForStorage(dir);
@@ -105,7 +107,13 @@ export function openLocalDb(
     // Logical suppression succeeded; only physical erasure awaits a reader. Diagnostic failure
     // cannot reject this successful open, close its caller-owned connection or repeat maintenance.
     try {
-      const delivery = notice(`${CHECKPOINT_DEFERRED}\n`);
+      const write =
+        notice ?? ((text: string) => (noticeContext?.io ?? processIo()).writeErrAcknowledged(text));
+      const delivery = deliverCheckpointNotice(
+        write,
+        `${CHECKPOINT_DEFERRED}\n`,
+        noticeContext?.invocation,
+      );
       if (delivery !== undefined) void delivery.catch(() => undefined);
     } catch {
       // Best-effort diagnostic only; no stored content or raw driver error is surfaced.

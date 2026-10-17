@@ -1,3 +1,4 @@
+import type { LocalDbNoticeContext } from '../db/checkpoint-notice.js';
 import { ownSessionSubscriber } from '../chat/session-presentation.js';
 import { SessionControlWrites } from '../chat/session-control-writes.js';
 import { SessionHomeLifetime } from './session-home-lifetime.js';
@@ -129,6 +130,7 @@ export interface HomeDeps {
   readonly openSessionStore?: (
     homeDir: string,
     captureClose?: (close: () => void) => void,
+    noticeContext?: LocalDbNoticeContext,
   ) => OpenedSessionStore;
   readonly mcpSecretResolver?: McpSecretResolver;
   /** The `/doctor` probes (2.5.C S5) — production assembles the real probes; a test injects a fake. */
@@ -241,9 +243,15 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
     deps.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env, keychain);
   const opened =
     ownership === undefined
-      ? (deps.openSessionStore ?? openSessionStore)(homeDir)
+      ? (deps.openSessionStore ?? openSessionStore)(homeDir, undefined, {
+          io: deps.io,
+          invocation: deps.invocation,
+        })
       : ownership.acquireStore((captureClose) =>
-          (deps.openSessionStore ?? openSessionStore)(homeDir, captureClose),
+          (deps.openSessionStore ?? openSessionStore)(homeDir, captureClose, {
+            io: deps.io,
+            invocation: deps.invocation,
+          }),
         );
   // The provider resolver + `/doctor` probes are built INSIDE the try below — once `opened.db` + the `providerStore`
   // exist — so the resolver is STORE-AWARE (a custom `base_url` rebinds to its validated endpoint, 2.5.G S9); a test

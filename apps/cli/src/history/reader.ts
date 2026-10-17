@@ -1,3 +1,4 @@
+import type { LocalDbNoticeContext } from '../db/checkpoint-notice.js';
 import { createRunHistoryReader, type Db, type RunHistoryReader } from '@relavium/db';
 
 import { openLocalDb } from '../db/open.js';
@@ -20,8 +21,10 @@ export function openHistoryReader(
   openDb?: (
     homeDir: string,
     captureClose?: (close: () => void) => void,
+    noticeContext?: LocalDbNoticeContext,
   ) => { db: Db; close: () => void },
   captureClose?: (close: () => void) => void,
+  noticeContext?: LocalDbNoticeContext,
 ): OpenedReader {
   let opened: { db: Db; close: () => void };
   let nativeClose: (() => void) | undefined;
@@ -31,7 +34,9 @@ export function openHistoryReader(
   };
   try {
     opened =
-      openDb === undefined ? openLocalDb(homeDir, undefined, capture) : openDb(homeDir, capture);
+      openDb === undefined
+        ? openLocalDb(homeDir, undefined, capture, noticeContext)
+        : openDb(homeDir, capture, noticeContext);
   } catch (err) {
     throw storageBoundaryError(err);
   }

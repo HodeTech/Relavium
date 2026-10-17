@@ -232,7 +232,11 @@ async function agentRunOwned(
     // owns this database from acquisition through actual host cleanup, including setup failures before a turn.
     lifetime.work.assertAdmitting();
     const journalStore = acquireNativeResource(
-      (captureClose) => openSessionStore(homeDir, captureClose),
+      (captureClose) =>
+        openSessionStore(homeDir, captureClose, {
+          io: deps.io,
+          invocation: deps.invocation,
+        }),
       {
         assertAdmitting: lifetime.work.assertAdmitting,
         captureClose: captureJournalClose,

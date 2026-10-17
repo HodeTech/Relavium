@@ -1,3 +1,4 @@
+import type { LocalDbNoticeContext } from '../db/checkpoint-notice.js';
 import { acquireCommandResource, type CommandLifetime } from '../process/command-lifetime.js';
 import { closeQuietly } from '../process/close-quietly.js';
 import type { AgentSessionRecord } from '@relavium/shared';
@@ -18,6 +19,7 @@ export interface ChatListCommandDeps {
   readonly openSessionStore?: (
     homeDir: string,
     captureClose?: (close: () => void) => void,
+    noticeContext?: LocalDbNoticeContext,
   ) => OpenedSessionStore;
 }
 
@@ -35,7 +37,10 @@ export function chatListCommand(deps: ChatListCommandDeps): ExitCode {
     configPath: deps.global.configPath,
   });
   const opened = acquireCommandResource(deps.commandLifetime, (captureClose) =>
-    (deps.openSessionStore ?? openSessionStore)(homeDir, captureClose),
+    (deps.openSessionStore ?? openSessionStore)(homeDir, captureClose, {
+      io: deps.io,
+      invocation: deps.commandLifetime?.invocation,
+    }),
   );
   try {
     if (deps.global.json) {

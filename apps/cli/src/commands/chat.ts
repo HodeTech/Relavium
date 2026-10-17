@@ -1,3 +1,4 @@
+import type { LocalDbNoticeContext } from '../db/checkpoint-notice.js';
 import { ownSessionOutput, ownSessionSubscriber } from '../chat/session-presentation.js';
 import { SessionChatTerminal } from '../chat/session-chat-terminal.js';
 import type { SessionInkMount } from '../chat/session-ink-mount.js';
@@ -375,6 +376,7 @@ export interface ChatCommandDeps {
   readonly openSessionStore?: (
     homeDir: string,
     captureClose?: (close: () => void) => void,
+    noticeContext?: LocalDbNoticeContext,
   ) => OpenedSessionStore;
   /** The MCP named-secret resolver (2.R Step 4) — production injects the keychain-backed one (specs.ts); default env-only. */
   readonly mcpSecretResolver?: McpSecretResolver;
@@ -417,6 +419,7 @@ export interface ChatResumeCommandDeps {
   readonly openSessionStore?: (
     homeDir: string,
     captureClose?: (close: () => void) => void,
+    noticeContext?: LocalDbNoticeContext,
   ) => OpenedSessionStore;
   /** The MCP named-secret resolver (2.R Step 4) — production injects the keychain-backed one; default env-only. */
   readonly mcpSecretResolver?: McpSecretResolver;
@@ -683,9 +686,15 @@ async function chatCommandBody(
     try {
       opened =
         ownership === undefined
-          ? (deps.openSessionStore ?? openSessionStore)(homeDir)
+          ? (deps.openSessionStore ?? openSessionStore)(homeDir, undefined, {
+              io: deps.io,
+              invocation: deps.invocation,
+            })
           : ownership.acquireStore((captureClose) =>
-              (deps.openSessionStore ?? openSessionStore)(homeDir, captureClose),
+              (deps.openSessionStore ?? openSessionStore)(homeDir, captureClose, {
+                io: deps.io,
+                invocation: deps.invocation,
+              }),
             );
     } catch (err) {
       if (host !== undefined) {
@@ -876,9 +885,15 @@ async function chatResumeCommandBody(
   const homeDir = resolveHomeDir({});
   const opened =
     ownership === undefined
-      ? (deps.openSessionStore ?? openSessionStore)(homeDir)
+      ? (deps.openSessionStore ?? openSessionStore)(homeDir, undefined, {
+          io: deps.io,
+          invocation: deps.invocation,
+        })
       : ownership.acquireStore((captureClose) =>
-          (deps.openSessionStore ?? openSessionStore)(homeDir, captureClose),
+          (deps.openSessionStore ?? openSessionStore)(homeDir, captureClose, {
+            io: deps.io,
+            invocation: deps.invocation,
+          }),
         );
   const prepare = async (host?: SessionHostOwner) => {
     let config: LoadedConfig['config'];

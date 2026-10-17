@@ -1,3 +1,4 @@
+import type { LocalDbNoticeContext } from '../db/checkpoint-notice.js';
 import { acquireCommandResource, type CommandLifetime } from '../process/command-lifetime.js';
 import type { Db, RunRecord } from '@relavium/db';
 import { byCodeUnit } from '@relavium/shared';
@@ -24,6 +25,7 @@ export interface ListCommandDeps {
   readonly openDb?: (
     homeDir: string,
     captureClose?: (close: () => void) => void,
+    noticeContext?: LocalDbNoticeContext,
   ) => { db: Db; close: () => void };
   /** Injectable catalog scanner — tests pass a fixture catalog without touching the filesystem. */
   readonly discoverCatalog?: typeof discoverCatalog;
@@ -70,7 +72,10 @@ export function listCommand(args: ListCommandArgs, deps: ListCommandDeps): ExitC
   const lastBySlug = new Map<string, RunRecord>();
   if (kind === 'workflows' && entries.some((entry) => entry.valid)) {
     const { reader, close } = acquireCommandResource(deps.commandLifetime, (captureClose) =>
-      openHistoryReader(homeDir, deps.openDb, captureClose),
+      openHistoryReader(homeDir, deps.openDb, captureClose, {
+        io: deps.io,
+        invocation: deps.commandLifetime?.invocation,
+      }),
     );
     try {
       for (const summary of reader.loadLatestRunPerWorkflow()) {

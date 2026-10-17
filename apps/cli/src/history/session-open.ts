@@ -1,3 +1,4 @@
+import type { LocalDbNoticeContext } from '../db/checkpoint-notice.js';
 import { createSessionStore, type Db, type SessionStore } from '@relavium/db';
 
 import { openLocalDb } from '../db/open.js';
@@ -25,10 +26,11 @@ export interface OpenedSessionStore {
 export function openSessionStore(
   homeDir: string,
   captureClose?: (close: () => void) => void,
+  noticeContext?: LocalDbNoticeContext,
 ): OpenedSessionStore {
   let opened: { db: Db; close: () => void };
   try {
-    opened = openLocalDb(homeDir, undefined, captureClose);
+    opened = openLocalDb(homeDir, undefined, captureClose, noticeContext);
   } catch (err) {
     throw storageBoundaryError(err);
   }

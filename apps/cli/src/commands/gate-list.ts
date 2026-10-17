@@ -1,3 +1,4 @@
+import type { LocalDbNoticeContext } from '../db/checkpoint-notice.js';
 import { acquireCommandResource, type CommandLifetime } from '../process/command-lifetime.js';
 import type { Db, RunHistoryReader } from '@relavium/db';
 
@@ -31,6 +32,7 @@ export interface GateListCommandDeps {
   readonly openDb?: (
     homeDir: string,
     captureClose?: (close: () => void) => void,
+    noticeContext?: LocalDbNoticeContext,
   ) => { db: Db; close: () => void };
 }
 
@@ -52,7 +54,10 @@ export function gateListCommand(args: GateListCommandArgs, deps: GateListCommand
     configPath: deps.global.configPath,
   });
   const { reader, close } = acquireCommandResource(deps.commandLifetime, (captureClose) =>
-    openHistoryReader(homeDir, deps.openDb, captureClose),
+    openHistoryReader(homeDir, deps.openDb, captureClose, {
+      io: deps.io,
+      invocation: deps.commandLifetime?.invocation,
+    }),
   );
   try {
     // Per-run isolation (`readPerRunOrDegrade`) for the no-arg ALL-RUNS form: one damaged run used to abort the

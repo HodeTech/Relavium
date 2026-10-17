@@ -1,3 +1,4 @@
+import type { LocalDbNoticeContext } from '../db/checkpoint-notice.js';
 import { acquireNativeResource } from '../process/acquire-native-resource.js';
 import type { CliInvocation } from '../process/invocation.js';
 import type { defaultSubscribeSignals } from '../process/signals.js';
@@ -156,6 +157,7 @@ export interface GateCommandDeps {
   readonly openDb?: (
     homeDir: string,
     captureClose?: (close: () => void) => void,
+    noticeContext?: LocalDbNoticeContext,
   ) => { db: Db; close: () => void };
   readonly selectRenderer?: (
     io: CliIo,
@@ -319,8 +321,14 @@ async function resumeGateOwned(
     const opened = acquireNativeResource(
       (captureClose) =>
         deps.openDb === undefined
-          ? openLocalDb(homeDir, undefined, captureClose)
-          : deps.openDb(homeDir, captureClose),
+          ? openLocalDb(homeDir, undefined, captureClose, {
+              io: deps.io,
+              invocation: lifetime.invocation,
+            })
+          : deps.openDb(homeDir, captureClose, {
+              io: deps.io,
+              invocation: lifetime.invocation,
+            }),
       {
         assertAdmitting: () => lifetime.checkpoint(),
         captureClose: (close) => {

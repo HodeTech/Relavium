@@ -1,3 +1,4 @@
+import type { LocalDbNoticeContext } from '../db/checkpoint-notice.js';
 import { randomUUID } from 'node:crypto';
 
 import {
@@ -385,7 +386,8 @@ function storeAwareResolver(
   });
   return withSynchronousResource(
     ctx.invocation,
-    (captureClose) => openLocalDb(homeDir, undefined, captureClose),
+    (captureClose) =>
+      openLocalDb(homeDir, undefined, captureClose, { io: ctx.io, invocation: ctx.invocation }),
     ({ db }) => fromDb(db),
   );
 }
@@ -520,7 +522,11 @@ export function createProviderSlugResolver(
  * touching the real `history.db` or loading the native keychain.
  */
 export interface ModelsDbPorts {
-  readonly openDb: (homeDir: string, captureClose?: (close: () => void) => void) => OpenedDb;
+  readonly openDb: (
+    homeDir: string,
+    captureClose?: (close: () => void) => void,
+    noticeContext?: LocalDbNoticeContext,
+  ) => OpenedDb;
   /** Build the key resolver over the models db — the `providerStore` (from the SAME db) makes it store-aware so a
    *  custom `base_url` lists models over the SSRF-validated hop (2.5.G S9, ADR-0065 §4). A test stub may ignore it. */
   readonly makeResolver: (
@@ -541,7 +547,8 @@ export interface ModelsDbPorts {
 }
 
 const PRODUCTION_MODELS_PORTS: ModelsDbPorts = {
-  openDb: (homeDir, captureClose) => openLocalDb(homeDir, undefined, captureClose),
+  openDb: (homeDir, captureClose, noticeContext) =>
+    openLocalDb(homeDir, undefined, captureClose, noticeContext),
   makeResolver: (io, providerStore) =>
     createProviderResolver(io.env, createOsKeychainStore(), { providerStore }),
   refreshCatalog: (homeDir, persist, lifecycle) =>
@@ -574,7 +581,7 @@ async function withModelsDepsOwned(
     configPath: ctx.global.configPath,
   });
   const { db, close } = acquireCommandResource(ctx.commandLifetime, (captureClose) =>
-    ports.openDb(homeDir, captureClose),
+    ports.openDb(homeDir, captureClose, { io: ctx.io, invocation: ctx.invocation }),
   );
   try {
     const storeDeps = { uuid: () => randomUUID(), now: () => Date.now() };
@@ -680,7 +687,7 @@ const executeModelsPricing: CommandExecutor = (input, ctx) => {
     configPath: ctx.global.configPath,
   });
   const { db, close } = acquireCommandResource(ctx.commandLifetime, (captureClose) =>
-    openLocalDb(homeDir, undefined, captureClose),
+    openLocalDb(homeDir, undefined, captureClose, { io: ctx.io, invocation: ctx.invocation }),
   );
   try {
     const storeDeps = { uuid: () => randomUUID(), now: () => Date.now() };
@@ -716,7 +723,7 @@ async function withProviderDepsOwned(
     configPath: ctx.global.configPath,
   });
   const { db, close } = acquireCommandResource(ctx.commandLifetime, (captureClose) =>
-    openLocalDb(homeDir, undefined, captureClose),
+    openLocalDb(homeDir, undefined, captureClose, { io: ctx.io, invocation: ctx.invocation }),
   );
   try {
     const keychain = createOsKeychainStore(); // one native accessor, shared by the store-ref writes + the resolver

@@ -116,10 +116,12 @@ workflow:
           const session = await import('../history/session-open.js');
           assertCurrent();
           const nativeOpen = session.openSessionStore;
-          vi.spyOn(session, 'openSessionStore').mockImplementation((home, captureClose) => {
-            faultEnabled = true;
-            return nativeOpen(home, captureClose);
-          });
+          vi.spyOn(session, 'openSessionStore').mockImplementation(
+            (home, captureClose, noticeContext) => {
+              faultEnabled = true;
+              return nativeOpen(home, captureClose, noticeContext);
+            },
+          );
           const openSessionStore = session.openSessionStore;
           const f = invocationFixture();
           const captured = captureIo();

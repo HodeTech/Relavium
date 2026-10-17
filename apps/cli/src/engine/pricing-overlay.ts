@@ -98,7 +98,7 @@ function readPricingRows(db: Db): PricingOverlay {
  */
 export function loadUserPricingOverlay(
   homeDir: string,
-  io: Pick<CliIo, 'writeErr'>,
+  io: Pick<CliIo, 'writeErr' | 'writeErrAcknowledged'>,
   invocation?: CliInvocation,
 ): PricingOverlay | undefined {
   return withSynchronousResource(
@@ -106,7 +106,7 @@ export function loadUserPricingOverlay(
     (captureClose) => {
       let opened: { db: Db; close: () => void };
       try {
-        opened = openLocalDb(homeDir, undefined, captureClose);
+        opened = openLocalDb(homeDir, undefined, captureClose, { io, invocation });
       } catch (cause) {
         // An optional cache cannot launder partial construction or a failed native close into success.
         if (toUserFacing(cause).code !== 'storage_unavailable') throw cause;

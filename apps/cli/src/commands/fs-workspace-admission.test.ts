@@ -401,8 +401,8 @@ it('runner-abort ownership joins a held resumed builder before fixture removal a
         global: global(fixture.home),
         providers: scriptedResolver([]),
         drive,
-        openSessionStore: (home, captureClose) => {
-          const opened = openSessionStore(home, captureClose);
+        openSessionStore: (home, captureClose, noticeContext) => {
+          const opened = openSessionStore(home, captureClose, noticeContext);
           native = opened.db.$client;
           return {
             ...opened,
