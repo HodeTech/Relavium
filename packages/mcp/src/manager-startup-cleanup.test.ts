@@ -15,6 +15,95 @@ function gate() {
 
 const reactions = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
 
+describe('successful close reporters observe faults before sibling joins', () => {
+  it.each(['synchronous', 'rejected'])(
+    'reports a %s close fault promptly and retains the reentrant shared join',
+    async (mode) => {
+      const fault = new Error('synthetic connection close failure');
+      const held = gate();
+      const manager = await startMcpClient([
+        server('bad', () => {
+          if (mode === 'synchronous') throw fault;
+          return Promise.reject(fault);
+        }),
+        server('held', () => held.promise),
+      ]);
+      const reentries: Promise<void>[] = [];
+      const report = vi.fn(() => {
+        reentries.push(manager.close(report));
+      });
+      let settled = false;
+      const closing = manager.close(report).then(() => {
+        settled = true;
+      });
+      await reactions();
+      expect(
+        report,
+        'MCP_SUCCESSFUL_CLOSE_REPORT_BEFORE_HELD_SIBLING',
+      ).toHaveBeenCalledExactlyOnceWith('bad', fault);
+      expect(settled, 'MCP_SUCCESSFUL_CLOSE_REPORT_IS_NOT_ACK').toBe(false);
+      held.release();
+      await Promise.all([closing, ...reentries]);
+      expect(settled).toBe(true);
+      expect(report).toHaveBeenCalledOnce();
+    },
+  );
+
+  it('replays retained faults immediately to a reporter attaching while another close is held', async () => {
+    const fault = new Error('synthetic earlier close failure');
+    const held = gate();
+    const manager = await startMcpClient([
+      server('bad', () => Promise.reject(fault)),
+      server('held', () => held.promise),
+    ]);
+    const first = manager.close();
+    await reactions();
+    const report = vi.fn();
+    const late = manager.close(report);
+    const repeated = manager.close(report);
+    expect(
+      report,
+      'MCP_SUCCESSFUL_CLOSE_LATE_REPORT_BEFORE_HELD_SIBLING',
+    ).toHaveBeenCalledExactlyOnceWith('bad', fault);
+    held.release();
+    await Promise.all([first, late, repeated]);
+    await manager.close(report);
+    expect(report).toHaveBeenCalledOnce();
+  });
+
+  it('joins every entered close despite a reporter exception and preserves that exception', async () => {
+    const fault = new Error('synthetic connection close failure');
+    const observerFault = new Error('synthetic observer failure');
+    const held = gate();
+    const otherClose = vi.fn(() => held.promise);
+    const manager = await startMcpClient([
+      server('bad', () => Promise.reject(fault)),
+      server('held', otherClose),
+    ]);
+    const report = vi.fn(() => {
+      throw observerFault;
+    });
+    let rejected = false;
+    const closing = manager.close(report);
+    void closing.catch(() => {
+      rejected = true;
+    });
+    const healthy = vi.fn();
+    const other = manager.close(healthy);
+    await reactions();
+    expect(report).toHaveBeenCalledExactlyOnceWith('bad', fault);
+    expect(healthy).toHaveBeenCalledExactlyOnceWith('bad', fault);
+    expect(otherClose).toHaveBeenCalledOnce();
+    expect(rejected, 'MCP_REPORTER_FAILURE_DOES_NOT_SKIP_RAW_CLOSE_JOIN').toBe(false);
+    held.release();
+    await expect(closing).rejects.toBe(observerFault);
+    await other;
+    await expect(manager.close(report)).rejects.toBe(observerFault);
+    expect(report).toHaveBeenCalledOnce();
+    await expect(manager.close()).resolves.toBeUndefined();
+  });
+});
+
 describe('successful manager cleanup keeps its original live budget at transport entry', () => {
   it.each([false, true])(
     'rechecks the deferred close boundary (queued expiry=%s)',

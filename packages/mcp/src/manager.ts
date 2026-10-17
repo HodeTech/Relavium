@@ -65,8 +65,10 @@ export interface McpClient {
    * Tear down every connection (idempotent).
    *
    * Every concurrent/repeated close joins the same cleanup. Teardown faults are retained and
-   * reported once to each supplied `onCloseError` callback; successful connections are removed
-   * only after their exact close completes. The default remains best-effort reporting, not
+   * reported promptly once per server to each supplied `onCloseError` callback, even while
+   * another close is held. Late reporters receive retained faults. Successful connections are removed
+   * only after their exact close completes. Reporting is not a cleanup join; reporter exceptions
+   * are returned after all entered closes settle. The default remains best-effort reporting, not
    * a semantic receipt or proof that a failed transport acknowledged native resource closure.
    */
   close(onCloseError?: (serverId: string, cause: unknown) => void): Promise<void>;
@@ -97,7 +99,13 @@ export async function startMcpClient(
 ): Promise<McpClient> {
   const connections = new Map<string, McpConnection>();
   const closeFailures = new Map<string, unknown>();
-  const reported = new WeakSet<(serverId: string, cause: unknown) => void>();
+  type CloseReporter = NonNullable<Parameters<McpClient['close']>[0]>;
+  interface ReportState {
+    readonly servers: Set<string>;
+    failure?: { readonly cause: unknown };
+  }
+  const reported = new WeakMap<CloseReporter, ReportState>();
+  const activeReporters = new Map<CloseReporter, ReportState>();
   const toolDefs: ToolDef[] = [];
   const toolIdsByServer = new Map<string, readonly string[]>();
   const skipped: ManagerSkippedTool[] = [];
@@ -125,37 +133,72 @@ export async function startMcpClient(
   let failedStartup = false;
   let startupFailure: { readonly cause: unknown } | undefined;
   let closing: Promise<void> | undefined;
+  let closeFinished = false;
   let rejectObserver: (cause: Error) => void = () => undefined;
   const observerFailure = new Promise<never>((_resolve, reject) => {
     rejectObserver = reject;
   });
   void observerFailure.catch(() => undefined);
+  const deliver = (
+    report: CloseReporter,
+    state: ReportState,
+    serverId: string,
+    cause: unknown,
+  ): void => {
+    if (state.servers.has(serverId)) return;
+    // Mark before entering caller code: a reporter may reenter close with the same identity.
+    state.servers.add(serverId);
+    try {
+      report(serverId, cause);
+    } catch (observerCause) {
+      // A callback cannot abandon sibling cleanup or erase its own original failure.
+      state.failure ??= { cause: observerCause };
+    }
+  };
+  const reportCloseFailure = (serverId: string, cause: unknown): void => {
+    for (const [report, state] of [...activeReporters]) deliver(report, state, serverId, cause);
+  };
   const close = (onCloseError?: (serverId: string, cause: unknown) => void): Promise<void> => {
     // Publish the shared join before entering custom close factories, including reentry.
     // Successful clients keep the same live budget across this deferred entry. Their reporter
     // still belongs to close(onCloseError), separately from the failed-start lifecycle observer.
-    closing ??= Promise.resolve().then(() =>
-      closeAll(
-        connections,
-        closeFailures,
-        failedStartup ? failedCleanup : undefined,
-        failedStartup
-          ? lifecycle
-          : lifecycle?.budget === undefined
-            ? undefined
-            : { budget: lifecycle.budget },
-        (cause) =>
-          rejectObserver(
-            new Error('MCP startup cleanup observation failed.', {
-              cause: { primary: startupFailure?.cause, observer: cause },
-            }),
-          ),
-      ),
-    );
+    closing ??= Promise.resolve()
+      .then(() =>
+        closeAll(
+          connections,
+          closeFailures,
+          failedStartup ? failedCleanup : undefined,
+          failedStartup
+            ? lifecycle
+            : {
+                ...(lifecycle?.budget === undefined ? {} : { budget: lifecycle.budget }),
+                onCloseError: reportCloseFailure,
+              },
+          (cause) =>
+            rejectObserver(
+              new Error('MCP startup cleanup observation failed.', {
+                cause: { primary: startupFailure?.cause, observer: cause },
+              }),
+            ),
+        ),
+      )
+      .finally(() => {
+        closeFinished = true;
+        activeReporters.clear();
+      });
+    let state: ReportState | undefined;
+    if (onCloseError !== undefined) {
+      state = reported.get(onCloseError);
+      if (state === undefined) {
+        state = { servers: new Set() };
+        reported.set(onCloseError, state);
+      }
+      if (!closeFinished) activeReporters.set(onCloseError, state);
+      // A caller attaching during a held sibling close must see earlier faults now too.
+      for (const [serverId, cause] of closeFailures) deliver(onCloseError, state, serverId, cause);
+    }
     return closing.then(() => {
-      if (onCloseError === undefined || reported.has(onCloseError)) return;
-      reported.add(onCloseError);
-      for (const [serverId, cause] of closeFailures) onCloseError(serverId, cause);
+      if (state?.failure !== undefined) throw state.failure.cause;
     });
   };
   const settled = await Promise.allSettled(

@@ -214,9 +214,13 @@ across its deferred shared-close entry, and checks it immediately before each
 actual transport-close factory; zero remaining time enters no new
 asynchronous close and supplies no cleanup acknowledgement. Ordinary startup
 without these ports retains its existing actual joins and typed refusal.
-Successful-client failures still use each supplied `close(onCloseError)` reporter
-once; the failed-start lifecycle observer is not delivered a second time for an
-ordinary successful-client close.
+Successful-client failures use each supplied `close(onCloseError)` reporter once
+per failed server, as soon as that fault occurs, even while another close remains
+held. A late reporter immediately receives retained faults; reentering with the
+same callback cannot redeliver one. Reporting never acknowledges cleanup: every
+entered close remains joined, and a throwing reporter's original exception is
+returned only after those joins settle. The failed-start lifecycle observer is not
+delivered a second time for an ordinary successful-client close.
 
 Failed-start cleanup transfers its own work scope before server construction.
 All exact entered closes remain joined even if the lifecycle reporter throws.
