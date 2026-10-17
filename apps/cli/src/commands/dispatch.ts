@@ -608,7 +608,11 @@ async function withModelsDepsOwned(
     const service = createModelRefreshService({
       ...(owner === undefined
         ? {}
-        : { assertAdmitting: owner.assertAdmitting, onHostFailure: owner.failure }),
+        : {
+            assertAdmitting: owner.assertAdmitting,
+            onHostFailure: owner.failure,
+            invocationOptions: owner.work,
+          }),
       resolveProvider: resolver.resolveProvider,
       keyFor: resolver.keyFor,
       providerStore,

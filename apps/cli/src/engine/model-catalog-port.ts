@@ -50,6 +50,7 @@ export function createModelCatalogPort(params: {
       : {
           assertAdmitting: params.workOwner.assertAdmitting,
           onHostFailure: params.workOwner.failure,
+          invocationOptions: params.workOwner.work,
         }),
   });
   // Memoized: a keychain read is a SYNC native N-API call (and can pop an OS ACL prompt on first access), so it must

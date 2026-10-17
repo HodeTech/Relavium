@@ -7986,3 +7986,81 @@ verdicts. Two NEW complete cumulative CLEAN rounds after the last material fix,
 NEW separate clean security and fresh corrected-source full CI plus all four
 same-artifact consumers remain required. Steps 9–19 have not started. No user,
 credential, provider capture, billing or production-recipient decision is pending.
+
+
+### Wave 3 Step 8d R21–R22 discovery ownership correction — 2026-10-17
+
+**Step 8d and whole Step 8 remain OPEN.** The reviewed source is `c491836a`,
+from cumulative Step 7 base `d9625ff0`; R21 and R22 each cover all **330 paths /
+1,789 ordered cumulative hunks** across seven disjoint semantic slices. Root
+reads all original reports and every per-path substantive assessment, rechecks
+physical/Git/full-diff/hunk identities and closes each full source/dependency/dist
+freeze. Model/effort records are parent-dispatch attribution, not independent
+backend attestation. R21 is CLEAN. Its six explicit workflow test-description
+errata are independently compared against all six full current test bodies; the
+original overbroad descriptions supply no evidence. R22 is NONCLEAN: one Medium
+**MS22-1**, bounded model-discovery result versus actual SDK/transport retirement.
+
+The management command's actual resolver, custom OpenAI adapter, installed SDK
+and native SQLite reproduce the gap at the unchanged public model-list timeout.
+With only the supported offline fetch held across abort, the command returns 0,
+closes SQLite and retires all owners while the transport remains unsettled. Root
+independently executes the probe-derived negative and an independently authored
+normal completed-transport positive, with explicit empty runtime-error channel,
+actual Node OS wait and outer tool join. This proves early owner release; it does
+not prove a late SQLite write, actual remote abort failure, socket leak, paid call
+or native Windows failure. Home/chat applicability follows the shared catalog
+port and is covered by the permanent correction controls.
+
+The correction uses the existing invocation-local work mechanism rather than a
+new decision: optional existing ownership authority reaches live discovery, all
+three dialects, management and shared Home/chat refreshes. The key probe forwards
+its existing authority to generation. SDK collection, pagination and controlled
+fetch descendants retain actual completion separately from the bounded report.
+Future entry retires at the same boundary; no provider retry, paid authorization,
+engine health, deadline or database-close acknowledgement is invented. Existing
+two-argument and ownerless calls remain compatible. The observable Gemini SDK
+list/pager lifetime does not certify opaque native undici close or untransferred
+foreign descendants; the [provider seam](../../reference/shared-core/llm-provider-seam.md#model-discovery--the-listmodels-capability-adr-0064)
+owns that concrete limit.
+
+Twenty-nine new permanent cases exercise actual installed SDKs and SQLite,
+normal success, unchanged public timeout, original-owner retirement, pre-stopped
+entry, late rejection, an opaque transfer refusal, explicit transport descendants,
+management, both shared picker refresh modes and key validation. Nine independent
+mechanism removals fail named semantic assertions and every restoration passes,
+with explicit zero unhandled errors and actual Node/outer joins. Collector/parent
+removals run their complete seven-case unit file; the seven SDK/client/host
+removals run all three complete files / 29 cases. Source restoration is byte-exact
+and the product tree is unchanged by those isolated controls. Initial broad
+collector removal was rejected for three real SDK unhandled errors; a later
+negative was rejected because its test sampled only one microtask. The permanent
+assertion now observes a complete clock turn. Neither contaminated nor ineffective
+negative execution is acceptance evidence; no assertion or deadline is weakened.
+
+At predecessor `c491836a`, a separate clean security sitting and successful full
+[CI run 39030793953](https://github.com/HodeTech/Relavium/actions/runs/39030793953)
+retain their exact source scopes. All fifteen jobs pass, including all four
+same-tarball consumers and the Windows advisory. Root physically checks the five
+package ZIPs and **70 public files**, including the **446,702-byte** tarball with
+SHA-256 `28c8fd16c9a72b08bcf78af2482f92ee0b57c9bcd1f1919ab3fa3bb547dd2df5`.
+Root also independently validates current-source retained filesystem (**110 /
+330 phases**) and secrets (**41 / 123 phases**) archives against exact declaration
+sets, runtime-error, source-manifest, evaluation, stdio and physical retention
+checks. This inspects published evidence; it does not execute a new causal matrix.
+These results do not accept the later material correction. Two NEW complete
+cumulative clean rounds, NEW separate clean security and fresh corrected-source
+full CI plus all four same-artifact consumers remain required. Steps 9–19 have
+not started; no user decision, credential, billing or provider capture is pending.
+
+Applied author lint/typecheck passes all **17 tasks** (six cache hits); the
+serialized workspace test pipeline passes all **11 tasks** (seven cache hits).
+The complete CLI suite reports **361 files / 5,655 passes / ten established
+skips**. Build and format pass seven tasks (five cache hits). Test isolation
+collects 742 files, seam and engine-dependency checks pass, compiled closure
+verifies 25 outputs / 410 inputs / 17 externals, bootstrap passes 177 controls
+and compiled CLI smoke passes. Every actual subprocess and the outer orchestrator
+is joined with exit 0. Existing cache, synthetic/native and platform qualifications
+remain; these author gates are not the two required independent reviews or new
+whole-CI/platform acceptance. All 151 current filesystem/secrets source anchors
+remain unique; that static check is not a new causal-family execution.

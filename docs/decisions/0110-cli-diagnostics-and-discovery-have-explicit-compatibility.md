@@ -301,3 +301,18 @@ an earlier successful request or later closure. The installed control distinguis
 that narrowly evidenced failure outcome from ordinary turn success while retaining
 all actual-lifetime and cleanup obligations. Earlier failed runs stay failed;
 fresh independent correctness/security/platform acceptance remains open.
+
+## Discovery ownership correction — 2026-10-17
+
+The complete cumulative Step 8d R22 review confirmed that a bounded model-list
+result could retire its original command owner before an abort-ignoring SDK
+collector settled. A supported offline fetch, the actual installed SDK and
+SQLite reproduce that gap; no late database write or real remote transport
+failure is inferred. Forwarding the existing invocation-local work authority
+through discovery and key-validation callers implements this decision's
+actual-join rule. It neither replaces ADR-0064's public timeout nor introduces
+another termination budget. Concrete signatures and transport limits remain in
+the [canonical discovery contract](../reference/shared-core/llm-provider-seam.md#model-discovery--the-listmodels-capability-adr-0064).
+Step 8d and whole Step 8 remain open until the corrected source has two new
+complete cumulative clean reviews, a new separate security sitting and fresh
+full CI plus all four same-artifact package consumers.

@@ -8,6 +8,7 @@ import {
   type EndpointKind,
   LlmProviderError,
   type LlmProvider,
+  type LlmRequest,
   type ProviderId,
 } from '@relavium/llm';
 import type { Agent } from '@relavium/shared';
@@ -250,15 +251,15 @@ export async function validateProviderKey(
   const probeFactory = async (): Promise<ProviderKeyValidation> => {
     lifecycle?.assertAdmitting();
     try {
-      await provider.generate(
-        {
-          model,
-          messages: [{ role: 'user', content: [{ type: 'text', text: 'ping' }] }],
-          maxTokens: 1,
-          signal: controller.signal,
-        },
-        key,
-      );
+      const request: LlmRequest = {
+        model,
+        messages: [{ role: 'user', content: [{ type: 'text', text: 'ping' }] }],
+        maxTokens: 1,
+        signal: controller.signal,
+      };
+      await (lifecycle === undefined
+        ? provider.generate(request, key)
+        : provider.generate(request, key, lifecycle.work));
       return { ok: true, detail: `key works (${model})`, reason: 'ok' };
     } catch (err) {
       const raw = err instanceof Error ? err.message : String(err);

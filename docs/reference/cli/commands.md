@@ -874,6 +874,15 @@ otherwise alternate-screen restoration can erase it. Restoration control bytes u
 the existing terminal control sink, not diagnostic stdout. Keep host/DB close
 behind actual joins; fatal process termination does not grant safe store close.
 
+Model discovery preserves the distinction between its bounded public report and
+actual SDK/transport completion. The management refresh and shared Home/chat
+catalog port transfer their original work authority through the
+[provider seam](../shared-core/llm-provider-seam.md#model-discovery--the-listmodels-capability-adr-0064),
+as does the key-validation probe. A completed or timed-out report cannot release
+the database or signal custody while an admitted descendant remains pending.
+Normal cleanup may still wait after reporting a timeout; no new deadline or
+safe-close acknowledgement is invented.
+
 The fatal deadline is three seconds from the first infrastructure fault, including
 join, native helper/reap, restore and flush. Every callback/helper receives only the
 remaining common monotonic budget; no serial per-owner renewal. An already earlier

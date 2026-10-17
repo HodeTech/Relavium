@@ -1346,6 +1346,16 @@ ten established skips, zero unhandled errors), with static/compiled smokes.
 R1–R20 remain NONCLEAN; two NEW complete cumulative clean rounds, NEW separate
 security and fresh corrected-source full CI/platforms remain required. Steps 9–19
 have not started; no user decision is pending.
+The [R21–R22 discovery ownership checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-r21r22-discovery-ownership-correction--2026-10-17)
+records complete coverage of 330 paths / 1,789 cumulative hunks at `c491836a`.
+R21 is CLEAN; R22 confirms one Medium discovery-ownership gap, independently
+reproduced with actual installed SDK/SQLite and a held synthetic transport.
+The correction uses existing invocation-local work, preserving bounded reports,
+actual cleanup joins and all existing deadlines. The separate clean security
+sitting, full CI and all four physically inspected package consumers belong to
+`c491836a`; none accepts the later correction. Two NEW complete cumulative clean
+rounds, NEW separate security and corrected-source full CI/platforms remain
+required. Steps 9–19 have not started; no user decision is pending.
 Step 8d proceeds automatically. The
 [final proposal reviews](phases/phase-2.5.5-hardening-and-remediation.md#second-maintainer-rereview-final-proposal-readiness--2026-10-16)
 remain proposal evidence, not implementation review. The selected encrypted archive

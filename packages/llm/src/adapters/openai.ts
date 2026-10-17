@@ -1606,20 +1606,26 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
      * priced ids for cost-eligibility). The provider id (`openai` | `deepseek`) selects the priced-id union set. Bounded +
      * abortable + secret-free via `boundedListModels`; a per-row parse failure drops only that row.
      */
-    async listModels(key: string, signal?: AbortSignalLike): Promise<ModelListing[]> {
+    async listModels(
+      key: string,
+      signal?: AbortSignalLike,
+      options?: LlmInvocationOptions,
+    ): Promise<ModelListing[]> {
       return boundedListModels({
         provider: providerId,
         key,
         signal,
+        options,
         classify: (err) => openaiErrorToLlmError(err, providerId),
-        collect: async (innerSignal) => {
-          const client = createClient(key);
+        collect: async (innerSignal, work) => {
+          const client = createClient(key, undefined, work);
           const priced = pricedModelIdsFor(providerId);
           const listings: ModelListing[] = [];
           const seen = new Set<string>();
           let rawCount = 0;
           let droppedForShape = 0;
-          for await (const model of client.models.list({ signal: innerSignal })) {
+          const source = client.models.list({ signal: innerSignal });
+          for await (const model of work?.ownIterator(source) ?? source) {
             rawCount += 1;
             if (!isRecord(model)) {
               droppedForShape += 1; // a non-object row — drop it, never dereference

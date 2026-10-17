@@ -1,6 +1,12 @@
 import type { ModelCatalogLiveModel, ReplaceProviderModelsResult } from '@relavium/db';
 import { byCodeUnit } from '@relavium/shared';
-import type { AbortSignalLike, LlmProvider, ModelListing, ProviderId } from '@relavium/llm';
+import type {
+  AbortSignalLike,
+  LlmInvocationOptions,
+  LlmProvider,
+  ModelListing,
+  ProviderId,
+} from '@relavium/llm';
 
 import { keyHint } from './providers.js';
 
@@ -89,6 +95,8 @@ export interface RefreshCatalogStore {
 }
 
 export interface ModelRefreshDeps {
+  /** Original invocation's transitive SDK/transport work; never part of catalog data. */
+  readonly invocationOptions?: LlmInvocationOptions;
   /** Original long-lived session admission; recheck after discovery before any shared-database write. */
   readonly assertAdmitting?: () => void;
   /** Observe local clock/key/store faults before sibling discovery can hold the refresh result. */
@@ -219,7 +227,32 @@ export function createModelRefreshService(deps: ModelRefreshDeps): ModelRefreshS
         return { provider: id, status: 'skipped-unsupported' };
       }
       // The key reaches ONLY this call; the seam bounds + aborts + redacts it.
-      const listings = await adapter.listModels(key, signal);
+      let transferFailure: { readonly cause: unknown } | undefined;
+      const invocationOptions = deps.invocationOptions;
+      const ownedOptions: LlmInvocationOptions | undefined =
+        invocationOptions === undefined
+          ? undefined
+          : {
+              retainWork: (factory) => {
+                try {
+                  return invocationOptions.retainWork(factory);
+                } catch (cause) {
+                  transferFailure = { cause };
+                  deps.onHostFailure?.(cause);
+                  throw cause;
+                }
+              },
+            };
+      let listings: ModelListing[];
+      try {
+        listings = await adapter.listModels(key, signal, ownedOptions);
+      } catch (cause) {
+        // A host-entry refusal is not a vendor diagnostic. Its original owner
+        // observes it above; do not inspect or render the opaque throwable.
+        if (transferFailure !== undefined && Object.is(cause, transferFailure.cause))
+          return { provider: id, status: 'failed', error: 'refresh failed' };
+        throw cause;
+      }
       deps.assertAdmitting?.();
 
       // Ensure the FK-target `llm_providers` row exists BEFORE writing model rows (FK ordering). The metadata is

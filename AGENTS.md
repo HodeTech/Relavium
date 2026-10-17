@@ -107,22 +107,20 @@ is independently accepted at `dbab25d8` after two NEW complete cumulative clean
 rounds, a separate clean security sitting and successful full CI. All four
 same-tarball platform consumers pass at that reviewed source. Whole Step 8 remains open.
 Step 8d session/terminal integration and product fatal activation are implemented
-but not independently accepted. Its first twenty complete cumulative rounds are
-NONCLEAN. R20 verifies all 325 paths / 1,759 cumulative hunks at `4eee7c68`
-and confirms two Medium gaps: deferred Home business results after permanent stop
-and new optional workflow maintenance at an expired original budget. `50d7309f`
-seals Home results and gates run/gate/budget effect retention and media GC on the
-same absolute budget, preserving live behaviour and all actual entered/native joins.
-Six installed-Home cases, ten controller cases and actual run/gate/budget controls
-pin the correction. Two Home guard removals and five independent budget guard or
-forwarding removals fail precise assertions; every restoration passes. Applied
-workspace/build and joined post-build CLI gates pass (360 files / 5,649 passes /
-ten established skips, zero unhandled errors), together with static and compiled
-smokes. Predecessor `4eee7c68` has four successful same-artifact consumers; its
-full CI is still in progress when recorded and does not accept this correction.
-Two NEW complete cumulative clean rounds, a NEW separate clean security sitting
-and fresh corrected-source full CI plus all four same-artifact consumers remain
-required. Steps 9–19 have not started; no user decision is pending.
+but not independently accepted. R1–R20 remain NONCLEAN. R21 is complete CLEAN at
+`c491836a` (330 paths / 1,789 cumulative hunks); R22 covers the same complete
+source and confirms one Medium gap: bounded model discovery can release its
+original owner before an abort-ignoring SDK collector settles. Root independently
+reproduces management/SQLite early release and a healthy completed-transport
+control. The correction forwards existing invocation-local work through model
+refresh, all three discovery dialects and key validation, preserving the public
+timeout and actual entered/native joins. No new decision or approval is needed.
+R21 and the separate clean security sitting, successful full CI and all four
+physically inspected same-artifact consumers remain attributed to `c491836a`;
+they do not accept the later correction. Two NEW complete cumulative clean rounds,
+a NEW separate clean security sitting and fresh corrected-source full CI plus all
+four same-artifact consumers remain required. Steps 9–19 have not started; no
+user decision is pending.
 Step 8 proceeds as recorded serial increments 8a–8d; native
 fatal integration remains open until all actual owners are connected.
 Later implementation and whole-wave acceptance
