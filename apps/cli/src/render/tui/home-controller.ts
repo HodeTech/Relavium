@@ -21,6 +21,7 @@ import { nextMode, type ChatMode } from '../../chat/chat-mode.js';
 import { clearedNotice, modelSwitchNotice } from '../../chat/repl-info.js';
 import { formatDoctorReport, runDoctorChecks, type DoctorProbes } from '../../chat/doctor.js';
 import type { HomeSnapshot, HomeStore } from '../../home/home-store.js';
+import type { InvocationWorkOwner } from '../../process/invocation-work-owner.js';
 import {
   applyEditorAction,
   editorFromText,
@@ -236,6 +237,8 @@ export interface HomeControllerDeps {
     carriedTranscript: readonly TranscriptEntry[],
   ) => Promise<HomeChatSession>;
   readonly homeStore: HomeStore;
+  /** Original Home invocation; observe publication before local recovery and retain entered doctor work. */
+  readonly workOwner?: Pick<InvocationWorkOwner, 'enter' | 'failure'>;
   /** The Home exited cleanly (Ctrl-C / EOF in Home mode) → `driveHome` resolves with exit 0. */
   readonly onExit: () => void;
   /** An unexpected error escaping a chat turn (a re-thrown turn-core bug) — `driveHome` tears down + propagates. */
@@ -366,7 +369,13 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     });
 
   const notify = (): void => {
-    for (const listener of listeners) listener();
+    try {
+      for (const listener of listeners) listener();
+    } catch (cause) {
+      // Palette and other advisory callers may recover; the original publication fault comes first.
+      deps.workOwner?.failure(cause);
+      throw cause;
+    }
   };
   /** Whether a chat turn is streaming — paste content (like every other key) is gated mid-turn. */
   const chatRunning = (): boolean =>
@@ -1042,27 +1051,32 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     editTranscript: () => undefined,
     copyTranscript: () => undefined,
 
-    runDoctor: async (deep) => {
-      if (exiting) return;
-      const runId = (doctorRunId += 1); // a new run; a prompt edit/submit or a later run bumps this, invalidating us
-      set({ notice: 'doctor: checking…' });
-      let text: string;
-      try {
-        text = formatDoctorReport(await runDoctorChecks(deep, deps.doctorProbes));
-      } catch {
-        text = 'doctor: check failed';
-      }
-      // Land ONLY if nothing moved on during the await: still THIS run (the prompt wasn't edited/submitted), still
-      // a bare idle Home (no chat started, mode still 'home'), and the palette isn't open (it cleared the notice).
-      if (
-        runId === doctorRunId &&
-        !exiting &&
-        state.mode === 'home' &&
-        state.session === undefined &&
-        state.palette === undefined
-      ) {
-        set({ notice: text });
-      }
+    runDoctor: (deep) => {
+      if (exiting) return Promise.resolve();
+      const operation = async (): Promise<void> => {
+        const runId = (doctorRunId += 1); // a new run; a prompt edit/submit or a later run bumps this, invalidating us
+        set({ notice: 'doctor: checking…' });
+        let text: string;
+        try {
+          text = formatDoctorReport(await runDoctorChecks(deep, deps.doctorProbes));
+        } catch (cause) {
+          deps.workOwner?.failure(cause);
+          text = 'doctor: check failed';
+        }
+        // Land ONLY if nothing moved on during the await: still THIS run (the prompt wasn't edited/submitted), still
+        // a bare idle Home (no chat started, mode still 'home'), and the palette isn't open (it cleared the notice).
+        if (
+          runId === doctorRunId &&
+          !exiting &&
+          state.mode === 'home' &&
+          state.session === undefined &&
+          state.palette === undefined
+        ) {
+          set({ notice: text });
+        }
+      };
+      // Returning/handling this promise is separate from retaining the actual original operation.
+      return deps.workOwner === undefined ? operation() : deps.workOwner.enter(operation);
     },
   };
 

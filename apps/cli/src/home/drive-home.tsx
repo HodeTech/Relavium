@@ -1295,6 +1295,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         resolve(EXIT_CODES.success);
       };
       controller = createHomeController({
+        ...(ownership === undefined ? {} : { workOwner: ownership.surface.work }),
         startChat,
         reseatChat,
         homeStore,
