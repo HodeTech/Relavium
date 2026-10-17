@@ -6763,3 +6763,124 @@ remote acceptance remain open. At the previous source, wire/usage/secrets contro
 coverage and Node-floor/Windows advisories have passed while filesystem controls
 are still running; required macOS/packed aggregation remain failed. No whole-CI
 success or post-correction artifact evidence is inferred from that partial run.
+
+### Wave 3 Step 8d seventh cumulative review and native-outcome correction — 2026-10-17
+
+**Implemented correction; independent acceptance remains open.** Three NEW
+read-only reviewers assess the complete original `d9625ff0` base through
+`86f0422ac1d5010986f89e48dc8ddcb8f7547936`. Root independently recomputes all
+288 physical-file hashes, full zero-context diffs and 1,534 individual hunk hashes,
+then verifies disjoint complete coverage: session/terminal 73 paths / 505 hunks,
+workflow/management 132 / 791, native/tools/docs 83 / 238. R7 is **NONCLEAN**, with
+one confirmed Medium tooling finding, `WNT-R7-1`; the other two complete slices
+are clean. No clean slice is inherited as a new whole review. The local aggregate
+SHA-256 is `b9f0144911010f50cec5ddabdc85c252dc6194e8f234e84e7cc5bcf37e337292`.
+All seven historical complete rounds remain NONCLEAN.
+
+The required macOS job `117286651653`, run `38995305462`, at the reviewed source
+now records the actual initiating native fact. The same explicitly created
+detached group receives a successful SIGKILL, then a SIGKILL refusal with own
+`EPERM`/`-1`; actual target close follows, then the final reap receives `ESRCH`/`-3`.
+The passive diagnostic is complete, and product infrastructure 9 is retained.
+Prior successful signaling or later absence cannot erase a real refusal. The
+product's two final reaps and non-ESRCH failure rule remain unchanged. The
+unconditional nonbootstrap smoke expectation rejects 9 before its remaining
+postconditions run. Two independent readings and an actual-source protocol probe
+corroborate this control defect. Current XNU source suggests a possible group-state
+explanation, but the runner's exact kernel/member states are unverified; no
+harmlessness, zombie-cause or flake conclusion is drawn.
+
+The [installed-package control](../../../tools/cli-package/README.md) now accepts only
+that narrowly witnessed Darwin injected-error **failure outcome**: complete
+three-signal evidence tied to the actual creation, exact infrastructure 9 with one
+fixed `cli_internal` diagnostic, actual target/delivered closure and **zero**
+completed turns. Fault-free cases retain 0/1 and one completed turn. All original
+readiness, descendant absence, sibling survival, watchdog, timing, cleanup,
+compiled-byte and forbidden-service assertions still execute. Missing/foreign/
+extra fault evidence or an unexplained 9 refuses. This is correct failure
+classification, not ordinary success or retrospective acceptance of a failed CI
+run. The permanent validator has thirty adverse vectors; a separate native-owner
+preservation case pins sticky 9 through explicitly simulated native close without
+adding a product fix.
+
+Root safely downloads the exact reviewed package, verifies GitHub ZIP digest
+`2aed0e470de56b5948137d93249deef63679ffac7a3d57ff8433e63778007d14`,
+tarball `7b20f20ba6d073fcb50f682e6a1cde7f19042e0dd2797e09c9733f59f39e9acc`
+and all seventy installed files. A synthetic native-edge EPERM after an actual
+successful group kill makes the original control fail semantically. It establishes
+actual infrastructure cancellation with zero completed turns. The corrected
+control then executes all three nonbootstrap modes, preserving every postcondition:
+9 for the witnessed refusal and ordinary 0/0 for the other modes. A separate
+unchanged-installation complete eight-case worker passes. Both retain byte identity
+and actual owned cleanup; the installation is removed. These are local author
+controls on Node 24.20.0, not fresh remote 24.21.0 or full-CI acceptance. An initial
+experimental injection also affected an unrelated mode and is correctly rejected;
+that invalid experiment is retained separately rather than counted as a pass.
+
+**Separate fixture-lifetime corrections.** Fresh Windows advisory job
+`117286543561` fails a native DB readiness wait, the CLI native-writer case deadline
+and the following root-alias expectation (0 expected, 2 observed). The required
+Windows packed consumer passes at this source; it does not clear the advisory.
+Three restricted actual-source/native probes establish pre-existing fixture
+problems: error/exit was treated as child retirement, and a raw timed-out test can
+enter the next case's mocked home. Holding that late native maintenance operation
+reproduces `maintenance_active`/2 at the next root. This is a feasible source
+schedule, not proof of the remote failure's exact cause. The local full workspace
+run separately exposes two acquisition-test files: a first-case timeout, then
+close count four instead of two, plus an acquisition admission wait failure. Two
+restricted actual SQLite probes reproduce late-import reuse of the next mock and
+preserve exact count two when the original case is sealed.
+
+Corrections retain the existing five-second readiness/case limits, one-second
+admission wait, exact outcomes and close-count assertions. Native fixture cleanup
+joins actual **close**, with runner-owned cleanup before home replacement. The
+writer captures its original signal/home, seals after timeout and uses one
+remaining case budget instead of renewed phase budgets. Bounded fixed phase,
+exit/close and diagnostic-code facts improve future failure attribution. The DB
+fixture's real started-child error regression requires cancellation and actual
+close; restoring the erroneous error-as-ended guard fails its named semantic
+assertion and byte-exact restoration is retained. Acquisition cases now retain
+their raw scenario through runner cleanup, check the original captured signal
+and an explicit cleanup seal after imports/before native admission, join pending
+startup before mock reset and retain every exact native disposal capability.
+Pure module transformation is prepared before the unchanged semantic case timer.
+Deliberately unacknowledged failed-close product results remain pending; manual
+harness disposal is never a product ACK. No product runtime or accepted decision
+is changed by these fixture repairs.
+
+The ignored Windows triage report/evidence SHA-256 values are
+`6edb030e22389ac53c85ea64fc056be9258a34cfdc34477ad26b82feb68a16db` /
+`6d22bf164ac290e61a0280d8f9a195bc392457fab0244680f9aced89c07f711f`;
+the acquisition triage values are
+`af7f63d915e800280950cbd6f93a7d25b85b87b053f58a5cdbaf7abf5da877e3` /
+`ac2f71b9a91e0d6e5aa7ce4c726ab71dff440bdbcca0aa6c4989aab99966df49`.
+Their original sources and scope limits are preserved; they do not review the
+subsequent author corrections. Initial author import/context setup mistakes are
+repaired before the valid focused controls, not waived as successful executions.
+Author validation continues on the corrected source. Historical red runs remain
+red; no exact Windows readiness/root-cause diagnosis is inferred from local green.
+
+Two NEW complete cumulative clean rounds after the final material correction,
+a NEW separate clean security sitting and fresh full CI plus all four actual
+same-artifact consumers remain required. Whole Step 8 and Steps 9–19 remain open.
+No ADR approval, user decision, billing, provider/keychain operation, capture,
+production recipient or release upload is pending. Work continues automatically.
+
+**Final author gates for the R7 correction.** The corrected source passes all
+seventeen workspace lint/typecheck tasks (fifteen cached) and eleven workspace
+test tasks (nine cached). Fresh DB execution is **64 files / 1,062 passing tests**;
+fresh CLI is **335 files / 5,413 passing tests / ten established local skips**.
+All **547 acceptance-tool tests**, final tools lint/typecheck, schema sync,
+seam/purity, 714-file test-isolation/ownership, seven build/format tasks
+(five cached), 25-output compiled closure and 177 compiled bootstrap controls pass.
+The earlier full-suite, context-setup and cleanup-lint failures remain retained
+and repaired; they are not waived or counted as positive controls.
+
+The eleven-path source seal SHA-256 is
+`c5e27edb6dce7c57dceca4abaa1590c7f6e263d0b0e55614b96f7f64350212ac`;
+all sealed bytes are independently checked unchanged after final gates. The
+separate eight-case exact-package author worker and selected native/fixture
+removals retain the narrower scopes recorded above. Fresh required remote CI,
+all four actual same-artifact platforms, two NEW clean cumulative reviews and a
+NEW clean security sitting remain open. This author checkpoint grants no Step 8d,
+whole Step 8 or later-increment acceptance.

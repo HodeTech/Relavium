@@ -291,3 +291,13 @@ preparation, driver and terminal ownership are independently accepted for 8c.
 Session lifetimes, final diagnostic acknowledgement and all-surface activation
 remain 8d. Whole Step 8 and later Wave 3 work remain open; no new decision,
 dependency or deferral is added.
+
+## Native-fault acceptance clarification — 2026-10-17
+
+The [seventh cumulative Step 8d review](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-seventh-cumulative-review-and-native-outcome-correction--2026-10-17)
+identifies a required-control expectation defect, not a change to this decision.
+An actually observed owned-group signal refusal remains infrastructure 9 despite
+an earlier successful request or later closure. The installed control distinguishes
+that narrowly evidenced failure outcome from ordinary turn success while retaining
+all actual-lifetime and cleanup obligations. Earlier failed runs stay failed;
+fresh independent correctness/security/platform acceptance remains open.

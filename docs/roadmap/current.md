@@ -1188,7 +1188,17 @@ actual close joins and the original deadline, with permanent adverse controls.
 New Windows evidence passes; required macOS packaging remains failed and its
 initiating fault unresolved. Passive test-only native diagnostics preserve all
 original outcome/cleanup assertions. New clean reviews, security and exact-source
-CI/platform gates remain required. Step 8d proceeds automatically. The
+CI/platform gates remain required. The
+[seventh cumulative review and native-outcome correction](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-seventh-cumulative-review-and-native-outcome-correction--2026-10-17)
+records complete NONCLEAN review of 288 paths / 1,534 verified hunks at `86f0422a`.
+Its one tooling finding concerns a directly observed Darwin group EPERM: the
+product correctly retains infrastructure 9, but the installed smoke assumes 0/1.
+The narrow validator correction requires exact fault/closure evidence and no
+completed turn; it does not normalize EPERM or waive a historical failed run.
+Separate Windows/local-suite triage identifies fixture close and late-case
+ownership defects. Corrections are implemented with original deadlines and
+assertions; fresh author, cumulative-review, security and required CI/platform
+gates remain staged. Step 8d proceeds automatically. The
 [final proposal reviews](phases/phase-2.5.5-hardening-and-remediation.md#second-maintainer-rereview-final-proposal-readiness--2026-10-16)
 remain proposal evidence, not implementation review. The selected encrypted archive
 method persists; production recipient/recovery belongs to Wave 4b release setup.
