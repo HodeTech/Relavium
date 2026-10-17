@@ -54,7 +54,11 @@ describe('supported compiled dependency leaves', () => {
   it('retains the shared root and terminal-safe function identity in actual compiled exports', async () => {
     const root = await import('@relavium/shared');
     const leaf = await import('@relavium/shared/terminal-safe');
+    expect(typeof leaf.stripTerminalControls).toBe('function');
     expect(root.stripTerminalControls).toBe(leaf.stripTerminalControls);
+    expect(leaf.stripTerminalControls('ordinary\u001b[31m text\u001b[0m\u202e')).toBe(
+      'ordinary text',
+    );
   });
 
   it('retains one function through the supported compiled root and leaf exports', async () => {

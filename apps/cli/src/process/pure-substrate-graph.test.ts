@@ -120,6 +120,7 @@ describe('pure Step 6 substrate runtime import closure', () => {
       'apps/cli/src/process/diagnostic-policy.ts',
       'apps/cli/src/process/options.ts',
       'apps/cli/src/process/exit-observations.ts',
+      'apps/cli/src/process/exit-codes.ts',
       'apps/cli/src/process/invocation-registry.ts',
       'apps/cli/src/process/native-invocation.ts',
       'apps/cli/src/process/fixed-diagnostic.ts',
@@ -228,6 +229,62 @@ describe('lightweight Commander adapter runtime import closure', () => {
     ]);
     expect(() => adapterClosure(value)).toThrowError(
       'forbidden runtime import: @relavium/core from apps/cli/src/commands/specs.ts',
+    );
+  });
+});
+
+// Step 6's legacy manifest intentionally evaluates Zod. Keep that schema boundary
+// separate from the dependency-free pure leaves and the Commander adapter above.
+describe('legacy manifest schema boundary runtime import closure', () => {
+  const root = 'apps/cli/src/commands/manifest.ts';
+  const permittedPackages = new Set([
+    'zod',
+    '@relavium/shared/fs-root-limits',
+    '@relavium/shared/relavium-error',
+  ]);
+  function manifestClosure(sourceOverrides?: ReadonlyMap<string, string>): Closure {
+    return runtimeClosure([root], {
+      permittedPackages,
+      opaquePackages: new Set(['zod']),
+      ...(sourceOverrides === undefined ? {} : { sourceOverrides }),
+    });
+  }
+  it('keeps the legacy model wrapper within its explicit schema and descriptor boundary', () => {
+    const graph = manifestClosure();
+    expect([...graph.packages].sort(), graph.edges.join('\n')).toEqual([
+      '@relavium/shared/fs-root-limits',
+      '@relavium/shared/relavium-error',
+      'zod',
+    ]);
+    const files = [...graph.files].map((file) => relative(repository, file));
+    expect(files).toContain(root);
+    expect(
+      files.filter((file) =>
+        /(?:process\/errors|commands\/(?:dispatch|specs)|test-support|engine\/|db\/|render\/|config\/)/.test(
+          file,
+        ),
+      ),
+    ).toEqual([]);
+  });
+  it('rejects a service value edge while permitting the corresponding erased type', () => {
+    const file = resolve(repository, root);
+    const source = readFileSync(file, 'utf8');
+    expect(() =>
+      manifestClosure(
+        new Map([[file, `import type { WorkflowEngine } from '@relavium/core';\n${source}`]]),
+      ),
+    ).not.toThrow();
+    expect(() =>
+      manifestClosure(
+        new Map([
+          [
+            file,
+            `import { WorkflowEngine } from '@relavium/core';\nvoid WorkflowEngine;\n${source}`,
+          ],
+        ]),
+      ),
+    ).toThrowError(
+      'forbidden runtime import: @relavium/core from apps/cli/src/commands/manifest.ts',
     );
   });
 });

@@ -34,6 +34,53 @@ describe('createModelCatalogPort', () => {
     hasKey: () => hasKey,
   });
 
+  it.each(['refresh', 'refreshIfStale'] as const)(
+    '%s returns a rejecting Promise when its owner already stopped',
+    async (method) => {
+      const f = invocationFixture();
+      const home = new SessionHomeLifetime(f.invocation, () => () => undefined);
+      const providers = resolver(true);
+      const resolveProvider = vi.spyOn(providers, 'resolveProvider');
+      const port = createModelCatalogPort({
+        db: client.db,
+        providers,
+        now: () => 0,
+        uuid: () => 'stopped-catalog',
+        workOwner: home.surface.work,
+      });
+      home.surface.work.stop();
+      // An immediate .catch is part of the Promise API, including refused entry.
+      const cause = await port[method]().catch((error: unknown) => error);
+      expect(home.surface.work.isStoppedFailure(cause)).toBe(true);
+      expect(resolveProvider).not.toHaveBeenCalled();
+      await home.surface.work.close();
+    },
+  );
+
+  it.each(['refresh', 'refreshIfStale'] as const)(
+    '%s enters admitted discovery before returning its Promise',
+    async (method) => {
+      const f = invocationFixture();
+      const home = new SessionHomeLifetime(f.invocation, () => () => undefined);
+      const providers = resolver(false);
+      const keyFor = vi.spyOn(providers, 'keyFor');
+      const port = createModelCatalogPort({
+        db: client.db,
+        providers,
+        now: () => 0,
+        uuid: () => 'admitted-catalog',
+        workOwner: home.surface.work,
+      });
+      const refresh = port[method]().catch((cause: unknown) => cause);
+      try {
+        expect(keyFor, 'CATALOG_ADMISSION_PRECEDES_PROMISE_RETURN').toHaveBeenCalled();
+      } finally {
+        await home.surface.work.close();
+        await refresh;
+      }
+    },
+  );
+
   it('retains the existing recoverable cache-read policy while joining its actual work', async () => {
     const f = invocationFixture();
     const home = new SessionHomeLifetime(f.invocation, () => () => undefined);

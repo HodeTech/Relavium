@@ -125,6 +125,6 @@ function fixedInternalFailure(): UserFacingError {
   return {
     code: 'cli_internal',
     message: CLI_ERROR_POLICY.cli_internal.fixedMessage ?? '',
-    exitCode: 9,
+    exitCode: EXIT_CODES.infrastructureFailed,
   };
 }

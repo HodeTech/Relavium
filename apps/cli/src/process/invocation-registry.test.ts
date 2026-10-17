@@ -595,6 +595,53 @@ describe('InvocationRegistry ownership', () => {
     expect(registry.failureKinds).toBe(1);
   });
 
+  it.each(['unknown', '__proto__', 'toString', undefined, null, 1])(
+    'rejects an unknown runtime owner kind %j before admission',
+    async (kind) => {
+      const registry = new InvocationRegistry(new ManualClock());
+      const life = deferred<OwnerRetirement>();
+      const stop = vi.fn();
+      const join = vi.fn();
+      const owner = session(life.promise, { stop, join });
+      Object.defineProperty(owner, 'kind', { value: kind });
+      let failure: unknown;
+      try {
+        registry.register(owner);
+      } catch (cause) {
+        failure = cause;
+      }
+      expect(failure).toMatchObject({ code: 'cli_internal', exitCode: 9 });
+      expect(registry.activeOwners).toBe(0);
+      expect(stop).not.toHaveBeenCalled();
+      expect(join).not.toHaveBeenCalled();
+      // Refusal grants no owner and does not poison later valid registration.
+      const valid = registry.register(session(life.promise));
+      await retire(life);
+      expect(await valid.close()).toEqual({ kind: 'retired' });
+      expect(registry.activeOwners).toBe(0);
+    },
+  );
+
+  it('distinguishes an absent retirement failure from an explicitly undefined failure', async () => {
+    const clock = new ManualClock();
+    const registry = new InvocationRegistry(clock);
+    const valid = deferred<OwnerRetirement>();
+    const malformed = deferred<OwnerRetirement>();
+    registry.register(session(valid.promise));
+    registry.register(session(malformed.promise));
+    const payload: OwnerRetirement = { kind: 'settled' };
+    // The exact optional protocol permits absence, not a present non-code value.
+    Object.defineProperty(payload, 'failure', { value: undefined });
+    await retire(valid);
+    expect(registry.activeOwners).toBe(1);
+    await retire(malformed, payload);
+    expect(registry.activeOwners).toBe(1);
+    expect(registry.observations.infrastructureCode()).toBe('cli_internal');
+    const closing = registry.terminate({ kind: 'infrastructure', code: 'cli_internal' });
+    clock.advanceTo(3000);
+    expect(await closing).toMatchObject({ kind: 'deadline', unacknowledgedOwners: 1 });
+  });
+
   it('does not invoke hostile retirement payload getters or accept them as an ACK', async () => {
     const clock = new ManualClock();
     const registry = new InvocationRegistry(clock);

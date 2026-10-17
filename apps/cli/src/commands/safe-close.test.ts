@@ -33,6 +33,7 @@ import { agentRunCommand } from './agent-run.js';
 import { chatListCommand } from './chat-list.js';
 import { gateCommand } from './gate.js';
 import { runCommand, type RunCommandDeps } from './run.js';
+import { WorkflowLifetime } from './workflow-lifetime.js';
 
 const YAML = `schema_version: '1.0'
 workflow:
@@ -279,6 +280,7 @@ describe('command teardown preserves primary outcomes (#22)', () => {
 
   it('run retains the first infrastructure failure through opaque close and warning-sink faults', async () => {
     const primary = new Error('engine build failed');
+    const observedFailure = vi.spyOn(WorkflowLifetime.prototype, 'failure');
     const captured = captureIo();
     const io = {
       ...captured.io,
@@ -301,6 +303,10 @@ describe('command teardown preserves primary outcomes (#22)', () => {
       ),
       invocation,
     );
+    expect(observedFailure.mock.calls[0]?.[0], 'PRIMARY_FAILURE_PRECEDES_OPAQUE_CLEANUP').toBe(
+      primary,
+    );
+    expect(observedFailure.mock.calls.length).toBeGreaterThan(1);
     assertClosed(captured.err());
   });
 

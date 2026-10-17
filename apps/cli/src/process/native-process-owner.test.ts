@@ -523,6 +523,132 @@ describe('creation-owned native processes', () => {
     await vi.waitFor(() => expect(h.registry.activeOwners).toBe(0));
   });
 
+  it('retains a rejected MCP native-close observation as uncertainty through finite expiry', async () => {
+    const h = harness();
+    const observer = await h.controller.observeMcp();
+    let rejectClosed: (cause: unknown) => void = () => undefined;
+    const nativeClosed = new Promise<void>((_resolve, reject) => {
+      rejectClosed = reject;
+    });
+    const cause = new TypeError('PRIVATE_MCP_NATIVE_CLOSE_OBSERVATION');
+    const close = vi.fn(() => Promise.resolve());
+    observer.attach({ readPid: () => 70, isClosed: () => false, whenClosed: nativeClosed, close });
+    rejectClosed(cause);
+    await vi.waitFor(() => expect(h.registry.observations.exitCode()).toBe(9));
+    expect(h.registry.observations.infrastructureCode()).toBe('cli_internal');
+    expect(close).toHaveBeenCalledOnce();
+    expect(h.registry.activeOwners, 'MCP_REJECTED_NATIVE_CLOSE_NOT_ACK').toBe(1);
+    observer.abandonIfUnattached();
+    h.advance(3000);
+    const result = await h.registry.terminate({ kind: 'normal' });
+    expect(result).toMatchObject({ kind: 'deadline', unacknowledgedOwners: 1 });
+    const priorTermination = h.registry.termination;
+    h.exit();
+    expect(h.registry.termination).toBe(priorTermination);
+    expect(close).toHaveBeenCalledOnce();
+    expect(h.registry.activeOwners).toBe(1);
+    expect(h.removeExit).not.toHaveBeenCalled();
+  });
+
+  it.each(['synchronous throw', 'promise rejection'] as const)(
+    'retains an MCP cooperative-close %s until the exact native-close acknowledgment',
+    async (failure) => {
+      const h = harness();
+      const observer = await h.controller.observeMcp();
+      const nativeClosed = deferred<void>();
+      let closed = false;
+      const cause = new TypeError('PRIVATE_MCP_COOPERATIVE_CLOSE');
+      const close = vi.fn(() => {
+        if (failure === 'synchronous throw') throw cause;
+        return Promise.reject(cause);
+      });
+      observer.attach({
+        readPid: () => 70,
+        isClosed: () => closed,
+        whenClosed: nativeClosed.promise,
+        close,
+      });
+      const stopping = h.registry.terminate({ kind: 'normal' });
+      await vi.waitFor(() => expect(h.registry.observations.exitCode()).toBe(9));
+      expect(h.registry.observations.infrastructureCode()).toBe('cli_internal');
+      expect(close).toHaveBeenCalledOnce();
+      let acknowledged = false;
+      void stopping.then(() => {
+        acknowledged = true;
+      });
+      // SDK liveness and successful finite requests are not the transferred native-close promise.
+      closed = true;
+      h.exit();
+      await Promise.resolve();
+      expect(acknowledged, 'MCP_COOPERATIVE_CLOSE_FAILURE_NOT_ACK').toBe(false);
+      expect(h.registry.activeOwners).toBe(1);
+      expect(h.removeExit).not.toHaveBeenCalled();
+      expect(close).toHaveBeenCalledOnce();
+      nativeClosed.resolve();
+      expect(await stopping).toMatchObject({ kind: 'settled', unacknowledgedOwners: 0 });
+      expect(h.registry.activeOwners).toBe(0);
+      expect(h.removeExit).toHaveBeenCalledOnce();
+      expect(h.registry.observations.exitCode()).toBe(9);
+      expect(h.scheduled.size).toBe(0);
+    },
+  );
+
+  it.each(['linux', 'darwin'] as const)(
+    'finite exit retains explicit group authority after simulated leader exit on %s',
+    async (platform) => {
+      const h = harness(platform);
+      const lease = await h.controller.reserve('group');
+      const target = child();
+      lease.bindChild(target);
+      target.emit('exit', 0); // The leader exited; inherited descriptors still owe native close.
+      h.signal.mockClear();
+      let acknowledged = false;
+      void lease.whenClosed.then(() => {
+        acknowledged = true;
+      });
+      h.exit();
+      expect(h.signal.mock.calls, 'POSIX_FINITE_EXIT_GROUP_AUTHORITY').toEqual([[-40, 'SIGKILL']]);
+      expect(h.registry.termination).toBeUndefined();
+      expect(h.request).not.toHaveBeenCalled();
+      expect(h.scheduled.size).toBe(0);
+      await Promise.resolve();
+      expect(acknowledged, 'POSIX_FINITE_EXIT_NOT_NATIVE_ACK').toBe(false);
+      expect(h.registry.activeOwners).toBe(1);
+      target.emit('close', 0);
+      await lease.whenClosed;
+      expect(h.registry.activeOwners).toBe(0);
+      expect(h.signal.mock.calls).toEqual([
+        [-40, 'SIGKILL'],
+        [-40, 'SIGKILL'],
+      ]);
+      h.exit();
+      expect(h.signal).toHaveBeenCalledTimes(2);
+      expect(h.removeExit).toHaveBeenCalledOnce();
+    },
+  );
+
+  it('records finite POSIX group failure without starting async shutdown or acknowledging close', async () => {
+    const h = harness();
+    const lease = await h.controller.reserve('group');
+    const target = child();
+    lease.bindChild(target);
+    target.emit('exit', 0);
+    h.signal.mockClear();
+    h.signal.mockImplementationOnce(() => {
+      throw Object.assign(new Error('PRIVATE_FINITE_GROUP_SIGNAL_FAILURE'), { code: 'EPERM' });
+    });
+    h.exit();
+    expect(h.signal.mock.calls, 'POSIX_FINITE_GROUP_FAILURE_REQUEST').toEqual([[-40, 'SIGKILL']]);
+    expect(h.registry.observations.exitCode()).toBe(9);
+    expect(h.registry.termination, 'POSIX_FINITE_GROUP_NO_ASYNC_SHUTDOWN').toBeUndefined();
+    expect(h.scheduled.size).toBe(0);
+    expect(h.registry.activeOwners).toBe(1);
+    target.emit('close', 0);
+    await lease.whenClosed;
+    expect(h.registry.activeOwners).toBe(0);
+    expect(h.registry.observations.exitCode()).toBe(9);
+  });
+
   it.each(
     (['linux', 'win32'] as const).flatMap((platform) =>
       (['attached', 'late-attach', 'liveness-reentry'] as const).map((boundary) => ({

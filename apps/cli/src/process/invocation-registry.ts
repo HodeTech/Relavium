@@ -200,6 +200,18 @@ export class InvocationRegistry {
     this.assertAdmitting();
     // Creation-specific capabilities cannot change after registration through the caller's object.
     owner = Object.freeze({ ...owner });
+    switch (owner.kind) {
+      case 'workflow':
+      case 'session':
+      case 'command':
+      case 'terminal':
+      case 'native-group':
+      case 'native-pid':
+      case 'windows-live-root':
+        break;
+      default:
+        throw new CliError('cli_internal', '');
+    }
     let resolveRetirement = (): void => undefined;
     const retirement = new Promise<void>((resolve) => {
       resolveRetirement = resolve;

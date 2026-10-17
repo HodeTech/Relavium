@@ -68,8 +68,11 @@ import type { RunRenderer } from '../render/renderer.js';
 import { selectRenderer } from '../render/select.js';
 import { createMcpSecretResolver, type McpSecretResolver } from '../secrets/mcp-secret.js';
 import { parseSecretLines } from '../secrets/parse-secret-lines.js';
-import { readSecretFromStdin, type StdinSecretContext } from '../secrets/read-secret.js';
-import { Readable } from 'node:stream';
+import {
+  readSecretFromStdin,
+  type StdinSecretContext,
+  type StdinSecretSource,
+} from '../secrets/read-secret.js';
 import { resolveWorkflowSource } from '../workflows/resolve.js';
 import {
   assertWorkflowCatalogValid,
@@ -619,7 +622,11 @@ async function readRunSecrets(
   const read =
     deps.readSecretInput ??
     ((): Promise<string> => {
-      if (!(deps.io.stdin instanceof Readable)) throw new CliError('cli_internal', '');
+      if (!isSecretInputSource(deps.io.stdin))
+        throw new CliError(
+          'invalid_invocation',
+          'Secret input requires an async-iterable stdin source.',
+        );
       return readSecretFromStdin(RUN_SECRET_STDIN_CONTEXT, deps.io.stdin, {
         signal: lifetime.signal,
         onFailure: (cause) => lifetime.failure(cause),
@@ -628,4 +635,15 @@ async function readRunSecrets(
   const raw = await read();
   lifetime.checkpoint();
   return parseSecretLines(raw, 'run --secret-inputs-stdin');
+}
+
+/** Native and embedding inputs share the reader's structural source contract. */
+function isSecretInputSource(
+  value: NodeJS.ReadableStream,
+): value is NodeJS.ReadableStream & StdinSecretSource {
+  try {
+    return typeof Reflect.get(value, Symbol.asyncIterator) === 'function';
+  } catch {
+    return false;
+  }
 }

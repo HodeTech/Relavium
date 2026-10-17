@@ -1,5 +1,5 @@
 import { WorkflowLifetime } from './workflow-lifetime.js';
-import { createCliInvocation } from '../process/invocation.js';
+import { invocationFixture } from '../process/invocation.test-support.js';
 import {
   EngineStateError,
   createInMemoryHost,
@@ -66,14 +66,21 @@ describe('driveRun — interactive gate', () => {
     const { renderer, events } = recordingRenderer();
     const prompter = prompterReturning({ decision: 'approved', decidedBy: 'cli' });
     const { io } = captureIo();
+    const lifetime = new WorkflowLifetime(
+      invocationFixture().invocation,
+      io,
+      () => () => undefined,
+    );
 
     const outcome = await driveRun({
+      lifetime,
       engine,
       handle,
       makeRenderer: () => renderer,
       gatePrompter: prompter,
       io,
     });
+    await lifetime.finish();
 
     expect(outcome).toBe('completed');
     expect(prompter.prompt).toHaveBeenCalledTimes(1);
@@ -88,14 +95,21 @@ describe('driveRun — interactive gate', () => {
     const { engine, handle } = await startGatedRun();
     const { renderer, events } = recordingRenderer();
     const { io } = captureIo();
+    const lifetime = new WorkflowLifetime(
+      invocationFixture().invocation,
+      io,
+      () => () => undefined,
+    );
 
     await driveRun({
+      lifetime,
       engine,
       handle,
       makeRenderer: () => renderer,
       gatePrompter: prompterReturning({ decision: 'rejected', decidedBy: 'cli', comment: 'no' }),
       io,
     });
+    await lifetime.finish();
 
     const resumed = events.find((e) => e.type === 'human_gate:resumed');
     expect(resumed).toMatchObject({ decision: 'rejected', decidedBy: 'cli' });
@@ -105,14 +119,21 @@ describe('driveRun — interactive gate', () => {
     const { engine, handle } = await startGatedRun();
     const { renderer, events } = recordingRenderer();
     const { io } = captureIo();
+    const lifetime = new WorkflowLifetime(
+      invocationFixture().invocation,
+      io,
+      () => () => undefined,
+    );
 
     const outcome = await driveRun({
+      lifetime,
       engine,
       handle,
       makeRenderer: () => renderer,
       gatePrompter: prompterReturning(null),
       io,
     });
+    await lifetime.finish();
 
     expect(outcome).toBe('cancelled');
     expect(events.at(-1)?.type).toBe('run:cancelled');
@@ -128,7 +149,7 @@ describe('driveRun — interactive gate', () => {
     const cancelSpy = vi.spyOn(handle, 'cancel');
 
     const lifetime = new WorkflowLifetime(
-      createCliInvocation({ exit: vi.fn(), setExitCode: vi.fn() }),
+      invocationFixture().invocation,
       io,
       () => () => undefined,
     );
@@ -170,7 +191,7 @@ describe('driveRun — interactive gate', () => {
     const { io, err } = captureIo();
 
     const lifetime = new WorkflowLifetime(
-      createCliInvocation({ exit: vi.fn(), setExitCode: vi.fn() }),
+      invocationFixture().invocation,
       io,
       () => () => undefined,
     );
@@ -200,7 +221,13 @@ describe('driveRun — interactive gate', () => {
     const { engine, handle } = await startGatedRun();
     const { renderer } = recordingRenderer();
     const { io } = captureIo();
-    const outcome = await driveRun({ engine, handle, makeRenderer: () => renderer, io });
+    const lifetime = new WorkflowLifetime(
+      invocationFixture().invocation,
+      io,
+      () => () => undefined,
+    );
+    const outcome = await driveRun({ lifetime, engine, handle, makeRenderer: () => renderer, io });
+    await lifetime.finish();
     expect(outcome).toBe('paused');
   });
 
@@ -208,6 +235,11 @@ describe('driveRun — interactive gate', () => {
     const { engine, handle } = await startGatedRun();
     const { renderer } = recordingRenderer();
     const { io } = captureIo();
+    const lifetime = new WorkflowLifetime(
+      invocationFixture().invocation,
+      io,
+      () => () => undefined,
+    );
     // The SIGINT-during-prompt race: the prompt cooperatively cancels the run (→ run:cancelled), then returns
     // a decision the engine now refuses with run_already_terminal. driveRun must swallow that and drain to the
     // cancelled terminal — never surface it as a generic "unexpected internal error".
@@ -224,12 +256,14 @@ describe('driveRun — interactive gate', () => {
     };
 
     const outcome = await driveRun({
+      lifetime,
       engine,
       handle,
       makeRenderer: () => renderer,
       gatePrompter: prompter,
       io,
     });
+    await lifetime.finish();
 
     expect(resumeSpy).toHaveBeenCalledTimes(1); // the race path WAS taken...
     expect(outcome).toBe('cancelled'); // ...and resolved cleanly to the cancelled terminal, no throw

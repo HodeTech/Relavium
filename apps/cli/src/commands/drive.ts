@@ -25,7 +25,7 @@ import { detectOutputMode, isCiEnv } from '../process/output-mode.js';
 import type { CliIo } from '../process/io.js';
 import type { RunRenderer } from '../render/renderer.js';
 import type { RendererCreationOwner } from './workflow-terminal.js';
-import { WorkflowLifetime } from './workflow-lifetime.js';
+import type { WorkflowLifetime } from './workflow-lifetime.js';
 import { wireRunJobControl } from '../render/run-job-control.js';
 
 /**
@@ -57,7 +57,7 @@ function rethrowDriveFailure(original: unknown): never {
 }
 
 export interface DriveRunDeps {
-  readonly lifetime?: WorkflowLifetime;
+  readonly lifetime: WorkflowLifetime;
   readonly engine: WorkflowEngine;
   readonly handle: RunHandle;
   /**
@@ -88,7 +88,7 @@ export interface DriveRunDeps {
  */
 export async function driveRun(deps: DriveRunDeps): Promise<RunOutcome | undefined> {
   const { engine, handle, makeRenderer, io } = deps;
-  const lifetime = deps.lifetime ?? new WorkflowLifetime(undefined, io);
+  const lifetime = deps.lifetime;
   lifetime.adoptEngine(engine, handle.runId);
   lifetime.adoptHandle(handle);
   const terminal = lifetime.terminal;
@@ -497,7 +497,6 @@ export async function driveRun(deps: DriveRunDeps): Promise<RunOutcome | undefin
         );
       }
     }
-    if (deps.lifetime === undefined && safe) await lifetime.finish();
   }
 }
 

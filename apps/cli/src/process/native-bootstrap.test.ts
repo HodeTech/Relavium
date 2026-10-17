@@ -118,6 +118,52 @@ describe('native product bootstrap', () => {
     },
   );
 
+  it.each([5, 7, 8] as const)(
+    'accepts actual workflow health %s without inventing a fatal failure',
+    async (code) => {
+      const f = fixture();
+      const retired = deferred<OwnerRetirement>();
+      const native = f.start(() =>
+        Promise.resolve({
+          run: () => {
+            f.registry.register({
+              kind: 'workflow',
+              retired: retired.promise,
+              stop: () => retired.resolve({ kind: 'settled' }),
+              join: () => retired.promise.then(() => undefined),
+              readSafetyExit: () => code,
+              classifyFailure: () => 'cli_internal',
+            });
+            return Promise.resolve(code);
+          },
+        }),
+      );
+      expect(await native.finished).toBe(code);
+      expect(f.exitCode()).toBe(code);
+      expect(f.registry.activeOwners).toBe(0);
+      expect(f.registry.observations.hasInfrastructureFailure()).toBe(false);
+      expect(f.registry.budget.deadline()).toBeUndefined();
+      expect(f.stderr.frames).toEqual([]);
+      expect(f.exit).not.toHaveBeenCalled();
+      expect(f.ports.exit).not.toHaveBeenCalled();
+    },
+  );
+
+  it('rejects an invalid resolved runtime code through the single fatal authority', async () => {
+    const f = fixture();
+    const run = vi.fn<(typeof import('../run.js'))['run']>();
+    // @ts-expect-error Deliberately model an invalid value crossing the runtime module boundary.
+    run.mockResolvedValueOnce(10);
+    const native = f.start(() => Promise.resolve({ run }));
+    expect(await native.finished).toBe(9);
+    expect(f.registry.activeOwners).toBe(0);
+    expect(f.registry.observations.infrastructureCode()).toBe('cli_internal');
+    expect(f.stderr.frames).toHaveLength(1);
+    expect(f.stderr.frames.join('')).toContain('relavium:');
+    expect(f.exit).toHaveBeenCalledExactlyOnceWith(9);
+    expect(f.ports.exit).not.toHaveBeenCalled();
+  });
+
   it.each([{ args: [] }, { args: ['--json', '--verbose'] }])(
     'reports a loader rejection once without its private text (%j)',
     async ({ args }) => {

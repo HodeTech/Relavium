@@ -26,6 +26,25 @@ function fixture(tty = false) {
 }
 
 describe('reserved workflow terminal creation and actual restoration', () => {
+  it.each([true, false])(
+    'refuses sealed view operation entry; mayAcquire=%s',
+    async (mayAcquire) => {
+      const f = fixture();
+      f.terminal.seal();
+      const operation = vi.fn(() => Promise.resolve());
+      let failure: unknown;
+      try {
+        void f.terminal.runViewOperation(operation, mayAcquire);
+      } catch (cause) {
+        failure = cause;
+      }
+      expect(failure).toMatchObject({ code: 'cli_internal' });
+      expect(operation).not.toHaveBeenCalled();
+      await f.terminal.finish();
+      expect(f.registry.activeOwners).toBe(0);
+    },
+  );
+
   it('retires a native-free preparation without writing cursor codes to NDJSON output', async () => {
     const f = fixture();
     expect(f.registry.activeOwners).toBe(1);

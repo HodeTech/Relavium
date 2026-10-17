@@ -2181,56 +2181,73 @@ describe('first-run secret admission before service construction (ADR-0107)', ()
     expect(Object.hasOwn(start.mock.calls[0]?.[0].inputs ?? {}, 'optional')).toBe(false);
   });
 
-  it('uses the real default reader exactly once and suppresses even an injected gate selector', async () => {
-    const path = writeWorkflow(
-      'secret-gate.relavium.yaml',
-      GATED.replace(
-        '  nodes:',
-        '  inputs:\n    - { name: token, type: secret, required: true }\n  nodes:',
-      ),
-    );
-    const { io } = captureIo();
-    const source = new Readable({ read() {} });
-    const iterator = vi.fn(async function* () {
-      yield await Promise.resolve(Buffer.from('token=  opaque=verbatim  \r\n'));
-    });
-    Object.defineProperties(source, {
-      isTTY: { value: false },
-      [Symbol.asyncIterator]: { value: iterator },
-    });
-    const prompt = vi.fn<GatePrompter['prompt']>(() => Promise.resolve(null));
-    const selectGatePrompter = vi.fn(() => ({ prompt, dispose: () => {} }));
-    const engine = await buildEngine({ host: createInMemoryHost() });
-    const start = vi.spyOn(engine, 'start');
-    try {
-      let code: number | undefined;
-      let caught: unknown;
-      try {
-        code = await runCommand(
-          { workflow: path, input: [], allowMcpStdio: [], secretInputsStdin: true },
-          deps({ ...io, stdin: source }, globalOptions(), {
-            buildEngine: () => Promise.resolve(engine),
-            selectGatePrompter,
-          }),
+  it.each(['native', 'structural'] as const)(
+    'uses the real %s default reader once and suppresses an injected gate selector',
+    async (kind) => {
+      const path = writeWorkflow(
+        'secret-gate.relavium.yaml',
+        GATED.replace(
+          '  nodes:',
+          '  inputs:\n    - { name: token, type: secret, required: true }\n  nodes:',
+        ),
+      );
+      const { io } = captureIo();
+      const source = new Readable({ read() {} });
+      if (kind === 'structural') {
+        // A structurally equivalent embedding stream need not share the native constructor identity.
+        // Copy its method descriptors without mutating the global prototype or changing input bytes.
+        const prototype = Object.defineProperties(
+          {},
+          Object.getOwnPropertyDescriptors(Readable.prototype),
         );
-      } catch (error) {
-        caught = error;
+        const parent: unknown = Object.getPrototypeOf(Readable.prototype);
+        if (parent !== null && typeof parent !== 'object')
+          throw new Error('Invalid stream prototype.');
+        Object.setPrototypeOf(prototype, parent);
+        Object.setPrototypeOf(source, prototype);
+        expect(source instanceof Readable).toBe(false);
       }
-      expect(iterator, 'SECRETS_CAUSAL_RUN_DEFAULT_READER').toHaveBeenCalledOnce();
-      expect(start.mock.calls[0]?.[0].inputs, 'SECRETS_CAUSAL_RUN_DEFAULT_READER').toEqual({
-        token: '  opaque=verbatim  ',
+      const iterator = vi.fn(async function* () {
+        yield await Promise.resolve(Buffer.from('token=  opaque=verbatim  \r\n'));
       });
-      expect(
-        selectGatePrompter,
-        'SECRETS_CAUSAL_RUN_GATE_PROMPT_SUPPRESSION',
-      ).not.toHaveBeenCalled();
-      expect(prompt).not.toHaveBeenCalled();
-      expect(caught).toBeUndefined();
-      expect(code).toBe(EXIT_CODES.gatePaused);
-    } finally {
-      source.destroy();
-    }
-  });
+      Object.defineProperties(source, {
+        isTTY: { value: false },
+        [Symbol.asyncIterator]: { value: iterator },
+      });
+      const prompt = vi.fn<GatePrompter['prompt']>(() => Promise.resolve(null));
+      const selectGatePrompter = vi.fn(() => ({ prompt, dispose: () => {} }));
+      const engine = await buildEngine({ host: createInMemoryHost() });
+      const start = vi.spyOn(engine, 'start');
+      try {
+        let code: number | undefined;
+        let caught: unknown;
+        try {
+          code = await runCommand(
+            { workflow: path, input: [], allowMcpStdio: [], secretInputsStdin: true },
+            deps({ ...io, stdin: source }, globalOptions(), {
+              buildEngine: () => Promise.resolve(engine),
+              selectGatePrompter,
+            }),
+          );
+        } catch (error) {
+          caught = error;
+        }
+        expect(iterator, 'SECRETS_CAUSAL_RUN_DEFAULT_READER').toHaveBeenCalledOnce();
+        expect(start.mock.calls[0]?.[0].inputs, 'SECRETS_CAUSAL_RUN_DEFAULT_READER').toEqual({
+          token: '  opaque=verbatim  ',
+        });
+        expect(
+          selectGatePrompter,
+          'SECRETS_CAUSAL_RUN_GATE_PROMPT_SUPPRESSION',
+        ).not.toHaveBeenCalled();
+        expect(prompt).not.toHaveBeenCalled();
+        expect(caught).toBeUndefined();
+        expect(code).toBe(EXIT_CODES.gatePaused);
+      } finally {
+        source.destroy();
+      }
+    },
+  );
 
   it.each([true, false])(
     'the real default reader refuses TTY/oversize before services (TTY=%s)',

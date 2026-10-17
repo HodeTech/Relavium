@@ -1360,19 +1360,25 @@ workflow:
     });
   });
 
-  it('maps a closed-handle resume (a concurrent-settle race) to an idempotent exit 0', async () => {
-    const { runId } = await setupPausedRun();
-    const { io, out } = captureIo();
-    const code = await gateCommand(
-      { runId, approve: true },
-      {
-        ...deps(io),
-        buildEngine: () => Promise.resolve(stubEngine(() => Promise.resolve(emptyHandle(runId)))),
-      },
-    );
-    expect(code).toBe(EXIT_CODES.success); // a closed handle (already terminal) is an idempotent no-op, not a failure
-    expect(out()).toContain('already settled');
-  });
+  it.each([false, true])(
+    'maps a closed-handle resume to an idempotent exit 0; json=%s',
+    async (json) => {
+      const { runId } = await setupPausedRun();
+      const { io, out, err } = captureIo();
+      const commandDeps = deps(io);
+      const code = await gateCommand(
+        { runId, approve: true },
+        {
+          ...commandDeps,
+          global: { ...commandDeps.global, json },
+          buildEngine: () => Promise.resolve(stubEngine(() => Promise.resolve(emptyHandle(runId)))),
+        },
+      );
+      expect(code).toBe(EXIT_CODES.success); // a closed handle (already terminal) is an idempotent no-op, not a failure
+      expect(json ? err() : out()).toBe(`run ${runId} already settled; nothing to resume\n`);
+      expect(json ? out() : err()).toBe('');
+    },
+  );
 
   it('maps a workflow_mismatch EngineStateError from resumeFromCheckpoint to exit-2', async () => {
     const { runId } = await setupPausedRun();
@@ -1447,22 +1453,33 @@ workflow:
     });
   });
 
-  it('is idempotent: a doubled decision on an already-completed run is a clean exit-0 no-op (no double-advance)', async () => {
-    const { runId } = await setupPausedRun();
-    const { io, out } = captureIo();
-    const reader = createRunHistoryStore(db, {
-      uuid: () => randomUUID(),
-      now: () => Date.now(),
-      workflow: { slug: 'gate-resume', name: 'gate-resume', definitionJson: '{}' },
-    });
-    await gateCommand({ runId, approve: true }, deps(io)); // first resume → completes
-    const eventsAfterFirst = reader.loadRunEvents(runId).length;
+  it.each([false, true])(
+    'keeps a doubled decision on a completed run idempotent; json=%s',
+    async (json) => {
+      const { runId } = await setupPausedRun();
+      const { io } = captureIo();
+      const reader = createRunHistoryStore(db, {
+        uuid: () => randomUUID(),
+        now: () => Date.now(),
+        workflow: { slug: 'gate-resume', name: 'gate-resume', definitionJson: '{}' },
+      });
+      await gateCommand({ runId, approve: true }, deps(io)); // first resume → completes
+      const eventsAfterFirst = reader.loadRunEvents(runId).length;
 
-    const code = await gateCommand({ runId, approve: true }, deps(io)); // second decision
-    expect(code).toBe(EXIT_CODES.success);
-    expect(out()).toContain('nothing to resume'); // idempotent message, not a re-run
-    expect(reader.loadRunEvents(runId)).toHaveLength(eventsAfterFirst); // NO new events — not advanced twice
-  });
+      const second = captureIo();
+      const commandDeps = deps(second.io);
+      const buildEngine = vi.fn(() => Promise.reject(new Error('unexpected engine construction')));
+      const code = await gateCommand(
+        { runId, approve: true },
+        { ...commandDeps, global: { ...commandDeps.global, json }, buildEngine },
+      );
+      expect(code).toBe(EXIT_CODES.success);
+      expect(json ? second.err() : second.out()).toContain('nothing to resume');
+      expect(json ? second.out() : second.err()).toBe('');
+      expect(buildEngine).not.toHaveBeenCalled();
+      expect(reader.loadRunEvents(runId)).toHaveLength(eventsAfterFirst); // NO new events — not advanced twice
+    },
+  );
 
   it('rejects an unknown runId (exit 2)', async () => {
     const { io } = captureIo();

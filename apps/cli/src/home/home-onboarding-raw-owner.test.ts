@@ -8,6 +8,8 @@ import { expect, it, vi } from 'vitest';
 import { ConfigError } from '../config/errors.js';
 import { invocationFixture } from '../process/invocation.test-support.js';
 import type { InvocationWorkOwner } from '../process/invocation-work-owner.js';
+import { DISABLE_MOUSE } from '../render/alt-screen.js';
+import { DISABLE_BRACKETED_PASTE } from '../render/tui/home-input.js';
 import type { RootAppProps } from '../render/tui/home-app.js';
 import { captureIo, OwnedTtyInput, OwnedTtyOutput } from '../test-support.js';
 import { driveHome } from './drive-home.js';
@@ -83,6 +85,8 @@ it.each(scenarios)('Home retains the original onboarding raw-mode fault: %s', as
   let settled = false;
   const running = driveHome({
     ...(owned ? { invocation: f.invocation } : {}),
+    // The compatibility driver uses this explicit control sink; owned cases keep their ACK seam.
+    writeControl: (sequence) => captured.io.writeOut(sequence),
     io: {
       ...captured.io,
       stdoutIsTty: true,
@@ -208,6 +212,12 @@ it.each(scenarios)('Home retains the original onboarding raw-mode fault: %s', as
     expect(closes).toBe(1);
     expect(client.sqlite.open).toBe(false);
     expect(f.registry.activeOwners).toBe(0);
+    if (!owned) {
+      expect(captured.out(), 'OWNERLESS_HOME_CAPTURES_TERMINAL_RESTORE').toContain(
+        DISABLE_BRACKETED_PASTE,
+      );
+      expect(captured.out()).toContain(DISABLE_MOUSE);
+    }
     expect(captured.out() + captured.err()).not.toContain('PRIVATE_HOME_RAW_FAULT');
   } finally {
     armed = false;

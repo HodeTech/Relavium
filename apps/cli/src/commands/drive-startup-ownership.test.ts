@@ -2,6 +2,8 @@ import { WorkflowEngine, createInMemoryHost, parseWorkflow } from '@relavium/cor
 import { expect, it } from 'vitest';
 import { captureIo } from '../test-support.js';
 import { driveRun } from './drive.js';
+import { WorkflowLifetime } from './workflow-lifetime.js';
+import { invocationFixture } from '../process/invocation.test-support.js';
 
 for (const fails of [false, true])
   it(`owns input-adapter construction after engine admission (fails=${fails})`, async () => {
@@ -23,10 +25,13 @@ for (const fails of [false, true])
       ),
     });
     const { io } = captureIo();
+    const f = invocationFixture();
+    const lifetime = new WorkflowLifetime(f.invocation, io, () => () => undefined);
     let constructions = 0;
     let mounts = 0;
     const signals = process.listenerCount('SIGINT');
     const driving = driveRun({
+      lifetime,
       engine,
       handle,
       io,
@@ -42,6 +47,9 @@ for (const fails of [false, true])
     });
     if (fails) await expect(driving).rejects.toThrow('input adapter construction failed');
     else await expect(driving).resolves.toBe('completed');
+    await lifetime.finish();
+    expect(f.registry.activeOwners).toBe(0);
+    expect(f.exit).not.toHaveBeenCalled();
     expect(constructions).toBe(1);
     expect(mounts).toBe(fails ? 0 : 1);
     await expect(handle.depart()).resolves.toMatchObject({

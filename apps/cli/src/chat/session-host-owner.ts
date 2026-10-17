@@ -11,10 +11,12 @@ export class SessionHostOwner {
   #cancelled: BuiltChatSession | undefined;
   #persister: SessionPersister | undefined;
   #constructionEntered = false;
+  #mcpClosing: Promise<void> | undefined;
 
   constructor(invocation: CliInvocation, surface: SessionOwner['surface']) {
     this.work = new SessionWorkOwner(invocation, surface, {
       cancel: () => this.#cancel(),
+      beforeWorkJoin: () => this.#closeMcp(),
       cleanup: () => this.#cleanup(),
     });
   }
@@ -74,6 +76,33 @@ export class SessionHostOwner {
     }
   }
 
+  #closeMcp(): Promise<void> {
+    if (this.#mcpClosing !== undefined) return this.#mcpClosing;
+    const built = this.#built;
+    if (built === undefined || built.closeMcp === undefined) return Promise.resolve();
+    // Publish the exact retained operation before entering callbacks. The SDK's native-close
+    // receipt is itself transferred work, so its close request must precede that work's join.
+    // Entered roots are already settled; the core barrier additionally joins actual provider,
+    // tool and accounting work before an otherwise idle MCP connection can close.
+    const close = built.closeMcp;
+    const raw = Promise.resolve().then(async () => {
+      try {
+        await built.whenHostSafeToClose();
+      } catch (cause) {
+        this.work.cleanupUncertain(cause);
+      }
+      if (this.work.invocation.registry.budget.remainingMs() === 0)
+        await new Promise<never>(() => {});
+      try {
+        await close.call(built, (_id, cause) => this.work.cleanupUncertain(cause));
+      } catch (cause) {
+        this.work.cleanupUncertain(cause);
+      }
+    });
+    this.#mcpClosing = this.work.work.retainWork(() => raw);
+    return this.#mcpClosing;
+  }
+
   async #cleanup(): Promise<void> {
     const built = this.#built;
     if (built === undefined) return;
@@ -95,13 +124,6 @@ export class SessionHostOwner {
         this.work.cleanupUncertain(cause);
       }
     }
-    if (built.closeMcp === undefined) return;
-    if (this.work.invocation.registry.budget.remainingMs() === 0)
-      await new Promise<never>(() => {});
-    try {
-      await built.closeMcp((_id, cause) => this.work.cleanupUncertain(cause));
-    } catch (cause) {
-      this.work.cleanupUncertain(cause);
-    }
+    await this.#mcpClosing;
   }
 }

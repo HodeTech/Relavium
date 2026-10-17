@@ -57,7 +57,7 @@ export function createModelCatalogPort(params: {
   // not repeat on every `/models` open + every refresh completion on the live ink render thread. The resolvable key
   // set is fixed for the process (a mid-session key change ⇒ restart), the same posture as the startup key probe.
   let keyedProviders: ReadonlySet<(typeof KNOWN_PROVIDER_IDS)[number]> | undefined;
-  const retain = <T>(operation: () => Promise<T>): Promise<T> => {
+  const retain = async <T>(operation: () => Promise<T>): Promise<T> => {
     if (workOwner === undefined) return operation();
     workOwner.assertAdmitting();
     // Discovery/cache reads preserve their recoverable UI policy. Local publication,

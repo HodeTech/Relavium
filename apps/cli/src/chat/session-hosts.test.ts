@@ -114,6 +114,7 @@ describe('actual host instance collection, independent of UI selection', () => {
     const cleanup = gate();
     const close = vi.fn(() => cleanup.promise);
     const cause = new Error('PRIVATE_POST_BUILD_FAILURE');
+    let settled = false;
     const opening = f.hosts
       .construct(async (owner) => {
         await owner.build(async (workOwner) => ({
@@ -122,7 +123,10 @@ describe('actual host instance collection, independent of UI selection', () => {
         }));
         throw cause;
       })
-      .catch((error: unknown) => error);
+      .catch((error: unknown) => {
+        settled = true;
+        return error;
+      });
     try {
       await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
       expect(f.registry.observations.exitCode()).toBe(9);
@@ -130,6 +134,8 @@ describe('actual host instance collection, independent of UI selection', () => {
         3000,
       );
       expect(f.registry.activeOwners).toBe(1);
+      await reactions();
+      expect(settled, 'FAILED_CONSTRUCTION_AWAITS_ACTUAL_HOST_CLOSE').toBe(false);
     } finally {
       cleanup.release();
     }

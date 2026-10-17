@@ -6,6 +6,8 @@ import { buildEngine } from '../engine/build-engine.js';
 import type { GatePrompter } from '../gate/prompter.js';
 import { captureIo, CHAT_TEXT_CAPABILITY_FLAGS } from '../test-support.js';
 import { driveRun } from './drive.js';
+import { WorkflowLifetime } from './workflow-lifetime.js';
+import { invocationFixture } from '../process/invocation.test-support.js';
 const MODEL = 'offline-budget-ui';
 const PRICE: ModelPricing = {
   provider: 'openai',
@@ -64,6 +66,8 @@ for (const mode of ['approve', 'reject', 'stale', 'missing_amount', 'input'] as 
     });
     const events: RunEvent[] = [];
     const { io, err } = captureIo();
+    const f = invocationFixture();
+    const lifetime = new WorkflowLifetime(f.invocation, io, () => () => undefined);
     let prompts = 0;
     let approvedAmount: number | undefined;
     const prompter: GatePrompter = {
@@ -94,6 +98,7 @@ for (const mode of ['approve', 'reject', 'stale', 'missing_amount', 'input'] as 
     };
     try {
       const result = await driveRun({
+        lifetime,
         engine,
         handle,
         makeRenderer: () => ({ onEvent: (e) => events.push(e) }),
@@ -151,6 +156,9 @@ for (const mode of ['approve', 'reject', 'stale', 'missing_amount', 'input'] as 
         expect(events.some((e) => e.type === 'run:cancelled')).toBe(false);
       }
       unsubscribe();
+      await lifetime.finish();
+      expect(f.registry.activeOwners).toBe(0);
+      expect(f.exit).not.toHaveBeenCalled();
       expect(host.armedCount()).toBe(0);
       expect(host.livenessCount()).toBe(0);
       expect(host.deadlineCount()).toBe(0);

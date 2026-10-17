@@ -22,6 +22,69 @@ const event: SessionStreamHandleEvent = {
 };
 
 describe('owned passive session presentation', () => {
+  it.each(['writeOut', 'writeErr'] as const)(
+    'classifies a synchronous %s fault before cancellation and retains actual cleanup',
+    async (method) => {
+      const f = invocationFixture();
+      let releaseCleanup: () => void = () => {};
+      const heldCleanup = new Promise<void>((resolve) => {
+        releaseCleanup = resolve;
+      });
+      const cleanup = vi.fn(() => heldCleanup);
+      const owner = new SessionWorkOwner(f.invocation, 'chat', { cancel: () => {}, cleanup });
+      const captured = captureIo();
+      const cause = new TypeError('PRIVATE_SYNCHRONOUS_OUTPUT_FAILURE');
+      const writeOut = vi.fn(() => {
+        if (method === 'writeOut') throw cause;
+      });
+      const writeErr = vi.fn(() => {
+        if (method === 'writeErr') throw cause;
+      });
+      const writeOutAcknowledged = vi.fn(() => Promise.resolve());
+      const writeErrAcknowledged = vi.fn(() => Promise.resolve());
+      const output = ownSessionOutput(
+        { ...captured.io, writeOut, writeErr, writeOutAcknowledged, writeErrAcknowledged },
+        owner,
+      );
+      let thrown: unknown;
+      try {
+        output[method]('business output');
+      } catch (failure) {
+        thrown = failure;
+      }
+      expect(thrown).toBeInstanceOf(CliError);
+      expect(thrown).toMatchObject({ code: 'output_unavailable', exitCode: 9, cause });
+      expect(owner.firstFailure?.cause).toBe(thrown);
+      expect(f.registry.observations.infrastructureCode()).toBe('output_unavailable');
+      expect(f.registry.observations.exitCode()).toBe(9);
+      if (!(thrown instanceof CliError)) throw new Error('missing classified output failure');
+      expect(thrown.message).not.toContain(cause.message);
+      for (const write of [
+        () => output.writeOut('late stdout'),
+        () => output.writeErr('late stderr'),
+        () => output.writeOutAcknowledged('late acknowledged stdout'),
+        () => output.writeErrAcknowledged('late acknowledged stderr'),
+      ])
+        expect(write, 'SESSION_SYNC_OUTPUT_SEALS_ALL_BUSINESS_OUTPUT').toThrow();
+      expect(writeOut).toHaveBeenCalledTimes(method === 'writeOut' ? 1 : 0);
+      expect(writeErr).toHaveBeenCalledTimes(method === 'writeErr' ? 1 : 0);
+      expect(writeOutAcknowledged).not.toHaveBeenCalled();
+      expect(writeErrAcknowledged).not.toHaveBeenCalled();
+      let retired = false;
+      void owner.retired.then(() => {
+        retired = true;
+      });
+      const closing = owner.close();
+      await vi.waitFor(() => expect(cleanup).toHaveBeenCalledOnce());
+      expect(retired, 'SESSION_SYNC_OUTPUT_REQUIRES_ACTUAL_CLEANUP').toBe(false);
+      expect(f.registry.activeOwners).toBe(1);
+      releaseCleanup();
+      await closing;
+      expect(retired).toBe(true);
+      expect(f.registry.activeOwners).toBe(0);
+    },
+  );
+
   it('observes the notification failure before advisory recovery and reentrant cancellation', async () => {
     const f = invocationFixture();
     let notify: (value: string) => void = () => {};

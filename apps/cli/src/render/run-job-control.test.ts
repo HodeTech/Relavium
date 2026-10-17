@@ -3,6 +3,9 @@ import { describe, expect, it, vi } from 'vitest';
 import { HIDE_CURSOR, SHOW_CURSOR } from './alt-screen.js';
 import { wireRunJobControl } from './run-job-control.js';
 import type { JobControlLifecycle } from './suspend.js';
+import { WorkflowTerminal } from '../commands/workflow-terminal.js';
+import { invocationFixture } from '../process/invocation.test-support.js';
+import { captureIo } from '../test-support.js';
 
 /**
  * G0's residue on the run/gate path. ink hides the cursor while it renders and `signal-exit`'s signal list
@@ -45,6 +48,66 @@ function harness(supported = true) {
 }
 
 describe('wireRunJobControl (G0, the run/gate path)', () => {
+  it.each(['suspend', 'continue'] as const)(
+    'reports a native %s cursor write failure while retaining actual terminal restoration',
+    async (phase) => {
+      const h = harness();
+      const f = invocationFixture();
+      const captured = captureIo();
+      const cause = new Error('PRIVATE_NATIVE_CURSOR_WRITE');
+      let release: () => void = () => undefined;
+      const inputReleased = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const fail = vi.fn();
+      const terminal = new WorkflowTerminal(
+        f.registry,
+        { ...captured.io, stdoutIsTty: true },
+        () => undefined,
+        fail,
+      );
+      terminal.createRenderer(() => ({
+        onEvent: () => undefined,
+        releaseInput: () => inputReleased,
+      }));
+      const onFailure = vi.fn((failure: unknown) => {
+        fail(failure);
+        terminal.seal();
+      });
+      const control = terminal.createJobControl((adopt) =>
+        wireRunJobControl({
+          adopt,
+          lifecycle: h.lifecycle,
+          onFailure,
+          write: (text) => {
+            if (text === (phase === 'suspend' ? SHOW_CURSOR : HIDE_CURSOR)) throw cause;
+            h.write(text);
+          },
+        }),
+      );
+      if (phase === 'continue') h.fireSuspend();
+      expect(phase === 'suspend' ? h.fireSuspend : h.fireContinue).not.toThrow();
+      expect(onFailure).toHaveBeenCalledExactlyOnceWith(cause);
+      expect(fail).toHaveBeenCalledExactlyOnceWith(cause);
+      expect(h.suspendSelf).toHaveBeenCalledTimes(phase === 'suspend' ? 0 : 1);
+      await control.released;
+      let finished = false;
+      const done = terminal.finish().then(() => {
+        finished = true;
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(finished, 'CURSOR_WRITE_REFUSAL_RETAINS_TERMINAL_RELEASE').toBe(false);
+      expect(f.registry.activeOwners).toBe(1);
+      h.fireSuspend();
+      h.fireContinue();
+      expect(onFailure).toHaveBeenCalledOnce();
+      release();
+      await done;
+      expect(f.registry.activeOwners).toBe(0);
+      expect(captured.out()).toBe(SHOW_CURSOR + SHOW_CURSOR);
+    },
+  );
+
   it('SHOWS the cursor before stopping, then re-raises so the process actually suspends', () => {
     const h = harness();
     const jc = wireRunJobControl({ write: h.write, lifecycle: h.lifecycle });

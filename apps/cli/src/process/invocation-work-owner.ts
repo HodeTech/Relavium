@@ -8,6 +8,9 @@ const observePromise: unknown = Object.getOwnPropertyDescriptor(Promise.prototyp
 export interface InvocationWorkOwnerPorts {
   /** Finite cancellation only, including when the common termination budget is exhausted. */
   readonly cancel: () => void;
+  /** After entered roots settle, initiate shutdown that transferred lifetime ACKs depend on.
+   * May retain its exact cleanup work; final cleanup still follows every transferred ACK. */
+  readonly beforeWorkJoin?: () => Promise<void>;
   /** Fulfilment must mean actual complete cleanup, independently of any retained receipt failure. */
   readonly cleanup: () => Promise<void>;
 }
@@ -153,6 +156,7 @@ export class InvocationWorkOwner {
         // Cancellation seals future roots, not the cleanup continuations of roots already entered.
         // Those roots can still register iterator.return/receipt tails before their actual settlement.
         await this.#roots.done;
+        await this.#ports.beforeWorkJoin?.();
         this.#work.seal();
         await this.#work.done;
         if (this.invocation.registry.budget.remainingMs() === 0) return;

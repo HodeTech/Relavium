@@ -102,9 +102,21 @@ export function wireRunJobControl(opts: WireRunJobControlOptions): RunJobControl
     if (failed !== undefined) throw new CliError('cli_internal', '', { cause: failed.cause });
     acknowledgeReleased();
   };
+  const writeCursor = (text: string): boolean => {
+    try {
+      opts.write(text);
+      return true;
+    } catch (cause) {
+      // Native signal callbacks cannot throw past the creation owner. Its failure
+      // path seals callbacks and retains the actual terminal restoration barrier.
+      if (opts.onFailure === undefined) throw cause;
+      opts.onFailure(cause);
+      return false;
+    }
+  };
   const onSuspend = (): void => {
     if (disposed) return;
-    opts.write(SHOW_CURSOR);
+    if (!writeCursor(SHOW_CURSOR)) return;
     if (disposed) return;
     detached();
     if (disposed) return;
@@ -145,7 +157,7 @@ export function wireRunJobControl(opts: WireRunJobControlOptions): RunJobControl
           removeContinue = lifecycle.onContinue(() => {
             if (disposed) return;
             attach();
-            if (!disposed) opts.write(HIDE_CURSOR);
+            if (!disposed) writeCursor(HIDE_CURSOR);
           });
           continueRegistered = true;
         } catch (cause) {

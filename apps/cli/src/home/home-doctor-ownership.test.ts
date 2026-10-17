@@ -9,6 +9,8 @@ import { scriptedResolver } from '../chat/test-support.js';
 import { ConfigError } from '../config/errors.js';
 import { invocationFixture } from '../process/invocation.test-support.js';
 import type { InvocationWorkOwner } from '../process/invocation-work-owner.js';
+import { DISABLE_MOUSE } from '../render/alt-screen.js';
+import { DISABLE_BRACKETED_PASTE } from '../render/tui/home-input.js';
 import type { RootAppProps } from '../render/tui/home-app.js';
 import { captureIo } from '../test-support.js';
 import { driveHome } from './drive-home.js';
@@ -78,6 +80,8 @@ it.each(cases)('actual Home doctor retains original publication and work: %s', a
   let hits = 0;
   const running = driveHome({
     ...(owned ? { invocation: f.invocation } : {}),
+    // The compatibility driver uses this explicit control sink; owned cases keep their ACK seam.
+    writeControl: (sequence) => captured.io.writeOut(sequence),
     io: { ...captured.io, stdoutIsTty: true, stdinIsTty: true },
     global: {
       cwd,
@@ -199,6 +203,12 @@ it.each(cases)('actual Home doctor retains original publication and work: %s', a
     expect(closes).toBe(1);
     expect(client.sqlite.open).toBe(false);
     expect(f.registry.activeOwners).toBe(0);
+    if (!owned) {
+      expect(captured.out(), 'OWNERLESS_HOME_CAPTURES_TERMINAL_RESTORE').toContain(
+        DISABLE_BRACKETED_PASTE,
+      );
+      expect(captured.out()).toContain(DISABLE_MOUSE);
+    }
     expect(captured.out() + captured.err()).not.toContain('PRIVATE_HOME_DOCTOR');
   } finally {
     remove();

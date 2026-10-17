@@ -41,6 +41,53 @@ function fixture(write?: (text: string) => Promise<void>) {
 }
 
 describe('persistent chat terminal and actual child mounts', () => {
+  it('retains a partially registered exit fallback without acknowledging terminal cleanup', async () => {
+    const f = invocationFixture();
+    const lifetime = new SessionChatLifetime(f.invocation, {
+      onInterrupt: () => () => undefined,
+      onTerminationSignal: () => () => undefined,
+    });
+    const captured = captureIo();
+    const write = vi.fn(() => Promise.resolve());
+    const terminal = new SessionChatTerminal({
+      lifetime,
+      active: true,
+      mouse: true,
+      io: { ...captured.io, writeOutAcknowledged: write },
+    });
+    const cause = new TypeError('PRIVATE_PARTIAL_EXIT_REGISTRATION');
+    let fallback: (() => void) | undefined;
+    expect(() =>
+      terminal.enter((callback) => {
+        fallback = callback; // Registration happened; the API threw before returning its remover.
+        throw cause;
+      }),
+    ).toThrow(cause);
+    expect(lifetime.surface.work.firstFailure?.cause).toBe(cause);
+    expect(lifetime.surface.work.hasCleanupUncertainty).toBe(true);
+    expect(f.registry.observations.exitCode()).toBe(9);
+    let acknowledged = false;
+    void terminal.close().then(() => {
+      acknowledged = true;
+    });
+    await turn();
+    expect(write.mock.calls.flat().join('')).toContain(EXIT_ALT_SCREEN);
+    const enteredWrites = write.mock.calls.length;
+    if (fallback === undefined) throw new Error('missing partially registered exit fallback');
+    expect(fallback).not.toThrow();
+    await turn();
+    expect(write).toHaveBeenCalledTimes(enteredWrites); // Exit fallback starts no async delivery.
+    expect(acknowledged, 'CHAT_PARTIAL_EXIT_REGISTRATION_NOT_ACK').toBe(false);
+    expect(f.registry.activeOwners).toBe(2);
+    expect(lifetime.surface.work.firstFailure?.cause).toBe(cause);
+    expect(captured.out() + captured.err()).not.toContain(cause.message);
+    f.advance(3000);
+    await turn();
+    expect(f.exit).toHaveBeenCalledWith(9);
+    expect(acknowledged).toBe(false);
+    expect(f.registry.activeOwners).toBe(2);
+  });
+
   it('preserves output failure immediately while a sibling native mount remains held', async () => {
     const held = gate();
     const f = fixture(() => Promise.reject(new CliError('output_unavailable', '')));

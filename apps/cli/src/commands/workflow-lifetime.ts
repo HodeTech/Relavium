@@ -195,8 +195,8 @@ export class WorkflowLifetime {
     return combined >= 0 && combined <= 9 ? combinedExit(combined) : result;
   }
   /** Called only after the command's actual cleanup tail, never by a deadline or cancellation. */
-  async finish(cleanupAcknowledged = true): Promise<void> {
-    if (!cleanupAcknowledged || !this.#cleanupAcknowledged) this.#hostSafe = false;
+  async finish(): Promise<void> {
+    if (!this.#cleanupAcknowledged) this.#hostSafe = false;
     if (this.#hostSafe) this.#resolveRetired({ kind: 'settled' });
     await this.terminal.finish();
     if (!this.#hostSafe) await new Promise<never>(() => {});

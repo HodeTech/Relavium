@@ -3,6 +3,8 @@ import type { StdioNativeLifetime } from '@relavium/mcp';
 import type { NativeProcessController } from '../process/native-process-owner.js';
 import { resolveStdioSpawn } from '../engine/mcp-consent.js';
 import { createCliInvocation } from '../process/invocation.js';
+import { invocationFixture } from '../process/invocation.test-support.js';
+import { SessionWorkOwner } from './session-work-owner.js';
 import { nativeProcessesForInvocation } from '../process/native-process-owner.js';
 import { prepareOutputCapPlan } from '@relavium/llm';
 import type { PreEgressInfo } from '@relavium/core';
@@ -20,11 +22,12 @@ import {
 import type { SessionStreamHandleEvent } from '@relavium/core';
 import {
   buildServerToolDefs,
+  McpAbortedError,
   startMcpClient as realStartMcpClient,
   type McpClient,
   type McpConnection,
 } from '@relavium/mcp';
-import type { AgentSessionRecord, SessionMessage } from '@relavium/shared';
+import type { AbortSignalLike, AgentSessionRecord, SessionMessage } from '@relavium/shared';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { ResolvedChatConfig } from '../config/resolve.js';
@@ -1774,6 +1777,140 @@ it('reads the attached initial usage snapshot once across a streamed turn', asyn
   await built.session.sendMessage('stream');
   await built.whenHostSafeToClose();
   expect(initialCoverage).toHaveBeenCalledTimes(1);
+});
+
+describe('owned session MCP startup cancellation', () => {
+  it.each(
+    (['fresh', 'resumed'] as const).flatMap((surface) =>
+      (['caller', 'owner', 'pre-aborted-caller'] as const).map((cancel) => ({ surface, cancel })),
+    ),
+  )('$surface honors $cancel with both startup signals present', async ({ surface, cancel }) => {
+    const f = invocationFixture();
+    const owner = new SessionWorkOwner(f.invocation, 'chat', {
+      cancel: () => undefined,
+      cleanup: () => Promise.resolve(),
+    });
+    const caller = new AbortController();
+    if (cancel === 'pre-aborted-caller') caller.abort();
+    let acknowledgeClose: () => void = () => undefined;
+    const closeAck = new Promise<void>((resolve) => {
+      acknowledgeClose = resolve;
+    });
+    const cancelled = vi.fn();
+    const listTools = vi.fn((signal?: AbortSignalLike): Promise<[]> => {
+      let onAbort: () => void = () => undefined;
+      return new Promise<[]>((_resolve, reject) => {
+        onAbort = () => {
+          cancelled();
+          reject(new McpAbortedError('fs', 'discovery'));
+        };
+        signal?.addEventListener('abort', onAbort);
+      }).finally(() => signal?.removeEventListener('abort', onAbort));
+    });
+    const close = vi.fn(() => closeAck);
+    let observedSignal: AbortSignalLike | undefined;
+    const startMcpClient = vi.fn<
+      NonNullable<Parameters<typeof buildFreshSession>[0]['startMcpClient']>
+    >((_servers, signal, work, lifecycle) => {
+      observedSignal = signal;
+      return realStartMcpClient(
+        [
+          {
+            id: 'fs',
+            open: () =>
+              Promise.resolve({
+                listTools,
+                callTool: () => Promise.resolve({ content: [], isError: false }),
+                close,
+              }),
+          },
+        ],
+        signal,
+        work,
+        lifecycle,
+      );
+    });
+    const agent = {
+      ...buildDefaultChatAgent('claude-sonnet-4-6'),
+      mcp_servers: [{ id: 'fs', transport: 'stdio' as const, command: 'synthetic-server' }],
+    };
+    const common = {
+      chat: EMPTY_CHAT,
+      now: () => 0,
+      providers: scriptedResolver([]),
+      workOwner: owner,
+      mcpConnectSignal: caller.signal,
+      consentGate: () => Promise.resolve(new Map()),
+      startMcpClient,
+    };
+    const record: AgentSessionRecord = {
+      id: 'signal-resume',
+      agentSlug: agent.id,
+      agentSnapshot: agent,
+      context: { workingDir: '/tmp', fsScopeTier: 'project' },
+      status: 'ended',
+      totalInputTokens: 0,
+      totalOutputTokens: 0,
+      totalCostMicrocents: 0,
+      totalConservativeMicrocents: 0,
+      createdAt: '2026-10-16T00:00:00.000Z',
+      updatedAt: '2026-10-16T00:00:00.000Z',
+    };
+    let settled = false;
+    const opening = owner
+      .enter(() =>
+        surface === 'fresh'
+          ? buildFreshSession({
+              ...common,
+              agent,
+              agentRef: undefined,
+              cwd: '/tmp',
+              projectConfigDir: undefined,
+              uuid: () => 'signal-fresh',
+            })
+          : buildRestoredSession({ ...common, record, messages: [] }),
+      )
+      .then(
+        (value) => {
+          settled = true;
+          return value;
+        },
+        (cause: unknown) => {
+          settled = true;
+          return cause;
+        },
+      );
+    try {
+      if (cancel === 'pre-aborted-caller') {
+        expect(await opening).toBeInstanceOf(Error);
+        expect(startMcpClient).not.toHaveBeenCalled();
+      } else {
+        await vi.waitFor(() => expect(listTools).toHaveBeenCalledOnce());
+        if (cancel === 'owner') owner.stop();
+        else caller.abort();
+        expect(observedSignal?.aborted, 'BOTH_SESSION_SIGNALS_LIMIT_STARTUP').toBe(true);
+        await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(settled, 'MCP_CANCEL_DOES_NOT_ACKNOWLEDGE_ACTUAL_CLOSE').toBe(false);
+        expect(f.registry.activeOwners).toBe(1);
+        // Both inputs abort during cleanup, but their composed signal emits once.
+        caller.abort();
+        owner.stop();
+        expect(cancelled).toHaveBeenCalledOnce();
+        acknowledgeClose();
+        expect(await opening).toBeInstanceOf(Error);
+      }
+    } finally {
+      caller.abort();
+      owner.stop();
+      acknowledgeClose();
+      await opening;
+      await owner.close();
+    }
+    expect(f.registry.activeOwners).toBe(0);
+    expect(f.registry.observations.hasInfrastructureFailure()).toBe(false);
+    expect(f.exit).not.toHaveBeenCalled();
+  });
 });
 
 describe('session MCP native owner forwarding during pending startup', () => {
