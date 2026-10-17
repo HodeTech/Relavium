@@ -1275,3 +1275,15 @@ formatter, report or listener faults select infrastructure `9` with private orig
 causes, while known diagnostic-check refusals remain an inline report. An obsolete
 report still cannot overwrite a newer prompt or session. Ownerless controller
 embeddings retain their existing compatibility behaviour.
+
+Compaction disclosures bind their complete returned publication or render-flush
+operation to the original host before core starts waiting for acknowledgement.
+Cancelling compaction may release its interactive wait and unused admission; the
+entered delivery still precedes host retirement and shared database closure. A
+late publication or flush fault reaches that original owner even after the
+compaction result is consumed. Unexpected faults select infrastructure `9`, and
+native sink refusal retains `output_unavailable`. An operation
+abort permits a subsequent turn but cannot restart the cancelled summary request.
+Full owner stop refuses notices that have not entered. Fresh, resumed, cleared,
+reseated and Home hosts share this boundary; absent callbacks and ownerless
+embeddings retain their existing behaviour, and one-shot execution gains no notice.

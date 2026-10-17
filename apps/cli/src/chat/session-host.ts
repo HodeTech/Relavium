@@ -402,6 +402,18 @@ function buildSessionRuntime(
     opts.onListenerError === undefined
       ? undefined
       : ownSessionNotification(opts.workOwner, opts.onListenerError);
+  // The core may stop waiting on disclosure when compaction is cancelled. The original host still
+  // owns the entire entered publication, including a late native delivery rejection, before retirement.
+  const compactionNotice = opts.onCompactionStart;
+  const workOwner = opts.workOwner;
+  const onCompactionStart =
+    compactionNotice === undefined || workOwner === undefined
+      ? compactionNotice
+      : (info: Parameters<NonNullable<SessionDeps['onCompactionStart']>>[0]) =>
+          workOwner.enter(() => {
+            const acknowledgement = compactionNotice(info);
+            return acknowledgement === undefined ? Promise.resolve() : acknowledgement;
+          });
   // #228: a passive subscriber that throws — the chat persister failing a durable `history.db` write — is
   // isolated by `deliver()` either way, so successful surface reporting preserves the turn. What was missing is where the
   // failure GOES: with no sink the bus re-throws it out-of-band, and Node kills the process on the resulting
@@ -718,7 +730,7 @@ function buildSessionRuntime(
     ...(opts.afterTurnCompaction === undefined
       ? {}
       : { afterTurnCompaction: opts.afterTurnCompaction }),
-    ...(opts.onCompactionStart === undefined ? {} : { onCompactionStart: opts.onCompactionStart }),
+    ...(onCompactionStart === undefined ? {} : { onCompactionStart }),
     ...(opts.chat.autoCompact === undefined ? {} : { autoCompact: opts.chat.autoCompact }),
     ...(opts.chat.compactThreshold === undefined
       ? {}
