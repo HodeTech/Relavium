@@ -198,6 +198,33 @@ describe('creation-owned native processes', () => {
     await lease.whenClosed;
   });
 
+  it('retains a later group EPERM after successful cancellation and joins the actual close', async () => {
+    const h = harness('darwin');
+    const lease = await h.controller.reserve('group');
+    const target = child();
+    lease.bindChild(target);
+    const closed = lease.stop();
+    expect(h.signal.mock.calls).toEqual([[-40, 'SIGKILL']]);
+    h.signal.mockImplementationOnce(() => {
+      throw Object.assign(new Error('synthetic native refusal'), { code: 'EPERM', errno: -1 });
+    });
+    target.emit('exit', null);
+    expect(h.registry.observations.exitCode(), 'NATIVE_GROUP_REFUSAL_RETAINED').toBe(9);
+    expect(h.registry.activeOwners).toBe(1);
+    h.signal.mockImplementationOnce(() => {
+      throw Object.assign(new Error('synthetic native absence'), { code: 'ESRCH', errno: -3 });
+    });
+    target.emit('close', null);
+    await closed;
+    expect(h.signal.mock.calls).toEqual([
+      [-40, 'SIGKILL'],
+      [-40, 'SIGKILL'],
+      [-40, 'SIGKILL'],
+    ]);
+    expect(h.registry.activeOwners).toBe(0);
+    expect(h.registry.observations.exitCode(), 'NATIVE_GROUP_REFUSAL_RETAINED').toBe(9);
+  });
+
   it('keeps a Windows helper and target as two independent native close obligations', async () => {
     const h = harness('win32');
     const lease = await h.controller.reserve('pid');
