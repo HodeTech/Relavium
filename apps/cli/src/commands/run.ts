@@ -526,7 +526,7 @@ async function runOwned(
     // survive precisely because its run is over.
     // `opened` is undefined on the in-memory path (`--no-history`), which has no journal to sweep.
     if (isTerminalOutcome(outcome) && opened !== undefined) {
-      sweepCommittedEffects(deps.io, opened.db, handle.runId);
+      sweepCommittedEffects(deps.io, opened.db, handle.runId, lifetime.effectNoticeOwner);
     }
     await sweepMediaAtTerminal({
       sweep: deps.sweepMedia ?? defaultSweepMedia,

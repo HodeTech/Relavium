@@ -9,7 +9,33 @@ import {
 } from '@relavium/db';
 
 import type { CliIo } from '../process/io.js';
+import type { InvocationWorkOwner } from '../process/invocation-work-owner.js';
+import { CliError } from '../process/cli-error.js';
 import { CHECKPOINT_DEFERRED } from '../db/privacy-notice.js';
+
+/** The original caller retains actual delivery; this port grants no receipt or native-close authority. */
+export type EffectNoticeOwner = Pick<
+  InvocationWorkOwner,
+  'signal' | 'assertAdmitting' | 'failure' | 'work'
+>;
+
+function deliver(
+  owner: EffectNoticeOwner | undefined,
+  operation: () => void | Promise<void>,
+): void | Promise<void> {
+  if (owner === undefined) return operation();
+  owner.assertAdmitting();
+  return owner.work.retainWork(async () => {
+    try {
+      await operation();
+    } catch (cause) {
+      const failure = new CliError('output_unavailable', '', { cause });
+      // Observe synchronous throws before returning, and rejections before advisory recovery.
+      owner.failure(failure);
+      throw failure;
+    }
+  });
+}
 
 const RETENTION_FAILED = 'warning: effect-journal retention could not be completed.';
 const DISCLOSURE_FAILED =
@@ -18,22 +44,27 @@ const IDENTITY_HISTORY_INVALID =
   'warning: session effect identity history is invalid; audit evidence was retained and effect-turn allocation remains blocked.';
 
 /** Driver diagnostics, ids and database contents are never interpolated into a warning. */
-async function writeWarning(io: CliIo, text: string): Promise<void> {
+async function writeWarning(io: CliIo, text: string, owner?: EffectNoticeOwner): Promise<void> {
   // The async boundary also converts a synchronous host-port throw into a rejected promise.
-  await io.writeErrAcknowledged(`${text}\n`);
+  await deliver(owner, () => io.writeErrAcknowledged(`${text}\n`));
 }
 
-function warn(io: CliIo, text: string): void {
-  // A failed output sink must not change the outcome or trigger another cleanup attempt.
-  void writeWarning(io, text).catch(() => undefined);
+function warn(io: CliIo, text: string, owner?: EffectNoticeOwner): void {
+  // Never repeat retention to repair a diagnostic. The original owner observes and joins its output.
+  void writeWarning(io, text, owner).catch(() => undefined);
 }
 
 /** Delete only committed rows of a RUN the caller knows can no longer be resumed. */
-export function sweepCommittedEffects(io: CliIo, db: Db, runId: string): void {
+export function sweepCommittedEffects(
+  io: CliIo,
+  db: Db,
+  runId: string,
+  owner?: EffectNoticeOwner,
+): void {
   try {
     createEffectJournalStore(db, { uuid: randomUUID, now: Date.now }).sweepCommittedForRun(runId);
   } catch {
-    warn(io, RETENTION_FAILED);
+    warn(io, RETENTION_FAILED, owner);
   }
 }
 
@@ -42,6 +73,7 @@ export type NoticeFlush = (publish?: () => void | Promise<void>) => Promise<void
 
 export interface ResumedSessionEffectOptions {
   readonly io: CliIo;
+  readonly owner?: EffectNoticeOwner;
   readonly db: Db;
   readonly sessionId: string;
   readonly sanitize: (text: string) => string;
@@ -57,7 +89,8 @@ export interface ResumedSessionEffectOptions {
 export function reconcileResumedSessionEffects(
   options: ResumedSessionEffectOptions,
 ): void | Promise<void> {
-  const active = options.isActive ?? (() => true);
+  const active = (): boolean =>
+    options.owner?.signal.aborted !== true && (options.isActive?.() ?? true);
   if (!active()) return;
   const store = createEffectJournalStore(options.db, { uuid: randomUUID, now: Date.now });
   let snapshot: SessionEffectDisclosureSnapshot;
@@ -67,10 +100,11 @@ export function reconcileResumedSessionEffects(
   const warning = (text: string): void | Promise<void> => {
     if (!active()) return;
     try {
-      const warningDelivery = options.deliverNotice(text);
-      if (warningDelivery !== undefined) return warningDelivery.catch(() => warn(options.io, text));
+      const warningDelivery = deliver(options.owner, () => options.deliverNotice(text));
+      if (warningDelivery !== undefined)
+        return warningDelivery.catch(() => warn(options.io, text, options.owner));
     } catch {
-      warn(options.io, text);
+      warn(options.io, text, options.owner);
     }
   };
   try {
@@ -95,7 +129,7 @@ export function reconcileResumedSessionEffects(
   };
   const publish = (): void | Promise<void> => {
     if (!active() || notice === undefined) return;
-    const result = options.deliverNotice(notice);
+    const result = deliver(options.owner, () => options.deliverNotice(notice));
     published = true;
     if (result !== undefined)
       delivered = result.then(
@@ -113,8 +147,11 @@ export function reconcileResumedSessionEffects(
       : delivered.then((success) => (success ? sweep() : warning(DISCLOSURE_FAILED)));
   };
   try {
-    if (options.flushNotice !== undefined)
-      return options.flushNotice(publish).then(acknowledged, () => warning(DISCLOSURE_FAILED));
+    const flush = options.flushNotice;
+    if (flush !== undefined)
+      return Promise.resolve(deliver(options.owner, () => flush(publish))).then(acknowledged, () =>
+        warning(DISCLOSURE_FAILED),
+      );
     void publish();
     return acknowledged();
   } catch {
@@ -123,14 +160,19 @@ export function reconcileResumedSessionEffects(
 }
 
 /** Never resumable; the caller proves ownership by a successful one-shot turn-key reservation. */
-export function sweepOneShotSessionEffects(io: CliIo, db: Db, sessionId: string): void {
+export function sweepOneShotSessionEffects(
+  io: CliIo,
+  db: Db,
+  sessionId: string,
+  owner?: EffectNoticeOwner,
+): void {
   try {
     const store = createEffectJournalStore(db, { uuid: randomUUID, now: Date.now });
     const snapshot = store.readSessionDisclosureSnapshot(sessionId);
     const swept = store.sweepCommittedForSession(sessionId, snapshot.committed);
-    if (swept.checkpoint === 'deferred') warn(io, CHECKPOINT_DEFERRED);
+    if (swept.checkpoint === 'deferred') warn(io, CHECKPOINT_DEFERRED, owner);
   } catch {
-    warn(io, 'warning: one-shot effect retention or WAL erasure could not be completed.');
+    warn(io, 'warning: one-shot effect retention or WAL erasure could not be completed.', owner);
   }
 }
 

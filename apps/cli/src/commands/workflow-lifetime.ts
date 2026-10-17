@@ -11,11 +11,13 @@ import { defaultSubscribeSignals } from '../process/signals.js';
 import { subscribeWithSignalCustody } from '../process/signal-custody.js';
 import { WorkflowTerminal } from './workflow-terminal.js';
 import { ownNotification } from '../process/owned-notification.js';
+import type { EffectNoticeOwner } from '../engine/effect-retention.js';
 
 /** Single command owner: registration/signals precede its first owned asynchronous preparation. */
 export class WorkflowLifetime {
   readonly invocation: CliInvocation;
   readonly terminal: WorkflowTerminal;
+  readonly effectNoticeOwner: EffectNoticeOwner;
   readonly #cancel = new AbortController();
   readonly #stoppedMarker = new Error('Workflow command stopped.');
   readonly #retired: Promise<OwnerRetirement>;
@@ -57,6 +59,15 @@ export class WorkflowLifetime {
       () => this.checkpoint(),
       (cause) => this.failure(cause),
     );
+    this.effectNoticeOwner = Object.freeze({
+      signal: this.signal,
+      assertAdmitting: () => this.checkpoint(),
+      failure: (cause: unknown) => this.failure(cause),
+      work: Object.freeze({
+        retainWork: <T>(factory: () => Promise<T>): Promise<T> =>
+          this.terminal.runViewOperation(factory, false),
+      }),
+    });
     this.#removeSignals = subscribeWithSignalCustody(
       this.invocation.signalCustody,
       subscribeSignals,

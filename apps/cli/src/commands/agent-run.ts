@@ -375,7 +375,7 @@ async function agentRunOwned(
         lifetime.invocation.registry.budget.remainingMs() !== 0 &&
         ownedEffectSessionId !== undefined
       )
-        sweepOneShotSessionEffects(deps.io, journalStore.db, ownedEffectSessionId);
+        sweepOneShotSessionEffects(deps.io, journalStore.db, ownedEffectSessionId, lifetime.work);
       for (const receipt of receipts.values()) usageStore.retire(receipt);
       receipts.clear();
     }

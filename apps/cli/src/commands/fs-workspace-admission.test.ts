@@ -1,5 +1,6 @@
 import { invocationFixture } from '../process/invocation.test-support.js';
 import type { CliInvocation } from '../process/invocation.js';
+import { InvocationWorkOwner } from '../process/invocation-work-owner.js';
 import {
   existsSync,
   mkdirSync,
@@ -80,9 +81,14 @@ interface WorkspaceCase {
   readonly assertCurrent: () => void;
   readonly trace: (phase: WorkspacePhase) => void;
   readonly abortSnapshot: () => readonly PhaseEntry[] | undefined;
+  sealed: boolean;
+  retired: boolean;
+  closing: Promise<void> | undefined;
 }
-let currentCase: WorkspaceCase;
-beforeEach((context) => {
+let currentCase: WorkspaceCase | undefined;
+function beginWorkspaceCase(context: { readonly signal: AbortSignal }): WorkspaceCase {
+  if (currentCase !== undefined && !currentCase.retired)
+    throw new Error('Previous native workspace fixture is not retired.');
   const base = realpathSync.native(mkdtempSync(join(tmpdir(), 'relavium-workspace-floor-')));
   const home = join(base, 'home');
   const workspace = join(base, 'neutral-vault');
@@ -104,7 +110,7 @@ beforeEach((context) => {
     invocation.finiteExit.signal(15);
   };
   context.signal.addEventListener('abort', onAbort, { once: true });
-  currentCase = {
+  const fixture: WorkspaceCase = {
     base,
     home,
     workspace,
@@ -112,38 +118,59 @@ beforeEach((context) => {
     invocation,
     signal: context.signal,
     pending: new Set(),
+    sealed: false,
+    retired: false,
+    closing: undefined,
     trace,
     abortSnapshot: () => aborted,
     removeAbort: () => context.signal.removeEventListener('abort', onAbort),
     assertCurrent: () => {
       context.signal.throwIfAborted();
+      if (fixture.sealed || currentCase !== fixture)
+        throw new Error('Native workspace fixture no longer admits work.');
       invocation.registry.assertAdmitting();
     },
   };
+  currentCase = fixture;
   vi.stubEnv('HOME', home);
   vi.stubEnv('USERPROFILE', home);
   Object.assign(effects, { history: 0, keys: 0 });
+  return fixture;
+}
+beforeEach((context) => {
+  beginWorkspaceCase(context);
 });
+function retireWorkspaceCase(fixture: WorkspaceCase): Promise<void> {
+  fixture.sealed = true;
+  fixture.closing ??= (async () => {
+    const aborted = fixture.abortSnapshot();
+    if (aborted !== undefined) {
+      // Fixed labels/numbers only. A timeout snapshot is diagnostic, never a native-close receipt.
+      console.error(JSON.stringify({ kind: 'workspace-case-abort-phases', phases: aborted }));
+    }
+    // Runner timeout is cancellation, not raw settlement. Keep HOME/root and refuse the next case until this joins.
+    await Promise.allSettled([...fixture.pending]);
+    if (fixture.invocation.registry.termination !== undefined)
+      await fixture.invocation.registry.termination;
+    fixture.removeAbort();
+    expect(fixture.invocation.registry.activeOwners).toBe(0);
+    // A late hook owns only its captured fixture, never a successor's environment, spies or trace.
+    if (currentCase === fixture) {
+      phaseTrace.active = undefined;
+      vi.restoreAllMocks();
+      vi.unstubAllEnvs();
+    }
+    rmSync(fixture.base, { recursive: true, force: true });
+    fixture.retired = true;
+  })();
+  return fixture.closing;
+}
 afterEach(async () => {
-  const fixture = currentCase;
-  const aborted = fixture.abortSnapshot();
-  if (aborted !== undefined) {
-    // Fixed labels/numbers only. A timeout snapshot is diagnostic, never a native-close receipt.
-    console.error(JSON.stringify({ kind: 'workspace-case-abort-phases', phases: aborted }));
-  }
-  // Runner timeout is cancellation, not raw settlement. Preserve this case's HOME/root until the actual join.
-  await Promise.allSettled([...fixture.pending]);
-  if (fixture.invocation.registry.termination !== undefined)
-    await fixture.invocation.registry.termination;
-  fixture.removeAbort();
-  phaseTrace.active = undefined;
-  expect(fixture.invocation.registry.activeOwners).toBe(0);
-  vi.restoreAllMocks();
-  vi.unstubAllEnvs();
-  rmSync(fixture.base, { recursive: true, force: true });
+  if (currentCase !== undefined) await retireWorkspaceCase(currentCase);
 });
 function ownCase(body: (fixture: WorkspaceCase) => Promise<void>): Promise<void> {
   const fixture = currentCase;
+  if (fixture === undefined) throw new Error('Native workspace fixture was not created.');
   const raw = Promise.resolve().then(() => {
     fixture.assertCurrent();
     return body(fixture);
@@ -462,3 +489,99 @@ it('a real SQLite read failure still closes the manually acquired session store'
       if (native?.open === true) native.close();
     }
   }));
+
+it('fixture retirement seals late work and refuses successor setup until raw work and owners join', async () => {
+  const fixture = currentCase;
+  if (fixture === undefined) throw new Error('Missing native workspace fixture.');
+  let releaseRaw = (): void => {};
+  const raw = new Promise<void>((resolve) => {
+    releaseRaw = resolve;
+  });
+  fixture.pending.add(raw);
+  let releaseOwner = (): void => {};
+  const cleanup = new Promise<void>((resolve) => {
+    releaseOwner = resolve;
+  });
+  let ownerCleanupEntered = false;
+  new InvocationWorkOwner(
+    fixture.invocation,
+    { kind: 'command' },
+    {
+      cancel: () => undefined,
+      cleanup: () => {
+        ownerCleanupEntered = true;
+        return cleanup;
+      },
+    },
+  );
+  fixture.invocation.finiteExit.signal(15);
+  const ownTrace = phaseTrace.active;
+  const effectsBefore = { ...effects };
+  let unexpectedSuccessor: WorkspaceCase | undefined;
+  const attemptSuccessor = (): void => {
+    unexpectedSuccessor = beginWorkspaceCase({ signal: new AbortController().signal });
+  };
+  const closing = retireWorkspaceCase(fixture);
+  try {
+    expect(attemptSuccessor).toThrow('Previous native workspace fixture is not retired.');
+    expect(currentCase).toBe(fixture);
+    expect(process.env['HOME']).toBe(fixture.home);
+    expect(process.env['USERPROFILE']).toBe(fixture.home);
+    expect(phaseTrace.active).toBe(ownTrace);
+    expect(effects).toEqual(effectsBefore);
+    expect(existsSync(fixture.base)).toBe(true);
+    const lateEntry = vi.fn(() => Promise.resolve());
+    await expect(ownCase(lateEntry)).rejects.toThrow(
+      'Native workspace fixture no longer admits work.',
+    );
+    expect(lateEntry).not.toHaveBeenCalled();
+    releaseRaw();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(fixture.retired).toBe(false);
+    expect(ownerCleanupEntered).toBe(true);
+    expect(fixture.invocation.registry.activeOwners).toBe(1);
+    expect(attemptSuccessor).toThrow('Previous native workspace fixture is not retired.');
+    expect(existsSync(fixture.base)).toBe(true);
+  } finally {
+    releaseRaw();
+    releaseOwner();
+    await closing;
+    if (unexpectedSuccessor !== undefined) await retireWorkspaceCase(unexpectedSuccessor);
+  }
+  expect(fixture.retired).toBe(true);
+  expect(existsSync(fixture.base)).toBe(false);
+  const next = beginWorkspaceCase({ signal: new AbortController().signal });
+  expect(next).not.toBe(fixture);
+  expect(process.env['HOME']).toBe(next.home);
+});
+
+it('repeated teardown shares the actual join and cannot restore a later fixture environment', async () => {
+  const fixture = currentCase;
+  if (fixture === undefined) throw new Error('Missing native workspace fixture.');
+  let release = (): void => {};
+  const raw = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  fixture.pending.add(raw);
+  const first = retireWorkspaceCase(fixture);
+  const second = retireWorkspaceCase(fixture);
+  try {
+    expect(second).toBe(first);
+    expect(fixture.retired).toBe(false);
+    expect(existsSync(fixture.base)).toBe(true);
+  } finally {
+    release();
+    await Promise.all([first, second]);
+  }
+  const next = beginWorkspaceCase({ signal: new AbortController().signal });
+  const ownTrace = phaseTrace.active;
+  const witness = { value: () => 1 };
+  vi.spyOn(witness, 'value').mockReturnValue(2);
+  expect(retireWorkspaceCase(fixture)).toBe(first);
+  await first;
+  expect(process.env['HOME']).toBe(next.home);
+  expect(process.env['USERPROFILE']).toBe(next.home);
+  expect(phaseTrace.active).toBe(ownTrace);
+  expect(witness.value()).toBe(2);
+  expect(existsSync(next.base)).toBe(true);
+});

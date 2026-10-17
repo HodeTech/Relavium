@@ -1129,6 +1129,7 @@ async function chatResumeCommandBody(
         onActivated: (isActive, flushNotice) =>
           reconcileResumedSessionEffects({
             io: deps.io,
+            ...(built.workOwner === undefined ? {} : { owner: built.workOwner }),
             db: opened.db,
             sessionId: built.sessionId,
             sanitize: sanitizeInline,
@@ -2279,6 +2280,7 @@ async function buildReseatWiring(
     onActivated: (isActive, flushNotice) =>
       reconcileResumedSessionEffects({
         io: deps.io,
+        ...(resumed.workOwner === undefined ? {} : { owner: resumed.workOwner }),
         db: deps.opened.db,
         sessionId: resumed.sessionId,
         sanitize: sanitizeInline,

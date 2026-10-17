@@ -633,7 +633,7 @@ async function resumeGateOwned(
     // are untouched by construction: they are the record an operator needs, and an exit-7 run's rows must
     // survive precisely because its run is over.
     if (isTerminalOutcome(outcome)) {
-      sweepCommittedEffects(deps.io, opened.db, args.runId);
+      sweepCommittedEffects(deps.io, opened.db, args.runId, lifetime.effectNoticeOwner);
     }
     await sweepMediaAtTerminal({
       sweep: deps.sweepMedia ?? defaultSweepMedia,

@@ -782,6 +782,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
                   const activate = () =>
                     reconcileResumedSessionEffects({
                       io: deps.io,
+                      ...(built.workOwner === undefined ? {} : { owner: built.workOwner }),
                       db: opened.db,
                       sessionId: built.sessionId,
                       sanitize: sanitizeInline,
