@@ -1243,3 +1243,15 @@ successful reporting of an existing passive error retain their established
 behaviour. This does not turn the reported argument into a new fatal fault or
 replace captured terminal-restoration capabilities. Actual producer, receipt,
 input and native cleanup joins remain required.
+
+Deferred-checkpoint privacy notices use the original invocation's captured stderr
+and retain the actual delivery operation independently of the opened database.
+The successful open still transfers its connection to the caller; notice failure
+neither closes that connection nor repeats maintenance. A synchronous write fault
+seals invocation admission before the opener returns, and an asynchronous fault
+is observed when its delivery rejects. Both retain `output_unavailable` and exit
+`9`, subject to the same actual workflow-health priority. Database closure, stop
+requests and deadline expiry never acknowledge a pending notice delivery.
+Ownerless library calls retain their existing best-effort behaviour. A custom
+opener delegating to the default factories forwards the explicit notice context,
+alongside its existing native-close handoff.

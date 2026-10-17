@@ -196,21 +196,17 @@ is independently accepted at `dbab25d8` after two NEW complete cumulative clean
 rounds, a separate clean security sitting and successful full CI. All four
 same-tarball platform consumers pass at that reviewed source. Whole Step 8 remains open.
 Step 8d session/terminal integration and product fatal activation are implemented
-but not independently accepted. Its first twelve complete cumulative rounds are
-NONCLEAN. R12 independently verifies all 306 paths / 1,672 cumulative hunks at
-`518082b1`: cooperative JSON finalization seals output before its real terminal,
-and workflow advisory faults bypass their original invocation. Corrections at
-`3d937244` publish cooperative terminals before sealing, observe workflow
-notifications before passive recovery and retain original fatal/output boundaries,
-actual workflow-health priority and producer/native/accounting joins. The clear/reseat
-fixture keeps the original operation/root through actual retirement and removes only
-redundant observer maintenance, preserving default product openers and five-second bounds.
-The old source's full filesystem (110 controls) and secrets (41) families pass with
-independent physical/source/runtime/evaluation audits. Its four same-artifact
-consumers pass; its different clear/reseat Windows advisory failure remains failed,
-with initiating phase/cause unclassified. Author correction gates pass
-(347 CLI files / 5,533 passes / ten established skips). New independent reviews,
-a separate security sitting and final-source CI/platform acceptance remain pending.
+but not independently accepted. Its first thirteen complete cumulative rounds are
+NONCLEAN. R13 independently verifies all 310 paths / 1,706 cumulative hunks at
+`c15aa314`, with explicitly attributed supplementary reading. Its High checkpoint-notice
+finding is corrected at `afb3b932`: the original captured IO observes failed writes,
+and the actual pending delivery remains owned independently of database closure.
+Real SQLite/default-factory/management-command regressions fail on the old source;
+fixed author gates pass (349 CLI files / 5,566 passes / ten established skips).
+All four same-artifact consumers and the Windows advisory pass at the older reviewed
+source; these results do not certify the correction. Earlier failed Windows runs
+retain their original outcomes and unknown initiating causes. New independent
+reviews, a separate security sitting and final-source CI/platform acceptance remain pending.
 Two NEW complete cumulative clean rounds after the last material fix, a NEW
 separate clean security sitting and fresh full CI plus all four same-artifact
 package consumers remain required.

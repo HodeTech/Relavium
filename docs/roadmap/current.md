@@ -1255,6 +1255,17 @@ remains failed and unexplained. Final author lint/typecheck/test gates pass
 rounds, NEW separate security and fresh final-source CI/platforms remain required.
 Steps 1–7 and 8a–8c are accepted; 8d remains open and Steps 9–19 have not started.
 No user decision is pending.
+The [thirteenth cumulative review and checkpoint-notice correction](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-thirteenth-cumulative-review-and-checkpoint-notice-correction--2026-10-17)
+records complete NONCLEAN coverage of 310 paths / 1,706 independently rehashed
+hunks at `c15aa314`. The confirmed default-notice fault/custody gap is corrected
+at `afb3b932`: explicit captured IO, immediate original-owner observation and
+actual pending-delivery ownership preserve successful DB acquisition without
+inventing a write acknowledgement. Identical regressions fail on the old source;
+fixed author checks pass (349 CLI files / 5,566 passes / ten established skips).
+The older source's four installed consumers and Windows advisory pass; its full
+CI was still running when recorded. These do not certify the correction. R1–R13
+remain NONCLEAN; two NEW complete cumulative clean rounds, separate security and
+fresh final-source CI/platforms are required. No user decision is pending.
 Step 8d proceeds automatically. The
 [final proposal reviews](phases/phase-2.5.5-hardening-and-remediation.md#second-maintainer-rereview-final-proposal-readiness--2026-10-16)
 remain proposal evidence, not implementation review. The selected encrypted archive

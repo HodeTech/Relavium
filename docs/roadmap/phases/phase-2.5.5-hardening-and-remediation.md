@@ -7414,3 +7414,81 @@ verdicts. Two NEW complete cumulative CLEAN rounds after the last material fix,
 a NEW separate clean security sitting and fresh full CI plus all four same-artifact
 package consumers remain required. Steps 9–19 have not started; no credential,
 provider capture, billing, production archive recipient or user decision is pending.
+
+### Wave 3 Step 8d thirteenth cumulative review and checkpoint-notice correction — 2026-10-17
+
+**R13 is complete and NONCLEAN; Step 8d and whole Step 8 remain open.** The
+cumulative range is `d9625ff0a641197c6ed45968df99094a25db88d6` →
+`c15aa3148b887b94bf9731ff4dc0027bbe71aac9`: **310 paths / 1,706 hunks**, with no
+gap or overlap. Session/terminal covers 82/544; workflow/management 139/870;
+native/tooling/docs 89/292. The workflow group explicitly attributes five complete
+test bodies / 83 hunks to a fourth, named supplementary reviewer; the primary
+personally reads the other 134 bodies / 787 hunks. This is one complete sitting,
+not an extra clean round or borrowed execution. Root reads all four reports and
+recomputes every physical/full-diff/hunk identity. Inventory SHA-256 is
+`3b32cb00c4e0727f3a17fe35f0878045d33e92641e5437073c887146f9b59460`;
+aggregate SHA-256 is `c0fc759b768fbd2920b3631e5ed5834df516e24e02043b6290a11b6879844166`.
+Opening/closing freeze is identical across 1,743 tracked blobs, 21,165 physical
+dependency files / 1,215 lexical symlinks and 466 existing dist files. Mutable
+caches are excluded; symlinks are not followed. Detailed records remain local and
+Git-ignored.
+
+Fresh whole-file executions pass: session/terminal 43 files / 781 tests;
+workflow/management 73 / 1,405 with one established Windows-only skip;
+native/tooling 20 TypeScript files / 206 tests plus eight Node suites / 101 tests.
+All actual launchers join, with zero reported unhandled errors. Source aliases,
+existing-dist native children and synthetic IO/clock/Windows ports retain their
+explicit report limits. These executions do not establish a separate security
+sitting or final-source CI.
+
+**Confirmed High `WM-R13-01`, corrected at `afb3b932`.** Default deferred-checkpoint
+notices reacquire process IO, suppress acknowledged-write failure and lose pending
+delivery custody. Independent reviewer and root probes each use real SQLite,
+actual command/native coordination and synthetic native write outcomes: one
+healthy positive / three precise assertion failures / zero unhandled errors.
+The correction forwards the original captured IO and invocation through default
+workflow/session/management factories. It observes synchronous failure before the
+opener returns, observes asynchronous rejection on settlement and owns the actual
+pending write independently of the successfully transferred DB connection. Native
+close, a stop request or deadline never becomes a delivery acknowledgement.
+Known workflow-health priority and ownerless best-effort compatibility remain;
+the [CLI contract](../../reference/cli/commands.md#cooperative-session-finalization-and-passive-notifications)
+is canonical. This is the approved Step 8d boundary, not Step 18 centralization or
+a new ADR, dependency, public package seam or decision.
+
+Permanent controls include real default factories and an actual management
+command, held delivery after DB close, synchronous/asynchronous failures,
+reentry, finite termination and existing workflow-health priority. The identical
+22 regression cases produce precise AssertionErrors on an immutable `c15aa314`
+archive while ten unchanged opener controls pass. The fixed candidate passes
+632 tests in 22 whole files; actual child waits and zero run-end unhandled errors
+are recorded. Native SQLite creation/migrations are real; only checkpoint
+`deferred` disposition is forced. These are not observations of kernel EPIPE or
+actual OS process exit. Candidate parent aliases do not claim to rewrite every
+native child's existing-dist imports. Validation receipt SHA-256 is
+`fffcd6398f9dbd8b3ca0edb64a3214fa9743c5b78e7541fc1ec38353505f0767`.
+
+**Author gates on the applied correction:** `pnpm turbo run lint typecheck test`
+passes all 23 tasks (20 cached), with fresh **349 CLI files / 5,566 passing tests /
+ten established skips**. Build passes six tasks (five cached); format, fences,
+engine dependencies, tooling typecheck and 728-file isolation pass. Compiled
+closure is 25 outputs / 410 inputs / 17 externals. Untouched compiled bootstrap
+passes 177 controls on local Node 22.23.1/Darwin, and compiled workflow/MCP/budget
+smoke passes. These are author checks, not independent acceptance.
+
+At the older reviewed source `c15aa314`, all four installed consumers and Windows
+advisory pass in run `39010171558`; full CI is still in progress when recorded.
+Root and an independent reviewer inspect five ZIPs, all 70 public tar members and
+four receipt origins for tarball SHA-256
+`23c8efff4dcd3155445e6827f6a9181b0402e29603168492731741c19f5cf7fc`
+(446,233 bytes). Current Linux/macOS/Windows use Node 24.21.0; minimum Linux uses
+22.0.0, each with 177 bootstrap controls and eight installed cases. This is
+physical inspection of published execution, not another execution or acceptance
+of the later correction. Earlier failed/cancelled CI and Windows jobs retain their
+separate source attribution; no unknown initiating cause is invented.
+
+R1–R13 remain NONCLEAN. Two NEW complete cumulative CLEAN rounds after the last
+material correction, a NEW separate clean security sitting and fresh full CI plus
+all four same-artifact consumers remain required. Steps 9–19 have not started;
+no credential, billing, provider capture, production recipient or user decision is
+pending.
