@@ -16,6 +16,7 @@ import { test } from 'node:test';
 import { clearTimeout, setTimeout } from 'node:timers';
 import { fileURLToPath } from 'node:url';
 import {
+  assertObservedGroupRefusal,
   copyFixtureNode,
   copyFixtureRuntimeSupport,
   createFixtureSentinel,
@@ -23,6 +24,110 @@ import {
   pendingNativeFixturePids,
 } from './native-process.mjs';
 import { explicitEnvironment, ndjson, poll } from './process.mjs';
+
+function observedGroupRefusal() {
+  return {
+    platform: 'darwin',
+    mode: 'injected-error',
+    runtime: process.version,
+    cliPid: 60,
+    result: {
+      code: 9,
+      signal: null,
+      stdout: '{"type":"session:cancelled"}\n',
+      stderr:
+        '{"type":"error","code":"cli_internal","message":"An unexpected CLI failure occurred. Use --verbose for safe diagnostics. Inspect existing work before repeating paid or effectful operations."}\n',
+    },
+    observed: [
+      { operation: 'native-target-spawn', pid: 40, detached: true, exitCallbacksBeforeEntry: 1 },
+      {
+        operation: 'native-signal-observed',
+        target: -40,
+        owned: true,
+        signal: 'SIGKILL',
+        outcome: 'returned',
+        returned: true,
+        milliseconds: 1,
+      },
+      {
+        operation: 'native-signal-observed',
+        target: -40,
+        owned: true,
+        signal: 'SIGKILL',
+        outcome: 'threw',
+        nativeCode: 'EPERM',
+        errno: -1,
+        milliseconds: 2,
+      },
+      { operation: 'native-target-actual-close', pid: 40, code: null, signal: 'SIGKILL' },
+      {
+        operation: 'native-signal-observed',
+        target: -40,
+        owned: true,
+        signal: 'SIGKILL',
+        outcome: 'threw',
+        nativeCode: 'ESRCH',
+        errno: -3,
+        milliseconds: 3,
+      },
+      { operation: 'native-target-close-delivered', pid: 40 },
+      { operation: 'native-target-close-delivered', pid: 40 },
+      { operation: 'native-signal-diagnostics-complete', complete: true, observations: 3 },
+    ],
+  };
+}
+
+test('observed owned-group refusal requires sticky infrastructure 9 and no ordinary completion', () => {
+  assert.deepEqual(assertObservedGroupRefusal(observedGroupRefusal()), []);
+});
+
+for (const [name, mutate] of [
+  ['a different platform', (v) => (v.platform = 'linux')],
+  ['a different native mode', (v) => (v.mode = 'leader-exit')],
+  ['a swallowed fault', (v) => (v.result.code = 0)],
+  ['a signal exit', (v) => (v.result.signal = 'SIGTERM')],
+  ['a false completed turn', (v) => (v.result.stdout += '{"type":"session:turn_completed"}\n')],
+  ['a different diagnostic', (v) => (v.result.stderr = '{"code":"output_unavailable"}\n')],
+  ['private diagnostic text', (v) => (v.result.stderr += 'PRIVATE_NATIVE_CANARY\n')],
+  ['an extra diagnostic', (v) => (v.result.stderr += v.result.stderr)],
+  ['missing complete evidence', (v) => v.observed.pop()],
+  ['truncated evidence', (v) => (v.observed.at(-1).complete = false)],
+  ['a wrong observation count', (v) => (v.observed.at(-1).observations = 2)],
+  ['a second creation', (v) => v.observed.unshift({ ...v.observed[0], pid: 41 })],
+  ['missing group authority', (v) => (v.observed[0].detached = false)],
+  ['missing creation registration', (v) => (v.observed[0].exitCallbacksBeforeEntry = 0)],
+  ['foreign signal ownership', (v) => (v.observed[2].owned = false)],
+  ['a different group', (v) => (v.observed[2].target = -41)],
+  ['a positive PID', (v) => (v.observed[2].target = 40)],
+  ['an unrelated signal', (v) => (v.observed[2].signal = 0)],
+  ['an unproved first request', (v) => (v.observed[1].returned = false)],
+  ['a different refusal', (v) => (v.observed[2].nativeCode = 'EACCES')],
+  ['missing native errno', (v) => delete v.observed[2].errno],
+  ['a nonfinite clock', (v) => (v.observed[2].milliseconds = NaN)],
+  ['a reversed clock', (v) => (v.observed[2].milliseconds = 4)],
+  ['missing later absence', (v) => (v.observed[4].nativeCode = 'EPERM')],
+  ['a foreign target close', (v) => (v.observed[3].pid = 41)],
+  ['a wrong native close', (v) => (v.observed[3].signal = 'SIGTERM')],
+  ['an absent close delivery', (v) => v.observed.splice(5, 1)],
+  ['a foreign close delivery', (v) => (v.observed[5].pid = 41)],
+  ['premature close delivery', (v) => v.observed.splice(1, 0, v.observed.splice(5, 1)[0])],
+  [
+    'an uncaught native error',
+    (v) => {
+      v.observed.splice(-1, 0, {
+        operation: 'native-uncaught-exception-observed',
+        milliseconds: 4,
+      });
+      v.observed.at(-1).observations++;
+    },
+  ],
+]) {
+  test(`observed group refusal rejects ${name}`, () => {
+    const vector = observedGroupRefusal();
+    mutate(vector);
+    assert.throws(() => assertObservedGroupRefusal(vector));
+  });
+}
 
 test('each fixture sentinel owns a separate bounded lifetime and joins native close', async () => {
   const root = mkdtempSync(join(tmpdir(), 'relavium-native-sentinel-test-'));

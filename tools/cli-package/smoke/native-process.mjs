@@ -80,6 +80,76 @@ function records(path) {
   assert.ok(statSync(path).isFile() && statSync(path).size <= 65536);
   return ndjson(readFileSync(path, 'utf8'));
 }
+
+/** A real, narrowly witnessed native refusal is an infrastructure outcome, never ordinary success. */
+export function assertObservedGroupRefusal({ platform, mode, result, observed, runtime, cliPid }) {
+  assert.equal(platform, 'darwin');
+  assert.equal(mode, 'injected-error');
+  assert.equal(result.code, 9);
+  assert.equal(result.signal, null);
+  assertNativeSignalDiagnosticComplete(observed);
+  const started = observed.filter((item) => item.operation === 'native-target-spawn');
+  assert.equal(started.length, 1);
+  const pid = started[0].pid;
+  assert.ok(positivePid(pid));
+  assert.equal(started[0].detached, true);
+  assert.equal(started[0].exitCallbacksBeforeEntry, 1);
+  const signals = observed.filter((item) => item.operation === 'native-signal-observed');
+  assert.equal(signals.length, 3);
+  for (const item of signals) {
+    assert.equal(item.owned, true);
+    assert.equal(item.target, -pid);
+    assert.equal(item.signal, 'SIGKILL');
+    assert.ok(Number.isFinite(item.milliseconds) && item.milliseconds >= 0);
+  }
+  assert.ok(signals[0].milliseconds <= signals[1].milliseconds);
+  assert.ok(signals[1].milliseconds <= signals[2].milliseconds);
+  assert.deepEqual(
+    signals.map(({ outcome, returned, nativeCode, errno }) => ({
+      outcome,
+      returned,
+      nativeCode,
+      errno,
+    })),
+    [
+      { outcome: 'returned', returned: true, nativeCode: undefined, errno: undefined },
+      { outcome: 'threw', returned: undefined, nativeCode: 'EPERM', errno: -1 },
+      { outcome: 'threw', returned: undefined, nativeCode: 'ESRCH', errno: -3 },
+    ],
+  );
+  assert.equal(
+    observed.some((item) => item.operation === 'native-uncaught-exception-observed'),
+    false,
+  );
+  const closed = observed.filter((item) => item.operation === 'native-target-actual-close');
+  assert.equal(closed.length, 1);
+  assert.equal(closed[0].pid, pid);
+  assert.equal(closed[0].code, null);
+  assert.equal(closed[0].signal, 'SIGKILL');
+  assert.ok(observed.indexOf(signals[1]) < observed.indexOf(closed[0]));
+  assert.ok(observed.indexOf(closed[0]) < observed.indexOf(signals[2]));
+  const delivered = observed.filter((item) => item.operation === 'native-target-close-delivered');
+  assert.equal(delivered.length, 2);
+  for (const item of delivered) {
+    assert.equal(item.pid, pid);
+    assert.ok(observed.indexOf(signals[2]) < observed.indexOf(item));
+  }
+  const projected = projectRuntimeStderr(result.stderr, { runtime, pid: cliPid });
+  assert.deepEqual(ndjson(projected.diagnostics), [
+    {
+      type: 'error',
+      code: 'cli_internal',
+      message:
+        'An unexpected CLI failure occurred. Use --verbose for safe diagnostics. Inspect existing work before repeating paid or effectful operations.',
+    },
+  ]);
+  assert.equal(
+    ndjson(result.stdout).filter((event) => event.type === 'session:turn_completed').length,
+    0,
+    'A native infrastructure refusal must not publish an ordinary completed turn',
+  );
+  return projected.runtimeWarnings;
+}
 /** Actual close releases PID authority, even if a later liveness sample would see that number reused. */
 export function pendingNativeFixturePids(log) {
   const observed = records(log);
@@ -412,15 +482,27 @@ export async function assertInstalledNativeProcesses(context, { bootstrap = fals
         }
         const result = await owned.result();
         assert.equal(result.signal, null, result.stderr);
-        if (bootstrap) assert.equal(result.code, 9, result.stderr);
-        else assert.ok([0, 1].includes(result.code), result.stderr);
-        assert.equal(
-          ndjson(result.stdout).filter((event) => event.type === 'session:turn_completed').length,
-          bootstrap && mode !== 'bootstrap-background' ? 0 : 1,
-          'The public offline turn completion differs from its actual lifetime',
-        );
         const observed = records(log);
         assertNativeSignalDiagnosticComplete(observed);
+        // No native fault still requires the original 0/1 result. Do not normalize EPERM,
+        // drop the final reap, admit arbitrary 9 or retrospectively pass an old failed run.
+        const nativeGroupRefusal = !bootstrap && result.code === 9;
+        if (nativeGroupRefusal)
+          outcome.runtimeWarnings = assertObservedGroupRefusal({
+            platform: process.platform,
+            mode,
+            result,
+            observed,
+            runtime: process.version,
+            cliPid: owned.child.pid,
+          });
+        if (bootstrap) assert.equal(result.code, 9, result.stderr);
+        else if (!nativeGroupRefusal) assert.ok([0, 1].includes(result.code), result.stderr);
+        assert.equal(
+          ndjson(result.stdout).filter((event) => event.type === 'session:turn_completed').length,
+          nativeGroupRefusal || (bootstrap && mode !== 'bootstrap-background') ? 0 : 1,
+          'The public offline turn completion differs from its actual lifetime',
+        );
         if (bootstrap) {
           assert.ok(
             observed.some((item) => item.operation === `native-${gate}-close-delivered`),
@@ -534,6 +616,9 @@ export async function assertInstalledNativeProcesses(context, { bootstrap = fals
           actualNativeClose: mode !== 'facility-refusal',
           syntheticNativeError: mode === 'injected-error',
           syntheticFacilityAccessRefusal: mode === 'facility-refusal',
+          disposition: nativeGroupRefusal
+            ? 'observed-native-group-refusal'
+            : 'original-mode-outcome',
           ownedDescendantClosed: bootstrap || mode === 'injected-error' || mode === 'leader-exit',
           siblingSurvived: true,
           observed,

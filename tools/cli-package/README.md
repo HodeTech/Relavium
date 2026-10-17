@@ -65,9 +65,18 @@ creation-owned target identity and own-data native errno. A passive
 inspecting exception text. Journal/clock/descriptor failure never masks the native
 outcome; missing, failed, duplicate or nonterminal completion evidence refuses
 the control. The failed-worker projection admits only its fixed diagnostic fields.
-These observations improve failure attribution; they do not relax a native-close,
-exit-code, watchdog, timing or cleanup assertion, or classify an unresolved failure
-as harmless.
+These observations improve failure attribution and never classify a native refusal
+as harmless. Fault-free nonbootstrap cases still require 0/1 and one completed turn.
+The Darwin injected-error control additionally recognizes only the fully observed
+same-owned-group sequence: successful SIGKILL, EPERM/-1, actual target close, then
+ESRCH/-3 and delivered close. That failure outcome requires exact infrastructure 9,
+one fixed `cli_internal` diagnostic and **zero** completed turns. Missing/incomplete
+evidence, a foreign group, another fault/mode, or unexplained 9 refuses. All original
+readiness, actual-close, descendant absence, sibling survival, watchdog, timing,
+cleanup and forbidden-service assertions still execute. A historical failed run
+cannot acquire these unexecuted postconditions retrospectively; fresh execution is
+required. This tests correct failure classification, not an ordinary successful
+turn or the unverified kernel cause of EPERM.
 
 Required PR/push consumers use current `.nvmrc` Linux/macOS/Windows and exact Node
 22.0.0 Linux. The aggregate reinspects the tarball and requires all four unique
