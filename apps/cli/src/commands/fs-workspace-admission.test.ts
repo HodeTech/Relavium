@@ -14,7 +14,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createClient, createSessionStore } from '@relavium/db';
+import { createClient, createSessionStore, runMigrations } from '@relavium/db';
+import { AgentSchema } from '@relavium/shared';
 
 import { buildChatSession, buildResumedChatSession } from '../chat/session-host.js';
 import { scriptedResolver } from '../chat/test-support.js';
@@ -223,6 +224,49 @@ async function seed(fixture: WorkspaceCase, cwd: string): Promise<void> {
   fixture.assertCurrent();
 }
 
+function loadBuilderSession(fixture: WorkspaceCase) {
+  fixture.assertCurrent();
+  // Direct constructor admission needs a validated stored record, not a disk-backed chat lifecycle.
+  // The surrounding command/resume cases retain their real on-disk startup and shutdown.
+  const client = createClient(':memory:');
+  try {
+    runMigrations(client.db);
+    const store = createSessionStore(client.db);
+    const agent = AgentSchema.parse({
+      id: 'workspace-floor-agent',
+      provider: 'anthropic',
+      model: 'claude-sonnet-4-6',
+      system_prompt: 'Synthetic fixture',
+      tools: [],
+    });
+    const iso = '2026-10-17T00:00:00.000Z';
+    store.createSession({
+      id: 'workspace-floor-session',
+      agentSlug: agent.id,
+      agentSnapshot: agent,
+      context: { workingDir: fixture.workspace, fsScopeTier: 'project' },
+      status: 'ended',
+      totalInputTokens: 0,
+      totalOutputTokens: 0,
+      totalCostMicrocents: 0,
+      totalConservativeMicrocents: 0,
+      createdAt: iso,
+      updatedAt: iso,
+    });
+    const loaded = store.loadFull('workspace-floor-session');
+    if (loaded === undefined) throw new Error('synthetic builder record missing');
+    expect(loaded.session.context).toEqual({
+      workingDir: fixture.workspace,
+      fsScopeTier: 'project',
+    });
+    expect(loaded.session.agentSnapshot).toEqual(agent);
+    expect(loaded.messages).toEqual([]);
+    return loaded;
+  } finally {
+    client.sqlite.close();
+  }
+}
+
 describe('secret workspace admission before canonical persistence', () => {
   it.each([[], ['chat'], ['agent', 'run', 'unused-agent.yaml']].map((surface) => ({ surface })))(
     'refuses real argv surface %j before history/key/provider/MCP composition',
@@ -366,9 +410,7 @@ describe('secret workspace admission before canonical persistence', () => {
   it('fresh and resumed builders refuse owned lexical provenance even with canonical cwd', async () => {
     return ownCase(async (fixture) => {
       const { workspace, sensitiveAlias } = fixture;
-      await seed(fixture, workspace);
-      const loaded = readSession(fixture);
-      if (loaded === undefined) throw new Error('synthetic seed missing');
+      const loaded = loadBuilderSession(fixture);
       const chat = loadResolvedConfig({ cwd: workspace }).config.chat;
       const policy = createFsPathPolicy({ workspaceDir: sensitiveAlias });
       const providers = scriptedResolver([]);

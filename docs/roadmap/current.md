@@ -1365,8 +1365,19 @@ while joining entered siblings through failure. Ten new permanent cases and thre
 independent causal removals cover the correction. This author evidence does not
 replace two NEW complete cumulative clean rounds, NEW separate security or fresh
 corrected-source full CI and all four same-artifact consumers. Steps 9–19 have not
-started; no user decision is pending. Step 8d proceeds automatically. The
-[final proposal reviews](phases/phase-2.5.5-hardening-and-remediation.md#second-maintainer-rereview-final-proposal-readiness--2026-10-16)
+started; no user decision is pending. Step 8d proceeds automatically.
+The [R24 direct-builder fixture correction](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-r24-builder-fixture-correction--2026-10-17)
+records complete NONCLEAN review of 342 paths / 1,842 cumulative hunks at
+`cef520d4`, with one Medium test-preparation finding. The native Windows advisory
+exceeds the original five-second case bound during unrelated disk-backed chat
+seeding; required CI is separately attributed. Only the direct-builder fixture now
+uses a validated real in-memory SQLite SessionStore roundtrip. All guard/no-service
+assertions, fixture abort ownership, five-second bounds and surrounding on-disk
+lifecycle cases remain. CI-mode focus passes 228 cases; two independent entry-guard
+removals fail the exact case and every restoration passes. Two NEW complete
+cumulative clean rounds, NEW separate security and fresh corrected-source full
+CI/all four same-artifact consumers remain required. No user decision is pending.
+The [final proposal reviews](phases/phase-2.5.5-hardening-and-remediation.md#second-maintainer-rereview-final-proposal-readiness--2026-10-16)
 remain proposal evidence, not implementation review. The selected encrypted archive
 method persists; production recipient/recovery belongs to Wave 4b release setup.
 No provider capture, credential, billing or production upload is needed for this implementation.

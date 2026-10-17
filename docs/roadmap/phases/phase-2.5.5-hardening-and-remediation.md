@@ -8143,3 +8143,76 @@ files, seam and engine-dependency checks pass, finite compiled closure verifies
 CLI smoke passes. Every author subprocess and the outer orchestrator is joined
 with exit 0. These checks are author validation, not the two NEW independent
 reviews, NEW security sitting or fresh full-CI/platform acceptance still required.
+
+### Wave 3 Step 8d R24 builder-fixture correction — 2026-10-17
+
+**R24 is complete and NONCLEAN; Step 8d and whole Step 8 remain OPEN.** Eight
+NEW independent reviewers cover all **342 paths / 1,842 ordered cumulative
+hunks** from Step 7 installed-package acceptance `d9625ff0` to `cef520d4`.
+Root reads every original report and all 342 substantive path assessments,
+rechecks physical/Git/full-diff/ordered-hunk identities and independently matches
+opening/closing tracked, installed-dependency and existing-dist freezes. Explicit
+root qualifications narrow an overbroad Home test description and distinguish the
+Windows advisory from required CI; originals remain unchanged. Exact-scope fresh
+runtime records retain their empty error channels, actual Node/outer joins and
+source/native/synthetic/platform limits. Invalid broad-scope attempts receive no
+acceptance credit. Model/effort identifies parent dispatch, not backend attestation.
+
+**MS-R24-1 (Medium)** concerns the direct fresh/resume builder-admission test,
+not a demonstrated product lifetime defect. In native Windows
+[job 117421092884](https://github.com/HodeTech/Relavium/actions/runs/39041270052/job/117421092884),
+full chat seeding takes **7,574.7133 ms** before the existing **5,000 ms** case
+bound aborts. The captured native-open interval does not establish its underlying
+latency cause or completion of individual builder assertions. That source-native
+Windows job is advisory and is not a dependency of required `ci`; the original
+review's broader required-CI wording is explicitly qualified.
+
+The correction replaces only this direct-constructor case's disk-backed chat
+startup with an actual **in-memory SQLite SessionStore create/load roundtrip**.
+A schema-valid frozen agent, canonical working directory and empty transcript
+reach the same real fresh and resumed builders. The record's context, agent and
+messages are asserted, and the exact SQLite connection closes in `finally`.
+Both original `invalid_invocation` checks and every no-provider/key/UUID/MCP
+assertion remain, along with the original case name, five-second deadline,
+captured abort/join ownership and every surrounding real disk-backed command,
+persistence and resumed-host lifecycle test. There is no new ADR or deferral.
+
+Author focus under **CI=true** passes four complete files / **228 cases**, with
+explicit `onFinished` errors=[], completed Vitest close, actual Node OS wait and
+outer exec join. Separate isolated controls run the complete 12-case workspace
+file through five phases: fixed, fresh-entry guard removal/restoration and
+resumed-entry guard removal/restoration. Each removal fails the exact original
+builder-refusal case with its semantic assertion; fixed/restored phases pass.
+All **60 case executions** preserve original bounds and exact case membership,
+empty runtime-error channels and actual joins. Restoration is byte-exact and the
+controls leave developer source/index unchanged. An initial wrapper escaping
+error fails before collecting tests and supplies no acceptance credit. These are
+author controls, not native Windows or independent review acceptance.
+
+At `cef520d4`, all four required same-tarball package consumers pass and their
+five downloaded ZIPs are independently inspected against CI origin, native tar
+headers, public/installed files and exact shared digest: **446,752 bytes / 70
+public files**, SHA-256
+`070e437c2c7ea02bd3ce72a8bef1f77cf58c3809af77edefc10ecd82e71309a1`.
+Downloaded filesystem/secrets evidence independently verifies **110 / 41 controls**
+and **330 / 123 phases**, their exact declaration sets, retained source/runtime/
+stdio/evaluation records and physical bounds. This is retained-evidence inspection,
+not a new mutation execution. Those package/control results precede this fixture
+correction; the Windows advisory remains failed and required CI retains its own
+attributed outcome. None confers later-source acceptance.
+
+Two NEW complete cumulative clean rounds after the final material correction, a
+NEW separate clean security sitting and fresh full CI plus all four actual
+same-artifact consumers remain required. Steps 9–19 have not started. No user
+approval, provider capture, credential, billing or production release operation
+is pending. Detailed review and runtime records remain local and Git-ignored.
+
+#### R24 builder-fixture author gates
+
+Lint/typecheck passes all 17 tasks (15 cache hits); serialized workspace tests
+pass all 11 tasks (ten cache hits). The changed CLI suite executes **362 files /
+5,665 passes / ten established skips**; unchanged siblings retain cache attribution.
+Build/format, test isolation, SDK seam, engine-dependency and finite bundle closure
+pass, along with all 177 compiled bootstrap controls and compiled CLI smoke.
+Every author subprocess and the outer orchestrator joins with exit 0. The later
+independent review/security/full-CI/platform gates above remain required.

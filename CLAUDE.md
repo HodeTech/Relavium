@@ -196,20 +196,21 @@ is independently accepted at `dbab25d8` after two NEW complete cumulative clean
 rounds, a separate clean security sitting and successful full CI. All four
 same-tarball platform consumers pass at that reviewed source. Whole Step 8 remains open.
 Step 8d session/terminal integration and product fatal activation are implemented
-but not independently accepted. R21 is complete CLEAN at `c491836a`; R22 and
-R23 are NONCLEAN. R23 covers all 340 paths / 1,834 cumulative hunks at `e7fe93c5`
-and confirms two Medium joined-maintenance gaps: a failed media deletion or CAS
-shard can release the command/database owner while an entered sibling remains
-pending. Root independently reproduces both with real engine/SQLite and qualified
-synthetic native-port failures. Corrections join every entered sibling before
-propagating failure, preserving best-effort outcomes and existing budgets. Ten
-new permanent cases and three independent fixed/removal/restored mechanisms
-verify the correction; this is author evidence, not independent acceptance.
-Earlier clean review, security, CI and same-artifact consumers retain their exact
-reviewed-source attribution and do not accept later material fixes. Two NEW
-complete cumulative clean rounds, a NEW separate clean security sitting and fresh
-corrected-source full CI plus all four same-artifact consumers remain required.
-Steps 9–19 have not started; no new decision or approval is needed.
+but not independently accepted. R21 is complete CLEAN at `c491836a`; R22–R24
+are NONCLEAN. R24 covers all 342 paths / 1,842 cumulative hunks at `cef520d4`.
+Its one Medium finding is test preparation: the direct-builder guard spends its
+unchanged five-second case bound on unrelated disk-backed chat seeding. The actual
+Windows source-native advisory fails; required CI is a separate job. The correction
+uses a real in-memory SQLite SessionStore roundtrip only for that case, preserving
+all original guard/no-service assertions, abort ownership and surrounding native
+disk lifecycle cases. Author CI-mode focus passes 228 cases; independent fresh
+and resume guard removals fail the exact case and byte-exact restorations pass.
+This is author evidence, not independent acceptance. Earlier clean review,
+security, CI and same-artifact consumers retain their exact reviewed-source
+attribution. Two NEW complete cumulative clean rounds, a NEW separate clean
+security sitting and fresh corrected-source full CI plus all four same-artifact
+consumers remain required. Steps 9–19 have not started; no new decision or
+approval is needed.
 Step 8 proceeds as recorded serial increments 8a–8d; native
 fatal integration remains open until all actual owners are connected.
 Later implementation and whole-wave acceptance
