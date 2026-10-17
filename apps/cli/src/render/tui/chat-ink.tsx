@@ -781,11 +781,13 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     if (reader === undefined) return;
     void reader.list(dir).then(
       (candidates) => {
+        if (!acceptsInput()) return;
         const open = mentionRef.current;
         if (open !== undefined && open.dir === dir)
           applyMention({ ...open, candidates, loading: false });
       },
       () => {
+        if (!acceptsInput()) return;
         const open = mentionRef.current;
         if (open !== undefined && open.dir === dir)
           applyMention({ ...open, candidates: [], loading: false });
@@ -873,7 +875,8 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       },
       () => {
         applyShellBusy(false);
-        if (submitGenRef.current === gen) props.store.note('! shell command failed unexpectedly');
+        if (acceptsInput() && submitGenRef.current === gen)
+          props.store.note('! shell command failed unexpectedly');
       },
     );
   };
@@ -1698,7 +1701,8 @@ export function finalizeInkExit(
  *    back to the conversation it had just ended (whole-phase Opus review). The MCP-skipped diagnostic already took
  *    this route (chat.ts); the intro did not.
  *
- * `driveInk` mounts real ink and cannot be unit-tested, so the decision lives here, where it can be.
+ * The placement decision is directly testable here; driver integration tests also mount installed Ink
+ * over captured native streams.
  */
 export function emitIntro(
   intro: string | undefined,
@@ -1918,8 +1922,8 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
           onSubmit: ctx.processLine,
           shouldStop: ctx.shouldStop,
           onExit: () => resolveExit(),
-          // An unexpected turn-core throw rejects `exited` → the finally tears down + the rejection propagates out
-          // of the command (mapped to exit 1), matching the plain driver where the throw escapes the for-await loop.
+          // An unexpected turn-core throw reaches the original owner before native teardown, matching
+          // the plain driver's escaping cause. Classified outcomes retain their existing surface policy.
           onError: (err) => rejectExit(err),
           // ADR-0057 mode/abort wiring — the REPL loop always supplies these. onModeChange defaults to a no-op so a
           // driver wired without it degrades to a fixed mode; onAbort is passed through AS-IS (optional) so the

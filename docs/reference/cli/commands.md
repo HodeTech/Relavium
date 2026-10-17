@@ -958,7 +958,11 @@ These are **Step 8d implementation claims, not acceptance**. Complete cumulative
 reviews, security and current required platform acceptance remain open. Home
 post-chat snapshot failures reach the actual lifetime; ordinary slash notices
 are suppressed after owned stop, including delayed doctor/compaction results and
-export fault catches. The
+export fault catches. Standalone shell rejection notices and directory-completion
+results also recheck the live input seal before publication; an already-entered
+native suspension still drains completely before unmount. Live classified refusals
+retain their inline warning, and clearing local busy state does not authorize a
+new notice. The
 [session substrate checkpoint](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-session-substrate-checkpoint--2026-10-16)
 and [chat/Home checkpoint](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-chat-and-home-integration-checkpoint--2026-10-17)
 record their exact scopes. Whole Step 8 remains open.
