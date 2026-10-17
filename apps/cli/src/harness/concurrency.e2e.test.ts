@@ -12,11 +12,13 @@ import {
   createRunHistoryStore,
   createSessionStore,
   runMigrations,
+  type DbClient,
 } from '@relavium/db';
 import { RunEventSchema, type AgentSessionRecord, type SessionMessage } from '@relavium/shared';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
 import { runCommand } from '../commands/run.js';
+import { buildEngine } from '../engine/build-engine.js';
 import type { OpenedHistory } from '../history/open.js';
 import type { GlobalOptions } from '../process/options.js';
 import { captureIo } from '../test-support.js';
@@ -122,80 +124,334 @@ function runChild(args: readonly string[]): SpawnedChild {
   return { ready, done };
 }
 
-describe('concurrency e2e (2.5.I S3) — a run and a chat share one history.db', () => {
-  it('coexistence: a real run and a real chat session write the same file concurrently — both land', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'relavium-concurrency-'));
-    const dbPath = join(dir, 'history.db');
-    const runClient = createClient(dbPath);
-    runMigrations(runClient.db);
-    const chatClient = createClient(dbPath); // a SEPARATE connection — the chat process's handle
+interface CoexistencePorts {
+  readonly migrate?: typeof runMigrations;
+  readonly build?: typeof buildEngine;
+  readonly onClient?: (client: DbClient) => void;
+  readonly onDirectory?: (directory: string) => void;
+  readonly onResult?: (code: number, stdout: string, stderr: string) => void;
+}
+
+/** Keep the raw case, not Vitest's timeout wrapper, owed until its actual cleanup completes. */
+let rawCase: Promise<void> | undefined;
+afterEach(async () => {
+  await rawCase?.catch(() => undefined); // The original test already observes its failure.
+  rawCase = undefined;
+});
+function startCoexistenceCase(signal: AbortSignal, ports: CoexistencePorts = {}): Promise<void> {
+  rawCase = Promise.resolve().then(() => coexistenceCase(signal, ports));
+  return rawCase;
+}
+
+async function coexistenceCase(signal: AbortSignal, ports: CoexistencePorts): Promise<void> {
+  signal.throwIfAborted();
+  const dir = mkdtempSync(join(tmpdir(), 'relavium-concurrency-'));
+  const dbPath = join(dir, 'history.db');
+  const nativeCloses: Array<() => void> = [];
+  const phases: Array<{ readonly phase: string; readonly milliseconds: number }> = [];
+  const began = performance.now();
+  const phase = (name: string): void => {
+    if (phases.length < 24)
+      phases.push({ phase: name, milliseconds: Math.round(performance.now() - began) });
+  };
+  let runWork: ReturnType<typeof runCommand> | undefined;
+  let chatWork: Promise<void> | undefined;
+  let cancelRun = (): void => {};
+  let primary: { readonly cause: unknown } | undefined;
+  const cleanupFailures: unknown[] = [];
+  phase('case-enter');
+  try {
+    ports.onDirectory?.(dir);
+    phase('run-open-enter');
+    const runClient = createClient(dbPath, (close) => nativeCloses.push(close));
+    ports.onClient?.(runClient);
+    phase('run-open-done');
+    phase('migrations-enter');
+    (ports.migrate ?? runMigrations)(runClient.db);
+    phase('migrations-done');
+    signal.throwIfAborted();
+    phase('chat-open-enter');
+    const chatClient = createClient(dbPath, (close) => nativeCloses.push(close));
+    ports.onClient?.(chatClient);
+    phase('chat-open-done');
     const TURNS = 12;
+    const sessions = createSessionStore(chatClient.db);
+    const sessionId = 'sess-coexist';
+    sessions.createSession(session(sessionId));
+
+    // A separate connection writes the transcript, yielding between actual writes.
+    chatWork = (async () => {
+      for (let seq = 0; seq < TURNS; seq += 1) {
+        signal.throwIfAborted();
+        sessions.appendMessage(message(sessionId, seq));
+        sessions.updateSession(session(sessionId, seq + 1));
+        await Promise.resolve();
+      }
+      phase('chat-writes-done');
+    })();
+    const openRunStore = (workflow: WorkflowDefinition): OpenedHistory => ({
+      store: createRunHistoryStore(runClient.db, {
+        uuid: () => randomUUID(),
+        now: () => Date.now(),
+        workflow: {
+          slug: workflow.workflow.id,
+          name: workflow.workflow.name ?? workflow.workflow.id,
+          definitionJson: JSON.stringify(workflow),
+        },
+      }),
+      db: runClient.db,
+      terminalOutboxPath: join(dir, 'terminal-outbox.ndjson'),
+      // This fixture closes the native connection only after both raw writers settle.
+      close: () => {},
+    });
+    const runIo = captureIo();
+    phase('run-command-enter');
+    runWork = runCommand(
+      { workflow: join(FIXTURES_DIR, 'sequential.relavium.yaml'), input: [], allowMcpStdio: [] },
+      {
+        io: runIo.io,
+        global: globalOptions(),
+        openRunStore,
+        buildEngine: async (options) => {
+          phase('build-enter');
+          const engine = await (ports.build ?? buildEngine)(options);
+          phase('build-done');
+          return engine;
+        },
+        subscribeSignals: (onSignal) => {
+          let requested = false;
+          const stop = (): void => {
+            if (requested) return;
+            requested = true;
+            phase('case-stop-request');
+            onSignal(2); // The shipping WorkflowLifetime cooperative stop, not a forced close.
+          };
+          cancelRun = stop;
+          signal.addEventListener('abort', stop, { once: true });
+          if (signal.aborted) stop();
+          return () => {
+            signal.removeEventListener('abort', stop);
+            cancelRun = () => {};
+          };
+        },
+      },
+    ).then((code) => {
+      phase('run-command-done');
+      ports.onResult?.(code, runIo.out(), runIo.err());
+      return code;
+    });
+    const [runCode] = await Promise.all([runWork, chatWork]);
+    phase('both-writers-done');
+    signal.throwIfAborted();
+    // The run completed cleanly and its events persisted (stdout-pure --json contract).
+    expect(runCode).toBe(0);
+    expect(runIo.err()).toBe('');
+    const runEvents = runIo
+      .out()
+      .trimEnd()
+      .split('\n')
+      .map((line) => RunEventSchema.parse(JSON.parse(line)));
+    expect(runEvents[0]?.type).toBe('run:started');
+    expect(runEvents.at(-1)?.type).toBe('run:completed');
+
+    // The chat transcript persisted intact + the loadFull snapshot is consistent with the session totals.
+    const full = sessions.loadFull(sessionId);
+    expect(full?.messages.map((m) => m.sequenceNumber)).toEqual(
+      Array.from({ length: TURNS }, (_, i) => i),
+    );
+    expect(full?.session.totalOutputTokens).toBe(TURNS);
+    phase('assertions-done');
+  } catch (cause) {
+    primary = { cause };
+  } finally {
+    if (primary !== undefined || signal.aborted) {
+      try {
+        cancelRun();
+      } catch (cause) {
+        cleanupFailures.push(cause);
+      }
+    }
+    // Promise.all's first rejection, context abort and the test timeout are not writer joins.
+    const settled = await Promise.allSettled([runWork, chatWork]);
+    for (const result of settled)
+      if (result.status === 'rejected' && result.reason !== primary?.cause)
+        cleanupFailures.push(result.reason);
+    phase('raw-writers-joined');
+    for (const close of nativeCloses) {
+      phase('native-close-enter');
+      try {
+        close();
+        phase('native-close-done');
+      } catch (cause) {
+        cleanupFailures.push(cause);
+      }
+    }
     try {
-      const sessions = createSessionStore(chatClient.db);
-      const sessionId = 'sess-coexist';
-      sessions.createSession(session(sessionId));
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      phase('directory-removed');
+    } catch (cause) {
+      cleanupFailures.push(cause);
+    }
+    if (primary !== undefined || cleanupFailures.length > 0 || signal.aborted)
+      console.error(
+        'CONCURRENCY_FIXTURE_PHASES ' +
+          JSON.stringify({ phases, cleanupFailures: cleanupFailures.length }),
+      );
+  }
+  if (primary !== undefined) {
+    if (cleanupFailures.length > 0)
+      throw new AggregateError(
+        [primary.cause, ...cleanupFailures],
+        'Concurrency fixture failed and cleanup also failed.',
+        { cause: primary.cause },
+      );
+    throw primary.cause;
+  }
+  if (cleanupFailures.length > 0)
+    throw new AggregateError(cleanupFailures, 'Concurrency fixture cleanup failed.');
+}
 
-      // The chat side: append a transcript, yielding between turns so the run interleaves at await points.
-      const chatWrites = (async () => {
-        for (let seq = 0; seq < TURNS; seq += 1) {
-          sessions.appendMessage(message(sessionId, seq));
-          sessions.updateSession(session(sessionId, seq + 1));
-          await Promise.resolve();
-        }
-      })();
+describe('concurrency e2e (2.5.I S3) — a run and a chat share one history.db', () => {
+  it('coexistence: a real run and a real chat session write the same file concurrently — both land', ({
+    signal,
+  }) => startCoexistenceCase(signal));
 
-      // The run side: the REAL `runCommand` persisting to its OWN connection on the same file.
-      const openRunStore = (workflow: WorkflowDefinition): OpenedHistory => ({
-        store: createRunHistoryStore(runClient.db, {
-          uuid: () => randomUUID(),
-          now: () => Date.now(),
-          workflow: {
-            slug: workflow.workflow.id,
-            name: workflow.workflow.name ?? workflow.workflow.id,
-            definitionJson: JSON.stringify(workflow),
+  it('setup refusal closes the original native connection and removes its directory', async ({
+    signal,
+  }) => {
+    const failure = new Error('synthetic migration setup refusal');
+    const clients: DbClient[] = [];
+    let directory: string | undefined;
+    try {
+      await expect(
+        startCoexistenceCase(signal, {
+          onClient: (client) => clients.push(client),
+          onDirectory: (path) => {
+            directory = path;
+          },
+          migrate: () => {
+            throw failure;
           },
         }),
-        db: runClient.db,
-        // CR-92's outbox lives beside history.db; a fixture points it at the temp home so nothing
-        // touches the developer's ~/.relavium (ADR-0078 §4).
-        terminalOutboxPath: join(dir, 'terminal-outbox.ndjson'),
-        close: () => {},
-      });
-      const runIo = captureIo();
-      const runPromise = runCommand(
-        { workflow: join(FIXTURES_DIR, 'sequential.relavium.yaml'), input: [], allowMcpStdio: [] },
-        { io: runIo.io, global: globalOptions(), openRunStore },
-      );
-
-      const [runCode] = await Promise.all([runPromise, chatWrites]);
-
-      // The run completed cleanly and its events persisted (stdout-pure --json contract).
-      expect(runCode).toBe(0);
-      expect(runIo.err()).toBe('');
-      const runEvents = runIo
-        .out()
-        .trimEnd()
-        .split('\n')
-        .map((line) => RunEventSchema.parse(JSON.parse(line)));
-      expect(runEvents[0]?.type).toBe('run:started');
-      expect(runEvents.at(-1)?.type).toBe('run:completed');
-
-      // The chat transcript persisted intact + the loadFull snapshot is consistent with the session totals.
-      const full = sessions.loadFull(sessionId);
-      expect(full?.messages.map((m) => m.sequenceNumber)).toEqual(
-        Array.from({ length: TURNS }, (_, i) => i),
-      );
-      expect(full?.session.totalOutputTokens).toBe(TURNS);
+      ).rejects.toBe(failure);
+      expect(clients).toHaveLength(1);
+      expect(clients[0]?.sqlite.open, 'CONCURRENCY_SETUP_NATIVE_CLOSE').toBe(false);
+      expect(directory).toBeDefined();
+      expect(directory !== undefined && existsSync(directory)).toBe(false);
     } finally {
-      try {
-        runClient.sqlite.close();
-      } finally {
-        try {
-          chatClient.sqlite.close();
-        } finally {
-          rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
-        }
-      }
+      // Separate administrative recovery keeps a removal-control failure from leaking its real handle.
+      for (const client of clients) if (client.sqlite.open) client.sqlite.close();
+      if (directory !== undefined)
+        rmSync(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
+  });
+
+  it('case abort seals a held real build and joins writers before native cleanup', async () => {
+    const controller = new AbortController();
+    const reason = new Error('synthetic case abort');
+    const clients: DbClient[] = [];
+    let directory: string | undefined;
+    let signalEntered = (): void => {};
+    const entered = new Promise<void>((resolve) => {
+      signalEntered = resolve;
+    });
+    let release = (): void => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let result:
+      | { readonly code: number; readonly stdout: string; readonly stderr: string }
+      | undefined;
+    let settled = false;
+    const work = startCoexistenceCase(controller.signal, {
+      onClient: (client) => clients.push(client),
+      onDirectory: (path) => {
+        directory = path;
+      },
+      build: async (options) => {
+        signalEntered();
+        await held;
+        return buildEngine(options);
+      },
+      onResult: (code, stdout, stderr) => {
+        result = { code, stdout, stderr };
+      },
+    });
+    // Observe the raw rejection immediately; it remains owed while the build is held.
+    const observed = work.then(
+      () => {
+        settled = true;
+        return undefined;
+      },
+      (cause: unknown) => {
+        settled = true;
+        return cause;
+      },
+    );
+    try {
+      await Promise.race([
+        entered,
+        observed.then((cause) => {
+          throw new Error('Synthetic build was not entered.', { cause });
+        }),
+      ]);
+      controller.abort(reason);
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      expect(clients).toHaveLength(2);
+      expect(clients.every((client) => client.sqlite.open)).toBe(true);
+      expect(directory !== undefined && existsSync(directory)).toBe(true);
+      release();
+      expect(await observed).toBe(reason);
+      expect(result, 'CONCURRENCY_ABORT_PREVENTS_RUN_ENTRY').toEqual({
+        code: 1,
+        stdout: '',
+        stderr: '',
+      });
+      expect(clients.every((client) => !client.sqlite.open)).toBe(true);
+      expect(directory !== undefined && existsSync(directory)).toBe(false);
+    } finally {
+      controller.abort(reason);
+      release();
+      await observed;
+    }
+  });
+
+  it('cleanup failure retains the original setup fault and actual native close outcome', async ({
+    signal,
+  }) => {
+    const primary = new Error('synthetic setup fault');
+    const secondary = new Error('synthetic close fault after native release');
+    const clients: DbClient[] = [];
+    let directory: string | undefined;
+    try {
+      const failure = await startCoexistenceCase(signal, {
+        onDirectory: (path) => {
+          directory = path;
+        },
+        onClient: (client) => {
+          clients.push(client);
+          const close = client.sqlite.close.bind(client.sqlite);
+          client.sqlite.close = () => {
+            close();
+            throw secondary;
+          };
+        },
+        migrate: () => {
+          throw primary;
+        },
+      }).catch((cause: unknown) => cause);
+      expect(failure).toBeInstanceOf(AggregateError);
+      if (!(failure instanceof AggregateError)) throw new Error('Expected both fixture failures.');
+      expect(failure.cause).toBe(primary);
+      expect(failure.errors).toEqual([primary, secondary]);
+      expect(clients).toHaveLength(1);
+      expect(clients[0]?.sqlite.open).toBe(false);
+      expect(directory !== undefined && existsSync(directory)).toBe(false);
+    } finally {
+      for (const client of clients) if (client.sqlite.open) client.sqlite.close();
+      if (directory !== undefined)
+        rmSync(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });
 
