@@ -26,6 +26,7 @@ import { scriptedResolver } from '../chat/test-support.js';
 import { openSessionStore } from '../history/session-open.js';
 import type { GlobalOptions } from '../process/options.js';
 import { run } from '../run.js';
+import { invocationFixture } from '../process/invocation.test-support.js';
 import { captureIo } from '../test-support.js';
 import { chatCommand, chatResumeCommand, type ChatDriver } from './chat.js';
 import { runCommand } from './run.js';
@@ -159,6 +160,7 @@ describe('real argv → Commander → dispatcher admission (synthetic key bounda
     'bounded repeated grants with no config reach the authorised %j composition boundary',
     async ({ surface }) => {
       const captured = captureIo();
+      const f = invocationFixture();
       const code = await run(
         argv(
           '--allow-fs-root',
@@ -174,6 +176,8 @@ describe('real argv → Commander → dispatcher admission (synthetic key bounda
           stdinIsTty: surface[0] !== 'agent',
           stdoutIsTty: surface[0] !== 'agent',
         },
+        undefined,
+        f.invocation,
       );
       // The injected key boundary deliberately throws: this certifies routing/admission, not a live provider turn.
       expect(code).toBe(9);
@@ -181,6 +185,10 @@ describe('real argv → Commander → dispatcher admission (synthetic key bounda
       expect(captured.err()).not.toContain('synthetic composition boundary reached');
       expect(effects.keys, 'FS_CAUSAL_INVOCATION_FORWARD').toBe(1);
       expect(effects.history).toBe(0);
+      expect(f.exit).not.toHaveBeenCalled();
+      f.advance(3000);
+      expect(await f.invocation.finiteExit.exited).toBe(9);
+      expect(f.exit).toHaveBeenCalledExactlyOnceWith(9);
     },
   );
 
@@ -399,9 +407,19 @@ it('revalidates a revoked policy before binding an agent or connecting MCP durin
 it('forwards real argv grants into a project selector before composition', async () => {
   config(workspace, `[chat]\nfs_scope="project"\nextra_roots=[${JSON.stringify(outside)}]\n`);
   const captured = captureIo();
-  const code = await run(argv('chat', '--cwd', workspace, '--allow-fs-root', outside), captured.io);
+  const f = invocationFixture();
+  const code = await run(
+    argv('chat', '--cwd', workspace, '--allow-fs-root', outside),
+    captured.io,
+    undefined,
+    f.invocation,
+  );
   expect(code, 'FS_CAUSAL_INVOCATION_FORWARD').toBe(9);
   expect(captured.err()).not.toContain('synthetic composition boundary reached');
   expect(effects.keys, 'FS_CAUSAL_INVOCATION_FORWARD').toBe(1);
   expect(effects.history).toBe(0);
+  expect(f.exit).not.toHaveBeenCalled();
+  f.advance(3000);
+  expect(await f.invocation.finiteExit.exited).toBe(9);
+  expect(f.exit).toHaveBeenCalledExactlyOnceWith(9);
 });

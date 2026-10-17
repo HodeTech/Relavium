@@ -962,8 +962,17 @@ Management dispatch and the separate media-maintenance route reserve a command
 owner before entering work. Provider verification and both model-refresh axes
 retain actual operations beyond early report/failure results. Their original
 signal and admission checks prevent credential, catalog and output publication
-after stop. Captured secret input joins its native close separately from a
-cancellation request. Deep-doctor probes belong to their actual chat/Home host;
+after stop. Captured secret input reserves close observation before iterator
+acquisition and joins actual native close on success, early refusal and failure,
+separately from `iterator.return()` or a cancellation/destruction request. A
+partially acquired iterator cannot retire the command or release its database
+while the consumed pipe remains live. A public `closed` flag does not establish
+close delivery; an unobserved preclosed source retains cleanup uncertainty.
+TTY refusal remains before consumption;
+non-native iterable sources retain their separate awaited-return contract.
+Headless plain/JSON chat likewise owns partial native readline construction and
+retains entered driver continuations through final callback removal and input
+pause. Deep-doctor probes belong to their actual chat/Home host;
 an ordinary failed probe remains a report, while its still-running producer
 remains owed.
 

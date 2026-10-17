@@ -6309,3 +6309,86 @@ Two NEW complete cumulative clean review rounds after the final correction, a NE
 separate clean security sitting and fresh required full CI/four same-artifact
 platform consumers remain open. Whole Step 8 and Steps 9–19 remain open. No new
 ADR approval, credential, provider, billing or user action is pending.
+
+
+## Wave 3 Step 8d second cumulative review and native-input corrections — 2026-10-17
+
+**Complete cumulative round 2 is NONCLEAN at `98259c97`; Step 8d remains open.**
+Three independent reviewers inspected all 262 paths from `d9625ff0`: 70
+session/terminal paths, 121 workflow/management paths and 71 native/tooling/docs
+paths. Their inventories join without omission or overlap. The local Git-ignored
+aggregate SHA-256 is `7d805b33457b732acbecd05bea77de9b143875c02be047e4f3da5bc496dc7a7c`.
+Two verified High findings, followed by one verified High supplemental finding,
+are corrected in the subsequent source. A clean slice, supplemental advisory or
+passing author test is not a complete clean review round.
+
+- Plain/JSON chat now reserves partial native readline cleanup before construction
+  or iterator entry. The actual entered driver remains owned through cancellation,
+  late continuations, callback removal and input pause. Eight full-command
+  regressions failed before correction; separate retained-continuation and failed
+  removal controls cover the original finite-exit path without inventing cleanup
+  ACK. Prior input callbacks remain intact.
+- Both catalog-refresh axes recheck their original admission before each credential
+  candidate, database read and clock stamp. An unexpected first-key failure can no
+  longer start another candidate after synchronous owner stop. Ordinary typed
+  missing-key discovery still continues. Three negative controls failed before
+  correction; two ordinary-discovery controls remain positive.
+- The focused supplemental audit reproduced early secret refusal retiring before
+  actual native close: both partial iterator setup and the ordinary 65,537-byte
+  refusal. The reader now reserves native close observation before iterator entry,
+  independently requests destruction before awaiting iterator cleanup and joins
+  actual close delivery on every consumed non-TTY outcome. Operator TTY refusal
+  remains before consumption; generic iterables retain their awaited-return/primary
+  failure contract. Two held-`_destroy` regressions failed before correction.
+  Close-observer failure still requests destruction but retains uncertainty and
+  database ownership through the original physical exit. No second timeout is added.
+
+The author's first secret-reader repair prematurely acknowledged `Socket.closed`;
+existing actual workflow/gate pipe tests caught both missing close-delivery events.
+The public flag can become true before native close delivery. The repair now uses
+its owned event receipt; an unobserved preclosed source retains uncertainty. Four
+permanent native-pipe controls hold actual close delivery across factory refusal,
+cap refusal, cancellation and preclosed input. No public flag, iterator return,
+internal state bit or elapsed deadline supplies delivery ACK. The focused advisory
+was initially clean on a narrower probe set; its appended follow-up records this
+miss and corrected scope. Neither advisory counts as an acceptance/security round.
+
+At `98259c97`, all four required same-tarball remote consumers and their aggregate
+passed, including current Windows and Node 22.0.0. This is historical execution,
+not execution of the subsequent corrections. Broader CI refused the usage inventory
+and the Windows advisory job. The usage suite passed all 23 mechanisms and 446
+permanent cases before rejecting its stale 440-case pin; the corrected guard pins
+446 and independently collects the actual 17 test files. Native-child inventory
+remains 71. Four intentional fatal-exit filesystem fixtures now use their existing
+injected finite clock/exit ports instead of accidentally exiting the real test
+worker three seconds later. Production timing and physical exit are unchanged.
+The concurrency outbox now belongs to the test's own temporary directory. This
+hermetic change is not claimed to explain the separately observed Windows 5s
+coexistence timeout; its timeout remains unchanged and fresh platform execution is
+required.
+
+At the final frozen fifteen-path product/test/tooling source, author workspace
+lint/typecheck passes all seventeen tasks (fifteen valid cache hits); tests pass all
+eleven tasks, with ten cached packages and fresh CLI execution: **327 files, 5,343
+passing tests and ten established skips**. Build passes six tasks (five cached).
+Tools lint/typecheck, all **512 acceptance-tool tests**, test isolation, seam/purity,
+finite emitted-graph closure, **177 compiled bootstrap controls** and compiled CLI
+smoke pass locally on macOS/Node 22.23.1. The local Git-ignored author source pin
+has SHA-256 `9b2441993c2fb6bf39d174c5352f45d9ea60066bab84ccd0222d5d15c2714354`.
+
+Removing only entered-readline retention or only native-secret close joining breaks
+the corresponding named semantic regressions; both exact restorations pass. The
+existing generic-iterator cleanup mechanism also passes its fixed/removal/restored
+cycle with 31 fixed/restored cases. That selected-family report retains
+`complete: false`; this is not full-family or remote/platform acceptance.
+Earlier failed tool invocations, loader/fixture corrections, the first
+full workspace's two close-order failures and narrower historical evidence retain
+their scopes. Test collection initially overwrote one test file; the author restored
+its exact HEAD bytes immediately. The new collector always writes an explicitly
+owned temporary output path, so no test filter can become its report destination.
+No unintended test-content change remains.
+
+Two NEW complete cumulative clean rounds after the final material fix, a NEW
+separate clean security sitting, fresh full CI and the four same-artifact platform
+consumers remain open. Whole Step 8 and Steps 9–19 remain open. No user decision,
+ADR approval, credential, provider capture or billing action is pending.

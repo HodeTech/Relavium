@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { Buffer } from 'node:buffer';
+import { execFileSync } from 'node:child_process';
 import {
   mkdtempSync,
   readFileSync,
@@ -13,6 +14,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { permanentFiles } from './mutations.mjs';
 import {
   aliases,
   digest,
@@ -25,6 +27,7 @@ import {
   assertPermanentWorkload,
   ordinaryPhaseTimeoutMs,
   permanentPhaseTimeoutMs,
+  permanentWorkload,
 } from './workload.mjs';
 
 test('supported shared, llm and core exports map to exact owned sources, with unknown aliases refused', () => {
@@ -57,11 +60,11 @@ test('the complete native/scale workload has its own calculated bound and exact 
   assert.equal(ordinaryPhaseTimeoutMs, 300_000);
   assert.equal(permanentPhaseTimeoutMs, 300_000 + 71 * 20_000 + 600_000);
   const result = {
-    tests: Array.from({ length: 440 }),
+    tests: Array.from({ length: 446 }),
     runtime: { nativeChildren: 71, readinessTimeoutChildren: 1 },
   };
   assert.doesNotThrow(() => assertPermanentWorkload(result));
-  for (const count of [0, 435, 439, 441]) {
+  for (const count of [0, 440, 445, 447]) {
     assert.throws(
       () => assertPermanentWorkload({ ...result, tests: Array.from({ length: count }) }),
       /Permanent case inventory drift/,
@@ -86,6 +89,40 @@ test('the complete native/scale workload has its own calculated bound and exact 
         }),
       /Missing\/extra native timeout control/,
     );
+});
+
+test('the pinned permanent inventory matches actual installed Vitest collection', () => {
+  const repository = fileURLToPath(new URL('../../', import.meta.url));
+  const scratch = mkdtempSync(join(tmpdir(), 'relavium-usage-inventory-'));
+  const output = join(scratch, 'collected.json');
+  try {
+    // Vitest's optional --json argument is a filename, including the literal string "true".
+    // Always give an owned output path: no filter may become the reporter's destination.
+    execFileSync(
+      process.execPath,
+      [
+        join(repository, 'node_modules/vitest/vitest.mjs'),
+        'list',
+        `--json=${output}`,
+        ...permanentFiles,
+      ],
+      { cwd: repository, timeout: 30_000, maxBuffer: 4 * 1024 * 1024, stdio: 'pipe' },
+    );
+    const collected = JSON.parse(readFileSync(output, 'utf8'));
+    assert.ok(Array.isArray(collected));
+    assert.equal(
+      collected.length,
+      permanentWorkload.cases,
+      'Permanent collected case inventory drift',
+    );
+    assert.deepEqual(
+      [...new Set(collected.map((item) => item.file))].sort(),
+      permanentFiles.map((file) => join(repository, file)).sort(),
+      'Permanent collected file inventory drift',
+    );
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
 });
 
 test('only the loaded-but-unready timeout control may omit a real readiness barrier', () => {

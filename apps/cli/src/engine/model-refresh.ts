@@ -108,7 +108,8 @@ export interface ModelRefreshDeps {
 }
 
 export interface ModelRefreshService {
-  /** Force-refresh every connected provider (or `opts.providers`), per-provider-isolated. Never rejects. The
+  /** Force-refresh every connected provider (or `opts.providers`), with isolated discovery failures.
+   *  Original-owner admission refusals reject rather than admitting more work after stop. The
    *  UNBOUNDED, user-initiated refresh (no TTL backoff) — this is what a one-shot CLI invocation must use
    *  (`relavium models` / `models refresh` do). */
   refresh(opts?: RefreshOptions): Promise<RefreshReport>;
@@ -188,12 +189,13 @@ export function createModelRefreshService(deps: ModelRefreshDeps): ModelRefreshS
   // `refresh()` always attempts.
   const lastAttemptAt = new Map<ProviderId, number>();
 
-  /** Refresh ONE connected provider (its key already resolved). NEVER throws — a fault becomes `status:'failed'`. */
+  /** Refresh one already-selected provider; stopped admission rejects before any new attempt work. */
   const refreshOne = async (
     id: ProviderId,
     key: string,
     signal: AbortSignalLike | undefined,
   ): Promise<RefreshProviderResult> => {
+    deps.assertAdmitting?.();
     // Stamp the ATTEMPT before anything can throw — `refreshOne` runs only for a connected provider, and every
     // outcome (refreshed / failed / skipped-unsupported / empty) counts as an attempt for the TTL backoff (FIX 3).
     try {
@@ -211,6 +213,7 @@ export function createModelRefreshService(deps: ModelRefreshDeps): ModelRefreshS
         deps.onHostFailure?.(cause);
         throw cause;
       }
+      deps.assertAdmitting?.();
       if (adapter?.listModels === undefined) {
         // No adapter, or an adapter without the optional list capability — degrade to static (ADR-0064 §1/§5).
         return { provider: id, status: 'skipped-unsupported' };
@@ -228,6 +231,7 @@ export function createModelRefreshService(deps: ModelRefreshDeps): ModelRefreshS
           displayName: meta.displayName,
           baseUrl: meta.baseUrl,
         }).id;
+        deps.assertAdmitting?.();
 
         const rows = listings.map(toLiveModel);
         // The store counts added/updated/deactivated ATOMICALLY inside its own transaction and returns them — no
@@ -259,14 +263,17 @@ export function createModelRefreshService(deps: ModelRefreshDeps): ModelRefreshS
     const results: RefreshProviderResult[] = [];
     const connected: { readonly id: ProviderId; readonly key: string }[] = [];
     for (const id of candidates) {
+      deps.assertAdmitting?.();
       let key: string;
       try {
         key = deps.keyFor(id);
       } catch (cause) {
         deps.onHostFailure?.(cause);
+        deps.assertAdmitting?.();
         results.push({ provider: id, status: 'skipped-no-key' });
         continue;
       }
+      deps.assertAdmitting?.();
       connected.push({ id, key });
     }
 
@@ -301,13 +308,16 @@ export function createModelRefreshService(deps: ModelRefreshDeps): ModelRefreshS
     }
     const stale: ProviderId[] = [];
     for (const id of candidates) {
+      deps.assertAdmitting?.();
       // Only a CONNECTED provider can be refreshed — an unconnected one is never "stale" (nothing to fetch).
       try {
         deps.keyFor(id);
       } catch (cause) {
         deps.onHostFailure?.(cause);
+        deps.assertAdmitting?.();
         continue;
       }
+      deps.assertAdmitting?.();
       const record = deps.providerStore.get(id);
       const refreshedAt =
         record === undefined ? undefined : deps.catalogStore.providerRefreshedAt(record.id);

@@ -1156,7 +1156,10 @@ cumulative clean reviews, a separate clean security sitting and current full
 CI/platform acceptance remain open. The
 [first cumulative round and correction register](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-first-cumulative-review-and-corrections--2026-10-17)
 records complete NONCLEAN coverage of all 255 paths and the verified corrections;
-no clean-round acceptance is inferred. Step 8d proceeds automatically. The
+no clean-round acceptance is inferred. The [second cumulative round and native-input corrections](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-second-cumulative-review-and-native-input-corrections--2026-10-17)
+record complete NONCLEAN coverage of all 262 paths, the supplemental native-input
+finding and subsequent fixes. Fresh complete reviews/security/full-CI/platform
+acceptance remain open. Step 8d proceeds automatically. The
 [final proposal reviews](phases/phase-2.5.5-hardening-and-remediation.md#second-maintainer-rereview-final-proposal-readiness--2026-10-16)
 remain proposal evidence, not implementation review. The selected encrypted archive
 method persists; production recipient/recovery belongs to Wave 4b release setup.

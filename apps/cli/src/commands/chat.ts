@@ -11,7 +11,7 @@ import {
 import { randomUUID } from 'node:crypto';
 import { realpathSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
-import { createInterface } from 'node:readline';
+import { withSessionReadline } from '../chat/session-readline.js';
 
 import {
   DEFAULT_SESSION_MAX_TURNS,
@@ -3016,67 +3016,72 @@ export async function runReplLoop(
  * TTY is attached (a pipe / CI without `--json`, which is 2.Q); the TTY ink driver overrides `deps.drive`.
  */
 export async function drivePlain(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
-  const unsubscribe = ctx.handle.subscribe(
-    makePlainPrinter(ctx.io, true, ctx.store.getSnapshot().state.memoryPolicy),
-  );
-  const rl = createInterface({ input: ctx.io.stdin, terminal: false });
-  const lines = rl[Symbol.asyncIterator](); // buffer piped lines before any awaited activation can yield.
-  // Ctrl-C (cooked mode here, unlike the raw-mode ink path) closes the input so the loop ends and the
-  // command's finally runs cancelOnce() + close() — the session is marked 'ended', never left orphaned 'active'.
-  let active = true;
-  const isActive = (): boolean => active && !ctx.shouldStop();
-  let interrupt: () => void = () => undefined;
-  const interrupted = new Promise<void>((resolve) => {
-    interrupt = resolve;
-  });
-  const stopInput = (): void => {
-    active = false;
-    interrupt();
-    rl.close();
-  };
-  const onSigint = (): void => {
-    if (!active) {
-      ctx.workOwner?.invocation.finiteExit.cooperativeCancel(EXIT_CODES.chatEnded);
-      return;
-    }
-    stopInput();
-    ctx.finalize?.();
-  };
-  let removeInterrupt = (): void => undefined;
-  try {
-    removeInterrupt =
-      ctx.subscribeInterrupt === undefined
-        ? (() => {
-            process.once('SIGINT', onSigint);
-            return () => {
-              process.removeListener('SIGINT', onSigint);
-            };
-          })()
-        : ctx.subscribeInterrupt(onSigint);
-    ctx.workOwner?.signal.addEventListener('abort', stopInput, { once: true });
-    if (ctx.workOwner?.signal.aborted === true) stopInput();
-    ctx.io.writeOut(`${ctx.intro ?? 'relavium chat — type a message, or /exit to quit.'}\n`);
-    ctx.workOwner?.assertAdmitting();
-    ctx.startSession(); // subscription wired above ⇒ session:started is observed (fresh), or a no-op (resume)
-    // A full output pipe must not hold cancellation/teardown hostage. The race observes late
-    // delivery failures; the permanently disarmed activity predicate prevents a late sweep.
-    if (isActive()) await Promise.race([ctx.onActivated?.(isActive), interrupted]);
-    if (isActive()) {
-      for await (const line of lines) {
-        if (!isActive()) break;
-        await ctx.processLine(line);
-        if (ctx.shouldStop()) break;
+  return withSessionReadline(
+    ctx.io.stdin,
+    ctx.workOwner,
+    () =>
+      ctx.handle.subscribe(
+        makePlainPrinter(ctx.io, true, ctx.store.getSnapshot().state.memoryPolicy),
+      ),
+    async (rl, closeInput) => {
+      const lines = rl[Symbol.asyncIterator](); // buffer piped lines before any awaited activation can yield.
+      // Ctrl-C (cooked mode here, unlike the raw-mode ink path) closes the input so the loop ends and the
+      // command's finally runs cancelOnce() + close() — the session is marked 'ended', never left orphaned 'active'.
+      let active = true;
+      const isActive = (): boolean => active && !ctx.shouldStop();
+      let interrupt: () => void = () => undefined;
+      const interrupted = new Promise<void>((resolve) => {
+        interrupt = resolve;
+      });
+      const stopInput = (): void => {
+        active = false;
+        interrupt();
+        closeInput();
+      };
+      const onSigint = (): void => {
+        if (!active) {
+          ctx.workOwner?.invocation.finiteExit.cooperativeCancel(EXIT_CODES.chatEnded);
+          return;
+        }
+        stopInput();
+        ctx.finalize?.();
+      };
+      let removeInterrupt = (): void => undefined;
+      try {
+        removeInterrupt =
+          ctx.subscribeInterrupt === undefined
+            ? (() => {
+                process.once('SIGINT', onSigint);
+                return () => {
+                  process.removeListener('SIGINT', onSigint);
+                };
+              })()
+            : ctx.subscribeInterrupt(onSigint);
+        ctx.workOwner?.signal.addEventListener('abort', stopInput, { once: true });
+        if (ctx.workOwner?.signal.aborted === true) stopInput();
+        ctx.io.writeOut(`${ctx.intro ?? 'relavium chat — type a message, or /exit to quit.'}\n`);
+        ctx.workOwner?.assertAdmitting();
+        ctx.startSession(); // subscription wired above ⇒ session:started is observed (fresh), or a no-op (resume)
+        // A full output pipe must not hold cancellation/teardown hostage. The race observes late
+        // delivery failures; the permanently disarmed activity predicate prevents a late sweep.
+        if (isActive()) await Promise.race([ctx.onActivated?.(isActive), interrupted]);
+        if (isActive()) {
+          for await (const line of lines) {
+            if (!isActive()) break;
+            await ctx.processLine(line);
+            if (ctx.shouldStop()) break;
+          }
+        }
+      } finally {
+        active = false;
+        removeInterrupt();
+        ctx.workOwner?.signal.removeEventListener('abort', stopInput);
+        closeInput();
       }
-    }
-  } finally {
-    active = false;
-    removeInterrupt();
-    ctx.workOwner?.signal.removeEventListener('abort', stopInput);
-    rl.close();
-    unsubscribe();
-  }
-  // A plain (non-TTY) session is not interactive, so `/clear` is gated off — `stopReason()` is always `'exit'`.
-  return { kind: ctx.stopReason() };
+      // A plain (non-TTY) session is not interactive, so `/clear` is gated off — `stopReason()` is always `'exit'`.
+      return { kind: ctx.stopReason() };
+    },
+  );
 }
 
 /**
@@ -3088,67 +3093,69 @@ export async function drivePlain(ctx: ChatDriveContext): Promise<ChatDriveOutcom
  * (exit code 4, like the REPL). No banner — the first line is the `session:started` event.
  */
 export async function driveJson(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
-  const unsubscribe = ctx.handle.subscribe((event) =>
-    ctx.io.writeOut(`${stringifyJsonLine(event)}\n`),
-  );
-  const rl = createInterface({ input: ctx.io.stdin, terminal: false });
-  const lines = rl[Symbol.asyncIterator]();
-  let active = true;
-  const isActive = (): boolean => active && !ctx.shouldStop();
-  let interrupt: () => void = () => undefined;
-  const interrupted = new Promise<void>((resolve) => {
-    interrupt = resolve;
-  });
-  const stopInput = (): void => {
-    active = false;
-    interrupt();
-    rl.close();
-  };
-  const onSigint = (): void => {
-    if (!active) {
-      ctx.workOwner?.invocation.finiteExit.cooperativeCancel(EXIT_CODES.chatEnded);
-      return;
-    }
-    stopInput();
-    ctx.finalize?.();
-  };
-  let removeInterrupt = (): void => undefined;
-  try {
-    removeInterrupt =
-      ctx.subscribeInterrupt === undefined
-        ? (() => {
-            process.once('SIGINT', onSigint);
-            return () => {
-              process.removeListener('SIGINT', onSigint);
-            };
-          })()
-        : ctx.subscribeInterrupt(onSigint);
-    ctx.workOwner?.signal.addEventListener('abort', stopInput, { once: true });
-    if (ctx.workOwner?.signal.aborted === true) stopInput();
-    ctx.workOwner?.assertAdmitting();
-    ctx.startSession(); // subscription wired above ⇒ the synchronous session:started is the first NDJSON line
-    // Keep terminal finalization and resource teardown independent of a blocked diagnostic sink.
-    // Late activation settlement stays observed and cannot recover this driver's activity.
-    if (isActive()) await Promise.race([ctx.onActivated?.(isActive), interrupted]);
-    if (isActive()) {
-      for await (const line of lines) {
-        if (!isActive()) break;
-        await ctx.processLine(line);
-        if (ctx.shouldStop()) break;
+  return withSessionReadline(
+    ctx.io.stdin,
+    ctx.workOwner,
+    () => ctx.handle.subscribe((event) => ctx.io.writeOut(`${stringifyJsonLine(event)}\n`)),
+    async (rl, closeInput) => {
+      const lines = rl[Symbol.asyncIterator]();
+      let active = true;
+      const isActive = (): boolean => active && !ctx.shouldStop();
+      let interrupt: () => void = () => undefined;
+      const interrupted = new Promise<void>((resolve) => {
+        interrupt = resolve;
+      });
+      const stopInput = (): void => {
+        active = false;
+        interrupt();
+        closeInput();
+      };
+      const onSigint = (): void => {
+        if (!active) {
+          ctx.workOwner?.invocation.finiteExit.cooperativeCancel(EXIT_CODES.chatEnded);
+          return;
+        }
+        stopInput();
+        ctx.finalize?.();
+      };
+      let removeInterrupt = (): void => undefined;
+      try {
+        removeInterrupt =
+          ctx.subscribeInterrupt === undefined
+            ? (() => {
+                process.once('SIGINT', onSigint);
+                return () => {
+                  process.removeListener('SIGINT', onSigint);
+                };
+              })()
+            : ctx.subscribeInterrupt(onSigint);
+        ctx.workOwner?.signal.addEventListener('abort', stopInput, { once: true });
+        if (ctx.workOwner?.signal.aborted === true) stopInput();
+        ctx.workOwner?.assertAdmitting();
+        ctx.startSession(); // subscription wired above ⇒ the synchronous session:started is the first NDJSON line
+        // Keep terminal finalization and resource teardown independent of a blocked diagnostic sink.
+        // Late activation settlement stays observed and cannot recover this driver's activity.
+        if (isActive()) await Promise.race([ctx.onActivated?.(isActive), interrupted]);
+        if (isActive()) {
+          for await (const line of lines) {
+            if (!isActive()) break;
+            await ctx.processLine(line);
+            if (ctx.shouldStop()) break;
+          }
+        }
+      } finally {
+        active = false;
+        removeInterrupt();
+        ctx.workOwner?.signal.removeEventListener('abort', stopInput);
+        closeInput();
+        // Flush session:cancelled BEFORE unsubscribing, so the NDJSON stream includes its sole terminal event.
+        ctx.finalize?.();
       }
-    }
-  } finally {
-    active = false;
-    removeInterrupt();
-    ctx.workOwner?.signal.removeEventListener('abort', stopInput);
-    rl.close();
-    // Flush session:cancelled BEFORE unsubscribing, so the NDJSON stream includes its sole terminal event.
-    ctx.finalize?.();
-    unsubscribe();
-  }
-  // `--json` is a machine stream, not interactive, so `/clear` is gated off — `stopReason()` is always `'exit'`
-  // (one stdout stream stays one session lifecycle, ADR-0049).
-  return { kind: ctx.stopReason() };
+      // `--json` is a machine stream, not interactive, so `/clear` is gated off — `stopReason()` is always `'exit'`
+      // (one stdout stream stays one session lifecycle, ADR-0049).
+      return { kind: ctx.stopReason() };
+    },
+  );
 }
 
 /**
