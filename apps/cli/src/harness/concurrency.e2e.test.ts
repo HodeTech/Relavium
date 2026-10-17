@@ -87,41 +87,97 @@ const message = (sessionId: string, seq: number): SessionMessage => ({
 });
 
 interface SpawnedChild {
-  /** Resolves when the child prints `READY` (about to write) OR exits — so the parent never hangs on a dead child. */
+  /** Positive initialization ACK; the parent must not hold the write lock during child startup. */
+  readonly opened: Promise<void>;
+  /** Positive first-write handshake. Early exit rejects rather than impersonating readiness. */
   readonly ready: Promise<void>;
-  /** Resolves with the child's exit code + captured stderr once it closes. */
-  readonly done: Promise<{ code: number; stderr: string }>;
+  /** Resolves only on actual native close, including after a spawn error or stop request. */
+  readonly done: Promise<{ code: number; stderr: string; spawnError: Error | undefined }>;
+  readonly start: () => void;
+  readonly stop: () => void;
+  readonly isClosed: () => boolean;
 }
 
-/** Spawn a child; expose a `ready` handshake (printed just before its first write) + its final exit/stderr. */
+/** Spawn once and retain its actual close even if setup, the test body or readiness fails. */
 function runChild(args: readonly string[]): SpawnedChild {
   const child = spawn(process.execPath, [CHILD_SCRIPT, ...args], {
-    stdio: ['ignore', 'pipe', 'pipe'],
+    stdio: ['pipe', 'pipe', 'pipe'],
   });
   let stdout = '';
   let stderr = '';
+  let closed = false;
+  let spawnError: Error | undefined;
+  let signalOpened: () => void = () => {};
   let signalReady: () => void = () => {};
+  const opened = new Promise<void>((resolve) => {
+    signalOpened = resolve;
+  });
   const ready = new Promise<void>((resolve) => {
     signalReady = resolve;
   });
   child.stdout.on('data', (chunk: Buffer) => {
     stdout += chunk.toString('utf8');
-    if (stdout.includes('READY')) signalReady();
+    if (stdout.split('\n').includes('OPENED')) signalOpened();
+    if (stdout.split('\n').includes('READY')) signalReady();
   });
   child.stderr.on('data', (chunk: Buffer) => {
     stderr += chunk.toString('utf8');
   });
-  const done = new Promise<{ code: number; stderr: string }>((resolve, reject) => {
-    child.on('error', (err) => {
-      signalReady(); // a spawn failure (ENOENT/EAGAIN) must ALSO release the ready-wait, else `await child.ready` hangs
-      reject(err);
-    });
-    child.on('close', (code) => {
-      signalReady(); // a child that died before printing READY must not hang the parent's ready-wait
-      resolve({ code: code ?? -1, stderr });
-    });
+  const done = new Promise<{ code: number; stderr: string; spawnError: Error | undefined }>(
+    (resolve) => {
+      child.on('error', (err) => {
+        spawnError ??= err;
+      });
+      child.stdin.on('error', (err: Error) => {
+        spawnError ??= err;
+      });
+      child.on('close', (code) => {
+        closed = true;
+        resolve({ code: code ?? -1, stderr, spawnError });
+      });
+    },
+  );
+  const prematureClose = done.then((result) => {
+    throw new Error(
+      `Concurrent writer closed before its handshake (exit ${result.code}). ${result.stderr}`,
+      {
+        cause: result.spawnError,
+      },
+    );
   });
-  return { ready, done };
+  const observedOpened = Promise.race([opened, prematureClose]);
+  const observedReady = Promise.race([ready, prematureClose]);
+  // Both phases are observed from creation, even if the other phase fails first.
+  void observedOpened.catch(() => undefined);
+  void observedReady.catch(() => undefined);
+  return {
+    opened: observedOpened,
+    ready: observedReady,
+    done,
+    start: () => {
+      child.stdin.end('START\n');
+    },
+    stop: () => {
+      if (!closed) child.kill();
+    },
+    isClosed: () => closed,
+  };
+}
+
+/** Abort abandons only the wait; the caller still owes each child's actual close in finally. */
+async function untilCaseAbort<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  let abort = (): void => {};
+  const stopped = new Promise<never>((_resolve, reject) => {
+    // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- preserve the test context's original abort reason
+    abort = () => reject(signal.reason);
+    signal.addEventListener('abort', abort, { once: true });
+    if (signal.aborted) abort();
+  });
+  try {
+    return await Promise.race([stopped, work]);
+  } finally {
+    signal.removeEventListener('abort', abort);
+  }
 }
 
 interface CoexistencePorts {
@@ -311,7 +367,163 @@ async function coexistenceCase(signal: AbortSignal, ports: CoexistencePorts): Pr
     throw new AggregateError(cleanupFailures, 'Concurrency fixture cleanup failed.');
 }
 
+interface CrossProcessPorts {
+  readonly firstMode?: 'fail-before-ready';
+  readonly onChild?: (child: SpawnedChild) => void;
+  readonly onDirectory?: (directory: string) => void;
+  readonly onOpened?: () => void;
+}
+
+function startCrossProcessCase(signal: AbortSignal, ports: CrossProcessPorts = {}): Promise<void> {
+  rawCase = Promise.resolve().then(() => crossProcessCase(signal, ports));
+  return rawCase;
+}
+
+async function crossProcessCase(signal: AbortSignal, ports: CrossProcessPorts): Promise<void> {
+  signal.throwIfAborted();
+  const dir = mkdtempSync(join(tmpdir(), 'relavium-concurrency-2p-'));
+  const dbPath = join(dir, 'history.db');
+  const children: SpawnedChild[] = [];
+  const nativeCloses: Array<() => void> = [];
+  const phases: Array<{ readonly phase: string; readonly milliseconds: number }> = [];
+  const began = performance.now();
+  const phase = (name: string): void => {
+    phases.push({ phase: name, milliseconds: Math.round(performance.now() - began) });
+  };
+  let holder: DbClient | undefined;
+  let primary: { readonly cause: unknown } | undefined;
+  const cleanupFailures: unknown[] = [];
+  const releaseLock = (): void => {
+    if (holder?.sqlite.inTransaction) holder.sqlite.exec('COMMIT');
+  };
+  phase('case-enter');
+  try {
+    ports.onDirectory?.(dir);
+    // Retain one parent connection through migration, contention and verification. Closing/reopening
+    // the last connection adds an unrelated WAL checkpoint/recovery cycle to a writer contention case.
+    holder = createClient(dbPath, (close) => nativeCloses.push(close));
+    runMigrations(holder.db);
+    phase('migrations-done');
+    signal.throwIfAborted();
+    const PER_CHILD = 40;
+    for (const prefix of ['a', 'b']) {
+      const child = runChild([
+        DB_DIST_URL.href,
+        dbPath,
+        prefix,
+        String(PER_CHILD),
+        prefix === 'a' ? (ports.firstMode ?? 'write') : 'write',
+      ]);
+      children.push(child);
+      ports.onChild?.(child);
+    }
+    // Import/PRAGMA initialization must not compete with the write lock whose release waits for them.
+    // OPENED is separate from READY: each child still enters its first upsert only after START.
+    await untilCaseAbort(Promise.all(children.map((child) => child.opened)), signal);
+    phase('children-opened');
+    ports.onOpened?.();
+    signal.throwIfAborted();
+    holder.sqlite.exec('BEGIN IMMEDIATE');
+    phase('lock-held');
+    for (const child of children) child.start();
+    await untilCaseAbort(Promise.all(children.map((child) => child.ready)), signal);
+    phase('children-ready');
+    // Retain the existing overlap margin and the actual 5-second native busy handler. The deterministic
+    // write-policy clause guards remain in db's provider-store/retry tests; this is a native smoke.
+    await untilCaseAbort(
+      new Promise<void>((resolve) => {
+        setTimeout(resolve, 100);
+      }),
+      signal,
+    );
+    releaseLock();
+    phase('lock-released');
+    const results = await untilCaseAbort(Promise.all(children.map((child) => child.done)), signal);
+    phase('children-closed');
+    signal.throwIfAborted();
+    for (const result of results) {
+      expect(result.spawnError).toBeUndefined();
+      expect(result.code).toBe(0);
+      expect(result.stderr).not.toMatch(/SQLITE|Error/i);
+    }
+    const providers = createProviderStore(holder.db, { uuid: () => randomUUID(), now: () => 0 });
+    const names = providers.list().map((provider) => provider.name);
+    expect(names).toHaveLength(2 * PER_CHILD);
+    for (let i = 0; i < PER_CHILD; i += 1) {
+      expect(names).toContain(`a-${i}`);
+      expect(names).toContain(`b-${i}`);
+    }
+    phase('assertions-done');
+  } catch (cause) {
+    primary = { cause };
+  } finally {
+    // Release the lock before asking children to stop, then join actual close before any SQLite close
+    // or removal. A test timeout, early-exit handshake failure and kill request are never close ACKs.
+    try {
+      releaseLock();
+    } catch (cause) {
+      cleanupFailures.push(cause);
+    }
+    if (primary !== undefined || signal.aborted) {
+      for (const child of children) {
+        try {
+          child.stop();
+        } catch (cause) {
+          cleanupFailures.push(cause);
+        }
+      }
+    }
+    await Promise.all(children.map((child) => child.done));
+    phase('raw-children-joined');
+    for (const close of nativeCloses) {
+      try {
+        close();
+      } catch (cause) {
+        cleanupFailures.push(cause);
+      }
+    }
+    phase('native-close-attempts-done');
+    try {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      phase('directory-removed');
+    } catch (cause) {
+      cleanupFailures.push(cause);
+    }
+    if (primary !== undefined || cleanupFailures.length > 0 || signal.aborted)
+      console.error(
+        'CONCURRENCY_CHILD_PHASES ' +
+          JSON.stringify({
+            phases,
+            childrenClosed: children.filter((child) => child.isClosed()).length,
+            cleanupFailures: cleanupFailures.length,
+          }),
+      );
+  }
+  if (primary !== undefined) {
+    if (cleanupFailures.length > 0)
+      throw new AggregateError(
+        [primary.cause, ...cleanupFailures],
+        'Cross-process fixture failed and cleanup also failed.',
+        { cause: primary.cause },
+      );
+    throw primary.cause;
+  }
+  if (cleanupFailures.length > 0)
+    throw new AggregateError(cleanupFailures, 'Cross-process fixture cleanup failed.');
+}
+
 describe('concurrency e2e (2.5.I S3) — a run and a chat share one history.db', () => {
+  it('an already-aborted fixture wait still observes the raw child-phase rejection', async () => {
+    const controller = new AbortController();
+    const reason = new Error('synthetic case already stopped');
+    controller.abort(reason);
+    await expect(
+      untilCaseAbort(Promise.reject(new Error('synthetic child-phase fault')), controller.signal),
+    ).rejects.toBe(reason);
+    // A throw before installing the race would leave the already-created work unobserved.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  });
+
   it('coexistence: a real run and a real chat session write the same file concurrently — both land', ({
     signal,
   }) => startCoexistenceCase(signal));
@@ -457,74 +669,52 @@ describe('concurrency e2e (2.5.I S3) — a run and a chat share one history.db',
 
   it.skipIf(!existsSync(DB_DIST_PATH))(
     'cross-process safety: two child processes contend on one file (parent holds the lock) — all writes land',
+    ({ signal }) => startCrossProcessCase(signal),
+  );
+
+  it.skipIf(!existsSync(DB_DIST_PATH))(
+    'a child exiting before READY fails and both actual child closes precede directory removal',
+    async ({ signal }) => {
+      const children: SpawnedChild[] = [];
+      let directory: string | undefined;
+      await expect(
+        startCrossProcessCase(signal, {
+          firstMode: 'fail-before-ready',
+          onChild: (child) => children.push(child),
+          onDirectory: (path) => {
+            directory = path;
+          },
+        }),
+      ).rejects.toThrow('Concurrent writer closed before its handshake');
+      expect(children).toHaveLength(2);
+      expect(children.every((child) => child.isClosed())).toBe(true);
+      expect(directory !== undefined && existsSync(directory)).toBe(false);
+    },
+  );
+
+  it.skipIf(!existsSync(DB_DIST_PATH))(
+    'case abort after child initialization joins both native closes before releasing fixture custody',
     async () => {
-      const dir = mkdtempSync(join(tmpdir(), 'relavium-concurrency-2p-'));
-      const dbPath = join(dir, 'history.db');
-      // The parent migrates ONCE so the children never race the migrator — they only write.
-      const setup = createClient(dbPath);
-      runMigrations(setup.db);
-      setup.sqlite.close();
-      const PER_CHILD = 40;
-      // A third connection that HOLDS the single WAL write lock while the children start, so their first
-      // upsert genuinely busy-waits cross-process. `inTransaction` is the truth of whether the lock is held —
-      // it double-guards release and never COMMITs when no transaction is open.
-      const holder = createClient(dbPath);
-      const releaseLock = (): void => {
-        if (holder.sqlite.inTransaction) holder.sqlite.exec('COMMIT');
-      };
-      try {
-        holder.sqlite.exec('BEGIN IMMEDIATE'); // acquire the write lock; the children block on it
-        const childA = runChild([DB_DIST_URL.href, dbPath, 'a', String(PER_CHILD)]);
-        const childB = runChild([DB_DIST_URL.href, dbPath, 'b', String(PER_CHILD)]);
-
-        // Deterministic handshake: both children print READY the instant before their first write, so once
-        // both signal they are (about to be) busy-waiting on the held lock. A small margin then covers the
-        // microgap between the signal and the child's BEGIN IMMEDIATE, so releasing here guarantees a real
-        // cross-process busy-wait every run — independent of Node/import startup speed (which can exceed a
-        // fixed timer). The `close`-resolves-`ready` fallback means a dead child can never hang this wait.
-        await Promise.all([childA.ready, childB.ready]);
-        await new Promise<void>((resolve) => {
-          setTimeout(resolve, 100);
-        });
-        releaseLock();
-        const [a, b] = await Promise.all([childA.done, childB.done]);
-
-        // Both children exited cleanly. A real failure prints the error to stderr + exits 1; a benign Node
-        // warning line (deprecation, experimental flag) is tolerated — assert the exit code and the ABSENCE
-        // of a SQLite/Error line, not exact-empty stderr (which a CI runner's warnings could break).
-        expect(a.code).toBe(0);
-        expect(a.stderr).not.toMatch(/SQLITE|Error/i);
-        expect(b.code).toBe(0);
-        expect(b.stderr).not.toMatch(/SQLITE|Error/i);
-
-        // Every write of BOTH children landed: 2 × PER_CHILD distinct providers, none lost or corrupted.
-        const verify = createClient(dbPath);
-        try {
-          const providers = createProviderStore(verify.db, {
-            uuid: () => randomUUID(),
-            now: () => 0,
-          });
-          const names = providers.list().map((p) => p.name);
-          expect(names).toHaveLength(2 * PER_CHILD);
-          for (let i = 0; i < PER_CHILD; i += 1) {
-            expect(names).toContain(`a-${i}`);
-            expect(names).toContain(`b-${i}`);
-          }
-        } finally {
-          verify.sqlite.close();
-        }
-      } finally {
-        // Nested so a failure in one cleanup step never skips the rest (release → close → remove temp dir).
-        try {
-          releaseLock();
-        } finally {
-          try {
-            holder.sqlite.close();
-          } finally {
-            rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
-          }
-        }
-      }
+      const controller = new AbortController();
+      const reason = new Error('synthetic cross-process abort');
+      const children: SpawnedChild[] = [];
+      let directory: string | undefined;
+      await expect(
+        startCrossProcessCase(controller.signal, {
+          onChild: (child) => children.push(child),
+          onDirectory: (path) => {
+            directory = path;
+          },
+          onOpened: () => {
+            expect(children).toHaveLength(2);
+            expect(children.every((child) => !child.isClosed())).toBe(true);
+            expect(directory !== undefined && existsSync(directory)).toBe(true);
+            controller.abort(reason);
+          },
+        }),
+      ).rejects.toBe(reason);
+      expect(children.every((child) => child.isClosed())).toBe(true);
+      expect(directory !== undefined && existsSync(directory)).toBe(false);
     },
   );
 });
