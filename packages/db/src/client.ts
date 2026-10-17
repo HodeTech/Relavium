@@ -206,6 +206,8 @@ export interface RunMigrationsOptions {
    * existing caller, and the ones that matter — the real `history.db` openers — are a short, reviewable list.
    */
   readonly dbPath?: string;
+  /** Adds the separate migration-lock native close to the original database acquisition. */
+  readonly captureClose?: (close: () => void) => void;
 }
 
 /**
@@ -219,13 +221,17 @@ export interface RunMigrationsOptions {
  */
 export function runMigrations(db: Db, options: RunMigrationsOptions = {}): SessionEffectCheckpoint {
   requireSessionEffectTransactionOwnership(db);
-  return withMigrationLock(options.dbPath, () => {
-    migrateWithOwnedStorageFacts(db, MIGRATIONS_DIR);
-    if (hasOwnedClient(db)) {
-      withOwnedSqlite(() => initializeSessionEffectTurnKeys(db));
-      return withOwnedSqlite(() => clearLegacySessionEffectResults(db));
-    }
-    initializeSessionEffectTurnKeys(db);
-    return clearLegacySessionEffectResults(db);
-  });
+  return withMigrationLock(
+    options.dbPath,
+    () => {
+      migrateWithOwnedStorageFacts(db, MIGRATIONS_DIR);
+      if (hasOwnedClient(db)) {
+        withOwnedSqlite(() => initializeSessionEffectTurnKeys(db));
+        return withOwnedSqlite(() => clearLegacySessionEffectResults(db));
+      }
+      initializeSessionEffectTurnKeys(db);
+      return clearLegacySessionEffectResults(db);
+    },
+    options,
+  );
 }

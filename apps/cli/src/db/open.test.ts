@@ -72,7 +72,7 @@ it('hands off native close before setup and preserves primary plus secondary cle
     expect(failure).toMatchObject({
       code: 'cli_internal',
       exitCode: 9,
-      cause: { cause: primary, errors: [primary, secondary] },
+      cause: { cause: primary, errors: [primary, { errors: [secondary] }] },
     });
     expect(client?.sqlite.open).toBe(true);
     expect(captured).toBeTypeOf('function');

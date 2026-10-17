@@ -22,6 +22,7 @@ import * as signalPorts from '../process/signals.js';
 import * as sessionOpen from '../history/session-open.js';
 import * as consentPrompts from '../mcp/consent-prompt.js';
 import { mcpConsentPath } from '../engine/mcp-consent-gate.js';
+import { fingerprint, resolveStdioSpawn } from '../engine/mcp-consent.js';
 import type { GlobalOptions } from '../process/options.js';
 import { captureIo, parseNdjson } from '../test-support.js';
 import { agentRunCommand, readAllStdin, type AgentRunCommandDeps } from './agent-run.js';
@@ -443,58 +444,62 @@ describe('agentRunCommand (2.Q)', () => {
   });
 
   it.each([false, true])(
-    'the default MCP gate owns a late consent answer (stopped=%s)',
-    async (stopped) => {
+    'consumed one-shot stdin never authorizes a second MCP prompt (preapproved=%s)',
+    async (preapproved) => {
       writeFileSync(
         agentPath(),
         `${AGENT_YAML}\nmcp_servers:\n  - id: synthetic\n    transport: stdio\n    command: ${JSON.stringify(process.execPath)}\n`,
       );
-      let answer: (approved: boolean) => void = () => undefined;
-      const pendingAnswer = new Promise<boolean>((resolve) => {
-        answer = resolve;
-      });
-      let entered: () => void = () => undefined;
-      const prompted = new Promise<void>((resolve) => {
-        entered = resolve;
-      });
-      const prompt = vi.fn(async () => {
-        entered();
-        return pendingAnswer;
-      });
-      vi.spyOn(consentPrompts, 'createBoundConsentPrompter').mockReturnValue(prompt);
+      // An immediate negative answer makes removal fail a named assertion instead of hanging.
+      const prompt = vi.fn(() => Promise.resolve(false));
+      const createPrompt = vi
+        .spyOn(consentPrompts, 'createBoundConsentPrompter')
+        .mockReturnValue(prompt);
       const { d, control } = deps('synthetic prompt', {
         providers: scriptedResolver([textTurn('done')]),
       });
-      const start = vi.fn(() => realStartMcpClient([])); // A real empty manager; no native child or network.
-      const action = agentRunCommand(
-        { agent: agentPath(), input: [], allowMcpStdio: [] },
-        {
-          ...d,
-          io: { ...d.io, stdinIsTty: true, stdoutIsTty: true },
-          buildSession: (options) => buildChatSession({ ...options, startMcpClient: start }),
-        },
+      const spawn = await resolveStdioSpawn(
+        { serverId: 'synthetic', command: process.execPath, provenance: { kind: 'inline' } },
+        cwd,
       );
+      const start = vi.fn(() => realStartMcpClient([])); // Real manager, no native spawn/network.
+      let failure: unknown;
+      let result: number | undefined;
       try {
-        await prompted;
-        expect(prompt).toHaveBeenCalledOnce();
-        expect(start).not.toHaveBeenCalled();
-        if (stopped) {
-          control.invocation.finiteExit.signal(15);
-          await reactions();
-          expect(control.registry.activeOwners).toBe(3);
-        }
-      } finally {
-        answer(true);
+        result = await agentRunCommand(
+          { agent: agentPath(), input: [], allowMcpStdio: preapproved ? [fingerprint(spawn)] : [] },
+          {
+            ...d,
+            // EOF closed the actual stream; these stale booleans must not authorize another read.
+            io: { ...d.io, stdinIsTty: true, stdoutIsTty: true, env: {} },
+            buildSession: (options) => buildChatSession({ ...options, startMcpClient: start }),
+          },
+        );
+      } catch (cause) {
+        failure = cause;
       }
-      expect(await action).toBe(stopped ? 4 : 0);
+      if (!(d.io.stdin instanceof Readable))
+        throw new Error('Expected the actual native input fixture.');
+      expect(d.io.stdin.closed).toBe(true);
+      expect(d.io.stdin.destroyed).toBe(true);
+      expect(
+        createPrompt,
+        'AGENT_CONSUMED_STDIN_HAS_NO_MCP_PROMPT_AUTHORITY',
+      ).not.toHaveBeenCalled();
+      expect(prompt).not.toHaveBeenCalled();
+      expect(existsSync(mcpConsentPath(home))).toBe(false);
+      expect(start).toHaveBeenCalledTimes(preapproved ? 1 : 0);
+      if (preapproved) {
+        expect(failure).toBeUndefined();
+        expect(result).toBe(0);
+      } else {
+        expect(failure).toMatchObject({ code: 'invalid_invocation', exitCode: 2 });
+        expect(result).toBeUndefined();
+      }
       await reactions();
-      expect(existsSync(mcpConsentPath(home)), 'AGENT_LATE_CONSENT_CANNOT_APPEND_GRANT').toBe(
-        !stopped,
-      );
-      expect(start).toHaveBeenCalledTimes(stopped ? 0 : 1);
       expect(control.registry.activeOwners).toBe(0);
-      if (stopped) expect(control.exit).toHaveBeenCalledExactlyOnceWith(143);
-      else expect(control.exit).not.toHaveBeenCalled();
+      expect(control.registry.budget.deadline()).toBeUndefined();
+      expect(control.exit).not.toHaveBeenCalled();
     },
   );
 

@@ -2,7 +2,6 @@ import { acquireNativeResource } from '../process/acquire-native-resource.js';
 import type { CliInvocation } from '../process/invocation.js';
 import { SessionHostOwner } from '../chat/session-host-owner.js';
 import { SessionSurfaceLifetime } from '../chat/session-surface-lifetime.js';
-import { runSessionPrompt } from '../chat/session-prompt.js';
 import { nativeProcessesForInvocation } from '../process/native-process-owner.js';
 import { randomUUID } from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
@@ -18,7 +17,6 @@ import { buildChatSession, type BuiltChatSession } from '../chat/session-host.js
 import { createConsentGate } from '../engine/mcp-consent-gate.js';
 
 import type { StdioConsentGate } from '../engine/mcp-servers.js';
-import { createBoundConsentPrompter } from '../mcp/consent-prompt.js';
 import { loadResolvedConfig } from '../config/load.js';
 import { admitFsInvocation, admitChatFsPolicy } from '../engine/tool-host/fs-admission.js';
 import { surfaceMcpSkipped } from '../engine/mcp-servers.js';
@@ -190,21 +188,13 @@ async function agentRunOwned(
         consentGate:
           deps.consentGate ??
           createConsentGate({
-            io: deps.io,
+            // Mandatory one-shot input has consumed and closed this stream. A captured TTY flag
+            // grants no second read; only an existing grant or an explicit digest may authorize MCP.
+            io: { ...deps.io, stdinIsTty: false },
             global: deps.global,
             homeDir,
             allowedDigests: args.allowMcpStdio,
             signal: workOwner.signal,
-            prompt: (subject) => {
-              const prompt = createBoundConsentPrompter(deps.io);
-              return runSessionPrompt(
-                lifetime.invocation,
-                deps.io,
-                workOwner.assertAdmitting,
-                workOwner.failure,
-                (signal) => prompt(subject, { signal }),
-              );
-            },
           }),
         // ADR-0071 §6: a one-shot invoke has no transcript and no picker, so a withheld tier would otherwise vanish
         // completely — the turn runs, the authored knob does nothing, and the bill arrives at the provider's default.

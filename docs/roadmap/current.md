@@ -1165,7 +1165,14 @@ shared consumed-input custody and pre-setup database ownership across the actual
 shipping surfaces. Earlier CI failures retain their exact attribution; the macOS
 packed failure is not cleared by local reproduction passes. Two NEW complete clean
 rounds, a NEW separate clean security sitting and current CI/platform acceptance
-remain open. Step 8d proceeds automatically. The
+remain open. The [fourth cumulative review and native-resource corrections](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-fourth-cumulative-review-and-native-resource-corrections--2026-10-17)
+records complete NONCLEAN coverage of 279 paths at `db825377`: three verified High
+findings cover consumed one-shot input, late workflow MCP close admission and the
+separate native migration-lock connection. All four same-artifact package consumers
+pass at that source; this does not grant review acceptance or erase the earlier
+unexplained macOS failure. Two NEW complete cumulative clean rounds after the last
+material fix, a NEW separate clean security sitting and fresh full CI/platform
+acceptance remain required. Step 8d proceeds automatically. The
 [final proposal reviews](phases/phase-2.5.5-hardening-and-remediation.md#second-maintainer-rereview-final-proposal-readiness--2026-10-16)
 remain proposal evidence, not implementation review. The selected encrypted archive
 method persists; production recipient/recovery belongs to Wave 4b release setup.

@@ -1,4 +1,5 @@
 import { createCliInvocation } from '../process/invocation.js';
+import { workflowFinalizerControl } from './workflow-expired-cleanup.test-support.js';
 import { toUserFacing } from '../process/errors.js';
 import { witnessNativeToolProcess } from './native-forwarding.test-support.js';
 import { randomUUID } from 'node:crypto';
@@ -72,7 +73,7 @@ beforeEach(() => {
   persistPrice(PRICE);
 });
 afterEach(() => {
-  client.sqlite.close();
+  if (client.sqlite.open) client.sqlite.close();
   rmSync(root, { recursive: true, force: true });
 });
 /** Production's early price read must use actual durable user pricing, not the engine test override. */
@@ -244,6 +245,25 @@ function deps(io: ReturnType<typeof captureIo>['io']): GateCommandDeps {
     },
   };
 }
+it.each([0, 1])(
+  'budget resume finalizer respects the original MCP budget (%s ms left)',
+  async (remaining) => {
+    const paused = await seed({ mcp: true });
+    const control = workflowFinalizerControl(remaining, client.sqlite);
+    await control.verify(
+      budgetCommand(
+        { runId: paused.runId, approveAmount: String(paused.amount) },
+        {
+          ...deps(captureIo().io),
+          ...control,
+          consentGate: () => Promise.resolve(new Map()),
+          openDb: () => ({ db: client.db, close: control.closeDatabase }),
+        },
+      ),
+    );
+  },
+);
+
 for (const abort of [false, true]) {
   it(`native SQLite budget resume is binary and amount bounded (abort=${abort})`, async () => {
     const paused = await seed();

@@ -1,4 +1,5 @@
 import { invocationFixture } from '../process/invocation.test-support.js';
+import { workflowFinalizerControl } from './workflow-expired-cleanup.test-support.js';
 import { createCliInvocation } from '../process/invocation.js';
 import { witnessNativeToolProcess } from './native-forwarding.test-support.js';
 import { randomUUID } from 'node:crypto';
@@ -285,7 +286,7 @@ describe('gateCommand', () => {
     db = client.db;
   });
   afterEach(() => {
-    client.sqlite.close();
+    if (client.sqlite.open) client.sqlite.close();
   });
 
   /** The injected deps for a resume over the SHARED in-memory db (no-op close — the db spans the whole test). */
@@ -346,6 +347,36 @@ describe('gateCommand', () => {
     }
     return { runId, gateIds };
   }
+
+  it.each([0, 1])(
+    'gate finalizer respects the original MCP budget (%s ms left)',
+    async (remaining) => {
+      const yaml = GATED.replace(
+        '  nodes:',
+        `  agents:
+    - id: unused
+      model: claude-sonnet-4-6
+      provider: anthropic
+      system_prompt: synthetic
+      tools: [mcp_fs_read]
+      mcp_servers: [{ id: fs, transport: stdio, command: synthetic-never-spawned }]
+  nodes:`,
+      );
+      const paused = await setupPausedRun(yaml);
+      const control = workflowFinalizerControl(remaining, client.sqlite);
+      await control.verify(
+        gateCommand(
+          { runId: paused.runId, approve: true },
+          {
+            ...deps(captureIo().io),
+            ...control,
+            consentGate: () => Promise.resolve(new Map()),
+            openDb: () => ({ db, close: control.closeDatabase }),
+          },
+        ),
+      );
+    },
+  );
 
   it('forwards the resuming invocation before the actual engine build resolves', async () => {
     const { runId } = await setupPausedRun();

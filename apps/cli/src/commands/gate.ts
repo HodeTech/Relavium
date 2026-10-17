@@ -64,6 +64,7 @@ import {
 } from '../gate/budget.js';
 import {
   connectWorkflowMcp,
+  closePreparedMcp,
   workflowDeclaresMcp,
   surfaceMcpSkipped,
   type StdioConsentGate,
@@ -647,7 +648,13 @@ async function resumeGateOwned(
     throw err;
   } finally {
     try {
-      await mcpRuntime?.client.close(reportMcpCloseFailure);
+      if (mcpRuntime !== undefined) {
+        await closePreparedMcp(
+          mcpRuntime.client,
+          reportMcpCloseFailure,
+          lifetime.invocation.registry.budget,
+        );
+      }
     } catch (cause) {
       mcpAcknowledged = false;
       lifetime.cleanupFailed(cause);

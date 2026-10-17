@@ -69,6 +69,7 @@
     "@relavium/llm": "workspace:*",
     "@relavium/mcp": "workspace:*",
     "@relavium/shared": "workspace:*",
+    "@types/better-sqlite3": "catalog:",
     "@types/node": "catalog:",
     "@types/react": "catalog:",
     "eslint": "catalog:",

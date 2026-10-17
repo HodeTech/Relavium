@@ -105,8 +105,13 @@ platform consumers remain attributed to `ab50be11`, with independently verified
 source/dependency equivalence. Step 8c workflow/preparation/terminal integration
 is independently accepted at `dbab25d8` after two NEW complete cumulative clean
 rounds, a separate clean security sitting and successful full CI. All four
-same-tarball platform consumers pass at that reviewed source. Whole Step 8,
-session/terminal integration and product fatal activation in 8d remain open.
+same-tarball platform consumers pass at that reviewed source. Whole Step 8 remains open.
+Step 8d session/terminal integration and product fatal activation are implemented
+but not independently accepted. Its first four complete cumulative rounds are
+NONCLEAN; the three fourth-round findings have implementation corrections and
+passing author gates. Two NEW complete cumulative clean rounds after the last
+material fix, a NEW separate clean security sitting and fresh full CI plus all
+four same-artifact package consumers remain required.
 Step 8 proceeds as recorded serial increments 8a–8d; native
 fatal integration remains open until all actual owners are connected.
 Later implementation and whole-wave acceptance

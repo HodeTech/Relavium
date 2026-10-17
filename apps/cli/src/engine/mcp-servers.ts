@@ -1036,7 +1036,7 @@ export async function connectWorkflowMcp(
     // Best-effort: a teardown rejection must NOT replace the original augmentation error (preserve the primary).
     opts.onFailure?.(err);
     try {
-      await client.close(opts.onCloseError);
+      await closePreparedMcp(client, opts.onCloseError, opts.budget);
     } catch (cause) {
       if (opts.onCloseError !== undefined) opts.onCloseError('', cause);
       else opts.onFailure?.(cause);

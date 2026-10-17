@@ -912,12 +912,19 @@ turn failures retain exit 1, invocation refusals retain exit 2, and unexpected
 infrastructure failures use exit 9. This surface has no workflow health authority
 to invent exits 5–8.
 
-Bound MCP consent uses captured prompt streams and the host cancellation signal.
+Interactive session MCP consent uses captured prompt streams and the host cancellation signal.
 A late answer cannot append a grant. Prompt custody joins actual completion and
 acknowledged cursor delivery; a fulfilled Clack prompt is not aborted again during
 normal cleanup. Best-effort retention warnings retain their actual delivery tail
 and output-failure classification. The optional builder ownership port preserves
 accounting/publication failures across repeated host-safe-close checks.
+
+One-shot `agent run` first consumes and closes its mandatory prompt input. Its
+default MCP gate therefore has no remaining stdin prompt authority, even if
+captured TTY metadata still says interactive. An existing persistent grant or
+exact `--allow-mcp-stdio` digest can authorize the declared server; otherwise the
+gate refuses with exit 2 before starting a client. An explicitly supplied host
+consent gate retains its own authority; the default never reopens ambient input.
 
 Fresh, resumed, cleared and reseated standalone chats, and every actual pending,
 late or superseded Home chat, now retain their construction and post-build
@@ -1020,6 +1027,14 @@ TERM/HUP/QUIT uses the invocation's single finite-exit capability and unchanged
 absolute budget. A late engine/handle is adopted before further work and drains
 without acquiring new input after stop. A late consent answer cannot append a
 grant or enter secrets, MCP or business work.
+
+A successfully constructed MCP client returned after stop, and the finalizers
+of `run`, human-gate resume and budget resume, share the invocation's original
+remaining budget. At zero they retain the unacknowledged client and database
+obligations without entering another asynchronous SDK close. A close entered
+before expiry still needs its actual acknowledgement before history can close
+and signal custody can be removed; neither expiry nor a cancellation request is
+that acknowledgement.
 
 The driver keeps one primary reader across prompts. Actual departure health can
 progress while input is held; a rejected reader is never positive primary done.

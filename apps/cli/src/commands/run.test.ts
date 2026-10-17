@@ -1,4 +1,5 @@
 import { invocationFixture } from '../process/invocation.test-support.js';
+import { workflowFinalizerControl } from './workflow-expired-cleanup.test-support.js';
 import { createCliInvocation } from '../process/invocation.js';
 import { witnessNativeToolProcess } from './native-forwarding.test-support.js';
 import { randomUUID } from 'node:crypto';
@@ -1844,6 +1845,37 @@ workflow:
     }
     expect(engineBuilt).toBe(false); // the connect failed before the engine was ever built (no leak)
   });
+
+  it.each([0, 1])(
+    'run finalizer respects the original MCP budget (%s ms left)',
+    async (remaining) => {
+      const client = createClient(':memory:');
+      runMigrations(client.db);
+      const control = workflowFinalizerControl(remaining, client.sqlite);
+      try {
+        await control.verify(
+          runCommand(
+            {
+              workflow: writeWorkflow('expiry.relavium.yaml', MCP_WF),
+              input: [],
+              allowMcpStdio: [],
+            },
+            deps(captureIo().io, globalOptions(), {
+              ...control,
+              providers: scriptedResolver([textTurn('unused')]),
+              consentGate: PASS_CONSENT,
+              openRunStore: (workflow) => ({
+                ...historyOpenRunStore(client.db)(workflow, home, root),
+                close: control.closeDatabase,
+              }),
+            }),
+          ),
+        );
+      } finally {
+        if (client.sqlite.open) client.sqlite.close(); // Test disposal does not acknowledge the pending owner.
+      }
+    },
+  );
 
   it('tears the MCP connection down even when the engine fails AFTER a successful connect (run-terminal teardown)', async () => {
     const path = writeWorkflow('mcp-fail.relavium.yaml', MCP_WF);

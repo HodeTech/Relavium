@@ -12,7 +12,7 @@ import { processIo } from '../process/io.js';
 import { CHECKPOINT_DEFERRED } from './privacy-notice.js';
 import { CliError } from '../process/cli-error.js';
 
-/** An opened local database plus the handle to close its SQLite connection. */
+/** An opened local database plus the close capability for all of its actual native connections. */
 export interface OpenedDb {
   readonly db: Db;
   readonly close: () => void;
@@ -34,27 +34,48 @@ export function openLocalDb(
   chmodForStorage(dir, 0o700);
   const path = join(globalConfigDir(homeDir), 'history.db');
   let client: ReturnType<typeof createClient>;
-  let nativeClose: (() => void) | undefined;
-  try {
-    client = createClient(path, (close) => {
-      nativeClose = close;
+  const nativeCloses = new Set<() => void>();
+  const close = (): void => {
+    const failures: unknown[] = [];
+    // A failed auxiliary close must not prevent an independent main-connection release.
+    for (const release of [...nativeCloses].reverse()) {
+      try {
+        release();
+        nativeCloses.delete(release);
+      } catch (cause) {
+        failures.push(cause);
+      }
+    }
+    if (failures.length !== 0) {
+      throw new AggregateError(failures, 'Local database cleanup failed.');
+    }
+  };
+  let transferred = false;
+  const captureNativeClose = (release: () => void): void => {
+    nativeCloses.add(release);
+    if (!transferred) {
+      transferred = true;
+      // Transfer one composite, not competing callbacks that can overwrite the original main handle.
+      // Later auxiliary construction adds to this already-owned capability before its own setup.
       captureClose?.(close);
-    });
+    }
+  };
+  try {
+    client = createClient(path, captureNativeClose);
   } catch (error) {
     throw storageBoundaryError(error);
   }
   let checkpoint: SessionEffectCheckpoint;
-  const close =
-    nativeClose ??
-    (() => {
-      if (client.sqlite.open) client.sqlite.close();
-    });
   // If setup (migrations / the at-rest chmod) throws, close the just-opened handle before propagating —
   // otherwise the SQLite connection leaks for the lifetime of the failing process.
   try {
     // The original owner receives the actual native capability BEFORE setup can throw.
     // Legacy injected factories may not implement the optional early handoff.
-    if (nativeClose === undefined) captureClose?.(close);
+    if (!transferred) {
+      captureNativeClose(() => {
+        if (client.sqlite.open) client.sqlite.close();
+      });
+    }
     // #28: the 0600 runs BEFORE the migrations, and again after. Before, because `createClient` has already
     // CREATED the file at the process umask — typically 644 — and a migration that throws (disk full, an
     // interrupted first run) used to leave it there, world-readable, for the lifetime of the install. The
@@ -63,7 +84,10 @@ export function openLocalDb(
     hardenAtRest(path);
     // The batch is serialized across processes (ADR-0073): two `relavium` invocations racing a fresh
     // `history.db` wait for each other instead of one dying on a duplicate `CREATE TABLE` (#99).
-    checkpoint = runMigrations(client.db, { dbPath: client.path });
+    checkpoint = runMigrations(client.db, {
+      dbPath: client.path,
+      captureClose: captureNativeClose,
+    });
     hardenAtRest(path);
   } catch (err) {
     try {

@@ -6483,3 +6483,82 @@ Two NEW complete cumulative clean rounds after the last material fix,
 a NEW separate clean security sitting, fresh full CI and all four same-artifact
 platform consumers remain required. Whole Step 8 and Steps 9–19 remain open.
 No user decision, ADR approval, provider, key, billing or capture action is pending.
+
+### Wave 3 Step 8d fourth cumulative review and native-resource corrections — 2026-10-17
+
+**Implementation correction checkpoint; not Step 8d acceptance.** Three NEW
+complete cumulative reviewers cover all **279 paths / 1,506 zero-context hunks**
+at `db825377a6b213d8a63a1ed0b39a2a63b9193982`, against the unchanged cumulative base
+`d9625ff0a641197c6ed45968df99094a25db88d6`. Their disjoint 73/129/77-path slices
+join exactly, with every assigned physical source hash checked. The session slice
+is scoped CLEAN; workflow/management and native/tools/docs are NONCLEAN, with
+three verified High findings. The local Git-ignored aggregate SHA-256 is
+`13554160ab36a9fd076e5b26dc14e0983e9ce4ad0aeea70a378a90e14b9278fd`.
+Rounds 1–4 remain NONCLEAN; a clean slice is not whole-increment acceptance.
+
+- **WM-R4-1, consumed one-shot input:** the default `agent run` gate previously
+  treated stale TTY metadata as permission to prompt after mandatory stdin had
+  reached actual EOF/close. An actual command/default-builder/installed-Clack
+  reviewer probe remained pending without spawning MCP until its original signal
+  cancelled it. The corrected default has no second input authority; unapproved
+  stdio refuses before prompt/client construction. The paired exact-digest control
+  succeeds through the real builder and manager without writing a grant. Explicit
+  injected host consent retains its own authority.
+- **WM-R4-2, expired successful-client cleanup:** workflow late publication and
+  all three actual run/human-gate/budget-resume finalizers now use the original
+  remaining budget, as the agent connector already did. Expiry cannot start a new
+  asynchronous SDK close or release the database/signals. Paired actual-manager
+  controls exercise zero remaining time and a close entered with one millisecond
+  remaining; the latter holds real close acknowledgement before actual SQLite
+  release. The original absolute deadline is unchanged.
+- **N4-01, auxiliary SQLite custody:** the migration lock creates a second native
+  connection, distinct from history. Its close capability is now captured before
+  PRAGMA/lock acquisition and added to the one composite already transferred to
+  the original opener owner. Failed auxiliary release does not skip independent
+  main release, retire the owner, remove signals or gain operational storage
+  provenance. Primary and cleanup causes survive. Actual installed-driver
+  held-iterator close refusal, opaque/storage-shaped injections, later successful
+  release and normal two-connection closure have permanent controls. The held
+  iterator is an injected schedule, not a claim that ordinary migration creates
+  it or that an OS disk fault was measured.
+
+Independent reviewer execution remains scoped: 697 session tests; 56 workflow
+preparation/acquisition tests; 117 native source tests, 54 tooling tests and three
+actual-handle reproductions. Counts overlap author selections and are not summed
+into a new whole-suite claim. Root independently reproduced all three lock-close
+cases. Author regression execution passes 289 CLI cases in ten complete files
+and fourteen DB cases in three complete files before final whole-workspace gates.
+Five separate author removal exercises break the named forwarding, native lock
+handoff, consumed-input and workflow close controls; each restores exact original
+bytes. The initial malformed forwarding mutation and the initial obscured native
+witness are rejected harness attempts, retained locally and not acceptance
+results. Filtered unselected cases are not product skips or whole-suite execution.
+
+The CLI declares the already-catalogued SQLite development type package for its
+actual native-handle tests; no runtime package or resolved version changes.
+Frozen offline lockfile validation and CLI/DB typechecks pass. Canonical behavior
+belongs in the [CLI lifecycle contract](../../reference/cli/commands.md#management-ownership-implementation-checkpoint)
+and [database contract](../../reference/shared-core/database-schema.md#concurrency--transaction-behavior).
+
+At source `db825377`, required packed Linux/macOS/Windows and minimum Node 22.0.0
+consumers and their aggregate pass in run `38989000942`. Broader CI was still
+running at this checkpoint. These new remote passes do not rewrite the earlier
+unexplained `ec8ba368` macOS failure or count as post-correction evidence.
+Two NEW complete cumulative clean rounds after the last material fix, a NEW
+separate clean security sitting, fresh full CI and all four same-artifact package
+consumers remain required. Whole Step 8 and Steps 9–19 remain open. No user,
+ADR, provider, key, billing or capture decision is pending.
+
+**Final author source gates for this correction.** Workspace lint/typecheck passes
+seventeen tasks (fifteen cached); tests pass eleven tasks (nine cached), with
+fresh CLI **334 files / 5,407 passing tests / eleven existing reported skips**
+and fresh DB **64 files / 1,062 passing tests / no skips**. Build passes six tasks
+(five cached); bundle closure remains 25 outputs / 407 inputs / seventeen declared
+externals. All 512 acceptance-tool tests, tools lint/typecheck, schema sync,
+format, seam/purity, test isolation, 177 compiled bootstrap controls and compiled
+CLI smoke pass. The final five removal exercises restore exact bytes; restored
+execution passes 246 CLI and fourteen DB cases with no failures/skips. Earlier
+author lint failures are corrected, not waived. The local 18-path product/test/
+configuration source pin SHA-256 is `c33fe30d7ee58825a924e2d1ac81f64a94ab0c474cc8d2b890ab9dae407585d0`. These are author gates;
+independent cumulative review, security and post-correction remote acceptance
+remain open.

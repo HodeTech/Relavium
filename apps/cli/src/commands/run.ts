@@ -36,6 +36,7 @@ import { sweepCommittedEffects } from '../engine/effect-retention.js';
 import { createCliHost } from '../engine/host.js';
 import {
   connectWorkflowMcp,
+  closePreparedMcp,
   type StdioConsentGate,
   surfaceMcpSkipped,
   type WorkflowMcpRuntime,
@@ -550,7 +551,13 @@ async function runOwned(
     // Cleanup is joined directly, never via a registry promise that depends on this finally.
     // Neither cancellation nor a deadline certifies the engine/MCP/DB or terminal released.
     try {
-      await mcpRuntime?.client.close(reportMcpCloseFailure);
+      if (mcpRuntime !== undefined) {
+        await closePreparedMcp(
+          mcpRuntime.client,
+          reportMcpCloseFailure,
+          lifetime.invocation.registry.budget,
+        );
+      }
     } catch (cause) {
       mcpAcknowledged = false;
       lifetime.cleanupFailed(cause);
