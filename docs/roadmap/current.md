@@ -1198,7 +1198,17 @@ completed turn; it does not normalize EPERM or waive a historical failed run.
 Separate Windows/local-suite triage identifies fixture close and late-case
 ownership defects. Corrections are implemented with original deadlines and
 assertions; fresh author, cumulative-review, security and required CI/platform
-gates remain staged. Step 8d proceeds automatically. The
+gates remain staged. The
+[eighth cumulative review and coexistence-fixture correction](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-eighth-cumulative-review-and-coexistence-fixture-correction--2026-10-17)
+records complete NONCLEAN coverage of 293 paths / 1,578 independently verified
+hunks at `09740575`. One current one-shot summary contradicts the implemented
+exit 9/finite cleanup contract; its correction changes no runtime policy.
+Separate actual-SQLite triage reproduces setup and timeout ownership gaps in the
+coexistence fixture, with the original five-second deadline preserved. All four
+same-artifact consumers pass at that reviewed source; its separate Windows
+advisory timeout remains failed and its exact initiating delay unclassified.
+Two NEW clean complete cumulative rounds, a NEW clean security sitting and fresh
+final-source CI/platform evidence remain required. Step 8d proceeds automatically. The
 [final proposal reviews](phases/phase-2.5.5-hardening-and-remediation.md#second-maintainer-rereview-final-proposal-readiness--2026-10-16)
 remain proposal evidence, not implementation review. The selected encrypted archive
 method persists; production recipient/recovery belongs to Wave 4b release setup.

@@ -196,15 +196,15 @@ is independently accepted at `dbab25d8` after two NEW complete cumulative clean
 rounds, a separate clean security sitting and successful full CI. All four
 same-tarball platform consumers pass at that reviewed source. Whole Step 8 remains open.
 Step 8d session/terminal integration and product fatal activation are implemented
-but not independently accepted. Its first seven complete cumulative rounds are
-NONCLEAN. R6's successful-MCP first-fault and canonical lifecycle corrections pass
-R7 review. R7 identifies a required-control expectation defect: directly observed
-Darwin group EPERM correctly retains infrastructure 9, while the smoke requires
-0/1. The narrow control correction preserves the native fault and actual joins.
-Fresh Windows advisory and local full-suite failures also expose fixture ownership
-and late-case contamination; their corrections remain under author validation.
-Older unexplained platform failures retain their historical scope. No failed run
-is retrospectively accepted; current required platform/full-CI evidence stays open.
+but not independently accepted. Its first eight complete cumulative rounds are
+NONCLEAN. R8 accepts the earlier MCP/native-outcome and fixture corrections in its
+reviewed scope, but finds a stale one-shot command summary. That canonical summary
+is corrected alongside independently reproduced coexistence-fixture setup/timeout
+ownership gaps; fresh reviews of these corrections remain required. All four
+same-artifact package consumers pass at `09740575`; its separate Windows advisory
+coexistence timeout remains failed and its exact cause unclassified. Original
+five-second case bounds and semantic assertions are preserved. No historical
+failure is retrospectively accepted; fresh final-source full CI remains required.
 Two NEW complete cumulative clean rounds after the last material fix, a NEW
 separate clean security sitting and fresh full CI plus all four same-artifact
 package consumers remain required.

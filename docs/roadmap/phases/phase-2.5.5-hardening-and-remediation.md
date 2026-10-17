@@ -6884,3 +6884,126 @@ removals retain the narrower scopes recorded above. Fresh required remote CI,
 all four actual same-artifact platforms, two NEW clean cumulative reviews and a
 NEW clean security sitting remain open. This author checkpoint grants no Step 8d,
 whole Step 8 or later-increment acceptance.
+
+
+### Wave 3 Step 8d eighth cumulative review and coexistence-fixture correction — 2026-10-17
+
+**R8 is complete and NONCLEAN; Step 8d and whole Step 8 remain open.** The root
+read all three new cumulative reports and independently recomputed every physical
+file, complete U0 diff and hunk identity at frozen `09740575`, from the original
+Step 8 base `d9625ff0`. Coverage is disjoint and complete: **293 paths / 1,578 hunks**.
+The inventory SHA-256 is
+`aca454b00ff8b040f3b1880f1e98291c829c57a71bf270c26e1e3819ec96affe`;
+the independently joined aggregate is
+`5cfac59a82a137bfc1c762e69e21da36ea4ab54b9feddc9ea97dc0063a440736`.
+
+| Complete cumulative slice | Paths / hunks | Fresh execution, separately attributed | Verdict |
+|---|---:|---|---|
+| Session/terminal | 73 / 505 | 35 files / 697 passes, zero skips | CLEAN |
+| Workflow/management | 134 / 809 | 37 files / 489 passes, one established non-Windows skip | CLEAN |
+| Native/tools/docs | 86 / 264 | 19 source files / 228 passes; 101 tooling passes | NONCLEAN: WNT-R8-1 |
+
+Selections overlap between reviewers; no deduplicated combined test total is
+claimed. These source/protocol executions do not certify operator TTYs, actual
+Windows execution, full CI or the separately required security sitting. Report
+SHA-256 values, in table order, are
+`e61f634eca969f2bf689d5764781fa68d415ac2c929114b44204fa2b56b99c6a`,
+`1720af1abf90314aecafda914c3b433070e838e349eebdd73f2b684c5ac56367` and
+`ad15f1da99581e2f569c0ee29895d0de452e4d298691bfd6da78c88bb8b0b9ec`.
+Their independently checked coverage-ledger hashes are
+`feda555fbc16596bb51b0f62f58585d98f7d3764ae033eb4549bc9dcfddd3691`,
+`1362e03eb660d1803d9e7711e59944d917d96aedecac790e1dac028b9e21652c` and
+`6baf0efcd3594b4051cb655ed66b487ea3048ee345b96016054a298443afc579`.
+Records remain local and Git-ignored.
+
+**WNT-R8-1, Medium, independently corroborated.** The current one-shot command
+summary omitted infrastructure exit 9 and promised unconditional MCP reaping,
+contradicting the implemented finite cleanup contract and the same canonical
+file's detailed sections. The correction qualifies ordinary outcomes and links
+[the one-shot contract](../../reference/cli/commands.md#relavium-agent-run) to
+its sole failure/teardown authorities. It changes no product runtime policy and
+introduces no ADR decision or universal descendant-containment claim.
+
+**Fresh physical package evidence at the reviewed source.** Push CI
+`38998232222`, attempt 1, records successful pack, all four installed consumers
+and required aggregation at `09740575`. The root downloaded and SHA-checked all
+five GitHub ZIPs, bounded their extraction, independently inspected every tar
+member and reran strict receipt aggregation against observed job/source/origin
+metadata. The native reviewer separately inspected those physical bytes and
+receipts. The actual tarball is **445,642 bytes / 70 public files**, SHA-256
+`f0c2d8abccaeed8df245bfb08c86da0faaf71d67e69bb68c678d91d452915b5b`.
+Current Linux/macOS/Windows use Node 24.21.0; minimum Linux uses exact Node 22.0.0.
+Each report binds eight installed cases and 177 bootstrap controls to that same
+artifact. Root physical-audit SHA-256:
+`7a0d38ff0cbd8904773b5d1fe0dd95790e3aab540080171953350025e91ca9e0`.
+Inspection is not a new consumer execution or final-source acceptance.
+
+**Separate Windows advisory remains failed.** Job `117295420447` in that run
+passes the previously repaired DB/media suites but times out the first
+coexistence case at its original **5,000 ms** bound (reported duration 10,452 ms).
+The cross-process case passes. The remote log contains no identifying phase;
+SQLite contention, WebAssembly startup and scheduler delay are not established
+causes. No flake, waiver or retrospective pass is inferred.
+
+A new independent ignored triage uses exact current source, actual file SQLite
+and real `runCommand`. Six separately retained controls reproduce two fixture
+gaps: setup before the cleanup scope leaks the first native connection on an
+injected setup fault; Vitest timeout aborts its context but leaves the raw run
+and both connections live. Explicit raw release/join permits the original run
+assertions to pass after the timeout. Guarded setup closes the original handle
+while retaining the same injected failure. A captured context-abort bridge to
+shipping cooperative stop prevents engine entry, retains the failed timeout,
+returns actual run 1 with no events and joins both closes. These local causal
+facts do not explain the remote delay. The original source/probe/config/log
+bytes are independently hash-verified; triage report/manifest SHA-256 values are
+`11c31edbda2e3aadbd37550603ffb215ffa673644d9b3dd8d1d8a22fc0b1c124` /
+`62bec05ae9782f5cc74280438003c7b3111eca01ebb108930e0e9becff9ca722`.
+One preliminary duplicate baseline is explicitly excluded from the six controls.
+
+The author correction retains the raw case before entry and awaits it from
+runner `afterEach`. Exact SQLite close capabilities are captured before factory
+setup; migration and the second open remain within cleanup ownership. The test
+context abort reaches the original cooperative run stop; rejection of one writer
+still joins both actual writers before either native close. Fixed bounded phase
+timings contain no path, transcript or raw failure text. Three permanent controls
+pin actual setup cleanup, a held real build's cancellation/late settlement and
+preservation of the original fault alongside a native cleanup failure. The
+unchanged normal run, NDJSON, transcript and cross-process assertions remain.
+Neither case/readiness bounds nor workload scheduling are extended. No speculative
+WebAssembly warmup or serialization change is applied. Author gates and fresh
+final-source Windows evidence are required; the initiating remote delay remains
+unclassified.
+
+Two NEW complete cumulative clean rounds after the last material correction, a
+NEW separate clean security sitting and fresh full CI plus all four actual
+same-artifact platforms remain required. Historical R1–R8 and failed CI results
+keep their source scopes. No Step 8d, whole Step 8 or later-step acceptance is
+inferred. No user decision, ADR approval, credential, billing, provider capture,
+production recipient or release upload is pending. Work continues automatically.
+
+
+**Final author gates for the R8 correction.** All seventeen workspace lint/typecheck
+tasks pass (fifteen cached); all eleven workspace test tasks pass (ten cached).
+The fresh CLI run records **335 files / 5,416 passes / ten established local skips**.
+Final build/format has seven successful tasks (five cached). Seam/engine-dependency
+fences, 714-file isolation/ownership, 25-output/407-input/17-external compiled
+closure, 177 bootstrap controls and compiled CLI smoke pass. No runtime source,
+manifest, lockfile, tool or ADR body changes in this correction. A mistaken
+nonexistent purity-script invocation and the initial test lint failure are retained
+as invalid/failed attempts, then corrected before the final gates; neither is
+counted as a pass.
+
+The final test-source seal is
+`503966adb470b0d32db8039a1b52c36579f503ae6df6251ea56d1cabd86564f1`;
+its exact source bytes are independently checked unchanged after all gates. Two
+selected author removals independently disable actual native close and cooperative
+stop delivery in private byte copies. Each breaks its precise named semantic
+assertion; neither setup/timeout/nonzero alone certifies removal. The complete
+five-case fixed and byte-restored files pass. Filtered removal runs each execute
+one case with four explicit selection skips, not a full-file acceptance. Final
+causal-result SHA-256:
+`34ef08c1aceb2dffeef8ceaaf8b183363563316ebf479581902f05f5ceeb8fe7`.
+Initial copy-config over-selection and a rejected non-unique mutation anchor are
+excluded from that causal matrix. These author controls do not replace independent
+reviews or explain the remote Windows timeout. Fresh final-source CI/platforms,
+two NEW clean cumulative rounds and a NEW clean security sitting remain required.
