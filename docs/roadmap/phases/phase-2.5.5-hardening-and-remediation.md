@@ -8314,3 +8314,44 @@ remain local and Git-ignored. Another agent should inspect the PR/merge state
 before Step 9: commits on the same `development` head extend the open PR's scope.
 Whole-wave reviews, core coverage promotion and the remaining Step 19 obligations
 are still required after later increments.
+
+### PR #95 Sonar correction — 2026-10-18
+
+The maintainer authorized the necessary Sonar corrections and issue dispositions
+for the scoped Steps 1–8 PR. The complete initial inventory contains **214 open
+records across 80 source files**. Independent source/caller review identifies one
+tooling performance defect at two sites: stack-line detection could rescan a
+newline-only suffix quadratically. `0eae1b8b` restricts indentation to spaces/tabs
+within one line, preserving stack positives and the existing private-text/file-URL
+checks. Permanent tests inspect the actual assertion operands in both runners;
+independent removal of either fix fails its regression and byte-exact restoration
+passes. No native deadline, case inventory or output ceiling is relaxed.
+
+`887ff47e` adds small equivalent CLI clarifications: a readonly captured baseline,
+exact opaque-cause rejection without a redundant Promise constructor, and gate
+hooks ordered before cases within their existing suite. Together, the correction
+has **eight paths / eleven ordered hunks** against publication head `4762f21f`.
+Two NEW complete cumulative CLEAN rounds, each with two independent reviewers,
+cover that exact corrective source. These reviews do not replace the pending
+maintainer whole-PR review or extend the earlier Step 8 acceptance scope.
+
+Author gates pass at the corrected source: workspace lint/typecheck **17/17**
+(15 cache hits), serialized workspace tasks **11/11** (10 cache hits), build
+**6/6** (five cache hits), and **551 acceptance-tool tests** without skips.
+The fresh CLI workspace run passes **362 files / 5,665 tests**, with ten established
+skips; other workspace results retain their cache attribution. The actual local
+macOS/Node 22.23.1 installed consumer passes **177 bootstrap controls and eight
+smoke cases** using tarball SHA-256
+`2dd80f46204a60e17d4abb72c5442425e29d09c73e60642cad40ccc254125d4e`.
+This is one local consumer, not fresh Linux/Windows/minimum-runtime certification.
+
+All **52 false-positive** and **86 intentional-design** records receive reasoned
+online dispositions, verified by exact issue key and retained comment. This
+preserves synchronous-entry catches, typed Error ancestry, deterministic machine
+ordering and actual lifetime acknowledgements. The local Git fallback retains its
+explicit trusted-host PATH boundary. Valid remaining maintainability suggestions
+stay visible; rules, quality-gate thresholds and approved deferrals are unchanged.
+Fresh push/PR CI and Sonar analysis must be evaluated at the new published head;
+the earlier green publication runs are not attributed to these changed bytes.
+Detailed triage, correction reviews and receipts remain local and Git-ignored.
+Steps 9–19 have not started; Wave 3 and whole-PR acceptance remain open.
