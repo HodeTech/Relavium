@@ -2,6 +2,8 @@
 export const REQUIRED_SMOKE_CASES = Object.freeze([
   'native-addon-load-only',
   'installed-version',
+  'installed-provider-list',
+  'installed-unknown-logs',
   'workflow-gate-budget-effects',
   'real-sdk-chat-persistence-resume',
   'actual-mcp-initialize-version',

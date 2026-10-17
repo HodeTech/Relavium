@@ -245,3 +245,102 @@ for (const [label, alter] of [
     assert.throws(() => checkConsumer(job, 'pack-cli'));
   });
 }
+
+function checkRequiredSourceSmokes(workflow) {
+  const job = workflow.jobs.ci;
+  assert.ok(job, 'source smokes must run in the required ci job');
+  assert.equal(job.if, '${{ always() }}');
+  assert.equal(job['continue-on-error'], undefined);
+  assert.ok(job['timeout-minutes'] > 0 && job['timeout-minutes'] <= 30);
+  assert.equal(workflow.defaults?.run?.['working-directory'], undefined);
+  assert.equal(job.defaults?.run?.['working-directory'], undefined);
+  const commands = [
+    'pnpm install --frozen-lockfile',
+    'pnpm turbo run build',
+    'pnpm smoke:cli-bootstrap',
+    'pnpm smoke:budget-replay',
+  ];
+  const indices = commands.map((command) => {
+    const steps = job.steps.filter((step) => step.run === command);
+    assert.equal(steps.length, 1, `${command} must be one actual required step`);
+    const step = steps[0];
+    assert.equal(step.if, undefined);
+    assert.equal(step['continue-on-error'], undefined);
+    assert.equal(step['working-directory'], undefined);
+    assert.equal(step.uses, undefined);
+    return job.steps.indexOf(step);
+  });
+  assert.ok(indices[0] < indices[1]);
+  assert.ok(indices[1] < indices[2] && indices[1] < indices[3]);
+}
+
+test('required CI executes bootstrap and replay source smokes after install/build', () => {
+  checkRequiredSourceSmokes(readWorkflow('ci'));
+  const scripts = JSON.parse(readFileSync(new URL('package.json', root), 'utf8')).scripts;
+  assert.equal(scripts['smoke:cli-bootstrap'], 'node tools/cli-bootstrap/check.mjs');
+  assert.equal(scripts['smoke:budget-replay'], 'node tools/budget-replay-compat/check.mjs');
+});
+
+for (const command of ['pnpm smoke:cli-bootstrap', 'pnpm smoke:budget-replay']) {
+  for (const [name, mutate] of [
+    ['removed', (job, step) => job.steps.splice(job.steps.indexOf(step), 1)],
+    [
+      'name-only',
+      (_job, step) => {
+        step.name = command;
+        delete step.run;
+      },
+    ],
+    [
+      'echo-only',
+      (_job, step) => {
+        step.run = `echo ${command}`;
+      },
+    ],
+    [
+      'conditional',
+      (_job, step) => {
+        step.if = '${{ false }}';
+      },
+    ],
+    [
+      'ignored failure',
+      (_job, step) => {
+        step['continue-on-error'] = true;
+      },
+    ],
+    [
+      'different checkout directory',
+      (_job, step) => {
+        step['working-directory'] = 'scratch';
+      },
+    ],
+    [
+      'before build',
+      (job, step) => {
+        job.steps.splice(job.steps.indexOf(step), 1);
+        job.steps.unshift(step);
+      },
+    ],
+    [
+      'advisory job',
+      (job) => {
+        job['continue-on-error'] = true;
+      },
+    ],
+    [
+      'disabled job',
+      (job) => {
+        job.if = '${{ false }}';
+      },
+    ],
+  ]) {
+    test(`required source smoke guard rejects ${command}: ${name}`, () => {
+      const workflow = readWorkflow('ci');
+      const job = workflow.jobs.ci;
+      const step = job.steps.find((step) => step.run === command);
+      mutate(job, step);
+      assert.throws(() => checkRequiredSourceSmokes(workflow));
+    });
+  }
+}

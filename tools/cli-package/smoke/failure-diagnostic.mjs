@@ -208,7 +208,7 @@ export function formatInstalledWorkerFailure(raw) {
     }
     line = JSON.stringify(diagnostic) + '\n';
   }
-  // The compact fixed inventory fits well below this bound even with all eight failures.
+  // The compact fixed inventory fits well below this bound even with the complete required failure inventory.
   if (Buffer.byteLength(line) > MAX_WORKER_FAILURE_BYTES)
     throw new Error('Worker failure diagnostic bound exceeded');
   return line;

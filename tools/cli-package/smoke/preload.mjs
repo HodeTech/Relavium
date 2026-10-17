@@ -5,6 +5,7 @@ import net from 'node:net';
 import tls from 'node:tls';
 import http from 'node:http';
 import https from 'node:https';
+import http2 from 'node:http2';
 import dns from 'node:dns';
 import child from 'node:child_process';
 import dgram from 'node:dgram';
@@ -24,6 +25,8 @@ for (const module of [http, https]) {
   module.get = denied('http.get');
   module.createServer = denied('http.createServer');
 }
+for (const name of ['connect', 'createServer', 'createSecureServer'])
+  http2[name] = denied(`http2.${name}`);
 for (const [label, module] of [
   ['dns', dns],
   ['dns.promises', dns.promises],

@@ -243,15 +243,24 @@ test('consumer refuses replay, mismatched files, failed/skipped/incomplete contr
   );
 });
 
-test('each required platform refuses a missing or failed native owner/bootstrap case', () => {
-  assert.ok(REQUIRED_SMOKE_CASES.includes('actual-native-process-owner'));
-  assert.ok(REQUIRED_SMOKE_CASES.includes('actual-native-bootstrap-lifecycle'));
-  assert.equal(REQUIRED_SMOKE_CASES.length, 8);
-  for (const nativeCase of ['actual-native-process-owner', 'actual-native-bootstrap-lifecycle'])
+test('each required platform refuses every missing or failed independently pinned installed case', () => {
+  assert.deepEqual(REQUIRED_SMOKE_CASES, [
+    'native-addon-load-only',
+    'installed-version',
+    'installed-provider-list',
+    'installed-unknown-logs',
+    'workflow-gate-budget-effects',
+    'real-sdk-chat-persistence-resume',
+    'actual-mcp-initialize-version',
+    'actual-media-cas-iterator-cleanup',
+    'actual-native-process-owner',
+    'actual-native-bootstrap-lifecycle',
+  ]);
+  for (const nativeCase of REQUIRED_SMOKE_CASES)
     for (const leg of REQUIRED_CONSUMER_LEGS) {
       const report = consumer(leg);
       const cases = report.smoke.cases.filter((item) => item.id !== nativeCase);
-      assert.equal(cases.length, 7);
+      assert.equal(cases.length, 9);
       refuses(() =>
         validateConsumerRecord({ ...report, smoke: { success: true, cases } }, receipt(), expected),
       );

@@ -25,6 +25,9 @@ aggregate. Each result has `id`, `passed`, and evidence or an error. Overall
   native binary resolution must stay in the installed consumer's `node_modules`.
 - Execute installed version and compare it with installed package metadata.
   The surrounding bootstrap controls own exhaustive meta-operation isolation.
+- Preserve the earlier release smoke's installed human `provider list` (exit 0)
+  and unknown `logs nope` (exit 2) checks in separate required cases. Each owns a
+  fresh HOME and refuses any keychain or network dispatch.
 - Run the actual transform workflow and installed migrations; discover a paused
   human gate and resume it in a fresh process. Produce a real budget pause, reject
   four invalid decisions without durable mutation, abort and repeat idempotently.
@@ -102,7 +105,7 @@ with background-only exit 9. Each independent mode retains its own sibling,
 watchdog, actual close and exact-PID cleanup evidence. These are plain one-shot
 activation/ACK-order controls: interactive terminal restoration and absolute
 budget nonrenewal retain their separately attributed source controls. Whole
-Step 8d acceptance remains open. Original-TS maps/custody remain Step 9. All eight
+Step 8d acceptance remains open. Original-TS maps/custody remain Step 9. The current ten
 behavior cases and 177 bootstrap controls are required. Windows bootstrap modes
 require five actual target/helper creations (two fatal, one background, two output);
 the other platform/cohort combinations require three.

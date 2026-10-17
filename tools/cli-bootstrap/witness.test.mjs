@@ -10,6 +10,40 @@ import { spawnBounded } from './process.mjs';
 import { BOOTSTRAP_CONTROL_COUNT } from './inventory.mjs';
 import ts from 'typescript';
 
+// Pinned independently of the policy so deleting a boundary cannot delete its own control.
+// Commander alone belongs to the permitted compiled meta-operation grammar.
+const requiredServicePackages = [
+  'better-sqlite3',
+  '@napi-rs/keyring',
+  '@anthropic-ai/sdk',
+  'openai',
+  '@google/genai',
+  '@modelcontextprotocol/sdk',
+  'drizzle-orm',
+  'ink',
+  'react',
+  '@clack/prompts',
+  'yaml',
+  'smol-toml',
+  'string-width',
+  'zod',
+  'quickjs-emscripten-core',
+  '@jitl/quickjs-singlefile-mjs-release-sync',
+];
+test('bootstrap service boundaries retain their independently pinned inventory', () => {
+  assert.deepEqual([...servicePackages].sort(), [...requiredServicePackages].sort());
+  const manifest = JSON.parse(
+    readFileSync(new URL('../../apps/cli/package.json', import.meta.url), 'utf8'),
+  );
+  assert.deepEqual(
+    Object.keys(manifest.dependencies)
+      .filter((name) => name !== 'commander')
+      .sort(),
+    [...requiredServicePackages].sort(),
+    'Every declared runtime service except the meta grammar must have a boundary',
+  );
+});
+
 // Inspect the actual assertion operands: a copied test regex could pass after either
 // acceptance runner regressed. Parsing never imports or executes the native harness.
 for (const [path, markers] of [
@@ -100,7 +134,10 @@ test('production child retains file-URL semantics for a preload path with URL me
 });
 test('each denied ESM package/subpath is witnessed even when the application swallows it', async () => {
   await withFixture(async (fixture) => {
-    const specifiers = servicePackages.flatMap((name) => [name, `${name}/synthetic-subpath`]);
+    const specifiers = requiredServicePackages.flatMap((name) => [
+      name,
+      `${name}/synthetic-subpath`,
+    ]);
     const entry = fixtureModule(
       fixture,
       `for (const specifier of ${JSON.stringify(specifiers)}) { try { await import(specifier); } catch {} }`,

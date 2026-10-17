@@ -260,6 +260,36 @@ function cassette() {
 }
 
 /** Public offline route; all native mechanism/controller/registry bytes are from the selected installation. */
+/** Fixed public projections are independently authored here, never imported from product policy. */
+export function assertNativeBootstrapDiagnostic(diagnostics, mode) {
+  const expected = {
+    'bootstrap-fatal': {
+      type: 'error',
+      code: 'cli_internal',
+      message:
+        'An unexpected CLI failure occurred. Use --verbose for safe diagnostics. Inspect existing work before repeating paid or effectful operations.',
+    },
+    'bootstrap-output': {
+      type: 'error',
+      code: 'output_unavailable',
+      message:
+        'CLI output could not be delivered. Inspect existing work before repeating paid or effectful operations.',
+    },
+    'bootstrap-background': {
+      type: 'error',
+      code: 'cli_internal',
+      message:
+        'A background operation failed. Inspect existing work before repeating paid or effectful operations.',
+    },
+  };
+  assert.ok(Object.hasOwn(expected, mode), 'Unknown native bootstrap diagnostic mode');
+  assert.deepEqual(
+    diagnostics,
+    [expected[mode]],
+    'Exactly one complete fixed native diagnostic is owed',
+  );
+}
+
 export async function assertInstalledNativeProcesses(context, { bootstrap = false } = {}) {
   const { root, cli, environment, calls } = context;
   const home = join(root, bootstrap ? 'bootstrap-home' : 'native-home');
@@ -514,13 +544,8 @@ export async function assertInstalledNativeProcesses(context, { bootstrap = fals
           });
           outcome.runtimeWarnings = projected.runtimeWarnings;
           const diagnostics = ndjson(projected.diagnostics);
-          assert.equal(diagnostics.length, 1, 'Exactly one native diagnostic is owed');
-          assert.equal(
-            diagnostics[0].code,
-            mode === 'bootstrap-output' ? 'output_unavailable' : 'cli_internal',
-          );
+          assertNativeBootstrapDiagnostic(diagnostics, mode);
           if (mode === 'bootstrap-background') {
-            assert.match(diagnostics[0].message, /^A background operation failed\./);
             assert.equal(
               observed.find((item) => item.operation === 'native-target-actual-close').code,
               0,

@@ -17,6 +17,7 @@ import { clearTimeout, setTimeout } from 'node:timers';
 import { fileURLToPath } from 'node:url';
 import {
   assertObservedGroupRefusal,
+  assertNativeBootstrapDiagnostic,
   copyFixtureNode,
   copyFixtureRuntimeSupport,
   createFixtureSentinel,
@@ -367,4 +368,41 @@ test('fixture watchdog never reacquires a root/helper PID after actual native cl
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+for (const [mode, code, message] of [
+  [
+    'bootstrap-fatal',
+    'cli_internal',
+    'An unexpected CLI failure occurred. Use --verbose for safe diagnostics. Inspect existing work before repeating paid or effectful operations.',
+  ],
+  [
+    'bootstrap-output',
+    'output_unavailable',
+    'CLI output could not be delivered. Inspect existing work before repeating paid or effectful operations.',
+  ],
+  [
+    'bootstrap-background',
+    'cli_internal',
+    'A background operation failed. Inspect existing work before repeating paid or effectful operations.',
+  ],
+]) {
+  test(`${mode} requires its complete fixed diagnostic without private or extra fields`, () => {
+    const exact = { type: 'error', code, message };
+    assertNativeBootstrapDiagnostic([exact], mode);
+    for (const diagnostics of [
+      [],
+      [exact, exact],
+      [{ ...exact, message: '' }],
+      [{ ...exact, message: message + ' PRIVATE_NATIVE_CANARY' }],
+      [{ ...exact, code: 'different' }],
+      [{ ...exact, type: 'different' }],
+      [{ ...exact, stack: 'private native stack' }],
+      [{ code, message }],
+    ])
+      assert.throws(() => assertNativeBootstrapDiagnostic(diagnostics, mode));
+  });
+}
+test('unknown native bootstrap diagnostic mode grants no acceptance', () => {
+  assert.throws(() => assertNativeBootstrapDiagnostic([undefined], 'unknown'));
 });

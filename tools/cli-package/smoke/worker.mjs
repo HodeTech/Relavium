@@ -177,6 +177,44 @@ async function exerciseInstalledSmoke({ packageRoot, supportRoot, artifactSha256
       assert.equal(calls().length, 0, 'Version must not load/use external services');
       return { version, outputBytes: result.bytes };
     });
+    await runCase('installed-provider-list', async () => {
+      const home = join(root, 'provider-list-home');
+      mkdirSync(home);
+      const before = calls().length;
+      const result = await invoke(cli(['provider', 'list']), { cwd: home, env: environment(home) });
+      assertExit(result, 0);
+      assert.ok(
+        result.stdout.trim().length > 0,
+        'Installed provider list produced no human listing',
+      );
+      const guardedKeychainOrNetworkAttempts = calls()
+        .slice(before)
+        .filter((call) => call.denied || call.operation === 'sdk-fetch').length;
+      assert.equal(
+        guardedKeychainOrNetworkAttempts,
+        0,
+        'Offline provider listing attempted keychain/network access',
+      );
+      return { exit: result.code, outputBytes: result.bytes, guardedKeychainOrNetworkAttempts };
+    });
+    await runCase('installed-unknown-logs', async () => {
+      const home = join(root, 'unknown-logs-home');
+      mkdirSync(home);
+      const before = calls().length;
+      const result = await invoke(cli(['logs', 'nope']), { cwd: home, env: environment(home) });
+      assertExit(result, 2);
+      assert.equal(result.stdout, '');
+      assert.match(result.stderr, /no run found with id nope/);
+      const guardedKeychainOrNetworkAttempts = calls()
+        .slice(before)
+        .filter((call) => call.denied || call.operation === 'sdk-fetch').length;
+      assert.equal(
+        guardedKeychainOrNetworkAttempts,
+        0,
+        'Unknown-run lookup attempted keychain/network access',
+      );
+      return { exit: result.code, outputBytes: result.bytes, guardedKeychainOrNetworkAttempts };
+    });
     await runCase('workflow-gate-budget-effects', () => assertInstalledWorkflows(context));
     await runCase('real-sdk-chat-persistence-resume', () => assertInstalledChat(context));
     await runCase('actual-mcp-initialize-version', async () => {

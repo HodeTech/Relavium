@@ -38,7 +38,7 @@ access is refused. No workspace install, product build, repack, provider request
 credential is used by a consumer. Actual installed dependency versions and metadata
 digests are recorded; a workspace resolution is never substituted.
 
-Each consumer repeats the 177 untouched-entry bootstrap controls and the eight
+Each consumer repeats the 177 untouched-entry bootstrap controls and the ten
 [installed behavior cases](smoke/README.md). Detailed local reports remain in the
 support directory. CI uploads **only** the bounded public `installed-consumer.json`:
 source/artifact/origin/runtime identities, public file/dependency digests, and exact

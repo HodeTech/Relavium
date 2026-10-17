@@ -27,7 +27,9 @@ process.stdout.write(
     nativeModules,
     keyring: require.resolve('@napi-rs/keyring'),
     sqlite: require.resolve('better-sqlite3'),
-    keyringApiCalls: 0,
+    keyringCapabilityProof: 'actual native binary loaded; Entry export is a function',
+    keyringApiObservation:
+      'not instrumented; this load-only probe does not construct Entry or invoke credential APIs',
     sqliteValue: 42,
   }) + '\n',
 );

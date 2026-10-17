@@ -12,6 +12,7 @@ export const servicePackages = Object.freeze([
   '@clack/prompts',
   'yaml',
   'smol-toml',
+  'string-width',
   'zod',
   'quickjs-emscripten-core',
   '@jitl/quickjs-singlefile-mjs-release-sync',

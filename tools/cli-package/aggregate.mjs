@@ -55,7 +55,7 @@ export function runAggregate(args, environment) {
   const repository = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
   const source =
     environment.RELAVIUM_PACKAGE_SOURCE_SHA ??
-    execFileSync('git', ['rev-parse', 'HEAD'], {
+    execFileSync('git', ['--no-replace-objects', 'rev-parse', 'HEAD'], {
       cwd: repository,
       encoding: 'utf8',
       timeout: 10000,
