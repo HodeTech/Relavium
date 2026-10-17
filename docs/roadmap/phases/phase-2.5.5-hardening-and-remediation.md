@@ -7807,3 +7807,55 @@ cumulative CLEAN rounds after the last material fix, a NEW separate clean securi
 sitting and fresh final-source full CI plus all four installed consumers remain
 required. Steps 9–19 have not started; no credential, provider capture, billing,
 production recipient or user decision is pending.
+
+### Wave 3 Step 8d eighteenth cumulative review and self-stop/CI corrections — 2026-10-17
+
+**R18 is complete and NONCLEAN; Step 8d and whole Step 8 remain open.** Seven NEW
+independent slices cover cumulative `d9625ff0` → `1f3cce50`: **321 paths / 1,749
+hunks**. Root reads every original report and substantive file assessment, then
+independently rechecks physical bodies, complete diffs and ordered hunk identities.
+Opening/closing freezes match all 1,752 tracked files, 21,165 physical dependency
+files, 1,215 lexical links and 466 dist files. Aggregate SHA-256 is
+`3f839514f8a8690a1cc91ad06731d3f9be7c1adf9d61d024f6e624424ab3c3eb`.
+Original detailed reports, qualified normative-context reads, a corrected historical
+test attribution and root validation notes remain local and Git-ignored.
+
+**High `R18-HOME-1` is corrected at `f23e0da7`.** The run/gate self-stop catch
+could consume an unexpected native fault, reattach and return success. Actual
+engine/driver/original-lifetime controls independently reproduce that gap. The
+production caller now forwards unexpected failure to its original owner before
+recovery; classified refusals and ownerless behaviour stay recoverable. Actual
+native/primary/cursor ACKs still govern retirement. The
+[canonical workflow/terminal contract](../../reference/cli/commands.md#workflow-and-terminal-ownership)
+owns the behaviour. Three actual driver controls and two helper controls are
+permanent. Seven-file fixed/restored runs pass 75 cases; removing the observation
+breaks two precise assertions and removing only the driver link breaks one, with
+all remaining controls passing. Every phase has explicit zero-unhandled and actual
+OS-join receipts. These controlled native faults are not operator-TTY measurements.
+
+**High `TD18-CI1` is corrected at `df6e6631`.** GitHub positively annotates the
+predecessor [required job](https://github.com/HodeTech/Relavium/actions/runs/39020071201/job/117365513223)
+as exceeding its 15-minute limit: its successful serial prefix leaves only 24s
+when replay begins, despite six sequential workers retaining individual 45s bounds.
+The main outer watchdog is now 25 minutes, pinned by the existing scheduling
+regression. The separate floor watchdog, serialization, native execution evidence,
+all inner test/readiness/replay bounds and success-only dependencies are unchanged.
+This later evidence resolves that job's initiating cause; its earlier still-running
+checkpoint remains historical. No failed test or complete CI success is inferred.
+
+Applied author workspace lint/typecheck/test and build pass. The CLI records
+**356 files / 5,622 passes / ten established skips**; a separate post-build full
+CLI run has the same counts, explicit zero unhandled errors and actual Node exit 0.
+All **549 acceptance-tool tests**, tools/static/format/DB-sync/fence checks pass;
+isolation collects 735 files. Compiled closure verifies 25 outputs / 410 inputs /
+17 externals, Darwin/Node 22.23.1 bootstrap passes 177 controls and CLI smoke passes.
+Cached tasks retain their qualification; Markdown remains outside Prettier's scope.
+
+At reviewed `1f3cce50`, all four same-artifact consumers, coverage and Windows
+advisory pass in [CI run 39022803277](https://github.com/HodeTech/Relavium/actions/runs/39022803277);
+full CI remains in progress when recorded. Root independently inspects five ZIPs,
+70 public files and the 446,477-byte tarball. Those results do not execute or accept
+the corrections. Two NEW complete cumulative CLEAN rounds after the last material
+fix, NEW separate clean security and fresh corrected-source full CI plus all four
+installed consumers remain required. Steps 9–19 have not started. No credential,
+provider capture, billing, production recipient or user decision is pending.

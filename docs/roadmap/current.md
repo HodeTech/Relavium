@@ -1310,6 +1310,17 @@ zero unhandled errors), 549 acceptance-tool tests and compiled smokes pass.
 R1–R17 remain NONCLEAN. Two NEW complete cumulative clean rounds, NEW separate
 security and fresh final-source CI/platforms remain required. Steps 9–19 have not
 started; no user decision is pending.
+The [eighteenth cumulative review and self-stop/CI corrections](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-eighteenth-cumulative-review-and-self-stopci-corrections--2026-10-17)
+records complete NONCLEAN coverage of 321 paths / 1,749 rehashed hunks at `1f3cce50`.
+`f23e0da7` observes caught workflow self-stop faults on the original invocation;
+`df6e6631` fixes the positively confirmed main-CI watchdog expiry while retaining
+all inner bounds and required gates. Two independent mechanism removals break
+the new ownership regressions; fixed/restored runs pass all 75 cases. Applied
+workspace/build and joined post-build CLI checks pass (356 files / 5,622 passes /
+ten established skips, zero unhandled errors), together with 549 acceptance-tool
+tests and compiled smokes. R1–R18 remain NONCLEAN. Two NEW complete cumulative
+clean rounds, NEW separate security and fresh corrected-source CI/platforms remain
+required. Steps 9–19 have not started; no user decision is pending.
 Step 8d proceeds automatically. The
 [final proposal reviews](phases/phase-2.5.5-hardening-and-remediation.md#second-maintainer-rereview-final-proposal-readiness--2026-10-16)
 remain proposal evidence, not implementation review. The selected encrypted archive

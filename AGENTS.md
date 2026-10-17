@@ -107,19 +107,18 @@ is independently accepted at `dbab25d8` after two NEW complete cumulative clean
 rounds, a separate clean security sitting and successful full CI. All four
 same-tarball platform consumers pass at that reviewed source. Whole Step 8 remains open.
 Step 8d session/terminal integration and product fatal activation are implemented
-but not independently accepted. Its first seventeen complete cumulative rounds are
-NONCLEAN. R17 independently verifies all 320 paths / 1,746 cumulative hunks at
-`2891e8fd` and confirms one High Home onboarding raw-mode fault-observation gap.
-`1dec7a8d` observes release/reclaim faults on the original invocation before
-reversible recovery, retaining classified refusals and actual prompt cleanup.
-Nine permanent actual Home/SQLite controls pass; removing the observations yields
-four precise failures and five positive controls. Author workspace and separate
-joined post-build CLI gates pass (355 files / 5,617 passes / ten established skips,
-zero unhandled errors); all 549 acceptance-tool tests pass. Predecessor package/CI
-results retain their own source and do not accept this correction. Earlier failed
-Windows runs retain their outcomes and unknown initiating causes. Two NEW complete
-cumulative clean rounds, a NEW separate clean security sitting and fresh full CI
-plus all four same-artifact package consumers remain required.
+but not independently accepted. Its first eighteen complete cumulative rounds are
+NONCLEAN. R18 verifies all 321 paths / 1,749 cumulative hunks at `1f3cce50`
+and confirms two High gaps: caught workflow self-stop faults and the required
+CI job's outer time budget. `f23e0da7` observes the original self-stop failure
+before reversible recovery; `df6e6631` sizes only the main CI watchdog at 25 minutes.
+Classified refusals, ownerless recovery, actual cleanup ACKs and all inner test,
+native and replay bounds remain intact. Author workspace/build and separately
+joined post-build CLI gates pass (356 files / 5,622 passes / ten established skips,
+zero unhandled errors), along with all 549 acceptance-tool tests and compiled smokes.
+Predecessor platform/CI results retain their source and do not accept these fixes.
+Two NEW complete cumulative clean rounds, a NEW separate clean security sitting
+and fresh full CI plus all four same-artifact consumers remain required.
 Step 8 proceeds as recorded serial increments 8a–8d; native
 fatal integration remains open until all actual owners are connected.
 Later implementation and whole-wave acceptance
