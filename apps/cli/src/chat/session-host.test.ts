@@ -23,6 +23,7 @@ import type { SessionStreamHandleEvent } from '@relavium/core';
 import {
   buildServerToolDefs,
   McpAbortedError,
+  raceDeadline,
   startMcpClient as realStartMcpClient,
   type McpClient,
   type McpConnection,
@@ -1780,6 +1781,166 @@ it('reads the attached initial usage snapshot once across a streamed turn', asyn
 });
 
 describe('owned session MCP startup cancellation', () => {
+  it.each(
+    (['fresh', 'resumed'] as const).flatMap((surface) =>
+      (['caller-unlink', 'owner-unlink', 'partial-add'] as const).map((fault) => ({
+        surface,
+        fault,
+      })),
+    ),
+  )(
+    '$surface retains $fault uncertainty without losing discovery cancellation or inventing close ACK',
+    async ({ surface, fault }) => {
+      const f = invocationFixture();
+      const owner = new SessionWorkOwner(f.invocation, 'chat', {
+        cancel: () => undefined,
+        cleanup: () => Promise.resolve(),
+      });
+      const primary = new Error('foreign caller signal fault');
+      let aborted = false;
+      let allowRemoval = false;
+      const listeners = new Set<() => void>();
+      const caller: AbortSignalLike = {
+        get aborted() {
+          return aborted;
+        },
+        addEventListener: (_type, listener) => {
+          listeners.add(listener);
+          if (fault === 'partial-add') throw primary;
+        },
+        removeEventListener: (_type, listener) => {
+          if (!allowRemoval && fault !== 'partial-add') throw primary;
+          listeners.delete(listener);
+        },
+      };
+      let releaseDiscovery: () => void = () => undefined;
+      const rawDiscovery = new Promise<[]>((resolve) => {
+        releaseDiscovery = () => resolve([]);
+      });
+      const listTools = vi.fn((signal?: AbortSignalLike) =>
+        raceDeadline(
+          'fs',
+          'discovery',
+          { startedAt: Date.now(), timeoutMs: 15_000 },
+          () => rawDiscovery,
+          signal,
+        ),
+      );
+      let acknowledgeClose: () => void = () => undefined;
+      const closeAck = new Promise<void>((resolve) => {
+        acknowledgeClose = resolve;
+      });
+      const close = vi.fn(() => closeAck);
+      const agent = {
+        ...buildDefaultChatAgent('claude-sonnet-4-6'),
+        mcp_servers: [{ id: 'fs', transport: 'stdio' as const, command: 'synthetic-server' }],
+      };
+      const common = {
+        chat: EMPTY_CHAT,
+        now: () => 0,
+        providers: scriptedResolver([]),
+        workOwner: owner,
+        mcpConnectSignal: caller,
+        consentGate: () => Promise.resolve(new Map()),
+        startMcpClient: (
+          _servers: Parameters<typeof realStartMcpClient>[0],
+          signal?: AbortSignalLike,
+          work?: Parameters<typeof realStartMcpClient>[2],
+          lifecycle?: Parameters<typeof realStartMcpClient>[3],
+        ) =>
+          realStartMcpClient(
+            [
+              {
+                id: 'fs',
+                open: () =>
+                  Promise.resolve({
+                    listTools,
+                    callTool: () => Promise.resolve({ content: [], isError: false }),
+                    close,
+                  }),
+              },
+            ],
+            signal,
+            work,
+            lifecycle,
+          ),
+      };
+      const record: AgentSessionRecord = {
+        id: 'fault-resume',
+        agentSlug: agent.id,
+        agentSnapshot: agent,
+        context: { workingDir: '/tmp', fsScopeTier: 'project' },
+        status: 'ended',
+        totalInputTokens: 0,
+        totalOutputTokens: 0,
+        totalCostMicrocents: 0,
+        totalConservativeMicrocents: 0,
+        createdAt: '2026-10-16T00:00:00.000Z',
+        updatedAt: '2026-10-16T00:00:00.000Z',
+      };
+      let settled = false;
+      const opening = owner
+        .enter(() =>
+          surface === 'fresh'
+            ? buildFreshSession({
+                ...common,
+                agent,
+                agentRef: undefined,
+                cwd: '/tmp',
+                projectConfigDir: undefined,
+                uuid: () => 'fault-fresh',
+              })
+            : buildRestoredSession({ ...common, record, messages: [] }),
+        )
+        .then(
+          (value) => {
+            settled = true;
+            return value;
+          },
+          (cause: unknown) => {
+            settled = true;
+            return cause;
+          },
+        );
+      try {
+        await vi.waitFor(() => expect(listTools).toHaveBeenCalledOnce());
+        if (fault !== 'partial-add') {
+          expect(() => {
+            if (fault === 'owner-unlink') owner.stop();
+            else {
+              aborted = true;
+              for (const listener of [...listeners]) listener();
+            }
+          }, 'FOREIGN_UNLINK_CANNOT_SUPPRESS_MCP_CANCELLATION').not.toThrow();
+        }
+        await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+        expect(settled, 'SUBSCRIPTION_FAULT_IS_NOT_NATIVE_CLOSE_ACK').toBe(false);
+        expect(owner.hasCleanupUncertainty).toBe(true);
+        expect(owner.firstFailure?.cause).toBe(primary);
+        acknowledgeClose();
+        expect(await opening).toBeInstanceOf(Error);
+        let retired = false;
+        void owner.close().then(() => {
+          retired = true;
+        });
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(retired, 'REJECTED_LISTENER_CLEANUP_IS_NOT_OWNER_RETIREMENT').toBe(false);
+        expect(f.registry.activeOwners).toBe(1);
+        f.advance(3_000);
+        expect(await f.invocation.finiteExit.exited).toBe(9);
+        expect(f.registry.activeOwners).toBe(1);
+      } finally {
+        // Join every entered synthetic connection; sticky uncertainty intentionally has no positive ACK.
+        allowRemoval = true;
+        releaseDiscovery();
+        acknowledgeClose();
+        owner.stop();
+        await opening;
+        void owner.close();
+      }
+    },
+  );
+
   it.each(
     (['fresh', 'resumed'] as const).flatMap((surface) =>
       (['caller', 'owner', 'pre-aborted-caller'] as const).map((cancel) => ({ surface, cancel })),

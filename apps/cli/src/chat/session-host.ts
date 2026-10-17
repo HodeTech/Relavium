@@ -1,4 +1,5 @@
 import type { NativeProcessController } from '../process/native-process-owner.js';
+import { combineMcpConnectSignals } from './mcp-connect-signal.js';
 import {
   type AgentDefinition,
   AgentSession,
@@ -871,41 +872,15 @@ function mcpOptionsFor(
   mcpArtifact: string | undefined,
   cwd: string,
 ): ConnectAgentMcpOptions {
-  const ownerSignal = opts.workOwner?.signal;
+  const owner = opts.workOwner;
+  const ownerSignal = owner?.signal;
   const callerSignal = opts.mcpConnectSignal;
-  // Both authorities can limit startup. Subscribe lazily so discovery's own
-  // listener removal also releases both inputs when startup settles.
-  const subscriptions = new Map<() => void, () => void>();
   const connectSignal: AbortSignalLike | undefined =
-    ownerSignal === undefined
+    owner === undefined || ownerSignal === undefined
       ? callerSignal
       : callerSignal === undefined || callerSignal === ownerSignal
         ? ownerSignal
-        : {
-            get aborted() {
-              return ownerSignal.aborted || callerSignal.aborted;
-            },
-            addEventListener: (type, listener) => {
-              if (subscriptions.has(listener) || ownerSignal.aborted || callerSignal.aborted)
-                return;
-              const notify = (): void => {
-                if (!subscriptions.delete(listener)) return;
-                ownerSignal.removeEventListener(type, notify);
-                callerSignal.removeEventListener(type, notify);
-                listener();
-              };
-              subscriptions.set(listener, notify);
-              ownerSignal.addEventListener(type, notify);
-              callerSignal.addEventListener(type, notify);
-            },
-            removeEventListener: (type, listener) => {
-              const notify = subscriptions.get(listener);
-              if (notify === undefined) return;
-              subscriptions.delete(listener);
-              ownerSignal.removeEventListener(type, notify);
-              callerSignal.removeEventListener(type, notify);
-            },
-          };
+        : combineMcpConnectSignals(ownerSignal, callerSignal, owner.cleanupUncertain);
   return {
     cwd,
     ...(opts.workOwner === undefined
