@@ -1218,6 +1218,16 @@ All four package consumers and the Windows advisory pass at the reviewed source,
 which precedes these runtime corrections. The old unexplained Windows failure is
 not retrospectively passed. Two NEW clean complete cumulative rounds, a NEW clean
 security sitting and fresh final-source CI/platform evidence remain required.
+The [tenth cumulative review and original-owner corrections](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-tenth-cumulative-review-and-original-owner-corrections--2026-10-17)
+records complete NONCLEAN coverage of 293 paths / 1,600 independently verified hunks
+at `4c0fa5b7`. Four confirmed gaps affect passive Home/chat consumers, export timestamps,
+native editor preparation and checkpoint error classification. Corrections preserve
+known refusals and real cleanup joins. Separate fixture triage proves raw-work and
+manual SQLite-read cleanup gaps without claiming the initiating remote Windows cause.
+All four same-artifact consumers pass at that reviewed source; its Windows advisory
+remains failed. Correction author gates pass (341 CLI files / 5,475 passes / ten
+established skips); two NEW clean cumulative rounds, NEW separate security and fresh
+final-source CI/platform evidence remain pending.
 Step 8d proceeds automatically. The
 [final proposal reviews](phases/phase-2.5.5-hardening-and-remediation.md#second-maintainer-rereview-final-proposal-readiness--2026-10-16)
 remain proposal evidence, not implementation review. The selected encrypted archive

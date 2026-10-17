@@ -7106,3 +7106,97 @@ records; seal SHA-256:
 `4ba3e9799c4f2382256425fdc2c83b1fb76c0befae899c5ca5662028d884aced`.
 Source pins are checked unchanged after the gates. This does not replace the
 required new independent reviews, separate security or final-source CI/platforms.
+
+
+### Wave 3 Step 8d tenth cumulative review and original-owner corrections — 2026-10-17
+
+**NONCLEAN; implementation corrections in progress.** Source `4c0fa5b7` has a
+NEW complete cumulative review from base `d9625ff0`: all **293 physical paths /
+1,600 full U0 hunks** independently rehashed and joined without overlap or omission.
+Session/terminal: 73/509, NONCLEAN; workflow/management: 134/825, NONCLEAN;
+native/tools/docs: 86/266, scoped CLEAN. The interrupted session sitting was
+completed independently from retained captures plus fresh source review/execution;
+no interrupted predecessor completion or earlier clean credit is inherited.
+Root independently joined every physical file, full patch and hunk identity.
+Aggregate SHA-256:
+`e11fe25dbf8011952ebb5ebae4bb35cba82b4fe8a7dcbf1246cbfc5776b17a22`.
+Detailed reports/ledgers remain local and Git-ignored.
+
+| Confirmed finding | Correction and preservation |
+| --- | --- |
+| ST-R10-1 — passive Home/plain/JSON/Ink session consumers hide failures behind bus isolation | Observe through original owner before local recovery; seal before reentrant cancellation; classify captured business output and retain independent restoration capabilities |
+| ST-R10-2 — export provenance catch also encloses native timestamp failure | Compute timestamp outside best-effort row write; preserve already-written scaffold and existing row-write warning policy |
+| ST-R10-3 — native `/edit` setup failure becomes an inline editor outcome before owner observation | Observe concrete native creation/write before partial cleanup; preserve known errno/editor refusal and never-throws outcome compatibility; report partial-cleanup uncertainty |
+| R10-WM-01 — gate/budget checkpoint native failure becomes invocation 2 | Preserve original cause; keep existing typed suspension corruption operational 1 with fixed history-inspection advice; unexpected native failure remains infrastructure 9 |
+
+Fresh reviewer verification records 35 assigned session files / **699 passes**,
+68 assigned workflow files / **1,287 passes and one established host skip**, and
+20 native source files / **304 passes**, with **101 Node tests** separately.
+Counts retain their own cohorts; overlap is not added into a unique whole-project
+claim. Session probes freshly reproduce all three findings, seven cases across
+four physical files with zero runner-unhandled errors. Workflow native checkpoint
+controls have four precise expected9 failures / four passing known-history/missing-run
+controls; valid-row fold controls separately characterize the old noncanonical
+mapping. Root independently reproduces Home/plain/JSON/Ink, export, checkpoint and
+native editor observations with owned zero-unhandled reporter receipts. These are
+injected offline/native-boundary scenarios, not live provider or naturally observed
+OS corruption claims.
+
+**Separately attributed source platforms.** At `4c0fa5b7`, push run `39002571093`
+passes pack, required package aggregation and all four same-artifact consumers.
+Root and native reviewer independently inspect five ZIPs, 70 public tar members
+and four bound receipts. Tarball: **445,764 bytes**, SHA-256
+`6ff96978bf39cba43a817fa1f739ad5897355ccd2af6d3f800a0285c49968cb5`;
+physical audit SHA-256:
+`8d35a9f645dc3058da71baf8db56619e3aaa87631a860951c36038fcb0585130`.
+Its Windows advisory fails the benign-alias filesystem case at its unchanged
+5,000-ms bound (reported 5,418 ms; 322 passes / eighteen Windows skips). The remote
+initiating phase/cause remains **unknown**. Broader required CI retains its actual
+separate status; these platform passes precede the R10 corrections.
+
+Separate isolated macOS/native-SQLite triage proves that runner timeout does not
+join pending raw work, mutable fixture identity can affect late reads, and an actual
+read fault bypasses an unguarded close. Eight unchanged original cases plus three
+controls pass; two intentionally held original-bound timeout controls remain RED;
+two real missing-table read controls pass. All fresh owned launchers/children join,
+all source/dependency pins remain fixed, and no watchdog fires. This does not explain
+or waive the remote Windows failure. The correction retains immutable case identity,
+bridges runner abort to the original invocation, joins raw work before HOME/root
+removal, and protects manual native reads/writes with `finally`. No timeout widening,
+new skip, speculative warmup or serialization is introduced.
+
+Author correction gates, permanent old-runtime causal checks, two NEW complete
+cumulative clean rounds after the last material fix, a NEW separate clean security
+sitting and fresh final-source full CI plus all four same-artifact consumers remain
+required. R1–R10 retain NONCLEAN verdicts. No Step 8d, whole Step 8, later-step or
+whole-wave acceptance is inferred. No new ADR, user decision, provider capture,
+credential, billing, production recipient or release upload is pending.
+
+
+**R10 correction author gates.** Workspace lint/typecheck/test passes all **23
+tasks** (twenty cached); the fresh CLI cohort records **341 files / 5,475 passes /
+ten established skips**. Build/format passes all seven tasks (five cached).
+Seam and engine-dependency fences, tools typecheck, **720-file** isolation/ownership,
+compiled **25-output / 408-input / 17-external** closure, **177** bootstrap controls
+and compiled CLI smoke pass. No dependency-manifest change or core/LLM/DB/MCP/shared runtime
+source delta is introduced. All 490 relative file targets in the five changed Markdown
+homes resolve; mandatory managed Turbo headings and fenced examples are preserved.
+
+Permanent controls execute twelve identical test files against an immutable
+`4c0fa5b7` Git archive and the corrected source. Old runtime: **29 precise semantic
+assertion failures / 228 passes**; corrected source: **261 passes**, including four
+additional helper tests. Both owned runner receipts report zero unhandled errors;
+actual execution sessions join. No tracked runtime is mutated for these controls.
+The original no-collection dependency-link attempt receives no passing credit.
+A final Prettier-only comment indentation change in one test is independently
+verified to preserve the complete TypeScript executable-token sequence; the original
+execution pins and explicit format-equivalence receipt remain local. Causal record
+SHA-256: `baf2ada2043e876a911e73d5e19f253617c1194687004511d1eb2c5a6ec72e16`.
+
+Material source/test/canonical-contract seal SHA-256: `bea2dbf25e58cf75ffa7f4421d1926f6b9f51fe5c7df4093e974c080cd23011f`.
+Append-only status records are excluded from that seal to avoid a circular hash.
+Initial test expectation/type/lint/format failures were corrected and retain their
+failed attribution; only the successful final commands above receive credit.
+These author gates do not replace two NEW complete cumulative clean rounds, the
+NEW separate clean security sitting or fresh final-source full CI and all four
+same-artifact consumers. Step 8d and whole Step 8 remain open.

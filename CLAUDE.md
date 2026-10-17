@@ -196,16 +196,18 @@ is independently accepted at `dbab25d8` after two NEW complete cumulative clean
 rounds, a separate clean security sitting and successful full CI. All four
 same-tarball platform consumers pass at that reviewed source. Whole Step 8 remains open.
 Step 8d session/terminal integration and product fatal activation are implemented
-but not independently accepted. Its first nine complete cumulative rounds are
-NONCLEAN. R9 independently verifies all 293 paths / 1,588 cumulative hunks and
-reproduces two High caught-fault gaps: one-shot passive rendering and bare-Home
-`/models` default writing. The corrections observe the original owner before UI/bus
-recovery, preserve actual producer/native/accounting joins and keep known refusals
-inline. The signal summary is reconciled with existing forced workflow termination.
-All four same-artifact consumers and the Windows advisory pass at reviewed
-`40086e71`; those results precede the R9 runtime corrections and are not final-source
-acceptance. The earlier `09740575` Windows timeout remains failed with exact cause
-unclassified. Original five-second bounds and semantic assertions are preserved.
+but not independently accepted. Its first ten complete cumulative rounds are
+NONCLEAN. R10 independently verifies all 293 paths / 1,600 cumulative hunks at
+`4c0fa5b7` and confirms four original-owner failure gaps: passive session consumers,
+export timestamp recovery, native editor preparation and checkpoint classification.
+Corrections preserve known inline/typed refusals and actual producer/native/accounting
+joins. Separate actual-SQLite triage proves filesystem fixture raw-work/read cleanup
+gaps; original five-second bounds and semantic assertions are preserved. All four
+same-artifact consumers pass at that reviewed source, but its Windows advisory
+filesystem timeout remains failed with exact initiating phase/cause unclassified.
+The older `09740575` Windows timeout also retains its failed, unclassified status.
+Author correction gates pass (341 CLI files / 5,475 passes / ten established skips);
+final-source independent review/security/CI/platform acceptance remains pending.
 Two NEW complete cumulative clean rounds after the last material fix, a NEW
 separate clean security sitting and fresh full CI plus all four same-artifact
 package consumers remain required.

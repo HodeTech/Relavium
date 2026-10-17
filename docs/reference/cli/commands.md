@@ -783,7 +783,7 @@ The runtime classifier queries the read-only
 [`@relavium/db` storage-origin fact](../shared-core/database-schema.md#node-client-failure-provenance).
 A public `DbOpenError('open_failed', …)`, a copied error, an errno-shaped object
 or a convincing cause does not establish storage origin. The CLI's concrete
-directory-creation, permission-hardening and export-write operations classify
+directory-creation, permission-hardening, export-write and native editor temporary-directory/private-transcript-write operations classify
 `EACCES`, `EPERM`, `ENOSPC` and `EROFS` at those owned native calls. Shared local
 opening, run/gate opening and history helpers preserve these dispositions;
 centralizing all openers remains Step 18.
@@ -794,7 +794,7 @@ unknown throws project fixed `cli_internal` and exit 9. Runtime projection
 uses own data descriptors; reflection/accessor faults fall back to the same
 fixed infrastructure diagnostic without incoming message, cause or coercion.
 Exit classification comes from the CLI policy, not a mutable error exit field.
-Typed history corruption/unreadability and known run/gate departure failures
+Typed history corruption/unreadability, including the shared checkpoint suspension-corruption family, and known run/gate departure failures
 retain operational 1; URI/API validation, authoring and known maintenance
 refusals retain their existing invocation disposition.
 
@@ -1183,3 +1183,30 @@ G15 is refuted as a current shipping defect. Preserve human durable-event replay
 and actual JSON stored sequence/gaps. The engine/store/log regression must prove
 live fragments are emitted live but absent from durable history; no token
 coalescer or new persistence is authorized by that historical finding.
+
+
+#### Step 8d passive consumers and editor preparation
+
+Surface-owned session view/printer/JSON callbacks observe an unexpected failure
+through their original invocation before passive bus isolation can consume it.
+The callback seals before cancellation reentry; the core bus keeps its listener
+isolation. Headless business writes use the captured output origin, while entered
+terminal restoration retains its independent original capabilities. Actual producer,
+accounting, native close and output delivery remain independently owed.
+
+The native editor temp helper observes unexpected creation/write failures before
+partial removal can hold. Its existing classified `EditorOutcome` compatibility
+contract remains: missing editor and known operational refusals stay inline;
+unexpected native faults select infrastructure 9 through the original owner.
+Actual spawn ENOENT/EACCES remain inline only at concrete spawn origins. Rejected
+admission after ordinary stop is separate from a native spawn fault. Partial-removal
+failure reports cleanup uncertainty while retaining the exit net and original
+primary failure; observation does not acknowledge cleanup. Ownerless compatibility
+callers retain the existing outcome contract.
+
+A completed export's auxiliary provenance-row write remains best effort. Timestamp
+construction is outside that recovery scope, so an unexpected clock/format fault
+cannot become successful provenance recovery or cause a second scaffold write.
+Checkpoint loading likewise preserves original causes: typed inconsistent history
+remains operational 1 with inspection advice; an unexpected driver/wiring failure
+selects infrastructure 9 before original-owner cleanup.
