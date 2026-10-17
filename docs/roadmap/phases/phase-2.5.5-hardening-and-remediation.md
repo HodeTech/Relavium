@@ -7007,3 +7007,102 @@ Initial copy-config over-selection and a rejected non-unique mutation anchor are
 excluded from that causal matrix. These author controls do not replace independent
 reviews or explain the remote Windows timeout. Fresh final-source CI/platforms,
 two NEW clean cumulative rounds and a NEW clean security sitting remain required.
+
+### Wave 3 Step 8d ninth cumulative review and caught-fault correction — 2026-10-17
+
+**R9 is complete and NONCLEAN; Step 8d and whole Step 8 remain open.** The root
+read all three new complete reports and independently recomputed every physical
+file, full U0 diff and hunk from original Step 8 base `d9625ff0` to frozen
+`40086e71`. Coverage is disjoint and complete: **293 paths / 1,588 hunks**.
+Inventory SHA-256:
+`2f5f938dca6c091169835b30dead1d8d5712c6ce37a08438f4af48a754548993`;
+independently joined aggregate:
+`bd36912c9c8ff457aa09c61a3a44cc3a8616930d8bd69862943a5826a23b0d1c`.
+
+| Complete cumulative slice | Paths / hunks | Fresh execution, separately attributed | Verdict |
+|---|---:|---|---|
+| Session/terminal | 73 / 505 | 35 complete files / 697 passes; separate actual Home/onboarding probe / two passes, zero skips | NONCLEAN: ST-R9-1, High |
+| Workflow/management | 134 / 818 | 68 complete files / 1,276 passes, one established host skip; independent eight-case probe has six precise failures and two positive passes | NONCLEAN: R9-WM-01, High |
+| Native/tools/docs | 86 / 265 | 18 source files / 191 passes; 101 tooling passes; four independent signal probes, zero skips | NONCLEAN: WNT-R9-1, Medium |
+
+Selections overlap; no combined deduplicated execution total is inferred. In
+table order, report SHA-256 values are
+`69efbdc45f67a337e529437c1c0f0cc233a4a04e6d3acd73c93e6e3d73e793ee`,
+`371e07d09011adeaf07b11fc1c5b1be4f39123e4b0393d77b8f08c86258dbbca` and
+`8d9fb2c8f4f3a1350984f37ce0d66cd2979532cb9d4ec077f4ae9d15de605b53`.
+Checked coverage-ledger hashes are
+`25b5eb65f629db004a268f0e88fe5d8ee6095aa42fd62fb526682935d9de975d`,
+`a0511bc6f1ad4ddfdeccd5bf466510b605352d5d2857899ea055ed192f4b1373` and
+`30bfc7da2c83dc8065a92d06d1be02662774108c2863836176674846bce1d9df`.
+Records remain local and Git-ignored. Native evidence distinguishes fresh source
+parents from existing-dist child fixtures. Failed reviewer setup attempts receive
+no acceptance credit. Root replays have separate copies; reviewers regenerated
+their final reports after an overwritten probe output path.
+
+**ST-R9-1, High, independently reproduced.** The real Home default writer can
+throw unexpectedly before its filesystem refusal adapter. Inline picker recovery
+consumed the fault without notifying the original owner, permitting Home exit 0.
+The owned callback now checks admission and observes failure before UI recovery.
+Known typed config refusals remain inline; ownerless compatibility is preserved.
+Onboarding already observes the same fault correctly and needs no runtime change.
+
+**R9-WM-01, High, independently reproduced through shipping dispatch.** Passive
+one-shot render faults were isolated by the event bus and reduced to warnings.
+Failed rendering also prevented recording a turn error, changing failed-turn 1
+into success 0. Captured writes now classify actual sink refusal and notify the
+original surface owner. The subscriber records the turn error independently,
+seals rendering before cancellation reentry and observes its exceptions before
+bus isolation. Mandatory host ownership and admission checks prevent turn entry
+after a start-render fault. Actual producer, usage, MCP and native database joins
+still precede retirement. No workflow health is manufactured. The proof uses an
+injected captured-sink refusal with actual dispatch/cassette/SQLite, not OS EPIPE.
+
+**WNT-R9-1, Medium.** The canonical exit summary now distinguishes cooperative
+first SIGINT from second SIGINT and terminating HUP/QUIT/TERM, linking existing
+outcome precedence. No runtime signal policy changes.
+
+**Permanent and causal evidence.** Thirteen new cases cover direct and shipping
+dispatch, plain and JSON output, successful and failed turns, known Home config
+refusal, unexpected actual-writer failure and a held host-close/database join.
+Two complete current-source files pass **113 tests**, zero skips. The same tests
+against a private immutable `40086e71` archive produce exactly **ten named semantic
+failures / 103 passes**, zero skips. Both executions have owned runner completion
+receipts with **zero unhandled errors**. No tracked runtime mutation, timeout,
+import failure or mere nonzero exit certifies causal proof. Control artifact:
+`cc4ee289b92054b526a4219f079033090955518a13ae23e4f51ebdd6a454836f`.
+Fixture finally blocks join actual drives even when semantic assertions fail.
+An initial test-only generic mock type error was corrected; an unsupported Python
+extraction option was a preparation failure. Neither receives passing credit.
+
+**Separately attributed reviewed-source platforms.** Push run `39000420576`,
+attempt 1, passes pack, all four same-artifact consumers, required aggregation
+and Windows advisory at `40086e71`. Root and native reviewer independently inspect
+all five ZIPs, 70 public tar members and four bound receipts. Tarball: **445,642
+bytes**, SHA-256
+`3517a497fd5f1dca8d042cfefbc824b4fcb8394acb548e3d9b166f77ee28e283`;
+physical audit:
+`278d7aa1f8319b241b5767b9044de85b8673cd43c4f80563dbea7542e1d93e26`.
+Actual Windows coexistence passes all five cases at the unchanged five-second
+bound. These results precede the runtime corrections. The earlier `09740575`
+timeout remains failed with exact cause unclassified; a later pass does not
+explain it. Required broader CI retains its own observed status.
+
+Two NEW complete cumulative clean rounds after the last material correction, a
+NEW separate clean security sitting and fresh final-source full CI plus all four
+actual same-artifact platforms remain required. R1–R9 retain NONCLEAN verdicts.
+No Step 8d, whole Step 8, later-step or whole-wave acceptance is inferred. No user
+decision, ADR approval, credential, billing, provider capture, production recipient
+or release upload is pending. Implementation continues automatically.
+
+
+**Final author gates for the R9 correction.** All seventeen workspace lint/typecheck
+tasks pass (fifteen cached); all eleven workspace test tasks pass (ten cached).
+The fresh CLI run records **335 files / 5,429 passes / ten established local skips**.
+Build/format passes all seven tasks (six cached). Seam and engine-dependency
+fences, 714-file isolation/ownership, 25-output/407-input/17-external compiled
+closure, 177 bootstrap controls and compiled CLI smoke pass. Product/test source
+and the canonical exit summary are sealed separately from append-only status
+records; seal SHA-256:
+`4ba3e9799c4f2382256425fdc2c83b1fb76c0befae899c5ca5662028d884aced`.
+Source pins are checked unchanged after the gates. This does not replace the
+required new independent reviews, separate security or final-source CI/platforms.

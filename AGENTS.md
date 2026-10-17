@@ -107,15 +107,16 @@ is independently accepted at `dbab25d8` after two NEW complete cumulative clean
 rounds, a separate clean security sitting and successful full CI. All four
 same-tarball platform consumers pass at that reviewed source. Whole Step 8 remains open.
 Step 8d session/terminal integration and product fatal activation are implemented
-but not independently accepted. Its first eight complete cumulative rounds are
-NONCLEAN. R8 accepts the earlier MCP/native-outcome and fixture corrections in its
-reviewed scope, but finds a stale one-shot command summary. That canonical summary
-is corrected alongside independently reproduced coexistence-fixture setup/timeout
-ownership gaps; fresh reviews of these corrections remain required. All four
-same-artifact package consumers pass at `09740575`; its separate Windows advisory
-coexistence timeout remains failed and its exact cause unclassified. Original
-five-second case bounds and semantic assertions are preserved. No historical
-failure is retrospectively accepted; fresh final-source full CI remains required.
+but not independently accepted. Its first nine complete cumulative rounds are
+NONCLEAN. R9 independently verifies all 293 paths / 1,588 cumulative hunks and
+reproduces two High caught-fault gaps: one-shot passive rendering and bare-Home
+`/models` default writing. The corrections observe the original owner before UI/bus
+recovery, preserve actual producer/native/accounting joins and keep known refusals
+inline. The signal summary is reconciled with existing forced workflow termination.
+All four same-artifact consumers and the Windows advisory pass at reviewed
+`40086e71`; those results precede the R9 runtime corrections and are not final-source
+acceptance. The earlier `09740575` Windows timeout remains failed with exact cause
+unclassified. Original five-second bounds and semantic assertions are preserved.
 Two NEW complete cumulative clean rounds after the last material fix, a NEW
 separate clean security sitting and fresh full CI plus all four same-artifact
 package consumers remain required.

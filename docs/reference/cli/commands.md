@@ -587,10 +587,11 @@ under [ADR-0106](../../decisions/0106-media-publication-requires-bounded-verifie
 
 ## Exit codes
 
-CI relies on deterministic exit codes. The table is the closed set for `run` and `gate`; the signal codes
-`128+signo` (`129` SIGHUP, `130` SIGINT, `131` SIGQUIT, `143` SIGTERM) belong to the surfaces that end **on** a
-signal rather than draining through one — the interactive Home and `agent run`. `relavium run` is deliberately
-not one of them: its Ctrl-C is a cooperative cancel that exits `1`.
+CI relies on deterministic exit codes. The table covers ordinary `run` and `gate` outcomes. A first workflow
+SIGINT requests cooperative cancellation, normally exiting `1` unless a stronger observation applies. A second
+SIGINT or a terminating SIGHUP, SIGQUIT or SIGTERM uses `128+signo` (`130`, `129`, `131` or `143`), subject to
+the [observed health and infrastructure precedence](#failure-classification-and-remedies). Home and `agent run`
+also retain their [owned signal dispositions](#invocation-owners-and-fatal-ordering).
 
 
 | Code | Meaning |

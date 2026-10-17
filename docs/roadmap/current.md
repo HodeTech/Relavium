@@ -1207,8 +1207,18 @@ Separate actual-SQLite triage reproduces setup and timeout ownership gaps in the
 coexistence fixture, with the original five-second deadline preserved. All four
 same-artifact consumers pass at that reviewed source; its separate Windows
 advisory timeout remains failed and its exact initiating delay unclassified.
-Two NEW clean complete cumulative rounds, a NEW clean security sitting and fresh
-final-source CI/platform evidence remain required. Step 8d proceeds automatically. The
+The [ninth cumulative review and caught-fault correction](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-ninth-cumulative-review-and-caught-fault-correction--2026-10-17)
+records complete NONCLEAN coverage of 293 paths / 1,588 independently verified
+hunks at `40086e71`: two High runtime findings in one-shot passive output and owned
+Home default writing, plus a Medium signal-summary inconsistency. Corrections
+observe original invocation failures before local recovery, seal further entry and
+retain actual cleanup joins. New tests fail precisely against the old runtime;
+known config refusals and ordinary failed turns retain their classified outcomes.
+All four package consumers and the Windows advisory pass at the reviewed source,
+which precedes these runtime corrections. The old unexplained Windows failure is
+not retrospectively passed. Two NEW clean complete cumulative rounds, a NEW clean
+security sitting and fresh final-source CI/platform evidence remain required.
+Step 8d proceeds automatically. The
 [final proposal reviews](phases/phase-2.5.5-hardening-and-remediation.md#second-maintainer-rereview-final-proposal-readiness--2026-10-16)
 remain proposal evidence, not implementation review. The selected encrypted archive
 method persists; production recipient/recovery belongs to Wave 4b release setup.
