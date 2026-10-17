@@ -2,7 +2,7 @@
 
 > Status: Living
 
-> Last updated: 2026-10-15 — Wave 2 merged in PR #94; existing approved deferrals remain.
+> Last updated: 2026-10-18 — Wave 2 is merged in PR #94; Wave 3 Steps 1–8 are accepted on `development`, with PR #95 under review. Existing approved deferrals remain.
 > The [merge checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#wave-2-merge-checkpoint--2026-10-15) records completed prerequisites; full M/N lifecycle and other scheduled work remain with their owners.
 >
 > Earlier triage: the Phase-2.6 rewrite triaged every open item, the 2026-07-19 full-project

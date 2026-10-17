@@ -1,6 +1,6 @@
 # CLI Command Reference (`relavium`)
 
-> Last updated: 2026-10-17
+> Last updated: 2026-10-18
 
 - **Status**: Reference (partial — surface defined, exact flags to be finalized as the CLI is built)
 - **Surface**: CLI (`relavium`)
@@ -12,7 +12,7 @@ The `relavium` CLI is the terminal surface of the platform and the fastest way t
 ## Install & distribution
 
 - **Package**: published to npm as `relavium`, installed globally. The artifact is an **engine-inlined ESM bundle** — the proprietary `@relavium/*` engine is bundled in; every third-party dependency (including the prebuilt native addons) installs normally ([ADR-0051](../../decisions/0051-cli-distribution-thin-bundle-private-engine.md)). A global install needs no compiler toolchain.
-- **Build**: TypeScript bundled with `tsup` to one executable ESM entry. Wave 3 Step 7a implements finite lazy chunks on `development`; installed-package/platform acceptance and release custody remain staged in the [packaging contract](packaging.md). The published single-bundle release uses the `Release CLI` workflow (pack → cross-OS install-smoke on macOS/Linux/Windows → npm publish with provenance), see [release-a-surface.md](../../runbooks/release-a-surface.md).
+- **Build**: TypeScript bundled with `tsup` to one executable ESM entry and finite lazy chunks. Wave 3 Steps 7–8, including actual same-tarball Linux/macOS/Windows and minimum Node 22 consumers, are independently accepted on `development`; Step 9 maps, release custody and later whole-wave gates remain staged in the [packaging contract](packaging.md). The published release retains its historical single bundle; see [release-a-surface.md](../../runbooks/release-a-surface.md).
 - **Stack**: `commander.js` for argument parsing, `ink` (React for terminals) for the interactive TUI, `@clack/prompts` for setup wizards.
 - **API keys**: stored in the OS keychain via `@napi-rs/keyring` (macOS Keychain / Windows Credential Manager / Linux libsecret) — never plaintext, and never the archived `keytar` (see [ADR-0019](../../decisions/0019-cli-node-keychain-library.md) and [add-a-provider-key.md](../../runbooks/add-a-provider-key.md)).
 - **Workflow discovery**: reads workflows from the `.relavium/` directory in the project root, or from an explicit path argument.
@@ -152,7 +152,7 @@ The command set below is the confirmed surface. Commands ship **per workstream**
 
 > **Canonical home** for the command manifest ([ADR-0056](../../decisions/0056-cli-in-app-slash-command-system-and-manifest.md), 2.5.C). The runtime form lives in `apps/cli/src/commands/manifest.ts` (a **CLI-only** contract — no other surface consumes a CLI command list).
 
-The **command manifest** is the one source the **shell** command surfaces derive from — the `commander` parser, the `executeCommand` dispatch table (`apps/cli/src/commands/dispatch.ts`), and `relavium --help --json` — so they can **never diverge**. (The in-REPL `/` palette + slash commands are a separate, curated registry — see [In-REPL slash commands](#in-repl-slash-commands) below.) The set is deliberately **small and alias-free**; every entry is canonical by construction (there is no per-entry alias flag). Each entry is:
+The **command manifest** is a derived, alias-free projection of the CLI descriptor registry. That registry owns the shell grammar and metadata used by `commander`, discovery and the finite executor mapping; `apps/cli/src/commands/manifest.ts` is not a second editing authority. Drift guards compare the actual parser and executor set with the descriptors and derived manifest. (The in-REPL `/` palette + slash commands are a separate, curated registry — see [In-REPL slash commands](#in-repl-slash-commands) below.) Each manifest entry is:
 
 ```text
 {
@@ -165,7 +165,7 @@ The **command manifest** is the one source the **shell** command surfaces derive
 }
 ```
 
-- **`effect`** is a forward-looking annotation: `read` never mutates, `write` creates/modifies, `destructive` irreversibly removes (today only `provider.remove-key`). It is **marked** for agent discoverability now; approval **enforcement** of a `destructive` entry is owned by [ADR-0057](../../decisions/0057-cli-chat-modes-and-per-tool-approval.md) (workstream 2.5.E), not here.
+- **`effect`** is a forward-looking annotation: `read` never mutates, `write` creates/modifies, `destructive` irreversibly removes (`provider.remove-key` and `media.prune-temporaries`). It is **marked** for agent discoverability now; approval **enforcement** of a `destructive` entry is owned by [ADR-0057](../../decisions/0057-cli-chat-modes-and-per-tool-approval.md) (workstream 2.5.E), not here.
 - **`modeScope`** lists the chat modes a command appears in (omit ⇒ all). The mode values (`ask` / `plan` / `accept-edits` / `auto`) are defined in [ADR-0057](../../decisions/0057-cli-chat-modes-and-per-tool-approval.md) (2.5.E); 2.5.C ships the field with `omit = all`.
 - A `manifest ↔ commander` drift guard (a unit test) asserts every real `commander` command has an entry with the **same description** (command + each option), so `commander`, the `executeCommand` table, and `--help --json` stay byte-consistent.
 
@@ -232,7 +232,7 @@ Both are **surface-agnostic** git-native YAML operations — they read/write `.r
 
 `create` and `import` emit these notices only after their YAML file is written. A refused write emits no authored-content notice or success output.
 
-The review visits at most 4,096 nodes through depth 64, checks strings of at most 16,384 UTF-16 code units and at most 262,144 checked code units in total, including property names. It reports only a count of strings matching the existing finite detector (prefixed OpenAI/Anthropic or Google keys, URL userinfo, Bearer/Basic credentials and literal secret query names). It does not classify every credential format. Over-budget strings or structure, repeated objects and unsupported object shapes produce a separate fixed incomplete-review notice. Object-key enumeration relies on the existing parser source ceiling; the node limit is not an independent bound on that enumeration. Neither notice includes values or arbitrary property names.
+The review visits at most 4,096 nodes through depth 64, checks strings of at most 16,384 UTF-16 code units and at most 262,144 checked code units in total, including property names. It reports only a count of strings matching the finite detector: prefixed OpenAI/Anthropic or Google keys, HTTP(S)/WS(S)/FTP(S) URL userinfo, exact `api-key`/`x-api-key`/`x-goog-api-key` headers, Bearer/Basic credentials and literal secret query names. It does not classify every credential format or distinguish arbitrary opaque credential fragments from following diagnostic prose. Over-budget strings or structure, repeated objects and unsupported object shapes produce a separate fixed incomplete-review notice. Object-key enumeration relies on the existing parser source ceiling; the node limit is not an independent bound on that enumeration. Neither notice includes values or arbitrary property names.
 
 For this detector probe only, a recognised bare template reference without a path or filter is projected to an already masked span, provided its raw reference contains no recognised credential shape. This keeps `Bearer {{secrets.token}}` and equivalent query placeholders quiet. Adjacent literals, credential-shaped identifiers, paths, filter arguments and unknown or malformed references retain their evidence. This projection neither resolves references nor changes authored content.
 

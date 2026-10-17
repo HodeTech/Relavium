@@ -228,3 +228,11 @@ historical-content limits. Earlier decision-acceptance notes do not claim this
 later implementation landing. Other Wave 3 decisions and increments remain
 staged; this note does not close ADR-0112 policy work, whole-wave publication or
 merge. No historical ADR body is rewritten.
+
+### PR #95 external-projection guard — 2026-10-18
+
+The owned provenance authority now refuses a resolved context key absent from its admitted
+declaration snapshot before reading that value. This closes an embedding-only implicit-clean
+fallback while preserving normal fresh/resume/preparation resolution and the existing fixed
+validation refusal. The [runner contract](../reference/shared-core/agent-runner.md#qualified-context-consumers)
+owns this boundary; the accepted decision and historical implementation evidence remain unchanged.

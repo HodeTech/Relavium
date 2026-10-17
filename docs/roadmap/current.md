@@ -1432,7 +1432,7 @@ on `home-controller.ts`/`chat-ink.tsx` (the decomposition moves already-guarded 
 - **Viewport (strict)** — 2.5.5.I · share the ADR-0069 grapheme segmenter (#58, #62, G40, G51) →
   2.5.5.G · tab expansion before width measurement (#65) → per-cluster width cache + resize debounce
   (#64, #66), refined to frame coalescing in the proposed plan. Alt-screen word-wrap
-  (#61) retains Wave 5a ownership; its formal disposition follows plan approval.
+  (#61) retains the approved Wave 5a ownership; it is not an unapproved Wave 3 prerequisite.
 - **`packages/shared` (strict)** — the `.code` ruling (G50, D10) → `findDuplicates`/`superRefine` implementation or preservation at the
   schema dispositions (#89, #90, G16, G17, G18, #210, #211, #212) → `BaseEventSchema` disposition (#213) →
   the `RelaviumError` base class (#219). *The ruling must precede the base class, or it is baked in permanently.*

@@ -398,6 +398,8 @@ passes both through `resumePreparation.context` / `resumePreparation.provenance`
 execution reuses them rather than deriving a second mutable secret-name set.
 Context analysis and resolution use the authority's same owned definition snapshot, so caller
 edits after admission or during an awaited context capability cannot change the analysed source.
+Qualification refuses a resolved key absent from that owned declaration snapshot before reading
+its value; an undeclared key never acquires an implicit clean classification.
 
 `NodeExecContext` and `NodePreparationContext` require the same context projection and owned
 `secretInputNames` membership; the preparation Pick includes both. Agent prompt resolution

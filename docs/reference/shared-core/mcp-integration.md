@@ -223,6 +223,12 @@ entered close remains joined, and a throwing reporter's original exception is
 returned only after those joins settle. The failed-start lifecycle observer is not
 delivered a second time for an ordinary successful-client close.
 
+A successful-client budget-port failure likewise rejects `close` promptly with a fixed
+generic infrastructure error and a retained private cause. Rejection does not acknowledge
+cleanup: the unknown connection and original shared cleanup join remain retained, while
+eligible sibling closes still enter and settle independently. Repeated `close` calls
+observe the retained failure without restarting cleanup or renewing its budget.
+
 Failed-start cleanup transfers its own work scope before server construction.
 All exact entered closes remain joined even if the lifecycle reporter throws.
 A reporter/budget-port failure surfaces promptly as a fixed generic
@@ -237,6 +243,13 @@ retain the same failed-start observations. No vendor handle, PID authority,
 receipt success or new engine error code is carried by this channel. Final
 session/terminal integration and global activation are covered by [Step 8d
 acceptance](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-and-whole-step-8-acceptance--2026-10-17).
+
+Session-host shutdown initiates the once-retained MCP close after entered construction/turn
+roots and actual core provider/tool/accounting work settle, before joining transferred native
+connection lifetimes. Otherwise that join would wait on the close it prevents from starting.
+The close request is not acknowledgement: native receipts and other transferred work still
+join before persister/final host cleanup and database release. The original finite budget
+is checked before entering close; expiry or a barrier/close refusal preserves uncertainty.
 
 ### Discovery and result ingress bounds
 

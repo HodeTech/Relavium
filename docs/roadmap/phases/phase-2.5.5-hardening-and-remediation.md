@@ -4537,7 +4537,8 @@ whole-wave acceptance, a release or new permission. Detailed records stay ignore
 
 Step 3 is independently accepted at `5d8c0b0cf91604c2c270ff0351b4168508fe6041`.
 Two NEW independent complete cumulative clean reviews after the final material
-fix cover all **42 changed paths / 108 hunks**, including all thirteen added
+fix cover all **42 changed paths / 108 default-context (`--unified=3`) hunks**
+from accepted Step 2 `873da1c3` through `5d8c0b0c`, including all thirteen added
 files and actual consumers. Selected reviewers are gpt-6-astra/high (30 files /
 1,513 independently passing tests) and gpt-6.1-sol/high (20 files / 1,193 tests).
 Both report zero findings and independently run the 26 retained ordinary
@@ -8355,3 +8356,60 @@ Fresh push/PR CI and Sonar analysis must be evaluated at the new published head;
 the earlier green publication runs are not attributed to these changed bytes.
 Detailed triage, correction reviews and receipts remain local and Git-ignored.
 Steps 9–19 have not started; Wave 3 and whole-PR acceptance remain open.
+
+### PR #95 systematic-review corrections — 2026-10-18
+
+The maintainer's systematic review is pinned to `05061d55`, with no Blocker/High,
+thirteen Medium findings and grouped Low observations. The authorized correction
+stays within the Steps 1–8 publication scope on `development`; it starts no
+Step 9 release/custody work. Earlier independent acceptance retains its exact source
+attribution. This checkpoint records implementation and author verification;
+two NEW complete cumulative clean review rounds, a separate security sitting,
+corrected-source CI/Sonar and fresh same-artifact consumers remain required.
+
+The effect journal now hashes the full redacted projection instead of a display
+preview. Real registry/reference and registry/SQLite regressions distinguish equal-length
+long tails, preserve current-version identical replay and refuse changed same-slot
+arguments. A persisted digest version separates old lossy projections: all unversioned
+rows refuse matching prepare, including unchanged small arguments and literal old previews.
+Declared and recognized credentials remain excluded before hashing; no raw
+argument storage or new hash primitive is introduced. The owned context authority also
+refuses undeclared resolved keys before reading them. Its ordinary producer paths remain
+unchanged. Finite credential diagnostics cover malformed multi-`@` URL authorities,
+supported additional URL schemes, exact API-key headers and split Bearer/Basic labels;
+the canonical detector contract retains its explicit opaque-fragment limits.
+
+Actual active-turn OS SIGINT tests additionally expose and repair a session/MCP
+close-order cycle. Six POSIX cases exercise fresh chat, resumed chat and standalone
+agent, plain/JSON; two ordinary EOF cases retain real MCP children. Provider/core
+quiescence precedes the once-retained MCP close request, native acknowledgement
+precedes final persistence cleanup, and the original termination budget is unchanged.
+These local POSIX cases do not claim native Windows signal execution. Catalog refresh
+always rejects through its Promise boundary without delaying admission; both owner and
+caller signals limit MCP startup. Exceptional MCP budget observation is prompt and
+retains unknown closure, with independent sibling cleanup and no fabricated ACK.
+
+Permanent regressions also pin failed-construction cleanup, accepted bootstrap exits,
+gate JSON no-op stdout purity, shared DB-acquisition custody, notice-context forwarding,
+partial terminal registration, native-close failures and finite reap, diagnostic sink
+failures and explicit driver lifetime ownership. CI smoke-step guards reject removal
+or advisory substitution. The installed cohort restores provider listing and unknown-run
+log refusal, making ten required cases; historical eight-case receipts are not relabeled.
+Direct seal and HTTP/2 denial tests enter the ordinary acceptance-tool gate.
+
+The Sonar count correction distinguishes the initial **214 records / 80 files**
+from the independently fetched all-record snapshot at reviewed source `05061d55`:
+**215 records / 81 files = 53 false positives + 86 accepted + 9 fixed + 67 open**.
+The additional workflow false positive was already classified outside the initial
+214-record intake; it is not a newly performed disposition. The 67 valid maintenance
+suggestions remain visible, without changing rules, quality gates or approved deferrals.
+Later analyses must retain their own source and counts.
+
+Several review observations required precise disposition rather than a contract change:
+explicit `failure: undefined` remains an invalid retirement witness; the three claimed
+missing pure roots are not three uncovered production boundaries; Step 3's 108 hunks
+are the reproducible default-context count (143 with `--unified=0`). Fixture-retirement
+tests test the native test harness and are not presented as additional product-path
+coverage. Separate tarball builds may differ in metadata ordering: existing acceptance
+certifies one chosen immutable archive, not independently reproducible builds.
+Detailed per-finding evidence, controls and review records remain local and Git-ignored.

@@ -1,6 +1,6 @@
 # Desktop Keychain & Secrets
 
-> Last updated: 2026-10-13
+> Last updated: 2026-10-18
 
 - **Status**: Reference
 - **Surface**: Desktop (Tauri v2)

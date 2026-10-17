@@ -339,3 +339,16 @@ The approved W7 implementation and scoped independent reviews are complete. Fina
 acceptance, per-item causal evidence, canonical landing checks and approved residuals are joined in
 the [W7 closing register](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w7-closing-register--2026-10-10).
 This dated note preserves the earlier decision and status history; W8 and the phase remain open.
+
+### PR #95 collision-guard correction — 2026-10-18
+
+The maintainer review reproduced a long-argument collision: the display's prefix and
+total-length marker had also fed the journal digest, losing different equal-length tails.
+The dispatch now supplies the full redacted projection to the existing host-side canonical
+hash. This restores §4's different-args refusal without hashing raw credentials or changing
+session non-replay. The persisted version prefix also prevents a current literal preview
+from matching a lossy legacy projection. All unversioned rows refuse matching prepare,
+including unchanged small arguments; no fallback or migration invents an identity or
+permission to repeat an effect. The exact projection and credential-equality
+limits remain in [effect-journal.md](../reference/shared-core/effect-journal.md#11-secrets-what-a-row-may-hold).
+This author correction is subject to fresh review and source-pinned validation in PR #95.

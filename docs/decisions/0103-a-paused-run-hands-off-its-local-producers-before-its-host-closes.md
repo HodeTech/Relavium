@@ -1245,3 +1245,15 @@ future feature, deferral or claim of merge-commit execution.
 ## Wave 3 decision acceptance — 2026-10-16
 
 > Amended 2026-10-16: [ADR-0110](0110-cli-diagnostics-and-discovery-have-explicit-compatibility.md) is accepted by the maintainer. The invocation shutdown registry preserves actual owner stop/join and run-only health on return and throw paths. The total fatal-process budget is not a receipt deadline or host-safe-close acknowledgement. Sessions keep their existing lifetime/publication failures without fabricated RunDeparture health. ADR-0111 requires a single registry instance in the finite package graph. The approved [execution plan](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#proposed-implementation-increments) owns implementation and review gates; this note does not claim implementation landing.
+
+### PR #95 session close initiation correction — 2026-10-18
+
+Actual active-turn SIGINT and ordinary EOF regressions exposed a session-host cycle:
+joining the transferred MCP native lifetime prevented its only close request from starting.
+The host now initiates that once-retained close after entered roots and actual core work
+settle, before joining transferred lifetimes. Final persistence/database cleanup remains
+after the actual acknowledgements. This repairs the existing order without making logical
+cancellation, close initiation, a rejected observer or budget expiry into acknowledgement.
+The exact host sequence and exceptional budget-observation path live in
+[mcp-integration.md](../reference/shared-core/mcp-integration.md#failed-start-cleanup-lifecycle).
+Fresh cumulative review and corrected-source gates remain required in PR #95.

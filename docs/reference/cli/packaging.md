@@ -88,6 +88,17 @@ retained separately from product diagnostics; unknown runtime output still fails
 the diagnostic grammar and ordering controls. [Step 8d and whole Step 8 acceptance](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-and-whole-step-8-acceptance--2026-10-17)
 records cumulative reviews, separate security and actual same-artifact platforms.
 
+The PR #95 review correction adds two installed regressions: `provider list` succeeds
+without credential/network access and unknown `logs nope` refuses with exit 2 and empty
+stdout. The current required inventory is ten cases; the earlier eight-case receipts keep
+their historical source attribution. A changed inventory requires fresh same-artifact
+consumer receipts before current-source platform acceptance is claimed.
+
+These receipts certify one chosen archive and its exact bytes. Independent `pnpm pack`
+runs can reorder package metadata and produce a different digest; the contract does not
+claim independently reproducible tarballs. Retry and publication reuse the recorded candidate
+rather than treating a fresh build as that same artifact.
+
 The emitted graph checker parses actual JavaScript and compares every loading edge
 with the build inventory. It rejects missing/extra/unreachable/escaping chunks,
 computed or unreviewed loaders, private external imports, undeclared dependencies
