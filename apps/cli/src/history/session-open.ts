@@ -22,10 +22,13 @@ export interface OpenedSessionStore {
  * Owned storage-open faults are operational 1. Unknown native/import/wiring faults are
  * infrastructure 9; neither can be diagnosed from arbitrary messages or cause trees.
  */
-export function openSessionStore(homeDir: string): OpenedSessionStore {
+export function openSessionStore(
+  homeDir: string,
+  captureClose?: (close: () => void) => void,
+): OpenedSessionStore {
   let opened: { db: Db; close: () => void };
   try {
-    opened = openLocalDb(homeDir);
+    opened = openLocalDb(homeDir, undefined, captureClose);
   } catch (err) {
     throw storageBoundaryError(err);
   }

@@ -1,3 +1,4 @@
+import { acquireNativeResource } from '../process/acquire-native-resource.js';
 import type { CliInvocation } from '../process/invocation.js';
 import { SessionHostOwner } from '../chat/session-host-owner.js';
 import { SessionSurfaceLifetime } from '../chat/session-surface-lifetime.js';
@@ -5,7 +6,7 @@ import { runSessionPrompt } from '../chat/session-prompt.js';
 import { nativeProcessesForInvocation } from '../process/native-process-owner.js';
 import { randomUUID } from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
-import { Readable } from 'node:stream';
+import { CapturedNativeInput } from '../process/native-input.js';
 
 import type { SessionStreamHandleEvent } from '@relavium/core';
 
@@ -94,7 +95,13 @@ export async function agentRunCommand(
   args: AgentRunCommandArgs,
   deps: AgentRunCommandDeps,
 ): Promise<ExitCode> {
-  const lifetime = new SessionSurfaceLifetime(deps.invocation, 'agent');
+  let closeJournal: (() => void) | undefined;
+  const lifetime = new SessionSurfaceLifetime(deps.invocation, 'agent', undefined, () => {
+    // The original surface releases its native database only after its host/root/tails join,
+    // and before its signal custody can be removed.
+    closeJournal?.();
+    return Promise.resolve();
+  });
   return lifetime.execute(() =>
     agentRunOwned(
       args,
@@ -117,6 +124,9 @@ export async function agentRunCommand(
         },
       },
       lifetime,
+      (close) => {
+        closeJournal = close;
+      },
     ),
   );
 }
@@ -125,9 +135,9 @@ async function agentRunOwned(
   args: AgentRunCommandArgs,
   deps: AgentRunCommandDeps,
   lifetime: SessionSurfaceLifetime,
+  captureJournalClose: (close: () => void) => void,
 ): Promise<ExitCode> {
   const hostOwner = new SessionHostOwner(lifetime.invocation, 'agent');
-  let openedJournal: ReturnType<typeof openSessionStore> | undefined;
   try {
     const nativeProcesses = nativeProcessesForInvocation(deps.invocation);
     const grants = admitFsInvocation(deps.global);
@@ -242,8 +252,15 @@ async function agentRunOwned(
     // The host reservation already owns every entered builder/MCP operation. The outer surface root also
     // owns this database from acquisition through actual host cleanup, including setup failures before a turn.
     lifetime.work.assertAdmitting();
-    const journalStore = openSessionStore(homeDir);
-    openedJournal = journalStore;
+    const journalStore = acquireNativeResource(
+      (captureClose) => openSessionStore(homeDir, captureClose),
+      {
+        assertAdmitting: lifetime.work.assertAdmitting,
+        captureClose: captureJournalClose,
+        cleanupUncertain: lifetime.work.cleanupUncertain,
+        isStoppedFailure: lifetime.work.isStoppedFailure,
+      },
+    );
     let ownedEffectSessionId: string | undefined;
     const usageStore = createSessionUsageStore(journalStore.db);
     const receipts = new Map<UsageInvocation, SessionUsageReceipt>();
@@ -385,13 +402,6 @@ async function agentRunOwned(
     throw cause;
   } finally {
     await hostOwner.work.close();
-    if (openedJournal !== undefined) {
-      try {
-        openedJournal.close();
-      } catch (cause) {
-        lifetime.work.cleanupUncertain(cause);
-      }
-    }
   }
 }
 
@@ -497,29 +507,9 @@ export async function readAllStdin(
   let data = '';
   const signal = options?.signal;
   signal?.throwIfAborted();
-  const native = stream instanceof Readable ? stream : undefined;
-  const cancelled = new Error('One-shot input stopped.');
-  let cancellationEntered = false;
-  let closed: Promise<void> | undefined;
-  let acknowledgeClose: () => void = () => undefined;
-  const onClose = (): void => acknowledgeClose();
-  const abort = (): void => {
-    if (native === undefined || cancellationEntered) return;
-    cancellationEntered = true;
-    closed = new Promise((resolve) => {
-      acknowledgeClose = resolve;
-    });
-    native.once('close', onClose);
-    if (native.closed) acknowledgeClose();
-    try {
-      native.destroy(cancelled);
-    } catch (cause) {
-      // A throwing cancellation is not close ACK. Report it before waiting on the retained read.
-      options?.onFailure(cause);
-    }
-  };
-  signal?.addEventListener('abort', abort, { once: true });
+  const input = new CapturedNativeInput(stream, options, 'One-shot input stopped.');
   try {
+    input.open();
     for await (const chunk of stream) {
       data += chunk instanceof Uint8Array ? decoder.write(Buffer.from(chunk)) : String(chunk);
     }
@@ -529,12 +519,10 @@ export async function readAllStdin(
   } catch (cause) {
     // Only this owned native destroy identity can recover the invocation's cancellation reason.
     // An unrelated read fault racing an aborted signal keeps its original infrastructure diagnosis.
-    if (cause === cancelled) signal?.throwIfAborted();
+    if (cause === input.cancelled) signal?.throwIfAborted();
     options?.onFailure(cause);
     throw cause;
   } finally {
-    signal?.removeEventListener('abort', abort);
-    await closed;
-    native?.removeListener('close', onClose);
+    await input.close();
   }
 }

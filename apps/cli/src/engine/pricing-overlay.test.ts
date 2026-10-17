@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -15,6 +15,7 @@ import { clearCatalogRefresh, priceModel } from '@relavium/llm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { captureIo } from '../test-support.js';
+import { toUserFacing } from '../process/errors.js';
 import { openLocalDb } from '../db/open.js';
 import { catalogModelToRow } from './catalog-metadata.js';
 import {
@@ -158,12 +159,24 @@ describe('loadUserPricingOverlay (self-contained transient open)', () => {
     expect(overlay?.get('acme-custom-1')?.inputPerMtokMicrocents).toBe(300_000_000);
   });
 
-  it('returns undefined NON-FATALLY when the db path is unopenable (the surface reports the fault itself)', () => {
+  it('degrades a cleaned native storage refusal without inventing free pricing', () => {
+    mkdirSync(join(home, '.relavium'));
+    writeFileSync(join(home, '.relavium', 'history.db'), 'synthetic corrupt header'.repeat(8));
+    expect(loadUserPricingOverlay(home, captureIo().io)).toBeUndefined();
+  });
+
+  it('does not swallow an unclassified acquisition fault as an optional cache miss', () => {
     // Put a regular FILE where the home dir's `.relavium/` would go: `ensureGlobalConfigDir` can't `mkdir` a
-    // directory under a file (ENOTDIR), so `openLocalDb` throws — and the loader degrades to `undefined` rather
-    // than propagating (the surface's own session/run store open is the authoritative fault report, a clean exit 2).
+    // directory under a file (ENOTDIR). This lies outside the Accepted operational-storage vocabulary.
     const blocker = join(home, 'blocker');
     writeFileSync(blocker, 'not a directory');
-    expect(loadUserPricingOverlay(blocker, captureIo().io)).toBeUndefined();
+    let failure: unknown;
+    try {
+      loadUserPricingOverlay(blocker, captureIo().io);
+    } catch (cause) {
+      failure = cause;
+    }
+    expect(failure, 'UNCLASSIFIED_PRICING_ACQUISITION_MUST_ESCAPE').toBeDefined();
+    expect(toUserFacing(failure)).toMatchObject({ code: 'cli_internal', exitCode: 9 });
   });
 });

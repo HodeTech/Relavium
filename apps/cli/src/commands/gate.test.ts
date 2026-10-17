@@ -1,3 +1,4 @@
+import { invocationFixture } from '../process/invocation.test-support.js';
 import { createCliInvocation } from '../process/invocation.js';
 import { witnessNativeToolProcess } from './native-forwarding.test-support.js';
 import { randomUUID } from 'node:crypto';
@@ -241,19 +242,38 @@ describe('gateCommand', () => {
 
   it('does not promote an injected errno-shaped opener failure to storage', async () => {
     const cause = Object.assign(new Error('PRIVATE_FOREIGN_OPEN_FAILURE'), { code: 'ENOSPC' });
-    await expect(
-      gateCommand(
-        { runId: 'synthetic', approve: true },
-        {
-          io: captureIo().io,
-          global: globalOptions(),
-          invocation: createCliInvocation({ exit: vi.fn(), setExitCode: vi.fn() }),
-          openDb: () => {
-            throw cause;
-          },
+    const control = invocationFixture();
+    const removeSignals = vi.fn();
+    let settled = false;
+    void gateCommand(
+      { runId: 'synthetic', approve: true },
+      {
+        io: captureIo().io,
+        global: globalOptions(),
+        invocation: control.invocation,
+        subscribeSignals: () => removeSignals,
+        openDb: () => {
+          throw cause;
         },
-      ),
-    ).rejects.toMatchObject({ code: 'cli_internal', exitCode: 9, cause });
+      },
+    ).then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(toUserFacing(cause)).toMatchObject({ code: 'cli_internal', exitCode: 9 });
+    expect(control.registry.observations.exitCode()).toBe(9);
+    expect(control.registry.activeOwners, 'UNKNOWN_PARTIAL_GATE_OPEN_IS_NOT_RETIREMENT').toBe(1);
+    expect(removeSignals).not.toHaveBeenCalled();
+    expect(settled).toBe(false);
+    control.advance(3_000);
+    expect(await control.invocation.finiteExit.exited).toBe(9);
+    expect(control.registry.activeOwners).toBe(1);
+    expect(settled).toBe(false);
   });
 
   let client: DbClient;

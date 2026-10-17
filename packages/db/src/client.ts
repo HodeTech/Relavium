@@ -111,7 +111,10 @@ export class DbOpenError extends RelaviumError {
  * - `synchronous = NORMAL` — the recommended durability/throughput trade-off under WAL.
  * - `secure_delete = ON` — overwrite deleted session-effect payload bytes; WAL erasure also needs a checkpoint.
  */
-export function createClient(path = ':memory:'): DbClient {
+export function createClient(
+  path = ':memory:',
+  captureClose?: (close: () => void) => void,
+): DbClient {
   // SQLite URI filenames (`file:…`) are NOT supported: better-sqlite3 needs `{ uri: true }` to
   // interpret them and otherwise silently creates a literal file of that name. Reject up front
   // rather than open the wrong database — pass ':memory:' or a plain filesystem path.
@@ -122,18 +125,20 @@ export function createClient(path = ':memory:'): DbClient {
       path,
     );
   }
-  let sqlite: Database.Database | undefined;
+  let close: (() => void) | undefined;
   try {
     // Create the parent directory for a real file path so a first-run open doesn't fail on a
     // missing folder (inside the try so a filesystem error is classified the same way).
     if (path !== ':memory:') {
       withOwnedFilesystem(() => mkdirSync(dirname(path), { recursive: true }));
     }
-    // A local binding as well as the outer `let`: the outer one is what the `catch` closes, and inside a
-    // closure TypeScript cannot narrow it away from `undefined`, which would turn a real invariant into an
-    // optional chain that silently skips the pragma.
     const opened = withOwnedSqlite(() => new Database(path));
-    sqlite = opened;
+    close = () => {
+      if (opened.open) opened.close();
+    };
+    // The original invocation owns this exact native capability before PRAGMAs or Drizzle can fail.
+    // Returning a DbClient is too late to transfer a partially constructed connection.
+    captureClose?.(close);
     // The PRAGMAs and the Drizzle bind are INSIDE the try: any of them can fail (a corrupt header surfaces on
     // the first `journal_mode` write, not on open), and outside it a failure would leak the just-opened
     // connection for the process lifetime AND escape as an untyped driver error — past both this factory's
@@ -160,19 +165,27 @@ export function createClient(path = ':memory:'): DbClient {
     return { db, sqlite: opened, path };
   } catch (err) {
     // Close what we opened before propagating, or the connection leaks on every failed setup.
+    let cleanupFailure: { readonly cause: unknown } | undefined;
     try {
-      sqlite?.close();
-    } catch {
-      /* already failing; a secondary close error must not replace the real cause */
+      close?.();
+    } catch (cause) {
+      cleanupFailure = { cause };
     }
     // A STABLE, generic message: `err.message` from better-sqlite3 routinely contains the absolute file path,
     // and this message is surfaced verbatim to the user by the CLI's history openers — interpolating it would
     // put the OS username back in user-facing output, which is the very thing moving the path to `.path` was
     // for. The driver's own error is preserved in full via `cause` for diagnosis.
     const failure = new DbOpenError('open_failed', 'could not open the SQLite database', path, {
-      cause: err,
+      cause:
+        cleanupFailure === undefined
+          ? err
+          : new AggregateError([err, cleanupFailure.cause], 'SQLite startup cleanup failed.', {
+              cause: err,
+            }),
     });
-    transferStorageFailure(failure, err);
+    // Native cleanup uncertainty is infrastructure, even when the primary failure was operational.
+    // Preserve both causes without laundering the failed release through storage provenance.
+    if (cleanupFailure === undefined) transferStorageFailure(failure, err);
     throw failure;
   }
 }

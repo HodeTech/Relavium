@@ -979,9 +979,21 @@ remains owed.
 Command database cleanup follows roots and transferred work, with independent
 releases entered before any join. A failed close retains uncertainty and signal
 custody. Short resolver/pricing reads keep synchronous close-before-next-open
-ordering and retain their exact close capability if release fails; optional
-pricing open/read degradation remains unchanged. This is lifecycle integration,
+ordering and retain their exact close capability if release fails; classified
+operational pricing refusals may still degrade. This is lifecycle integration,
 not the later sole-opener refactor.
+
+The original command, workflow or session surface captures a database's actual
+close capability before native setup, including partial acquisition through
+injected production openers. Returned wrappers cannot replace that capability.
+Release follows the owner's existing host/root/tail joins and precedes removal
+of its signal custody. A failed or unobservable release retains the same original
+finite-exit obligation. SQLite construction details have their canonical home in
+the [database contract](../shared-core/database-schema.md#concurrency--transaction-behavior).
+Optional pricing reads may degrade a classified operational storage refusal;
+unknown acquisition faults and failed native cleanup remain infrastructure 9.
+A later successful release permits retirement without erasing an earlier
+infrastructure observation.
 
 The standalone create wizard binds installed Clack prompts to captured streams
 and checks admission between answers and before writing. Its already-entered

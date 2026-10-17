@@ -1,3 +1,4 @@
+import { acquireNativeResource } from '../process/acquire-native-resource.js';
 import type { CliInvocation } from '../process/invocation.js';
 import type { defaultSubscribeSignals } from '../process/signals.js';
 import { warnTeardown } from '../process/close-quietly.js';
@@ -152,7 +153,10 @@ export interface GateCommandDeps {
   /** Injectable provider seam (the engine's resolver for a post-gate agent node). Defaults to the env resolver. */
   readonly providers?: ProviderResolver;
   /** Injectable history-db opener — tests pass an in-memory db; production opens `~/.relavium/history.db`. */
-  readonly openDb?: (homeDir: string) => { db: Db; close: () => void };
+  readonly openDb?: (
+    homeDir: string,
+    captureClose?: (close: () => void) => void,
+  ) => { db: Db; close: () => void };
   readonly selectRenderer?: (
     io: CliIo,
     global: GlobalOptions,
@@ -294,12 +298,7 @@ async function resumeGateOwned(
     cwd: deps.global.cwd,
     configPath: deps.global.configPath,
   });
-  let opened: { db: Db; close: () => void };
-  try {
-    opened = (deps.openDb ?? openLocalDb)(homeDir);
-  } catch (err) {
-    throw storageBoundaryError(err);
-  }
+  let closeHistory: (() => void) | undefined;
 
   let mcpRuntime: WorkflowMcpRuntime | undefined;
   let mcpAcknowledged = true;
@@ -317,6 +316,20 @@ async function resumeGateOwned(
   };
   try {
     lifetime.checkpoint();
+    const opened = acquireNativeResource(
+      (captureClose) =>
+        deps.openDb === undefined
+          ? openLocalDb(homeDir, undefined, captureClose)
+          : deps.openDb(homeDir, captureClose),
+      {
+        assertAdmitting: () => lifetime.checkpoint(),
+        captureClose: (close) => {
+          closeHistory = close;
+        },
+        cleanupUncertain: (cause) => lifetime.cleanupFailed(cause),
+        isStoppedFailure: (cause) => lifetime.isStoppedFailure(cause),
+      },
+    );
     const snapshot = loadRunSnapshot(opened.db, args.runId);
     if (snapshot === undefined) {
       throw new CliError('invalid_invocation', `no run found with id ${args.runId}`);
@@ -649,7 +662,7 @@ async function resumeGateOwned(
     }
     if (!mcpAcknowledged) await new Promise<never>(() => {});
     try {
-      opened.close();
+      closeHistory?.();
     } catch (cause) {
       lifetime.cleanupFailed(storageBoundaryError(cause));
       warnTeardown(deps.io, 'history database');

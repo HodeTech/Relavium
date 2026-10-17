@@ -1,4 +1,4 @@
-import type { CommandLifetime } from '../process/command-lifetime.js';
+import { acquireCommandResource, type CommandLifetime } from '../process/command-lifetime.js';
 import type { Db } from '@relavium/db';
 import type { RunEvent } from '@relavium/shared';
 
@@ -22,7 +22,10 @@ export interface LogsCommandDeps {
   readonly commandLifetime?: CommandLifetime;
   readonly io: CliIo;
   readonly global: GlobalOptions;
-  readonly openDb?: (homeDir: string) => { db: Db; close: () => void };
+  readonly openDb?: (
+    homeDir: string,
+    captureClose?: (close: () => void) => void,
+  ) => { db: Db; close: () => void };
 }
 
 /**
@@ -36,8 +39,9 @@ export function logsCommand(args: LogsCommandArgs, deps: LogsCommandDeps): ExitC
     cwd: deps.global.cwd,
     configPath: deps.global.configPath,
   });
-  const { reader, close } = openHistoryReader(homeDir, deps.openDb);
-  deps.commandLifetime?.adoptCleanup(close);
+  const { reader, close } = acquireCommandResource(deps.commandLifetime, (captureClose) =>
+    openHistoryReader(homeDir, deps.openDb, captureClose),
+  );
   try {
     const run = reader.loadRun(args.runId);
     if (run === undefined) {

@@ -31,7 +31,7 @@ import { createMcpSecretResolver } from '../secrets/mcp-secret.js';
 import { createOsKeychainStore } from '../secrets/os-keychain.js';
 import { readSecretFromStdin } from '../secrets/read-secret.js';
 import { Readable } from 'node:stream';
-import { withCommandLifetime } from '../process/command-lifetime.js';
+import { acquireCommandResource, withCommandLifetime } from '../process/command-lifetime.js';
 import { withSynchronousResource } from '../process/synchronous-resource.js';
 import { agentRunCommand, type AgentRunCommandArgs } from './agent-run.js';
 import { chatCommand, chatResumeCommand, type ChatCommandArgs } from './chat.js';
@@ -385,7 +385,7 @@ function storeAwareResolver(
   });
   return withSynchronousResource(
     ctx.invocation,
-    () => openLocalDb(homeDir),
+    (captureClose) => openLocalDb(homeDir, undefined, captureClose),
     ({ db }) => fromDb(db),
   );
 }
@@ -520,7 +520,7 @@ export function createProviderSlugResolver(
  * touching the real `history.db` or loading the native keychain.
  */
 export interface ModelsDbPorts {
-  readonly openDb: (homeDir: string) => OpenedDb;
+  readonly openDb: (homeDir: string, captureClose?: (close: () => void) => void) => OpenedDb;
   /** Build the key resolver over the models db — the `providerStore` (from the SAME db) makes it store-aware so a
    *  custom `base_url` lists models over the SSRF-validated hop (2.5.G S9, ADR-0065 §4). A test stub may ignore it. */
   readonly makeResolver: (
@@ -541,7 +541,7 @@ export interface ModelsDbPorts {
 }
 
 const PRODUCTION_MODELS_PORTS: ModelsDbPorts = {
-  openDb: openLocalDb,
+  openDb: (homeDir, captureClose) => openLocalDb(homeDir, undefined, captureClose),
   makeResolver: (io, providerStore) =>
     createProviderResolver(io.env, createOsKeychainStore(), { providerStore }),
   refreshCatalog: (homeDir, persist, lifecycle) =>
@@ -573,8 +573,9 @@ async function withModelsDepsOwned(
     cwd: ctx.global.cwd,
     configPath: ctx.global.configPath,
   });
-  const { db, close } = ports.openDb(homeDir);
-  ctx.commandLifetime?.adoptCleanup(close);
+  const { db, close } = acquireCommandResource(ctx.commandLifetime, (captureClose) =>
+    ports.openDb(homeDir, captureClose),
+  );
   try {
     const storeDeps = { uuid: () => randomUUID(), now: () => Date.now() };
     // The `models` command prices, and it holds the db — so make the DB the catalog's authoritative backing here
@@ -678,8 +679,9 @@ const executeModelsPricing: CommandExecutor = (input, ctx) => {
     cwd: ctx.global.cwd,
     configPath: ctx.global.configPath,
   });
-  const { db, close } = openLocalDb(homeDir);
-  ctx.commandLifetime?.adoptCleanup(close);
+  const { db, close } = acquireCommandResource(ctx.commandLifetime, (captureClose) =>
+    openLocalDb(homeDir, undefined, captureClose),
+  );
   try {
     const storeDeps = { uuid: () => randomUUID(), now: () => Date.now() };
     return Promise.resolve(
@@ -713,8 +715,9 @@ async function withProviderDepsOwned(
     cwd: ctx.global.cwd,
     configPath: ctx.global.configPath,
   });
-  const { db, close } = openLocalDb(homeDir);
-  ctx.commandLifetime?.adoptCleanup(close);
+  const { db, close } = acquireCommandResource(ctx.commandLifetime, (captureClose) =>
+    openLocalDb(homeDir, undefined, captureClose),
+  );
   try {
     const keychain = createOsKeychainStore(); // one native accessor, shared by the store-ref writes + the resolver
     const store = createProviderStore(db, { uuid: () => randomUUID(), now: () => Date.now() });

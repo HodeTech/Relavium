@@ -4,10 +4,27 @@ import { createCliInvocation } from '../../process/invocation.js';
 import { toUserFacing } from '../../process/errors.js';
 import { captureIo } from '../../test-support.js';
 import { readSecretFromStdin } from '../read-secret.js';
+import { agentRunCommand } from '../../commands/agent-run.js';
+import { join } from 'node:path';
 
 const mode = process.argv[2];
-if (!['factory', 'cap', 'cancel', 'predestroyed'].includes(mode ?? ''))
+if (
+  ![
+    'factory',
+    'cap',
+    'cancel',
+    'predestroyed',
+    'agent-eof',
+    'agent-factory',
+    'agent-cancel',
+    'agent-predestroyed',
+  ].includes(mode ?? '')
+)
   throw new Error('Fixture mode required.');
+const agent = mode?.startsWith('agent-') === true;
+const action = agent ? mode?.slice('agent-'.length) : mode;
+const root = process.argv[3];
+if (agent && root === undefined) throw new Error('Isolated agent fixture root required.');
 const input = process.stdin;
 let releaseClose: (() => void) | undefined;
 let enteredClose: () => void = () => {};
@@ -49,46 +66,68 @@ const invocation = createCliInvocation({
   },
   setExitCode: () => {},
 });
-const owner = new CommandLifetime(invocation, { ...captureIo().io, stdin: input }, () => () => {});
-owner.adoptCleanup(() => {
+const io = { ...captureIo().io, stdin: input };
+const owner = agent ? undefined : new CommandLifetime(invocation, io, () => () => {});
+owner?.adoptCleanup(() => {
   cleaned = true;
 });
 process.on('message', (message: unknown) => {
   if (message === 'release') releaseClose?.();
 });
-if (mode === 'predestroyed') {
+if (action === 'predestroyed') {
   input.destroy();
   await heldClose;
 }
-if (mode === 'factory')
+if (action === 'factory')
   input[Symbol.asyncIterator] = () => {
     throw new Error('synthetic native iterator factory refusal');
   };
-const reading = owner
-  .execute(async () => {
-    await readSecretFromStdin(undefined, input, {
-      signal: owner.work.signal,
-      onFailure: owner.work.failure,
-    });
-    return 0;
-  })
-  .then(
-    (returned) => {
-      settled = true;
-      result = { returned };
-    },
-    (cause: unknown) => {
-      settled = true;
-      const facing = toUserFacing(cause);
-      result = { code: facing.code, exitCode: facing.exitCode };
-    },
-  );
-if (mode === 'cancel') invocation.finiteExit.signal(15);
+const operation =
+  agent && root !== undefined
+    ? agentRunCommand(
+        {
+          agent: 'synthetic',
+          fixture: join(root, 'absent-synthetic-cassette.json'),
+          input: [],
+          allowMcpStdio: [],
+        },
+        {
+          invocation,
+          io,
+          global: {
+            cwd: root,
+            configPath: join(root, 'config.toml'),
+            json: false,
+            color: false,
+            verbosity: 'normal',
+          },
+        },
+      )
+    : owner?.execute(async () => {
+        await readSecretFromStdin(undefined, input, {
+          signal: owner.work.signal,
+          onFailure: owner.work.failure,
+        });
+        return 0;
+      });
+if (operation === undefined) throw new Error('Fixture owner required.');
+const reading = operation.then(
+  (returned) => {
+    settled = true;
+    result = { returned };
+  },
+  (cause: unknown) => {
+    settled = true;
+    const facing = toUserFacing(cause);
+    result = { code: facing.code, exitCode: facing.exitCode };
+  },
+);
+if (action === 'cancel') invocation.finiteExit.signal(15);
 await heldClose;
 // Flush promise continuations: public Socket.closed may already be true while delivery stays held.
 await new Promise<void>((resolve) => setImmediate(resolve));
 process.send?.({ phase: 'held', ...snapshot() });
 await reading;
 // Signal mode specifically owes the actual finite-exit port, not an IPC/natural-exit race.
-if (mode === 'cancel') await new Promise<never>(() => {});
+if (action === 'cancel' || (agent && action === 'factory')) await new Promise<never>(() => {});
 process.send?.({ phase: 'settled', ...snapshot() }, () => process.disconnect());

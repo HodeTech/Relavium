@@ -48,8 +48,9 @@ export function openHistoryStore(
   workflow: WorkflowDefinition,
   homeDir: string,
   projectRoot: string,
+  captureClose?: (close: () => void) => void,
 ): OpenedHistory {
-  const { db, close } = openLocalDb(homeDir);
+  const { db, close } = openLocalDb(homeDir, undefined, captureClose);
   const store = createRunHistoryStore(db, {
     uuid: () => randomUUID(),
     now: () => Date.now(),

@@ -59,6 +59,33 @@ function fixture() {
 }
 
 describe('surface roots outlive their shared preparation and database tails', () => {
+  it('retains signal custody when a partial native acquisition supplies no release capability', async () => {
+    const f = fixture();
+    let settled = false;
+    void f.lifetime
+      .execute(() => {
+        const failure = new Error('synthetic unknown partial acquisition');
+        f.lifetime.work.cleanupUncertain(failure);
+        throw failure;
+      })
+      .then(
+        () => {
+          settled = true;
+        },
+        () => {
+          settled = true;
+        },
+      );
+    await reactions();
+    expect(f.registry.activeOwners).toBe(1);
+    expect(f.remove, 'UNKNOWN_PARTIAL_ACQUISITION_RETAINS_SIGNAL_CUSTODY').not.toHaveBeenCalled();
+    expect(settled).toBe(false);
+    f.advance(3_000);
+    expect(await f.invocation.finiteExit.exited).toBe(9);
+    expect(f.registry.activeOwners).toBe(1);
+    expect(f.remove).not.toHaveBeenCalled();
+  });
+
   it.each([0, 1, 2, 4] as const)(
     'preserves actual surface outcome %s without creating a fatal timer or physical exit',
     async (outcome) => {

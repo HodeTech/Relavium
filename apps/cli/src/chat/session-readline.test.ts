@@ -117,11 +117,15 @@ describe('captured headless input lifetime', () => {
         f.input,
         f.work,
         () => unsubscribe,
-        async (reader) => {
+        async () => {
           entered.resolve();
           await release.promise;
-          reader.resume(); // The actual entered continuation resumes native input after stop.
+          // The readline facade is already sealed. The entered continuation can still touch
+          // its captured native input; Node 24 correctly refuses reader.resume() after close.
+          f.input.resume();
           f.input.on('data', late);
+          expect(f.input.isPaused(), 'LATE_DRIVER_ACTUALLY_RESUMED_NATIVE_INPUT').toBe(false);
+          expect(f.input.listeners('data')).toContain(late);
           return 'finished';
         },
       ),

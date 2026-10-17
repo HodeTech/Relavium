@@ -1,6 +1,7 @@
 import { CliError, toUserFacing } from './errors.js';
 import type { CliInvocation } from './invocation.js';
 import type { OwnerRetirement } from './invocation-registry.js';
+import { acquireNativeResource } from './acquire-native-resource.js';
 
 /**
  * Short trusted native acquisitions remain synchronous: their positive close precedes the
@@ -8,11 +9,11 @@ import type { OwnerRetirement } from './invocation-registry.js';
  */
 export function withSynchronousResource<Resource extends { readonly close: () => void }, Result>(
   invocation: CliInvocation | undefined,
-  acquire: () => Resource,
+  acquire: (captureClose: (close: () => void) => void) => Resource,
   use: (resource: Resource) => Result,
 ): Result {
   if (invocation === undefined) {
-    const resource = acquire();
+    const resource = acquire(() => {});
     try {
       return use(resource);
     } finally {
@@ -24,7 +25,7 @@ export function withSynchronousResource<Resource extends { readonly close: () =>
     complete = resolve;
   });
   let resource: Resource | undefined;
-  let close: (() => void) | undefined;
+  const closes: (() => void)[] = [];
   let active = true;
   let attempted = false;
   let uncertain = false;
@@ -32,8 +33,17 @@ export function withSynchronousResource<Resource extends { readonly close: () =>
     if (active || attempted || uncertain) return;
     attempted = true;
     try {
-      close?.();
-      close = undefined;
+      const failures: unknown[] = [];
+      for (const close of closes) {
+        try {
+          close();
+        } catch (cause) {
+          failures.push(cause);
+        }
+      }
+      if (failures.length !== 0)
+        throw new AggregateError(failures, 'Native resource cleanup failed.');
+      closes.length = 0;
       resource = undefined;
       complete({ kind: 'settled' });
     } catch (cause) {
@@ -56,10 +66,15 @@ export function withSynchronousResource<Resource extends { readonly close: () =>
   try {
     invocation.registry.assertAdmitting();
     try {
-      resource = acquire();
-      const acquired = resource;
-      const nativeClose = acquired.close;
-      close = () => Reflect.apply(nativeClose, acquired, []);
+      resource = acquireNativeResource(acquire, {
+        assertAdmitting: () => invocation.registry.assertAdmitting(),
+        captureClose: (close) => {
+          closes.push(close);
+        },
+        cleanupUncertain: () => {
+          uncertain = true;
+        },
+      });
     } catch (cause) {
       // Trusted owned acquisition adapters either return their close capability or classify
       // a cleaned-up refusal. Unknown partial construction never certifies resource retirement.
@@ -67,7 +82,6 @@ export function withSynchronousResource<Resource extends { readonly close: () =>
         toUserFacing(cause).code === 'cli_internal' ||
         toUserFacing(cause).code === 'output_unavailable'
       ) {
-        uncertain = true;
         invocation.finiteExit.fail('cli_internal');
       }
       throw cause;

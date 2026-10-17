@@ -125,7 +125,10 @@ export interface HomeDeps {
   /** Injectable RESUMED-session builder — used by the in-Home `/models` reseat (ADR-0059). Default {@link buildResumedChatSession}. */
   readonly buildResumedSession?: typeof buildResumedChatSession;
   /** Injectable session-store opener (tests pass an in-memory store). Default {@link openSessionStore}. */
-  readonly openSessionStore?: (homeDir: string) => OpenedSessionStore;
+  readonly openSessionStore?: (
+    homeDir: string,
+    captureClose?: (close: () => void) => void,
+  ) => OpenedSessionStore;
   readonly mcpSecretResolver?: McpSecretResolver;
   /** The `/doctor` probes (2.5.C S5) — production assembles the real probes; a test injects a fake. */
   readonly doctorProbes?: DoctorProbes;
@@ -235,8 +238,12 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
   const keychain = createOsKeychainStore();
   const mcpSecretResolver =
     deps.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env, keychain);
-  const opened = (deps.openSessionStore ?? openSessionStore)(homeDir);
-  ownership?.adoptStore(opened);
+  const opened =
+    ownership === undefined
+      ? (deps.openSessionStore ?? openSessionStore)(homeDir)
+      : ownership.acquireStore((captureClose) =>
+          (deps.openSessionStore ?? openSessionStore)(homeDir, captureClose),
+        );
   // The provider resolver + `/doctor` probes are built INSIDE the try below — once `opened.db` + the `providerStore`
   // exist — so the resolver is STORE-AWARE (a custom `base_url` rebinds to its validated endpoint, 2.5.G S9); a test
   // still injects `deps.providers` / `deps.doctorProbes` to bypass the keychain/network.

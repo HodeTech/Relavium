@@ -1,3 +1,4 @@
+import { acquireNativeResource } from '../process/acquire-native-resource.js';
 import type { CliInvocation } from '../process/invocation.js';
 import type { ExitCode } from '../process/exit-codes.js';
 import { CliError } from '../process/cli-error.js';
@@ -83,6 +84,22 @@ export class SessionChatLifetime {
       if (this.#interrupt === listener) this.#interrupt = undefined;
     };
   };
+
+  /** Capture the shared connection before native setup; release remains after every original host/tail. */
+  acquireStore<Resource extends { readonly close: () => void }>(
+    factory: (captureClose: (close: () => void) => void) => Resource,
+  ): Resource {
+    if (this.#store !== undefined) throw new CliError('cli_internal', '');
+    return acquireNativeResource(factory, {
+      assertAdmitting: this.surface.work.assertAdmitting,
+      captureClose: (close) => {
+        if (this.#store !== undefined) throw new CliError('cli_internal', '');
+        this.#store = { close };
+      },
+      cleanupUncertain: this.surface.work.cleanupUncertain,
+      isStoppedFailure: this.surface.work.isStoppedFailure,
+    });
+  }
 
   adoptStore(store: { readonly close: () => void }): void {
     if (this.#store !== undefined) throw new CliError('cli_internal', '');

@@ -6392,3 +6392,94 @@ Two NEW complete cumulative clean rounds after the final material fix, a NEW
 separate clean security sitting, fresh full CI and the four same-artifact platform
 consumers remain open. Whole Step 8 and Steps 9–19 remain open. No user decision,
 ADR approval, credential, provider capture or billing action is pending.
+
+
+## Wave 3 Step 8d third cumulative review and partial-acquisition corrections — 2026-10-17
+
+**Complete cumulative round 3 is NONCLEAN at `ec8ba368`; Step 8d remains open.**
+Three independent complete slices join all 269 cumulative paths from `d9625ff0`
+without omission or overlap: 73 session/terminal, 125 workflow/management and
+71 native/tooling/docs. The local Git-ignored aggregate SHA-256 is
+`ceb0e5610e795f23fda760599e2cea96caf409c60f6a08f200b49b3c65748d0d`.
+A clean slice is not a clean round. One verified Blocker and two verified High
+findings require the subsequent corrections below.
+
+- The permanent usage collector now copies the actual source graph into an owned
+  install-only tree, with no build outputs or workspace-package links. It uses
+  the canonical source aliases and refuses transformations into the original
+  workspace. A no-alias negative control establishes that the local built graph
+  cannot supply the proof. Actual collection still pins 17 files / 446 cases;
+  the independent runtime native-child inventory stays 71. Required install-only
+  CI jobs gain no build prerequisite or weakened gate.
+- Secret stdin and one-shot agent input share captured native close observation
+  before iterator acquisition. EOF, partial setup, cancellation and unobserved
+  preclosed sources cannot supply close ACK from public flags. Independent native
+  cancellation and callback removal retain their own uncertainty. A failed abort
+  listener removal still joins actual close and cannot retire the input. The
+  caller's operator-TTY refusal remains before consumption.
+- Every shipping database route now transfers its actual native close capability
+  to its original owner immediately after SQLite construction, before PRAGMAs,
+  hardening, migrations or store construction can throw. Production-injected
+  openers forward the same optional handoff. Legacy returned methods preserve
+  their receiver; returned wrappers cannot replace an early native capability.
+  Workflow, management, chat/Home, one-shot journal and transient resolver/pricing
+  owners retain their existing identities and cleanup order. The sole-opener
+  refactor remains Step 18. Primary and secondary startup failures survive
+  together; failed release cannot inherit operational storage provenance.
+- Optional pricing degradation no longer swallows unknown acquisition or native
+  cleanup faults. A later successful release can retire the actual resource while
+  retaining the earlier infrastructure observation. A one-shot database tail
+  closes before its surface removes signal custody; unknown partial construction
+  retains that custody through the same original finite-exit obligation.
+
+Thirty-three real SQLite controls exercise management, workflow/gate, fresh and
+resumed chat, Home, one-shot journal and optional pricing paths. Sixteen native
+failure cases break at named semantic assertions when only original-owner handoff
+is removed; exact restoration passes all 33. The native-constructor controls fail
+before the pre-PRAGMA fix and pass afterward. Four actual agent child controls
+cover EOF, iterator-factory refusal, cancellation and preclosed input; restoring
+only the previous agent reader breaks the EOF ownership assertion. The first
+removal attempt instead hit an unhandled IPC EPIPE and is excluded: the parent
+fixture now observes release-send failure and the repeated removal reaches the
+semantic assertion. The 31-case secret iterator cleanup mechanism retains its
+fixed/removal/restored proof, with the selected-family report explicitly
+`complete: false`.
+
+CI run `38984767780` at `ec8ba368` remains failed. Its install-only filesystem and
+secrets jobs exposed the collector defect before their families ran. Coverage
+exposed a Node-24-incompatible test continuation: a closed readline interface
+cannot be resumed there. The corrected control resumes its captured native input,
+proves that late activity happened, and retains all final cleanup assertions.
+Independent Node 24 focused execution passes. This is a test correction, not a
+relaxation of product sealing or native cleanup.
+
+That run's current-Windows advisory and Linux/Windows/Node-22.0.0 packed consumers
+pass. Its macOS packed leg remains failed with an unexpected infrastructure 9;
+its initiating cause is not established. The exact package and matching official
+Node 24.21.0 pass eleven instrumented local cohorts and one untouched eight-case
+cohort, but the local OS differs from the remote image. These local passes neither
+replace the remote failure nor establish a flake. No package assertion, native
+close/readiness control or watchdog is relaxed.
+
+At the final frozen 42-path product/test/tooling source, author workspace
+lint/typecheck passes seventeen tasks (fifteen cached); tests pass eleven tasks
+(ten cached), with fresh CLI execution of **332 files / 5,394 passing tests /
+eleven reported skips**. Build passes six tasks (five cached); the finite CLI
+graph has 25 outputs / 407 inputs / seventeen declared externals. Tools
+lint/typecheck, all **512 acceptance-tool tests**, seam/purity, test isolation,
+**177 compiled bootstrap controls** and compiled CLI smoke pass. Node 24.19.0
+passes twelve focused native-input/readline cases; official Node 22.0.0 passes
+43 focused reader/acquisition cases. These are author checks, not remote package
+or independent-review acceptance. The local Git-ignored source pin SHA-256 is
+`4a7cb298512fba75fb35ae616feae765f532705b04f7d784b5d4cebc82acdcc1`.
+
+Earlier lint/type/fixture failures and the full workspace's two obsolete
+immediate-retirement controls retain their historical scopes. Those injected
+unknown-open controls now use fake physical-exit ports, verify retained signal
+custody and independently joined MCP cleanup, and cannot terminate the real test
+worker. No timeout, production shutdown budget or required gate was increased.
+
+Two NEW complete cumulative clean rounds after the last material fix,
+a NEW separate clean security sitting, fresh full CI and all four same-artifact
+platform consumers remain required. Whole Step 8 and Steps 9–19 remain open.
+No user decision, ADR approval, provider, key, billing or capture action is pending.

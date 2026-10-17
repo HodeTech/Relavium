@@ -1,5 +1,5 @@
 import { CliError } from '../process/errors.js';
-import { Readable } from 'node:stream';
+import { CapturedNativeInput } from '../process/native-input.js';
 
 /**
  * Read a secret (an API key) from **stdin** for `relavium provider set-key` (2.C). The key is deliberately
@@ -68,54 +68,12 @@ export async function readSecretFromStdin(
 
   let iterator: AsyncIterator<unknown> | undefined;
   let finished = false;
-  const native = input instanceof Readable ? input : undefined;
-  const cancelled = new Error('Secret input stopped.');
-  let acknowledgeClose: () => void = () => undefined;
-  // Iterator return can settle before _destroy acknowledges close, or fail before its cleanup starts.
-  // Reserve the actual native-close obligation BEFORE iterator construction/first next.
-  const closing =
-    native === undefined
-      ? undefined
-      : new Promise<void>((resolve) => {
-          acknowledgeClose = resolve;
-        });
-  const onClose = (): void => acknowledgeClose();
-  // An abort can enter before the iterator installs its own error observer. The iterator still owns
-  // read-error classification; this guard only prevents an unobserved cancellation during acquisition.
-  const onNativeError = (): void => {};
-  let destroyEntered = false;
-  let cleanupFailed = false;
-  const cleanupFailure = (cause: unknown): void => {
-    cleanupFailed = true;
-    lifecycle?.onFailure(new CliError('cli_internal', '', { cause }));
-  };
-  const requestClose = (reason?: Error): void => {
-    if (native === undefined || destroyEntered) return;
-    destroyEntered = true;
-    try {
-      native.destroy(reason);
-    } catch (cause) {
-      cleanupFailure(cause);
-    }
-  };
-  const stop = (): void => requestClose(cancelled);
+  const captured = new CapturedNativeInput(input, lifecycle, 'Secret input stopped.');
   const chunks: Buffer[] = [];
   let totalBytes = 0;
   try {
     try {
-      native?.on('error', onNativeError);
-      native?.once('close', onClose);
-      // Socket.closed can become true BEFORE its actual close delivery. An unobserved preclosed
-      // source supplies no receipt; retain uncertainty rather than inventing already-complete ACK.
-      if (native?.closed === true) throw new CliError('cli_internal', '');
-    } catch (cause) {
-      // Destruction is independently attempted in finally even if close-observer acquisition failed.
-      cleanupFailure(cause);
-      throw readFailure(cause);
-    }
-    lifecycle?.signal.addEventListener('abort', stop, { once: true });
-    if (lifecycle?.signal.aborted === true) stop();
-    try {
+      captured.open();
       lifecycle?.signal.throwIfAborted();
       iterator = input[Symbol.asyncIterator]();
     } catch (cause) {
@@ -142,7 +100,7 @@ export async function readSecretFromStdin(
           } else if (typeof chunk === 'string') size = chunk.length;
         }
       } catch (cause) {
-        if (cause === cancelled) lifecycle?.signal.throwIfAborted();
+        if (cause === captured.cancelled) lifecycle?.signal.throwIfAborted();
         throw readFailure(cause);
       }
       if (done) {
@@ -173,7 +131,7 @@ export async function readSecretFromStdin(
   } finally {
     // Enter native cancellation before awaiting any iterator cleanup; a partial or foreign iterator
     // must not prevent the independent finite destruction request for the consumed pipe.
-    requestClose();
+    captured.requestClose();
     if (!finished && iterator !== undefined) {
       try {
         await iterator.return?.();
@@ -181,23 +139,7 @@ export async function readSecretFromStdin(
         // Best-effort release must not replace the primary refusal with foreign cleanup text.
       }
     }
-    // A consumed non-TTY source is never reused as interactive authority. Closing it also covers
-    // partial iterator acquisition and early cap refusal, independently of iterator.return's result.
-    lifecycle?.signal.removeEventListener('abort', stop);
-    await closing;
-    for (const [event, callback] of [
-      ['close', onClose],
-      ['error', onNativeError],
-    ] as const) {
-      try {
-        native?.removeListener(event, callback);
-      } catch (cause) {
-        cleanupFailure(cause);
-      }
-    }
-    // A failed cleanup step cannot acknowledge retirement. The original invocation's finite exit
-    // still bounds the process; neither an iterator return nor a destroy request invents close ACK.
-    if (cleanupFailed) await new Promise<never>(() => {});
+    await captured.close();
   }
   lifecycle?.signal.throwIfAborted();
   // Decode once to preserve code points split across Buffer chunks; only callers may trim values.

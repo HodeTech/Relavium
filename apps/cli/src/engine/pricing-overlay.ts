@@ -2,6 +2,7 @@ import { closeQuietly } from '../process/close-quietly.js';
 import type { CliIo } from '../process/io.js';
 import type { CliInvocation } from '../process/invocation.js';
 import { withSynchronousResource } from '../process/synchronous-resource.js';
+import { toUserFacing } from '../process/errors.js';
 import { randomUUID } from 'node:crypto';
 
 import {
@@ -90,9 +91,9 @@ function readPricingRows(db: Db): PricingOverlay {
 
 /**
  * Load the overlay via a SELF-CONTAINED transient open→read→close, for a surface with no db handle of its own yet
- * (`relavium chat`, one-shot `agent run`). Deliberately NON-FATAL: an unopenable/unmigratable `history.db` yields
- * `undefined` (cost governance degrades to the no-overlay behavior — unknown models `allow` loudly), so the db
- * fault surfaces through the surface's OWN store-open error path (a clean exit 2), not an opaque throw here. The
+ * (`relavium chat`, one-shot `agent run`). A classified operational storage refusal yields `undefined`;
+ * an unknown acquisition or failed native cleanup remains an infrastructure failure. The authoritative
+ * store reports its own operational refusal. The
  * transient handle closes before the surface opens its real store — sequential opens of the one SQLite file.
  */
 export function loadUserPricingOverlay(
@@ -102,12 +103,13 @@ export function loadUserPricingOverlay(
 ): PricingOverlay | undefined {
   return withSynchronousResource(
     invocation,
-    () => {
+    (captureClose) => {
       let opened: { db: Db; close: () => void };
       try {
-        opened = openLocalDb(homeDir);
-      } catch {
-        // Preserve optional open/read degradation; the authoritative store reports its own failure.
+        opened = openLocalDb(homeDir, undefined, captureClose);
+      } catch (cause) {
+        // An optional cache cannot launder partial construction or a failed native close into success.
+        if (toUserFacing(cause).code !== 'storage_unavailable') throw cause;
         return { db: undefined, close: () => undefined };
       }
       return {

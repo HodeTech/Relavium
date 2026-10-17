@@ -6,6 +6,7 @@ import type { CliIo } from './io.js';
 import { InvocationWorkOwner } from './invocation-work-owner.js';
 import { defaultSubscribeSignals } from './signals.js';
 import { subscribeWithSignalCustody } from './signal-custody.js';
+import { acquireNativeResource } from './acquire-native-resource.js';
 
 /** One management operation, with no AgentSession label or workflow receipt authority. */
 export class CommandLifetime {
@@ -86,6 +87,21 @@ export class CommandLifetime {
     });
   };
 
+  /** Capture partial native resources before setup can fail; legacy injected openers adopt on return. */
+  acquire<Resource extends { readonly close: () => void }>(
+    factory: (captureClose: (close: () => void) => void) => Resource,
+  ): Resource {
+    return acquireNativeResource(factory, {
+      assertAdmitting: () => this.work.assertAdmitting(),
+      captureClose: this.adoptCleanup,
+      isStoppedFailure: this.work.isStoppedFailure,
+      cleanupUncertain: (cause) => {
+        this.#cleanupFailed = true;
+        this.work.cleanupUncertain(cause);
+      },
+    });
+  }
+
   async execute(body: () => Promise<ExitCode>): Promise<ExitCode> {
     let result: ExitCode = EXIT_CODES.success;
     let failure: { readonly cause: unknown } | undefined;
@@ -145,4 +161,12 @@ export function withCommandLifetime(
   if (ctx.invocation === undefined || ctx.commandLifetime !== undefined) return body(ctx);
   const lifetime = new CommandLifetime(ctx.invocation, ctx.io);
   return lifetime.execute(() => body({ ...ctx, io: lifetime.io, commandLifetime: lifetime }));
+}
+
+/** No opener selection/classification policy here; this only transfers exact acquisition custody. */
+export function acquireCommandResource<Resource extends { readonly close: () => void }>(
+  lifetime: CommandLifetime | undefined,
+  factory: (captureClose: (close: () => void) => void) => Resource,
+): Resource {
+  return lifetime === undefined ? factory(() => {}) : lifetime.acquire(factory);
 }

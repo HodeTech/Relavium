@@ -1,3 +1,4 @@
+import { invocationFixture } from '../process/invocation.test-support.js';
 import { createCliInvocation } from '../process/invocation.js';
 import { witnessNativeToolProcess } from './native-forwarding.test-support.js';
 import { randomUUID } from 'node:crypto';
@@ -1721,31 +1722,46 @@ workflow:
         return Promise.resolve();
       },
     };
-    let caught: unknown;
-    try {
-      await runCommand(
-        { workflow: path, input: [], allowMcpStdio: [] },
-        {
-          io,
-          global: globalOptions(),
-          providers: scriptedResolver([textTurn('done')]),
-          consentGate: PASS_CONSENT,
-          startMcpClient: () =>
-            realStartMcpClient([
-              { id: 'fs', toolsAllowlist: ['read'], open: () => Promise.resolve(conn) },
-            ]),
-          openRunStore: () => {
-            throw Object.assign(new Error('PRIVATE_HISTORY_FAULT'), { code: 'EACCES' });
-          },
+    const control = invocationFixture();
+    const removeSignals = vi.fn();
+    const cause = Object.assign(new Error('PRIVATE_HISTORY_FAULT'), { code: 'EACCES' });
+    let settled = false;
+    void runCommand(
+      { workflow: path, input: [], allowMcpStdio: [] },
+      {
+        io,
+        global: globalOptions(),
+        invocation: control.invocation,
+        subscribeSignals: () => removeSignals,
+        providers: scriptedResolver([textTurn('done')]),
+        consentGate: PASS_CONSENT,
+        startMcpClient: () =>
+          realStartMcpClient([
+            { id: 'fs', toolsAllowlist: ['read'], open: () => Promise.resolve(conn) },
+          ]),
+        openRunStore: () => {
+          throw cause;
         },
-      );
-    } catch (error) {
-      caught = error;
-    }
-    expect(isCliError(caught) && caught.code).toBe('cli_internal');
-    expect(isCliError(caught) && caught.exitCode).toBe(EXIT_CODES.infrastructureFailed);
-    expect(isCliError(caught) && caught.message).not.toContain('PRIVATE_HISTORY_FAULT');
-    expect(closed).toBe(1); // the spawned connection did not leak past the fault
+      },
+    ).then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await vi.waitFor(() => expect(closed).toBe(1));
+    expect(toUserFacing(cause)).toMatchObject({ code: 'cli_internal', exitCode: 9 });
+    expect(toUserFacing(cause).message).not.toContain('PRIVATE_HISTORY_FAULT');
+    expect(control.registry.observations.exitCode()).toBe(9);
+    expect(control.registry.activeOwners, 'UNKNOWN_PARTIAL_RUN_OPEN_IS_NOT_RETIREMENT').toBe(1);
+    expect(removeSignals).not.toHaveBeenCalled();
+    expect(settled).toBe(false);
+    control.advance(3_000);
+    expect(await control.invocation.finiteExit.exited).toBe(9);
+    expect(control.registry.activeOwners).toBe(1);
+    expect(settled).toBe(false);
   });
 
   it('routes an MCP tool RESULT with isError:true through dispatch → engine as a RECOVERABLE error (run still completes)', async () => {

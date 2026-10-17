@@ -72,6 +72,11 @@ export class InvocationWorkOwner {
     return this.#firstFailure;
   }
 
+  /** Cleanup consumers must retain signal custody when no positive native release fact exists. */
+  get hasCleanupUncertainty(): boolean {
+    return this.#cleanupUncertain;
+  }
+
   /** Positive actual cleanup fact, shared with the invocation registry; expiry/rejection never resolves it. */
   get retired(): Promise<OwnerRetirement> {
     return this.#retired;

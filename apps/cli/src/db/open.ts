@@ -10,6 +10,7 @@ import {
 } from '../process/owned-storage.js';
 import { processIo } from '../process/io.js';
 import { CHECKPOINT_DEFERRED } from './privacy-notice.js';
+import { CliError } from '../process/cli-error.js';
 
 /** An opened local database plus the handle to close its SQLite connection. */
 export interface OpenedDb {
@@ -26,21 +27,34 @@ export interface OpenedDb {
 export function openLocalDb(
   homeDir: string,
   notice: (text: string) => void | Promise<void> = (text) => processIo().writeErrAcknowledged(text),
+  captureClose?: (close: () => void) => void,
 ): OpenedDb {
   const dir = globalConfigDir(homeDir);
   mkdirForStorage(dir);
   chmodForStorage(dir, 0o700);
   const path = join(globalConfigDir(homeDir), 'history.db');
   let client: ReturnType<typeof createClient>;
+  let nativeClose: (() => void) | undefined;
   try {
-    client = createClient(path);
+    client = createClient(path, (close) => {
+      nativeClose = close;
+      captureClose?.(close);
+    });
   } catch (error) {
     throw storageBoundaryError(error);
   }
   let checkpoint: SessionEffectCheckpoint;
+  const close =
+    nativeClose ??
+    (() => {
+      if (client.sqlite.open) client.sqlite.close();
+    });
   // If setup (migrations / the at-rest chmod) throws, close the just-opened handle before propagating —
   // otherwise the SQLite connection leaks for the lifetime of the failing process.
   try {
+    // The original owner receives the actual native capability BEFORE setup can throw.
+    // Legacy injected factories may not implement the optional early handoff.
+    if (nativeClose === undefined) captureClose?.(close);
     // #28: the 0600 runs BEFORE the migrations, and again after. Before, because `createClient` has already
     // CREATED the file at the process umask — typically 644 — and a migration that throws (disk full, an
     // interrupted first run) used to leave it there, world-readable, for the lifetime of the install. The
@@ -52,7 +66,15 @@ export function openLocalDb(
     checkpoint = runMigrations(client.db, { dbPath: client.path });
     hardenAtRest(path);
   } catch (err) {
-    client.sqlite.close();
+    try {
+      close();
+    } catch (cleanupCause) {
+      throw new CliError('cli_internal', '', {
+        cause: new AggregateError([err, cleanupCause], 'Local database cleanup failed.', {
+          cause: err,
+        }),
+      });
+    }
     throw storageBoundaryError(err);
   }
   if (checkpoint === 'deferred') {
@@ -69,11 +91,7 @@ export function openLocalDb(
     db: client.db,
     // Idempotent: better-sqlite3's close() throws on an already-closed handle, so guard on `.open`
     // — a double close (e.g. an error-recovery path that also closes in a finally) is then a no-op.
-    close: () => {
-      if (client.sqlite.open) {
-        client.sqlite.close();
-      }
-    },
+    close,
   };
 }
 

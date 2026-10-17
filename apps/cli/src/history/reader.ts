@@ -17,13 +17,26 @@ export interface OpenedReader {
  */
 export function openHistoryReader(
   homeDir: string,
-  openDb: (homeDir: string) => { db: Db; close: () => void } = openLocalDb,
+  openDb?: (
+    homeDir: string,
+    captureClose?: (close: () => void) => void,
+  ) => { db: Db; close: () => void },
+  captureClose?: (close: () => void) => void,
 ): OpenedReader {
   let opened: { db: Db; close: () => void };
+  let nativeClose: (() => void) | undefined;
+  const capture = (close: () => void): void => {
+    nativeClose = close;
+    captureClose?.(close);
+  };
   try {
-    opened = openDb(homeDir);
+    opened =
+      openDb === undefined ? openLocalDb(homeDir, undefined, capture) : openDb(homeDir, capture);
   } catch (err) {
     throw storageBoundaryError(err);
   }
-  return { reader: createRunHistoryReader(opened.db), close: opened.close };
+  // A legacy injected method may depend on its original receiver. Capture it before reader setup too.
+  const close = nativeClose ?? opened.close.bind(opened);
+  if (nativeClose === undefined) captureClose?.(close);
+  return { reader: createRunHistoryReader(opened.db), close };
 }

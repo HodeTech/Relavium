@@ -36,6 +36,51 @@ afterEach(() => {
 
 const modeOf = (path: string): number => statSync(path).mode & 0o777;
 
+it('hands off native close before setup and preserves primary plus secondary cleanup failure', async () => {
+  const actual = await import('@relavium/db');
+  let client: ReturnType<typeof actual.createClient> | undefined;
+  let release: (() => void) | undefined;
+  let captured: (() => void) | undefined;
+  const primary = new Error('synthetic setup cause');
+  const secondary = new Error('synthetic close cause');
+  vi.doMock('@relavium/db', () => ({
+    ...actual,
+    createClient: (...args: Parameters<typeof actual.createClient>) => {
+      client = actual.createClient(...args);
+      release = client.sqlite.close.bind(client.sqlite);
+      client.sqlite.close = () => {
+        throw secondary;
+      };
+      return client;
+    },
+    runMigrations: () => {
+      expect(captured, 'NATIVE_DATABASE_CLOSE_HANDOFF_PRECEDES_SETUP').toBeTypeOf('function');
+      throw primary;
+    },
+  }));
+  vi.resetModules();
+  try {
+    const { openLocalDb } = await import('./open.js');
+    let failure: unknown;
+    try {
+      openLocalDb(home, undefined, (close) => {
+        captured = close;
+      });
+    } catch (cause) {
+      failure = cause;
+    }
+    expect(failure).toMatchObject({
+      code: 'cli_internal',
+      exitCode: 9,
+      cause: { cause: primary, errors: [primary, secondary] },
+    });
+    expect(client?.sqlite.open).toBe(true);
+    expect(captured).toBeTypeOf('function');
+  } finally {
+    if (client?.sqlite.open) release?.();
+  }
+});
+
 describe('openLocalDb — the at-rest 0600 (#28, ADR-0050)', () => {
   it.skipIf(!POSIX)('applies 0600 on a successful open', async () => {
     const { openLocalDb } = await import('./open.js');

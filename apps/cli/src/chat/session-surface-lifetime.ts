@@ -28,6 +28,7 @@ export class SessionSurfaceLifetime {
         // Signal custody must survive a failed database release. A later signal still
         // belongs to the original finite authority while cleanup remains uncertain.
         await cleanup?.();
+        if (this.work.hasCleanupUncertainty) await new Promise<never>(() => {});
         this.#removeSignals();
       },
     });

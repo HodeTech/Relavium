@@ -1,3 +1,4 @@
+import { acquireNativeResource } from '../process/acquire-native-resource.js';
 import type { CliInvocation } from '../process/invocation.js';
 import type { defaultSubscribeSignals } from '../process/signals.js';
 import { warnTeardown } from '../process/close-quietly.js';
@@ -124,6 +125,7 @@ export interface RunCommandDeps {
     workflow: WorkflowDefinition,
     homeDir: string,
     projectRoot: string,
+    captureClose?: (close: () => void) => void,
   ) => OpenedHistory;
   /**
    * Injectable renderer selector (TUI / json / plain). Defaults to the real {@link selectRenderer}; tests
@@ -249,6 +251,7 @@ async function runOwned(
   // Declared here, assigned AFTER the MCP connect below — the shared `finally` closes both resources, and
   // the store cannot be opened until the definition it must freeze is known.
   let opened: OpenedHistory | undefined;
+  let closeHistory: (() => void) | undefined;
   let mcpRuntime: WorkflowMcpRuntime | undefined;
   let mcpAcknowledged = true;
   const reportMcpCloseFailure = (_serverId: string, cause: unknown): void => {
@@ -316,7 +319,20 @@ async function runOwned(
     // only be seen if what was frozen is what was executed.
     lifetime.checkpoint();
     try {
-      opened = deps.openRunStore?.(runWorkflow, homeDir, deps.global.cwd);
+      const openRunStore = deps.openRunStore;
+      if (openRunStore !== undefined) {
+        opened = acquireNativeResource(
+          (captureClose) => openRunStore(runWorkflow, homeDir, deps.global.cwd, captureClose),
+          {
+            assertAdmitting: () => lifetime.checkpoint(),
+            captureClose: (close) => {
+              closeHistory = close;
+            },
+            cleanupUncertain: (cause) => lifetime.cleanupFailed(cause),
+            isStoppedFailure: (cause) => lifetime.isStoppedFailure(cause),
+          },
+        );
+      }
     } catch (err) {
       // Classify only this open operation; engine/work faults retain their own boundary.
       throw storageBoundaryError(err);
@@ -549,7 +565,7 @@ async function runOwned(
     }
     if (!mcpAcknowledged) await new Promise<never>(() => {});
     try {
-      opened?.close();
+      closeHistory?.();
     } catch (cause) {
       lifetime.cleanupFailed(storageBoundaryError(cause));
       warnTeardown(deps.io, 'history database');

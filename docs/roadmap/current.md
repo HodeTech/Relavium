@@ -1159,7 +1159,13 @@ records complete NONCLEAN coverage of all 255 paths and the verified corrections
 no clean-round acceptance is inferred. The [second cumulative round and native-input corrections](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-second-cumulative-review-and-native-input-corrections--2026-10-17)
 record complete NONCLEAN coverage of all 262 paths, the supplemental native-input
 finding and subsequent fixes. Fresh complete reviews/security/full-CI/platform
-acceptance remain open. Step 8d proceeds automatically. The
+acceptance remain open. The [third cumulative review and partial-acquisition corrections](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-third-cumulative-review-and-partial-acquisition-corrections--2026-10-17)
+record complete NONCLEAN coverage of 269 paths at `ec8ba368`, source-only collection,
+shared consumed-input custody and pre-setup database ownership across the actual
+shipping surfaces. Earlier CI failures retain their exact attribution; the macOS
+packed failure is not cleared by local reproduction passes. Two NEW complete clean
+rounds, a NEW separate clean security sitting and current CI/platform acceptance
+remain open. Step 8d proceeds automatically. The
 [final proposal reviews](phases/phase-2.5.5-hardening-and-remediation.md#second-maintainer-rereview-final-proposal-readiness--2026-10-16)
 remain proposal evidence, not implementation review. The selected encrypted archive
 method persists; production recipient/recovery belongs to Wave 4b release setup.

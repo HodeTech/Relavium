@@ -1,4 +1,4 @@
-import type { CommandLifetime } from '../process/command-lifetime.js';
+import { acquireCommandResource, type CommandLifetime } from '../process/command-lifetime.js';
 import { closeQuietly } from '../process/close-quietly.js';
 import { SessionExportedEventSchema } from '@relavium/shared';
 
@@ -32,7 +32,10 @@ export interface ChatExportCommandDeps {
   readonly io: CliIo;
   readonly global: GlobalOptions;
   /** Injectable session-store opener — tests pass an in-memory store; production opens `~/.relavium/history.db`. */
-  readonly openSessionStore?: (homeDir: string) => OpenedSessionStore;
+  readonly openSessionStore?: (
+    homeDir: string,
+    captureClose?: (close: () => void) => void,
+  ) => OpenedSessionStore;
   /** Wall-clock (ms) for the `exported` row timestamp + the event timestamp (injectable for tests). */
   readonly now?: () => number;
 }
@@ -46,8 +49,9 @@ export function chatExportCommand(
     cwd: deps.global.cwd,
     configPath: deps.global.configPath,
   });
-  const opened = (deps.openSessionStore ?? openSessionStore)(homeDir);
-  deps.commandLifetime?.adoptCleanup(() => opened.close());
+  const opened = acquireCommandResource(deps.commandLifetime, (captureClose) =>
+    (deps.openSessionStore ?? openSessionStore)(homeDir, captureClose),
+  );
   try {
     const result = exportSession({
       store: opened.store,

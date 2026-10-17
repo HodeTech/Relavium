@@ -27,6 +27,100 @@ function fixture() {
 }
 
 describe('management command lifetime', () => {
+  it('adopts an early native close once across the returned-resource handoff', async () => {
+    const f = fixture();
+    const close = vi.fn();
+    await f.lifetime.execute(() => {
+      f.lifetime.acquire((captureClose) => {
+        captureClose(close);
+        captureClose(close);
+        return { close };
+      });
+      return Promise.resolve(0);
+    });
+    expect(close).toHaveBeenCalledOnce();
+    expect(f.registry.activeOwners).toBe(0);
+  });
+
+  it('preserves the receiver of a legacy returned native resource', async () => {
+    const f = fixture();
+    const resource = {
+      closed: false,
+      close() {
+        this.closed = true;
+      },
+    };
+    await f.lifetime.execute(() => {
+      expect(f.lifetime.acquire(() => resource)).toBe(resource);
+      return Promise.resolve(0);
+    });
+    expect(resource.closed).toBe(true);
+    expect(f.registry.activeOwners).toBe(0);
+  });
+
+  it('retains unknown partial acquisition and signal custody through the original deadline', async () => {
+    const f = fixture();
+    let settled = false;
+    const command = f.lifetime.execute(() => {
+      f.lifetime.acquire(() => {
+        throw new Error('synthetic unknown partial creation');
+      });
+      return Promise.resolve(0);
+    });
+    void command.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await reactions();
+    expect(f.registry.activeOwners, 'UNKNOWN_PARTIAL_COMMAND_ACQUISITION_IS_NOT_RETIREMENT').toBe(
+      1,
+    );
+    expect(f.removeSignals).not.toHaveBeenCalled();
+    expect(settled).toBe(false);
+    f.advance(3_000);
+    expect(await f.invocation.finiteExit.exited).toBe(9);
+    expect(f.registry.activeOwners).toBe(1);
+  });
+
+  it('preserves a classified no-resource storage refusal', async () => {
+    const f = fixture();
+    const refusal = new CliError('storage_unavailable', '');
+    await expect(
+      f.lifetime.execute(() => {
+        f.lifetime.acquire(() => {
+          throw refusal;
+        });
+        return Promise.resolve(0);
+      }),
+    ).rejects.toBe(refusal);
+    expect(f.registry.activeOwners).toBe(0);
+    expect(f.removeSignals).toHaveBeenCalledOnce();
+    expect(f.registry.budget.deadline()).toBeUndefined();
+  });
+
+  it('adopts a resource that returns after reentrant stop before admitting business use', async () => {
+    const f = fixture();
+    const close = vi.fn();
+    const use = vi.fn();
+    await f.lifetime.execute(() => {
+      f.lifetime.acquire((captureClose) => {
+        captureClose(close);
+        f.signal(15);
+        return { close };
+      });
+      use();
+      return Promise.resolve(0);
+    });
+    expect(use).not.toHaveBeenCalled();
+    expect(close).toHaveBeenCalledOnce();
+    expect(f.registry.activeOwners).toBe(0);
+    expect(await f.invocation.finiteExit.exited).toBe(143);
+  });
+
   it.each([0, 1, 2] as const)(
     'preserves ordinary %s with a truthful no-health owner',
     async (code) => {

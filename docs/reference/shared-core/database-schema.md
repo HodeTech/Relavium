@@ -1332,6 +1332,16 @@ Byte/format verification and exact host shapes live in the
 
 ## Concurrency & transaction behavior
 
+The Node factory `createClient(path, captureClose?)` can hand its idempotent native
+close capability to the original host synchronously, immediately after the SQLite
+constructor and before PRAGMAs or Drizzle setup. CLI openers forward this optional
+handoff before hardening, migrations or store construction can fail. A setup
+failure attempts native release and preserves its primary cause. If release also
+fails, both causes survive in an `AggregateError`; the escaping open failure does
+not inherit operational storage provenance. A returned handle, swallowed cleanup
+error or elapsed shutdown budget is not evidence of native release. CLI ownership
+and refusal projection follow the [CLI lifecycle contract](../cli/commands.md#management-ownership-implementation-checkpoint).
+
 `history.db` is a **single shared file** two concurrent `relavium` processes may write at once — e.g. a `run` persisting events while a `chat` refreshes the live model catalog ([ADR-0064](../../decisions/0064-live-model-catalog.md) §5). The Node/CLI path (`better-sqlite3`, [ADR-0021](../../decisions/0021-node-sqlite-driver-better-sqlite3.md), re-affirmed by [ADR-0067](../../decisions/0067-node-supported-floor-22-reaffirm-better-sqlite3.md)) hardens this at the connection and the transaction level; this is the one canonical home for the policy that `packages/db/src/retry.ts` and the store doc-comments cite.
 
 - **Connection PRAGMAs** ([`client.ts`](../../../packages/db/src/client.ts)): `journal_mode = WAL` (readers never block the single writer, and vice-versa), `busy_timeout = 5000` (SQLite's built-in busy handler waits up to 5 s for a contended lock before returning `SQLITE_BUSY`), `synchronous = NORMAL` (the recommended durability/throughput trade-off under WAL), and `foreign_keys = ON`.

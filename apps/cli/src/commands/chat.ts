@@ -371,7 +371,10 @@ export interface ChatCommandDeps {
    *  just-ended session under a new-model agent. Default {@link buildResumedChatSession}. */
   readonly buildResumedSession?: typeof buildResumedChatSession;
   /** Injectable session-store opener (tests pass an in-memory store). Default {@link openSessionStore}. */
-  readonly openSessionStore?: (homeDir: string) => OpenedSessionStore;
+  readonly openSessionStore?: (
+    homeDir: string,
+    captureClose?: (close: () => void) => void,
+  ) => OpenedSessionStore;
   /** The MCP named-secret resolver (2.R Step 4) — production injects the keychain-backed one (specs.ts); default env-only. */
   readonly mcpSecretResolver?: McpSecretResolver;
   readonly resolveKeys?: (
@@ -410,7 +413,10 @@ export interface ChatResumeCommandDeps {
    *  brand-new session (not a re-resume) bound to the resumed agent. Default {@link buildChatSession}. */
   readonly buildSession?: typeof buildChatSession;
   /** Injectable session-store opener (tests pass an in-memory store). Default {@link openSessionStore}. */
-  readonly openSessionStore?: (homeDir: string) => OpenedSessionStore;
+  readonly openSessionStore?: (
+    homeDir: string,
+    captureClose?: (close: () => void) => void,
+  ) => OpenedSessionStore;
   /** The MCP named-secret resolver (2.R Step 4) — production injects the keychain-backed one; default env-only. */
   readonly mcpSecretResolver?: McpSecretResolver;
   readonly resolveKeys?: (
@@ -674,8 +680,12 @@ async function chatCommandBody(
     // Acquire the store first; on failure tear the MCP children down (best-effort — never mask the open error).
     let opened: OpenedSessionStore;
     try {
-      opened = (deps.openSessionStore ?? openSessionStore)(homeDir);
-      ownership?.adoptStore(opened);
+      opened =
+        ownership === undefined
+          ? (deps.openSessionStore ?? openSessionStore)(homeDir)
+          : ownership.acquireStore((captureClose) =>
+              (deps.openSessionStore ?? openSessionStore)(homeDir, captureClose),
+            );
     } catch (err) {
       if (host !== undefined) {
         host.work.failure(err);
@@ -863,8 +873,12 @@ async function chatResumeCommandBody(
 
   const grants = admitFsInvocation(deps.global);
   const homeDir = resolveHomeDir({});
-  const opened = (deps.openSessionStore ?? openSessionStore)(homeDir);
-  ownership?.adoptStore(opened);
+  const opened =
+    ownership === undefined
+      ? (deps.openSessionStore ?? openSessionStore)(homeDir)
+      : ownership.acquireStore((captureClose) =>
+          (deps.openSessionStore ?? openSessionStore)(homeDir, captureClose),
+        );
   const prepare = async (host?: SessionHostOwner) => {
     let config: LoadedConfig['config'];
     let projectConfigDir: LoadedConfig['projectConfigDir'];
