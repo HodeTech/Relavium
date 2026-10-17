@@ -352,3 +352,20 @@ including unchanged small arguments; no fallback or migration invents an identit
 permission to repeat an effect. The exact projection and credential-equality
 limits remain in [effect-journal.md](../reference/shared-core/effect-journal.md#11-secrets-what-a-row-may-hold).
 This author correction is subject to fresh review and source-pinned validation in PR #95.
+
+### PR #95 recognized-credential correction — 2026-10-18
+
+The next independent review reproduced two incomplete recognized-value masks in the
+full journal input: an opaque query value longer than 512 characters and a quoted
+JSON password containing an escaped quote. Their remaining suffixes changed physical
+SQLite digests despite changing only credentials. The correction consumes each complete
+recognized value, preserving subsequent public fields. A new persisted digest domain
+refuses older partial projections, including a current literal equal to an old projection;
+it does not rewrite old rows or permit a repeated effect. This restores the existing
+credential-equality requirement rather than adding a new hashing or secret-storage
+decision. The exact current representation and compatibility limits remain in
+[effect-journal.md §11](../reference/shared-core/effect-journal.md#11-secrets-what-a-row-may-hold).
+An author sweep of the same class also reproduces multi-`@` URL userinfo retaining a
+password suffix. One whole-authority projection masks through its last separator,
+preserving the host and subsequent public fields. Fresh independent review and
+publication validation remain required for the complete correction.

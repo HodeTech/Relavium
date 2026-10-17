@@ -8441,3 +8441,24 @@ Its unchanged timeout, two 40-write bursts and all row assertions remain. Local
 validation of these repairs does not establish a Windows or minimum-Node CI result.
 Two NEW complete cumulative clean rounds, a NEW separate security sitting and fresh
 corrected-source CI/platform evidence remain required after this nonclean round.
+
+The next candidate, `060830f6`, has one complete clean cumulative round across
+99 corrective paths / 194 hunks. The subsequent library review is **NONCLEAN**
+(20 paths / 47 hunks): native registry/HTTP/SQLite probes independently confirm
+that long opaque-query and escaped-quote password masks retain credential suffixes
+in the new full-value digest input. CLI review is complete clean (43 paths / 93 hunks);
+the separate security probe confirms the same journal equality oracle. None of
+these reports is whole-PR acceptance, and the clean round cannot certify the repair.
+An author sweep also reproduces a partial multi-`@` userinfo mask in this same core
+journal path and adds it to the correction and native SQLite regressions.
+Admitted-scale probes additionally expose V8 stack exhaustion in open-ended token
+repetitions. Bounded minimum lookaheads and simple greedy runs preserve the existing
+token floors; delimiter scanners retain whole query values and following public
+fragments. Permanent multi-megabyte cases protect the accepted size instead of
+lowering admission or truncating a credential. Author removal/restoration controls
+cover the value and runtime guards; they do not substitute for independent acceptance.
+The correction masks complete recognized values and separates the persisted digest
+domain from earlier partial projections. Existing old digests are not rewritten,
+and old rows grant neither replay nor retry permission. Two NEW complete cumulative
+clean rounds, a NEW separate clean security sitting and corrected-source publication
+evidence remain required after this finding.

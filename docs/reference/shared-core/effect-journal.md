@@ -351,16 +351,24 @@ unencrypted at rest. "A digest, not the bytes" is therefore not by itself a suff
 contract does not make it. The hash is SHA-256 over a canonical JSON serialization (sorted keys, no insignificant
 whitespace) of the redacted projection, using a vetted implementation — never a hand-rolled one.
 
-The current persisted form is `v2:` followed by the SHA-256 hex digest. The version
+The current persisted form is `v3:` followed by the SHA-256 hex digest. The version
 prefix is outside the hash and separates current full-value projections from legacy
-unversioned digests; a JSON wrapper alone could itself equal arbitrary old tool args.
+unversioned digests and `v2:` projections with incomplete credential masks; a JSON
+wrapper alone could itself equal arbitrary old tool args.
 The digest consumes the full surviving non-secret values, including long string tails.
 The bounded `toolInput` display preview is not a journal input: equal-length values can
-differ beyond its retained prefix. Every unversioned legacy row refuses matching prepare,
+differ beyond its retained prefix. Every unversioned or `v2:` legacy row refuses matching prepare,
 including unchanged small arguments: its original projection cannot be proven from the
 digest alone. There is no fallback to the old digest or automatic retry permission. Secret and
 inline-media redaction remain deliberate projection equality; raw credential bytes are never
 added to the digest to distinguish calls.
+
+Recognized URL userinfo is masked through the authority's last `@`, preserving the host,
+path, query and fragment. Recognized opaque URL-query values are masked through their delimiter, including values
+longer than 512 characters. Quoted secret-key values honor escaped quotes and backslashes
+through the actual closing quote. A recognized value must not leave a credential suffix
+in the projection. This remains a finite shape detector, not a claim to identify arbitrary
+unlabelled secrets. Existing old digests are not retroactively erased or rewritten.
 
 A **session** row's `result_json` is always SQL NULL; even a supplied result whose serializer throws is never
 examined. A matching prepare refuses rather than replaying, and session audit readers omit the stored
