@@ -22,6 +22,65 @@ afterEach(() => {
 });
 
 describe('bounded model-list collector ownership', () => {
+  it.each([false, true])(
+    'keeps caller cancellation primary through SDK and cleanup refusal (already stopped=%s)',
+    async (alreadyStopped) => {
+      const stop = new AbortController();
+      if (alreadyStopped) stop.abort();
+      const classify = vi.fn(() =>
+        makeLlmError({ provider: 'anthropic', kind: 'unknown', message: 'SDK abort differs' }),
+      );
+      const removal = vi.spyOn(stop.signal, 'removeEventListener').mockImplementation(() => {
+        throw new Error('private listener cleanup refusal');
+      });
+      const outcome = boundedListModels({
+        provider: 'anthropic',
+        key: 'synthetic',
+        signal: stop.signal,
+        classify,
+        collect: (signal) =>
+          new Promise((_resolve, reject) => {
+            const refuse = () => reject(new Error('private SDK abort'));
+            if (signal.aborted) refuse();
+            else signal.addEventListener('abort', refuse, { once: true });
+          }),
+      });
+      if (!alreadyStopped) stop.abort();
+      await expect(outcome).rejects.toMatchObject({
+        message: 'model list cancelled',
+        llmError: { kind: 'cancelled', retryable: false },
+      });
+      expect(classify).not.toHaveBeenCalled();
+      expect(removal).toHaveBeenCalledOnce();
+    },
+  );
+
+  it('keeps the hard timeout primary when abort also reaches the caller signal', async () => {
+    vi.useFakeTimers();
+    const stop = new AbortController();
+    const outcome = boundedListModels({
+      provider: 'gemini',
+      key: 'synthetic',
+      signal: stop.signal,
+      classify: () => makeLlmError({ provider: 'gemini', kind: 'unknown', message: 'unused' }),
+      collect: (signal) =>
+        new Promise((_resolve, reject) => {
+          signal.addEventListener(
+            'abort',
+            () => {
+              stop.abort();
+              reject(new Error('private SDK abort'));
+            },
+            { once: true },
+          );
+        }),
+    }).catch((cause: unknown) => cause);
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(await outcome).toMatchObject({ llmError: { kind: 'timeout', retryable: true } });
+    expect(stop.signal.aborted).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it('cleans an attempted host listener and empty aggregate after partial setup refuses', async () => {
     const parent = owner();
     const cause = new Error('private listener setup');

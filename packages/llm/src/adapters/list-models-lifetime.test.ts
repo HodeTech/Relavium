@@ -192,15 +192,46 @@ describe('discovery result versus original invocation retirement', () => {
   );
 
   it.each(dialects)(
+    '$name classifies an in-flight caller abort consistently through the installed SDK',
+    async ({ create }) => {
+      const parent = owner();
+      const entered = deferred<void>();
+      const stop = new AbortController();
+      const fetch: ProviderFetch = (_input, init) =>
+        new Promise((_resolve, reject) => {
+          entered.resolve();
+          const refuse = () => reject(new DOMException('synthetic request aborted', 'AbortError'));
+          if (init?.signal?.aborted === true) refuse();
+          else init?.signal?.addEventListener('abort', refuse, { once: true });
+        });
+      const outcome = list(create(fetch), parent.options, stop.signal).catch(
+        (cause: unknown) => cause,
+      );
+      await entered.promise;
+      stop.abort();
+      const cause = await outcome;
+      expect(cause).toBeInstanceOf(LlmProviderError);
+      expect(cause).toMatchObject({ llmError: { kind: 'cancelled', retryable: false } });
+      if (cause instanceof LlmProviderError) {
+        expect(cause.llmError.cause).toBeUndefined();
+        expect(cause.message).not.toContain('synthetic-discovery-key');
+      }
+      await Promise.all(parent.raw);
+    },
+  );
+
+  it.each(dialects)(
     '$name refuses SDK entry for an already-stopped owned request',
     async ({ create }) => {
       const parent = owner();
       const fetch = vi.fn(() => Promise.resolve(jsonResponse({})));
       const stop = new AbortController();
       stop.abort();
-      await expect(list(create(fetch), parent.options, stop.signal)).rejects.toBeInstanceOf(
-        LlmProviderError,
-      );
+      const outcome = list(create(fetch), parent.options, stop.signal);
+      await expect(outcome).rejects.toBeInstanceOf(LlmProviderError);
+      await expect(outcome).rejects.toMatchObject({
+        llmError: { kind: 'cancelled', retryable: false },
+      });
       expect(fetch).not.toHaveBeenCalled();
       await Promise.all(parent.raw);
     },

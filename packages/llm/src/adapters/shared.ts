@@ -242,7 +242,7 @@ export function assertListModelsShape(
 
 /**
  * Resolve the base {@link LlmError} for a failed {@link boundedListModels} race, BEFORE the final redact +
- * `cause`-strip re-wrap. A timeout wins first; then a pre-classified error (the §8 drift throw, or any
+ * `cause`-strip re-wrap. A timeout wins first, then caller cancellation; a pre-classified error (the §8 drift throw, or any
  * adapter-side `LlmProviderError`) passes THROUGH with its own `kind` — never re-run through `classify`
  * (which would flatten a `bad_request` drift throw to `unknown`); otherwise the adapter classifier runs.
  */
@@ -250,16 +250,20 @@ function resolveListModelsError(params: {
   readonly provider: ProviderId;
   readonly err: unknown;
   readonly timedOut: boolean;
+  readonly cancelled: boolean;
   readonly timeoutMs: number;
   readonly classify: (err: unknown) => LlmError;
 }): LlmError {
-  const { provider, err, timedOut, timeoutMs, classify } = params;
+  const { provider, err, timedOut, cancelled, timeoutMs, classify } = params;
   if (timedOut) {
     return makeLlmError({
       provider,
       kind: 'timeout',
       message: `model list timed out after ${String(timeoutMs)}ms`,
     });
+  }
+  if (cancelled) {
+    return makeLlmError({ provider, kind: 'cancelled', message: 'model list cancelled' });
   }
   if (err instanceof LlmProviderError) {
     return err.llmError;
@@ -294,7 +298,11 @@ export async function boundedListModels(params: {
   const options = captureInvocationOptions(params.options);
   const work =
     options === undefined ? undefined : new ProviderInvocationWork(options, controller.signal);
-  const onAbort = (): void => controller.abort();
+  let cancelled = false;
+  const onAbort = (): void => {
+    cancelled = true;
+    controller.abort();
+  };
   let timer: ReturnType<typeof setTimeout> | undefined;
   let listenerAttempted = false;
   let timedOut = false;
@@ -306,7 +314,7 @@ export async function boundedListModels(params: {
       // the exact attempted listener, independently of collection entry.
       listenerAttempted = true;
       signal.addEventListener('abort', onAbort);
-      if (signal.aborted) controller.abort();
+      if (signal.aborted) onAbort();
     }
     const timeout = new Promise<never>((_resolve, reject) => {
       timer = setTimeout(() => {
@@ -322,7 +330,14 @@ export async function boundedListModels(params: {
       // retains the exact collect and its admitted transport descendants.
       result = await Promise.race([collecting, timeout]);
     } catch (err) {
-      const base = resolveListModelsError({ provider, err, timedOut, timeoutMs, classify });
+      const base = resolveListModelsError({
+        provider,
+        err,
+        timedOut,
+        cancelled,
+        timeoutMs,
+        classify,
+      });
       throw new LlmProviderError(
         makeLlmError({
           provider,
