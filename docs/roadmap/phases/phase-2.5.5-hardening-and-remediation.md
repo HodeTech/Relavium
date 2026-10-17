@@ -7919,3 +7919,70 @@ verdicts. Two NEW complete cumulative CLEAN rounds after the last material fix,
 NEW separate clean security and fresh corrected-source full CI plus all four
 installed consumers remain required. Steps 9–19 have not started. No credential,
 provider capture, billing, production recipient or user decision is pending.
+
+
+### Wave 3 Step 8d twentieth cumulative review and stopped-result/maintenance corrections — 2026-10-17
+
+**R20 is complete and NONCLEAN; Step 8d and whole Step 8 remain open.** Seven NEW
+independent slices cover cumulative `d9625ff0` → `4eee7c68`: **325 paths / 1,759
+hunks**. The base is Step 7 installed-package acceptance, not the Step 8c boundary.
+Root reads all original reports and every substantive assessment, then verifies
+physical/Git bodies, complete diffs and ordered hunks. Opening/closing freezes
+match all 1,754 tracked files, 21,165 dependency files, 1,215 lexical links and
+466 dist files. Aggregate SHA-256 is
+`07261862e1830f0bf60fa31e5282536109d660691e2f5409971cdf825c52ee5a`;
+root closure is `5740cb79de2f3253cec556bd68aaa943ad2c8dee576189e74002b84cd3b3fd01`.
+Original reviews, a byte-identical workflow-ledger filename alias, append-only
+caller-path metadata correction, qualified document reads and runtime receipts
+remain local and Git-ignored. Index blob/mode membership is unchanged; a Git
+stat-cache byte hash is not a staged-content identity.
+
+**Medium `R20-HOME-1` is corrected at `50d7309f`.** Deferred mention/file/shell
+results and model-refresh banners could mutate Home business state after its
+permanent stop, while entered native suspension still kept the view mounted.
+The monotonic exit seal now joins session identity/epoch checks before those
+publications. Live classified notices, local busy cleanup and actual producer,
+suspension and native restoration joins remain intact. No new credential,
+provider, database-authority or accounting bypass is claimed. Existing clear/end
+latches already prevented a demonstrated new host; clear/rebuild controls preserve
+that behaviour. The [canonical session contract](../../reference/cli/commands.md#session-ownership-implementation-checkpoint)
+owns publication. Six actual installed-Home/RootApp cases and ten controller cases
+cover live/stopped results. Two separate Home guard removals produce five and two
+precise failures; fixed/restored 24-file runs pass **424 cases** with no unhandled
+errors and actual Node/outer execution joins. Synthetic streams are not operator TTYs.
+
+**Medium `WFA-R20-01` is corrected in the same commit.** Actual subscribed-signal,
+engine, SQLite and default CAS probes show new media GC can enter at remaining
+budget zero before queued physical exit. Root independently reproduces it; no data
+loss or delayed physical deadline is inferred. The same original budget now guards
+new effect retention and shared media-GC entry for run, gate and budget resume.
+Already-entered sweeps remain joined; no deadline is renewed and no engine,
+receipt, input, MCP, database or terminal acknowledgement is skipped. The
+[canonical workflow contract](../../reference/cli/commands.md#workflow-and-terminal-ownership)
+owns this rule. Permanent actual run/gate/budget live/expired journeys preserve
+unresolved rows and distinguish DB/raw-sweep closure from still-owed expired
+terminal restoration. Five independent guard/forwarding removals cause four,
+one, two, one and two precise failures; each restored two-file run passes all
+**28 cases**, with explicit zero-unhandled and actual Node/outer joins. Initial
+author fixture/anchor corrections are retained honestly; no product assertion,
+readiness bound or native/test watchdog is weakened. No new dependency or public
+engine/provider seam is introduced.
+
+Applied author workspace lint/typecheck/test and build pass; cached dependency
+tasks retain that qualification. A separate post-build complete CLI run passes
+**360 files / 5,649 cases / ten established skips**, explicit zero unhandled errors,
+actual Node exit 0 and outer execution exit 0. Format, isolation (739 files), seam
+and engine-dependency checks pass. Compiled closure verifies 25 outputs / 410 inputs /
+17 externals; local bootstrap passes 177 controls and compiled CLI smoke passes.
+These are author checks, not independent acceptance; Markdown is outside Prettier.
+
+At reviewed predecessor `4eee7c68`, all four same-artifact consumers, coverage and
+Windows advisory pass in [CI run 39028149301](https://github.com/HodeTech/Relavium/actions/runs/39028149301).
+Full CI remains in progress when recorded. Root independently inspects five ZIPs,
+70 public files and the 446,626-byte tarball, SHA-256
+`31ff784e2b81aef980187bd3609905f66eeef9cc7ac6ff01ad56b5a0eb7122ab`.
+Those results do not execute or accept the correction. R1–R20 retain NONCLEAN
+verdicts. Two NEW complete cumulative CLEAN rounds after the last material fix,
+NEW separate clean security and fresh corrected-source full CI plus all four
+same-artifact consumers remain required. Steps 9–19 have not started. No user,
+credential, provider capture, billing or production-recipient decision is pending.

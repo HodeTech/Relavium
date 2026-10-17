@@ -1333,6 +1333,19 @@ unhandled errors), with static and compiled smokes. R1–R19 remain NONCLEAN; tw
 NEW complete cumulative clean rounds, NEW separate security and corrected-source
 full CI/platforms remain required. Steps 9–19 have not started; no user decision
 is pending.
+The [twentieth cumulative review and stopped-result/maintenance corrections](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-twentieth-cumulative-review-and-stopped-resultmaintenance-corrections--2026-10-17)
+records complete NONCLEAN coverage of 325 paths / 1,759 rehashed hunks at `4eee7c68`.
+Two Medium findings are corrected at `50d7309f`: Home drops deferred business
+results after permanent stop, and optional workflow effect retention/media GC
+refuse fresh entry at the original zero remaining budget. Actual native and
+already-entered work joins stay owed. Six installed-Home, ten controller and
+run/gate/budget live/expired controls pass; two Home and five budget mechanism
+removals fail their precise assertions and every restoration passes. Author
+workspace/build and joined post-build CLI gates pass (360 files / 5,649 passes /
+ten established skips, zero unhandled errors), with static/compiled smokes.
+R1–R20 remain NONCLEAN; two NEW complete cumulative clean rounds, NEW separate
+security and fresh corrected-source full CI/platforms remain required. Steps 9–19
+have not started; no user decision is pending.
 Step 8d proceeds automatically. The
 [final proposal reviews](phases/phase-2.5.5-hardening-and-remediation.md#second-maintainer-rereview-final-proposal-readiness--2026-10-16)
 remain proposal evidence, not implementation review. The selected encrypted archive
