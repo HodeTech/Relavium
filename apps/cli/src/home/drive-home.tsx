@@ -588,16 +588,25 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       // Write to the SAME file the picker re-reads + the started session resolves (honors `--config`), so a `/models`
       // write is never a silent no-op to a different file (2.5.G S7). The effort rides the SAME atomic write; an
       // absent `reasoningEffort` (a non-reasoning model) leaves any prior effort default unchanged.
-      writeDefault: (modelId, provider, reasoningEffort) =>
-        writeGlobalPreferences(
-          {
-            defaultModel: modelId,
-            defaultProvider: provider, // ADR-0059: persist the provider so the next chat skips id inference
-            ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
-          },
-          homeDir,
-          deps.global.configPath,
-        ),
+      writeDefault: (modelId, provider, reasoningEffort) => {
+        ownership?.surface.work.assertAdmitting();
+        try {
+          writeGlobalPreferences(
+            {
+              defaultModel: modelId,
+              defaultProvider: provider, // ADR-0059: persist the provider so the next chat skips id inference
+              ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
+            },
+            homeDir,
+            deps.global.configPath,
+          );
+        } catch (cause) {
+          // Known config refusals keep the picker's inline recovery. An unexpected fault must reach
+          // the original owner before that recovery consumes it and can otherwise permit clean exit.
+          ownership?.surface.work.failure(cause);
+          throw cause;
+        }
+      },
     };
 
     // The SHARED HomeChatSession wiring over a built (FRESH or RESUMED) session + its view store — the persister,

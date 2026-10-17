@@ -801,7 +801,8 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
 
   // The BARE-Home next-session-default write (ADR-0063 · ADR-0066 §6). Persists the GLOBAL `[preferences].default_model`
   // and — when the effort sub-step ran for a reasoning model — `[preferences].reasoning_effort` too, in ONE atomic
-  // write; a write fault keeps the picker open with a secret-free hint rather than crashing.
+  // write; a known config refusal keeps the picker open with a secret-free hint. The owned host observes
+  // unexpected writer faults before this UI recovery; an ownerless embedding retains its inline recovery.
   const writeNextSessionDefault = (
     modelId: string,
     displayName: string,

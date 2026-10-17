@@ -2,6 +2,7 @@ import { acquireNativeResource } from '../process/acquire-native-resource.js';
 import type { CliInvocation } from '../process/invocation.js';
 import { SessionHostOwner } from '../chat/session-host-owner.js';
 import { SessionSurfaceLifetime } from '../chat/session-surface-lifetime.js';
+import type { SessionWorkOwner } from '../chat/session-work-owner.js';
 import { nativeProcessesForInvocation } from '../process/native-process-owner.js';
 import { randomUUID } from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
@@ -106,20 +107,7 @@ export async function agentRunCommand(
       {
         ...deps,
         invocation: lifetime.invocation,
-        io: {
-          ...deps.io,
-          // Best-effort retention may consume a warning refusal, but actual output remains an
-          // invocation-owned tail. Neither a pending delivery nor a broken sink is a completion ACK.
-          writeErrAcknowledged: (text) =>
-            lifetime.work.work.retainWork(async () => {
-              try {
-                await deps.io.writeErrAcknowledged(text);
-              } catch (cause) {
-                lifetime.work.failure(cause);
-                throw cause;
-              }
-            }),
-        },
+        io: ownOneShotIo(deps.io, lifetime.work),
       },
       lifetime,
       (close) => {
@@ -127,6 +115,41 @@ export async function agentRunCommand(
       },
     ),
   );
+}
+
+/** Observe the actual captured sink before a passive listener or best-effort notice can consume its fault. */
+function ownOneShotIo(io: CliIo, owner: SessionWorkOwner): CliIo {
+  const failed = (cause: unknown): CliError => {
+    const failure = new CliError('output_unavailable', '', { cause });
+    owner.failure(failure);
+    return failure;
+  };
+  const write = (operation: () => void): void => {
+    owner.assertAdmitting();
+    try {
+      operation();
+    } catch (cause) {
+      throw failed(cause);
+    }
+  };
+  const deliver = (operation: () => Promise<void>): Promise<void> => {
+    owner.assertAdmitting();
+    // Retention notices may consume a rejection, but the original invocation still owes actual delivery.
+    return owner.work.retainWork(async () => {
+      try {
+        await operation();
+      } catch (cause) {
+        throw failed(cause);
+      }
+    });
+  };
+  return {
+    ...io,
+    writeOut: (text) => write(() => io.writeOut(text)),
+    writeErr: (text) => write(() => io.writeErr(text)),
+    writeOutAcknowledged: (text) => deliver(() => io.writeOutAcknowledged(text)),
+    writeErrAcknowledged: (text) => deliver(() => io.writeErrAcknowledged(text)),
+  };
 }
 
 async function agentRunOwned(
@@ -366,7 +389,9 @@ async function agentRunOwned(
       );
       // Render the live stream + run the single turn + tear down — a classified turn failure maps to exit 1.
       hostOwner.work.assertAdmitting();
-      const turnErrorCode = await hostOwner.work.enter(() => runOneShotTurn(built, message, deps));
+      const turnErrorCode = await hostOwner.work.enter(() =>
+        runOneShotTurn(built, message, deps, hostOwner.work),
+      );
       return turnErrorCode === undefined ? EXIT_CODES.success : EXIT_CODES.workflowFailed;
     } catch (cause) {
       // Setup can fail before a turn root exists. Observe the original fault BEFORE awaiting host cleanup:
@@ -437,8 +462,10 @@ async function runOneShotTurn(
   built: BuiltChatSession,
   message: string,
   deps: AgentRunCommandDeps,
+  owner: SessionWorkOwner,
 ): Promise<string | undefined> {
   let turnErrorCode: string | undefined;
+  let renderingStopped = false;
   const renderer: (event: SessionStreamHandleEvent) => void = deps.global.json
     ? (event) => deps.io.writeOut(`${stringifyJsonLine(event)}\n`)
     : // A ONE-SHOT: the session is cancelled in `finally` right after, so suppress the session-continuity recovery
@@ -448,9 +475,18 @@ async function runOneShotTurn(
   try {
     surfaceMcpSkipped(deps.io, built.mcpSkipped);
     unsubscribe = built.handle.subscribe((event) => {
-      renderer(event);
       if (event.type === 'session:turn_completed' && event.error !== undefined) {
         turnErrorCode = event.error.code;
+      }
+      if (renderingStopped || owner.signal.aborted) return;
+      try {
+        owner.assertAdmitting();
+        renderer(event);
+      } catch (cause) {
+        // The bus deliberately isolates passive subscribers. Observe here, before its warning-only
+        // handler can consume the fault; seal first because cancellation can synchronously emit again.
+        renderingStopped = true;
+        owner.failure(cause);
       }
     });
     // ADR-0057: `agent run` is a NON-interactive one-shot over the SAME full-capability chat-read-write host
@@ -468,16 +504,19 @@ async function runOneShotTurn(
       prompt: nonInteractiveApprovalPrompt('in a one-shot agent run'),
     });
     applyChatMode(modeEnv, 'ask');
+    owner.assertAdmitting();
     built.session.start();
+    owner.assertAdmitting();
     await built.session.sendMessage(message);
+    owner.assertAdmitting();
   } catch (cause) {
-    built.workOwner?.failure(cause);
+    owner.failure(cause);
     throw cause;
   } finally {
     try {
       built.session.cancel();
     } catch (cause) {
-      built.workOwner?.cleanupUncertain(cause);
+      owner.cleanupUncertain(cause);
     } finally {
       unsubscribe();
     }

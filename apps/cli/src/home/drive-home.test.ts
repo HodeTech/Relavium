@@ -1,4 +1,5 @@
 import { createCliInvocation } from '../process/invocation.js';
+import { randomUUID } from 'node:crypto';
 import { invocationFixture } from '../process/invocation.test-support.js';
 import {
   holdNativeToolProcess,
@@ -51,6 +52,7 @@ vi.mock('ink', async (importOriginal) => ({
   ...(await importOriginal<typeof import('ink')>()),
   render: inkRenderer.render,
 }));
+vi.mock('node:crypto', { spy: true });
 
 // Regression for the `provider_auth` bug: the Home built an ENV-ONLY key resolver, so a key stored in the OS
 // keychain (the normal `relavium provider add` path) was invisible while `relavium chat` (keychain-wired) worked.
@@ -138,6 +140,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
   });
   afterEach(() => {
     if (client.sqlite.open) client.sqlite.close();
+    vi.restoreAllMocks();
   });
 
   const global: GlobalOptions = {
@@ -615,6 +618,72 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     props.controller.handleKey('c', CTRL_C);
     expect(await drivePromise).toBe(EXIT_CODES.success);
   }, 10000);
+
+  it.each(['unexpected', 'known-config-refusal'] as const)(
+    'observes an owned /models default-write %s before inline picker recovery',
+    async (mode) => {
+      const f = invocationFixture();
+      const configFile = join(cwd, 'owned-picker-config.toml');
+      let captured: RootAppProps | undefined;
+      const close = vi.fn(() => client.sqlite.close());
+      const { deps } = makeDeps(
+        (props) => {
+          captured = props;
+        },
+        {
+          invocation: f.invocation,
+          global: { ...global, configPath: configFile },
+          openSessionStore: () => ({ store: createSessionStore(client.db), db: client.db, close }),
+        },
+      );
+      const drive = driveHome(deps);
+      const props = captured;
+      if (props === undefined) throw new Error('Home did not mount');
+      try {
+        props.controller.handleKey('/', {});
+        type(props, 'models');
+        props.controller.handleKey('', ENTER);
+        await flush();
+        expect(props.controller.getSnapshot().modelPicker?.entries.length).toBeGreaterThan(0);
+        if (mode === 'unexpected') {
+          // This native entry is before the real writer's filesystem catch; no errno or arbitrary
+          // error message is granted configuration-refusal provenance.
+          vi.mocked(randomUUID).mockImplementationOnce(() => {
+            throw new Error('PRIVATE_HOME_CONFIG_INVARIANT');
+          });
+        } else writeFileSync(configFile, '[preferences\n');
+        props.controller.handleKey('', ENTER);
+        if (props.controller.getSnapshot().modelPicker?.phase === 'effort')
+          props.controller.handleKey('', ENTER);
+        if (mode === 'unexpected') {
+          expect(randomUUID).toHaveBeenCalledOnce();
+          expect(
+            f.registry.observations.exitCode(),
+            'HOME_DEFAULT_WRITE_FAULT_REACHES_ORIGINAL_OWNER',
+          ).toBe(9);
+          expect(f.registry.budget.deadline()).toBe(3000);
+          expect(await drive).toBe(9);
+        } else {
+          expect(props.controller.getSnapshot().modelPicker?.hint).toContain('could not save');
+          expect(f.registry.termination).toBeUndefined();
+          props.controller.handleKey('', { escape: true });
+          props.controller.handleKey('', { escape: true });
+          expect(props.controller.getSnapshot().modelPicker).toBeUndefined();
+          props.controller.handleKey('c', CTRL_C);
+          expect(await drive).toBe(0);
+        }
+      } finally {
+        // Failed semantic assertions still close the actual drive before the fixture closes SQLite.
+        props.controller.handleKey('', { escape: true });
+        props.controller.handleKey('', { escape: true });
+        props.controller.handleKey('c', CTRL_C);
+        await drive;
+      }
+      expect(close).toHaveBeenCalledOnce();
+      expect(client.sqlite.open).toBe(false);
+      expect(f.registry.activeOwners).toBe(0);
+    },
+  );
 
   it('a /models write is picked up by the NEXT chat started in the SAME Home process (2.5.G S7 regression)', async () => {
     // The blocker Sonnet review caught: `startChat` closed over the load-once `config` snapshot, so a `/models`

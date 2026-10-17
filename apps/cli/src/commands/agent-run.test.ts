@@ -26,6 +26,7 @@ import { fingerprint, resolveStdioSpawn } from '../engine/mcp-consent.js';
 import type { GlobalOptions } from '../process/options.js';
 import { captureIo, parseNdjson } from '../test-support.js';
 import { agentRunCommand, readAllStdin, type AgentRunCommandDeps } from './agent-run.js';
+import { executeCommand } from './dispatch.js';
 
 /** A tiny structural guard so an NDJSON event's nested `error.code` is read without an unsafe `as` cast. */
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -582,6 +583,133 @@ describe('agentRunCommand (2.Q)', () => {
   }
 
   const agentPath = (): string => join(cwd, 'coder.agent.yaml');
+
+  it.each([
+    ['direct', false, false],
+    ['direct', true, false],
+    ['dispatch', false, false],
+    ['dispatch', true, false],
+    ['direct', false, true],
+    ['direct', true, true],
+    ['dispatch', false, true],
+    ['dispatch', true, true],
+  ] as const)(
+    'observes a refusing renderer through %s (json=%s, failed turn=%s) before the passive bus can hide it',
+    async (route, json, failedTurn) => {
+      const fixture = join(cwd, 'render-refusal.json');
+      writeFileSync(
+        fixture,
+        JSON.stringify({ ...CASSETTE, calls: failedTurn ? [] : CASSETTE.calls }),
+      );
+      const { d, control, out, err } = deps('synthetic prompt', { json });
+      const failure = new Error('PRIVATE_CAPTURED_SINK_FAILURE');
+      let rejectedWrites = 0;
+      const io = {
+        ...d.io,
+        writeOut: (text: string) => {
+          // A failed JSON turn reaches its real terminal event before this fault. The ordinary
+          // error must be recorded independently of rendering; successful turns refuse at first output.
+          if (json && failedTurn && !text.includes('"type":"session:turn_completed"')) {
+            d.io.writeOut(text);
+            return;
+          }
+          rejectedWrites++;
+          expect(control.registry.activeOwners).toBe(2);
+          throw failure;
+        },
+      };
+      const result =
+        route === 'direct'
+          ? await agentRunCommand(
+              { agent: agentPath(), input: [], allowMcpStdio: [], fixture },
+              { ...d, io },
+            )
+          : await executeCommand(
+              'agent.run',
+              { positionals: [agentPath()], options: { fixture } },
+              { invocation: control.invocation, global: d.global, io },
+            );
+      expect(result, 'AGENT_PASSIVE_OUTPUT_FAILURE_REACHES_ORIGINAL_OWNER').toBe(9);
+      expect(control.registry.observations.infrastructureCode()).toBe('output_unavailable');
+      expect(control.registry.budget.deadline()).toBe(3000);
+      expect(rejectedWrites, 'AGENT_OUTPUT_SEALS_BEFORE_CANCELLATION_REENTRY').toBe(1);
+      expect(control.registry.activeOwners).toBe(0);
+      expect(out() + err()).not.toContain(failure.message);
+    },
+  );
+
+  it.each([false, true])(
+    'keeps an ordinary failed turn at 1 through shipping dispatch (json=%s)',
+    async (json) => {
+      const fixture = join(cwd, 'healthy-output-failed-turn.json');
+      writeFileSync(fixture, JSON.stringify({ ...CASSETTE, calls: [] }));
+      const { d, control, out, err } = deps('synthetic prompt', { json });
+      expect(
+        await executeCommand(
+          'agent.run',
+          { positionals: [agentPath()], options: { fixture } },
+          { invocation: control.invocation, global: d.global, io: d.io },
+        ),
+      ).toBe(1);
+      expect(out() + err()).not.toBe('');
+      expect(control.registry.termination).toBeUndefined();
+      expect(control.registry.observations.exitCode()).toBe(1);
+      expect(control.registry.activeOwners).toBe(0);
+    },
+  );
+
+  it('seals paid entry after a start-render fault and retains the actual MCP and database join', async () => {
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const closeMcp = vi.fn(() => held);
+    let sendCalls = (): number => -1;
+    const { d, control, err } = deps('synthetic prompt', {
+      json: true,
+      providers: scriptedResolver([textTurn('must not egress')]),
+      onBuilt: (built) => {
+        const send = vi.spyOn(built.session, 'sendMessage');
+        sendCalls = () => send.mock.calls.length;
+      },
+    });
+    const builder = d.buildSession ?? buildChatSession;
+    const writeOut = vi.fn(() => {
+      throw new Error('PRIVATE_START_RENDER_FAILURE');
+    });
+    let settled = false;
+    const action = agentRunCommand(
+      { agent: agentPath(), input: [], allowMcpStdio: [] },
+      {
+        ...d,
+        io: { ...d.io, writeOut },
+        buildSession: async (options) => ({ ...(await builder(options)), closeMcp }),
+      },
+    );
+    void action.then(() => {
+      settled = true;
+    });
+    try {
+      await vi.waitFor(() => expect(closeMcp).toHaveBeenCalledOnce());
+      expect(sendCalls(), 'AGENT_START_RENDER_REFUSAL_PREVENTS_TURN_ENTRY').toBe(0);
+      expect(writeOut).toHaveBeenCalledOnce();
+      expect(control.registry.observations.exitCode()).toBe(9);
+      expect(control.registry.budget.deadline()).toBe(3000);
+      expect(control.registry.activeOwners).toBe(2);
+      expect(
+        productStores[0]?.db.$client.open,
+        'AGENT_OUTPUT_FAILURE_RETAINS_NATIVE_DATABASE',
+      ).toBe(true);
+      expect(settled).toBe(false);
+      expect(err()).not.toContain('PRIVATE_START_RENDER_FAILURE');
+    } finally {
+      release();
+      await action;
+    }
+    expect(await action).toBe(9);
+    expect(control.registry.activeOwners).toBe(0);
+    expect(productStores[0]?.db.$client.open).toBe(false);
+  });
 
   it.each([false, true])(
     'forwards native tool ownership before one-shot startup resolves (offline=%s)',
