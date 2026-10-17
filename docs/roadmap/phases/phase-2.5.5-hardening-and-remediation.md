@@ -7200,3 +7200,100 @@ failed attribution; only the successful final commands above receive credit.
 These author gates do not replace two NEW complete cumulative clean rounds, the
 NEW separate clean security sitting or fresh final-source full CI and all four
 same-artifact consumers. Step 8d and whole Step 8 remain open.
+
+
+### Wave 3 Step 8d eleventh cumulative review and advisory-owner corrections — 2026-10-17
+
+**NONCLEAN; corrections committed at `d8e6b4d5`.** Three NEW independent sittings
+review frozen `b9bc7118` cumulatively from `d9625ff0`: all **302 physical paths /
+1,650 U0 hunks** are independently rehashed and joined without overlap or omission.
+Session/terminal: 79/532; workflow/management: 136/834; native/tools/docs: 87/284.
+All three verdicts are NONCLEAN. Root reads all reports, corroborates the runtime
+findings, and independently verifies every physical/full-diff/hunk identity.
+Aggregate SHA-256:
+`9eb66529d81ceef58303f6971517b54742bd1794ebbb752322b1739f3dc2e8a3`.
+Detailed reports and physical ledgers remain local and Git-ignored.
+
+| Confirmed finding | Correction and preservation |
+| --- | --- |
+| ST-R11-1 — budget/unpriced notifications consume output/view faults before original-owner observation | Bind the synchronous notification family at shared runtime creation; observe its own original cause before governor/bus recovery and seal before cancellation reentry. Preserve healthy warnings, successful passive-error reporting, ownerless compatibility and original restoration capabilities |
+| R11-WM-01 — missing local MCP consent wiring remains operational 1 despite the accepted infrastructure-9 inventory | Use existing fixed `cli_internal` at this exact pre-start guard. Preserve known consent/cancellation outcomes and actual workflow health priority; do not reinterpret `internal` globally |
+| WNT-R11-1 — filesystem workspace declaration expects eight cases after two permanent controls were added | Refresh only the complete workload pin to ten; preserve named semantic assertions, exact inventory, runtime-error refusal and original bounds |
+| WNT-R11-2 — command-export declaration and README still expect fifteen cases | Refresh to sixteen, preserving the new timestamp regression, full-file witness and restoration requirements |
+
+Fresh assigned reviewer execution: session **40 files / 744 passes**, workflow
+**70 files / 1,301 passes / one established platform skip**, native **19 files /
+201 passes**, with a separate **16-pass** command-export file and **101 Node tests**.
+Every reported cohort has zero runner-unhandled errors and actual joined execution;
+overlapping checks are not added into a unique project total. The 61-file / 1,726-case
+union is collection evidence for 151 declarations, not execution of that mutation
+family. Only two workload count mismatches were found.
+
+Actual owned chat-resume plain/JSON and Home controls reproduce hidden notification
+faults with real SQLite and scripted offline providers. Effort, manual compaction
+acknowledgement and installed Ink error controls retain their distinct successful
+owner-observation evidence. The missing-consent guard refuses before spawn on both
+actual lifetime routes, but originally selects the wrong classification. Shipping
+callers currently supply consent; no CLI route to unconsented spawning is claimed.
+
+**Permanent causal evidence.** Three identical new regression files execute against
+the corrected source and an immutable `b9bc7118` Git archive. All **1,736 original
+tracked blobs** in that archive are independently reverified; only the three new
+test files are explicitly overlaid. Old runtime: **eight precise assertion failures /
+eight passes**. Corrected runtime: **sixteen passes**, zero skips. Both actual sessions
+join and owned reporter receipts record zero unhandled errors. The healthy pairs,
+original cause, provider entry counts, durable replies, native DB close and zero
+remaining owners are checked. Parent source aliases and shared installed dependencies
+are explicit; no Windows, provider-call or operator-TTY evidence is inferred.
+Causal record SHA-256:
+`e55cf4054a155db9dd844d13f7854687742ac06ec49f9f0984a7a0c0dbb9ed40`.
+Additional actual session-host reporter tests preserve successful passive reporting
+while observing a failure in the reporter itself; helper tests pin cancellation
+reentry, stopped entry and ownerless compatibility.
+
+**Separately attributed platform evidence.** Reviewed-source push run `39006313132`
+attempt 1 completes with **failure**. Both required causal families reject the stale
+counts, and the main required job refuses their failed dependency. Coverage, wire,
+usage, minimum-installable-Node and peer checks pass in their own scopes. Pack,
+all four installed consumers and required package aggregation pass. Root and native
+reviewer independently inspect five ZIPs, 70 public members and four bound receipts.
+Tarball: **446,001 bytes**, SHA-256
+`98e6b32548904d59588a14e28b478c8bc62d6c21761ef3e001e24275679a8e77`;
+physical audit SHA-256:
+`5af82c23fb67d39877e96705cdd73d9a794a479180c64c730a02c4d8f420f58c`.
+The current-runtime legs report Node 24.21.0; the minimum consumer is exactly 22.0.0.
+Package passes do not make full CI green.
+
+The separate Windows advisory fails the benign-alias fixture at **5,108 ms** against
+the unchanged **5,000-ms** bound (324 passes / eighteen established skips). Its
+initiating phase/cause remains **unknown**, as do the earlier attributed failures.
+Read-only source inspection and separately joined original/proposed native probes
+prove that a manual fixture snapshot redundantly runs migration/checkpoint maintenance.
+Both complete ten-case files pass locally with zero unhandled errors and all native
+connections closed; benign-case connections change from four main/four lock to four
+main/three lock. The private snapshot helper now uses the existing real SQLite/store
+read with `finally` close. Default fresh/resume openers and all semantic assertions
+remain intact. The actual missing-table control still proves native close on read
+failure. Bounded fixed-label/elapsed-number abort diagnostics record no paths, values
+or raw causes and grant no cleanup acknowledgement. This removes demonstrated
+unnecessary test work; it does not claim to explain or repair the remote timeout.
+No warmup, serialization, skip or timeout increase is introduced.
+
+**Correction author gates.** Final workspace lint/typecheck/test passes all **23
+tasks** (twenty cached), with fresh CLI **344 files / 5,496 passes / ten established
+skips**. Build/format passes seven tasks (five cached). Seam and engine-dependency
+fences, tools typecheck, **723-file** isolation/ownership, compiled **25-output /
+408-input / 17-external** closure, **177** bootstrap controls and compiled CLI smoke
+pass. Initial test-only type/lint failures and a misspelled helper-command attempt
+receive no passing credit; successful final commands are separately retained.
+The fourteen material source/test/tool/contract files remain unchanged through these
+gates. Material seal SHA-256:
+`c6f121b7b035b5d166afc6d2428c724ab55ce19552945802ddbe13ab1fd195dd`.
+Append-only status records are excluded to avoid a circular hash.
+
+Complete filesystem/secrets causal republication, two NEW clean complete cumulative
+rounds after the last material fix, a NEW separate clean security sitting and fresh
+final-source full CI plus all four same-artifact consumers remain required. R1–R11
+retain NONCLEAN verdicts. Step 8d, whole Step 8 and later increments remain open.
+No new ADR, maintainer decision, key, billing, provider capture, production recipient
+or release upload is pending. Implementation continues automatically.

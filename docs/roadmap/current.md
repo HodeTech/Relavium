@@ -1228,6 +1228,18 @@ All four same-artifact consumers pass at that reviewed source; its Windows advis
 remains failed. Correction author gates pass (341 CLI files / 5,475 passes / ten
 established skips); two NEW clean cumulative rounds, NEW separate security and fresh
 final-source CI/platform evidence remain pending.
+The [eleventh cumulative review and advisory-owner corrections](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-eleventh-cumulative-review-and-advisory-owner-corrections--2026-10-17)
+records full NONCLEAN review of 302 paths / 1,650 independently verified hunks at
+`b9bc7118`. Two original-owner/classification gaps and two stale required causal
+workload declarations are corrected at `d8e6b4d5`. Healthy warnings, successful
+passive reporting, known refusals and actual cleanup joins remain intact. The test's
+manual native snapshot avoids redundant migration maintenance while preserving
+real default fresh/resume entry and original five-second bounds. Four installed
+consumers pass at the reviewed source; required CI and Windows advisory fail
+separately, with the latter's initiating phase still unknown. Author gates pass
+(344 CLI files / 5,496 passes / ten established skips). Complete causal republication,
+two NEW clean cumulative rounds, separate security and final-source CI/platforms
+remain required. No user decision is pending.
 Step 8d proceeds automatically. The
 [final proposal reviews](phases/phase-2.5.5-hardening-and-remediation.md#second-maintainer-rereview-final-proposal-readiness--2026-10-16)
 remain proposal evidence, not implementation review. The selected encrypted archive
