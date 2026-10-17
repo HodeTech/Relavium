@@ -6656,3 +6656,110 @@ triage report SHA-256 is
 `edf43b42f6ab90043e05cf2445d213bdf71146aed32a798de1a37c690a0d4702`.
 These are author/triage records; rounds 1–5 remain NONCLEAN and new cumulative
 review, separate security and post-correction CI/platform acceptance remain open.
+
+
+### Wave 3 Step 8d sixth cumulative review and first-fault correction — 2026-10-17
+
+**NONCLEAN; implementation correction, not acceptance.** Three NEW complete
+cumulative reviewers cover all **285 paths / 1,526 zero-context hunks** at
+`4b7ba2164d119d72a0fccaea742a6e261f03576f`, against the same `d9625ff0` base.
+Root reads every full report and independently rejoins all 73/131/81 physical
+file, complete diff and individual hunk hashes. The local ignored aggregate
+SHA-256 is `daf8739b459e0fda0e47320a1480d6681599916ac6fef57739252f3c4700482d`.
+All three slices are NONCLEAN. Three verified High findings, independently
+corroborated and counted once each, require correction:
+
+- **WM-R6-1:** a successfully initialized manager retains an actual connection
+  close refusal but reports it only after every sibling close settles. Actual
+  `runCommand`, the default engine, real SQLite and the actual manager reproduce
+  no infrastructure observation/deadline/exit at a manually advanced 10,000 ms;
+  releasing the held sibling then creates the first deadline at 13,000. Root
+  independently reruns the same three-probe source selection. Its initial wrong
+  configuration collected zero tests and is rejected setup, not evidence. The
+  two paired R5 controls independently confirm its deferred-budget fix.
+- **F1:** the current chat reference still promises crash exit 1 and excludes
+  infrastructure 9 from its one-shot wording. The correction preserves ordinary
+  classified failed turns, deliberate chat end and invalid invocation, while
+  linking the canonical infrastructure/remedy contract. This adjacent unchanged
+  reference was supporting context, not an extra assigned path in the review.
+- **F2:** the current Home reference still promises immediate second-signal exit
+  and timer-bounded cleanup followed by DB closure. The corrected product reference
+  describes the original deadline and actual joins, keeps infrastructure precedence
+  visible, and distinguishes the ownerless library compatibility path.
+
+Successful MCP reporters are now registered before shared cleanup, notified once
+per failed server as each fault occurs, and replay retained faults immediately
+when attached late. Mark-before-callback prevents duplicate reentry. Every actual
+close remains joined; a reporter exception is retained until those joins settle,
+and failed-start observation remains separate. The original live budget still
+controls actual entry. Four new manager schedules and an actual workflow/SQLite
+regression pass; replacing only the manager with its pre-fix bytes breaks exactly
+five permanent cases, then restores the fixed bytes. This is an author removal
+exercise, not a new formal whole-family causal certificate. The run/gate secrets
+workloads remain 83/71; no control inventory is weakened.
+
+Reviewer scopes remain distinct and overlap author selections: 697 session cases;
+467 workflow cases plus three probes; 163 native source cases, 66 tooling cases,
+four paired correction probes and three shared probes. This is neither full CI
+nor the separately required security sitting. All first six rounds remain NONCLEAN.
+
+At `4b7ba216`, minimum/current Linux and current Windows installed consumers pass;
+required macOS and therefore the packed aggregate fail. The new Windows advisory
+passes, including all eight benign-alias cases, without changing the old 5-second
+bound. This does not explain the prior `ad743ba5` timeout. The current macOS
+injected-error control returns fixed infrastructure 9 where ordinary native
+outcomes still require 0/1. Actual target/descendant readiness, native close,
+listener removal and fixture/sentinel cleanup are recorded, without a watchdog;
+the initiating fault remains unknown. Node there is actually **24.20.0**, not a
+version inferred from another platform's current-runtime leg.
+
+Independent immutable-source triage verifies the actual tarball
+`0a1a38868a581806d026bd707e43634b39d790ac2cfcda7d3cd4b183763b56a3`, all
+seventy installed files and official Node 24.20.0. Thirty-one local injected-error
+executions and 96 native subcases pass, including an unchanged complete eight-case
+worker. Local macOS 27.0.1 differs from the CI host's 26.6.2. Invalid canonical-path/
+module-context attempts and their cleanup limits are retained separately. These
+passes do not clear either failed macOS source. The ignored triage report SHA-256
+is `db3004eb5f27425c54c6c68a1afcb44790219348f229885b59b8814a28831069`,
+and its 89-file evidence manifest SHA-256 is
+`80b045f29009e523e41056fe2f424c98ca78946d0ca101f892d36d70632927b2`.
+
+The existing installed-test witness adds passive actual signal/uncaught-occurrence
+observations with bounded native-origin facts and a required terminal completeness
+record. It forwards the original receiver, arguments, result and throwable,
+retains observation failure without masking the native result, and adds no
+product handler/registry/exit authority. No exit, acknowledgement, readiness,
+watchdog or timeout assertion is relaxed. The new tooling is locally exercised
+against the unchanged old tarball with its complete eight-case worker and all
+seventy installed bytes preserved; this is tooling validation, not a newly built
+post-manager-fix artifact or remote platform acceptance. Required future macOS
+execution remains open; no unobserved errno is normalized or declared harmless.
+
+Two NEW complete cumulative clean reviews after the last material correction,
+a NEW separate clean security sitting and fresh full CI/all four exact-package
+platform consumers remain required. Whole Step 8 and Steps 9–19 remain open.
+No ADR approval, user decision, provider, credential, billing, capture or production
+recipient setup is pending. Root continues automatically.
+
+
+**Final author gates for the R6 correction.** Seventeen workspace lint/typecheck
+tasks pass (twelve cached); eleven workspace test tasks pass (nine cached).
+Fresh CLI execution is **335 files / 5,412 passing tests / ten reported skips**;
+fresh MCP is **twenty files / 250 passing tests / no skips**. The previously
+CI-skipped local wrap-shape case runs and passes in this non-CI author environment;
+this explains the changed CLI skip count without deleting or weakening a case.
+All **516 acceptance-tool tests**, tools lint/typecheck, schema sync, seam/purity,
+714-file test isolation, build/format, 25-output closure, 177 compiled bootstrap
+controls and compiled CLI smoke pass. Build/format has seven tasks, five cached.
+The initial copied-tool fixture import failures and missing performance import
+lint failure are repaired, not waived. A missing old temporary artifact path is
+rejected local setup before install; the retained artifact is used for the valid
+new-diagnostic worker. Root independently verifies all 89 sealed triage files.
+
+The ten-path product/test/tool author pin SHA-256 is
+`794c04657e8ef264f718805cc53d0c02a922b20474aa0160df5322e5208e9c3f`.
+These are author gates; independent cumulative review, security and fresh required
+remote acceptance remain open. At the previous source, wire/usage/secrets controls,
+coverage and Node-floor/Windows advisories have passed while filesystem controls
+are still running; required macOS/packed aggregation remain failed. No whole-CI
+success or post-correction artifact evidence is inferred from that partial run.

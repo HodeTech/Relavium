@@ -29,9 +29,10 @@ A Home build/config fault uses the same [CLI failure classification](commands.md
 as a command: invalid config/invocation remains exit `2`, known operational faults
 retain exit `1`, and an unexpected escaping throw uses the fixed `cli_internal`
 projection and exit `9`, without its incoming message, cause or stack in that
-projection. The legacy broad `internal` code is not remapped wholesale. Connecting
-caught Home/session faults and the complete fatal coordinator remains Step 8d;
-this does not turn a classified failed chat turn into a fatal CLI failure.
+projection. The legacy broad `internal` code is not remapped wholesale. Step 8d
+implements caught Home/session fault integration and the complete fatal coordinator;
+its independent acceptance remains pending. This does not turn a classified failed
+chat turn into a fatal CLI failure.
 
 ## First-run onboarding wizard (2.5.G S8)
 
@@ -143,14 +144,14 @@ Below **80×24** the Home **degrades** to a single line — `Terminal too small 
 
 ## Signal lifecycle & exit codes
 
-The Home owns **one signal lifecycle (SIGINT/SIGTERM/SIGHUP/SIGQUIT)** covering the Home, the in-Home chat, and MCP teardown (`closeMcp`), plus a synchronous `process.on('exit')` net behind all of them:
+The invocation-backed Home shares **one signal lifecycle (SIGINT/SIGTERM/SIGHUP/SIGQUIT)** across the Home, pending/replaced chat hosts and MCP teardown. Its actual owners follow the [canonical invocation ordering](commands.md#invocation-owners-and-fatal-ordering); the synchronous native exit reap is a last-resort request, not a cleanup acknowledgement:
 
 | Outcome | How | Exit code |
 | --- | --- | --- |
 | **Clean Home exit** | Ctrl-C / EOF in `home` mode | `0` |
-| **Signal-driven** | an external SIGINT / SIGTERM / SIGHUP / SIGQUIT (`kill -INT`, closing the terminal window, a parent's signal) | `128 + signo` — **`130`** (SIGINT) / **`143`** (SIGTERM) / **`129`** (SIGHUP) / **`131`** (SIGQUIT) |
+| **Signal-driven, without a stronger infrastructure fault** | an external SIGINT / SIGTERM / SIGHUP / SIGQUIT (`kill -INT`, closing the terminal window, a parent's signal) | `128 + signo` — **`130`** (SIGINT) / **`143`** (SIGTERM) / **`129`** (SIGHUP) / **`131`** (SIGQUIT); infrastructure faults follow the [canonical precedence](commands.md#failure-classification-and-remedies) |
 
-On an external signal the handler restores the terminal (unmount ink, disable bracketed paste, disable mouse reporting), tears the live chat — or an in-flight build — down **bounded** (a stuck MCP teardown can't hang the exit; a second signal force-exits immediately), closes the db once, and exits `128+signo` so a shell pipeline still detects the interruption.
+An external signal stops admission and requests terminal restoration and cleanup of every actual host, including an in-flight build. Repeated signals share the original finite deadline and cannot restart cleanup or force an immediate second-signal exit. The physical exit backstop bounds the invocation; it does not certify terminal, MCP or database release. The shared database closes only after actual host/work settlement, and failed or held cleanup retains its owners and signal custody. Infrastructure faults may strengthen the final disposition; read the [canonical remedies](commands.md#failure-classification-and-remedies) before repeating uncertain work. The ownerless library compatibility path is not this product invocation lifecycle.
 
 A keyboard Ctrl-C does **not** normally reach the process as SIGINT (raw mode), so the controller handles it (Home → `0`, chat → `/cancel`). There is **one exception**: while a `/scrollback` or `/edit` suspension owns the terminal, ink has turned raw mode off and the kernel delivers a real SIGINT. That signal belongs to the hatch — the Home's handler drops it (`suspendPort.isSuspended()`), the hatch's own listener resumes the renderer, and the session survives. An external SIGTERM/SIGHUP/SIGQUIT still tears down, suspended or not.
 

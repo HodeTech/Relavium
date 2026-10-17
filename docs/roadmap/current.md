@@ -1180,7 +1180,15 @@ independently inspected, but broader CI exposes an obsolete causal workload pin
 and an unexplained Windows advisory timeout. The implementation correction
 preserves the live budget through actual transport entry and updates strict
 workload counts; new reviews/security/full CI and Windows evidence remain open.
-Step 8d proceeds automatically. The
+The [sixth cumulative review and first-fault correction](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-sixth-cumulative-review-and-first-fault-correction--2026-10-17)
+records full NONCLEAN coverage of the same 285 paths / 1,526 hunks at `4b7ba216`.
+Successful MCP close failures must reach their owner before a held sibling joins;
+chat/Home references also require lifecycle reconciliation. The correction keeps
+actual close joins and the original deadline, with permanent adverse controls.
+New Windows evidence passes; required macOS packaging remains failed and its
+initiating fault unresolved. Passive test-only native diagnostics preserve all
+original outcome/cleanup assertions. New clean reviews, security and exact-source
+CI/platform gates remain required. Step 8d proceeds automatically. The
 [final proposal reviews](phases/phase-2.5.5-hardening-and-remediation.md#second-maintainer-rereview-final-proposal-readiness--2026-10-16)
 remain proposal evidence, not implementation review. The selected encrypted archive
 method persists; production recipient/recovery belongs to Wave 4b release setup.
