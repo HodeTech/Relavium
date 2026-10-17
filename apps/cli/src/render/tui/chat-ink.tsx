@@ -1,3 +1,4 @@
+import { ownSessionSubscriber } from '../../chat/session-presentation.js';
 import { Box, Static, Text, render, useApp, useInput, usePaste, useWindowSize } from 'ink';
 import {
   createElement,
@@ -1738,7 +1739,9 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
     writeOut: (text) => ctx.io.writeOut(text),
   });
   // Mirror the live stream into the view store the component projects.
-  const unsubscribe = ctx.handle.subscribe((event) => ctx.store.apply(event));
+  const unsubscribe = ctx.handle.subscribe(
+    ownSessionSubscriber(ctx.workOwner, (event) => ctx.store.apply(event)),
+  );
   const frame = setInterval(() => ctx.store.tick(), FRAME_MS);
   frame.unref();
 

@@ -5,7 +5,7 @@ import {
   holdNativeToolProcess,
   witnessNativeToolProcess,
 } from '../commands/native-forwarding.test-support.js';
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
@@ -219,6 +219,85 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     };
     return { deps, unmount, writeControl, signalHandlers, exitHandlers };
   }
+
+  it.each([false, true])(
+    'observes actual passive Home view faults before bus recovery (fault=%s)',
+    async (faulted) => {
+      const f = invocationFixture();
+      let captured: RootAppProps | undefined;
+      let repliesAtClose = 0;
+      let observedSessionId: string | undefined;
+      const sessions = createSessionStore(client.db);
+      closeSpy.mockImplementation(() => {
+        const sessionId = observedSessionId;
+        if (sessionId !== undefined)
+          repliesAtClose =
+            sessions.loadFull(sessionId)?.messages.filter((message) => message.role === 'assistant')
+              .length ?? 0;
+        client.sqlite.close();
+      });
+      const { deps, unmount } = makeDeps(
+        (props) => {
+          captured = props;
+        },
+        {
+          invocation: f.invocation,
+          providers: scriptedResolver([textTurn('first'), textTurn('second')]),
+        },
+      );
+      const running = driveHome(deps);
+      const completion = running.then(
+        (value) => ({ value }),
+        (cause: unknown) => ({ cause }),
+      );
+      let hits = 0;
+      try {
+        await vi.waitFor(() => expect(captured).toBeDefined());
+        if (captured === undefined) throw new Error('Home did not mount');
+        const props = captured;
+        for (const character of 'hello') props.controller.handleKey(character, {});
+        props.controller.handleKey('', ENTER);
+        await vi.waitFor(() => {
+          const id = props.controller.getSnapshot().session?.sessionId;
+          expect(
+            id === undefined
+              ? []
+              : sessions.loadFull(id)?.messages.filter((message) => message.role === 'assistant'),
+          ).toHaveLength(1);
+        });
+        const session = props.controller.getSnapshot().session;
+        if (session === undefined) throw new Error('Home did not create a session');
+        observedSessionId = session.sessionId;
+        const apply = session.store.apply.bind(session.store);
+        vi.spyOn(session.store, 'apply').mockImplementation((event) => {
+          if (faulted && event.type === 'session:turn_started') {
+            hits++;
+            throw new TypeError('PRIVATE_PASSIVE_HOME_FAULT');
+          }
+          apply(event);
+        });
+        await session.processLine('second input');
+        expect(f.registry.termination !== undefined).toBe(faulted);
+        if (!faulted) {
+          props.controller.handleKey('c', CTRL_C);
+          await flush();
+          props.controller.handleKey('c', CTRL_C);
+        }
+        expect(await running).toBe(faulted ? 9 : 0);
+        expect(hits).toBe(faulted ? 1 : 0);
+        expect(repliesAtClose).toBe(faulted ? 1 : 2);
+        expect(closeSpy).toHaveBeenCalledOnce();
+        expect(client.sqlite.open).toBe(false);
+        expect(f.registry.activeOwners).toBe(0);
+      } finally {
+        unmount();
+        await completion;
+        vi.restoreAllMocks();
+        if (client.sqlite.open) client.sqlite.close();
+        rmSync(cwd, { recursive: true, force: true });
+      }
+    },
+  );
 
   it('an init fault after the db is open (a throwing render/mount) still closes the db once', async () => {
     // The cleanup scope opens right after `opened`, and the inner finally guarantees the close even though the

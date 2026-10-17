@@ -1,3 +1,4 @@
+import { ownSessionOutput, ownSessionSubscriber } from '../chat/session-presentation.js';
 import { SessionChatTerminal } from '../chat/session-chat-terminal.js';
 import type { SessionInkMount } from '../chat/session-ink-mount.js';
 import type { CliInvocation } from '../process/invocation.js';
@@ -2837,8 +2838,16 @@ export async function runReplLoop(
           clipboard: (text: string) => copyToClipboard({ writeControl, env: deps.io.env }, text),
           editor: {
             env: deps.io.env,
-            spawnEditor: createNodeSpawnEditor(nativeProcessesForInvocation(deps.invocation)),
-            createTempDocument: nodeCreateTempDocument,
+            spawnEditor: createNodeSpawnEditor(
+              nativeProcessesForInvocation(deps.invocation),
+              deps.chatLifetime?.surface.work.failure,
+            ),
+            createTempDocument: (contents) =>
+              nodeCreateTempDocument(
+                contents,
+                deps.chatLifetime?.surface.work.failure,
+                deps.chatLifetime?.surface.work.cleanupUncertain,
+              ),
             onDisposeFailed: (path, error) => {
               if (deps.chatLifetime !== undefined) {
                 const work = deps.chatLifetime.surface.work;
@@ -3030,12 +3039,16 @@ export async function runReplLoop(
  * TTY is attached (a pipe / CI without `--json`, which is 2.Q); the TTY ink driver overrides `deps.drive`.
  */
 export async function drivePlain(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
+  const io = ownSessionOutput(ctx.io, ctx.workOwner);
   return withSessionReadline(
     ctx.io.stdin,
     ctx.workOwner,
     () =>
       ctx.handle.subscribe(
-        makePlainPrinter(ctx.io, true, ctx.store.getSnapshot().state.memoryPolicy),
+        ownSessionSubscriber(
+          ctx.workOwner,
+          makePlainPrinter(io, true, ctx.store.getSnapshot().state.memoryPolicy),
+        ),
       ),
     async (rl, closeInput) => {
       const lines = rl[Symbol.asyncIterator](); // buffer piped lines before any awaited activation can yield.
@@ -3073,7 +3086,7 @@ export async function drivePlain(ctx: ChatDriveContext): Promise<ChatDriveOutcom
             : ctx.subscribeInterrupt(onSigint);
         ctx.workOwner?.signal.addEventListener('abort', stopInput, { once: true });
         if (ctx.workOwner?.signal.aborted === true) stopInput();
-        ctx.io.writeOut(`${ctx.intro ?? 'relavium chat — type a message, or /exit to quit.'}\n`);
+        io.writeOut(`${ctx.intro ?? 'relavium chat — type a message, or /exit to quit.'}\n`);
         ctx.workOwner?.assertAdmitting();
         ctx.startSession(); // subscription wired above ⇒ session:started is observed (fresh), or a no-op (resume)
         // A full output pipe must not hold cancellation/teardown hostage. The race observes late
@@ -3107,10 +3120,16 @@ export async function drivePlain(ctx: ChatDriveContext): Promise<ChatDriveOutcom
  * (exit code 4, like the REPL). No banner — the first line is the `session:started` event.
  */
 export async function driveJson(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
+  const io = ownSessionOutput(ctx.io, ctx.workOwner);
   return withSessionReadline(
     ctx.io.stdin,
     ctx.workOwner,
-    () => ctx.handle.subscribe((event) => ctx.io.writeOut(`${stringifyJsonLine(event)}\n`)),
+    () =>
+      ctx.handle.subscribe(
+        ownSessionSubscriber(ctx.workOwner, (event) =>
+          io.writeOut(`${stringifyJsonLine(event)}\n`),
+        ),
+      ),
     async (rl, closeInput) => {
       const lines = rl[Symbol.asyncIterator]();
       let active = true;

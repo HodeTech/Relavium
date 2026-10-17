@@ -11,6 +11,7 @@ import {
   ProviderHeaderPolicyError,
   SessionMessageBoundaryError,
 } from '@relavium/db';
+import { RunSuspensionCorruptionError } from '@relavium/shared';
 
 import { EXIT_CODES } from './exit-codes.js';
 import {
@@ -63,6 +64,14 @@ function projectUserFacing(value: unknown): UserFacingError {
       message:
         'A session message has an invalid persistence format. Restore a safe history backup or start a new session.',
       exitCode: EXIT_CODES.invalidInvocation,
+    };
+  }
+  if (value instanceof RunSuspensionCorruptionError) {
+    return {
+      code: 'internal',
+      message:
+        'The stored gate history is inconsistent. Inspect its history before resuming or repeating the run.',
+      exitCode: EXIT_CODES.workflowFailed,
     };
   }
   // History permits compatible errors from another bundle. Preflight own data directly rather than

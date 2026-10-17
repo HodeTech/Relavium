@@ -76,12 +76,13 @@ export function chatExportCommand(
     // session (no concurrent persister), unlike the in-REPL `/export` which deliberately does not mark the row.
     // The file write is the durable contract, so a provenance-mark fault degrades to a warning (stderr, so
     // stdout stays pure under --json) rather than failing an export whose scaffold already landed on disk.
+    const exportedAt = new Date(now()).toISOString();
     try {
       opened.store.updateSession({
         ...result.record,
         status: 'exported',
         exportedWorkflowPath: result.path,
-        updatedAt: new Date(now()).toISOString(),
+        updatedAt: exportedAt,
       });
     } catch {
       deps.io.writeErr('note: scaffold written but could not mark the session exported\n');
@@ -92,7 +93,7 @@ export function chatExportCommand(
       const event = SessionExportedEventSchema.parse({
         type: 'session:exported',
         sessionId: args.sessionId,
-        timestamp: new Date(now()).toISOString(),
+        timestamp: exportedAt,
         sequenceNumber: result.sequenceNumber,
         workflowPath: result.path,
       });

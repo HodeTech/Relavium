@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { rmSync } from 'node:fs';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -12,6 +12,7 @@ import {
   WindowsTeardownUnavailableError,
   WINDOWS_TEARDOWN_UNAVAILABLE_MESSAGE,
 } from '../process/windows-teardown.js';
+import { mkdtempForStorage, writePrivateFileForStorage } from '../process/owned-storage.js';
 
 /**
  * The `$EDITOR` half of the ADR-0068 §e copy-and-search escape hatches (2.6.F Step 5d): write the transcript to a
@@ -235,16 +236,30 @@ export function disposePendingTempDirs(): void {
 export function pendingTempDirCount(): number {
   return pendingTempDirs.size;
 }
-export const nodeCreateTempDocument = async (contents: string): Promise<TempDocument> => {
-  const dir = await mkdtemp(join(tmpdir(), 'relavium-transcript-'));
-  const path = join(dir, 'transcript.md');
+export const nodeCreateTempDocument = async (
+  contents: string,
+  onFailure?: (cause: unknown) => void,
+  onCleanupFailure?: (cause: unknown) => void,
+): Promise<TempDocument> => {
+  let acquired: string | undefined;
+  try {
+    acquired = await mkdtempForStorage(join(tmpdir(), 'relavium-transcript-'));
+  } catch (cause) {
+    observeEditorFailure(onFailure, cause);
+    throw cause;
+  }
+  const dir = acquired;
+  let path: string;
   // Register + arm the exit net BEFORE the write: the write flushes (part of) the conversation, so a write that fails
   // has still put transcript bytes in the directory, and the exit net must be able to reclaim it (Step-6h review).
-  pendingTempDirs.add(dir);
-  armTempDirExitNet();
   try {
-    await writeFile(path, contents, { encoding: 'utf8', mode: 0o600 });
+    path = join(dir, 'transcript.md');
+    pendingTempDirs.add(dir);
+    armTempDirExitNet();
+    await writePrivateFileForStorage(path, contents);
   } catch (error) {
+    // Observe before partial removal can hold. This is not a cleanup or terminal release ACK.
+    observeEditorFailure(onFailure, error);
     // Reclaim the partial transcript. If THAT fails (a locked dir), leave it registered so the exit net retries — and
     // never let the removal's error MASK the write error the caller classifies as `{ kind: 'failed' }` (Step-5d-3 Opus
     // review; the masking + never-registered gap is the Step-6h Sonnet finding). Async `rm` here (not `rmSync`) so this
@@ -252,7 +267,8 @@ export const nodeCreateTempDocument = async (contents: string): Promise<TempDocu
     try {
       await rm(dir, { recursive: true, force: true });
       pendingTempDirs.delete(dir);
-    } catch {
+    } catch (cause) {
+      observeEditorFailure(onCleanupFailure, cause);
       // keep it in the pending set — the exit net gets one more chance
     }
     throw error;
@@ -279,6 +295,7 @@ export const nodeCreateTempDocument = async (contents: string): Promise<TempDocu
  *  runs) and resolve on exit. `shell: false` — see the module note. Rejects only when the child cannot be started. */
 export function createNodeSpawnEditor(
   nativeProcesses: NativeProcessController = createNativeProcessController(),
+  onFailure?: (cause: unknown) => void,
 ): (command: string, args: readonly string[], file: string) => Promise<EditorExit> {
   return async (command, args, file) => {
     const native = await nativeProcesses.reserve('pid');
@@ -286,12 +303,22 @@ export function createNodeSpawnEditor(
       let child: ReturnType<typeof spawn>;
       try {
         native.assertAdmitting();
+      } catch (cause) {
+        // Rejected admission after ordinary stop is not an unexpected native spawn failure.
+        native.abandon();
+        reject(
+          cause instanceof Error ? cause : new Error('The editor was not admitted.', { cause }),
+        );
+        return;
+      }
+      try {
         child = spawn(command, [...args, file], {
           stdio: 'inherit', // the editor owns the terminal; suspendFullScreen already handed it over
           shell: false, // SECURITY: metacharacters remain inert argv, never a command
           windowsHide: false,
         });
       } catch (cause) {
+        observeEditorStartFailure(onFailure, cause);
         native.abandon();
         reject(
           cause instanceof Error ? cause : new Error('The editor could not be started.', { cause }),
@@ -301,6 +328,7 @@ export function createNodeSpawnEditor(
       native.bindChild(child);
       // The public start error is unchanged, but the registered lifetime remains until native close.
       child.once('error', (cause) => {
+        observeEditorStartFailure(onFailure, cause);
         void native.stop();
         reject(cause);
       });
@@ -309,6 +337,36 @@ export function createNodeSpawnEditor(
       });
     });
   };
+}
+
+/** Fault observation cannot replace the original failure or skip partial transcript cleanup. */
+function observeEditorFailure(
+  onFailure: ((cause: unknown) => void) | undefined,
+  cause: unknown,
+): void {
+  try {
+    onFailure?.(cause);
+  } catch {
+    // The compatibility editor outcome still owns presentation; its original native cause is preserved.
+  }
+}
+
+/** Only the concrete spawn throw/error event establishes an ordinary unavailable editor. */
+function observeEditorStartFailure(
+  onFailure: ((cause: unknown) => void) | undefined,
+  cause: unknown,
+): void {
+  if (cause instanceof WindowsTeardownUnavailableError) return;
+  let code: unknown;
+  try {
+    if (typeof cause === 'object' && cause !== null) {
+      const descriptor = Object.getOwnPropertyDescriptor(cause, 'code');
+      if (descriptor !== undefined && 'value' in descriptor) code = descriptor.value;
+    }
+  } catch {
+    // A hostile descriptor cannot establish an ordinary native start refusal.
+  }
+  if (code !== 'ENOENT' && code !== 'EACCES') observeEditorFailure(onFailure, cause);
 }
 
 /** Compatibility host with local cleanup; product constructors bind their original invocation explicitly. */

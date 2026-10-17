@@ -1,3 +1,4 @@
+import { ownSessionSubscriber } from '../chat/session-presentation.js';
 import { SessionControlWrites } from '../chat/session-control-writes.js';
 import { SessionHomeLifetime } from './session-home-lifetime.js';
 import type { SessionHostOwner } from '../chat/session-host-owner.js';
@@ -495,8 +496,13 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
     },
     editor: {
       env: deps.io.env,
-      spawnEditor: createNodeSpawnEditor(nativeProcesses),
-      createTempDocument: nodeCreateTempDocument,
+      spawnEditor: createNodeSpawnEditor(nativeProcesses, ownership?.surface.work.failure),
+      createTempDocument: (contents) =>
+        nodeCreateTempDocument(
+          contents,
+          ownership?.surface.work.failure,
+          ownership?.surface.work.cleanupUncertain,
+        ),
       onDisposeFailed: (path, error) => {
         if (ownership !== undefined) {
           ownership.surface.work.cleanupUncertain(error);
@@ -692,7 +698,9 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         );
         // Subscribe the view store BEFORE opening the session so the synchronous session:started is observed.
         const subscribeView = (): (() => void) =>
-          built.handle.subscribe((event) => store.apply(event));
+          built.handle.subscribe(
+            ownSessionSubscriber(built.hostOwner?.work, (event) => store.apply(event)),
+          );
         const startFrame = (): (() => void) => {
           frame = setInterval(() => store.tick(), FRAME_MS);
           frame.unref();

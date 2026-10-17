@@ -1,3 +1,4 @@
+import { RunSuspensionCorruptionError } from '@relavium/shared';
 import {
   AgentParseError,
   EngineStateError,
@@ -99,6 +100,28 @@ describe('CliError', () => {
 });
 
 describe('toUserFacing', () => {
+  it.each([
+    'gate_identity_conflict',
+    'gate_state_conflict',
+    'legacy_gate_join_missing',
+    'legacy_gate_join_ambiguous',
+  ] as const)(
+    'keeps typed %s history corruption operational without reflecting mutated detail',
+    (code) => {
+      const failure = new RunSuspensionCorruptionError(code);
+      failure.message = 'PRIVATE_CORRUPT_HISTORY';
+      expect(toUserFacing(failure)).toEqual({
+        code: 'internal',
+        message:
+          'The stored gate history is inconsistent. Inspect its history before resuming or repeating the run.',
+        exitCode: 1,
+      });
+      expect(toUserFacing(Object.assign(new Error('PRIVATE_LOOKALIKE'), { code })).exitCode).toBe(
+        9,
+      );
+    },
+  );
+
   it.each(['message_invalid', 'metadata_invalid'] as const)(
     'maps a %s session boundary refusal to a fixed, value-free invocation diagnostic',
     (code) => {

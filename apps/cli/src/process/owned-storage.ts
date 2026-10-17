@@ -1,4 +1,5 @@
 import { chmodSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtemp, writeFile } from 'node:fs/promises';
 
 import { CliError, toCliError } from './errors.js';
 
@@ -29,6 +30,24 @@ export function chmodForStorage(path: string, mode: number): void {
 export function writeFileForStorage(path: string, content: string, force: boolean): void {
   try {
     writeFileSync(path, content, { encoding: 'utf8', flag: force ? 'w' : 'wx' });
+  } catch (error) {
+    throwOwnedFilesystemFailure(error);
+  }
+}
+
+/** Concrete native acquisition for the editor's private transcript directory. */
+export async function mkdtempForStorage(prefix: string): Promise<string> {
+  try {
+    return await mkdtemp(prefix);
+  } catch (error) {
+    throwOwnedFilesystemFailure(error);
+  }
+}
+
+/** Concrete native transcript write; mode and encoding are fixed at this boundary. */
+export async function writePrivateFileForStorage(path: string, content: string): Promise<void> {
+  try {
+    await writeFile(path, content, { encoding: 'utf8', mode: 0o600 });
   } catch (error) {
     throwOwnedFilesystemFailure(error);
   }

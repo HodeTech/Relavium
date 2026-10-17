@@ -1,3 +1,4 @@
+import { ownSessionOutput } from '../chat/session-presentation.js';
 import { acquireNativeResource } from '../process/acquire-native-resource.js';
 import type { CliInvocation } from '../process/invocation.js';
 import { SessionHostOwner } from '../chat/session-host-owner.js';
@@ -107,7 +108,7 @@ export async function agentRunCommand(
       {
         ...deps,
         invocation: lifetime.invocation,
-        io: ownOneShotIo(deps.io, lifetime.work),
+        io: ownSessionOutput(deps.io, lifetime.work),
       },
       lifetime,
       (close) => {
@@ -115,41 +116,6 @@ export async function agentRunCommand(
       },
     ),
   );
-}
-
-/** Observe the actual captured sink before a passive listener or best-effort notice can consume its fault. */
-function ownOneShotIo(io: CliIo, owner: SessionWorkOwner): CliIo {
-  const failed = (cause: unknown): CliError => {
-    const failure = new CliError('output_unavailable', '', { cause });
-    owner.failure(failure);
-    return failure;
-  };
-  const write = (operation: () => void): void => {
-    owner.assertAdmitting();
-    try {
-      operation();
-    } catch (cause) {
-      throw failed(cause);
-    }
-  };
-  const deliver = (operation: () => Promise<void>): Promise<void> => {
-    owner.assertAdmitting();
-    // Retention notices may consume a rejection, but the original invocation still owes actual delivery.
-    return owner.work.retainWork(async () => {
-      try {
-        await operation();
-      } catch (cause) {
-        throw failed(cause);
-      }
-    });
-  };
-  return {
-    ...io,
-    writeOut: (text) => write(() => io.writeOut(text)),
-    writeErr: (text) => write(() => io.writeErr(text)),
-    writeOutAcknowledged: (text) => deliver(() => io.writeOutAcknowledged(text)),
-    writeErrAcknowledged: (text) => deliver(() => io.writeErrAcknowledged(text)),
-  };
 }
 
 async function agentRunOwned(
