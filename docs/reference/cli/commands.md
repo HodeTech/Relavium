@@ -1030,9 +1030,13 @@ review, security and platform gates remain open in the
 
 Optional terminal effect retention and media GC check the original invocation
 remaining budget immediately before new maintenance. At zero they leave rows and
-bytes for a later eligible pass. An already-entered media sweep remains joined;
-this skips no engine, receipt, input, MCP or native database-close acknowledgement
-and never resets the absolute termination deadline.
+bytes for a later eligible pass. An already-entered media sweep remains joined,
+including every entered grace/orphan deletion and CAS-shard enumeration branch
+when a sibling rejects. A synchronous deletion-entry refusal stops new entries
+but still joins previously entered deletions. Only then may the original failure
+reach the best-effort caller; an aggregate rejection alone never acknowledges
+sibling completion. This skips no engine, receipt, input, MCP or native
+database-close acknowledgement and never resets the absolute termination deadline.
 
 **Step 8c independently accepted on `development`.** The
 [acceptance register](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8c-acceptance--2026-10-16)

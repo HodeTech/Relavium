@@ -8064,3 +8064,82 @@ is joined with exit 0. Existing cache, synthetic/native and platform qualificati
 remain; these author gates are not the two required independent reviews or new
 whole-CI/platform acceptance. All 151 current filesystem/secrets source anchors
 remain unique; that static check is not a new causal-family execution.
+
+### Wave 3 Step 8d R23 joined-maintenance correction — 2026-10-17
+
+**R23 is complete and NONCLEAN; Step 8d and whole Step 8 remain OPEN.** Eight
+NEW independent reviewers cover all **340 paths / 1,834 ordered cumulative
+hunks**, from Step 7 installed-package acceptance `d9625ff0` to `e7fe93c5`.
+Root reads all eight original reports and every substantive path assessment,
+rechecks full diff/hunk/current-body identities and verifies unchanged opening
+and closing source/dependency/dist freezes. Explicit test-description and support
+path clarifications qualify the original reports; they do not silently rewrite
+them or confer unsupported runtime coverage. Model/effort identifies parent
+dispatch, not independently attested backend execution.
+
+Two Medium findings are independently reproduced before implementation:
+
+- **R23-WA-01:** a rejected grace/orphan deletion, or synchronous deletion-entry
+  refusal after a prior entry, lets the best-effort sweep return while a sibling
+  deletion is pending. The actual workflow command closes SQLite and retires its
+  original owners before that sibling settles. Healthy held-sibling controls keep
+  the command/database/owners alive until release.
+- **R23-NB-1:** a rejected CAS shard lets `listHandles` and the same default
+  terminal sweep settle while another entered shard continuation remains held.
+  The real command/engine/SQLite path reproduces early release; the healthy
+  counterpart retains ownership.
+
+The parallel helpers predate Step 7. These findings contradict Step 8's new
+joined-maintenance guarantee and actual owner integration; they do not claim the
+old parallel algorithm or run exit code originated in this wave. Deletion ports
+are controlled promises/throws. The shard fixture starts a real native read and
+holds its adapter continuation; the sibling EIO is synthetic. No late database
+access, data loss, real pending OS unlink, measured filesystem latency, remote
+provider failure or native Windows failure is inferred.
+
+The correction observes and joins every entered deletion and launched shard
+branch before propagating its original failure. Synchronous deletion-entry
+refusal starts no later deletion and still joins earlier entries. Existing
+best-effort outcomes, admission, timeout, absolute termination budget and native
+close acknowledgement retain their meanings. The [CLI ownership contract](../../reference/cli/commands.md#workflow-and-terminal-ownership)
+owns the concrete requirement; no new decision or approval is needed.
+
+Ten NEW permanent cases include six grace/orphan healthy/rejection/synchronous
+command controls, two actual-shard command controls, and two unit controls that
+also pin original-cause identity and no later entry after a synchronous refusal.
+Author causal validation runs both complete files / 35 cases in seven phases:
+fixed, three independent mechanism removals and each restoration. All fixed and
+restored phases pass; removals fail seven named semantic assertions across
+**245 case executions**. Every phase records an empty explicit runtime-error
+channel, completed Vitest close and actual Node OS wait; the outer orchestrator
+also exits 0. Product source/index remain unchanged by isolated controls and
+restoration is byte-exact. An earlier candidate setup failed before collecting
+tests because it misread the alias manifest shape; it supplies no acceptance
+evidence. These are author controls, not a fresh independent review or platform
+matrix. Detailed reports and runtime records remain local and Git-ignored.
+
+Earlier clean R21/security/CI evidence belongs to `c491836a`; R23 belongs to
+`e7fe93c5`. At the latter source, all fifteen jobs in
+[CI run 39037060129](https://github.com/HodeTech/Relavium/actions/runs/39037060129)
+complete successfully. All four physically inspected same-tarball consumers pass:
+current Linux/macOS/Windows and minimum Node 22.0.0. The five
+downloaded ZIPs agree on the 70-file public package and **446,599-byte** tarball,
+SHA-256 `887559ac65bd6d23e40719a1a6e7261cb8db1efc3bf2249e77c2e06295f34dc4`.
+These results precede this material maintenance correction and do not accept it.
+Two NEW complete cumulative clean rounds, NEW separate clean security and fresh
+corrected-source full CI plus all four actual same-artifact consumers remain
+required. Steps 9–19 have not started; no user decision, credential, billing or
+provider capture is pending.
+
+#### R23 maintenance-correction author gates
+
+Lint/typecheck passes all 17 tasks (12 cache hits); serialized workspace tests
+pass all 11 tasks (nine cache hits). The changed DB and CLI suites execute:
+DB reports **64 files / 1,062 passes**, CLI **362 files / 5,665 passes / ten
+established skips**. Cached sibling results retain their cache attribution.
+Build/format passes seven tasks (five cache hits), test isolation collects 743
+files, seam and engine-dependency checks pass, finite compiled closure verifies
+25 outputs / 410 inputs / 17 externals, bootstrap passes 177 controls and compiled
+CLI smoke passes. Every author subprocess and the outer orchestrator is joined
+with exit 0. These checks are author validation, not the two NEW independent
+reviews, NEW security sitting or fresh full-CI/platform acceptance still required.

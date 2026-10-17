@@ -64,6 +64,30 @@ export interface MediaGcReport {
   readonly orphanSweepRan: boolean;
 }
 
+/** A failed sibling is a result, not acknowledgement of every already-entered delete. */
+async function deleteJoined(
+  store: MediaGcDeps['casStore'],
+  handles: readonly string[],
+): Promise<void> {
+  const pending: Promise<void>[] = [];
+  let failure: { readonly cause: unknown } | undefined;
+  for (const handle of handles) {
+    try {
+      pending.push(
+        store.delete(handle).catch((cause: unknown) => {
+          failure ??= { cause };
+        }),
+      );
+    } catch (cause) {
+      // Preserve synchronous entry refusal without abandoning previously entered siblings.
+      failure ??= { cause };
+      break;
+    }
+  }
+  await Promise.all(pending);
+  if (failure !== undefined) throw failure.cause;
+}
+
 /**
  * The host media garbage collection (2.S/D-GC, ADR-0042 §4) — a best-effort, run-end ("keyed on the terminal run
  * event") pass the CLI owns (the engine signals the terminal; the host runs the mechanism). Three ordered steps:
@@ -104,7 +128,7 @@ export async function runHostMediaGc(deps: MediaGcDeps): Promise<MediaGcReport> 
   //    today; if `graceMs` is ever shortened materially, gate each delete on a re-verify SELECT (skip a handle
   //    whose `deleted_at` is NULL again).
   const expired = deps.references.reclaimExpired(deps.graceMs);
-  await Promise.all(expired.map((handle) => deps.casStore.delete(handle)));
+  await deleteJoined(deps.casStore, expired);
 
   // 3. CAS-orphan sweep — skip entirely while another run could be mid-write; age-guard each candidate so a
   //    fresh row-less blob (a concurrent run's, not yet recordObject'd) is never deleted.
@@ -118,7 +142,7 @@ export async function runHostMediaGc(deps: MediaGcDeps): Promise<MediaGcReport> 
     const orphans = (await deps.casStore.listHandles())
       .filter(({ handle, mtimeMs }) => !known.has(handle) && mtimeMs <= settledBefore)
       .map(({ handle }) => handle);
-    await Promise.all(orphans.map((handle) => deps.casStore.delete(handle)));
+    await deleteJoined(deps.casStore, orphans);
     orphansDeleted = orphans.length;
   }
 

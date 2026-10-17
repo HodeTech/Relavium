@@ -87,6 +87,50 @@ function baseDeps(over: Partial<MediaGcDeps>): MediaGcDeps {
 }
 
 describe('runHostMediaGc (2.S/D-GC, ADR-0042 §4)', () => {
+  it.each(['grace', 'orphan'] as const)(
+    '%s synchronous entry refusal joins prior work and does not start later deletes',
+    async (batch) => {
+      let release: () => void = () => undefined;
+      const raw = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const cause = new Error('Synthetic synchronous entry refusal.');
+      const handles = [H('a'), H('b'), H('c')];
+      const cas = fakeCas(
+        batch === 'orphan' ? handles.map((handle) => ({ handle, mtimeMs: 0 })) : [],
+      );
+      const deletion = vi.fn((handle: string) => {
+        if (handle === handles[0]) return raw;
+        throw cause;
+      });
+      let settled = false;
+      const result = runHostMediaGc(
+        baseDeps({
+          casStore: { ...cas.store, delete: deletion },
+          references: fakeRefs({ expired: batch === 'grace' ? handles : [] }).refs,
+        }),
+      ).then(
+        () => {
+          settled = true;
+          return undefined;
+        },
+        (failure: unknown) => {
+          settled = true;
+          return failure;
+        },
+      );
+      try {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(deletion.mock.calls.map(([handle]) => handle)).toEqual(handles.slice(0, 2));
+        expect(settled, 'GC_SYNC_REFUSAL_RETAINS_ENTERED_SIBLING').toBe(false);
+      } finally {
+        release();
+        await result;
+      }
+      expect(await result).toBe(cause);
+    },
+  );
+
   it('reclaim-retry: sweeps ONLY reclaimable (settled), non-current runs with lingering run-refs', async () => {
     const { refs, removed } = fakeRefs({ runRefRunIds: ['settled-a', 'active-b', 'current'] });
     const report = await runHostMediaGc(

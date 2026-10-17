@@ -1356,7 +1356,16 @@ sitting, full CI and all four physically inspected package consumers belong to
 `c491836a`; none accepts the later correction. Two NEW complete cumulative clean
 rounds, NEW separate security and corrected-source full CI/platforms remain
 required. Steps 9–19 have not started; no user decision is pending.
-Step 8d proceeds automatically. The
+The [R23 joined-maintenance checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-r23-joined-maintenance-correction--2026-10-17)
+records complete NONCLEAN review of 340 paths / 1,834 cumulative hunks at
+`e7fe93c5`. Two confirmed Medium gaps release workflow/database ownership before
+entered sibling media deletions or shard enumeration settle. Root independently
+reproduces both; the correction preserves existing best-effort results and budgets
+while joining entered siblings through failure. Ten new permanent cases and three
+independent causal removals cover the correction. This author evidence does not
+replace two NEW complete cumulative clean rounds, NEW separate security or fresh
+corrected-source full CI and all four same-artifact consumers. Steps 9–19 have not
+started; no user decision is pending. Step 8d proceeds automatically. The
 [final proposal reviews](phases/phase-2.5.5-hardening-and-remediation.md#second-maintainer-rereview-final-proposal-readiness--2026-10-16)
 remain proposal evidence, not implementation review. The selected encrypted archive
 method persists; production recipient/recovery belongs to Wave 4b release setup.
