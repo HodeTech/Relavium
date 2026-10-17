@@ -625,6 +625,8 @@ async function resumeGateOwned(
       return EXIT_CODES.success;
     }
 
+    // Both retention passes are optional: do not start new maintenance after the original deadline.
+    // Already-entered work and mandatory engine/input/MCP/database joins retain their own barriers.
     // Host media GC (2.S/D-GC, ADR-0042 §4) — only when the gate-resumed run reaches a TERMINAL event, exactly as
     // `run` does (the SAME helper). A re-pause (a second gate / budget pause) is NOT terminal, so the still-paused
     // run's media survives for the next resume; a GC failure is swallowed (never a correctness break).
@@ -632,7 +634,7 @@ async function resumeGateOwned(
     // returns a closed handle for one — so its COMMITTED rows have no reader left and go. Unresolved rows
     // are untouched by construction: they are the record an operator needs, and an exit-7 run's rows must
     // survive precisely because its run is over.
-    if (isTerminalOutcome(outcome)) {
+    if (isTerminalOutcome(outcome) && lifetime.invocation.registry.budget.remainingMs() !== 0) {
       sweepCommittedEffects(deps.io, opened.db, args.runId, lifetime.effectNoticeOwner);
     }
     await sweepMediaAtTerminal({
@@ -642,6 +644,7 @@ async function resumeGateOwned(
       casRoot: wiring.media.casRoot,
       currentRunId: args.runId,
       graceMs: config.mediaGcGraceMs,
+      budget: lifetime.invocation.registry.budget,
     });
     // Same rule as  (ADR-0078 §5) — the resumed leg's terminal is durable, or the run says so.
     // **Read off the HANDLE, never from a `subscribe()` here.** The resume gate settles `run:failed` INSIDE

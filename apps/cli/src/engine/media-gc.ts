@@ -7,6 +7,8 @@ import {
 } from '@relavium/db';
 import type { RunStatus } from '@relavium/shared';
 
+import type { RemainingBudget } from '../process/invocation-registry.js';
+
 /** The terminal `runs.status` set — a run here will never be resumed, so its lingering `run`-refs are reclaimable.
  *  Typed as `Set<RunStatus>` (not `Set<string>`) so a misspelled status is a compile error and `.has(status)`
  *  narrows against the closed run-status union. */
@@ -171,7 +173,8 @@ export async function sweepHostMediaBestEffort(args: {
  * (`casRoot`/`db` present — the in-memory unit/harness path has neither). A non-terminal (`paused`) outcome is
  * skipped so the resumable run's media survives. The whole call is best-effort — any throw (incl. an injected
  * `sweep` stub's) is swallowed so the GC can NEVER fail the run. Extracted here so neither command carries the
- * branch/try in its own body (one home for the guard).
+ * branch/try in its own body (one home for the guard). An expired original invocation budget skips
+ * NEW maintenance; a sweep already entered is still joined and never receives a renewed deadline.
  */
 export async function sweepMediaAtTerminal(args: {
   readonly sweep: typeof sweepHostMediaBestEffort;
@@ -180,6 +183,7 @@ export async function sweepMediaAtTerminal(args: {
   readonly casRoot: string | undefined;
   readonly currentRunId: string;
   readonly graceMs: number | undefined;
+  readonly budget?: RemainingBudget;
 }): Promise<void> {
   // `db === undefined` is run.ts's optional-store path (gate always passes a live `opened.db`); `casRoot` /
   // `db` are wired together, so the in-memory unit/harness path (neither present) is also skipped here.
@@ -187,6 +191,7 @@ export async function sweepMediaAtTerminal(args: {
     return;
   }
   try {
+    if (args.budget?.remainingMs() === 0) return;
     await args.sweep({
       db: args.db,
       casRoot: args.casRoot,

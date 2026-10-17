@@ -962,7 +962,9 @@ export fault catches. Standalone shell rejection notices and directory-completio
 results also recheck the live input seal before publication; an already-entered
 native suspension still drains completely before unmount. Live classified refusals
 retain their inline warning, and clearing local busy state does not authorize a
-new notice. The
+new notice. Home applies its permanent exit seal to deferred directory/file results,
+shell results and model refresh banners before changing business state. Local busy
+cleanup and already-entered producer/native joins still complete after that seal. The
 [session substrate checkpoint](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-session-substrate-checkpoint--2026-10-16)
 and [chat/Home checkpoint](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-chat-and-home-integration-checkpoint--2026-10-17)
 record their exact scopes. Whole Step 8 remains open.
@@ -1016,6 +1018,12 @@ review, security and platform gates remain open in the
 [implementation register](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-management-ownership-checkpoint--2026-10-17).
 
 ### Workflow and terminal ownership
+
+Optional terminal effect retention and media GC check the original invocation
+remaining budget immediately before new maintenance. At zero they leave rows and
+bytes for a later eligible pass. An already-entered media sweep remains joined;
+this skips no engine, receipt, input, MCP or native database-close acknowledgement
+and never resets the absolute termination deadline.
 
 **Step 8c independently accepted on `development`.** The
 [acceptance register](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8c-acceptance--2026-10-16)

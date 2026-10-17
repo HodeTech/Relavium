@@ -516,6 +516,8 @@ async function runOwned(
       false,
     );
 
+    // Both retention passes are optional: do not start new maintenance after the original deadline.
+    // Already-entered work and mandatory engine/input/MCP/database joins retain their own barriers.
     // Host media GC (2.S/D-GC, ADR-0042 §4) — best-effort, keyed on a TERMINAL outcome: the clean-terminal reclaim
     // retry + the grace-window byte reclaim + the CAS-orphan sweep, over the same durable `history.db`. Skipped on
     // a `paused` outcome (resumable — its media must survive) and the in-memory path (no CAS). See
@@ -525,7 +527,11 @@ async function runOwned(
     // are untouched by construction: they are the record an operator needs, and an exit-7 run's rows must
     // survive precisely because its run is over.
     // `opened` is undefined on the in-memory path (`--no-history`), which has no journal to sweep.
-    if (isTerminalOutcome(outcome) && opened !== undefined) {
+    if (
+      isTerminalOutcome(outcome) &&
+      opened !== undefined &&
+      lifetime.invocation.registry.budget.remainingMs() !== 0
+    ) {
       sweepCommittedEffects(deps.io, opened.db, handle.runId, lifetime.effectNoticeOwner);
     }
     await sweepMediaAtTerminal({
@@ -535,6 +541,7 @@ async function runOwned(
       casRoot: mediaCasRoot,
       currentRunId: handle.runId,
       graceMs: config.mediaGcGraceMs,
+      budget: lifetime.invocation.registry.budget,
     });
 
     // The handle's disposition OUTRANKS the outcome (ADR-0078 §5): a delivered `run:completed` whose

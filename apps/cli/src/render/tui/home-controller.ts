@@ -84,7 +84,8 @@ import { FORCE_TEARDOWN_MS } from './tui-constants.js';
 /**
  * The Home session state machine, extracted from the ink view as a plain external store (2.5.B / ADR-0054) so the
  * lifecycle — submit → build → chat → end, the build/turn error paths, the exit/close-race guards, and bracketed
- * paste — is unit-testable WITHOUT mounting ink (the repo does not render-test ink). `RootApp` is a thin view that
+ * paste — is unit-testable without mounting Ink. Installed-RootApp integration tests also use captured native
+ * streams. `RootApp` is a thin view that
  * `useSyncExternalStore`s this controller and forwards the single `useInput` to {@link HomeController.handleKey};
  * `driveHome` owns the process lifetime and calls {@link HomeController.teardownActive} from its signal handler so
  * an external SIGINT/SIGTERM reaps a live chat's MCP child + frame loop before the process exits.
@@ -298,7 +299,9 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   // process; Up/Down recall, Ctrl+R reverse-searches. Not persisted (a chat-resume starts fresh).
   let history: InputHistory = EMPTY_HISTORY;
   let cancelFired = false;
-  let exiting = false; // set on the clean-exit / error / signal paths — guards deferred reads of a closed db
+  let exiting = false; // permanent stop seals deferred business results as well as database reads
+  const isCurrentChat = (active: HomeChatSession): boolean =>
+    !exiting && state.session === active && state.mode === 'chat';
   let tearingDown: HomeChatSession | undefined;
   let activeTeardown: Promise<void> | undefined; // the in-flight teardown of `tearingDown`, so a signal can await it
   let buildInFlight: Promise<HomeChatSession> | undefined; // a `loading`-state build, so a signal can reap it
@@ -458,7 +461,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   // about-to-be-cleared session. On success the old session is torn down (bounded, mirroring endChat) and the fresh
   // one is swapped in, its transcript opening with the clearedNotice naming the prior (resumable) conversation.
   const clearChat = (old: HomeChatSession): void => {
-    if (tearingDown === old) return; // already ending this session (a double-/clear race) — mirror endChat
+    if (exiting || tearingDown === old) return; // permanent stop or a double-/clear race
     const oldId = old.sessionId;
     set({ submitBusy: true }); // re-gate input for the whole swap (the old chat is still live underneath)
     const build = deps.startChat();
@@ -529,6 +532,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   // session is torn down (bounded) and the reseated session — the SAME sessionId, resumed under the switched model
   // with the carried transcript + cost/turns — is swapped in, its transcript opening with the modelSwitchNotice.
   const reseatChat = (old: HomeChatSession, target: ReseatTarget): void => {
+    if (exiting) return;
     const reseat = deps.reseatChat;
     if (reseat === undefined) return; // acceptModel only calls this when a builder IS wired (defensive)
     if (tearingDown === old) return; // already ending this session (mirror clearChat)
@@ -607,11 +611,12 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     // Gate input for the WHOLE submit — streaming AND any after-turn auto-compaction (ADR-0062), which runs
     // inside processLine AFTER session:turn_completed flipped the view idle. Without this a message typed then
     // would reach sendMessage → SessionStateError → crash (the same hazard `shellBusy` fixes for `!`-shell).
+    if (!isCurrentChat(active)) return;
     set({ submitBusy: true });
-    if (exiting || state.session !== active || state.mode !== 'chat') return;
     void active.processLine(line, display).then(
       () => {
         if (state.session === active) set({ submitBusy: false });
+        if (!isCurrentChat(active)) return;
         if (active.shouldStop()) {
           // `/clear` (ADR-0062 §7) swaps in a FRESH session, staying in chat; `/exit`/`/cancel` end to the bare Home.
           if (active.stopReason() === 'clear') clearChat(active);
@@ -635,6 +640,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   };
 
   const submit = (): void => {
+    if (exiting) return;
     const trimmed = state.input.text.trim();
     if (trimmed.length === 0) {
       set({ input: emptyEditor() }); // an empty prompt stays on the Home (no chat)
@@ -693,7 +699,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   // refresh can never silently wipe a "not available"/"could not save" message the user just triggered.
   const applyRefreshResult = (epoch: number, report: RefreshReport | undefined): void => {
     const open = state.modelPicker;
-    if (epoch !== pickerEpoch || open === undefined || deps.models === undefined) return; // stale/closed — drop it
+    if (exiting || epoch !== pickerEpoch || open === undefined || deps.models === undefined) return; // stale/closed — drop it
     const failed =
       report?.providers.filter((p) => p.status === 'failed').map((p) => p.provider) ?? [];
     let view: ReturnType<HomeModelsPort['load']>;
@@ -716,6 +722,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     });
   };
   const runPickerRefresh = (refresh: () => Promise<RefreshReport | undefined>): void => {
+    if (exiting) return;
     const epoch = pickerEpoch; // capture THIS picker generation so a reopened picker never adopts this result
     const open = state.modelPicker;
     if (open === undefined) return;
@@ -732,6 +739,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     );
   };
   const openModelPicker = (): void => {
+    if (exiting) return;
     const port = deps.models; // capture the narrowed port so the refresh closure needs no non-null assertion
     if (port === undefined) {
       set({ notice: '/models is unavailable here.' }); // defensive — production always wires the port
@@ -1127,9 +1135,9 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     // (mirrors acceptMention's session-identity guard).
     const applyIfCurrent = (candidates: readonly MentionCandidate[]): void => {
       const open = state.mention;
-      if (open === undefined) return; // no submode open (narrows `open` for the spread below)
-      // Drop a stale resolve: a since-descended submode, or (after /exit → new chat) a different session / mode.
-      if (open.dir !== dir || state.session !== active || state.mode !== 'chat') return;
+      if (open === undefined || !isCurrentChat(active)) return;
+      // A matching directory is insufficient after permanent stop or a chat swap.
+      if (open.dir !== dir) return;
       set({ mention: { ...open, candidates, loading: false } });
     };
     void reader.list(dir).then(
@@ -1149,8 +1157,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     if (reader === undefined) return;
     const epoch = submitEpoch; // capture: a submit since accept ⇒ the buffer moved on (drop the inject)
     // Stale if the chat swapped/ended (session/mode) OR the compose buffer was submitted since accept.
-    const stale = (): boolean =>
-      state.session !== active || state.mode !== 'chat' || submitEpoch !== epoch;
+    const stale = (): boolean => !isCurrentChat(active) || submitEpoch !== epoch;
     void reader.read(path).then(
       ({ content, sizeBytes }) => {
         if (stale()) return; // the chat ended or the buffer was submitted mid-read — drop it
@@ -1190,7 +1197,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     mode: ChatMode,
     epoch: number,
   ): void => {
-    if (state.session !== active || state.mode !== 'chat' || submitEpoch !== epoch) return;
+    if (!isCurrentChat(active) || submitEpoch !== epoch) return;
     if (outcome.kind === 'ran') {
       // SHOW the output read-only (a transcript notice) + queue it as a pending COMMAND attachment that rides the
       // next message (the FULL output is expanded into the UNTRUSTED frame at submit; the preview is bounded).
@@ -1221,6 +1228,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     );
   };
   const runShell = (active: HomeChatSession, parsed: ShellCommand): void => {
+    if (!isCurrentChat(active)) return;
     const runner = active.runShellCommand;
     if (runner === undefined) return;
     const epoch = submitEpoch;
@@ -1239,7 +1247,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       },
       () => {
         clearBusy();
-        if (state.session === active && state.mode === 'chat' && submitEpoch === epoch) {
+        if (isCurrentChat(active) && submitEpoch === epoch) {
           active.store.note('! shell command failed unexpectedly');
         }
       },
@@ -1579,9 +1587,10 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       // Bracketed paste is handled natively by ink 7's `usePaste` → `handlePaste` (a channel separate from
       // `useInput`), so a pasted multi-line block never arrives here char-by-char and a pasted approval token can
       // never reach the approval reducer. Every real keystroke is dispatched by the open-overlay + mode router.
-      dispatchKey(input, key);
+      if (!exiting) dispatchKey(input, key);
     },
     handlePaste(text) {
+      if (exiting) return;
       // ink 7 delivers a whole bracketed paste as ONE native event; CRLF/CR → LF (matching a typed newline).
       // Dropped (not char-inserted) unless the main prompt is the active editable target — `pasteEditable` mirrors
       // the old bracketed-paste gate and additionally refuses a pending approval (the fail-closed floor, ADR-0057)

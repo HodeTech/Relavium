@@ -411,6 +411,52 @@ describe('sweepMediaAtTerminal (the shared run/gate run-end GC guard)', () => {
     expect('graceMs' in (calls[0] ?? {})).toBe(false); // conditional-spread omitted the key, never graceMs: undefined
   });
 
+  it.each([undefined, 1, 0])('respects the original remaining budget %s', async (remaining) => {
+    const { sweep, calls } = spySweep();
+    const budget = { deadline: () => 3000, remainingMs: () => remaining };
+    await sweepMediaAtTerminal({
+      sweep,
+      isTerminal: true,
+      db: client.db,
+      casRoot: '/cas',
+      currentRunId: 'r1',
+      graceMs: undefined,
+      budget,
+    });
+    expect(calls, 'TERMINAL_MEDIA_MAINTENANCE_ENTRY_BUDGET').toHaveLength(remaining === 0 ? 0 : 1);
+  });
+
+  it('still joins a sweep entered before expiry without renewing the budget', async () => {
+    let remaining = 1;
+    let release: () => void = () => undefined;
+    const raw = new Promise<undefined>((resolve) => {
+      release = () => resolve(undefined);
+    });
+    const sweep = vi.fn(() => raw);
+    let settled = false;
+    const pending = sweepMediaAtTerminal({
+      sweep,
+      isTerminal: true,
+      db: client.db,
+      casRoot: '/cas',
+      currentRunId: 'r1',
+      graceMs: undefined,
+      budget: { deadline: () => 3000, remainingMs: () => remaining },
+    }).then(() => {
+      settled = true;
+    });
+    try {
+      expect(sweep).toHaveBeenCalledOnce();
+      remaining = 0;
+      await Promise.resolve();
+      expect(settled, 'ENTERED_MEDIA_SWEEP_REMAINS_OWED').toBe(false);
+    } finally {
+      release();
+      await pending;
+    }
+    expect(settled).toBe(true);
+  });
+
   it('SWALLOWS a throwing sweep — the run-end GC must NEVER fail the run', async () => {
     const { sweep } = spySweep(() => Promise.reject(new Error('gc boom')));
     await expect(
