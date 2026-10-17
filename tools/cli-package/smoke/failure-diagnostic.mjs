@@ -66,19 +66,13 @@ const code = (value) =>
 const signal = (value) => (value === null || signals.has(value) ? value : undefined);
 const identity = (value, pattern) =>
   typeof value === 'string' && value.length <= 128 && pattern.test(value) ? value : 'unavailable';
-function errorText(value, maximum = 256) {
-  if (typeof value !== 'string') return undefined;
-  // Only the first diagnostic line is useful here; stacks, assertion diffs and child output stay private.
-  const first = value.slice(0, 1024).split(/[\r\n]/u, 1)[0];
-  if (/[a-z]:[\\/]|file:\/\/|(?:^|[\s("'=])(?:\.{1,2}[\\/]|[\\/])/iu.test(first)) {
-    const errno =
-      /^Error:\s*(EACCES|EPERM|ENOENT|EBUSY|EIO|EEXIST|EINVAL|ENOTDIR|EISDIR|ENAMETOOLONG|ETIMEDOUT|ENOSPC|EROFS)\b/u.exec(
-        first,
-      )?.[1];
-    return `${errno === undefined ? 'Failure' : errno}: path detail omitted.`;
-  }
-  return first.replace(/[^\x20-\x7e]/gu, '?').slice(0, maximum);
+// Assertion messages may contain raw child stderr, argv or other fixture text. Only
+// the presence of a private failure is public; structured native facts use the
+// separate closed projections below. Text shape is never evidence of safe origin.
+function privateFailure(value) {
+  return typeof value === 'string' ? 'Failure detail retained in private report.' : undefined;
 }
+
 function observation(raw) {
   const value = object(raw);
   if (!operations.has(value.operation)) return undefined;
@@ -91,7 +85,7 @@ function observation(raw) {
     detached: bool(value.detached),
     shell: bool(value.shell),
     synthetic: bool(value.synthetic),
-    error: errorText(value.reason, 128),
+    error: privateFailure(value.reason),
     ...(value.operation === 'native-signal-observed'
       ? {
           owned: bool(value.owned),
@@ -151,7 +145,7 @@ function nativeMode(raw) {
         watchdogFired: bool(object(cleanup.sentinel).watchdogFired),
       },
       failures: list(cleanup.failures, 3)
-        .map((value) => errorText(value, 128))
+        .map((value) => privateFailure(value))
         .filter(Boolean),
     },
   };
@@ -172,9 +166,9 @@ export function formatInstalledWorkerFailure(raw) {
       : 'unavailable',
     workerPid: pid(report.pid),
     parentPid: pid(report.parentPid),
-    error: errorText(report.error),
-    cleanupError: errorText(report.cleanupError),
-    immutabilityError: errorText(report.immutabilityError),
+    error: privateFailure(report.error),
+    cleanupError: privateFailure(report.cleanupError),
+    immutabilityError: privateFailure(report.immutabilityError),
     compiledUnchanged: bool(report.compiledUnchanged),
     ownedTempRemoved: bool(report.ownedTempRemoved),
     cases: REQUIRED_SMOKE_CASES.flatMap((id) => {
@@ -184,7 +178,7 @@ export function formatInstalledWorkerFailure(raw) {
         {
           id,
           status: item === undefined ? 'missing' : 'failed',
-          error: errorText(item?.error),
+          error: privateFailure(item?.error),
           ...(['actual-native-process-owner', 'actual-native-bootstrap-lifecycle'].includes(id)
             ? {
                 native: list(object(item?.evidence).outcomes, 6)
@@ -201,7 +195,6 @@ export function formatInstalledWorkerFailure(raw) {
   if (Buffer.byteLength(line) > MAX_WORKER_FAILURE_BYTES) {
     diagnostic.truncated = true;
     for (const item of diagnostic.cases) {
-      item.error = errorText(item.error, 96);
       if ((item.native?.length ?? 0) > 2) {
         item.native = [item.native[0], item.native.at(-1)];
         item.nativeModesTruncated = true;

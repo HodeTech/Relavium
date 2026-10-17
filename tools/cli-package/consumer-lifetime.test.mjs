@@ -163,7 +163,7 @@ for (const diagnosticSinkFailure of [false, true])
           assert.equal(diagnostic.parentPid, process.pid);
           assert.equal(diagnostic.cases.length, 1);
           assert.equal(diagnostic.cases[0].id, 'actual-native-process-owner');
-          assert.match(diagnostic.cases[0].error, /synthetic helper-close failure/);
+          assert.equal(diagnostic.cases[0].error, 'Failure detail retained in private report.');
           assert.equal(diagnostic.cases[0].native[0].observed[0].code, 1);
           assert.equal(diagnostic.cases[0].native[0].cleanup.cliActualCloseObserved, true);
         }

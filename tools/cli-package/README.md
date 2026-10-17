@@ -54,7 +54,11 @@ publication, and a secondary cleanup/diagnostic failure preserves the primary.
 A failed worker emits one bounded synthetic-test diagnostic on stderr after its
 cleanup and private report write. The projection identifies failed canonical cases
 and selected native-close facts without copying report paths, environment, argv,
-transcripts or raw child output. It remains failure evidence: the parent still joins
+transcripts or raw child output. Failure-text fields use one fixed private-detail
+label, including assertion headers and nested reason/cleanup fields; arbitrary
+first-line text is never public. Canonical case IDs and bounded native codes,
+signals, identities and close observations remain available. The original raw
+primary stays in the existing private report. It remains failure evidence: the parent still joins
 the worker and removes its installation, and no success receipt is published.
 An unavailable diagnostic sink does not replace the original failure.
 
