@@ -15,6 +15,90 @@ function gate() {
 
 const reactions = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
 
+describe('successful manager cleanup keeps its original live budget at transport entry', () => {
+  it.each([false, true])(
+    'rechecks the deferred close boundary (queued expiry=%s)',
+    async (expire) => {
+      let remaining = 1;
+      const closed = gate();
+      const close = vi.fn(() => closed.promise);
+      const manager = await startMcpClient([server('one', close)], undefined, undefined, {
+        budget: { remainingMs: () => remaining },
+      });
+      if (expire)
+        queueMicrotask(() => {
+          remaining = 0;
+        });
+      let settled = false;
+      const closing = manager.close().then(() => {
+        settled = true;
+      });
+      await reactions();
+      expect(close, 'MCP_SUCCESSFUL_MANAGER_RECHECKS_DEFERRED_CLOSE_BUDGET').toHaveBeenCalledTimes(
+        expire ? 0 : 1,
+      );
+      expect(settled).toBe(false);
+      closed.release();
+      if (expire) {
+        await reactions();
+        expect(settled, 'MCP_SUCCESSFUL_MANAGER_EXPIRY_IS_NOT_ACK').toBe(false);
+      } else {
+        await closing;
+        expect(settled).toBe(true);
+      }
+    },
+  );
+
+  it('rechecks every successful connection when an earlier close consumes the last budget', async () => {
+    let remaining = 1;
+    const first = vi.fn(() => {
+      remaining = 0;
+      return Promise.resolve();
+    });
+    const second = vi.fn(() => Promise.resolve());
+    const manager = await startMcpClient(
+      [server('one', first), server('two', second)],
+      undefined,
+      undefined,
+      {
+        budget: { remainingMs: () => remaining },
+      },
+    );
+    let settled = false;
+    void manager.close().then(() => {
+      settled = true;
+    });
+    await reactions();
+    expect(first).toHaveBeenCalledOnce();
+    expect(second, 'MCP_SUCCESSFUL_MANAGER_RECHECKS_EACH_TRANSPORT_CLOSE').not.toHaveBeenCalled();
+    expect(settled).toBe(false);
+  });
+
+  it('keeps successful-client reporters distinct from failed-start lifecycle observers', async () => {
+    const failure = new Error('synthetic transport close failure');
+    const report = vi.fn();
+    const manager = await startMcpClient(
+      [server('one', () => Promise.reject(failure))],
+      undefined,
+      undefined,
+      {
+        onCloseError: report,
+        budget: { remainingMs: () => 1 },
+      },
+    );
+    await manager.close(report);
+    expect(
+      report,
+      'MCP_SUCCESSFUL_CLOSE_REPORTER_IS_NOT_DELIVERED_TWICE',
+    ).toHaveBeenCalledExactlyOnceWith('one', failure);
+    await manager.close(report);
+    expect(report).toHaveBeenCalledOnce();
+    const late = vi.fn();
+    await manager.close(late);
+    expect(late).toHaveBeenCalledExactlyOnceWith('one', failure);
+  });
+});
+
 function server(
   id: string,
   close: McpConnection['close'],

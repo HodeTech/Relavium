@@ -196,9 +196,12 @@ is independently accepted at `dbab25d8` after two NEW complete cumulative clean
 rounds, a separate clean security sitting and successful full CI. All four
 same-tarball platform consumers pass at that reviewed source. Whole Step 8 remains open.
 Step 8d session/terminal integration and product fatal activation are implemented
-but not independently accepted. Its first four complete cumulative rounds are
-NONCLEAN; the three fourth-round findings have implementation corrections and
-passing author gates. Two NEW complete cumulative clean rounds after the last
+but not independently accepted. Its first five complete cumulative rounds are
+NONCLEAN; the fourth-round findings have implementation corrections and passing
+author gates. The fifth round finds a deferred MCP transport-close budget gap;
+its correction and strict causal-workload pin updates pass author validation.
+An isolated Windows advisory timeout remains unexplained; fresh evidence is
+required. Two NEW complete cumulative clean rounds after the last
 material fix, a NEW separate clean security sitting and fresh full CI plus all
 four same-artifact package consumers remain required.
 Step 8 proceeds as recorded serial increments 8a–8d; native

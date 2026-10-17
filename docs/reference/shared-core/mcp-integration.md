@@ -209,9 +209,14 @@ argument, separately from its existing third work-transfer argument. Its
 `onCloseError(serverId, cause)` observes each failed-start connection close
 refusal immediately, including while a different close is held. Its read-only
 `budget.remainingMs()` uses the invocation's existing remaining budget. The
-manager checks it before each new close; zero remaining time enters no new
+manager retains that same live budget for successfully initialized clients too,
+across its deferred shared-close entry, and checks it immediately before each
+actual transport-close factory; zero remaining time enters no new
 asynchronous close and supplies no cleanup acknowledgement. Ordinary startup
 without these ports retains its existing actual joins and typed refusal.
+Successful-client failures still use each supplied `close(onCloseError)` reporter
+once; the failed-start lifecycle observer is not delivered a second time for an
+ordinary successful-client close.
 
 Failed-start cleanup transfers its own work scope before server construction.
 All exact entered closes remain joined even if the lifecycle reporter throws.

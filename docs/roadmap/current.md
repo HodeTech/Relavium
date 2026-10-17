@@ -1172,7 +1172,15 @@ separate native migration-lock connection. All four same-artifact package consum
 pass at that source; this does not grant review acceptance or erase the earlier
 unexplained macOS failure. Two NEW complete cumulative clean rounds after the last
 material fix, a NEW separate clean security sitting and fresh full CI/platform
-acceptance remain required. Step 8d proceeds automatically. The
+acceptance remain required. The [fifth cumulative review and deferred-close correction](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-fifth-cumulative-review-and-deferred-close-correction--2026-10-17)
+records complete NONCLEAN coverage of 285 paths / 1,526 independently hash-checked
+hunks at `ad743ba5`, with one corroborated manager microtask-expiry finding.
+All four exact-package consumers pass there and their physical artifacts are
+independently inspected, but broader CI exposes an obsolete causal workload pin
+and an unexplained Windows advisory timeout. The implementation correction
+preserves the live budget through actual transport entry and updates strict
+workload counts; new reviews/security/full CI and Windows evidence remain open.
+Step 8d proceeds automatically. The
 [final proposal reviews](phases/phase-2.5.5-hardening-and-remediation.md#second-maintainer-rereview-final-proposal-readiness--2026-10-16)
 remain proposal evidence, not implementation review. The selected encrypted archive
 method persists; production recipient/recovery belongs to Wave 4b release setup.

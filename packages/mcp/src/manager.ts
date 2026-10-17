@@ -80,11 +80,11 @@ export interface McpClient {
   readonly childPids: readonly number[];
 }
 
-/** Host-only failed-start cleanup observations; no SDK/native handle or receipt authority crosses here. */
+/** Host-only failed-start observations and live close budget; no native handle or receipt authority. */
 export interface McpStartupLifecycle {
   /** Called immediately for each actual close refusal, even while another connection is still closing. */
   readonly onCloseError?: (serverId: string, cause: unknown) => void;
-  /** The original live budget. Expiry permits no new async close and grants no cleanup acknowledgement. */
+  /** Applies to every actual close, including successful startup and deferred manager entry. */
   readonly budget?: { readonly remainingMs: () => number | undefined };
 }
 
@@ -132,12 +132,18 @@ export async function startMcpClient(
   void observerFailure.catch(() => undefined);
   const close = (onCloseError?: (serverId: string, cause: unknown) => void): Promise<void> => {
     // Publish the shared join before entering custom close factories, including reentry.
+    // Successful clients keep the same live budget across this deferred entry. Their reporter
+    // still belongs to close(onCloseError), separately from the failed-start lifecycle observer.
     closing ??= Promise.resolve().then(() =>
       closeAll(
         connections,
         closeFailures,
         failedStartup ? failedCleanup : undefined,
-        failedStartup ? lifecycle : undefined,
+        failedStartup
+          ? lifecycle
+          : lifecycle?.budget === undefined
+            ? undefined
+            : { budget: lifecycle.budget },
         (cause) =>
           rejectObserver(
             new Error('MCP startup cleanup observation failed.', {

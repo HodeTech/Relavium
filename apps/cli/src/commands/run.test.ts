@@ -1846,12 +1846,16 @@ workflow:
     expect(engineBuilt).toBe(false); // the connect failed before the engine was ever built (no leak)
   });
 
-  it.each([0, 1])(
-    'run finalizer respects the original MCP budget (%s ms left)',
-    async (remaining) => {
+  it.each([
+    { remaining: 0, queuedExpiry: false },
+    { remaining: 1, queuedExpiry: false },
+    { remaining: 1, queuedExpiry: true },
+  ])(
+    'run finalizer respects the original MCP budget ($remaining ms left, queued expiry=$queuedExpiry)',
+    async ({ remaining, queuedExpiry }) => {
       const client = createClient(':memory:');
       runMigrations(client.db);
-      const control = workflowFinalizerControl(remaining, client.sqlite);
+      const control = workflowFinalizerControl(remaining, client.sqlite, queuedExpiry);
       try {
         await control.verify(
           runCommand(

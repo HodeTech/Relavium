@@ -348,9 +348,13 @@ describe('gateCommand', () => {
     return { runId, gateIds };
   }
 
-  it.each([0, 1])(
-    'gate finalizer respects the original MCP budget (%s ms left)',
-    async (remaining) => {
+  it.each([
+    { remaining: 0, queuedExpiry: false },
+    { remaining: 1, queuedExpiry: false },
+    { remaining: 1, queuedExpiry: true },
+  ])(
+    'gate finalizer respects the original MCP budget ($remaining ms left, queued expiry=$queuedExpiry)',
+    async ({ remaining, queuedExpiry }) => {
       const yaml = GATED.replace(
         '  nodes:',
         `  agents:
@@ -363,7 +367,7 @@ describe('gateCommand', () => {
   nodes:`,
       );
       const paused = await setupPausedRun(yaml);
-      const control = workflowFinalizerControl(remaining, client.sqlite);
+      const control = workflowFinalizerControl(remaining, client.sqlite, queuedExpiry);
       await control.verify(
         gateCommand(
           { runId: paused.runId, approve: true },

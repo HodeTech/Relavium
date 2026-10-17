@@ -6562,3 +6562,97 @@ author lint failures are corrected, not waived. The local 18-path product/test/
 configuration source pin SHA-256 is `c33fe30d7ee58825a924e2d1ac81f64a94ab0c474cc8d2b890ab9dae407585d0`. These are author gates;
 independent cumulative review, security and post-correction remote acceptance
 remain open.
+
+### Wave 3 Step 8d fifth cumulative review and deferred-close correction — 2026-10-17
+
+**NONCLEAN; no Step 8d acceptance.** Three NEW complete cumulative reviewers cover
+all **285 paths / 1,526 zero-context hunks** at
+`ad743ba5819361ad070a27ee31f0fb5751b823d4`, against the same `d9625ff0` base.
+Root independently verifies every physical file, complete diff and individual
+hunk hash, with disjoint 73/131/81-path coverage. The local Git-ignored aggregate
+SHA-256 is `56250341253e61c55c6788f142a1998bde576ffb378bc582be8f660c91d34adc`.
+Session/terminal is scoped CLEAN; the other two slices corroborate the same High
+**WM-R5-1**, counted once. R4's three original schedules are repaired; all first
+five complete rounds remain NONCLEAN.
+
+The helper admitted a successful MCP manager close with one millisecond left,
+but the manager deferred actual connection entry and discarded the lifecycle
+budget after successful startup. An already queued microtask could consume that
+millisecond before transport/SDK close began. Root and both relevant reviewers
+reproduce the paired helper schedule; independent reviewer probes additionally
+exercise actual `runCommand`, the real manager and real SQLite. These are
+synthetic connections/fake clock schedules, not native MCP subprocesses. They
+establish forbidden late close entry, not a renewed deadline, false ACK or survival
+past physical exit.
+
+The manager now retains the same live budget across deferred successful close
+and checks it at every actual transport-close factory. Successful-client reporters
+remain distinct from failed-start observers, preserving once-per-callback delivery
+and the shared reentrant close promise. Permanent controls cover queued expiry,
+remaining-time positive acknowledgement, per-connection exhaustion and reporter
+identity; actual run/human/budget finalizers add the queued-expiry schedule beside
+their zero/one-millisecond pairs. No shutdown budget or timeout increases.
+Canonical semantics live in the [MCP integration contract](../../reference/shared-core/mcp-integration.md#failed-start-cleanup-lifecycle).
+
+Reviewer execution retains its separate scopes: 697 session tests; 405 workflow
+cases plus two selected budget cases; 159 native cases and 66 tool cases; four
+shared defect-observation probes. These overlapping counts are not a new suite
+aggregate or the separate security sitting. The root-read complete reports remain
+local and ignored.
+
+At `ad743ba5`, all four packed consumers/aggregate pass. Root downloads the actual
+five GitHub artifacts, verifies each GitHub ZIP digest, rechecks tar bytes/public
+inventory and all seventy installed files per consumer, and binds every report
+to the actual remote run/attempt/source. The common tarball SHA-256 is
+`487870990752ce6559f9cdec979702bff0a8ba8670e439223f434e3f6c40554f`;
+the independent local physical-audit record SHA-256 is
+`e0f503fb4adf29f414f54e7cad40d7bc9a5f29bf53e13455ee00c270cb2f37a2`.
+This is artifact inspection, not a new remote consumer execution. Current Node
+consumers use 24.21.0; the separate minimum leg is exactly 22.0.0.
+
+Broader CI `38991418424` is not accepted: required secrets controls correctly
+reject an obsolete 80-case run-file pin after R4 added two cases, and the Windows
+advisory times out once in benign-alias resume (5,143 ms against 5,000). The
+secrets pins are updated to the actual final 83 run / 71 gate cases, including
+this correction's added schedule, while exact-count/identity/runtime-error and
+fixed/removal/restored checks remain strict. No control or assertion is removed.
+The same Windows case passed at prior `db825377` in 437 ms; local macOS controls
+do not explain or clear the current Windows failure. Fresh Windows evidence
+remains required; no timeout relaxation or inferred product repair is recorded.
+
+Two NEW complete cumulative clean rounds after the last material correction,
+a NEW clean separate security sitting and fresh full CI/platform evidence remain
+required. Whole Step 8 and Steps 9–19 remain open. No new ADR or user decision,
+provider, credential, billing or production custody setup is needed here.
+
+
+**Final author gates for the R5 correction.** Seventeen workspace lint/typecheck
+tasks pass (twelve cached); eleven test tasks pass (nine cached), with fresh CLI
+**334 files / 5,410 passing tests / eleven established reported skips** and fresh
+MCP **twenty files / 246 passing tests / no skips**. Build/format passes seven
+tasks (five cached); all 512 acceptance-tool tests, tools lint/typecheck, schema
+sync, seam/purity, test isolation, 25-output bundle closure, 177 compiled bootstrap
+controls and compiled CLI smoke pass. The new regressions first break at the two
+named MCP assertions and all three actual workflow-finalizer assertions before
+the fix; their corrected complete/selected executions pass. Filtered unselected
+cases are not product skips or whole-suite evidence.
+
+Three affected secrets controls independently pass fixed/removal/restored at
+83/71/83 complete-file cases, **nine phases / 711 executions**. Each removal
+breaks its named witness, every restored source digest equals its fixed digest,
+and the isolated graph reports developer sources unchanged. This selected run
+honestly retains `complete: false`; it is not acceptance of the full secrets
+family. An initial unsupported argument invocation is a rejected setup, not a
+product result. The local causal-summary SHA-256 is
+`aca1ee8f4a921f86afdcc175b9a247d516aaae4766c7e1739c5314206157a551`;
+the seven-path product/test/control author pin SHA-256 is
+`92bd5f22ec12fd8fda5db4e577044d0baa53bfdced9275f579025e7116c0385f`.
+
+Separate read-only Windows triage finds no verified defect. The unchanged
+original eight-case suite passes locally, and an immutable `ad743ba5` snapshot
+verifies all eight acquired native handles close with zero remaining product
+owners. Local macOS timings cannot explain the remote Windows timeout. The local
+triage report SHA-256 is
+`edf43b42f6ab90043e05cf2445d213bdf71146aed32a798de1a37c690a0d4702`.
+These are author/triage records; rounds 1–5 remain NONCLEAN and new cumulative
+review, separate security and post-correction CI/platform acceptance remain open.
