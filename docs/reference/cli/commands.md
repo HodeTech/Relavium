@@ -1054,6 +1054,13 @@ after a failed mount is not a release ACK. A remount already entered before stop
 must settle and release its final native state. JSON/CI/plain output acquires no
 TTY job-control or cursor custody merely because stdout has a TTY flag.
 
+Run/gate self-stop failures reach the original workflow owner before reversible
+listener recovery consumes them. An unexpected fault selects infrastructure 9
+and seals business rendering and reattachment; an already classified self-stop
+refusal retains its recoverable outcome. Ownerless bindings keep their existing
+recovery behaviour. A failed self-signal supplies no native-release or cursor
+delivery acknowledgement.
+
 MCP manager close failures can arrive through its callback even when `close()`
 fulfills. They retain the MCP/workflow obligation and keep DB close behind actual
 cleanup. An opaque database-close throw also supplies no release ACK; already

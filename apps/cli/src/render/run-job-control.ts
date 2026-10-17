@@ -28,6 +28,8 @@ export interface RunJobControl {
 
 export interface WireRunJobControlOptions {
   readonly adopt?: (control: RunJobControl) => void;
+  /** Observe the original self-stop failure before reversible listener recovery consumes it. */
+  readonly onFailure?: (cause: unknown) => void;
   /** Where the cursor codes go — the same seam the renderers write through, so tests capture them. */
   readonly write: (text: string) => void;
   /** Injectable signal registration (`defaultJobControlLifecycle` in production; a fake in tests). */
@@ -108,7 +110,8 @@ export function wireRunJobControl(opts: WireRunJobControlOptions): RunJobControl
     if (disposed) return;
     try {
       lifecycle.suspendSelf();
-    } catch {
+    } catch (cause) {
+      opts.onFailure?.(cause);
       attach();
     }
   };

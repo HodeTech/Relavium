@@ -19,7 +19,7 @@ import type {
 import type { GatePrompter } from '../gate/prompter.js';
 import { budgetIdentifier, budgetPromptContext, type BudgetPromptContext } from '../gate/budget.js';
 import { sanitizeUntrustedInline, stringifyJsonLine } from '../render/sanitize.js';
-import { CliError } from '../process/errors.js';
+import { CliError, toUserFacing } from '../process/errors.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import { detectOutputMode, isCiEnv } from '../process/output-mode.js';
 import type { CliIo } from '../process/io.js';
@@ -330,7 +330,16 @@ export async function driveRun(deps: DriveRunDeps): Promise<RunOutcome | undefin
           }) === 'tui'
         )
           jobControl = terminal.createJobControl((adopt) =>
-            wireRunJobControl({ write: (text) => io.writeOut(text), adopt }),
+            wireRunJobControl({
+              write: (text) => io.writeOut(text),
+              adopt,
+              onFailure: (cause) => {
+                // A recoverable self-stop refusal is not the run's eventual outcome.
+                // Unexpected native faults must reach its original owner before reattachment.
+                if (toUserFacing(cause).exitCode === EXIT_CODES.infrastructureFailed)
+                  lifetime.failure(cause);
+              },
+            }),
           );
         if (deps.makeGatePrompter !== undefined) gatePrompter = deps.makeGatePrompter();
         renderer = terminal.createRenderer(makeRenderer);
