@@ -1,6 +1,7 @@
 import { Buffer } from 'node:buffer';
 import { writeSync } from 'node:fs';
 import { REQUIRED_SMOKE_CASES } from './cases.mjs';
+import { nativeSignalCode } from './native-signal-diagnostic.mjs';
 
 export const MAX_WORKER_FAILURE_BYTES = 8192;
 const modes = new Set([
@@ -50,6 +51,9 @@ const operations = new Set([
   'native-bootstrap-fatal-injected',
   'native-bootstrap-background-injected',
   'native-bootstrap-output-injected',
+  'native-signal-observed',
+  'native-uncaught-exception-observed',
+  'native-signal-diagnostics-complete',
 ]);
 const object = (value) => (value !== null && typeof value === 'object' ? value : {});
 const list = (value, maximum) => (Array.isArray(value) ? value.slice(0, maximum) : []);
@@ -83,11 +87,39 @@ function observation(raw) {
     pid: pid(value.pid),
     parentPid: pid(value.parentPid),
     code: code(value.code),
-    signal: signal(value.signal),
+    signal: value.signal === 0 ? 0 : signal(value.signal),
     detached: bool(value.detached),
     shell: bool(value.shell),
     synthetic: bool(value.synthetic),
     error: errorText(value.reason, 128),
+    ...(value.operation === 'native-signal-observed'
+      ? {
+          owned: bool(value.owned),
+          target: value.owned === true && value.target !== 0 ? code(value.target) : undefined,
+          outcome: ['returned', 'threw'].includes(value.outcome) ? value.outcome : undefined,
+          returned: bool(value.returned),
+          nativeCode: value.outcome === 'threw' ? nativeSignalCode(value.nativeCode) : undefined,
+          errno:
+            Number.isSafeInteger(value.errno) && Math.abs(value.errno) <= 10000
+              ? value.errno
+              : undefined,
+        }
+      : {}),
+    ...(value.operation === 'native-signal-diagnostics-complete'
+      ? {
+          complete: bool(value.complete),
+          observations:
+            Number.isSafeInteger(value.observations) &&
+            value.observations >= 0 &&
+            value.observations <= 64
+              ? value.observations
+              : undefined,
+        }
+      : {}),
+    milliseconds:
+      Number.isFinite(value.milliseconds) && value.milliseconds >= 0 && value.milliseconds <= 1e12
+        ? value.milliseconds
+        : undefined,
   };
 }
 function nativeMode(raw) {

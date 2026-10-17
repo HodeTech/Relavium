@@ -3,6 +3,7 @@ import { Buffer } from 'node:buffer';
 import { appendFileSync, existsSync, lstatSync, readFileSync, statSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
 import { clearInterval, setImmediate, setInterval } from 'node:timers';
+import { createNativeSignalDiagnostic } from './native-signal-diagnostic.mjs';
 
 /** A stdout marker alone is insufficient: match the actual root, its created child and that child's ACK. */
 export function assertNativeFixtureReady(observed, pid, mode) {
@@ -74,6 +75,11 @@ export function createNativeSpawnWitness(configuration, spawn) {
   let pending = [];
   let gateTimer;
   let gateTicks = 0;
+  const ownedSignalTargets = new Set();
+  const signalDiagnostic = createNativeSignalDiagnostic({
+    record,
+    owns: (target) => ownedSignalTargets.has(target),
+  });
   // Observe the actual synchronous removal. A later setImmediate would be skipped by a
   // legitimate fatal process exit even after the creation owner had already retired.
   const onExitRemoved = (event, listener) => {
@@ -117,6 +123,14 @@ export function createNativeSpawnWitness(configuration, spawn) {
     };
   }
   return Object.freeze({
+    installSignalDiagnostics() {
+      const finish = () => signalDiagnostic.finish();
+      process.on('exit', finish);
+      // This fixture observer is baseline, never an extra product creation-owner callback.
+      initialExit.add(finish);
+      process.on('uncaughtExceptionMonitor', () => signalDiagnostic.uncaught());
+      process.kill = signalDiagnostic.wrap(process.kill);
+    },
     /** Synthetic verifier-boundary refusal; healthy modes retain the original native function. */
     wrapFacilityAccess(access) {
       if (config.mode !== 'facility-refusal') return access;
@@ -156,6 +170,8 @@ export function createNativeSpawnWitness(configuration, spawn) {
         exitReaper = additions[0];
         target = spawn(executable, args, options);
         assert.ok(Number.isSafeInteger(target.pid) && target.pid > 0);
+        ownedSignalTargets.add(target.pid);
+        if (options.detached) ownedSignalTargets.add(-target.pid);
         record({
           operation: 'native-target-spawn',
           pid: target.pid,
@@ -228,6 +244,7 @@ export function createNativeSpawnWitness(configuration, spawn) {
         assert.deepEqual(options, { shell: false, windowsHide: true, stdio: 'ignore' });
         helperEntered = true;
         const helper = spawn(executable, args, options);
+        if (Number.isSafeInteger(helper.pid) && helper.pid > 0) ownedSignalTargets.add(helper.pid);
         record({
           operation: 'native-helper-spawn',
           pid: helper.pid,

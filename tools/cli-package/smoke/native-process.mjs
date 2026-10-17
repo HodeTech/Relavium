@@ -17,6 +17,10 @@ import { fileURLToPath } from 'node:url';
 import { readOrdinaryFile, sha256 } from '../files.mjs';
 import { ndjson, poll, startOwned } from './process.mjs';
 import { projectRuntimeStderr } from './runtime-stderr.mjs';
+import {
+  assertNativeSignalDiagnosticComplete,
+  SIGNAL_DIAGNOSTIC_OPERATIONS,
+} from './native-signal-diagnostic.mjs';
 
 const fixture = (name) => fileURLToPath(new URL(name, import.meta.url));
 const positivePid = (pid) => Number.isSafeInteger(pid) && pid > 0;
@@ -416,6 +420,7 @@ export async function assertInstalledNativeProcesses(context, { bootstrap = fals
           'The public offline turn completion differs from its actual lifetime',
         );
         const observed = records(log);
+        assertNativeSignalDiagnosticComplete(observed);
         if (bootstrap) {
           assert.ok(
             observed.some((item) => item.operation === `native-${gate}-close-delivered`),
@@ -457,9 +462,14 @@ export async function assertInstalledNativeProcesses(context, { bootstrap = fals
         sibling.assertAlive();
         if (mode === 'facility-refusal') {
           assert.deepEqual(
-            observed,
+            observed.filter((item) => !SIGNAL_DIAGNOSTIC_OPERATIONS.has(item.operation)),
             [{ operation: 'native-facility-access-refused', synthetic: true }],
             'One synthetic facility access refusal must precede any target/helper entry',
+          );
+          assert.equal(
+            observed.at(-1).observations,
+            0,
+            'Invalid facility entered native signaling',
           );
           assert.ok(
             (result.stdout + result.stderr).includes('Windows subprocess teardown is unavailable'),

@@ -38,8 +38,10 @@ const originalSpawn = child.spawn;
 const nativeWitness = process.env.RELAVIUM_PACKAGE_SMOKE_NATIVE
   ? createNativeSpawnWitness(process.env.RELAVIUM_PACKAGE_SMOKE_NATIVE, originalSpawn)
   : undefined;
-if (nativeWitness !== undefined)
+if (nativeWitness !== undefined) {
+  nativeWitness.installSignalDiagnostics();
   fsPromises.access = nativeWitness.wrapFacilityAccess(fsPromises.access);
+}
 child.spawn = (...args) => {
   const native = nativeWitness?.trySpawn(...args);
   if (native !== undefined) {

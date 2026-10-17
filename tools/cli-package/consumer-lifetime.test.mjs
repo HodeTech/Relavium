@@ -30,7 +30,7 @@ async function fixture(
   for (const name of ['process.mjs', 'files.mjs'])
     copyFileSync(new URL(name, import.meta.url), join(root, name));
   copyFileSync(new URL('smoke/index.mjs', import.meta.url), join(smoke, 'index.mjs'));
-  for (const name of ['failure-diagnostic.mjs', 'cases.mjs'])
+  for (const name of ['failure-diagnostic.mjs', 'native-signal-diagnostic.mjs', 'cases.mjs'])
     copyFileSync(new URL(`smoke/${name}`, import.meta.url), join(smoke, name));
   const require = createRequire(new URL('../../packages/db/package.json', import.meta.url));
   const binary = join(

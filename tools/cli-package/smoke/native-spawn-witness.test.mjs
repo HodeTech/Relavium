@@ -21,6 +21,162 @@ import { setImmediate } from 'node:timers';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { assertNativeFixtureReady, createNativeSpawnWitness } from './native-spawn-witness.mjs';
 import { formatInstalledWorkerFailure } from './failure-diagnostic.mjs';
+import {
+  assertNativeSignalDiagnosticComplete,
+  createNativeSignalDiagnostic,
+} from './native-signal-diagnostic.mjs';
+
+test('signal evidence preserves exact receiver, arguments, result and throwable without reading error text', () => {
+  const rows = [];
+  const d = createNativeSignalDiagnostic({
+    record: (row) => rows.push(row),
+    owns: (pid) => pid === -40,
+    now: () => 12,
+  });
+  const receiver = {};
+  const result = {};
+  const native = function (...args) {
+    assert.equal(this, receiver);
+    assert.deepEqual(args, [-40, 'SIGKILL']);
+    return result;
+  };
+  assert.equal(d.wrap(native).call(receiver, -40, 'SIGKILL'), result);
+  const error = Object.assign(new Error('PRIVATE_NATIVE_MESSAGE'), { code: 'EPERM', errno: -1 });
+  Object.defineProperty(error, 'message', {
+    get: () => {
+      throw new Error('Text must never be inspected');
+    },
+  });
+  assert.throws(
+    () =>
+      d.wrap(() => {
+        throw error;
+      })(-40, 0),
+    (cause) => cause === error,
+  );
+  assert.equal(d.wrap(() => false)(99, 'SIGKILL'), false);
+  d.finish();
+  assertNativeSignalDiagnosticComplete(rows);
+  assert.equal(rows[1].nativeCode, 'EPERM');
+  assert.equal(rows[1].errno, -1);
+  assert.equal(rows[2].owned, false);
+  assert.equal(rows[2].target, undefined);
+  assert.doesNotMatch(JSON.stringify(rows), /PRIVATE_|message|stack/);
+});
+
+test('observation failure never replaces native success or failure and refuses complete evidence', () => {
+  for (const mode of ['journal', 'clock', 'descriptor']) {
+    const rows = [];
+    const d = createNativeSignalDiagnostic({
+      record: (row) => {
+        if (mode === 'journal' && row.operation !== 'native-signal-diagnostics-complete')
+          throw new Error('Synthetic journal refusal');
+        rows.push(row);
+      },
+      owns: () => true,
+      now: () => (mode === 'clock' ? NaN : 1),
+    });
+    const error =
+      mode === 'descriptor'
+        ? new Proxy(
+            {},
+            {
+              getOwnPropertyDescriptor() {
+                throw new Error('Synthetic descriptor refusal');
+              },
+            },
+          )
+        : new Error('Synthetic native fault');
+    assert.equal(d.wrap(() => true)(-40, 'SIGKILL'), true);
+    assert.throws(
+      () =>
+        d.wrap(() => {
+          throw error;
+        })(-40, 'SIGKILL'),
+      (cause) => cause === error,
+    );
+    d.finish();
+    assert.throws(() => assertNativeSignalDiagnosticComplete(rows), /incomplete/);
+  }
+});
+
+test('signal evidence rejects missing, duplicate, over-bound and post-marker observations', () => {
+  const make = () => {
+    const rows = [];
+    return {
+      rows,
+      d: createNativeSignalDiagnostic({
+        record: (row) => rows.push(row),
+        owns: () => true,
+        now: () => 1,
+      }),
+    };
+  };
+  assert.throws(() => assertNativeSignalDiagnosticComplete([]), /incomplete/);
+  const normal = make();
+  normal.d.uncaught();
+  normal.d.finish();
+  assertNativeSignalDiagnosticComplete(normal.rows);
+  assert.throws(
+    () => assertNativeSignalDiagnosticComplete([...normal.rows, normal.rows.at(-1)]),
+    /incomplete/,
+  );
+  normal.d.wrap(() => true)(40, 0);
+  assert.throws(() => assertNativeSignalDiagnosticComplete(normal.rows), /incomplete/);
+  const bounded = make();
+  const signal = bounded.d.wrap(() => true);
+  for (let i = 0; i < 65; i++) assert.equal(signal(40, 0), true);
+  bounded.d.finish();
+  assert.equal(bounded.rows.length, 65);
+  assert.throws(() => assertNativeSignalDiagnosticComplete(bounded.rows), /incomplete/);
+});
+
+test('worker failure retains bounded native errno and observation completeness without opaque properties', () => {
+  const row = {
+    operation: 'native-signal-observed',
+    owned: true,
+    target: -40,
+    signal: 'SIGKILL',
+    outcome: 'threw',
+    nativeCode: 'EPERM',
+    errno: -1,
+    milliseconds: 2,
+    message: 'PRIVATE_NATIVE_MESSAGE',
+    cause: 'PRIVATE_CAUSE',
+  };
+  const diagnostic = JSON.parse(
+    formatInstalledWorkerFailure({
+      cases: [
+        {
+          id: 'actual-native-process-owner',
+          passed: false,
+          evidence: {
+            outcomes: [
+              {
+                mode: 'injected-error',
+                observed: [
+                  row,
+                  {
+                    operation: 'native-signal-diagnostics-complete',
+                    complete: true,
+                    observations: 1,
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      ],
+    }),
+  );
+  const observed = diagnostic.cases.find((item) => item.id === 'actual-native-process-owner')
+    .native[0].observed;
+  assert.equal(observed[0].nativeCode, 'EPERM');
+  assert.equal(observed[0].target, -40);
+  assert.equal(observed[0].errno, -1);
+  assert.equal(observed[1].complete, true);
+  assert.doesNotMatch(JSON.stringify(diagnostic), /PRIVATE_/);
+});
 
 /** Explicit simulated event/port tests. These execute neither product code nor Windows taskkill. */
 function harness(mode = 'injected-error', gate = 'none') {

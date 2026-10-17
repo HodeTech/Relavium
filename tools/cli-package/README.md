@@ -58,6 +58,17 @@ transcripts or raw child output. It remains failure evidence: the parent still j
 the worker and removes its installation, and no success receipt is published.
 An unavailable diagnostic sink does not replace the original failure.
 
+The native-edge witness also forwards the actual `process.kill` receiver,
+arguments, return and throwable unchanged while recording bounded monotonic time,
+creation-owned target identity and own-data native errno. A passive
+`uncaughtExceptionMonitor` records occurrence without handling the event or
+inspecting exception text. Journal/clock/descriptor failure never masks the native
+outcome; missing, failed, duplicate or nonterminal completion evidence refuses
+the control. The failed-worker projection admits only its fixed diagnostic fields.
+These observations improve failure attribution; they do not relax a native-close,
+exit-code, watchdog, timing or cleanup assertion, or classify an unresolved failure
+as harmless.
+
 Required PR/push consumers use current `.nvmrc` Linux/macOS/Windows and exact Node
 22.0.0 Linux. The aggregate reinspects the tarball and requires all four unique
 matching receipts plus successful pack/matrix jobs. Missing, failed, skipped,
