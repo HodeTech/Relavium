@@ -2,6 +2,8 @@ import fs from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
 import { basename } from 'node:path';
 
+process.send?.({ phase: 'worker-entry' });
+
 const root = process.argv[2];
 const mode = process.argv[3];
 const stage = process.argv[4];
@@ -54,11 +56,13 @@ fs.promises.open = async (path, ...args) => {
   const file = await nativeOpen(path, ...args);
   if (basename(String(path)).startsWith('recovery-v1.')) await barrier('recovery');
   if (basename(String(path)).startsWith('media-maintenance-v1.')) await barrier('maintenance');
+  if (basename(String(path)).startsWith('media-v1.')) report({ phase: 'producer-open' });
   if (basename(String(path)).startsWith('media-v1.')) await barrier('producer-open');
   return file;
 };
 syncBuiltinESMExports();
 const { FilesystemMediaStore } = await import('../media-store.js');
+report({ phase: 'store-imported' });
 const store = new FilesystemMediaStore(root);
 try {
   if (mode === 'producer') {
@@ -66,12 +70,14 @@ try {
       (async function* () {
         yield new Uint8Array([1, 2]);
         report({ stage: 'writing', pid: process.pid });
+        report({ phase: 'writing' });
         await released;
         yield new Uint8Array([3, 4]);
       })(),
       'audio/L16',
     );
     report({ done: true, handle });
+    report({ phase: 'done' });
   } else if (mode === 'sweep') report({ done: true, result: await store.sweepTemporaries() });
   else if (mode === 'legacy')
     report({
