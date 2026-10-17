@@ -68,8 +68,10 @@ export interface McpClient {
    * reported promptly once per server to each supplied `onCloseError` callback, even while
    * another close is held. Late reporters receive retained faults. Successful connections are removed
    * only after their exact close completes. Reporting is not a cleanup join; reporter exceptions
-   * are returned after all entered closes settle. The default remains best-effort reporting, not
-   * a semantic receipt or proof that a failed transport acknowledged native resource closure.
+   * are returned after all entered closes settle. A budget-port infrastructure failure rejects
+   * promptly while retaining unknown cleanup and every entered sibling close; rejection is no ACK.
+   * The default remains best-effort reporting, not a semantic receipt or proof that a failed
+   * transport acknowledged native resource closure.
    */
   close(onCloseError?: (serverId: string, cause: unknown) => void): Promise<void>;
   /**
@@ -176,9 +178,14 @@ export async function startMcpClient(
               },
           (cause) =>
             rejectObserver(
-              new Error('MCP startup cleanup observation failed.', {
-                cause: { primary: startupFailure?.cause, observer: cause },
-              }),
+              new Error(
+                failedStartup
+                  ? 'MCP startup cleanup observation failed.'
+                  : 'MCP cleanup observation failed.',
+                {
+                  cause: { primary: startupFailure?.cause, observer: cause },
+                },
+              ),
             ),
         ),
       )
@@ -197,7 +204,7 @@ export async function startMcpClient(
       // A caller attaching during a held sibling close must see earlier faults now too.
       for (const [serverId, cause] of closeFailures) deliver(onCloseError, state, serverId, cause);
     }
-    return closing.then(() => {
+    return Promise.race([closing, observerFailure]).then(() => {
       if (state?.failure !== undefined) throw state.failure.cause;
     });
   };

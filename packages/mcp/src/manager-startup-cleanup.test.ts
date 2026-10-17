@@ -105,6 +105,57 @@ describe('successful close reporters observe faults before sibling joins', () =>
 });
 
 describe('successful manager cleanup keeps its original live budget at transport entry', () => {
+  it('reports and retains a budget-port failure without acknowledging unknown or held cleanup', async () => {
+    const budgetFailure = new Error('PRIVATE_BUDGET_FAILURE');
+    const unknownClose = vi.fn(() => Promise.resolve());
+    const held = gate();
+    const siblingClose = vi.fn(() => held.promise);
+    const remainingMs = vi
+      .fn()
+      .mockImplementationOnce(() => {
+        throw budgetFailure;
+      })
+      .mockReturnValue(1);
+    const withPid = (config: McpServerConfig, childPid: number): McpServerConfig => ({
+      ...config,
+      open: async () => ({ ...(await config.open()), childPid }),
+    });
+    const manager = await startMcpClient(
+      [withPid(server('unknown', unknownClose), 901), withPid(server('held', siblingClose), 902)],
+      undefined,
+      undefined,
+      { budget: { remainingMs } },
+    );
+    const report = vi.fn();
+    let observed: unknown;
+    const closing = manager.close(report).catch((cause: unknown) => {
+      observed = cause;
+      return cause;
+    });
+    try {
+      await reactions();
+      expect(observed, 'MCP_SUCCESSFUL_BUDGET_FAILURE_IS_PROMPT').toMatchObject({
+        message: 'MCP cleanup observation failed.',
+        cause: { observer: budgetFailure },
+      });
+      expect(unknownClose).not.toHaveBeenCalled();
+      expect(siblingClose).toHaveBeenCalledOnce();
+      expect(manager.childPids, 'MCP_BUDGET_FAILURE_IS_NOT_NATIVE_ACK').toEqual([901, 902]);
+      expect(report).not.toHaveBeenCalled();
+      await expect(manager.close()).rejects.toBe(observed);
+      expect(remainingMs).toHaveBeenCalledTimes(2);
+      held.release();
+      await reactions();
+      expect(manager.childPids).toEqual([901]);
+      await expect(manager.close()).rejects.toBe(observed);
+      expect(siblingClose).toHaveBeenCalledOnce();
+      expect(remainingMs).toHaveBeenCalledTimes(2);
+    } finally {
+      held.release();
+      void closing;
+    }
+  });
+
   it.each([false, true])(
     'rechecks the deferred close boundary (queued expiry=%s)',
     async (expire) => {
