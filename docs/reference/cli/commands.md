@@ -698,8 +698,10 @@ filter IO or implicitly approve a prompt. Reasoning follows its existing content
 control. Verbose exposes only owned fixed classifications and bounded validated
 frame locations, with no stack first-line message, arbitrary cause/detail, argv,
 request or credential text. Unknown throws, projection/getter faults and broken
-sinks fall back to a fixed message; do not coerce arbitrary objects. The ordinary
-generic failure points to `--verbose`.
+sinks fall back to a fixed message; do not coerce arbitrary objects. Infrastructure
+and unclassifiable faults use the same fixed diagnostic at every verbosity; their
+message does not suggest that `--verbose` exposes additional detail. The bounded
+safe-detail policy still applies to diagnostic categories that provide owned metadata.
 
 Frame syntax alone is not provenance: Error.stack is writable. Emit only an exact
 owned shipped-artifact/source-file identity from a pure static/build-generated

@@ -33,6 +33,12 @@ These choices remain Proposed. Exact shapes, categories and exits belong in
 [CLI commands](../reference/cli/commands.md#proposed-wave-3-cli-compatibility).
 No engine ErrorCode or runtime dependency is added.
 
+> Amended 2026-10-18: The preceding “remain Proposed” sentence records the
+> proposal stage and is not the current decision status. The maintainer accepted
+> this ADR on 2026-10-16; its dated acceptance and implementation notes below
+> retain their exact scopes. The [current correction register](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#pr-95-second-systematic-review-corrections--2026-10-18)
+> records later PR #95 work without granting new acceptance.
+
 ## Decision
 
 ### Diagnostics and ownership
@@ -327,3 +333,15 @@ failed-review checkpoints retain their historical scopes. This lands native
 owner/session/terminal/fatal integration; it does not claim Step 10's unshipped
 CLI compatibility work or whole-Wave-3 acceptance. No new decision or deferral
 is added.
+
+
+## Fixed infrastructure diagnostic clarification — 2026-10-18
+
+> Amended 2026-10-18: Infrastructure and unclassifiable fault paths intentionally
+> emit the same fixed diagnostic at every verbosity. Their fixed message does
+> not suggest `--verbose` provides extra detail. The existing bounded owned
+> metadata/frame policy still governs categories that expose such detail; no
+> raw arbitrary message, cause tree or stack is admitted by this clarification.
+> The [canonical diagnostic policy](../reference/cli/commands.md#diagnostic-policy)
+> owns this distinction. This corrects misleading advice and reconciles the
+> implementation without reversing the decision or claiming new review acceptance.

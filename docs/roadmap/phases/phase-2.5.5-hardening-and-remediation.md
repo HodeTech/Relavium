@@ -207,15 +207,15 @@ reached.
 - ✅ **DONE ([Wave 3 Step 2](#wave-3-step-2-acceptance--2026-10-16)).** **Apply consistent duplicate/cross-field admission; certify existing input and session guards.** Shared leaf/full admission now enforces the approved duplicate, human-gate timeout and logical Run status matrices. Existing input defaults/enums and session compaction-role rules are certified. Historical session/workflow readers retain their former contracts; no rows are migrated or silently repaired. *(M · `packages/shared/src/{node,agent,workflow,session,run,common}.ts` · #89, #90, G18, #212, G16, G17, #210, #211)*
 - **Extend `analyzeSecretTaint`'s leak-reporting loop to cover context-value sites.** `analyzeSecretTaint` (`packages/core/src/interpolation/analyze.ts`) deliberately skips context-value sites in its leak-reporting loop, so a direct `{{secrets.*}}` reference never read elsewhere is not reported at parse time — the workflow only fails later, differently-shaped, at run start. Not an actual secret leak, but a real completeness gap in the "reject before a run starts, uniformly" contract. *(S · `packages/core/src/interpolation/analyze.ts` · G22)*
 - ✅ **DONE ([Wave 3 Step 4](#wave-3-step-4-acceptance--2026-10-16)).** **Retain and validate the public event envelope without stripping full payloads.** `BaseEventSchema` shares the full run family's parsed exactly-one-correlation check; `BaseEvent` and `HumanGateEvent` remain exported. Complete payload, strict accounting, lenient opposite-key and stored forward-reader contracts are preserved. *(S · `packages/shared/src/run-event.ts` · #213)*
-- **Correct `ctx.fsScope`'s wiring, blocked on a maintainer call.** `ctx.fsScope` is threaded through every dispatch context in `packages/core/src/tools/{types,registry,builtins}.ts` and `packages/core/src/engine/agent-session.ts`, but `enforcePolicy()` (`packages/core/src/tools/registry.ts`) has no `fsScoped` branch and no `FsCapability` method signature accepts it. **Blocked on a maintainer decision**: is this a deliberate "one host instance = one immutable scope" design, in which case only the doc comment needs correcting, or should it be threaded into `FsCapability`'s method signatures to support future per-turn scope escalation? *(S · `packages/core/src/tools/registry.ts` · #93)*
+- ✅ **DONE ([Wave 3 Step 5](#wave-3-step-5-acceptance--2026-10-16)).** **Clarify descriptive dispatch scope and retain immutable host filesystem authority.** Accepted [ADR-0105](../../decisions/0105-filesystem-roots-are-invocation-grants-not-project-authority.md) decides the host boundary; `ctx.fsScope` describes dispatch context and cannot widen the host's grant. No per-turn `FsCapability` escalation is introduced. *(S · `packages/core/src/tools/{types,registry,builtins}.ts` · #93)*
 - **Correct three stale engine doc comments to match current code.** `checkpoint.ts`'s module doc (`packages/core/src/engine/checkpoint.ts`) claims a "runId+nodeId+retryCount idempotency key" bounds resumed side effects; no such key exists. `builtins.ts`'s top comment still says egress is "not wired yet"; it shipped. `workflow-yaml-spec.md` documents `workflow.version` as Semver-format-enforced; `WorkflowSpecSchema` enforces no format. One sweep correcting each. *(S · `packages/core/src/engine/checkpoint.ts`, `packages/core/src/tools/builtins.ts`, `docs/reference/*/workflow-yaml-spec.md` · #78, #97, #214)*
 - **Remove the dead `RunEventBusOptions.validate` escape hatch and replace `kahnOrder`'s full re-sort with a priority structure.** `RunEventBusOptions.validate` (`packages/core/src/engine/event-bus.ts`) is documented as a hot-path escape hatch but no caller ever sets it — dead config, negligible cost today. `kahnOrder` (`packages/core/src/dag.ts`) re-sorts the entire ready-list on every pop instead of using a priority queue, also negligible at today's node counts. Both essentially-free cleanups; batch into one pass and revisit priority-queueing only if 2.6.P's subworkflows push node counts up. *(S · `packages/core/src/engine/event-bus.ts`, `packages/core/src/dag.ts` · #274, #275)*
 - ✅ **DONE ([Wave 3 Step 4](#wave-3-step-4-acceptance--2026-10-16)).** **Introduce minimal shared native error ancestry while retaining each family's contract.** The current export-scoped inventory replaces the historical 15/17 estimate: 46 roots across 37 files reach 83 module-exported production classes, with the additional unchanged private timeout descendant recorded separately. Constructors, names, discriminants, context/cause and structural/private-authority guards are preserved. *(M · `packages/shared/src/relavium-error.ts` and existing package families · #219)*
 - **Chat-to-workflow export hardening: continuity caveat and non-ASCII slug fallback; certify existing tool-content exclusion.** W7/PR #90 and Accepted [ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) structurally exclude model-issued tool arguments/results from durable session rows and exported scaffolds. The earlier raw-tool-result export claim and its proposed opt-in/redaction decision are superseded by that contract; do not add a raw-content flag. Wave 2 still adds a clear continuity/review notice and deterministic ASCII title normalization with a session-identity fallback. Retained user/assistant text, `@` attachments and `!` output can remain sensitive: this is not universal transcript masking. Certify producer→SQLite→export rejection fixtures with #115; the [Wave 2 decision package](#decisions-presented-together-before-implementation) records D14/D15. *(M · `packages/core/src/export/serializer.ts` · #80, #81, #83)*
-- **Give `BudgetExceededError`/`BudgetPauseError` a `.code` field, blocked on a maintainer call.** These two errors (`packages/core/src/engine/budget-governor.ts`) expose no `.code`, unlike `EngineStateError`/`RunLoopInvariantError` in the same directory that `docs/standards/error-handling.md` names as the canonical model. Not a functional bug today. **Blocked on a maintainer decision**: should these errors adopt the `.code` convention, or is `instanceof`-narrowing an accepted exception for this pair? *(S · `packages/core/src/engine/budget-governor.ts` · G50)*
+- ✅ **DONE ([Wave 3 Step 4](#wave-3-step-4-acceptance--2026-10-16)).** **Preserve typed budget-error discriminants with shared native ancestry.** `BudgetExceededError` and `BudgetPauseError` retain their `.code` fields and `instanceof` identity; the accepted D10 ruling and error-substrate increment resolve the former maintainer question. *(S · `packages/core/src/engine/budget-governor.ts` · G50)*
 - **Collapse two always-co-occurring branches in `engine.ts`'s `#dispatch` retry-sleep handling.** Purely cosmetic dead-code/maintenance-trap: two branches that always co-occur, one unreachable dead weight. No behavioral bug, but real, trivially-scheduled cleanup. *(S · `packages/core/src/engine/engine.ts` · #79)*
 
-**Acceptance:** the CRITICAL `previewFor()`/approval-preview secret leak is closed and verified against a `run_command`/`write_file` fixture containing a fake credential; `BudgetGovernor` rejects a concurrent-branch overspend under `max_parallel` in a new test exercising the reservation ledger; `#armRunTimeout` computes remaining budget on every resume rather than re-arming full duration; cancel-signal propagation reaches `human-gate.ts` and `resolvePrompt`, and backpressure propagation reaches `SessionHandle`; `parser.ts` and `agent-parser.ts` share one `messageFor`-derived diagnostic helper; `findDuplicates`/`superRefine` are applied at every one of the seven named remaining schema sites across `node.ts`, `agent.ts`, `workflow.ts`, `session.ts`, and `run.ts`; the cycle-guard `WeakSet` leak in `bounding.ts` is fixed with a regression test; no engine-core doc comment contradicts the code it describes; the two blocked items (`BudgetExceededError`/`BudgetPauseError`'s `.code` field, and the export-serializer's redaction/warning scope for embedded `tool_result` content) have a maintainer ruling recorded before either lands.
+**Acceptance:** the CRITICAL `previewFor()`/approval-preview secret leak is closed and verified against a `run_command`/`write_file` fixture containing a fake credential; `BudgetGovernor` rejects a concurrent-branch overspend under `max_parallel` in a new test exercising the reservation ledger; `#armRunTimeout` computes remaining budget on every resume rather than re-arming full duration; cancel-signal propagation reaches `human-gate.ts` and `resolvePrompt`, and backpressure propagation reaches `SessionHandle`; `parser.ts` and `agent-parser.ts` share one `messageFor`-derived diagnostic helper; the approved duplicate/cross-field schema inventory is implemented or certified with its historical-reader limits in [Wave 3 Step 2](#wave-3-step-2-acceptance--2026-10-16); the cycle-guard `WeakSet` leak in `bounding.ts` is fixed with a regression test; no engine-core doc comment contradicts the code it describes; the budget-error `.code` ruling is resolved by D10 and [Wave 3 Step 4](#wave-3-step-4-acceptance--2026-10-16), while the export privacy/warning scope is resolved by the accepted D14/D15 Wave 2 contract. These are resolved decision gates, not current blockers; whole sub-stream A acceptance remains Wave 3 Step 19.
 
 ### 2.5.5.B — LLM adapter & catalog money-safety hardening
 
@@ -625,7 +625,7 @@ The review report itself is not tracked in git (it lives under the gitignored `d
 | `#80` | `low` | `packages/core/src/export/serializer.ts:198` | Exported multi-turn session has no cross-turn conversation memory | Chat-to-workflow export (serializer.ts) has three independent robustness/safety gaps: no… |
 | `#81` | `low` | `packages/core/src/export/serializer.ts:213` | Exported YAML embeds the full transcript with no scrub of tool-result content | Chat-to-workflow export (serializer.ts) has three independent robustness/safety gaps: no… |
 | `#83` | `low` | `packages/core/src/export/serializer.ts:159` | Non-ASCII session titles collapse to a generic workflow id | Chat-to-workflow export (serializer.ts) has three independent robustness/safety gaps: no… |
-| `#93` | `low` | `packages/core/src/tools/types.ts:340` | ctx.fsScope is threaded through every dispatch but never read by the registry or forwarded to FsCapability | ctx.fsScope is threaded through every dispatch context but enforcePolicy() has no fsScoped… |
+| `#93` | `low` | `packages/core/src/tools/types.ts:340` | Historical descriptive-scope ambiguity | DONE — immutable host authority under Accepted ADR-0105; descriptive dispatch contract clarified and accepted in [Wave 3 Step 5](#wave-3-step-5-acceptance--2026-10-16). |
 | `#97` | `low` | `packages/core/src/tools/builtins.ts:6` | Top-of-file comment claims the egress host capability is "not wired yet", but it now is | Three stale doc comments in the engine assert a behavior/format the code no longer (or never… |
 | `#212` | `low` | `packages/shared/src/node.ts:142` | Duplicate `when` values in a condition node's branches[], and duplicate ids in parallel_of, are not rejected | Two established packages/shared validation conventions (a duplicate-detection helper, and… |
 | `#213` | `low` | `packages/shared/src/run-event.ts:57` | BaseEventSchema / BaseEvent and HumanGateEvent are public exports with zero consumers anywhere in the monorepo | BaseEventSchema/BaseEvent and HumanGateEvent are public exports with zero consumers anywhere in… |
@@ -639,7 +639,7 @@ The review report itself is not tracked in git (it lives under the gitignored `d
 | `#98` | `polish` | `packages/core/src/tools/builtins.ts:248` | Tool descriptions read as engineer-facing implementation notes, not model-facing guidance | No built-in tool's llmVisibleParams schema has per-property descriptions, and several leak… |
 | `#275` | `polish` | `packages/core/src/dag.ts:500` | Kahn topo sort re-sorts the whole ready-list every pop (O(n^2 log n)), not a priority queue | RunEventBusOptions.validate is dead config, and kahnOrder re-sorts the whole ready-list on… |
 | `G18` | `polish` | `packages/shared/src/agent.ts:245` | FallbackChainEntrySchema has no duplicate-entry check | Two established packages/shared validation conventions (a duplicate-detection helper, and… |
-| `G50` | `polish` | `packages/core/src/engine/budget-governor.ts:26` | Budget*Error carries no .code, breaking the directory's own error-taxonomy convention | BudgetExceededError/BudgetPauseError expose no .code field, unlike every other engine/ error… |
+| `G50` | `polish` | `packages/core/src/engine/budget-governor.ts:26` | Historical budget-error discriminant question | DONE — D10 resolved; `.code` and identity preserved by accepted [Wave 3 Step 4](#wave-3-step-4-acceptance--2026-10-16). |
 
 #### 2.5.5.B — LLM adapter & catalog money-safety hardening
 
@@ -8659,3 +8659,69 @@ downloaded archive/report inspection is distinct from executing another platform
 Earlier pending checkpoints are historical, not outstanding requests to repeat
 their old-source reviews. No merge, release, new decision or deferral is added.
 Steps 9–19 remain unstarted and outside this PR.
+
+
+### PR #95 second systematic-review corrections — 2026-10-18
+
+**Corrective work is in progress; independent review and publication acceptance
+are pending.** The second maintainer report reviews `ab08209e..a5a5d45e` and
+reopens PR #95 readiness. Earlier increment acceptance and the prior `ba14b1bd`
+corrective reviews retain their exact source scopes; neither accepts these new
+corrections. This is a scoped publication checkpoint for Steps 1–8, not whole-wave
+acceptance. Steps 9–19 remain unstarted.
+
+The report's Blockers B1/B2, High H1/H2 and Medium 1–12 are assigned for correction
+and regression verification. B1 concerns pid-less native cancellation; B2 concerns
+finite credential masking. H1 concerns installed executable/bin validation and H2
+notice-context/partial-close forwarding across every changed caller. Medium
+findings cover cleanup deadlines, stopped refresh/publication, diagnostic
+contracts and hostile values, fixture-test attribution, recovered native close,
+package engine admission, CI credentials, stale status and superseded process
+modules. The supplementary Low findings retain individual concrete dispositions
+in the corrective handoff; no blanket acceptance, deferral or dismissal follows
+from this inventory.
+
+For H2, direct and dispatch tests enter the production command paths and observe
+the opener's context and capture-close capability, including list/gate-list,
+fresh/resumed chat, Home, one-shot agent, pricing and resolver/models/provider/
+pricing dispatch. For Medium 6 the coexistence setup/cleanup tests are explicitly
+labelled **fixture cleanup**; they do not certify production acquisition. Medium 7
+adds a real `logs` dispatch through `CommandLifetime` with failed initial close,
+successful retry on the exact SQLite handle, actual closed state, removed signal
+custody and zero active owners. Local author verification passes five complete
+files / 62 cases: both forwarding files, partial and surface DB acquisition, and
+the coexistence harness. CLI typecheck and focused lint/format checks pass. These
+are working-tree author checks, not final-source CI, coverage or platform acceptance.
+
+Four temporary forwarding probes independently remove context at fourteen new
+call sites, capture-close at eleven owned call sites, and context/capture at the
+production models adapter. They produce respectively 14/11/1/1 named semantic
+failures with 6/9/19/19 positive controls, zero runtime-error suites and all twenty
+forwarding cases passing after **each byte-exact restoration**. An initial runner
+preparation rejects two valid custody assertion names; its record is retained,
+the validator is corrected, and the complete probes are rerun. No failed or
+incomplete preparation supplies this author evidence. These controls do not
+supply independent acceptance.
+
+Supplementary Low test corrections retain actual production evidence: the benign
+workspace-alias retarget case checks the real resumed host context, immutable
+filesystem roots and persisted original workspace; three helper-custody cases
+are labelled fixture integrity. The fresh/resumed MCP partial-add cases now
+separate attachment failure from actual cancellation during partial attachment,
+with a discovery-abort witness and held native-close acknowledgement. Both
+complete files pass 98 cases locally (12 workspace / 86 session-host), with the
+final workspace assertion-placement revision separately passing all twelve.
+These author tests add no production claim or review acceptance.
+
+Documentation corrections reconcile live Wave 3 progress, resolved #93/G50 and
+schema acceptance wording, the ADR-0113 lexical scope/private denial transport,
+fixed infrastructure diagnostics, the finite LF/TAB credential masker and the
+historical proposal-stage ADR sentences. The installed executable/bin/Node-floor
+contract is corrected without attributing new controls to older consumer receipts.
+Detailed R1–R24 history stays in this owning register rather than a duplicate live
+progress narrative. The security index records only the previous `ba14b1bd`
+static sitting as completed; a **NEW separate sitting for this correction is
+pending**. Two NEW independent complete cumulative clean rounds after the final
+material correction, current author gates and corrected-source CI/coverage/Sonar/
+same-archive platform controls remain required. No merge, release, new ADR,
+credential capture, billing step or new deferral is claimed.

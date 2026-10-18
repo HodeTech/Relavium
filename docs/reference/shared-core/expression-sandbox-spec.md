@@ -53,10 +53,11 @@ Rules:
   remain absent. Key-only enumeration is allowed; see the [finite denial contract](#private-evaluation-and-finite-denial).
   This is declared-source provenance, not value scanning: arbitrary literals and historical
   `run.outputs` are outside that guarantee.
-- **The scope is data-only and deeply immutable.** It is crossed into the VM as plain JSON (see
-  [Marshaling & isolation](#marshaling--isolation)); each binding is installed as a non-writable,
-  non-configurable property over a deep-frozen value. An expression cannot mutate the scope, and a
-  mutation attempt has no cross-evaluation effect.
+- **The scope uses immutable lexical bindings.** It crosses into the VM as JSON-only transport
+  (see [Marshaling & isolation](#marshaling--isolation)); the VM rebuilds frozen null-prototype
+  records, installs denied accessors and gives authored code `const` bindings in a separate
+  strict lexical function. Scope bindings are never VM-global properties. An expression cannot
+  mutate the scope, and a mutation attempt has no cross-evaluation effect.
 - **Determinism of `merge_fn`.** Because `branches` is ordered by static declaration (not arrival), a
   parallel fan-in merges to the same result regardless of which branch finishes first.
 
@@ -201,13 +202,14 @@ retryable/fatal split (owned by [error-handling.md](../../standards/error-handli
 | Observed denied input/context accessor | private denied transport arm, never an authored error name/message | `secret_context` | **fatal**, fixed diagnostic without detail/cause |
 | Wall-clock timeout (the genuine interrupt) | `{ name: "InternalError", message: "interrupted" }` **and** the host deadline passed | `timeout` | **retryable** — non-idempotent; bounded by the node retry budget (1.S) |
 
-> **Classification is by error `name` + the host-side deadline — never an author-controlled message.**
-> The only retryable reason, `timeout`, requires BOTH the engine-emitted `InternalError: interrupted`
-> marker AND the host deadline having passed; a user can forge neither in combination (running long
-> enough to pass the deadline trips the real interrupt first, and anything thrown earlier has
-> `deadlinePassed === false`). So a thrown `Error("…interrupted…")` is a fatal `runtime`, and a
-> deterministic error that merely outlasts the deadline is fatal, not retryable. The exact quickjs
-> strings are implementation-dependent; the perf spike records what the pinned variant emits.
+> **Private transport selects success, failure or observed denial before ordinary error classification.**
+> A VM-owned denied arm takes precedence over authored catches and error names; authored values cannot
+> select that arm. Only ordinary failures use the existing error-name/engine-marker and host-deadline
+> classifier. The retryable `timeout` requires BOTH the genuine `InternalError: interrupted` marker
+> AND the host deadline having passed. An authored `Error("…interrupted…")` is a fatal `runtime`;
+> merely outlasting the deadline does not make a deterministic failure retryable. The pinned VM's
+> exact marker strings are implementation-dependent. See [private transport](#primitive-transport-and-result-parity)
+> and the [finite denial limit](#private-evaluation-and-finite-denial).
 
 **Message scrubbing (binding).** The user-facing `sandbox_error` message is the code plus a generic,
 secret-free string — it **never** echoes the expression source, a variable name, a scope value, an

@@ -1,7 +1,7 @@
 # Current state
 
 > Status: Living
-> Last updated: 2026-10-17
+> Last updated: 2026-10-18
 
 - **Related**: [README.md](README.md), [phases/phase-2.5-cli-consolidation.md](phases/phase-2.5-cli-consolidation.md), [phases/phase-2.5.5-hardening-and-remediation.md](phases/phase-2.5.5-hardening-and-remediation.md), [phases/phase-2-cli.md](phases/phase-2-cli.md), [deferred-tasks.md](deferred-tasks.md), [../project-structure.md](../project-structure.md), [../tech-stack.md](../tech-stack.md)
 
@@ -136,12 +136,14 @@ The [deferred register](deferred-tasks.md) retains its existing limits; closure 
 
 ## Next work — Wave 3 — Clear the ground
 
-The next engineering work is [Wave 3 — Clear the ground](#wave-3--clear-the-ground);
-its implementation has not started in this closure update.
-Its serialized multi-file queue starts with shared close handling, safe path
-presentation and exhaustiveness guards, before hot-file decomposition and the
-remaining CLI/process work. Start with current documents/code and its own decision
-preflight; Wave 2 does not silently approve the next wave's unresolved decisions.
+Wave 3 implementation is in progress on `development`; Steps 1–8 have scoped
+independent acceptance. The initial publication checkpoint is
+[PR #95](https://github.com/HodeTech/Relavium/pull/95). A second maintainer systematic
+review at `a5a5d45e` reopened corrective work; its
+[current correction register](phases/phase-2.5.5-hardening-and-remediation.md#pr-95-second-systematic-review-corrections--2026-10-18)
+owns dispositions and remaining gates. New corrections are pending independent
+review and publication checks. Steps 9–19 have not started; check the PR status
+before extending its scope with Step 9. See the [Wave 3 queue](#wave-3--clear-the-ground).
 
 ## Historical W7 implementation checkpoints
 
@@ -1106,296 +1108,26 @@ an ESLint selector rather than a list.
 
 ### Wave 3 — Clear the ground
 
-**Approved for implementation — 2026-10-16.** The maintainer approved
-ADR-0110–0113, their linked unshipped contracts and the nineteen-increment plan.
-The [approval checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-maintainer-approval-and-implementation-checkpoint--2026-10-16)
-records completed decision gates and staged implementation.
-[Step 1 is accepted](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-1-acceptance--2026-10-16)
-after two NEW independent complete clean reviews.
-[Step 2 is also accepted](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-2-acceptance--2026-10-16)
-with two NEW complete clean cumulative rounds after its historical-reader corrections;
-[Step 3 is independently accepted](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-3-acceptance--2026-10-16)
-after two NEW complete cumulative clean rounds and a separate clean security sitting.
-[Step 4 is independently accepted](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-4-acceptance--2026-10-16)
-after two NEW complete cumulative clean rounds.
-[Step 5 is independently accepted](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-5-acceptance--2026-10-16)
-after two NEW complete cumulative clean rounds following its registry-documentation
-correction and a separate clean security sitting.
-[Step 6 is independently accepted](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-6-acceptance--2026-10-16)
-after two NEW complete cumulative clean rounds and a separate clean security sitting.
-[Step 7a is independently accepted](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-7a-acceptance--2026-10-16)
-after two NEW complete cumulative clean rounds and a separate clean security sitting.
-[Step 7b and whole Step 7 are independently accepted](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-7b-and-whole-step-7-acceptance--2026-10-16)
-at `c836ffe6` after two NEW complete cumulative clean rounds, a separate clean
-security sitting and successful same-tarball current Linux/macOS/Windows and
-exact Node 22.0.0 Linux consumers. [The accepted c836 full CI run subsequently completed successfully](phases/phase-2.5.5-hardening-and-remediation.md#step-7-completed-full-ci-follow-up--2026-10-16),
-with its executed source and CI totals recorded separately from the historical
-acceptance observation. [Step 8a implements origin adapters and an inert native
-foundation](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8a-implementation-checkpoint--2026-10-16);
-[its independent acceptance](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8a-acceptance--2026-10-16)
-at `e0a5ae19` includes two NEW complete cumulative clean rounds and a separate
-clean security sitting. [The same reviewed source's full CI subsequently completed successfully](phases/phase-2.5.5-hardening-and-remediation.md#step-8a-completed-full-ci-follow-up--2026-10-16),
-with remote totals attributed separately. [Step 8b is independently accepted](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8b-acceptance--2026-10-16)
-at `e16a7659` after two NEW complete cumulative clean rounds and a separate clean
-security sitting following the canonical-reference correction. Full CI and all
-four required same-tarball consumers pass at `ab50be11`; independent equivalence
-checks preserve that execution attribution. [Step 8c workflow/terminal integration is independently accepted](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8c-acceptance--2026-10-16)
-at `dbab25d8` after two NEW complete cumulative clean rounds, a separate clean
-security sitting and successful full CI plus all four same-tarball platform
-consumers. [Step 8d and whole Step 8 are independently accepted](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-and-whole-step-8-acceptance--2026-10-17)
-at `c83c8575` after two NEW complete cumulative CLEAN rounds, a NEW separate
-clean security sitting and successful full CI plus all four actual same-tarball
-consumers. Steps 1–8 are accepted on `development`; Steps 9–19 have NOT STARTED.
-Following the private handoff, the maintainer authorized an initial PR for completed
-Steps 1–8. Steps 9–19 and whole-wave acceptance remain separate. Check that PR's
-status before later commits on `development`, which would extend its review scope.
-The checkpoints below are historical observations;
-their then-open gates are resolved only by the final acceptance linked above. The earlier
-[2026-10-17 chat/Home implementation checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-chat-and-home-integration-checkpoint--2026-10-17)
-records partial session/native-terminal integration and the remaining activation,
-review/security/platform gates without claiming acceptance. The subsequent
-[management-owner checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-management-ownership-checkpoint--2026-10-17)
-records remaining command, prompt, doctor and transient-resource integration;
-[native activation checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-native-activation-implementation-checkpoint--2026-10-17)
-records product bootstrap activation at `a2acba8e` and the eighth required
-installed case at `2928d8ef`. At that checkpoint, two NEW complete cumulative
-clean reviews, separate security and current full CI/platform acceptance were
-still required. Subsequent historical rounds retain their exact source scopes. The
-[first cumulative round and correction register](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-first-cumulative-review-and-corrections--2026-10-17)
-records complete NONCLEAN coverage of all 255 paths and the verified corrections;
-no clean-round acceptance is inferred. The [second cumulative round and native-input corrections](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-second-cumulative-review-and-native-input-corrections--2026-10-17)
-record complete NONCLEAN coverage of all 262 paths, the supplemental native-input
-finding and subsequent fixes. Fresh complete reviews/security/full-CI/platform
-acceptance remain open. The [third cumulative review and partial-acquisition corrections](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-third-cumulative-review-and-partial-acquisition-corrections--2026-10-17)
-record complete NONCLEAN coverage of 269 paths at `ec8ba368`, source-only collection,
-shared consumed-input custody and pre-setup database ownership across the actual
-shipping surfaces. Earlier CI failures retain their exact attribution; the macOS
-packed failure is not cleared by local reproduction passes. Two NEW complete clean
-rounds, a NEW separate clean security sitting and current CI/platform acceptance
-remain open. The [fourth cumulative review and native-resource corrections](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-fourth-cumulative-review-and-native-resource-corrections--2026-10-17)
-records complete NONCLEAN coverage of 279 paths at `db825377`: three verified High
-findings cover consumed one-shot input, late workflow MCP close admission and the
-separate native migration-lock connection. All four same-artifact package consumers
-pass at that source; this does not grant review acceptance or erase the earlier
-unexplained macOS failure. Two NEW complete cumulative clean rounds after the last
-material fix, a NEW separate clean security sitting and fresh full CI/platform
-acceptance remain required. The [fifth cumulative review and deferred-close correction](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-fifth-cumulative-review-and-deferred-close-correction--2026-10-17)
-records complete NONCLEAN coverage of 285 paths / 1,526 independently hash-checked
-hunks at `ad743ba5`, with one corroborated manager microtask-expiry finding.
-All four exact-package consumers pass there and their physical artifacts are
-independently inspected, but broader CI exposes an obsolete causal workload pin
-and an unexplained Windows advisory timeout. The implementation correction
-preserves the live budget through actual transport entry and updates strict
-workload counts; new reviews/security/full CI and Windows evidence remain open.
-The [sixth cumulative review and first-fault correction](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-sixth-cumulative-review-and-first-fault-correction--2026-10-17)
-records full NONCLEAN coverage of the same 285 paths / 1,526 hunks at `4b7ba216`.
-Successful MCP close failures must reach their owner before a held sibling joins;
-chat/Home references also require lifecycle reconciliation. The correction keeps
-actual close joins and the original deadline, with permanent adverse controls.
-New Windows evidence passes; required macOS packaging remains failed and its
-initiating fault unresolved. Passive test-only native diagnostics preserve all
-original outcome/cleanup assertions. New clean reviews, security and exact-source
-CI/platform gates remain required. The
-[seventh cumulative review and native-outcome correction](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-seventh-cumulative-review-and-native-outcome-correction--2026-10-17)
-records complete NONCLEAN review of 288 paths / 1,534 verified hunks at `86f0422a`.
-Its one tooling finding concerns a directly observed Darwin group EPERM: the
-product correctly retains infrastructure 9, but the installed smoke assumes 0/1.
-The narrow validator correction requires exact fault/closure evidence and no
-completed turn; it does not normalize EPERM or waive a historical failed run.
-Separate Windows/local-suite triage identifies fixture close and late-case
-ownership defects. Corrections are implemented with original deadlines and
-assertions; fresh author, cumulative-review, security and required CI/platform
-gates remain staged. The
-[eighth cumulative review and coexistence-fixture correction](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-eighth-cumulative-review-and-coexistence-fixture-correction--2026-10-17)
-records complete NONCLEAN coverage of 293 paths / 1,578 independently verified
-hunks at `09740575`. One current one-shot summary contradicts the implemented
-exit 9/finite cleanup contract; its correction changes no runtime policy.
-Separate actual-SQLite triage reproduces setup and timeout ownership gaps in the
-coexistence fixture, with the original five-second deadline preserved. All four
-same-artifact consumers pass at that reviewed source; its separate Windows
-advisory timeout remains failed and its exact initiating delay unclassified.
-The [ninth cumulative review and caught-fault correction](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-ninth-cumulative-review-and-caught-fault-correction--2026-10-17)
-records complete NONCLEAN coverage of 293 paths / 1,588 independently verified
-hunks at `40086e71`: two High runtime findings in one-shot passive output and owned
-Home default writing, plus a Medium signal-summary inconsistency. Corrections
-observe original invocation failures before local recovery, seal further entry and
-retain actual cleanup joins. New tests fail precisely against the old runtime;
-known config refusals and ordinary failed turns retain their classified outcomes.
-All four package consumers and the Windows advisory pass at the reviewed source,
-which precedes these runtime corrections. The old unexplained Windows failure is
-not retrospectively passed. Two NEW clean complete cumulative rounds, a NEW clean
-security sitting and fresh final-source CI/platform evidence remain required.
-The [tenth cumulative review and original-owner corrections](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-tenth-cumulative-review-and-original-owner-corrections--2026-10-17)
-records complete NONCLEAN coverage of 293 paths / 1,600 independently verified hunks
-at `4c0fa5b7`. Four confirmed gaps affect passive Home/chat consumers, export timestamps,
-native editor preparation and checkpoint error classification. Corrections preserve
-known refusals and real cleanup joins. Separate fixture triage proves raw-work and
-manual SQLite-read cleanup gaps without claiming the initiating remote Windows cause.
-All four same-artifact consumers pass at that reviewed source; its Windows advisory
-remains failed. Correction author gates pass (341 CLI files / 5,475 passes / ten
-established skips); two NEW clean cumulative rounds, NEW separate security and fresh
-final-source CI/platform evidence remain pending.
-The [eleventh cumulative review and advisory-owner corrections](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-eleventh-cumulative-review-and-advisory-owner-corrections--2026-10-17)
-records full NONCLEAN review of 302 paths / 1,650 independently verified hunks at
-`b9bc7118`. Two original-owner/classification gaps and two stale required causal
-workload declarations are corrected at `d8e6b4d5`. Healthy warnings, successful
-passive reporting, known refusals and actual cleanup joins remain intact. The test's
-manual native snapshot avoids redundant migration maintenance while preserving
-real default fresh/resume entry and original five-second bounds. Four installed
-consumers pass at the reviewed source; required CI and Windows advisory fail
-separately, with the latter's initiating phase still unknown. Author gates pass
-(344 CLI files / 5,496 passes / ten established skips). Complete causal republication,
-two NEW clean cumulative rounds, separate security and final-source CI/platforms
-remain required. No user decision is pending.
-The [twelfth cumulative review and cooperative-terminal correction](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-twelfth-cumulative-review-and-cooperative-terminal-correction--2026-10-17)
-records complete NONCLEAN coverage of 306 paths / 1,672 independently rehashed
-hunks at `518082b1`. Two High gaps in normal JSON finalization and workflow advisory
-ownership are corrected at `3d937244`, with 24 precise old-runtime failures and six
-healthy controls. Cooperative terminal delivery, existing fatal admission, actual
-workflow health and cleanup joins remain separate. The clear/reseat fixture retains
-actual raw-work/root custody and avoids redundant observer maintenance under its
-original five-second bound. Both complete causal families pass at the reviewed old
-source (110 filesystem / 41 secrets controls), with independent retained-evidence
-audits; its four package consumers pass. Its different Windows clear/reseat failure
-remains failed and unexplained. Final author lint/typecheck/test gates pass
-(347 CLI files / 5,533 passing tests / ten established skips). Two NEW clean cumulative
-rounds, NEW separate security and fresh final-source CI/platforms remain required.
-Steps 1–7 and 8a–8c are accepted; 8d remains open and Steps 9–19 have not started.
-No user decision is pending.
-The [thirteenth cumulative review and checkpoint-notice correction](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-thirteenth-cumulative-review-and-checkpoint-notice-correction--2026-10-17)
-records complete NONCLEAN coverage of 310 paths / 1,706 independently rehashed
-hunks at `c15aa314`. The confirmed default-notice fault/custody gap is corrected
-at `afb3b932`: explicit captured IO, immediate original-owner observation and
-actual pending-delivery ownership preserve successful DB acquisition without
-inventing a write acknowledgement. Identical regressions fail on the old source;
-fixed author checks pass (349 CLI files / 5,566 passes / ten established skips).
-The older source's four installed consumers and Windows advisory pass; its full
-CI was still running when recorded. These do not certify the correction. R1–R13
-remain NONCLEAN; two NEW complete cumulative clean rounds, separate security and
-fresh final-source CI/platforms are required. No user decision is pending.
-The [fourteenth cumulative review and disclosure-retention corrections](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-fourteenth-cumulative-review-and-disclosure-retention-corrections--2026-10-17)
-record complete NONCLEAN coverage of 314 paths / 1,715 independently rehashed
-hunks at `dcc23cfb`. Two High disclosure instances share a common ownership gap;
-`d6d2fbdd` fixes it across chat/Home/run/gate and fixes workspace fixture isolation.
-`e218ba0e` keeps arbitrary installed-test error text in its private report. Actual
-old-source/removal controls break the corresponding assertions; author gates pass
-(352 CLI files / 5,590 passes / ten established skips; 549 acceptance-tool tests).
-A separate joined post-build CLI run reports zero unhandled errors. At the older
-reviewed source, all four installed consumers and Windows advisory pass; full CI
-was pending at the filesystem causal job when recorded. R1–R14 remain NONCLEAN;
-two NEW complete clean cumulative rounds, separate security and fresh final-source
-CI/platforms remain required. Steps 9–19 have not started. No user decision is pending.
-The [fifteenth cumulative review and Home doctor correction](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-fifteenth-cumulative-review-and-home-doctor-correction--2026-10-17)
-records complete NONCLEAN coverage of 318 paths / 1,737 independently rehashed
-hunks at `eb5d61af`. `151abaf5` fixes the High Home doctor publication/work gap;
-`1ed15ab8` fixes the required-CI workload blocker without weakening the 12-case
-coordinator. Fixed/restored runs pass 12/12 and removal breaks seven assertions.
-Author gates pass (353 CLI files / 5,598 passes / ten established skips; 549
-acceptance-tool tests), with a joined post-build CLI run and explicit zero unhandled
-errors. The reviewed source's four installed consumers and Windows advisory pass,
-but its full CI fails the stale workload and downstream dependency gate. Those
-results do not accept the correction. R1–R15 remain NONCLEAN; two NEW complete
-cumulative clean rounds, separate security and fresh final-source CI/platforms
-remain required. Steps 9–19 have not started. No user decision is pending.
-The [sixteenth cumulative review and compaction-delivery correction](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-sixteenth-cumulative-review-and-compaction-delivery-correction--2026-10-17)
-records complete NONCLEAN coverage of 319 paths / 1,744 rehashed hunks at `71a91042`.
-`ea996d6c` retains the original compaction publication/flush callback through actual
-settlement after core cancellation. Ten actual fresh/resumed chat/SQLite controls
-pass, including a subsequent turn after abort; predecessor code breaks six precise
-ownership assertions with four positive controls. Applied workspace and separately
-joined post-build CLI checks pass (354 files / 5,608 passes / ten established skips,
-zero unhandled errors). R1–R16 remain NONCLEAN. Two NEW complete cumulative clean
-rounds, NEW separate security and fresh final-source CI/platforms remain required.
-Steps 9–19 have not started; no user decision is pending.
-The [seventeenth cumulative review and onboarding correction](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-seventeenth-cumulative-review-and-onboarding-correction--2026-10-17)
-records complete NONCLEAN coverage of 320 paths / 1,746 rehashed hunks at `2891e8fd`.
-`1dec7a8d` observes original Home raw-mode release/reclaim faults before reversible
-recovery consumes them. Nine actual Home/SQLite controls pass; removal produces
-four precise failures with five positive controls. Applied workspace, build,
-separate joined post-build CLI (355 files / 5,617 passes / ten established skips,
-zero unhandled errors), 549 acceptance-tool tests and compiled smokes pass.
-R1–R17 remain NONCLEAN. Two NEW complete cumulative clean rounds, NEW separate
-security and fresh final-source CI/platforms remain required. Steps 9–19 have not
-started; no user decision is pending.
-The [eighteenth cumulative review and self-stop/CI corrections](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-eighteenth-cumulative-review-and-self-stopci-corrections--2026-10-17)
-records complete NONCLEAN coverage of 321 paths / 1,749 rehashed hunks at `1f3cce50`.
-`f23e0da7` observes caught workflow self-stop faults on the original invocation;
-`df6e6631` fixes the positively confirmed main-CI watchdog expiry while retaining
-all inner bounds and required gates. Two independent mechanism removals break
-the new ownership regressions; fixed/restored runs pass all 75 cases. Applied
-workspace/build and joined post-build CLI checks pass (356 files / 5,622 passes /
-ten established skips, zero unhandled errors), together with 549 acceptance-tool
-tests and compiled smokes. R1–R18 remain NONCLEAN. Two NEW complete cumulative
-clean rounds, NEW separate security and fresh corrected-source CI/platforms remain
-required. Steps 9–19 have not started; no user decision is pending.
-The [nineteenth cumulative review and late-publication correction](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-nineteenth-cumulative-review-and-late-publication-correction--2026-10-17)
-records complete NONCLEAN coverage of 324 paths / 1,754 rehashed hunks at `261bb82d`.
-Two Medium gaps let shell refusal notices and directory completion results publish
-after owned stop. `6cc8bc53` seals both results while retaining live warnings and
-actual native cleanup. Four installed-Ink controls and two independent guard
-removals pin the behaviour; fixed/restored five-file runs pass all 27 cases with
-zero unhandled errors and actual process joins. Applied workspace/build and joined
-post-build CLI gates pass (357 files / 5,626 passes / ten established skips, zero
-unhandled errors), with static and compiled smokes. R1–R19 remain NONCLEAN; two
-NEW complete cumulative clean rounds, NEW separate security and corrected-source
-full CI/platforms remain required. Steps 9–19 have not started; no user decision
-is pending.
-The [twentieth cumulative review and stopped-result/maintenance corrections](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-twentieth-cumulative-review-and-stopped-resultmaintenance-corrections--2026-10-17)
-records complete NONCLEAN coverage of 325 paths / 1,759 rehashed hunks at `4eee7c68`.
-Two Medium findings are corrected at `50d7309f`: Home drops deferred business
-results after permanent stop, and optional workflow effect retention/media GC
-refuse fresh entry at the original zero remaining budget. Actual native and
-already-entered work joins stay owed. Six installed-Home, ten controller and
-run/gate/budget live/expired controls pass; two Home and five budget mechanism
-removals fail their precise assertions and every restoration passes. Author
-workspace/build and joined post-build CLI gates pass (360 files / 5,649 passes /
-ten established skips, zero unhandled errors), with static/compiled smokes.
-R1–R20 remain NONCLEAN; two NEW complete cumulative clean rounds, NEW separate
-security and fresh corrected-source full CI/platforms remain required. Steps 9–19
-have not started; no user decision is pending.
-The [R21–R22 discovery ownership checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-r21r22-discovery-ownership-correction--2026-10-17)
-records complete coverage of 330 paths / 1,789 cumulative hunks at `c491836a`.
-R21 is CLEAN; R22 confirms one Medium discovery-ownership gap, independently
-reproduced with actual installed SDK/SQLite and a held synthetic transport.
-The correction uses existing invocation-local work, preserving bounded reports,
-actual cleanup joins and all existing deadlines. The separate clean security
-sitting, full CI and all four physically inspected package consumers belong to
-`c491836a`; none accepts the later correction. Two NEW complete cumulative clean
-rounds, NEW separate security and corrected-source full CI/platforms remain
-required. Steps 9–19 have not started; no user decision is pending.
-The [R23 joined-maintenance checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-r23-joined-maintenance-correction--2026-10-17)
-records complete NONCLEAN review of 340 paths / 1,834 cumulative hunks at
-`e7fe93c5`. Two confirmed Medium gaps release workflow/database ownership before
-entered sibling media deletions or shard enumeration settle. Root independently
-reproduces both; the correction preserves existing best-effort results and budgets
-while joining entered siblings through failure. Ten new permanent cases and three
-independent causal removals cover the correction. This author evidence does not
-replace two NEW complete cumulative clean rounds, NEW separate security or fresh
-corrected-source full CI and all four same-artifact consumers. Steps 9–19 have not
-started; no user decision is pending. Step 8d proceeds automatically.
-The [R24 direct-builder fixture correction](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-r24-builder-fixture-correction--2026-10-17)
-records complete NONCLEAN review of 342 paths / 1,842 cumulative hunks at
-`cef520d4`, with one Medium test-preparation finding. The native Windows advisory
-exceeds the original five-second case bound during unrelated disk-backed chat
-seeding; required CI is separately attributed. Only the direct-builder fixture now
-uses a validated real in-memory SQLite SessionStore roundtrip. All guard/no-service
-assertions, fixture abort ownership, five-second bounds and surrounding on-disk
-lifecycle cases remain. CI-mode focus passes 228 cases; two independent entry-guard
-removals fail the exact case and every restoration passes. Two NEW complete
-cumulative clean rounds, NEW separate security and fresh corrected-source full
-CI/all four same-artifact consumers remain required. No user decision is pending.
+**Implementation in progress — 2026-10-18.** ADR-0110–0113, their linked
+contracts and the nineteen-increment plan were approved on 2026-10-16.
+[Steps 1–8 are independently accepted](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-and-whole-step-8-acceptance--2026-10-17)
+on `development`, with whole Step 8 reviewed at `c83c8575`. The phase register
+owns each increment's source, tests, cumulative review rounds, security sittings
+and platform/publication evidence, including historical NONCLEAN R1–R24 records.
+This live page links that history instead of repeating its superseded pending states.
 
-**Latest status — 2026-10-17:** the [final Step 8d / whole Step 8 acceptance](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-and-whole-step-8-acceptance--2026-10-17)
-closes those gates at `c83c8575`: R25/R26 each cover all 342 paths / 1,842 hunks
-and are CLEAN; separate security is CLEAN; full CI completes 15/15 jobs and all
-four actual same-tarball consumers succeed. Earlier failed/partial records remain
-historical and are not relabelled. Steps 9–19 remain unstarted for the next agent;
-no new decision, credential, billing or release operation is needed to begin Step 9.
-
-The [final proposal reviews](phases/phase-2.5.5-hardening-and-remediation.md#second-maintainer-rereview-final-proposal-readiness--2026-10-16)
-remain proposal evidence, not implementation review. The selected encrypted archive
-method persists; production recipient/recovery belongs to Wave 4b release setup.
-No provider capture, credential, billing or production upload is needed for this implementation.
+The maintainer authorized the initial completed-Steps-1–8 publication checkpoint,
+[PR #95](https://github.com/HodeTech/Relavium/pull/95). The
+[previous corrective review completion](phases/phase-2.5.5-hardening-and-remediation.md#pr-95-corrective-review-completion--2026-10-18)
+remains attributed to `ba14b1bd`; it does not certify later changes. The second
+maintainer systematic report reviews `a5a5d45e` and opens further corrections.
+The [second correction register](phases/phase-2.5.5-hardening-and-remediation.md#pr-95-second-systematic-review-corrections--2026-10-18)
+is canonical for that work. New independent complete cumulative clean rounds,
+a separate security sitting and corrected-source publication checks are pending;
+no new acceptance is claimed. Steps 9–19 have **NOT STARTED** and whole-wave
+acceptance remains Step 19. Check PR #95 before later implementation commits,
+which extend its review scope. No new decision, credential, billing or provider
+capture gate is introduced.
 
 Decompose, guard and normalize every hot file a 2.6 workstream is about to land on.
 **The multi-file queue is Step 1 and runs first.** The approved
@@ -1436,7 +1168,7 @@ on `home-controller.ts`/`chat-ink.tsx` (the decomposition moves already-guarded 
 - **`packages/shared` (strict)** — the `.code` ruling (G50, D10) → `findDuplicates`/`superRefine` implementation or preservation at the
   schema dispositions (#89, #90, G16, G17, G18, #210, #211, #212) → `BaseEventSchema` disposition (#213) →
   the `RelaviumError` base class (#219). *The ruling must precede the base class, or it is baked in permanently.*
-- **`registry.ts` / `builtins.ts` / `engine.ts`** — declared-source context repair and honest unsupported-mapping disposition (#92/Proposed ADR-0113) → `ctx.fsScope` (#93) →
+- **`registry.ts` / `builtins.ts` / `engine.ts`** — declared-source context repair and honest unsupported-mapping disposition (#92/Accepted ADR-0113) → `ctx.fsScope` (#93) →
   `ok`/`success` (#216, #221) → identifier-sort `localeCompare` pinning (#258, #259) → the `git_commit`
   denial copy (#308); then the four schema length caps (#95), the `llmVisibleParams` rewrite (#96, #98),
   stale doc comments (#78, #97, #214); then `#armRunTimeout` (#75), `#dispatch` dead branch (#79),

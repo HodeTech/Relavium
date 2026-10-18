@@ -422,12 +422,14 @@ clean sibling avoids incorrectly treating distinct selections as a replay. This 
 projection a lossless canonical encoding or claim detection of arbitrary sensitive text.
 
 Diagnostic truncation follows complete recognized-span redaction. `toolInput` applies
-secret/media projection before clipping its string leaves; `outputSummary` normalizes
-the complete materialized text to one line, recognizes secret-shaped spans, then bounds
-length. A closing quote or URL authority separator beyond a preview boundary must not
-make a supported credential shape unrecognizable. This does not redact the raw model
-result, full spill or arbitrary unlabelled sensitive text; those retain their existing
-content-sensitive handling.
+secret/media projection before clipping its string leaves; `outputSummary` recognizes
+supported LF/TAB-split shapes before normalizing complete materialized text to one line,
+then recognizes ordinary spans and bounds length. The
+[finite credential masking contract](built-in-tools.md#finite-diagnostic-credential-masking)
+owns supported spans, ambiguous continuation and public-prose boundaries. A closing
+quote or URL authority separator beyond a preview boundary must not make a supported
+credential shape unrecognizable. Raw model results, full spills and arbitrary unlabelled
+sensitive text retain their existing content-sensitive handling.
 Recorded replay results retain the [existing journal contract](effect-journal.md);
 this diagnostic correction does not rewrite historical content.
 

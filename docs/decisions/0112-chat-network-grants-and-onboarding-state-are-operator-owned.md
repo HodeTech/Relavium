@@ -34,6 +34,12 @@ All choices remain Proposed. Exact keys, limits, diagnostics, transition and
 rollback rules have one home in
 [config-spec.md](../reference/contracts/config-spec.md#proposed-wave-3-chat-policy-and-preferences).
 
+> Amended 2026-10-18: The preceding “remain Proposed” sentence records the
+> proposal stage and is not the current decision status. The maintainer accepted
+> this ADR on 2026-10-16; its dated acceptance and implementation notes below
+> retain their exact scopes. The [current correction register](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#pr-95-second-systematic-review-corrections--2026-10-18)
+> records later PR #95 work without granting new acceptance.
+
 ## Decision
 
 ### Chat HTTP authority

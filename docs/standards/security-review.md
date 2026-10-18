@@ -333,7 +333,12 @@ change all of them between two calls. Recorded after the wave merged (2026-09-01
 | The model is TOLD a tool description came from a server, so a description cannot impersonate the operator | `agent-session.test.ts` — "prefixes an MCP tool's description with a provenance line" and "states the provenance even when the server supplied NO description" |
 | A cross-layer or same-layer tool-name collision is refused rather than resolved silently | `resolve.test.ts` |
 | A connect that never settles is bounded, and the cancellation reaches the server | `deadlines.test.ts` — a transport whose `start()` never settles; `network-adapters.test.ts` — a real `McpServer` observing its own cancellation |
-| A spawned local server cannot outlive the CLI that spawned it | `mcp-orphan.e2e.test.ts` **and** `tools/cli-smoke/check.mjs` — a real signalled `agent run` subprocess asserted against the process table |
+| A creation-owned local MCP root is stopped and its actual close is joined on termination | `mcp-orphan.e2e.test.ts` exercises the production native creation-owner/invocation finite-exit path; `tools/cli-smoke/check.mjs` drives a real signalled `agent run` subprocess. PID-root custody is not universal descendant containment. |
+
+**Current control pointer correction — 2026-10-18:** the MCP-orphan harness now
+uses the production native creation owner and original invocation termination
+path. The superseded standalone signal guard is removed. This updates the current
+control inventory; it does not re-execute or widen the historical W4 sitting.
 
 **What the sitting produced**, recorded because a sitting that finds nothing is usually a sitting that did not
 look: the wave's own review found **five merge blockers** in `W4`, all reproduced and fixed before it merged,
@@ -731,6 +736,24 @@ verbose-stack secrecy or complete vulnerability-database audit is certified.
 Actual native close is not a receipt ACK; expiry never grants DB-safe-close
 permission. Steps 9–19 and whole-Wave-3 acceptance remain open.
 
+### Sitting: PR #95 prior corrective secret and ownership boundaries (2026-10-18)
+
+The [prior corrective completion register](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#pr-95-corrective-review-completion--2026-10-18)
+records a NEW separate **COMPLETE CLEAN static** security sitting at
+`ba14b1bd179270742534fc460501ec72dba85da1`, against review base `05061d55`,
+covering 40 paths / 100 ordered default-context hunks. Root independently
+verified source bindings, coverage and substantive assessments. The sitting
+executes **no tests** and inherits no earlier execution result. Finite credential
+masking, historical-content, native-close-versus-ACK and trusted-host limits retain
+their canonical scope; this entry records the completed earlier sitting rather
+than recertifying those mechanisms.
+
+The second maintainer report reviews later source `a5a5d45e` and opens new
+corrections. A **NEW separate corrective sitting is pending** in the
+[second correction register](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#pr-95-second-systematic-review-corrections--2026-10-18).
+The `ba14b1bd` sitting does not accept those later changes, establish a new
+whole-PR security result or imply current publication acceptance.
+
 ## Sandbox and tool policy (`run_command`, node tools, secret inputs)
 
 This is the **binding home** for the tool-policy rules; the rationale is
@@ -829,10 +852,11 @@ security invariants** a review must confirm are:
   exist *inside* the VM but are contained — they reach no host reference and no forbidden capability,
   so they are harmless; the guarantee rests on the isolation + capability removal, not on deleting
   every reflective handle to `Function`.
-- **JSON-only marshaling, immutable scope.** Scope crosses the boundary as plain JSON (host
-  `stringify` → VM `parse`), so no live host object/getter/function leaks in and a `{"__proto__":…}`
-  in model/tool-derived `run.outputs` cannot poison the prototype chain; each binding is installed
-  non-writable/non-configurable over a deep-frozen value.
+- **JSON-only marshaling, immutable lexical scope.** Scope crosses through JSON-only transport,
+  so no live host reference crosses the boundary. The VM rebuilds frozen null-prototype records
+  and denied accessors, then supplies `const` bindings in a separate strict lexical function;
+  scope bindings are never VM-global properties. The [canonical marshaling contract](../reference/shared-core/expression-sandbox-spec.md#marshaling--isolation)
+  owns prototype, accessor and isolation details.
 - **Deterministic within caps; caps are non-idempotent safety nets.** No clock/RNG/async is
   supplied. Uncaught resource failures surface as typed `sandbox_error`; a caught pre-accessor
   stack failure can return a clean fallback without an observed denial. The
