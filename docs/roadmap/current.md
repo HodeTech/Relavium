@@ -1122,10 +1122,14 @@ The maintainer authorized the initial completed-Steps-1–8 publication checkpoi
 remains attributed to `ba14b1bd`; it does not certify later changes. The second
 maintainer systematic report reviews `a5a5d45e` and opens further corrections.
 The [second correction register](phases/phase-2.5.5-hardening-and-remediation.md#pr-95-second-systematic-review-corrections--2026-10-18)
-is canonical for that work. New independent complete cumulative clean rounds,
-a separate security sitting and corrected-source publication checks are pending;
-no new acceptance is claimed. Steps 9–19 have **NOT STARTED** and whole-wave
-acceptance remains Step 19. Check PR #95 before later implementation commits,
+is canonical for that work. The
+[second corrective source-review completion](phases/phase-2.5.5-hardening-and-remediation.md#pr-95-second-corrective-source-review-completion--2026-10-18)
+accepts corrections at `ec0f3e10` after two NEW complete cumulative clean rounds
+and a NEW separate clean security sitting. Current source-bound PR/push CI,
+coverage, SonarCloud, same-archive consumers and physical control artifacts remain
+required publication criteria; PR #95 owns their live result. Source review does
+not imply merge or whole-wave acceptance. Steps 9–19 have **NOT STARTED** and
+whole-wave acceptance remains Step 19. Check PR #95 before later implementation commits,
 which extend its review scope. No new decision, credential, billing or provider
 capture gate is introduced.
 

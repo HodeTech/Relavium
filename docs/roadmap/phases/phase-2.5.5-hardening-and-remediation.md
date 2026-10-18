@@ -8663,9 +8663,13 @@ Steps 9–19 remain unstarted and outside this PR.
 
 ### PR #95 second systematic-review corrections — 2026-10-18
 
-**Corrective work is in progress; independent review and publication acceptance
-are pending.** The second maintainer report reviews `ab08209e..a5a5d45e` and
-reopens PR #95 readiness. Earlier increment acceptance and the prior `ba14b1bd`
+**Source corrections are independently accepted at `ec0f3e10`.** The
+[second corrective source-review completion](#pr-95-second-corrective-source-review-completion--2026-10-18)
+records the final clean rounds and separate security sitting. Current publication
+status belongs to PR #95's source-bound checks, separately from source review.
+The chronological entries below retain earlier pending, NONCLEAN and superseded
+states rather than retrospectively relabeling them. The second maintainer report
+reviews `ab08209e..a5a5d45e` and reopened PR #95 readiness. Earlier increment acceptance and the prior `ba14b1bd`
 corrective reviews retain their exact source scopes; neither accepts these new
 corrections. This is a scoped publication checkpoint for Steps 1–8, not whole-wave
 acceptance. Steps 9–19 remain unstarted.
@@ -8948,3 +8952,57 @@ their source attribution. Fresh full workspace lint/typecheck/test/build passes
 24/24 forced tasks with zero cache hits: 748 files / 15,974 passing tests /
 21 established local skips. These author results are not independent review or
 final-source remote CI acceptance.
+
+### PR #95 second corrective source-review completion — 2026-10-18
+
+The final material repair and cumulative second-report corrections are
+**independently accepted at `ec0f3e10d2a2ec2e4f89e17b22e35ebd64623347`**,
+against report source `a5a5d45e`. Fourteenth and fifteenth ordinary rounds are
+NEW, independent and **COMPLETE CLEAN** after the native SQLite export repair.
+Each accounts for all **108 corrective paths / 272 ordered U3 hunks**, with
+root-reconciled body and hunk hashes, no missing or repeated assignments and
+substantive per-path assessments. Code, test and tooling bodies are read in full;
+historical documents use explicit complete-structure and all-affected
+semantic-clause modes. Unrelated historical narrative is not recertified. Earlier
+NONCLEAN rounds and failed/superseded preparation remain attributed above.
+These are cumulative corrective reviews, not a new whole-PR review.
+
+A NEW separate security sitting at the same source is **CLEAN** within its
+explicit changed-mechanism, caller/test and historical-clause modes. Root verifies
+all 108 body identities / 272 hunks and retained execution-log hashes. Independent
+execution passes **764 source tests across 18 files and 148 tooling tests across
+seven files**, zero skips. The initial private alias-order load failure remains
+retained and receives no acceptance credit. Report SHA-256:
+`156c7947b1564ca601668d6e97069822853acf0da2533759499c7ad6391f2b1f`.
+The [security index](../../standards/security-review.md#sitting-pr-95-second-corrective-native-and-storage-boundaries-2026-10-18)
+owns its scope and exclusions; no real provider, paid request, keychain or GPG
+operation was performed. Detailed reviews remain local and Git-ignored.
+
+Author validation at this source passes **24/24 forced workspace tasks** with
+zero cache hits, **748 files / 15,974 tests / 21 established local skips**,
+**633 acceptance-tool tests**, tool lint/typecheck and format/diff checks.
+The selected real-native export coordinator passes one control / three phases /
+54 executions / two required witnesses / four marked removal failures, zero
+recorded runner-unhandled errors and byte-exact restoration. Its physical evidence
+is independently inspected, including the actual 18/18 fixed and restored results;
+`complete:false` explicitly excludes full-family acceptance. All 57 secrets
+control identities and 336 required witness obligations remain. Native close,
+receipt ACK and safe store close retain distinct meanings; finite credential
+recognition does not promise arbitrary secret detection.
+
+Earlier `3d276489` PR and push CI each finish **15/15 successful jobs**. Root
+independently inspects their same-archive four-platform consumers and full
+filesystem, secrets, usage and wire artifacts, including archive digests and
+retained bytes. Those results remain **historical evidence at that source**;
+they do not accept the later native storage repair. Current PR/push CI, coverage,
+SonarCloud, all four same-archive consumers and complete physical control artifacts
+are required publication criteria at the final pushed head. Their live result is
+owned by [PR #95](https://github.com/HodeTech/Relavium/pull/95), not inferred from
+this earlier source-review record. A metadata-only closing delta is reviewed
+separately; it does not create a new full-source review or execution claim.
+
+This checkpoint remains **Wave 3 Steps 1–8 only**. Steps **9–19 have NOT STARTED**;
+whole-wave acceptance and core coverage promotion remain Step 19. No merge,
+release, new ADR, user decision, paid capture or new deferral is claimed. Existing
+manual `git_commit` review and historical session-export limits retain their
+Accepted contracts. The approved execution plan remains the sole later-work order.

@@ -749,10 +749,44 @@ their canonical scope; this entry records the completed earlier sitting rather
 than recertifying those mechanisms.
 
 The second maintainer report reviews later source `a5a5d45e` and opens new
-corrections. A **NEW separate corrective sitting is pending** in the
-[second correction register](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#pr-95-second-systematic-review-corrections--2026-10-18).
-The `ba14b1bd` sitting does not accept those later changes, establish a new
-whole-PR security result or imply current publication acceptance.
+corrections. The NEW separate sitting below accepts its later scoped security
+work; the [second correction register](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#pr-95-second-systematic-review-corrections--2026-10-18)
+retains all intermediate source scopes and findings. The `ba14b1bd` sitting does
+not accept those later changes, establish a new whole-PR security result or imply
+current publication acceptance.
+
+### Sitting: PR #95 second corrective native and storage boundaries (2026-10-18)
+
+A NEW separate sitting is **CLEAN** at
+`ec0f3e10d2a2ec2e4f89e17b22e35ebd64623347`, against `a5a5d45e`, after the
+actual SQLite export repair. Its **108 paths / 272 ordered U3 hunks** have
+root-verified body, diff, hunk and retained log hashes. Reading modes cover
+complete changed security mechanisms and relevant callers, changed test/fixture
+expectations and affected historical clauses; full body identity does not claim
+reading every unchanged ordinary line. This is separate from the two NEW
+complete cumulative ordinary rounds, and not a new whole-PR security review.
+Report SHA-256: `156c7947b1564ca601668d6e97069822853acf0da2533759499c7ad6391f2b1f`.
+
+Independent execution passes **764 source tests in 18 files and 148 Node tooling
+tests in seven files**, zero skips. A failed private alias-order preparation is
+retained without acceptance credit. The sitting checks private SQLite origin,
+actual read-only export/recovery and foreign-client/getter negative controls;
+creation-owned positive PID/native-close obligations; finite raw-before-normalized
+credential projection, complete journal arguments and hostile diagnostics; sealed
+UI/refresh, installed executable/Node-floor pins and credential-free CI consumers.
+No actionable finding or new deferral remains within this scope.
+
+The author-selected export capture is physically inspected, not rerun by this
+reviewer: three source segments, 1,392 fixed-source hashes, bound runtime receipts
+and actual 18/18 fixed, four expected removal failures, 18/18 restored agree.
+Its `complete:false` result is not full-family acceptance. Retained dependency
+metadata is checked; absent dependency bytes and source/dist/native-platform
+limits remain explicit. No live provider, paid call, keychain, GPG, complete CI,
+coverage, actual Windows/Linux/minimum-Node or operator TTY is exercised here.
+Finite redaction is not universal detection; timeout does not mint settlement,
+receipt, native-close or safe-store-close ACK. The
+[source-review completion register](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#pr-95-second-corrective-source-review-completion--2026-10-18)
+separately owns publication criteria and Steps 9–19 remaining unstarted.
 
 ## Sandbox and tool policy (`run_command`, node tools, secret inputs)
 
