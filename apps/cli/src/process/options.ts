@@ -87,8 +87,17 @@ function applyBoolean(raw: RawGlobalOptions, option: GlobalOptionDescriptor): vo
     case 'noMouse':
       raw.noMouse = true;
       break;
-    default:
+    case 'cwd':
+    case 'config':
+    case 'allowFsRoots':
+    case 'help':
+    case 'version':
       throw new CliError('cli_internal', '');
+    default: {
+      const exhaustive: never = option.binding;
+      void exhaustive;
+      throw new CliError('cli_internal', '');
+    }
   }
 }
 
@@ -188,8 +197,20 @@ function assignValueFlag(
     case 'config':
       raw.config = value;
       return undefined;
-    default:
+    case 'json':
+    case 'color':
+    case 'verbose':
+    case 'quiet':
+    case 'noAltScreen':
+    case 'noMouse':
+    case 'help':
+    case 'version':
       throw new CliError('cli_internal', '');
+    default: {
+      const exhaustive: never = option.binding;
+      void exhaustive;
+      throw new CliError('cli_internal', '');
+    }
   }
 }
 

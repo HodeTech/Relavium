@@ -615,7 +615,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     set({ submitBusy: true });
     void active.processLine(line, display).then(
       () => {
-        if (state.session === active) set({ submitBusy: false });
+        if (!exiting && state.session === active) set({ submitBusy: false });
         if (!isCurrentChat(active)) return;
         if (active.shouldStop()) {
           // `/clear` (ADR-0062 §7) swaps in a FRESH session, staying in chat; `/exit`/`/cancel` end to the bare Home.
@@ -624,7 +624,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         }
       },
       (err: unknown) => {
-        if (state.session === active) set({ submitBusy: false });
+        if (!exiting && state.session === active) set({ submitBusy: false });
         tearingDown = active; // align with endChat's single-shot guard (the session closure is idempotent)
         const td = active.teardown();
         activeTeardown = td; // a concurrent signal awaits this teardown too
@@ -730,10 +730,9 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     void refresh().then(
       (report) => applyRefreshResult(epoch, report),
       () => {
-        // refresh()/refreshIfStale() never reject (per-provider isolation), but stay defensive: drop the spinner
-        // only when this is still the same open picker generation.
+        // Owner refusal rejects; never publish it after exit or into a later picker generation.
         const cur = state.modelPicker;
-        if (epoch === pickerEpoch && cur !== undefined)
+        if (!exiting && epoch === pickerEpoch && cur !== undefined)
           set({ modelPicker: { ...cur, loading: false } });
       },
     );

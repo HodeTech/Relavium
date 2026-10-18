@@ -56,7 +56,10 @@ describe('captured native prompt ports', () => {
     try {
       expect(nativePromptIo(f.io)).toEqual({ input: f.input, output: f.output });
       const lineInput = Readable.from([]);
-      expect(nativePromptIo({ ...f.io, stdin: lineInput }).input).toBe(lineInput);
+      expect(nativePromptIo({ ...f.io, stdin: lineInput }).input).toBe(f.input);
+      const { nativeStdin, ...withoutNativeInput } = f.io;
+      expect(nativeStdin).toBe(f.input);
+      expect(nativePromptIo({ ...withoutNativeInput, stdin: lineInput }).input).toBe(lineInput);
     } finally {
       f.close();
     }

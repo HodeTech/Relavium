@@ -257,6 +257,59 @@ describe('session preparation keeps its original owner across MCP consent and st
     },
   );
 
+  it('joins acquired client close before preserving a thrown remaining-budget fault', async () => {
+    const primary = new Error('PRIVATE_BUDGET_FAULT');
+    const native = gate();
+    const close = vi.fn(() => native.promise);
+    const result = closePreparedMcp(client(close), undefined, {
+      deadline: () => undefined,
+      remainingMs: () => {
+        throw primary;
+      },
+    });
+    const rejected = expect(result).rejects.toBe(primary);
+    expect(close).toHaveBeenCalledOnce();
+    let settled = false;
+    void result.catch(() => {
+      settled = true;
+    });
+    await reactions();
+    expect(settled).toBe(false);
+    native.release();
+    await rejected;
+  });
+
+  it('preserves the late-client admission refusal when close also rejects', async () => {
+    const started = gate();
+    const published = gate();
+    const primary = new Error('PRIVATE_ADMISSION');
+    const cleanup = new Error('PRIVATE_CLOSE');
+    let stopped = false;
+    const report = vi.fn();
+    const close = vi.fn(() => Promise.reject(cleanup));
+    const opening = connectAgentMcp(refs, {
+      cwd: '/tmp',
+      consentGate: () => Promise.resolve(new Map()),
+      resolveSecret: () => 'SYNTHETIC_SECRET',
+      assertAdmitting: () => {
+        if (stopped) throw primary;
+      },
+      onCloseError: report,
+      startMcpClient: async () => {
+        started.release();
+        await published.promise;
+        return client(close);
+      },
+    });
+    const rejected = expect(opening).rejects.toBe(primary);
+    await started.promise;
+    stopped = true;
+    published.release();
+    await rejected;
+    expect(close).toHaveBeenCalledOnce();
+    expect(report).toHaveBeenCalledWith('', cleanup);
+  });
+
   it('never starts a new asynchronous manager close after the original budget expires', async () => {
     const close = vi.fn(() => Promise.resolve());
     let settled = false;

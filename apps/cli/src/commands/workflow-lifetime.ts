@@ -159,6 +159,9 @@ export class WorkflowLifetime {
   cleanupFailed(cause: unknown): void {
     this.#cleanupAcknowledged = false;
     this.failure(cause);
+    // Failure to acknowledge owned cleanup is infrastructure uncertainty regardless
+    // of the original operation's classification. Retention must always have a bound.
+    this.invocation.finiteExit.fail('cli_internal');
   }
   async execute(body: () => Promise<ExitCode>): Promise<ExitCode> {
     let result: ExitCode = EXIT_CODES.workflowFailed;

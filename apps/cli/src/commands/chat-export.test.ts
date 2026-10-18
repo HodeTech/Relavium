@@ -7,6 +7,7 @@ import { AgentSchema, type AgentSessionRecord, type SessionMessage } from '@rela
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { OpenedSessionStore } from '../history/session-open.js';
+import { CliError } from '../process/cli-error.js';
 import { EXIT_CODES } from '../process/exit-codes.js';
 import type { GlobalOptions } from '../process/options.js';
 import { captureIo, parseNdjson } from '../test-support.js';
@@ -222,6 +223,23 @@ describe('chatExportCommand (2.P)', () => {
     expect(existsSync(join(cwd, 'custom/out.yaml'))).toBe(true);
   });
 
+  it('preserves an unexpected provenance fault after the scaffold has been written', () => {
+    const primary = new TypeError('PRIVATE_EXPORT_BUG');
+    opened = {
+      ...opened,
+      store: {
+        ...opened.store,
+        updateSession: () => {
+          throw primary;
+        },
+      },
+    };
+    const { io, err } = captureIo();
+    expect(() => chatExportCommand({ sessionId: 's1', force: false }, deps(io))).toThrow(primary);
+    expect(existsSync(join(cwd, 's1.relavium.yaml'))).toBe(true);
+    expect(err()).not.toContain('could not mark the session exported');
+  });
+
   it('degrades a row-mark failure to a stderr warning — the scaffold still lands, exit 0', () => {
     // updateSession throws (e.g. a locked db): the file write is the durable contract, so the export still
     // succeeds (exit 0) with a stderr note rather than failing an export already on disk.
@@ -230,7 +248,7 @@ describe('chatExportCommand (2.P)', () => {
       store: {
         ...opened.store,
         updateSession: () => {
-          throw new Error('db locked');
+          throw new CliError('storage_unavailable', '');
         },
       },
     };

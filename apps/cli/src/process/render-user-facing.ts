@@ -27,8 +27,21 @@ export function renderUserFacing(
   // The raw stack is a human-mode debugging affordance only — never under `--json`, where it would
   // mix non-JSON text into the structured stderr diagnostic (error-handling.md: a stack is not machine
   // output). Under `--json` the `{ type: 'error', … }` envelope is the whole stderr diagnostic.
-  if (opts.verbose && !opts.json && value instanceof Error && value.stack !== undefined) {
-    // A stack embeds the message, and often argument values with it — this is the likeliest leak of the four.
-    io.writeErr(sanitizeUntrusted(value.stack) + '\n');
+  if (opts.verbose && !opts.json) {
+    const stack = ownErrorStack(value);
+    if (stack !== undefined) io.writeErr(sanitizeUntrusted(stack) + '\n');
+  }
+}
+
+/** A foreign throwable can trap prototype or descriptor inspection; never invoke a stack accessor. */
+function ownErrorStack(value: unknown): string | undefined {
+  try {
+    if (!(value instanceof Error)) return undefined;
+    const descriptor = Object.getOwnPropertyDescriptor(value, 'stack');
+    return descriptor !== undefined && 'value' in descriptor && typeof descriptor.value === 'string'
+      ? descriptor.value
+      : undefined;
+  } catch {
+    return undefined;
   }
 }

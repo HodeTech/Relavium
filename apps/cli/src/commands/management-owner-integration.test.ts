@@ -113,9 +113,22 @@ describe('actual management dispatch ownership', () => {
     const f = invocationFixture();
     const cwd = mkdtempSync(join(tmpdir(), 'relavium-owned-create-'));
     mkdirSync(join(cwd, '.relavium'));
-    const { io } = captureIo();
+    const { io, out } = captureIo();
     const lifetime = new CommandLifetime(f.invocation, io, () => () => undefined);
     const answer = gate();
+    const entered = gate();
+    const gather = vi.fn(async () => {
+      entered.release();
+      await answer.promise;
+      return {
+        kind: 'agent',
+        name: 'Late Answer',
+        provider: 'anthropic',
+        model: 'synthetic',
+        systemPrompt: 'Synthetic',
+        tools: [],
+      } as const;
+    });
     const command = lifetime.execute(() =>
       createCommand(
         { force: false },
@@ -123,33 +136,28 @@ describe('actual management dispatch ownership', () => {
           io: lifetime.io,
           global: { ...global, cwd },
           commandLifetime: lifetime,
-          prompter: {
-            gather: async () => {
-              await answer.promise;
-              return {
-                kind: 'agent',
-                name: 'Late Answer',
-                provider: 'anthropic',
-                model: 'synthetic',
-                systemPrompt: 'Synthetic',
-                tools: [],
-              };
-            },
-          },
+          prompter: { gather },
         },
       ),
     );
     try {
+      await entered.promise;
+      expect(gather, 'CREATE_WIZARD_ENTERED_BEFORE_STOP').toHaveBeenCalledOnce();
+      expect(f.registry.activeOwners).toBe(1);
       f.invocation.finiteExit.signal(15);
+      await reactions();
+      expect(f.registry.activeOwners, 'CREATE_OWNER_RETAINS_PENDING_WIZARD').toBe(1);
       answer.release();
       await command;
       expect(
         existsSync(join(cwd, '.relavium', 'agents', 'late-answer.agent.yaml')),
         'CREATE_LATE_ANSWER_CANNOT_WRITE',
       ).toBe(false);
+      expect(out()).toBe('');
       expect(f.registry.activeOwners).toBe(0);
     } finally {
       answer.release();
+      await command;
       rmSync(cwd, { recursive: true, force: true });
     }
   });

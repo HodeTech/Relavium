@@ -282,6 +282,8 @@ export function createModelRefreshService(deps: ModelRefreshDeps): ModelRefreshS
         throw cause;
       }
     } catch (err) {
+      // Stopped owner admission is not a provider failure report.
+      deps.assertAdmitting?.();
       return { provider: id, status: 'failed', error: secretFreeReason(err, key) };
     }
   };
@@ -313,6 +315,8 @@ export function createModelRefreshService(deps: ModelRefreshDeps): ModelRefreshS
     const settled = await Promise.allSettled(
       connected.map(({ id, key }) => refreshOne(id, key, signal)),
     );
+    // allSettled joins every admitted sibling; it must not turn owner refusal into success.
+    deps.assertAdmitting?.();
     settled.forEach((outcome, index) => {
       const entry = connected[index];
       if (entry === undefined) return; // unreachable — 1:1 with `connected`

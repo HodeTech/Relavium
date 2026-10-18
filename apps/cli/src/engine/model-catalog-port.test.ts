@@ -213,6 +213,7 @@ describe('createModelCatalogPort', () => {
     let refresh: ReturnType<typeof port.refresh> | undefined;
     const drive = home.execute(() => {
       refresh = port.refresh();
+      void refresh.catch(() => undefined); // Observe rejection while actual discovery remains held.
       return Promise.resolve(0);
     });
     await new Promise<void>((resolve) => setImmediate(resolve));
@@ -220,7 +221,9 @@ describe('createModelCatalogPort', () => {
     expect(f.registry.activeOwners).toBe(1);
     finish([{ id: 'synthetic-late-model' }]);
     await drive;
-    await refresh;
+    expect(
+      home.surface.work.isStoppedFailure(await refresh?.catch((cause: unknown) => cause)),
+    ).toBe(true);
     expect(close).toHaveBeenCalledOnce();
     expect(client.sqlite.prepare('SELECT COUNT(*) AS count FROM llm_providers').get()).toEqual({
       count: 0,

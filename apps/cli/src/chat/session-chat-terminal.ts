@@ -183,7 +183,13 @@ export class SessionChatTerminal {
     void job.released.then(() => {
       this.#jobs.delete(job);
     }, this.#report);
-    if (this.#sealed) job.dispose();
+    if (this.#sealed) {
+      try {
+        job.dispose();
+      } catch (cause) {
+        this.#report(cause);
+      }
+    }
   };
 
   readonly close = (): Promise<void> => this.#owner.close();

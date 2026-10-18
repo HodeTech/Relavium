@@ -135,6 +135,7 @@ export function createNodeOsCapability(config: NodeOsCapabilityConfig = {}): OsC
             timeoutMs,
             maxBufferBytes,
             nativeProcesses,
+            platform,
           });
         } catch (error) {
           if (error instanceof HostDeniedError) throw error;
@@ -157,6 +158,7 @@ export function createNodeOsCapability(config: NodeOsCapabilityConfig = {}): OsC
         timeoutMs,
         maxBufferBytes,
         nativeProcesses,
+        platform,
       });
       if (result.exitCode !== 0) {
         throw new OsCapabilityError('the notification could not be delivered');
@@ -229,6 +231,7 @@ async function spawnCapturing(
     timeoutMs: number;
     maxBufferBytes: number;
     nativeProcesses: NativeProcessController;
+    platform: NodeJS.Platform;
   },
 ): Promise<CaptureResult> {
   const native = await opts.nativeProcesses.reserve('pid').catch((cause: unknown) => {
@@ -298,7 +301,7 @@ async function spawnCapturing(
             reject(new OsCapabilityError('the os command was aborted'));
           } else if (failed) {
             reject(new OsCapabilityError('the os command failed to run'));
-          } else if (timedOut && (code === null || (process.platform === 'win32' && code !== 0))) {
+          } else if (timedOut && (code === null || (opts.platform === 'win32' && code !== 0))) {
             reject(new OsTimeoutError('the os command timed out'));
           } else {
             resolvePromise({ exitCode: code ?? 1, stdout: stdout.text() });

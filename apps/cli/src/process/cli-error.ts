@@ -46,7 +46,7 @@ export const CLI_ERROR_POLICY: Readonly<Record<CliErrorCode, CliErrorPolicy>> = 
     origin: 'infrastructure',
     exitCode: EXIT_CODES.infrastructureFailed,
     fixedMessage:
-      'An unexpected CLI failure occurred. Use --verbose for safe diagnostics. Inspect existing work before repeating paid or effectful operations.',
+      'An unexpected CLI failure occurred. Inspect existing work before repeating paid or effectful operations.',
   }),
   output_unavailable: Object.freeze({
     origin: 'output',

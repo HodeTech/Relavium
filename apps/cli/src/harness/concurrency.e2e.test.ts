@@ -528,7 +528,9 @@ describe('concurrency e2e (2.5.I S3) — a run and a chat share one history.db',
     signal,
   }) => startCoexistenceCase(signal));
 
-  it('setup refusal closes the original native connection and removes its directory', async ({
+  // Fixture custody only: production opener/CommandLifetime partial-close evidence lives in
+  // commands/partial-db-acquisition.test.ts and commands/surface-db-acquisition.test.ts.
+  it('fixture cleanup: setup refusal closes its native connection and removes its directory', async ({
     signal,
   }) => {
     const failure = new Error('synthetic migration setup refusal');
@@ -547,7 +549,7 @@ describe('concurrency e2e (2.5.I S3) — a run and a chat share one history.db',
         }),
       ).rejects.toBe(failure);
       expect(clients).toHaveLength(1);
-      expect(clients[0]?.sqlite.open, 'CONCURRENCY_SETUP_NATIVE_CLOSE').toBe(false);
+      expect(clients[0]?.sqlite.open, 'CONCURRENCY_FIXTURE_SETUP_NATIVE_CLOSE').toBe(false);
       expect(directory).toBeDefined();
       expect(directory !== undefined && existsSync(directory)).toBe(false);
     } finally {
@@ -629,7 +631,7 @@ describe('concurrency e2e (2.5.I S3) — a run and a chat share one history.db',
     }
   });
 
-  it('cleanup failure retains the original setup fault and actual native close outcome', async ({
+  it('fixture cleanup: close failure retains its setup fault and actual native close outcome', async ({
     signal,
   }) => {
     const primary = new Error('synthetic setup fault');

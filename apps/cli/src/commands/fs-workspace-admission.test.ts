@@ -20,7 +20,7 @@ import { AgentSchema } from '@relavium/shared';
 import { buildChatSession, buildResumedChatSession } from '../chat/session-host.js';
 import { scriptedResolver } from '../chat/test-support.js';
 import { loadResolvedConfig } from '../config/load.js';
-import { createFsPathPolicy } from '../engine/tool-host/fs-policy.js';
+import { createFsPathPolicy, fsPolicyScopeRoots } from '../engine/tool-host/fs-policy.js';
 import { openSessionStore } from '../history/session-open.js';
 import type { GlobalOptions } from '../process/options.js';
 import { run } from '../run.js';
@@ -353,6 +353,11 @@ describe('secret workspace admission before canonical persistence', () => {
       symlinkSync(home, alias, 'junction');
       fixture.trace('alias-retarget-return');
       fixture.trace('resume-enter');
+      let built: Awaited<ReturnType<typeof buildResumedChatSession>> | undefined;
+      const resume = vi.fn<typeof buildResumedChatSession>(async (options) => {
+        built = await buildResumedChatSession(options);
+        return built;
+      });
       expect(
         await chatResumeCommand(
           { sessionId: 'workspace-floor-session' },
@@ -361,11 +366,19 @@ describe('secret workspace admission before canonical persistence', () => {
             io: captureIo().io,
             global: global(home),
             providers: scriptedResolver([]),
+            buildResumedSession: resume,
             drive: exitDriver,
           },
         ),
       ).toBe(4);
       fixture.trace('resume-return');
+      expect(resume).toHaveBeenCalledOnce();
+      expect(built?.context.workingDir, 'RESUMED_HOST_RETAINS_ORIGINAL_WORKSPACE').toBe(workspace);
+      expect(
+        fsPolicyScopeRoots(built?.fsPolicy, workspace, 'project'),
+        'RESUMED_FILESYSTEM_AUTHORITY_RETAINS_ORIGINAL_WORKSPACE',
+      ).toEqual([workspace]);
+      expect(readSession(fixture)?.session.context.workingDir).toBe(workspace);
     });
   });
 
@@ -509,7 +522,9 @@ it('runner-abort ownership joins a held resumed builder before fixture removal a
     expect(existsSync(fixture.base)).toBe(true);
   }));
 
-it('a real SQLite read failure still closes the manually acquired session store', () =>
+// These three cases test this file's fixture custody. Production acquisition and close
+// behavior is exercised by partial-db-acquisition.test.ts and surface-db-acquisition.test.ts.
+it('fixture integrity: a real SQLite read failure closes the manually acquired session store', () =>
   ownCase(async (fixture) => {
     await seed(fixture, fixture.workspace);
     let native: ReturnType<typeof createClient>['sqlite'] | undefined;
@@ -532,7 +547,7 @@ it('a real SQLite read failure still closes the manually acquired session store'
     }
   }));
 
-it('fixture retirement seals late work and refuses successor setup until raw work and owners join', async () => {
+it('fixture integrity: retirement seals late work until raw work and owners join', async () => {
   const fixture = currentCase;
   if (fixture === undefined) throw new Error('Missing native workspace fixture.');
   let releaseRaw = (): void => {};
@@ -597,7 +612,7 @@ it('fixture retirement seals late work and refuses successor setup until raw wor
   expect(process.env['HOME']).toBe(next.home);
 });
 
-it('repeated teardown shares the actual join and cannot restore a later fixture environment', async () => {
+it('fixture integrity: repeated teardown cannot restore a later fixture environment', async () => {
   const fixture = currentCase;
   if (fixture === undefined) throw new Error('Missing native workspace fixture.');
   let release = (): void => {};

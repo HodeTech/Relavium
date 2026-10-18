@@ -1,6 +1,7 @@
 import type { LocalDbNoticeContext } from '../db/checkpoint-notice.js';
 import { acquireCommandResource, type CommandLifetime } from '../process/command-lifetime.js';
 import { closeQuietly } from '../process/close-quietly.js';
+import { toUserFacing } from '../process/errors.js';
 import { SessionExportedEventSchema } from '@relavium/shared';
 
 import { exportSession, SESSION_EXPORT_REVIEW_NOTICE } from '../chat/export.js';
@@ -89,7 +90,8 @@ export function chatExportCommand(
         exportedWorkflowPath: result.path,
         updatedAt: exportedAt,
       });
-    } catch {
+    } catch (cause) {
+      if (toUserFacing(cause).code !== 'storage_unavailable') throw cause;
       deps.io.writeErr('note: scaffold written but could not mark the session exported\n');
     }
 

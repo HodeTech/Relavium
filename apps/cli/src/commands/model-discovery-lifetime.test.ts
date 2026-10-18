@@ -139,6 +139,12 @@ describe('actual SDK discovery original-owner integration', () => {
       });
       try {
         await entered.promise;
+        await vi.advanceTimersByTimeAsync(0);
+        expect(settled, 'MANAGEMENT_RESPONSE_PENDING_KEEPS_COMMAND_OPEN').toBe(false);
+        expect(client.sqlite.open, 'MANAGEMENT_SUCCESS_WAITS_FOR_RAW_SDK').toBe(true);
+        expect(client.sqlite.prepare('SELECT 1 AS alive').get()).toEqual({ alive: 1 });
+        expect(close).not.toHaveBeenCalled();
+        expect(f.registry.activeOwners).toBe(1);
         if (end === 'timeout') {
           await vi.advanceTimersByTimeAsync(15_000);
           expect(captured.out()).toContain('model list timed out after 15000ms');

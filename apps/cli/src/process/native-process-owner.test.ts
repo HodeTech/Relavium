@@ -707,6 +707,64 @@ describe('creation-owned native processes', () => {
 });
 
 describe('actual owned native child lifetime', () => {
+  it.each(['stop', 'terminate', 'exit'] as const)(
+    'never kills a PID-less failed native spawn during same-tick %s',
+    async (boundary) => {
+      const h = harness();
+      const lease = await h.controller.reserve('pid');
+      const target = spawn(`${process.execPath}.relavium-missing-binary-${process.pid}`, [], {
+        stdio: 'ignore',
+        shell: false,
+      });
+      // Never enter the unsafe native call, including while proving the unfixed code fails.
+      const kill = vi.spyOn(target, 'kill').mockReturnValue(false);
+      expect(target.pid, 'FAILED_SPAWN_HAS_NO_PID').toBeUndefined();
+      lease.bindChild(target);
+      let closed = false;
+      target.once('close', () => {
+        closed = true;
+      });
+      if (boundary === 'stop') void lease.stop();
+      else if (boundary === 'terminate') void h.registry.terminate({ kind: 'normal' });
+      else h.exit();
+      expect(closed).toBe(false);
+      expect(h.registry.activeOwners, 'PIDLESS_SPAWN_NOT_CLOSE_ACK').toBe(1);
+      expect(kill, 'PIDLESS_SPAWN_NEVER_KILL_HANDLE').not.toHaveBeenCalled();
+      expect(h.signal).not.toHaveBeenCalled();
+      await lease.whenClosed;
+      expect(closed).toBe(true);
+      expect(h.registry.activeOwners).toBe(0);
+    },
+  );
+  it('never kills a failed PID-less taskkill helper while retaining both real closes', async () => {
+    const h = harness('win32');
+    const lease = await h.controller.reserve('pid');
+    const target = child(70);
+    let helper: ChildProcess | undefined;
+    let kill = vi.fn<ChildProcess['kill']>(() => false);
+    h.request.mockImplementation(() => {
+      helper = spawn(`${process.execPath}.relavium-missing-helper-${process.pid}`, [], {
+        stdio: 'ignore',
+        shell: false,
+      });
+      kill = vi.fn<ChildProcess['kill']>(() => false);
+      vi.spyOn(helper, 'kill').mockImplementation(kill);
+      expect(helper.pid).toBeUndefined();
+      return helper;
+    });
+    lease.bindChild(target);
+    void lease.stop();
+    h.exit();
+    expect(kill, 'PIDLESS_HELPER_NEVER_KILL_HANDLE').not.toHaveBeenCalled();
+    expect(h.registry.activeOwners).toBe(1);
+    await new Promise<void>((resolve) => helper?.once('close', () => resolve()));
+    expect(kill).not.toHaveBeenCalled();
+    expect(h.registry.activeOwners, 'PIDLESS_HELPER_NOT_TARGET_ACK').toBe(1);
+    target.emit('close', null);
+    await lease.whenClosed;
+    expect(h.registry.activeOwners).toBe(0);
+  });
+
   it('registers before spawn, terminates a real owned child and joins native close', async () => {
     const invocation = createCliInvocation();
     const controller = nativeProcessesForInvocation(invocation);

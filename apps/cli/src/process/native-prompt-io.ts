@@ -7,7 +7,8 @@ export function nativePromptIo(io: CliIo): {
   readonly input: Readable;
   readonly output: NodeJS.WriteStream;
 } {
-  if (io.nativeStdout === undefined || !(io.stdin instanceof Readable))
+  const input = io.nativeStdin ?? io.stdin;
+  if (io.nativeStdout === undefined || !(input instanceof Readable))
     throw new CliError('cli_internal', '');
-  return { input: io.stdin, output: io.nativeStdout };
+  return { input, output: io.nativeStdout };
 }

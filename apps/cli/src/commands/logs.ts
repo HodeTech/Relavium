@@ -16,7 +16,7 @@ export interface LogsCommandArgs {
 }
 
 /** How many skipped-row sequence numbers the ADR-0074 §5 note names before it elides — same bound-the-diagnostic
- *  reasoning as `background-failure.ts`'s `MAX_REPORTED`: the COUNT is the signal, the numbers are the lead. */
+ *  reasoning as the fixed native background-diagnostic bound: the COUNT is the signal, the numbers are the lead. */
 const MAX_REPORTED_SKIPS = 8;
 
 export interface LogsCommandDeps {
@@ -59,7 +59,7 @@ export function logsCommand(args: LogsCommandArgs, deps: LogsCommandDeps): ExitC
     // `sse-event-schema.md` §Transport tells consumers to diagnose exactly that as data loss. It goes to
     // STDERR in both modes, so `--json`'s stdout stays a pure NDJSON `RunEvent` stream (the flag's contract).
     if (skipped.length > 0) {
-      // BOUNDED, like `background-failure.ts`'s `MAX_REPORTED`: a run replayed under a much newer binary could
+      // BOUNDED, like the fixed native background-diagnostic bound: a run replayed under a much newer binary could
       // skip thousands of rows, and one unbounded line of comma-separated integers is not a diagnostic. The count
       // is the signal; the first few numbers are the lead.
       const shown = skipped.slice(0, MAX_REPORTED_SKIPS).map((row) => row.sequenceNumber);

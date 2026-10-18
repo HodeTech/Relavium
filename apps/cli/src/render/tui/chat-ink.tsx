@@ -915,10 +915,9 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     void refresh().then(
       (report) => applyPickerRefresh(epoch, report),
       () => {
-        // refresh()/refreshIfStale() never reject (per-provider isolation), but stay defensive: drop the spinner
-        // only when this is still the same open picker generation.
+        // Owner refusal rejects; never publish after input admission has sealed.
         const cur = modelPickerRef.current;
-        if (epoch === pickerEpochRef.current && cur !== undefined)
+        if (acceptsInput() && epoch === pickerEpochRef.current && cur !== undefined)
           applyModelPicker({ ...cur, loading: false });
       },
     );

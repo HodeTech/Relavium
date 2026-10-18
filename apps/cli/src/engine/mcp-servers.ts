@@ -743,7 +743,17 @@ export async function connectAgentMcp(
     return client;
   } catch (cause) {
     opts.onFailure?.(cause);
-    await closePreparedMcp(client, opts.onCloseError, opts.budget);
+    try {
+      await closePreparedMcp(client, opts.onCloseError, opts.budget);
+    } catch (cleanupCause) {
+      // Preserve the original post-start refusal; cleanup uncertainty belongs to
+      // the original owner and must not replace that refusal with a secondary fault.
+      try {
+        opts.onCloseError?.('', cleanupCause);
+      } catch {
+        // The owner already observed cleanup entry; a reporting fault is not the primary refusal.
+      }
+    }
     throw cause;
   }
 }
@@ -754,13 +764,29 @@ export async function closePreparedMcp(
   onCloseError?: (serverId: string, cause: unknown) => void,
   budget?: RemainingBudget,
 ): Promise<void> {
-  if (budget?.remainingMs() === 0) await new Promise<never>(() => {});
+  let budgetFailure: { readonly cause: unknown } | undefined;
+  try {
+    if (budget?.remainingMs() === 0) await new Promise<never>(() => {});
+  } catch (cause) {
+    // A failed clock is a fault, not proof that native cleanup completed. Still
+    // release the already-acquired client; preserve the clock fault after that join.
+    budgetFailure = { cause };
+  }
   try {
     await client.close(onCloseError);
   } catch (cause) {
-    if (onCloseError === undefined) throw cause;
-    onCloseError('', cause);
+    if (budgetFailure !== undefined) {
+      try {
+        onCloseError?.('', cause);
+      } catch {
+        /* Preserve the first cleanup-boundary fault. */
+      }
+    } else {
+      if (onCloseError === undefined) throw cause;
+      onCloseError('', cause);
+    }
   }
+  if (budgetFailure !== undefined) throw budgetFailure.cause;
 }
 
 /**

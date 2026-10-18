@@ -3,7 +3,10 @@ import { EventEmitter } from 'node:events';
 import { describe, expect, it, vi } from 'vitest';
 
 import { EgressCapabilityError, HostDeniedError } from './errors.js'; // sibling check: the os errors live in the same module
-import type { NativeProcessController } from '../../process/native-process-owner.js';
+import {
+  createNativeProcessController,
+  type NativeProcessController,
+} from '../../process/native-process-owner.js';
 import {
   WindowsTeardownUnavailableError,
   WINDOWS_TEARDOWN_UNAVAILABLE_MESSAGE,
@@ -73,9 +76,24 @@ function controllableSpawn(): {
   spawnImpl: OsSpawnFn;
   calls: RecordedCall[];
   killCount: () => number;
+  nativeProcesses: NativeProcessController;
 } {
   const calls: RecordedCall[] = [];
   let killCount = 0;
+  const children = new Map<number, OsSpawnLike>();
+  const nativeProcesses = createNativeProcessController(undefined, {
+    platform: 'linux',
+    now: () => performance.now(),
+    schedule: (milliseconds, fire) => {
+      const timer = setTimeout(fire, milliseconds);
+      return () => clearTimeout(timer);
+    },
+    signal: (pid, signal) => {
+      if (signal === 'SIGKILL') children.get(pid)?.kill('SIGKILL');
+    },
+    verifyWindows: () => Promise.reject(new Error('unused Windows fixture')),
+    subscribeExit: () => () => undefined,
+  });
   const spawnImpl: OsSpawnFn = (executable, args, options) => {
     calls.push({ executable, args, env: options.env });
     const child = new EventEmitter() as EventEmitter & OsSpawnLike;
@@ -87,9 +105,12 @@ function controllableSpawn(): {
         queueMicrotask(() => child.emit('close', null)); // SIGKILL ⇒ death ⇒ close with a null code
       },
     });
+    const pid = 1000 + calls.length;
+    Object.defineProperty(child, 'pid', { value: pid });
+    children.set(pid, child);
     return child; // never emits close on its own — only a timeout/abort kill ends it
   };
-  return { spawnImpl, calls, killCount: () => killCount };
+  return { spawnImpl, calls, killCount: () => killCount, nativeProcesses };
 }
 
 describe('notifyPlan — the per-platform spawn plan (injection-free arg/env construction)', () => {
@@ -228,8 +249,13 @@ describe('createNodeOsCapability — notify', () => {
 
 describe('createNodeOsCapability — timeout + mid-spawn abort + the bounded buffer (the SIGKILL paths)', () => {
   it('SIGKILLs a hung clipboard candidate past timeoutMs and rejects with the timeout reason', async () => {
-    const { spawnImpl, killCount } = controllableSpawn();
-    const os = createNodeOsCapability({ platform: 'darwin', spawnImpl, timeoutMs: 10 });
+    const { spawnImpl, killCount, nativeProcesses } = controllableSpawn();
+    const os = createNodeOsCapability({
+      platform: 'darwin',
+      spawnImpl,
+      nativeProcesses,
+      timeoutMs: 10,
+    });
     const err = await os.readClipboard().catch((e: unknown) => e);
     expect(err).toBeInstanceOf(OsCapabilityError);
     expect((err as OsCapabilityError).message).toBe('the os command timed out'); // not the misleading default
@@ -237,15 +263,20 @@ describe('createNodeOsCapability — timeout + mid-spawn abort + the bounded buf
   });
 
   it('SIGKILLs a hung notify spawn past timeoutMs and rejects', async () => {
-    const { spawnImpl, killCount } = controllableSpawn();
-    const os = createNodeOsCapability({ platform: 'linux', spawnImpl, timeoutMs: 10 });
+    const { spawnImpl, killCount, nativeProcesses } = controllableSpawn();
+    const os = createNodeOsCapability({
+      platform: 'linux',
+      spawnImpl,
+      nativeProcesses,
+      timeoutMs: 10,
+    });
     await expect(os.notify({ title: 't', body: 'b' })).rejects.toBeInstanceOf(OsCapabilityError);
     expect(killCount()).toBeGreaterThanOrEqual(1);
   });
 
   it('aborts an IN-FLIGHT clipboard spawn and does NOT probe the next candidate', async () => {
-    const { spawnImpl, calls, killCount } = controllableSpawn();
-    const os = createNodeOsCapability({ platform: 'linux', spawnImpl }); // 3 candidates (wl-paste, xclip, xsel)
+    const { spawnImpl, calls, killCount, nativeProcesses } = controllableSpawn();
+    const os = createNodeOsCapability({ platform: 'linux', spawnImpl, nativeProcesses }); // 3 candidates (wl-paste, xclip, xsel)
     const ac = new AbortController();
     const pending = os.readClipboard(ac.signal);
     await vi.waitFor(() => expect(calls).toHaveLength(1)); // actual entry, independent of preparation awaits

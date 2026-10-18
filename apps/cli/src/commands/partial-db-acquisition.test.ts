@@ -27,10 +27,21 @@ const routes = [
 ];
 
 describe('management custody before local database setup', () => {
-  it.each(routes.flatMap((route) => [false, true].map((closeFails) => ({ ...route, closeFails }))))(
-    '$id joins actual SQLite after setup fails; close failure=$closeFails',
-    ({ id, positionals, options, closeFails }) =>
-      runCase({ prefix: 'relavium-partial-db-', closeFails }, async (fixture) => {
+  it.each([
+    ...routes.flatMap((route) =>
+      [false, true].map((closeFails) => ({ ...route, closeFails, closeRecovers: false })),
+    ),
+    {
+      id: 'logs',
+      positionals: ['synthetic-run'],
+      options: {},
+      closeFails: true,
+      closeRecovers: true,
+    },
+  ])(
+    '$id joins actual SQLite after setup fails; close failure=$closeFails; retry recovers=$closeRecovers',
+    ({ id, positionals, options, closeFails, closeRecovers }) =>
+      runCase({ prefix: 'relavium-partial-db-', closeFails, closeRecovers }, async (fixture) => {
         const { root, assertCurrent } = fixture;
         mkdirSync(join(root, '.relavium', 'workflows'), { recursive: true });
         writeFileSync(
@@ -97,7 +108,7 @@ workflow:
         expect(captured.out()).toBe('');
         expect(f.registry.observations.exitCode()).toBe(9);
         expect(f.registry.budget.deadline()).toBe(3_000);
-        if (closeFails) {
+        if (closeFails && !closeRecovers) {
           expect(settled, 'PARTIAL_DATABASE_FAILURE_RETAINS_ACTUAL_NATIVE_CLOSE').toBe(false);
           expect(fixture.native()?.sqlite.open).toBe(true);
           expect(f.registry.activeOwners).toBe(1);
@@ -112,7 +123,9 @@ workflow:
           expect(fixture.native()?.sqlite.open).toBe(false);
           expect(f.registry.activeOwners).toBe(0);
           expect(removeSignals).toHaveBeenCalledOnce();
-          expect(fixture.closeAttempts()).toBe(1);
+          expect(fixture.closeAttempts(), 'COMMAND_LIFETIME_RETRIES_EXACT_NATIVE_CLOSE').toBe(
+            closeRecovers ? 2 : 1,
+          );
         }
       }),
   );

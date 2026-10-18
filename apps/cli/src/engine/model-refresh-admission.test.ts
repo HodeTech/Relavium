@@ -95,7 +95,10 @@ describe('catalog refresh original-owner admission', () => {
   it('admits sibling attempt clocks before entry, preserving already selected keys without starting post-stop work', async () => {
     const f = fixture(true, true);
     try {
-      await f.service.refresh({ signal: f.owner.signal });
+      const result = await f.service
+        .refresh({ signal: f.owner.signal })
+        .catch((cause: unknown) => cause);
+      expect(f.owner.isStoppedFailure(result)).toBe(true);
       expect(f.keyFor).toHaveBeenCalledTimes(2); // Both keys were selected before the first attempt fault.
       expect(f.now, 'CATALOG_FATAL_CLOCK_STOPS_SIBLING_ATTEMPT').toHaveBeenCalledOnce();
       expect(f.entered.some((event) => event.stopped)).toBe(false);

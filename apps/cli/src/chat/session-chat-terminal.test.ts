@@ -41,6 +41,28 @@ function fixture(write?: (text: string) => Promise<void>) {
 }
 
 describe('persistent chat terminal and actual child mounts', () => {
+  it('reports late adopted job disposal refusal without escaping the sealed terminal', async () => {
+    const f = fixture();
+    await f.terminal.close();
+    const primary = new Error('PRIVATE_LATE_JOB_DISPOSE');
+    const native = gate();
+    const dispose = vi.fn(() => {
+      throw primary;
+    });
+    expect(() =>
+      f.terminal.adoptJob({
+        requestSuspend: vi.fn(),
+        dispose,
+        finish: () => native.promise,
+        released: native.promise,
+      }),
+    ).not.toThrow();
+    expect(dispose).toHaveBeenCalledOnce();
+    expect(f.lifetime.surface.work.firstFailure?.cause).toBe(primary);
+    expect(f.registry.observations.exitCode()).toBe(9);
+    native.release();
+    await turn();
+  });
   it('retains a partially registered exit fallback without acknowledging terminal cleanup', async () => {
     const f = invocationFixture();
     const lifetime = new SessionChatLifetime(f.invocation, {

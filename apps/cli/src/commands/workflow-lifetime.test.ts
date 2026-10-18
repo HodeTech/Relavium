@@ -189,3 +189,45 @@ it('publishes a returned infrastructure exit before owner retirement instead of 
   expect(f.invocation.registry.observations.exitCode()).toBe(9);
   expect(f.invocation.registry.activeOwners).toBe(0);
 });
+
+it.each(['storage_unavailable', 'internal'] as const)(
+  'bounds unacknowledged cleanup even when its original cause is %s',
+  async (code) => {
+    let now = 0;
+    const timers = new Map<() => void, number>();
+    const clock = {
+      now: () => now,
+      schedule: (milliseconds: number, fire: () => void) => {
+        timers.set(fire, now + milliseconds);
+        return () => {
+          timers.delete(fire);
+        };
+      },
+    };
+    const registry = new InvocationRegistry(clock);
+    const exit = vi.fn();
+    const finiteExit = createInvocationFiniteExit(registry, clock, { exit, setExitCode: vi.fn() });
+    const lifetime = new WorkflowLifetime(
+      { registry, finiteExit, seedFileCatalogOnce: () => Promise.resolve() },
+      captureIo().io,
+      () => () => undefined,
+    );
+    let settled = false;
+    void lifetime
+      .execute(() => {
+        lifetime.cleanupFailed(new CliError(code, 'synthetic close fault'));
+        return Promise.resolve(0);
+      })
+      .then(() => {
+        settled = true;
+      });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(registry.budget.deadline(), 'CLEANUP_FAILURE_ALWAYS_FINITE').toBe(3000);
+    now = 3000;
+    for (const [fire, at] of [...timers]) if (at <= now && timers.delete(fire)) fire();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(exit).toHaveBeenCalledExactlyOnceWith(9);
+    expect(settled, 'CLEANUP_FAILURE_NEVER_ACKNOWLEDGES').toBe(false);
+    expect(registry.activeOwners).toBe(1);
+  },
+);

@@ -239,7 +239,7 @@ describe('Home deferred results respect permanent controller stop', () => {
         await tick();
         expect(f.startChat, 'HOME_STOPPED_CLEAR_REBUILD').toHaveBeenCalledTimes(stopped ? 1 : 2);
         if (!stopped) expect(f.controller.getSnapshot().session).toBe(f.fresh);
-        expect(f.controller.getSnapshot().submitBusy).toBe(false);
+        expect(f.controller.getSnapshot().submitBusy).toBe(stopped);
         expect(f.onError).not.toHaveBeenCalled();
       } finally {
         raw.resolve(undefined);

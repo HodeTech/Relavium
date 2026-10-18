@@ -141,7 +141,6 @@ interface Target {
   readonly readPid: () => number | undefined;
   readonly isClosed: () => boolean;
   readonly isExited: () => boolean;
-  readonly cancel?: (() => void) | undefined;
   readonly cooperativeClose?: (() => Promise<void>) | undefined;
 }
 
@@ -258,9 +257,6 @@ class NativeCreation {
       readPid: () => pid,
       isClosed: () => closed,
       isExited: () => exited || child.exitCode != null || child.signalCode != null,
-      cancel: () => {
-        child.kill('SIGKILL');
-      },
     });
     // An error diagnoses the command, not native closure. Callers retain their public error contract.
     child.on('error', () => undefined);
@@ -357,18 +353,9 @@ class NativeCreation {
 
   #signalPid(): void {
     const pid = this.#livePid();
-    if (pid === undefined) {
-      // A synchronously returned child can have no PID when native spawn later emits error/close.
-      // Its own handle remains creation-owned; never substitute a guessed or historical PID.
-      if (this.#eligible() && positivePid(this.#target?.readPid()) === undefined) {
-        try {
-          this.#target?.cancel?.();
-        } catch {
-          this.#failed();
-        }
-      }
-      return;
-    }
+    // A failed spawn can return a handle without a PID before its error/close events.
+    // ChildProcess.kill is unsafe in that state; retain ownership until real close.
+    if (pid === undefined) return;
     try {
       this.#ports.signal(pid, 'SIGKILL');
     } catch (cause) {
@@ -489,7 +476,15 @@ class NativeCreation {
   }
 
   #cancelHelper(): void {
-    if (this.#helper === undefined || this.#helperClosed || this.#helperCancelling) return;
+    if (
+      this.#helper === undefined ||
+      this.#helperClosed ||
+      this.#helperCancelling ||
+      positivePid(this.#helper.pid) === undefined ||
+      this.#helper.exitCode !== null ||
+      this.#helper.signalCode !== null
+    )
+      return;
     // ChildProcess.kill can emit error synchronously. Its listener may request cancellation
     // again; suppress that reentry while allowing a later independent finite request.
     this.#helperCancelling = true;

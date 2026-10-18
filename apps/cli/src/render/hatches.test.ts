@@ -103,6 +103,20 @@ const harness = (
 };
 
 describe('/scrollback', () => {
+  it('does not let a throwing observer replace the hatch fault or skip the notice', async () => {
+    const primary = new CliError('output_unavailable', 'PRIVATE_PRIMARY');
+    const failure = vi.fn(() => {
+      throw new Error('PRIVATE_OBSERVER');
+    });
+    const { deps, notes } = harness({
+      onFailure: failure,
+      dump: { writeOut: () => Promise.reject(primary), waitForContinue: () => Promise.resolve() },
+    });
+    await expect(createHatches(deps).dumpScrollback()).resolves.toBeUndefined();
+    expect(failure).toHaveBeenCalledExactlyOnceWith(primary);
+    expect(notes.join('')).toContain('CLI output could not be delivered');
+    expect(notes.join('')).not.toContain('PRIVATE_');
+  });
   it('observes failed transcript delivery before a held native reclaim can hide the failure', async () => {
     let finishNative: () => void = () => undefined;
     const native = new Promise<void>((resolve) => {
@@ -136,6 +150,7 @@ describe('/scrollback', () => {
     finishNative();
     await dump;
     expect(notes.join('')).not.toContain('PRIVATE_OUTPUT_FAULT');
+    expect(failure).toHaveBeenCalledExactlyOnceWith(primary);
   });
 
   it('suspends the renderer, dumps, waits, and restores every terminal mode — in order', async () => {

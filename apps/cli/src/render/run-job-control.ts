@@ -118,13 +118,18 @@ export function wireRunJobControl(opts: WireRunJobControlOptions): RunJobControl
     if (disposed) return;
     if (!writeCursor(SHOW_CURSOR)) return;
     if (disposed) return;
-    detached();
-    if (disposed) return;
     try {
-      lifecycle.suspendSelf();
+      detached();
+      if (disposed) return;
+      try {
+        lifecycle.suspendSelf();
+      } catch (cause) {
+        opts.onFailure?.(cause);
+        attach();
+      }
     } catch (cause) {
-      opts.onFailure?.(cause);
-      attach();
+      if (opts.onFailure === undefined) throw cause;
+      opts.onFailure(cause);
     }
   };
   const attach = (): void => {
@@ -156,8 +161,13 @@ export function wireRunJobControl(opts: WireRunJobControlOptions): RunJobControl
         try {
           removeContinue = lifecycle.onContinue(() => {
             if (disposed) return;
-            attach();
-            if (!disposed) writeCursor(HIDE_CURSOR);
+            try {
+              attach();
+              if (!disposed) writeCursor(HIDE_CURSOR);
+            } catch (cause) {
+              if (opts.onFailure === undefined) throw cause;
+              opts.onFailure(cause);
+            }
           });
           continueRegistered = true;
         } catch (cause) {

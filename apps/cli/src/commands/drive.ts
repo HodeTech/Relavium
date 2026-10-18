@@ -171,6 +171,7 @@ export async function driveRun(deps: DriveRunDeps): Promise<RunOutcome | undefin
     }
   };
   const retainUnacknowledged = async (): Promise<never> => {
+    lifetime.cleanupFailed(new CliError('cli_internal', ''));
     diagnostic(
       'cleanup_failed',
       'Run cleanup could not be acknowledged; input and run resources remain owned.',

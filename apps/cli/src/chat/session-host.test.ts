@@ -1783,13 +1783,19 @@ it('reads the attached initial usage snapshot once across a streamed turn', asyn
 describe('owned session MCP startup cancellation', () => {
   it.each(
     (['fresh', 'resumed'] as const).flatMap((surface) =>
-      (['caller-unlink', 'owner-unlink', 'partial-add'] as const).map((fault) => ({
-        surface,
-        fault,
-      })),
+      (['caller-unlink', 'owner-unlink', 'partial-add', 'partial-add-during-abort'] as const).map(
+        (fault) => ({
+          surface,
+          fault,
+          obligation:
+            fault === 'partial-add'
+              ? 'partial attachment and held close'
+              : 'discovery cancellation and held close',
+        }),
+      ),
     ),
   )(
-    '$surface retains $fault uncertainty without losing discovery cancellation or inventing close ACK',
+    '$surface retains $fault uncertainty through $obligation without inventing close ACK',
     async ({ surface, fault }) => {
       const f = invocationFixture();
       const owner = new SessionWorkOwner(f.invocation, 'chat', {
@@ -1797,6 +1803,7 @@ describe('owned session MCP startup cancellation', () => {
         cleanup: () => Promise.resolve(),
       });
       const primary = new Error('foreign caller signal fault');
+      const partialAdd = fault === 'partial-add' || fault === 'partial-add-during-abort';
       let aborted = false;
       let allowRemoval = false;
       const listeners = new Set<() => void>();
@@ -1806,10 +1813,14 @@ describe('owned session MCP startup cancellation', () => {
         },
         addEventListener: (_type, listener) => {
           listeners.add(listener);
-          if (fault === 'partial-add') throw primary;
+          if (fault === 'partial-add-during-abort') {
+            aborted = true;
+            for (const attached of [...listeners]) attached();
+          }
+          if (partialAdd) throw primary;
         },
         removeEventListener: (_type, listener) => {
-          if (!allowRemoval && fault !== 'partial-add') throw primary;
+          if (!allowRemoval && !partialAdd) throw primary;
           listeners.delete(listener);
         },
       };
@@ -1817,6 +1828,7 @@ describe('owned session MCP startup cancellation', () => {
       const rawDiscovery = new Promise<[]>((resolve) => {
         releaseDiscovery = () => resolve([]);
       });
+      const cancelled = vi.fn();
       const listTools = vi.fn((signal?: AbortSignalLike) =>
         raceDeadline(
           'fs',
@@ -1824,7 +1836,10 @@ describe('owned session MCP startup cancellation', () => {
           { startedAt: Date.now(), timeoutMs: 15_000 },
           () => rawDiscovery,
           signal,
-        ),
+        ).catch((cause: unknown) => {
+          if (cause instanceof McpAbortedError) cancelled();
+          throw cause;
+        }),
       );
       let acknowledgeClose: () => void = () => undefined;
       const closeAck = new Promise<void>((resolve) => {
@@ -1904,7 +1919,7 @@ describe('owned session MCP startup cancellation', () => {
         );
       try {
         await vi.waitFor(() => expect(listTools).toHaveBeenCalledOnce());
-        if (fault !== 'partial-add') {
+        if (!partialAdd) {
           expect(() => {
             if (fault === 'owner-unlink') owner.stop();
             else {
@@ -1914,6 +1929,9 @@ describe('owned session MCP startup cancellation', () => {
           }, 'FOREIGN_UNLINK_CANNOT_SUPPRESS_MCP_CANCELLATION').not.toThrow();
         }
         await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+        if (fault === 'partial-add-during-abort')
+          expect(cancelled, 'PARTIAL_ADD_ABORT_REACHES_ENTERED_DISCOVERY').toHaveBeenCalledOnce();
+        if (fault === 'partial-add') expect(cancelled).not.toHaveBeenCalled();
         expect(settled, 'SUBSCRIPTION_FAULT_IS_NOT_NATIVE_CLOSE_ACK').toBe(false);
         expect(owner.hasCleanupUncertainty).toBe(true);
         expect(owner.firstFailure?.cause).toBe(primary);

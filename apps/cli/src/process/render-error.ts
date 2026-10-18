@@ -9,8 +9,9 @@ import { renderUserFacing } from './render-user-facing.js';
  * ([ADR-0049](../../../../docs/decisions/0049-cli-machine-output-contract.md)): under `--json` it is a
  * structured `{ type: 'error', code, message }` envelope (a CLI fault, distinct from the run-stream's
  * `run:failed`/`node:failed`); otherwise a `relavium: <message>` human line. So under `--json` a fault
- * leaves stdout empty and the exit code is the primary signal. The original stack is written to stderr
- * **only** under `--verbose`, never as primary output.
+ * leaves stdout empty and the exit code is the primary signal. This legacy renderer accepts only an own
+ * data-string stack under `--verbose`; foreign/native accessors are never invoked. Production fatal
+ * diagnostics use the separate fixed-message projection.
  */
 export function renderError(
   value: unknown,

@@ -162,6 +162,16 @@ export function createHatches(deps: HatchDeps): Hatches {
     if (busy) return false; // a suspension is already in flight; ink would throw
     busy = true;
     const term = deps.terminal();
+    const observed = new Set<unknown>();
+    const reportFailure = (cause: unknown): void => {
+      if (observed.has(cause)) return;
+      observed.add(cause);
+      try {
+        deps.onFailure?.(cause);
+      } catch {
+        // The owner observation cannot replace the primary operation fault or skip its notice.
+      }
+    };
     try {
       await suspendFullScreen(
         {
@@ -170,7 +180,7 @@ export function createHatches(deps: HatchDeps): Hatches {
             try {
               await deps.writeControl(sequence);
             } catch (cause) {
-              deps.onFailure?.(cause);
+              reportFailure(cause);
               throw cause;
             }
           },
@@ -182,14 +192,14 @@ export function createHatches(deps: HatchDeps): Hatches {
           try {
             await body();
           } catch (cause) {
-            deps.onFailure?.(cause);
+            reportFailure(cause);
             throw cause;
           }
         },
       );
       return true;
     } catch (error) {
-      deps.onFailure?.(error);
+      reportFailure(error);
       // Preserve the owned failure before its notice. Native release/ACK remains separate from presentation.
       const message =
         deps.onFailure === undefined

@@ -50,6 +50,18 @@ export interface CommandDescriptor {
   readonly landsIn?: string;
 }
 export interface GlobalOptionDescriptor extends OptionDescriptor {
+  readonly binding:
+    | 'json'
+    | 'color'
+    | 'cwd'
+    | 'config'
+    | 'allowFsRoots'
+    | 'noAltScreen'
+    | 'noMouse'
+    | 'verbose'
+    | 'quiet'
+    | 'help'
+    | 'version';
   readonly scope: 'position-independent';
   readonly owner: 'extractor' | 'commander';
 }
@@ -1136,7 +1148,7 @@ export const COMMAND_DESCRIPTORS: readonly CommandDescriptor[] = freezeData([
 ] satisfies readonly CommandDescriptor[]);
 
 function globalOption(
-  binding: string,
+  binding: GlobalOptionDescriptor['binding'],
   spellings: readonly string[],
   description: string,
   details: Partial<GlobalOptionDescriptor> = {},

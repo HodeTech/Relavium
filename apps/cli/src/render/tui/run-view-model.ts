@@ -533,7 +533,8 @@ export function reduceRunEvent(state: RunViewState, event: RunEvent): RunViewSta
       return base;
     default: {
       const exhaustive: never = event;
-      return exhaustive;
+      void exhaustive; // Keep compile-time exhaustiveness and tolerate newer external runtime events.
+      return base;
     }
   }
 }

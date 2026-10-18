@@ -20,6 +20,17 @@ function reduceAll(events: readonly RunEvent[]): RunViewState {
 }
 
 describe('reduceRunEvent', () => {
+  it('preserves current view state for a newer external runtime event', () => {
+    const state = initialRunViewState();
+    const result = reduceRunEvent(state, {
+      // @ts-expect-error Runtime compatibility control: a newer event is outside today's closed type.
+      type: 'future:event',
+      runId: RUN,
+      timestamp: TS,
+      sequenceNumber: 1,
+    });
+    expect(result).toEqual({ ...state, lastSequenceNumber: 1 });
+  });
   it('starts empty', () => {
     const s = initialRunViewState();
     expect(s.nodeOrder).toEqual([]);

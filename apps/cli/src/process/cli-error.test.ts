@@ -120,7 +120,10 @@ describe('closed CLI diagnostic authority', () => {
     expect(new CliError('internal', 'known history refusal').exitCode).toBe(1);
     expect(new CliError('internal', 'known history refusal').message).toBe('known history refusal');
     expect(new CliError('cli_internal', 'private detail').exitCode).toBe(9);
-    expect(new CliError('cli_internal', 'private detail').message).toContain('--verbose');
+    expect(new CliError('cli_internal', 'private detail').message).not.toContain('--verbose');
+    expect(new CliError('cli_internal', 'private detail').message).toContain(
+      'Inspect existing work',
+    );
   });
 
   it('retains an inspection remedy before repeating potentially effectful infrastructure failures', () => {

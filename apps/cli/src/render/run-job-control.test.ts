@@ -48,6 +48,47 @@ function harness(supported = true) {
 }
 
 describe('wireRunJobControl (G0, the run/gate path)', () => {
+  it('reports suspend-listener removal faults at the signal owner instead of throwing', async () => {
+    const h = harness();
+    const primary = new Error('PRIVATE_SIGNAL_REMOVE');
+    const failure = vi.fn();
+    const control = wireRunJobControl({
+      write: h.write,
+      lifecycle: h.lifecycle,
+      onFailure: failure,
+    });
+    h.removeSuspend.mockImplementationOnce(() => {
+      throw primary;
+    });
+    expect(() => h.fireSuspend()).not.toThrow();
+    expect(failure).toHaveBeenCalledExactlyOnceWith(primary);
+    expect(h.suspendSelf).not.toHaveBeenCalled();
+    control.dispose();
+    await control.released;
+  });
+
+  it('reports a failed reattach from SIGCONT without throwing from its native callback', () => {
+    const h = harness();
+    const primary = new Error('PRIVATE_SIGNAL_ATTACH');
+    const failure = vi.fn();
+    let entries = 0;
+    const control = wireRunJobControl({
+      write: h.write,
+      lifecycle: {
+        ...h.lifecycle,
+        onSuspend: (listener) => {
+          if (++entries === 2) throw primary;
+          return h.lifecycle.onSuspend(listener);
+        },
+      },
+      onFailure: failure,
+    });
+    h.fireSuspend();
+    expect(() => h.fireContinue()).not.toThrow();
+    expect(failure).toHaveBeenCalledExactlyOnceWith(primary);
+    control.dispose();
+  });
+
   it.each(['suspend', 'continue'] as const)(
     'reports a native %s cursor write failure while retaining actual terminal restoration',
     async (phase) => {

@@ -4,16 +4,19 @@ import { join } from 'node:path';
 
 import { describe, expect, it, vi } from 'vitest';
 
-import { createCliInvocation } from '../process/invocation.js';
+import { createCliInvocation, type CliInvocation } from '../process/invocation.js';
 import { nativeProcessesForInvocation } from '../process/native-process-owner.js';
 import { captureIo } from '../test-support.js';
 import { executeCommand, type CommandInput, type DispatchContext } from './dispatch.js';
 import { witnessNativeToolProcess } from './native-forwarding.test-support.js';
 
+const receivedInvocations: CliInvocation[] = [];
+
 /** Retain the real production dependency projections; replace only the command body with a native owner. */
 async function nativeBoundary(deps: DispatchContext): Promise<0> {
   expect(deps.invocation, 'NATIVE_DISPATCH_INVOCATION').toBeDefined();
   if (deps.invocation === undefined) throw new Error('dispatch omitted the original invocation');
+  receivedInvocations.push(deps.invocation);
   await witnessNativeToolProcess(
     nativeProcessesForInvocation(deps.invocation),
     deps.invocation,
@@ -52,6 +55,7 @@ describe('production native dispatch dependency forwarding', () => {
     async (id, input) => {
       const cwd = realpathSync(mkdtempSync(join(tmpdir(), 'relavium-dispatch-native-')));
       const invocation = createCliInvocation();
+      const before = receivedInvocations.length;
       try {
         expect(
           await executeCommand(id, input, {
@@ -60,6 +64,8 @@ describe('production native dispatch dependency forwarding', () => {
             invocation,
           }),
         ).toBe(0);
+        expect(receivedInvocations.slice(before), 'NATIVE_DISPATCH_ENTERS_ONCE').toHaveLength(1);
+        expect(receivedInvocations[before], 'NATIVE_DISPATCH_ORIGINAL_INVOCATION').toBe(invocation);
         expect(invocation.registry.activeOwners).toBe(0);
       } finally {
         rmSync(cwd, { recursive: true, force: true });

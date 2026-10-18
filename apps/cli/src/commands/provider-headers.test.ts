@@ -23,7 +23,7 @@ const BASE_URL = 'https://wave7-command.example/v1';
 const POLICY_MESSAGE = 'Provider headers are disabled until keychain custody is implemented.';
 const CORRUPT_MESSAGE = 'Stored provider headers are invalid.';
 const INTERNAL_MESSAGE =
-  'An unexpected CLI failure occurred. Use --verbose for safe diagnostics. Inspect existing work before repeating paid or effectful operations.';
+  'An unexpected CLI failure occurred. Inspect existing work before repeating paid or effectful operations.';
 const MALFORMED_HEADERS = '{"x-wave7-malformed-opaque":"cedar-river-legacy",';
 const NONSTRING_HEADERS = '{"x-wave7-nonstring-opaque":37}';
 const ERROR_SENTINELS = [
@@ -291,14 +291,16 @@ describe('ADR-0108 provider-header command projections', () => {
                 { type: 'error', code: projected.code, message: projected.message },
               ]);
             else {
-              expect(rendered.err()).toContain(`relavium: ${projected.message}\n`);
-              if (verbose) {
+              const ownStack: unknown = Object.getOwnPropertyDescriptor(error, 'stack')?.value;
+              // Native V8 stacks may be data or accessors; never invoke an accessor for diagnostics.
+              if (verbose && typeof ownStack === 'string') {
+                expect(rendered.err()).toContain(`relavium: ${projected.message}\n`);
                 expect(rendered.err()).toContain(`${error.name}: ${error.message}\n`);
                 expect(rendered.err()).toMatch(/\n\s+at /u);
               } else expect(rendered.err()).toBe(`relavium: ${projected.message}\n`);
             }
-            // The causal diagnostic witness must inspect real verbose output before internal error-shape
-            // checks: a key-bearing parser diagnostic should fail at its public rendering boundary.
+            // Inspect actual public diagnostic bytes before private error-shape checks.
+            // Explicit data-stack masking is covered separately by render-error.test.ts.
             assertNoLegacy(rendered.err(), 'FS_CAUSAL_PROVIDER_HEADER_DIAGNOSTIC');
             expect(isProviderHeaderPolicyError(error)).toBe(policy);
             expect(error.name).toBe(policy ? 'ProviderHeaderPolicyError' : 'TypeError');
