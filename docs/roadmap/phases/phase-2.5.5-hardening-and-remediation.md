@@ -8774,3 +8774,29 @@ typed-replacement branch behind the source-bound Sonar reliability failure is
 also corrected without waiving the issue. Fresh author checks, two NEW complete
 cumulative clean rounds, a NEW separate security sitting and corrected-source
 publication gates remain required after these material corrections.
+
+The third new cumulative round at `7e9096a8` is **COMPLETE NONCLEAN**:
+all 98 corrective paths / 249 ordered hunks have independently reconciled body
+and hunk identities. Two independent lanes reproduce a diagnostic boundary gap:
+CLI one-line normalization can expose a recognized LF/TAB continuation, and
+terminal stripping can erase a legitimate original credential boundary. Actual
+sanitizer, human/JSON renderer and `run` error routes reproduce the disclosure.
+The correction gives the original diagnostic to the shared finite projection
+before terminal stripping, retains the CLI's normalized/residual query policy,
+and collapses to one line last. Twelve sanitizer cases and four real renderer
+modes pin both boundaries, public preservation and JSON stdout purity. An initial
+author preparation breaks one existing normalized query-name positive control;
+that failure is retained and corrected before publication.
+
+A separate source-bound Node 22.13 CI job at that head exceeds the unchanged
+five-second admitted-size header/URL preparation bound (7,573 ms). Numerical
+rejection of universally impossible ASCII starts and reuse of identical pure
+projections remove redundant work without changing the canonical matchers,
+workload or bound. Author execution on the actual official Node 22.13.0 runtime
+passes 187 focused cases; the preparation takes 1,413 ms. The four current focused
+files pass 366 cases, and all 22 independent disclosure expectations pass after
+correction. The earlier head's ordinary coverage passes 748 files / 15,953 tests /
+22 established skips; its SonarCloud gate is green. Neither accepts these newer
+corrections. Two NEW complete cumulative clean rounds, a NEW separate security
+sitting and corrected-source publication evidence remain required. Steps 9–19
+remain unstarted; no merge, release or whole-wave acceptance is claimed.
