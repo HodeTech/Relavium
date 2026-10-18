@@ -56,6 +56,28 @@ describe('utf8ByteLength', () => {
 describe('boundForModel', () => {
   const host = (overrides?: Partial<ToolHost>): ToolHost => ({ ...overrides });
 
+  it.each([
+    {
+      name: 'quoted credential',
+      text: `password="SYNTHETIC_VISIBLE_HEAD_${'Q'.repeat(20 * 1024)}"; public-tail`,
+      summary: '[redacted]; public-tail',
+    },
+    {
+      name: 'URL userinfo',
+      text: `https://user:SYNTHETIC_VISIBLE_HEAD_${'Q'.repeat(20 * 1024)}@service.invalid/path`,
+      summary: 'https://[redacted]@service.invalid/path',
+    },
+  ])(
+    'SUMMARY_REDACTION_ORDER recognizes a complete long $name before clipping',
+    async ({ text, summary }) => {
+      const result = await boundForModel(text, BIG, host());
+      expect(result.summary, 'SUMMARY_REDACTION_ORDER').toBe(summary);
+      expect(result.summary.length).toBeLessThanOrEqual(501);
+      expect(result.value).toBe(text);
+      expect(result.truncated).toBe(false);
+    },
+  );
+
   it('passes a within-limits result through untouched', async () => {
     const result = { ok: true, n: 1 };
     const bounded = await boundForModel(result, BIG, host());

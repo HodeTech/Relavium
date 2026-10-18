@@ -8554,3 +8554,33 @@ all edited source bytes are restored exactly. A preliminary author control that
 encountered an unwrapped product refusal is retained as preparation evidence, not
 counted as an accepted assertion control. Fresh workspace/publication results and
 independent acceptance remain separate.
+
+### PR #95 diagnostic projection order correction — 2026-10-18
+
+R7 at `c09f1924` is **INCOMPLETE NONCLEAN**: library 20 paths / 63 hunks
+reports one Blocker, while CLI 43/93 is complete clean; tooling/docs has not
+started. A separate **COMPLETE NONCLEAN** defensive security sitting covers all
+39/98 and independently classifies the same presentation-order defect as High.
+Those findings are source-confirmed, with no new crafted probes. Ordinary tool
+firehose events reach the live bus/JSON surface; automatic run-event-log
+persistence of that firehose is not claimed. The full journal projection is
+unaffected by this finding.
+
+The correction recognizes complete credential spans before tool-input clipping
+and result-summary clipping. Permanent helper, registry and actual built-in HTTP
+registry-to-SQLite cases cover a closing quote and URL authority separator beyond
+the preview limit, unchanged raw/model values and unchanged full journal bytes.
+There is no new digest domain, credential detector, automatic retry or authority.
+The [canonical tool projection contract](../../reference/shared-core/tool-registry.md#result-bounding-and-spill-to-file)
+records the finite scope and sensitive raw-content limits. Fresh two-round
+cumulative independent acceptance, a complete separate clean security sitting
+and final-source publication remain required; Steps 9–19 remain unstarted.
+
+Author verification passes all 207 focused cases, with seven removal controls
+producing 87 specific assertion failures and byte-exact restoration followed by
+all 207 targets passing each time. The committed runner reporter records zero
+unhandled errors. A fresh forced build passes 6/6 with no cache hits; the 177
+bootstrap controls and finite 25-output closure pass after clearing stale local
+generated chunks through that normal build. Lint/typecheck passes 17/17 (11
+cache hits). These checks establish author evidence only, without inheriting
+previous clean reviews or remote results.

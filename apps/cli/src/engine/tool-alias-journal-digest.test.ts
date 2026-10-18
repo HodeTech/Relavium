@@ -84,6 +84,73 @@ const METADATA = [
   { name: 'nonempty', keys: new Set(['confidentialNote']) },
 ];
 
+it.each([
+  {
+    name: 'quoted body credential',
+    body: `password="SYNTHETIC_VISIBLE_HEAD_${'Q'.repeat(20 * 1024)}"; public-tail`,
+    projected: '[redacted]; public-tail',
+  },
+  {
+    name: 'body URL userinfo',
+    body: `https://user:SYNTHETIC_VISIBLE_HEAD_${'Q'.repeat(20 * 1024)}@service.invalid/path`,
+    projected: 'https://[redacted]@service.invalid/path',
+  },
+])(
+  'PHYSICAL_DISPLAY_REDACTION_ORDER masks complete $name before the event preview',
+  async ({ body, projected }) => {
+    const client = createClient(':memory:');
+    try {
+      runMigrations(client.db);
+      const store = createEffectJournalStore(client.db, {
+        uuid: () => 'display-order',
+        now: () => 6,
+      });
+      const effects = recordingPort(
+        createEffectJournalPort(
+          store,
+          { kind: 'run', runId: 'r-display', nodeId: 'n', attempt: 1 },
+          { providerAttempt: 1, toolCallId: 'display-call' },
+        ),
+      );
+      const fetch = vi.fn((input: Parameters<NonNullable<ToolHost['egress']>['fetch']>[0]) => {
+        expect(input.body).toBe(body);
+        return Promise.resolve({ status: 200, headers: {}, body: 'ok' });
+      });
+      const registry = createToolRegistry({ tools: BUILTIN_TOOLS, host: { egress: { fetch } } });
+      const context: ToolDispatchContext = {
+        nodeId: 'n',
+        grantedToolIds: new Set(['http_request']),
+        config: {},
+        toolPolicy: { allowedDomains: ['service.invalid'] },
+        fsScope: 'sandboxed',
+        gateApproved: false,
+        effects,
+        effectSlot: 0,
+      };
+      const args = { body, method: 'POST', url: 'https://service.invalid/x' };
+      const outcome = await registry.dispatch(
+        { type: 'tool_call', id: 'display-call', name: 'http_request', args },
+        context,
+      );
+      const expected = { body: projected, method: 'POST', url: 'https://service.invalid/x' };
+      expect(outcome.events.call.toolInput, 'PHYSICAL_DISPLAY_REDACTION_ORDER').toEqual(expected);
+      expect(effects.prepare.mock.calls[0]?.[3]).toEqual(expected);
+      expect(fetch).toHaveBeenCalledOnce();
+      const rows = PhysicalRowsSchema.parse(
+        client.sqlite
+          .prepare('SELECT slot, state, args_digest FROM run_effects ORDER BY slot')
+          .all(),
+      );
+      // Independent sorted-key bytes; display ordering must not alter the full v5 journal identity.
+      expect(rows, 'PHYSICAL_DISPLAY_JOURNAL_UNCHANGED').toEqual([
+        { slot: 0, state: 'committed', args_digest: sha256(JSON.stringify(expected)) },
+      ]);
+    } finally {
+      client.sqlite.close();
+    }
+  },
+);
+
 describe.each(METADATA)('native MCP own public data with $name metadata', ({ keys }) => {
   it.each(['scalar', 'record'] as const)(
     'PHYSICAL_OWN_DATA retains %s data in the digest, replays equality and refuses a changed value',

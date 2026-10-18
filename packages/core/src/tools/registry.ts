@@ -1093,12 +1093,13 @@ function sanitizeInput(
   // verbatim from a real dispatch.
   // A display preview may omit a tail; the journal's collision guard may not. Both still exclude
   // declared secrets and credential/media-shaped values BEFORE the host computes its digest.
-  const projection = purpose === 'display' ? boundArgsForDisplay(out) : out;
-  const walked = redactSecretShapedValue(redactInlineMedia(projection));
+  // Recognition needs the complete value: clipping may remove a quote or URL authority separator.
+  const walked = redactSecretShapedValue(redactInlineMedia(out));
+  const projection = purpose === 'display' ? boundArgsForDisplay(walked) : walked;
   // The walk preserves plain-object shape, so this is the same record with scrubbed members; the guard is
   // a boundary check rather than a cast, and the fallback can only be reached if the walk ever stops
   // returning an object for an object input.
-  return isPlainRecord(walked) ? walked : out;
+  return isPlainRecord(projection) ? projection : out;
 }
 
 /**
@@ -1108,7 +1109,7 @@ function sanitizeInput(
 const ARG_SCAN_MAX_CHARS = 16 * 1024;
 
 /**
- * Truncate display STRING leaves with an explicit true-length marker. This is never a journal input:
+ * Truncate already-redacted display STRING leaves with their surviving length. This is never a journal input:
  * equal-length values can differ after the retained prefix and must not replay each other's result.
  */
 function boundArgsForDisplay(

@@ -421,6 +421,14 @@ are unchanged. Sanitized effective arguments also feed the existing journal iden
 clean sibling avoids incorrectly treating distinct selections as a replay. This does not make the
 projection a lossless canonical encoding or claim detection of arbitrary sensitive text.
 
+Diagnostic truncation follows complete recognized-span redaction. `toolInput` applies
+secret/media projection before clipping its string leaves; `outputSummary` recognizes
+secret-shaped spans in the complete materialized text before bounding whitespace and
+length. A closing quote or URL authority separator beyond a preview boundary must not
+make a supported credential shape unrecognizable. This does not redact the raw model
+result, full spill or arbitrary unlabelled sensitive text; those retain their existing
+content-sensitive handling.
+
 ## Untrusted-data taint (1.T marks; 1.O places)
 
 Every tool result is wrapped in the engine's branded untrusted marker at the registry boundary (the

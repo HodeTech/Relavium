@@ -476,12 +476,12 @@ function toText(result: unknown): string {
 }
 
 function makeSummary(text: string): string {
-  // Cap the scanned input so the whitespace-collapse never runs over an oversized result (the summary
-  // is bounded to SUMMARY_MAX regardless). Scrub secret-shaped substrings BEFORE the length cap so a
-  // credential in the result (a read_clipboard, an egress body, a `.env` read) never rides `outputSummary`
-  // to the `--json` stream / a log (the model-facing value is untouched — this is the observability copy).
-  const slice = text.length > SUMMARY_MAX * 8 ? text.slice(0, SUMMARY_MAX * 8) : text;
-  const oneLine = redactSecretShapedText(slice.replace(/\s+/g, ' ').trim());
+  // Recognize complete spans before clipping: a closing quote or authority separator can be beyond
+  // the preview. The result is already materialized for byte/line bounding; raw model/spill text stays
+  // unchanged. Bound the subsequent whitespace-collapse and diagnostic independently.
+  const redacted = redactSecretShapedText(text);
+  const slice = redacted.length > SUMMARY_MAX * 8 ? redacted.slice(0, SUMMARY_MAX * 8) : redacted;
+  const oneLine = slice.replace(/\s+/g, ' ').trim();
   return oneLine.length <= SUMMARY_MAX ? oneLine : `${oneLine.slice(0, SUMMARY_MAX)}…`;
 }
 

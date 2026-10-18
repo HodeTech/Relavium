@@ -80,6 +80,34 @@ const METADATA = [
 ];
 
 describe('PR #95 journal identity retains long redacted arguments', () => {
+  it.each([
+    {
+      name: 'quoted credential',
+      text: `password="SYNTHETIC_VISIBLE_HEAD_${'Q'.repeat(20 * 1024)}"; public-tail`,
+      projected: '[redacted]; public-tail',
+    },
+    {
+      name: 'URL userinfo',
+      text: `https://user:SYNTHETIC_VISIBLE_HEAD_${'Q'.repeat(20 * 1024)}@service.invalid/path`,
+      projected: 'https://[redacted]@service.invalid/path',
+    },
+  ])(
+    'DISPLAY_REDACTION_ORDER recognizes a complete $name before its preview',
+    async ({ text, projected }) => {
+      const h = harness();
+      const payload = { text };
+      const result = await h.registry.dispatch(call(payload), h.context);
+      expect(result.events.call.toolInput, 'DISPLAY_REDACTION_ORDER').toEqual({
+        payload: { text: projected },
+      });
+      expect(vi.mocked(h.effects.prepare).mock.calls[0]?.[3]).toEqual({
+        payload: { text: projected },
+      });
+      expect(h.received[0]).toBe(payload);
+      expect(payload.text).toBe(text);
+    },
+  );
+
   it('LONG_ARGS_CONFLICT replays identical args but refuses a changed same-length tail at the same slot', async () => {
     const h = harness();
     const prefix = 'x'.repeat(20 * 1024);

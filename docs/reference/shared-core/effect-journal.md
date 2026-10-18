@@ -360,7 +360,9 @@ The digest consumes the full surviving non-secret values, including long string 
 Nested own enumerable data keys, including `__proto__`, remain data members in the
 projection rather than invoking inherited setters. Top-level tool-argument admission
 exclusions remain unchanged. The bounded `toolInput` display preview is not a journal
-input: equal-length values can differ beyond its retained prefix. Every unversioned,
+input, and its clipping follows full recognized-value projection
+([tool-registry.md](tool-registry.md#result-bounding-and-spill-to-file)). Equal-length
+values can differ beyond its retained prefix. Every unversioned,
 `v2:`, `v3:` or `v4:` legacy row refuses matching prepare, including unchanged small
 arguments: its original projection cannot be proven from the digest alone. There is
 no fallback to the old digest or automatic retry permission. Secret and

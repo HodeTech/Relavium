@@ -399,3 +399,16 @@ rows without rewriting history or granting retry authority. This restores the
 existing different-args refusal; exact representation remains in
 [effect-journal.md §11](../reference/shared-core/effect-journal.md#11-secrets-what-a-row-may-hold).
 Fresh independent acceptance and source-pinned publication checks remain separate.
+
+### PR #95 diagnostic projection order — 2026-10-18
+
+The subsequent independent library and separate security reviews identify
+truncation before recognition in tool-input and result-summary diagnostics. A
+preview could remove the closing delimiter of an otherwise supported credential
+shape. Both diagnostic paths now recognize complete spans before clipping. The
+full journal projection and its current digest domain are unchanged; raw host
+dispatch, model results and full spill content retain their existing handling.
+The finite diagnostic policy lives in
+[tool-registry.md](../reference/shared-core/tool-registry.md#result-bounding-and-spill-to-file);
+this does not promise removal of arbitrary sensitive content. Fresh acceptance
+and publication checks remain source-scoped.
