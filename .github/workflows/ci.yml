@@ -471,8 +471,9 @@ jobs:
     name: engine coverage floor (llm, mcp)
     runs-on: ubuntu-latest
     # One file worker isolates unchanged admitted-size case budgets from instrumentation
-    # contention. Keep a finite whole-suite budget for all files and native DB waits.
-    timeout-minutes: 25
+    # contention. A measured 1,481-second complete run plus setup exhausted 25 minutes;
+    # reserve finite whole-suite headroom without changing case bounds or coverage thresholds.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:

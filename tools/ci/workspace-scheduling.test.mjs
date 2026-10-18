@@ -186,7 +186,7 @@ test('required and local CI share all workspace tasks and uncached per-invocatio
   }
   const floor = workflow.jobs['floor-check'];
   assert.equal(floor['timeout-minutes'], 25);
-  assert.equal(workflow.jobs.coverage['timeout-minutes'], 25);
+  assert.equal(workflow.jobs.coverage['timeout-minutes'], 30);
   assert.equal(
     workflow.jobs.coverage.steps.find((step) => step.run === 'pnpm coverage:enforced')?.name,
     'Engine coverage floor (>=90% line+branch — llm, mcp enforced; core measured)',

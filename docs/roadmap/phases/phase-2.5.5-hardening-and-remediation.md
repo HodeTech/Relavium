@@ -8889,3 +8889,15 @@ The current-source selected modern-alphabet coordinator separately passes three
 phases / 426 executions / four required witnesses / twelve marked removal
 failures, zero recorded unhandled errors and exact restoration. Its bounded
 physical evidence is independently inspected; it is not a full-family capture.
+
+The eleventh review preparation is **INCOMPLETE / SUPERSEDED**, not a clean
+round. A separately inspected annotation for the earlier push coverage job
+`117655454340` explicitly reports that its 25-minute maximum was exceeded:
+Vitest takes 1,481.25 seconds, before setup/cleanup, and also records the already
+known dense-public case failure. The tooling reviewer independently confirms
+this measured outer-budget finding. Coverage alone receives a finite 30-minute
+whole-job budget and its structural pin is updated. Node-floor, required-CI and
+Windows budgets are unchanged; all cases, instrumentation, per-case bounds,
+coverage thresholds and required-job dependencies remain. No current-source
+failure or success is inferred from that historical job. Final-source clean
+cumulative reviews, security and publication gates remain required.
