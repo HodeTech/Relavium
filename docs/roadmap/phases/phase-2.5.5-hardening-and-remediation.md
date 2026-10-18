@@ -8725,3 +8725,27 @@ pending**. Two NEW independent complete cumulative clean rounds after the final
 material correction, current author gates and corrected-source CI/coverage/Sonar/
 same-archive platform controls remain required. No merge, release, new ADR,
 credential capture, billing step or new deferral is claimed.
+
+The first new cumulative round at `02b34e4d` is **COMPLETE NONCLEAN**: three
+independent lanes cover all 96 corrective paths / 234 ordered hunks, with no
+unassigned or repeated paths. The tooling/documentation lane is clean; the
+libraries/native lane reproduces a skipped original-boundary credential suffix,
+and the CLI lane reproduces classified terminal cleanup retained without a
+finite bound. These are defects in the first corrections, not accepted limits.
+The terminal correction in `ad5a506a` carries actual terminal cleanup uncertainty
+to the original finite-exit owner without marking workflow cleanup unacknowledged.
+Positive native-free constructor refusals retain their ordinary classification;
+adopted rollback can retire only after its actual input-release ACK. Author
+checks pass 61 focused cases plus CLI typecheck/lint. Removing the bound fails
+nine named assertions; byte-exact restoration passes all 25 lifetime cases.
+This author control does not replace the committed coordinator's runtime-error
+receipt or independent review. Credential recovery and its causal controls remain
+under final verification. Corrections `64774b64` / `5393f6b7` select eligible
+original-text starts before a rejected greedy candidate can skip them. Author
+core/LLM checks pass 318 focused cases, typechecks and lint, including admitted-size
+public boundaries and failed JWT probes. The manifest declares 53 controls / 310
+required witnesses; all 51 preceding identities and witnesses remain, and fresh
+collection confirms 25 complete workload files / 1,292 cases. These declarations
+and author checks are not final-source physical execution or independent acceptance.
+Two NEW complete cumulative clean rounds after the final
+material correction and the separate security/publication gates are still required.
