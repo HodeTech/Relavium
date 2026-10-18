@@ -6,12 +6,15 @@ import { DrizzleError } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type { AgentSessionRecord } from '@relavium/shared';
+
 import { createClient, DbOpenError, runMigrations, type DbClient } from './client.js';
 import { isOwnedStorageFailure } from './index.js';
 import { FilesystemMediaStore } from './media-store.js';
 import { MediaStoreFilesystemError, MediaStorePaths } from './media-store-paths.js';
 import { migrateWithOwnedStorageFacts } from './migration-storage-origin.js';
 import * as schema from './schema.js';
+import { createSessionStore } from './session-store.js';
 import {
   checkpointSessionEffectPrivacy,
   SessionEffectPrivacyError,
@@ -55,7 +58,74 @@ function migrations(sqlText?: string): string {
   return folder;
 }
 
+function sessionRecord(): AgentSessionRecord {
+  return {
+    id: 'storage-origin-session',
+    agentSlug: 'synthetic',
+    context: { workingDir: root, fsScopeTier: 'sandboxed' },
+    status: 'active',
+    totalInputTokens: 0,
+    totalOutputTokens: 0,
+    totalCostMicrocents: 0,
+    totalConservativeMicrocents: 0,
+    createdAt: '2026-10-18T00:00:00.000Z',
+    updatedAt: '2026-10-18T00:00:00.000Z',
+  };
+}
+
 describe('owned storage origin (ADR-0110)', () => {
+  it('marks a real readonly session update and permits recovery on the same native client', () => {
+    const value = client();
+    runMigrations(value.db);
+    const store = createSessionStore(value.db);
+    const record = sessionRecord();
+    store.createSession(record);
+    value.sqlite.pragma('query_only = ON');
+    const failure = caught(() => store.updateSession({ ...record, status: 'exported' }));
+    expect(failure).toBeInstanceOf(Database.SqliteError);
+    expect(failure).toMatchObject({ code: 'SQLITE_READONLY' });
+    expect(isOwnedStorageFailure(failure), 'DB_ORIGIN_SESSION_UPDATE_READONLY').toBe(true);
+    expect(store.loadSession(record.id)?.status).toBe('active');
+    value.sqlite.pragma('query_only = OFF');
+    store.updateSession({ ...record, status: 'exported' });
+    expect(store.loadSession(record.id)?.status).toBe('exported');
+  });
+
+  it('does not grant session-update storage origin to a foreign native client', () => {
+    const sqlite = new Database(':memory:');
+    try {
+      const db = drizzle(sqlite, { schema });
+      runMigrations(db);
+      const store = createSessionStore(db);
+      const record = sessionRecord();
+      store.createSession(record);
+      sqlite.pragma('query_only = ON');
+      const failure = caught(() => store.updateSession({ ...record, status: 'exported' }));
+      expect(failure).toBeInstanceOf(Database.SqliteError);
+      expect(failure).toMatchObject({ code: 'SQLITE_READONLY' });
+      expect(isOwnedStorageFailure(failure), 'DB_ORIGIN_FOREIGN_SESSION_UPDATE').toBe(false);
+    } finally {
+      sqlite.close();
+    }
+  });
+
+  it('does not grant storage origin to a native-shaped error thrown by record validation', () => {
+    const value = client();
+    runMigrations(value.db);
+    const store = createSessionStore(value.db);
+    const record = sessionRecord();
+    store.createSession(record);
+    const primary = new Database.SqliteError('PRIVATE_RECORD_ACCESSOR', 'SQLITE_READONLY');
+    Object.defineProperty(record, 'title', {
+      get: () => {
+        throw primary;
+      },
+    });
+    expect(caught(() => store.updateSession(record))).toBe(primary);
+    expect(isOwnedStorageFailure(primary), 'DB_ORIGIN_RECORD_VALIDATION_REFUSAL').toBe(false);
+    expect(store.loadSession(record.id)?.status).toBe('active');
+  });
+
   it('marks an actual corrupt database open while retaining family, cause and path-free message', () => {
     const path = join(root, 'corrupt.db');
     writeFileSync(path, 'not a SQLite file');

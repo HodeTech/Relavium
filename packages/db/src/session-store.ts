@@ -21,6 +21,7 @@ import {
 import { readSessionCoverage, type SessionUsageSnapshot } from './session-usage-read.js';
 import { withBusyRetry } from './retry.js';
 import { withSessionUsageWrite } from './session-usage-write.js';
+import { hasOwnedClient, withOwnedSqlite } from './storage-failure-facts.js';
 import {
   agentSessions,
   sessionMessages,
@@ -592,13 +593,17 @@ export function createSessionStore(db: Db): SessionStore {
     },
 
     updateSession: (record) => {
-      withSessionUsageWrite(db, [record.id], (tx) =>
-        tx
-          .update(agentSessions)
-          .set(mutableSessionColumns(record))
-          .where(eq(agentSessions.id, record.id))
-          .run(),
-      );
+      // Validate caller data outside the native-origin boundary: even a getter throwing a
+      // real SqliteError must not acquire storage authority. Only our owned write grants it.
+      const sessionId = record.id;
+      const columns = mutableSessionColumns(record);
+      const write = (): void => {
+        withSessionUsageWrite(db, [sessionId], (tx) =>
+          tx.update(agentSessions).set(columns).where(eq(agentSessions.id, sessionId)).run(),
+        );
+      };
+      if (hasOwnedClient(db)) withOwnedSqlite(write);
+      else write();
     },
 
     recordSessionCost: (entry) => {
