@@ -904,8 +904,8 @@ export const mutations = [
   // PR #95 B2: independent modern-prefix, joined-view, boundary and malformed-userinfo sites.
   coreProjectionControl(
     'core-modern-key-alphabet',
-    String.raw`sk-(?=[\w-]{16})[\w-]+`,
-    String.raw`sk-(?=[A-Za-z0-9]{16})[A-Za-z0-9]+`,
+    String.raw`{ prefix: /sk-/, body: /(?=[\w-]{16})[\w-]+/ }`,
+    String.raw`{ prefix: /sk-/, body: /(?=[A-Za-z0-9]{16})[A-Za-z0-9]+/ }`,
     ['sk-proj-', 'sk-svcacct-', 'sk-ant-', 'sk-AAAA'].map(
       (prefix) => `masks the complete modern provider shape ${prefix}`,
     ),

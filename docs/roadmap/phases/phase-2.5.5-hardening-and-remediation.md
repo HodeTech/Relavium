@@ -8860,3 +8860,13 @@ are not Linux instrumentation acceptance. Two NEW complete cumulative clean
 rounds, a NEW separate security sitting and current-source publication gates
 remain required after this material performance correction. Steps 9–19 remain
 unstarted; no merge or whole-wave acceptance is claimed.
+
+The fragment-table rewrite also moves the existing modern-key-alphabet removal
+anchor. The author anchor preflight catches this before a new review can be
+completed; the ninth review preparation is superseded, not a clean round.
+The control now narrows the exact current `sk-` body declaration. Its identity,
+four semantic witnesses, complete workload and expected refusal are unchanged.
+All 57 anchors occur exactly once and every declared mutant syntax-parses;
+336 named witnesses remain required. An anchor check is not physical causal
+execution, and the prior source's passing full capture is not promoted to the
+new source. Current-source review, security and publication gates remain open.
