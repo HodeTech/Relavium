@@ -151,7 +151,7 @@ test('required and local CI share all workspace tasks and uncached per-invocatio
   );
   assert.deepEqual(floorCommand.run.trim().split('\n'), [
     'pnpm turbo run typecheck --force',
-    'pnpm turbo run test --concurrency=1 --force',
+    'pnpm turbo run test --concurrency=1 --force -- --maxWorkers=1',
     'pnpm turbo run build --force',
   ]);
   assert.equal(floorCommand['continue-on-error'], undefined);

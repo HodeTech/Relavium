@@ -432,9 +432,13 @@ jobs:
         # `--force` = no cache READ (genuine Node-22 run, not a Node-24 replay); the job-level blanked
         # TURBO_TOKEN/TURBO_TEAM above = no cache WRITE (so `ci` never replays this Node-22 result). Both are
         # needed — see the job-level comment.
+        # In this compatibility job, serialize file workers as well as workspaces
+        # so unrelated files cannot consume the admitted-size cases' unchanged elapsed-time budget.
+        # Every case still runs, including its explicit native concurrency. Required CI retains its
+        # ordinary file workers; this job verifies the exact older runtime rather than cross-file load.
         run: |
           pnpm turbo run typecheck --force
-          pnpm turbo run test --concurrency=1 --force
+          pnpm turbo run test --concurrency=1 --force -- --maxWorkers=1
           pnpm turbo run build --force
 
   # CI-only strict peer-dependency gate (.npmrc keeps this OFF for local installs so fresh
