@@ -26,6 +26,13 @@ interface SecretRule {
   readonly boundary?: RegExp;
 }
 
+/**
+ * Deliberately NOT word-bounded: the pre-PR matcher masked `xhttps://user:pass@host`, and a `\b` here
+ * would let any scheme glued to a preceding word character through unmasked. The rule has no `\b`
+ * prefix, so it also supplies its own joined form rather than letting the scanner strip one.
+ */
+const URL_USERINFO_PATTERN = /(?:https?|wss?|ftps?):\/\/[^/\s]*@/gi;
+
 /** One private authority per existing credential family, shared by probes and output masking. */
 const NON_QUERY_SECRET_RULES: readonly SecretRule[] = [
   // OpenAI sk-/sk-proj-/sk-svcacct- and Anthropic sk-ant- key prefixes.
@@ -42,7 +49,8 @@ const NON_QUERY_SECRET_RULES: readonly SecretRule[] = [
   // Finite authority schemes, not URL validation. Raw ?/# before the first @ may belong
   // to a password; after an existing @ they begin public query/fragment text.
   {
-    pattern: /\b(?:https?|wss?|ftps?):\/\/[^/\s]*@/gi,
+    pattern: URL_USERINFO_PATTERN,
+    joinedPattern: URL_USERINFO_PATTERN,
     replacement: maskUrlUserinfo,
     boundary: /\w/,
   },

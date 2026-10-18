@@ -1,4 +1,3 @@
-import { schemaIssueReason } from './schema-issue.js';
 /**
  * `parseAgent` — the standalone `.agent.yaml` parser, the agent sibling of {@link ./parser.ts}'s
  * `parseWorkflow`. It loads an agent-document **string**, decodes it through the one hardened YAML profile
@@ -18,6 +17,7 @@ import { RelaviumError, AgentSchema, type Agent } from '@relavium/shared';
 
 import { MAX_SOURCE_CHARS } from './parser.js';
 import { outputSchemaRefusals } from './output-schema.js';
+import { schemaIssueReason } from './schema-issue.js';
 import { decodeHardenedYaml } from './yaml-decode.js';
 
 /** The validated agent document — `@relavium/shared`'s `Agent`, under a parser-local alias (mirrors `WorkflowDefinition`). */

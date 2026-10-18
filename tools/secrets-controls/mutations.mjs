@@ -234,7 +234,7 @@ function diagnosticControl(id, before, after, targets, marker = diagnosticMarker
     before,
     after,
     ['packages/llm/src/scrub-secrets.test.ts'],
-    89,
+    103,
     targets[0],
     marker,
     targets.slice(1).map((target) => ({ target, marker })),
@@ -355,7 +355,7 @@ export const mutations = [
     "  for (const remaining of scrubbed.split('[REDACTED]')) {",
     '  for (const remaining of []) {',
     ['apps/cli/src/render/sanitize.test.ts', 'apps/cli/src/process/render-error.test.ts'],
-    179,
+    180,
     "SECRETS_CAUSAL_RESIDUAL_SCRUB protects 'client_secret' beside a split credential: 'multiline'",
     'SECRETS_CAUSAL_RESIDUAL_SCRUB',
     [
@@ -397,7 +397,7 @@ export const mutations = [
       'apps/cli/src/render/sanitize.test.ts',
       'apps/cli/src/process/render-error.test.ts',
     ],
-    277,
+    278,
     'SECRETS_CAUSAL_PREFIX_ORDER protects client_secret before overlapping query redaction',
     'SECRETS_CAUSAL_PREFIX_ORDER',
     [
@@ -446,7 +446,7 @@ export const mutations = [
     '  return stripTerminalControls(text);',
     '  return text;',
     overlapFiles,
-    277,
+    278,
     `${overlapMarker} protects client_secret normalized key before query redaction`,
     overlapMarker,
     overlapWitnesses('normalized key').filter(
@@ -461,7 +461,7 @@ export const mutations = [
     '  return scrubQuerySecrets(scrubNonQuerySecrets(text));',
     '  return scrubNonQuerySecrets(scrubQuerySecrets(text));',
     overlapFiles,
-    277,
+    278,
     `${overlapMarker} protects client_secret Bearer before query redaction`,
     overlapMarker,
     [
@@ -967,8 +967,8 @@ export const mutations = [
   ),
   diagnosticControl(
     'diagnostic-raw-password-userinfo',
-    String.raw`pattern: /\b(?:https?|wss?|ftps?):\/\/[^/\s]*@/gi,`,
-    String.raw`pattern: /\b(?:https?|wss?|ftps?):\/\/[^/\s?#]*@/gi,`,
+    String.raw`const URL_USERINFO_PATTERN = /(?:https?|wss?|ftps?):\/\/[^/\s]*@/gi;`,
+    String.raw`const URL_USERINFO_PATTERN = /(?:https?|wss?|ftps?):\/\/[^/\s?#]*@/gi;`,
     [...diagnosticPasswords, ...rawPasswordAssignments],
   ),
   // R1-LN-1: recover a valid original start hidden inside a rejected greedy joined candidate.
@@ -1008,7 +1008,7 @@ export const mutations = [
     '  return sanitizeInline(sanitizeUntrusted(text));',
     '  return sanitizeUntrusted(sanitizeInline(text));',
     displayProjectionCases,
-    179,
+    180,
     displayOrderCases[0],
     displayOrderMarker,
     [
@@ -1022,7 +1022,7 @@ export const mutations = [
     '  return redactIncludingAcrossSeparators(stripTerminalControls(scrubSecrets(text)));',
     '  return redactIncludingAcrossSeparators(stripTerminalControls(text));',
     displayProjectionCases,
-    179,
+    180,
     displayBoundaryCases[0],
     displayBoundaryMarker,
     [

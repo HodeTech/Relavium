@@ -287,7 +287,7 @@ test('secrets workload corrections retain independent complete-count and reader-
     [
       'diagnostic-residual-scrub',
       ['apps/cli/src/render/sanitize.test.ts', 'apps/cli/src/process/render-error.test.ts'],
-      179,
+      180,
     ],
     ...['prefix-before-redaction', 'normalized-secret-probe', 'non-query-before-query'].map(
       (id) => [
@@ -297,7 +297,7 @@ test('secrets workload corrections retain independent complete-count and reader-
           'apps/cli/src/render/sanitize.test.ts',
           'apps/cli/src/process/render-error.test.ts',
         ],
-        277,
+        278,
       ],
     ),
     ...[
@@ -317,11 +317,11 @@ test('secrets workload corrections retain independent complete-count and reader-
       'diagnostic-raw-password-userinfo',
       'diagnostic-joined-original-boundary-recovery',
       'diagnostic-header-original-boundary-recovery',
-    ].map((id) => [id, ['packages/llm/src/scrub-secrets.test.ts'], 89]),
+    ].map((id) => [id, ['packages/llm/src/scrub-secrets.test.ts'], 103]),
     ...['diagnostic-inline-projection-order', 'diagnostic-original-control-boundary'].map((id) => [
       id,
       ['apps/cli/src/render/sanitize.test.ts', 'apps/cli/src/process/render-error.test.ts'],
-      179,
+      180,
     ]),
   ]) {
     const selected = secretsControls.find((entry) => entry.id === id);

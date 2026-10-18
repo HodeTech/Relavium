@@ -1,4 +1,3 @@
-import { schemaIssueReason } from './schema-issue.js';
 /**
  * `WorkflowYAMLParser` (1.L / 1.L2) — the engine's entry point. Loads a `.relavium.yaml` **string**,
  * validates it against the strict `@relavium/shared` `WorkflowSchema` (ADR-0023), and runs the static
@@ -31,6 +30,7 @@ import {
 } from './errors.js';
 import { analyzePreRunReferences, analyzeSecretTaint } from './interpolation/analyze.js';
 import { outputSchemaRefusals } from './output-schema.js';
+import { schemaIssueReason } from './schema-issue.js';
 import { decodeHardenedYaml } from './yaml-decode.js';
 
 /** The validated workflow document — `@relavium/shared`'s `Workflow`, under a parser-local alias. */

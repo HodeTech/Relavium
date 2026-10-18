@@ -83,6 +83,22 @@ describe('finite diagnostic credential backstop regressions (PR #95 M2)', () => 
         expected: `connect ${scheme.toUpperCase()}://[REDACTED]@provider.invalid/v1 failed`,
       },
     ]),
+    // A scheme glued to a preceding word character was masked before this PR; a `\b` on the rule
+    // let it through (PR #95 review, MEDIUM-1). Adjacent and LF/TAB-split forms are both pinned.
+    ...['http', 'https', 'ws', 'wss', 'ftp', 'ftps'].flatMap((scheme) => [
+      {
+        input: `x${scheme}://alice:opaque-password@provider.invalid/v1`,
+        expected: `x${scheme}://[REDACTED]@provider.invalid/v1`,
+      },
+      {
+        input: `1${scheme.toUpperCase()}://opaque-user@provider.invalid/v1`,
+        expected: `1${scheme.toUpperCase()}://[REDACTED]@provider.invalid/v1`,
+      },
+    ]),
+    ...['\n', '\t'].map((separator) => ({
+      input: `xhttps://ali${separator}ce:opaque-password@provider.invalid/v1`,
+      expected: '[REDACTED]',
+    })),
     ...['api-key', 'x-api-key', 'x-goog-api-key'].flatMap((name) => [
       {
         input: `header ${name}: opaque-header-Z29 rejected`,

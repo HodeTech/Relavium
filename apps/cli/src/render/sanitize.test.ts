@@ -249,6 +249,18 @@ describe('sanitizeUntrusted — the failure paths carry arbitrary text (#W15-8)'
       }
     }
   });
+
+  it('masks URL userinfo whose scheme is glued to a preceding word character (PR #95 MEDIUM-1)', () => {
+    for (const sanitize of [sanitizeUntrusted, sanitizeUntrustedInline]) {
+      expect(sanitize('xhttps://user:opaque-value@host/x')).toBe('xhttps://[REDACTED]@host/x');
+      expect(sanitize('1wss://opaque-user@host/x retry after 30s')).toBe(
+        '1wss://[REDACTED]@host/x retry after 30s',
+      );
+      for (const separator of ['\n', '\t']) {
+        expect(sanitize(`xhttps://us${separator}er:opaque-value@host/x`)).toBe('[REDACTED]');
+      }
+    }
+  });
 });
 
 describe('PR95 B2 complete diagnostic evidence before display normalization', () => {

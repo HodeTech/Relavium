@@ -5,6 +5,11 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createCliInvocation } from '../../process/invocation.js';
+import {
+  nativeProcessesForInvocation,
+  type NativeProcessController,
+} from '../../process/native-process-owner.js';
 import { createNodeProcessCapability, ProcessCapabilityError } from './process.js';
 
 vi.mock('node:child_process', { spy: true });
@@ -120,5 +125,41 @@ describe('native child resource lifetime after an error (ADR-0103)', () => {
     expect(error).toBeInstanceOf(ProcessCapabilityError);
     expect(error).toMatchObject({ message: 'the command failed to run' });
     expect(closed).toBe(true);
+  });
+
+  it('withholds the failed-spawn result until the owner reservation joins close', async () => {
+    // The child's own `close` event cannot pin this: the capability's handler only runs after it, so a
+    // rejection that skipped `reservation.whenClosed` would still see a closed child (and, on POSIX with no
+    // helper, an already-retired owner). Gate the reservation's join itself and observe the publication.
+    const real = nativeProcessesForInvocation(createCliInvocation());
+    if (real === undefined) throw new Error('explicit invocation missing');
+    const gate = deferred();
+    const gated: NativeProcessController = {
+      ...real,
+      reserve: async (kind) => ({ ...(await real.reserve(kind)), whenClosed: gate.promise }),
+    };
+    let closed = false;
+    vi.mocked(spawn).mockImplementationOnce((command, args, options) => {
+      const child = native.spawn(command, args, options);
+      child.once('close', () => {
+        closed = true;
+      });
+      return child;
+    });
+    let settled = false;
+    const call = createNodeProcessCapability({ workspaceDir: workspace, nativeProcesses: gated })
+      .spawn(join(workspace, 'absent-executable'), [], {}, {})
+      .catch((cause: unknown) => cause)
+      .finally(() => {
+        settled = true;
+      });
+    await vi.waitFor(() => expect(closed).toBe(true));
+    // Microtasks queued by the close dispatch have run; give any ungated publication one more turn.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(settled, 'PROCESS_OWNER_CLOSE_JOIN').toBe(false);
+    gate.resolve();
+    const error = await call;
+    expect(error).toBeInstanceOf(ProcessCapabilityError);
+    expect(error).toMatchObject({ message: 'the command failed to run' });
   });
 });
