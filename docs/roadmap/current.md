@@ -1128,8 +1128,11 @@ accepts corrections at `ec0f3e10` after two NEW complete cumulative clean rounds
 and a NEW separate clean security sitting. Current source-bound PR/push CI,
 coverage, SonarCloud, same-archive consumers and physical control artifacts remain
 required publication criteria; PR #95 owns their live result. Source review does
-not imply merge or whole-wave acceptance. Steps 9–19 have **NOT STARTED** and
-whole-wave acceptance remains Step 19. Check PR #95 before later implementation commits,
+not imply merge or whole-wave acceptance. The later
+[native Windows admission preparation](phases/phase-2.5.5-hardening-and-remediation.md#pr-95-native-windows-admission-preparation--2026-10-18)
+retains the failed advisory attempt and separate test-preparation review scope;
+production runtime is unchanged and PR #95 owns final publication results.
+Steps 9–19 have **NOT STARTED** and whole-wave acceptance remains Step 19. Check PR #95 before later implementation commits,
 which extend its review scope. No new decision, credential, billing or provider
 capture gate is introduced.
 

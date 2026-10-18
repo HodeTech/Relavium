@@ -9006,3 +9006,41 @@ whole-wave acceptance and core coverage promotion remain Step 19. No merge,
 release, new ADR, user decision, paid capture or new deferral is claimed. Existing
 manual `git_commit` review and historical session-export limits retain their
 Accepted contracts. The approved execution plan remains the sole later-work order.
+
+### PR #95 native Windows admission preparation — 2026-10-18
+
+The first publication attempt at `d001f9c0` retains a failed push-side Windows
+source-native advisory: the first bare-Home argv case exceeds Vitest's default
+five-second case bound. The same-source PR Windows job passes, as do all four
+actual installed consumers. The failed native trace records only runner abort
+at 5,007 ms, with no native-open, seed or read phase. This does not conclusively
+attribute the Windows delay to infrastructure or establish successful publication.
+
+Independent private local instrumentation measures 320 ms of a 327-ms bare case
+inside the real lazy Home import; preparation reduces that import to 0.018 ms
+and the same case to 7 ms. Those local values do not reproduce the actual Windows
+delay. The Accepted packaging contract has independent fresh-process compiled
+controls; this source-level admission case has no five-second cold TypeScript
+compilation SLA. Its purpose remains refusal before history, key, provider or MCP
+composition through the actual default `run` route.
+
+The correction prepares the **real Home module inside the existing owned native
+fixture's before-each hook**, after its HOME and service observations are captured.
+The import promise is registered with the existing case owner; preparation checks
+admission again after the await, and cleanup joins it before restoring the fixture.
+Unlike collection-time preparation, module acquisition is not hidden by resetting
+service observations afterward. No replacement Home implementation is injected.
+All original cases, assertions, causal markers, the unchanged five-second case
+bound, cancellation and real native joins remain. Product, build, dependency and
+CI bytes are unchanged. This is a separate test-preparation increment after the
+accepted `ec0f3e10` runtime/source corrections, not a new runtime or security policy.
+
+Author execution passes all twelve complete admission cases, plus CLI typecheck,
+focused lint and format/diff checks. These local results do not certify Windows
+or a complete causal family. Two NEW independent complete reviews of this
+preparation increment, a scoped security-witness check and final-head publication
+checks are required separately.
+Earlier R14/R15 and their metadata checks retain their exact sources and do not
+claim to read this later test change. The final PR record owns actual current
+results, including the failed attempt; no green retry is inferred here. Steps
+9–19 remain unstarted and the PR remains open for maintainer review.

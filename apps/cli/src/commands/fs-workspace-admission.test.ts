@@ -138,8 +138,14 @@ function beginWorkspaceCase(context: { readonly signal: AbortSignal }): Workspac
   Object.assign(effects, { history: 0, keys: 0 });
   return fixture;
 }
-beforeEach((context) => {
+beforeEach(async (context) => {
   beginWorkspaceCase(context);
+  // Compile the real lazy Home graph as owned fixture preparation, outside the case clock.
+  // Keep its service observations inside this fixture; run() still uses its default Home loader.
+  await ownCase(async (fixture) => {
+    await import('../home/drive-home.js');
+    fixture.assertCurrent();
+  });
 });
 function retireWorkspaceCase(fixture: WorkspaceCase): Promise<void> {
   fixture.sealed = true;
