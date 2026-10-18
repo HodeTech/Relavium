@@ -31,7 +31,7 @@ const EXPECTED_CANONICAL = {
 };
 
 function sha256(text: string): string {
-  return `v3:${createHash('sha256').update(text).digest('hex')}`;
+  return `v4:${createHash('sha256').update(text).digest('hex')}`;
 }
 
 function registryFixture(effects: EffectDispatchPort) {
@@ -116,7 +116,7 @@ describe.each(METADATA)(
         );
         expect(rows).toHaveLength(2);
         expect(rows.map((row) => row.state)).toEqual(['committed', 'committed']);
-        for (const row of rows) expect(row.args_digest).toMatch(/^v3:[0-9a-f]{64}$/);
+        for (const row of rows) expect(row.args_digest).toMatch(/^v4:[0-9a-f]{64}$/);
         expect(rows[0]?.args_digest, 'PHYSICAL_ALIAS_DIGEST_DISTINCT').not.toBe(
           rows[1]?.args_digest,
         );
@@ -485,30 +485,260 @@ describe.each(CREDENTIAL_CASES)('PR #95 complete recognized credential: $name', 
     }
   });
 
-  it('PHYSICAL_PARTIAL_V2_REFUSAL refuses a literal equal to an old partially redacted projection', async () => {
+  it.each(['v2:', 'v3:'])(
+    'PHYSICAL_LEGACY_PROJECTION_REFUSAL refuses a current literal in the %s digest domain',
+    async (prefix) => {
+      const client = createClient(':memory:');
+      try {
+        runMigrations(client.db);
+        const store = createEffectJournalStore(client.db, {
+          uuid: () => 'partial-v2',
+          now: () => 6,
+        });
+        const correlation = { kind: 'run', runId: 'r-v2', nodeId: 'n', attempt: 1 } as const;
+        const body = `${'x'.repeat(20 * 1024)}\n${fixture.oldProjection('A')}`;
+        const args = { body, method: 'POST', url: 'https://service.invalid/x' };
+        const identity = { scope: 'run:r-v2:n', slot: 0, toolId: 'http_request' };
+        const legacyDigest = `${prefix}${createHash('sha256').update(JSON.stringify(args)).digest('hex')}`;
+        store.prepare(
+          identity,
+          correlation,
+          { providerAttempt: 1, toolCallId: 'old' },
+          3,
+          legacyDigest,
+        );
+        store.settle(identity, 'committed', { receipt: 'old result' });
+        const effects = createEffectJournalPort(store, correlation, {
+          providerAttempt: 1,
+          toolCallId: 'new',
+        });
+        const attempt = await effects.prepare(0, 'http_request', 3, args).then(
+          (value) => ({ value }),
+          (failure: unknown) => ({ failure }),
+        );
+        expect(attempt, 'PHYSICAL_LEGACY_PROJECTION_REFUSAL').toMatchObject({
+          failure: { name: 'EffectConflictError' },
+        });
+        expect(store.recordsFor(correlation)).toHaveLength(1);
+      } finally {
+        client.sqlite.close();
+      }
+    },
+  );
+});
+
+const STRUCTURED_CREDENTIAL_CASES = [
+  {
+    name: 'X-Api-Key with a recognized token prefix',
+    key: 'X-Api-Key',
+    value: (tail: string) => `sk-${'Q'.repeat(16)};${tail}`,
+    projected: '[redacted]',
+  },
+  {
+    name: 'a recognized prefix beyond the display boundary',
+    key: 'X-Api-Key',
+    value: (tail: string) => `${'x'.repeat(20 * 1024)};sk-${'Q'.repeat(16)};${tail}`,
+    projected: '[redacted]',
+  },
+  {
+    name: 'an embedded scheme is not a public header scheme',
+    key: 'X-Auth-Token',
+    value: (tail: string) => `ordinary;Bearer ${'Q'.repeat(16)};${tail}`,
+    projected: '[redacted]',
+  },
+  {
+    name: 'escaped quoted text inside a credential header',
+    key: 'X-Client-Secret',
+    value: (tail: string) => `${JSON.stringify({ password: 'inner"secret' })};${tail}`,
+    projected: '[redacted]',
+  },
+  {
+    name: 'Bearer retains only its canonical scheme',
+    key: 'Authorization',
+    value: (tail: string) => `bEaReR ${'Q'.repeat(16)};${tail}`,
+    projected: 'Bearer [redacted]',
+  },
+  {
+    name: 'Basic retains only its canonical scheme',
+    key: 'Proxy-Authorization',
+    value: (tail: string) => `bAsIc ${'Q'.repeat(16)};${tail}`,
+    projected: 'Basic [redacted]',
+  },
+  {
+    name: 'Token retains only its canonical scheme',
+    key: 'X-Auth-Token',
+    value: (tail: string) => `tOkEn ${'Q'.repeat(16)};${tail}`,
+    projected: 'Token [redacted]',
+  },
+];
+
+describe.each(STRUCTURED_CREDENTIAL_CASES)('PR #95 structural credential: $name', (fixture) => {
+  it('PHYSICAL_STRUCTURAL_SECRET replays credential-only changes and distinguishes public content', async () => {
     const client = createClient(':memory:');
     try {
       runMigrations(client.db);
-      const store = createEffectJournalStore(client.db, { uuid: () => 'partial-v2', now: () => 6 });
-      const correlation = { kind: 'run', runId: 'r-v2', nodeId: 'n', attempt: 1 } as const;
-      const body = `${'x'.repeat(20 * 1024)}\n${fixture.oldProjection('A')}`;
-      const args = { body, method: 'POST', url: 'https://service.invalid/x' };
-      const identity = { scope: 'run:r-v2:n', slot: 0, toolId: 'http_request' };
-      const v2 = `v2:${createHash('sha256').update(JSON.stringify(args)).digest('hex')}`;
-      store.prepare(identity, correlation, { providerAttempt: 1, toolCallId: 'old' }, 3, v2);
-      store.settle(identity, 'committed', { receipt: 'old result' });
-      const effects = createEffectJournalPort(store, correlation, {
-        providerAttempt: 1,
-        toolCallId: 'new',
+      let ids = 0;
+      const store = createEffectJournalStore(client.db, {
+        uuid: () => `structured-${++ids}`,
+        now: () => 6,
       });
-      const attempt = await effects.prepare(0, 'http_request', 3, args).then(
-        (value) => ({ value }),
+      const effects = recordingPort(
+        createEffectJournalPort(
+          store,
+          { kind: 'run', runId: 'r-structured', nodeId: 'n', attempt: 1 },
+          { providerAttempt: 1, toolCallId: 'structured-call' },
+        ),
+      );
+      const fetch = vi.fn<NonNullable<ToolHost['egress']>['fetch']>(() =>
+        Promise.resolve({ status: 200, headers: {}, body: 'receipt' }),
+      );
+      const registry = createToolRegistry({ tools: BUILTIN_TOOLS, host: { egress: { fetch } } });
+      const context: ToolDispatchContext = {
+        nodeId: 'n',
+        grantedToolIds: new Set(['http_request']),
+        config: {},
+        toolPolicy: { allowedDomains: ['service.invalid'] },
+        fsScope: 'sandboxed',
+        gateApproved: false,
+        effects,
+        effectSlot: 0,
+      };
+      const prefix = 'public content '.repeat(1600);
+      const args = (suffix: string, publicTail = 'first') => ({
+        body: `${prefix}${publicTail}`,
+        headers: { [fixture.key]: fixture.value(`${'x'.repeat(20 * 1024)}${suffix}`) },
+        method: 'POST',
+        url: 'https://service.invalid/x',
+      });
+      const request = (suffix: string, publicTail = 'first') =>
+        ({
+          type: 'tool_call',
+          id: 'structured-call',
+          name: 'http_request',
+          args: args(suffix, publicTail),
+        }) as const;
+      const first = await registry.dispatch(request('A'), context);
+      const replay = await registry.dispatch(request('B'), context).then(
+        (result) => ({ output: result.output }),
         (failure: unknown) => ({ failure }),
       );
-      expect(attempt, 'PHYSICAL_PARTIAL_V2_REFUSAL').toMatchObject({
-        failure: { name: 'EffectConflictError' },
+      expect(replay, 'PHYSICAL_STRUCTURAL_SECRET_REPLAY').toEqual({ output: first.output });
+      expect(fetch).toHaveBeenCalledOnce();
+      expect(fetch.mock.calls[0]?.[0]).toEqual(request('A').args);
+      await registry.dispatch(request('B'), { ...context, effectSlot: 1 });
+      expect(fetch.mock.calls[1]?.[0]).toEqual(request('B').args);
+      const projected = {
+        body: `${prefix}first`,
+        headers: { [fixture.key]: fixture.projected },
+        method: 'POST',
+        url: 'https://service.invalid/x',
+      };
+      // Independently authored sorted-key bytes; the production projection is not its own oracle.
+      const expected = sha256(JSON.stringify(projected));
+      const rows = PhysicalRowsSchema.parse(
+        client.sqlite
+          .prepare('SELECT slot, state, args_digest FROM run_effects ORDER BY slot')
+          .all(),
+      );
+      expect(rows, 'PHYSICAL_STRUCTURAL_SECRET_DIGEST').toEqual([
+        { slot: 0, state: 'committed', args_digest: expected },
+        { slot: 1, state: 'committed', args_digest: expected },
+      ]);
+      for (const callArgs of effects.prepare.mock.calls)
+        expect(callArgs[3], 'PHYSICAL_STRUCTURAL_SECRET_PROJECTION').toEqual(projected);
+      await expect(
+        registry.dispatch(request('B', 'other'), context),
+        'PHYSICAL_STRUCTURAL_PUBLIC_TAIL',
+      ).rejects.toMatchObject({ name: 'ToolEffectConflictError', retryable: false });
+      expect(fetch).toHaveBeenCalledTimes(2);
+    } finally {
+      client.sqlite.close();
+    }
+  });
+});
+
+describe.each(['separate', 'inline', 'numeric'] as const)('PR #95 credential argv: %s', (mode) => {
+  it('PHYSICAL_ARGV_SECRET keeps only public argument differences in the native journal', async () => {
+    const client = createClient(':memory:');
+    try {
+      runMigrations(client.db);
+      let ids = 0;
+      const store = createEffectJournalStore(client.db, {
+        uuid: () => `argv-${++ids}`,
+        now: () => 6,
       });
-      expect(store.recordsFor(correlation)).toHaveLength(1);
+      const effects = recordingPort(
+        createEffectJournalPort(
+          store,
+          { kind: 'run', runId: 'r-argv', nodeId: 'n', attempt: 1 },
+          { providerAttempt: 1, toolCallId: 'argv-call' },
+        ),
+      );
+      const spawn = vi.fn<NonNullable<ToolHost['process']>['spawn']>(() =>
+        Promise.resolve({ exitCode: 0, stdout: 'receipt', stderr: '', durationMs: 0 }),
+      );
+      const registry = createToolRegistry({ tools: BUILTIN_TOOLS, host: { process: { spawn } } });
+      const argv = (suffix: string, count = 'first') => {
+        const credential =
+          mode === 'numeric' ? `123${suffix}` : `sk-${'Q'.repeat(16)};${'x'.repeat(1000)}${suffix}`;
+        return mode === 'inline'
+          ? [`--token=${credential}`, `--count=${count}`]
+          : ['--token', credential, `--count=${count}`];
+      };
+      const context: ToolDispatchContext = {
+        nodeId: 'n',
+        grantedToolIds: new Set(['run_command']),
+        config: {},
+        toolPolicy: {
+          allowedCommands: [argv('4'), argv('5'), argv('5', 'other')].map((args) =>
+            ['synthetic-publish', ...args].join(' '),
+          ),
+        },
+        fsScope: 'sandboxed',
+        gateApproved: false,
+        effects,
+        effectSlot: 0,
+      };
+      const request = (suffix: string, count = 'first') =>
+        ({
+          type: 'tool_call',
+          id: 'argv-call',
+          name: 'run_command',
+          args: { command: 'synthetic-publish', args: argv(suffix, count) },
+        }) as const;
+      const first = await registry.dispatch(request('4'), context);
+      const replay = await registry.dispatch(request('5'), context).then(
+        (result) => ({ output: result.output }),
+        (failure: unknown) => ({ failure }),
+      );
+      expect(replay, 'PHYSICAL_ARGV_SECRET_REPLAY').toEqual({ output: first.output });
+      expect(spawn).toHaveBeenCalledOnce();
+      expect(spawn.mock.calls[0]?.slice(0, 2)).toEqual(['synthetic-publish', argv('4')]);
+      await registry.dispatch(request('5'), { ...context, effectSlot: 1 });
+      expect(spawn.mock.calls[1]?.slice(0, 2)).toEqual(['synthetic-publish', argv('5')]);
+      const projected = {
+        args:
+          mode === 'inline'
+            ? ['--token=[redacted]', '--count=first']
+            : ['--token', '[redacted]', '--count=first'],
+        command: 'synthetic-publish',
+      };
+      const expected = sha256(JSON.stringify(projected));
+      const rows = PhysicalRowsSchema.parse(
+        client.sqlite
+          .prepare('SELECT slot, state, args_digest FROM run_effects ORDER BY slot')
+          .all(),
+      );
+      expect(rows, 'PHYSICAL_ARGV_SECRET_DIGEST').toEqual([
+        { slot: 0, state: 'committed', args_digest: expected },
+        { slot: 1, state: 'committed', args_digest: expected },
+      ]);
+      for (const callArgs of effects.prepare.mock.calls) expect(callArgs[3]).toEqual(projected);
+      await expect(
+        registry.dispatch(request('5', 'other'), context),
+        'PHYSICAL_ARGV_PUBLIC_TAIL',
+      ).rejects.toMatchObject({ name: 'ToolEffectConflictError', retryable: false });
+      expect(spawn).toHaveBeenCalledTimes(2);
     } finally {
       client.sqlite.close();
     }

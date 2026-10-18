@@ -331,29 +331,43 @@ const KEY_QUALIFIERS: ReadonlySet<string> = new Set([
  */
 function redactArgVector(items: readonly unknown[], seen: WeakSet<object>): unknown[] {
   const out: unknown[] = [];
-  let redactNext = false;
+  let redactNext: string | undefined;
   for (const item of items) {
-    if (redactNext && typeof item === 'string') {
-      // A port is not a credential, however password-shaped its flag was.
-      out.push(looksLikePort(item) ? redactSecretShapedWalk(item, seen) : '[redacted]');
-      redactNext = false;
+    if (redactNext !== undefined) {
+      // Only the ambiguous -p flag has the documented port interpretation. --password/--token do not.
+      out.push(
+        typeof item === 'string' && redactNext.toLowerCase() === '-p' && looksLikePort(item)
+          ? redactSecretShapedWalk(item, seen)
+          : '[redacted]',
+      );
+      redactNext = undefined;
       continue;
     }
-    redactNext = typeof item === 'string' && isSecretishFlag(item);
+    if (typeof item === 'string') {
+      const separator = item.indexOf('=');
+      const flag = separator > 0 ? item.slice(0, separator) : '';
+      if (isSecretishFlag(flag)) {
+        const value = item.slice(separator + 1);
+        out.push(flag.toLowerCase() === '-p' && looksLikePort(value) ? item : `${flag}=[redacted]`);
+        continue;
+      }
+      if (isSecretishFlag(item)) redactNext = item;
+    }
     out.push(redactSecretShapedWalk(item, seen));
   }
   return out;
 }
 
 /**
- * A CLI flag that introduces a credential — `--token`, `--password`, `-p`. (`--password=…` is the text
- * rule's job, since flag and value are one string there.)
+ * A CLI flag that introduces a credential — `--token`, `--password`, `-p`.
  *
  * `-p` is deliberately kept AND deliberately qualified. It really is the password flag for `mysql` and
  * `psql`, and dropping it would leak those verbatim — but it is also the port flag for `ssh` and the
  * port-mapping flag for `docker run`, and a review caught this destroying `ssh -p 2222` and
- * `docker run -p 8080:80`. The value shape settles it: a port is digits, optionally `host:container`, and a
- * password never is. See {@link looksLikePort}.
+ * `docker run -p 8080:80`. A port is digits, optionally `host:container`. Only the
+ * `-p` ambiguity retains that exception; explicitly named credential flags do not. Both separate and
+ * `--password=…` argument spellings use the entire value, rather than a partial text-pattern match.
+ * See {@link looksLikePort}.
  */
 /**
  * The flag names, as one anchored alternation.
@@ -369,7 +383,7 @@ function isSecretishFlag(item: string): boolean {
   return SECRETISH_FLAG.test(item);
 }
 
-/** `2222`, `8080:80`, `127.0.0.1:8080:80` — a port or a port mapping, never a credential. */
+/** Port-shaped values disambiguate `-p`; an explicit credential flag has no port exception. */
 function looksLikePort(value: string): boolean {
   return /^(?:[\d.]{1,15}:)?\d{1,5}(?::\d{1,5})?(?:\/(?:tcp|udp))?$/i.test(value);
 }
@@ -377,17 +391,26 @@ function looksLikePort(value: string): boolean {
 /**
  * One member of an object, redacted with its KEY taken into account.
  *
- * The shape scrub runs first and WINS when it fires, so `{"Authorization": "Bearer tok…"}` keeps its
- * diagnostic scheme (`Bearer [redacted]`) rather than collapsing to a bare `[redacted]` — the scheme is not
- * the secret, and knowing which auth scheme a call used is exactly the sort of thing a stored row is for.
- * The wholesale redaction is the FALLBACK, for the case the shape scrub structurally cannot see: an opaque
- * value with no recognisable prefix, a nested object, an array, or a number.
+ * A recognized credential key owns the WHOLE value. An inner shape match does not establish that the
+ * remaining text is public. Do not traverse a credential container or carry any partially scrubbed value
+ * into the journal. Only an anchored, known auth scheme may survive as a fixed diagnostic label.
  */
 function redactUnderKey(key: string, item: unknown, seen: WeakSet<object>): unknown {
-  const walked = redactSecretShapedWalk(item, seen);
-  if (!isSecretishKey(key) || item === null || item === undefined) return walked;
-  // The shape scrub already fired on this string — keep its more informative output.
-  if (typeof item === 'string' && walked !== item) return walked;
+  if (!isSecretishKey(key) || item === null || item === undefined)
+    return redactSecretShapedWalk(item, seen);
+  if (typeof item === 'string') {
+    // Match only the bounded label and the start of a nonempty remainder, never return that remainder.
+    // Canonical labels also keep caller-controlled casing out of the credential projection.
+    const scheme = /^(bearer|basic|token)[ \t]+\S/i.exec(item)?.[1]?.toLowerCase();
+    switch (scheme) {
+      case 'bearer':
+        return 'Bearer [redacted]';
+      case 'basic':
+        return 'Basic [redacted]';
+      case 'token':
+        return 'Token [redacted]';
+    }
+  }
   return '[redacted]';
 }
 
@@ -401,7 +424,7 @@ function redactSecretShapedWalk(value: unknown, seen: WeakSet<object>): unknown 
     if (!isPlainObject(value)) return value; // Date/RegExp/Map/… — leave for native handling
     const out: Record<string, unknown> = {};
     // Scrub the KEY too (a secret-shaped key is redacted; a normal name is unchanged — see the doc above). A
-    // display-only field, so a rare collision of two keys both redacting to `[redacted]` losing one is acceptable.
+    // Recognized credentials deliberately share a redacted projection; raw invocation keys stay unchanged.
     for (const [key, item] of Object.entries(value)) {
       // **The key decides, whatever the value's shape.** Checked BEFORE the walk, because the walk only
       // inspects strings by shape — so a numeric PIN, a nested credential object, or a high-entropy opaque

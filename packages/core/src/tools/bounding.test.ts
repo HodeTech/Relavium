@@ -730,6 +730,28 @@ describe('redactSecretShapedValue — the KEY decides, whatever the value looks 
     });
   });
 
+  it.each(['--token', '--password', '--api-key', '--client-secret'])(
+    'STRUCTURAL_ARGV_WHOLE treats %s as credential authority for both argument spellings',
+    (flag) => {
+      const value = `sk-${'Q'.repeat(16)};${'x'.repeat(20 * 1024)}SYNTHETIC_TAIL`;
+      expect(redactSecretShapedValue({ args: [flag, value, '--count=4'] })).toEqual({
+        args: [flag, '[redacted]', '--count=4'],
+      });
+      expect(redactSecretShapedValue({ args: [`${flag}=${value}`, '--count=4'] })).toEqual({
+        args: [`${flag}=[redacted]`, '--count=4'],
+      });
+      expect(redactSecretShapedValue({ args: [flag, '1234', `${flag}=1234`] })).toEqual({
+        args: [flag, '[redacted]', `${flag}=[redacted]`],
+      });
+    },
+  );
+
+  it('STRUCTURAL_ARGV_PORT preserves the ambiguous -p port exception without widening it', () => {
+    expect(redactSecretShapedValue({ args: ['-p=8080:80', '-p', '2222', '--port=3333'] })).toEqual({
+      args: ['-p=8080:80', '-p', '2222', '--port=3333'],
+    });
+  });
+
   it('leaves ordinary structured args alone — the negative control', () => {
     // Without this the rule above is satisfied by redacting everything, which would strip the stored row of
     // the diagnostic value that is its whole remaining purpose.
@@ -745,11 +767,59 @@ describe('redactSecretShapedValue — the KEY decides, whatever the value looks 
     expect(redactSecretShapedValue(benign)).toEqual(benign);
   });
 
-  it('keeps the auth SCHEME when the shape scrub already fired', () => {
-    // `Bearer` is not the secret, and which scheme a call used is exactly what a stored row is for. The
-    // wholesale key redaction is the fallback for what the shape scrub structurally cannot see.
+  it('keeps only the bounded auth scheme under a recognized credential key', () => {
+    // The scheme is public diagnostic information; a partial inner match cannot prove that the rest
+    // of a structurally identified credential is public.
     expect(redactSecretShapedValue({ Authorization: 'Bearer tok_abcdef123456' })).toEqual({
       Authorization: 'Bearer [redacted]',
+    });
+  });
+
+  it.each(['X-Api-Key', 'password', 'authToken', 'client_secret', 'sessionKey', 'credentials'])(
+    'STRUCTURAL_SECRET_WHOLE masks the entire %s value despite an inner shape match',
+    (key) => {
+      for (const prefix of ['', 'x'.repeat(20 * 1024)]) {
+        for (const recognized of [
+          `sk-${'Q'.repeat(16)}`,
+          'Bearer QQQQQQQQQQQQQQQQ',
+          'password="synthetic inner secret"',
+          'https://user:synthetic-password@service.invalid',
+        ]) {
+          const value = `${prefix}ordinary:${recognized};${'x'.repeat(20 * 1024)}SYNTHETIC_TAIL`;
+          expect(redactSecretShapedValue({ [key]: value }), 'STRUCTURAL_SECRET_WHOLE').toEqual({
+            [key]: '[redacted]',
+          });
+        }
+      }
+    },
+  );
+
+  it.each([
+    ['bEaReR', 'Bearer'],
+    ['bAsIc', 'Basic'],
+    ['tOkEn', 'Token'],
+  ])('STRUCTURAL_SECRET_SCHEME retains only canonical %s diagnostics', (input, canonical) => {
+    const value = `${input}\tQQQQQQQQQQQQQQQQ;${'x'.repeat(20 * 1024)}SYNTHETIC_TAIL`;
+    expect(redactSecretShapedValue({ Authorization: value })).toEqual({
+      Authorization: `${canonical} [redacted]`,
+    });
+  });
+
+  it('STRUCTURAL_SECRET_OPAQUE does not inspect a recognized secret container', () => {
+    const inspect = vi.fn(() => {
+      throw new Error('secret contents are outside the projection');
+    });
+    const nested = Object.defineProperty({}, 'value', { enumerable: true, get: inspect });
+    expect(
+      () => redactSecretShapedValue({ credentials: nested }),
+      'STRUCTURAL_SECRET_OPAQUE',
+    ).not.toThrow();
+    expect(redactSecretShapedValue({ credentials: nested })).toEqual({ credentials: '[redacted]' });
+    expect(inspect).not.toHaveBeenCalled();
+    expect(redactSecretShapedValue({ password: null, token: undefined, pin: 123456 })).toEqual({
+      password: null,
+      token: undefined,
+      pin: '[redacted]',
     });
   });
 
