@@ -335,10 +335,10 @@ describe('run — bare-invocation Home gate', () => {
     expect(err()).toContain('home config is broken');
   });
 
-  it('reports an unexpected Home throw generically (exit 1, no raw message/stack leak)', async () => {
+  it('reports an unexpected Home throw as infrastructure (exit 9, no raw message/stack leak)', async () => {
     const { io, out, err } = interactiveIo();
     const { openHome } = fakeOpenHome(() => Promise.reject(new Error('internal boom')));
-    expect(await run(argv(), io, openHome)).toBe(EXIT_CODES.workflowFailed); // unexpected → exit 1
+    expect(await run(argv(), io, openHome)).toBe(EXIT_CODES.infrastructureFailed);
     expect(out()).toBe('');
     expect(err()).not.toContain('internal boom'); // the raw message is never surfaced
     expect(err()).toContain('unexpected');

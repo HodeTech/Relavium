@@ -447,3 +447,7 @@ removed from current reap views, even while another connection is still closing.
 snapshot authorises killing a later process. Cancellation continues to preserve sibling calls;
 cleanup does not replay tool execution. The canonical contract and remaining host-wide obligations
 are in [MCP integration](../reference/shared-core/mcp-integration.md#invocation-and-transport-lifetimes).
+
+## Wave 3 decision acceptance — 2026-10-16
+
+> Amended 2026-10-16: [ADR-0110](0110-cli-diagnostics-and-discovery-have-explicit-compatibility.md) is accepted by the maintainer. Fatal cleanup follows actual native ownership: SDK-backed MCP owns its live PID, not a detached POSIX process group. Windows uses the verified absolute teardown facility. Bounded process termination never certifies an MCP close acknowledgement or universal descendant containment. The approved [execution plan](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#proposed-implementation-increments) owns implementation and review gates; this note does not claim implementation landing.

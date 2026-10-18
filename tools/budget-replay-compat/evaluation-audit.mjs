@@ -73,7 +73,19 @@ export function auditRequiredEvaluations(owned, processes) {
           ? ['packages/db/src/index.ts', 'packages/db/src/session-usage-write.ts']
           : ['packages/core/src/engine/engine.ts'];
     if (child.stage === 'predecessor')
-      required.push('packages/db/src/run-history-store.ts', 'apps/cli/src/engine/checkpointer.ts');
+      required.push(
+        'packages/db/src/run-history-store.ts',
+        'apps/cli/src/engine/checkpointer.ts',
+        'packages/shared/src/terminal-safe.ts',
+      );
+    if (child.stage === 'producer')
+      required.push(
+        'packages/shared/src/relavium-error.ts',
+        'packages/shared/src/fs-root-limits.ts',
+        'packages/shared/src/terminal-safe.ts',
+        'packages/llm/src/scrub-secrets.ts',
+        'packages/core/src/tools/dispatch-error.ts',
+      );
     for (const target of required)
       assert.ok(
         records.some(

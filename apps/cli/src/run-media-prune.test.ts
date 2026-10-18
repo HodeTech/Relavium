@@ -22,6 +22,7 @@ const isolated = vi.hoisted(() => ({
     throw new Error('PRIVATE_SERVICE_SENTINEL');
   }),
 }));
+const nativeCleanups = new Set<() => Promise<void>>();
 vi.mock('node:os', async (original) => ({
   ...(await original<typeof import('node:os')>()),
   homedir: () => isolated.home,
@@ -51,7 +52,13 @@ beforeEach(() => {
   isolated.home = mkdtempSync(join(tmpdir(), 'private-media-maintenance-'));
   isolated.services.mockClear();
 });
-afterEach(() => rmSync(isolated.home, { recursive: true, force: true }));
+afterEach(async () => {
+  // Runner timeout aborts a context, not its raw async body. Join its actual child/work
+  // before another test replaces the mocked home or removes this case's directory.
+  await Promise.all([...nativeCleanups].map((close) => close()));
+  nativeCleanups.clear();
+  rmSync(isolated.home, { recursive: true, force: true });
+});
 const nonce = '12345678-1234-4234-8234-123456789abc';
 function legacy() {
   const root = join(isolated.home, '.relavium', 'media');
@@ -136,8 +143,14 @@ it('MEDIA_MAINTENANCE_LIVE: a current new producer prevents every legacy deletio
   expect(isolated.services).toHaveBeenCalledTimes(0);
 });
 
-it('MEDIA_MAINTENANCE_NATIVE_WRITER: an actual held producer survives refusal and then publishes', async () => {
+it('MEDIA_MAINTENANCE_NATIVE_WRITER: an actual held producer survives refusal and then publishes', async (context) => {
+  context.signal.throwIfAborted();
   const f = legacy();
+  const originalHome = isolated.home;
+  const deadline = performance.now() + 5000;
+  const remaining = (): number => Math.max(0, deadline - performance.now());
+  let sealed = false;
+  let work: Promise<unknown> = Promise.resolve();
   const child = fork(
     fileURLToPath(new URL('./engine/fixtures/media-prune-producer.ts', import.meta.url)),
     [f.root],
@@ -151,14 +164,71 @@ it('MEDIA_MAINTENANCE_NATIVE_WRITER: an actual held producer survives refusal an
     },
   );
   let diagnostic = '';
+  const phases: Array<{ phase: string; milliseconds: number }> = [];
+  const started = performance.now();
+  let actualClose = false;
+  let exitCode: number | null = null;
+  let exitSignal: string | null = null;
+  let disconnected = false;
   child.stderr?.on('data', (chunk: Buffer) => {
-    diagnostic += chunk.toString();
+    diagnostic = (diagnostic + chunk.toString()).slice(-4000);
   });
-  const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()));
+  child.once('exit', (code, signal) => {
+    exitCode = code;
+    exitSignal = signal;
+  });
+  child.once('disconnect', () => {
+    disconnected = true;
+  });
+  const closed = new Promise<void>((resolve) =>
+    child.once('close', () => {
+      actualClose = true;
+      resolve();
+    }),
+  );
+  child.on('message', (message: unknown) => {
+    if (
+      typeof message === 'object' &&
+      message !== null &&
+      'phase' in message &&
+      typeof message.phase === 'string' &&
+      ['loader-entry', 'worker-entry', 'store-imported', 'writing', 'done'].includes(
+        message.phase,
+      ) &&
+      phases.length < 32
+    )
+      phases.push({ phase: message.phase, milliseconds: performance.now() - started });
+  });
+  let closing: Promise<void> | undefined;
+  const close = (): Promise<void> => {
+    sealed = true;
+    closing ??= Promise.resolve().then(async () => {
+      if (!actualClose) child.kill('SIGKILL');
+      await closed;
+      await work.catch(() => undefined);
+    });
+    return closing;
+  };
+  nativeCleanups.add(close);
+  const assertCurrent = (): void => {
+    context.signal.throwIfAborted();
+    if (sealed || isolated.home !== originalHome || remaining() === 0)
+      throw new Error('Synthetic native case no longer admits work');
+  };
+  const onAbort = (): void => {
+    // The runner-owned afterEach still observes this same cleanup result.
+    void close().catch(() => undefined);
+  };
+  context.signal.addEventListener('abort', onAbort, { once: true });
   const writing = new Promise<void>((resolve, reject) => {
     const timer = setTimeout(
-      () => reject(new Error('Synthetic producer readiness deadline')),
-      5000,
+      () =>
+        reject(
+          new Error(
+            `Synthetic producer readiness deadline: ${JSON.stringify({ phases, actualClose, exitCode, exitSignal, disconnected })}`,
+          ),
+        ),
+      remaining(),
     );
     child.on('message', (message: unknown) => {
       if (
@@ -182,19 +252,19 @@ it('MEDIA_MAINTENANCE_NATIVE_WRITER: an actual held producer survives refusal an
   });
   try {
     await writing;
+    assertCurrent();
     const io = captureIo();
-    expect(
-      await run(
-        ['node', 'relavium', 'media', 'prune-temporaries', '--legacy-offline', '--force'],
-        io.io,
-      ),
-      'MEDIA_MAINTENANCE_NATIVE_WRITER',
-    ).toBe(2);
+    work = run(
+      ['node', 'relavium', 'media', 'prune-temporaries', '--legacy-offline', '--force'],
+      io.io,
+    );
+    expect(await work, 'MEDIA_MAINTENANCE_NATIVE_WRITER').toBe(2);
+    assertCurrent();
     expect(existsSync(f.first)).toBe(true);
     const done = new Promise<unknown>((resolve, reject) => {
       const timer = setTimeout(
         () => reject(new Error('Synthetic producer completion deadline')),
-        5000,
+        remaining(),
       );
       child.on('message', (message: unknown) => {
         if (
@@ -214,14 +284,16 @@ it('MEDIA_MAINTENANCE_NATIVE_WRITER: an actual held producer survives refusal an
     });
     child.send('release');
     const result = await done;
+    assertCurrent();
     if (typeof result !== 'object' || result === null || !('handle' in result))
       throw new Error('Missing native producer result');
     expect(result.handle, 'MEDIA_MAINTENANCE_NATIVE_WRITER').toMatch(/^media:\/\/sha256-/);
-    await exited;
+    await closed;
     expect(child.exitCode).toBe(0);
   } finally {
-    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
-    await exited;
+    await close();
+    context.signal.removeEventListener('abort', onAbort);
+    nativeCleanups.delete(close);
   }
 });
 
@@ -249,8 +321,30 @@ for (const kind of ['root', 'shard', 'file-symlink', 'hardlink'] as const) {
         ['node', 'relavium', 'media', 'prune-temporaries', '--legacy-offline', '--force', '--json'],
         io.io,
       ),
-      'MEDIA_MAINTENANCE_CONTAINMENT',
-    ).toBe(kind === 'root' ? 0 : 1);
+      `MEDIA_MAINTENANCE_CONTAINMENT ${JSON.stringify({
+        diagnosticCodes: io
+          .err()
+          .split('\n')
+          .filter(Boolean)
+          .map((line) => {
+            try {
+              const value: unknown = JSON.parse(line);
+              if (
+                typeof value === 'object' &&
+                value !== null &&
+                'code' in value &&
+                ['invalid_invocation', 'internal', 'cli_internal', 'storage_unavailable'].includes(
+                  String(value.code),
+                )
+              )
+                return value.code;
+            } catch {
+              /* Only fixed structured diagnostic codes belong in this test's failure evidence. */
+            }
+            return 'unclassified';
+          }),
+      })}`,
+    ).toBe(kind === 'root' ? 0 : 9);
     // Initial root aliases are admitted and pinned by ADR-0105; linked descendants are refused.
     expect(readFileSync(witness, 'utf8')).toBe('PRIVATE_OUTSIDE_BYTES');
     expect(io.out() + io.err()).not.toContain(isolated.home);

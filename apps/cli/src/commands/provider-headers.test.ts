@@ -22,7 +22,8 @@ import { runProviderCommand, type ProviderCommandDeps } from './provider.js';
 const BASE_URL = 'https://wave7-command.example/v1';
 const POLICY_MESSAGE = 'Provider headers are disabled until keychain custody is implemented.';
 const CORRUPT_MESSAGE = 'Stored provider headers are invalid.';
-const INTERNAL_MESSAGE = 'An unexpected internal error occurred.';
+const INTERNAL_MESSAGE =
+  'An unexpected CLI failure occurred. Inspect existing work before repeating paid or effectful operations.';
 const MALFORMED_HEADERS = '{"x-wave7-malformed-opaque":"cedar-river-legacy",';
 const NONSTRING_HEADERS = '{"x-wave7-nonstring-opaque":37}';
 const ERROR_SENTINELS = [
@@ -290,18 +291,24 @@ describe('ADR-0108 provider-header command projections', () => {
                 { type: 'error', code: projected.code, message: projected.message },
               ]);
             else {
-              expect(rendered.err()).toContain(`relavium: ${projected.message}\n`);
-              if (verbose) {
+              const ownStack: unknown = Object.getOwnPropertyDescriptor(error, 'stack')?.value;
+              // Native V8 stacks may be data or accessors; never invoke an accessor for diagnostics.
+              if (verbose && typeof ownStack === 'string') {
+                expect(rendered.err()).toContain(`relavium: ${projected.message}\n`);
                 expect(rendered.err()).toContain(`${error.name}: ${error.message}\n`);
                 expect(rendered.err()).toMatch(/\n\s+at /u);
               } else expect(rendered.err()).toBe(`relavium: ${projected.message}\n`);
             }
-            // The causal diagnostic witness must inspect real verbose output before internal error-shape
-            // checks: a key-bearing parser diagnostic should fail at its public rendering boundary.
+            // Inspect actual public diagnostic bytes before private error-shape checks.
+            // Explicit data-stack masking is covered separately by render-error.test.ts.
             assertNoLegacy(rendered.err(), 'FS_CAUSAL_PROVIDER_HEADER_DIAGNOSTIC');
             expect(isProviderHeaderPolicyError(error)).toBe(policy);
             expect(error.name).toBe(policy ? 'ProviderHeaderPolicyError' : 'TypeError');
-            expect(error.message).toBe(policy ? POLICY_MESSAGE : CORRUPT_MESSAGE);
+            // Pin the store boundary even when native Error.stack is an accessor and the
+            // safe fixed renderer correctly declines to read it. Both boundaries must hold.
+            expect(error.message, 'FS_CAUSAL_PROVIDER_HEADER_DIAGNOSTIC').toBe(
+              policy ? POLICY_MESSAGE : CORRUPT_MESSAGE,
+            );
             expect(Object.hasOwn(error, 'cause')).toBe(false);
             const ownProperties = Object.getOwnPropertyNames(error).map((key) => {
               const value: unknown = Object.getOwnPropertyDescriptor(error, key)?.value;
@@ -309,9 +316,9 @@ describe('ADR-0108 provider-header command projections', () => {
             });
             assertNoLegacy(JSON.stringify(ownProperties));
             expect(projected).toEqual({
-              code: policy ? 'invalid_invocation' : 'internal',
+              code: policy ? 'invalid_invocation' : 'cli_internal',
               message: policy ? POLICY_MESSAGE : INTERNAL_MESSAGE,
-              exitCode: policy ? 2 : 1,
+              exitCode: policy ? 2 : 9,
             });
             expect(fetch).not.toHaveBeenCalled();
             expect(globalThis.fetch).not.toHaveBeenCalled();

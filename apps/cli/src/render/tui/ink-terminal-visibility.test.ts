@@ -4,6 +4,8 @@ import { WorkflowEngine, createInMemoryHost, parseWorkflow } from '@relavium/cor
 import { driveRun } from '../../commands/drive.js';
 import { captureIo } from '../../test-support.js';
 import { createInkRenderer } from './ink-renderer.js';
+import { WorkflowLifetime } from '../../commands/workflow-lifetime.js';
+import { invocationFixture } from '../../process/invocation.test-support.js';
 
 function deferred() {
   let resolve!: () => void;
@@ -64,10 +66,13 @@ it('actual Ink displays a terminal after native input ACK while the host receipt
   });
   const handle = engine.start({ workflow });
   const io = captureIo();
+  const f = invocationFixture();
+  const lifetime = new WorkflowLifetime(f.invocation, io.io, () => () => undefined);
   const summaries: string[] = [];
   const listeners = new Set(process.rawListeners('beforeExit'));
   let settled = false;
   const driving = driveRun({
+    lifetime,
     engine,
     handle,
     io: io.io,
@@ -117,6 +122,9 @@ it('actual Ink displays a terminal after native input ACK while the host receipt
   } finally {
     raw.resolve();
     await driving;
+    await lifetime.finish();
+    expect(f.registry.activeOwners).toBe(0);
+    expect(f.exit).not.toHaveBeenCalled();
     for (const listener of process.rawListeners('beforeExit')) {
       if (!listeners.has(listener))
         Reflect.apply(process.removeListener.bind(process), process, ['beforeExit', listener]);

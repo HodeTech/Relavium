@@ -1,0 +1,850 @@
+import { ChildProcess, spawn } from 'node:child_process';
+
+import { describe, expect, it, vi } from 'vitest';
+
+import { createCliInvocation } from './invocation.js';
+import { InvocationRegistry } from './invocation-registry.js';
+import {
+  createNativeProcessController,
+  nativeProcessesForInvocation,
+  type NativeProcessPorts,
+} from './native-process-owner.js';
+import { WindowsTeardownUnavailableError } from './windows-teardown.js';
+
+function deferred<T>(): { readonly promise: Promise<T>; readonly resolve: (value: T) => void } {
+  let resolve: (value: T) => void = () => undefined;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+/** Explicit simulated native events: these test ownership protocol, not OS containment. */
+function child(pid = 40): ChildProcess {
+  const target = new ChildProcess();
+  Object.defineProperty(target, 'pid', { value: pid });
+  vi.spyOn(target, 'kill').mockReturnValue(true);
+  return target;
+}
+
+function harness(platform: NodeJS.Platform = 'linux') {
+  let now = 0;
+  const scheduled = new Map<() => void, number>();
+  const schedule = (milliseconds: number, fire: () => void): (() => void) => {
+    scheduled.set(fire, now + milliseconds);
+    return () => scheduled.delete(fire);
+  };
+  const registry = new InvocationRegistry({ now: () => now, schedule });
+  const helper = child(80);
+  const request = vi.fn(() => helper);
+  const verify = vi.fn(() => Promise.resolve({ spawn: request }));
+  const signal = vi.fn<(pid: number, signal: 0 | 'SIGKILL') => void>(() => undefined);
+  const helperKill = vi.spyOn(helper, 'kill');
+  const removeExit = vi.fn();
+  let exit: (() => void) | undefined;
+  const subscribeExit = vi.fn((listener: () => void) => {
+    exit = listener;
+    return removeExit;
+  });
+  const ports: NativeProcessPorts = {
+    platform,
+    now: () => now,
+    schedule,
+    signal,
+    verifyWindows: verify,
+    subscribeExit,
+  };
+  const controller = createNativeProcessController(registry, ports);
+  const advance = (milliseconds: number): void => {
+    now += milliseconds;
+    for (const [fire, at] of [...scheduled]) {
+      if (at > now || !scheduled.has(fire)) continue;
+      scheduled.delete(fire);
+      fire();
+    }
+  };
+  return {
+    registry,
+    controller,
+    ports,
+    helper,
+    helperKill,
+    request,
+    verify,
+    signal,
+    subscribeExit,
+    removeExit,
+    scheduled,
+    advance,
+    exit: () => exit?.(),
+    now: () => now,
+  };
+}
+
+describe('creation-owned native processes', () => {
+  it('constructs inertly and binds only the explicit original invocation identity', () => {
+    const h = harness('win32');
+    expect(h.verify).not.toHaveBeenCalled();
+    expect(h.subscribeExit).not.toHaveBeenCalled();
+    expect(h.registry.activeOwners).toBe(0);
+    const invocation = createCliInvocation();
+    expect(nativeProcessesForInvocation(invocation)).toBe(nativeProcessesForInvocation(invocation));
+    expect(nativeProcessesForInvocation(invocation)).not.toBe(
+      nativeProcessesForInvocation(createCliInvocation()),
+    );
+    expect(nativeProcessesForInvocation(undefined)).toBeUndefined();
+  });
+
+  it('reserves before Windows verification and refuses a stopped creation before native entry', async () => {
+    const h = harness('win32');
+    const verified = deferred<{ readonly spawn: (pid: number) => ChildProcess }>();
+    const controller = createNativeProcessController(h.registry, {
+      ...h.ports,
+      verifyWindows: () => verified.promise,
+    });
+    const prepared = controller.reserve('pid').catch((cause: unknown) => cause);
+    expect(h.registry.activeOwners, 'NATIVE_PREENTRY_REGISTRATION').toBe(1);
+    const termination = h.registry.terminate({ kind: 'normal' });
+    verified.resolve({ spawn: h.request });
+    expect(await prepared).toMatchObject({ code: 'cli_internal' });
+    expect(await termination).toMatchObject({ kind: 'settled', unacknowledgedOwners: 0 });
+    expect(h.request).not.toHaveBeenCalled();
+    expect(h.removeExit).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves fixed facility refusal and retires only the proved-empty reservation', async () => {
+    const h = harness('win32');
+    const controller = createNativeProcessController(h.registry, {
+      ...h.ports,
+      verifyWindows: () => Promise.reject(new WindowsTeardownUnavailableError()),
+    });
+    await expect(controller.reserve('group')).rejects.toBeInstanceOf(
+      WindowsTeardownUnavailableError,
+    );
+    expect(h.registry.activeOwners).toBe(0);
+    expect(h.signal).not.toHaveBeenCalled();
+  });
+
+  it('caches only the invocation facility, never target PID or eligibility', async () => {
+    const h = harness('win32');
+    const first = await h.controller.reserve('pid');
+    const second = await h.controller.reserve('pid');
+    expect(h.verify).toHaveBeenCalledTimes(1);
+    expect(h.registry.activeOwners).toBe(2);
+    expect(h.subscribeExit).toHaveBeenCalledTimes(1);
+    first.abandon();
+    expect(h.removeExit).not.toHaveBeenCalled();
+    second.abandon();
+    await second.whenClosed;
+    expect(h.removeExit).toHaveBeenCalledTimes(1);
+    const third = await h.controller.reserve('pid');
+    expect(h.subscribeExit).toHaveBeenCalledTimes(2);
+    third.abandon();
+  });
+
+  it('retains a native error and successful kill request until actual close', async () => {
+    const h = harness();
+    const lease = await h.controller.reserve('pid');
+    const target = child();
+    lease.bindChild(target);
+    target.emit('error', new Error('untrusted command error'));
+    await Promise.resolve(); // Observe any erroneous retirement reaction before asking for cancellation.
+    expect(h.registry.activeOwners, 'NATIVE_ERROR_NOT_ACK').toBe(1);
+    const stop = lease.stop();
+    let settled = false;
+    void stop.then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    expect(settled, 'NATIVE_REQUEST_NOT_ACK').toBe(false);
+    expect(h.registry.activeOwners).toBe(1);
+    expect(h.signal.mock.calls).toEqual([
+      [40, 0],
+      [40, 'SIGKILL'],
+    ]);
+    target.emit('close', null);
+    await stop;
+    expect(h.registry.activeOwners).toBe(0);
+  });
+
+  it('uses group authority after leader exit and releases it after final close reap', async () => {
+    const h = harness();
+    const lease = await h.controller.reserve('group');
+    const target = child();
+    lease.bindChild(target);
+    target.emit('exit', 0);
+    expect(h.signal).toHaveBeenCalledWith(-40, 'SIGKILL');
+    expect(h.registry.activeOwners).toBe(1);
+    target.emit('close', 0);
+    await lease.whenClosed;
+    expect(h.signal.mock.calls, 'NATIVE_GROUP_FINAL_REAP').toEqual([
+      [-40, 'SIGKILL'],
+      [-40, 'SIGKILL'],
+    ]);
+    h.registry.reapNativeAtExit();
+    expect(h.signal).toHaveBeenCalledTimes(2);
+    expect(h.registry.activeOwners).toBe(0);
+  });
+
+  it('never promotes a shared foreground PID to group authority', async () => {
+    const h = harness();
+    const lease = await h.controller.reserve('pid');
+    const target = child();
+    lease.bindChild(target);
+    target.emit('exit', 0);
+    h.exit();
+    expect(h.signal).not.toHaveBeenCalled();
+    target.emit('close', 0);
+    await lease.whenClosed;
+  });
+
+  it('retains a later group EPERM after successful cancellation and joins the actual close', async () => {
+    const h = harness('darwin');
+    const lease = await h.controller.reserve('group');
+    const target = child();
+    lease.bindChild(target);
+    const closed = lease.stop();
+    expect(h.signal.mock.calls).toEqual([[-40, 'SIGKILL']]);
+    h.signal.mockImplementationOnce(() => {
+      throw Object.assign(new Error('synthetic native refusal'), { code: 'EPERM', errno: -1 });
+    });
+    target.emit('exit', null);
+    expect(h.registry.observations.exitCode(), 'NATIVE_GROUP_REFUSAL_RETAINED').toBe(9);
+    expect(h.registry.activeOwners).toBe(1);
+    h.signal.mockImplementationOnce(() => {
+      throw Object.assign(new Error('synthetic native absence'), { code: 'ESRCH', errno: -3 });
+    });
+    target.emit('close', null);
+    await closed;
+    expect(h.signal.mock.calls).toEqual([
+      [-40, 'SIGKILL'],
+      [-40, 'SIGKILL'],
+      [-40, 'SIGKILL'],
+    ]);
+    expect(h.registry.activeOwners).toBe(0);
+    expect(h.registry.observations.exitCode(), 'NATIVE_GROUP_REFUSAL_RETAINED').toBe(9);
+  });
+
+  it('keeps a Windows helper and target as two independent native close obligations', async () => {
+    const h = harness('win32');
+    const lease = await h.controller.reserve('pid');
+    const target = child();
+    lease.bindChild(target);
+    const closed = lease.stop();
+    expect(h.request).toHaveBeenCalledExactlyOnceWith(40);
+    h.helper.emit('close', 0);
+    await Promise.resolve();
+    expect(h.registry.activeOwners, 'WINDOWS_TARGET_JOIN').toBe(1);
+    target.emit('close', null);
+    await closed;
+    expect(h.registry.activeOwners).toBe(0);
+    expect(h.scheduled.size).toBe(0);
+  });
+
+  it('retains helper authority when target closes first and never repeats taskkill', async () => {
+    const h = harness('win32');
+    const lease = await h.controller.reserve('group');
+    const target = child();
+    lease.bindChild(target);
+    const stopped = lease.stop();
+    target.emit('close', null);
+    await Promise.resolve();
+    expect(h.registry.activeOwners, 'WINDOWS_HELPER_JOIN').toBe(1);
+    void lease.stop();
+    expect(h.request).toHaveBeenCalledTimes(1);
+    h.helper.emit('close', 0);
+    await stopped;
+    expect(h.registry.activeOwners).toBe(0);
+  });
+
+  it('preserves normal outcome when taskkill loses a race with actual cooperative root close', async () => {
+    const h = harness('win32');
+    const lease = await h.controller.reserve('pid');
+    const target = child();
+    lease.bindChild(target);
+    void lease.stop();
+    target.emit('close', 0);
+    h.helper.emit('close', 128);
+    await lease.whenClosed;
+    expect(h.registry.termination).toBeUndefined();
+    expect(h.registry.observations.exitCode()).toBe(0);
+    expect(h.registry.activeOwners).toBe(0);
+  });
+
+  it('retains helper error as a failure and joins both actual native closes', async () => {
+    const h = harness('win32');
+    const lease = await h.controller.reserve('pid');
+    const target = child();
+    lease.bindChild(target);
+    void lease.stop();
+    h.helper.emit('error', new Error('private helper fault'));
+    expect(h.registry.observations.exitCode()).toBe(9);
+    expect(h.registry.activeOwners, 'WINDOWS_HELPER_ERROR_JOIN').toBe(1);
+    target.emit('close', null);
+    await Promise.resolve();
+    expect(h.registry.activeOwners, 'WINDOWS_HELPER_ERROR_JOIN').toBe(1);
+    h.helper.emit('close', null);
+    await lease.whenClosed;
+    expect(h.registry.activeOwners).toBe(0);
+  });
+
+  it('retains a fixed infrastructure fault when taskkill fails while its owned root remains live', async () => {
+    const h = harness('win32');
+    const lease = await h.controller.reserve('pid');
+    const target = child();
+    lease.bindChild(target);
+    void lease.stop();
+    h.helper.emit('close', 1);
+    expect(h.registry.observations.exitCode()).toBe(9);
+    expect(h.registry.activeOwners).toBe(1);
+    expect(h.request).toHaveBeenCalledTimes(1);
+    target.emit('close', null);
+    await lease.whenClosed;
+  });
+
+  it.each(['helper error', 'finite exit'])(
+    'bounds synchronous helper kill-error reentry during %s without acknowledging close',
+    async (entry) => {
+      const h = harness('win32');
+      const lease = await h.controller.reserve('pid');
+      const target = child();
+      lease.bindChild(target);
+      void lease.stop();
+      let killRequests = 0;
+      h.helperKill.mockImplementation(() => {
+        killRequests++;
+        // Node's native kill refusal emits error synchronously. Bound the simulated refusal
+        // so removing the guard yields a semantic count failure, not a stack-overflow witness.
+        if (killRequests <= 2) h.helper.emit('error', new Error('synthetic native kill refusal'));
+        return false;
+      });
+      if (entry === 'finite exit') {
+        target.emit('close', 0);
+        h.exit();
+        expect(h.registry.termination).toBeUndefined();
+      } else {
+        h.helper.emit('error', new Error('synthetic helper failure'));
+      }
+      expect(killRequests, 'WINDOWS_HELPER_CANCEL_REENTRY').toBe(1);
+      expect(h.registry.observations.exitCode()).toBe(9);
+      expect(h.registry.activeOwners, 'WINDOWS_HELPER_CANCEL_REENTRY').toBe(1);
+      target.emit('close', 0);
+      await Promise.resolve();
+      expect(h.registry.activeOwners, 'WINDOWS_HELPER_CANCEL_REENTRY').toBe(1);
+      // A later, independent exit attempt remains possible; neither failed request was an ACK.
+      h.helperKill.mockReturnValue(false);
+      h.exit();
+      expect(h.helperKill).toHaveBeenCalledTimes(2);
+      h.helper.emit('close', null);
+      await lease.whenClosed;
+      expect(h.registry.activeOwners).toBe(0);
+    },
+  );
+
+  it('does not enter taskkill for a root whose exit precedes stdio close', async () => {
+    const h = harness('win32');
+    const lease = await h.controller.reserve('pid');
+    const target = child();
+    lease.bindChild(target);
+    target.emit('exit', 0);
+    const stopped = lease.stop();
+    expect(h.request, 'WINDOWS_ROOT_EXIT_REFUSAL').not.toHaveBeenCalled();
+    expect(h.registry.activeOwners).toBe(1);
+    target.emit('close', 0);
+    await stopped;
+  });
+
+  it('performs immediate best-effort live-root checking before taskkill', async () => {
+    const h = harness('win32');
+    h.signal.mockImplementation(() => {
+      const error = new Error('absent');
+      Object.defineProperty(error, 'code', { value: 'ESRCH' });
+      throw error;
+    });
+    const lease = await h.controller.reserve('pid');
+    const target = child();
+    lease.bindChild(target);
+    void lease.stop();
+    expect(h.request, 'WINDOWS_LIVE_ROOT_CHECK').not.toHaveBeenCalled();
+    expect(h.registry.activeOwners).toBe(1);
+    target.emit('close', null);
+    await lease.whenClosed;
+  });
+
+  it('shortens an already-entered ordinary helper to later fatal and earlier signal deadlines', async () => {
+    const h = harness('win32');
+    const lease = await h.controller.reserve('pid');
+    const target = child();
+    lease.bindChild(target);
+    void lease.stop();
+    expect([...h.scheduled.values()]).toEqual([3000]);
+    h.advance(500);
+    void h.registry.terminate({ kind: 'infrastructure', code: 'cli_internal' });
+    // Ordinary helper's original limit is earlier than the newly observed fatal bound.
+    expect([...h.scheduled.values()].sort()).toEqual([3000, 3500]);
+    void h.registry.terminate({ kind: 'signal', signalNumber: 15, deadline: 1000 });
+    expect([...h.scheduled.values()], 'WINDOWS_CHANGED_BUDGET').toEqual([1000, 1000]);
+    h.advance(499);
+    expect(h.helperKill).not.toHaveBeenCalled();
+    h.advance(1);
+    expect(h.helperKill).toHaveBeenCalled();
+    expect(h.request).toHaveBeenCalledTimes(1);
+    expect(h.registry.activeOwners).toBe(1); // expiry never fabricates close
+    target.emit('close', null);
+    h.helper.emit('close', null);
+    await lease.whenClosed;
+    expect(h.registry.activeOwners).toBe(0);
+  });
+
+  it('does not renew an ordinary helper deadline on equal or later failures', async () => {
+    const h = harness('win32');
+    const lease = await h.controller.reserve('pid');
+    const target = child();
+    lease.bindChild(target);
+    void lease.stop();
+    h.advance(400);
+    void h.registry.terminate({ kind: 'infrastructure', code: 'output_unavailable' });
+    h.advance(400);
+    void h.registry.terminate({ kind: 'infrastructure', code: 'cli_internal' });
+    expect([...h.scheduled.values()].sort(), 'WINDOWS_ORIGINAL_BOUND').toEqual([3000, 3400]);
+    target.emit('close', 0);
+    h.helper.emit('close', 0);
+    await lease.whenClosed;
+  });
+
+  it('at expiry performs finite existing requests without starting a helper or acknowledging closure', async () => {
+    const h = harness('win32');
+    const lease = await h.controller.reserve('pid');
+    const target = child();
+    lease.bindChild(target);
+    const closing = h.registry.terminate({ kind: 'signal', signalNumber: 15, deadline: 0 });
+    expect(h.request).not.toHaveBeenCalled();
+    expect(h.signal).toHaveBeenCalledWith(40, 'SIGKILL');
+    expect(await closing).toMatchObject({ kind: 'deadline', unacknowledgedOwners: 1 });
+    target.emit('close', null);
+    await lease.whenClosed;
+  });
+
+  it('rechecks the live budget when immediate liveness work synchronously expires it', async () => {
+    const h = harness('win32');
+    const lease = await h.controller.reserve('pid');
+    const target = child();
+    lease.bindChild(target);
+    h.signal.mockImplementation((_pid, signal) => {
+      if (signal === 0)
+        void h.registry.terminate({ kind: 'signal', signalNumber: 15, deadline: 0 });
+    });
+    void lease.stop();
+    expect(h.request, 'WINDOWS_PREHELPER_BUDGET').not.toHaveBeenCalled();
+    expect(h.registry.budget.remainingMs()).toBe(0);
+    expect(h.signal).toHaveBeenCalledWith(40, 'SIGKILL');
+    expect(h.registry.activeOwners).toBe(1);
+    target.emit('close', null);
+    await lease.whenClosed;
+  });
+
+  it('finite exit cleanup kills only active owned resources and starts no taskkill helper', async () => {
+    const h = harness('win32');
+    const lease = await h.controller.reserve('pid');
+    const target = child();
+    lease.bindChild(target);
+    h.exit();
+    expect(h.signal.mock.calls).toEqual([
+      [40, 0],
+      [40, 'SIGKILL'],
+    ]);
+    expect(h.request).not.toHaveBeenCalled();
+    expect(h.registry.activeOwners).toBe(1);
+    target.emit('close', null);
+    await lease.whenClosed;
+    h.exit();
+    expect(h.signal).toHaveBeenCalledTimes(2);
+  });
+
+  it('a finite exit failure records a fixed diagnosis without entering normal async shutdown', async () => {
+    const h = harness('win32');
+    const lease = await h.controller.reserve('pid');
+    const target = child();
+    lease.bindChild(target);
+    h.signal.mockImplementation(() => {
+      throw new Error('native signal failure');
+    });
+    h.exit();
+    expect(h.registry.termination, 'NATIVE_EXIT_NO_TERMINATE').toBeUndefined();
+    expect(h.registry.observations.exitCode()).toBe(9);
+    expect(h.request).not.toHaveBeenCalled();
+    expect(h.scheduled.size).toBe(0);
+    expect(h.registry.activeOwners).toBe(1);
+    target.emit('close', 0);
+    await lease.whenClosed;
+  });
+
+  it('finite exit still cancels an existing helper after target close without reauthorizing the root', async () => {
+    const h = harness('win32');
+    const lease = await h.controller.reserve('pid');
+    const target = child();
+    lease.bindChild(target);
+    void lease.stop();
+    target.emit('close', 0);
+    h.signal.mockClear();
+    h.exit();
+    expect(h.helperKill, 'NATIVE_EXIT_EXISTING_HELPER').toHaveBeenCalledTimes(1);
+    expect(h.signal).not.toHaveBeenCalled();
+    expect(h.request).toHaveBeenCalledTimes(1);
+    expect(h.registry.activeOwners).toBe(1);
+    h.helper.emit('close', 0);
+    await lease.whenClosed;
+  });
+
+  it('retains SDK close independently from public cancellation and uses positive live PID only', async () => {
+    const h = harness();
+    const observer = await h.controller.observeMcp();
+    const nativeClosed = deferred<void>();
+    let closed = false;
+    const close = vi.fn(() => Promise.resolve());
+    observer.attach({
+      readPid: () => 70,
+      isClosed: () => closed,
+      whenClosed: nativeClosed.promise,
+      close,
+    });
+    void h.registry.terminate({ kind: 'normal' });
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(h.signal.mock.calls, 'MCP_POSITIVE_PID').toEqual([
+      [70, 0],
+      [70, 'SIGKILL'],
+    ]);
+    await Promise.resolve();
+    expect(h.registry.activeOwners).toBe(1);
+    observer.abandonIfUnattached();
+    expect(h.registry.activeOwners).toBe(1);
+    closed = true;
+    nativeClosed.resolve();
+    await vi.waitFor(() => expect(h.registry.activeOwners).toBe(0));
+  });
+
+  it('retains a rejected MCP native-close observation as uncertainty through finite expiry', async () => {
+    const h = harness();
+    const observer = await h.controller.observeMcp();
+    let rejectClosed: (cause: unknown) => void = () => undefined;
+    const nativeClosed = new Promise<void>((_resolve, reject) => {
+      rejectClosed = reject;
+    });
+    const cause = new TypeError('PRIVATE_MCP_NATIVE_CLOSE_OBSERVATION');
+    const close = vi.fn(() => Promise.resolve());
+    observer.attach({ readPid: () => 70, isClosed: () => false, whenClosed: nativeClosed, close });
+    rejectClosed(cause);
+    await vi.waitFor(() => expect(h.registry.observations.exitCode()).toBe(9));
+    expect(h.registry.observations.infrastructureCode()).toBe('cli_internal');
+    expect(close).toHaveBeenCalledOnce();
+    expect(h.registry.activeOwners, 'MCP_REJECTED_NATIVE_CLOSE_NOT_ACK').toBe(1);
+    observer.abandonIfUnattached();
+    h.advance(3000);
+    const result = await h.registry.terminate({ kind: 'normal' });
+    expect(result).toMatchObject({ kind: 'deadline', unacknowledgedOwners: 1 });
+    const priorTermination = h.registry.termination;
+    h.exit();
+    expect(h.registry.termination).toBe(priorTermination);
+    expect(close).toHaveBeenCalledOnce();
+    expect(h.registry.activeOwners).toBe(1);
+    expect(h.removeExit).not.toHaveBeenCalled();
+  });
+
+  it.each(['synchronous throw', 'promise rejection'] as const)(
+    'retains an MCP cooperative-close %s until the exact native-close acknowledgment',
+    async (failure) => {
+      const h = harness();
+      const observer = await h.controller.observeMcp();
+      const nativeClosed = deferred<void>();
+      let closed = false;
+      const cause = new TypeError('PRIVATE_MCP_COOPERATIVE_CLOSE');
+      const close = vi.fn(() => {
+        if (failure === 'synchronous throw') throw cause;
+        return Promise.reject(cause);
+      });
+      observer.attach({
+        readPid: () => 70,
+        isClosed: () => closed,
+        whenClosed: nativeClosed.promise,
+        close,
+      });
+      const stopping = h.registry.terminate({ kind: 'normal' });
+      await vi.waitFor(() => expect(h.registry.observations.exitCode()).toBe(9));
+      expect(h.registry.observations.infrastructureCode()).toBe('cli_internal');
+      expect(close).toHaveBeenCalledOnce();
+      let acknowledged = false;
+      void stopping.then(() => {
+        acknowledged = true;
+      });
+      // SDK liveness and successful finite requests are not the transferred native-close promise.
+      closed = true;
+      h.exit();
+      await Promise.resolve();
+      expect(acknowledged, 'MCP_COOPERATIVE_CLOSE_FAILURE_NOT_ACK').toBe(false);
+      expect(h.registry.activeOwners).toBe(1);
+      expect(h.removeExit).not.toHaveBeenCalled();
+      expect(close).toHaveBeenCalledOnce();
+      nativeClosed.resolve();
+      expect(await stopping).toMatchObject({ kind: 'settled', unacknowledgedOwners: 0 });
+      expect(h.registry.activeOwners).toBe(0);
+      expect(h.removeExit).toHaveBeenCalledOnce();
+      expect(h.registry.observations.exitCode()).toBe(9);
+      expect(h.scheduled.size).toBe(0);
+    },
+  );
+
+  it.each(['linux', 'darwin'] as const)(
+    'finite exit retains explicit group authority after simulated leader exit on %s',
+    async (platform) => {
+      const h = harness(platform);
+      const lease = await h.controller.reserve('group');
+      const target = child();
+      lease.bindChild(target);
+      target.emit('exit', 0); // The leader exited; inherited descriptors still owe native close.
+      h.signal.mockClear();
+      let acknowledged = false;
+      void lease.whenClosed.then(() => {
+        acknowledged = true;
+      });
+      h.exit();
+      expect(h.signal.mock.calls, 'POSIX_FINITE_EXIT_GROUP_AUTHORITY').toEqual([[-40, 'SIGKILL']]);
+      expect(h.registry.termination).toBeUndefined();
+      expect(h.request).not.toHaveBeenCalled();
+      expect(h.scheduled.size).toBe(0);
+      await Promise.resolve();
+      expect(acknowledged, 'POSIX_FINITE_EXIT_NOT_NATIVE_ACK').toBe(false);
+      expect(h.registry.activeOwners).toBe(1);
+      target.emit('close', 0);
+      await lease.whenClosed;
+      expect(h.registry.activeOwners).toBe(0);
+      expect(h.signal.mock.calls).toEqual([
+        [-40, 'SIGKILL'],
+        [-40, 'SIGKILL'],
+      ]);
+      h.exit();
+      expect(h.signal).toHaveBeenCalledTimes(2);
+      expect(h.removeExit).toHaveBeenCalledOnce();
+    },
+  );
+
+  it('records finite POSIX group failure without starting async shutdown or acknowledging close', async () => {
+    const h = harness();
+    const lease = await h.controller.reserve('group');
+    const target = child();
+    lease.bindChild(target);
+    target.emit('exit', 0);
+    h.signal.mockClear();
+    h.signal.mockImplementationOnce(() => {
+      throw Object.assign(new Error('PRIVATE_FINITE_GROUP_SIGNAL_FAILURE'), { code: 'EPERM' });
+    });
+    h.exit();
+    expect(h.signal.mock.calls, 'POSIX_FINITE_GROUP_FAILURE_REQUEST').toEqual([[-40, 'SIGKILL']]);
+    expect(h.registry.observations.exitCode()).toBe(9);
+    expect(h.registry.termination, 'POSIX_FINITE_GROUP_NO_ASYNC_SHUTDOWN').toBeUndefined();
+    expect(h.scheduled.size).toBe(0);
+    expect(h.registry.activeOwners).toBe(1);
+    target.emit('close', 0);
+    await lease.whenClosed;
+    expect(h.registry.activeOwners).toBe(0);
+    expect(h.registry.observations.exitCode()).toBe(9);
+  });
+
+  it.each(
+    (['linux', 'win32'] as const).flatMap((platform) =>
+      (['attached', 'late-attach', 'liveness-reentry'] as const).map((boundary) => ({
+        platform,
+        boundary,
+      })),
+    ),
+  )(
+    'keeps finite cancellation without a fresh MCP close after expiry on $platform at $boundary',
+    async ({ platform, boundary }) => {
+      const h = harness(platform);
+      const observer = await h.controller.observeMcp();
+      const nativeClosed = deferred<void>();
+      let closed = false;
+      const close = vi.fn(() => Promise.resolve());
+      const lifetime = {
+        readPid: () => 70,
+        isClosed: () => closed,
+        whenClosed: nativeClosed.promise,
+        close,
+      };
+      if (boundary !== 'late-attach') observer.attach(lifetime);
+      if (boundary === 'liveness-reentry')
+        h.signal.mockImplementation((_pid, signal) => {
+          if (signal === 0)
+            void h.registry.terminate({ kind: 'signal', signalNumber: 15, deadline: 0 });
+        });
+      const termination = h.registry.terminate(
+        boundary === 'liveness-reentry'
+          ? { kind: 'normal' }
+          : { kind: 'signal', signalNumber: 15, deadline: 0 },
+      );
+      if (boundary === 'late-attach') observer.attach(lifetime);
+      expect(close, 'NATIVE_COOPERATIVE_BUDGET').not.toHaveBeenCalled();
+      expect(h.registry.budget.remainingMs()).toBe(0);
+      expect(h.request).not.toHaveBeenCalled();
+      expect(h.signal).toHaveBeenCalledWith(70, 'SIGKILL');
+      expect(h.signal.mock.calls.every(([pid]) => pid > 0)).toBe(true);
+      expect(await termination).toMatchObject({ kind: 'deadline', unacknowledgedOwners: 1 });
+      expect(h.registry.activeOwners).toBe(1);
+      closed = true;
+      nativeClosed.resolve();
+      await vi.waitFor(() => expect(h.registry.activeOwners).toBe(0));
+    },
+  );
+
+  it('releases a bridge refusal before SDK attachment without losing an attached native obligation', async () => {
+    const h = harness();
+    const observer = await h.controller.observeMcp();
+    expect(h.registry.activeOwners).toBe(1);
+    observer.abandonIfUnattached();
+    await vi.waitFor(() => expect(h.registry.activeOwners).toBe(0));
+    expect(() => observer.beforeStart()).toThrow();
+    expect(h.signal).not.toHaveBeenCalled();
+  });
+});
+
+describe('actual owned native child lifetime', () => {
+  it.each(['stop', 'terminate', 'exit'] as const)(
+    'never kills a PID-less failed native spawn during same-tick %s',
+    async (boundary) => {
+      const h = harness();
+      const lease = await h.controller.reserve('pid');
+      const target = spawn(`${process.execPath}.relavium-missing-binary-${process.pid}`, [], {
+        stdio: 'ignore',
+        shell: false,
+      });
+      // Never enter the unsafe native call, including while proving the unfixed code fails.
+      const kill = vi.spyOn(target, 'kill').mockReturnValue(false);
+      expect(target.pid, 'FAILED_SPAWN_HAS_NO_PID').toBeUndefined();
+      lease.bindChild(target);
+      let closed = false;
+      target.once('close', () => {
+        closed = true;
+      });
+      if (boundary === 'stop') void lease.stop();
+      else if (boundary === 'terminate') void h.registry.terminate({ kind: 'normal' });
+      else h.exit();
+      expect(closed).toBe(false);
+      expect(h.registry.activeOwners, 'PIDLESS_SPAWN_NOT_CLOSE_ACK').toBe(1);
+      expect(kill, 'PIDLESS_SPAWN_NEVER_KILL_HANDLE').not.toHaveBeenCalled();
+      expect(h.signal).not.toHaveBeenCalled();
+      await lease.whenClosed;
+      expect(closed).toBe(true);
+      expect(h.registry.activeOwners).toBe(0);
+    },
+  );
+  it('never kills a failed PID-less taskkill helper while retaining both real closes', async () => {
+    const h = harness('win32');
+    const lease = await h.controller.reserve('pid');
+    const target = child(70);
+    let helper: ChildProcess | undefined;
+    let kill = vi.fn<ChildProcess['kill']>(() => false);
+    h.request.mockImplementation(() => {
+      helper = spawn(`${process.execPath}.relavium-missing-helper-${process.pid}`, [], {
+        stdio: 'ignore',
+        shell: false,
+      });
+      kill = vi.fn<ChildProcess['kill']>(() => false);
+      vi.spyOn(helper, 'kill').mockImplementation(kill);
+      expect(helper.pid).toBeUndefined();
+      return helper;
+    });
+    lease.bindChild(target);
+    void lease.stop();
+    h.exit();
+    expect(kill, 'PIDLESS_HELPER_NEVER_KILL_HANDLE').not.toHaveBeenCalled();
+    expect(h.registry.activeOwners).toBe(1);
+    await new Promise<void>((resolve) => helper?.once('close', () => resolve()));
+    expect(kill).not.toHaveBeenCalled();
+    expect(h.registry.activeOwners, 'PIDLESS_HELPER_NOT_TARGET_ACK').toBe(1);
+    target.emit('close', null);
+    await lease.whenClosed;
+    expect(h.registry.activeOwners).toBe(0);
+  });
+
+  it('registers before spawn, terminates a real owned child and joins native close', async () => {
+    const invocation = createCliInvocation();
+    const controller = nativeProcessesForInvocation(invocation);
+    if (controller === undefined) throw new Error('missing explicit invocation');
+    const lease = await controller.reserve('pid');
+    expect(invocation.registry.activeOwners, 'NATIVE_REAL_PREENTRY').toBe(1);
+    const target = spawn(
+      process.execPath,
+      ['-e', 'process.stdout.write("ready");setInterval(()=>{},1000)'],
+      {
+        stdio: ['ignore', 'pipe', 'ignore'],
+        shell: false,
+      },
+    );
+    lease.bindChild(target);
+    let watchdogFired = false;
+    const watchdog = setTimeout(() => {
+      watchdogFired = true;
+      target.kill('SIGKILL');
+    }, 5000);
+    try {
+      await new Promise<void>((resolve, reject) => {
+        target.stdout?.once('data', () => resolve());
+        target.once('error', reject);
+      });
+      await lease.stop();
+      expect(watchdogFired, 'NATIVE_OWNER_PID_CANCEL').toBe(false);
+      if (process.platform === 'win32')
+        expect(target.exitCode !== null || target.signalCode !== null).toBe(true);
+      else expect(target.signalCode).toBe('SIGKILL');
+      expect(invocation.registry.activeOwners).toBe(0);
+    } finally {
+      clearTimeout(watchdog);
+      target.kill('SIGKILL');
+      await lease.whenClosed;
+    }
+  }, 10000);
+
+  it.runIf(process.platform !== 'win32')(
+    'reaps an explicitly detached group when leader exit leaves inherited pipes open',
+    async () => {
+      const invocation = createCliInvocation();
+      const controller = nativeProcessesForInvocation(invocation);
+      if (controller === undefined) throw new Error('missing explicit invocation');
+      const lease = await controller.reserve('group');
+      const target = spawn(
+        process.execPath,
+        [
+          '-e',
+          [
+            'const {spawn}=require("node:child_process");',
+            'const descendant=spawn(process.execPath,["-e","setInterval(()=>{},1000)"],{stdio:["ignore",1,2]});',
+            'process.stdout.write("descendant "+descendant.pid+"\\n");',
+            'descendant.unref();',
+          ].join(''),
+        ],
+        { detached: true, stdio: ['ignore', 'pipe', 'pipe'], shell: false },
+      );
+      lease.bindChild(target);
+      let closed = false;
+      let watchdogFired = false;
+      target.once('close', () => {
+        closed = true;
+      });
+      const watchdog = setTimeout(() => {
+        watchdogFired = true;
+        if (!closed && target.pid !== undefined) process.kill(-target.pid, 'SIGKILL');
+      }, 5000);
+      try {
+        await lease.whenClosed;
+        expect(watchdogFired, 'NATIVE_OWNER_GROUP_EXIT_REAP').toBe(false);
+        expect(target.exitCode).toBe(0); // leader completed naturally; its descendant held the inherited pipe
+        expect(closed).toBe(true);
+        expect(invocation.registry.activeOwners).toBe(0);
+      } finally {
+        clearTimeout(watchdog);
+        if (!closed && target.pid !== undefined) process.kill(-target.pid, 'SIGKILL');
+        await lease.whenClosed;
+      }
+    },
+    10000,
+  );
+});

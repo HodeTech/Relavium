@@ -65,6 +65,7 @@ export {
   type DbOpenErrorCode,
   type RunMigrationsOptions,
 } from './client.js';
+export { isOwnedStorageFailure } from './storage-failure-facts.js';
 
 // Session persistence (1.X) — the directly-stored, append-only transcript layer over the
 // agent_sessions + session_messages tables. The domain ↔ row mappers double as the validation

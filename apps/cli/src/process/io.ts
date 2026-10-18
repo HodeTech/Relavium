@@ -1,12 +1,20 @@
-import { CliError } from './errors.js';
+import { CliError } from './cli-error.js';
 
 /**
  * The CLI's IO seam — injected so the command and process logic is testable with no real
  * TTY, stdout, or environment. The `bin` entry wires this to `process`; tests pass a capture.
  */
 export interface CliIo {
+  /** Captured native TUI/prompt sink. Memory-only hosts omit it and cannot silently acquire the real TTY. */
+  readonly nativeStdout?: NodeJS.WriteStream;
+  /** Captured native renderer error sink; owned TUI acquisition never borrows a later process global. */
+  readonly nativeStderr?: NodeJS.WriteStream;
+  /** Native Ink input from the same captured invocation; line-only hosts retain stdin without this field. */
+  readonly nativeStdin?: NodeJS.ReadStream;
   writeOut(text: string): void;
   writeErr(text: string): void;
+  /** Actual delivery to the same stdout; enqueueing or cancellation is never a restoration ACK. */
+  writeOutAcknowledged(text: string): Promise<void>;
   /** Acknowledge delivery to the same sink as writeErr; rejection never contains the stream's error text. */
   writeErrAcknowledged(text: string): Promise<void>;
   readonly env: Readonly<Record<string, string | undefined>>;
@@ -25,23 +33,34 @@ export interface CliIo {
 export function processIo(): CliIo {
   const { stdout, stderr, stdin } = process;
   return {
+    nativeStdout: stdout,
+    nativeStderr: stderr,
+    nativeStdin: stdin,
     writeOut: (text) => {
-      stdout.write(text);
+      writeNative(stdout, text);
     },
     writeErr: (text) => {
-      stderr.write(text);
+      writeNative(stderr, text);
     },
+    writeOutAcknowledged: (text) => acknowledgeWrite(stdout, text),
     writeErrAcknowledged: (text) => acknowledgeWrite(stderr, text),
     env: process.env,
-    stdoutIsTty: process.stdout.isTTY === true,
-    stdinIsTty: process.stdin.isTTY === true,
+    stdoutIsTty: stdout.isTTY === true,
+    stdinIsTty: stdin.isTTY === true,
     stdin,
   };
 }
 
-const STDERR_FAILED = 'The diagnostic output could not be acknowledged.';
+/** Classify failures at the exact native write, without blocking entered terminal restoration. */
+function writeNative(stream: NodeJS.WriteStream, text: string): void {
+  try {
+    stream.write(text);
+  } catch (cause) {
+    throw new CliError('output_unavailable', '', { cause });
+  }
+}
 
-function canWrite(stream: NodeJS.WriteStream): boolean {
+export function canWrite(stream: NodeJS.WriteStream): boolean {
   return (
     stream.writable &&
     !stream.destroyed &&
@@ -52,7 +71,7 @@ function canWrite(stream: NodeJS.WriteStream): boolean {
 }
 
 /** Native write callbacks acknowledge delivery; returning from write() only acknowledges enqueueing. */
-function acknowledgeWrite(stream: NodeJS.WriteStream, text: string): Promise<void> {
+export function acknowledgeWrite(stream: NodeJS.WriteStream, text: string): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     let pending = true;
     const release = (): void => {
@@ -72,7 +91,7 @@ function acknowledgeWrite(stream: NodeJS.WriteStream, text: string): Promise<voi
         stream.once('close', release);
       } else setImmediate(release);
       if (success) resolve();
-      else reject(new CliError('internal', STDERR_FAILED));
+      else reject(new CliError('output_unavailable', ''));
     };
     const failed = (): void => finish(false);
     stream.on('error', failed);

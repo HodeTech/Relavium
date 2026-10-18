@@ -249,6 +249,57 @@ describe('sanitizeUntrusted — the failure paths carry arbitrary text (#W15-8)'
       }
     }
   });
+
+  it('masks URL userinfo whose scheme is glued to a preceding word character (PR #95 MEDIUM-1)', () => {
+    for (const sanitize of [sanitizeUntrusted, sanitizeUntrustedInline]) {
+      expect(sanitize('xhttps://user:opaque-value@host/x')).toBe('xhttps://[REDACTED]@host/x');
+      expect(sanitize('1wss://opaque-user@host/x retry after 30s')).toBe(
+        '1wss://[REDACTED]@host/x retry after 30s',
+      );
+      for (const separator of ['\n', '\t']) {
+        expect(sanitize(`xhttps://us${separator}er:opaque-value@host/x`)).toBe('[REDACTED]');
+      }
+    }
+  });
+});
+
+describe('PR95 B2 complete diagnostic evidence before display normalization', () => {
+  const variants = [
+    { label: 'multiline', sanitize: sanitizeUntrusted },
+    { label: 'inline', sanitize: sanitizeUntrustedInline },
+  ];
+
+  it.each(
+    variants.flatMap((variant) => ['\n', '\t'].map((separator) => ({ ...variant, separator }))),
+  )(
+    'SECRETS_B2_DISPLAY_ORDER protects a complete first fragment in $label with $separator',
+    ({ sanitize, separator }) => {
+      for (const prefix of ['sk-proj-', 'AIza']) {
+        const input = `provider rejected ${prefix}${'A'.repeat(32)}${separator}${'B'.repeat(32)}; public=Q`;
+        expect(sanitize(input), 'SECRETS_B2_DISPLAY_ORDER').toBe('[REDACTED]');
+        expect(sanitize('provider rejected public-label; public=Q')).toBe(
+          'provider rejected public-label; public=Q',
+        );
+      }
+    },
+  );
+
+  it.each(
+    variants.flatMap((variant) =>
+      ['\u0001', '\u007f', '\u0085', '\u202e'].map((separator) => ({ ...variant, separator })),
+    ),
+  )(
+    'SECRETS_B2_DISPLAY_BOUNDARY preserves the original boundary in $label with $separator',
+    ({ sanitize, separator }) => {
+      for (const prefix of ['sk-proj-', 'AIza']) {
+        const input = `word${separator}${prefix}${'A'.repeat(32)}; public=Q`;
+        expect(sanitize(input), 'SECRETS_B2_DISPLAY_BOUNDARY').toBe('[REDACTED]');
+        expect(sanitize(`word${separator}public-label; public=Q`)).toBe(
+          'wordpublic-label; public=Q',
+        );
+      }
+    },
+  );
 });
 
 /**

@@ -339,8 +339,9 @@ workflow:
   it('rejects an over-long fallback chain and every over-budget entry in it, not just the first', () => {
     const entries = Array.from(
       { length: ADMISSION_CEILINGS.fallbackChainEntries + 1 },
-      () =>
-        `{ model: m, provider: anthropic, max_attempts: ${ADMISSION_CEILINGS.chainEntryMaxAttempts + 1} }`,
+      // Distinct identities isolate resource ceilings from the earlier duplicate-tuple admission guard.
+      (_, index) =>
+        `{ model: m-${index}, provider: anthropic, max_attempts: ${ADMISSION_CEILINGS.chainEntryMaxAttempts + 1} }`,
     ).join(', ');
     const yaml = `schema_version: '1.0'
 workflow:

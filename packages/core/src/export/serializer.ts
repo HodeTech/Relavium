@@ -1,8 +1,9 @@
 /**
  * Session **export-to-workflow** (1.Z) — the inverse of the parser (1.L is parse-only). Two pure functions:
  *
- * - {@link serializeWorkflow} emits a {@link WorkflowDefinition} as **deterministic, round-trippable** YAML
- *   (map keys sorted alphabetically, array order preserved) so `parse → serialize` is byte-stable.
+ * - {@link serializeWorkflow} emits a {@link WorkflowDefinition} as **deterministic** YAML
+ *   (map keys sorted alphabetically, array order preserved). Currently admitted definitions round-trip;
+ *   frozen historical agents may require deliberate author repair before current parsing.
  * - {@link sessionToWorkflow} maps a persisted session (`AgentSessionRecord` + its ordered
  *   `SessionMessage[]`, 1.X) into a **linear-chain scaffold** `WorkflowDefinition`
  *   ([ADR-0026](../../../../docs/decisions/0026-session-export-to-workflow.md); the mapping contract lives
@@ -36,8 +37,8 @@ type AgentNode = Extract<WorkflowNode, { type: 'agent' }>;
 
 /**
  * Emit a {@link WorkflowDefinition} as YAML. Map keys are sorted alphabetically and array element order is
- * preserved, so the output is deterministic and `parse(serialize(def))` followed by another serialize is
- * byte-stable. Faithful: it serializes exactly what it is given. Durable session types exclude structural
+ * preserved. For a currently admitted definition, `parse(serialize(def))` followed by another serialize
+ * is byte-stable; a frozen historical snapshot may require deliberate author repair before parsing. Faithful: it serializes exactly what it is given. Durable session types exclude structural
  * tool values/signatures (see {@link sessionToWorkflow}); authored text/config may still be sensitive.
  */
 export function serializeWorkflow(workflow: WorkflowDefinition): string {
@@ -46,7 +47,7 @@ export function serializeWorkflow(workflow: WorkflowDefinition): string {
 
 /**
  * Emit an {@link AgentDefinition} as deterministic YAML (map keys sorted alphabetically, array order preserved),
- * so `parse(serialize(agent))` is byte-stable — the `.agent.yaml` counterpart of {@link serializeWorkflow}.
+ * so currently admitted agents have byte-stable `parse(serialize(agent))` — the `.agent.yaml` counterpart of {@link serializeWorkflow}.
  * Re-serializing the validated AST drops authored comments, but faithfully retains its values: prompts,
  * descriptions and other authored config can contain sensitive literals. Keychain custody and MCP secret
  * placeholders do not make the whole document safe to share. Review before sharing; no scrubbing occurs
@@ -136,7 +137,8 @@ function workflowIdFor(record: AgentSessionRecord): string {
 /**
  * Map a persisted session + its ordered transcript into a linear-chain scaffold `WorkflowDefinition`
  * (ADR-0026). Deterministic — the same `record` + `messages` always produce the same definition (no
- * wall-clock / randomness), so the emitted YAML round-trips. Assumes a well-formed, user-initiated
+ * wall-clock / randomness). Frozen agent entries are preserved; historical entries which no longer pass
+ * current author admission require review/repair before the emitted YAML can round-trip. Assumes a well-formed, user-initiated
  * transcript (each turn opens with a `user` message, as `AgentSession` emits). Orphaned assistant rows
  * remain in metadata and never become completed-turn nodes.
  */

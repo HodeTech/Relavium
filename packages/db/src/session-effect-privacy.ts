@@ -1,14 +1,21 @@
+import { RelaviumError } from '@relavium/shared';
+
 import { and, gte, isNotNull, lt } from 'drizzle-orm';
 
 import type { Db } from './client.js';
 import { withBusyRetry } from './retry.js';
+import {
+  hasOwnedClient,
+  markNativeStorageFailure,
+  transferStorageFailure,
+} from './storage-failure-facts.js';
 import { runEffects } from './schema.js';
 
 /** A busy reader postpones physical erasure; logical session-result suppression still holds. */
 export type SessionEffectCheckpoint = 'complete' | 'deferred';
 
 /** Fixed diagnostics: driver errors and stored content must never become disclosure text. */
-export class SessionEffectPrivacyError extends Error {
+export class SessionEffectPrivacyError extends RelaviumError {
   constructor(readonly code: 'transaction_active' | 'checkpoint_failed') {
     super(
       code === 'transaction_active'
@@ -38,7 +45,12 @@ export function checkpointSessionEffectPrivacy(db: Db): SessionEffectCheckpoint 
     ) {
       return 'deferred';
     }
-    throw new SessionEffectPrivacyError('checkpoint_failed');
+    const failure = new SessionEffectPrivacyError('checkpoint_failed');
+    if (hasOwnedClient(db)) {
+      markNativeStorageFailure(error);
+      transferStorageFailure(failure, error);
+    }
+    throw failure;
   }
   if (Array.isArray(result) && result.length === 1) {
     const row: unknown = result[0];

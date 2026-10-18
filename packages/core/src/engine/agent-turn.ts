@@ -72,7 +72,7 @@ import {
   type ToolDef as LlmToolDef,
 } from '@relavium/llm';
 
-import { SessionToolHistoryEntrySchema } from '@relavium/shared';
+import { RelaviumError, SessionToolHistoryEntrySchema } from '@relavium/shared';
 
 import { ADMISSION_CEILINGS } from '../limits.js';
 import { ToolDispatchError } from '../tools/errors.js';
@@ -311,7 +311,7 @@ export interface AgentTurnResult {
  * the run-path adapter maps it to a `NodeOutcome.failed`. The internal correlation id rides the
  * event, never this message.
  */
-export class AgentTurnError extends Error {
+export class AgentTurnError extends RelaviumError {
   override readonly name = 'AgentTurnError';
   /**
    * The accumulated token usage of the turn at the moment it failed (EA2, ADR-0055). Populated by

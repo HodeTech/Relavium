@@ -53,6 +53,8 @@ export interface CatalogRefreshResult {
 }
 
 export interface CatalogRefreshDeps {
+  readonly signal?: AbortSignal;
+  readonly assertAdmitting?: () => void;
   readonly homeDir: string;
   /** Injectable for tests — the real one is global `fetch`. */
   readonly fetch?: typeof globalThis.fetch;
@@ -74,7 +76,9 @@ export interface CatalogRefreshDeps {
  * to fail a command the user ran to *look at their models*.
  */
 export async function refreshCatalog(deps: CatalogRefreshDeps): Promise<CatalogRefreshResult> {
+  deps.assertAdmitting?.();
   const fetched = await fetchModelsDevPayload(deps);
+  deps.assertAdmitting?.();
   if (typeof fetched !== 'string') return fetched; // a classified network/HTTP failure — the snapshot answers
 
   // INSTALL is a SEPARATE failure domain from the network. A Zod / parse / normalization throw here means models.dev
@@ -103,8 +107,12 @@ async function fetchModelsDevPayload(
 ): Promise<string | CatalogRefreshResult> {
   const doFetch = deps.fetch ?? globalThis.fetch;
   const controller = new AbortController();
+  const stopped = (): void => controller.abort();
+  deps.signal?.addEventListener('abort', stopped, { once: true });
+  if (deps.signal?.aborted === true) stopped();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
   try {
+    deps.assertAdmitting?.();
     const response = await doFetch(SOURCE_URL, {
       signal: controller.signal,
       // NO credentials, NO cookies, NO user data — an unauthenticated GET of a public file (ADR-0071 §8).
@@ -150,6 +158,7 @@ async function fetchModelsDevPayload(
     };
   } finally {
     clearTimeout(timer);
+    deps.signal?.removeEventListener('abort', stopped);
   }
 }
 
@@ -260,7 +269,7 @@ function install(
  * Cache the payload, filtered to the FOUR providers we have an adapter for.
  *
  * models.dev ships 166 providers and ~5,600 models — the 2–3 MB blob ADR-0071 §3 explicitly declined to vendor. We
- * consume four of them, and `seedCatalog` re-reads + re-parses this file on EVERY invocation, including `--help`.
+ * consume four of them, and a priced invocation seeds this file at most once, after filesystem admission. Meta operations never read it.
  * Caching the whole thing taxes the cheapest, hottest commands with a parse we throw almost all of away. Filtering
  * to the mapped providers keeps the file small AND keeps it RAW-per-provider, so a future release that fixes a
  * normalization bug still repairs the cache on the next load.

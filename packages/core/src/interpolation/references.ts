@@ -204,8 +204,8 @@ function parseArg(piece: string): FilterArg | undefined {
     return undefined;
   }
   const quoted = QUOTED.exec(trimmed);
-  if (quoted?.[2] !== undefined) {
-    return { type: 'string', value: quoted[2] };
+  if (quoted?.[2] !== undefined && quoted[1] !== undefined) {
+    return { type: 'string', value: decodeQuotedArg(quoted[2], quoted[1]) };
   }
   if (trimmed === 'true' || trimmed === 'false') {
     return { type: 'boolean', value: trimmed === 'true' };
@@ -216,6 +216,22 @@ function parseArg(piece: string): FilterArg | undefined {
   // A bareword (incl. `0x10`, `1e3`, `Infinity`, leading-dot) — kept verbatim as a string, never
   // coerced to a number; 1.L2 owns evaluation, so the lexer must not over-interpret arguments.
   return { type: 'string', value: trimmed };
+}
+
+/** Decode only the matching delimiter and backslash, after all structural splitting is complete. */
+function decodeQuotedArg(text: string, quote: string): string {
+  const parts: string[] = [];
+  let start = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    if (text[i] !== '\\') continue;
+    const next = text[i + 1];
+    if (next !== quote && next !== '\\') continue;
+    parts.push(text.slice(start, i), next);
+    i += 1;
+    start = i + 1;
+  }
+  parts.push(text.slice(start));
+  return parts.join('');
 }
 
 /** Returns true for the two quote characters that delimit filter string arguments. */

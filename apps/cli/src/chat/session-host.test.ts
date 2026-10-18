@@ -1,3 +1,11 @@
+import { fileURLToPath } from 'node:url';
+import type { StdioNativeLifetime } from '@relavium/mcp';
+import type { NativeProcessController } from '../process/native-process-owner.js';
+import { resolveStdioSpawn } from '../engine/mcp-consent.js';
+import { createCliInvocation } from '../process/invocation.js';
+import { invocationFixture } from '../process/invocation.test-support.js';
+import { SessionWorkOwner } from './session-work-owner.js';
+import { nativeProcessesForInvocation } from '../process/native-process-owner.js';
 import { prepareOutputCapPlan } from '@relavium/llm';
 import type { PreEgressInfo } from '@relavium/core';
 import { execFileSync } from 'node:child_process';
@@ -14,11 +22,13 @@ import {
 import type { SessionStreamHandleEvent } from '@relavium/core';
 import {
   buildServerToolDefs,
+  McpAbortedError,
+  raceDeadline,
   startMcpClient as realStartMcpClient,
   type McpClient,
   type McpConnection,
 } from '@relavium/mcp';
-import type { AgentSessionRecord, SessionMessage } from '@relavium/shared';
+import type { AbortSignalLike, AgentSessionRecord, SessionMessage } from '@relavium/shared';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { ResolvedChatConfig } from '../config/resolve.js';
@@ -327,7 +337,11 @@ describe('buildChatSession', () => {
     const repo = mkdtempSync(join(tmpdir(), 'relavium-git-'));
     try {
       execFileSync('git', ['init', '-q'], { cwd: repo }); // `git status` needs no user identity (unlike commits)
+      const invocation = createCliInvocation();
+      const nativeProcesses = nativeProcessesForInvocation(invocation);
+      const register = vi.spyOn(invocation.registry, 'register');
       const built = await build({
+        ...(nativeProcesses === undefined ? {} : { nativeProcesses }),
         cwd: repo,
         providers: scriptedResolver([callWithArgs('c1', 'git_status', {}), textTurn('clean')]),
       });
@@ -354,6 +368,12 @@ describe('buildChatSession', () => {
       // …and the post-tool answer streamed, so the loop completed after the fold.
       const tokens = events.flatMap((e) => (e.type === 'agent:token' ? [e.token] : [])).join('');
       expect(tokens).toContain('clean');
+      expect(register, 'NATIVE_SESSION_FACTORY_FORWARDING').toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: process.platform === 'win32' ? 'windows-live-root' : 'native-group',
+        }),
+      );
+      await vi.waitFor(() => expect(invocation.registry.activeOwners).toBe(0));
     } finally {
       rmSync(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
@@ -811,6 +831,41 @@ describe('buildResumedChatSession (2.N)', () => {
       ).toBe(false);
     } finally {
       spy.mockRestore();
+    }
+  });
+
+  it('registers the resumed session real process factory under the original invocation', async () => {
+    const repo = mkdtempSync(join(tmpdir(), 'relavium-resumed-native-'));
+    const invocation = createCliInvocation();
+    const nativeProcesses = nativeProcessesForInvocation(invocation);
+    const register = vi.spyOn(invocation.registry, 'register');
+    try {
+      execFileSync('git', ['init', '-q'], { cwd: repo });
+      const built = await buildResumedChatSession({
+        chat: EMPTY_CHAT,
+        record: record({ context: { workingDir: repo, fsScopeTier: 'project' } }),
+        messages: [],
+        now: () => Date.parse(ISO),
+        providers: scriptedResolver([callWithArgs('c1', 'git_status', {}), textTurn('clean')]),
+        ...(nativeProcesses === undefined ? {} : { nativeProcesses }),
+      });
+      expect(invocation.registry.activeOwners).toBe(0); // construction alone creates no native owner
+      await built.session.sendMessage('inspect the repository');
+      built.session.cancel();
+      const events = await built.recordedEvents;
+      const toolResult = events.find((event) => event.type === 'agent:tool_result');
+      expect(toolResult).toMatchObject({ toolId: 'git_status', success: true });
+      expect(
+        toolResult?.type === 'agent:tool_result' ? toolResult.outputSummary : undefined,
+      ).toContain('"exitCode":0');
+      expect(register, 'NATIVE_SESSION_FACTORY_FORWARDING').toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: process.platform === 'win32' ? 'windows-live-root' : 'native-group',
+        }),
+      );
+      await vi.waitFor(() => expect(invocation.registry.activeOwners).toBe(0));
+    } finally {
+      rmSync(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });
 
@@ -1723,4 +1778,417 @@ it('reads the attached initial usage snapshot once across a streamed turn', asyn
   await built.session.sendMessage('stream');
   await built.whenHostSafeToClose();
   expect(initialCoverage).toHaveBeenCalledTimes(1);
+});
+
+describe('owned session MCP startup cancellation', () => {
+  it.each(
+    (['fresh', 'resumed'] as const).flatMap((surface) =>
+      (['caller-unlink', 'owner-unlink', 'partial-add', 'partial-add-during-abort'] as const).map(
+        (fault) => ({
+          surface,
+          fault,
+          obligation:
+            fault === 'partial-add'
+              ? 'partial attachment and held close'
+              : 'discovery cancellation and held close',
+        }),
+      ),
+    ),
+  )(
+    '$surface retains $fault uncertainty through $obligation without inventing close ACK',
+    async ({ surface, fault }) => {
+      const f = invocationFixture();
+      const owner = new SessionWorkOwner(f.invocation, 'chat', {
+        cancel: () => undefined,
+        cleanup: () => Promise.resolve(),
+      });
+      const primary = new Error('foreign caller signal fault');
+      const partialAdd = fault === 'partial-add' || fault === 'partial-add-during-abort';
+      let aborted = false;
+      let allowRemoval = false;
+      const listeners = new Set<() => void>();
+      const caller: AbortSignalLike = {
+        get aborted() {
+          return aborted;
+        },
+        addEventListener: (_type, listener) => {
+          listeners.add(listener);
+          if (fault === 'partial-add-during-abort') {
+            aborted = true;
+            for (const attached of [...listeners]) attached();
+          }
+          if (partialAdd) throw primary;
+        },
+        removeEventListener: (_type, listener) => {
+          if (!allowRemoval && !partialAdd) throw primary;
+          listeners.delete(listener);
+        },
+      };
+      let releaseDiscovery: () => void = () => undefined;
+      const rawDiscovery = new Promise<[]>((resolve) => {
+        releaseDiscovery = () => resolve([]);
+      });
+      const cancelled = vi.fn();
+      const listTools = vi.fn((signal?: AbortSignalLike) =>
+        raceDeadline(
+          'fs',
+          'discovery',
+          { startedAt: Date.now(), timeoutMs: 15_000 },
+          () => rawDiscovery,
+          signal,
+        ).catch((cause: unknown) => {
+          if (cause instanceof McpAbortedError) cancelled();
+          throw cause;
+        }),
+      );
+      let acknowledgeClose: () => void = () => undefined;
+      const closeAck = new Promise<void>((resolve) => {
+        acknowledgeClose = resolve;
+      });
+      const close = vi.fn(() => closeAck);
+      const agent = {
+        ...buildDefaultChatAgent('claude-sonnet-4-6'),
+        mcp_servers: [{ id: 'fs', transport: 'stdio' as const, command: 'synthetic-server' }],
+      };
+      const common = {
+        chat: EMPTY_CHAT,
+        now: () => 0,
+        providers: scriptedResolver([]),
+        workOwner: owner,
+        mcpConnectSignal: caller,
+        consentGate: () => Promise.resolve(new Map()),
+        startMcpClient: (
+          _servers: Parameters<typeof realStartMcpClient>[0],
+          signal?: AbortSignalLike,
+          work?: Parameters<typeof realStartMcpClient>[2],
+          lifecycle?: Parameters<typeof realStartMcpClient>[3],
+        ) =>
+          realStartMcpClient(
+            [
+              {
+                id: 'fs',
+                open: () =>
+                  Promise.resolve({
+                    listTools,
+                    callTool: () => Promise.resolve({ content: [], isError: false }),
+                    close,
+                  }),
+              },
+            ],
+            signal,
+            work,
+            lifecycle,
+          ),
+      };
+      const record: AgentSessionRecord = {
+        id: 'fault-resume',
+        agentSlug: agent.id,
+        agentSnapshot: agent,
+        context: { workingDir: '/tmp', fsScopeTier: 'project' },
+        status: 'ended',
+        totalInputTokens: 0,
+        totalOutputTokens: 0,
+        totalCostMicrocents: 0,
+        totalConservativeMicrocents: 0,
+        createdAt: '2026-10-16T00:00:00.000Z',
+        updatedAt: '2026-10-16T00:00:00.000Z',
+      };
+      let settled = false;
+      const opening = owner
+        .enter(() =>
+          surface === 'fresh'
+            ? buildFreshSession({
+                ...common,
+                agent,
+                agentRef: undefined,
+                cwd: '/tmp',
+                projectConfigDir: undefined,
+                uuid: () => 'fault-fresh',
+              })
+            : buildRestoredSession({ ...common, record, messages: [] }),
+        )
+        .then(
+          (value) => {
+            settled = true;
+            return value;
+          },
+          (cause: unknown) => {
+            settled = true;
+            return cause;
+          },
+        );
+      try {
+        await vi.waitFor(() => expect(listTools).toHaveBeenCalledOnce());
+        if (!partialAdd) {
+          expect(() => {
+            if (fault === 'owner-unlink') owner.stop();
+            else {
+              aborted = true;
+              for (const listener of [...listeners]) listener();
+            }
+          }, 'FOREIGN_UNLINK_CANNOT_SUPPRESS_MCP_CANCELLATION').not.toThrow();
+        }
+        await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+        if (fault === 'partial-add-during-abort')
+          expect(cancelled, 'PARTIAL_ADD_ABORT_REACHES_ENTERED_DISCOVERY').toHaveBeenCalledOnce();
+        if (fault === 'partial-add') expect(cancelled).not.toHaveBeenCalled();
+        expect(settled, 'SUBSCRIPTION_FAULT_IS_NOT_NATIVE_CLOSE_ACK').toBe(false);
+        expect(owner.hasCleanupUncertainty).toBe(true);
+        expect(owner.firstFailure?.cause).toBe(primary);
+        acknowledgeClose();
+        expect(await opening).toBeInstanceOf(Error);
+        let retired = false;
+        void owner.close().then(() => {
+          retired = true;
+        });
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(retired, 'REJECTED_LISTENER_CLEANUP_IS_NOT_OWNER_RETIREMENT').toBe(false);
+        expect(f.registry.activeOwners).toBe(1);
+        f.advance(3_000);
+        expect(await f.invocation.finiteExit.exited).toBe(9);
+        expect(f.registry.activeOwners).toBe(1);
+      } finally {
+        // Join every entered synthetic connection; sticky uncertainty intentionally has no positive ACK.
+        allowRemoval = true;
+        releaseDiscovery();
+        acknowledgeClose();
+        owner.stop();
+        await opening;
+        void owner.close();
+      }
+    },
+  );
+
+  it.each(
+    (['fresh', 'resumed'] as const).flatMap((surface) =>
+      (['caller', 'owner', 'pre-aborted-caller'] as const).map((cancel) => ({ surface, cancel })),
+    ),
+  )('$surface honors $cancel with both startup signals present', async ({ surface, cancel }) => {
+    const f = invocationFixture();
+    const owner = new SessionWorkOwner(f.invocation, 'chat', {
+      cancel: () => undefined,
+      cleanup: () => Promise.resolve(),
+    });
+    const caller = new AbortController();
+    if (cancel === 'pre-aborted-caller') caller.abort();
+    let acknowledgeClose: () => void = () => undefined;
+    const closeAck = new Promise<void>((resolve) => {
+      acknowledgeClose = resolve;
+    });
+    const cancelled = vi.fn();
+    const listTools = vi.fn((signal?: AbortSignalLike): Promise<[]> => {
+      let onAbort: () => void = () => undefined;
+      return new Promise<[]>((_resolve, reject) => {
+        onAbort = () => {
+          cancelled();
+          reject(new McpAbortedError('fs', 'discovery'));
+        };
+        signal?.addEventListener('abort', onAbort);
+      }).finally(() => signal?.removeEventListener('abort', onAbort));
+    });
+    const close = vi.fn(() => closeAck);
+    let observedSignal: AbortSignalLike | undefined;
+    const startMcpClient = vi.fn<
+      NonNullable<Parameters<typeof buildFreshSession>[0]['startMcpClient']>
+    >((_servers, signal, work, lifecycle) => {
+      observedSignal = signal;
+      return realStartMcpClient(
+        [
+          {
+            id: 'fs',
+            open: () =>
+              Promise.resolve({
+                listTools,
+                callTool: () => Promise.resolve({ content: [], isError: false }),
+                close,
+              }),
+          },
+        ],
+        signal,
+        work,
+        lifecycle,
+      );
+    });
+    const agent = {
+      ...buildDefaultChatAgent('claude-sonnet-4-6'),
+      mcp_servers: [{ id: 'fs', transport: 'stdio' as const, command: 'synthetic-server' }],
+    };
+    const common = {
+      chat: EMPTY_CHAT,
+      now: () => 0,
+      providers: scriptedResolver([]),
+      workOwner: owner,
+      mcpConnectSignal: caller.signal,
+      consentGate: () => Promise.resolve(new Map()),
+      startMcpClient,
+    };
+    const record: AgentSessionRecord = {
+      id: 'signal-resume',
+      agentSlug: agent.id,
+      agentSnapshot: agent,
+      context: { workingDir: '/tmp', fsScopeTier: 'project' },
+      status: 'ended',
+      totalInputTokens: 0,
+      totalOutputTokens: 0,
+      totalCostMicrocents: 0,
+      totalConservativeMicrocents: 0,
+      createdAt: '2026-10-16T00:00:00.000Z',
+      updatedAt: '2026-10-16T00:00:00.000Z',
+    };
+    let settled = false;
+    const opening = owner
+      .enter(() =>
+        surface === 'fresh'
+          ? buildFreshSession({
+              ...common,
+              agent,
+              agentRef: undefined,
+              cwd: '/tmp',
+              projectConfigDir: undefined,
+              uuid: () => 'signal-fresh',
+            })
+          : buildRestoredSession({ ...common, record, messages: [] }),
+      )
+      .then(
+        (value) => {
+          settled = true;
+          return value;
+        },
+        (cause: unknown) => {
+          settled = true;
+          return cause;
+        },
+      );
+    try {
+      if (cancel === 'pre-aborted-caller') {
+        expect(await opening).toBeInstanceOf(Error);
+        expect(startMcpClient).not.toHaveBeenCalled();
+      } else {
+        await vi.waitFor(() => expect(listTools).toHaveBeenCalledOnce());
+        if (cancel === 'owner') owner.stop();
+        else caller.abort();
+        expect(observedSignal?.aborted, 'BOTH_SESSION_SIGNALS_LIMIT_STARTUP').toBe(true);
+        await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(settled, 'MCP_CANCEL_DOES_NOT_ACKNOWLEDGE_ACTUAL_CLOSE').toBe(false);
+        expect(f.registry.activeOwners).toBe(1);
+        // Both inputs abort during cleanup, but their composed signal emits once.
+        caller.abort();
+        owner.stop();
+        expect(cancelled).toHaveBeenCalledOnce();
+        acknowledgeClose();
+        expect(await opening).toBeInstanceOf(Error);
+      }
+    } finally {
+      caller.abort();
+      owner.stop();
+      acknowledgeClose();
+      await opening;
+      await owner.close();
+    }
+    expect(f.registry.activeOwners).toBe(0);
+    expect(f.registry.observations.hasInfrastructureFailure()).toBe(false);
+    expect(f.exit).not.toHaveBeenCalled();
+  });
+});
+
+describe('session MCP native owner forwarding during pending startup', () => {
+  it.each(['fresh', 'resumed'] as const)(
+    '%s forwards authority before the actual SDK initializer resolves',
+    async (surface) => {
+      const invocation = createCliInvocation();
+      const native = nativeProcessesForInvocation(invocation);
+      if (native === undefined) throw new Error('missing native invocation controller');
+      let lifetime: StdioNativeLifetime | undefined;
+      const nativeProcesses: NativeProcessController = {
+        reserve: native.reserve,
+        observeMcp: async () => {
+          const observer = await native.observeMcp();
+          return {
+            ...observer,
+            attach: (value) => {
+              lifetime = value;
+              observer.attach(value);
+            },
+          };
+        },
+      };
+      const cwd = process.cwd();
+      const server = fileURLToPath(
+        new URL('../../../../packages/mcp/test-fixtures/silent-mcp-server.mjs', import.meta.url),
+      );
+      const ref = {
+        id: 'pending-native',
+        transport: 'stdio' as const,
+        command: process.execPath,
+        args: [server],
+        connect_timeout_ms: 10_000,
+      };
+      const consented = await resolveStdioSpawn(
+        {
+          serverId: ref.id,
+          provenance: { kind: 'inline' },
+          command: ref.command,
+          args: ref.args,
+          env: {},
+        },
+        cwd,
+      );
+      const abort = new AbortController();
+      const agent = { ...buildDefaultChatAgent('claude-sonnet-4-6'), mcp_servers: [ref] };
+      const common = {
+        chat: EMPTY_CHAT,
+        now: () => 0,
+        providers: scriptedResolver([]),
+        nativeProcesses,
+        mcpConnectSignal: abort.signal,
+        consentGate: () => Promise.resolve(new Map([[ref.id, consented]])),
+      };
+      const record: AgentSessionRecord = {
+        id: 'pending-resume',
+        agentSlug: agent.id,
+        agentSnapshot: agent,
+        context: { workingDir: cwd, fsScopeTier: 'project' },
+        status: 'ended',
+        totalInputTokens: 0,
+        totalOutputTokens: 0,
+        totalCostMicrocents: 0,
+        totalConservativeMicrocents: 0,
+        createdAt: '2026-10-16T00:00:00.000Z',
+        updatedAt: '2026-10-16T00:00:00.000Z',
+      };
+      const opening =
+        surface === 'fresh'
+          ? buildFreshSession({
+              ...common,
+              agent,
+              agentRef: undefined,
+              cwd,
+              projectConfigDir: undefined,
+              uuid: () => 'pending-fresh',
+            })
+          : buildRestoredSession({ ...common, record, messages: [] });
+      const outcome = opening.catch((error: unknown) => error);
+      try {
+        await vi.waitFor(() =>
+          expect(lifetime?.readPid(), 'NATIVE_SESSION_MCP_FORWARDING').toBeTypeOf('number'),
+        );
+        expect(invocation.registry.activeOwners).toBe(1);
+        expect(lifetime?.isClosed()).toBe(false);
+        // The builder has no returned session/client yet. The original registry still owns its native child.
+        invocation.registry.reapNativeAtExit();
+        expect(invocation.registry.activeOwners).toBe(1); // a reap request does not acknowledge close
+        abort.abort();
+        await outcome;
+        await lifetime?.whenClosed;
+        await vi.waitFor(() => expect(invocation.registry.activeOwners).toBe(0));
+      } finally {
+        invocation.registry.reapNativeAtExit();
+        abort.abort();
+        await outcome;
+        await lifetime?.close();
+      }
+    },
+    15_000,
+  );
 });

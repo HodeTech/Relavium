@@ -351,6 +351,41 @@ unencrypted at rest. "A digest, not the bytes" is therefore not by itself a suff
 contract does not make it. The hash is SHA-256 over a canonical JSON serialization (sorted keys, no insignificant
 whitespace) of the redacted projection, using a vetted implementation — never a hand-rolled one.
 
+The current persisted form is `v5:` followed by the SHA-256 hex digest. The version
+prefix is outside the hash and separates current full-value projections from legacy
+unversioned digests, `v2:`/`v3:` projections with incomplete credential masks and
+`v4:` projections that could omit own public data keys; a JSON wrapper alone could
+itself equal arbitrary old tool args.
+The digest consumes the full surviving non-secret values, including long string tails.
+Nested own enumerable data keys, including `__proto__`, remain data members in the
+projection rather than invoking inherited setters. Top-level tool-argument admission
+exclusions remain unchanged. The bounded `toolInput` display preview is not a journal
+input, and its clipping follows full recognized-value projection
+([tool-registry.md](tool-registry.md#result-bounding-and-spill-to-file)). Equal-length
+values can differ beyond its retained prefix. Every unversioned,
+`v2:`, `v3:` or `v4:` legacy row refuses matching prepare, including unchanged small
+arguments: its original projection cannot be proven from the digest alone. There is
+no fallback to the old digest or automatic retry permission. Secret and
+inline-media redaction remain deliberate projection equality; raw credential bytes are never
+added to the digest to distinguish calls.
+
+Recognized URL userinfo is masked through the authority's last `@`, preserving the host,
+path, query and fragment. Recognized opaque URL-query values are masked through their delimiter, including values
+longer than 512 characters. Quoted secret-key values honor escaped quotes and backslashes
+through the actual closing quote. A recognized value must not leave a credential suffix
+in the projection. This remains a finite shape detector, not a claim to identify arbitrary
+unlabelled secrets. Existing old digests are not retroactively erased or rewritten.
+
+A recognized structural credential key masks its entire value before traversal. A partial
+inner text match does not make the remaining value public. Only an anchored Bearer, Basic
+or Token scheme survives as its canonical label followed by `[redacted]`; no original
+credential remainder or casing is retained. Credential flags in an argument vector mask
+the whole following element or the complete value in `--token=value` form. Only the
+ambiguous `-p` spelling retains the existing port-shaped exception; explicitly named
+credential flags have none. Unrecognized public fields and ordinary arguments still
+contribute their complete surviving values to identity. These projections do not change
+the arguments dispatched to the host.
+
 A **session** row's `result_json` is always SQL NULL; even a supplied result whose serializer throws is never
 examined. A matching prepare refuses rather than replaying, and session audit readers omit the stored
 result column entirely; run readers retain replay results.
@@ -427,8 +462,10 @@ Trigger: a user who must resume a partially completed tool loop rather than fail
   Trigger to revisit: the first supported concurrent-resume flow.
 - **Physical erasure is conditional.** Busy checkpoints defer it; pre-upgrade freed pages are outside the
   secure-delete guarantee (§11). No automatic `VACUUM` or encryption change is implied.
-- **A credential rotation changes the redacted projection**, so an effect whose args reference a rotated
-  credential gets a fresh identity and degrades to tier-3 behaviour for that occurrence.
+- **Credential-only changes deliberately do not distinguish redacted digests.** Declared secret keys and
+  recognized credential shapes are excluded or masked before hashing, so the digest is not a credential
+  equality oracle. A changed surviving non-secret value at an existing slot refuses replay (§4); it does
+  not grant a fresh effect identity or permission to repeat the operation.
 - **`EffectSlot` is not stable across a model replay**, which is why the gate is at node granularity. A design
   that later needs slot-granular resume needs a durable record of the model response, which is CR-95's long-term
   continuation checkpoint, not this.

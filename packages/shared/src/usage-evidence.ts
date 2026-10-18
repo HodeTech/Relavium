@@ -1,5 +1,7 @@
 /** Canonical complete quantities and inert W8 evidence foundations (ADR-0104). */
 import { z } from 'zod';
+
+import { RelaviumError } from './relavium-error.js';
 import { MEDIA_BILLED_MODALITIES } from './constants.js';
 
 const nonNegativeInt = z.number().int().nonnegative();
@@ -123,7 +125,7 @@ export const UsageEvidenceSchema = z.discriminatedUnion('kind', [
 export type UsageEvidence = z.infer<typeof UsageEvidenceSchema>;
 
 /** The owned boundary never exposes input, Zod issues or a hostile trap's cause. */
-export class InvalidUsageEvidenceError extends Error {
+export class InvalidUsageEvidenceError extends RelaviumError {
   readonly code = 'invalid_usage_evidence';
   constructor() {
     super('Invalid usage evidence');

@@ -1,802 +1,159 @@
-import { CommanderError, type Command } from 'commander';
+import { CommanderError, Option, type Command } from 'commander';
 
-import { CliError } from '../process/errors.js';
-import { type ExitCode } from '../process/exit-codes.js';
-import type { CliIo } from '../process/io.js';
-import type { GlobalOptions } from '../process/options.js';
-import { executeCommand } from './dispatch.js';
+import { CliError } from '../process/cli-error.js';
+import type { ExitCode } from '../process/exit-codes.js';
+import {
+  COMMAND_DESCRIPTORS,
+  compatibilityOptions,
+  compatibilityPath,
+  type CommandDescriptor,
+  type OptionDescriptor,
+} from './descriptors.js';
+import type { CommandOptionValue, DispatchCommand, DispatchContext } from './input.js';
 
-/**
- * The documented command surface (canonical home:
- * [commands.md](../../../../docs/reference/cli/commands.md)). Every real command's registration here is a thin
- * `commander` adapter: it parses argv into a uniform {@link import('./dispatch.js').CommandInput} and calls the
- * shared {@link executeCommand} table ([dispatch.ts](dispatch.ts), [ADR-0056](../../../../docs/decisions/0056-cli-in-app-slash-command-system-and-manifest.md)),
- * so the per-command dependency wiring lives once and the `commander` / palette / slash surfaces can never
- * diverge. The remaining `STUB_COMMANDS` contains `init` (a later workstream) —
- * each shows the documented "not available yet (lands in …)" message until it lands.
- */
-
-/** The runtime context the real commands need; the boundary reads `result.exitCode` after parse. */
-export interface CommandContext {
-  readonly io: CliIo;
-  readonly global: GlobalOptions;
+export interface CommandContext extends DispatchContext {
   readonly result: { exitCode?: ExitCode };
 }
 
-interface StubSpec {
-  readonly name: string;
-  readonly summary: string;
-  readonly landsIn: string;
+/** Availability derives from the descriptor authority, not a separately authored stub list. */
+export const STUB_COMMANDS = Object.freeze(
+  COMMAND_DESCRIPTORS.filter((entry) => entry.availability === 'not_implemented').map((entry) =>
+    Object.freeze({
+      name: entry.path.join(' '),
+      summary: entry.description,
+      landsIn: entry.landsIn ?? 'a later workstream',
+    }),
+  ),
+);
+
+function flags(option: OptionDescriptor): string {
+  const base = option.spellings.join(', ');
+  if (option.arity === 'none') return base;
+  const value = `${option.placeholder ?? 'value'}${option.repetition === 'variadic' ? '...' : ''}`;
+  return `${base} ${option.arity === 'required' ? `<${value}>` : `[${value}]`}`;
 }
 
-export const STUB_COMMANDS: readonly StubSpec[] = [
-  {
-    name: 'init',
-    summary: 'Initialize a .relavium/ directory in the current project.',
-    landsIn: 'a later workstream',
-  },
-];
-
-export function registerCommands(program: Command, ctx?: CommandContext): void {
-  registerRun(program, ctx);
-  registerChat(program, ctx);
-  registerChatResume(program, ctx);
-  registerChatList(program, ctx);
-  registerChatExport(program, ctx);
-  registerCreate(program, ctx);
-  registerExport(program, ctx);
-  registerImport(program, ctx);
-  registerAgent(program, ctx);
-  registerGate(program, ctx);
-  registerBudget(program, ctx);
-  registerModels(program, ctx);
-  registerProvider(program, ctx);
-  registerMedia(program, ctx);
-  registerList(program, ctx);
-  registerLogs(program, ctx);
-  registerStatus(program, ctx);
-  for (const spec of STUB_COMMANDS) {
-    program
-      .command(spec.name)
-      .description(spec.summary)
-      .action(() => {
-        throw new CliError(
-          'not_implemented',
-          `\`relavium ${commandWord(spec.name)}\` is not available yet (lands in ${spec.landsIn}).`,
-        );
+/** Current compatibility grammar only; canonical aliases and consent integrate in Step 10. */
+export function registerCommands(
+  program: Command,
+  context?: CommandContext,
+  execute?: DispatchCommand,
+): void {
+  const registered = new Map<string, Command>();
+  registered.set('[]', program);
+  for (const descriptor of COMMAND_DESCRIPTORS) {
+    const path = compatibilityPath(descriptor);
+    const parent = registered.get(JSON.stringify(path.slice(0, -1)));
+    const word = path.at(-1);
+    if (parent === undefined || word === undefined) throw new CliError('cli_internal', '');
+    const command =
+      descriptor.opaqueParserHint === undefined ? parent.command(word) : parent.createCommand(word);
+    if (descriptor.opaqueParserHint !== undefined) {
+      parent.addCommand(command);
+      const hint = descriptor.opaqueParserHint;
+      command.configureOutput({
+        ...parent.configureOutput(),
+        outputError: (_message, write) => write(`${hint}\n`),
       });
-  }
-}
-
-function registerRun(program: Command, ctx?: CommandContext): void {
-  // `command()` shares the parent's output configuration object. A prepared subcommand gets a
-  // separate copy, so its parser faults can be made opaque without changing root/other commands.
-  const run = program
-    .createCommand('run')
-    .argument('<workflow>')
-    .description('Execute a workflow (path or id), streaming progress.')
-    .option('--input <key=value...>', 'a workflow input (repeatable)')
-    .option('--secret-inputs-stdin', 'read declared secret inputs from non-TTY stdin')
-    .option(
-      '--allow-mcp-stdio <digest...>',
-      'authorize a stdio MCP server by its consent digest for this invocation (repeatable)',
-    )
-    .allowExcessArguments(false)
-    .configureOutput({
-      ...program.configureOutput(),
-      outputError: (_message, write) =>
-        write('error: invalid run arguments; use relavium run --help.\n'),
-    })
-    .exitOverride((error) => {
-      if (error.exitCode === 0) throw error;
-      throw new CommanderError(
-        error.exitCode,
-        error.code,
-        'error: invalid run arguments; use relavium run --help.',
+      command.exitOverride((error) => {
+        if (error.exitCode === 0) throw error;
+        throw new CommanderError(error.exitCode, error.code, hint);
+      });
+    }
+    command.description(descriptor.description);
+    if (descriptor.allowExcessArguments !== undefined)
+      command.allowExcessArguments(descriptor.allowExcessArguments);
+    for (const positional of descriptor.positionals) {
+      const name = `${positional.name}${positional.variadic ? '...' : ''}`;
+      // Existing human argument-help layout is preserved; discovery separately carries descriptions.
+      command.argument(positional.required ? `<${name}>` : `[${name}]`);
+    }
+    for (const option of compatibilityOptions(descriptor)) {
+      const parsed = new Option(flags(option), option.description).makeOptionMandatory(
+        option.required,
       );
-    });
-  program.addCommand(run);
-
-  if (ctx === undefined) {
-    // No runtime context (e.g. a bare buildProgram for help rendering) — keep it a clean stub.
-    run.action(() => {
-      throw new CliError('not_implemented', '`relavium run` requires the CLI runtime context.');
-    });
-    return;
+      if (option.default !== undefined) parsed.default(option.default);
+      if (option.conflicts.length > 0) parsed.conflicts([...option.conflicts]);
+      command.addOption(parsed);
+    }
+    registerAction(command, descriptor, path, context, execute);
+    registered.set(JSON.stringify(path), command);
   }
-
-  run.action(
-    async (
-      workflow: string,
-      opts: {
-        input?: readonly string[];
-        secretInputsStdin?: boolean;
-        allowMcpStdio?: readonly string[];
-      },
-    ) => {
-      ctx.result.exitCode = await executeCommand(
-        'run',
-        // Every registered option must be FORWARDED, not merely registered: `opts` is destructured by name
-        // here, so an option missing from this type is parsed by commander and then silently dropped before
-        // `buildRunArgs` can see it. `--allow-mcp-stdio` was — which made ADR-0084 §6's CI escape hatch
-        // inoperative end to end while its unit tests passed, because they call the gate directly.
-        {
-          positionals: [workflow],
-          options: {
-            input: opts.input,
-            secretInputsStdin: opts.secretInputsStdin,
-            allowMcpStdio: opts.allowMcpStdio,
-          },
-        },
-        ctx,
-      );
-    },
-  );
 }
 
-/**
- * Register `relavium chat [--agent <ref>]` (2.M — the agent-first interactive REPL over `AgentSession`). The
- * dispatch wires the keychain-backed key resolver (2.C), durable session persistence (2.H/ADR-0050), and the
- * TTY-aware driver. `/exit` ends the session with exit code 4.
- */
-function registerChat(program: Command, ctx?: CommandContext): void {
-  const chat = program
-    .command('chat')
-    .description('Start an interactive agent chat session (REPL).')
-    .option('--agent <ref>', 'bind a specific agent (.agent.yaml path or .relavium/ id)');
-
-  if (ctx === undefined) {
-    chat.action(() => {
-      throw new CliError('not_implemented', '`relavium chat` requires the CLI runtime context.');
-    });
-    return;
-  }
-
-  chat.action(async (opts: { agent?: string }) => {
-    ctx.result.exitCode = await executeCommand(
-      'chat',
-      { positionals: [], options: { agent: opts.agent } },
-      ctx,
-    );
-  });
-}
-
-/**
- * Register `relavium chat-resume <sessionId>` (2.N) — reload a persisted session from `history.db` and continue
- * it in the same REPL. An unknown session id is a clean exit-2 invocation fault; `/exit` ends with exit code 4.
- */
-function registerChatResume(program: Command, ctx?: CommandContext): void {
-  const chatResume = program
-    .command('chat-resume <sessionId>')
-    .description('Reload a persisted session from history.db and continue the conversation.');
-
-  if (ctx === undefined) {
-    chatResume.action(() => {
+function registerAction(
+  command: Command,
+  descriptor: CommandDescriptor,
+  path: readonly string[],
+  context?: CommandContext,
+  execute?: DispatchCommand,
+): void {
+  const name = path.join(' ');
+  if (descriptor.availability === 'not_implemented') {
+    command.action(() => {
       throw new CliError(
         'not_implemented',
-        '`relavium chat-resume` requires the CLI runtime context.',
+        `\`relavium ${name}\` is not available yet (lands in ${descriptor.landsIn ?? 'a later workstream'}).`,
       );
     });
     return;
   }
-
-  chatResume.action(async (sessionId: string) => {
-    ctx.result.exitCode = await executeCommand(
-      'chat-resume',
-      { positionals: [sessionId], options: {} },
-      ctx,
-    );
-  });
-}
-
-/** Register `relavium chat-list` (2.O) — list past agent sessions from durable `history.db` (id, agent, last activity). */
-function registerChatList(program: Command, ctx?: CommandContext): void {
-  const chatList = program
-    .command('chat-list')
-    .description('List past agent sessions (id, agent, title, last activity).');
-  if (ctx === undefined) {
-    chatList.action(() => {
-      throw new CliError(
-        'not_implemented',
-        '`relavium chat-list` requires the CLI runtime context.',
-      );
-    });
-    return;
-  }
-  chatList.action(async () => {
-    ctx.result.exitCode = await executeCommand('chat-list', { positionals: [], options: {} }, ctx);
-  });
-}
-
-/**
- * Register `relavium chat-export <sessionId>` (2.P) — export a persisted session to a `.relavium.yaml`
- * scaffold for review ([ADR-0026](../../../../docs/decisions/0026-session-export-to-workflow.md)). Writes
- * `<id>.relavium.yaml` in cwd by default; `--out <path>` overrides, `--force` overwrites an existing file.
- */
-function registerChatExport(program: Command, ctx?: CommandContext): void {
-  const chatExport = program
-    .command('chat-export <sessionId>')
-    .description('Export a session to a .relavium.yaml scaffold for review (ADR-0026).')
-    .option('--out <path>', 'write the scaffold here instead of <id>.relavium.yaml')
-    .option('--force', 'overwrite an existing file at the target path');
-  if (ctx === undefined) {
-    chatExport.action(() => {
-      throw new CliError(
-        'not_implemented',
-        '`relavium chat-export` requires the CLI runtime context.',
-      );
-    });
-    return;
-  }
-  chatExport.action(async (sessionId: string, opts: { out?: string; force?: boolean }) => {
-    ctx.result.exitCode = await executeCommand(
-      'chat-export',
-      { positionals: [sessionId], options: { out: opts.out, force: opts.force } },
-      ctx,
-    );
-  });
-}
-
-/**
- * Register `relavium create` (2.J) — an interactive `@clack/prompts` wizard that scaffolds a new agent or a
- * minimal single-agent workflow as schema-validated, git-ready YAML under `.relavium/`. Needs an interactive
- * terminal (fails loud under `--json` / non-TTY); a name collision is exit 2 unless `--force`. No keychain/db.
- */
-function registerCreate(program: Command, ctx?: CommandContext): void {
-  const create = program
-    .command('create')
-    .description('Scaffold a new agent or workflow via an interactive wizard.')
-    .option('--force', 'overwrite an existing project entry with the same id');
-  if (ctx === undefined) {
-    create.action(() => {
-      throw new CliError('not_implemented', '`relavium create` requires the CLI runtime context.');
-    });
-    return;
-  }
-  create.action(async (opts: { force?: boolean }) => {
-    ctx.result.exitCode = await executeCommand(
-      'create',
-      { positionals: [], options: { force: opts.force } },
-      ctx,
-    );
-  });
-}
-
-/**
- * Register `relavium export <id>` (2.J) — write a portable, share-safe copy of a project workflow/agent
- * (re-serialized from the validated AST; `{{secrets.*}}` placeholders preserved, no resolved secret). Default
- * target is `<id>.<suffix>` in cwd; `--out` overrides, `--force` overwrites. Pure YAML I/O — no keychain/db.
- */
-function registerExport(program: Command, ctx?: CommandContext): void {
-  const exportCmd = program
-    .command('export <id>')
-    .description(
-      'Export a workflow/agent to a portable YAML (secret references stay placeholdered).',
-    )
-    .option('--out <path>', 'write the copy here instead of <id>.<suffix> in cwd')
-    .option('--force', 'overwrite an existing file at the target path');
-  if (ctx === undefined) {
-    exportCmd.action(() => {
-      throw new CliError('not_implemented', '`relavium export` requires the CLI runtime context.');
-    });
-    return;
-  }
-  exportCmd.action(async (id: string, opts: { out?: string; force?: boolean }) => {
-    ctx.result.exitCode = await executeCommand(
-      'export',
-      { positionals: [id], options: { out: opts.out, force: opts.force } },
-      ctx,
-    );
-  });
-}
-
-/**
- * Register `relavium import <path>` (2.J) — copy an external workflow/agent YAML into the project `.relavium/`,
- * validating schema + slug uniqueness, writing the re-serialized doc to `.relavium/<kind>/<id>.<suffix>`. A
- * collision is exit 2 unless `--force`. Pure YAML I/O — no keychain/db.
- */
-function registerImport(program: Command, ctx?: CommandContext): void {
-  const importCmd = program
-    .command('import <path>')
-    .description(
-      'Import an external workflow/agent YAML into the project (validated, deduplicated).',
-    )
-    .option('--force', 'overwrite an existing project entry with the same id');
-  if (ctx === undefined) {
-    importCmd.action(() => {
-      throw new CliError('not_implemented', '`relavium import` requires the CLI runtime context.');
-    });
-    return;
-  }
-  importCmd.action(async (path: string, opts: { force?: boolean }) => {
-    ctx.result.exitCode = await executeCommand(
-      'import',
-      { positionals: [path], options: { force: opts.force } },
-      ctx,
-    );
-  });
-}
-
-/**
- * Register `relavium agent run <agent>` (2.Q) — a one-shot, non-interactive agent invocation over the same
- * `AgentSession` infra. The prompt is piped on stdin; `--input k=v` adds `{{ctx.*}}` variables; `--fixture`
- * replays a recorded cassette (offline). A bare `relavium agent` (no subcommand) is a clean exit-2 fault.
- */
-function registerAgent(program: Command, ctx?: CommandContext): void {
-  const agent = program.command('agent').description('Manage and run agents.');
-  const run = agent
-    .command('run <agent>')
-    .description(
-      'Run a single agent one-shot (prompt on stdin); --fixture replays a recorded cassette.',
-    )
-    .option('--input <key=value...>', 'a session {{ctx.*}} variable (repeatable)')
-    .option('--fixture <path>', 'replay a recorded LLM cassette (deterministic, offline)')
-    .option(
-      '--allow-mcp-stdio <digest...>',
-      'authorize a stdio MCP server by its consent digest for this invocation (repeatable)',
-    );
-
-  if (ctx === undefined) {
-    run.action(() => {
-      throw new CliError(
-        'not_implemented',
-        '`relavium agent run` requires the CLI runtime context.',
-      );
-    });
-    agent.action(() => {
-      throw new CliError('not_implemented', '`relavium agent` requires the CLI runtime context.');
-    });
-    return;
-  }
-
-  run.action(
-    async (
-      agentRef: string,
-      opts: {
-        input?: readonly string[];
-        fixture?: string;
-        allowMcpStdio?: readonly string[];
-      },
-    ) => {
-      ctx.result.exitCode = await executeCommand(
-        'agent.run',
-        {
-          positionals: [agentRef],
-          options: {
-            input: opts.input,
-            fixture: opts.fixture,
-            allowMcpStdio: opts.allowMcpStdio,
-          },
-        },
-        ctx,
-      );
-    },
-  );
-  // A bare `relavium agent` (no `run`) is a clean invocation fault, not a thrown stack.
-  agent.action(() => {
-    throw new CliError('invalid_invocation', '`relavium agent` requires a subcommand (run).');
-  });
-}
-
-/**
- * Register `relavium gate [runId]` (2.G — resolve a pending human gate over the durable resume substrate) plus
- * its `gate list [runId]` subcommand (2.I — list the pending gates so an operator picks a `gateId`). The
- * positional is OPTIONAL so commander routes `gate list …` to the subcommand; a bare `gate` (no runId, no
- * subcommand) falls through to the parent action, which reports the missing runId as a clean exit-2 invocation.
- */
-function registerGate(program: Command, ctx?: CommandContext): void {
-  const gate = program
-    .command('gate [runId]')
-    .description('Resolve a pending human gate (approve / reject / input).')
-    .option('--approve', 'approve the gate')
-    .option('--reject', 'reject the gate')
-    .option('--comment <text>', 'a decision comment (with --approve / --reject)')
-    .option('--input <value>', 'provide input for a gate_type=input gate (JSON, else a raw string)')
-    .option(
-      '--gate <gateId>',
-      'which pending gate to resolve (required when more than one is pending)',
-    )
-    .option(
-      '--secret-stdin',
-      "read the run's secret inputs from stdin as name=value lines (never passed as arguments)",
-    )
-    .option(
-      '--allow-mcp-stdio <digest...>',
-      'authorize a stdio MCP server by its consent digest for this invocation (repeatable)',
-    );
-  const gateList = gate
-    .command('list [runId]')
-    .description('List pending human gates (all paused runs, or one run).');
-
-  if (ctx === undefined) {
-    gate.action(() => {
-      throw new CliError('not_implemented', '`relavium gate` requires the CLI runtime context.');
-    });
-    gateList.action(() => {
-      throw new CliError(
-        'not_implemented',
-        '`relavium gate list` requires the CLI runtime context.',
-      );
-    });
-    return;
-  }
-
-  gate.action(
-    async (
-      runId: string | undefined,
-      opts: {
-        approve?: boolean;
-        reject?: boolean;
-        comment?: string;
-        input?: string;
-        gate?: string;
-        secretStdin?: boolean;
-        allowMcpStdio?: readonly string[];
-      },
-    ) => {
-      ctx.result.exitCode = await executeCommand(
-        'gate',
-        {
-          positionals: runId === undefined ? [] : [runId],
-          options: {
-            approve: opts.approve,
-            reject: opts.reject,
-            comment: opts.comment,
-            input: opts.input,
-            gate: opts.gate,
-            secretStdin: opts.secretStdin,
-            allowMcpStdio: opts.allowMcpStdio,
-          },
-        },
-        ctx,
-      );
-    },
-  );
-
-  gateList.action(async (runId: string | undefined) => {
-    ctx.result.exitCode = await executeCommand(
-      'gate.list',
-      { positionals: runId === undefined ? [] : [runId], options: {} },
-      ctx,
-    );
-  });
-}
-
-function registerBudget(program: Command, ctx?: CommandContext): void {
-  const budget = program.command('budget').description('Resolve recorded budget authorization.');
-  const resume = budget
-    .command('resume <runId>')
-    .description('Approve the exact frozen microcents or reject a budget gate.')
-    .option(
-      '--approve-amount <microcents>',
-      'approve exactly the recorded frozen amount (including zero)',
-    )
-    .option('--abort', 'reject the budget gate without provider or tool execution')
-    .option('--gate <gateId>', 'which budget gate to resolve when multiple are pending')
-    .option(
-      '--secret-stdin',
-      "read the run's secret inputs from stdin as name=value lines (never passed as arguments)",
-    )
-    .option(
-      '--allow-mcp-stdio <digest...>',
-      'authorize a stdio MCP server by its consent digest for this invocation (repeatable)',
-    );
-  if (ctx === undefined) {
-    resume.action(() => {
-      throw new CliError(
-        'not_implemented',
-        '`relavium budget resume` requires the CLI runtime context.',
-      );
-    });
-    return;
-  }
-  resume.action(
-    async (
-      runId: string,
-      opts: {
-        approveAmount?: string;
-        abort?: boolean;
-        gate?: string;
-        secretStdin?: boolean;
-        allowMcpStdio?: readonly string[];
-      },
-    ) => {
-      ctx.result.exitCode = await executeCommand(
-        'budget.resume',
-        {
-          positionals: [runId],
-          options: {
-            approveAmount: opts.approveAmount,
-            abort: opts.abort,
-            gate: opts.gate,
-            secretStdin: opts.secretStdin,
-            allowMcpStdio: opts.allowMcpStdio,
-          },
-        },
-        ctx,
-      );
-    },
-  );
-}
-
-/** Register `relavium list [--agents]` (2.I) — the disk catalog + last-run overlay from durable history. */
-function registerList(program: Command, ctx?: CommandContext): void {
-  const list = program
-    .command('list')
-    .description('List discovered workflows (or, with --agents, agents) in the current project.')
-    .option('--agents', 'list agents instead of workflows');
-  if (ctx === undefined) {
-    list.action(() => {
-      throw new CliError('not_implemented', '`relavium list` requires the CLI runtime context.');
-    });
-    return;
-  }
-  list.action(async (opts: { agents?: boolean }) => {
-    ctx.result.exitCode = await executeCommand(
-      'list',
-      { positionals: [], options: { agents: opts.agents } },
-      ctx,
-    );
-  });
-}
-
-/** Register `relavium logs <runId>` (2.I) — replay a past run's persisted event stream. */
-function registerLogs(program: Command, ctx?: CommandContext): void {
-  const logs = program
-    .command('logs <runId>')
-    .description('Print the persisted event stream for a past run.');
-  if (ctx === undefined) {
-    logs.action(() => {
-      throw new CliError('not_implemented', '`relavium logs` requires the CLI runtime context.');
-    });
-    return;
-  }
-  logs.action(async (runId: string) => {
-    ctx.result.exitCode = await executeCommand('logs', { positionals: [runId], options: {} }, ctx);
-  });
-}
-
-/** Register `relavium status` (2.I) — the active/paused runs + their per-node status. */
-function registerStatus(program: Command, ctx?: CommandContext): void {
-  const status = program
-    .command('status')
-    .description('Show active/paused runs and their per-node status.');
-  if (ctx === undefined) {
-    status.action(() => {
-      throw new CliError('not_implemented', '`relavium status` requires the CLI runtime context.');
-    });
-    return;
-  }
-  status.action(async () => {
-    ctx.result.exitCode = await executeCommand('status', { positionals: [], options: {} }, ctx);
-  });
-}
-
-/**
- * Register `relavium models` (list the cached catalog) + `relavium models refresh` (force a live re-fetch)
- * (2.5.G S5, [ADR-0064](../../../../docs/decisions/0064-live-model-catalog.md)). The parent `models` action
- * lists the cache (refreshing on first run if empty); the `refresh` subcommand blocks on a live re-fetch and
- * reports per-provider outcomes. Both honor `--json`. Each dispatch opens the local db + keychain per invocation.
- */
-function registerModels(program: Command, ctx?: CommandContext): void {
-  const models = program
-    .command('models')
-    .description('List the cached model catalog (refreshes on first run if empty).');
-  const refresh = models
-    .command('refresh')
-    .description(
-      "Re-fetch what we know about models: each connected provider's live list, and the models.dev catalog.",
-    )
-    .option('--providers', "availability only — each connected provider's live model list")
-    .option('--catalog', 'metadata only — prices, ceilings and reasoning tiers from models.dev');
-  const pricing = models
-    .command('pricing <model>')
-    .description(
-      'Set your own price for a model — it overrides the catalog (you hold the invoice). --clear removes it.',
-    )
-    .requiredOption('--provider <slug>', 'the provider that serves the model (must be registered)')
-    // NOT `requiredOption`: `--clear` takes none of the three price flags, and commander would reject the invocation
-    // before the command ever sees it. The real rule — exactly one of "set a price" or "--clear" — is enforced in
-    // `buildModelsPricingArgs`, which can express it; commander's required-flag check cannot.
-    .option(
-      '--input <usd-per-mtok>',
-      'input (prompt) price, USD per million tokens — required WITH --output when either is given; omit both to price only media',
-    )
-    .option(
-      '--output <usd-per-mtok>',
-      'output (completion) price, USD per million tokens — required WITH --input when either is given; omit both to price only media',
-    )
-    .option(
-      '--cached <usd-per-mtok>',
-      "cache-read price, USD per million tokens; omitted ⇒ the catalog's cache discount, applied to your input rate",
-    )
-    .option('--image <usd-per-image>', 'image-output price, USD per image')
-    .option('--audio <usd-per-second>', 'audio-output price, USD per second')
-    .option('--video <usd-per-second>', 'video-output price, USD per second')
-    .option('--clear', "remove your price for this model — it falls back to the catalog's");
-
-  if (ctx === undefined) {
-    models.action(() => {
-      throw new CliError('not_implemented', '`relavium models` requires the CLI runtime context.');
-    });
-    refresh.action(() => {
-      throw new CliError(
-        'not_implemented',
-        '`relavium models refresh` requires the CLI runtime context.',
-      );
-    });
-    pricing.action(() => {
-      throw new CliError(
-        'not_implemented',
-        '`relavium models pricing` requires the CLI runtime context.',
-      );
-    });
-    return;
-  }
-
-  models.action(async () => {
-    ctx.result.exitCode = await executeCommand('models', { positionals: [], options: {} }, ctx);
-  });
-  refresh.action(async (opts: { providers?: boolean; catalog?: boolean }) => {
-    ctx.result.exitCode = await executeCommand(
-      'models.refresh',
-      { positionals: [], options: { providers: opts.providers, catalog: opts.catalog } },
-      ctx,
-    );
-  });
-  pricing.action(
-    async (
-      model: string,
-      opts: {
-        provider?: string;
-        input?: string;
-        output?: string;
-        cached?: string;
-        // The media rates are DECLARED as options above and must be forwarded here. They were not, so
-        // `relavium models pricing <model> --provider p --image 0.04` reached the dispatch with no `image`
-        // and failed "missing required option --input" — the media-only invocation `CR-55` exists to make
-        // legal, and the exact command a `strict_cost_cap` refusal tells the user to run.
-        image?: string;
-        audio?: string;
-        video?: string;
-        clear?: boolean;
-      },
-    ) => {
-      ctx.result.exitCode = await executeCommand(
-        'models.pricing',
-        {
-          positionals: [model],
-          options: {
-            provider: opts.provider,
-            input: opts.input,
-            output: opts.output,
-            cached: opts.cached,
-            image: opts.image,
-            audio: opts.audio,
-            video: opts.video,
-            clear: opts.clear,
-          },
-        },
-        ctx,
-      );
-    },
-  );
-}
-
-/** Register `relavium provider` and its subcommands (2.C). Each dispatch opens the local db + keychain per invocation. */
-function registerProvider(program: Command, ctx?: CommandContext): void {
-  const provider = program
-    .command('provider')
-    .description('Manage providers and API keys in the OS keychain.');
-  const list = provider
-    .command('list')
-    .description('List registered providers and whether a key is set.')
-    .option('--verify', 'additionally run a live key-verification probe per provider');
-  const add = provider
-    .command('add <name>')
-    .description('Register a provider.')
-    .option('--base-url <url>', 'override the provider base URL')
-    .option(
-      '--pricing-url <url>',
-      'override the pricing reference page (where you find model prices)',
-    );
-  const setKey = provider
-    .command('set-key <name>')
-    .description('Store a provider API key in the OS keychain (the key is read from stdin).');
-  const removeKey = provider
-    .command('remove-key <name>')
-    .description('Remove a provider API key from the OS keychain.');
-  const test = provider
-    .command('test <name>')
-    .description('Verify a provider key with a minimal live request.')
-    .option('--model <id>', 'model to test with (defaults to a cheap known model)');
-
-  if (ctx === undefined) {
-    // No runtime context (bare buildProgram for help) — keep each subcommand a clean stub.
-    for (const sub of [list, add, setKey, removeKey, test]) {
-      sub.action(() => {
+  if (descriptor.executorId === undefined) {
+    if (descriptor.requiredSubcommand !== undefined) {
+      command.action(() => {
+        if (context === undefined) throw missingContext(name);
         throw new CliError(
-          'not_implemented',
-          '`relavium provider` requires the CLI runtime context.',
+          'invalid_invocation',
+          `\`relavium ${name}\` requires a subcommand (${descriptor.requiredSubcommand}).`,
         );
       });
     }
     return;
   }
-
-  list.action(async (opts: { verify?: boolean }) => {
-    ctx.result.exitCode = await executeCommand(
-      'provider.list',
-      { positionals: [], options: { verify: opts.verify } },
-      ctx,
-    );
-  });
-  add.action(async (name: string, opts: { baseUrl?: string; pricingUrl?: string }) => {
-    ctx.result.exitCode = await executeCommand(
-      'provider.add',
-      { positionals: [name], options: { baseUrl: opts.baseUrl, pricingUrl: opts.pricingUrl } },
-      ctx,
-    );
-  });
-  setKey.action(async (name: string) => {
-    ctx.result.exitCode = await executeCommand(
-      'provider.set-key',
-      { positionals: [name], options: {} },
-      ctx,
-    );
-  });
-  removeKey.action(async (name: string) => {
-    ctx.result.exitCode = await executeCommand(
-      'provider.remove-key',
-      { positionals: [name], options: {} },
-      ctx,
-    );
-  });
-  test.action(async (name: string, opts: { model?: string }) => {
-    ctx.result.exitCode = await executeCommand(
-      'provider.test',
-      { positionals: [name], options: { model: opts.model } },
-      ctx,
-    );
-  });
-}
-
-/** First whitespace-delimited token of a command name — `logs <runId>` → `logs`. */
-function commandWord(name: string): string {
-  return name.split(' ', 1)[0] ?? name;
-}
-
-function registerMedia(program: Command, ctx?: CommandContext): void {
-  const media = program.command('media').description('Manage local media storage.');
-  const prune = media.createCommand('prune-temporaries');
-  media.addCommand(prune);
-  prune
-    .configureOutput({
-      ...program.configureOutput(),
-      outputError: (_message, write) => write('error: invalid media maintenance arguments.\n'),
-    })
-    .exitOverride((error) => {
-      if (error.exitCode === 0) throw error;
-      throw new CommanderError(
-        error.exitCode,
-        error.code,
-        'error: invalid media maintenance arguments.',
-      );
-    })
-    .description('Remove legacy temporary media after all old producers are stopped.')
-    .option('--legacy-offline', 'acknowledge that all old media producers are stopped')
-    .option('--force', 'authorize legacy temporary media deletion')
-    .allowExcessArguments(false)
-    .action(async (opts: { legacyOffline?: boolean; force?: boolean }) => {
-      if (ctx === undefined)
-        throw new CliError(
-          'not_implemented',
-          'Media maintenance requires the CLI runtime context.',
-        );
-      ctx.result.exitCode = await executeCommand(
-        'media.prune-temporaries',
-        { positionals: [], options: { legacyOffline: opts.legacyOffline, force: opts.force } },
-        ctx,
-      );
+  if (context === undefined) {
+    command.action(() => {
+      throw missingContext(name);
     });
+    return;
+  }
+  const executorId = descriptor.executorId;
+  command.action(async (...values: unknown[]) => {
+    if (execute === undefined) throw new CliError('cli_internal', '');
+    const positionals: string[] = [];
+    for (let index = 0; index < descriptor.positionals.length; index += 1) {
+      const value = values[index];
+      const positional = descriptor.positionals[index];
+      if (value === undefined && positional?.required !== true) continue;
+      if (typeof value === 'string') positionals.push(value);
+      else if (positional?.variadic === true) positionals.push(...stringVector(value));
+      else throw new CliError('cli_internal', '');
+    }
+    const raw: unknown = command.opts();
+    const options: Record<string, CommandOptionValue> = {};
+    for (const option of compatibilityOptions(descriptor))
+      options[option.binding] = readOption(raw, option.binding);
+    context.result.exitCode = await execute(executorId, { positionals, options }, context);
+  });
+}
+
+function missingContext(name: string): CliError {
+  return new CliError('not_implemented', `\`relavium ${name}\` requires the CLI runtime context.`);
+}
+
+function stringVector(value: unknown): readonly string[] {
+  if (!Array.isArray(value)) throw new CliError('cli_internal', '');
+  const values: readonly unknown[] = value;
+  const strings: string[] = [];
+  for (const item of values) {
+    if (typeof item !== 'string') throw new CliError('cli_internal', '');
+    strings.push(item);
+  }
+  return strings;
+}
+
+function readOption(raw: unknown, binding: string): CommandOptionValue {
+  if (typeof raw !== 'object' || raw === null) throw new CliError('cli_internal', '');
+  const value: unknown = Object.getOwnPropertyDescriptor(raw, binding)?.value;
+  if (value === undefined || typeof value === 'string' || typeof value === 'boolean') return value;
+  return stringVector(value);
 }

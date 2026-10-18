@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 import { createClient, createSessionStore, runMigrations, type DbClient } from '@relavium/db';
 import { AgentSchema, type AgentSessionRecord, type SessionMessage } from '@relavium/shared';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { OpenedSessionStore } from '../history/session-open.js';
 import { EXIT_CODES } from '../process/exit-codes.js';
@@ -103,6 +103,9 @@ describe('chatExportCommand (2.P)', () => {
       );
       expect(notice.trim().split('\n')).toHaveLength(1);
       expect(`${out()}${notice}`).not.toContain('PRIVATE_');
+      expect(err()).toContain(
+        'Historical agent snapshots may require edits to pass current validation before running.',
+      );
       expect(out()).not.toContain('scaffold;');
       expect(readFileSync(join(cwd, 's1.relavium.yaml'), 'utf8')).toContain(
         'PRIVATE_USER_SENTINEL',
@@ -134,6 +137,19 @@ describe('chatExportCommand (2.P)', () => {
     expect(out()).toBe('');
     expect(readFileSync(path, 'utf8')).toBe('existing artifact');
     expect(opened.store.loadFull('s1')?.session.status).toBe('active');
+  });
+
+  it('preserves the written artifact but does not swallow a native invalid-timestamp fault as provenance refusal', () => {
+    const { io, out, err } = captureIo();
+    const update = vi.spyOn(opened.store, 'updateSession');
+    expect(() =>
+      chatExportCommand({ sessionId: 's1', force: false }, { ...deps(io), now: () => Number.NaN }),
+    ).toThrow(RangeError);
+    expect(update).not.toHaveBeenCalled();
+    expect(existsSync(join(cwd, 's1.relavium.yaml'))).toBe(true);
+    expect(err()).not.toContain('could not mark the session exported');
+    expect(out()).toBe('');
+    update.mockRestore();
   });
 
   it('writes the scaffold, marks the session exported, and prints the path (exit 0)', () => {
@@ -206,23 +222,50 @@ describe('chatExportCommand (2.P)', () => {
     expect(existsSync(join(cwd, 'custom/out.yaml'))).toBe(true);
   });
 
-  it('degrades a row-mark failure to a stderr warning — the scaffold still lands, exit 0', () => {
-    // updateSession throws (e.g. a locked db): the file write is the durable contract, so the export still
-    // succeeds (exit 0) with a stderr note rather than failing an export already on disk.
+  it('preserves an unexpected provenance fault after the scaffold has been written', () => {
+    const primary = new TypeError('PRIVATE_EXPORT_BUG');
     opened = {
       ...opened,
       store: {
         ...opened.store,
         updateSession: () => {
-          throw new Error('db locked');
+          throw primary;
         },
       },
     };
     const { io, err } = captureIo();
-    expect(chatExportCommand({ sessionId: 's1', force: false }, deps(io))).toBe(EXIT_CODES.success);
-    expect(err()).toContain('could not mark the session exported');
+    expect(() => chatExportCommand({ sessionId: 's1', force: false }, deps(io))).toThrow(primary);
     expect(existsSync(join(cwd, 's1.relavium.yaml'))).toBe(true);
+    expect(err()).not.toContain('could not mark the session exported');
   });
+
+  it.each([false, true])(
+    'preserves the written scaffold and success on actual SQLite readonly metadata refusal (json=%s)',
+    (json) => {
+      client.sqlite.pragma('query_only = ON');
+      const { io, err, out } = captureIo();
+      expect(
+        chatExportCommand({ sessionId: 's1', force: false }, deps(io, json)),
+        'EXPORT_NATIVE_READONLY_SUCCESS',
+      ).toBe(EXIT_CODES.success);
+      expect(err(), 'EXPORT_NATIVE_READONLY_WARNING').toContain(
+        'could not mark the session exported',
+      );
+      expect(existsSync(join(cwd, 's1.relavium.yaml'))).toBe(true);
+      expect(opened.store.loadSession('s1')?.status).toBe('active');
+      if (json) {
+        expect(parseNdjson(out())).toEqual([
+          expect.objectContaining({
+            type: 'session:exported',
+            sessionId: 's1',
+            workflowPath: join(cwd, 's1.relavium.yaml'),
+          }),
+        ]);
+      } else {
+        expect(out()).toBe(`Exported session s1 to ${join(cwd, 's1.relavium.yaml')}\n`);
+      }
+    },
+  );
 
   it('refuses to overwrite an existing target without --force (exit-2 fault) and closes the store', () => {
     const { io } = captureIo();

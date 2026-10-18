@@ -1232,3 +1232,38 @@ joins the per-item disposition, two NEW clean complete whole-wave review rounds,
 security sittings, exact-source gates and preserved limits. Earlier dated pending
 checkpoints remain historical. This landing does not claim a merge, future header
 activation, full M/N lifecycle or removal of approved residuals.
+
+
+### Wave 2 merge landing — 2026-10-15
+
+The applicable Wave 2 implementation and maintainer corrections merged to `main`
+as PR #94 (`ab08209e`). The [merge checkpoint](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-2-merge-checkpoint--2026-10-15)
+joins final reviewed source `4cdfe011`, review scopes, execution evidence and preserved
+limits. Earlier pending/unmerged notes are historical; this landing adds no decision,
+future feature, deferral or claim of merge-commit execution.
+
+## Wave 3 decision acceptance — 2026-10-16
+
+> Amended 2026-10-16: [ADR-0110](0110-cli-diagnostics-and-discovery-have-explicit-compatibility.md) is accepted by the maintainer. The invocation shutdown registry preserves actual owner stop/join and run-only health on return and throw paths. The total fatal-process budget is not a receipt deadline or host-safe-close acknowledgement. Sessions keep their existing lifetime/publication failures without fabricated RunDeparture health. ADR-0111 requires a single registry instance in the finite package graph. The approved [execution plan](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#proposed-implementation-increments) owns implementation and review gates; this note does not claim implementation landing.
+
+### PR #95 session close initiation correction — 2026-10-18
+
+Actual active-turn SIGINT and ordinary EOF regressions exposed a session-host cycle:
+joining the transferred MCP native lifetime prevented its only close request from starting.
+The host now initiates that once-retained close after entered roots and actual core work
+settle, before joining transferred lifetimes. Final persistence/database cleanup remains
+after the actual acknowledgements. This repairs the existing order without making logical
+cancellation, close initiation, a rejected observer or budget expiry into acknowledgement.
+The exact host sequence and exceptional budget-observation path live in
+[mcp-integration.md](../reference/shared-core/mcp-integration.md#failed-start-cleanup-lifecycle).
+Fresh cumulative review and corrected-source gates remain required in PR #95.
+
+### PR #95 corrective review landing — 2026-10-18
+
+The session-close correction is included in the two NEW clean complete cumulative
+reviews and NEW separate clean defensive security sitting at `ba14b1bd`. The
+[correction register](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#pr-95-corrective-review-completion--2026-10-18)
+records exact scopes, tests and published-source validation. Earlier pending
+checkpoints are historical. Actual native/work/terminal/database acknowledgements
+remain distinct from cancellation, initiation, refusal and deadline expiry; this
+note adds no shutdown authority or whole-wave acceptance.

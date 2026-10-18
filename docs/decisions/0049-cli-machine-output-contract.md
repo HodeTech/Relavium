@@ -1,6 +1,6 @@
 # ADR-0049: CLI machine-output contract (`--json` NDJSON stream + stderr diagnostics)
 
-- **Status**: Accepted
+- **Status**: Accepted (§5 infrastructure/storage and §6 explicit JSON help partially replaced by ADR-0110)
 - **Date**: 2026-06-22
 - **Related**: [ADR-0036](0036-run-loop-substrate-event-bus-and-execution-host.md), [ADR-0047](0047-cli-framework-commander-ink-clack.md), [sse-event-schema.md](../reference/contracts/sse-event-schema.md), [commands.md](../reference/cli/commands.md), [error-handling.md](../standards/error-handling.md)
 
@@ -134,3 +134,7 @@ Machine-readable events and durable discovery records now qualify numeric known 
 
 See [ADR-0104](0104-unknown-provider-usage-is-durable-cost-uncertainty.md) and the
 [canonical usage contract](../reference/shared-core/llm-provider-seam.md#6-usage).
+
+## Wave 3 decision acceptance — 2026-10-16
+
+> Amended 2026-10-16: [ADR-0110](0110-cli-diagnostics-and-discovery-have-explicit-compatibility.md) is accepted by the maintainer. Sections 5 and 6 are partially replaced for explicit infrastructure/storage classifications and explicit JSON help. The approved CLI commands contract owns surface-specific exits, structured stderr and the separate versioned discovery projection. Actual workflow outcomes and the pure stdout event stream remain accepted. The approved [execution plan](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#proposed-implementation-increments) owns implementation and review gates; this note does not claim implementation landing.

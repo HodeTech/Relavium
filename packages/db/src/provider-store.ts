@@ -1,4 +1,4 @@
-import { PROVIDER_KINDS, type ProviderKind } from '@relavium/shared';
+import { RelaviumError, PROVIDER_KINDS, type ProviderKind } from '@relavium/shared';
 import { and, asc, eq, isNull } from 'drizzle-orm';
 
 import type { Db } from './client.js';
@@ -70,7 +70,7 @@ const HEADER_POLICY_MESSAGE =
 const INVALID_STORED_HEADERS = 'Stored provider headers are invalid.';
 
 /** Content-free interim admission refusal (ADR-0108); never retain the supplied map or a foreign cause. */
-export class ProviderHeaderPolicyError extends Error {
+export class ProviderHeaderPolicyError extends RelaviumError {
   readonly code = 'provider_header_policy';
 
   constructor() {

@@ -216,3 +216,16 @@ joins the per-item disposition, two NEW clean complete whole-wave review rounds,
 security sittings, exact-source gates and preserved limits. Earlier dated pending
 checkpoints remain historical. This landing does not claim a merge, future header
 activation, full M/N lifecycle or removal of approved residuals.
+
+
+### Wave 2 merge landing — 2026-10-15
+
+The applicable Wave 2 implementation and maintainer corrections merged to `main`
+as PR #94 (`ab08209e`). The [merge checkpoint](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-2-merge-checkpoint--2026-10-15)
+joins final reviewed source `4cdfe011`, review scopes, execution evidence and preserved
+limits. Earlier pending/unmerged notes are historical; this landing adds no decision,
+future feature, deferral or claim of merge-commit execution.
+
+## Wave 3 decision acceptance — 2026-10-16
+
+> Amended 2026-10-16: [ADR-0112](0112-chat-network-grants-and-onboarding-state-are-operator-owned.md) is accepted by the maintainer. Interactive approval remains an independent floor. The invocation-live HTTP authority is rechecked after awaited approval/effect preparation; a permission change cannot be bypassed by an earlier approval snapshot. The approved [execution plan](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#proposed-implementation-increments) owns implementation and review gates; this note does not claim implementation landing.

@@ -621,5 +621,9 @@ export interface LlmProvider {
    * that one row (never throws for it — ADR-0064 §8); a breaking endpoint/shape change throws a classified,
    * key-redacted `LlmProviderError` the host's per-provider refresh isolation catches (ADR-0064 §5).
    */
-  listModels?(key: string, signal?: AbortSignalLike): Promise<ModelListing[]>;
+  listModels?(
+    key: string,
+    signal?: AbortSignalLike,
+    options?: LlmInvocationOptions,
+  ): Promise<ModelListing[]>;
 }

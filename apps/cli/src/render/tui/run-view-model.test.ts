@@ -20,12 +20,123 @@ function reduceAll(events: readonly RunEvent[]): RunViewState {
 }
 
 describe('reduceRunEvent', () => {
+  it('preserves current view state for a newer external runtime event', () => {
+    const state = initialRunViewState();
+    const result = reduceRunEvent(state, {
+      // @ts-expect-error Runtime compatibility control: a newer event is outside today's closed type.
+      type: 'future:event',
+      runId: RUN,
+      timestamp: TS,
+      sequenceNumber: 1,
+    });
+    expect(result).toEqual({ ...state, lastSequenceNumber: 1 });
+  });
   it('starts empty', () => {
     const s = initialRunViewState();
     expect(s.nodeOrder).toEqual([]);
     expect(s.cumulativeCostMicrocents).toBe(0);
     expect(s.gapDetected).toBe(false);
     expect(s.summary).toBeUndefined();
+  });
+
+  it('shows early reasoning, appends deltas, and preserves independent answer text', () => {
+    const state = reduceAll([
+      {
+        type: 'agent:reasoning',
+        runId: RUN,
+        timestamp: TS,
+        sequenceNumber: 1,
+        nodeId: 'a',
+        model: 'reasoner',
+        text: 'consider ',
+      },
+      {
+        type: 'agent:reasoning',
+        runId: RUN,
+        timestamp: TS,
+        sequenceNumber: 2,
+        nodeId: 'a',
+        model: 'reasoner',
+        text: 'this',
+      },
+      {
+        type: 'agent:token',
+        runId: RUN,
+        timestamp: TS,
+        sequenceNumber: 3,
+        nodeId: 'a',
+        model: 'reasoner',
+        token: 'answer',
+      },
+    ]);
+    expect(state.nodes['a']?.status).toBe('running');
+    expect(state.activeNodeId).toBe('a');
+    expect(state.activeModel).toBe('reasoner');
+    expect(state.activeReasoning).toBe('consider this');
+    expect(state.activeTokens).toBe('answer');
+  });
+
+  it('bounds reasoning and ignores duplicate or out-of-order deltas without losing the cost snapshot', () => {
+    const first: RunEvent = {
+      type: 'agent:reasoning',
+      runId: RUN,
+      timestamp: TS,
+      sequenceNumber: 3,
+      nodeId: 'a',
+      model: 'reasoner',
+      text: `${'x'.repeat(MAX_TOKEN_CHARS)}tail`,
+      cumulativeCostMicrocents: 25,
+    };
+    const state = reduceAll([
+      first,
+      { ...first, text: 'duplicate' },
+      { ...first, sequenceNumber: 2, text: 'old' },
+    ]);
+    expect(state.activeReasoning).toHaveLength(MAX_TOKEN_CHARS);
+    expect(state.activeReasoning.endsWith('tail')).toBe(true);
+    expect(state.activeReasoning).not.toContain('duplicate');
+    expect(state.activeReasoning).not.toContain('old');
+    expect(state.cumulativeCostMicrocents).toBe(25);
+    expect(state.lastSequenceNumber).toBe(3);
+  });
+
+  it('resets both live buffers on node switch and on an explicit node start', () => {
+    const reason: RunEvent = {
+      type: 'agent:reasoning',
+      runId: RUN,
+      timestamp: TS,
+      sequenceNumber: 1,
+      nodeId: 'a',
+      model: 'reasoner',
+      text: 'first reasoning',
+    };
+    let state = reduceAll([
+      reason,
+      {
+        type: 'agent:token',
+        runId: RUN,
+        timestamp: TS,
+        sequenceNumber: 2,
+        nodeId: 'b',
+        model: 'other',
+        token: 'other answer',
+      },
+    ]);
+    expect(state.activeReasoning).toBe('');
+    state = reduceRunEvent(state, { ...reason, sequenceNumber: 3 });
+    expect(state.activeTokens).toBe('');
+    expect(state.activeReasoning).toBe('first reasoning');
+    state = reduceRunEvent(state, {
+      type: 'node:started',
+      runId: RUN,
+      timestamp: TS,
+      sequenceNumber: 4,
+      nodeId: 'c',
+      nodeType: 'agent',
+    });
+    expect(state.activeTokens).toBe('');
+    expect(state.activeReasoning).toBe('');
+    expect(state.activeModel).toBeUndefined();
   });
 
   it('records the runId from run:started', () => {

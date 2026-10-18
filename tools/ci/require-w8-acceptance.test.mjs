@@ -41,7 +41,16 @@ test('the actual required workflow joins both full offline controls and checks t
     'usage-mutations',
     'fs-mutations',
     'secrets-mutations',
+    'packed-cli',
   ]);
+  const packedGuard = ci.steps.find((step) => step.name === 'Require complete packed CLI controls');
+  assert.equal(packedGuard.env.PACKED_CLI_RESULT, '${{ needs.packed-cli.result }}');
+  assert.equal(
+    packedGuard.run,
+    "node -e \"require('node:assert/strict').equal(process.env.PACKED_CLI_RESULT, 'success')\"",
+  );
+  assert.equal(packedGuard.if, undefined);
+  assert.equal(packedGuard['continue-on-error'], undefined);
   const fsGuard = ci.steps.find(
     (step) => step.name === 'Require complete filesystem causal controls',
   );

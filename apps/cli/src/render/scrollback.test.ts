@@ -1,8 +1,9 @@
 import { Writable } from 'node:stream';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { PassThrough } from 'node:stream';
+import { injectPostRemoval } from '../chat/native-removal.test-support.js';
 
 import {
   DUMP_FOOTER,
@@ -26,7 +27,9 @@ const harness = (
 ): { deps: DumpToScrollbackDeps; trace: string[] } => {
   const trace: string[] = [];
   const deps: DumpToScrollbackDeps = {
-    writeOut: (text) => trace.push(text),
+    writeOut: (text) => {
+      trace.push(text);
+    },
     waitForContinue: () => {
       trace.push('waited');
       return Promise.resolve();
@@ -37,6 +40,20 @@ const harness = (
 };
 
 describe('dumpToScrollback', () => {
+  it('waits for actual transcript delivery before acquiring the acknowledgement input', async () => {
+    let deliver: () => void = () => undefined;
+    const delivery = new Promise<void>((resolve) => {
+      deliver = resolve;
+    });
+    const wait = vi.fn(() => Promise.resolve());
+    const { deps } = harness({ writeOut: () => delivery, waitForContinue: wait });
+    const dump = dumpToScrollback(deps, ['synthetic transcript']);
+    expect(wait, 'SESSION_SCROLLBACK_DELIVERY_BEFORE_INPUT_ACQUISITION').not.toHaveBeenCalled();
+    deliver();
+    await dump;
+    expect(wait).toHaveBeenCalledOnce();
+  });
+
   it('prints the banners around the transcript, then WAITS before the caller repaints', async () => {
     const { deps, trace } = harness();
     await dumpToScrollback(deps, ['> hi', 'hello there']);
@@ -107,6 +124,101 @@ const fakeInterrupts = (): InterruptSource & { raise: () => void; listeners: num
  * own stdin listeners and turned raw mode off, so it owns stdin for the duration and must hand it back clean.
  */
 describe('nodeWaitForContinue', () => {
+  it('joins a reentrant native registration before acknowledging removal of its late listener', async () => {
+    const ref = vi.fn();
+    const stdin = Object.assign(new PassThrough(), { ref });
+    const interrupts = fakeInterrupts();
+    stdin.on('newListener', (event: string | symbol) => {
+      if (event === 'end') stdin.emit('data', '\n');
+    });
+    await nodeWaitForContinue(stdin, interrupts)();
+    expect(stdin.listenerCount('data')).toBe(0);
+    expect(stdin.listenerCount('end'), 'SESSION_HATCH_REGISTRATION_REENTRY_NO_LATE_LISTENER').toBe(
+      0,
+    );
+    expect(stdin.listenerCount('error')).toBe(0);
+    expect(interrupts.listeners).toBe(0);
+    expect(ref).not.toHaveBeenCalled();
+    expect(stdin.isPaused()).toBe(true);
+  });
+
+  it('preserves a failed registration while independently releasing earlier native acquisitions', async () => {
+    const stdin = new PassThrough();
+    const interrupts = fakeInterrupts();
+    const primary = new Error('native registration failed');
+    stdin.on('newListener', (event: string | symbol) => {
+      if (event === 'end') throw primary;
+    });
+    await expect(nodeWaitForContinue(stdin, interrupts)()).rejects.toBe(primary);
+    expect(stdin.listenerCount('data')).toBe(0);
+    expect(stdin.listenerCount('end')).toBe(0);
+    expect(interrupts.listeners).toBe(0);
+    expect(stdin.isPaused()).toBe(true);
+  });
+
+  it('a failed remover refuses release but does not skip independent listeners or pausing input', async () => {
+    const stdin = new PassThrough();
+    const interrupts = fakeInterrupts();
+    const cancel = new AbortController();
+    const primary = new Error('native removal failed');
+    injectPostRemoval(stdin)((event) => {
+      if (event === 'data') throw primary;
+    });
+    const wait = nodeWaitForContinue(stdin, interrupts, cancel.signal)();
+    const refused = expect(wait).rejects.toBe(primary);
+    cancel.abort();
+    await refused;
+    expect(stdin.listenerCount('data')).toBe(0);
+    expect(stdin.listenerCount('end')).toBe(0);
+    expect(stdin.listenerCount('error')).toBe(0);
+    expect(interrupts.listeners).toBe(0);
+    expect(stdin.isPaused()).toBe(true);
+  });
+
+  it('a failed ref releases registered listeners and preserves its primary failure', async () => {
+    const primary = new Error('native ref failed');
+    const stdin = Object.assign(new PassThrough(), {
+      ref: () => {
+        throw primary;
+      },
+    });
+    const interrupts = fakeInterrupts();
+    await expect(nodeWaitForContinue(stdin, interrupts)()).rejects.toBe(primary);
+    expect(stdin.listenerCount('data')).toBe(0);
+    expect(stdin.listenerCount('end')).toBe(0);
+    expect(stdin.listenerCount('error')).toBe(0);
+    expect(interrupts.listeners).toBe(0);
+    expect(stdin.isPaused()).toBe(true);
+  });
+
+  it('an owned abort releases actual hatch listeners and pauses captured input before Ink reclaims it', async () => {
+    const stdin = new PassThrough();
+    const interrupts = fakeInterrupts();
+    const cancel = new AbortController();
+    const wait = nodeWaitForContinue(stdin, interrupts, cancel.signal)();
+    expect(stdin.listenerCount('data')).toBe(1);
+    expect(interrupts.listeners).toBe(1);
+    cancel.abort();
+    await wait;
+    expect(stdin.listenerCount('data')).toBe(0);
+    expect(stdin.listenerCount('end')).toBe(0);
+    expect(stdin.listenerCount('error')).toBe(0);
+    expect(interrupts.listeners).toBe(0);
+    expect(stdin.isPaused(), 'SESSION_HATCH_ABORT_RELEASES_CAPTURED_INPUT').toBe(true);
+  });
+
+  it('a pre-aborted hatch does not acquire or resume input', async () => {
+    const stdin = new PassThrough();
+    const interrupts = fakeInterrupts();
+    const cancel = new AbortController();
+    cancel.abort();
+    const resume = vi.spyOn(stdin, 'resume');
+    await nodeWaitForContinue(stdin, interrupts, cancel.signal)();
+    expect(resume).not.toHaveBeenCalled();
+    expect(stdin.listenerCount('data')).toBe(0);
+    expect(interrupts.listeners).toBe(0);
+  });
+
   it('resolves on the first keypress and removes every listener it added', async () => {
     const stdin = new PassThrough();
     const interrupts = fakeInterrupts();

@@ -14,7 +14,8 @@ import { join } from 'node:path';
 import { Readable } from 'node:stream';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createClient } from '@relavium/db';
+import { createClient, createSessionStore } from '@relavium/db';
+import type { CliInvocation } from '../process/invocation.js';
 
 import {
   buildChatSession,
@@ -26,6 +27,7 @@ import { scriptedResolver } from '../chat/test-support.js';
 import { openSessionStore } from '../history/session-open.js';
 import type { GlobalOptions } from '../process/options.js';
 import { run } from '../run.js';
+import { invocationFixture } from '../process/invocation.test-support.js';
 import { captureIo } from '../test-support.js';
 import { chatCommand, chatResumeCommand, type ChatDriver } from './chat.js';
 import { runCommand } from './run.js';
@@ -33,13 +35,53 @@ import { fsPolicyWorkspace } from '../engine/tool-host/fs-policy.js';
 import { createNodeFsCapability } from '../engine/tool-host/fs.js';
 
 const effects = vi.hoisted(() => ({ history: 0, keys: 0, builders: 0 }));
+type ClearPhase =
+  | 'command-enter'
+  | 'command-settled'
+  | 'native-open-enter'
+  | 'native-open-return'
+  | 'fresh-build-enter'
+  | 'fresh-build-return'
+  | 'resumed-build-enter'
+  | 'resumed-build-return'
+  | 'clear-enter'
+  | 'clear-return'
+  | 'reseat-enter'
+  | 'reseat-return'
+  | 'exit-enter'
+  | 'exit-return'
+  | 'observer-enter'
+  | 'observer-closed'
+  | 'runner-abort';
+interface ClearPhaseEntry {
+  readonly phase: ClearPhase;
+  readonly elapsedMs: number;
+}
+const clearTrace = vi.hoisted((): { active: ((phase: ClearPhase) => void) | undefined } => ({
+  active: undefined,
+}));
+let clearOperation:
+  | {
+      readonly raw: Promise<unknown>;
+      readonly rawSettled: () => boolean;
+      readonly invocation: CliInvocation;
+      readonly removeAbort: () => void;
+      readonly abortSnapshot: () => readonly ClearPhaseEntry[] | undefined;
+    }
+  | undefined;
 vi.mock('../db/open.js', async (original) => {
   const native = await original<typeof import('../db/open.js')>();
   return {
     ...native,
     openLocalDb: (...args: Parameters<typeof native.openLocalDb>) => {
       effects.history += 1;
-      return native.openLocalDb(...args);
+      const trace = clearTrace.active;
+      trace?.('native-open-enter');
+      try {
+        return native.openLocalDb(...args);
+      } finally {
+        trace?.('native-open-return');
+      }
     },
   };
 });
@@ -74,6 +116,11 @@ let workspace: string;
 let outside: string;
 const argv = (...tokens: string[]) => ['node', 'relavium', ...tokens];
 beforeEach(() => {
+  if (
+    clearOperation !== undefined &&
+    (!clearOperation.rawSettled() || clearOperation.invocation.registry.activeOwners !== 0)
+  )
+    throw new Error('Previous native filesystem fixture is not retired.');
   base = realpathSync.native(mkdtempSync(join(tmpdir(), 'relavium-fs-invocation-')));
   home = join(base, 'home');
   workspace = join(base, 'workspace');
@@ -82,10 +129,30 @@ beforeEach(() => {
   vi.stubEnv('HOME', home);
   vi.stubEnv('USERPROFILE', home);
   Object.assign(effects, { history: 0, keys: 0, builders: 0 });
+  clearOperation = undefined;
 });
-afterEach(() => {
+afterEach(async () => {
+  const root = base;
+  const operation = clearOperation;
+  if (operation !== undefined) {
+    const phases = operation.abortSnapshot();
+    if (phases !== undefined)
+      console.error(JSON.stringify({ kind: 'clear-reseat-case-abort-phases', phases }));
+    // Runner cancellation is not settlement. Keep this root/HOME until the original operation and owners join.
+    await Promise.allSettled([operation.raw]);
+    if (operation.invocation.registry.termination !== undefined)
+      await operation.invocation.registry.termination;
+    expect(operation.invocation.registry.activeOwners).toBe(0);
+    operation.removeAbort();
+  }
+  // A timed-out hook may resume after the runner attempted another case. Never restore that case's environment.
+  if (operation !== undefined && clearOperation !== operation) {
+    rmSync(root, { recursive: true, force: true });
+    return;
+  }
+  clearTrace.active = undefined;
   vi.unstubAllEnvs();
-  rmSync(base, { recursive: true, force: true });
+  rmSync(root, { recursive: true, force: true });
 });
 function global(cwd = workspace): GlobalOptions {
   return { cwd, json: false, color: false, configPath: undefined, verbosity: 'normal' };
@@ -159,6 +226,7 @@ describe('real argv → Commander → dispatcher admission (synthetic key bounda
     'bounded repeated grants with no config reach the authorised %j composition boundary',
     async ({ surface }) => {
       const captured = captureIo();
+      const f = invocationFixture();
       const code = await run(
         argv(
           '--allow-fs-root',
@@ -174,11 +242,19 @@ describe('real argv → Commander → dispatcher admission (synthetic key bounda
           stdinIsTty: surface[0] !== 'agent',
           stdoutIsTty: surface[0] !== 'agent',
         },
+        undefined,
+        f.invocation,
       );
       // The injected key boundary deliberately throws: this certifies routing/admission, not a live provider turn.
-      expect(code).toBe(1);
+      expect(code).toBe(9);
+      expect(captured.err()).toContain('unexpected CLI failure');
+      expect(captured.err()).not.toContain('synthetic composition boundary reached');
       expect(effects.keys, 'FS_CAUSAL_INVOCATION_FORWARD').toBe(1);
       expect(effects.history).toBe(0);
+      expect(f.exit).not.toHaveBeenCalled();
+      f.advance(3000);
+      expect(await f.invocation.finiteExit.exited).toBe(9);
+      expect(f.exit).toHaveBeenCalledExactlyOnceWith(9);
     },
   );
 
@@ -260,54 +336,119 @@ it('resumes current config at the canonical original workspace with fresh grants
   expect((await fs.readFile('../outside/allowed.txt', {})).content).toBe('allowed');
 });
 
-it('keeps one owned policy through clear and model reseating without persisting the grants', async () => {
+it('keeps one owned policy through clear and model reseating without persisting the grants', async (context) => {
   config(workspace, '[chat]\nfs_scope="project"\n');
+  const f = invocationFixture();
+  const started = performance.now();
+  const phases: ClearPhaseEntry[] = [];
+  let aborted: readonly ClearPhaseEntry[] | undefined;
+  const trace = (phase: ClearPhase): void => {
+    if (phases.length < 32) phases.push({ phase, elapsedMs: performance.now() - started });
+  };
+  clearTrace.active = trace;
+  const onAbort = (): void => {
+    trace('runner-abort');
+    aborted ??= phases.map((entry) => ({ ...entry }));
+    f.invocation.finiteExit.signal(15);
+  };
+  context.signal.addEventListener('abort', onAbort, { once: true });
   const policies: BuildChatSessionOptions['fsPolicy'][] = [];
   let round = 0;
   const drive: ChatDriver = async (ctx) => {
     ctx.startSession();
     round += 1;
     if (round === 1) {
+      trace('clear-enter');
       await ctx.processLine('/clear');
+      trace('clear-return');
       return { kind: ctx.stopReason() };
     }
     if (round === 2) {
+      trace('reseat-enter');
       ctx.onReseat?.({ modelId: 'gpt-4o-mini', provider: 'openai' });
+      trace('reseat-return');
       return { kind: ctx.stopReason() };
     }
+    trace('exit-enter');
     await ctx.processLine('/exit');
+    trace('exit-return');
     return { kind: 'exit' };
   };
-  await chatCommand(
-    { agent: undefined },
-    {
-      io: { ...captureIo().io, stdoutIsTty: true },
-      writeControl: () => undefined,
-      global: { ...global(), noAltScreen: true, allowFsRoots: [outside] },
-      providers: scriptedResolver([]),
-      drive,
-      buildSession: async (options) => {
-        policies.push(options.fsPolicy);
-        return buildChatSession(options);
+  trace('command-enter');
+  const raw = Promise.resolve().then(() => {
+    context.signal.throwIfAborted();
+    return chatCommand(
+      { agent: undefined },
+      {
+        invocation: f.invocation,
+        lifecycle: {
+          onProcessExit: () => () => {},
+          onInterrupt: () => () => {},
+          onTerminationSignal: () => () => {},
+          setRawMode: () => {},
+          exit: () => {},
+        },
+        io: { ...captureIo().io, stdoutIsTty: true },
+        writeControl: () => undefined,
+        global: { ...global(), noAltScreen: true, allowFsRoots: [outside] },
+        providers: scriptedResolver([]),
+        drive,
+        buildSession: async (options) => {
+          policies.push(options.fsPolicy);
+          trace('fresh-build-enter');
+          try {
+            return await buildChatSession(options);
+          } finally {
+            trace('fresh-build-return');
+          }
+        },
+        buildResumedSession: async (options) => {
+          policies.push(options.fsPolicy);
+          trace('resumed-build-enter');
+          try {
+            return await buildResumedChatSession(options);
+          } finally {
+            trace('resumed-build-return');
+          }
+        },
       },
-      buildResumedSession: async (options) => {
-        policies.push(options.fsPolicy);
-        return buildResumedChatSession(options);
-      },
+    );
+  });
+  let rawSettled = false;
+  void raw.then(
+    () => {
+      rawSettled = true;
+    },
+    () => {
+      rawSettled = true;
     },
   );
+  clearOperation = {
+    raw,
+    rawSettled: () => rawSettled,
+    invocation: f.invocation,
+    removeAbort: () => context.signal.removeEventListener('abort', onAbort),
+    abortSnapshot: () => aborted,
+  };
+  await raw;
+  trace('command-settled');
+  context.signal.throwIfAborted();
   expect(policies).toHaveLength(3);
   expect(policies[0]).toBeDefined();
   expect(policies.every((policy) => policy === policies[0])).toBe(true);
-  const opened = openSessionStore(home);
+  trace('observer-enter');
+  // Inspect the existing real DB without repeating writable migrations and privacy maintenance.
+  const client = createClient(join(home, '.relavium', 'history.db'));
   try {
-    for (const row of opened.store.listSessions()) {
-      const loaded = opened.store.loadFull(row.id);
+    const store = createSessionStore(client.db);
+    for (const row of store.listSessions()) {
+      const loaded = store.loadFull(row.id);
       expect(loaded?.session.context).not.toHaveProperty('fsPolicy');
       expect(loaded?.session.context).not.toHaveProperty('allowFsRoots');
     }
   } finally {
-    opened.close();
+    client.sqlite.close();
+    trace('observer-closed');
   }
   if (policies[0] !== undefined) expect(fsPolicyWorkspace(policies[0])).toBe(workspace);
 });
@@ -397,8 +538,19 @@ it('revalidates a revoked policy before binding an agent or connecting MCP durin
 it('forwards real argv grants into a project selector before composition', async () => {
   config(workspace, `[chat]\nfs_scope="project"\nextra_roots=[${JSON.stringify(outside)}]\n`);
   const captured = captureIo();
-  const code = await run(argv('chat', '--cwd', workspace, '--allow-fs-root', outside), captured.io);
-  expect(code, 'FS_CAUSAL_INVOCATION_FORWARD').toBe(1);
+  const f = invocationFixture();
+  const code = await run(
+    argv('chat', '--cwd', workspace, '--allow-fs-root', outside),
+    captured.io,
+    undefined,
+    f.invocation,
+  );
+  expect(code, 'FS_CAUSAL_INVOCATION_FORWARD').toBe(9);
+  expect(captured.err()).not.toContain('synthetic composition boundary reached');
   expect(effects.keys, 'FS_CAUSAL_INVOCATION_FORWARD').toBe(1);
   expect(effects.history).toBe(0);
+  expect(f.exit).not.toHaveBeenCalled();
+  f.advance(3000);
+  expect(await f.invocation.finiteExit.exited).toBe(9);
+  expect(f.exit).toHaveBeenCalledExactlyOnceWith(9);
 });

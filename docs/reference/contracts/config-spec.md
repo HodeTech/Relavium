@@ -6,7 +6,7 @@
 
 Relavium uses a two-level configuration model that mirrors VS Code's **user vs. workspace** split: a **global** config in the user's home directory, and a **per-project** config committed alongside the code. The per-project layer overrides the global layer. A directory the user opens *is* the workspace — there is no separate "project" concept; the filesystem directory is the unit of organization, which makes git integration trivial.
 
-Config files are **TOML 1.0**. They are decoded to plain objects by the surface that reads them (the CLI in build phase 2 — [ADR-0048](../../decisions/0048-toml-config-parser.md)), then validated against the strict `@relavium/shared` config schemas ([ADR-0033](../../decisions/0033-strict-config-files-amends-0023.md)); the engine never reads config files itself.
+Config files are **TOML 1.0**. They are decoded to plain objects by the surface that reads them (the CLI in build phase 2 — [ADR-0048](../../decisions/0048-toml-config-parser.md)), then validated against the strict `@relavium/shared` config schemas ([ADR-0033](../../decisions/0033-strict-config-files-amends-0023.md)); the engine never reads config files itself. Numeric range diagnostics identify the field, schema-side bound and inclusive/exclusive operator without displaying the rejected value; loader and preference-writer validation share that formatter.
 
 ## Locations
 
@@ -259,3 +259,108 @@ This is covered in full in [../desktop/keychain-and-secrets.md](../desktop/keych
 ## Schema versioning
 
 The workflow and agent files inside `.relavium/` carry their own `schema_version` (see [workflow-yaml-spec.md](workflow-yaml-spec.md)). Because the entire `.relavium/` directory is committed and shared, both the config files and the workflow/agent files are treated as stable, versioned, public formats — breaking changes require a migration path, never a silent reinterpretation of existing keys.
+
+## Proposed Wave 3 chat policy and preferences
+
+**Approved design, unshipped — 2026-10-16.** [ADR-0112](../../decisions/0112-chat-network-grants-and-onboarding-state-are-operator-owned.md)
+was approved by the maintainer. These additions do not change current schema until
+implementation landing.
+
+- Global-only `[chat_http].allowed_domains: string[]`, optional, absent/empty deny-all.
+  At most 128 entries, each at most 253 characters after an optional terminal
+  root-dot is removed. Canonical ASCII DNS: labels 1–63 characters with alphanumeric
+  ends and internal hyphens, at least two labels. Check ASCII **before** any case
+  folding; then normalize case/root-dot and deduplicate. Reject numeric final
+  labels/WHATWG IPv4 forms (including 127.1 and 0x7f.1), not only dotted quads. IDNs require explicit punycode. Reject URLs, ports, paths, credentials,
+  wildcards, suffix grants, IP literals, single-label names, and names equal to or ending in .localhost or .local. Existing
+  shared URL/authority extraction supplies request hostname normalization; one pure
+  DNS validator/comparator rejects alternate IP interpretation and agrees with
+  actual connection authority. Do not introduce another ad-hoc URL parser. Workflow
+  allowedDomains retains its separate existing policy; this grammar does not
+  silently change stored workflow grants.
+- Global-only `[preferences].keychain_unavailable_acknowledged: boolean`, optional,
+  absent=false. It is reminder state, not credential state. Only a typed backend
+  unavailable result plus explicit user choice may set it; no startup auto-write.
+
+Project/workspace/agent/session/environment layers cannot supply or override either
+field. Read normal global config or explicitly selected `--config` only. Invalid
+fields/values refuse with `config_error`, exit 2, fixed value/path-free diagnostic
+naming the known setting and recovery action. Extend the safe issue formatter for
+these rules; do not emit raw Zod/TOML messages or generic “value is invalid” alone.
+Standard protected global storage and arbitrary operator-selected paths have
+different filesystem guarantees; explicit selection is not proof of model
+unwritability. Other network capabilities retain their own contracts.
+
+Pin the global selection once: resolve relative --config against invocation
+startup cwd, capture the default home/config path once, and never rebase either on
+later --cwd, environment changes or model input. This pins lexical selection, not
+an intentional read-side symlink's referent. Follow the selected link under the
+existing read contract, and state that changing that referent changes operator
+policy. A genuinely absent initial regular-file selection yields I=A=[]; dangling
+links, ENOTDIR, permission failure or disappearance during a read are errors.
+
+Before first host/key/MCP construction, capture owned ceiling I and accepted A=I.
+One live invocation owner supplies effective HTTP authority to **all** old, pending
+and replacement hosts. Every new/resume/Home/clear/reseat build rereads current
+global G and synchronously sets A=A∩G before later build effects. A validated
+removal is sticky even if build fails; additions to I or A never widen it and
+produce one fixed compatibility notice per refresh. Build-first Home recovery
+may retain its old session, but its HTTP guard reads current A, not a host snapshot.
+
+Read/parse failure (including disappearance after a previously present policy)
+suspends HTTP admission and refuses the build with the known fixed diagnostic.
+It preserves A for recovery, never treats transient failure as accepted empty G.
+Successful later refresh clears suspension and still intersects previous A.
+Validated explicit empty policy is a real removal; re-adding then requires a fresh
+invocation. No startup/model fallback or persisted session can reset this owner.
+
+At dispatch, check the current non-suspended view after awaited approval/effect
+prepare and immediately before host work, using the owned admitted HTTP target
+specified in the [tool contract](../shared-core/tool-registry.md#proposed-wave-3-http-authority-and-secret-provenance).
+Already admitted requests may complete. There is no file watcher or recall promise.
+Use latest-only build generations for host and selected model publication; stale
+completion disposes its host and cannot restore policy/selection. This contract
+works with Home's existing build-first lifecycle rather than pretending it stops
+its old host before build.
+
+This permits only built-in `http_request` to exact allowed hostnames at existing
+HTTPS ports; it does not enable the tool grant, a missing confirmer, search, MCP,
+provider traffic or shell egress. See the
+[tool comparison contract](../shared-core/tool-registry.md#proposed-wave-3-http-authority-and-secret-provenance).
+
+Expose a typed, value-free current key-availability observation before Home's UX
+choice: usable key (including env fallback), missing entry, or unavailable backend.
+Do not infer backend failure from absence or native error strings. Acknowledgement
+is used only with actual current unavailable+keyless state; a usable key always
+suppresses setup. Retry setup is explicit; ordinary missing-key/auth/DB failures
+are not relabelled keychain unavailable. Preference write failure stays visible. Keeping this UX-only preference in global
+TOML is deliberate despite portability; a DB record would add another store and
+would still require the same current-key check.
+
+An explicitly chosen ephemeral provider/model pair belongs to one invocation
+selection binding used by all later clear/reseat/Home builds. Reuse the existing
+resolved chat/reseat target shape. Commit selection only with the latest successful
+build; failed/stale builds never overwrite it. Disk/project defaults stay distinct.
+
+For mutation, the shared writer checks final-component symlink (including dangling link) refuses with
+`ConfigWriteRefusedError`, code `config_write_refused`, reason `symlink_target`,
+non-retryable, fixed path-free message and exit 2. Read-side links remain supported.
+Check before loader/read/chmod side effects; all present/future preference writers
+use this same primitive. Offer manual edit/regular-file replacement and honest compatible ephemeral setup,
+not Retry or saved-success. Ancestor links remain owner-controlled; hardlinks get
+atomic replacement of the chosen entry, not all aliases. No lstat+rename race-free
+claim. Regular writes retain schema round-trip/0600/temp/fsync/atomic rename.
+TOML comments/order are lost as in ADR-0063; preserve every validated policy value
+and emit the fixed compatibility notice before **every existing-file** preference
+rewrite (new-file creation has no lost comments). Do not infer hand-editing. Home,
+picker and wizard render the known refusal/action, not a generic swallowed error;
+unexpected infrastructure faults follow ADR-0110. CLI error codes share its one
+closed authority.
+
+**Rollback to an older strict binary:** back up the non-secret TOML; remove the
+entire `[chat_http]` table and the `keychain_unavailable_acknowledged` entry from
+`[preferences]`, leaving other preferences intact. Then run the older binary.
+Without removal, an older strict binary can reject unknown keys with config
+error/exit 2 on **any** command, including help/version when it loads config.
+ADR-0111’s new meta behavior cannot be promised for older binaries. Provider keys stay in OS
+keychain. For an intentional link, edit the operator-chosen referent manually.

@@ -70,9 +70,76 @@ describe('RunSchema', () => {
   });
 
   it('enforces temporal invariants (completedAt >= startedAt, updatedAt >= createdAt)', () => {
-    expect(RunSchema.safeParse({ ...run, startedAt: 2000, completedAt: 1000 }).success).toBe(false);
-    expect(RunSchema.safeParse({ ...run, createdAt: 2000, updatedAt: 1000 }).success).toBe(false);
-    expect(RunSchema.safeParse({ ...run, startedAt: 1000, completedAt: 2000 }).success).toBe(true);
+    const backwardsFinish = RunSchema.safeParse({
+      ...run,
+      status: 'completed',
+      startedAt: 2000,
+      completedAt: 1000,
+    });
+    expect(backwardsFinish.success).toBe(false);
+    if (!backwardsFinish.success)
+      expect(backwardsFinish.error.issues).toEqual([
+        expect.objectContaining({
+          path: ['completedAt'],
+          message: 'completedAt must be >= startedAt',
+        }),
+      ]);
+    const backwardsUpdate = RunSchema.safeParse({ ...run, createdAt: 2000, updatedAt: 1000 });
+    expect(backwardsUpdate.success).toBe(false);
+    if (!backwardsUpdate.success)
+      expect(backwardsUpdate.error.issues).toEqual([
+        expect.objectContaining({
+          path: ['updatedAt'],
+          message: 'updatedAt must be >= createdAt',
+        }),
+      ]);
+    expect(
+      RunSchema.safeParse({ ...run, status: 'completed', startedAt: 1000, completedAt: 2000 })
+        .success,
+    ).toBe(true);
+    expect(
+      RunSchema.safeParse({ ...run, status: 'completed', startedAt: 1000, completedAt: 1000 })
+        .success,
+    ).toBe(true);
+  });
+
+  // Explicit contract matrix, independent of the implementation's status predicates.
+  const lifecycle = [
+    { status: 'pending', startedAt: false, completedAt: false, error: false },
+    { status: 'running', startedAt: true, completedAt: false, error: false },
+    { status: 'paused', startedAt: true, completedAt: false, error: false },
+    { status: 'completed', startedAt: true, completedAt: true, error: false },
+    { status: 'failed', startedAt: true, completedAt: true, error: true },
+    { status: 'cancelled', startedAt: true, completedAt: true, error: false },
+  ] as const;
+  const completionFields = {
+    startedAt: 1000,
+    completedAt: 2000,
+    error: { code: 'internal', message: 'PRIVATE_ERROR_SENTINEL', retryable: false },
+  };
+
+  describe.each(lifecycle)('$status logical record compatibility', (row) => {
+    it('allows missing legacy lifecycle fields and retains optional outputs', () => {
+      const absent = { ...run, status: row.status };
+      expect(RunSchema.parse(absent)).toEqual(absent);
+      const withOutputs = { ...absent, outputs: { partial: 'legacy-result' } };
+      expect(RunSchema.parse(withOutputs)).toEqual(withOutputs);
+    });
+
+    it.each(['startedAt', 'completedAt', 'error'] as const)(
+      'enforces the present %s contract independently',
+      (field) => {
+        const value = { ...run, status: row.status, [field]: completionFields[field] };
+        const result = RunSchema.safeParse(value);
+        expect(result.success).toBe(row[field]);
+        if (result.success) expect(result.data).toEqual(value);
+        else {
+          expect(result.error.issues).toHaveLength(1);
+          expect(result.error.issues[0]?.path).toEqual([field]);
+          expect(result.error.message).not.toContain('PRIVATE_ERROR_SENTINEL');
+        }
+      },
+    );
   });
 
   it('accepts the optional completion fields (error, startedAt, completedAt) when present', () => {

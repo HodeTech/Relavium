@@ -12,7 +12,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
-import { captureIo } from '../test-support.js';
+import { captureIo, OwnedTtyOutput } from '../test-support.js';
 import { selectGatePrompter } from './select-prompter.js';
 
 const global = (json = false): GlobalOptions => ({
@@ -27,6 +27,7 @@ const io = (
   over: { stdoutIsTty?: boolean; stdinIsTty?: boolean; env?: Record<string, string> } = {},
 ): CliIo => ({
   ...captureIo(over.env ?? {}).io,
+  nativeStdout: new OwnedTtyOutput(),
   stdoutIsTty: over.stdoutIsTty ?? true,
   stdinIsTty: over.stdinIsTty ?? true,
 });

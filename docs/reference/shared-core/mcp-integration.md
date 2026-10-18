@@ -161,9 +161,32 @@ acknowledgement and admitted descendants remain owed.
 `liveMcpChildPids()` includes pre-initialize stdio children; a connection's `childPid` remains
 latched until positive native-close acknowledgement. `McpClient.childPids` is a current view of
 retained initialized connections. Each acknowledged PID disappears independently while another
-cleanup may still be pending; forced-exit callers must read the current view rather than cache
-an old PID. The manager retains failed connection handles and reports each stored fault once
+cleanup may still be pending. These compatibility observations grant no CLI kill authority;
+the CLI uses the exact creation-owned native registration described below. External callers
+must not retain historical PIDs as fresh liveness evidence. The manager retains failed connection handles and reports each stored fault once
 per supplied reporter; its default remains best-effort reporting, not semantic receipt health.
+
+### Creation-owned native stdio lifetime
+
+**Wave 3 Step 8b independently accepted on `development`.**
+`StdioServerSpec.nativeObserver` is an optional trusted, SDK-free host projection.
+Its synchronous `attach` receives a creation-latched PID reader, known-close
+reader, actual native `whenClosed` promise and the existing idempotent full-owner
+`close` function. Attachment precedes connect/start. Synchronous `beforeStart`
+admission runs immediately before native entry, followed by an owner-open and
+caller-abort recheck. Neither hook receives a transport, client or native process
+handle. Both return `undefined`; an unexpected return refuses with the fixed
+`observer_unavailable` lifetime reason. Ordinary returned native Promise rejection
+is observed without reading a foreign `then` getter; hostile Promise
+constructor/species protocols are outside this trusted callback contract.
+
+Actual native close remains separate from full MCP work completion. A rejected
+start, callback refusal or cancellation cannot acknowledge an already-created
+resource. If the host bridge refuses before attachment, it may retire only its
+proved-empty reservation. Attached native work remains owed through the existing
+owner. The CLI connects this projection to its original invocation registry;
+its [native scope](../cli/commands.md#native-crash-teardown-scope)
+owns platform-specific reap authority and its stated containment limits.
 
 Manager startup transfers an aggregate before any server open. `startMcpClient` accepts optional
 trusted work options as its third argument; `McpServerConfig.open` receives them second, and SDK
@@ -173,10 +196,67 @@ proved-empty scope. A successful client's close joins startup descendants as wel
 CLI run/resume hosts retain this aggregate before connect and keep their signal guard until its
 cleanup acknowledgement, including failure before a client or engine handle exists.
 
+For owned CLI sessions, both the invocation signal and an optional caller startup
+signal limit discovery. Subscription entry is synchronous. Abort delivery is
+independent of input-listener cleanup: both removals are attempted even when one
+fails. Cleanup of partial registration is attempted after the registering call returns.
+Any failed or unknown unlink is retained as cleanup uncertainty by the original
+invocation owner; consumer settlement or bounded refusal does not retire that owner.
+
 The engine's [departure contract](../../architecture/shared-core-engine.md#internal-departure-foundations-adr-0103)
 owns all run actors and final receipt health. MCP connection close supplies its own actual-work
 acknowledgement; a bounded public failure does not substitute for it. Consolidated independent
 acceptance is recorded in [current.md](../../roadmap/current.md).
+
+### Failed-start cleanup lifecycle
+
+**Wave 3 Step 8d independently accepted on `development`.** The [acceptance register](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-and-whole-step-8-acceptance--2026-10-17)
+records cumulative reviews, security and platform evidence. `startMcpClient`
+accepts an optional fourth `McpStartupLifecycle`
+argument, separately from its existing third work-transfer argument. Its
+`onCloseError(serverId, cause)` observes each failed-start connection close
+refusal immediately, including while a different close is held. Its read-only
+`budget.remainingMs()` uses the invocation's existing remaining budget. The
+manager retains that same live budget for successfully initialized clients too,
+across its deferred shared-close entry, and checks it immediately before each
+actual transport-close factory; zero remaining time enters no new
+asynchronous close and supplies no cleanup acknowledgement. Ordinary startup
+without these ports retains its existing actual joins and typed refusal.
+Successful-client failures use each supplied `close(onCloseError)` reporter once
+per failed server, as soon as that fault occurs, even while another close remains
+held. A late reporter immediately receives retained faults; reentering with the
+same callback cannot redeliver one. Reporting never acknowledges cleanup: every
+entered close remains joined, and a throwing reporter's original exception is
+returned only after those joins settle. The failed-start lifecycle observer is not
+delivered a second time for an ordinary successful-client close.
+
+A successful-client budget-port failure likewise rejects `close` promptly with a fixed
+generic infrastructure error and a retained private cause. Rejection does not acknowledge
+cleanup: the unknown connection and original shared cleanup join remain retained, while
+eligible sibling closes still enter and settle independently. Repeated `close` calls
+observe the retained failure without restarting cleanup or renewing its budget.
+
+Failed-start cleanup transfers its own work scope before server construction.
+All exact entered closes remain joined even if the lifecycle reporter throws.
+A reporter/budget-port failure surfaces promptly as a fixed generic
+infrastructure error, with the original startup failure and reporter cause kept
+private; it cannot become an ordinary configuration refusal or erase a held
+sibling. A successful reporter preserves the original typed startup failure.
+Neither a close refusal nor an exhausted budget retires a connection.
+
+The CLI forwards this lifecycle through the actual default manager. Custom
+starters that delegate to `startMcpClient` must forward the fourth argument to
+retain the same failed-start observations. No vendor handle, PID authority,
+receipt success or new engine error code is carried by this channel. Final
+session/terminal integration and global activation are covered by [Step 8d
+acceptance](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-and-whole-step-8-acceptance--2026-10-17).
+
+Session-host shutdown initiates the once-retained MCP close after entered construction/turn
+roots and actual core provider/tool/accounting work settle, before joining transferred native
+connection lifetimes. Otherwise that join would wait on the close it prevents from starting.
+The close request is not acknowledgement: native receipts and other transferred work still
+join before persister/final host cleanup and database release. The original finite budget
+is checked before entering close; expiry or a barrier/close refusal preserves uncertainty.
 
 ### Discovery and result ingress bounds
 

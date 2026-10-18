@@ -1,5 +1,10 @@
-import { CliError } from './errors.js';
-import { FS_ROOT_LIMITS } from '@relavium/shared';
+import { isAbsolute } from 'node:path';
+
+import { CliError } from './cli-error.js';
+import { FS_ROOT_LIMITS } from '@relavium/shared/fs-root-limits';
+import { resolveDiagnosticPolicy, type Verbosity } from './diagnostic-policy.js';
+export type { Verbosity } from './diagnostic-policy.js';
+import { globalOptionForSpelling, type GlobalOptionDescriptor } from '../commands/descriptors.js';
 import type { InvocationFsGrants } from '../engine/tool-host/fs-policy.js';
 
 /**
@@ -8,7 +13,6 @@ import type { InvocationFsGrants } from '../engine/tool-host/fs-policy.js';
  * equivalent), so they are owned here — extracted from argv before `commander` parses the
  * rest — rather than declared as `commander` options (which bind to the command they follow).
  */
-export type Verbosity = 'quiet' | 'normal' | 'verbose';
 
 export interface GlobalOptions {
   readonly json: boolean;
@@ -62,36 +66,40 @@ export interface ExtractedArgv {
   readonly error?: CliError;
 }
 
-/** Boolean global flags (no value) → the mutation each applies to the raw options. */
-const BOOLEAN_FLAGS: Readonly<Record<string, (raw: RawGlobalOptions) => void>> = {
-  '--json': (raw) => {
-    raw.json = true;
-  },
-  '--no-color': (raw) => {
-    raw.color = false;
-  },
-  '--color': (raw) => {
-    raw.color = true;
-  },
-  '--verbose': (raw) => {
-    raw.verbose = true;
-  },
-  '-v': (raw) => {
-    raw.verbose = true;
-  },
-  '--quiet': (raw) => {
-    raw.quiet = true;
-  },
-  '-q': (raw) => {
-    raw.quiet = true;
-  },
-  '--no-alt-screen': (raw) => {
-    raw.noAltScreen = true;
-  },
-  '--no-mouse': (raw) => {
-    raw.noMouse = true;
-  },
-};
+/** Descriptor bindings are a closed internal grammar; no prototype lookup consumes unknown argv. */
+function applyBoolean(raw: RawGlobalOptions, option: GlobalOptionDescriptor): void {
+  switch (option.binding) {
+    case 'json':
+      raw.json = true;
+      break;
+    case 'color':
+      raw.color = !option.negated;
+      break;
+    case 'verbose':
+      raw.verbose = true;
+      break;
+    case 'quiet':
+      raw.quiet = true;
+      break;
+    case 'noAltScreen':
+      raw.noAltScreen = true;
+      break;
+    case 'noMouse':
+      raw.noMouse = true;
+      break;
+    case 'cwd':
+    case 'config':
+    case 'allowFsRoots':
+    case 'help':
+    case 'version':
+      throw new CliError('cli_internal', '');
+    default: {
+      const exhaustive: never = option.binding;
+      void exhaustive;
+      throw new CliError('cli_internal', '');
+    }
+  }
+}
 
 type ValueFlagResult =
   | { readonly kind: 'consumed'; readonly advance: number }
@@ -122,9 +130,9 @@ export function extractGlobalOptions(argv: readonly string[]): ExtractedArgv {
       rest.push(...tokens.slice(i));
       break;
     }
-    const applyBoolean = BOOLEAN_FLAGS[token];
-    if (applyBoolean !== undefined) {
-      applyBoolean(raw);
+    const option = globalOptionForSpelling(token);
+    if (option?.owner === 'extractor' && option.arity === 'none') {
+      applyBoolean(raw, option);
       continue;
     }
     const valued = takeValueFlag(raw, token, tokens[i + 1]);
@@ -141,79 +149,78 @@ export function extractGlobalOptions(argv: readonly string[]): ExtractedArgv {
   return { raw, rest: [...prefix, ...rest] };
 }
 
-/** Handle the value-bearing flags (`--cwd` / `--config`), spaced or `=`-form. */
+/** Recognize value arity from the same descriptor authority used by help/discovery. */
 function takeValueFlag(
   raw: RawGlobalOptions,
   token: string,
   next: string | undefined,
 ): ValueFlagResult {
-  if (
-    token.startsWith('--cwd=') ||
-    token.startsWith('--config=') ||
-    token.startsWith('--allow-fs-root=')
-  ) {
-    const eq = token.indexOf('=');
-    const flag = token.slice(0, eq);
-    const value = token.slice(eq + 1);
-    if (value.trim() === '') {
-      return { kind: 'error', error: requiresArgument(flag) };
-    }
-    const error = assignValueFlag(raw, flag, value);
-    if (error !== undefined) return { kind: 'error', error };
-    return { kind: 'consumed', advance: 0 };
+  const eq = token.indexOf('=');
+  const spelling = eq < 0 ? token : token.slice(0, eq);
+  const option = globalOptionForSpelling(spelling);
+  if (option?.owner !== 'extractor' || option.arity === 'none') return { kind: 'skip' };
+  const value = eq < 0 ? next : token.slice(eq + 1);
+  if (value === undefined || value.trim() === '' || (eq < 0 && value.startsWith('-'))) {
+    return { kind: 'error', error: requiresArgument(spelling) };
   }
-  if (token === '--cwd' || token === '--config' || token === '--allow-fs-root') {
-    if (next === undefined || next.startsWith('-') || next.trim() === '') {
-      return { kind: 'error', error: requiresArgument(token) };
-    }
-    const error = assignValueFlag(raw, token, next);
-    if (error !== undefined) return { kind: 'error', error };
-    return { kind: 'consumed', advance: 1 };
-  }
-  return { kind: 'skip' };
+  const error = assignValueFlag(raw, option, value);
+  if (error !== undefined) return { kind: 'error', error };
+  return { kind: 'consumed', advance: eq < 0 ? 1 : 0 };
 }
 
-function assignValueFlag(raw: RawGlobalOptions, flag: string, value: string): CliError | undefined {
-  if (flag === '--allow-fs-root') {
-    if (
-      value.length > FS_ROOT_LIMITS.characters ||
-      (raw.allowFsRoots?.length ?? 0) >= FS_ROOT_LIMITS.count
-    ) {
-      return new CliError(
-        'invalid_invocation',
-        'Filesystem root grants exceed the supported bounds.',
-      );
+function assignValueFlag(
+  raw: RawGlobalOptions,
+  option: GlobalOptionDescriptor,
+  value: string,
+): CliError | undefined {
+  switch (option.binding) {
+    case 'allowFsRoots':
+      if (
+        value.length > FS_ROOT_LIMITS.characters ||
+        (raw.allowFsRoots?.length ?? 0) >= FS_ROOT_LIMITS.count
+      ) {
+        return new CliError(
+          'invalid_invocation',
+          'Filesystem root grants exceed the supported bounds.',
+        );
+      }
+      if (!isAbsolute(value))
+        return new CliError(
+          'invalid_invocation',
+          'Filesystem root grants must use absolute paths.',
+        );
+      (raw.allowFsRoots ??= []).push(value);
+      return undefined;
+    case 'cwd':
+      raw.cwd = value;
+      return undefined;
+    case 'config':
+      raw.config = value;
+      return undefined;
+    case 'json':
+    case 'color':
+    case 'verbose':
+    case 'quiet':
+    case 'noAltScreen':
+    case 'noMouse':
+    case 'help':
+    case 'version':
+      throw new CliError('cli_internal', '');
+    default: {
+      const exhaustive: never = option.binding;
+      void exhaustive;
+      throw new CliError('cli_internal', '');
     }
-    (raw.allowFsRoots ??= []).push(value);
-    return undefined;
   }
-  if (flag === '--cwd') {
-    raw.cwd = value;
-  } else {
-    raw.config = value;
-  }
-  return undefined;
 }
 
 function requiresArgument(flag: string): CliError {
   return new CliError('invalid_invocation', `\`${flag}\` requires a non-empty argument.`);
 }
 
-/** The one cross-flag rule: `--verbose` and `--quiet` are mutually exclusive. */
+/** Preserve the existing conflict API through the single diagnostic policy. */
 export function assertNoGlobalOptionConflicts(raw: RawGlobalOptions): void {
-  if (raw.verbose === true && raw.quiet === true) {
-    throw new CliError('invalid_invocation', '`--verbose` and `--quiet` cannot be combined.');
-  }
-}
-
-function resolveVerbosity(raw: RawGlobalOptions): Verbosity {
-  if (raw.quiet === true) {
-    return 'quiet';
-  }
-  if (raw.verbose === true) {
-    return 'verbose';
-  }
-  return 'normal';
+  resolveDiagnosticPolicy(raw, {});
 }
 
 /**
@@ -244,13 +251,13 @@ export function resolveGlobalOptions(
   defaultCwd: string,
   env: Readonly<Record<string, string | undefined>> = {},
 ): GlobalOptions {
-  assertNoGlobalOptionConflicts(raw);
+  const policy = resolveDiagnosticPolicy(raw, env);
   return {
-    json: raw.json === true,
+    json: policy.json,
     color: resolveColor(raw, env),
     cwd: raw.cwd ?? defaultCwd,
     configPath: raw.config,
-    verbosity: resolveVerbosity(raw),
+    verbosity: policy.verbosity,
     noAltScreen: raw.noAltScreen === true,
     noMouse: raw.noMouse === true,
     ...(raw.allowFsRoots === undefined

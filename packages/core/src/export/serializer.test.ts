@@ -49,6 +49,33 @@ const msg = (
   timestamp: TS,
 });
 
+it('faithfully exports a historical agent which needs repair before current authored admission', () => {
+  const agentSnapshot = {
+    ...AGENT,
+    fallback_chain: [
+      { model: 'alternate', provider: 'openai' as const, max_attempts: 1 },
+      { model: 'alternate', provider: 'openai' as const, max_attempts: 2 },
+    ],
+  };
+  const record = AgentSessionSchema.parse(session({ agentSnapshot }));
+  const workflow = sessionToWorkflow(record, []);
+  expect(workflow.workflow.agents).toEqual([agentSnapshot]);
+  const yaml = serializeWorkflow(workflow);
+  expect(() => parseWorkflow(yaml)).toThrowError(/fallback_chain/);
+  // Repair is an explicit author decision, never an exporter rewrite of frozen attempt budgets.
+  const repaired = {
+    ...workflow,
+    workflow: {
+      ...workflow.workflow,
+      agents: [{ ...agentSnapshot, fallback_chain: agentSnapshot.fallback_chain.slice(0, 1) }],
+    },
+  };
+  expect(parseWorkflow(serializeWorkflow(repaired)).workflow.agents).toEqual(
+    repaired.workflow.agents,
+  );
+  expect(record.agentSnapshot?.fallback_chain).toEqual(agentSnapshot.fallback_chain);
+});
+
 describe('sessionToWorkflow (1.Z) — linear-chain scaffold', () => {
   it('preserves legacy bare-user prefixes in the next completed export prompt', () => {
     const messages = [

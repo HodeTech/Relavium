@@ -273,16 +273,17 @@ interface ToolDispatchContext {
   readonly grantedToolIds: ReadonlySet<ToolId>;  // the node's narrowed grant (0029(b)); dispatch refused outside it
   readonly config: ToolNodeConfig;        // resolved tool_config/agent_config block: configOnly VALUES + input/output_mapping (node-types.md)
   readonly toolPolicy: ToolPolicy;         // resolved allowedCommands/-Globs/-Domains (@relavium/shared)
-  readonly fsScope: FsScopeTier;           // 'sandboxed' | 'project' | 'full' (the @relavium/shared source of truth)
-  readonly gateApproved: boolean;          // a human-gate decision is present for this dispatch (1.Q)
+  readonly fsScope: FsScopeTier;           // descriptive host-captured tier; cannot widen the host's immutable policy
+  readonly gateApproved: boolean;          // registry gate floor; both production agent producers currently pass false
   // Per-tool approval regime (ADR-0057 EA3). PRESENT ⇒ the interactive-approval (chat) path: a governed-class
   // dispatch requires `approval.confirm`'s decision, and an absent confirm is fail-closed → denied. ABSENT ⇒
   // the workflow author-trust path (unchanged). `confirm` is the host-injected ConfirmActionHook (the engine
   // defines the interface + the invocation point, the host supplies the implementation — ADR-0037-clean).
   readonly approval?: { readonly confirm?: ConfirmActionHook };
   // The effective-arg keys whose resolved value is secret-tainted (ADR-0029(c)); the registry rejects
-  // any present one from tool args (re-applying the parse-time taint gate on the effective set). 1.O/1.V
-  // produces this; absent ⇒ no taint check (no producer yet).
+  // any present one from tool args (re-applying the parse-time taint gate on the effective set).
+  // No live authored mapping producer exists. Absent means unverified external provenance, not clean;
+  // see Secret argument provenance below before activating a future mapped path.
   readonly secretArgKeys?: ReadonlySet<string>;
   readonly invokeAgent?: (nodeId: string, input: unknown) => Promise<unknown>; // engine delegate (invoke_agent); absent ⇒ ToolUnavailableError
   readonly limits?: ToolResultLimits;      // the result-bounding ceilings; absent ⇒ DEFAULT_TOOL_RESULT_LIMITS
@@ -389,23 +390,48 @@ The canonical guardrail home is [security-review.md §Sandbox-and-tool-policy](.
 | `http_request` (egress `http`) | **HTTPS-only**, **exact-FQDN** `allowedDomains`, **empty/absent ⇒ deny-all**; an `input_mapping`-derived URL runs the same check (0029(d)) | `egress.fetch` runs the shared SSRF primitive + connect-pinning (1.AE) |
 | `web_search` (egress `search`) | untrusted-data-validated **query** (transits a query, **not** an FQDN allowlist — [security-review.md §Prompt-injection](../../standards/security-review.md#prompt-injection-posture)) | `egress.fetch` to the configured provider; key via host-resolved `credentialRef` |
 | `mcp_call` (egress `mcp`) | configured MCP **server** URL (not `allowedDomains`); secrets injected host-side | `mcp` transport runs the same SSRF primitive (0029(d); 2.R) |
-| `git_commit` | refused unless `ctx.gateApproved` (human-gate, 1.Q) in an automated workflow | `process.spawn` |
+| `git_commit` | refused unless `ctx.gateApproved`; production agent contexts currently pass false, and chat confirmation cannot substitute | `process.spawn` |
 | node `tools:` narrowing | enforced at **plan build** when the host marks the grant complete (`BuildRunPlanOptions.toolGrantsFinal`), with `resolveGrant` as the dispatch floor for a directly-constructed executor ([ADR-0094](../../decisions/0094-a-tool-grant-is-checked-when-the-plan-is-built.md)); narrow-only, 0029(b)/[ADR-0023](../../decisions/0023-strict-authored-yaml-validation.md) | — |
-| secret args | `secret`-typed values reach only credential/header fields, rejected at parse from tool text (transitive taint, 0029(c)); re-checked on the **top-level** effective-arg keys (step 3) — by contract the 1.O/1.V taint producer flattens a tainted *nested* path to a top-level deny before it reaches `secretArgKeys`; the actual secret never travels as an arg value (it is a host-resolved `credentialRef`) | host attaches a resolved `credentialRef` inside its trust boundary |
-| FS scope tier | tool flagged `fsScoped` | `fs.*` jails to the tier + rejects path traversal |
+| secret args | Parser refusal covers declared secret references in text (transitive taint, 0029(c)); externally supplied `secretArgKeys` is checked on **top-level** effective-arg keys before approvals/effects (step 3). There is no live authored mapping producer; absent metadata is unverified. See [secret argument provenance](#secret-argument-provenance) for the future mapped-path obligation | host resolves an opaque `credentialRef` inside its trust boundary |
+| FS scope tier | descriptive `ctx.fsScope` does not grant access | `fs.*` enforces its host-captured immutable policy + rejects path traversal |
+
+Built-in effective-argument bounds are canonical in
+[built-in tools](built-in-tools.md#tool-input-bounds). Validation precedes policy targets, confirmation,
+effect preparation and host dispatch. Registry IDs and field-only refusal lists use shared UTF-16
+code-unit ordering, independent of ambient locale.
 
 ## Result bounding and spill-to-file
 
 The result a tool hands **back to the model** (which re-enters the next `LlmRequest`) is bounded —
-distinct from the *event* `outputSummary`, which is truncated separately at the bus translation point
+distinct from the *event* `outputSummary`, which the registry bounding stage produces before bus stamping/delivery
 ([ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)). Three rules:
 
 - **Bounding is model-facing only.** `output_mapping` runs on the **full** result (step 6) so workflow state holds the real value; only the model-facing `tool_result` is replaced by a **bounded preview + an explicit truncation marker + the spill path** (step 7).
-- **The full result is spilled to the host `outputStore`; the model gets a preview + handle.** *v1.0 caveat:* the bound is over the **in-memory** result the `dispatch` returns — the seam's `FileRead.content` / `EgressResponse.body` / `ProcessResult.stdout` are `string`, so the engine holds the full result transiently before spilling. The **stream-and-incrementally-spill-at-the-boundary** guarantee (the engine never holding the full bytes) is a **host-capability obligation** — push a `maxBytes` into `FsReadOpts` / `EgressRequest` so the host truncates at the source — landed with the first genuinely-streamed large source (the residual engine-memory exposure until then is bounded by the FS scope tier + the host process budget; egress is gated to 1.AE). The model-facing context-window protection (the stated purpose) holds today regardless. The output store is its **own** `ToolHost` capability, so bounding does not depend on the optional `fs` capability (a `web_search` / MCP host with no `fs` still bounds).
+- **The full result is spilled to the host `outputStore`; the model gets a preview + handle.** *v1.0 caveat:* the bound is over the **in-memory** result the `dispatch` returns — the seam's `FileRead.content` / `EgressResponse.body` / `ProcessResult.stdout` are `string`, so the engine holds the full result transiently before spilling. A **stream-and-incrementally-spill-at-the-boundary** guarantee (the engine never holding the full bytes) requires a **host-capability contract**; it is not provided by this string-returning seam. Hosts own their source limits, and network availability depends on the surface/profile wiring. The shipping CLI wires egress in `chat-read-write`; its `chat-read-only` and `workflow-read-write` profiles omit that arm. This does not claim streamed engine results or shipping workflow HTTP. The model-facing context-window protection (the stated purpose) holds today regardless. The output store is its **own** `ToolHost` capability, so bounding does not depend on the optional `fs` capability (a `web_search` / MCP host with no `fs` still bounds).
 - **Reclaimed at the terminal event.** Spilled output is run-scoped and swept when the run reaches a terminal event (the ADR-0036 terminal-state sweep), like other run-scoped artifacts.
 
 The ceiling is a **byte/line** bound (no token count — that needs a provider-specific tokenizer, which would break engine purity); concrete defaults and the marker shape are canonical in
 [built-in-tools.md](built-in-tools.md#tool-result-bounding). `ToolResultLimits` carries them into `ctx`.
+
+Observability and journal-argument projections distinguish shared siblings from ancestor cycles.
+Each walk removes a visited object when its branch finishes, including native/binary/media early
+returns. A genuine ancestor back-reference becomes `[cyclic]`; repeated non-cyclic objects are
+projected at every occurrence. The model-facing value and existing secret/media redaction policies
+are unchanged. Sanitized effective arguments also feed the existing journal identity; preserving a
+clean sibling avoids incorrectly treating distinct selections as a replay. This does not make the
+projection a lossless canonical encoding or claim detection of arbitrary sensitive text.
+
+Diagnostic truncation follows complete recognized-span redaction. `toolInput` applies
+secret/media projection before clipping its string leaves; `outputSummary` recognizes
+supported LF/TAB-split shapes before normalizing complete materialized text to one line,
+then recognizes ordinary spans and bounds length. The
+[finite credential masking contract](built-in-tools.md#finite-diagnostic-credential-masking)
+owns supported spans, ambiguous continuation and public-prose boundaries. A closing
+quote or URL authority separator beyond a preview boundary must not make a supported
+credential shape unrecognizable. Raw model results, full spills and arbitrary unlabelled
+sensitive text retain their existing content-sensitive handling.
+Recorded replay results retain the [existing journal contract](effect-journal.md);
+this diagnostic correction does not rewrite historical content.
 
 ## Untrusted-data taint (1.T marks; 1.O places)
 
@@ -430,7 +456,7 @@ per-call-site discipline ([security-review.md §Prompt-injection](../../standard
 | `run_command` | `host.process` | exact `allowedCommands` + host-resolved executable + declared env, `shell:false` |
 | `git_status` | `host.process` | pre-approved git allowlist |
 | `git_commit` | `host.process` | **human-gate approval required** |
-| `http_request` | `host.egress` (`http`) | HTTPS-only + exact-FQDN `allowedDomains` + SSRF (1.AE-gated) |
+| `http_request` | `host.egress` (`http`) | HTTPS-only + exact-FQDN `allowedDomains` + SSRF at the wired host; availability is profile-dependent |
 | `web_search` | `host.egress` (`search`) | provider key via host-resolved `credentialRef`; untrusted query |
 | `read_clipboard` / `notify` | `host.os` | — |
 | `mcp_call` | `host.mcp` | server URL runs the same SSRF primitive (0029(d); 2.R) |
@@ -498,3 +524,54 @@ whole registry unit-testable with zero real side effects (the engine coverage ba
 holds every registered `ToolDef`, but a dispatch is authorized only by `ctx.grantedToolIds`, so adding a
 tool to the catalog never widens what a given node may call. An MCP or media tool is an additive
 `ToolDef` + `ToolHost` capability later (2.R / 1.AF), not a shape change here.
+
+## Proposed Wave 3 HTTP authority and secret provenance
+
+**HTTP authority: approved design, unshipped — 2026-10-16.**
+[ADR-0112](../../decisions/0112-chat-network-grants-and-onboarding-state-are-operator-owned.md)
+was approved by the maintainer; its HTTP implementation remains staged in the Wave 3 plan.
+The separate [secret argument provenance](#secret-argument-provenance) section describes the
+current boundary under ADR-0113. This combined heading remains for existing inbound links.
+
+HTTP policy compares canonical **hostname**, not URL host-with-port. Reuse the
+shared HTTPS authority parser and one pure DNS normalizer/comparator for both
+request and allowlist. Permission is exact, with no suffix/subdomain match;
+existing HTTPS ports remain allowed, not 443-only. Native DNS/range, pinned
+connection, redirect/time/size floors still apply. Chat's global policy is defined
+only in [config-spec.md](../contracts/config-spec.md#proposed-wave-3-chat-policy-and-preferences);
+workflow policy and independent command/MCP/provider egress are not expanded here.
+
+Chat HTTP authority uses one invocation-owned live narrowing view. Extend the
+existing beforeDispatch callback additively to receive tool ID and the existing
+PolicyTarget. Immediately after admitArgs, copy/freeze its known command/url/path
+fields once, before any await, and use that same target for approval/policy and
+post-prepare dispatch. The CLI session-host wrapper checks HTTP against current
+non-suspended authority at this post-approval/post-effect-prepare cut, then invokes
+the existing journal callback. Refusal discards any prepared effect under the
+existing protocol. A static host allowlist remains an earlier ceiling, never a
+replacement for this current check. Do not decorate shared fetch/search/MCP or
+invent a policyTarget function in model arguments. Existing callbacks ignoring
+new parameters remain compatible; migrate every invocation/forwarding site.
+
+Live authority changes only at explicit rebuild/refresh, not file watching. Old
+and pending hosts share it, so failed replacement cannot restore a grant. A
+request admitted before narrowing may finish. Workflow domains remain separately
+owned and are not switched to global chat policy.
+
+## Secret argument provenance
+
+**Current boundary — 2026-10-16.**
+[ADR-0113](../../decisions/0113-secret-derived-context-keeps-provenance-at-public-sinks.md)
+retains the optional external `secretArgKeys` interface. Nonempty tainted effective-argument
+keys refuse before approvals/effects. Its absence is **unverified external provenance**,
+not proof that effective arguments are clean. No live authored tool-input mapping producer
+exists: current agent/session dispatches supply empty config, and model JSON has no
+declared-input provenance. Neither this guard nor expression-context qualification detects
+arbitrary credentials pasted into model/tool text. This is the documented #92 mapping
+limitation, separate from the repaired [expression-context exposure](expression-sandbox-spec.md#secret-context-boundary).
+
+Activating any future mapped path requires fail-closed refusal of missing provenance and
+projection of taint **after final model/mapping/config precedence** to top-level effective
+argument keys, including parents of tainted nested paths, before approval persistence or
+effect dispatch. Marker serialization cannot clear provenance. That is a prerequisite for
+a future feature, not an implemented or exercised mapping producer in this wave.

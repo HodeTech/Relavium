@@ -13,7 +13,7 @@ import {
 import { access, realpath, stat } from 'node:fs/promises';
 import { dirname, isAbsolute, resolve } from 'node:path';
 
-import { canonicalJson } from '@relavium/shared';
+import { RelaviumError, canonicalJson } from '@relavium/shared';
 import { z } from 'zod';
 
 import { stringifyJsonLine } from '../render/sanitize.js';
@@ -77,7 +77,7 @@ export interface ResolvedStdioSpawn {
 }
 
 /** Why a declaration could not be resolved to a program — a refusal before any prompt. */
-export class StdioResolutionError extends Error {
+export class StdioResolutionError extends RelaviumError {
   constructor(message: string) {
     super(message);
     this.name = 'StdioResolutionError';
@@ -365,7 +365,7 @@ function refuseSymlink(path: string): void {
 }
 
 /** The grant store could not be written safely. A refusal, never a silent skip. */
-export class ConsentStoreError extends Error {
+export class ConsentStoreError extends RelaviumError {
   constructor(message: string) {
     super(message);
     this.name = 'ConsentStoreError';

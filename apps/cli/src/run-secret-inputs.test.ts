@@ -1,6 +1,7 @@
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Readable } from 'node:stream';
 
 import { createCheckpointReconstructor, parseWorkflow, WorkflowEngine } from '@relavium/core';
 import { createClient, createRunHistoryReader, loadRunSnapshot } from '@relavium/db';
@@ -17,7 +18,7 @@ import * as mcpConsent from './engine/mcp-consent.js';
 import * as providerResolver from './engine/providers.js';
 import * as history from './history/open.js';
 import { run } from './run.js';
-import { captureIo } from './test-support.js';
+import { captureIo as captureOutput } from './test-support.js';
 
 const isolated = vi.hoisted(() => ({ home: '' }));
 const keychain = vi.hoisted(() => ({
@@ -62,6 +63,22 @@ const INPUTS = `    - { name: token, type: secret, required: true }
     - { name: n, type: number, default: 2 }
     - { name: optional, type: secret, required: false }`;
 
+let capturedSecretInput: Readable | undefined;
+function captureIo() {
+  const capture = captureOutput();
+  return {
+    ...capture,
+    io: { ...capture.io, stdin: capturedSecretInput ?? capture.io.stdin },
+  };
+}
+function installSource(iterator: () => AsyncIterator<unknown>, isTTY = false): void {
+  capturedSecretInput = new Readable({ read() {} });
+  Object.defineProperties(capturedSecretInput, {
+    isTTY: { value: isTTY },
+    [Symbol.asyncIterator]: { value: iterator },
+  });
+}
+
 /** Real default reader, owned async source. Never replace readSecretFromStdin or inject a string reader. */
 function installStdin(chunks: readonly unknown[], isTTY = false) {
   const cleanup = vi.fn(
@@ -79,10 +96,7 @@ function installStdin(chunks: readonly unknown[], isTTY = false) {
       return: cleanup,
     };
   });
-  Object.defineProperty(process, 'stdin', {
-    configurable: true,
-    value: { isTTY, [Symbol.asyncIterator]: iterator },
-  });
+  installSource(iterator, isTTY);
   return Object.assign(iterator, { cleanup });
 }
 
@@ -127,13 +141,12 @@ function nativeEvidence(home: string) {
 describe('top-level secret stdin admission with native history (ADR-0107)', () => {
   let startSpy: MockInstance<WorkflowEngine['start']>;
   let directory: string;
-  let stdinDescriptor: PropertyDescriptor | undefined;
   beforeEach(() => {
     directory = mkdtempSync(join(tmpdir(), 'relavium-secret-native-'));
     isolated.home = directory;
     vi.stubEnv('HOME', directory);
     vi.stubEnv('USERPROFILE', directory);
-    stdinDescriptor = Object.getOwnPropertyDescriptor(process, 'stdin');
+    capturedSecretInput = undefined;
     vi.clearAllMocks();
     // These are observations, not replacements: both production history opens and the real engine run.
     vi.spyOn(localDb, 'openLocalDb');
@@ -149,7 +162,8 @@ describe('top-level secret stdin admission with native history (ADR-0107)', () =
     startSpy = vi.spyOn(WorkflowEngine.prototype, 'start');
   });
   afterEach(() => {
-    if (stdinDescriptor !== undefined) Object.defineProperty(process, 'stdin', stdinDescriptor);
+    capturedSecretInput?.destroy();
+    capturedSecretInput = undefined;
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
     rmSync(directory, { recursive: true, force: true });
@@ -451,16 +465,10 @@ describe('top-level secret stdin admission with native history (ADR-0107)', () =
     it(`keeps real stdin iterator faults private and closes the iterator (${mode.join(' ') || 'human'})`, async () => {
       const path = writeWorkflow();
       const cleanup = vi.fn(() => Promise.resolve({ done: true, value: undefined }));
-      Object.defineProperty(process, 'stdin', {
-        configurable: true,
-        value: {
-          isTTY: false,
-          [Symbol.asyncIterator]: () => ({
-            next: () => Promise.reject(new Error(SENTINEL)),
-            return: cleanup,
-          }),
-        },
-      });
+      installSource(() => ({
+        next: () => Promise.reject(new Error(SENTINEL)),
+        return: cleanup,
+      }));
       const capture = captureIo();
       const code = await run(argv('run', path, '--secret-inputs-stdin', ...mode), capture.io);
       expectNoEffects();

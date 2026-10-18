@@ -1,6 +1,6 @@
 # Desktop Keychain & Secrets
 
-> Last updated: 2026-10-13
+> Last updated: 2026-10-18
 
 - **Status**: Reference
 - **Surface**: Desktop (Tauri v2)
@@ -64,6 +64,10 @@ There is **no** encrypted-file key store in v1.0. A headless/CI fallback for env
 The global run-history database (`~/.relavium/history.db`) is encrypted with SQLCipher **on the desktop** (see [database-schema.md](../shared-core/database-schema.md)). Its passphrase is derived from the same stable machine secret combined with a keychain entry, so the database opens automatically on restart without prompting the user. The passphrase is set in the Rust `setup()` hook **before** the SQL plugin initializes — if it is not present when the database is opened, the open fails.
 
 The **Phase-2 CLI does not use SQLCipher**: it opens the same `history.db` with `better-sqlite3` **unencrypted**, guarded by `0600`/`0700` OS file permissions ([ADR-0050](../../decisions/0050-cli-history-db-at-rest-posture.md)). Relavium-managed provider keys stay here in the OS keychain. The CLI accepts first-run declared `secret` inputs through bounded [non-TTY stdin](../cli/commands.md#relavium-run), rejects them in ordinary `--input` arguments, and persists their recorded input slots and input-node results as `{ secret: true, ref }` placeholders. The workflow definition snapshot faithfully records the parsed workflow and may contain other authored literals. This is a key-custody and input-slot guarantee, not a guarantee that the file contains no credentials or sensitive content, and [ADR-0050](../../decisions/0050-cli-history-db-at-rest-posture.md)'s note of 2026-09-14 says what it does hold: tool-I/O redaction is shape-based and applied upstream to event copies rather than by the bus, user-injected content (an `@`-attached file, `!`-shell output) is at rest as the user's own data, and a committed tier-3 run effect keeps its bounded result until that run's sweep. Session effect rows hold no result and never replay ([ADR-0098](../../decisions/0098-a-session-effect-row-holds-no-result-and-never-replays.md)); their physical erasure guarantee requires secure deletion and a successful WAL checkpoint, with busy-reader and pre-upgrade freed-page residuals stated in [effect-journal.md §11](../shared-core/effect-journal.md#11-secrets-what-a-row-may-hold). The two at-rest postures cannot share one file at the same path; reconciling cross-surface coexistence is a named Phase-3 follow-on (ADR-0050).
+
+The [historical output/error guidance](../shared-core/database-schema.md#historical-output-and-error-data)
+owns the separate limit for previously persisted secret-derived content and replay/resume;
+current context qualification does not scrub or certify those records.
 
 ## Key custody and retained content
 

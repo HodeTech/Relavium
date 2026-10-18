@@ -1,3 +1,7 @@
+import type { LocalDbNoticeContext } from '../db/checkpoint-notice.js';
+import { acquireCommandResource, type CommandLifetime } from '../process/command-lifetime.js';
+import { closeQuietly } from '../process/close-quietly.js';
+import { toUserFacing } from '../process/errors.js';
 import { SessionExportedEventSchema } from '@relavium/shared';
 
 import { exportSession, SESSION_EXPORT_REVIEW_NOTICE } from '../chat/export.js';
@@ -26,10 +30,15 @@ export interface ChatExportCommandArgs {
 }
 
 export interface ChatExportCommandDeps {
+  readonly commandLifetime?: CommandLifetime;
   readonly io: CliIo;
   readonly global: GlobalOptions;
   /** Injectable session-store opener — tests pass an in-memory store; production opens `~/.relavium/history.db`. */
-  readonly openSessionStore?: (homeDir: string) => OpenedSessionStore;
+  readonly openSessionStore?: (
+    homeDir: string,
+    captureClose?: (close: () => void) => void,
+    noticeContext?: LocalDbNoticeContext,
+  ) => OpenedSessionStore;
   /** Wall-clock (ms) for the `exported` row timestamp + the event timestamp (injectable for tests). */
   readonly now?: () => number;
 }
@@ -43,7 +52,12 @@ export function chatExportCommand(
     cwd: deps.global.cwd,
     configPath: deps.global.configPath,
   });
-  const opened = (deps.openSessionStore ?? openSessionStore)(homeDir);
+  const opened = acquireCommandResource(deps.commandLifetime, (captureClose) =>
+    (deps.openSessionStore ?? openSessionStore)(homeDir, captureClose, {
+      io: deps.io,
+      invocation: deps.commandLifetime?.invocation,
+    }),
+  );
   try {
     const result = exportSession({
       store: opened.store,
@@ -66,19 +80,19 @@ export function chatExportCommand(
 
     // Mark the session `exported` + record the path (provenance, ADR-0026). Safe here — this is a NON-live
     // session (no concurrent persister), unlike the in-REPL `/export` which deliberately does not mark the row.
-    // The file write is the durable contract, so a provenance-mark fault degrades to a warning (stderr, so
-    // stdout stays pure under --json) rather than failing an export whose scaffold already landed on disk.
+    // The file write is durable: a classified storage refusal degrades to a stderr warning
+    // (keeping --json stdout pure). Unexpected metadata faults still propagate; the scaffold remains.
+    const exportedAt = new Date(now()).toISOString();
     try {
       opened.store.updateSession({
         ...result.record,
         status: 'exported',
         exportedWorkflowPath: result.path,
-        updatedAt: new Date(now()).toISOString(),
+        updatedAt: exportedAt,
       });
-    } catch (err) {
-      deps.io.writeErr(
-        `note: scaffold written but could not mark the session exported: ${err instanceof Error ? err.message : String(err)}\n`,
-      );
+    } catch (cause) {
+      if (toUserFacing(cause).code !== 'storage_unavailable') throw cause;
+      deps.io.writeErr('note: scaffold written but could not mark the session exported\n');
     }
 
     if (deps.global.json) {
@@ -86,7 +100,7 @@ export function chatExportCommand(
       const event = SessionExportedEventSchema.parse({
         type: 'session:exported',
         sessionId: args.sessionId,
-        timestamp: new Date(now()).toISOString(),
+        timestamp: exportedAt,
         sequenceNumber: result.sequenceNumber,
         workflowPath: result.path,
       });
@@ -96,6 +110,7 @@ export function chatExportCommand(
     }
     return EXIT_CODES.success;
   } finally {
-    opened.close();
+    if (deps.commandLifetime === undefined)
+      closeQuietly(deps.io, 'session store', () => opened.close());
   }
 }

@@ -34,6 +34,8 @@ export type SdkLaneFactory = (lifetime: SdkLaneLifetime) => Target;
 
 /** Only stdio/WebSocket SDK callbacks denote the actual native resource close. */
 export interface SdkNativeClose {
+  /** Synchronous admission immediately before actual native start entry. */
+  readonly beforeStart?: () => void;
   readonly onStartEntered?: () => void;
   readonly onAcknowledged?: () => void;
 }
@@ -273,6 +275,7 @@ export class SdkTransportOwner {
   #startEntered = false;
   #nativeErrorSeen = false;
   #nativeAcknowledge: (() => void) | undefined;
+  readonly #nativeClosed: Promise<void> | undefined;
   #cleanupFault: { readonly error: unknown } | undefined;
   readonly #nativeClose: SdkNativeClose | undefined;
 
@@ -290,6 +293,7 @@ export class SdkTransportOwner {
       const closed = new Promise<void>((resolve) => {
         this.#nativeAcknowledge = resolve;
       });
+      this.#nativeClosed = closed;
       void this.work.retainWork(() => closed);
     }
     const previousClose = base.onclose;
@@ -328,6 +332,10 @@ export class SdkTransportOwner {
   get nativeCloseAcknowledged(): boolean {
     return this.#nativeClose !== undefined && this.#nativeAcknowledge === undefined;
   }
+  /** Native close alone, separate from the owner's transitive work/close join. */
+  get nativeClosed(): Promise<void> | undefined {
+    return this.#nativeClosed;
+  }
   /** Package-internal cardinality of control lanes still owned by live requests. */
   get pendingControlLaneCount(): number {
     let count = 0;
@@ -340,22 +348,26 @@ export class SdkTransportOwner {
   }
   start(): Promise<void> {
     this.#assertOpen();
-    this.#startEntered = true;
     let raw: Promise<void>;
     try /* NOSONAR — S4822: only sync entry proves no native resource; raw.catch below owns async start failure. */ {
+      this.#nativeClose?.beforeStart?.();
+      // Admission can synchronously request close. No resource may be created after that retirement.
+      this.#assertOpen();
+      this.#startEntered = true;
       raw = this.work.retainWork(() => this.#base.start());
     } catch (error) {
       // The installed native transports throw synchronously only before native construction.
       this.#acknowledgeNativeClose();
       throw error;
     }
-    this.#nativeClose?.onStartEntered?.();
     void raw.catch(() => {
       // In SDK 1.29, async spawn/socket failure invokes onerror before rejecting start.
       // Rejection with no native error callback instead proves constructor/start entry failed
       // before a native resource existed. A native error always still owes actual onclose.
       if (!this.#nativeErrorSeen) this.#acknowledgeNativeClose();
     });
+    // Observe raw start BEFORE a post-entry callback can throw and abandon the caller's join.
+    this.#nativeClose?.onStartEntered?.();
     return raw;
   }
 

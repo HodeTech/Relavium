@@ -1,3 +1,5 @@
+import type { NativeProcessController } from '../process/native-process-owner.js';
+import { combineMcpConnectSignals } from './mcp-connect-signal.js';
 import {
   type AgentDefinition,
   AgentSession,
@@ -33,7 +35,7 @@ import {
   type PricingOverlay,
   type ProviderId,
 } from '@relavium/llm';
-import type { ManagerSkippedTool, McpClient, McpServerConfig } from '@relavium/mcp';
+import type { ManagerSkippedTool, McpClient } from '@relavium/mcp';
 import { UsageCoverageFold, type UsageCoverageSnapshot } from '@relavium/shared';
 import type {
   AbortSignalLike,
@@ -50,6 +52,7 @@ import type {
 
 import type { ResolvedChatConfig } from '../config/resolve.js';
 import {
+  closePreparedMcp,
   connectAgentMcp,
   type ConnectAgentMcpOptions,
   type StdioConsentGate,
@@ -72,6 +75,9 @@ import {
 import { resolveChatAgentSource, type ResolvedChatAgent } from './agent-source.js';
 import { sanitizeUntrustedInline } from '../render/sanitize.js';
 import { hostDeadlineTimer, hostSleep } from '../process/sleep.js';
+import type { SessionWorkOwner } from './session-work-owner.js';
+import type { SessionHostOwner } from './session-host-owner.js';
+import { ownSessionNotification } from './session-presentation.js';
 
 const SESSION_DURABILITY_FAILURE =
   'this session could not be saved, so it will not send anything further — the transcript and cost on disk are behind what you see';
@@ -88,6 +94,10 @@ const SESSION_DURABILITY_FAILURE =
  */
 
 export interface BuildChatSessionOptions {
+  /** Creation owner reserved by the surface before preparation; never persisted or reconstructed by ID. */
+  readonly workOwner?: SessionWorkOwner;
+  /** Host-only native authority for both tool processes and MCP startup. */
+  readonly nativeProcesses?: NativeProcessController;
   /** The resolved `[chat]` block (default model, fs scope, turn cap, cost cap). */
   readonly chat: ResolvedChatConfig;
   readonly maxTokensEstimate?: number;
@@ -119,7 +129,7 @@ export interface BuildChatSessionOptions {
    * `@relavium/mcp` `startMcpClient`. Threads through to {@link connectAgentMcp} so the agent's inline stdio
    * `mcp_servers` discover their tools without a live server in the unit path.
    */
-  readonly startMcpClient?: (servers: readonly McpServerConfig[]) => Promise<McpClient>;
+  readonly startMcpClient?: NonNullable<ConnectAgentMcpOptions['startMcpClient']>;
   /**
    * The consent gate ([ADR-0084](../../../../docs/decisions/0084-consent-before-a-local-mcp-spawn.md) §1) —
    * threaded to {@link connectAgentMcp} so a chat session's declared stdio server is not spawned until the
@@ -165,7 +175,8 @@ export interface BuildChatSessionOptions {
   /**
    * Sink for an `on_exceed: 'warn'` pre-egress budget warning. A session has no `budget:warning` event in
    * its namespace, so the surface (the REPL) is the warning channel — the command wires this to surface a
-   * one-line notice. Absent ⇒ a no-op (the warn stays non-blocking either way).
+   * one-line notice. Absent ⇒ a no-op. The warning stays advisory; an owned output/view failure is a separate
+   * invocation failure and is observed before the governor recovers from this callback.
    */
   readonly onBudgetWarning?: (warning: ChatBudgetWarning) => void;
   /**
@@ -188,8 +199,9 @@ export interface BuildChatSessionOptions {
    * on screen and the in-memory transcript is intact).
    *
    * Absent ⇒ **not** a no-op, unlike the sinks above. A dropped durable write must never be silent
-   * (`docs/standards/error-handling.md`), so the runtime still surfaces it out-of-band, where the process-level
-   * `unhandledRejection` net in `index.ts` reports it and keeps the process alive.
+   * (`docs/standards/error-handling.md`), so the runtime still surfaces it out-of-band to the process-level
+   * failure boundary. Owned notification faults are observed before advisory recovery; successfully reported
+   * passive failures retain their existing recoverable policy.
    */
   readonly onListenerError?: (note: string) => void;
   /**
@@ -225,6 +237,9 @@ export interface SessionUsageWriter {
 }
 
 export interface BuiltChatSession {
+  /** Creation owner for surface persistence/teardown; absent in an explicitly unowned embedding. */
+  readonly hostOwner?: SessionHostOwner;
+  readonly workOwner?: SessionWorkOwner;
   readonly attachUsageWriter: (writer: SessionUsageWriter) => void;
   readonly whenHostSafeToClose: () => Promise<void>;
   /** Host-authoritative base-model window; present undefined for custom/unknown metadata. */
@@ -316,6 +331,8 @@ type SessionRuntimeOptions = Pick<
   | 'providers'
   | 'toolHost'
   | 'fsPolicy'
+  | 'nativeProcesses'
+  | 'workOwner'
   | 'afterTurnCompaction'
   | 'onCompactionStart'
   | 'onBudgetWarning'
@@ -368,8 +385,38 @@ function buildSessionRuntime(
   attachDurabilityProbe: (probe: () => Error | undefined) => void;
 } {
   let durabilityProbe: () => Error | undefined = () => undefined;
+  // Bind once to this actual host, including callbacks captured before fresh/resume/rebuild publication.
+  // Only a callback's own failure is observed: reporting an existing passive error is still supported.
+  const onBudgetWarning =
+    opts.onBudgetWarning === undefined
+      ? undefined
+      : ownSessionNotification(opts.workOwner, opts.onBudgetWarning);
+  const onUnpriced =
+    opts.onUnpriced === undefined
+      ? undefined
+      : ownSessionNotification(opts.workOwner, opts.onUnpriced);
+  const onEffortWithheld =
+    opts.onEffortWithheld === undefined
+      ? undefined
+      : ownSessionNotification(opts.workOwner, opts.onEffortWithheld);
+  const onListenerError =
+    opts.onListenerError === undefined
+      ? undefined
+      : ownSessionNotification(opts.workOwner, opts.onListenerError);
+  // The core may stop waiting on disclosure when compaction is cancelled. The original host still
+  // owns the entire entered publication, including a late native delivery rejection, before retirement.
+  const compactionNotice = opts.onCompactionStart;
+  const workOwner = opts.workOwner;
+  const onCompactionStart =
+    compactionNotice === undefined || workOwner === undefined
+      ? compactionNotice
+      : (info: Parameters<NonNullable<SessionDeps['onCompactionStart']>>[0]) =>
+          workOwner.enter(() => {
+            const acknowledgement = compactionNotice(info);
+            return acknowledgement === undefined ? Promise.resolve() : acknowledgement;
+          });
   // #228: a passive subscriber that throws — the chat persister failing a durable `history.db` write — is
-  // isolated by `deliver()` either way, so the turn itself is never broken. What was missing is where the
+  // isolated by `deliver()` either way, so successful surface reporting preserves the turn. What was missing is where the
   // failure GOES: with no sink the bus re-throws it out-of-band, and Node kills the process on the resulting
   // unhandled rejection, asynchronously, after the reply was already on screen. Wiring the sink turns that into
   // a reported, survivable event. When the surface supplied no `onListenerError` the sink deliberately re-throws
@@ -377,7 +424,7 @@ function buildSessionRuntime(
   const bus = new RunEventBus({
     now: () => new Date(opts.now()).toISOString(),
     onListenerError: (error, event) => {
-      const report = opts.onListenerError;
+      const report = onListenerError;
       if (report === undefined) {
         // Rethrowing from the sink is not a shrug — `RunEventBus.#reportListenerError` catches a throwing sink
         // and routes it to `#surfaceOutOfBand`, i.e. exactly the no-sink path, which is the fallback we want.
@@ -406,6 +453,7 @@ function buildSessionRuntime(
     profile: 'chat-read-write',
     fsScopeTier: context.fsScopeTier,
     workspaceDir: context.workingDir,
+    ...(opts.nativeProcesses === undefined ? {} : { nativeProcesses: opts.nativeProcesses }),
     ...(opts.fsPolicy === undefined ? {} : { fsPolicy: opts.fsPolicy }),
   });
   const baseHost: ToolHost = opts.toolHost ?? factoryEnv.host;
@@ -445,10 +493,10 @@ function buildSessionRuntime(
   };
   const governor = buildGovernorWiring(
     opts.chat,
-    opts.onBudgetWarning,
+    onBudgetWarning,
     opts.resolvePrice,
     providers.endpointKind,
-    opts.onUnpriced,
+    onUnpriced,
     opts.maxTokensEstimate,
   );
   // The session event sink (1.W): a draft → bus → stamped sequenceNumber/timestamp. Hoisted so a SURFACE
@@ -473,8 +521,23 @@ function buildSessionRuntime(
   const hostWork = new HostWorkRegistry(sessionId);
   let cumulativeCost = 0;
   let accountingSnapshot: SessionAccountingSnapshot | undefined;
+  let accountingFailure: { readonly cause: unknown } | undefined;
   let publicationFailure: Error | undefined;
   let publicationUncertain = false;
+  const rememberAccountingFailure = (cause: unknown): void => {
+    accountingFailure ??= {
+      cause: new Error('Session cost ledger could not be made durable.', { cause }),
+    };
+    opts.workOwner?.failure(accountingFailure.cause);
+  };
+  const observeAccounting = async <T>(operation: () => Promise<T>): Promise<T> => {
+    try {
+      return await operation();
+    } catch (cause) {
+      rememberAccountingFailure(cause);
+      throw cause;
+    }
+  };
   const refreshAccounting = (): void => {
     accountingSnapshot = usageWriter?.readSnapshot?.();
     publicationUncertain = false;
@@ -500,11 +563,12 @@ function buildSessionRuntime(
     } catch (cause) {
       publicationUncertain = true;
       publicationFailure ??= new Error('session accounting publication failed', { cause });
+      opts.workOwner?.failure(publicationFailure);
     }
   };
   const money = new MoneyDurability({
     beginUsageInvocation: async (draft) => {
-      const invocation = await requiredUsageWriter().begin(draft);
+      const invocation = await observeAccounting(() => requiredUsageWriter().begin(draft));
       publishAcknowledged(() => {
         usageCoverage?.pending(draft.model, invocation);
         emit({
@@ -518,7 +582,7 @@ function buildSessionRuntime(
       return invocation;
     },
     emitUsageDisposition: async (draft) => {
-      await requiredUsageWriter().disposition(draft);
+      await observeAccounting(async () => requiredUsageWriter().disposition(draft));
       publishAcknowledged(() => {
         usageCoverage?.disposition(
           draft.model,
@@ -534,7 +598,7 @@ function buildSessionRuntime(
       });
     },
     emit: async (draft, cumulative) => {
-      await requiredUsageWriter().record(draft, cumulative);
+      await observeAccounting(async () => requiredUsageWriter().record(draft, cumulative));
       publishAcknowledged(() => {
         if (draft.invocation !== undefined) usageCoverage?.complete(draft.model, draft.invocation);
         emit({
@@ -547,12 +611,35 @@ function buildSessionRuntime(
     },
     ...(governor === undefined
       ? {}
-      : { flushConservative: () => governor.flushBudgetCommitments() }),
+      : {
+          flushConservative: () => observeAccounting(() => governor.flushBudgetCommitments()),
+        }),
   });
   const moneyPort = money.turnPort(() => cumulativeCost);
+  const joinMoney = async (): Promise<void> => {
+    await observeAccounting(() => money.join());
+    if (accountingFailure !== undefined) throw accountingFailure.cause;
+  };
+  const beginUsage = moneyPort.beginUsageInvocation;
   const deps: SessionDeps = {
-    money: moneyPort,
-    retainWork: (work) => hostWork.invoke(() => work()),
+    money: {
+      ...moneyPort,
+      join: joinMoney,
+      accountingFailure: (cause) => {
+        rememberAccountingFailure(cause);
+        moneyPort.accountingFailure?.(cause);
+      },
+      ...(beginUsage === undefined
+        ? {}
+        : {
+            beginUsageInvocation: (draft: PendingUsageDraft) =>
+              observeAccounting(() => beginUsage(draft)),
+          }),
+    },
+    retainWork: (work) =>
+      opts.workOwner === undefined
+        ? hostWork.invoke(() => work())
+        : opts.workOwner.work.retainWork(() => hostWork.invoke(() => work())),
     ...(opts.maxTokensEstimate === undefined ? {} : { maxTokensEstimate: opts.maxTokensEstimate }),
     reserveEffectTurnKey: (id) => {
       if (effectTurnAllocator === undefined)
@@ -599,11 +686,11 @@ function buildSessionRuntime(
     withheldByCap: reasoningWithheldByCapFor,
     // …and when the gate withholds, SAY SO. The engine cannot print; it hands back the verdict (which carries the
     // tiers the model would take) and the surface turns it into the one sentence every path uses.
-    ...(opts.onEffortWithheld === undefined
+    ...(onEffortWithheld === undefined
       ? {}
       : {
           onEffortWithheld: (result: EffortGateResult, model: string) => {
-            opts.onEffortWithheld?.(effortWithheldNote(result, model));
+            onEffortWithheld(effortWithheldNote(result, model));
           },
         }),
     registry,
@@ -644,7 +731,7 @@ function buildSessionRuntime(
     ...(opts.afterTurnCompaction === undefined
       ? {}
       : { afterTurnCompaction: opts.afterTurnCompaction }),
-    ...(opts.onCompactionStart === undefined ? {} : { onCompactionStart: opts.onCompactionStart }),
+    ...(onCompactionStart === undefined ? {} : { onCompactionStart }),
     ...(opts.chat.autoCompact === undefined ? {} : { autoCompact: opts.chat.autoCompact }),
     ...(opts.chat.compactThreshold === undefined
       ? {}
@@ -656,7 +743,10 @@ function buildSessionRuntime(
     // persister latches a write failure, no further egress is admitted. It composes with the governor rather
     // than replacing it, and it runs FIRST — a session whose record is already lost must not spend more.
     preEgress: (info) => {
+      opts.workOwner?.assertAdmitting();
       if (publicationFailure !== undefined) throw publicationFailure;
+      if (accountingFailure !== undefined)
+        throw new Error(SESSION_DURABILITY_FAILURE, { cause: accountingFailure.cause });
       const failure = durabilityProbe();
       if (failure !== undefined) {
         // A plain Error, deliberately: the chain classifies a `preAttempt` throw as a fatal (non-retryable)
@@ -674,7 +764,7 @@ function buildSessionRuntime(
           // ADR-0074 §4: resume restores BOTH totals into the same governor a fresh session uses.
           restoreConservativeCost: governor.restoreConservativeCost,
           // ADR-0074 §2's turn-boundary half — the session's equivalent of the engine's node-boundary flush.
-          flushBudgetCommitments: governor.flushBudgetCommitments,
+          flushBudgetCommitments: () => observeAccounting(() => governor.flushBudgetCommitments()),
         }),
     // The realized-cost overlay (2.5.G S10, ADR-0065 §2) — so the CostTracker prices a user-priced (otherwise
     // unknown) model instead of throwing UnknownModelError. Same map the governor uses; both fill an UNKNOWN id
@@ -690,8 +780,10 @@ function buildSessionRuntime(
     whenHostSafeToClose: async () => {
       await hostWork.join();
       await money.waitForWrites();
-      await money.join();
+      await joinMoney();
       if (publicationFailure !== undefined) throw publicationFailure;
+      const failure = durabilityProbe();
+      if (failure !== undefined) throw failure;
     },
     bus,
     deps,
@@ -753,12 +845,18 @@ function bindChatAgent(opts: BuildChatSessionOptions): ResolvedChatAgent {
  * Exactly the fields {@link mcpOptionsFor} reads — deliberately NOT `BuildChatSessionOptions`.
  *
  * The fresh and resumed paths carry two different option types, and the mapper has no business requiring
- * either whole. Naming the five it actually consumes is what lets both satisfy it structurally, and makes a
- * sixth option impossible to add on one path only: it has to be added here, and then both call sites see it.
+ * either whole. Naming the host inputs it actually consumes is what lets both satisfy it structurally, and makes an
+ * additional option impossible to add on one path only: it has to be added here, and then both call sites see it.
  */
 type McpConnectInputs = Pick<
   BuildChatSessionOptions,
-  'consentGate' | 'startMcpClient' | 'mcpSecretResolver' | 'mcpRegistrations' | 'mcpConnectSignal'
+  | 'consentGate'
+  | 'startMcpClient'
+  | 'mcpSecretResolver'
+  | 'mcpRegistrations'
+  | 'mcpConnectSignal'
+  | 'nativeProcesses'
+  | 'workOwner'
 >;
 
 /**
@@ -774,8 +872,27 @@ function mcpOptionsFor(
   mcpArtifact: string | undefined,
   cwd: string,
 ): ConnectAgentMcpOptions {
+  const owner = opts.workOwner;
+  const ownerSignal = owner?.signal;
+  const callerSignal = opts.mcpConnectSignal;
+  const connectSignal: AbortSignalLike | undefined =
+    owner === undefined || ownerSignal === undefined
+      ? callerSignal
+      : callerSignal === undefined || callerSignal === ownerSignal
+        ? ownerSignal
+        : combineMcpConnectSignals(ownerSignal, callerSignal, owner.cleanupUncertain);
   return {
     cwd,
+    ...(opts.workOwner === undefined
+      ? {}
+      : {
+          assertAdmitting: opts.workOwner.assertAdmitting,
+          onFailure: opts.workOwner.failure,
+          onCloseError: (_id: string, cause: unknown) => opts.workOwner?.cleanupUncertain(cause),
+          work: opts.workOwner.work,
+          budget: opts.workOwner.invocation.registry.budget,
+        }),
+    ...(opts.nativeProcesses === undefined ? {} : { nativeProcesses: opts.nativeProcesses }),
     ...(opts.consentGate === undefined ? {} : { consentGate: opts.consentGate }),
     // The caller's label wins (`agent run` names the ref the user typed); otherwise the path the agent was
     // actually read from — §7's "declared in <file>" for the imported-artifact case.
@@ -783,7 +900,7 @@ function mcpOptionsFor(
     ...(opts.startMcpClient === undefined ? {} : { startMcpClient: opts.startMcpClient }),
     ...(opts.mcpSecretResolver === undefined ? {} : { resolveSecret: opts.mcpSecretResolver }),
     ...(opts.mcpRegistrations === undefined ? {} : { registrations: opts.mcpRegistrations }),
-    ...(opts.mcpConnectSignal === undefined ? {} : { connectSignal: opts.mcpConnectSignal }),
+    ...(connectSignal === undefined ? {} : { connectSignal }),
   };
 }
 
@@ -813,6 +930,7 @@ function assertSessionFsPolicy(
 }
 
 export async function buildChatSession(opts: BuildChatSessionOptions): Promise<BuiltChatSession> {
+  opts.workOwner?.assertAdmitting();
   assertSessionFsPolicy(opts.fsPolicy, opts.cwd, opts.chat);
   const sessionId = opts.uuid();
   const { agent, artifact } = bindChatAgent(opts);
@@ -838,6 +956,7 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
       );
 
   try {
+    opts.workOwner?.assertAdmitting();
     const {
       attachUsageWriter,
       whenHostSafeToClose,
@@ -882,6 +1001,7 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
       sessionId,
       agent,
       context,
+      ...(opts.workOwner === undefined ? {} : { workOwner: opts.workOwner }),
       ...(opts.fsPolicy === undefined ? {} : { fsPolicy: opts.fsPolicy }),
       contextWindowTokens: sessionContextWindow(agent, deps),
       tools: deps.tools,
@@ -905,7 +1025,20 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
     // leak the just-spawned MCP children — tear them down before the failure propagates. The build is then
     // all-or-nothing: it either returns a session that OWNS `closeMcp`, or it has already closed the client.
     // Best-effort: a teardown rejection must NOT mask the original construction error (preserve the primary).
-    await mcp?.close().catch(() => undefined);
+    opts.workOwner?.failure(err);
+    if (mcp !== undefined) {
+      try {
+        await closePreparedMcp(
+          mcp,
+          opts.workOwner === undefined
+            ? undefined
+            : (_id, cause) => opts.workOwner?.cleanupUncertain(cause),
+          opts.workOwner?.invocation.registry.budget,
+        );
+      } catch (cause) {
+        opts.workOwner?.cleanupUncertain(cause);
+      }
+    }
     throw err;
   }
 }
@@ -980,7 +1113,7 @@ export interface BuiltResumedChatSession extends BuiltChatSession {
 
 export interface BuildResumedChatSessionOptions extends Pick<
   BuildChatSessionOptions,
-  'afterTurnCompaction' | 'onCompactionStart' | 'fsPolicy'
+  'afterTurnCompaction' | 'onCompactionStart' | 'fsPolicy' | 'nativeProcesses' | 'workOwner'
 > {
   /** The resolved `[chat]` block (turn cap, cost cap) — applied to the resumed session's deps. */
   readonly chat: ResolvedChatConfig;
@@ -1022,10 +1155,7 @@ export interface BuildResumedChatSessionOptions extends Pick<
    * shape as the dropped `open: () =>` closure ADR-0088 §1.3 records: a signal that type-checks its way out
    * of existing. Kept identical to the fresh declaration so the two paths cannot disagree again.
    */
-  readonly startMcpClient?: (
-    servers: readonly McpServerConfig[],
-    signal?: AbortSignalLike,
-  ) => Promise<McpClient>;
+  readonly startMcpClient?: NonNullable<ConnectAgentMcpOptions['startMcpClient']>;
   /**
    * The consent gate ([ADR-0084](../../../../docs/decisions/0084-consent-before-a-local-mcp-spawn.md) §1) —
    * threaded to {@link connectAgentMcp} so a chat session's declared stdio server is not spawned until the
@@ -1064,6 +1194,7 @@ export interface BuildResumedChatSessionOptions extends Pick<
 export async function buildResumedChatSession(
   opts: BuildResumedChatSessionOptions,
 ): Promise<BuiltResumedChatSession> {
+  opts.workOwner?.assertAdmitting();
   const { record, messages } = opts;
   assertSessionFsPolicy(opts.fsPolicy, record.context.workingDir, opts.chat);
   const agent = record.agentSnapshot;
@@ -1098,6 +1229,7 @@ export async function buildResumedChatSession(
   );
 
   try {
+    opts.workOwner?.assertAdmitting();
     const {
       attachUsageWriter,
       whenHostSafeToClose,
@@ -1147,6 +1279,7 @@ export async function buildResumedChatSession(
       sessionId: record.id,
       agent,
       context,
+      ...(opts.workOwner === undefined ? {} : { workOwner: opts.workOwner }),
       ...(opts.fsPolicy === undefined ? {} : { fsPolicy: opts.fsPolicy }),
       contextWindowTokens: sessionContextWindow(agent, deps),
       tools: deps.tools,
@@ -1170,7 +1303,20 @@ export async function buildResumedChatSession(
   } catch (err) {
     // Self-clean: a post-connect fault must not leak the just-spawned MCP children (see {@link buildChatSession}).
     // Best-effort: a teardown rejection must NOT mask the original resume error (preserve the primary).
-    await mcp?.close().catch(() => undefined);
+    opts.workOwner?.failure(err);
+    if (mcp !== undefined) {
+      try {
+        await closePreparedMcp(
+          mcp,
+          opts.workOwner === undefined
+            ? undefined
+            : (_id, cause) => opts.workOwner?.cleanupUncertain(cause),
+          opts.workOwner?.invocation.registry.budget,
+        );
+      } catch (cause) {
+        opts.workOwner?.cleanupUncertain(cause);
+      }
+    }
     throw err;
   }
 }

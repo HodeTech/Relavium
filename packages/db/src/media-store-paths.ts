@@ -1,8 +1,11 @@
+import { RelaviumError } from '@relavium/shared';
+
 import { lstatSync, mkdirSync, realpathSync, statSync, type Stats } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { transferStorageFailure, withOwnedFilesystem } from './storage-failure-facts.js';
 
 /** Reason-only host failure; native errors may contain private absolute filenames. */
-export class MediaStoreFilesystemError extends Error {
+export class MediaStoreFilesystemError extends RelaviumError {
   constructor(readonly reason: 'missing' | 'unsafe_path' | 'io') {
     super(
       reason === 'missing'
@@ -49,16 +52,16 @@ export class MediaStorePaths {
     try {
       let entry: Stats;
       try {
-        entry = lstatSync(this.#lexical);
+        entry = withOwnedFilesystem(() => lstatSync(this.#lexical));
       } catch (error) {
         if (!missing(error)) throw error;
         if (this.#pin !== undefined) throw new MediaStoreFilesystemError('unsafe_path');
         if (!create) return undefined;
-        mkdirSync(this.#lexical, { recursive: true, mode: 0o700 });
-        entry = lstatSync(this.#lexical);
+        withOwnedFilesystem(() => mkdirSync(this.#lexical, { recursive: true, mode: 0o700 }));
+        entry = withOwnedFilesystem(() => lstatSync(this.#lexical));
       }
-      const canonical = realpathSync(this.#lexical);
-      const info = statSync(canonical);
+      const canonical = withOwnedFilesystem(() => realpathSync(this.#lexical));
+      const info = withOwnedFilesystem(() => statSync(canonical));
       if (!info.isDirectory()) throw new MediaStoreFilesystemError('unsafe_path');
       const current = {
         canonical,
@@ -95,12 +98,12 @@ export class MediaStorePaths {
     try {
       let info: Stats;
       try {
-        info = lstatSync(dir);
+        info = withOwnedFilesystem(() => lstatSync(dir));
       } catch (error) {
         if (!missing(error)) throw error;
         if (!create) return undefined;
         try {
-          mkdirSync(dir, { mode: 0o700 });
+          withOwnedFilesystem(() => mkdirSync(dir, { mode: 0o700 }));
         } catch (error) {
           // A cooperating writer may have created the same shard; it still must pass all checks below.
           if (
@@ -113,12 +116,12 @@ export class MediaStorePaths {
           )
             throw error;
         }
-        info = lstatSync(dir);
+        info = withOwnedFilesystem(() => lstatSync(dir));
       }
       if (
         !info.isDirectory() ||
         info.isSymbolicLink() ||
-        realpathSync(dir) !== dir ||
+        withOwnedFilesystem(() => realpathSync(dir)) !== dir ||
         !within(root, dir)
       ) {
         throw new MediaStoreFilesystemError('unsafe_path');
@@ -167,7 +170,7 @@ export class MediaStorePaths {
   fileSnapshot(path: string): Stats | undefined {
     this.assertParent(path);
     try {
-      const info = lstatSync(path);
+      const info = withOwnedFilesystem(() => lstatSync(path));
       if (!info.isFile() || info.isSymbolicLink() || (info.nlink !== 0 && info.nlink !== 1))
         throw new MediaStoreFilesystemError('unsafe_path');
       return info;
@@ -212,8 +215,11 @@ export class MediaStorePaths {
   }
 
   error(error: unknown): MediaStoreFilesystemError {
-    return error instanceof MediaStoreFilesystemError
-      ? error
-      : new MediaStoreFilesystemError(missing(error) ? 'missing' : 'io');
+    const failure =
+      error instanceof MediaStoreFilesystemError
+        ? error
+        : new MediaStoreFilesystemError(missing(error) ? 'missing' : 'io');
+    transferStorageFailure(failure, error);
+    return failure;
   }
 }

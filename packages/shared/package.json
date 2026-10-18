@@ -9,6 +9,21 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./relavium-error": {
+      "types": "./dist/relavium-error.d.ts",
+      "import": "./dist/relavium-error.js",
+      "default": "./dist/relavium-error.js"
+    },
+    "./fs-root-limits": {
+      "types": "./dist/fs-root-limits.d.ts",
+      "import": "./dist/fs-root-limits.js",
+      "default": "./dist/fs-root-limits.js"
+    },
+    "./terminal-safe": {
+      "types": "./dist/terminal-safe.d.ts",
+      "import": "./dist/terminal-safe.js",
+      "default": "./dist/terminal-safe.js"
     }
   },
   "main": "./dist/index.js",

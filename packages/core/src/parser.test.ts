@@ -414,6 +414,10 @@ describe('parseWorkflow — diagnostic field naming (issue-mapper coverage)', ()
       `schema_version: '2.0'\nworkflow:\n  id: w\n  nodes:\n    - id: n\n      type: input\n  edges: []`,
     );
     expect(err.issues.some((i) => i.field === 'schema_version')).toBe(true);
+    expect(err.issues.find((i) => i.field === 'schema_version')?.message).toBe(
+      'expected literal "1.0"',
+    );
+    expect(err.message).not.toContain('2.0');
   });
 
   it('handles a non-object workflow body without crashing', () => {

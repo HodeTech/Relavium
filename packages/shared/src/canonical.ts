@@ -1,3 +1,5 @@
+import { RelaviumError } from './relavium-error.js';
+
 /**
  * Deterministic serialization — the one canonical form two independent implementations must agree on.
  */
@@ -9,7 +11,7 @@
  * and an `undefined` property both as `null`. Each of those merges two distinguishable values into one
  * digest, in a function whose only job is to tell values apart.
  */
-export class NonCanonicalValueError extends Error {
+export class NonCanonicalValueError extends RelaviumError {
   constructor(message: string) {
     super(message);
     this.name = 'NonCanonicalValueError';

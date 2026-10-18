@@ -3,18 +3,19 @@
  * ([built-in-tools.md](../../../../docs/reference/shared-core/built-in-tools.md)). Each is engine-pure:
  * `parseArgs` is the executable Zod validator (the full effective-arg set, including config-only params),
  * `llmVisibleParams` is the LLM-facing projection the `ToolNormalizer` (1.E) lowers, and `dispatch`
- * performs side effects ONLY through the injected `ToolHost`. The egress tools (`http_request` /
- * `web_search` / `mcp_call`) are dispatchable against a stub host now and ship gated at the surfaces
- * until the shared SSRF primitive lands (1.AE) — i.e. their host capability is simply not wired yet.
+ * performs side effects ONLY through the injected `ToolHost`. Egress availability depends on the
+ * surface's configured host capability; the CLI's network host enforces its shared SSRF boundary.
  */
 
 import {
   type EffectTier,
+  byCodeUnit,
   INLINE_MEDIA_CEILING,
   MEDIA_HANDLE_PATTERN,
   MediaMimeTypeSchema,
   mediaModalityOf,
   scopeSetIncludes,
+  utf8ByteLength,
 } from '@relavium/shared';
 import { z } from 'zod';
 
@@ -45,7 +46,7 @@ import {
 interface BuiltinSpec<A> {
   readonly id: ToolId;
   readonly description: string;
-  readonly args: z.ZodType<A>;
+  readonly args: z.ZodType<A, z.ZodTypeDef, unknown>;
   readonly llmVisibleParams: JsonSchema;
   readonly configOnlyParams?: readonly string[];
   readonly policy: ToolPolicyClass;
@@ -78,6 +79,67 @@ function defineBuiltin<A>(spec: BuiltinSpec<A>): ToolDef<A> {
   };
   return def;
 }
+
+const WRITE_CONTENT_MAX_BYTES = 8 * 1024 * 1024;
+const HTTP_BODY_MAX_BYTES = 1024 * 1024;
+const COMMAND_ARG_MAX_BYTES = 16 * 1024;
+const COMMAND_ARGS_MAX_BYTES = 64 * 1024;
+const COMMAND_ARGS_MAX_COUNT = 256;
+const COMMIT_MESSAGE_MAX_BYTES = 16 * 1024;
+
+/** UTF-16 length is a cheap lower bound; only plausible strings reach the byte measurement. */
+function utf8String(maxBytes: number, minLength = 0): z.ZodEffects<z.ZodString, string, string> {
+  return z
+    .string()
+    .min(minLength)
+    .refine((value) => value.length <= maxBytes && utf8ByteLength(value) <= maxBytes, {
+      message: `must contain at most ${maxBytes} UTF-8 bytes`,
+    });
+}
+
+// Refuse impossible vectors before parsing/measuring their members. A Zod array .max() alone still
+// parses every member, and a per-member byte refine would scan before the aggregate cheap gate.
+const commandArgs = z
+  .unknown()
+  .superRefine((raw, ctx) => {
+    if (!Array.isArray(raw)) return; // The typed array parser below owns the shape error.
+    const refuse = (message: string, path: number[] = []): void =>
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message, path, fatal: true });
+    if (raw.length > COMMAND_ARGS_MAX_COUNT) {
+      refuse(`must contain at most ${COMMAND_ARGS_MAX_COUNT} arguments`);
+      return;
+    }
+    let characters = 0;
+    for (let i = 0; i < raw.length; i += 1) {
+      const value: unknown = raw[i];
+      if (typeof value !== 'string') continue;
+      if (value.length > COMMAND_ARG_MAX_BYTES) {
+        refuse(`must contain at most ${COMMAND_ARG_MAX_BYTES} UTF-8 bytes`, [i]);
+        return;
+      }
+      characters += value.length;
+      if (characters > COMMAND_ARGS_MAX_BYTES) {
+        refuse(`arguments must total at most ${COMMAND_ARGS_MAX_BYTES} UTF-8 bytes`);
+        return;
+      }
+    }
+    let bytes = 0;
+    for (let i = 0; i < raw.length; i += 1) {
+      const value: unknown = raw[i];
+      if (typeof value !== 'string') continue;
+      const size = utf8ByteLength(value);
+      if (size > COMMAND_ARG_MAX_BYTES) {
+        refuse(`must contain at most ${COMMAND_ARG_MAX_BYTES} UTF-8 bytes`, [i]);
+        return;
+      }
+      bytes += size;
+      if (bytes > COMMAND_ARGS_MAX_BYTES) {
+        refuse(`arguments must total at most ${COMMAND_ARGS_MAX_BYTES} UTF-8 bytes`);
+        return;
+      }
+    }
+  })
+  .pipe(z.array(z.string()));
 
 /**
  * Build the `web_search` request URL from the config-pinned endpoint. Throws a typed
@@ -178,7 +240,16 @@ const readFileTool = defineBuiltin({
   args: z.object({ path: z.string().min(1), glob: z.boolean().optional() }).strict(),
   llmVisibleParams: {
     type: 'object',
-    properties: { path: { type: 'string' }, glob: { type: 'boolean' } },
+    properties: {
+      path: {
+        type: 'string',
+        description: 'File path within the host-authorized filesystem roots.',
+      },
+      glob: {
+        type: 'boolean',
+        description: 'Treat the path as a glob pattern when true; defaults to false.',
+      },
+    },
     required: ['path'],
     additionalProperties: false,
   },
@@ -193,7 +264,7 @@ const writeFileTool = defineBuiltin({
   args: z
     .object({
       path: z.string().min(1),
-      content: z.string(),
+      content: utf8String(WRITE_CONTENT_MAX_BYTES),
       append: z.boolean().optional(),
       createDirs: z.boolean().optional(),
     })
@@ -201,10 +272,23 @@ const writeFileTool = defineBuiltin({
   llmVisibleParams: {
     type: 'object',
     properties: {
-      path: { type: 'string' },
-      content: { type: 'string' },
-      append: { type: 'boolean' },
-      createDirs: { type: 'boolean' },
+      path: {
+        type: 'string',
+        description: 'Destination file within the host-authorized filesystem roots.',
+      },
+      content: {
+        type: 'string',
+        maxLength: WRITE_CONTENT_MAX_BYTES,
+        description: 'Text to write, at most 8 MiB of UTF-8 bytes; empty text is allowed.',
+      },
+      append: {
+        type: 'boolean',
+        description: 'Append when true; otherwise overwrite or replace the existing file content.',
+      },
+      createDirs: {
+        type: 'boolean',
+        description: 'Create missing parent directories when true; defaults to false.',
+      },
     },
     required: ['path', 'content'],
     additionalProperties: false,
@@ -240,9 +324,18 @@ const listDirectoryTool = defineBuiltin({
   llmVisibleParams: {
     type: 'object',
     properties: {
-      path: { type: 'string' },
-      recursive: { type: 'boolean' },
-      glob: { type: 'string' },
+      path: {
+        type: 'string',
+        description: 'Directory path within the host-authorized filesystem roots.',
+      },
+      recursive: {
+        type: 'boolean',
+        description: 'Include nested directory entries when true; defaults to false.',
+      },
+      glob: {
+        type: 'string',
+        description: 'Optional glob pattern used to filter the returned directory entries.',
+      },
     },
     required: ['path'],
     additionalProperties: false,
@@ -263,11 +356,11 @@ const listDirectoryTool = defineBuiltin({
 const runCommandTool = defineBuiltin({
   id: 'run_command',
   description:
-    'Spawn an allowlisted shell command (shell:false) and capture stdout/stderr/exit code.',
+    'Run an authorized executable directly, without a shell; return its output and exit code.',
   args: z
     .object({
       command: z.string().min(1),
-      args: z.array(z.string()).optional(),
+      args: commandArgs.optional(),
       cwd: z.string().optional(),
       timeoutMs: z.number().int().positive().optional(),
       env: z.record(z.string()).optional(),
@@ -275,7 +368,24 @@ const runCommandTool = defineBuiltin({
     .strict(),
   llmVisibleParams: {
     type: 'object',
-    properties: { command: { type: 'string' }, args: { type: 'array', items: { type: 'string' } } },
+    properties: {
+      command: {
+        type: 'string',
+        description: 'Executable name or path permitted by the configured command policy.',
+      },
+      args: {
+        type: 'array',
+        maxItems: COMMAND_ARGS_MAX_COUNT,
+        description:
+          'Literal arguments passed without shell expansion: at most 256 entries, totaling at most 64 KiB of UTF-8 bytes.',
+        items: {
+          type: 'string',
+          maxLength: COMMAND_ARG_MAX_BYTES,
+          description:
+            'One literal argument, at most 16 KiB of UTF-8 bytes; an empty argument is allowed.',
+        },
+      },
+    },
     required: ['command'],
     additionalProperties: false,
   },
@@ -313,7 +423,14 @@ const gitStatusTool = defineBuiltin({
     .strict(),
   llmVisibleParams: {
     type: 'object',
-    properties: { command: { type: 'string', enum: ['status', 'log', 'diff'] } },
+    properties: {
+      command: {
+        type: 'string',
+        enum: ['status', 'log', 'diff'],
+        description:
+          'Read-only Git operation; defaults to status. Extra flags are configured by the author.',
+      },
+    },
     additionalProperties: false,
   },
   configOnlyParams: ['args'],
@@ -332,10 +449,10 @@ const gitStatusTool = defineBuiltin({
 const gitCommitTool = defineBuiltin({
   id: 'git_commit',
   description:
-    'Create a commit, optionally restricting it to the given pathspecs — requires a human-gate approval in automated workflows.',
+    'Create a commit after a human-gate approval. Chat cannot provide that approval; review changes and commit manually instead.',
   args: z
     .object({
-      message: z.string().min(1),
+      message: utf8String(COMMIT_MESSAGE_MAX_BYTES, 1),
       // A pathspec must not start with `-`, so a model cannot smuggle a git OPTION (`--amend`,
       // `--no-verify`, `--author=…`) through `files` past the human gate (the `--` separator below is
       // the structural backstop; this refine gives a field-named parse error).
@@ -352,8 +469,21 @@ const gitCommitTool = defineBuiltin({
   llmVisibleParams: {
     type: 'object',
     properties: {
-      message: { type: 'string' },
-      files: { type: 'array', items: { type: 'string' } },
+      message: {
+        type: 'string',
+        minLength: 1,
+        maxLength: COMMIT_MESSAGE_MAX_BYTES,
+        description: 'Non-empty commit message, at most 16 KiB of UTF-8 bytes.',
+      },
+      files: {
+        type: 'array',
+        description: 'Optional file pathspecs to include in the commit.',
+        items: {
+          type: 'string',
+          minLength: 1,
+          description: 'A non-empty file pathspec that does not begin with a hyphen.',
+        },
+      },
     },
     required: ['message'],
     additionalProperties: false,
@@ -374,28 +504,43 @@ const gitCommitTool = defineBuiltin({
 });
 
 /* ------------------------------------------------------------------------------------------------ *
- * Egress tools (gated until the shared SSRF primitive lands — 1.AE).
+ * Egress tools (available only when the surface supplies the corresponding network capability).
  * ------------------------------------------------------------------------------------------------ */
 
 const httpRequestTool = defineBuiltin({
   id: 'http_request',
   description:
-    'Outbound HTTPS request to an allowedDomains host (HTTPS-only, exact-FQDN, SSRF-guarded).',
+    'Make an HTTPS request to a configured allowed host, when network access is available.',
   args: z
     .object({
       method: z.enum(['GET', 'POST', 'PUT', 'DELETE']).optional(),
       url: z.string().min(1),
       headers: z.record(z.string()).optional(),
-      body: z.string().optional(),
+      body: utf8String(HTTP_BODY_MAX_BYTES).optional(),
     })
     .strict(),
   llmVisibleParams: {
     type: 'object',
     properties: {
-      method: { type: 'string', enum: ['GET', 'POST', 'PUT', 'DELETE'] },
-      url: { type: 'string' },
-      headers: { type: 'object', additionalProperties: { type: 'string' } },
-      body: { type: 'string' },
+      method: {
+        type: 'string',
+        enum: ['GET', 'POST', 'PUT', 'DELETE'],
+        description: 'HTTP method to send; defaults to GET.',
+      },
+      url: {
+        type: 'string',
+        description: 'Absolute HTTPS URL whose host is allowed by the configured network policy.',
+      },
+      headers: {
+        type: 'object',
+        description: 'Optional HTTP header names and string values for this request.',
+        additionalProperties: { type: 'string' },
+      },
+      body: {
+        type: 'string',
+        maxLength: HTTP_BODY_MAX_BYTES,
+        description: 'Optional request text, at most 1 MiB of UTF-8 bytes; empty text is allowed.',
+      },
     },
     required: ['url'],
     additionalProperties: false,
@@ -433,7 +578,18 @@ const webSearchTool = defineBuiltin({
     .strict(),
   llmVisibleParams: {
     type: 'object',
-    properties: { query: { type: 'string' }, maxResults: { type: 'integer', minimum: 1 } },
+    properties: {
+      query: {
+        type: 'string',
+        minLength: 1,
+        description: 'Non-empty search query sent to the configured search provider.',
+      },
+      maxResults: {
+        type: 'integer',
+        minimum: 1,
+        description: 'Optional positive maximum number of search results to request.',
+      },
+    },
     required: ['query'],
     additionalProperties: false,
   },
@@ -453,14 +609,22 @@ const webSearchTool = defineBuiltin({
 
 const mcpCallTool = defineBuiltin({
   id: 'mcp_call',
-  description:
-    'Invoke a tool on a configured MCP server (server URL runs the same SSRF primitive).',
+  description: 'Invoke a named tool on a configured MCP server, when that server is available.',
   args: z
     .object({ server: z.string().min(1), tool: z.string().min(1), args: z.unknown().optional() })
     .strict(),
   llmVisibleParams: {
     type: 'object',
-    properties: { server: { type: 'string' }, tool: { type: 'string' }, args: {} },
+    properties: {
+      server: { type: 'string', description: 'Identifier of the configured MCP server to call.' },
+      tool: {
+        type: 'string',
+        description: 'Name or identifier of the tool exposed by that server.',
+      },
+      args: {
+        description: 'Optional tool arguments in the shape required by the selected server tool.',
+      },
+    },
     required: ['server', 'tool'],
     additionalProperties: false,
   },
@@ -496,7 +660,14 @@ const notifyTool = defineBuiltin({
   args: z.object({ title: z.string().min(1), body: z.string() }).strict(),
   llmVisibleParams: {
     type: 'object',
-    properties: { title: { type: 'string' }, body: { type: 'string' } },
+    properties: {
+      title: {
+        type: 'string',
+        minLength: 1,
+        description: 'Non-empty title shown in the desktop notification.',
+      },
+      body: { type: 'string', description: 'Notification body text; an empty body is allowed.' },
+    },
     required: ['title', 'body'],
     additionalProperties: false,
   },
@@ -530,7 +701,13 @@ const readMediaTool = defineBuiltin({
     .strict(),
   llmVisibleParams: {
     type: 'object',
-    properties: { handle: { type: 'string' } },
+    properties: {
+      handle: {
+        type: 'string',
+        description:
+          'Whole media://sha256-<64hex> handle authorized for this conversation; byte ranges are not supported.',
+      },
+    },
     required: ['handle'],
     additionalProperties: false,
   },
@@ -623,7 +800,14 @@ const invokeAgentTool = defineBuiltin({
   args: z.object({ nodeId: z.string().min(1), input: z.unknown().optional() }).strict(),
   llmVisibleParams: {
     type: 'object',
-    properties: { nodeId: { type: 'string' }, input: {} },
+    properties: {
+      nodeId: {
+        type: 'string',
+        description:
+          'Identifier of the agent node to invoke through the available delegation capability.',
+      },
+      input: { description: 'Optional input value supplied to the invoked agent node.' },
+    },
     required: ['nodeId'],
     additionalProperties: false,
   },
@@ -673,5 +857,5 @@ export const BUILTIN_TOOLS: readonly ToolDef[] = [
 
 /** The built-in tool ids (sorted), for grant construction and tests. */
 export const BUILTIN_TOOL_IDS: readonly ToolId[] = BUILTIN_TOOLS.map((tool) => tool.id).sort(
-  (a, b) => a.localeCompare(b),
+  byCodeUnit,
 );

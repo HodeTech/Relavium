@@ -1,7 +1,7 @@
 # Current state
 
 > Status: Living
-> Last updated: 2026-10-15
+> Last updated: 2026-10-18
 
 - **Related**: [README.md](README.md), [phases/phase-2.5-cli-consolidation.md](phases/phase-2.5-cli-consolidation.md), [phases/phase-2.5.5-hardening-and-remediation.md](phases/phase-2.5.5-hardening-and-remediation.md), [phases/phase-2-cli.md](phases/phase-2-cli.md), [deferred-tasks.md](deferred-tasks.md), [../project-structure.md](../project-structure.md), [../tech-stack.md](../tech-stack.md)
 
@@ -101,55 +101,51 @@ Earlier dated pending checkpoints in this page and the phase register are histor
 
 <a id="next-work--wave-2--shut-the-doors"></a>
 
-## Wave 2 accepted — Shut the doors
+<a id="wave-2-accepted--shut-the-doors"></a>
 
-**PR #94 additional corrections implemented — 2026-10-15.** Review of `992e6dab`
-reproduced two High valid-media failures and further host-boundary defects. All four
-repair increments, including the followup finite pin-error capture, are implemented.
-The [additional correction register](phases/phase-2.5.5-hardening-and-remediation.md#pr-94-additional-systematic-review--2026-10-15)
-tracks their scope and checkpoint evidence. [PR #94](https://github.com/HodeTech/Relavium/pull/94)
-owns actual current-source cumulative review, execution and ready/merge status;
-two NEW complete clean rounds after the final fix and actual required gates must
-succeed before merge. The acceptance checkpoints below retain their original scopes.
-Wave 3 follows corrected PR acceptance; no provider, credential or user decision is pending.
+## Wave 2 merged — Shut the doors
 
-**Wave 2's eight steps are accepted on `development`, 2026-10-13.** This existing
-navigation anchor is retained for incoming decision links; implementation is
-complete and publication is separate from merge. The [closing register](phases/phase-2.5.5-hardening-and-remediation.md#wave-2-closing-register--2026-10-13)
-joins all forty item dispositions, four new threat sittings plus W4 revalidation,
-two NEW complete clean cumulative whole-wave review rounds and exact-source author,
-coverage, native Windows/Node-floor and full physical causal evidence.
+**Wave 2 merged to `main` on 2026-10-15 as [PR #94](https://github.com/HodeTech/Relavium/pull/94),
+merge commit `ab08209e`. All eight steps and the maintainer corrections are complete.**
+The [merge checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#wave-2-merge-checkpoint--2026-10-15)
+joins the forty item dispositions, four new security sittings plus W4 revalidation,
+original whole-wave acceptance and all subsequent correction scopes. Existing incoming
+navigation anchors are retained; dated implementation checkpoints remain historical.
 
-**PR #94's three maintainer source corrections are accepted — 2026-10-13.**
-Systematic review of `395fbf95` confirmed a runner-level unhandled-error blind spot,
-refusal of valid OpusTags padding and missing nonfinal FLAC block-size consistency.
-All three repairs have permanent regressions and two NEW independent clean complete
-cumulative rounds after each final source correction. The final source rounds at
-`f4ca3c53` cover all 28 correction paths / 72 hunks. The
-[correction register](phases/phase-2.5.5-hardening-and-remediation.md#pr-94-systematic-review-corrections--2026-10-13)
-joins their separate acceptance scopes. Corrected-head full CI, coverage, platform
-results and independently inspected complete controls belong to the
-[PR #94 publication record](https://github.com/HodeTech/Relavium/pull/94) and must
-pass before merge. Earlier green checks retain their original source attribution;
-the original `395fbf95` artifacts do not establish the repaired runner-error
-guarantee. Publication and maintainer review precede merge; Wave 3 remains
-subsequent work.
+Completed work covers invocation-authorized filesystem boundaries and scratch-policy
+composition; bounded secret stdin, early admission and private bridge diagnostics;
+faithful-snapshot warnings, structural session privacy and export completion; verified
+bounded media/CAS/native lifecycles; and the interim provider-header gate. Maintainer
+corrections include runner-level error rejection, valid Opus/Vorbis publication,
+FLAC structural consistency, generated-result streaming and finite pin-error provenance.
 
-Completed work covers invocation-authorized filesystem boundaries, bounded secret
-input and bridge diagnostics, faithful-snapshot warnings and structural session
-privacy, export completion, verified bounded media/CAS/native lifecycles, and the
-interim provider-header gate. Exit criteria 1–3 and sub-stream D are signed off.
-M2.5.5-2's I half, full Phase 2.5.5/2.6, M/N production lifecycle, future live headers
-and existing approved residuals remain open. There is no pending ADR approval,
-provider capture, credential, billing or user decision for this wave.
+Final reviewed correction source `4cdfe011` has two NEW independent complete clean
+cumulative rounds covering all 67 correction paths / 188 hunks / 24 complete new files.
+These scoped rounds do not claim a new review of every original PR path. Full local
+CI, ordinary/enforced coverage and all nine jobs in each PR/push CI workflow pass;
+SonarCloud and selected native Windows/Node-floor controls pass. Local coverage records
+588 files / 12,983 passing tests / 20 explicit skips; CI records 12,982 / 21 with its
+established extra CI-only skip. Complete physical controls are independently inspected.
+The merge tree matches the reviewed source; no new merge-commit execution is inferred.
+
+**Satisfied on `main`:** Phase 2.5.5 exit criteria 1–3 and sub-stream D acceptance.
+**Still open:** M2.5.5-2's I half, whole Phase 2.5.5/2.6, M/N production lifecycle,
+future live headers and existing approved residuals. Wave 2 has no remaining implementation,
+review, publication, ADR approval, provider capture, credential, billing or user-decision gate.
+The [deferred register](deferred-tasks.md) retains its existing limits; closure adds no deferral.
 
 ## Next work — Wave 3 — Clear the ground
 
-The next engineering work is [Wave 3 — Clear the ground](#wave-3--clear-the-ground).
-Its serialized multi-file queue starts with shared close handling, safe path
-presentation and exhaustiveness guards, before hot-file decomposition and the
-remaining CLI/process work. Start with current documents/code and its own decision
-preflight; Wave 2 does not silently approve the next wave's unresolved decisions.
+Wave 3 implementation is in progress on `development`; Steps 1–8 have scoped
+independent acceptance. The initial publication checkpoint is
+[PR #95](https://github.com/HodeTech/Relavium/pull/95). A second maintainer systematic
+review at `a5a5d45e` reopened corrective work; its
+[current correction register](phases/phase-2.5.5-hardening-and-remediation.md#pr-95-second-systematic-review-corrections--2026-10-18)
+owns dispositions and remaining gates. Corrective source reviews are complete;
+the two later native test-fixture increments have [separate scoped acceptance](phases/phase-2.5.5-hardening-and-remediation.md#pr-95-supplemental-native-fixture-source-acceptance--2026-10-18).
+Final pushed-head publication checks remain required, with their live results on
+PR #95. Steps 9–19 have not started; check the PR status before extending its scope
+with Step 9. See the [Wave 3 queue](#wave-3--clear-the-ground).
 
 ## Historical W7 implementation checkpoints
 
@@ -524,7 +520,7 @@ flowchart TD
     W1["Wave 1 — Stop the bleeding ✅<br/>3 CRITICALs · cost cap · ADR-0074"]
     LEDGER["#W15-1 — realized-cost ledger ✅<br/>ADR-0076 + ADR-0077"]
     P265["Phase 2.6.5 — Core reliability<br/>51 CR items · 8 P0 blockers behind ADR-0078–0084<br/>W0–W8 complete · W3 blocker closed in W8<br/>W4 merged — the hostile-MCP class, ADR-0088<br/>W5 merged — media correctness, ADR-0089+0090<br/>W6 merged — authoring correctness, ADR-0091–0094<br/>W7 merged — PR #90 · W8 merged — PR #92<br/>49/51 closed · approved deferrals retained"]
-    W2["Wave 2 — Shut the doors<br/>fs jail · secrets · config trust<br/>certifies 2.5.5 EXIT 1–3"]
+    W2["Wave 2 — Shut the doors ✅<br/>PR #94 merged · fs jail · secrets · config trust<br/>2.5.5 EXIT 1–3 satisfied"]
     W3["Wave 3 — Clear the ground<br/>god-file decomposition · CLI net"]
     W4a["Wave 4a — The spine<br/>2.6.A/D/H/K + 2 ADRs"]
     W4b["Wave 4b — Money floor & close-out<br/>2.5.5.B/C/F/H drain · v0.2.0"]
@@ -1080,7 +1076,7 @@ an ESLint selector rather than a list.
 
 ### Wave 2 — Shut the doors
 
-**Accepted on `development`, 2026-10-13; merge remains separate.** The [closing register](phases/phase-2.5.5-hardening-and-remediation.md#wave-2-closing-register--2026-10-13) joins all forty queue IDs and the exit/D sign-off. Hostile-MCP work is reused from W4/PR #87; the remaining filesystem, secrets/config, persistence and media work is complete within its recorded limits. The queue below preserves scope and traceability.
+**Complete on `main`, 2026-10-15, merged as PR #94 (`ab08209e`).** The [merge checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#wave-2-merge-checkpoint--2026-10-15) joins all forty queue IDs, the exit/D sign-off and final correction evidence. Hostile-MCP work is reused from W4/PR #87; the remaining filesystem, secrets/config, persistence and media work is complete within its recorded limits. The queue below preserves scope and traceability.
 
 1. ✅ **Completed in W4/PR #87:** 2.5.5.D · project-layer MCP name collision redirecting a global secret
    (G19) and MCP tool-definition poisoning (#202); see the
@@ -1094,19 +1090,19 @@ an ESLint selector rather than a list.
    certify from there in step 6 below; the *work* happens in 2.6.5 alongside `CR-16` (consent before a stdio
    spawn) and `CR-41` (the DNS/redirect SSRF hole), because they are the same code and the same security
    sitting. Splitting them across two phases would book the hostile-MCP reviewer twice.
-3. ✅ **The fs jail, ONE reviewed change set — accepted on `development`, 2026-10-12** — 2.5.5.D · sensitive-credential floor for `.kube`/`.azure`/gcloud
+3. ✅ **The fs jail, ONE reviewed change set — complete on `main`, PR #94** — 2.5.5.D · sensitive-credential floor for `.kube`/`.azure`/gcloud
    (#36, #39) → extract `deepestExistingReal` to `packages/shared` (#235) → **2.6.M's `project`-tier
    `extraRoots`** and **2.6.N's fs-floor home-anchoring**, both *pulled forward*. `~/.relavium/tmp/` (G21)
    is resolved under the same general predicate (decision D12) — otherwise `fs.ts` takes two security reviews.
-4. `discoverCatalog` realpath containment (#1, accepted in Step 2); the secrets-layer test pair — OS-keychain bridge (#27) and
+4. ✅ `discoverCatalog` realpath containment (#1, accepted in Step 2); the secrets-layer test pair — OS-keychain bridge (#27) and
    `readSecretFromStdin` + stdin cap (#31, #293); secret-typed `run --input` rejection (#25); the unredacted
    workflow-snapshot doc + lint (#30); 2.5.5.B · `scrubSecrets` param-name broadening (#196).
-5. Persistence-security: 2.5.5.C · `assertRelativePath`'s Windows drive-relative form (#113), media-store
+5. ✅ Persistence-security: 2.5.5.C · `assertRelativePath`'s Windows drive-relative form (#113), media-store
    hardening (#111, #108, #112), media `mimeType` verification (#107, #109, #110), and certification of
    W7's structural session/tool-content controls (#115, Wave D15). 2.5.5.A · chat-export continuity/slug
    completion and existing tool-content exclusion (#80, #81, #83, D14), plus `analyzeSecretTaint`'s
    context sites (G22). 2.5.5.D · the dormant `default_headers` admission/custody gate (G20, D13).
-6. **Certify 2.5.5 exit criteria 1, 2 and 3** + the sub-stream D acceptance sign-off. **Closes M2.5.5-2 (D half).**
+6. ✅ **Phase 2.5.5 exit criteria 1, 2 and 3 and sub-stream D acceptance are satisfied on `main` by PR #94.** The D half of M2.5.5-2 is complete; the I half remains open.
 
 > Book **four security-review sittings by threat class** (fs/path-jail · secrets-at-rest · secrets-input ·
 > config-trust), not ~30 per-PR passes. The **hostile-MCP** sitting moved to Phase 2.6.5 with the queue-2 work;
@@ -1114,15 +1110,53 @@ an ESLint selector rather than a list.
 
 ### Wave 3 — Clear the ground
 
-Decompose, guard and normalize every hot file a 2.6 workstream is about to land on. **The multi-file queue
-runs first and is serialized against the rest**; the remaining queues are file-disjoint, any order.
+**Implementation in progress — 2026-10-18.** ADR-0110–0113, their linked
+contracts and the nineteen-increment plan were approved on 2026-10-16.
+[Steps 1–8 are independently accepted](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-8d-and-whole-step-8-acceptance--2026-10-17)
+on `development`, with whole Step 8 reviewed at `c83c8575`. The phase register
+owns each increment's source, tests, cumulative review rounds, security sittings
+and platform/publication evidence, including historical NONCLEAN R1–R24 records.
+This live page links that history instead of repeating its superseded pending states.
+
+The maintainer authorized the initial completed-Steps-1–8 publication checkpoint,
+[PR #95](https://github.com/HodeTech/Relavium/pull/95). The
+[previous corrective review completion](phases/phase-2.5.5-hardening-and-remediation.md#pr-95-corrective-review-completion--2026-10-18)
+remains attributed to `ba14b1bd`; it does not certify later changes. The second
+maintainer systematic report reviews `a5a5d45e` and opens further corrections.
+The [second correction register](phases/phase-2.5.5-hardening-and-remediation.md#pr-95-second-systematic-review-corrections--2026-10-18)
+is canonical for that work. The
+[second corrective source-review completion](phases/phase-2.5.5-hardening-and-remediation.md#pr-95-second-corrective-source-review-completion--2026-10-18)
+accepts corrections at `ec0f3e10` after two NEW complete cumulative clean rounds
+and a NEW separate clean security sitting. Current source-bound PR/push CI,
+coverage, SonarCloud, same-archive consumers and physical control artifacts remain
+required publication criteria; PR #95 owns their live result. Source review does
+not imply merge or whole-wave acceptance. The later
+[native Windows admission preparation](phases/phase-2.5.5-hardening-and-remediation.md#pr-95-native-windows-admission-preparation--2026-10-18)
+retains the failed advisory attempt and separate test-preparation review scope;
+production runtime is unchanged. The later [supplemental fixture acceptance](phases/phase-2.5.5-hardening-and-remediation.md#pr-95-supplemental-native-fixture-source-acceptance--2026-10-18)
+records both owned-preparation and native-concurrency review scopes, including
+both failed Windows attempts. PR #95 owns final pushed-head publication results.
+Steps 9–19 have **NOT STARTED** and whole-wave acceptance remains Step 19. Check PR #95 before later implementation commits,
+which extend its review scope. No new decision, credential, billing or provider
+capture gate is introduced.
+
+Decompose, guard and normalize every hot file a 2.6 workstream is about to land on.
+**The multi-file queue is Step 1 and runs first.** The approved
+[nineteen-increment execution plan](phases/phase-2.5.5-hardening-and-remediation.md#proposed-implementation-increments)
+owns the full order and review gates: finish each increment and its fresh reviews
+before advancing; no parallel edits of shared hot files.
+
+The groups below retain the original scope inventory and within-file dependency
+arrows, not independent scheduling permission or current completion claims. The
+[source-corrected preflight dispositions](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-preflight-and-proposed-execution-plan--2026-10-15)
+own whether/how each original finding needs implementation or preservation.
 
 Two orderings here are not this plan's invention — they are the intra-phase serializations
 [2.5.5 records under Positioning](phases/phase-2.5.5-hardening-and-remediation.md#positioning): **E before I**
 on `home-controller.ts`/`chat-ink.tsx` (the decomposition moves already-guarded code), and **C before E** on
 `packages/db/src/client.ts` (C types the error path in Wave 1; E's `openLocalDb` rewrite lands last, here).
 
-- **Multi-file (strict, first)** — 2.5.5.E · `closeQuietly()` to its four siblings (#22) → `displayPath`
+- ✅ **Multi-file Step 1 accepted — 2026-10-16** ([evidence](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-1-acceptance--2026-10-16)) — 2.5.5.E · `closeQuietly()` to its four siblings (#22) → `displayPath`
   discipline to `resolve.ts`/`catalog.ts`/`chat-export.ts` (#4, G11) → `const exhaustive: never` across the
   six sites (#300, #301, G3, which also makes `relavium run` render `agent:reasoning`).
 - **`chat.ts` (strict)** — 2.5.5.G · the four money/token reimplementations (#236, #237, #242, #307) →
@@ -1131,29 +1165,34 @@ on `home-controller.ts`/`chat-ink.tsx` (the decomposition moves already-guarded 
   chat gap (G30)**, pulled forward into `session-host.ts`.
 - **`home-controller.ts` (strict)** — 2.5.5.E · `selectGatePrompter` test (G37) → the swallowed palette
   rejection (#281) → **2.5.5.I · decompose `createHomeController` + the overlay discriminated union**
-  (#215, #243) → 2.5.5.G · the `Capability`/`Port` vocabulary split (#217, #222) → 2.5.5.F · Home's
-  `showCost` no-op (#125, after D26).
-- **`chat-ink.tsx`** — 1,795 lines, larger than `home-controller.ts`, decomposed by **neither** phase doc.
+  (#215, #243) → 2.5.5.G · the `Capability`/`Port` vocabulary split (#217, #222).
+  Settle #125/D26 before decomposition: the approved preflight certifies the planned scope of the real
+  in-Home-chat cost path and retaining chat-only scope. If a new bare-Home cost
+  surface is selected, wire its explicit session target before decomposition.
+- **`chat-ink.tsx`** — 1,906 lines at preflight (the original queue recorded 1,795), decomposed by **neither** phase doc.
   **Recommendation: decline** a new decomposition (decision D18); take only the exhaustiveness guard and the
   min-terminal-size guard (#63), and hand restructuring to 2.6.M's render-v2 in Wave 5a.
 - **Viewport (strict)** — 2.5.5.I · share the ADR-0069 grapheme segmenter (#58, #62, G40, G51) →
   2.5.5.G · tab expansion before width measurement (#65) → per-cluster width cache + resize debounce
-  (#64, #66). Alt-screen word-wrap (#61) is **formally re-deferred**.
-- **`packages/shared` (strict)** — the `.code` ruling (G50, D10) → `findDuplicates`/`superRefine` at all seven
-  remaining schema sites (#89, #90, G16, G17, G18, #210, #211, #212) → `BaseEventSchema` disposition (#213) →
+  (#64, #66), refined to frame coalescing in the proposed plan. Alt-screen word-wrap
+  (#61) retains the approved Wave 5a ownership; it is not an unapproved Wave 3 prerequisite.
+- **`packages/shared` (strict)** — the `.code` ruling (G50, D10) → `findDuplicates`/`superRefine` implementation or preservation at the
+  schema dispositions (#89, #90, G16, G17, G18, #210, #211, #212) → `BaseEventSchema` disposition (#213) →
   the `RelaviumError` base class (#219). *The ruling must precede the base class, or it is baked in permanently.*
-- **`registry.ts` / `builtins.ts` / `engine.ts`** — `ctx.secretArgKeys` producer (#92) → `ctx.fsScope` (#93) →
+- **`registry.ts` / `builtins.ts` / `engine.ts`** — declared-source context repair and honest unsupported-mapping disposition (#92/Accepted ADR-0113) → `ctx.fsScope` (#93) →
   `ok`/`success` (#216, #221) → identifier-sort `localeCompare` pinning (#258, #259) → the `git_commit`
   denial copy (#308); then the four schema length caps (#95), the `llmVisibleParams` rewrite (#96, #98),
   stale doc comments (#78, #97, #214); then `#armRunTimeout` (#75), `#dispatch` dead branch (#79),
   `AbortSignal` into `resolvePrompt` + the human-gate recheck (#76, G9).
-- **Process/CLI boundary (strict head)** — 2.5.5.E · the five crash/signal net gaps (#40, #41, #42, #224,
-  #269) → the `--help`/`--version` ~400 ms tax (#43, #44, #271); then the flag-system ruling (#45, #264,
-  #265, #268), the exit-code and `--help --json` rulings (G35, #13), `logs` coalescing (G15), the `--input`
+- **Process/CLI boundary (strict head)** — the revised plan serializes pure flag/descriptor/owner substrate → lazy guarded runtime graph → native crash integration → map/archive custody → command behaviour. It covers 2.5.5.E · the five crash/signal net gaps (#40, #41, #42, #224,
+  #269), the `--help`/`--version` historical ~400 ms tax (#43, #44, #271), and the flag-system ruling (#45, #264,
+  #265, #268), the exit-code and `--help --json` rulings (G35, #13), durable-only logs preservation (G15 refuted), the `--input`
   namespace ruling (#18, #310). **`openLocalDb` wrap-and-redact (#278, #280) lands LAST** — it touches 8+
   call sites the other queues are still moving.
-- Then the tails of 2.5.5.A, E, G and I in any order; sub-stream **A, E and G acceptance sign-offs**;
-  and record the **EXIT:4 reading** (decision D22). **Closes M2.5.5-3.**
+- The numbered plan assigns the remaining 2.5.5.A/E/G/I tails and keeps the central
+  DB refactor last before whole-wave acceptance. Step 19 owns sub-stream **A, E
+  and G sign-offs**, the reconciled **EXIT:4 reading** (D22), and **M2.5.5-3**
+  closure. Full I acceptance remains in Wave 5a.
 
 ### Wave 4a — The spine
 
@@ -1281,9 +1320,10 @@ unanswered**; the remainder sit inline in their own phase-file bullet.
 | D15 | 2 | What masking guarantee does the session fixture (#115) certify? | **Reconciled 2026-10-12:** ADR-0095/0098 supply structural refusal, not universal masking. Certify the actual producer/SQLite/export fixtures and retained-content limits. This repairs the missing Wave 2 decision row; it is unrelated to historical media D15. |
 | D17 | 2 | Book security reviews **by threat class**, not per PR? | **Accepted 2026-10-13:** four new sittings (filesystem, secret input, secrets at rest, config trust), plus W4 hostile-MCP sitting/current regression revalidation. [Closing evidence](phases/phase-2.5.5-hardening-and-remediation.md#wave-2-closing-register--2026-10-13). |
 | D18 | 3 | `chat-ink.tsx` (1,795 lines, in neither doc): decompose or decline? | **Decline** — hand it to 2.6.M's render-v2 in Wave 5a, where the palette sweep then runs once |
-| D19 | 3 | `--quiet`/`--verbose`/`RELAVIUM_DEBUG` precedence | `--quiet` < default < `--verbose`; `RELAVIUM_DEBUG=1` an alias, explicit flag wins; `--json` overrides for stream shape |
-| D20 | 3 | `--input`'s four-way collision: rename or document? | Rename `models pricing` to `--input-price`/`--output-price`, old spellings deprecated aliases |
-| D22 | 3 | Read EXIT:4 as "no **breaking** change"? | Yes — with the additive exit code and the noun-verb aliases as the two sanctioned, documented exceptions |
+| D19 | 3 | `--quiet`/`--verbose`/`RELAVIUM_DEBUG` precedence | **Approved ADR-0110, 2026-10-16:** quiet+verbose remains a conflict; either explicit flag overrides exact DEBUG=1. This replaces the old precedence ladder. JSON remains independent; implementation is staged. |
+| D20 | 3 | `--input`'s four-way collision: rename or document? | **Approved ADR-0110, 2026-10-16:** rename pricing flags to `--input-price`/`--output-price`, retaining deprecated aliases and refusing conflicting spellings before normalization. Other command-scoped input meanings stay documented. |
+| D22 | 3 | Read EXIT:4 as "no **breaking** change"? | **Approved ADR-0110, 2026-10-16:** its enumerated compatibility scope replaces the old two-exception recommendation. Phase exit criterion 4/E wording and ADR-0049/0056 forward notes are reconciled before dependent code. |
+| D26 | 3 | Which session would bare Home's `showCost` target? | **Approved disposition, 2026-10-16:** keep `/cost` chat-only; certify both live chat surfaces. Bare Home currently cannot invoke the no-op. Past-session selection remains 2.6.G; no implicit cost release. See the [Wave 3 plan](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-preflight-and-proposed-execution-plan--2026-10-15). |
 | D28/D29 | 4a | Flip ADR-0058 and ADR-0060 to Accepted | Yes; 0060's taint model is the cited precedent for Wave 7's generation-security ADR |
 | D31 | 4a | Strike 2.6.H's chat-persister atomicity sub-part as a duplicate? | Yes — owned by Wave 1; record the closure |
 | D33 | 4b | Retention policy (the phase's largest single item) | Default bound 50 + `--limit`/`--tail`; ship `chat delete` writing the dead `deleted_at` columns; never auto-hard-delete |

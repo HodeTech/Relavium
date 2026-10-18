@@ -55,7 +55,7 @@ export const mutations = [
   control(
     'CAS_SHARD',
     paths,
-    '!info.isDirectory() ||\n        info.isSymbolicLink() ||\n        realpathSync(dir) !== dir ||\n        !within(root, dir)',
+    '!info.isDirectory() ||\n        info.isSymbolicLink() ||\n        withOwnedFilesystem(() => realpathSync(dir)) !== dir ||\n        !within(root, dir)',
     'false',
     'FS_CAUSAL_CAS_shard',
     [cases],
@@ -111,8 +111,8 @@ mutations.push(
   control(
     'INVOCATION_ADMISSION',
     'apps/cli/src/run.ts',
-    'fsGrants: admitFsInvocation(global)',
-    'fsGrants: admitFsInvocation({ ...global, allowFsRoots: [] })',
+    'fsGrants: runtime.admitFsInvocation(global)',
+    'fsGrants: runtime.admitFsInvocation({ ...global, allowFsRoots: [] })',
     'FS_CAUSAL_INVOCATION_ADMISSION',
     [invocation],
     'invalid grants refuse',
@@ -253,7 +253,7 @@ for (const mutation of mutations) {
       : file === floorCases[0]
         ? 14
         : file === workspaceCases
-          ? 8
+          ? 12
           : file === cooperativeCases
             ? 6
             : file === windowsWinnerCases

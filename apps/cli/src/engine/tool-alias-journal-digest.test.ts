@@ -1,0 +1,904 @@
+import { createHash } from 'node:crypto';
+
+import {
+  BUILTIN_TOOLS,
+  createToolRegistry,
+  type ToolDef,
+  type ToolDispatchContext,
+  type ToolHost,
+} from '@relavium/core';
+import {
+  createClient,
+  createEffectJournalPort,
+  createEffectJournalStore,
+  runMigrations,
+} from '@relavium/db';
+import type { EffectDispatchPort } from '@relavium/shared';
+import { describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
+
+function selection(which: 'alice' | 'bob') {
+  const alice = { label: 'alice' };
+  const bob = { label: 'bob' };
+  return { catalog: [alice, bob], selected: which === 'alice' ? alice : bob };
+}
+
+// Independently spelled canonical bytes: sorted object keys, ordered arrays, no whitespace.
+// Do not use the production canonicalJson helper to derive the expected digest.
+const EXPECTED_CANONICAL = {
+  alice: '{"payload":{"catalog":[{"label":"alice"},{"label":"bob"}],"selected":{"label":"alice"}}}',
+  bob: '{"payload":{"catalog":[{"label":"alice"},{"label":"bob"}],"selected":{"label":"bob"}}}',
+};
+
+function sha256(text: string): string {
+  return `v5:${createHash('sha256').update(text).digest('hex')}`;
+}
+
+function registryFixture(effects: EffectDispatchPort) {
+  const received: unknown[] = [];
+  const tool: ToolDef = {
+    id: 'alias_publish',
+    source: 'mcp',
+    description: 'Offline registry and native journal alias fixture',
+    llmVisibleParams: { type: 'object' },
+    parseArgs: (raw) => z.object({ payload: z.unknown() }).strict().parse(raw),
+    policy: { fsScoped: false, spawnsProcess: false, requiresGateApproval: false },
+    effect: () => 3,
+    dispatch: (args) => {
+      const parsed = z.object({ payload: z.unknown() }).strict().parse(args);
+      received.push(parsed.payload);
+      return Promise.resolve({ receipt: 'published' });
+    },
+  };
+  const context: ToolDispatchContext = {
+    nodeId: 'n',
+    grantedToolIds: new Set([tool.id]),
+    config: {},
+    toolPolicy: {},
+    fsScope: 'sandboxed',
+    gateApproved: false,
+    effects,
+    effectSlot: 0,
+  };
+  return { registry: createToolRegistry({ tools: [tool], host: {} }), received, context };
+}
+
+function call(payload: unknown) {
+  return { type: 'tool_call', id: 'alias-call', name: 'alias_publish', args: { payload } } as const;
+}
+
+function recordingPort(inner: EffectDispatchPort) {
+  return {
+    prepare: vi.fn((...args: Parameters<EffectDispatchPort['prepare']>) => inner.prepare(...args)),
+    settle: vi.fn((...args: Parameters<EffectDispatchPort['settle']>) => inner.settle(...args)),
+    discard: vi.fn((...args: Parameters<EffectDispatchPort['discard']>) => inner.discard(...args)),
+  } satisfies EffectDispatchPort;
+}
+
+const PhysicalRowsSchema = z.array(
+  z.object({ slot: z.number(), state: z.string(), args_digest: z.string() }).strict(),
+);
+const METADATA = [
+  { name: 'absent', keys: undefined },
+  { name: 'empty', keys: new Set<string>() },
+  { name: 'nonempty', keys: new Set(['confidentialNote']) },
+];
+
+it.each([
+  {
+    name: 'quoted body credential',
+    body: `password="SYNTHETIC_VISIBLE_HEAD_${'Q'.repeat(20 * 1024)}"; public-tail`,
+    projected: '[redacted]; public-tail',
+  },
+  {
+    name: 'body URL userinfo',
+    body: `https://user:SYNTHETIC_VISIBLE_HEAD_${'Q'.repeat(20 * 1024)}@service.invalid/path`,
+    projected: 'https://[redacted]@service.invalid/path',
+  },
+])(
+  'PHYSICAL_DISPLAY_REDACTION_ORDER masks complete $name before the event preview',
+  async ({ body, projected }) => {
+    const client = createClient(':memory:');
+    try {
+      runMigrations(client.db);
+      const store = createEffectJournalStore(client.db, {
+        uuid: () => 'display-order',
+        now: () => 6,
+      });
+      const effects = recordingPort(
+        createEffectJournalPort(
+          store,
+          { kind: 'run', runId: 'r-display', nodeId: 'n', attempt: 1 },
+          { providerAttempt: 1, toolCallId: 'display-call' },
+        ),
+      );
+      const fetch = vi.fn((input: Parameters<NonNullable<ToolHost['egress']>['fetch']>[0]) => {
+        expect(input.body).toBe(body);
+        return Promise.resolve({ status: 200, headers: {}, body: 'ok' });
+      });
+      const registry = createToolRegistry({ tools: BUILTIN_TOOLS, host: { egress: { fetch } } });
+      const context: ToolDispatchContext = {
+        nodeId: 'n',
+        grantedToolIds: new Set(['http_request']),
+        config: {},
+        toolPolicy: { allowedDomains: ['service.invalid'] },
+        fsScope: 'sandboxed',
+        gateApproved: false,
+        effects,
+        effectSlot: 0,
+      };
+      const args = { body, method: 'POST', url: 'https://service.invalid/x' };
+      const outcome = await registry.dispatch(
+        { type: 'tool_call', id: 'display-call', name: 'http_request', args },
+        context,
+      );
+      const expected = { body: projected, method: 'POST', url: 'https://service.invalid/x' };
+      expect(outcome.events.call.toolInput, 'PHYSICAL_DISPLAY_REDACTION_ORDER').toEqual(expected);
+      expect(effects.prepare.mock.calls[0]?.[3]).toEqual(expected);
+      expect(fetch).toHaveBeenCalledOnce();
+      const rows = PhysicalRowsSchema.parse(
+        client.sqlite
+          .prepare('SELECT slot, state, args_digest FROM run_effects ORDER BY slot')
+          .all(),
+      );
+      // Independent sorted-key bytes; display ordering must not alter the full v5 journal identity.
+      expect(rows, 'PHYSICAL_DISPLAY_JOURNAL_UNCHANGED').toEqual([
+        { slot: 0, state: 'committed', args_digest: sha256(JSON.stringify(expected)) },
+      ]);
+    } finally {
+      client.sqlite.close();
+    }
+  },
+);
+
+describe.each(METADATA)('native MCP own public data with $name metadata', ({ keys }) => {
+  it.each(['scalar', 'record'] as const)(
+    'PHYSICAL_OWN_DATA retains %s data in the digest, replays equality and refuses a changed value',
+    async (mode) => {
+      const client = createClient(':memory:');
+      try {
+        runMigrations(client.db);
+        let ids = 0;
+        const store = createEffectJournalStore(client.db, {
+          uuid: () => `own-${++ids}`,
+          now: () => 6,
+        });
+        const effects = recordingPort(
+          createEffectJournalPort(
+            store,
+            { kind: 'run', runId: 'r-own', nodeId: 'n', attempt: 1 },
+            { providerAttempt: 1, toolCallId: 'own-call' },
+          ),
+        );
+        const received: unknown[] = [];
+        const callMcp = vi.fn((input: Parameters<NonNullable<ToolHost['mcp']>['call']>[0]) => {
+          received.push(input.args);
+          return Promise.resolve({ receipt: 'published' });
+        });
+        const registry = createToolRegistry({
+          tools: BUILTIN_TOOLS,
+          host: { mcp: { call: callMcp } },
+        });
+        const context: ToolDispatchContext = {
+          nodeId: 'n',
+          grantedToolIds: new Set(['mcp_call']),
+          config: {},
+          toolPolicy: {},
+          fsScope: 'sandboxed',
+          gateApproved: false,
+          effects,
+          effectSlot: 0,
+          ...(keys === undefined ? {} : { secretArgKeys: keys }),
+        };
+        const value = mode === 'scalar' ? 'public-value' : { label: 'public-value' };
+        const payload = { ['__proto__']: value, confidentialNote: 'SYNTHETIC_NOTE' };
+        const request = (args: unknown) =>
+          ({
+            type: 'tool_call',
+            id: 'own-call',
+            name: 'mcp_call',
+            args: { server: 'offline', tool: 'publish', args },
+          }) as const;
+        const firstAttempt = await registry.dispatch(request(payload), context).then(
+          (result) => ({ result }),
+          (failure: unknown) => ({ failure }),
+        );
+        expect(firstAttempt, 'PHYSICAL_OWN_DATA_ADMISSION').not.toHaveProperty('failure');
+        if ('failure' in firstAttempt) throw firstAttempt.failure;
+        const first = firstAttempt.result;
+        const replay = await registry.dispatch(request(payload), context);
+        expect(replay.output).toEqual(first.output);
+        expect(callMcp).toHaveBeenCalledOnce();
+        expect(received[0]).toBe(payload);
+        const valueBytes = mode === 'scalar' ? '"public-value"' : '{"label":"public-value"}';
+        const noteBytes =
+          keys?.has('confidentialNote') === true ? '' : ',"confidentialNote":"SYNTHETIC_NOTE"';
+        const canonical = `{"args":{"__proto__":${valueBytes}${noteBytes}},"server":"offline","tool":"publish"}`;
+        const expected: unknown = JSON.parse(canonical);
+        expect(first.events.call.toolInput, 'PHYSICAL_OWN_DATA_EVENT').toEqual(expected);
+        expect(effects.prepare.mock.calls[0]?.[3], 'PHYSICAL_OWN_DATA_PREPARE').toEqual(expected);
+        const rows = PhysicalRowsSchema.parse(
+          client.sqlite
+            .prepare('SELECT slot, state, args_digest FROM run_effects ORDER BY slot')
+            .all(),
+        );
+        expect(rows, 'PHYSICAL_OWN_DATA_DIGEST').toEqual([
+          { slot: 0, state: 'committed', args_digest: sha256(canonical) },
+        ]);
+        const changed = { ...payload, ['__proto__']: 'changed-public-value' };
+        await expect(
+          registry.dispatch(request(changed), context),
+          'PHYSICAL_OWN_DATA_CONFLICT',
+        ).rejects.toMatchObject({ name: 'ToolEffectConflictError', retryable: false });
+        expect(callMcp).toHaveBeenCalledOnce();
+        await registry.dispatch(request(changed), { ...context, effectSlot: 1 });
+        expect(callMcp).toHaveBeenCalledTimes(2);
+        expect(received[1]).toBe(changed);
+        expect(Object.getPrototypeOf(payload)).toBe(Object.prototype);
+      } finally {
+        client.sqlite.close();
+      }
+    },
+  );
+});
+
+describe.each(METADATA)(
+  'W3S5 #94 public registry and native SQLite with $name external metadata',
+  ({ keys }) => {
+    it('PHYSICAL_ALIAS_DIGEST commits distinct correct SHA-256 values for different selections', async () => {
+      const client = createClient(':memory:');
+      try {
+        runMigrations(client.db);
+        let ids = 0;
+        const store = createEffectJournalStore(client.db, {
+          uuid: () => `alias-${++ids}`,
+          now: () => 6,
+        });
+        const effects = recordingPort(
+          createEffectJournalPort(
+            store,
+            { kind: 'run', runId: 'r-alias', nodeId: 'n', attempt: 1 },
+            { providerAttempt: 1, toolCallId: 'alias-call' },
+          ),
+        );
+        const h = registryFixture(effects);
+        const context = { ...h.context, ...(keys === undefined ? {} : { secretArgKeys: keys }) };
+        const alice = selection('alice');
+        const bob = selection('bob');
+        const aliceOutcome = await h.registry.dispatch(call(alice), context);
+        const bobOutcome = await h.registry.dispatch(call(bob), { ...context, effectSlot: 1 });
+        const rows = PhysicalRowsSchema.parse(
+          client.sqlite
+            .prepare('SELECT slot, state, args_digest FROM run_effects ORDER BY slot')
+            .all(),
+        );
+        expect(rows).toHaveLength(2);
+        expect(rows.map((row) => row.state)).toEqual(['committed', 'committed']);
+        for (const row of rows) expect(row.args_digest).toMatch(/^v5:[0-9a-f]{64}$/);
+        expect(rows[0]?.args_digest, 'PHYSICAL_ALIAS_DIGEST_DISTINCT').not.toBe(
+          rows[1]?.args_digest,
+        );
+        expect(rows[0]?.args_digest, 'PHYSICAL_ALIAS_DIGEST_ALICE').toBe(
+          sha256(EXPECTED_CANONICAL.alice),
+        );
+        expect(rows[1]?.args_digest, 'PHYSICAL_ALIAS_DIGEST_BOB').toBe(
+          sha256(EXPECTED_CANONICAL.bob),
+        );
+        for (const [index, outcome] of [aliceOutcome, bobOutcome].entries()) {
+          const expected: unknown = JSON.parse(
+            index === 0 ? EXPECTED_CANONICAL.alice : EXPECTED_CANONICAL.bob,
+          );
+          expect(outcome.events.call.toolInput, 'PHYSICAL_ALIAS_EVENT').toEqual(expected);
+          expect(effects.prepare.mock.calls[index]?.[3], 'PHYSICAL_ALIAS_PREPARE').toEqual(
+            expected,
+          );
+        }
+        expect(h.received[0]).toBe(alice);
+        expect(h.received[1]).toBe(bob);
+        expect(alice.selected).toBe(alice.catalog[0]);
+        expect(bob.selected).toBe(bob.catalog[1]);
+      } finally {
+        client.sqlite.close();
+      }
+    });
+
+    it('PHYSICAL_ALIAS_REPLAY replays equal selection and conflicts on changed same-slot selection', async () => {
+      const client = createClient(':memory:');
+      try {
+        runMigrations(client.db);
+        let ids = 0;
+        const store = createEffectJournalStore(client.db, {
+          uuid: () => `replay-${++ids}`,
+          now: () => 6,
+        });
+        const effects = recordingPort(
+          createEffectJournalPort(
+            store,
+            { kind: 'run', runId: 'r-alias-replay', nodeId: 'n', attempt: 1 },
+            { providerAttempt: 1, toolCallId: 'alias-call' },
+          ),
+        );
+        const h = registryFixture(effects);
+        const context = { ...h.context, ...(keys === undefined ? {} : { secretArgKeys: keys }) };
+        const first = await h.registry.dispatch(call(selection('alice')), context);
+        const replay = await h.registry.dispatch(call(selection('alice')), context);
+        expect(replay.output).toEqual(first.output);
+        expect(h.received).toHaveLength(1);
+        await expect(
+          h.registry.dispatch(call(selection('bob')), context),
+          'PHYSICAL_ALIAS_CHANGED_SELECTION_CONFLICT',
+        ).rejects.toMatchObject({
+          name: 'ToolEffectConflictError',
+          code: 'effect_conflict',
+          retryable: false,
+        });
+        expect(h.received, 'PHYSICAL_ALIAS_NO_DUPLICATE_DISPATCH').toHaveLength(1);
+        const rows = PhysicalRowsSchema.parse(
+          client.sqlite
+            .prepare('SELECT slot, state, args_digest FROM run_effects ORDER BY slot')
+            .all(),
+        );
+        expect(rows, 'PHYSICAL_ALIAS_REPLAY_ROW').toEqual([
+          { slot: 0, state: 'committed', args_digest: sha256(EXPECTED_CANONICAL.alice) },
+        ]);
+      } finally {
+        client.sqlite.close();
+      }
+    });
+  },
+);
+
+describe('W3S5 #94 physical journal deliberate secret-projection equality', () => {
+  it('PHYSICAL_SECRET_EQUALITY varies only credentials and keeps actual event and prepare copies scrubbed', async () => {
+    const client = createClient(':memory:');
+    try {
+      runMigrations(client.db);
+      let ids = 0;
+      const store = createEffectJournalStore(client.db, {
+        uuid: () => `secret-${++ids}`,
+        now: () => 6,
+      });
+      const effects = recordingPort(
+        createEffectJournalPort(
+          store,
+          { kind: 'run', runId: 'r-alias-secret', nodeId: 'n', attempt: 1 },
+          { providerAttempt: 1, toolCallId: 'alias-call' },
+        ),
+      );
+      const h = registryFixture(effects);
+      const context = { ...h.context, secretArgKeys: new Set(['confidentialNote']) };
+      const media = 'U1lOVEhFVElDX01FRElBX0NBTkFSWQ==';
+      const projected = {
+        payload: {
+          left: {
+            label: 'clean',
+            password: '[redacted]',
+            media: { kind: 'base64', base64Length: media.length },
+          },
+          right: {
+            label: 'clean',
+            password: '[redacted]',
+            media: { kind: 'base64', base64Length: media.length },
+          },
+        },
+      };
+      const canonical =
+        '{"payload":{"left":{"label":"clean","media":{"base64Length":32,"kind":"base64"},"password":"[redacted]"},"right":{"label":"clean","media":{"base64Length":32,"kind":"base64"},"password":"[redacted]"}}}';
+      expect(media.length, 'PHYSICAL_SECRET_FIXTURE_LENGTH').toBe(32);
+      for (const [slot, suffix] of ['ONE', 'TWO'].entries()) {
+        const shared = {
+          label: 'clean',
+          password: `SYNTHETIC_PASSWORD_${suffix}`,
+          media: { kind: 'base64', data: media },
+          confidentialNote: `SYNTHETIC_NOTE_${suffix}`,
+        };
+        const payload = { left: shared, right: shared };
+        const outcome = await h.registry.dispatch(call(payload), { ...context, effectSlot: slot });
+        for (const projection of [
+          outcome.events.call.toolInput,
+          effects.prepare.mock.calls[slot]?.[3],
+        ]) {
+          expect(projection, 'PHYSICAL_SECRET_PROJECTION').toEqual(projected);
+          const text = JSON.stringify(projection);
+          for (const canary of ['SYNTHETIC_PASSWORD_', 'SYNTHETIC_NOTE_', media])
+            expect(text).not.toContain(canary);
+        }
+        expect(h.received[slot]).toBe(payload);
+        expect(payload.left).toBe(payload.right);
+        expect(shared.password).toBe(`SYNTHETIC_PASSWORD_${suffix}`);
+      }
+      const rows = PhysicalRowsSchema.parse(
+        client.sqlite
+          .prepare('SELECT slot, state, args_digest FROM run_effects ORDER BY slot')
+          .all(),
+      );
+      expect(rows, 'PHYSICAL_SECRET_EQUALITY').toEqual([
+        { slot: 0, state: 'committed', args_digest: sha256(canonical) },
+        { slot: 1, state: 'committed', args_digest: sha256(canonical) },
+      ]);
+      expect(h.received).toHaveLength(2);
+    } finally {
+      client.sqlite.close();
+    }
+  });
+});
+
+describe('PR #95 full redacted journal digest', () => {
+  it('PHYSICAL_LONG_ARGS hashes the non-secret tail, preserves replay and refuses changed same-slot args', async () => {
+    const client = createClient(':memory:');
+    try {
+      runMigrations(client.db);
+      let ids = 0;
+      const store = createEffectJournalStore(client.db, {
+        uuid: () => `long-${++ids}`,
+        now: () => 6,
+      });
+      const effects = recordingPort(
+        createEffectJournalPort(
+          store,
+          { kind: 'run', runId: 'r-long', nodeId: 'n', attempt: 1 },
+          { providerAttempt: 1, toolCallId: 'long-call' },
+        ),
+      );
+      const h = registryFixture(effects);
+      const context = { ...h.context, secretArgKeys: new Set(['confidentialNote']) };
+      const prefix = 'x'.repeat(20 * 1024);
+      const payload = (tail: string, credential: string) => ({
+        text: `${prefix}${tail} Bearer ${credential}`,
+        password: credential,
+        confidentialNote: credential,
+      });
+      const firstPayload = payload('first', 'SYNTHETIC_LONG_SECRET_ONE');
+      const otherPayload = payload('other', 'SYNTHETIC_LONG_SECRET_TWO');
+      expect(firstPayload.text.length).toBe(otherPayload.text.length);
+      const first = await h.registry.dispatch(call(firstPayload), context);
+      const replay = await h.registry.dispatch(
+        call(payload('first', 'SYNTHETIC_LONG_SECRET_TWO')),
+        context,
+      );
+      expect(replay.output).toEqual(first.output);
+      expect(h.received).toHaveLength(1);
+      await expect(
+        h.registry.dispatch(call(otherPayload), context),
+        'PHYSICAL_LONG_ARGS_CONFLICT',
+      ).rejects.toMatchObject({ name: 'ToolEffectConflictError', retryable: false });
+      expect(h.received).toHaveLength(1);
+      await h.registry.dispatch(call(otherPayload), { ...context, effectSlot: 1 });
+      expect(h.received).toEqual([firstPayload, otherPayload]);
+
+      const rows = PhysicalRowsSchema.parse(
+        client.sqlite
+          .prepare('SELECT slot, state, args_digest FROM run_effects ORDER BY slot')
+          .all(),
+      );
+      // Independent canonical bytes, including the entire non-secret tail, not the display preview.
+      const expected = (tail: string) =>
+        sha256(`{"payload":{"password":"[redacted]","text":"${prefix}${tail} Bearer [redacted]"}}`);
+      expect(rows, 'PHYSICAL_LONG_ARGS_DIGEST').toEqual([
+        { slot: 0, state: 'committed', args_digest: expected('first') },
+        { slot: 1, state: 'committed', args_digest: expected('other') },
+      ]);
+      expect(rows[0]?.args_digest).not.toBe(rows[1]?.args_digest);
+      for (const args of effects.prepare.mock.calls) {
+        const projection = JSON.stringify(args[3]);
+        expect(projection).not.toContain('SYNTHETIC_LONG_SECRET');
+        expect(projection).not.toContain('confidentialNote');
+        expect(projection).toContain('Bearer [redacted]');
+      }
+      expect(JSON.stringify(first.events.call.toolInput).length).toBeLessThan(17 * 1024);
+      expect(
+        JSON.stringify(client.sqlite.prepare('SELECT * FROM run_effects').all()),
+      ).not.toContain('SYNTHETIC_LONG_SECRET');
+    } finally {
+      client.sqlite.close();
+    }
+  });
+
+  it.each(['original', 'literal-preview'] as const)(
+    'PHYSICAL_LEGACY_LONG_ARGS refuses the %s against an old truncated digest',
+    async (kind) => {
+      const client = createClient(':memory:');
+      try {
+        runMigrations(client.db);
+        const store = createEffectJournalStore(client.db, {
+          uuid: () => 'legacy-long',
+          now: () => 6,
+        });
+        const effects = createEffectJournalPort(
+          store,
+          { kind: 'run', runId: 'r-legacy-long', nodeId: 'n', attempt: 1 },
+          { providerAttempt: 1, toolCallId: 'legacy-call' },
+        );
+        const text = `${'x'.repeat(20 * 1024)}first`;
+        const preview = `${text.slice(0, 16 * 1024)}…[${String(text.length)} chars total]`;
+        // Seed actual pre-correction bytes, never through the current digest-producing port.
+        const legacyDigest = createHash('sha256')
+          .update(JSON.stringify({ payload: { text: preview } }))
+          .digest('hex');
+        store.prepare(
+          { scope: 'run:r-legacy-long:n', slot: 0, toolId: 'alias_publish' },
+          { kind: 'run', runId: 'r-legacy-long', nodeId: 'n', attempt: 1 },
+          { providerAttempt: 1, toolCallId: 'legacy-call' },
+          3,
+          legacyDigest,
+        );
+        await effects.settle(0, 'alias_publish', 'committed', { receipt: 'legacy result' });
+        const h = registryFixture(effects);
+        await expect(
+          h.registry.dispatch(call({ text: kind === 'original' ? text : preview }), h.context),
+          'PHYSICAL_LEGACY_LONG_ARGS_REFUSAL',
+        ).rejects.toMatchObject({ name: 'ToolEffectConflictError', retryable: false });
+        expect(h.received).toEqual([]);
+        expect(
+          store.recordsFor({ kind: 'run', runId: 'r-legacy-long', nodeId: 'n', attempt: 1 }),
+        ).toHaveLength(1);
+      } finally {
+        client.sqlite.close();
+      }
+    },
+  );
+});
+
+const CREDENTIAL_CASES = [
+  {
+    name: 'URL password with multiple @ separators',
+    body: (suffix: string) =>
+      `https://a:p@SYNTHETIC_USERINFO_TAIL_${suffix}@api.invalid;custom://u:second-password@two.invalid/path`,
+    projected: 'https://[redacted]@api.invalid;custom://[redacted]@two.invalid/path',
+    oldProjection: (suffix: string) =>
+      `https://[redacted]@SYNTHETIC_USERINFO_TAIL_${suffix}@api.invalid;custom://[redacted]@two.invalid/path`,
+  },
+  {
+    name: 'opaque query beyond the old 512-character match',
+    body: (suffix: string) =>
+      `https://public.invalid/?opaque=${'Q'.repeat(599)}${suffix}#public-fragment`,
+    projected: 'https://public.invalid/?opaque=[redacted]#public-fragment',
+    oldProjection: (suffix: string) =>
+      `https://public.invalid/?opaque=[redacted]${'Q'.repeat(87)}${suffix}#public-fragment`,
+  },
+  {
+    name: 'JSON password with an escaped quote',
+    body: (suffix: string) =>
+      JSON.stringify({ password: `ordinary"SYNTHETIC_SECRET_TAIL_${suffix}` }),
+    projected: '{"[redacted]}',
+    oldProjection: (suffix: string) => `{"[redacted]SYNTHETIC_SECRET_TAIL_${suffix}"}`,
+  },
+];
+
+describe.each(CREDENTIAL_CASES)('PR #95 complete recognized credential: $name', (fixture) => {
+  it('PHYSICAL_CREDENTIAL_EQUALITY keeps credential changes out of actual HTTP journal digests', async () => {
+    const client = createClient(':memory:');
+    try {
+      runMigrations(client.db);
+      let ids = 0;
+      const store = createEffectJournalStore(client.db, {
+        uuid: () => `credential-${++ids}`,
+        now: () => 6,
+      });
+      const effects = recordingPort(
+        createEffectJournalPort(
+          store,
+          { kind: 'run', runId: 'r-credential', nodeId: 'n', attempt: 1 },
+          { providerAttempt: 1, toolCallId: 'credential-call' },
+        ),
+      );
+      const fetch = vi.fn<NonNullable<ToolHost['egress']>['fetch']>(() =>
+        Promise.resolve({ status: 200, headers: {}, body: 'receipt' }),
+      );
+      const registry = createToolRegistry({ tools: BUILTIN_TOOLS, host: { egress: { fetch } } });
+      const context: ToolDispatchContext = {
+        nodeId: 'n',
+        grantedToolIds: new Set(['http_request']),
+        config: {},
+        toolPolicy: { allowedDomains: ['service.invalid'] },
+        fsScope: 'sandboxed',
+        gateApproved: false,
+        effects,
+        effectSlot: 0,
+      };
+      const prefix = `${'x'.repeat(20 * 1024)}\n`;
+      const args = (body: string) => ({ body, method: 'POST', url: 'https://service.invalid/x' });
+      const request = (suffix: string, publicTail = '\npublic-tail') =>
+        ({
+          type: 'tool_call',
+          id: 'credential-call',
+          name: 'http_request',
+          args: args(`${prefix}${fixture.body(suffix)}${publicTail}`),
+        }) as const;
+      const first = await registry.dispatch(request('A'), context);
+      const replay = await registry.dispatch(request('B'), context).then(
+        (result) => ({ output: result.output }),
+        (failure: unknown) => ({ failure }),
+      );
+      expect(replay, 'PHYSICAL_CREDENTIAL_EQUALITY').toEqual({ output: first.output });
+      expect(fetch).toHaveBeenCalledOnce();
+      expect(fetch.mock.calls[0]?.[0]).toMatchObject(request('A').args);
+      await registry.dispatch(request('B'), { ...context, effectSlot: 1 });
+      expect(fetch).toHaveBeenCalledTimes(2);
+      const projected = args(`${prefix}${fixture.projected}\npublic-tail`);
+      // Independent sorted-key bytes; no production redactor/canonical helper supplies the oracle.
+      const expectedDigest = sha256(JSON.stringify(projected));
+      const rows = PhysicalRowsSchema.parse(
+        client.sqlite
+          .prepare('SELECT slot, state, args_digest FROM run_effects ORDER BY slot')
+          .all(),
+      );
+      expect(rows, 'PHYSICAL_CREDENTIAL_EQUALITY').toEqual([
+        { slot: 0, state: 'committed', args_digest: expectedDigest },
+        { slot: 1, state: 'committed', args_digest: expectedDigest },
+      ]);
+      for (const callArgs of effects.prepare.mock.calls) {
+        expect(callArgs[3], 'PHYSICAL_CREDENTIAL_PROJECTION').toEqual(projected);
+      }
+      await expect(
+        registry.dispatch(request('B', '\nchanged-public-tail'), context),
+        'PHYSICAL_CREDENTIAL_PUBLIC_TAIL_CONFLICT',
+      ).rejects.toMatchObject({ name: 'ToolEffectConflictError', retryable: false });
+      expect(fetch).toHaveBeenCalledTimes(2);
+      expect(
+        JSON.stringify(client.sqlite.prepare('SELECT * FROM run_effects').all()),
+      ).not.toContain('SYNTHETIC_SECRET_TAIL_');
+    } finally {
+      client.sqlite.close();
+    }
+  });
+
+  it.each(['v2:', 'v3:', 'v4:'])(
+    'PHYSICAL_LEGACY_PROJECTION_REFUSAL refuses a current literal in the %s digest domain',
+    async (prefix) => {
+      const client = createClient(':memory:');
+      try {
+        runMigrations(client.db);
+        const store = createEffectJournalStore(client.db, {
+          uuid: () => 'partial-v2',
+          now: () => 6,
+        });
+        const correlation = { kind: 'run', runId: 'r-v2', nodeId: 'n', attempt: 1 } as const;
+        const body = `${'x'.repeat(20 * 1024)}\n${fixture.oldProjection('A')}`;
+        const args = { body, method: 'POST', url: 'https://service.invalid/x' };
+        const identity = { scope: 'run:r-v2:n', slot: 0, toolId: 'http_request' };
+        const legacyDigest = `${prefix}${createHash('sha256').update(JSON.stringify(args)).digest('hex')}`;
+        store.prepare(
+          identity,
+          correlation,
+          { providerAttempt: 1, toolCallId: 'old' },
+          3,
+          legacyDigest,
+        );
+        store.settle(identity, 'committed', { receipt: 'old result' });
+        const effects = createEffectJournalPort(store, correlation, {
+          providerAttempt: 1,
+          toolCallId: 'new',
+        });
+        const attempt = await effects.prepare(0, 'http_request', 3, args).then(
+          (value) => ({ value }),
+          (failure: unknown) => ({ failure }),
+        );
+        expect(attempt, 'PHYSICAL_LEGACY_PROJECTION_REFUSAL').toMatchObject({
+          failure: { name: 'EffectConflictError' },
+        });
+        expect(store.recordsFor(correlation)).toHaveLength(1);
+      } finally {
+        client.sqlite.close();
+      }
+    },
+  );
+});
+
+const STRUCTURED_CREDENTIAL_CASES = [
+  {
+    name: 'X-Api-Key with a recognized token prefix',
+    key: 'X-Api-Key',
+    value: (tail: string) => `sk-${'Q'.repeat(16)};${tail}`,
+    projected: '[redacted]',
+  },
+  {
+    name: 'a recognized prefix beyond the display boundary',
+    key: 'X-Api-Key',
+    value: (tail: string) => `${'x'.repeat(20 * 1024)};sk-${'Q'.repeat(16)};${tail}`,
+    projected: '[redacted]',
+  },
+  {
+    name: 'an embedded scheme is not a public header scheme',
+    key: 'X-Auth-Token',
+    value: (tail: string) => `ordinary;Bearer ${'Q'.repeat(16)};${tail}`,
+    projected: '[redacted]',
+  },
+  {
+    name: 'escaped quoted text inside a credential header',
+    key: 'X-Client-Secret',
+    value: (tail: string) => `${JSON.stringify({ password: 'inner"secret' })};${tail}`,
+    projected: '[redacted]',
+  },
+  {
+    name: 'Bearer retains only its canonical scheme',
+    key: 'Authorization',
+    value: (tail: string) => `bEaReR ${'Q'.repeat(16)};${tail}`,
+    projected: 'Bearer [redacted]',
+  },
+  {
+    name: 'Basic retains only its canonical scheme',
+    key: 'Proxy-Authorization',
+    value: (tail: string) => `bAsIc ${'Q'.repeat(16)};${tail}`,
+    projected: 'Basic [redacted]',
+  },
+  {
+    name: 'Token retains only its canonical scheme',
+    key: 'X-Auth-Token',
+    value: (tail: string) => `tOkEn ${'Q'.repeat(16)};${tail}`,
+    projected: 'Token [redacted]',
+  },
+];
+
+describe.each(STRUCTURED_CREDENTIAL_CASES)('PR #95 structural credential: $name', (fixture) => {
+  it('PHYSICAL_STRUCTURAL_SECRET replays credential-only changes and distinguishes public content', async () => {
+    const client = createClient(':memory:');
+    try {
+      runMigrations(client.db);
+      let ids = 0;
+      const store = createEffectJournalStore(client.db, {
+        uuid: () => `structured-${++ids}`,
+        now: () => 6,
+      });
+      const effects = recordingPort(
+        createEffectJournalPort(
+          store,
+          { kind: 'run', runId: 'r-structured', nodeId: 'n', attempt: 1 },
+          { providerAttempt: 1, toolCallId: 'structured-call' },
+        ),
+      );
+      const fetch = vi.fn<NonNullable<ToolHost['egress']>['fetch']>(() =>
+        Promise.resolve({ status: 200, headers: {}, body: 'receipt' }),
+      );
+      const registry = createToolRegistry({ tools: BUILTIN_TOOLS, host: { egress: { fetch } } });
+      const context: ToolDispatchContext = {
+        nodeId: 'n',
+        grantedToolIds: new Set(['http_request']),
+        config: {},
+        toolPolicy: { allowedDomains: ['service.invalid'] },
+        fsScope: 'sandboxed',
+        gateApproved: false,
+        effects,
+        effectSlot: 0,
+      };
+      const prefix = 'public content '.repeat(1600);
+      const args = (suffix: string, publicTail = 'first') => ({
+        body: `${prefix}${publicTail}`,
+        headers: { [fixture.key]: fixture.value(`${'x'.repeat(20 * 1024)}${suffix}`) },
+        method: 'POST',
+        url: 'https://service.invalid/x',
+      });
+      const request = (suffix: string, publicTail = 'first') =>
+        ({
+          type: 'tool_call',
+          id: 'structured-call',
+          name: 'http_request',
+          args: args(suffix, publicTail),
+        }) as const;
+      const first = await registry.dispatch(request('A'), context);
+      const replay = await registry.dispatch(request('B'), context).then(
+        (result) => ({ output: result.output }),
+        (failure: unknown) => ({ failure }),
+      );
+      expect(replay, 'PHYSICAL_STRUCTURAL_SECRET_REPLAY').toEqual({ output: first.output });
+      expect(fetch).toHaveBeenCalledOnce();
+      expect(fetch.mock.calls[0]?.[0]).toEqual(request('A').args);
+      await registry.dispatch(request('B'), { ...context, effectSlot: 1 });
+      expect(fetch.mock.calls[1]?.[0]).toEqual(request('B').args);
+      const projected = {
+        body: `${prefix}first`,
+        headers: { [fixture.key]: fixture.projected },
+        method: 'POST',
+        url: 'https://service.invalid/x',
+      };
+      // Independently authored sorted-key bytes; the production projection is not its own oracle.
+      const expected = sha256(JSON.stringify(projected));
+      const rows = PhysicalRowsSchema.parse(
+        client.sqlite
+          .prepare('SELECT slot, state, args_digest FROM run_effects ORDER BY slot')
+          .all(),
+      );
+      expect(rows, 'PHYSICAL_STRUCTURAL_SECRET_DIGEST').toEqual([
+        { slot: 0, state: 'committed', args_digest: expected },
+        { slot: 1, state: 'committed', args_digest: expected },
+      ]);
+      for (const callArgs of effects.prepare.mock.calls)
+        expect(callArgs[3], 'PHYSICAL_STRUCTURAL_SECRET_PROJECTION').toEqual(projected);
+      await expect(
+        registry.dispatch(request('B', 'other'), context),
+        'PHYSICAL_STRUCTURAL_PUBLIC_TAIL',
+      ).rejects.toMatchObject({ name: 'ToolEffectConflictError', retryable: false });
+      expect(fetch).toHaveBeenCalledTimes(2);
+    } finally {
+      client.sqlite.close();
+    }
+  });
+});
+
+describe.each(['separate', 'inline', 'numeric'] as const)('PR #95 credential argv: %s', (mode) => {
+  it('PHYSICAL_ARGV_SECRET keeps only public argument differences in the native journal', async () => {
+    const client = createClient(':memory:');
+    try {
+      runMigrations(client.db);
+      let ids = 0;
+      const store = createEffectJournalStore(client.db, {
+        uuid: () => `argv-${++ids}`,
+        now: () => 6,
+      });
+      const effects = recordingPort(
+        createEffectJournalPort(
+          store,
+          { kind: 'run', runId: 'r-argv', nodeId: 'n', attempt: 1 },
+          { providerAttempt: 1, toolCallId: 'argv-call' },
+        ),
+      );
+      const spawn = vi.fn<NonNullable<ToolHost['process']>['spawn']>(() =>
+        Promise.resolve({ exitCode: 0, stdout: 'receipt', stderr: '', durationMs: 0 }),
+      );
+      const registry = createToolRegistry({ tools: BUILTIN_TOOLS, host: { process: { spawn } } });
+      const argv = (suffix: string, count = 'first') => {
+        const credential =
+          mode === 'numeric' ? `123${suffix}` : `sk-${'Q'.repeat(16)};${'x'.repeat(1000)}${suffix}`;
+        return mode === 'inline'
+          ? [`--token=${credential}`, `--count=${count}`]
+          : ['--token', credential, `--count=${count}`];
+      };
+      const context: ToolDispatchContext = {
+        nodeId: 'n',
+        grantedToolIds: new Set(['run_command']),
+        config: {},
+        toolPolicy: {
+          allowedCommands: [argv('4'), argv('5'), argv('5', 'other')].map((args) =>
+            ['synthetic-publish', ...args].join(' '),
+          ),
+        },
+        fsScope: 'sandboxed',
+        gateApproved: false,
+        effects,
+        effectSlot: 0,
+      };
+      const request = (suffix: string, count = 'first') =>
+        ({
+          type: 'tool_call',
+          id: 'argv-call',
+          name: 'run_command',
+          args: { command: 'synthetic-publish', args: argv(suffix, count) },
+        }) as const;
+      const first = await registry.dispatch(request('4'), context);
+      const replay = await registry.dispatch(request('5'), context).then(
+        (result) => ({ output: result.output }),
+        (failure: unknown) => ({ failure }),
+      );
+      expect(replay, 'PHYSICAL_ARGV_SECRET_REPLAY').toEqual({ output: first.output });
+      expect(spawn).toHaveBeenCalledOnce();
+      expect(spawn.mock.calls[0]?.slice(0, 2)).toEqual(['synthetic-publish', argv('4')]);
+      await registry.dispatch(request('5'), { ...context, effectSlot: 1 });
+      expect(spawn.mock.calls[1]?.slice(0, 2)).toEqual(['synthetic-publish', argv('5')]);
+      const projected = {
+        args:
+          mode === 'inline'
+            ? ['--token=[redacted]', '--count=first']
+            : ['--token', '[redacted]', '--count=first'],
+        command: 'synthetic-publish',
+      };
+      const expected = sha256(JSON.stringify(projected));
+      const rows = PhysicalRowsSchema.parse(
+        client.sqlite
+          .prepare('SELECT slot, state, args_digest FROM run_effects ORDER BY slot')
+          .all(),
+      );
+      expect(rows, 'PHYSICAL_ARGV_SECRET_DIGEST').toEqual([
+        { slot: 0, state: 'committed', args_digest: expected },
+        { slot: 1, state: 'committed', args_digest: expected },
+      ]);
+      for (const callArgs of effects.prepare.mock.calls) expect(callArgs[3]).toEqual(projected);
+      await expect(
+        registry.dispatch(request('5', 'other'), context),
+        'PHYSICAL_ARGV_PUBLIC_TAIL',
+      ).rejects.toMatchObject({ name: 'ToolEffectConflictError', retryable: false });
+      expect(spawn).toHaveBeenCalledTimes(2);
+    } finally {
+      client.sqlite.close();
+    }
+  });
+});

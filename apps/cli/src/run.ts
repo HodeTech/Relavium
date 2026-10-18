@@ -1,160 +1,168 @@
 import { CommanderError } from 'commander';
 
-import { resolveHomeDir } from './config/load.js';
-import { loadCachedCatalog } from './engine/catalog-refresh.js';
-import { admitFsInvocation } from './engine/tool-host/fs-admission.js';
-import { driveHome, type HomeDeps } from './home/drive-home.js';
+import { executeLazyCommand } from './commands/lazy-dispatch.js';
+import type { HomeDeps } from './home/drive-home.js';
 import { shouldOpenHome } from './home/should-open-home.js';
-import { CliError, toUserFacing } from './process/errors.js';
+import { CLI_ERROR_POLICY, CliError, projectCliError } from './process/cli-error.js';
 import { EXIT_CODES, type ExitCode } from './process/exit-codes.js';
 import type { CliIo } from './process/io.js';
+import { createCliInvocation, type CliInvocation } from './process/invocation.js';
+import type { NativeInvocation } from './process/native-invocation.js';
 import {
   extractGlobalOptions,
   resolveGlobalOptions,
   type GlobalOptions,
 } from './process/options.js';
-import { renderError } from './process/render-error.js';
+import { renderUserFacing } from './process/render-user-facing.js';
 import { buildProgram } from './program.js';
 
-/** The bare-invocation Home opener — injectable so a test can assert the TTY gate routes here (default {@link driveHome}). */
+/** Injectable Home boundary; the production implementation is imported only after admission. */
 export type OpenHome = (deps: HomeDeps) => Promise<ExitCode>;
 
+const openLazyHome: OpenHome = async (deps) => {
+  let runtime: typeof import('./home/drive-home.js');
+  try {
+    runtime = await import('./home/drive-home.js');
+  } catch (cause) {
+    throw new CliError('cli_internal', '', { cause });
+  }
+  if (deps.invocation?.registry.termination !== undefined) return EXIT_CODES.success;
+  return runtime.driveHome(deps);
+};
+
 /**
- * The CLI's top-level boundary: extract the position-independent global flags, resolve them, build the
- * program with the command runtime context, parse the remaining argv (node-style), and translate every
- * outcome to a single deterministic exit code ([commands.md](../../../docs/reference/cli/commands.md#exit-codes)).
- * A command's exit code is set on the shared `result` holder; pre-parse and parse faults are rendered
- * here. Designed to **never reject**.
+ * One grammar for meta and real execution. Only an actual action or interactive Home
+ * admits directories, seeds a needed offline catalog and enters the lazy runtime.
  */
 export async function run(
   argv: readonly string[],
   io: CliIo,
-  openHome: OpenHome = driveHome,
+  openHome: OpenHome = openLazyHome,
+  invocation: CliInvocation = createCliInvocation(),
+  native?: Pick<NativeInvocation, 'fail'>,
 ): Promise<ExitCode> {
   const { raw, rest, error: extractError } = extractGlobalOptions(argv);
-  // `raw` is fully populated by extraction (it never throws), so the render honors any
-  // `--json`/`--verbose` even when a later global flag is the thing that failed.
   const renderCtx = { json: raw.json === true, verbose: raw.verbose === true };
-
   if (extractError !== undefined) {
-    renderError(extractError, renderCtx, io);
+    renderKnownError(extractError, renderCtx, io);
     return extractError.exitCode;
   }
 
   let global: GlobalOptions;
   try {
-    global = resolveGlobalOptions(raw, process.cwd(), io.env); // env feeds NO_COLOR/FORCE_COLOR; also enforces --verbose/--quiet
-    global = Object.freeze({ ...global, fsGrants: admitFsInvocation(global) });
+    global = resolveGlobalOptions(raw, process.cwd(), io.env);
   } catch (err) {
-    renderError(err, renderCtx, io);
-    return toUserFacing(err).exitCode;
+    return renderFailure(err, renderCtx, io, native);
   }
-
-  // THE CATALOG, BEFORE ANYTHING READS A PRICE (ADR-0071 §4).
-  //
-  // A previous `models refresh --catalog` cached models.dev to disk; load it so this process starts current. Absent,
-  // unreadable, or corrupt ⇒ silently nothing, and the SHIPPED SNAPSHOT answers — it is the floor, not a fallback,
-  // and a refresh that cannot be read must never leave the product knowing less than it shipped knowing.
-  //
-  // No fetch here, ever. `[catalog] auto_refresh` (default `false`) governs whether a background refresh may run at
-  // all, and even when it is on, the fetch belongs on a path the user can see — not in the boot of every `--help`.
-  // Offline media maintenance needs only its canonical CAS root, even for malformed flags.
-  if (rest[2] !== 'media') seedCatalog();
-
   const result: { exitCode?: ExitCode } = {};
-  const program = buildProgram(io, {
-    suppressErrorOutput: renderCtx.json,
-    context: { io, global, result },
-  });
-
-  // Bare invocation — no subcommand after extraction (only `[node, script]`, optionally a lone `--`).
-  if (isBareInvocation(rest)) {
-    return await handleBareInvocation({ io, global, program, openHome, renderCtx });
-  }
-
+  const stopped = new Error('CLI preparation stopped.');
+  Object.freeze(stopped);
+  const assertPreparing = (): void => {
+    if (invocation.registry.termination !== undefined) throw stopped;
+  };
   try {
+    assertPreparing();
+    const program = buildProgram(io, {
+      suppressErrorOutput: renderCtx.json,
+      context: { io, global, result, invocation },
+      execute: async (id, input, ctx) => {
+        const admitted = await admitGlobal(ctx.global, assertPreparing);
+        assertPreparing();
+        return executeLazyCommand(id, input, { ...ctx, global: admitted });
+      },
+    });
+    if (isBareInvocation(rest)) {
+      if (
+        !shouldOpenHome({
+          stdoutIsTty: io.stdoutIsTty,
+          stdinIsTty: io.stdinIsTty,
+          json: global.json,
+          env: io.env,
+        })
+      ) {
+        io.writeOut(program.helpInformation());
+        return EXIT_CODES.success;
+      }
+      const admitted = await admitGlobal(global, assertPreparing);
+      await invocation.seedFileCatalogOnce();
+      assertPreparing();
+      return await openHome({ io, global: admitted, invocation });
+    }
     await program.parseAsync([...rest]);
     return result.exitCode ?? EXIT_CODES.success;
   } catch (err) {
+    if (err === stopped) return EXIT_CODES.success;
     if (err instanceof CommanderError) {
-      // commander wrote help/version to stdout; under --json its own stderr was suppressed, so we emit
-      // the structured fault envelope ourselves — to stderr, keeping stdout a pure event stream
-      // (ADR-0049). `exitCode` is 0 for help/version, non-zero for a parse fault → 2.
-      // Only re-render under --json (commander's own stderr was suppressed). Without --json, commander
-      // already wrote its human message to stderr (writeErr un-suppressed), so we deliberately add nothing.
-      if (err.exitCode !== 0 && renderCtx.json) {
-        renderError(
+      if (err.exitCode !== 0 && renderCtx.json)
+        renderKnownError(
           new CliError('invalid_invocation', stripErrorPrefix(err.message)),
           renderCtx,
           io,
         );
-      }
       return err.exitCode === 0 ? EXIT_CODES.success : EXIT_CODES.invalidInvocation;
     }
-    // A CliError thrown by a command action, or an unexpected throw.
-    renderError(err, renderCtx, io);
-    return toUserFacing(err).exitCode;
+    return renderFailure(err, renderCtx, io, native);
   }
 }
 
-/** A bare invocation: nothing after `[node, script]` survives extraction except an optional lone `--`. */
+async function admitGlobal(
+  global: GlobalOptions,
+  assertPreparing: () => void,
+): Promise<GlobalOptions> {
+  assertPreparing();
+  let runtime: typeof import('./engine/tool-host/fs-invocation-admission.js');
+  try {
+    runtime = await import('./engine/tool-host/fs-invocation-admission.js');
+  } catch (cause) {
+    throw new CliError('cli_internal', '', { cause });
+  }
+  assertPreparing();
+  return Object.freeze({ ...global, fsGrants: runtime.admitFsInvocation(global) });
+}
+
+function renderKnownError(
+  error: CliError,
+  opts: { json: boolean; verbose: boolean },
+  io: CliIo,
+): void {
+  renderUserFacing(
+    {
+      code: error.code,
+      message: CLI_ERROR_POLICY[error.code].fixedMessage ?? error.message,
+      exitCode: error.exitCode,
+    },
+    error,
+    opts,
+    io,
+  );
+}
+
+function renderFailure(
+  value: unknown,
+  opts: { json: boolean; verbose: boolean },
+  io: CliIo,
+  native?: Pick<NativeInvocation, 'fail'>,
+): ExitCode {
+  const facing = projectCliError(value) ?? projectCliError(new CliError('cli_internal', ''));
+  if (facing === undefined) return EXIT_CODES.infrastructureFailed;
+  if (facing.code === 'cli_internal' || facing.code === 'output_unavailable') {
+    if (native !== undefined) {
+      native.fail(facing.code); // Observe before joins; the native owner presents after terminal restoration.
+      return EXIT_CODES.infrastructureFailed;
+    }
+    // Pure embeddings have no native shutdown authority and still receive a fixed content-free diagnostic.
+    renderUserFacing(facing, undefined, { ...opts, verbose: false }, io);
+  } else {
+    renderUserFacing(facing, value, opts, io);
+  }
+  return facing.exitCode;
+}
+
 function isBareInvocation(rest: readonly string[]): boolean {
   return !rest.slice(2).some((token) => token !== '--');
 }
 
-/**
- * The bare-invocation outcome: open the interactive Home in a genuine TTY (2.5.B / ADR-0054), else keep the
- * byte-for-byte help + exit-0 meta-op (ADR-0049). A Home build/config fault renders like a command fault.
- */
-async function handleBareInvocation(ctx: {
-  io: CliIo;
-  global: GlobalOptions;
-  program: ReturnType<typeof buildProgram>;
-  openHome: OpenHome;
-  renderCtx: { json: boolean; verbose: boolean };
-}): Promise<ExitCode> {
-  const { io, global, program, openHome, renderCtx } = ctx;
-  if (
-    !shouldOpenHome({
-      stdoutIsTty: io.stdoutIsTty,
-      stdinIsTty: io.stdinIsTty,
-      json: global.json,
-      env: io.env,
-    })
-  ) {
-    io.writeOut(program.helpInformation());
-    return EXIT_CODES.success;
-  }
-  try {
-    return await openHome({ io, global });
-  } catch (err) {
-    renderError(err, renderCtx, io);
-    return toUserFacing(err).exitCode;
-  }
-}
-
-/** Drop commander's redundant leading `error:` prefix (the JSON envelope already says type:error). */
 function stripErrorPrefix(message: string): string {
   const prefix = 'error:';
-  if (!message.startsWith(prefix)) {
-    return message;
-  }
-  return message.slice(prefix.length).trimStart();
-}
-
-/**
- * Install a previously-refreshed models.dev catalog, if one is cached (ADR-0071 §4).
- *
- * TOTAL: it cannot fail the CLI. A missing cache, an unreadable one, a corrupt one, an unreadable home — every path
- * lands on the shipped snapshot, which is a complete answer on its own. That is the point of embedding it: with no
- * refresh ever run (the DEFAULT — `[catalog] auto_refresh = false`), Relavium prices every model it ships, offline,
- * and contacts nobody.
- */
-function seedCatalog(): void {
-  try {
-    loadCachedCatalog(resolveHomeDir({}));
-  } catch {
-    // An unreadable home, a torn cache. Not this seed's job to report — a cached catalog is not a reason to refuse
-    // to run `relavium --help`, and the shipped snapshot answers regardless.
-  }
+  return message.startsWith(prefix) ? message.slice(prefix.length).trimStart() : message;
 }

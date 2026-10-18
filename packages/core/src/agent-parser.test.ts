@@ -105,6 +105,54 @@ describe('parseAgent', () => {
     }
   });
 
+  it('does not expose rejected MCP identities when explaining a duplicate registration', () => {
+    const identity = 'private-identity-sentinel';
+    try {
+      parseAgent(
+        `${VALID_MINIMAL}\nmcp_servers:\n  - {ref: ${identity}}\n  - {ref: ${identity}}\n`,
+      );
+      expect.unreachable('duplicate registration must refuse');
+    } catch (error) {
+      if (!(error instanceof AgentParseError)) throw error;
+      expect(error.fields).toEqual(['mcp_servers']);
+      expect(error.message).toContain('duplicate mcp_servers identity');
+      expect(error.message).not.toContain(identity);
+      expect(error.cause).toBeUndefined();
+    }
+  });
+
+  it('explains missing and invalid fields without echoing the received value', () => {
+    const secret = 'private-provider-sentinel';
+    try {
+      parseAgent(`id: tiny\nmodel: m\nprovider: ${secret}\n`);
+      expect.unreachable('must reject');
+    } catch (error) {
+      if (!(error instanceof AgentParseError)) throw error;
+      expect(error.fields).toContain('provider');
+      expect(error.fields).toContain('system_prompt');
+      expect(error.message).toContain('expected one of:');
+      expect(error.message).toContain('system_prompt: missing — expected string');
+      expect(error.message).not.toContain(secret);
+      expect(error.cause).toBeUndefined();
+    }
+  });
+
+  it('keeps strict unknown-key diagnostics linear in the key inventory', () => {
+    const keys = Array.from({ length: 128 }, (_, i) => `extra_${i}`);
+    try {
+      parseAgent(
+        `${VALID_MINIMAL}\n${keys.map((key) => `${key}: private-value-sentinel`).join('\n')}`,
+      );
+      expect.unreachable('must reject unknown fields');
+    } catch (error) {
+      if (!(error instanceof AgentParseError)) throw error;
+      expect(error.fields).toEqual(keys);
+      expect(error.message).toContain('unknown keys:');
+      expect(error.message.length).toBeLessThan(10_000);
+      expect(error.message).not.toContain('private-value-sentinel');
+    }
+  });
+
   it('rejects a schema failure as agent_validation, naming the failing field path (no value)', () => {
     // Missing required `system_prompt` + a kebab-invalid id.
     try {

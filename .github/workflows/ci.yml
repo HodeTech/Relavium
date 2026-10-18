@@ -4,7 +4,7 @@
 # Turborepo cache, plus the formatting check and the no-vendor-type-across-the-seam fence.
 #
 # Branch protection (set in the GitHub repo settings, not here): `ci` and `coverage` are the REQUIRED
-# status checks to merge into `main`. Wire, usage, filesystem and secrets mutation jobs feed `ci` through an explicit
+# status checks to merge into `main`. Wire, usage, filesystem, secrets and packed CLI jobs feed `ci` through an explicit
 # success-only aggregation; they cannot silently skip or fail while `ci` stays green. The other jobs
 # self-label `(advisory)` — `floor-check`, `peer-dep-gate` and `windows-concurrency`.
 #
@@ -57,11 +57,14 @@ env:
 
 jobs:
   ci:
-    needs: [wire-mutations, usage-mutations, fs-mutations, secrets-mutations]
+    needs: [wire-mutations, usage-mutations, fs-mutations, secrets-mutations, packed-cli]
     if: ${{ always() }}
     name: lint · typecheck · test
     runs-on: ubuntu-latest
-    timeout-minutes: 15 # a hung step fails fast instead of inheriting the 360-min default
+    # A cold lint/typecheck plus serialized workspace run takes about 12.5 minutes, before
+    # build, tool checks and the replay smoke's six sequential, individually bounded 45s workers.
+    # Keep a finite outer watchdog without truncating those unchanged native/test bounds.
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
@@ -93,6 +96,11 @@ jobs:
         env:
           SECRETS_CONTROLS_RESULT: ${{ needs.secrets-mutations.result }}
         run: node -e "require('node:assert/strict').equal(process.env.SECRETS_CONTROLS_RESULT, 'success')"
+
+      - name: Require complete packed CLI controls
+        env:
+          PACKED_CLI_RESULT: ${{ needs.packed-cli.result }}
+        run: node -e "require('node:assert/strict').equal(process.env.PACKED_CLI_RESULT, 'success')"
 
       # A squash/main-based checkout need not contain development's immutable predecessor object.
       # Fetch only this canonical pin during CI setup; the acceptance harness itself stays offline.
@@ -168,6 +176,9 @@ jobs:
       # `npm i -g relavium` would fail to resolve a missing dep. Needs the build above.
       - name: CLI bundle closure matches its declared dependencies
         run: pnpm lint:bundle-closure
+
+      - name: Compiled CLI meta paths stay outside runtime services
+        run: pnpm smoke:cli-bootstrap
 
       # Drift gate: the committed migration must match src/schema.ts. If a schema change
       # (or an upstream @relavium/shared enum change the CHECKs derive from) wasn't
@@ -270,7 +281,7 @@ jobs:
   secrets-mutations:
     name: Wave 2 secrets causal controls
     # The historical 35-control, three-phase capture exceeded the former aggregate budget.
-    # The current cohort is 41 controls (2026-10-15); this comment does not certify its execution.
+    # The current cohort is 57 controls (2026-10-18); this comment does not certify its execution.
     # Per-phase, case/hook, output and retained-evidence bounds remain unchanged.
     timeout-minutes: 30
     runs-on: ubuntu-latest
@@ -396,7 +407,9 @@ jobs:
   floor-check:
     name: node 22-line floor (22.13.0) · typecheck · test · build (advisory)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # The complete serialized compatibility suite includes native DB waits; the former
+    # fifteen-minute budget expired before CLI completion. Per-case limits stay unchanged.
+    timeout-minutes: 25
     # Fully isolate this job from the shared Turbo remote cache. Turbo's task hash does NOT include the
     # runtime Node version, so floor-check (Node 22) and the required `ci` job (Node 24) share a hash —
     # either could replay the other's cached result and mask a version-specific failure. `--force` (below)
@@ -421,9 +434,13 @@ jobs:
         # `--force` = no cache READ (genuine Node-22 run, not a Node-24 replay); the job-level blanked
         # TURBO_TOKEN/TURBO_TEAM above = no cache WRITE (so `ci` never replays this Node-22 result). Both are
         # needed — see the job-level comment.
+        # In this compatibility job, serialize file workers as well as workspaces
+        # so unrelated files cannot consume the admitted-size cases' unchanged elapsed-time budget.
+        # Every case still runs, including its explicit native concurrency. Required CI retains its
+        # ordinary file workers; this job verifies the exact older runtime rather than cross-file load.
         run: |
           pnpm turbo run typecheck --force
-          pnpm turbo run test --concurrency=1 --force
+          pnpm turbo run test --concurrency=1 --force -- --maxWorkers=1
           pnpm turbo run build --force
 
   # CI-only strict peer-dependency gate (.npmrc keeps this OFF for local installs so fresh
@@ -453,7 +470,10 @@ jobs:
   coverage:
     name: engine coverage floor (llm, mcp)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # One file worker isolates unchanged admitted-size case budgets from instrumentation
+    # contention. A measured 1,481-second complete run plus setup exhausted 25 minutes;
+    # reserve finite whole-suite headroom without changing case bounds or coverage thresholds.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
@@ -574,3 +594,146 @@ jobs:
             echo "::error::chat entered raw mode without a TTY (the driver-selection gate regressed)"; exit 1
           fi
           echo "✓ windows headless no-TTY smoke passed"
+
+  # Required exact-artifact controls are independent of the cached workspace build above.
+  pack-cli:
+    outputs:
+      artifact-name: relavium-tarball-${{ github.run_id }}-${{ github.run_attempt }}
+    name: build once and inspect the packed CLI
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      TURBO_TOKEN: ''
+      TURBO_TEAM: ''
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: Set up pnpm
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+      - name: Install (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+      # The runner builds inlined dependencies fresh, then prepack performs the sole final CLI build.
+      - name: Pack once and independently inspect the public package
+        env:
+          RELAVIUM_PACKAGE_SOURCE_SHA: ${{ github.sha }}
+        run: node tools/cli-package/pack.mjs "${{ runner.temp }}/packed-cli-artifact"
+      - name: Upload the public tarball and package-test receipt
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: relavium-tarball-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/packed-cli-artifact/*.tgz
+            ${{ runner.temp }}/packed-cli-artifact/package-test-receipt.json
+          retention-days: 7
+          if-no-files-found: error
+
+  packed-cli-consumer:
+    name: installed CLI (${{ matrix.id }})
+    needs: pack-cli
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: current-linux
+            os: ubuntu-latest
+            node: '24'
+          - id: current-macos
+            os: macos-latest
+            node: '24'
+          - id: current-windows
+            os: windows-latest
+            node: '24'
+          - id: minimum-linux
+            os: ubuntu-latest
+            node: '22.0.0'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      TURBO_TOKEN: ''
+      TURBO_TEAM: ''
+    steps:
+      # Only the test runner and fixtures use this checkout. No workspace dependencies or build.
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      # An explicit version avoids evaluating the workspace's >=22.13 install floor on Node 22.0.0.
+      - name: Set up pnpm for the external consumer
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+        with:
+          version: 9.12.3
+          run_install: false
+      - name: Set up consumer Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ matrix.node == '22.0.0' && matrix.node || '' }}
+          node-version-file: ${{ matrix.node != '22.0.0' && '.nvmrc' || '' }}
+      - name: Download the exact packed CLI
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ${{ needs.pack-cli.outputs.artifact-name }}
+          path: ${{ runner.temp }}/packed-cli-artifact
+      - name: Install outside the workspace and exercise the actual package
+        env:
+          RELAVIUM_PACKAGE_LEG: ${{ matrix.id }}
+          RELAVIUM_PACKAGE_SOURCE_SHA: ${{ github.sha }}
+        run: node tools/cli-package/consume.mjs "${{ runner.temp }}/packed-cli-artifact" "${{ runner.temp }}/packed-cli-report"
+      - name: Upload successful installed-package receipt
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ needs.pack-cli.outputs.artifact-name }}-report-${{ matrix.id }}
+          # A retried consumer replaces only its smoke receipt for the same immutable tarball.
+          overwrite: true
+          path: ${{ runner.temp }}/packed-cli-report/installed-consumer.json
+          retention-days: 7
+          if-no-files-found: error
+
+  packed-cli:
+    outputs:
+      artifact-name: ${{ needs.pack-cli.outputs.artifact-name }}
+    name: require all installed CLI consumers
+    needs: [pack-cli, packed-cli-consumer]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    env:
+      TURBO_TOKEN: ''
+      TURBO_TEAM: ''
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+      - name: Require successful pack and every consumer before artifact downloads
+        env:
+          RELAVIUM_PACKAGE_JOB_RESULTS: ${{ toJSON(needs) }}
+        run: node --input-type=module -e "import { requirePackageJobResults } from './tools/cli-package/binding.mjs'; requirePackageJobResults(JSON.parse(process.env.RELAVIUM_PACKAGE_JOB_RESULTS ?? 'null'));"
+      - name: Download the exact packed CLI
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ${{ needs.pack-cli.outputs.artifact-name }}
+          path: ${{ runner.temp }}/packed-cli-artifact
+      - name: Download all installed-package receipts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: ${{ needs.pack-cli.outputs.artifact-name }}-report-*
+          path: ${{ runner.temp }}/packed-cli-reports
+          merge-multiple: false
+      - name: Require pack and every consumer outcome and matching receipt
+        env:
+          RELAVIUM_PACKAGE_JOB_RESULTS: ${{ toJSON(needs) }}
+          RELAVIUM_PACKAGE_SOURCE_SHA: ${{ github.sha }}
+        run: node tools/cli-package/aggregate.mjs "${{ runner.temp }}/packed-cli-artifact" "${{ runner.temp }}/packed-cli-reports"

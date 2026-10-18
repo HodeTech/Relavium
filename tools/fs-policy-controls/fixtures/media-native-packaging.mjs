@@ -17,9 +17,15 @@ import { syncBuiltinESMExports } from 'node:module';
 import os from 'node:os';
 import { dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { clearTimeout, setImmediate, setTimeout } from 'node:timers';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
-const entry = new URL('../../../apps/cli/dist/index.js', import.meta.url);
+// Tool-only artifact selection; no fixture flag or exported hook enters the product.
+assert.ok(process.argv.length === 2 || process.argv.length === 3, 'one optional CLI entry');
+if (process.argv[2] !== undefined) assert.ok(isAbsolute(process.argv[2]), 'absolute CLI entry');
+const entry =
+  process.argv[2] === undefined
+    ? new URL('../../../apps/cli/dist/index.js', import.meta.url)
+    : pathToFileURL(process.argv[2]);
 await access(entry).catch(() => {
   throw new Error(
     'Build apps/cli before running the actual CLI native-lifecycle packaging witness',

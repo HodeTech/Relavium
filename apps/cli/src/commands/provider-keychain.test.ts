@@ -177,9 +177,15 @@ describe('actual OS bridge → provider command → diagnostic rendering (Wave 2
               expect(envelope).toEqual({ type: 'error', code: 'invalid_invocation', message });
               expect(io.err().trimEnd().split('\n')).toHaveLength(1);
             } else {
-              expect(io.err()).toContain(`relavium: ${message}\n`);
-              if (mode.verbose) expect(io.err()).toContain(`CliError: ${message}`);
-              else expect(io.err()).toBe(`relavium: ${message}\n`);
+              const ownStack: unknown = Object.getOwnPropertyDescriptor(
+                bridgeError,
+                'stack',
+              )?.value;
+              // V8 versions represent native stacks as data or lazy accessors. Only data is eligible.
+              if (mode.verbose && typeof ownStack === 'string') {
+                expect(io.err()).toContain(`relavium: ${message}\n`);
+                expect(io.err()).toContain(`CliError: ${message}`);
+              } else expect(io.err()).toBe(`relavium: ${message}\n`);
             }
           });
         }

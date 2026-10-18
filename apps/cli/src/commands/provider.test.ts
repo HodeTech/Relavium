@@ -110,6 +110,27 @@ describe('relavium provider commands (2.C)', () => {
     expect(io.out()).not.toContain(RAW_KEY);
   });
 
+  it('rechecks invocation admission after secret read before any credential or database mutation', async () => {
+    const keychain = memKeychain();
+    let stopped = false;
+    const d = deps({
+      keychain,
+      readSecret: () => {
+        stopped = true;
+        return Promise.resolve(RAW_KEY);
+      },
+      assertAdmitting: () => {
+        if (stopped) throw new CliError('cli_internal', '');
+      },
+    });
+    await expect(
+      runProviderCommand({ action: 'set-key', name: 'anthropic' }, d),
+    ).rejects.toMatchObject({ code: 'cli_internal' });
+    expect(keychain.map.size, 'ONBOARDING_POST_SECRET_READ_ADMISSION').toBe(0);
+    expect(d.store.get('anthropic')).toBeUndefined();
+    expect(io.out()).toBe('');
+  });
+
   it('list shows registered providers and whether a key is set (no key echoed)', async () => {
     const keychain = memKeychain();
     const d = deps({ keychain });

@@ -5,6 +5,8 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { ProviderResolver } from '../engine/providers.js';
 import { CHAT_TEXT_CAPABILITY_FLAGS } from '../test-support.js';
+import { invocationFixture } from '../process/invocation.test-support.js';
+import { SessionWorkOwner } from './session-work-owner.js';
 import { buildProviderProbe, mcpSessionChecks } from './doctor-deep.js';
 
 // A test key assembled at runtime (no contiguous secret literal — leakwatch).
@@ -40,6 +42,46 @@ const skip = (server: string, name: string, reason: string): ManagerSkippedTool 
 });
 
 describe('buildProviderProbe', () => {
+  it.each(['timeout', 'stop'] as const)(
+    'retains the actual deep-doctor producer after its %s report',
+    async (end) => {
+      const f = invocationFixture();
+      const cleanup = vi.fn(() => Promise.resolve());
+      const workOwner = new SessionWorkOwner(f.invocation, 'chat', {
+        cancel: () => undefined,
+        cleanup,
+      });
+      let settle: () => void = () => undefined;
+      const raw = new Promise<never>((_resolve, reject) => {
+        settle = () => reject(new Error('synthetic provider settled'));
+      });
+      const generate = vi.fn(() => raw);
+      const probe = buildProviderProbe({
+        resolver: resolverWith({ anthropic: fakeProvider(generate) }, { anthropic: TEST_KEY }),
+        candidateIds: ['anthropic'],
+        timeoutMs: end === 'timeout' ? 5 : 100,
+        ...{ workOwner },
+      })();
+      expect(generate).toHaveBeenCalledOnce();
+      if (end === 'stop') workOwner.stop();
+      try {
+        const checks = await probe;
+        expect(checks).toHaveLength(1);
+        expect(checks[0]?.status).toBe('fail');
+        expect(checks[0]?.detail).toContain(end === 'timeout' ? 'timeout' : 'stopped');
+        void workOwner.close();
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(cleanup, 'DEEP_DOCTOR_REPORT_IS_NOT_PRODUCER_SETTLEMENT').not.toHaveBeenCalled();
+        expect(f.registry.activeOwners).toBe(1);
+      } finally {
+        settle();
+        await workOwner.close();
+      }
+      expect(cleanup).toHaveBeenCalledOnce();
+      expect(f.registry.activeOwners).toBe(0);
+      expect(f.exit).not.toHaveBeenCalled();
+    },
+  );
   it('warns when no candidate has a resolvable key', async () => {
     const probe = buildProviderProbe({ resolver: resolverWith({}), candidateIds: [] });
     const checks = await probe();

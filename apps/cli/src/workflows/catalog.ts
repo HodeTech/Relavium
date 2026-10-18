@@ -8,7 +8,8 @@ import {
   realpathSync,
   statSync,
 } from 'node:fs';
-import { basename, join, relative } from 'node:path';
+import { basename, join } from 'node:path';
+import { byCodeUnit } from '@relavium/shared';
 
 import {
   AgentParseError,
@@ -19,6 +20,7 @@ import {
 } from '@relavium/core';
 
 import { CliError } from '../process/errors.js';
+import { sourceLabel } from '../process/source-label.js';
 import { isWithinFsRoot } from '../engine/tool-host/fs-policy.js';
 
 /**
@@ -101,7 +103,7 @@ export function discoverCatalog(opts: {
   }
 
   const entries = names.map((name) => readEntry(join(dir, name), opts.cwd, opts.kind, root));
-  return entries.sort((a, b) => a.slug.localeCompare(b.slug));
+  return entries.sort((a, b) => byCodeUnit(a.slug, b.slug));
 }
 
 /** A `valid: false` catalog entry whose slug falls back to the filename stem — the secret-free, path-free shape. */
@@ -118,7 +120,7 @@ function invalidEntry(path: string, rel: string, error: string): CatalogEntry {
 
 /** Read + parse one catalog file into an entry; any read/parse fault becomes a `valid: false` entry. */
 function readEntry(path: string, cwd: string, kind: CatalogKind, root: string): CatalogEntry {
-  const rel = relative(cwd, path);
+  const rel = sourceLabel(cwd, path);
   let yaml: string;
   try {
     const canonical = realpathSync.native(path);

@@ -5,10 +5,15 @@ import { join } from 'node:path';
 import { parseWorkflow } from '@relavium/core';
 import { createClient, createSessionStore, runMigrations, type DbClient } from '@relavium/db';
 import { AgentSchema, type AgentSessionRecord, type SessionMessage } from '@relavium/shared';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { isCliError } from '../process/errors.js';
 import { exportSession } from './export.js';
+
+vi.mock('node:fs', async (original) => {
+  const native = await original<typeof import('node:fs')>();
+  return { ...native, writeFileSync: vi.fn(native.writeFileSync) };
+});
 
 const ISO = '2026-06-25T00:00:00.000Z';
 const CTX = { workingDir: '/workspace', fsScopeTier: 'sandboxed' as const };
@@ -52,6 +57,7 @@ describe('exportSession (2.P)', () => {
   let cwd: string;
 
   beforeEach(() => {
+    vi.clearAllMocks();
     client = createClient(':memory:');
     runMigrations(client.db);
     store = createSessionStore(client.db);
@@ -208,5 +214,56 @@ describe('exportSession (2.P)', () => {
     expect(yaml).toContain('type: input');
     expect(yaml).toContain('type: output');
     expect(yaml).not.toContain('type: agent'); // no completed turn ⇒ no agent node
+  });
+  it('wraps unexpected write failure as fixed infrastructure 9 and preserves cause', () => {
+    store.createSession(record());
+    const cause = new Error(`private native destination ${cwd}`);
+    vi.mocked(writeFileSync).mockImplementationOnce(() => {
+      throw cause;
+    });
+    try {
+      exportSession({ store, sessionId: 's1', cwd, outPath: 'exports/fault.yaml', force: false });
+      expect.fail('native write failure must refuse');
+    } catch (error) {
+      expect(isCliError(error)).toBe(true);
+      if (!isCliError(error)) throw error;
+      expect(error.code).toBe('cli_internal');
+      expect(error.exitCode).toBe(9);
+      expect(error.cause).toBe(cause);
+      expect(error.message).not.toContain(join('exports', 'fault.yaml'));
+      expect(error.message).not.toContain(cwd);
+      expect(error.message).not.toContain('private native');
+    }
+  });
+  it.each(['EACCES', 'EPERM', 'ENOSPC', 'EROFS'])(
+    'projects owned native export write %s to fixed storage 1',
+    (code) => {
+      store.createSession(record());
+      const cause = Object.assign(new Error('PRIVATE_WRITE_BYTES'), { code });
+      vi.mocked(writeFileSync).mockImplementationOnce(() => {
+        throw cause;
+      });
+      try {
+        exportSession({ store, sessionId: 's1', cwd, force: false });
+        expect.fail('write must refuse');
+      } catch (error) {
+        expect(isCliError(error)).toBe(true);
+        if (!isCliError(error)) throw error;
+        expect(error.code, 'CLI_ORIGIN_EXPORT_STORAGE').toBe('storage_unavailable');
+        expect(error.exitCode).toBe(1);
+        expect(error.cause).toBe(cause);
+        expect(error.message).not.toContain('PRIVATE_');
+        expect(error.message).not.toContain(cwd);
+      }
+    },
+  );
+
+  it('does not promote an errno-shaped store failure outside its owned write boundary', () => {
+    const failure = Object.assign(new Error('PRIVATE_STORE_FAILURE'), { code: 'ENOSPC' });
+    vi.spyOn(store, 'loadFull').mockImplementationOnce(() => {
+      throw failure;
+    });
+    expect(() => exportSession({ store, sessionId: 's1', cwd, force: false })).toThrow(failure);
+    expect(vi.mocked(writeFileSync)).not.toHaveBeenCalled();
   });
 });

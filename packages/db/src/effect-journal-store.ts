@@ -641,5 +641,8 @@ function coerceEffectTier(value: number): EffectTier {
  * by one package's module-private helper is not a contract a second implementation can be held to.
  */
 function digestOf(redactedArgs: unknown): string {
-  return createHash('sha256').update(canonicalJson(redactedArgs)).digest('hex');
+  // Unversioned digests may describe a lossy display preview; v2/v3 may include a partially redacted
+  // credential, while v4 may omit own public data keys. A current literal can equal an old
+  // projection, so none is a replay authority.
+  return `v5:${createHash('sha256').update(canonicalJson(redactedArgs)).digest('hex')}`;
 }

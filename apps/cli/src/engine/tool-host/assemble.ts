@@ -1,3 +1,4 @@
+import type { NativeProcessController } from '../../process/native-process-owner.js';
 import type { FsScopeTier, ToolDef, ToolDelegateName, ToolHost } from '@relavium/core';
 import type { ToolPolicy } from '@relavium/shared';
 
@@ -45,6 +46,8 @@ export { ProcessCapabilityError, ProcessDeniedError } from './process.js';
 export type ToolEnvProfile = 'chat-read-only' | 'chat-read-write' | 'workflow-read-write';
 
 export interface AssembleToolEnvOptions {
+  /** Invocation-owned native creation authority, inert until a capability actually spawns. */
+  readonly nativeProcesses?: NativeProcessController;
   readonly profile: ToolEnvProfile;
   /** The active filesystem scope tier (chat: `[chat].fs_scope` ?? sandboxed; run: the workflow's `fs_scope`). */
   readonly fsScopeTier: FsScopeTier;
@@ -107,7 +110,10 @@ export function assembleToolEnv(opts: AssembleToolEnvOptions): AssembledToolEnv 
     // The process arm itself has no read-only notion — chat-safety rests ENTIRELY on the policy layer above:
     // the empty `allowedCommands` default denies `run_command`, and `git_status` exposes no model-controlled
     // command. Loosening the chat `allowedCommands` in a future profile is therefore a security-review trigger.
-    process: createNodeProcessCapability({ workspaceDir: opts.workspaceDir }),
+    process: createNodeProcessCapability({
+      workspaceDir: opts.workspaceDir,
+      ...(opts.nativeProcesses === undefined ? {} : { nativeProcesses: opts.nativeProcesses }),
+    }),
     // egress + os: wired ONLY for the full-capability `chat-read-write` profile (ADR-0057 closes the 2.5.A
     // deferral). BOTH are GOVERNED classes that ride the fail-closed approval floor — `egress` (an
     // exfiltration sink) and `os` (`read_clipboard` reads ambient secret-bearing OS state; `notify` paints a
@@ -121,7 +127,9 @@ export function assembleToolEnv(opts: AssembleToolEnvOptions): AssembledToolEnv 
               ? {}
               : { resolveCredential: opts.egressCredentialResolver },
           ),
-          os: createNodeOsCapability(),
+          os: createNodeOsCapability(
+            opts.nativeProcesses === undefined ? {} : { nativeProcesses: opts.nativeProcesses },
+          ),
         }
       : {}),
   };

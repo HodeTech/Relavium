@@ -363,3 +363,16 @@ Usage pending and disposition writes use the existing bounded whole-transaction 
 
 See [ADR-0104](0104-unknown-provider-usage-is-durable-cost-uncertainty.md) and the
 [canonical usage contract](../reference/shared-core/llm-provider-seam.md#6-usage).
+
+### Wave 3 discovery ownership clarification — 2026-10-17
+
+The public discovery timeout in §3 remains bounded, abortable and secret-free.
+It is not acknowledgement that an abort-ignoring SDK/transport has actually
+settled. Wave 3's original-owner correction forwards the existing invocation-local
+work authority through discovery and key-validation callers; actual retirement
+can remain pending after a bounded report is available. This implements
+[ADR-0110](0110-cli-diagnostics-and-discovery-have-explicit-compatibility.md)'s
+already accepted actual-join rule without changing discovery, pricing, retry or
+authorization policy. The additive signature, dialect boundaries and opaque
+Gemini/native-close limitation belong in the
+[canonical discovery contract](../reference/shared-core/llm-provider-seam.md#model-discovery--the-listmodels-capability-adr-0064).

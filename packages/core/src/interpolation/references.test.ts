@@ -196,14 +196,14 @@ describe('parseTemplate', () => {
     // `default("say \"hi\"")` — the `\"` must NOT close the string, so the argument is `say "hi"`.
     const ref = refOf(parseTemplate(String.raw`{{inputs.x | default("say \"hi\"")}}`)[0]);
     expect(ref.filters).toEqual([
-      { name: 'default', args: [{ type: 'string', value: String.raw`say \"hi\"` }] },
+      { name: 'default', args: [{ type: 'string', value: 'say "hi"' }] },
     ]);
   });
 
   it('handles an escaped quote inside a filter string argument (single-quote variant)', () => {
     const ref = refOf(parseTemplate(String.raw`{{inputs.x | default('it\'s fine')}}`)[0]);
     expect(ref.filters).toEqual([
-      { name: 'default', args: [{ type: 'string', value: String.raw`it\'s fine` }] },
+      { name: 'default', args: [{ type: 'string', value: "it's fine" }] },
     ]);
   });
 

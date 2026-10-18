@@ -1,7 +1,8 @@
+import type { LocalDbNoticeContext } from '../db/checkpoint-notice.js';
 import { createSessionStore, type Db, type SessionStore } from '@relavium/db';
 
 import { openLocalDb } from '../db/open.js';
-import { CliError } from '../process/errors.js';
+import { storageBoundaryError } from '../process/owned-storage.js';
 
 /** An opened session store plus the handle to close its SQLite connection at REPL end. */
 export interface OpenedSessionStore {
@@ -19,20 +20,19 @@ export interface OpenedSessionStore {
  * Production (`commands/chat.ts`, `chat-list`, …) wires this; the unit tests drive a `createSessionStore`
  * over an in-memory db directly, so they never touch the user's home.
  *
- * A db-open fault (cannot create / open / migrate the file) is an INVOCATION fault (exit 2), surfaced before
- * any session work — mirroring {@link openHistoryReader} so every session command (`chat`, `chat-list`, and
- * the upcoming resume/export) reports an unreadable `history.db` as a clean exit 2, not an opaque exit 1.
+ * Owned storage-open faults are operational 1. Unknown native/import/wiring faults are
+ * infrastructure 9; neither can be diagnosed from arbitrary messages or cause trees.
  */
-export function openSessionStore(homeDir: string): OpenedSessionStore {
+export function openSessionStore(
+  homeDir: string,
+  captureClose?: (close: () => void) => void,
+  noticeContext?: LocalDbNoticeContext,
+): OpenedSessionStore {
   let opened: { db: Db; close: () => void };
   try {
-    opened = openLocalDb(homeDir);
+    opened = openLocalDb(homeDir, undefined, captureClose, noticeContext);
   } catch (err) {
-    throw new CliError(
-      'invalid_invocation',
-      `could not open the session history database: ${err instanceof Error ? err.message : String(err)}`,
-      { cause: err },
-    );
+    throw storageBoundaryError(err);
   }
   return { store: createSessionStore(opened.db), db: opened.db, close: opened.close };
 }

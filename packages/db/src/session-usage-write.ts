@@ -1,3 +1,5 @@
+import { RelaviumError } from '@relavium/shared';
+
 import { eq } from 'drizzle-orm';
 
 import type { Db, TxDb } from './client.js';
@@ -5,7 +7,7 @@ import { withBusyRetry } from './retry.js';
 import { agentSessions } from './schema.js';
 
 /** Fixed, content-free failures of the session coverage foundation (ADR-0104). */
-export class SessionUsageError extends Error {
+export class SessionUsageError extends RelaviumError {
   readonly code:
     | 'transaction_active'
     | 'history_invalid'

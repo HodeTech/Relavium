@@ -3,7 +3,21 @@ import { spawn } from 'node:child_process';
 import type { NotifyInput, OsCapability } from '@relavium/core';
 import type { AbortSignalLike } from '@relavium/shared';
 
-import { OsCapabilityError, throwIfAborted as throwIfAbortedShared } from './errors.js';
+import {
+  createNativeProcessController,
+  type NativeProcessController,
+  type NativeChildHandle,
+} from '../../process/native-process-owner.js';
+import {
+  WindowsTeardownUnavailableError,
+  WINDOWS_TEARDOWN_UNAVAILABLE_MESSAGE,
+} from '../../process/windows-teardown.js';
+
+import {
+  HostDeniedError,
+  OsCapabilityError,
+  throwIfAborted as throwIfAbortedShared,
+} from './errors.js';
 
 /**
  * The Node host **mechanism** half of the `ToolHost.os` capability arm (2.5.E Step 3, [ADR-0057](../../../../../docs/decisions/0057-cli-chat-modes-and-per-tool-approval.md)) —
@@ -56,6 +70,7 @@ const WINDOWS_NOTIFY_SCRIPT = [
 ].join(' ');
 
 export interface NodeOsCapabilityConfig {
+  readonly nativeProcesses?: NativeProcessController;
   /** Per-call timeout in ms (default {@link DEFAULT_TIMEOUT_MS}). */
   readonly timeoutMs?: number;
   /** Clipboard-read capture ceiling in bytes (default {@link DEFAULT_MAX_BUFFER_BYTES}). */
@@ -68,8 +83,12 @@ export interface NodeOsCapabilityConfig {
 
 /** The minimal child surface the os arm uses — a real node `ChildProcess` structurally satisfies it. */
 export interface OsSpawnLike {
+  readonly pid?: number | undefined;
+  readonly exitCode?: number | null | undefined;
+  readonly signalCode?: string | null | undefined;
   readonly stdout: { on(event: 'data', listener: (chunk: Buffer) => void): void } | null;
   on(event: 'error', listener: () => void): void;
+  on(event: 'exit', listener: () => void): void;
   on(event: 'close', listener: (code: number | null) => void): void;
   kill(signal: 'SIGKILL'): void;
 }
@@ -97,6 +116,7 @@ export function createNodeOsCapability(config: NodeOsCapabilityConfig = {}): OsC
   const maxBufferBytes = config.maxBufferBytes ?? DEFAULT_MAX_BUFFER_BYTES;
   const platform = config.platform ?? process.platform;
   const spawnImpl = config.spawnImpl ?? nodeSpawn;
+  const nativeProcesses = config.nativeProcesses ?? createNativeProcessController();
 
   return {
     readClipboard: async (signal) => {
@@ -110,8 +130,15 @@ export function createNodeOsCapability(config: NodeOsCapabilityConfig = {}): OsC
       for (const plan of clipboardReadPlans(platform)) {
         let result: CaptureResult;
         try {
-          result = await spawnCapturing(spawnImpl, plan, { signal, timeoutMs, maxBufferBytes });
+          result = await spawnCapturing(spawnImpl, plan, {
+            signal,
+            timeoutMs,
+            maxBufferBytes,
+            nativeProcesses,
+            platform,
+          });
         } catch (error) {
+          if (error instanceof HostDeniedError) throw error;
           throwIfAborted(signal); // an abort wins; a missing/failed candidate falls through to the next
           // A timeout (the tool exists but hung) is a real failure worth surfacing; a spawn-start error is
           // most likely a missing binary, for which the default "no tool available" is the more helpful reason.
@@ -130,6 +157,8 @@ export function createNodeOsCapability(config: NodeOsCapabilityConfig = {}): OsC
         signal,
         timeoutMs,
         maxBufferBytes,
+        nativeProcesses,
+        platform,
       });
       if (result.exitCode !== 0) {
         throw new OsCapabilityError('the notification could not be delivered');
@@ -194,11 +223,29 @@ interface CaptureResult {
 }
 
 /** Spawn a fixed host binary (`shell: false`), capturing bounded stdout, with a timeout + abort kill. */
-function spawnCapturing(
+async function spawnCapturing(
   spawnImpl: OsSpawnFn,
   plan: SpawnPlan,
-  opts: { signal: AbortSignalLike | undefined; timeoutMs: number; maxBufferBytes: number },
+  opts: {
+    signal: AbortSignalLike | undefined;
+    timeoutMs: number;
+    maxBufferBytes: number;
+    nativeProcesses: NativeProcessController;
+    platform: NodeJS.Platform;
+  },
 ): Promise<CaptureResult> {
+  const native = await opts.nativeProcesses.reserve('pid').catch((cause: unknown) => {
+    if (cause instanceof WindowsTeardownUnavailableError)
+      throw new HostDeniedError(WINDOWS_TEARDOWN_UNAVAILABLE_MESSAGE);
+    throw cause;
+  });
+  try {
+    throwIfAborted(opts.signal);
+    native.assertAdmitting();
+  } catch (cause) {
+    native.abandon();
+    throw cause;
+  }
   return new Promise<CaptureResult>((resolvePromise, reject) => {
     let child: OsSpawnLike;
     try {
@@ -208,22 +255,27 @@ function spawnCapturing(
         env: plan.env === undefined ? process.env : { ...process.env, ...plan.env },
       });
     } catch {
+      native.abandon();
       reject(new OsCapabilityError('the os command could not be started'));
       return;
     }
+    const nativeChild: NativeChildHandle = child;
+    native.bindChild(nativeChild);
 
     const stdout = new BoundedBuffer(opts.maxBufferBytes);
     let settled = false;
     let aborted = false;
     let timedOut = false;
+    let failed = false;
 
     const timer = setTimeout(() => {
+      if (child.exitCode != null || child.signalCode != null) return;
       timedOut = true;
-      child.kill('SIGKILL');
+      void native.stop();
     }, opts.timeoutMs);
     const onAbort = (): void => {
       aborted = true;
-      child.kill('SIGKILL');
+      void native.stop();
     };
     if (opts.signal !== undefined) opts.signal.addEventListener('abort', onAbort);
 
@@ -236,20 +288,27 @@ function spawnCapturing(
     };
 
     child.stdout?.on('data', (chunk: Buffer) => stdout.push(chunk));
-    child.on('error', () =>
-      finish(() => reject(new OsCapabilityError('the os command failed to run'))),
-    );
-    child.on('close', (code) =>
-      finish(() => {
-        if (aborted) {
-          reject(new OsCapabilityError('the os command was aborted'));
-        } else if (timedOut && code === null) {
-          reject(new OsTimeoutError('the os command timed out'));
-        } else {
-          resolvePromise({ exitCode: code ?? 1, stdout: stdout.text() });
-        }
-      }),
-    );
+    child.on('error', () => {
+      failed = true;
+      void native.stop();
+    });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      if (opts.signal !== undefined) opts.signal.removeEventListener('abort', onAbort);
+      void native.whenClosed.then(() =>
+        finish(() => {
+          if (aborted) {
+            reject(new OsCapabilityError('the os command was aborted'));
+          } else if (failed) {
+            reject(new OsCapabilityError('the os command failed to run'));
+          } else if (timedOut && (code === null || (opts.platform === 'win32' && code !== 0))) {
+            reject(new OsTimeoutError('the os command timed out'));
+          } else {
+            resolvePromise({ exitCode: code ?? 1, stdout: stdout.text() });
+          }
+        }),
+      );
+    });
   });
 }
 

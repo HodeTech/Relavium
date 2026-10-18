@@ -11,10 +11,12 @@ import type {
   CapabilityFlags,
   EstimateTokensInput,
   LlmError,
+  LlmInvocationOptions,
   LlmRequest,
   ModelListing,
   ProviderId,
 } from '../types.js';
+import { captureInvocationOptions, ProviderInvocationWork } from './invocation-work.js';
 
 /**
  * Shared helpers for the provider adapters — the platform-coupled zone (`src/adapters/*`) that may
@@ -34,8 +36,8 @@ export function isAbortSignal(value: unknown): value is AbortSignal {
  * each adapter's `contextLimit`. `undefined` for a model the catalog does not carry (a custom base URL, or one
  * newer than the snapshot); the engine then skips auto-compaction rather than guess a window.
  */
-export function contextLimitFor(model: string): number | undefined {
-  return catalogModel(model)?.contextWindowTokens;
+export function contextLimitFor(modelId: string): number | undefined {
+  return catalogModel(modelId)?.contextWindowTokens;
 }
 
 /**
@@ -46,8 +48,8 @@ export function contextLimitFor(model: string): number | undefined {
  * `estimateTokens` on top (a same-key property AFTER the spread wins).
  */
 export const CONTEXT_SEAM_DEFAULTS = {
-  contextLimit(model: string): number | undefined {
-    return contextLimitFor(model);
+  contextLimit(modelId: string): number | undefined {
+    return contextLimitFor(modelId);
   },
   managesOwnContext(): boolean {
     return false;
@@ -240,7 +242,7 @@ export function assertListModelsShape(
 
 /**
  * Resolve the base {@link LlmError} for a failed {@link boundedListModels} race, BEFORE the final redact +
- * `cause`-strip re-wrap. A timeout wins first; then a pre-classified error (the §8 drift throw, or any
+ * `cause`-strip re-wrap. A timeout wins first, then caller cancellation; a pre-classified error (the §8 drift throw, or any
  * adapter-side `LlmProviderError`) passes THROUGH with its own `kind` — never re-run through `classify`
  * (which would flatten a `bad_request` drift throw to `unknown`); otherwise the adapter classifier runs.
  */
@@ -248,16 +250,20 @@ function resolveListModelsError(params: {
   readonly provider: ProviderId;
   readonly err: unknown;
   readonly timedOut: boolean;
+  readonly cancelled: boolean;
   readonly timeoutMs: number;
   readonly classify: (err: unknown) => LlmError;
 }): LlmError {
-  const { provider, err, timedOut, timeoutMs, classify } = params;
+  const { provider, err, timedOut, cancelled, timeoutMs, classify } = params;
   if (timedOut) {
     return makeLlmError({
       provider,
       kind: 'timeout',
       message: `model list timed out after ${String(timeoutMs)}ms`,
     });
+  }
+  if (cancelled) {
+    return makeLlmError({ provider, kind: 'cancelled', message: 'model list cancelled' });
   }
   if (err instanceof LlmProviderError) {
     return err.llmError;
@@ -277,59 +283,95 @@ export async function boundedListModels(params: {
   readonly provider: ProviderId;
   readonly key: string;
   readonly signal: AbortSignalLike | undefined;
+  /** Existing invocation-local authority; the bounded result is not its completion ACK. */
+  readonly options?: LlmInvocationOptions | undefined;
   /** The adapter's SDK-error classifier (e.g. `anthropicErrorToLlmError`). */
   readonly classify: (err: unknown) => LlmError;
   /** Fetch + map the rows, threading the internal (timeout/abort-linked) signal to the SDK. */
-  readonly collect: (signal: AbortSignal) => Promise<ModelListing[]>;
+  readonly collect: (signal: AbortSignal, work?: ProviderInvocationWork) => Promise<ModelListing[]>;
   readonly timeoutMs?: number;
 }): Promise<ModelListing[]> {
   const { provider, key, signal, classify, collect, timeoutMs = LIST_MODELS_TIMEOUT_MS } = params;
   const controller = new AbortController();
-  const onAbort = (): void => controller.abort();
-  if (signal !== undefined) {
-    if (signal.aborted) {
-      controller.abort();
-    } else {
+  // Transfer before listener setup, SDK construction or collection. A refused
+  // host transfer remains outside provider-error normalization.
+  const options = captureInvocationOptions(params.options);
+  const work =
+    options === undefined ? undefined : new ProviderInvocationWork(options, controller.signal);
+  let cancelled = false;
+  const onAbort = (): void => {
+    cancelled = true;
+    controller.abort();
+  };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let listenerAttempted = false;
+  let timedOut = false;
+  let result: ModelListing[];
+  let cleanupFailed = false;
+  try {
+    if (signal !== undefined) {
+      // A supported host signal can throw after attaching. Cleanup still owns
+      // the exact attempted listener, independently of collection entry.
+      listenerAttempted = true;
       signal.addEventListener('abort', onAbort);
+      if (signal.aborted) onAbort();
+    }
+    const timeout = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+        reject(new Error('listModels timed out'));
+      }, timeoutMs);
+    });
+    try {
+      const invoke = () => collect(work?.signal ?? controller.signal, work);
+      const collecting = work === undefined ? invoke() : work.retainWork(invoke);
+      // The public race observes a late rejection; the separate work scope
+      // retains the exact collect and its admitted transport descendants.
+      result = await Promise.race([collecting, timeout]);
+    } catch (err) {
+      const base = resolveListModelsError({
+        provider,
+        err,
+        timedOut,
+        cancelled,
+        timeoutMs,
+        classify,
+      });
+      throw new LlmProviderError(
+        makeLlmError({
+          provider,
+          kind: base.kind,
+          message: redactKey(base.message, key),
+          ...(base.code !== undefined ? { code: redactKey(base.code, key) } : {}),
+          ...(base.status !== undefined ? { status: base.status } : {}),
+        }),
+      );
+    }
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    try {
+      if (listenerAttempted) signal?.removeEventListener('abort', onAbort);
+    } catch {
+      cleanupFailed = true;
+    }
+    try {
+      work?.retire();
+    } catch {
+      cleanupFailed = true;
     }
   }
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  let timedOut = false;
-  const timeout = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(() => {
-      timedOut = true;
-      controller.abort();
-      reject(new Error('listModels timed out'));
-    }, timeoutMs);
-  });
-  const collecting = collect(controller.signal);
-  // Attach a no-op handler so a post-timeout rejection (the SDK aborting after the timeout won the race)
-  // is not an unhandled rejection; the race still observes the rejection through its own handler.
-  collecting.catch(() => undefined);
-  try {
-    return await Promise.race([collecting, timeout]);
-  } catch (err) {
-    // Resolve the base error (timeout wins; a pre-classified `LlmProviderError` passes through with its own
-    // `kind`), then re-wrap through makeLlmError so scrubSecrets runs again AND redactKey strips the resolved
-    // key; never pass `cause` (it could carry the key or the raw vendor payload — ADR-0064 §3).
-    const base = resolveListModelsError({ provider, err, timedOut, timeoutMs, classify });
+  // An established throw skips this success-only path and remains primary.
+  // Cleanup-only refusal is fixed, non-retryable and cause-free.
+  if (cleanupFailed)
     throw new LlmProviderError(
       makeLlmError({
         provider,
-        kind: base.kind,
-        message: redactKey(base.message, key),
-        ...(base.code !== undefined ? { code: redactKey(base.code, key) } : {}),
-        ...(base.status !== undefined ? { status: base.status } : {}),
+        kind: 'unknown',
+        message: 'model list cleanup could not be completed',
       }),
     );
-  } finally {
-    if (timer !== undefined) {
-      clearTimeout(timer);
-    }
-    if (signal !== undefined) {
-      signal.removeEventListener('abort', onAbort);
-    }
-  }
+  return result;
 }
 
 /**

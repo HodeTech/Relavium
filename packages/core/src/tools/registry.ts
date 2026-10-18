@@ -11,6 +11,7 @@ import {
   type DurableMediaPart,
   type EffectPrepareVerdict,
   type EffectTier,
+  byCodeUnit,
   extractHttpsHost,
   isEffectConflictError,
   type ToolActionClass,
@@ -184,7 +185,7 @@ export function createToolRegistry(options: CreateToolRegistryOptions): {
 
   return {
     has: (id) => tools.has(id),
-    list: () => [...tools.keys()].sort((a, b) => a.localeCompare(b)),
+    list: () => [...tools.keys()].sort(byCodeUnit),
     dispatch: (toolCall, ctx) => dispatch(tools, host, toolCall, ctx),
   };
 }
@@ -342,7 +343,7 @@ async function prepareEffect(
       ctx.effectSlot,
       def.id,
       tier,
-      sanitizeInput(def, effective, ctx.secretArgKeys),
+      sanitizeInput(def, effective, ctx.secretArgKeys, 'journal'),
     ] as const;
     return await (ctx.effectAttempt === undefined
       ? ctx.effects.prepare(...args)
@@ -614,7 +615,10 @@ async function dispatch(
     mediaAttachments: markUntrusted(mediaAttachments),
     truncated: bounded.truncated,
     events: {
-      call: { toolId: def.id, toolInput: sanitizeInput(def, effective, ctx.secretArgKeys) },
+      call: {
+        toolId: def.id,
+        toolInput: sanitizeInput(def, effective, ctx.secretArgKeys, 'display'),
+      },
       result: { toolId: def.id, success: true, outputSummary: bounded.summary },
     },
   };
@@ -688,7 +692,7 @@ function assertNoTaintedArgs(
   }
   const tainted = Object.keys(effective).filter((key) => secretArgKeys.has(key));
   if (tainted.length > 0) {
-    const sorted = tainted.toSorted((a, b) => a.localeCompare(b));
+    const sorted = tainted.toSorted(byCodeUnit);
     throw new ToolArgsInvalidError(
       toolId,
       sorted,
@@ -728,7 +732,7 @@ function zodIssuePaths(cause: unknown): readonly string[] {
       }
     }
   }
-  return [...paths].sort((a, b) => a.localeCompare(b));
+  return [...paths].sort(byCodeUnit);
 }
 
 /* ------------------------------------------------------------------------------------------------ *
@@ -740,7 +744,7 @@ function enforcePolicy(def: ToolDef, target: PolicyTarget, ctx: ToolDispatchCont
     throw new ToolPolicyError(
       def.id,
       'gate_required',
-      `tool \`${def.id}\` requires a human-gate approval in an automated workflow`,
+      `tool \`${def.id}\` requires a human-gate approval. Chat cannot provide that approval; review the changes and commit manually instead.`,
     );
   }
 
@@ -1055,6 +1059,7 @@ function sanitizeInput(
   def: ToolDef,
   effective: Record<string, unknown>,
   secretArgKeys: ReadonlySet<string> | undefined,
+  purpose: 'display' | 'journal',
 ): Readonly<Record<string, unknown>> {
   const out: Record<string, unknown> = { ...effective };
   for (const key of def.configOnlyParams ?? []) {
@@ -1063,7 +1068,8 @@ function sanitizeInput(
   if (secretArgKeys !== undefined) {
     // **RECURSIVELY.** A top-level-only deletion misses `{"auth":{"api_key": …}}`, which is the ordinary
     // shape for an MCP tool whose schema this repo does not own. The shape scrub below is the second line;
-    // this is the first, and it is the one that knows the host's declared secret names.
+    // this is the first, using external declared names when supplied. Absence is unverified;
+    // no current authored mapping producer exists (tool-registry.md §Secret argument provenance).
     for (const key of Object.keys(out)) {
       out[key] = dropSecretKeysDeep(out[key], secretArgKeys);
     }
@@ -1076,8 +1082,8 @@ function sanitizeInput(
   // `secretArgKeys` deletion above only covers KNOWN top-level key names, so a model-set credential in an
   // arbitrary place (an `http_request` `Authorization` header value, a token in the body or url query) would
   // otherwise pass through — `redactSecretShapedValue` scrubs it by shape, keeping the object keys (header
-  // names) intact. Symmetric to the `outputSummary` scrub on the result side — display-only, the dispatch
-  // already ran on the real args.
+  // names) intact. This projection also protects the journal's digest from credential equality oracles.
+  // Neither projection changes the real args passed to the host.
   //
   // **Walked ONCE over the whole object, not per key.** A per-key loop handed the walker each VALUE with
   // its key already stripped, so the key-name rule — the one that catches an opaque credential with no
@@ -1085,32 +1091,31 @@ function sanitizeInput(
   // A tool's own TOP-LEVEL secretish parameter, which is exactly what an MCP server declares freely, went
   // through untouched into both the durable digest and the event stream. A review recovered `api_key`
   // verbatim from a real dispatch.
-  const walked = redactSecretShapedValue(redactInlineMedia(boundArgsForScan(out)));
+  // A display preview may omit a tail; the journal's collision guard may not. Both still exclude
+  // declared secrets and credential/media-shaped values BEFORE the host computes its digest.
+  // Recognition needs the complete value: clipping may remove a quote or URL authority separator.
+  const walked = redactSecretShapedValue(redactInlineMedia(out));
+  const projection = purpose === 'display' ? boundArgsForDisplay(walked) : walked;
   // The walk preserves plain-object shape, so this is the same record with scrubbed members; the guard is
   // a boundary check rather than a cast, and the fallback can only be reached if the walk ever stops
   // returning an object for an object input.
-  return isPlainRecord(walked) ? walked : out;
+  return isPlainRecord(projection) ? projection : out;
 }
 
 /**
- * The ceiling on how much of a single argument string the scrub will look at.
- *
- * The result side already truncates before scrubbing (`makeSummary`); the args side did not, so every
- * effectful dispatch ran seven full-string passes over an UNCAPPED value — plausibly megabytes, via a
- * `write_file` `content` sourced from a prior large `read_file`, or an `http_request` `body`. Each pass is
- * linear (bounded quantifiers, no nesting — measured, not assumed), so this is avoidable synchronous CPU on
- * the dispatch hot path rather than a ReDoS. The cap is generous: a credential is short, and the tail of a
- * megabyte payload carries no diagnostic value the head does not.
+ * The display-only string preview ceiling. The journal scans the full redacted argument set, bounded by
+ * tool admission, because an omitted non-secret tail may distinguish one effect from another.
  */
 const ARG_SCAN_MAX_CHARS = 16 * 1024;
 
 /**
- * Truncate over-long STRING leaves before the scrub walks them, so the redaction cost is bounded per
- * argument. The marker is explicit and carries the true length — a silently shortened value in a durable
- * digest would be indistinguishable from a genuinely shorter one, and telling two calls apart is the
- * digest's whole job.
+ * Truncate already-redacted display STRING leaves with their surviving length. This is never a journal input:
+ * equal-length values can differ after the retained prefix and must not replay each other's result.
  */
-function boundArgsForScan(value: unknown, seen: WeakSet<object> = new WeakSet<object>()): unknown {
+function boundArgsForDisplay(
+  value: unknown,
+  seen: WeakSet<object> = new WeakSet<object>(),
+): unknown {
   if (typeof value === 'string') {
     return value.length <= ARG_SCAN_MAX_CHARS
       ? value
@@ -1119,12 +1124,23 @@ function boundArgsForScan(value: unknown, seen: WeakSet<object> = new WeakSet<ob
   if (typeof value !== 'object' || value === null) return value;
   if (seen.has(value)) return '[cyclic]';
   seen.add(value);
-  if (Array.isArray(value)) return value.map((item) => boundArgsForScan(item, seen));
-  const proto: unknown = Object.getPrototypeOf(value);
-  if (proto !== Object.prototype && proto !== null) return value;
-  const out: Record<string, unknown> = {};
-  for (const [key, item] of Object.entries(value)) out[key] = boundArgsForScan(item, seen);
-  return out;
+  try {
+    if (Array.isArray(value)) return value.map((item) => boundArgsForDisplay(item, seen));
+    const proto: unknown = Object.getPrototypeOf(value);
+    if (proto !== Object.prototype && proto !== null) return value;
+    const out: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value)) {
+      Object.defineProperty(out, key, {
+        value: boundArgsForDisplay(item, seen),
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
+    }
+    return out;
+  } finally {
+    seen.delete(value);
+  }
 }
 
 /** Narrow the walk's `unknown` result back to a record, without an unsafe cast. */
@@ -1144,19 +1160,28 @@ function dropSecretKeysDeep(
   if (typeof value !== 'object' || value === null) return value;
   if (seen.has(value)) return '[cyclic]';
   seen.add(value);
-  if (Array.isArray(value)) {
-    return value.map((item) => dropSecretKeysDeep(item, secretArgKeys, seen));
+  try {
+    if (Array.isArray(value)) {
+      return value.map((item) => dropSecretKeysDeep(item, secretArgKeys, seen));
+    }
+    const proto: unknown = Object.getPrototypeOf(value);
+    if (proto !== Object.prototype && proto !== null) {
+      return value; // Date/RegExp/Map/… — left for the shape walk, exactly as it leaves them
+    }
+    const out: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value)) {
+      if (secretArgKeys.has(key)) continue;
+      Object.defineProperty(out, key, {
+        value: dropSecretKeysDeep(item, secretArgKeys, seen),
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
+    }
+    return out;
+  } finally {
+    seen.delete(value);
   }
-  const proto: unknown = Object.getPrototypeOf(value);
-  if (proto !== Object.prototype && proto !== null) {
-    return value; // Date/RegExp/Map/… — left for the shape walk, exactly as it leaves them
-  }
-  const out: Record<string, unknown> = {};
-  for (const [key, item] of Object.entries(value)) {
-    if (secretArgKeys.has(key)) continue;
-    out[key] = dropSecretKeysDeep(item, secretArgKeys, seen);
-  }
-  return out;
 }
 
 /* ------------------------------------------------------------------------------------------------ *

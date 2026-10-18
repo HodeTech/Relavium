@@ -235,3 +235,12 @@ activation, full M/N lifecycle or removal of approved residuals.
 > capture and the `kind` column. [ADR-0108](0108-provider-headers-stay-gated-until-keychain-custody.md)
 > remains the governing custody and activation gate. The earlier dated note is retained
 > as history; this correction changes no decision or implementation boundary.
+
+
+### Wave 2 merge landing — 2026-10-15
+
+The applicable Wave 2 implementation and maintainer corrections merged to `main`
+as PR #94 (`ab08209e`). The [merge checkpoint](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-2-merge-checkpoint--2026-10-15)
+joins final reviewed source `4cdfe011`, review scopes, execution evidence and preserved
+limits. Earlier pending/unmerged notes are historical; this landing adds no decision,
+future feature, deferral or claim of merge-commit execution.

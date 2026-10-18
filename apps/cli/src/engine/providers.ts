@@ -1,5 +1,5 @@
 import type { WorkflowDefinition } from '@relavium/core';
-import type { ProviderStore } from '@relavium/db';
+import type { EgressWorkOptions, ProviderStore } from '@relavium/db';
 import {
   createCustomOpenAiProvider,
   defaultProviders,
@@ -8,6 +8,7 @@ import {
   type EndpointKind,
   LlmProviderError,
   type LlmProvider,
+  type LlmRequest,
   type ProviderId,
 } from '@relavium/llm';
 import type { Agent } from '@relavium/shared';
@@ -204,16 +205,22 @@ export type ProviderKeyValidation =
  * defensively redact any occurrence (`raw.split(key).join(keyHint(key))`) before surfacing AND never attach
  * `err` as a cause (it could carry the key in a nested field a `--verbose` render might expose).
  *
- * The request is BOUNDED here — by an `AbortController` (cancels the in-flight request) AND a hard `Promise.race`
- * timeout (settles the call even if an adapter ignores the signal) — so BOTH callers (`provider test` and the
- * `/doctor --deep` probe) are bounded by construction; a stalled provider can never hang the CLI.
+ * Abort and the timeout bound the caller's probe observation. With a lifecycle owner, entered producer
+ * work remains retained until its actual settlement; a UX timeout never acknowledges cleanup.
+ * Ownership/admission refusals can reject instead of producing a validation result.
  */
 export async function validateProviderKey(
   provider: LlmProvider,
   key: string,
   model: string,
   timeoutMs: number = VALIDATE_KEY_TIMEOUT_MS,
+  lifecycle?: {
+    readonly signal: AbortSignal;
+    readonly work: Required<Pick<EgressWorkOptions, 'retainWork'>>;
+    readonly assertAdmitting: () => void;
+  },
 ): Promise<ProviderKeyValidation> {
+  lifecycle?.assertAdmitting();
   // Defensive: an empty key would make the redaction `raw.split('').join(keyHint(''))` split on every character
   // and garble the message (no secret leaks — the key is empty — but the detail becomes nonsense). All current
   // callers resolve a non-empty key (createProviderResolver rejects `''`); this closes the footgun at the seam.
@@ -221,6 +228,15 @@ export async function validateProviderKey(
     return { ok: false, detail: 'key test failed — (no key)', reason: 'other' };
   }
   const controller = new AbortController();
+  let parentStopped: () => void = () => undefined;
+  const stopped = new Promise<ProviderKeyValidation>((resolve) => {
+    parentStopped = () => {
+      controller.abort();
+      resolve({ ok: false, detail: 'key test stopped', reason: 'network' });
+    };
+  });
+  lifecycle?.signal.addEventListener('abort', parentStopped, { once: true });
+  if (lifecycle?.signal.aborted === true) parentStopped();
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<ProviderKeyValidation>((resolve) => {
     timer = setTimeout(() => {
@@ -232,17 +248,18 @@ export async function validateProviderKey(
       });
     }, timeoutMs);
   });
-  const probe = (async (): Promise<ProviderKeyValidation> => {
+  const probeFactory = async (): Promise<ProviderKeyValidation> => {
+    lifecycle?.assertAdmitting();
     try {
-      await provider.generate(
-        {
-          model,
-          messages: [{ role: 'user', content: [{ type: 'text', text: 'ping' }] }],
-          maxTokens: 1,
-          signal: controller.signal,
-        },
-        key,
-      );
+      const request: LlmRequest = {
+        model,
+        messages: [{ role: 'user', content: [{ type: 'text', text: 'ping' }] }],
+        maxTokens: 1,
+        signal: controller.signal,
+      };
+      await (lifecycle === undefined
+        ? provider.generate(request, key)
+        : provider.generate(request, key, lifecycle.work));
       return { ok: true, detail: `key works (${model})`, reason: 'ok' };
     } catch (err) {
       const raw = err instanceof Error ? err.message : String(err);
@@ -254,11 +271,14 @@ export async function validateProviderKey(
         reason: classifyValidationFailure(err),
       };
     }
-  })();
+  };
   try {
-    return await Promise.race([probe, timeout]);
+    // Register the real producer before entry. The UX timeout/abort result never retires it.
+    const probe = lifecycle?.work.retainWork(probeFactory) ?? probeFactory();
+    return await Promise.race([probe, timeout, stopped]);
   } finally {
     if (timer !== undefined) clearTimeout(timer);
+    lifecycle?.signal.removeEventListener('abort', parentStopped);
   }
 }
 

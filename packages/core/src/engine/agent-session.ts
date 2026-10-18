@@ -39,7 +39,7 @@ import type {
   EffectCorrelation,
   EffectDispatchPort,
 } from '@relavium/shared';
-import { createSessionToolCallId, unwiredEffectJournal } from '@relavium/shared';
+import { RelaviumError, createSessionToolCallId, unwiredEffectJournal } from '@relavium/shared';
 
 import { WorkflowGraphError, type GraphIssue } from '../errors.js';
 import { collectAgentCeilingIssues } from '../limits.js';
@@ -440,7 +440,7 @@ export interface AgentSessionParams {
 type SessionStatus = 'created' | 'idle' | 'running' | 'cancelled';
 
 /** A typed, secret-free session API-misuse error (never a raw string throw — error-handling.md). */
-export class SessionStateError extends Error {
+export class SessionStateError extends RelaviumError {
   override readonly name = 'SessionStateError';
   constructor(
     readonly code: 'not_started' | 'already_started' | 'not_active' | 'invalid_resume_state',

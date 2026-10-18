@@ -524,3 +524,7 @@ Missing usage and missing model/modality prices remain independent. A known zero
 
 See [ADR-0104](0104-unknown-provider-usage-is-durable-cost-uncertainty.md) and the
 [canonical usage contract](../reference/shared-core/llm-provider-seam.md#6-usage).
+
+## Wave 3 decision acceptance — 2026-10-16
+
+> Amended 2026-10-16: [ADR-0111](0111-cli-meta-operations-use-a-lazy-packaged-runtime.md) is accepted by the maintainer. Lazy execution preserves filesystem admission, one invocation-owned file-catalog seed, current DB overlay, then capability/quote/budget reads. Late file seeding cannot replace authoritative DB long-tail prices; meta operations perform no catalog/cache work. The approved [execution plan](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#proposed-implementation-increments) owns implementation and review gates; this note does not claim implementation landing.

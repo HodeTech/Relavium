@@ -30,7 +30,7 @@ vi.setConfig({ testTimeout: 15_000, hookTimeout: 15_000 });
 
 interface Worker {
   readonly child: ChildProcess;
-  readonly exited: Promise<void>;
+  readonly closed: Promise<void>;
   wait: (stage: string) => Promise<Record<string, unknown>>;
   release: () => void;
   stop: () => Promise<void>;
@@ -62,6 +62,11 @@ function worker(mode: string, stage?: string): Worker {
     },
   );
   let diagnostic = '';
+  const phases: Array<{ phase: string; milliseconds: number }> = [];
+  const started = performance.now();
+  let exitCode: number | null = null;
+  let exitSignal: string | null = null;
+  let faulted = false;
   child.stderr?.on('data', (chunk: Buffer) => {
     diagnostic = (diagnostic + chunk.toString()).slice(-4000);
   });
@@ -69,19 +74,36 @@ function worker(mode: string, stage?: string): Worker {
   const pending = new Set<() => void>();
   child.on('message', (message: unknown) => {
     if (typeof message === 'object' && message !== null) {
-      messages.push(Object.fromEntries(Object.entries(message)));
+      const value = Object.fromEntries(Object.entries(message));
+      messages.push(value);
+      if (
+        typeof value['phase'] === 'string' &&
+        [
+          'loader-entry',
+          'worker-entry',
+          'store-imported',
+          'producer-open',
+          'writing',
+          'done',
+        ].includes(value['phase']) &&
+        phases.length < 32
+      )
+        phases.push({ phase: value['phase'], milliseconds: performance.now() - started });
       for (const notify of pending) notify();
     }
   });
   let ended = false;
-  const exited = new Promise<void>((resolve) => {
-    child.once('error', (error) => {
+  const closed = new Promise<void>((resolve) => {
+    child.on('error', (error) => {
       diagnostic = error.message;
-      ended = true;
+      faulted = true;
       for (const notify of pending) notify();
-      resolve();
     });
-    child.once('exit', () => {
+    child.once('exit', (code, signal) => {
+      exitCode = code;
+      exitSignal = signal;
+    });
+    child.once('close', () => {
       ended = true;
       for (const notify of pending) notify();
       resolve();
@@ -89,12 +111,16 @@ function worker(mode: string, stage?: string): Worker {
   });
   const result: Worker = {
     child,
-    exited,
+    closed,
     wait: (stage) =>
       new Promise((resolve, reject) => {
         const timer = setTimeout(() => {
           pending.delete(check);
-          reject(new Error(`native fixture did not reach ${stage}: ${diagnostic}`));
+          reject(
+            new Error(
+              `native fixture did not reach ${stage}: ${JSON.stringify({ phases, exitCode, exitSignal, closed: ended, faulted })}: ${diagnostic}`,
+            ),
+          );
         }, 5000);
         const check = (): void => {
           const match = messages.find((message) =>
@@ -104,7 +130,11 @@ function worker(mode: string, stage?: string): Worker {
             clearTimeout(timer);
             pending.delete(check);
             resolve(match);
-          } else if (ended) {
+          } else if (
+            ended ||
+            faulted ||
+            messages.some((message) => message['error'] !== undefined)
+          ) {
             clearTimeout(timer);
             pending.delete(check);
             reject(new Error(`native fixture exited before ${stage}: ${diagnostic}`));
@@ -118,7 +148,7 @@ function worker(mode: string, stage?: string): Worker {
     },
     stop: async () => {
       if (!ended) child.kill('SIGKILL');
-      await exited;
+      await closed;
     },
   };
   workers.push(result);
@@ -273,7 +303,33 @@ it('uses exclusive private owner records and only absent old producers are remov
   producer.release();
   const published = await producer.wait('done');
   expect(published['handle']).toMatch(/^media:\/\/sha256-/);
-  await producer.exited;
+  await producer.closed;
+  // An error is a diagnostic, including on a real already-started fixture. It must
+  // neither suppress owned cancellation nor acknowledge the stderr/IPC close.
+  const faultedProducer = worker('producer');
+  await faultedProducer.wait('writing');
+  const kill = vi.spyOn(faultedProducer.child, 'kill');
+  let actualClose = false;
+  const actualClosed = new Promise<void>((resolve) =>
+    faultedProducer.child.once('close', () => {
+      actualClose = true;
+      resolve();
+    }),
+  );
+  try {
+    faultedProducer.child.emit('error', new Error('synthetic already-started fixture error'));
+    const stopped = faultedProducer.stop();
+    expect(kill, 'MEDIA_FIXTURE_ERROR_IS_NOT_CLOSE').toHaveBeenCalledExactlyOnceWith('SIGKILL');
+    await stopped;
+    expect(actualClose, 'MEDIA_FIXTURE_ERROR_IS_NOT_CLOSE').toBe(true);
+  } finally {
+    if (!actualClose) faultedProducer.child.kill('SIGKILL');
+    await actualClosed;
+    kill.mockRestore();
+  }
+  // The interrupted writer is a separate old-producer vector below.
+  for (const name of readdirSync(root).filter((entry) => entry.startsWith('media-v1.')))
+    rmSync(join(root, name));
   const second = await deadProducer();
   const result = await new FilesystemMediaStore(root).sweepTemporaries();
   expect(result).toEqual({ removed: 1, retained: 0, reasons: {} });
@@ -327,7 +383,7 @@ it('two real sweepers atomically claim one old producer without double deletion 
   first.release();
   second.release();
   const results = await Promise.all([first.wait('done'), second.wait('done')]);
-  await Promise.all([first.exited, second.exited]);
+  await Promise.all([first.closed, second.closed]);
   const removed = results
     .map((value) => value['result'])
     .reduce<number>(
@@ -465,7 +521,7 @@ it('maintenance marker blocks a concurrent new producer and is held through dele
     done: true,
     result: { removed: 1 },
   });
-  await maintainer.exited;
+  await maintainer.closed;
   expect(readdirSync(root)).toEqual([]);
 });
 
@@ -479,10 +535,10 @@ it('producer post-open recheck refuses a maintainer admitted after its first che
     done: true,
     error: 'MediaTemporaryMaintenanceError',
   });
-  await producer.exited;
+  await producer.closed;
   maintainer.release();
   expect(await maintainer.wait('done')).toMatchObject({ done: true, result: { removed: 0 } });
-  await maintainer.exited;
+  await maintainer.closed;
   expect(readdirSync(root)).toEqual([]);
 });
 
@@ -523,7 +579,7 @@ it('revalidates the exact original identity after initial claim rename', async (
   writeFileSync(blob, new Uint8Array([7, 8]));
   claimant.release();
   const result = await claimant.wait('done');
-  await claimant.exited;
+  await claimant.closed;
   expect(
     { result, exists: existsSync(blob), size: existsSync(blob) ? statSync(blob).size : undefined },
     'MEDIA_TEMP_INITIAL_CLAIM_IDENTITY',
@@ -545,7 +601,7 @@ it('two real recovery sweepers retain competing markers and eventually remove on
   first.release();
   second.release();
   const results = await Promise.all([first.wait('done'), second.wait('done')]);
-  await Promise.all([first.exited, second.exited]);
+  await Promise.all([first.closed, second.closed]);
   let removed = 0;
   for (const result of results) {
     const counts = result['result'];
@@ -614,10 +670,10 @@ it.each(['directory', 'rmdir'])(
     }
     retaining.release();
     const winner = await retaining.wait('done');
-    await retaining.exited;
+    await retaining.closed;
     deleting.release();
     const loser = await deleting.wait('done');
-    await deleting.exited;
+    await deleting.closed;
     expect(
       { winner: winner['result'], loser: loser['result'], remaining: readdirSync(root) },
       'MEDIA_TEMP_RECOVERY_CLEANUP_WINNER',

@@ -1,4 +1,6 @@
 /** ADR-0098: durable session effect identity, separate from the reconstructed max_turns counter. */
+import { RelaviumError } from '@relavium/shared';
+
 import { and, eq, gte, inArray, lt, or } from 'drizzle-orm';
 
 import type { Db } from './client.js';
@@ -8,7 +10,7 @@ import { agentSessions, runEffects, sessionMessages } from './schema.js';
 
 type Executor = Db | Parameters<Parameters<Db['transaction']>[0]>[0];
 
-export class SessionEffectTurnError extends Error {
+export class SessionEffectTurnError extends RelaviumError {
   readonly code: 'session_missing' | 'history_invalid' | 'key_exhausted' | 'transaction_active';
   constructor(code: SessionEffectTurnError['code']) {
     super('session effect-turn key could not be allocated');

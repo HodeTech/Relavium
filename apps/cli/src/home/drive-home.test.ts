@@ -1,7 +1,15 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { createCliInvocation } from '../process/invocation.js';
+import { randomUUID } from 'node:crypto';
+import { invocationFixture } from '../process/invocation.test-support.js';
+import {
+  holdNativeToolProcess,
+  witnessNativeToolProcess,
+} from '../commands/native-forwarding.test-support.js';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
+import { fileURLToPath } from 'node:url';
 
 import {
   createClient,
@@ -44,6 +52,7 @@ vi.mock('ink', async (importOriginal) => ({
   ...(await importOriginal<typeof import('ink')>()),
   render: inkRenderer.render,
 }));
+vi.mock('node:crypto', { spy: true });
 
 // Regression for the `provider_auth` bug: the Home built an ENV-ONLY key resolver, so a key stored in the OS
 // keychain (the normal `relavium provider add` path) was invisible while `relavium chat` (keychain-wired) worked.
@@ -114,6 +123,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
   const io: CliIo = {
     writeOut: () => undefined,
     writeErr: () => undefined,
+    writeOutAcknowledged: () => Promise.resolve(),
     writeErrAcknowledged: () => Promise.resolve(),
     env: {},
     stdoutIsTty: true,
@@ -129,7 +139,8 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     cwd = mkdtempSync(join(tmpdir(), 'relavium-home-'));
   });
   afterEach(() => {
-    client.sqlite.close();
+    if (client.sqlite.open) client.sqlite.close();
+    vi.restoreAllMocks();
   });
 
   const global: GlobalOptions = {
@@ -159,7 +170,11 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
       db: client.db,
       close: closeSpy,
     };
-    const unmount = vi.fn();
+    let acknowledgeExit: () => void = () => undefined;
+    const exited = new Promise<void>((resolve) => {
+      acknowledgeExit = resolve;
+    });
+    const unmount = vi.fn(() => acknowledgeExit());
     const writeControl = vi.fn();
     let uuidN = 0;
     const deps: HomeDeps = {
@@ -177,7 +192,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
         return {
           unmount,
           waitUntilRenderFlush: () => Promise.resolve(),
-          waitUntilExit: () => new Promise(() => {}),
+          waitUntilExit: () => exited,
         };
       },
       getSize: () => ({ cols: 120, rows: 40 }),
@@ -205,6 +220,85 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     return { deps, unmount, writeControl, signalHandlers, exitHandlers };
   }
 
+  it.each([false, true])(
+    'observes actual passive Home view faults before bus recovery (fault=%s)',
+    async (faulted) => {
+      const f = invocationFixture();
+      let captured: RootAppProps | undefined;
+      let repliesAtClose = 0;
+      let observedSessionId: string | undefined;
+      const sessions = createSessionStore(client.db);
+      closeSpy.mockImplementation(() => {
+        const sessionId = observedSessionId;
+        if (sessionId !== undefined)
+          repliesAtClose =
+            sessions.loadFull(sessionId)?.messages.filter((message) => message.role === 'assistant')
+              .length ?? 0;
+        client.sqlite.close();
+      });
+      const { deps, unmount } = makeDeps(
+        (props) => {
+          captured = props;
+        },
+        {
+          invocation: f.invocation,
+          providers: scriptedResolver([textTurn('first'), textTurn('second')]),
+        },
+      );
+      const running = driveHome(deps);
+      const completion = running.then(
+        (value) => ({ value }),
+        (cause: unknown) => ({ cause }),
+      );
+      let hits = 0;
+      try {
+        await vi.waitFor(() => expect(captured).toBeDefined());
+        if (captured === undefined) throw new Error('Home did not mount');
+        const props = captured;
+        for (const character of 'hello') props.controller.handleKey(character, {});
+        props.controller.handleKey('', ENTER);
+        await vi.waitFor(() => {
+          const id = props.controller.getSnapshot().session?.sessionId;
+          expect(
+            id === undefined
+              ? []
+              : sessions.loadFull(id)?.messages.filter((message) => message.role === 'assistant'),
+          ).toHaveLength(1);
+        });
+        const session = props.controller.getSnapshot().session;
+        if (session === undefined) throw new Error('Home did not create a session');
+        observedSessionId = session.sessionId;
+        const apply = session.store.apply.bind(session.store);
+        vi.spyOn(session.store, 'apply').mockImplementation((event) => {
+          if (faulted && event.type === 'session:turn_started') {
+            hits++;
+            throw new TypeError('PRIVATE_PASSIVE_HOME_FAULT');
+          }
+          apply(event);
+        });
+        await session.processLine('second input');
+        expect(f.registry.termination !== undefined).toBe(faulted);
+        if (!faulted) {
+          props.controller.handleKey('c', CTRL_C);
+          await flush();
+          props.controller.handleKey('c', CTRL_C);
+        }
+        expect(await running).toBe(faulted ? 9 : 0);
+        expect(hits).toBe(faulted ? 1 : 0);
+        expect(repliesAtClose).toBe(faulted ? 1 : 2);
+        expect(closeSpy).toHaveBeenCalledOnce();
+        expect(client.sqlite.open).toBe(false);
+        expect(f.registry.activeOwners).toBe(0);
+      } finally {
+        unmount();
+        await completion;
+        vi.restoreAllMocks();
+        if (client.sqlite.open) client.sqlite.close();
+        rmSync(cwd, { recursive: true, force: true });
+      }
+    },
+  );
+
   it('an init fault after the db is open (a throwing render/mount) still closes the db once', async () => {
     // The cleanup scope opens right after `opened`, and the inner finally guarantees the close even though the
     // ink mount throws — so a faulty render can never leak the db handle. (Bracketed-paste enable is ink 7's
@@ -216,6 +310,49 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     });
     await expect(driveHome(deps)).rejects.toThrow('ink mount failed');
     expect(closeSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('observes an owned renderer failure before held host cleanup and closes the shared DB only after actual join', async () => {
+    const f = invocationFixture();
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let captured: RootAppProps | undefined;
+    let builtCount = 0;
+    const { deps, unmount } = makeDeps(
+      (props) => {
+        captured = props;
+      },
+      {
+        invocation: f.invocation,
+        buildSession: async (options) => {
+          builtCount++;
+          return { ...(await buildChatSession(options)), whenHostSafeToClose: () => held };
+        },
+      },
+    );
+    const drive = driveHome(deps).catch((cause: unknown) => cause);
+    const props = captured;
+    if (props === undefined) throw new Error('Home not mounted');
+    type(props, 'synthetic first turn');
+    props.controller.handleKey('', ENTER);
+    await vi.waitFor(() => expect(props.controller.getSnapshot().submitBusy).toBe(false));
+    await vi.waitFor(() => expect(props.controller.getSnapshot().mode).toBe('chat'));
+    const primary = new Error('PRIVATE_HOME_RENDERER_FAILURE');
+    props.onRendererError?.(primary);
+    await vi.waitFor(() => expect(unmount).toHaveBeenCalledOnce());
+    expect(f.registry.observations.exitCode()).toBe(9);
+    expect(f.registry.budget.deadline()).toBe(3000);
+    expect(closeSpy, 'HOME_ACTUAL_HOST_JOIN_BEFORE_SHARED_DATABASE').not.toHaveBeenCalled();
+    props.controller.handlePaste('/clear');
+    props.controller.handleKey('', ENTER);
+    await flush();
+    expect(builtCount).toBe(1);
+    release();
+    expect(await drive).toBe(EXIT_CODES.infrastructureFailed);
+    expect(closeSpy).toHaveBeenCalledOnce();
+    expect(f.registry.activeOwners).toBe(0);
   });
 
   it('a throwing unmount on a clean exit stays best-effort — still resolves 0 and closes the db once', async () => {
@@ -258,6 +395,55 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     const controls = writeControl.mock.calls.map((c) => c[0] as string);
     expect(controls).toContain(DISABLE_BRACKETED_PASTE);
     expect(controls).toContain(DISABLE_MOUSE);
+  });
+
+  it('a native database close failure preserves a clean Home exit and restored terminal controls (#22)', async () => {
+    closeSpy.mockImplementation(() => {
+      client.sqlite.close();
+      throw new Error('SQLITE_IOERR_CLOSE /private/operator/history.db secret-token\x1b[2J');
+    });
+    let captured: RootAppProps | undefined;
+    const writeErr = vi.fn();
+    const { deps, unmount, writeControl, exitHandlers } = makeDeps((props) => (captured = props), {
+      io: { ...io, writeErr },
+    });
+    const drivePromise = driveHome(deps);
+    if (captured === undefined) throw new Error('the injected render was never invoked');
+    captured.controller.handleKey('c', CTRL_C);
+
+    expect(await drivePromise).toBe(EXIT_CODES.success);
+    expect(client.sqlite.open).toBe(false);
+    expect(closeSpy).toHaveBeenCalledTimes(1);
+    expect(unmount).toHaveBeenCalledTimes(1);
+    expect(writeControl).toHaveBeenCalledWith(DISABLE_BRACKETED_PASTE);
+    expect(writeControl).toHaveBeenCalledWith(DISABLE_MOUSE);
+    expect(writeErr).toHaveBeenCalledExactlyOnceWith('warning: session store teardown failed\n');
+    // The process-exit fallback shares the same close owner; a late callback must not repeat close or warning.
+    for (const exit of exitHandlers) exit();
+    expect(closeSpy).toHaveBeenCalledTimes(1);
+    expect(writeErr).toHaveBeenCalledTimes(1);
+  });
+
+  it('a native database close failure preserves the original mount error and restored controls (#22)', async () => {
+    const primary = new Error('ink mount primary failure');
+    closeSpy.mockImplementation(() => {
+      client.sqlite.close();
+      throw new Error('SQLITE_IOERR_CLOSE /private/operator/history.db secret-token\x1b[2J');
+    });
+    const writeErr = vi.fn();
+    const { deps, writeControl } = makeDeps(() => undefined, {
+      io: { ...io, writeErr },
+      render: () => {
+        throw primary;
+      },
+    });
+
+    await expect(driveHome(deps)).rejects.toBe(primary);
+    expect(client.sqlite.open).toBe(false);
+    expect(closeSpy).toHaveBeenCalledTimes(1);
+    expect(writeControl).toHaveBeenCalledWith(DISABLE_BRACKETED_PASTE);
+    expect(writeControl).toHaveBeenCalledWith(DISABLE_MOUSE);
+    expect(writeErr).toHaveBeenCalledExactlyOnceWith('warning: session store teardown failed\n');
   });
 
   it('MOUSE: the capture PORT exists by default, and `--no-mouse` withholds it (Step 5e/6g, ADR-0068 §e)', async () => {
@@ -355,12 +541,20 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
   });
 
   it('startChat builds the default-agent session and persists its row; a clean return ends it', async () => {
+    const invocation = createCliInvocation({ exit: vi.fn(), setExitCode: vi.fn() });
     mkdirSync(join(cwd, '.relavium'), { recursive: true });
     writeFileSync(join(cwd, '.relavium', 'project.toml'), '[defaults]\nmax_tokens_estimate = 17\n');
     const estimates: (number | undefined)[] = [];
     let captured: RootAppProps | undefined;
     const { deps } = makeDeps((p) => (captured = p), {
-      buildSession: (options) => {
+      invocation,
+      buildSession: async (options) => {
+        await witnessNativeToolProcess(
+          options.nativeProcesses,
+          invocation,
+          options.cwd,
+          estimates.length === 0 ? 4 : 5,
+        );
         estimates.push(options.maxTokensEstimate);
         return buildChatSession(options);
       },
@@ -371,8 +565,11 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
 
     type(props, 'hello');
     props.controller.handleKey('', ENTER); // submit ⇒ build + first turn
-    await flush();
-    expect(props.controller.getSnapshot().mode).toBe('chat');
+    await vi.waitFor(() =>
+      expect(invocation.registry.activeOwners, 'NATIVE_HOME_FRESH_FORWARDING').toBe(5),
+    );
+    expect(props.controller.getSnapshot().mode).toBe('loading');
+    await vi.waitFor(() => expect(props.controller.getSnapshot().mode).toBe('chat'));
 
     const sessions = createSessionStore(client.db);
     expect(sessions.listSessions({ limit: 10 })).toHaveLength(1); // the chat persisted its row
@@ -383,6 +580,9 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     // The filter also matches /cost's "clears held estimates" description; choose the Clear row.
     props.controller.handleKey('', { downArrow: true });
     props.controller.handleKey('', ENTER);
+    await vi.waitFor(() =>
+      expect(invocation.registry.activeOwners, 'NATIVE_HOME_FRESH_FORWARDING').toBe(6),
+    );
     await vi.waitFor(() => expect(estimates).toEqual([17, 17]));
     expect(props.controller.getSnapshot().mode).toBe('chat');
     expect(estimates).toEqual([17, 17]);
@@ -394,6 +594,184 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     expect(await drivePromise).toBe(EXIT_CODES.success);
     expect(sessions.listSessions({ limit: 10 })[0]?.status).toBe('ended');
   });
+
+  it('retains both original native reservations when a pending clear build is superseded', async () => {
+    const invocation = createCliInvocation({ exit: vi.fn(), setExitCode: vi.fn() });
+    let captured: RootAppProps | undefined;
+    const permits: (() => void)[] = [];
+    const children: { close: () => Promise<void> }[] = [];
+    let builds = 0;
+    const { deps } = makeDeps((props) => (captured = props), {
+      invocation,
+      buildSession: async (options) => {
+        if (builds++ === 0) return buildChatSession(options);
+        const child = await holdNativeToolProcess(options.nativeProcesses, invocation, options.cwd);
+        children.push(child);
+        await new Promise<void>((resolve) => permits.push(resolve));
+        const built = await buildChatSession(options);
+        return {
+          ...built,
+          closeMcp: async () => {
+            await child.close();
+            await built.closeMcp?.();
+          },
+        };
+      },
+    });
+    const drivePromise = driveHome(deps);
+    const props = captured;
+    if (props === undefined) throw new Error('Home was not mounted');
+    try {
+      type(props, 'hello');
+      props.controller.handleKey('', ENTER);
+      await vi.waitFor(() => expect(props.controller.getSnapshot().mode).toBe('chat'));
+      await vi.waitFor(() => expect(props.controller.getSnapshot().submitBusy).toBe(false));
+      const original = props.controller.getSnapshot().session;
+      expect(original).toBeDefined();
+      props.controller.handlePaste('/clear');
+      props.controller.handleKey('', ENTER);
+      await vi.waitFor(() => expect(permits, 'NATIVE_HOME_PENDING_FORWARDING').toHaveLength(1));
+      expect(invocation.registry.activeOwners).toBe(6);
+      expect(props.controller.getSnapshot().session).toBe(original); // first replacement still initializes
+      props.controller.handleKey('c', CTRL_C); // sticky /clear starts a second replacement
+      await vi.waitFor(() => expect(permits).toHaveLength(2));
+      expect(invocation.registry.activeOwners).toBe(8);
+      permits[1]?.(); // second replacement wins while both native creations remain live
+      await vi.waitFor(() => expect(props.controller.getSnapshot().session).not.toBe(original));
+      const winner = props.controller.getSnapshot().session;
+      expect(invocation.registry.activeOwners).toBe(7);
+      permits[0]?.(); // stale completion may close only its own native creation
+      await vi.waitFor(() => expect(invocation.registry.activeOwners).toBe(5));
+      expect(props.controller.getSnapshot().session).toBe(winner);
+      await vi.waitFor(() => expect(props.controller.getSnapshot().submitBusy).toBe(false));
+      props.controller.handleKey('c', CTRL_C);
+      await vi.waitFor(() => expect(props.controller.getSnapshot().mode).toBe('home'));
+      await vi.waitFor(() => expect(invocation.registry.activeOwners).toBe(3));
+      props.controller.handleKey('c', CTRL_C);
+      expect(await drivePromise).toBe(EXIT_CODES.success);
+    } finally {
+      for (const permit of permits) permit();
+      await Promise.all(children.map((child) => child.close()));
+      await props.controller.teardownActive();
+    }
+  });
+
+  it('binds the default Home editor to the original native registry', async () => {
+    const invocation = createCliInvocation({ exit: vi.fn(), setExitCode: vi.fn() });
+    const marker = join(cwd, 'home-editor-started');
+    const release = join(cwd, 'home-editor-release');
+    const script = fileURLToPath(new URL('../render/fixtures/native-editor.mjs', import.meta.url));
+    let captured: RootAppProps | undefined;
+    const { deps } = makeDeps((props) => (captured = props), {
+      invocation,
+      io: { ...io, env: { EDITOR: `"${process.execPath}" "${script}" "${marker}" "${release}"` } },
+    });
+    const drivePromise = driveHome(deps);
+    const props = captured;
+    if (props?.suspendPort === undefined)
+      throw new Error('default Home editor suspend port is missing');
+    props.suspendPort.attach((body) => body());
+    try {
+      type(props, 'hello');
+      props.controller.handleKey('', ENTER);
+      await vi.waitFor(() => expect(props.controller.getSnapshot().session).toBeDefined());
+      await vi.waitFor(() => expect(props.controller.getSnapshot().submitBusy).toBe(false));
+      props.controller.handlePaste('/edit');
+      props.controller.handleKey('', ENTER);
+      await vi.waitFor(
+        () => {
+          expect(invocation.registry.activeOwners, 'NATIVE_HOME_EDITOR_FORWARDING').toBe(5);
+          expect(readFileSync(marker, 'utf8')).toBe('ready\n');
+        },
+        { interval: 5, timeout: 3000 },
+      );
+    } finally {
+      writeFileSync(release, 'release');
+      await vi.waitFor(() => expect(invocation.registry.activeOwners).toBe(4), { timeout: 6000 });
+      await vi.waitFor(() => expect(props.controller.getSnapshot().submitBusy).toBe(false));
+      props.suspendPort.attach(undefined);
+    }
+    expect(readFileSync(marker, 'utf8')).toBe('ready\nreleased\n');
+    props.controller.handleKey('c', CTRL_C);
+    await vi.waitFor(() => expect(props.controller.getSnapshot().mode).toBe('home'));
+    props.controller.handleKey('c', CTRL_C);
+    expect(await drivePromise).toBe(EXIT_CODES.success);
+  }, 10000);
+
+  it.each(['unexpected', 'known-config-refusal'] as const)(
+    'observes an owned /models default-write %s before inline picker recovery',
+    async (mode) => {
+      const f = invocationFixture();
+      const configFile = join(cwd, 'owned-picker-config.toml');
+      let captured: RootAppProps | undefined;
+      const close = vi.fn(() => client.sqlite.close());
+      const { deps } = makeDeps(
+        (props) => {
+          captured = props;
+        },
+        {
+          invocation: f.invocation,
+          global: { ...global, configPath: configFile },
+          openSessionStore: () => ({ store: createSessionStore(client.db), db: client.db, close }),
+        },
+      );
+      const drive = driveHome(deps);
+      const props = captured;
+      if (props === undefined) throw new Error('Home did not mount');
+      try {
+        props.controller.handleKey('/', {});
+        type(props, 'models');
+        props.controller.handleKey('', ENTER);
+        await flush();
+        expect(props.controller.getSnapshot().modelPicker?.entries.length).toBeGreaterThan(0);
+        const postSealHints: Array<string | undefined> = [];
+        const unsubscribe = props.controller.subscribe(() => {
+          if (props.inputEnabled?.() === false)
+            postSealHints.push(props.controller.getSnapshot().modelPicker?.hint);
+        });
+        if (mode === 'unexpected') {
+          // This native entry is before the real writer's filesystem catch; no errno or arbitrary
+          // error message is granted configuration-refusal provenance.
+          vi.mocked(randomUUID).mockImplementationOnce(() => {
+            throw new Error('PRIVATE_HOME_CONFIG_INVARIANT');
+          });
+        } else writeFileSync(configFile, '[preferences\n');
+        props.controller.handleKey('', ENTER);
+        if (props.controller.getSnapshot().modelPicker?.phase === 'effort')
+          props.controller.handleKey('', ENTER);
+        if (mode === 'unexpected') {
+          expect(randomUUID).toHaveBeenCalledOnce();
+          expect(
+            f.registry.observations.exitCode(),
+            'HOME_DEFAULT_WRITE_FAULT_REACHES_ORIGINAL_OWNER',
+          ).toBe(9);
+          expect(f.registry.budget.deadline()).toBe(3000);
+          expect(await drive).toBe(9);
+          unsubscribe();
+          expect(postSealHints, 'HOME_DEFAULT_WRITE_NO_POSTSEAL_PUBLICATION').toEqual([]);
+        } else {
+          unsubscribe();
+          expect(postSealHints).toEqual([]);
+          expect(props.controller.getSnapshot().modelPicker?.hint).toContain('could not save');
+          expect(f.registry.termination).toBeUndefined();
+          props.controller.handleKey('', { escape: true });
+          props.controller.handleKey('', { escape: true });
+          expect(props.controller.getSnapshot().modelPicker).toBeUndefined();
+          props.controller.handleKey('c', CTRL_C);
+          expect(await drive).toBe(0);
+        }
+      } finally {
+        // Failed semantic assertions still close the actual drive before the fixture closes SQLite.
+        props.controller.handleKey('', { escape: true });
+        props.controller.handleKey('', { escape: true });
+        props.controller.handleKey('c', CTRL_C);
+        await drive;
+      }
+      expect(close).toHaveBeenCalledOnce();
+      expect(client.sqlite.open).toBe(false);
+      expect(f.registry.activeOwners).toBe(0);
+    },
+  );
 
   it('a /models write is picked up by the NEXT chat started in the SAME Home process (2.5.G S7 regression)', async () => {
     // The blocker Sonnet review caught: `startChat` closed over the load-once `config` snapshot, so a `/models`
@@ -503,6 +881,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
   });
 
   it('in-Home /models reseat: the REAL reseatChat resumes the session under the switched model, carrying the transcript (ADR-0059)', async () => {
+    const invocation = createCliInvocation({ exit: vi.fn(), setExitCode: vi.fn() });
     mkdirSync(join(cwd, '.relavium'), { recursive: true });
     writeFileSync(join(cwd, '.relavium', 'project.toml'), '[defaults]\nmax_tokens_estimate = 17\n');
     const freshEstimates: (number | undefined)[] = [];
@@ -511,12 +890,20 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     // store) end-to-end — not the mocked controller-level test — pinning the build-first swap over the same sessionId.
     let captured: RootAppProps | undefined;
     const { deps } = makeDeps((p) => (captured = p), {
+      invocation,
       providers: scriptedResolver([textTurn('sonnet reply'), textTurn('opus reply')]),
-      buildSession: (options) => {
+      buildSession: async (options) => {
+        await witnessNativeToolProcess(options.nativeProcesses, invocation, options.cwd, 4);
         freshEstimates.push(options.maxTokensEstimate);
         return buildChatSession(options);
       },
-      buildResumedSession: (options) => {
+      buildResumedSession: async (options) => {
+        await witnessNativeToolProcess(
+          options.nativeProcesses,
+          invocation,
+          options.record.context.workingDir,
+          5,
+        );
         resumedEstimates.push(options.maxTokensEstimate);
         return buildResumedChatSession(options);
       },
@@ -528,7 +915,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     // Start a chat (bound to the default claude-sonnet-4-6) + run one turn so the transcript persists.
     type(props, 'first');
     props.controller.handleKey('', ENTER);
-    await flush();
+    await vi.waitFor(() => expect(props.controller.getSnapshot().session).toBeDefined());
     expect(props.controller.getSnapshot().mode).toBe('chat');
     const oldSession = props.controller.getSnapshot().session;
     const sessionId = oldSession?.sessionId ?? '';
@@ -550,7 +937,11 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     expect(effortPicker?.phase).toBe('effort');
     expect(effortPicker?.pending?.modelId).toBe('claude-opus-4-8');
     props.controller.handleKey('', ENTER); // apply the highlighted tier (default 'medium') ⇒ the REAL reseatChat
-    await flush();
+    await vi.waitFor(() =>
+      expect(invocation.registry.activeOwners, 'NATIVE_HOME_RESEAT_FORWARDING').toBe(6),
+    );
+    await vi.waitFor(() => expect(resumedEstimates).toEqual([17]));
+    await vi.waitFor(() => expect(props.controller.getSnapshot().session).not.toBe(oldSession));
 
     // The session was reseated: a NEW session object, the SAME sessionId, bound to opus, carrying the prior turn.
     const reseated = props.controller.getSnapshot().session;

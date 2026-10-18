@@ -3,9 +3,28 @@ import { produceUsagePrefixes } from './usage-producer.mjs';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fixture, workflow, root, record } from './producer-common.mjs';
-import { RunEventSchema } from '@relavium/shared';
-import { reconstructCheckpointState } from '@relavium/core';
+import { RunEventSchema, RelaviumError as RootRelaviumError } from '@relavium/shared';
+import { RelaviumError } from '@relavium/shared/relavium-error';
+import { FS_ROOT_LIMITS } from '@relavium/shared/fs-root-limits';
+import { stripTerminalControls } from '@relavium/shared/terminal-safe';
+import { scrubSecrets as rootScrubSecrets } from '@relavium/llm';
+import { scrubSecrets } from '@relavium/llm/scrub-secrets';
+import {
+  reconstructCheckpointState,
+  ToolDispatchError as RootToolDispatchError,
+} from '@relavium/core';
+import { ToolDispatchError } from '@relavium/core/tool-dispatch-error';
 import { createClient, runMigrations, createRunHistoryStore } from '@relavium/db';
+// Exercise every supported leaf through the actual captured loader, not workspace dist.
+assert.equal(RelaviumError, RootRelaviumError);
+assert.equal(ToolDispatchError, RootToolDispatchError);
+assert.equal(scrubSecrets, rootScrubSecrets);
+assert.deepEqual(FS_ROOT_LIMITS, { count: 16, characters: 4096 });
+assert.equal(stripTerminalControls('\u001b[31mvisible\u001b[0m'), 'visible');
+assert.equal(scrubSecrets('?api_key=synthetic'), '?api_key=[REDACTED]');
+await assert.rejects(import('@relavium/shared/not-exported'), {
+  message: 'Unowned Relavium subpath forbidden: @relavium/shared/not-exported',
+});
 let fetches = 0;
 globalThis.fetch = () => {
   fetches += 1;

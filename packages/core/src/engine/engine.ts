@@ -74,7 +74,12 @@ import {
 import type { EndpointKind, MediaJobStatus, PricingOverlay, ProviderId } from '@relavium/llm';
 
 import { buildRunPlan, type BuildRunPlanOptions } from '../dag.js';
-import { InterpolationError } from '../errors.js';
+import { InterpolationError, WorkflowContextError } from '../errors.js';
+import {
+  createWorkflowProvenance,
+  type WorkflowProvenance,
+  type WorkflowContextProjection,
+} from '../interpolation/provenance.js';
 import { resolveContext, resolveTemplate } from '../interpolation/resolve.js';
 import type { ResolverCapabilities, RunScope } from '../interpolation/scope.js';
 import { ADMISSION_CEILINGS, DEFAULT_MAX_PARALLEL } from '../limits.js';
@@ -552,6 +557,7 @@ class RunExecution {
   readonly #maskedInputs: Record<string, unknown>;
   /** The names of `secret`-typed inputs — threaded to handlers so they keep raw secrets out of outputs. */
   readonly #secretInputNames: ReadonlySet<string>;
+  readonly #provenance: WorkflowProvenance;
   readonly #executionMode: ExecutionMode;
   readonly #eventConsumption: EventConsumption;
   readonly #host: ExecutionHost;
@@ -568,7 +574,7 @@ class RunExecution {
     | undefined;
   #resumeAdmitted = false;
   /** The resolved workflow `context:` (`ctx.*`), folded once at run start (or re-resolved on resume). */
-  #resolvedContext: Readonly<Record<string, string>> = {};
+  #resolvedContext: WorkflowContextProjection | undefined;
 
   readonly #abort: AbortControllerLike;
   readonly #states = new Map<string, VertexState>();
@@ -776,7 +782,8 @@ class RunExecution {
     resumePreparation?: {
       readonly gateId: string;
       readonly preparation: BudgetDispatchPreparation;
-      readonly context: Readonly<Record<string, string>>;
+      readonly context: WorkflowContextProjection;
+      readonly provenance: WorkflowProvenance;
     };
   }) {
     this.runId = params.runId;
@@ -797,13 +804,10 @@ class RunExecution {
     this.#effectResume = params.effectResume;
     this.#abort = params.host.newAbortController();
 
-    const secretNames = new Set(
-      (params.workflow.workflow.inputs ?? [])
-        .filter((input) => input.type === 'secret')
-        .map((input) => input.name),
-    );
-    this.#secretInputNames = secretNames;
-    this.#maskedInputs = maskInputs(params.inputs, secretNames);
+    this.#provenance =
+      params.resumePreparation?.provenance ?? createWorkflowProvenance(params.workflow);
+    this.#secretInputNames = this.#provenance.secretInputNames;
+    this.#maskedInputs = maskInputs(params.inputs, this.#secretInputNames);
     this.#maxTokensEstimate = params.maxTokensEstimate ?? DEFAULT_MAX_TOKENS_ESTIMATE;
     this.#resolvePrice = params.resolvePrice;
     if (params.resumePreparation !== undefined) {
@@ -1361,6 +1365,12 @@ class RunExecution {
     }
   }
 
+  /** Required engine-owned projection; an absent value is never implicit clean context. */
+  #contextProjection(): WorkflowContextProjection {
+    if (this.#resolvedContext === undefined) throw new WorkflowContextError();
+    return this.#resolvedContext;
+  }
+
   /**
    * Resolve the workflow `context:` map into the frozen `ctx.*` namespace (the spec's eager-once context),
    * threaded to every node via {@link NodeExecContext.ctx}. Returns `false` on failure: a cancel mid-resolve
@@ -1370,12 +1380,13 @@ class RunExecution {
    */
   async #resolveContextOrFail(): Promise<boolean> {
     try {
-      this.#resolvedContext = await resolveContext(
-        this.#workflow,
+      const resolved = await resolveContext(
+        this.#provenance.contextSource,
         this.#inputs,
         this.#resolverCapabilities,
         this.#abort.signal,
       );
+      this.#resolvedContext = this.#provenance.qualifyContext(resolved);
       return true;
     } catch (error) {
       if (this.#cancelling || this.#abort.signal.aborted) {
@@ -2208,7 +2219,7 @@ class RunExecution {
       vertex,
       runOutputs: this.#completedOutputs(),
       inputs: this.#inputs,
-      ctx: this.#resolvedContext,
+      ctx: this.#contextProjection(),
       secretInputNames: this.#secretInputNames,
       toolPolicy: this.#workflow.workflow.tools ?? {},
       signal: this.#abort.signal,
@@ -2921,15 +2932,9 @@ class RunExecution {
       if (this.#settled) {
         return; // the run settled (e.g. a sibling failure/cancel) while we waited — drop this re-dispatch
       }
-      if (this.#cancelling || this.#abort.signal.aborted) {
-        // A cancel / sibling-abort landed on the same tick the timer fully elapsed (so sleptFully was true
-        // but the run is now ending) — settle this node's last failure rather than waste a re-dispatch.
-        await this.#onOutcome(vertex, outcome, startedAtMs, attempt);
-        return;
-      }
-      if (!sleptFully) {
-        // The run's AbortSignal fired during the backoff — a cancel OR a sibling node's failure (which
-        // aborts to stop other branches). Do not re-dispatch; settle this node's last failure. #settleFailed
+      if (this.#cancelling || this.#abort.signal.aborted || !sleptFully) {
+        // Cancellation/sibling abort can interrupt sleep or arrive on the tick it finishes. In either
+        // case, do not re-dispatch; settle this node's last failure. #settleFailed
         // honours precedence: it won't overwrite an already-set #failure (a sibling's root cause) nor set one
         // while cancelling — so the run closes as the sibling's run:failed, or run:cancelled, accordingly.
         await this.#onOutcome(vertex, outcome, startedAtMs, attempt);
@@ -3036,7 +3041,7 @@ class RunExecution {
           vertex,
           runOutputs: this.#completedOutputs(),
           inputs: this.#inputs,
-          ctx: this.#resolvedContext,
+          ctx: this.#contextProjection(),
           secretInputNames: this.#secretInputNames,
           toolPolicy: this.#workflow.workflow.tools ?? {},
           emit: (event) => {
@@ -6199,7 +6204,8 @@ export class WorkflowEngine {
     | {
         readonly gateId: string;
         readonly preparation: BudgetDispatchPreparation;
-        readonly context: Readonly<Record<string, string>>;
+        readonly context: WorkflowContextProjection;
+        readonly provenance: WorkflowProvenance;
       }
     | undefined
   > {
@@ -6244,12 +6250,14 @@ export class WorkflowEngine {
         { runId: input.runId, gateId: input.gateId },
       );
     try {
-      const context = await resolveContext(
-        input.workflow,
+      const provenance = createWorkflowProvenance(input.workflow);
+      const resolved = await resolveContext(
+        provenance.contextSource,
         inputs,
         this.#resolverCapabilities,
         signal,
       );
+      const context = provenance.qualifyContext(resolved);
       const outputs = new Map<string, unknown>();
       for (const [nodeId, state] of checkpoint.nodeStates)
         if (state.status === 'completed') outputs.set(nodeId, state.output);
@@ -6258,11 +6266,7 @@ export class WorkflowEngine {
         runOutputs: outputs,
         inputs,
         ctx: context,
-        secretInputNames: new Set(
-          (input.workflow.workflow.inputs ?? [])
-            .filter((value) => value.type === 'secret')
-            .map((value) => value.name),
-        ),
+        secretInputNames: provenance.secretInputNames,
         toolPolicy: input.workflow.workflow.tools ?? {},
         signal,
         maxTokensEstimate: this.#maxTokensEstimate,
@@ -6276,7 +6280,7 @@ export class WorkflowEngine {
         plan.budget.strict_cost_cap === true,
         this.#resolvePrice,
       );
-      return { gateId: input.gateId, preparation: prepared.preparation, context };
+      return { gateId: input.gateId, preparation: prepared.preparation, context, provenance };
     } catch {
       if (signal.aborted) return undefined; // cancel wins; passive admission will settle without egress
       throw new EngineStateError(

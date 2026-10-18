@@ -2,6 +2,10 @@ import type { AbortSignalLike } from '@relavium/shared';
 import { beforeAll, describe, expect, it } from 'vitest';
 
 import { type ExpressionSandbox, createExpressionSandbox } from '../../expression/sandbox.js';
+import {
+  createWorkflowContextProjection,
+  ownSecretInputNames,
+} from '../../interpolation/provenance.js';
 import type { NodeExecContext, NodeExecutor, NodeOutcome } from '../node-executor.js';
 import type { PlanConfig, PlanVertex } from '../../run-plan.js';
 import { createConditionNodeExecutor } from './condition.js';
@@ -92,8 +96,12 @@ function makeCtx(
     vertex,
     runOutputs: opts.runOutputs ?? new Map(),
     inputs: opts.inputs ?? {},
-    ctx: opts.ctx ?? {},
-    secretInputNames: opts.secretInputNames ?? new Set(),
+    ctx: createWorkflowContextProjection({
+      values: opts.ctx ?? {},
+      deniedKeys: [],
+      orderedKeys: Object.keys(opts.ctx ?? {}),
+    }),
+    secretInputNames: ownSecretInputNames(opts.secretInputNames ?? []).secretInputNames,
     toolPolicy: {},
     emit: () => undefined,
     signal: opts.signal ?? LIVE,
@@ -701,7 +709,7 @@ describe('fan_out / input / output handlers (1.P)', () => {
   });
 });
 
-describe('secret-input masking (1.P security — BLOCKER fix)', () => {
+describe('secret-input display masking and expression denial (ADR-0113)', () => {
   const secretInputNames = new Set(['api_key']);
 
   it('the input handler masks a secret-typed input in its emitted output (never the raw value)', async () => {
@@ -718,20 +726,27 @@ describe('secret-input masking (1.P security — BLOCKER fix)', () => {
     expect(JSON.stringify(out)).not.toContain('sk-RAW');
   });
 
-  it('a transform sees the masked marker, not the raw secret — it cannot launder it into run.outputs', async () => {
+  it('a transform reading a supplied secret input fails with typed denial', async () => {
     const exec = createTransformNodeExecutor({ sandbox });
     const v = makeVertex({
       kind: 'transform',
       node: { id: 't', type: 'transform', transform: 'inputs.api_key' },
     });
     const out = await exec.execute(makeCtx(v, { inputs: { api_key: 'sk-RAW' }, secretInputNames }));
-    expect(out).toEqual({ kind: 'completed', output: { secret: true, ref: 'inputs.api_key' } });
+    expect(out).toEqual({
+      kind: 'failed',
+      error: {
+        code: 'sandbox_error',
+        message: 'secret-derived values are unavailable to expressions',
+        retryable: false,
+      },
+    });
     expect(JSON.stringify(out)).not.toContain('sk-RAW');
   });
 
-  it('a condition cannot branch on the raw secret value (it sees only the masked marker)', async () => {
+  it('a condition reading a supplied secret input fails without selecting a branch', async () => {
     const exec = createConditionNodeExecutor({ sandbox });
-    // `=== "sk-RAW"` would be true on the raw value; on the masked marker object it is false.
+    // A denied read must fail, rather than silently turning this comparison into a false branch.
     const v = makeVertex(
       conditionConfig('inputs.api_key === "sk-RAW"', [
         { when: true, target_node: 'leaked' },
@@ -740,10 +755,18 @@ describe('secret-input masking (1.P security — BLOCKER fix)', () => {
       { dependents: ['leaked', 'safe'] },
     );
     const out = await exec.execute(makeCtx(v, { inputs: { api_key: 'sk-RAW' }, secretInputNames }));
-    expect(out).toEqual({ kind: 'branch', selected: ['safe'] });
+    expect(out).toEqual({
+      kind: 'failed',
+      error: {
+        code: 'sandbox_error',
+        message: 'secret-derived values are unavailable to expressions',
+        retryable: false,
+      },
+    });
+    expect(JSON.stringify(out)).not.toContain('sk-RAW');
   });
 
-  it('a custom merge_fn sees the masked marker, not the raw secret (the merge arm masks too)', async () => {
+  it('a custom merge_fn reading a supplied secret input fails with typed denial', async () => {
     const exec = createFanInNodeExecutor({ sandbox });
     const v = makeVertex(fanInConfig('custom', ['a'], 'inputs.api_key'));
     const out = await exec.execute(
@@ -753,7 +776,14 @@ describe('secret-input masking (1.P security — BLOCKER fix)', () => {
         secretInputNames,
       }),
     );
-    expect(out).toEqual({ kind: 'completed', output: { secret: true, ref: 'inputs.api_key' } });
+    expect(out).toEqual({
+      kind: 'failed',
+      error: {
+        code: 'sandbox_error',
+        message: 'secret-derived values are unavailable to expressions',
+        retryable: false,
+      },
+    });
     expect(JSON.stringify(out)).not.toContain('sk-RAW');
   });
 

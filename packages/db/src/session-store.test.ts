@@ -366,6 +366,42 @@ describe('SessionStore (1.X) — persist + resume', () => {
     expect(rawRow && fromAgentSessionRow(rawRow).deletedAt).toBe(TS_ISO);
   });
 
+  it('reads and preserves legacy duplicate fallback snapshots across all history entry points', () => {
+    const agentSnapshot = {
+      id: 'legacy-agent',
+      model: 'primary',
+      provider: 'openai',
+      system_prompt: 'hello',
+      fallback_chain: [
+        { model: 'alternate', provider: 'openai', max_attempts: 1 },
+        { model: 'alternate', provider: 'openai', max_attempts: 2 },
+      ],
+    };
+    expect(AgentSchema.safeParse(agentSnapshot).success).toBe(false);
+    store.createSession(makeSession());
+    // Plant the exact historical JSON column instead of passing through today's author admission.
+    const snapshotBytes = JSON.stringify(agentSnapshot);
+    client.db
+      .update(agentSessions)
+      .set({ agentSnapshot: snapshotBytes })
+      .where(eq(agentSessions.id, 'sess-1'))
+      .run();
+    const loaded = store.loadSession('sess-1');
+    expect(loaded?.agentSnapshot).toEqual(agentSnapshot);
+    expect(store.listSessions().map((session) => session.agentSnapshot)).toEqual([agentSnapshot]);
+    expect(store.loadFull('sess-1')?.session.agentSnapshot).toEqual(agentSnapshot);
+    expect(loaded).toBeDefined();
+    if (loaded === undefined) throw new Error('legacy session was not loaded');
+    store.updateSession({ ...loaded, title: 'Resumed legacy session' });
+    expect(
+      client.db
+        .select({ snapshot: agentSessions.agentSnapshot })
+        .from(agentSessions)
+        .where(eq(agentSessions.id, 'sess-1'))
+        .get()?.snapshot,
+    ).toBe(snapshotBytes);
+  });
+
   it('updateSession preserves the immutable created_at while advancing updated_at', () => {
     const t1 = '2026-06-17T08:00:00.000Z';
     const t2 = '2026-06-17T09:30:00.000Z';

@@ -1,9 +1,12 @@
 # Relavium CLI release — pack once, smoke the exact artifact on every OS, then publish it (2.L · ADR-0051).
 #
+# Step 7b reuses the required installed-package runner, including the exact Node 22.0.0 runtime floor.
+# Step 9 retains ownership of original-TS maps, release custody and their permission/discovery redesign.
+#
 # Flow: `pack` builds the engine-inlined bundle and `pnpm pack`s it (resolving catalog:/workspace: to
-# concrete versions) into a tarball artifact → `smoke` installs THAT SAME tarball globally on ubuntu /
-# macOS / Windows and asserts the binary works (prebuilt native addons load, the bundled engine runs) →
-# `publish` (only on a `v*` tag, gated on green smoke) publishes the very artifact that was smoked, with
+# concrete versions) into a tarball artifact → `smoke` installs THAT SAME tarball outside the workspace on ubuntu /
+# macOS / Windows and the minimum Node runtime and asserts the binary works (prebuilt native addons load, the bundled engine runs) →
+# `publish` (only on a `v*` tag, gated on the strict packed aggregate) publishes the very artifact that was smoked, with
 # npm provenance. The actual publish needs the maintainer's `NPM_TOKEN` secret — it is maintainer-gated,
 # like branch protection. Verifying cross-OS BEFORE publish is the Phase-3 go/no-go #7 gate.
 #
@@ -38,6 +41,8 @@ concurrency:
 
 jobs:
   pack:
+    outputs:
+      artifact-name: relavium-tarball-${{ github.run_id }}-${{ github.run_attempt }}
     name: build + pack the tarball
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -87,37 +92,92 @@ jobs:
           cache: pnpm
       - name: Install (frozen lockfile)
         run: pnpm install --frozen-lockfile
-      # Build the engine packages first (turbo resolves the dependency order) so `pnpm pack`'s prepack can
-      # inline them into the bundle.
-      - name: Build
-        run: pnpm turbo run build --filter=relavium...
-      # `pnpm pack` (not `npm pack`) resolves catalog:/workspace: in the published manifest; its `prepack`
-      # rebuilds the bundle, copies the drizzle migrations beside it, AND runs the bundle-closure guard — so
-      # the guard validates exactly the dist that gets tarballed. The tarball is platform-independent (native
-      # addons resolve per-OS at install), so one tarball is smoked on, and published to, every target.
-      - name: Pack
-        working-directory: apps/cli
-        run: pnpm pack --pack-destination "${{ runner.temp }}/artifact"
-      - name: Upload tarball
+      # The same required package runner owns fresh dependencies and the sole prepack CLI build.
+      # Original-TS maps and encrypted release custody are staged separately in Wave 3 Step 9.
+      - name: Pack once and independently inspect the public package
+        env:
+          RELAVIUM_PACKAGE_SOURCE_SHA: ${{ github.sha }}
+        run: node tools/cli-package/pack.mjs "${{ runner.temp }}/packed-cli-artifact"
+      - name: Upload the public tarball and package-test receipt
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: relavium-tarball
-          path: ${{ runner.temp }}/artifact/*.tgz
+          name: relavium-tarball-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/packed-cli-artifact/*.tgz
+            ${{ runner.temp }}/packed-cli-artifact/package-test-receipt.json
+          retention-days: 7
           if-no-files-found: error
 
   smoke:
-    name: install-smoke (${{ matrix.os }})
+    name: installed CLI (${{ matrix.id }})
     needs: pack
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+          - id: current-linux
+            os: ubuntu-latest
+            node: '24'
+          - id: current-macos
+            os: macos-latest
+            node: '24'
+          - id: current-windows
+            os: windows-latest
+            node: '24'
+          - id: minimum-linux
+            os: ubuntu-latest
+            node: '22.0.0'
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: 20
     permissions:
       contents: read
     steps:
-      # Checkout only for the fixture workflows the smoke runs; no build here — we install the published tarball.
+      # Only the test runner and fixtures use this checkout. No workspace dependencies or build.
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      # An explicit version avoids evaluating the workspace's >=22.13 install floor on Node 22.0.0.
+      - name: Set up pnpm for the external consumer
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+        with:
+          version: 9.12.3
+          run_install: false
+      - name: Set up consumer Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ matrix.node == '22.0.0' && matrix.node || '' }}
+          node-version-file: ${{ matrix.node != '22.0.0' && '.nvmrc' || '' }}
+      - name: Download the exact packed CLI
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ${{ needs.pack.outputs.artifact-name }}
+          path: ${{ runner.temp }}/packed-cli-artifact
+      - name: Install outside the workspace and exercise the actual package
+        env:
+          RELAVIUM_PACKAGE_LEG: ${{ matrix.id }}
+          RELAVIUM_PACKAGE_SOURCE_SHA: ${{ github.sha }}
+        run: node tools/cli-package/consume.mjs "${{ runner.temp }}/packed-cli-artifact" "${{ runner.temp }}/packed-cli-report"
+      - name: Upload successful installed-package receipt
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ needs.pack.outputs.artifact-name }}-report-${{ matrix.id }}
+          # A retried consumer replaces only its smoke receipt for the same immutable tarball.
+          overwrite: true
+          path: ${{ runner.temp }}/packed-cli-report/installed-consumer.json
+          retention-days: 7
+          if-no-files-found: error
+
+  packed-cli:
+    outputs:
+      artifact-name: ${{ needs.pack.outputs.artifact-name }}
+    name: require all installed CLI consumers
+    needs: [pack, smoke]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           persist-credentials: false
@@ -125,44 +185,26 @@ jobs:
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .nvmrc
-      - name: Download tarball
+      - name: Download the exact packed CLI
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: relavium-tarball
-          path: artifact
-      # One bash script across all three OSes (GitHub provides Git Bash on Windows) so the asserts are uniform.
-      # These commands exercise the bundle + BOTH prebuilt native addons (better-sqlite3 opens history.db with
-      # the shipped migrations; @napi-rs/keyring's accessor loads) WITHOUT touching the OS credential store, so
-      # the Windows leg is headless-safe.
-      - name: Install globally + smoke
-        shell: bash
-        run: |
-          set -euo pipefail
-          # The `./` prefix is load-bearing: npm reads a slash-bearing arg without it
-          # (`artifact/relavium-X.tgz`) as a GitHub `owner/repo` shorthand and tries to git-clone it.
-          # `./artifact/…` forces the local-file spec (verified via npm-package-arg); the glob expands to
-          # the single packed tarball, so no `ls`/subshell is needed.
-          npm install -g ./artifact/*.tgz
-          echo "## relavium --help" && relavium --help >/dev/null
-          echo "## relavium --version matches the published package version"
-          VER="$(relavium --version)"
-          PKG="$(node -p "require('./apps/cli/package.json').version")"
-          test "$VER" = "$PKG" || { echo "relavium --version=$VER != package.json $PKG"; exit 1; }
-          echo "## relavium provider list" && relavium provider list
-          echo "## relavium run (sequential) --json (exit 0)"
-          relavium run apps/cli/src/harness/fixtures/sequential.relavium.yaml --input n=21 --json
-          echo "## relavium run (human-gate) --json (exit 3 = gate-paused)"
-          set +e; relavium run apps/cli/src/harness/fixtures/human-gate.relavium.yaml --json >/dev/null; ec=$?; set -e
-          test "$ec" -eq 3 || { echo "expected exit 3, got $ec"; exit 1; }
-          echo "## relavium gate list" && relavium gate list
-          echo "## unknown runId → exit 2"
-          set +e; relavium logs nope >/dev/null 2>&1; ec=$?; set -e
-          test "$ec" -eq 2 || { echo "expected exit 2, got $ec"; exit 1; }
-          echo "✓ smoke passed on ${{ matrix.os }}"
+          name: ${{ needs.pack.outputs.artifact-name }}
+          path: ${{ runner.temp }}/packed-cli-artifact
+      - name: Download all installed-package receipts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: ${{ needs.pack.outputs.artifact-name }}-report-*
+          path: ${{ runner.temp }}/packed-cli-reports
+          merge-multiple: false
+      - name: Require pack and every consumer outcome and matching receipt
+        env:
+          RELAVIUM_PACKAGE_JOB_RESULTS: ${{ toJSON(needs) }}
+          RELAVIUM_PACKAGE_SOURCE_SHA: ${{ github.sha }}
+        run: node tools/cli-package/aggregate.mjs "${{ runner.temp }}/packed-cli-artifact" "${{ runner.temp }}/packed-cli-reports"
 
   publish:
     name: publish to npm (provenance)
-    needs: smoke
+    needs: packed-cli
     # Only a real pushed release tag publishes. `github.event_name == 'push'` is load-bearing, not
     # belt-and-suspenders: a `workflow_dispatch` can target a `v*` tag, so the ref check alone would let a
     # manually dispatched run publish. Every manual run now stops after the cross-OS smoke.
@@ -189,7 +231,7 @@ jobs:
       - name: Download the smoked tarball
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: relavium-tarball
+          name: ${{ needs.packed-cli.outputs.artifact-name }}
           path: artifact
       # Publish the EXACT artifact the smoke matrix proved — not a fresh build. catalog:/workspace: are already
       # resolved in the packed manifest, so `npm publish <tarball>` is correct here (pnpm-pack did the resolving).

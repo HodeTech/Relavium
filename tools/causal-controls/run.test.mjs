@@ -26,8 +26,13 @@ import { sourceState, digest } from '../usage-coverage-controls/source-graph.mjs
 const repository = realpathSync(fileURLToPath(new URL('../../', import.meta.url)));
 const target = 'tools/causal-controls/fixture.mjs';
 const files = ['tools/causal-controls/fixture.cases.mjs'];
-const scratchNames = () =>
-  readdirSync(realpathSync(tmpdir()))
+function scratchEnvironment(directory) {
+  const root = join(directory, 'owned-temporary');
+  mkdirSync(root, { recursive: true });
+  return { TMPDIR: root, TMP: root, TEMP: root };
+}
+const scratchNames = (directory) =>
+  readdirSync(scratchEnvironment(directory).TMPDIR)
     .filter((name) => /^relavium-(?:filesystem|secrets)-controls-/.test(name))
     .sort();
 
@@ -43,7 +48,7 @@ for (const [kind, background] of [
       const directory = realpathSync(mkdtempSync(join(tmpdir(), 'causal-runtime-error-')));
       const before = sourceState(repository);
       const tooling = ownedTools(repository, ['tools/causal-controls', 'tools/fs-policy-controls']);
-      const scratches = scratchNames();
+      const scratches = scratchNames(directory);
       try {
         const success = {
           id: 'clean-semantic-removal',
@@ -69,7 +74,11 @@ for (const [kind, background] of [
         mkdirSync(evidence);
         const child = await spawnJoined(process.execPath, [entry], {
           cwd: repository,
-          env: { ...process.env, RELAVIUM_ACCEPTANCE_EVIDENCE: evidence },
+          env: {
+            ...process.env,
+            ...scratchEnvironment(directory),
+            RELAVIUM_ACCEPTANCE_EVIDENCE: evidence,
+          },
         });
         assert.equal(child.joined, true);
         assert.equal(child.timedOut, false);
@@ -137,7 +146,7 @@ for (const [kind, background] of [
           ownedTools(repository, ['tools/causal-controls', 'tools/fs-policy-controls']),
           tooling,
         );
-        assert.deepEqual(scratchNames(), scratches);
+        assert.deepEqual(scratchNames(directory), scratches);
       } finally {
         rmSync(directory, { recursive: true, force: true });
       }
@@ -153,7 +162,7 @@ test(
       sourceHash = digest(readFileSync(join(repository, target)));
     const roots = ['tools/causal-controls', 'tools/fs-policy-controls', 'tools/secrets-controls'];
     const tooling = ownedTools(repository, roots);
-    const scratches = scratchNames();
+    const scratches = scratchNames(directory);
     try {
       for (const [kind, failure, exportRefused] of [
         ['filesystem', 'assertion', false],
@@ -195,6 +204,7 @@ test(
             cwd: repository,
             env: {
               ...process.env,
+              ...scratchEnvironment(directory),
               RELAVIUM_ACCEPTANCE_EVIDENCE: exportRefused ? repository : evidence,
             },
           },
@@ -243,7 +253,7 @@ test(
           !child.stderr.includes('Evidence must be outside'),
           'Secondary export failure must preserve the actual primary',
         );
-        assert.deepEqual(scratchNames(), scratches, 'Actual coordinator leaked scratch');
+        assert.deepEqual(scratchNames(directory), scratches, 'Actual coordinator leaked scratch');
         assert.equal(digest(readFileSync(join(repository, target))), sourceHash);
         if (exportRefused) {
           assert.equal(existsSync(join(evidence, kind)), false);
@@ -311,7 +321,7 @@ test(
 test('a stale later anchor stops every selected control before any fixed phase', async () => {
   const directory = realpathSync(mkdtempSync(join(tmpdir(), 'causal-anchor-preflight-')));
   const before = sourceState(repository),
-    scratches = scratchNames();
+    scratches = scratchNames(directory);
   try {
     const entry = join(directory, 'run.mjs');
     const good = {
@@ -335,7 +345,11 @@ test('a stale later anchor stops every selected control before any fixed phase',
       [entry],
       {
         cwd: repository,
-        env: { ...process.env, RELAVIUM_ACCEPTANCE_EVIDENCE: evidence },
+        env: {
+          ...process.env,
+          ...scratchEnvironment(directory),
+          RELAVIUM_ACCEPTANCE_EVIDENCE: evidence,
+        },
       },
       30000,
     );
@@ -348,7 +362,7 @@ test('a stale later anchor stops every selected control before any fixed phase',
     assert.deepEqual(retained.restorations, []);
     assert.match(retained.failure.message, /later-stale: exact source anchor drift/);
     assert.equal(existsSync(join(evidence, 'filesystem', 'first-valid')), false);
-    assert.deepEqual(scratchNames(), scratches);
+    assert.deepEqual(scratchNames(directory), scratches);
     assert.deepEqual(sourceState(repository), before);
   } finally {
     rmSync(directory, { recursive: true, force: true });
@@ -387,6 +401,7 @@ test(
             cwd: repository,
             env: {
               ...process.env,
+              ...scratchEnvironment(directory),
               RELAVIUM_ACCEPTANCE_EVIDENCE: evidence,
               RELAVIUM_CAUSAL_TIMEOUT_FIXTURE: mode,
             },

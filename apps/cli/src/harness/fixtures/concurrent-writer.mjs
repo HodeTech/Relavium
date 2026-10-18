@@ -5,10 +5,33 @@
 // reproduce. It writes distinct provider names, so success = every write of BOTH children landed with no
 // escaped `SQLITE_BUSY` and no lost/corrupt row (the parent asserts the union).
 //
-// argv: [node, thisFile, <abs path to @relavium/db dist index.js>, <shared db path>, <name prefix>, <count>]
+// argv: [node, thisFile, <db dist file URL>, <shared db path>, <name prefix>, <count>, <mode?>]
+// The optional fail-before-ready mode is a fixture refusal control; the normal mode always writes count rows.
 /* global process, console -- a Node child-process fixture (not TS source); it uses only these Node globals. */
-const [, , distPath, dbPath, prefix, countArg] = process.argv;
+const [, , distPath, dbPath, prefix, countArg, mode = 'write'] = process.argv;
 const count = Number(countArg);
+
+// Await pipe acknowledgement before entering synchronous SQLite: no buffered readiness bytes are
+// allowed to depend on the event loop that the first contended write is about to block.
+const announce = (line) =>
+  new Promise((resolve, reject) => {
+    process.stdout.write(line + '\n', (error) => (error ? reject(error) : resolve()));
+  });
+
+const start = new Promise((resolve, reject) => {
+  let command = '';
+  process.stdin.setEncoding('utf8');
+  process.stdin.on('data', (chunk) => {
+    command += chunk;
+  });
+  process.stdin.once('error', reject);
+  process.stdin.once('end', () => {
+    if (command === 'START\n') resolve();
+    else reject(new Error('Concurrent writer did not receive START.'));
+  });
+});
+// Startup may fail before this wait is reached; always observe the already-owned input task.
+void start.catch(() => undefined);
 
 let client;
 try {
@@ -25,10 +48,11 @@ try {
     uuid: () => `${prefix}0000000-0000-4000-8000-${String(++uuidN).padStart(12, '0')}`,
     now: () => 1_700_000_000_000,
   });
-  // Signal readiness (the import + the connection are up) so the parent releases the held write lock only
-  // once we are about to write — a deterministic handshake that forces real cross-process contention every
-  // run, independent of Node/import startup latency (which can exceed a fixed parent-side timer).
-  process.stdout.write('READY\n');
+  await announce('OPENED');
+  await start;
+  if (mode === 'fail-before-ready') throw new Error('synthetic refusal before READY');
+  // The parent now holds the write lock. READY is positive evidence, never synthesized from child exit.
+  await announce('READY');
   for (let i = 0; i < count; i += 1) {
     providers.upsert({
       name: `${prefix}-${i}`,
@@ -40,5 +64,9 @@ try {
   console.error(err instanceof Error ? (err.stack ?? err.message) : String(err));
   process.exitCode = 1;
 } finally {
-  client?.sqlite.close();
+  try {
+    client?.sqlite.close();
+  } finally {
+    process.stdin.destroy();
+  }
 }

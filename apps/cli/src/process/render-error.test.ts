@@ -63,6 +63,7 @@ function captureIo(): { readonly io: CliIo; readonly stderr: () => string } {
       writeErr: (text) => {
         writes.push(text);
       },
+      writeOutAcknowledged: () => Promise.resolve(),
       writeErrAcknowledged: (text) => {
         writes.push(text);
         return Promise.resolve();
@@ -90,6 +91,41 @@ function messageFromJson(value: unknown): string {
 
 describe('renderError terminal projection', () => {
   it.each([
+    { label: 'human', json: false, verbose: false },
+    { label: 'human verbose', json: false, verbose: true },
+    { label: 'JSON', json: true, verbose: false },
+    { label: 'JSON verbose', json: true, verbose: true },
+  ])('SECRETS_B2_DISPLAY_ORDER protects original credential evidence in $label', (options) => {
+    for (const prefix of ['sk-proj-', 'AIza']) {
+      for (const separator of ['\n', '\t', '\u0001', '\u007f', '\u0085', '\u202e']) {
+        const marker =
+          separator === '\n' || separator === '\t'
+            ? 'SECRETS_B2_DISPLAY_ORDER'
+            : 'SECRETS_B2_DISPLAY_BOUNDARY';
+        const input =
+          separator === '\n' || separator === '\t'
+            ? `provider rejected ${prefix}${'A'.repeat(32)}${separator}${'B'.repeat(32)}; public=Q`
+            : `word${separator}${prefix}${'A'.repeat(32)}; public=Q`;
+        const error = new CliError('invalid_invocation', input);
+        Object.defineProperty(error, 'stack', { value: `outer stack ${input}` });
+        const capture = captureIo();
+        const stdout: string[] = [];
+        renderError(error, options, { ...capture.io, writeOut: (text) => stdout.push(text) });
+        expect(stdout, marker).toEqual([]);
+        const output = capture.stderr();
+        expect(output, marker).not.toContain('A'.repeat(32));
+        expect(output, marker).not.toContain('B'.repeat(32));
+        if (options.json) {
+          expect(messageFromJson(JSON.parse(output)), marker).toBe('[REDACTED]');
+          expect(output).not.toContain('outer stack');
+        } else {
+          expect(output, marker).toContain('relavium: [REDACTED]\n');
+        }
+      }
+    }
+  });
+
+  it.each([
     { json: false, verbose: false },
     { json: false, verbose: true },
     { json: true, verbose: false },
@@ -100,7 +136,9 @@ describe('renderError terminal projection', () => {
       'invalid_invocation',
       'request failed ?client_secret=opaque-value-Q7',
     );
-    error.stack = 'safe outer frame ?refresh_token=opaque-stack-V9';
+    Object.defineProperty(error, 'stack', {
+      value: 'safe outer frame ?refresh_token=opaque-stack-V9',
+    });
     renderError(error, options, capture.io);
     const output = capture.stderr();
     expect(output).not.toContain('opaque-value-Q7');
@@ -116,7 +154,7 @@ describe('renderError terminal projection', () => {
 
   it('sanitizes the human diagnostic and its verbose stack without suppressing readable content (G34)', () => {
     const error = new CliError('invalid_invocation', `message visible${ATTACK}\nforged message`);
-    error.stack = `stack visible${ATTACK}\nsecond stack line`;
+    Object.defineProperty(error, 'stack', { value: `stack visible${ATTACK}\nsecond stack line` });
     const capture = captureIo();
 
     renderError(error, { json: false, verbose: true }, capture.io);
@@ -166,7 +204,7 @@ describe('renderError terminal projection', () => {
           for (const text of [`${query}; credential: ${split}`, `credential: ${split}; ${query}`]) {
             const capture = captureIo();
             const error = new CliError('invalid_invocation', text);
-            error.stack = `outer stack ${text}`;
+            Object.defineProperty(error, 'stack', { value: `outer stack ${text}` });
             renderError(error, options, capture.io);
             const output = capture.stderr();
             expect(output, 'SECRETS_CAUSAL_RESIDUAL_SCRUB').not.toContain(secret);
@@ -186,7 +224,9 @@ describe('renderError terminal projection', () => {
     const capture = captureIo();
     const error = new CliError('invalid_invocation', 'request failed; retry after 30s');
     const split = '?api_\nkey=opaque-residual-query-P8';
-    error.stack = `outer stack ?refresh_token=opaque-stack-value&ordinary=kept; key: ${split}`;
+    Object.defineProperty(error, 'stack', {
+      value: `outer stack ?refresh_token=opaque-stack-value&ordinary=kept; key: ${split}`,
+    });
     renderError(error, { json: false, verbose: true }, capture.io);
     const output = capture.stderr();
     expect(output, 'SECRETS_CAUSAL_RESIDUAL_SCRUB').not.toContain('opaque-residual-query-P8');
@@ -221,7 +261,7 @@ describe('renderError terminal projection', () => {
             for (const projection of [text, llmError.message]) {
               const capture = captureIo();
               const error = new CliError('invalid_invocation', projection);
-              error.stack = `outer stack ${projection}`;
+              Object.defineProperty(error, 'stack', { value: `outer stack ${projection}` });
               renderError(error, options, capture.io);
               const output = capture.stderr();
               expect(output, 'SECRETS_CAUSAL_PREFIX_ORDER').not.toContain(suffix);
@@ -239,16 +279,19 @@ describe('renderError terminal projection', () => {
 
   it('SECRETS_CAUSAL_PREFIX_ORDER protects a pre-scrubbed overlapping query in a verbose stack', () => {
     const suffix = 'AbCdEf0123456789xyzUVWXYZ';
-    const query = `?refresh_token=${['sk-', 'ant-', 'api03-', '\n', suffix].join('')}`;
-    const llmError = makeLlmError({ provider: 'openai', kind: 'auth', message: query });
-    const error = new CliError('invalid_invocation', 'request failed; retry after 30s');
-    error.stack = `outer stack ${llmError.message}`;
-    const capture = captureIo();
-    renderError(error, { json: false, verbose: true }, capture.io);
-    const output = capture.stderr();
-    expect(output, 'SECRETS_CAUSAL_PREFIX_ORDER').not.toContain(suffix);
-    expect(output).toContain('request failed; retry after 30s');
-    expect(output).toContain('[REDACTED]');
+    // The broader residual join remains independently load-bearing even with the LF/TAB probe.
+    for (const separator of ['\n', '\t', ' \r\n\t ']) {
+      const query = `?refresh_token=${['sk-', 'ant-', 'api03-', separator, suffix].join('')}`;
+      const llmError = makeLlmError({ provider: 'openai', kind: 'auth', message: query });
+      const error = new CliError('invalid_invocation', 'request failed; retry after 30s');
+      Object.defineProperty(error, 'stack', { value: `outer stack ${llmError.message}` });
+      const capture = captureIo();
+      renderError(error, { json: false, verbose: true }, capture.io);
+      const output = capture.stderr();
+      expect(output, 'SECRETS_CAUSAL_PREFIX_ORDER').not.toContain(suffix);
+      expect(output).toContain('request failed; retry after 30s');
+      expect(output).toContain('[REDACTED]');
+    }
   });
 
   it.each(
@@ -282,7 +325,7 @@ describe('renderError terminal projection', () => {
           for (const projection of [text, llmError.message, llmError.code ?? '']) {
             const capture = captureIo();
             const error = new CliError('invalid_invocation', projection);
-            error.stack = `outer stack ${projection}`;
+            Object.defineProperty(error, 'stack', { value: `outer stack ${projection}` });
             renderError(error, options, capture.io);
             const output = capture.stderr();
             expect(output, 'SECRETS_CAUSAL_OVERLAP_ORDER').not.toContain(secret);
@@ -310,7 +353,7 @@ describe('renderError terminal projection', () => {
         });
         for (const projection of [llmError.message, llmError.code ?? '']) {
           const error = new CliError('invalid_invocation', 'request failed; retry after 30s');
-          error.stack = `outer stack ${projection}`;
+          Object.defineProperty(error, 'stack', { value: `outer stack ${projection}` });
           const capture = captureIo();
           renderError(error, { json: false, verbose: true }, capture.io);
           const output = capture.stderr();
@@ -324,7 +367,7 @@ describe('renderError terminal projection', () => {
 
   it('sanitizes JSON diagnostic values and never appends a raw verbose stack', () => {
     const error = new CliError('invalid_invocation', `message visible${ATTACK}\nforged message`);
-    error.stack = `stack visible${ATTACK}`;
+    Object.defineProperty(error, 'stack', { value: `stack visible${ATTACK}` });
     const capture = captureIo();
 
     renderError(error, { json: true, verbose: true }, capture.io);
@@ -339,3 +382,25 @@ describe('renderError terminal projection', () => {
     expect(message).toContain('message visible');
   });
 });
+
+it.each(['prototype', 'stack'] as const)(
+  'keeps a fixed diagnostic when foreign %s inspection traps',
+  (trap) => {
+    const error =
+      trap === 'prototype'
+        ? new Proxy(new Error('PRIVATE_TRAP'), {
+            getPrototypeOf: () => {
+              throw new Error('PRIVATE_PROTOTYPE');
+            },
+          })
+        : Object.defineProperty(new Error('PRIVATE_TRAP'), 'stack', {
+            get: () => {
+              throw new Error('PRIVATE_STACK');
+            },
+          });
+    const capture = captureIo();
+    expect(() => renderError(error, { json: false, verbose: true }, capture.io)).not.toThrow();
+    expect(capture.stderr()).not.toContain('PRIVATE_');
+    expect(capture.stderr()).toContain('relavium:');
+  },
+);

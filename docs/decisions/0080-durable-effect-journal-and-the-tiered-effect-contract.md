@@ -339,3 +339,113 @@ The approved W7 implementation and scoped independent reviews are complete. Fina
 acceptance, per-item causal evidence, canonical landing checks and approved residuals are joined in
 the [W7 closing register](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w7-closing-register--2026-10-10).
 This dated note preserves the earlier decision and status history; W8 and the phase remain open.
+
+### PR #95 collision-guard correction — 2026-10-18
+
+The maintainer review reproduced a long-argument collision: the display's prefix and
+total-length marker had also fed the journal digest, losing different equal-length tails.
+The dispatch now supplies the full redacted projection to the existing host-side canonical
+hash. This restores §4's different-args refusal without hashing raw credentials or changing
+session non-replay. The persisted version prefix also prevents a current literal preview
+from matching a lossy legacy projection. All unversioned rows refuse matching prepare,
+including unchanged small arguments; no fallback or migration invents an identity or
+permission to repeat an effect. The exact projection and credential-equality
+limits remain in [effect-journal.md](../reference/shared-core/effect-journal.md#11-secrets-what-a-row-may-hold).
+This author correction is subject to fresh review and source-pinned validation in PR #95.
+
+### PR #95 recognized-credential correction — 2026-10-18
+
+The next independent review reproduced two incomplete recognized-value masks in the
+full journal input: an opaque query value longer than 512 characters and a quoted
+JSON password containing an escaped quote. Their remaining suffixes changed physical
+SQLite digests despite changing only credentials. The correction consumes each complete
+recognized value, preserving subsequent public fields. A new persisted digest domain
+refuses older partial projections, including a current literal equal to an old projection;
+it does not rewrite old rows or permit a repeated effect. This restores the existing
+credential-equality requirement rather than adding a new hashing or secret-storage
+decision. The exact current representation and compatibility limits remain in
+[effect-journal.md §11](../reference/shared-core/effect-journal.md#11-secrets-what-a-row-may-hold).
+An author sweep of the same class also reproduces multi-`@` URL userinfo retaining a
+password suffix. One whole-authority projection masks through its last separator,
+preserving the host and subsequent public fields. Fresh independent review and
+publication validation remain required for the complete correction.
+
+### PR #95 structural-credential correction — 2026-10-18
+
+A separate security review at `63d8de41` confirms that a recognized credential
+field could retain the rest of its value when an inner text pattern matched.
+The structural field now decides before traversal; only a bounded, canonical
+authentication-scheme label may survive. The same whole-value rule applies to
+credential flags in both argument-vector spellings. The ambiguous `-p` port
+exception does not classify explicitly named credential flags as public ports.
+Native registry/store regressions retain original dispatch bytes while checking
+credential equality and public-argument distinction. Prior digest domains remain
+refused without rewriting history or granting retry authority. This restores the
+existing §11 requirement; current details remain in its
+[canonical contract](../reference/shared-core/effect-journal.md#11-secrets-what-a-row-may-hold).
+Fresh independent reviews, a complete separate security sitting and corrected-source
+publication checks are still required.
+
+### PR #95 own-data projection correction — 2026-10-18
+
+The next complete separate security sitting and library review at `c837cd41`
+confirm a pre-existing own-data copying defect in the changed projection paths.
+Assignment into an ordinary object could invoke an inherited setter instead of
+retaining a nested public data member, causing different raw calls to share a
+journal identity. Projection copies now define own enumerable data properties.
+Declared-secret and media exclusions, top-level argument admission and raw host
+dispatch are unchanged. The corrected persisted domain refuses earlier ambiguous
+rows without rewriting history or granting retry authority. This restores the
+existing different-args refusal; exact representation remains in
+[effect-journal.md §11](../reference/shared-core/effect-journal.md#11-secrets-what-a-row-may-hold).
+Fresh independent acceptance and source-pinned publication checks remain separate.
+
+### PR #95 diagnostic projection order — 2026-10-18
+
+The subsequent independent library and separate security reviews identify
+truncation before recognition in tool-input and result-summary diagnostics. A
+preview could remove the closing delimiter of an otherwise supported credential
+shape. Both diagnostic paths now recognize complete spans before clipping. The
+full journal projection and its current digest domain are unchanged; raw host
+dispatch, model results and full spill content retain their existing handling.
+The finite diagnostic policy lives in
+[tool-registry.md](../reference/shared-core/tool-registry.md#result-bounding-and-spill-to-file);
+this does not promise removal of arbitrary sensitive content. Fresh acceptance
+and publication checks remain source-scoped.
+
+### PR #95 summary normalization correction — 2026-10-18
+
+A subsequent independent review identifies a regression in the diagnostic-order
+correction: masking raw text before whitespace collapse loses the existing
+recognition of multiline quoted values in one-line summaries. Summary generation
+now normalizes the complete materialized text, recognizes complete spans, then
+clips. The full journal projection, raw result/spill and recorded replay contract
+are unchanged. The [canonical diagnostic contract](../reference/shared-core/tool-registry.md#result-bounding-and-spill-to-file)
+owns this finite behavior; no historical-content rewrite is introduced.
+
+### PR #95 corrective review landing — 2026-10-18
+
+The complete corrective implementation at `ba14b1bd` has two NEW clean cumulative
+independent review rounds and a NEW separate clean defensive security sitting.
+The [correction register](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#pr-95-corrective-review-completion--2026-10-18)
+owns exact source, coverage, execution limits and published-source validation.
+Earlier pending review notes retain their historical attribution. Canonical
+projection/compatibility contracts remain authoritative; this landing rewrites no
+history and grants no automatic effect retry or whole-wave completion.
+
+
+### PR #95 split-credential recognition clarification — 2026-10-18
+
+> Amended 2026-10-18: The second maintainer systematic report identifies supported
+> token families and LF/TAB-split credential suffixes escaping finite masking.
+> Recognition now covers the complete supported original span before summary
+> normalization or diagnostic clipping; ambiguous token-alphabet continuation
+> after LF/TAB is conservatively part of that span. Ordinary spaces/punctuation
+> separate surrounding public prose. This refines recognized-credential
+> projection rather than promising removal of arbitrary sensitive content.
+> The [finite masking contract](../reference/shared-core/built-in-tools.md#finite-diagnostic-credential-masking)
+> and [journal compatibility contract](../reference/shared-core/effect-journal.md#11-secrets-what-a-row-may-hold)
+> own current details. Raw dispatch/model content and historical rows are not
+> rewritten, and no effect retry authority is added. New independent review,
+> separate security and corrected-source publication checks remain pending in
+> the [second correction register](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#pr-95-second-systematic-review-corrections--2026-10-18).

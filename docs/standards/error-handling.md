@@ -11,6 +11,25 @@ and cost accounting that are product features.
 
 ## Typed errors, never strings
 
+Owned production error families inherit the minimal `RelaviumError` exported by
+`@relavium/shared`. It forwards the native `Error` constructor without imposing a
+name, discriminant, context or cause policy; each existing family owns those
+contracts. Plain seam values such as `LlmError`, foreign SDK exceptions and private
+control-flow sentinels retain their separate representations. Shared ancestry is
+neither proof of a safe diagnostic nor a substitute for an existing structural
+boundary guard: independently bundled class identities can differ. Existing local
+identity and private-authority guards also retain their own contracts.
+
+The supported `@relavium/shared/relavium-error` leaf exports that same constructor
+without evaluating the schema barrel. Early process contracts use this leaf;
+runtime classifiers that recognize engine/DB families stay behind runtime loading.
+The supported `@relavium/core/tool-dispatch-error` leaf likewise exports the
+existing `ToolDispatchError` base without loading the engine/provider barrel.
+Concrete tool errors and the root export extend/re-export that exact constructor;
+filesystem grant admission can classify its own denial before service evaluation.
+CLI diagnostic rendering accepts an already-classified projection independently
+of the heavy runtime-family classifier.
+
 - Errors are **typed and discriminated**, never bare `Error` and never thrown strings
   (see [code-style-typescript.md](code-style-typescript.md)). Each error type carries a
   stable discriminant (a `kind` / `code`) callers narrow on — not `error.message`, which
@@ -27,6 +46,15 @@ and cost accounting that are product features.
   `@relavium/core` so callers and tests narrow on `.code`, never the message. (The cross-cutting
   `LlmError` seam contract is the one error type detailed in full below, because the fallback chains
   depend on its classification.)
+
+`@relavium/core` also exports the frozen canonical
+`TRANSIENT_ENGINE_STATE_CODES` array used by `isTransientEngineStateError`.
+Boundary projections that must avoid reading caller-controlled accessors may
+compare a captured own-data code against that same authority. Do not create a
+second transient-code list. This export adds no engine code or retry behavior.
+Database storage origin has a separate
+[read-only identity fact](../reference/shared-core/database-schema.md#node-client-failure-provenance);
+error ancestry and public construction do not grant it.
 
 ## `LlmError` classification — the contract the fallback chains depend on
 

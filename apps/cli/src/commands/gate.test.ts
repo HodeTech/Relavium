@@ -1,7 +1,12 @@
+import { invocationFixture } from '../process/invocation.test-support.js';
+import { workflowFinalizerControl } from './workflow-expired-cleanup.test-support.js';
+import { createCliInvocation } from '../process/invocation.js';
+import { witnessNativeToolProcess } from './native-forwarding.test-support.js';
 import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Readable } from 'node:stream';
 
 import {
   EngineStateError,
@@ -9,6 +14,7 @@ import {
   parseWorkflow,
   type CheckpointState,
   type RunHandle,
+  type WorkflowDefinition,
   type WorkflowEngine,
 } from '@relavium/core';
 import {
@@ -25,7 +31,7 @@ import {
   type DbClient,
   type RunHistoryStore,
 } from '@relavium/db';
-import type { RunEvent } from '@relavium/shared';
+import { WorkflowSchema, WorkflowSnapshotSchema, type RunEvent } from '@relavium/shared';
 import { startMcpClient as realStartMcpClient } from '@relavium/mcp';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -51,7 +57,10 @@ import {
 const { consentPrompt } = vi.hoisted(() => ({
   consentPrompt: vi.fn(() => Promise.resolve(false)),
 }));
-vi.mock('../mcp/consent-prompt.js', () => ({ createConsentPrompter: () => consentPrompt }));
+vi.mock('../mcp/consent-prompt.js', () => ({
+  createConsentPrompter: () => consentPrompt,
+  createBoundConsentPrompter: () => consentPrompt,
+}));
 
 /**
  * A WorkflowEngine stub for the closed-handle / EngineStateError paths that the real engine can't be driven
@@ -230,12 +239,64 @@ describe('gateCommand', () => {
     db = client.db;
   });
   afterEach(() => {
-    client.sqlite.close();
+    if (client.sqlite.open) client.sqlite.close();
+  });
+
+  it('classifies actual history corruption as storage 1 before any resume', async () => {
+    mkdirSync(join(home, '.relavium'));
+    writeFileSync(join(home, '.relavium', 'history.db'), 'PRIVATE_CORRUPT_HISTORY');
+    await expect(
+      gateCommand(
+        { runId: 'synthetic', approve: true },
+        { io: captureIo().io, global: globalOptions() },
+      ),
+    ).rejects.toMatchObject({ code: 'storage_unavailable', exitCode: 1 });
+  });
+
+  it('does not promote an injected errno-shaped opener failure to storage', async () => {
+    const cause = Object.assign(new Error('PRIVATE_FOREIGN_OPEN_FAILURE'), { code: 'ENOSPC' });
+    const control = invocationFixture();
+    const removeSignals = vi.fn();
+    let settled = false;
+    void gateCommand(
+      { runId: 'synthetic', approve: true },
+      {
+        io: captureIo().io,
+        global: globalOptions(),
+        invocation: control.invocation,
+        subscribeSignals: () => removeSignals,
+        openDb: () => {
+          throw cause;
+        },
+      },
+    ).then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(toUserFacing(cause)).toMatchObject({ code: 'cli_internal', exitCode: 9 });
+    expect(control.registry.observations.exitCode()).toBe(9);
+    expect(control.registry.activeOwners, 'UNKNOWN_PARTIAL_GATE_OPEN_IS_NOT_RETIREMENT').toBe(1);
+    expect(removeSignals).not.toHaveBeenCalled();
+    expect(settled).toBe(false);
+    control.advance(3_000);
+    expect(await control.invocation.finiteExit.exited).toBe(9);
+    expect(control.registry.activeOwners).toBe(1);
+    expect(settled).toBe(false);
   });
 
   /** The injected deps for a resume over the SHARED in-memory db (no-op close — the db spans the whole test). */
   function deps(io: ReturnType<typeof captureIo>['io']): GateCommandDeps {
-    return { io, global: globalOptions(), openDb: () => ({ db, close: () => {} }) };
+    return {
+      io,
+      invocation: createCliInvocation({ exit: vi.fn(), setExitCode: vi.fn() }),
+      global: globalOptions(),
+      openDb: () => ({ db, close: () => {} }),
+    };
   }
 
   /** A read-only history store over the shared db (for asserting persisted events post-resume). */
@@ -254,6 +315,15 @@ describe('gateCommand', () => {
     projectRoot?: string,
   ): Promise<{ runId: string; gateIds: string[] }> {
     const def = parseWorkflow(yaml, { source: 'gate.test' });
+    return setupPausedWorkflow(def, inputs, projectRoot);
+  }
+
+  /** Historical runs enter with their already-admitted definition, never through fresh YAML admission. */
+  async function setupPausedWorkflow(
+    def: WorkflowDefinition,
+    inputs: Record<string, unknown>,
+    projectRoot?: string,
+  ): Promise<{ runId: string; gateIds: string[] }> {
     const store = createRunHistoryStore(db, {
       uuid: () => randomUUID(),
       now: () => Date.now(),
@@ -277,6 +347,188 @@ describe('gateCommand', () => {
     }
     return { runId, gateIds };
   }
+
+  it.each([
+    { remaining: 0, queuedExpiry: false },
+    { remaining: 1, queuedExpiry: false },
+    { remaining: 1, queuedExpiry: true },
+  ])(
+    'gate finalizer respects the original MCP budget ($remaining ms left, queued expiry=$queuedExpiry)',
+    async ({ remaining, queuedExpiry }) => {
+      const yaml = GATED.replace(
+        '  nodes:',
+        `  agents:
+    - id: unused
+      model: claude-sonnet-4-6
+      provider: anthropic
+      system_prompt: synthetic
+      tools: [mcp_fs_read]
+      mcp_servers: [{ id: fs, transport: stdio, command: synthetic-never-spawned }]
+  nodes:`,
+      );
+      const paused = await setupPausedRun(yaml);
+      const control = workflowFinalizerControl(remaining, client.sqlite, queuedExpiry);
+      await control.verify(
+        gateCommand(
+          { runId: paused.runId, approve: true },
+          {
+            ...deps(captureIo().io),
+            ...control,
+            consentGate: () => Promise.resolve(new Map()),
+            openDb: () => ({ db, close: control.closeDatabase }),
+          },
+        ),
+      );
+    },
+  );
+
+  it('forwards the resuming invocation before the actual engine build resolves', async () => {
+    const { runId } = await setupPausedRun();
+    const invocation = createCliInvocation();
+    const { io } = captureIo();
+    expect(
+      await gateCommand(
+        { runId, approve: true },
+        {
+          ...deps(io),
+          invocation,
+          buildEngine: async (options) => {
+            await witnessNativeToolProcess(
+              options?.toolEnv?.nativeProcesses,
+              invocation,
+              options?.toolEnv?.workspaceDir ?? root,
+              2,
+            );
+            return buildEngine(options);
+          },
+        },
+      ),
+    ).toBe(EXIT_CODES.success);
+    expect(invocation.registry.activeOwners).toBe(0);
+  });
+
+  it.each([
+    {
+      label: 'an inline agent with repeated fallback model/provider entries',
+      freshError: /duplicate fallback_chain/,
+      skippedNodeId: undefined,
+      historical: (base: WorkflowDefinition) => ({
+        ...base,
+        workflow: {
+          ...base.workflow,
+          // Unused by this deterministic workflow: retaining its ordered attempt budgets needs no key.
+          agents: [
+            {
+              id: 'unused',
+              model: 'gpt-4o',
+              provider: 'openai',
+              system_prompt: 'Keep the historical fallback order.',
+              fallback_chain: [
+                { model: 'gpt-4o-mini', provider: 'openai', max_attempts: 1 },
+                { model: 'gpt-4o-mini', provider: 'openai', max_attempts: 2 },
+              ],
+            },
+          ],
+        },
+      }),
+    },
+    {
+      label: 'a condition with repeated matching values and first-declared routing',
+      freshError: /duplicate branch when/,
+      skippedNodeId: 'shadow',
+      historical: (base: WorkflowDefinition) => ({
+        ...base,
+        workflow: {
+          ...base.workflow,
+          nodes: [
+            ...base.workflow.nodes,
+            {
+              id: 'route',
+              type: 'condition',
+              expression: 'inputs.n',
+              branches: [
+                { when: 7, target_node: 'double' },
+                { when: 7, target_node: 'shadow' },
+              ],
+            },
+            { id: 'shadow', type: 'transform', transform: '({ d: 999 })' },
+          ],
+          edges: [
+            { from: 'start', to: 'g' },
+            { from: 'g', to: 'route' },
+            { from: 'double', to: 'out' },
+            { from: 'shadow', to: 'out' },
+          ],
+        },
+      }),
+    },
+    {
+      label: 'a gate with an inactive timeout action and no timeout duration',
+      freshError: /timeout_action requires timeout_ms/,
+      skippedNodeId: undefined,
+      historical: (base: WorkflowDefinition) => ({
+        ...base,
+        workflow: {
+          ...base.workflow,
+          nodes: base.workflow.nodes.map((node) =>
+            node.id === 'g' ? { ...node, timeout_action: 'reject' } : node,
+          ),
+        },
+      }),
+    },
+  ])('resumes historical $label without rewriting its frozen definition', async (historical) => {
+    const original = historical.historical(parseWorkflow(GATED, { source: 'gate.test' }));
+    // New authoring rejects each shape, while an already-admitted run retains its original semantics.
+    expect(() => WorkflowSchema.parse(original)).toThrow(historical.freshError);
+    expect(() => parseWorkflow(JSON.stringify(original), { source: 'gate.test' })).toThrow(
+      historical.freshError,
+    );
+    const definition = WorkflowSnapshotSchema.parse(original);
+    expect(definition).toEqual(original);
+
+    const { runId, gateIds } = await setupPausedWorkflow(definition, { n: 7 });
+    expect(runId).not.toBe('');
+    expect(gateIds).toHaveLength(1);
+    expect(reader().loadRun(runId)?.status).toBe('paused');
+    const before = reader().loadRunEvents(runId);
+    const paused = before.find((event) => event.type === 'human_gate:paused');
+    expect(paused).toMatchObject({ nodeId: 'g', gateId: gateIds[0] });
+    // Even the historical timeout_action alone never armed a timer or applied a timeout decision.
+    expect(paused).not.toHaveProperty('timeoutMs');
+    expect(paused).not.toHaveProperty('timeoutAction');
+    expect(paused).not.toHaveProperty('expiresAt');
+    expect(before.some((event) => event.type === 'run:completed')).toBe(false);
+    const snapshot = loadRunSnapshot(db, runId)?.workflowDefinitionSnapshot;
+    expect(snapshot).toBe(JSON.stringify(definition));
+
+    const { io } = captureIo();
+    expect(await gateCommand({ runId, approve: true }, deps(io))).toBe(EXIT_CODES.success);
+    const events = reader().loadRunEvents(runId);
+    expect(reader().loadRun(runId)?.status).toBe('completed');
+    expect(events.filter((event) => event.type === 'run:started')).toHaveLength(1);
+    expect(events.filter((event) => event.type === 'run:completed')).toEqual([
+      expect.objectContaining({ runId, outputs: { out: { d: 14 } } }),
+    ]);
+    expect(events.filter((event) => event.type === 'human_gate:resumed')).toEqual([
+      expect.objectContaining({ runId, nodeId: 'g', decision: 'approved', decidedBy: 'cli' }),
+    ]);
+    expect(events.slice(0, before.length)).toEqual(before);
+    expect(loadRunSnapshot(db, runId)?.workflowDefinitionSnapshot).toBe(snapshot);
+    if (historical.skippedNodeId !== undefined) {
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          type: 'node:skipped',
+          nodeId: historical.skippedNodeId,
+          reason: 'branch_not_taken',
+        }),
+      );
+      expect(
+        events.some(
+          (event) => event.type === 'node:started' && event.nodeId === historical.skippedNodeId,
+        ),
+      ).toBe(false);
+    }
+  });
 
   describe('secret re-supply (ADR-0083 §6)', () => {
     const SECRET = 'sk-live-not-in-the-log';
@@ -366,14 +618,13 @@ describe('gateCommand', () => {
       // refuse immediately, which exercises the real function and its message without touching stdin.
       const { runId, gateIds } = await seedSecretRun();
       const { io } = captureIo();
-      const original = process.stdin.isTTY;
       try {
-        Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true });
+        Object.defineProperty(io.stdin, 'isTTY', { value: true, configurable: true });
         await expect(
           gateCommand({ runId, approve: true, secretStdin: true }, deps(io)),
         ).rejects.toThrow(`relavium gate ${runId} --gate ${gateIds[0]} --approve --secret-stdin`);
       } finally {
-        Object.defineProperty(process.stdin, 'isTTY', { value: original, configurable: true });
+        Object.defineProperty(io.stdin, 'isTTY', { value: false, configurable: true });
       }
     });
 
@@ -382,7 +633,7 @@ describe('gateCommand', () => {
       async (mode) => {
         const { runId } = await seedSecretRun();
         const captured = captureIo();
-        const original = Object.getOwnPropertyDescriptor(process, 'stdin');
+        const source = new Readable({ read() {} });
         const close = vi.fn();
         const resolveKeys = vi.fn(() => {
           throw new Error('keys must not resolve');
@@ -402,17 +653,14 @@ describe('gateCommand', () => {
           return Promise.resolve({ done, value: 'api_key=' + 'x'.repeat(65_536) });
         });
         try {
-          Object.defineProperty(process, 'stdin', {
-            configurable: true,
-            value: {
-              isTTY: mode === 'TTY',
-              [Symbol.asyncIterator]: () => ({ next }),
-            },
+          Object.defineProperties(source, {
+            isTTY: { value: mode === 'TTY' },
+            [Symbol.asyncIterator]: { value: () => ({ next }) },
           });
           const operation = gateCommand(
             { runId, approve: true, secretStdin: true },
             {
-              ...deps(captured.io),
+              ...deps({ ...captured.io, stdin: source }),
               openDb: () => ({ db, close }),
               resolveKeys,
               startMcpClient,
@@ -434,7 +682,7 @@ describe('gateCommand', () => {
           expect(captured.out()).toBe('');
           expect(captured.err()).not.toContain('opaque-gate-stdin-fault');
         } finally {
-          if (original !== undefined) Object.defineProperty(process, 'stdin', original);
+          source.destroy();
         }
       },
     );
@@ -444,26 +692,23 @@ describe('gateCommand', () => {
       async (exactCapacity) => {
         const { runId } = await seedSecretRun();
         const { io } = captureIo();
-        const original = Object.getOwnPropertyDescriptor(process, 'stdin');
+        const source = new Readable({ read() {} });
         let supplied: unknown;
         const padding = exactCapacity
           ? 'x'.repeat(65_536 - Buffer.byteLength(' api_key = value=with=equals  \r\n'))
           : '';
         const value = ` ${padding}value=with=equals  `;
         try {
-          Object.defineProperty(process, 'stdin', {
-            configurable: true,
-            value: {
-              async *[Symbol.asyncIterator]() {
-                await Promise.resolve();
-                yield ` api_key =${value}\r\n`;
-              },
+          Object.defineProperty(source, Symbol.asyncIterator, {
+            value: async function* () {
+              await Promise.resolve();
+              yield ` api_key =${value}\r\n`;
             },
           });
           const code = await gateCommand(
             { runId, approve: true, secretStdin: true },
             {
-              ...deps(io),
+              ...deps({ ...io, stdin: source }),
               buildEngine: async (options) => {
                 const engine = await buildEngine(options);
                 const resume = engine.resumeFromCheckpoint.bind(engine);
@@ -479,7 +724,7 @@ describe('gateCommand', () => {
           expect(supplied).toMatchObject({ inputs: { api_key: value } });
           expect(JSON.stringify(reader().loadRunEvents(runId))).not.toContain('value=with=equals');
         } finally {
-          if (original !== undefined) Object.defineProperty(process, 'stdin', original);
+          source.destroy();
         }
       },
     );
@@ -662,21 +907,21 @@ describe('gateCommand', () => {
         const io = { ...captured.io, stdinIsTty: true, stdoutIsTty: true, env: {} };
         const startMcpClient = vi.fn(() => realStartMcpClient([]));
         const before = reader().loadRunEvents(runId);
-        const descriptor = Object.getOwnPropertyDescriptor(process, 'stdin');
+        const source = new Readable({ read() {} });
         const iterator = vi.fn(async function* () {
           yield await Promise.resolve(`api_key=${opaque}`);
         });
         let caught: unknown;
         try {
-          Object.defineProperty(process, 'stdin', {
-            configurable: true,
-            value: { isTTY: false, [Symbol.asyncIterator]: iterator },
+          Object.defineProperties(source, {
+            isTTY: { value: false },
+            [Symbol.asyncIterator]: { value: iterator },
           });
           try {
             await gateCommand(
               { runId, approve: true, secretStdin: true },
               {
-                ...deps(io),
+                ...deps({ ...io, stdin: source }),
                 startMcpClient,
                 selectRenderer: () => ({ onEvent: () => {}, finalize: () => {} }),
               },
@@ -695,7 +940,7 @@ describe('gateCommand', () => {
           expect(existsSync(mcpConsentPath(home))).toBe(false);
           expect(reader().loadRunEvents(runId)).toEqual(before);
         } finally {
-          if (descriptor !== undefined) Object.defineProperty(process, 'stdin', descriptor);
+          source.destroy();
         }
       });
 
@@ -727,7 +972,10 @@ describe('gateCommand', () => {
         expect(
           await gateCommand(
             { runId, approve: true, secretStdin: true, allowMcpStdio: [digest] },
-            commandDeps,
+            {
+              ...commandDeps,
+              invocation: createCliInvocation({ exit: vi.fn(), setExitCode: vi.fn() }),
+            },
           ),
         ).toBe(EXIT_CODES.success);
         expect(startMcpClient).toHaveBeenCalledOnce();
@@ -1027,6 +1275,25 @@ workflow:
           .run('{"workflow":{}}', runId),
     },
     {
+      label: 'a historical snapshot with already-invalid duplicate parallel members',
+      corrupt: (runId: string) => {
+        const definition = parseWorkflow(GATED, { source: 'gate.test' });
+        const invalid = {
+          ...definition,
+          workflow: {
+            ...definition.workflow,
+            nodes: [
+              ...definition.workflow.nodes,
+              { id: 'fan', type: 'parallel', parallel_of: ['double', 'double'] },
+            ],
+          },
+        };
+        client.sqlite
+          .prepare('UPDATE runs SET workflow_definition_snapshot = ? WHERE id = ?')
+          .run(JSON.stringify(invalid), runId);
+      },
+    },
+    {
       label: 'a snapshot but no event log (no resumable state)',
       corrupt: (runId: string) =>
         client.sqlite.prepare('DELETE FROM run_events WHERE run_id = ?').run(runId),
@@ -1093,19 +1360,25 @@ workflow:
     });
   });
 
-  it('maps a closed-handle resume (a concurrent-settle race) to an idempotent exit 0', async () => {
-    const { runId } = await setupPausedRun();
-    const { io, out } = captureIo();
-    const code = await gateCommand(
-      { runId, approve: true },
-      {
-        ...deps(io),
-        buildEngine: () => Promise.resolve(stubEngine(() => Promise.resolve(emptyHandle(runId)))),
-      },
-    );
-    expect(code).toBe(EXIT_CODES.success); // a closed handle (already terminal) is an idempotent no-op, not a failure
-    expect(out()).toContain('already settled');
-  });
+  it.each([false, true])(
+    'maps a closed-handle resume to an idempotent exit 0; json=%s',
+    async (json) => {
+      const { runId } = await setupPausedRun();
+      const { io, out, err } = captureIo();
+      const commandDeps = deps(io);
+      const code = await gateCommand(
+        { runId, approve: true },
+        {
+          ...commandDeps,
+          global: { ...commandDeps.global, json },
+          buildEngine: () => Promise.resolve(stubEngine(() => Promise.resolve(emptyHandle(runId)))),
+        },
+      );
+      expect(code).toBe(EXIT_CODES.success); // a closed handle (already terminal) is an idempotent no-op, not a failure
+      expect(json ? err() : out()).toBe(`run ${runId} already settled; nothing to resume\n`);
+      expect(json ? out() : err()).toBe('');
+    },
+  );
 
   it('maps a workflow_mismatch EngineStateError from resumeFromCheckpoint to exit-2', async () => {
     const { runId } = await setupPausedRun();
@@ -1180,22 +1453,33 @@ workflow:
     });
   });
 
-  it('is idempotent: a doubled decision on an already-completed run is a clean exit-0 no-op (no double-advance)', async () => {
-    const { runId } = await setupPausedRun();
-    const { io, out } = captureIo();
-    const reader = createRunHistoryStore(db, {
-      uuid: () => randomUUID(),
-      now: () => Date.now(),
-      workflow: { slug: 'gate-resume', name: 'gate-resume', definitionJson: '{}' },
-    });
-    await gateCommand({ runId, approve: true }, deps(io)); // first resume → completes
-    const eventsAfterFirst = reader.loadRunEvents(runId).length;
+  it.each([false, true])(
+    'keeps a doubled decision on a completed run idempotent; json=%s',
+    async (json) => {
+      const { runId } = await setupPausedRun();
+      const { io } = captureIo();
+      const reader = createRunHistoryStore(db, {
+        uuid: () => randomUUID(),
+        now: () => Date.now(),
+        workflow: { slug: 'gate-resume', name: 'gate-resume', definitionJson: '{}' },
+      });
+      await gateCommand({ runId, approve: true }, deps(io)); // first resume → completes
+      const eventsAfterFirst = reader.loadRunEvents(runId).length;
 
-    const code = await gateCommand({ runId, approve: true }, deps(io)); // second decision
-    expect(code).toBe(EXIT_CODES.success);
-    expect(out()).toContain('nothing to resume'); // idempotent message, not a re-run
-    expect(reader.loadRunEvents(runId)).toHaveLength(eventsAfterFirst); // NO new events — not advanced twice
-  });
+      const second = captureIo();
+      const commandDeps = deps(second.io);
+      const buildEngine = vi.fn(() => Promise.reject(new Error('unexpected engine construction')));
+      const code = await gateCommand(
+        { runId, approve: true },
+        { ...commandDeps, global: { ...commandDeps.global, json }, buildEngine },
+      );
+      expect(code).toBe(EXIT_CODES.success);
+      expect(json ? second.err() : second.out()).toContain('nothing to resume');
+      expect(json ? second.out() : second.err()).toBe('');
+      expect(buildEngine).not.toHaveBeenCalled();
+      expect(reader.loadRunEvents(runId)).toHaveLength(eventsAfterFirst); // NO new events — not advanced twice
+    },
+  );
 
   it('rejects an unknown runId (exit 2)', async () => {
     const { io } = captureIo();

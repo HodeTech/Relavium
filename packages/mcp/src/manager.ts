@@ -65,9 +65,13 @@ export interface McpClient {
    * Tear down every connection (idempotent).
    *
    * Every concurrent/repeated close joins the same cleanup. Teardown faults are retained and
-   * reported once to each supplied `onCloseError` callback; successful connections are removed
-   * only after their exact close completes. The default remains best-effort reporting, not
-   * a semantic receipt or proof that a failed transport acknowledged native resource closure.
+   * reported promptly once per server to each supplied `onCloseError` callback, even while
+   * another close is held. Late reporters receive retained faults. Successful connections are removed
+   * only after their exact close completes. Reporting is not a cleanup join; reporter exceptions
+   * are returned after all entered closes settle. A budget-port infrastructure failure rejects
+   * promptly while retaining unknown cleanup and every entered sibling close; rejection is no ACK.
+   * The default remains best-effort reporting, not a semantic receipt or proof that a failed
+   * transport acknowledged native resource closure.
    */
   close(onCloseError?: (serverId: string, cause: unknown) => void): Promise<void>;
   /**
@@ -80,26 +84,30 @@ export interface McpClient {
   readonly childPids: readonly number[];
 }
 
+/** Host-only failed-start observations and live close budget; no native handle or receipt authority. */
+export interface McpStartupLifecycle {
+  /** Called immediately for each actual close refusal, even while another connection is still closing. */
+  readonly onCloseError?: (serverId: string, cause: unknown) => void;
+  /** Applies to every actual close, including successful startup and deferred manager entry. */
+  readonly budget?: { readonly remainingMs: () => number | undefined };
+}
+
 export async function startMcpClient(
   servers: readonly McpServerConfig[],
   /** Cancels the connect AND the discovery walk — see {@link McpServerConfig.open}. */
   signal?: AbortSignalLike,
   options?: ToolHostCallOptions,
+  lifecycle?: McpStartupLifecycle,
 ): Promise<McpClient> {
   const connections = new Map<string, McpConnection>();
   const closeFailures = new Map<string, unknown>();
-  const reported = new WeakSet<(serverId: string, cause: unknown) => void>();
-  let closing: Promise<void> | undefined;
-  const close = (onCloseError?: (serverId: string, cause: unknown) => void): Promise<void> => {
-    // Assign the shared join before entering a custom close factory; reentrant close/call
-    // observes retirement immediately rather than starting a second cleanup.
-    closing ??= Promise.resolve().then(() => closeAll(connections, closeFailures));
-    return closing.then(() => {
-      if (onCloseError === undefined || reported.has(onCloseError)) return;
-      reported.add(onCloseError);
-      for (const [serverId, cause] of closeFailures) onCloseError(serverId, cause);
-    });
-  };
+  type CloseReporter = NonNullable<Parameters<McpClient['close']>[0]>;
+  interface ReportState {
+    readonly servers: Set<string>;
+    failure?: { readonly cause: unknown };
+  }
+  const reported = new WeakMap<CloseReporter, ReportState>();
+  const activeReporters = new Map<CloseReporter, ReportState>();
   const toolDefs: ToolDef[] = [];
   const toolIdsByServer = new Map<string, readonly string[]>();
   const skipped: ManagerSkippedTool[] = [];
@@ -121,6 +129,85 @@ export async function startMcpClient(
   // connection as soon as `open()` resolves, so a later `listTools()` failure still has it in `connections` for
   // the fail-loud teardown; and each wraps its own failure into a typed, secret-free error carrying the server id.
   const startup = new McpWorkScope(options);
+  // Transfer failed-start cleanup before any producer enters. Its raw closes can outlive an
+  // unexpected reporter failure without disappearing from the caller's actual lifetime join.
+  const failedCleanup = startup.fork();
+  let failedStartup = false;
+  let startupFailure: { readonly cause: unknown } | undefined;
+  let closing: Promise<void> | undefined;
+  let closeFinished = false;
+  let rejectObserver: (cause: Error) => void = () => undefined;
+  const observerFailure = new Promise<never>((_resolve, reject) => {
+    rejectObserver = reject;
+  });
+  void observerFailure.catch(() => undefined);
+  const deliver = (
+    report: CloseReporter,
+    state: ReportState,
+    serverId: string,
+    cause: unknown,
+  ): void => {
+    if (state.servers.has(serverId)) return;
+    // Mark before entering caller code: a reporter may reenter close with the same identity.
+    state.servers.add(serverId);
+    try {
+      report(serverId, cause);
+    } catch (observerCause) {
+      // A callback cannot abandon sibling cleanup or erase its own original failure.
+      state.failure ??= { cause: observerCause };
+    }
+  };
+  const reportCloseFailure = (serverId: string, cause: unknown): void => {
+    for (const [report, state] of [...activeReporters]) deliver(report, state, serverId, cause);
+  };
+  const close = (onCloseError?: (serverId: string, cause: unknown) => void): Promise<void> => {
+    // Publish the shared join before entering custom close factories, including reentry.
+    // Successful clients keep the same live budget across this deferred entry. Their reporter
+    // still belongs to close(onCloseError), separately from the failed-start lifecycle observer.
+    closing ??= Promise.resolve()
+      .then(() =>
+        closeAll(
+          connections,
+          closeFailures,
+          failedStartup ? failedCleanup : undefined,
+          failedStartup
+            ? lifecycle
+            : {
+                ...(lifecycle?.budget === undefined ? {} : { budget: lifecycle.budget }),
+                onCloseError: reportCloseFailure,
+              },
+          (cause) =>
+            rejectObserver(
+              new Error(
+                failedStartup
+                  ? 'MCP startup cleanup observation failed.'
+                  : 'MCP cleanup observation failed.',
+                {
+                  cause: { primary: startupFailure?.cause, observer: cause },
+                },
+              ),
+            ),
+        ),
+      )
+      .finally(() => {
+        closeFinished = true;
+        activeReporters.clear();
+      });
+    let state: ReportState | undefined;
+    if (onCloseError !== undefined) {
+      state = reported.get(onCloseError);
+      if (state === undefined) {
+        state = { servers: new Set() };
+        reported.set(onCloseError, state);
+      }
+      if (!closeFinished) activeReporters.set(onCloseError, state);
+      // A caller attaching during a held sibling close must see earlier faults now too.
+      for (const [serverId, cause] of closeFailures) deliver(onCloseError, state, serverId, cause);
+    }
+    return Promise.race([closing, observerFailure]).then(() => {
+      if (state?.failure !== undefined) throw state.failure.cause;
+    });
+  };
   const settled = await Promise.allSettled(
     servers.map(async (server) => {
       const work = startup.fork();
@@ -139,9 +226,16 @@ export async function startMcpClient(
   const failure = settled.find((r): r is PromiseRejectedResult => r.status === 'rejected');
   if (failure !== undefined) {
     // Fail-loud: tear down everything opened, then surface the (already typed + secret-free) first failure.
-    await close();
+    startupFailure = { cause: failure.reason };
+    failedStartup = true;
+    try {
+      await Promise.race([close(), observerFailure]);
+    } finally {
+      failedCleanup.seal();
+    }
     throw failure.reason;
   }
+  failedCleanup.seal();
   // Assemble the tool defs in DECLARATION order (not connect-completion order) so the cross-server namespacing +
   // collision resolution (shared `seenToolIds`, first-wins) stays deterministic regardless of who connected first.
   for (const result of settled) {
@@ -203,17 +297,39 @@ export async function startMcpClient(
 async function closeAll(
   connections: Map<string, McpConnection>,
   failures: Map<string, unknown>,
+  scope?: McpWorkScope,
+  lifecycle?: McpStartupLifecycle,
+  observerFailed: (cause: unknown) => void = () => undefined,
 ): Promise<void> {
   const all = [...connections.entries()];
   await Promise.all(
     all.map(async ([serverId, connection]) => {
+      const enter = <T>(factory: () => Promise<T>): Promise<T> =>
+        scope === undefined ? factory() : scope.retainWork(factory);
       try {
-        await connection.close();
+        if (lifecycle?.budget?.remainingMs() === 0) {
+          await enter(() => new Promise<never>(() => {}));
+          return;
+        }
+      } catch (cause) {
+        observerFailed(cause);
+        await enter(() => new Promise<never>(() => {}));
+        return;
+      }
+      try {
+        await enter(() => connection.close());
         if (connections.get(serverId) === connection) connections.delete(serverId);
       } catch (cause) {
         // Preserve the opaque fault before any caller can catch/ignore its reporting result.
         // Native acknowledgement, where available, belongs to the connection's own raw scope.
         failures.set(serverId, cause);
+        try {
+          lifecycle?.onCloseError?.(serverId, cause);
+        } catch (observerCause) {
+          // The caller sees this independent infrastructure fault promptly, while the scope still
+          // retains every actual sibling close. Never turn reporter failure into a clean startup refusal.
+          observerFailed(observerCause);
+        }
       }
     }),
   );

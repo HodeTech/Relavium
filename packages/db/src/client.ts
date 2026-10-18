@@ -1,10 +1,19 @@
+import { RelaviumError } from '@relavium/shared';
+
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import Database from 'better-sqlite3';
 import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
+import { migrateWithOwnedStorageFacts } from './migration-storage-origin.js';
+import {
+  hasOwnedClient,
+  rememberOwnedClient,
+  transferStorageFailure,
+  withOwnedFilesystem,
+  withOwnedSqlite,
+} from './storage-failure-facts.js';
 
 import { withMigrationLock } from './migrate-lock.js';
 import * as schema from './schema.js';
@@ -73,7 +82,7 @@ export type DbOpenErrorCode =
  * carries the OS username, which a user-facing error is not supposed to leak. A caller that wants to show it
  * still can, redacted, from the field.
  */
-export class DbOpenError extends Error {
+export class DbOpenError extends RelaviumError {
   readonly code: DbOpenErrorCode;
   /** The database path that was requested. A diagnostic field — deliberately NOT part of `message`. */
   readonly path: string;
@@ -102,7 +111,10 @@ export class DbOpenError extends Error {
  * - `synchronous = NORMAL` — the recommended durability/throughput trade-off under WAL.
  * - `secure_delete = ON` — overwrite deleted session-effect payload bytes; WAL erasure also needs a checkpoint.
  */
-export function createClient(path = ':memory:'): DbClient {
+export function createClient(
+  path = ':memory:',
+  captureClose?: (close: () => void) => void,
+): DbClient {
   // SQLite URI filenames (`file:…`) are NOT supported: better-sqlite3 needs `{ uri: true }` to
   // interpret them and otherwise silently creates a literal file of that name. Reject up front
   // rather than open the wrong database — pass ':memory:' or a plain filesystem path.
@@ -113,18 +125,20 @@ export function createClient(path = ':memory:'): DbClient {
       path,
     );
   }
-  let sqlite: Database.Database | undefined;
+  let close: (() => void) | undefined;
   try {
     // Create the parent directory for a real file path so a first-run open doesn't fail on a
     // missing folder (inside the try so a filesystem error is classified the same way).
     if (path !== ':memory:') {
-      mkdirSync(dirname(path), { recursive: true });
+      withOwnedFilesystem(() => mkdirSync(dirname(path), { recursive: true }));
     }
-    // A local binding as well as the outer `let`: the outer one is what the `catch` closes, and inside a
-    // closure TypeScript cannot narrow it away from `undefined`, which would turn a real invariant into an
-    // optional chain that silently skips the pragma.
-    const opened = new Database(path);
-    sqlite = opened;
+    const opened = withOwnedSqlite(() => new Database(path));
+    close = () => {
+      if (opened.open) opened.close();
+    };
+    // The original invocation owns this exact native capability before PRAGMAs or Drizzle can fail.
+    // Returning a DbClient is too late to transfer a partially constructed connection.
+    captureClose?.(close);
     // The PRAGMAs and the Drizzle bind are INSIDE the try: any of them can fail (a corrupt header surfaces on
     // the first `journal_mode` write, not on open), and outside it a failure would leak the just-opened
     // connection for the process lifetime AND escape as an untyped driver error — past both this factory's
@@ -141,27 +155,38 @@ export function createClient(path = ':memory:'): DbClient {
     // It was not: `createClient` is the shipping open path. (Setting `busy_timeout` first was measured too,
     // and does NOT help — 15/25 with it first against 17/25 with it second — so the pragma order is left as
     // it was rather than changed on a plausible-sounding theory.)
-    withBusyRetry(() => opened.pragma('journal_mode = WAL'));
-    opened.pragma('foreign_keys = ON'); // SQLite does not enforce FKs per connection by default
-    opened.pragma('busy_timeout = 5000'); // wait up to 5s for a writer lock instead of erroring
-    opened.pragma('synchronous = NORMAL'); // the recommended durability/throughput trade-off with WAL
-    opened.pragma('secure_delete = ON');
+    withBusyRetry(() => withOwnedSqlite(() => opened.pragma('journal_mode = WAL')));
+    withOwnedSqlite(() => opened.pragma('foreign_keys = ON'));
+    withOwnedSqlite(() => opened.pragma('busy_timeout = 5000'));
+    withOwnedSqlite(() => opened.pragma('synchronous = NORMAL'));
+    withOwnedSqlite(() => opened.pragma('secure_delete = ON'));
     const db = drizzle(opened, { schema });
+    rememberOwnedClient(db, opened);
     return { db, sqlite: opened, path };
   } catch (err) {
     // Close what we opened before propagating, or the connection leaks on every failed setup.
+    let cleanupFailure: { readonly cause: unknown } | undefined;
     try {
-      sqlite?.close();
-    } catch {
-      /* already failing; a secondary close error must not replace the real cause */
+      close?.();
+    } catch (cause) {
+      cleanupFailure = { cause };
     }
     // A STABLE, generic message: `err.message` from better-sqlite3 routinely contains the absolute file path,
     // and this message is surfaced verbatim to the user by the CLI's history openers — interpolating it would
     // put the OS username back in user-facing output, which is the very thing moving the path to `.path` was
     // for. The driver's own error is preserved in full via `cause` for diagnosis.
-    throw new DbOpenError('open_failed', 'could not open the SQLite database', path, {
-      cause: err,
+    const failure = new DbOpenError('open_failed', 'could not open the SQLite database', path, {
+      cause:
+        cleanupFailure === undefined
+          ? err
+          : new AggregateError([err, cleanupFailure.cause], 'SQLite startup cleanup failed.', {
+              cause: err,
+            }),
     });
+    // Native cleanup uncertainty is infrastructure, even when the primary failure was operational.
+    // Preserve both causes without laundering the failed release through storage provenance.
+    if (cleanupFailure === undefined) transferStorageFailure(failure, err);
+    throw failure;
   }
 }
 
@@ -181,6 +206,8 @@ export interface RunMigrationsOptions {
    * existing caller, and the ones that matter — the real `history.db` openers — are a short, reviewable list.
    */
   readonly dbPath?: string;
+  /** Adds the separate migration-lock native close to the original database acquisition. */
+  readonly captureClose?: (close: () => void) => void;
 }
 
 /**
@@ -194,9 +221,17 @@ export interface RunMigrationsOptions {
  */
 export function runMigrations(db: Db, options: RunMigrationsOptions = {}): SessionEffectCheckpoint {
   requireSessionEffectTransactionOwnership(db);
-  return withMigrationLock(options.dbPath, () => {
-    migrate(db, { migrationsFolder: MIGRATIONS_DIR });
-    initializeSessionEffectTurnKeys(db);
-    return clearLegacySessionEffectResults(db);
-  });
+  return withMigrationLock(
+    options.dbPath,
+    () => {
+      migrateWithOwnedStorageFacts(db, MIGRATIONS_DIR);
+      if (hasOwnedClient(db)) {
+        withOwnedSqlite(() => initializeSessionEffectTurnKeys(db));
+        return withOwnedSqlite(() => clearLegacySessionEffectResults(db));
+      }
+      initializeSessionEffectTurnKeys(db);
+      return clearLegacySessionEffectResults(db);
+    },
+    options,
+  );
 }

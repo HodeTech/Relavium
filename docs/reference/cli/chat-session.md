@@ -1,6 +1,6 @@
 # `relavium chat` — Agent Session REPL
 
-> Last updated: 2026-10-10 — W7 compaction/recovery implemented; final wave review is tracked in the roadmap.
+> Last updated: 2026-10-18
 
 - **Status**: Reference — the whole chat family is live: the interactive REPL + `--agent`, `/exit`/`/cancel`, exit code 4, durable persistence (**2.M**); `chat-resume` (**2.N**); `chat-list` (**2.O**); `chat-export` + the in-REPL `/export` (**2.P**); `chat --json` + `agent run` (+ `--fixture`) (**2.Q**); the chat modes + fail-closed per-tool approval (**2.5.E**); and the mid-chat **`/models` reseat** + per-message `modelId` attribution + the `/effort` control (**2.5.G**) — this page is the reseat's behaviour home
 - **Surface**: CLI (`relavium chat`)
@@ -246,7 +246,7 @@ A reasoning model streams its "thinking" over the `agent:reasoning` event (EA6, 
 
 ### Actionable error recovery (2.5.H)
 
-A **failed** turn is never a terminal (only `session:cancelled` ends a session), so a failure always leaves the REPL live. Beyond showing the closed `ErrorCode`, the chat renders a **one-line, secret-free recovery hint** for each operational class that makes the next step + **"the session is still active"** explicit — extending the "say so plainly" philosophy from the 2.5.A capability gap to the transport / quota / limit classes:
+A classified **failed** turn is not a session terminal, so the REPL remains live unless a separate infrastructure fault stops the invocation. Unexpected CLI and failed-output faults follow the [failure classification and remedies](commands.md#failure-classification-and-remedies), rather than the ordinary turn-recovery policy. Beyond showing the closed `ErrorCode`, the chat renders a **one-line, secret-free recovery hint** for each operational class that makes the next step + **"the session is still active"** explicit — extending the "say so plainly" philosophy from the 2.5.A capability gap to the transport / quota / limit classes:
 
 - `provider_rate_limit` (429) / `provider_unavailable` — Relavium already retried with backoff + fallback-chain failover; resend.
 - `provider_auth` — check the key or **unlock the OS keychain** if it locked mid-session, then resend.
@@ -279,7 +279,7 @@ The session namespace is **disjoint** from the run namespace (keyed by `sessionI
 
 ## Exit code 4
 
-A `relavium chat` REPL ends with code **`4`** — the canonical **chat-session-ended** code defined in [commands.md](commands.md#exit-codes) — on any of: `/exit`, `/cancel` (or **Ctrl-C** in TTY mode), or an **input-stream EOF** (the user closes stdin — in plain non-TTY mode, or under `--json`). It is deliberately distinct from a successful workflow run (`0`) and a hard failure (`1`) so a wrapper script can tell "the user ended the chat" apart from either. A crash or an unrecoverable provider error still exits `1`; bad arguments still exit `2`. (The one-shot `relavium agent run` is **not** a REPL — it exits with the turn's outcome, `0`/`1`, never `4`.)
+A `relavium chat` REPL ends with code **`4`** — the canonical **chat-session-ended** code defined in [commands.md](commands.md#exit-codes) — on any of: `/exit`, `/cancel` (or **Ctrl-C** in TTY mode), or an **input-stream EOF** (the user closes stdin — in plain non-TTY mode, or under `--json`). This distinguishes deliberate session end from workflow and turn outcomes. Bad arguments retain exit `2`; an ordinary classified failed turn follows the recovery policy above. An unexpected CLI crash or failed output instead uses infrastructure exit **`9`**, with the [canonical classification, precedence and inspect-before-repeat remedy](commands.md#failure-classification-and-remedies). The one-shot `relavium agent run` is **not** a REPL: its ordinary turn outcome is `0`/`1`, never `4`, while infrastructure faults still use `9` and external signals retain their documented meanings.
 
 ## API keys
 

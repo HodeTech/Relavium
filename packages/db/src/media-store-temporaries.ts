@@ -1,9 +1,12 @@
+import { RelaviumError } from '@relavium/shared';
+
 import { randomUUID } from 'node:crypto';
 import { constants, lstatSync, readdirSync, realpathSync, type Stats } from 'node:fs';
 import { mkdir, open, rename, rmdir, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { MediaStoreFilesystemError, MediaStorePaths } from './media-store-paths.js';
+import { withOwnedFilesystem, withOwnedFilesystemAsync } from './storage-failure-facts.js';
 
 export type MediaTemporaryRetentionReason =
   | 'too_young'
@@ -22,7 +25,7 @@ export interface MediaTemporarySweepResult {
   readonly retained: number;
   readonly reasons: Readonly<Partial<Record<MediaTemporaryRetentionReason, number>>>;
 }
-export class MediaTemporaryMaintenanceError extends Error {
+export class MediaTemporaryMaintenanceError extends RelaviumError {
   constructor(
     readonly reason: 'flags_required' | 'producer_active' | 'owner_unknown' | 'maintenance_active',
   ) {
@@ -252,7 +255,7 @@ export class MediaStoreTemporaries {
   private entries(path: string): string[] {
     this.paths.root(false);
     try {
-      const names = readdirSync(path);
+      const names = withOwnedFilesystem(() => readdirSync(path));
       this.paths.root(false);
       return names;
     } catch (error) {
@@ -273,14 +276,16 @@ export class MediaStoreTemporaries {
     assertOwned: (identity: Stats) => void,
     cleanup: (identity: Stats) => Promise<void>,
   ): Promise<Stats> {
-    const file = await open(
-      path,
-      constants.O_WRONLY |
-        constants.O_CREAT |
-        constants.O_EXCL |
-        constants.O_NOFOLLOW |
-        constants.O_NONBLOCK,
-      0o600,
+    const file = await withOwnedFilesystemAsync(() =>
+      open(
+        path,
+        constants.O_WRONLY |
+          constants.O_CREAT |
+          constants.O_EXCL |
+          constants.O_NOFOLLOW |
+          constants.O_NONBLOCK,
+        0o600,
+      ),
     ).catch((error: unknown) => {
       throw this.paths.error(error);
     });
@@ -289,12 +294,12 @@ export class MediaStoreTemporaries {
     let cleanupError: MediaStoreFilesystemError | undefined;
     try {
       try {
-        identity = await file.stat().catch((error: unknown) => {
+        identity = await withOwnedFilesystemAsync(() => file.stat()).catch((error: unknown) => {
           throw this.paths.error(error);
         });
       } finally {
         try {
-          await file.close();
+          await withOwnedFilesystemAsync(() => file.close());
         } catch (error) {
           cleanupError = this.paths.error(error);
         }
@@ -324,18 +329,18 @@ export class MediaStoreTemporaries {
   }
   private async removeOwned(path: string, identity: Stats): Promise<void> {
     this.paths.assertOwnedFile(path, identity);
-    await unlink(path).catch((error: unknown) => {
+    await withOwnedFilesystemAsync(() => unlink(path)).catch((error: unknown) => {
       throw this.paths.error(error);
     });
   }
   private directory(root: string, name: string, identity?: Stats): Stats {
     this.paths.root(false);
     const path = join(root, name);
-    const info = lstatSync(path);
+    const info = withOwnedFilesystem(() => lstatSync(path));
     if (
       !info.isDirectory() ||
       info.isSymbolicLink() ||
-      realpathSync(path) !== path ||
+      withOwnedFilesystem(() => realpathSync(path)) !== path ||
       (identity !== undefined && !same(info, identity))
     )
       throw new MediaStoreFilesystemError('unsafe_path');
@@ -345,7 +350,7 @@ export class MediaStoreTemporaries {
   private child(root: string, name: string, identity: Stats, child: string): Stats | undefined {
     this.directory(root, name, identity);
     try {
-      const info = lstatSync(join(root, name, child));
+      const info = withOwnedFilesystem(() => lstatSync(join(root, name, child)));
       if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1)
         throw new MediaStoreFilesystemError('unsafe_path');
       return info;
@@ -356,7 +361,7 @@ export class MediaStoreTemporaries {
   }
   /** Exact claim identity supplements, rather than replaces, the existing cooperative path floor. */
   private nativeFile(path: string, expected: Stats): NativeIdentity {
-    const info = lstatSync(path, { bigint: true });
+    const info = withOwnedFilesystem(() => lstatSync(path, { bigint: true }));
     if (
       !info.isFile() ||
       info.isSymbolicLink() ||
@@ -378,14 +383,14 @@ export class MediaStoreTemporaries {
     const name = `media-claim-v2.${pid}.${nonce}.${original.dev}.${original.ino}.${process.pid}.${randomUUID()}`;
     const dir = join(root, name);
     this.paths.root(false);
-    await mkdir(dir, { mode: 0o700 }); // Exclusive mkdir: never overwrite another claimant's target.
+    await withOwnedFilesystemAsync(() => mkdir(dir, { mode: 0o700 })); // Exclusive creation.
     const identity = this.directory(root, name);
     try {
       this.paths.assertOwnedFile(source, info);
       if (!sameNative(this.nativeFile(source, info), original))
         throw new MediaStoreFilesystemError('unsafe_path');
       this.directory(root, name, identity);
-      await rename(source, join(dir, 'blob'));
+      await withOwnedFilesystemAsync(() => rename(source, join(dir, 'blob')));
       const moved = this.child(root, name, identity, 'blob');
       if (
         moved === undefined ||
@@ -393,7 +398,7 @@ export class MediaStoreTemporaries {
         !sameNative(this.nativeFile(join(dir, 'blob'), moved), original)
       )
         throw new MediaStoreFilesystemError('unsafe_path');
-      await unlink(join(dir, 'blob'));
+      await withOwnedFilesystemAsync(() => unlink(join(dir, 'blob')));
       return true;
     } catch (error) {
       if (
@@ -408,7 +413,7 @@ export class MediaStoreTemporaries {
       throw error;
     } finally {
       this.directory(root, name, identity);
-      if (this.entries(dir).length === 0) await rmdir(dir);
+      if (this.entries(dir).length === 0) await withOwnedFilesystemAsync(() => rmdir(dir));
     }
   }
 
@@ -470,7 +475,7 @@ export class MediaStoreTemporaries {
             const current = this.child(root, name, identity, entry);
             if (current === undefined) continue;
             if (!same(current, stale)) return 'identity_changed';
-            await unlink(join(dir, entry));
+            await withOwnedFilesystemAsync(() => unlink(join(dir, entry)));
           }
         }
         const blob = this.child(root, name, identity, 'blob');
@@ -486,7 +491,7 @@ export class MediaStoreTemporaries {
           if (current === undefined || !same(current, blob)) return 'identity_changed';
           if (exact && !sameNative(this.nativeFile(join(dir, 'blob'), current), original))
             return 'identity_changed';
-          await unlink(join(dir, 'blob'));
+          await withOwnedFilesystemAsync(() => unlink(join(dir, 'blob')));
         }
         return undefined;
       })();
@@ -530,7 +535,7 @@ export class MediaStoreTemporaries {
     markerInfo: Stats,
   ): Promise<void> {
     this.assertRecoveryMarker(root, name, identity, marker, markerInfo);
-    await unlink(join(root, name, marker));
+    await withOwnedFilesystemAsync(() => unlink(join(root, name, marker)));
   }
   private async cleanupRecovery(
     root: string,
@@ -544,7 +549,7 @@ export class MediaStoreTemporaries {
       this.directory(root, name, identity);
       const dir = join(root, name);
       if (this.entries(dir).length !== 0) return false;
-      await rmdir(dir);
+      await withOwnedFilesystemAsync(() => rmdir(dir));
       return true;
     } catch (error) {
       // After our own identity-checked marker removal, a cooperating peer may win

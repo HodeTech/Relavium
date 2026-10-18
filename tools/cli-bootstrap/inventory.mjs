@@ -1,0 +1,78 @@
+export const BOOTSTRAP_CONTROL_COUNT = 177;
+
+/** Existing human meta grammar only. JSON help remains human until Wave 3 Step 10. */
+export const metaCases = Object.freeze([
+  ['root-help', ['--help']],
+  ['root-short-help', ['-h']],
+  ['root-version', ['--version']],
+  ['root-short-version', ['-V']],
+  ['bare-pipe', []],
+  ['bare-terminator', ['--']],
+  ...[
+    ['run'],
+    ['chat'],
+    ['chat', 'resume'],
+    ['chat', 'list'],
+    ['chat', 'export'],
+    ['chat-resume'],
+    ['chat-list'],
+    ['chat-export'],
+    ['create'],
+    ['export'],
+    ['import'],
+    ['agent'],
+    ['agent', 'run'],
+    ['gate'],
+    ['gate', 'list'],
+    ['budget'],
+    ['budget', 'resume'],
+    ['models'],
+    ['models', 'refresh'],
+    ['models', 'pricing'],
+    ['provider'],
+    ['provider', 'list'],
+    ['provider', 'add'],
+    ['provider', 'set-key'],
+    ['provider', 'remove-key'],
+    ['provider', 'test'],
+    ['media'],
+    ['media', 'prune-temporaries'],
+    ['list'],
+    ['logs'],
+    ['status'],
+    ['init'],
+  ].map((path) => [
+    `${path.join('-')}${path.length > 1 ? '-subcommand' : ''}-help`,
+    [...path, '--help'],
+  ]),
+  ['help-command-subtree', ['help', 'provider']],
+  ['help-command-root', ['help']],
+]);
+
+/** Each variant has a distinct stable name, including nested commands and retained aliases. */
+export function controlName(name, json, rootGrant) {
+  return `${name}-${json ? 'json' : 'human'}${rootGrant === undefined ? '' : rootGrant ? '-root' : '-no-root'}`;
+}
+
+export function grammarCases(absentRoot) {
+  return [
+    [
+      'relative-root',
+      ['--help', '--allow-fs-root', 'synthetic-relative-canary-1157'],
+      'synthetic-relative-canary-1157',
+    ],
+    [
+      'oversize-root',
+      ['--help', '--allow-fs-root', `${absentRoot}/${'s'.repeat(4097)}`],
+      's'.repeat(100),
+    ],
+    ['missing-root-value', ['--help', '--allow-fs-root'], undefined],
+    [
+      'root-count',
+      ['--help', ...Array.from({ length: 17 }, () => ['--allow-fs-root', absentRoot]).flat()],
+      absentRoot,
+    ],
+    ['unknown-option', ['--synthetic-unknown-bootstrap-option'], undefined],
+    ['unknown-command', ['synthetic-unknown-bootstrap-command'], undefined],
+  ];
+}

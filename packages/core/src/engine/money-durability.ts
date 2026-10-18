@@ -22,6 +22,8 @@
  * without consuming an error; it is not a money barrier or a durability certificate.
  */
 
+import { RelaviumError } from '@relavium/shared';
+
 import type { UsageDisposition, UsageInvocation } from '@relavium/shared';
 
 export interface PendingUsageDraft {
@@ -39,7 +41,7 @@ export interface UsageDispositionDraft {
 }
 
 /** A realized-cost ledger write that did not reach the store. Carries the owning node for attribution. */
-export class LedgerDurabilityError extends Error {
+export class LedgerDurabilityError extends RelaviumError {
   readonly nodeId: string | undefined;
 
   constructor(cause: unknown, nodeId?: string) {

@@ -1,7 +1,7 @@
 /** Steps 3–5 and 7 independent production mechanisms and required named semantic witnesses. */
 const reader = 'apps/cli/src/secrets/read-secret.ts';
 const readerCases = ['apps/cli/src/secrets/read-secret.test.ts'];
-const llmError = 'packages/llm/src/llm-error.ts';
+const scrubSecretsLeaf = 'packages/llm/src/scrub-secrets.ts';
 const overlapFiles = [
   'packages/llm/src/llm-error.test.ts',
   'apps/cli/src/render/sanitize.test.ts',
@@ -47,6 +47,199 @@ const nativeRunCases = ['apps/cli/src/run-secret-inputs.test.ts'];
 const nativeModes = ['human', '--verbose', '--json', '--json --verbose'];
 const nativeSuccess = (mode) =>
   `delivers one verbatim default-stdin read through real engine start and persists only masks (${mode})`;
+
+const coreProjection = 'packages/core/src/tools/bounding.ts';
+const coreProjectionCases = ['packages/core/src/tools/bounding.test.ts'];
+const coreProjectionMarker = 'SECRETS_B2_CORE_PROJECTION';
+const diagnosticMarker = 'SECRETS_B2_LLM_DIAGNOSTIC';
+const splitCoreHeaders = ['\n', '\t'].map(
+  (separator) =>
+    `masks split schemes, finite header names and URL userinfo (${JSON.stringify(separator)})`,
+);
+const corePasswords = ['?', '#'].map(
+  (separator) => `masks raw ${separator} within password userinfo and preserves contact queries`,
+);
+const diagnosticPasswords = ['?', '#'].map(
+  (separator) => `masks raw ${separator} in userinfo while retaining host contact queries`,
+);
+const rawPasswordAssignments = ['?', '#'].map(
+  (separator) =>
+    `preserves public ${separator} tails after userinfo and masks raw password assignments`,
+);
+const originalBoundaryMarker = 'SECRETS_B2_ORIGINAL_BOUNDARY';
+const originalBoundaryCases = ['sk-proj-', 'AIza'].flatMap((prefix) =>
+  ['\n', '\t'].map(
+    (separator) =>
+      `keeps the original boundary after an embedded greedy prefix ${prefix} (${JSON.stringify(separator)})`,
+  ),
+);
+const headerOriginalBoundaryMarker = 'SECRETS_B2_HEADER_ORIGINAL_BOUNDARY';
+const headerOriginalBoundaryCases = ['x-', 'x-goog-'].flatMap((prefix) =>
+  ['\n', '\t'].map(
+    (separator) =>
+      `recovers the original finite header boundary after embedded ${prefix} (${JSON.stringify(separator)})`,
+  ),
+);
+const displayProjectionCases = [
+  'apps/cli/src/render/sanitize.test.ts',
+  'apps/cli/src/process/render-error.test.ts',
+];
+const displayOrderMarker = 'SECRETS_B2_DISPLAY_ORDER';
+const displayBoundaryMarker = 'SECRETS_B2_DISPLAY_BOUNDARY';
+const displayOrderCases = ['\\n', '\\t'].map(
+  (separator) =>
+    `${displayOrderMarker} protects a complete first fragment in 'inline' with '${separator}'`,
+);
+const displayBoundaryCases = ['multiline', 'inline'].flatMap((label) =>
+  ['\\u0001', '\\u007f', '\\u0085', '\\u202e'].map(
+    (separator) =>
+      `${displayBoundaryMarker} preserves the original boundary in '${label}' with '${separator}'`,
+  ),
+);
+function displayRendererWitnesses(marker) {
+  return ['human', 'human verbose', 'JSON', 'JSON verbose'].map((label) => ({
+    target: `${displayOrderMarker} protects original credential evidence in '${label}'`,
+    marker,
+  }));
+}
+// Both scanner admission and mapper admission enforce one original-boundary law. Remove both
+// exact checks together; removing only the late mapper guard would leave its new prefilter intact.
+const coreOriginalBoundary = String.raw`  const candidates = /(^|[^\w])([A-Za-z])/g;
+  const separators = /[\n\t]+/g;
+  let next = original === joined ? null : separators.exec(original);
+  let removed = 0;
+  let matchedUntil = 0;
+  for (
+    let candidate = candidates.exec(original);
+    candidate !== null;
+    candidate = candidates.exec(original)
+  ) {
+    const originalStart = candidate.index + candidate[0].length - 1;
+    while (next !== null && next.index < originalStart) {
+      removed += next[0].length;
+      next = separators.exec(original);
+    }
+    const start = originalStart - removed;
+    if (start < matchedUntil) continue;
+    JOINED_STANDALONE_CREDENTIAL.lastIndex = 0;
+    if (!JOINED_STANDALONE_CREDENTIAL.test(preview(start))) continue;
+    JOINED_STANDALONE_CREDENTIAL.lastIndex = start;
+    const match = JOINED_STANDALONE_CREDENTIAL.exec(joined);
+    if (match === null) continue;
+    matchedUntil = JOINED_STANDALONE_CREDENTIAL.lastIndex;
+    mask(start, matchedUntil, '[redacted]');
+  }
+}
+
+function redactStandaloneCredentials(text: string): string {
+  const parts: string[] = [];
+  let copied = 0;
+  visitJoinedStandaloneCredentials(text, text, (start, end, replacement) => {
+    parts.push(text.slice(copied, start), replacement);
+    copied = end;
+  });
+  if (parts.length === 0) return text;
+  parts.push(text.slice(copied));
+  return parts.join('');
+}
+
+/**
+ * The finite header-label literal is the sole joined-header authority. Check ORIGINAL boundaries
+ * before matching, so an embedded x-api-key/x-goog-api-key cannot consume an inner api-key start.
+ * Labels are bounded; trailing whitespace cannot contain another label, so failed scans are linear.
+ */
+function visitJoinedHeaderLabels(original: string, joined: string, mask: SecretSpanVisitor): void {
+  if (!joined.includes(':')) return;
+  const header = /(?:authorization|(?:x-)?api-key|x-goog-api-key)["']?\s*:/iy;
+  const candidates = /(^|[^A-Za-z0-9_-])([A-Za-z])/g;
+  const separators = /[\n\t]+/g;
+  let next = separators.exec(original);
+  let removed = 0;
+  let matchedUntil = 0;
+  for (
+    let candidate = candidates.exec(original);
+    candidate !== null;
+    candidate = candidates.exec(original)
+  ) {
+    const originalStart = candidate.index + candidate[0].length - 1;
+    while (next !== null && next.index < originalStart) {
+      removed += next[0].length;
+      next = separators.exec(original);
+    }
+    const start = originalStart - removed;
+    if (start < matchedUntil) continue;
+    header.lastIndex = start;
+    const match = header.exec(joined);
+    if (match === null) continue;
+    matchedUntil = header.lastIndex;
+    mask(start, matchedUntil, match[0]);
+  }
+}
+
+/**
+ * LF/TAB may split finite credential shapes. Map recognized spans back onto the original text;
+ * ordinary spaces remain boundaries and public text is never globally normalized for identity.
+ * Token-character continuations after LF/TAB are intentionally part of a recognized credential.
+ * The two cursors advance monotonically, with no per-character offset array or recursive matcher.
+ */
+function redactJoinedCredentialSpans(
+  text: string,
+  visit: (joined: string, mask: SecretSpanVisitor) => void,
+  boundary?: RegExp,
+): string {
+  if (!/[\n\t]/.test(text)) return text;
+  const joined = text.replace(/[\n\t]+/g, '');
+  const parts: string[] = [];
+  const separators = /[\n\t]+/g;
+  let next = separators.exec(text);
+  let removed = 0;
+  let copied = 0;
+  function advance(target: number, includeAtBoundary = false): number {
+    while (
+      next !== null &&
+      (next.index - removed < target || (includeAtBoundary && next.index - removed === target))
+    ) {
+      removed += next[0].length;
+      next = separators.exec(text);
+    }
+    return target + removed;
+  }
+  visit(joined, (start, end, replacement) => {
+    const originalStart = advance(start, true);
+    const originalEnd = advance(end);
+    if (boundary?.test(text[originalStart - 1] ?? '')) return;`;
+const withoutCoreOriginalBoundary = coreOriginalBoundary
+  .replace(
+    String.raw`  const candidates = /(^|[^\w])([A-Za-z])/g;`,
+    String.raw`  const candidates = /([A-Za-z])/g;`,
+  )
+  .replace("    if (boundary?.test(text[originalStart - 1] ?? '')) return;", '');
+function coreProjectionControl(id, before, after, targets, marker = coreProjectionMarker) {
+  return control(
+    id,
+    coreProjection,
+    before,
+    after,
+    coreProjectionCases,
+    142,
+    targets[0],
+    marker,
+    targets.slice(1).map((target) => ({ target, marker })),
+  );
+}
+function diagnosticControl(id, before, after, targets, marker = diagnosticMarker) {
+  return control(
+    id,
+    scrubSecretsLeaf,
+    before,
+    after,
+    ['packages/llm/src/scrub-secrets.test.ts'],
+    103,
+    targets[0],
+    marker,
+    targets.slice(1).map((target) => ({ target, marker })),
+  );
+}
 
 export const mutations = [
   control(
@@ -148,7 +341,7 @@ export const mutations = [
   ),
   control(
     'query-names',
-    'packages/llm/src/llm-error.ts',
+    scrubSecretsLeaf,
     String.raw`/([?&](?:(?:x[-_])?api[-_]?key|api[-_]?secret|(?:access|secret)[-_]?key|(?:access|refresh|id|auth|session)[-_]?token|client[-_]?secret|key|token|auth|password|secret)=)[^&\s#]+/gi`,
     String.raw`/([?&](?:(?:x[-_])?api[-_]?key|key|token|access[-_]?token|auth|password|secret)=)[^&\s#]+/gi`,
     ['packages/llm/src/llm-error.test.ts'],
@@ -159,11 +352,10 @@ export const mutations = [
   control(
     'diagnostic-residual-scrub',
     'apps/cli/src/render/sanitize.ts',
-    '  const scrubbed = scrubSecrets(normalized);',
-    `  const scrubbed = scrubSecrets(normalized);
-  if (scrubbed !== normalized) return scrubbed;`,
+    "  for (const remaining of scrubbed.split('[REDACTED]')) {",
+    '  for (const remaining of []) {',
     ['apps/cli/src/render/sanitize.test.ts', 'apps/cli/src/process/render-error.test.ts'],
-    161,
+    180,
     "SECRETS_CAUSAL_RESIDUAL_SCRUB protects 'client_secret' beside a split credential: 'multiline'",
     'SECRETS_CAUSAL_RESIDUAL_SCRUB',
     [
@@ -197,15 +389,15 @@ export const mutations = [
   ),
   control(
     'prefix-before-redaction',
-    'packages/llm/src/llm-error.ts',
-    "    const joined = remaining.replace(/\\s+/g, '');",
-    '    const joined = remaining;',
+    scrubSecretsLeaf,
+    "    const residual = remaining.replace(/\\s+/g, '');",
+    '    const residual = remaining;',
     [
       'packages/llm/src/llm-error.test.ts',
       'apps/cli/src/render/sanitize.test.ts',
       'apps/cli/src/process/render-error.test.ts',
     ],
-    259,
+    278,
     'SECRETS_CAUSAL_PREFIX_ORDER protects client_secret before overlapping query redaction',
     'SECRETS_CAUSAL_PREFIX_ORDER',
     [
@@ -250,11 +442,11 @@ export const mutations = [
   ),
   control(
     'normalized-secret-probe',
-    llmError,
+    scrubSecretsLeaf,
     '  return stripTerminalControls(text);',
     '  return text;',
     overlapFiles,
-    259,
+    278,
     `${overlapMarker} protects client_secret normalized key before query redaction`,
     overlapMarker,
     overlapWitnesses('normalized key').filter(
@@ -265,11 +457,11 @@ export const mutations = [
   ),
   control(
     'non-query-before-query',
-    llmError,
+    scrubSecretsLeaf,
     '  return scrubQuerySecrets(scrubNonQuerySecrets(text));',
     '  return scrubNonQuerySecrets(scrubQuerySecrets(text));',
     overlapFiles,
-    259,
+    278,
     `${overlapMarker} protects client_secret Bearer before query redaction`,
     overlapMarker,
     [
@@ -309,8 +501,8 @@ export const mutations = [
   control(
     'run-action-stdin-forwarding',
     'apps/cli/src/commands/specs.ts',
-    '            secretInputsStdin: opts.secretInputsStdin,\n',
-    '',
+    '      options[option.binding] = readOption(raw, option.binding);',
+    "      options[option.binding] = executorId === 'run' && option.binding === 'secretInputsStdin' ? undefined : readOption(raw, option.binding);",
     ['apps/cli/src/commands/specs-forwarding.test.ts'],
     14,
     'SECRETS_CAUSAL_RUN_STDIN_FLAG_FORWARDED: run forwards the boolean through its real action',
@@ -344,12 +536,19 @@ export const mutations = [
   control(
     'run-default-secret-reader',
     'apps/cli/src/commands/run.ts',
-    '  const raw = await (deps.readSecretInput?.() ?? readSecretFromStdin(RUN_SECRET_STDIN_CONTEXT));',
+    '  const raw = await read();',
     "  const raw = await (deps.readSecretInput?.() ?? Promise.resolve(''));",
     ['apps/cli/src/commands/run.test.ts'],
-    76,
-    'uses the real default reader exactly once and suppresses even an injected gate selector',
+    84,
+    'uses the real native default reader once and suppresses an injected gate selector',
     'SECRETS_CAUSAL_RUN_DEFAULT_READER',
+    [
+      {
+        target:
+          'uses the real structural default reader once and suppresses an injected gate selector',
+        marker: 'SECRETS_CAUSAL_RUN_DEFAULT_READER',
+      },
+    ],
   ),
   control(
     'run-consumed-stdin-prompt-authority',
@@ -367,7 +566,7 @@ export const mutations = [
     '    const mayPrompt = args.secretStdin !== true;',
     '    const mayPrompt = true;',
     ['apps/cli/src/commands/gate.test.ts'],
-    61,
+    73,
     'refuses unapproved stdio after a real read despite stale TTY, without prompting or writing a grant',
     'SECRETS_CAUSAL_RESUME_CONSUMED_STDIN_CONSENT',
   ),
@@ -404,20 +603,15 @@ export const mutations = [
   control(
     'run-commander-diagnostic-projection',
     'apps/cli/src/commands/specs.ts',
-    `    .configureOutput({
-      ...program.configureOutput(),
-      outputError: (_message, write) =>
-        write('error: invalid run arguments; use relavium run --help.\\n'),
-    })
-    .exitOverride((error) => {
-      if (error.exitCode === 0) throw error;
-      throw new CommanderError(
-        error.exitCode,
-        error.code,
-        'error: invalid run arguments; use relavium run --help.',
-      );
-    });`,
-    '    .exitOverride();',
+    `      command.configureOutput({
+        ...parent.configureOutput(),
+        outputError: (_message, write) => write(\`\${hint}\\n\`),
+      });
+      command.exitOverride((error) => {
+        if (error.exitCode === 0) throw error;
+        throw new CommanderError(error.exitCode, error.code, hint);
+      });`,
+    '      command.exitOverride();',
     ['apps/cli/src/run.test.ts'],
     28,
     'SECRETS_CAUSAL_RUN_COMMANDER_OPACITY: human keeps parser values opaque',
@@ -478,7 +672,7 @@ export const mutations = [
     "    .normalize('NFKD')\n",
     '',
     ['packages/core/src/export/serializer.test.ts'],
-    24,
+    25,
     'normalizes supported Unicode title forms into deterministic ASCII IDs that round-trip',
     'WAVE2_EXPORT_ASCII_NORMALIZATION',
   ),
@@ -488,7 +682,7 @@ export const mutations = [
     '  return slug.length > 0 ? slug : fallbackWorkflowId(record.id);',
     "  return slug.length > 0 ? slug : 'exported-session';",
     ['packages/core/src/export/serializer.test.ts'],
-    24,
+    25,
     'uses exact session identity for absent or unusable titles and preserves production UUIDs',
     'WAVE2_EXPORT_IDENTITY_FALLBACK',
   ),
@@ -498,7 +692,7 @@ export const mutations = [
     '  return `${SESSION_ID_PREFIX}id-${encoded}`;',
     '  return `${SESSION_ID_PREFIX}${sessionId}`;',
     ['packages/core/src/export/serializer.test.ts'],
-    24,
+    25,
     'bounds odd external session identities with deterministic legal encoding and faithful metadata',
     'WAVE2_EXPORT_EXTERNAL_ID_FALLBACK',
   ),
@@ -508,7 +702,7 @@ export const mutations = [
     '    deps.io.writeErr(SESSION_EXPORT_REVIEW_NOTICE);\n',
     '',
     ['apps/cli/src/commands/chat-export.test.ts'],
-    15,
+    18,
     "reports fixed continuity and review notice on stderr after successful 'human' export",
     'W2_EXPORT_COMMAND_NOTICE',
     [
@@ -525,7 +719,7 @@ export const mutations = [
     '        emitOutput(SESSION_EXPORT_REVIEW_NOTICE.trimEnd());\n',
     '',
     ['apps/cli/src/commands/chat.test.ts'],
-    122,
+    133,
     "reports fixed continuity and review notice on stderr after live 'human' /export",
     'W2_EXPORT_LIVE_NOTICE',
     [
@@ -545,7 +739,7 @@ export const mutations = [
     '        emitOutput(SESSION_EXPORT_REVIEW_NOTICE.trimEnd());\n',
     '        deps.io.writeErr(SESSION_EXPORT_REVIEW_NOTICE);\n',
     ['apps/cli/src/commands/chat.test.ts'],
-    122,
+    133,
     "renders the live export 'success' through the interactive transcript",
     'W2_EXPORT_LIVE_RENDERED_NOTICE',
   ),
@@ -586,7 +780,7 @@ export const mutations = [
     '  warnSnapshotLiterals(def, deps.io);\n',
     '',
     ['apps/cli/src/commands/run.test.ts'],
-    76,
+    84,
     'warns after admission before services and preserves the actual augmented frozen workflow',
     'SNAPSHOT_CAUSAL_RUN_CALLER',
   ),
@@ -705,6 +899,135 @@ export const mutations = [
           'FS_CAUSAL_PROVIDER_HEADER_DIAGNOSTIC nonstring-factory human verbose=true stays loud and content-free',
         marker: 'FS_CAUSAL_PROVIDER_HEADER_DIAGNOSTIC',
       },
+    ],
+  ),
+  // PR #95 B2: independent modern-prefix, joined-view, boundary and malformed-userinfo sites.
+  coreProjectionControl(
+    'core-modern-key-alphabet',
+    String.raw`{ prefix: /sk-/, body: /(?=[\w-]{16})[\w-]+/ }`,
+    String.raw`{ prefix: /sk-/, body: /(?=[A-Za-z0-9]{16})[A-Za-z0-9]+/ }`,
+    ['sk-proj-', 'sk-svcacct-', 'sk-ant-', 'sk-AAAA'].map(
+      (prefix) => `masks the complete modern provider shape ${prefix}`,
+    ),
+  ),
+  coreProjectionControl(
+    'core-joined-credential-spans',
+    '  visit(joined, (start, end, replacement) => {',
+    "  visit('', (start, end, replacement) => {",
+    [
+      'masks every LF/TAB split without losing the surrounding public identity',
+      ...splitCoreHeaders,
+    ],
+  ),
+  coreProjectionControl(
+    'core-joined-original-boundary',
+    coreOriginalBoundary,
+    withoutCoreOriginalBoundary,
+    ['keeps the original left boundary when LF/TAB occurs elsewhere or immediately before a key'],
+  ),
+  coreProjectionControl(
+    'core-split-scheme-label',
+    String.raw`/\b(b[\n\t]*e[\n\t]*a[\n\t]*r[\n\t]*e[\n\t]*r|b[\n\t]*a[\n\t]*s[\n\t]*i[\n\t]*c|t[\n\t]*o[\n\t]*k[\n\t]*e[\n\t]*n)\s+(?=[\w.~+/-]{8})[\w.~+/-]+={0,2}/gi`,
+    String.raw`/\b(bearer|basic|token)\s+(?=[\w.~+/-]{8})[\w.~+/-]+={0,2}/gi`,
+    splitCoreHeaders,
+  ),
+  coreProjectionControl(
+    'core-split-header-label',
+    '    mask(start, matchedUntil, match[0]);',
+    '    void match;',
+    splitCoreHeaders,
+  ),
+  coreProjectionControl(
+    'core-raw-password-userinfo',
+    String.raw`const delimiter = /[/\s"',}\]]/g;`,
+    String.raw`const delimiter = /[/\s?#"',}\]]/g;`,
+    [...corePasswords, ...rawPasswordAssignments],
+  ),
+  diagnosticControl(
+    'diagnostic-joined-before-masking',
+    "    if (joined !== undefined && hasSplitCredential(normalized, joined, rule)) return '[REDACTED]';",
+    '',
+    [
+      'masks every LF/TAB split including a complete-looking first key fragment',
+      'masks each split position in the finite API header names',
+      'treats LF/TAB token-character continuations as credential material even after a complete first fragment',
+    ],
+  ),
+  diagnosticControl(
+    'diagnostic-joined-original-boundary',
+    "if (letter && !previousWord && !rule.boundary.test(text[originalOffset - 1] ?? '')) {",
+    'if (letter) {',
+    ['does not invent a key boundary in a public word with a separate newline'],
+  ),
+  diagnosticControl(
+    'diagnostic-split-header-label',
+    String.raw`joinedPattern: /(?:(?:x-)?api-key|x-goog-api-key)["']?\s*:/gi,`,
+    'joinedPattern: /a^/g,',
+    ['masks each split position in the finite API header names'],
+  ),
+  diagnosticControl(
+    'diagnostic-raw-password-userinfo',
+    String.raw`const URL_USERINFO_PATTERN = /(?:https?|wss?|ftps?):\/\/[^/\s]*@/gi;`,
+    String.raw`const URL_USERINFO_PATTERN = /(?:https?|wss?|ftps?):\/\/[^/\s?#]*@/gi;`,
+    [...diagnosticPasswords, ...rawPasswordAssignments],
+  ),
+  // R1-LN-1: recover a valid original start hidden inside a rejected greedy joined candidate.
+  coreProjectionControl(
+    'core-joined-original-boundary-recovery',
+    String.raw`  const candidates = /(^|[^\w])([A-Za-z])/g;`,
+    String.raw`  const candidates = /([A-Za-z])/g;`,
+    originalBoundaryCases,
+    originalBoundaryMarker,
+  ),
+  diagnosticControl(
+    'diagnostic-joined-original-boundary-recovery',
+    "!rule.boundary.test(text[originalOffset - 1] ?? '')",
+    "!rule.boundary.test((rule.joinedPattern === undefined ? joined[joinedOffset - 1] : text[originalOffset - 1]) ?? '')",
+    originalBoundaryCases,
+    originalBoundaryMarker,
+  ),
+  // R2-LN-F1: retain a valid inner header start after a rejected embedded outer label.
+  coreProjectionControl(
+    'core-header-original-boundary-recovery',
+    String.raw`  const candidates = /(^|[^A-Za-z0-9_-])([A-Za-z])/g;`,
+    String.raw`  const candidates = /([A-Za-z])/g;`,
+    headerOriginalBoundaryCases,
+    headerOriginalBoundaryMarker,
+  ),
+  diagnosticControl(
+    'diagnostic-header-original-boundary-recovery',
+    "!rule.boundary.test(text[originalOffset - 1] ?? '')",
+    "!rule.boundary.test((rule.joinedPattern !== undefined ? joined[joinedOffset - 1] : text[originalOffset - 1]) ?? '')",
+    headerOriginalBoundaryCases,
+    headerOriginalBoundaryMarker,
+  ),
+  // R3: retain original credential evidence before independent inline/terminal display transforms.
+  control(
+    'diagnostic-inline-projection-order',
+    'apps/cli/src/render/sanitize.ts',
+    '  return sanitizeInline(sanitizeUntrusted(text));',
+    '  return sanitizeUntrusted(sanitizeInline(text));',
+    displayProjectionCases,
+    180,
+    displayOrderCases[0],
+    displayOrderMarker,
+    [
+      ...displayOrderCases.slice(1).map((target) => ({ target, marker: displayOrderMarker })),
+      ...displayRendererWitnesses(displayOrderMarker),
+    ],
+  ),
+  control(
+    'diagnostic-original-control-boundary',
+    'apps/cli/src/render/sanitize.ts',
+    '  return redactIncludingAcrossSeparators(stripTerminalControls(scrubSecrets(text)));',
+    '  return redactIncludingAcrossSeparators(stripTerminalControls(text));',
+    displayProjectionCases,
+    180,
+    displayBoundaryCases[0],
+    displayBoundaryMarker,
+    [
+      ...displayBoundaryCases.slice(1).map((target) => ({ target, marker: displayBoundaryMarker })),
+      ...displayRendererWitnesses(displayBoundaryMarker),
     ],
   ),
 ];

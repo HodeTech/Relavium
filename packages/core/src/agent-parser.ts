@@ -7,16 +7,17 @@
  * Pure by contract (like `parseWorkflow`): it takes text, never a path — the host surface (CLI catalog scan
  * 2.I, the authoring commands 2.J) reads the file and passes the string plus an optional workspace-relative
  * label. An agent file is plain config (model/provider/system_prompt/tools); it carries no secret VALUES (keys
- * live in the keychain, ADR-0006), but the error still echoes only field *paths*, never an authored value.
+ * live in the keychain, ADR-0006). Errors expose field paths and fixed schema reasons, never authored values.
  */
 
 import { LineCounter, YAMLParseError } from 'yaml';
 import type { ZodIssue } from 'zod';
 
-import { AgentSchema, type Agent } from '@relavium/shared';
+import { RelaviumError, AgentSchema, type Agent } from '@relavium/shared';
 
 import { MAX_SOURCE_CHARS } from './parser.js';
 import { outputSchemaRefusals } from './output-schema.js';
+import { schemaIssueReason } from './schema-issue.js';
 import { decodeHardenedYaml } from './yaml-decode.js';
 
 /** The validated agent document — `@relavium/shared`'s `Agent`, under a parser-local alias (mirrors `WorkflowDefinition`). */
@@ -33,7 +34,7 @@ export interface ParseAgentOptions {
  * For an `agent_syntax` YAML fault the `line`/`column` (1-based) of the fault are attached when the loader
  * reports a position — parity with `WorkflowSyntaxError` (errors.ts) — and are also folded into the message.
  */
-export class AgentParseError extends Error {
+export class AgentParseError extends RelaviumError {
   readonly code: 'agent_syntax' | 'agent_validation';
   readonly fields: readonly string[];
   /** 1-based line of a YAML syntax fault, when the loader reports a position (`agent_syntax` only). */
@@ -145,26 +146,27 @@ export function parseAgent(yamlText: string, opts?: ParseAgentOptions): AgentDef
 
   const result = AgentSchema.safeParse(raw);
   if (!result.success) {
-    // Field PATHS only (key names / indices) — never an authored value, so the message stays secret-free. For
+    // Field paths and schema-derived reasons only — never a rejected authored value. For
     // an `unrecognized_keys` issue Zod puts the unknown key NAMES in `issue.keys` (not the path), so name those
     // — prefixed with the parent path for a NESTED `.strict()` object (`retry`, `mcp_servers[i]`, memory) so the
     // context isn't lost, and bare at the root (empty path) — mirroring parser.ts's field locator.
-    const fields = [
-      ...new Set(
-        result.error.issues.flatMap((issue: ZodIssue) => {
-          if (issue.code === 'unrecognized_keys') {
-            const prefix = issue.path.length > 0 ? `${issue.path.map(String).join('.')}.` : '';
-            return issue.keys.map((key) => `${prefix}${key}`);
-          }
-          return [issue.path.map(String).join('.') || 'agent'];
-        }),
-      ),
-    ];
-    throw new AgentParseError(
-      'agent_validation',
-      `invalid agent${label}: ${fields.join(', ')}`,
-      fields,
-    );
+    const diagnostics = result.error.issues.map((issue: ZodIssue) => {
+      const paths =
+        issue.code === 'unrecognized_keys'
+          ? issue.keys.map(
+              (key) =>
+                `${issue.path.length > 0 ? `${issue.path.map(String).join('.')}.` : ''}${key}`,
+            )
+          : [issue.path.map(String).join('.') || 'agent'];
+      return { paths, reason: schemaIssueReason(issue) };
+    });
+    const fields = [...new Set(diagnostics.flatMap(({ paths }) => paths))];
+    // One reason per issue, not per unknown key: a strict-object refusal stays linear in its key count.
+    const detail = diagnostics
+      .map(({ paths, reason }) => `${paths.join(', ')}: ${reason}`)
+      .join('; ');
+
+    throw new AgentParseError('agent_validation', `invalid agent${label}: ${detail}`, fields);
   }
   // **`output_schema` is compiled HERE too** (ADR-0092 §3). A standalone agent never reaches a DAG build —
   // `AgentSession` (`relavium chat`, `agent run`) has no plan — so plan-build was the one place this could

@@ -3,7 +3,9 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setImmediate, setTimeout as delay } from 'node:timers/promises';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
+import { createCliInvocation } from '../process/invocation.js';
+import { toUserFacing } from '../process/errors.js';
 import {
   WorkflowEngine,
   createAgentNodeExecutor,
@@ -74,6 +76,7 @@ async function exercise(
   finish: Finish = 'completed',
   effectFinish: EffectFinish = 'reject-committed',
   inputOrder?: 'input-first' | 'receipt-first',
+  fault?: 'event' | 'finalize',
 ) {
   const dir = mkdtempSync(join(tmpdir(), 'departure-native-'));
   const dbPath = join(dir, 'history.db');
@@ -239,6 +242,12 @@ async function exercise(
           event.type === 'run:cancelled'
         )
           primaryTerminal.resolve();
+        if (fault === 'event' && event.type === 'run:' + finish)
+          throw new Error('PRIVATE_RENDERER_FAILURE');
+      },
+      finalize: async () => {
+        await renderer.finalize?.();
+        if (fault === 'finalize') throw new Error('PRIVATE_FINALIZE_FAILURE');
       },
     };
   };
@@ -394,6 +403,7 @@ async function exercise(
     return Promise.resolve(engine);
   };
   const common = {
+    invocation: createCliInvocation({ exit: vi.fn(), setExitCode: vi.fn() }),
     io: io.io,
     global: {
       json: mode === 'json',
@@ -469,9 +479,21 @@ async function exercise(
     release.resolve();
     inputRelease.resolve();
     await child;
-    expect(await execution).toBe(
-      moneyFail ? 8 : effectFail ? 7 : terminalAck === 'ok' ? (finish === 'completed' ? 0 : 1) : 5,
-    );
+    if (fault !== undefined && !moneyFail && !effectFail && terminalAck === 'ok') {
+      const result = await execution.catch((cause: unknown) => toUserFacing(cause));
+      expect(result).toMatchObject({ code: 'cli_internal', exitCode: 9 });
+    } else
+      expect(await execution).toBe(
+        moneyFail
+          ? 8
+          : effectFail
+            ? 7
+            : terminalAck === 'ok'
+              ? finish === 'completed'
+                ? 0
+                : 1
+              : 5,
+      );
     expect(closes).toBe(1);
     expect(process.listenerCount('SIGINT')).toBe(baseline);
     expect(
@@ -563,3 +585,32 @@ for (const effectFinish of [
 for (const order of ['input-first', 'receipt-first'] as const)
   it(`native Ink terminal and cleanup notice remain visible while ${order} barriers join`, () =>
     exercise('run', 'both', 'ink', 'ok', 'completed', 'reject-committed', order));
+
+for (const command of ['run', 'gate', 'budget'] as const)
+  for (const fault of ['event', 'finalize'] as const)
+    for (const health of ['healthy', 'money', 'effect'] as const)
+      it(`workflow ownership keeps real SQLite receipt health before ${fault} failure (${command}/${health})`, async () => {
+        await exercise(
+          command,
+          health,
+          'json',
+          'ok',
+          'completed',
+          'reject-committed',
+          undefined,
+          fault,
+        );
+      });
+for (const command of ['run', 'gate', 'budget'] as const)
+  it(`actual terminal outbox uncertainty outranks unexpected finalization (${command})`, async () => {
+    await exercise(
+      command,
+      'healthy',
+      'json',
+      'lost',
+      'completed',
+      'reject-committed',
+      undefined,
+      'finalize',
+    );
+  });

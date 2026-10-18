@@ -1,7 +1,19 @@
+import type { LocalDbNoticeContext } from '../db/checkpoint-notice.js';
+import { ownSessionOutput, ownSessionSubscriber } from '../chat/session-presentation.js';
+import { SessionChatTerminal } from '../chat/session-chat-terminal.js';
+import type { SessionInkMount } from '../chat/session-ink-mount.js';
+import type { CliInvocation } from '../process/invocation.js';
+import type { SessionWorkOwner } from '../chat/session-work-owner.js';
+import type { SessionHostOwner } from '../chat/session-host-owner.js';
+import { SessionChatLifetime } from '../chat/session-chat-lifetime.js';
+import {
+  nativeProcessesForInvocation,
+  type NativeProcessController,
+} from '../process/native-process-owner.js';
 import { randomUUID } from 'node:crypto';
 import { realpathSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
-import { createInterface } from 'node:readline';
+import { withSessionReadline } from '../chat/session-readline.js';
 
 import {
   DEFAULT_SESSION_MAX_TURNS,
@@ -20,6 +32,7 @@ import {
 import { exportSession, SESSION_EXPORT_REVIEW_NOTICE } from '../chat/export.js';
 import { createConsentGate } from '../engine/mcp-consent-gate.js';
 import { createConsentPrompter } from '../mcp/consent-prompt.js';
+import { createOwnedSessionConsentGate } from '../chat/session-consent.js';
 import { formatDoctorReport, runDoctorChecks, type DoctorProbes } from '../chat/doctor.js';
 import { assembleDoctorProbes } from '../chat/doctor-host.js';
 import {
@@ -81,13 +94,14 @@ import { loadUserPricingOverlay, readUserPricingOverlay } from '../engine/pricin
 import { mcpSkippedLines, surfaceMcpSkipped } from '../engine/mcp-servers.js';
 import { createProviderResolver, type ProviderResolver } from '../engine/providers.js';
 import { openSessionStore, type OpenedSessionStore } from '../history/session-open.js';
-import { CliError } from '../process/errors.js';
+import { CliError, toUserFacing } from '../process/errors.js';
 import type { CliIo } from '../process/io.js';
+import { closeQuietly, warnTeardown } from '../process/close-quietly.js';
 import type { GlobalOptions } from '../process/options.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import { detectOutputMode, isCiEnv } from '../process/output-mode.js';
 import { createAltScreenController, type AltScreenController } from '../render/alt-screen.js';
-import { nodeCreateTempDocument, nodeSpawnEditor } from '../render/editor.js';
+import { nodeCreateTempDocument, createNodeSpawnEditor } from '../render/editor.js';
 import {
   createHatches,
   hoistedTerminal,
@@ -144,24 +158,6 @@ export interface ChatCommandArgs {
   readonly agent: string | undefined;
 }
 
-/** Surface a teardown failure as a stderr warning (never silently swallowed, never thrown — the primary
- *  command outcome must survive a cleanup fault). Shared by the chat command + resume teardown paths. */
-function warnTeardown(io: CliIo, label: string, err: unknown): void {
-  io.writeErr(
-    `warning: ${label} teardown failed: ${err instanceof Error ? err.message : String(err)}\n`,
-  );
-}
-
-/** Best-effort SYNC close: run it, but a reject/throw only warns — so one resource's failure never skips the
- *  next teardown step nor masks the primary outcome (attempt-all, preserve-primary). */
-function closeQuietly(io: CliIo, label: string, close: () => void): void {
-  try {
-    close();
-  } catch (err) {
-    warnTeardown(io, label, err);
-  }
-}
-
 /**
  * A mid-session model-switch target ([ADR-0059](../../../../docs/decisions/0059-cli-mid-session-model-reseat.md)):
  * the picked model + its provider. The reseat rebuilds the session bound to this model (dropping the original
@@ -207,12 +203,28 @@ function buildChatModelsPort(
   boundModel: string,
   now: () => number,
   uuid: () => string,
+  workOwner?: SessionWorkOwner,
 ): ChatModelsPort {
-  return { ...createModelCatalogPort({ db: opened.db, providers, now, uuid }), boundModel };
+  return {
+    ...createModelCatalogPort({
+      db: opened.db,
+      providers,
+      now,
+      uuid,
+      ...(workOwner === undefined ? {} : { workOwner }),
+    }),
+    boundModel,
+  };
 }
 
 /** What an interactive driver receives — the command core's seam, so a driver never touches the session directly. */
 export interface ChatDriveContext {
+  /** Actual host lifetime, present on owned production construction paths. */
+  readonly workOwner?: SessionWorkOwner;
+  /** Join the current native job-control binding before this mount's final unmount. */
+  readonly finishJobControl?: () => Promise<void>;
+  readonly adoptTerminalMount?: (mount: SessionInkMount) => void;
+  readonly subscribeInterrupt?: (listener: () => void) => () => void;
   /**
    * Open the session — call this AS THE FIRST ACT inside the driver, AFTER it has wired its stream
    * subscription, so the synchronous `session:started` (which carries the model) is observed, not raced.
@@ -350,6 +362,8 @@ export interface ChatDriveOutcome {
 export type ChatDriver = (ctx: ChatDriveContext) => Promise<ChatDriveOutcome>;
 
 export interface ChatCommandDeps {
+  /** The original bootstrap invocation, shared across clear and reseat. */
+  readonly invocation?: CliInvocation;
   readonly io: CliIo;
   readonly global: GlobalOptions;
   readonly providers?: ProviderResolver;
@@ -359,7 +373,11 @@ export interface ChatCommandDeps {
    *  just-ended session under a new-model agent. Default {@link buildResumedChatSession}. */
   readonly buildResumedSession?: typeof buildResumedChatSession;
   /** Injectable session-store opener (tests pass an in-memory store). Default {@link openSessionStore}. */
-  readonly openSessionStore?: (homeDir: string) => OpenedSessionStore;
+  readonly openSessionStore?: (
+    homeDir: string,
+    captureClose?: (close: () => void) => void,
+    noticeContext?: LocalDbNoticeContext,
+  ) => OpenedSessionStore;
   /** The MCP named-secret resolver (2.R Step 4) — production injects the keychain-backed one (specs.ts); default env-only. */
   readonly mcpSecretResolver?: McpSecretResolver;
   readonly resolveKeys?: (
@@ -387,6 +405,8 @@ export interface ChatResumeCommandArgs {
 }
 
 export interface ChatResumeCommandDeps {
+  /** The original bootstrap invocation, shared across clear and reseat. */
+  readonly invocation?: CliInvocation;
   readonly io: CliIo;
   readonly global: GlobalOptions;
   readonly providers?: ProviderResolver;
@@ -396,7 +416,11 @@ export interface ChatResumeCommandDeps {
    *  brand-new session (not a re-resume) bound to the resumed agent. Default {@link buildChatSession}. */
   readonly buildSession?: typeof buildChatSession;
   /** Injectable session-store opener (tests pass an in-memory store). Default {@link openSessionStore}. */
-  readonly openSessionStore?: (homeDir: string) => OpenedSessionStore;
+  readonly openSessionStore?: (
+    homeDir: string,
+    captureClose?: (close: () => void) => void,
+    noticeContext?: LocalDbNoticeContext,
+  ) => OpenedSessionStore;
   /** The MCP named-secret resolver (2.R Step 4) — production injects the keychain-backed one; default env-only. */
   readonly mcpSecretResolver?: McpSecretResolver;
   readonly resolveKeys?: (
@@ -419,6 +443,10 @@ export interface ChatResumeCommandDeps {
 
 /** The subset the shared {@link runReplLoop} needs — satisfied by both {@link ChatCommandDeps} and {@link ChatResumeCommandDeps}. */
 interface ChatReplDeps {
+  readonly afterTerminalRelease?: () => Promise<void>;
+  readonly chatLifetime?: SessionChatLifetime;
+  /** The original bootstrap invocation, shared across clear and reseat. */
+  readonly invocation?: CliInvocation;
   readonly io: CliIo;
   readonly global: GlobalOptions;
   readonly drive?: ChatDriver;
@@ -432,6 +460,8 @@ interface ChatReplDeps {
   readonly jobControlLifecycle?: JobControlLifecycle;
   /** The current loop's raw Ctrl-Z request. Constructed beside the hoisted terminal state, not by a plain driver. */
   readonly onSuspend?: (() => void) | undefined;
+  readonly finishJobControl?: () => Promise<void>;
+  readonly adoptTerminalMount?: (mount: SessionInkMount) => void;
   /**
    * `[preferences].copy_on_select`, ALREADY resolved against the mouse decision (`resolveCopyOnSelect`). `false` (or
    * absent, on a non-interactive path) means the ink tree gets no `clipboard` prop: a released drag still highlights,
@@ -558,7 +588,18 @@ export function budgetWarningText(warning: ChatBudgetWarning): string {
   return `budget warning: ~${warning.thresholdPct}% of the ${warning.limitMicrocents}µ¢ cap reached`;
 }
 
-export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps): Promise<ExitCode> {
+export function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps): Promise<ExitCode> {
+  if (deps.invocation === undefined) return chatCommandBody(args, deps);
+  const ownership = new SessionChatLifetime(deps.invocation, deps.lifecycle);
+  return ownership.execute(() => chatCommandBody(args, deps, ownership));
+}
+
+async function chatCommandBody(
+  args: ChatCommandArgs,
+  deps: ChatCommandDeps,
+  ownership?: SessionChatLifetime,
+): Promise<ExitCode> {
+  const nativeProcesses = nativeProcessesForInvocation(deps.invocation);
   const grants = admitFsInvocation(deps.global);
   const now = deps.now ?? Date.now;
   const uuid = deps.uuid ?? randomUUID;
@@ -568,6 +609,12 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
   const { config, projectConfigDir, homeDir } = loadResolvedConfig({
     cwd: deps.global.cwd,
     configPath: deps.global.configPath,
+  });
+  const consentGate = createConsentGate({
+    io: deps.io,
+    global: deps.global,
+    homeDir,
+    prompt: createConsentPrompter(),
   });
   const fsPolicy = admitChatFsPolicy(grants, deps.global.cwd, config.chat.extraRoots);
   const keys = deps.resolveKeys?.();
@@ -581,171 +628,230 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
   // The ADR-0065 §2 user-pricing overlay (2.5.G S10) — a transient read of the `model_catalog` `source='user'`
   // rows, so a user-priced model is enforced by `[chat].max_cost_microcents` + tracked in realized cost. NON-FATAL:
   // an unopenable db yields `undefined` here and surfaces cleanly through the session store open below.
-  const resolvePrice = loadUserPricingOverlay(homeDir);
+  const resolvePrice = loadUserPricingOverlay(homeDir, deps.io, deps.invocation);
 
   // An unknown --agent / un-inferrable default model throws a typed CliError here (exit 2), before any session.
   // The build is async (2.R): it connects the agent's inline stdio `mcp_servers` (a connect failure is a
   // fail-loud exit-2 CliError, cause stripped) before the session is live.
-  const built = await (deps.buildSession ?? buildChatSession)({
-    chat: config.chat,
-    fsPolicy,
-    ...(config.maxTokensEstimate === undefined
-      ? {}
-      : { maxTokensEstimate: config.maxTokensEstimate }),
-    // **Consent before any stdio MCP spawn** (ADR-0084 §1). `chat --agent` is the ordinary way an imported
-    // agent is opened, which is the case the gate exists for — and the one the first wiring missed by
-    // covering only `relavium run`. No `--allow-mcp-stdio` here: a chat is interactive by construction, so
-    // the refusal directs a scripted caller at `agent run`, which has the flag.
-    consentGate: createConsentGate({
-      io: deps.io,
-      global: deps.global,
-      homeDir,
-      prompt: createConsentPrompter(),
-    }),
-    agentRef: args.agent,
-    cwd: deps.global.cwd,
-    projectConfigDir,
-    now,
-    uuid,
-    providers,
-    mcpSecretResolver,
-    mcpRegistrations: config.mcpServers,
-    ...(resolvePrice === undefined ? {} : { resolvePrice }),
-    onBudgetWarning: (warning) => emitLiveNotice(deps.io, budgetWarningText(warning)),
-    onCompactionStart: compactionStartNotice(deps.io),
-    // ADR-0071 §6: a tier the bound model does not take is WITHHELD at send — and said out loud. Without this the
-    // turn runs, the field is gone, and the user is billed at the provider's default tier with nothing to explain
-    // why the knob they set did nothing.
-    onEffortWithheld: onceEffortNotice((note) => emitLiveNotice(deps.io, note)),
-    onListenerError: (note: string) => emitLiveNotice(deps.io, note),
-    onUnpriced: (note) => emitLiveNotice(deps.io, note),
-  });
-  // The session now OWNS the live MCP connections (built.closeMcp). `runReplLoop`'s finally is the steady-state
-  // teardown, but the build→loop window (opening history.db can throw) runs first — guard it so a pre-loop fault
-  // tears the connections down rather than orphaning the spawned children (ADR-0052 §2 teardown-on-terminal).
-  surfaceMcpSkipped(deps.io, built.mcpSkipped);
-  // Acquire the store first; on failure tear the MCP children down (best-effort — never mask the open error).
-  let opened: OpenedSessionStore;
-  try {
-    opened = (deps.openSessionStore ?? openSessionStore)(homeDir);
-  } catch (err) {
-    await built.closeMcp?.().catch(() => undefined);
-    throw err;
-  }
-  // Then the persister; on failure tear down EVERY acquired resource (the store too) before rethrowing.
-  let persister: SessionPersister;
-  try {
-    persister = createSessionPersister({
-      usageStore: createSessionUsageStore(opened.db),
-      mode: 'fresh',
-      attachUsageWriter: built.attachUsageWriter,
-      governor: built.governor,
-      attachDurabilityProbe: built.attachDurabilityProbe,
-      attachEffectTurnAllocator: built.attachEffectTurnAllocator,
+  const prepare = async (host?: SessionHostOwner) => {
+    const build = (workOwner?: SessionWorkOwner) =>
+      (deps.buildSession ?? buildChatSession)({
+        ...(workOwner === undefined ? {} : { workOwner }),
+        chat: config.chat,
+        fsPolicy,
+        ...(nativeProcesses === undefined ? {} : { nativeProcesses }),
+        ...(config.maxTokensEstimate === undefined
+          ? {}
+          : { maxTokensEstimate: config.maxTokensEstimate }),
+        // **Consent before any stdio MCP spawn** (ADR-0084 §1). `chat --agent` is the ordinary way an imported
+        // agent is opened, which is the case the gate exists for — and the one the first wiring missed by
+        // covering only `relavium run`. No `--allow-mcp-stdio` here: a chat is interactive by construction, so
+        // the refusal directs a scripted caller at `agent run`, which has the flag.
+        consentGate:
+          workOwner === undefined
+            ? consentGate
+            : createOwnedSessionConsentGate(
+                {
+                  io: deps.io,
+                  global: deps.global,
+                  homeDir,
+                },
+                workOwner,
+              ),
+        agentRef: args.agent,
+        cwd: deps.global.cwd,
+        projectConfigDir,
+        now,
+        uuid,
+        providers,
+        mcpSecretResolver,
+        mcpRegistrations: config.mcpServers,
+        ...(resolvePrice === undefined ? {} : { resolvePrice }),
+        onBudgetWarning: (warning) => emitLiveNotice(deps.io, budgetWarningText(warning)),
+        onCompactionStart: compactionStartNotice(deps.io),
+        // ADR-0071 §6: a tier the bound model does not take is WITHHELD at send — and said out loud. Without this the
+        // turn runs, the field is gone, and the user is billed at the provider's default tier with nothing to explain
+        // why the knob they set did nothing.
+        onEffortWithheld: onceEffortNotice((note) => emitLiveNotice(deps.io, note)),
+        onListenerError: (note: string) => emitLiveNotice(deps.io, note),
+        onUnpriced: (note) => emitLiveNotice(deps.io, note),
+      });
+    const built = host === undefined ? await build() : await host.build(build);
+    // The session now OWNS the live MCP connections (built.closeMcp). `runReplLoop`'s finally is the steady-state
+    // teardown, but the build→loop window (opening history.db can throw) runs first — guard it so a pre-loop fault
+    // tears the connections down rather than orphaning the spawned children (ADR-0052 §2 teardown-on-terminal).
+    surfaceMcpSkipped(deps.io, built.mcpSkipped);
+    // Acquire the store first; on failure tear the MCP children down (best-effort — never mask the open error).
+    let opened: OpenedSessionStore;
+    try {
+      opened =
+        ownership === undefined
+          ? (deps.openSessionStore ?? openSessionStore)(homeDir, undefined, {
+              io: deps.io,
+              invocation: deps.invocation,
+            })
+          : ownership.acquireStore((captureClose) =>
+              (deps.openSessionStore ?? openSessionStore)(homeDir, captureClose, {
+                io: deps.io,
+                invocation: deps.invocation,
+              }),
+            );
+    } catch (err) {
+      if (host !== undefined) {
+        host.work.failure(err);
+        throw err;
+      }
+      await built.closeMcp?.().catch(() => undefined);
+      throw err;
+    }
+    // Then the persister; on failure tear down EVERY acquired resource (the store too) before rethrowing.
+    let persister: SessionPersister;
+    try {
+      persister = createSessionPersister(
+        {
+          usageStore: createSessionUsageStore(opened.db),
+          mode: 'fresh',
+          attachUsageWriter: built.attachUsageWriter,
+          governor: built.governor,
+          attachDurabilityProbe: built.attachDurabilityProbe,
+          attachEffectTurnAllocator: built.attachEffectTurnAllocator,
 
-      store: opened.store,
-      handle: built.handle,
-      sessionId: built.sessionId,
+          store: opened.store,
+          handle: built.handle,
+          sessionId: built.sessionId,
+          agent: built.agent,
+          context: built.context,
+          now,
+          uuid,
+          // ADR-0059 per-message/session model attribution — resolve a model string → its `model_catalog.id` (the FK
+          // target) over the SAME db, degrading to NULL when uncataloged. Shared across every persister site.
+          resolveModelCatalogId: makeCatalogIdResolver(opened.db, { uuid, now }),
+        },
+        built.hostOwner,
+      );
+
+      // The durable effect journal (ADR-0080), wired where `history.db` is open. A site that forgets is
+      // NOT silent: the forwarding port refuses the first effect loudly, which is exactly why
+      // `unwiredEffectJournal()` rejects instead of no-opping.
+      built.attachEffectJournal((correlation) =>
+        createEffectJournalPort(createEffectJournalStore(opened.db, { uuid, now }), correlation, {
+          providerAttempt: 1,
+          toolCallId: 'session',
+        }),
+      );
+    } catch (err) {
+      if (host !== undefined) {
+        host.work.failure(err);
+        throw err;
+      }
+      closeQuietly(deps.io, 'session store', () => opened.close());
+      await built.closeMcp?.().catch(() => undefined);
+      throw err;
+    }
+
+    const doctorProbes =
+      deps.doctorProbes ??
+      assembleDoctorProbes({
+        ...(built.workOwner === undefined ? {} : { workOwner: built.workOwner }),
+        cwd: deps.global.cwd,
+        ...(deps.global.configPath === undefined ? {} : { configPath: deps.global.configPath }),
+        resolver: providers,
+        // The MCP tier REPORTS the live session's status (read-only) — the bound agent's declared servers (all
+        // connected, since this session is live) + the tools the manager dropped. It never re-connects/spawns.
+        agentMcpServers: built.agent.mcp_servers ?? [],
+        mcpSkipped: built.mcpSkipped,
+      });
+
+    // The `/clear` (ADR-0062 §7) re-drive rebuild — a FRESH session bound to the SAME agent (`built.agent`, reused
+    // verbatim, invariant across swaps), MCP reconnected, store/totals empty, over the SHARED db. The contract is
+    // shared with `chat-resume` via createClearRebuild so it cannot drift.
+    const rebuild = createClearRebuild({
+      homeDir,
+      ...(ownership === undefined ? {} : { ownership }),
+      chat: config.chat,
+      fsPolicy,
+      ...(nativeProcesses === undefined ? {} : { nativeProcesses }),
+      consentGate,
+      ...(config.maxTokensEstimate === undefined
+        ? {}
+        : { maxTokensEstimate: config.maxTokensEstimate }),
       agent: built.agent,
-      context: built.context,
+      projectConfigDir,
       now,
       uuid,
-      // ADR-0059 per-message/session model attribution — resolve a model string → its `model_catalog.id` (the FK
-      // target) over the SAME db, degrading to NULL when uncataloged. Shared across every persister site.
-      resolveModelCatalogId: makeCatalogIdResolver(opened.db, { uuid, now }),
-    });
-
-    // The durable effect journal (ADR-0080), wired where `history.db` is open. A site that forgets is
-    // NOT silent: the forwarding port refuses the first effect loudly, which is exactly why
-    // `unwiredEffectJournal()` rejects instead of no-opping.
-    built.attachEffectJournal((correlation) =>
-      createEffectJournalPort(createEffectJournalStore(opened.db, { uuid, now }), correlation, {
-        providerAttempt: 1,
-        toolCallId: 'session',
-      }),
-    );
-  } catch (err) {
-    closeQuietly(deps.io, 'session store', () => opened.close());
-    await built.closeMcp?.().catch(() => undefined);
-    throw err;
-  }
-
-  const doctorProbes =
-    deps.doctorProbes ??
-    assembleDoctorProbes({
-      cwd: deps.global.cwd,
-      ...(deps.global.configPath === undefined ? {} : { configPath: deps.global.configPath }),
-      resolver: providers,
-      // The MCP tier REPORTS the live session's status (read-only) — the bound agent's declared servers (all
-      // connected, since this session is live) + the tools the manager dropped. It never re-connects/spawns.
-      agentMcpServers: built.agent.mcp_servers ?? [],
-      mcpSkipped: built.mcpSkipped,
-    });
-
-  // The `/clear` (ADR-0062 §7) re-drive rebuild — a FRESH session bound to the SAME agent (`built.agent`, reused
-  // verbatim, invariant across swaps), MCP reconnected, store/totals empty, over the SHARED db. The contract is
-  // shared with `chat-resume` via createClearRebuild so it cannot drift.
-  const rebuild = createClearRebuild({
-    chat: config.chat,
-    fsPolicy,
-    ...(config.maxTokensEstimate === undefined
-      ? {}
-      : { maxTokensEstimate: config.maxTokensEstimate }),
-    agent: built.agent,
-    projectConfigDir,
-    now,
-    uuid,
-    providers,
-    mcpSecretResolver,
-    mcpRegistrations: config.mcpServers,
-    opened,
-    buildSession: deps.buildSession ?? buildChatSession,
-    io: deps.io,
-    global: deps.global,
-    altScreen: config.altScreen,
-    // A `/clear` rebuild re-reads the user-pricing overlay FRESH from the shared db (buildFreshChatWiring), so a
-    // mid-session `models pricing` write applies to the next cleared session — no captured value to thread here.
-  });
-
-  // The `/models` reseat rebuild (ADR-0059) — a NEW-model session carrying the transcript. It reloads the
-  // just-ended session from the SHARED db, so it does not close over `built.agent` (the reseat swaps the model).
-  const reseatRebuild = createReseatRebuild({
-    chat: config.chat,
-    fsPolicy,
-    ...(config.maxTokensEstimate === undefined
-      ? {}
-      : { maxTokensEstimate: config.maxTokensEstimate }),
-    now,
-    uuid,
-    providers,
-    mcpSecretResolver,
-    mcpRegistrations: config.mcpServers,
-    opened,
-    buildResumedSession: deps.buildResumedSession ?? buildResumedChatSession,
-    io: deps.io,
-    global: deps.global,
-    altScreen: config.altScreen,
-  });
-
-  return runReplLoop(
-    {
-      built,
+      providers,
+      mcpSecretResolver,
+      mcpRegistrations: config.mcpServers,
       opened,
-      store,
-      persister,
-      doctorProbes,
-      startSession: () => built.session.start(),
-      modelPicker: buildChatModelsPort(opened, providers, built.agent.model, now, uuid),
+      buildSession: deps.buildSession ?? buildChatSession,
+      io: deps.io,
+      global: deps.global,
       altScreen: config.altScreen,
-      mouse: config.mouse,
-      copyOnSelect: config.copyOnSelect,
-      ...(config.chat.maxMessages === undefined
+      // A `/clear` rebuild re-reads the user-pricing overlay FRESH from the shared db (buildFreshChatWiring), so a
+      // mid-session `models pricing` write applies to the next cleared session — no captured value to thread here.
+    });
+
+    // The `/models` reseat rebuild (ADR-0059) — a NEW-model session carrying the transcript. It reloads the
+    // just-ended session from the SHARED db, so it does not close over `built.agent` (the reseat swaps the model).
+    const reseatRebuild = createReseatRebuild({
+      homeDir,
+      ...(ownership === undefined ? {} : { ownership }),
+      chat: config.chat,
+      fsPolicy,
+      ...(nativeProcesses === undefined ? {} : { nativeProcesses }),
+      consentGate,
+      ...(config.maxTokensEstimate === undefined
         ? {}
-        : { chatMaxMessages: config.chat.maxMessages }),
+        : { maxTokensEstimate: config.maxTokensEstimate }),
+      now,
+      uuid,
+      providers,
+      mcpSecretResolver,
+      mcpRegistrations: config.mcpServers,
+      opened,
+      buildResumedSession: deps.buildResumedSession ?? buildResumedChatSession,
+      io: deps.io,
+      global: deps.global,
+      altScreen: config.altScreen,
+    });
+
+    return {
+      wiring: {
+        built,
+        opened,
+        store,
+        persister,
+        doctorProbes,
+        startSession: () => built.session.start(),
+        modelPicker: buildChatModelsPort(
+          opened,
+          providers,
+          built.agent.model,
+          now,
+          uuid,
+          built.workOwner,
+        ),
+        altScreen: config.altScreen,
+        mouse: config.mouse,
+        copyOnSelect: config.copyOnSelect,
+        ...(config.chat.maxMessages === undefined
+          ? {}
+          : { chatMaxMessages: config.chat.maxMessages }),
+      } satisfies ReplWiring,
+      rebuild,
+      reseatRebuild,
+    };
+  };
+  const prepared =
+    ownership === undefined ? await prepare() : await ownership.hosts.construct(prepare);
+  return await runReplLoop(
+    prepared.wiring,
+    {
+      ...deps,
+      ...(ownership === undefined ? {} : { chatLifetime: ownership }),
     },
-    deps,
-    rebuild,
-    reseatRebuild,
+    prepared.rebuild,
+    prepared.reseatRebuild,
   );
 }
 
@@ -757,242 +863,313 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
  * {@link runReplLoop}. An unknown `sessionId` (or a session with no stored agent snapshot) is a clean exit-2
  * invocation fault. Like `chat`, it ends with **exit code 4**.
  */
-export async function chatResumeCommand(
+export function chatResumeCommand(
   args: ChatResumeCommandArgs,
   deps: ChatResumeCommandDeps,
 ): Promise<ExitCode> {
+  if (deps.invocation === undefined) return chatResumeCommandBody(args, deps);
+  const ownership = new SessionChatLifetime(deps.invocation, deps.lifecycle);
+  return ownership.execute(() => chatResumeCommandBody(args, deps, ownership));
+}
+
+async function chatResumeCommandBody(
+  args: ChatResumeCommandArgs,
+  deps: ChatResumeCommandDeps,
+  ownership?: SessionChatLifetime,
+): Promise<ExitCode> {
+  const nativeProcesses = nativeProcessesForInvocation(deps.invocation);
   const now = deps.now ?? Date.now;
   const uuid = deps.uuid ?? randomUUID;
 
   const grants = admitFsInvocation(deps.global);
   const homeDir = resolveHomeDir({});
-  const opened = (deps.openSessionStore ?? openSessionStore)(homeDir);
-  let config: LoadedConfig['config'];
-  let projectConfigDir: LoadedConfig['projectConfigDir'];
-  let fsPolicy: FsPathPolicy;
-  let providers: ProviderResolver;
-  let mcpSecretResolver: McpSecretResolver;
+  const opened =
+    ownership === undefined
+      ? (deps.openSessionStore ?? openSessionStore)(homeDir, undefined, {
+          io: deps.io,
+          invocation: deps.invocation,
+        })
+      : ownership.acquireStore((captureClose) =>
+          (deps.openSessionStore ?? openSessionStore)(homeDir, captureClose, {
+            io: deps.io,
+            invocation: deps.invocation,
+          }),
+        );
+  const prepare = async (host?: SessionHostOwner) => {
+    let config: LoadedConfig['config'];
+    let projectConfigDir: LoadedConfig['projectConfigDir'];
+    let fsPolicy: FsPathPolicy;
+    let providers: ProviderResolver;
+    let mcpSecretResolver: McpSecretResolver;
+    let consentGate: NonNullable<BuildChatSessionOptions['consentGate']>;
 
-  let built: BuiltChatSession;
-  let store: ChatStoreController;
-  let persister: SessionPersister;
-  let intro: string;
-  // The ADR-0065 §2 user-pricing overlay (2.5.G S10) — hoisted so the post-try `/clear` rebuild reuses it.
-  let resolvePrice: BuildChatSessionOptions['resolvePrice'];
-  // The just-built resumed session OWNS its MCP connections; if a pre-loop step after a SUCCESSFUL build throws,
-  // the catch must tear them down (the steady-state teardown is runReplLoop's finally, not yet entered). Undefined
-  // when no server was declared OR the build self-cleaned its own post-connect fault (see buildResumedChatSession).
-  let closeMcp: (() => Promise<void>) | undefined;
-  try {
-    // The current `[chat]` config governs the resumed turn/cost caps; the agent, model, and context are the
-    // frozen originals from the record. An absent session is a clean exit-2 invocation fault.
-    const loaded = opened.store.loadFull(args.sessionId);
-    if (loaded === undefined) {
-      throw new CliError('invalid_invocation', `no session found with id ${args.sessionId}`);
-    }
-    if (loaded.session.agentSnapshot === undefined) {
-      throw new CliError(
-        'invalid_invocation',
-        'The session has no stored agent snapshot and cannot be resumed.',
-      );
-    }
-    // Recover the original workspace before reading project/workspace selectors. Launch cwd cannot substitute it.
-    const originalCwd = loaded.session.context.workingDir;
-    if (!isAbsolute(originalCwd)) {
-      throw new CliError(
-        'invalid_invocation',
-        'This legacy session has no absolute workspace anchor and cannot be safely resumed.',
-      );
-    }
-    let canonicalCwd: string;
+    let built: BuiltChatSession;
+    let store: ChatStoreController;
+    let persister: SessionPersister;
+    let intro: string;
+    // The ADR-0065 §2 user-pricing overlay (2.5.G S10) — hoisted so the post-try `/clear` rebuild reuses it.
+    let resolvePrice: BuildChatSessionOptions['resolvePrice'];
+    // The just-built resumed session OWNS its MCP connections; if a pre-loop step after a SUCCESSFUL build throws,
+    // the catch must tear them down (the steady-state teardown is runReplLoop's finally, not yet entered). Undefined
+    // when no server was declared OR the build self-cleaned its own post-connect fault (see buildResumedChatSession).
+    let closeMcp: (() => Promise<void>) | undefined;
     try {
-      canonicalCwd = realpathSync.native(originalCwd);
-    } catch {
-      throw new CliError('invalid_invocation', 'The original session workspace is unavailable.');
-    }
-    if (canonicalCwd !== originalCwd) {
-      throw new CliError(
-        'invalid_invocation',
-        'This legacy session has an ambiguous workspace alias and cannot be safely resumed.',
-      );
-    }
-    ({ config, projectConfigDir } = loadResolvedConfig({
-      cwd: originalCwd,
-      configPath: deps.global.configPath,
-    }));
-    fsPolicy = admitChatFsPolicy(grants, originalCwd, config.chat.extraRoots);
-    deps = { ...deps, global: Object.freeze({ ...deps.global, cwd: originalCwd }) };
-    const keys = deps.resolveKeys?.(opened.db);
-    providers = deps.providers ?? keys?.providers ?? createProviderResolver(deps.io.env);
-    mcpSecretResolver =
-      deps.mcpSecretResolver ?? keys?.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env);
-    // The ADR-0065 §2 user-pricing overlay (2.5.G S10), read from the ALREADY-OPEN session db — so a resumed
-    // session enforces + tracks a user-priced model exactly like a fresh `chat`. Non-fatal (an empty map on a
-    // read fault): a corrupt pricing row must not fail an otherwise-valid resume.
-    resolvePrice = readUserPricingOverlay(opened.db);
-    const resumed = await (deps.buildResumedSession ?? buildResumedChatSession)({
-      chat: config.chat,
-      fsPolicy,
-      ...(config.maxTokensEstimate === undefined
-        ? {}
-        : { maxTokensEstimate: config.maxTokensEstimate }),
-      // Consent before any stdio MCP spawn (ADR-0084 §1) — every path that opens an agent, not only `run`.
-      consentGate: createConsentGate({
+      // The current `[chat]` config governs the resumed turn/cost caps; the agent, model, and context are the
+      // frozen originals from the record. An absent session is a clean exit-2 invocation fault.
+      const loaded = opened.store.loadFull(args.sessionId);
+      if (loaded === undefined) {
+        throw new CliError('invalid_invocation', `no session found with id ${args.sessionId}`);
+      }
+      if (loaded.session.agentSnapshot === undefined) {
+        throw new CliError(
+          'invalid_invocation',
+          'The session has no stored agent snapshot and cannot be resumed.',
+        );
+      }
+      // Recover the original workspace before reading project/workspace selectors. Launch cwd cannot substitute it.
+      const originalCwd = loaded.session.context.workingDir;
+      if (!isAbsolute(originalCwd)) {
+        throw new CliError(
+          'invalid_invocation',
+          'This legacy session has no absolute workspace anchor and cannot be safely resumed.',
+        );
+      }
+      let canonicalCwd: string;
+      try {
+        canonicalCwd = realpathSync.native(originalCwd);
+      } catch {
+        throw new CliError('invalid_invocation', 'The original session workspace is unavailable.');
+      }
+      if (canonicalCwd !== originalCwd) {
+        throw new CliError(
+          'invalid_invocation',
+          'This legacy session has an ambiguous workspace alias and cannot be safely resumed.',
+        );
+      }
+      ({ config, projectConfigDir } = loadResolvedConfig({
+        cwd: originalCwd,
+        configPath: deps.global.configPath,
+      }));
+      fsPolicy = admitChatFsPolicy(grants, originalCwd, config.chat.extraRoots);
+      deps = { ...deps, global: Object.freeze({ ...deps.global, cwd: originalCwd }) };
+      const keys = deps.resolveKeys?.(opened.db);
+      providers = deps.providers ?? keys?.providers ?? createProviderResolver(deps.io.env);
+      mcpSecretResolver =
+        deps.mcpSecretResolver ?? keys?.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env);
+      // The ADR-0065 §2 user-pricing overlay (2.5.G S10), read from the ALREADY-OPEN session db — so a resumed
+      // session enforces + tracks a user-priced model exactly like a fresh `chat`. Non-fatal (an empty map on a
+      // read fault): a corrupt pricing row must not fail an otherwise-valid resume.
+      resolvePrice = readUserPricingOverlay(opened.db);
+      consentGate = createConsentGate({
         io: deps.io,
         global: deps.global,
         homeDir,
         prompt: createConsentPrompter(),
-      }),
-      record: loaded.session,
-      messages: loaded.messages,
+      });
+      const build = (workOwner?: SessionWorkOwner) =>
+        (deps.buildResumedSession ?? buildResumedChatSession)({
+          ...(workOwner === undefined ? {} : { workOwner }),
+          chat: config.chat,
+          fsPolicy,
+          ...(nativeProcesses === undefined ? {} : { nativeProcesses }),
+          ...(config.maxTokensEstimate === undefined
+            ? {}
+            : { maxTokensEstimate: config.maxTokensEstimate }),
+          // Consent before any stdio MCP spawn (ADR-0084 §1) — every path that opens an agent, not only `run`.
+          consentGate:
+            workOwner === undefined
+              ? consentGate
+              : createOwnedSessionConsentGate(
+                  {
+                    io: deps.io,
+                    global: deps.global,
+                    homeDir,
+                  },
+                  workOwner,
+                ),
+          record: loaded.session,
+          messages: loaded.messages,
+          now,
+          providers,
+          mcpSecretResolver,
+          mcpRegistrations: config.mcpServers,
+          ...(resolvePrice === undefined ? {} : { resolvePrice }),
+          onBudgetWarning: (warning) => emitLiveNotice(deps.io, budgetWarningText(warning)),
+          onCompactionStart: compactionStartNotice(deps.io),
+          // ADR-0071 §6: a tier the bound model does not take is WITHHELD at send — and said out loud. Without this the
+          // turn runs, the field is gone, and the user is billed at the provider's default tier with nothing to explain
+          // why the knob they set did nothing.
+          onEffortWithheld: onceEffortNotice((note) => emitLiveNotice(deps.io, note)),
+          onListenerError: (note: string) => emitLiveNotice(deps.io, note),
+          onUnpriced: (note) => emitLiveNotice(deps.io, note),
+        });
+      const resumed = host === undefined ? await build() : await host.build(build);
+      closeMcp = resumed.closeMcp;
+      surfaceMcpSkipped(deps.io, resumed.mcpSkipped);
+      built = resumed;
+      // Seed the view header + persister via the SHARED resumed-wiring assembly (the same the `/models` reseat uses):
+      // a resumed session never re-emits `session:started`, so the seeded store shows the model + carried cost/turns
+      // from the first frame, and the persister continues past the last durable sequence number.
+      ({ store, persister } = seedResumedWiring(
+        resumed,
+        opened,
+        deps.global.color,
+        now,
+        uuid,
+        transcriptBoundFor(chatAltActive(deps, config.altScreen)),
+        // `chat-resume` carries NOTHING: it has never repainted prior turns, in any mode or version — there is no
+        // session_messages -> TranscriptEntry projection anywhere. That is a separate, tracked gap (deferred-tasks.md),
+        // NOT this reseat's business, and projecting it here would silently change resume's behaviour.
+        [],
+      ));
+      const turns = resumed.resumeState.turnCount;
+      // `sessionId` is only schema-constrained to a non-empty string (the CLI mints a UUID, but `history.db` is
+      // shared with other surfaces) — sanitize it before it reaches the TTY, exactly as `chat-list` does (the
+      // agent id is kebab-constrained, so safe raw). Without this the resume banner is the one chat output path
+      // that could carry a terminal escape from a crafted stored id.
+      intro = `Resuming session ${sanitizeInline(resumed.sessionId)} — ${resumed.agent.id}, ${turns} prior ${turns === 1 ? 'turn' : 'turns'}. Type a message, or /exit to quit.`;
+      // Pre-flight the hard turn cap: a session resumed under a config whose `[chat].max_turns` is now at/below
+      // its prior turn count would have EVERY new turn blocked loudly as `turn_limit` (the engine cap counts the
+      // carried turns) with no way forward but /exit. Warn up front (stderr, non-blocking) so the user isn't
+      // silently trapped — distinct from the per-turn engine error. The effective cap mirrors the engine's
+      // `undefined/≤0 ⇒ default` rule (config validation already rejects a non-positive max_turns).
+      const cap = config.chat.maxTurns ?? DEFAULT_SESSION_MAX_TURNS;
+      if (turns >= cap) {
+        deps.io.writeErr(
+          `note: this session has ${turns} turns, at or over the ${cap}-turn cap — new turns will be refused (turn_limit). Raise [chat].max_turns to continue it.\n`,
+        );
+      }
+    } catch (err) {
+      // A pre-loop fault (not-found, no snapshot, build failure, or a post-build setup throw) must not strand the
+      // open db handle NOR the spawned MCP children — tear BOTH down (a reject in one must not skip the other), and
+      // never let a cleanup fault mask the primary error (best-effort; closeMcp is idempotent + a no-op when unset).
+      if (host !== undefined) {
+        host.work.failure(err);
+        throw err;
+      }
+      await closeMcp?.().catch(() => warnTeardown(deps.io, 'MCP'));
+      closeQuietly(deps.io, 'session store', () => opened.close());
+      throw err;
+    }
+
+    const doctorProbes =
+      deps.doctorProbes ??
+      assembleDoctorProbes({
+        ...(built.workOwner === undefined ? {} : { workOwner: built.workOwner }),
+        cwd: deps.global.cwd,
+        ...(deps.global.configPath === undefined ? {} : { configPath: deps.global.configPath }),
+        resolver: providers,
+        // The MCP tier REPORTS the live session's status (read-only) — the bound agent's declared servers (all
+        // connected, since this session is live) + the tools the manager dropped. It never re-connects/spawns.
+        agentMcpServers: built.agent.mcp_servers ?? [],
+        mcpSkipped: built.mcpSkipped,
+      });
+
+    // The `/clear` (ADR-0062 §7) re-drive rebuild: a FRESH session (NOT a re-resume) bound to the resumed agent —
+    // `built.agent` is the frozen snapshot agent (no on-disk ref), passed verbatim. Same shared contract as `chat`.
+    const rebuild = createClearRebuild({
+      homeDir,
+      ...(ownership === undefined ? {} : { ownership }),
+      chat: config.chat,
+      fsPolicy,
+      consentGate,
+      ...(nativeProcesses === undefined ? {} : { nativeProcesses }),
+      ...(config.maxTokensEstimate === undefined
+        ? {}
+        : { maxTokensEstimate: config.maxTokensEstimate }),
+      agent: built.agent,
+      projectConfigDir,
       now,
+      uuid,
       providers,
       mcpSecretResolver,
       mcpRegistrations: config.mcpServers,
-      resolvePrice,
-      onBudgetWarning: (warning) => emitLiveNotice(deps.io, budgetWarningText(warning)),
-      onCompactionStart: compactionStartNotice(deps.io),
-      // ADR-0071 §6: a tier the bound model does not take is WITHHELD at send — and said out loud. Without this the
-      // turn runs, the field is gone, and the user is billed at the provider's default tier with nothing to explain
-      // why the knob they set did nothing.
-      onEffortWithheld: onceEffortNotice((note) => emitLiveNotice(deps.io, note)),
-      onListenerError: (note: string) => emitLiveNotice(deps.io, note),
-      onUnpriced: (note) => emitLiveNotice(deps.io, note),
-    });
-    closeMcp = resumed.closeMcp;
-    surfaceMcpSkipped(deps.io, resumed.mcpSkipped);
-    built = resumed;
-    // Seed the view header + persister via the SHARED resumed-wiring assembly (the same the `/models` reseat uses):
-    // a resumed session never re-emits `session:started`, so the seeded store shows the model + carried cost/turns
-    // from the first frame, and the persister continues past the last durable sequence number.
-    ({ store, persister } = seedResumedWiring(
-      resumed,
       opened,
-      deps.global.color,
+      buildSession: deps.buildSession ?? buildChatSession,
+      io: deps.io,
+      global: deps.global,
+      altScreen: config.altScreen,
+      // A `/clear` rebuild re-reads the user-pricing overlay FRESH from the shared db (buildFreshChatWiring).
+    });
+
+    // The `/models` reseat rebuild (ADR-0059) — a NEW-model session carrying the transcript, over the SHARED db.
+    // Reloads the just-ended session (which may itself already be a resume), so it needs no captured agent.
+    const reseatRebuild = createReseatRebuild({
+      homeDir,
+      ...(ownership === undefined ? {} : { ownership }),
+      chat: config.chat,
+      fsPolicy,
+      consentGate,
+      ...(nativeProcesses === undefined ? {} : { nativeProcesses }),
+      ...(config.maxTokensEstimate === undefined
+        ? {}
+        : { maxTokensEstimate: config.maxTokensEstimate }),
       now,
       uuid,
-      transcriptBoundFor(chatAltActive(deps, config.altScreen)),
-      // `chat-resume` carries NOTHING: it has never repainted prior turns, in any mode or version — there is no
-      // session_messages -> TranscriptEntry projection anywhere. That is a separate, tracked gap (deferred-tasks.md),
-      // NOT this reseat's business, and projecting it here would silently change resume's behaviour.
-      [],
-    ));
-    const turns = resumed.resumeState.turnCount;
-    // `sessionId` is only schema-constrained to a non-empty string (the CLI mints a UUID, but `history.db` is
-    // shared with other surfaces) — sanitize it before it reaches the TTY, exactly as `chat-list` does (the
-    // agent id is kebab-constrained, so safe raw). Without this the resume banner is the one chat output path
-    // that could carry a terminal escape from a crafted stored id.
-    intro = `Resuming session ${sanitizeInline(resumed.sessionId)} — ${resumed.agent.id}, ${turns} prior ${turns === 1 ? 'turn' : 'turns'}. Type a message, or /exit to quit.`;
-    // Pre-flight the hard turn cap: a session resumed under a config whose `[chat].max_turns` is now at/below
-    // its prior turn count would have EVERY new turn blocked loudly as `turn_limit` (the engine cap counts the
-    // carried turns) with no way forward but /exit. Warn up front (stderr, non-blocking) so the user isn't
-    // silently trapped — distinct from the per-turn engine error. The effective cap mirrors the engine's
-    // `undefined/≤0 ⇒ default` rule (config validation already rejects a non-positive max_turns).
-    const cap = config.chat.maxTurns ?? DEFAULT_SESSION_MAX_TURNS;
-    if (turns >= cap) {
-      deps.io.writeErr(
-        `note: this session has ${turns} turns, at or over the ${cap}-turn cap — new turns will be refused (turn_limit). Raise [chat].max_turns to continue it.\n`,
-      );
-    }
-  } catch (err) {
-    // A pre-loop fault (not-found, no snapshot, build failure, or a post-build setup throw) must not strand the
-    // open db handle NOR the spawned MCP children — tear BOTH down (a reject in one must not skip the other), and
-    // never let a cleanup fault mask the primary error (best-effort; closeMcp is idempotent + a no-op when unset).
-    await closeMcp?.().catch((e: unknown) => warnTeardown(deps.io, 'MCP', e));
-    closeQuietly(deps.io, 'session store', () => opened.close());
-    throw err;
-  }
-
-  const doctorProbes =
-    deps.doctorProbes ??
-    assembleDoctorProbes({
-      cwd: deps.global.cwd,
-      ...(deps.global.configPath === undefined ? {} : { configPath: deps.global.configPath }),
-      resolver: providers,
-      // The MCP tier REPORTS the live session's status (read-only) — the bound agent's declared servers (all
-      // connected, since this session is live) + the tools the manager dropped. It never re-connects/spawns.
-      agentMcpServers: built.agent.mcp_servers ?? [],
-      mcpSkipped: built.mcpSkipped,
+      providers,
+      mcpSecretResolver,
+      mcpRegistrations: config.mcpServers,
+      opened,
+      buildResumedSession: deps.buildResumedSession ?? buildResumedChatSession,
+      io: deps.io,
+      global: deps.global,
+      altScreen: config.altScreen,
     });
 
-  // The `/clear` (ADR-0062 §7) re-drive rebuild: a FRESH session (NOT a re-resume) bound to the resumed agent —
-  // `built.agent` is the frozen snapshot agent (no on-disk ref), passed verbatim. Same shared contract as `chat`.
-  const rebuild = createClearRebuild({
-    chat: config.chat,
-    fsPolicy,
-    ...(config.maxTokensEstimate === undefined
-      ? {}
-      : { maxTokensEstimate: config.maxTokensEstimate }),
-    agent: built.agent,
-    projectConfigDir,
-    now,
-    uuid,
-    providers,
-    mcpSecretResolver,
-    mcpRegistrations: config.mcpServers,
-    opened,
-    buildSession: deps.buildSession ?? buildChatSession,
-    io: deps.io,
-    global: deps.global,
-    altScreen: config.altScreen,
-    // A `/clear` rebuild re-reads the user-pricing overlay FRESH from the shared db (buildFreshChatWiring).
-  });
-
-  // The `/models` reseat rebuild (ADR-0059) — a NEW-model session carrying the transcript, over the SHARED db.
-  // Reloads the just-ended session (which may itself already be a resume), so it needs no captured agent.
-  const reseatRebuild = createReseatRebuild({
-    chat: config.chat,
-    fsPolicy,
-    ...(config.maxTokensEstimate === undefined
-      ? {}
-      : { maxTokensEstimate: config.maxTokensEstimate }),
-    now,
-    uuid,
-    providers,
-    mcpSecretResolver,
-    mcpRegistrations: config.mcpServers,
-    opened,
-    buildResumedSession: deps.buildResumedSession ?? buildResumedChatSession,
-    io: deps.io,
-    global: deps.global,
-    altScreen: config.altScreen,
-  });
-
-  // A resumed session already landed at idle inside `AgentSession.resume`; calling start() would throw and
-  // re-emitting `session:started` would double a lifecycle event. Disclose only once the driver is active.
-  return runReplLoop(
+    // A resumed session already landed at idle inside `AgentSession.resume`; calling start() would throw and
+    // re-emitting `session:started` would double a lifecycle event. Disclose only once the driver is active.
+    return {
+      wiring: {
+        built,
+        opened,
+        store,
+        persister,
+        doctorProbes,
+        startSession: () => undefined,
+        onActivated: (isActive, flushNotice) =>
+          reconcileResumedSessionEffects({
+            io: deps.io,
+            ...(built.workOwner === undefined ? {} : { owner: built.workOwner }),
+            db: opened.db,
+            sessionId: built.sessionId,
+            sanitize: sanitizeInline,
+            isActive,
+            ...(flushNotice === undefined ? {} : { flushNotice }),
+            deliverNotice: (text) => {
+              if (chatIsInteractive(deps.io, deps.global)) return store.notice(text);
+              else return deps.io.writeErrAcknowledged(`${text}\n`);
+            },
+          }),
+        intro,
+        modelPicker: buildChatModelsPort(
+          opened,
+          providers,
+          built.agent.model,
+          now,
+          uuid,
+          built.workOwner,
+        ),
+        altScreen: config.altScreen,
+        mouse: config.mouse,
+        copyOnSelect: config.copyOnSelect,
+        ...(config.chat.maxMessages === undefined
+          ? {}
+          : { chatMaxMessages: config.chat.maxMessages }),
+      } satisfies ReplWiring,
+      rebuild,
+      reseatRebuild,
+    };
+  };
+  const prepared =
+    ownership === undefined ? await prepare() : await ownership.hosts.construct(prepare);
+  return await runReplLoop(
+    prepared.wiring,
     {
-      built,
-      opened,
-      store,
-      persister,
-      doctorProbes,
-      startSession: () => undefined,
-      onActivated: (isActive, flushNotice) =>
-        reconcileResumedSessionEffects({
-          io: deps.io,
-          db: opened.db,
-          sessionId: built.sessionId,
-          sanitize: sanitizeInline,
-          isActive,
-          ...(flushNotice === undefined ? {} : { flushNotice }),
-          deliverNotice: (text) => {
-            if (chatIsInteractive(deps.io, deps.global)) return store.notice(text);
-            else return deps.io.writeErrAcknowledged(`${text}\n`);
-          },
-        }),
-      intro,
-      modelPicker: buildChatModelsPort(opened, providers, built.agent.model, now, uuid),
-      altScreen: config.altScreen,
-      mouse: config.mouse,
-      copyOnSelect: config.copyOnSelect,
-      ...(config.chat.maxMessages === undefined
-        ? {}
-        : { chatMaxMessages: config.chat.maxMessages }),
+      ...deps,
+      ...(ownership === undefined ? {} : { chatLifetime: ownership }),
     },
-    deps,
-    rebuild,
-    reseatRebuild,
+    prepared.rebuild,
+    prepared.reseatRebuild,
   );
 }
 
@@ -1209,6 +1386,7 @@ export function createChatLineHandler(
   deps: ChatReplDeps,
 ): ChatLineHandler {
   const { built, opened, store, persister, doctorProbes } = wiring;
+  const workOwner = built.workOwner;
   store.setMemoryPolicy(built.session.memoryPolicy);
   if (Object.hasOwn(built, 'contextWindowTokens'))
     store.setContextWindow?.(built.contextWindowTokens);
@@ -1224,7 +1402,8 @@ export function createChatLineHandler(
   const cancelOnce = (): void => {
     if (!cancelled) {
       cancelled = true;
-      built.session.cancel(); // the session's sole terminal (session:cancelled) — persister marks it 'ended'
+      if (built.hostOwner === undefined) built.session.cancel();
+      else built.hostOwner.cancel(); // Publish the real cooperative terminal before stopping output admission.
     }
   };
   // Whether an interactive prompt (the ink UI / Home controller) can answer an approval — the ink view is
@@ -1237,7 +1416,13 @@ export function createChatLineHandler(
   // keys (Shift+Tab / Esc) drive the SAME control. It applies the initial `ask` mode immediately, so the
   // full-capability host is never live without the fail-closed approval regime (default `ask` denies governed).
   const modeControl = createChatModeControl(built, store, { interactive });
+  const noticesStopped = (): boolean =>
+    workOwner !== undefined &&
+    (workOwner.signal.aborted || workOwner.invocation.registry.termination !== undefined);
   const emitOutput = (text: string): void => {
+    // Entered commands still settle after cancellation, but may not publish new business output.
+    // The invocation's final diagnostic belongs to its restored terminal, not this view/notice sink.
+    if (noticesStopped()) return;
     if (interactive) {
       store.notice(text);
     } else {
@@ -1257,6 +1442,7 @@ export function createChatLineHandler(
     ...(deps.hatchPorts ?? inertHatchPorts()),
     transcript: () => store.getSnapshot().state.transcript,
     note: emitOutput,
+    ...(workOwner === undefined ? {} : { onFailure: workOwner.failure }),
   });
 
   // The lifecycle capabilities the curated REPL commands (repl-commands.ts) run over — the slash names and the
@@ -1287,6 +1473,7 @@ export function createChatLineHandler(
           force: true,
         });
         emitOutput(SESSION_EXPORT_REVIEW_NOTICE.trimEnd());
+        if (noticesStopped()) return;
         if (deps.global.json) {
           // Machine mode (--json, 2.Q): emit `session:exported` THROUGH the session bus, so it rides the
           // live stream's monotonic per-session sequenceNumber (a DB-derived seq would jump backward and
@@ -1297,7 +1484,15 @@ export function createChatLineHandler(
           deps.io.writeErr(`exported session to ${result.path}\n`);
         }
       } catch (err) {
-        deps.io.writeErr(`export failed: ${err instanceof Error ? err.message : String(err)}\n`);
+        workOwner?.failure(err);
+        if (noticesStopped()) return;
+        const message =
+          workOwner === undefined
+            ? err instanceof Error
+              ? err.message
+              : String(err)
+            : toUserFacing(err).message;
+        deps.io.writeErr(`export failed: ${message}\n`);
       }
     },
     // The curated command list — a clean in-view notice in the ink TTY, a stderr list on the plain / `--json` paths.
@@ -1323,6 +1518,7 @@ export function createChatLineHandler(
           discoverCatalog({ projectConfigDir, cwd: deps.global.cwd, kind });
         emitOutput(catalogNotice(scan('workflows'), scan('agents')));
       } catch (err) {
+        workOwner?.failure(err);
         // Surface the failure by its CODE — a raw catalog CliError message embeds the absolute `.relavium/` path,
         // which the REPL transcript / a screenshare need not carry.
         const reason = err instanceof CliError ? err.code : 'unexpected error';
@@ -1360,9 +1556,9 @@ export function createChatLineHandler(
           }),
         );
       } catch (err) {
-        // A read-only info command must never end the conversation. `handleSlashCommand` awaits `run` unguarded, and
-        // on the ink driver a rejection routes to `onError` → teardown; every sibling info handler is guarded for
-        // exactly this reason. Report by CODE, never a raw message (a DB error can carry a path).
+        workOwner?.failure(err);
+        // Known info refusals remain notices. An owned infrastructure fault is reported above before this
+        // presentation catch consumes it. Report by CODE, never a raw message (a DB error can carry a path).
         emitOutput(
           `could not read the session cost: ${err instanceof CliError ? err.code : 'unexpected error'}`,
         );
@@ -1376,7 +1572,8 @@ export function createChatLineHandler(
       if (deep) emitOutput('doctor: validating providers + MCP…');
       try {
         emitOutput(formatDoctorReport(await runDoctorChecks(deep, doctorProbes)));
-      } catch {
+      } catch (cause) {
+        workOwner?.failure(cause);
         // runDoctorChecks should not throw (every probe catches its own faults), so this is a defensive net.
         // Keep it generic + consistent with the Home (home-controller.ts) — never surface an internal code.
         emitOutput('doctor: check failed');
@@ -1488,9 +1685,10 @@ export function createChatLineHandler(
       // A first-pass budget refusal opens none and is reported by this command's typed result.
       try {
         emitOutput(compactionNotice(await built.session.compact('manual')));
-      } catch {
-        // compact() RE-THROWS an unclassified error (a bug) rather than returning {kind:'failed'} — never crash
-        // the REPL (the discipline every slash command obeys); surface a static, secret-free notice instead.
+      } catch (cause) {
+        workOwner?.failure(cause);
+        // compact() rethrows an unclassified fault rather than returning a known failed outcome.
+        // Preserve the owned fault above; its presentation remains fixed and content-free.
         emitOutput('compaction failed unexpectedly — the conversation is unchanged.');
       } finally {
         // Idempotent fallback for a command/observer fault; admitted engine work closes its own moment.
@@ -1598,7 +1796,10 @@ export function createChatLineHandler(
   };
 
   return {
-    processLine,
+    processLine:
+      workOwner === undefined
+        ? processLine
+        : (raw, display) => workOwner.enter(() => processLine(raw, display)),
     cancelOnce,
     shouldStop: () => stop,
     // Priority: a reseat is a swap-to-new-model, a clear is a swap-to-fresh, else the REPL ends. A `/models` reseat
@@ -1628,8 +1829,11 @@ export function createChatLineHandler(
  * function's to close — the caller's outer {@link runReplLoop} finally owns it across every swap.
  */
 interface FreshChatWiringDeps {
+  readonly homeDir: string;
   readonly chat: BuildChatSessionOptions['chat'];
   readonly fsPolicy?: FsPathPolicy;
+  readonly nativeProcesses?: NativeProcessController;
+  readonly consentGate?: BuildChatSessionOptions['consentGate'];
   readonly maxTokensEstimate?: number;
   readonly agent: AgentDefinition;
   readonly cwd: string;
@@ -1656,32 +1860,49 @@ interface FreshChatWiringDeps {
   readonly altScreen?: boolean | undefined;
 }
 
-async function buildFreshChatWiring(deps: FreshChatWiringDeps, intro: string): Promise<ReplWiring> {
+async function buildFreshChatWiring(
+  deps: FreshChatWiringDeps,
+  intro: string,
+  host?: SessionHostOwner,
+): Promise<ReplWiring> {
   // Re-read the ADR-0065 §2 user-pricing overlay FRESH from the shared db on each `/clear` rebuild (2.5.G S10) — so
   // a `models pricing` write made in another terminal mid-session takes effect on the very next `/clear` session,
   // the SAME freshness guarantee `readEffectiveDefault()` gives the default model (and the Home already gives
   // pricing). Non-fatal (empty map on a read fault). Empty ⇒ omitted (unknown models degrade to allow, unchanged).
   const resolvePrice = readUserPricingOverlay(deps.opened.db);
-  const built = await deps.buildSession({
-    chat: deps.chat,
-    ...(deps.fsPolicy === undefined ? {} : { fsPolicy: deps.fsPolicy }),
-    ...(deps.maxTokensEstimate === undefined ? {} : { maxTokensEstimate: deps.maxTokensEstimate }),
-    agent: deps.agent,
-    agentRef: deps.agent.id, // ignored when `agent` is set, but the option key is required
-    cwd: deps.cwd,
-    projectConfigDir: deps.projectConfigDir,
-    now: deps.now,
-    uuid: deps.uuid,
-    providers: deps.providers,
-    mcpSecretResolver: deps.mcpSecretResolver,
-    ...(deps.mcpRegistrations === undefined ? {} : { mcpRegistrations: deps.mcpRegistrations }),
-    ...(resolvePrice.size === 0 ? {} : { resolvePrice }),
-    onBudgetWarning: deps.onBudgetWarning,
-    ...(deps.onCompactionStart === undefined ? {} : { onCompactionStart: deps.onCompactionStart }),
-    onEffortWithheld: deps.onEffortWithheld,
-    onListenerError: deps.onListenerError,
-    onUnpriced: deps.onUnpriced,
-  });
+  const build = (workOwner?: SessionWorkOwner) =>
+    deps.buildSession({
+      ...(workOwner === undefined ? {} : { workOwner }),
+      chat: deps.chat,
+      ...(deps.fsPolicy === undefined ? {} : { fsPolicy: deps.fsPolicy }),
+      ...(deps.nativeProcesses === undefined ? {} : { nativeProcesses: deps.nativeProcesses }),
+      ...(workOwner === undefined
+        ? deps.consentGate === undefined
+          ? {}
+          : { consentGate: deps.consentGate }
+        : { consentGate: createOwnedSessionConsentGate(deps, workOwner) }),
+      ...(deps.maxTokensEstimate === undefined
+        ? {}
+        : { maxTokensEstimate: deps.maxTokensEstimate }),
+      agent: deps.agent,
+      agentRef: deps.agent.id, // ignored when `agent` is set, but the option key is required
+      cwd: deps.cwd,
+      projectConfigDir: deps.projectConfigDir,
+      now: deps.now,
+      uuid: deps.uuid,
+      providers: deps.providers,
+      mcpSecretResolver: deps.mcpSecretResolver,
+      ...(deps.mcpRegistrations === undefined ? {} : { mcpRegistrations: deps.mcpRegistrations }),
+      ...(resolvePrice.size === 0 ? {} : { resolvePrice }),
+      onBudgetWarning: deps.onBudgetWarning,
+      ...(deps.onCompactionStart === undefined
+        ? {}
+        : { onCompactionStart: deps.onCompactionStart }),
+      onEffortWithheld: deps.onEffortWithheld,
+      onListenerError: deps.onListenerError,
+      onUnpriced: deps.onUnpriced,
+    });
+  const built = host === undefined ? await build() : await host.build(build);
   // The SAME signals `runReplLoop` used for the hoist (`deps.altScreen` is `[preferences].alt_screen`, carried here
   // precisely so a `/clear` re-drive keeps the mode) — so a rebuilt session cannot silently re-acquire the 4000-char
   // transcript bound mid-conversation.
@@ -1701,26 +1922,29 @@ async function buildFreshChatWiring(deps: FreshChatWiringDeps, intro: string): P
   for (const line of mcpSkippedLines(built.mcpSkipped)) store.notice(line);
   let persister: SessionPersister;
   try {
-    persister = createSessionPersister({
-      usageStore: createSessionUsageStore(deps.opened.db),
-      mode: 'fresh',
-      attachUsageWriter: built.attachUsageWriter,
-      governor: built.governor,
-      attachDurabilityProbe: built.attachDurabilityProbe,
-      attachEffectTurnAllocator: built.attachEffectTurnAllocator,
-      store: deps.opened.store,
-      handle: built.handle,
-      sessionId: built.sessionId,
-      agent: built.agent,
-      context: built.context,
-      now: deps.now,
-      uuid: deps.uuid,
-      // ADR-0059 attribution — resolved over the SAME shared db (a `/clear` rebuild re-reads it fresh).
-      resolveModelCatalogId: makeCatalogIdResolver(deps.opened.db, {
-        uuid: deps.uuid,
+    persister = createSessionPersister(
+      {
+        usageStore: createSessionUsageStore(deps.opened.db),
+        mode: 'fresh',
+        attachUsageWriter: built.attachUsageWriter,
+        governor: built.governor,
+        attachDurabilityProbe: built.attachDurabilityProbe,
+        attachEffectTurnAllocator: built.attachEffectTurnAllocator,
+        store: deps.opened.store,
+        handle: built.handle,
+        sessionId: built.sessionId,
+        agent: built.agent,
+        context: built.context,
         now: deps.now,
-      }),
-    });
+        uuid: deps.uuid,
+        // ADR-0059 attribution — resolved over the SAME shared db (a `/clear` rebuild re-reads it fresh).
+        resolveModelCatalogId: makeCatalogIdResolver(deps.opened.db, {
+          uuid: deps.uuid,
+          now: deps.now,
+        }),
+      },
+      built.hostOwner,
+    );
 
     // The durable effect journal (ADR-0080), wired where `history.db` is open. A site that forgets is
     // NOT silent: the forwarding port refuses the first effect loudly, which is exactly why
@@ -1735,10 +1959,12 @@ async function buildFreshChatWiring(deps: FreshChatWiringDeps, intro: string): P
   } catch (err) {
     // Acquire-then-guard: the fresh MCP children are already spawned — reclaim them before the failure propagates
     // so a persister-construction throw never orphans a stdio child (best-effort; never mask the primary error).
-    await built.closeMcp?.().catch(() => undefined);
+    if (host !== undefined) host.work.failure(err);
+    else await built.closeMcp?.().catch(() => undefined);
     throw err;
   }
   const doctorProbes = assembleDoctorProbes({
+    ...(built.workOwner === undefined ? {} : { workOwner: built.workOwner }),
     cwd: deps.cwd,
     ...(deps.configPath === undefined ? {} : { configPath: deps.configPath }),
     resolver: deps.providers,
@@ -1759,6 +1985,7 @@ async function buildFreshChatWiring(deps: FreshChatWiringDeps, intro: string): P
       built.agent.model,
       deps.now,
       deps.uuid,
+      built.workOwner,
     ),
     ...(deps.altScreen === undefined ? {} : { altScreen: deps.altScreen }),
     ...(deps.chat.maxMessages === undefined ? {} : { chatMaxMessages: deps.chat.maxMessages }),
@@ -1773,8 +2000,12 @@ async function buildFreshChatWiring(deps: FreshChatWiringDeps, intro: string): P
  * the {@link clearedNotice} naming the prior (still-resumable) session.
  */
 function createClearRebuild(params: {
+  readonly homeDir: string;
+  readonly ownership?: SessionChatLifetime;
   readonly chat: BuildChatSessionOptions['chat'];
   readonly fsPolicy?: FsPathPolicy;
+  readonly nativeProcesses?: NativeProcessController;
+  readonly consentGate?: BuildChatSessionOptions['consentGate'];
   readonly maxTokensEstimate?: number;
   readonly agent: AgentDefinition;
   readonly projectConfigDir: string | undefined;
@@ -1791,8 +2022,11 @@ function createClearRebuild(params: {
   readonly altScreen?: boolean | undefined;
 }): (oldSessionId: string) => Promise<ReplWiring> {
   const wiringDeps: FreshChatWiringDeps = {
+    homeDir: params.homeDir,
     chat: params.chat,
     ...(params.fsPolicy === undefined ? {} : { fsPolicy: params.fsPolicy }),
+    ...(params.nativeProcesses === undefined ? {} : { nativeProcesses: params.nativeProcesses }),
+    ...(params.consentGate === undefined ? {} : { consentGate: params.consentGate }),
     ...(params.maxTokensEstimate === undefined
       ? {}
       : { maxTokensEstimate: params.maxTokensEstimate }),
@@ -1816,7 +2050,12 @@ function createClearRebuild(params: {
     onListenerError: (note: string) => emitLiveNotice(params.io, note),
     onUnpriced: (note) => emitLiveNotice(params.io, note),
   };
-  return (oldSessionId) => buildFreshChatWiring(wiringDeps, clearedNotice(oldSessionId));
+  return (oldSessionId) =>
+    params.ownership === undefined
+      ? buildFreshChatWiring(wiringDeps, clearedNotice(oldSessionId))
+      : params.ownership.hosts.construct((host) =>
+          buildFreshChatWiring(wiringDeps, clearedNotice(oldSessionId), host),
+        );
 }
 
 /**
@@ -1860,26 +2099,29 @@ function seedResumedWiring(
     },
     transcriptBound,
   );
-  const persister = createSessionPersister({
-    usageStore: createSessionUsageStore(opened.db),
-    mode: 'adopt',
-    attachUsageWriter: resumed.attachUsageWriter,
-    governor: resumed.governor,
-    attachDurabilityProbe: resumed.attachDurabilityProbe,
-    attachEffectTurnAllocator: resumed.attachEffectTurnAllocator,
+  const persister = createSessionPersister(
+    {
+      usageStore: createSessionUsageStore(opened.db),
+      mode: 'adopt',
+      attachUsageWriter: resumed.attachUsageWriter,
+      governor: resumed.governor,
+      attachDurabilityProbe: resumed.attachDurabilityProbe,
+      attachEffectTurnAllocator: resumed.attachEffectTurnAllocator,
 
-    store: opened.store,
-    handle: resumed.handle,
-    sessionId: resumed.sessionId,
-    agent: resumed.agent,
-    context: resumed.context,
-    now,
-    uuid,
-    // Continue the durable transcript past its last sequence number (start() adopts the row + its totals).
-    initialSequenceNumber: resumed.nextSequenceNumber,
-    // ADR-0059 attribution — resolved over the SAME db; a reseat's new persister records the switched model.
-    resolveModelCatalogId: makeCatalogIdResolver(opened.db, { uuid, now }),
-  });
+      store: opened.store,
+      handle: resumed.handle,
+      sessionId: resumed.sessionId,
+      agent: resumed.agent,
+      context: resumed.context,
+      now,
+      uuid,
+      // Continue the durable transcript past its last sequence number (start() adopts the row + its totals).
+      initialSequenceNumber: resumed.nextSequenceNumber,
+      // ADR-0059 attribution — resolved over the SAME db; a reseat's new persister records the switched model.
+      resolveModelCatalogId: makeCatalogIdResolver(opened.db, { uuid, now }),
+    },
+    resumed.hostOwner,
+  );
   // The durable effect journal (ADR-0080), wired where `history.db` is open. A site that forgets is NOT
   // silent: the forwarding port refuses the first effect loudly, which is exactly why
   // `unwiredEffectJournal()` rejects instead of no-opping.
@@ -1896,8 +2138,11 @@ function seedResumedWiring(
  *  over the SHARED db. Mirrors {@link FreshChatWiringDeps} but RESUMES (carries the transcript) instead of starting
  *  fresh, and swaps the bound model (so it has no fixed `agent` — the agent is loaded from the just-ended record). */
 interface ReseatWiringDeps {
+  readonly homeDir: string;
   readonly chat: BuildChatSessionOptions['chat'];
   readonly fsPolicy?: FsPathPolicy;
+  readonly nativeProcesses?: NativeProcessController;
+  readonly consentGate?: BuildChatSessionOptions['consentGate'];
   readonly maxTokensEstimate?: number;
   readonly now: () => number;
   readonly uuid: () => string;
@@ -1938,6 +2183,7 @@ async function buildReseatWiring(
   /** The OUTGOING store's rendered transcript (2.6.C / F1) — what the reseated store opens with, so the full-screen
    *  viewport does not go blank. The gate drops it on the inline renderer (its lines are already printed). */
   carriedTranscript: readonly TranscriptEntry[],
+  host?: SessionHostOwner,
 ): Promise<ReplWiring> {
   const loaded = deps.opened.store.loadFull(oldSessionId);
   if (loaded === undefined || loaded.session.agentSnapshot === undefined) {
@@ -1963,23 +2209,36 @@ async function buildReseatWiring(
   // Re-read the user-pricing overlay FRESH from the shared db (mirrors buildFreshChatWiring) so a mid-session
   // `models pricing` write applies to the reseated session. Empty ⇒ omitted (unknown models degrade to allow).
   const resolvePrice = readUserPricingOverlay(deps.opened.db);
-  const resumed = await deps.buildResumedSession({
-    chat: deps.chat,
-    ...(deps.fsPolicy === undefined ? {} : { fsPolicy: deps.fsPolicy }),
-    ...(deps.maxTokensEstimate === undefined ? {} : { maxTokensEstimate: deps.maxTokensEstimate }),
-    record,
-    messages: loaded.messages,
-    now: deps.now,
-    providers: deps.providers,
-    mcpSecretResolver: deps.mcpSecretResolver,
-    ...(deps.mcpRegistrations === undefined ? {} : { mcpRegistrations: deps.mcpRegistrations }),
-    ...(resolvePrice.size === 0 ? {} : { resolvePrice }),
-    onBudgetWarning: deps.onBudgetWarning,
-    ...(deps.onCompactionStart === undefined ? {} : { onCompactionStart: deps.onCompactionStart }),
-    onEffortWithheld: deps.onEffortWithheld,
-    onListenerError: deps.onListenerError,
-    onUnpriced: deps.onUnpriced,
-  });
+  const build = (workOwner?: SessionWorkOwner) =>
+    deps.buildResumedSession({
+      ...(workOwner === undefined ? {} : { workOwner }),
+      chat: deps.chat,
+      ...(deps.fsPolicy === undefined ? {} : { fsPolicy: deps.fsPolicy }),
+      ...(deps.nativeProcesses === undefined ? {} : { nativeProcesses: deps.nativeProcesses }),
+      ...(workOwner === undefined
+        ? deps.consentGate === undefined
+          ? {}
+          : { consentGate: deps.consentGate }
+        : { consentGate: createOwnedSessionConsentGate(deps, workOwner) }),
+      ...(deps.maxTokensEstimate === undefined
+        ? {}
+        : { maxTokensEstimate: deps.maxTokensEstimate }),
+      record,
+      messages: loaded.messages,
+      now: deps.now,
+      providers: deps.providers,
+      mcpSecretResolver: deps.mcpSecretResolver,
+      ...(deps.mcpRegistrations === undefined ? {} : { mcpRegistrations: deps.mcpRegistrations }),
+      ...(resolvePrice.size === 0 ? {} : { resolvePrice }),
+      onBudgetWarning: deps.onBudgetWarning,
+      ...(deps.onCompactionStart === undefined
+        ? {}
+        : { onCompactionStart: deps.onCompactionStart }),
+      onEffortWithheld: deps.onEffortWithheld,
+      onListenerError: deps.onListenerError,
+      onUnpriced: deps.onUnpriced,
+    });
+  const resumed = host === undefined ? await build() : await host.build(build);
   let seeded: { store: ChatStoreController; persister: SessionPersister };
   try {
     seeded = seedResumedWiring(
@@ -1994,13 +2253,15 @@ async function buildReseatWiring(
   } catch (err) {
     // Acquire-then-guard: the resumed session's MCP children are already spawned — reclaim them before the failure
     // propagates so a persister-construction throw never orphans a stdio child (best-effort; never mask the primary).
-    await resumed.closeMcp?.().catch(() => undefined);
+    if (host !== undefined) host.work.failure(err);
+    else await resumed.closeMcp?.().catch(() => undefined);
     throw err;
   }
   // A reseat re-drive runs INSIDE the hoisted alt buffer — route the MCP-skipped diagnostic to the reseated session's
   // transcript rather than a raw `io.writeErr` the alt buffer would discard (Step-4b-3 Sonnet review).
   for (const line of mcpSkippedLines(resumed.mcpSkipped)) seeded.store.notice(line);
   const doctorProbes = assembleDoctorProbes({
+    ...(resumed.workOwner === undefined ? {} : { workOwner: resumed.workOwner }),
     cwd: deps.global.cwd,
     ...(deps.configPath === undefined ? {} : { configPath: deps.configPath }),
     resolver: deps.providers,
@@ -2019,6 +2280,7 @@ async function buildReseatWiring(
     onActivated: (isActive, flushNotice) =>
       reconcileResumedSessionEffects({
         io: deps.io,
+        ...(resumed.workOwner === undefined ? {} : { owner: resumed.workOwner }),
         db: deps.opened.db,
         sessionId: resumed.sessionId,
         sanitize: sanitizeInline,
@@ -2037,6 +2299,7 @@ async function buildReseatWiring(
       resumed.agent.model,
       deps.now,
       deps.uuid,
+      resumed.workOwner,
     ),
     ...(deps.altScreen === undefined ? {} : { altScreen: deps.altScreen }),
     ...(deps.chat.maxMessages === undefined ? {} : { chatMaxMessages: deps.chat.maxMessages }),
@@ -2050,8 +2313,12 @@ async function buildReseatWiring(
  * under a new-model agent over the SHARED db.
  */
 function createReseatRebuild(params: {
+  readonly homeDir: string;
+  readonly ownership?: SessionChatLifetime;
   readonly chat: BuildChatSessionOptions['chat'];
   readonly fsPolicy?: FsPathPolicy;
+  readonly nativeProcesses?: NativeProcessController;
+  readonly consentGate?: BuildChatSessionOptions['consentGate'];
   readonly maxTokensEstimate?: number;
   readonly now: () => number;
   readonly uuid: () => string;
@@ -2070,8 +2337,11 @@ function createReseatRebuild(params: {
   carriedTranscript: readonly TranscriptEntry[],
 ) => Promise<ReplWiring> {
   const wiringDeps: ReseatWiringDeps = {
+    homeDir: params.homeDir,
     chat: params.chat,
     ...(params.fsPolicy === undefined ? {} : { fsPolicy: params.fsPolicy }),
+    ...(params.nativeProcesses === undefined ? {} : { nativeProcesses: params.nativeProcesses }),
+    ...(params.consentGate === undefined ? {} : { consentGate: params.consentGate }),
     ...(params.maxTokensEstimate === undefined
       ? {}
       : { maxTokensEstimate: params.maxTokensEstimate }),
@@ -2093,7 +2363,11 @@ function createReseatRebuild(params: {
     onUnpriced: (note) => emitLiveNotice(params.io, note),
   };
   return (oldSessionId, target, carriedTranscript) =>
-    buildReseatWiring(wiringDeps, oldSessionId, target, carriedTranscript);
+    params.ownership === undefined
+      ? buildReseatWiring(wiringDeps, oldSessionId, target, carriedTranscript)
+      : params.ownership.hosts.construct((host) =>
+          buildReseatWiring(wiringDeps, oldSessionId, target, carriedTranscript, host),
+        );
 }
 
 /** The `!`-shell runner (2.5.D step 5, ADR-0061) — a thin wrapper over the session's `runUserCommand`, wired ONLY on
@@ -2103,7 +2377,10 @@ function buildInteractiveShellRunner(
   built: ReplWiring['built'],
 ): ((command: string, args: readonly string[]) => Promise<UserCommandOutcome>) | undefined {
   if (!interactive) return undefined;
-  return (command, args) => built.session.runUserCommand(command, args);
+  const workOwner = built.workOwner;
+  return workOwner === undefined
+    ? (command, args) => built.session.runUserCommand(command, args)
+    : (command, args) => workOwner.enter(() => built.session.runUserCommand(command, args));
 }
 
 /**
@@ -2173,6 +2450,22 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
   const runShellCommand = buildInteractiveShellRunner(interactive, built);
   // Captured once: `deps.hatchPorts` is the per-REPL port bundle that also owns `writeControl`.
   const hatchPortsForClipboard = deps.hatchPorts;
+  const activate = async (isActive: () => boolean, flushNotice?: NoticeFlush): Promise<void> => {
+    liveCompactionNotice = interactive
+      ? async (text, isCancelled) => {
+          if (isCancelled()) return;
+          if (!isActive() || flushNotice === undefined)
+            throw new Error('The chat renderer is not ready.');
+          await flushNotice(() => {
+            if (isCancelled()) return;
+            if (!isActive()) throw new Error('The chat renderer is not ready.');
+            store.notice(text);
+          });
+          if (!isCancelled() && !isActive()) throw new Error('The chat renderer is not ready.');
+        }
+      : undefined;
+    await wiring.onActivated?.(isActive, flushNotice);
+  };
 
   // persister.start() subscribes for the turn events + adopts/inserts the session row; it does NOT consume
   // session:started, so it is safe before the driver. The session-open action (fresh start() / resume no-op)
@@ -2185,23 +2478,19 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
     // plain / `--json` drivers the sink stays `undefined` so the warning keeps reaching stderr. Cleared in the finally.
     liveSessionNotice = liveNoticeSinkFor(interactive, store);
     const outcome = await (deps.drive ?? drivePlain)({
+      ...(deps.chatLifetime === undefined
+        ? {}
+        : { subscribeInterrupt: deps.chatLifetime.subscribeInterrupt }),
+      ...(built.workOwner === undefined ? {} : { workOwner: built.workOwner }),
+      ...(deps.finishJobControl === undefined ? {} : { finishJobControl: deps.finishJobControl }),
+      ...(deps.adoptTerminalMount === undefined
+        ? {}
+        : { adoptTerminalMount: deps.adoptTerminalMount }),
       startSession,
-      onActivated: async (isActive, flushNotice) => {
-        liveCompactionNotice = interactive
-          ? async (text, isCancelled) => {
-              if (isCancelled()) return;
-              if (!isActive() || flushNotice === undefined)
-                throw new Error('The chat renderer is not ready.');
-              await flushNotice(() => {
-                if (isCancelled()) return;
-                if (!isActive()) throw new Error('The chat renderer is not ready.');
-                store.notice(text);
-              });
-              if (!isCancelled() && !isActive()) throw new Error('The chat renderer is not ready.');
-            }
-          : undefined;
-        await wiring.onActivated?.(isActive, flushNotice);
-      },
+      onActivated: (isActive, flushNotice) =>
+        built.workOwner === undefined
+          ? activate(isActive, flushNotice)
+          : built.workOwner.enter(() => activate(isActive, flushNotice)),
       processLine,
       shouldStop,
       stopReason,
@@ -2246,13 +2535,21 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
         : {
             clipboard: (text: string): ClipboardOutcome =>
               copyToClipboard(
-                { writeControl: hatchPortsForClipboard.writeControl, env: deps.io.env },
+                {
+                  writeControl: (sequence) => {
+                    void hatchPortsForClipboard.writeControl(sequence);
+                  },
+                  env: deps.io.env,
+                },
                 text,
               ),
           }),
     });
     // A `/models` reseat attaches the captured target here (the one place holding the line handler); see the helper.
     return finalizeReseatOutcome(outcome, reseatTarget);
+  } catch (cause) {
+    built.workOwner?.failure(cause);
+    throw cause;
   } finally {
     liveCompactionNotice = undefined;
     liveSessionNotice = undefined; // the session is ending — never route a notice to a torn-down store
@@ -2260,14 +2557,22 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
     // Attempt EVERY teardown step (a reject in one must not skip the next) and never let a cleanup fault mask the
     // outcome — each is best-effort, surfacing a warning rather than throwing. MCP tears down LAST, AFTER the
     // session terminal, so no tool call can race the close (idempotent; present only with `mcp_servers`).
-    try {
-      await built.whenHostSafeToClose();
-    } finally {
-      // The lifetime join finishes before its durability verdict can reject. A failed final write
-      // must still release the now-quiescent persister and MCP clients.
-      closeQuietly(deps.io, 'persister', () => persister.close());
-      await built.closeMcp?.().catch((e: unknown) => warnTeardown(deps.io, 'MCP', e));
-    }
+    if (built.hostOwner !== undefined) {
+      try {
+        await deps.afterTerminalRelease?.();
+      } catch (cause) {
+        built.workOwner?.cleanupUncertain(cause);
+      }
+      await built.hostOwner.work.close();
+    } else
+      try {
+        await built.whenHostSafeToClose();
+      } finally {
+        // The lifetime join finishes before its durability verdict can reject. A failed final write
+        // must still release the now-quiescent persister and MCP clients.
+        closeQuietly(deps.io, 'persister', () => persister.close());
+        await built.closeMcp?.().catch(() => warnTeardown(deps.io, 'MCP'));
+      }
   }
 }
 
@@ -2340,8 +2645,8 @@ export async function withHoistedAltScreen(
     readonly mouse?: boolean;
     readonly write: (sequence: string) => void;
     readonly lifecycle: ReplLifecycle;
-    readonly writeOut: (text: string) => void;
-    readonly writeErr: (text: string) => void;
+    readonly writeOut: (text: string) => void | Promise<void>;
+    readonly writeErr: (text: string) => void | Promise<void>;
     /**
      * Permanently disarm a reversible terminal handoff before this wrapper restores its final terminal state. The
      * job-control coordinator intentionally leaves a pending SIGCONT waiter unresolved on an external termination:
@@ -2351,15 +2656,19 @@ export async function withHoistedAltScreen(
     /** The ONE suspend port for the loop. `current() === undefined` means NO ink tree is mounted — the only window in
      *  which SIGINT is unowned. Absent ⇒ no SIGINT net (a caller with no ink, e.g. a unit test). */
     readonly suspendPort?: SuspendPort;
+    readonly externallyOwnedSignals?: boolean;
+    readonly terminalOwner?: SessionChatTerminal;
   },
   runLoop: (alt: AltScreenController) => Promise<HoistedLoopResult>,
 ): Promise<void> {
   const noop = (): void => undefined;
-  const alt = createAltScreenController({
-    write: opts.write,
-    active: opts.active,
-    ...(opts.mouse === undefined ? {} : { mouse: opts.mouse }),
-  });
+  const alt =
+    opts.terminalOwner?.alt ??
+    createAltScreenController({
+      write: opts.write,
+      active: opts.active,
+      ...(opts.mouse === undefined ? {} : { mouse: opts.mouse }),
+    });
   // The removers are `let`, and `alt.enter()` runs INSIDE the try: `enter()`'s write can throw on a dead TTY, and the
   // `finally` must still run with valid bindings (a `const` declared after a throwing `enter` would be in the temporal
   // dead zone). `restore()` is a no-op when nothing was entered, and each remover defaults to `noop`.
@@ -2369,13 +2678,15 @@ export async function withHoistedAltScreen(
   const suspendPortForSigint = opts.suspendPort;
   let result: HoistedLoopResult = {};
   try {
-    alt.enter();
-    removeExitNet = opts.active
-      ? opts.lifecycle.onProcessExit(() => {
-          opts.beforeTerminalRestore?.();
-          alt.restore();
-        })
-      : noop;
+    if (opts.terminalOwner === undefined) alt.enter();
+    else opts.terminalOwner.enter(opts.lifecycle.onProcessExit);
+    removeExitNet =
+      opts.terminalOwner === undefined && opts.active
+        ? opts.lifecycle.onProcessExit(() => {
+            opts.beforeTerminalRestore?.();
+            alt.restore();
+          })
+        : noop;
     // SIGINT belongs to ink: while a tree is mounted, `driveInk`'s `onSigintGated` runs the cooperative `/cancel`, and
     // during a `/scrollback` or `/edit` hatch it deliberately DROPS the signal so the suspension can reclaim. But a
     // `/clear` or `/models` rebuild unmounts ink and mounts a fresh tree, and in that window NOTHING listens for
@@ -2383,7 +2694,7 @@ export async function withHoistedAltScreen(
     // runs and the alt buffer, mouse reporting and the hidden cursor are stranded on the user's shell. This net covers
     // exactly that window, and defers to ink whenever a tree is attached.
     removeInterruptNet =
-      opts.active && suspendPortForSigint !== undefined
+      opts.externallyOwnedSignals !== true && opts.active && suspendPortForSigint !== undefined
         ? opts.lifecycle.onInterrupt(() => {
             if (suspendPortForSigint.current() !== undefined) return; // ink owns it (mounted, or suspended)
             opts.beforeTerminalRestore?.();
@@ -2397,19 +2708,20 @@ export async function withHoistedAltScreen(
             opts.lifecycle.exit(130); // conventional 128 + SIGINT(2)
           })
         : noop;
-    removeSignalNet = opts.active
-      ? opts.lifecycle.onTerminationSignal((signo) => {
-          opts.beforeTerminalRestore?.();
-          alt.restore();
-          opts.write(DISABLE_BRACKETED_PASTE);
-          try {
-            opts.lifecycle.setRawMode(false);
-          } catch {
-            // best-effort — a non-TTY / already-cooked stdin must not mask the exit
-          }
-          opts.lifecycle.exit(128 + signo); // conventional 143 (SIGTERM) / 130+ (SIGHUP/SIGQUIT)
-        })
-      : noop;
+    removeSignalNet =
+      opts.externallyOwnedSignals !== true && opts.active
+        ? opts.lifecycle.onTerminationSignal((signo) => {
+            opts.beforeTerminalRestore?.();
+            alt.restore();
+            opts.write(DISABLE_BRACKETED_PASTE);
+            try {
+              opts.lifecycle.setRawMode(false);
+            } catch {
+              // best-effort — a non-TTY / already-cooked stdin must not mask the exit
+            }
+            opts.lifecycle.exit(128 + signo); // conventional 143 (SIGTERM) / 130+ (SIGHUP/SIGQUIT)
+          })
+        : noop;
     result = await runLoop(alt);
   } finally {
     // Exit the alt buffer FIRST (restores the primary buffer + scrollback), THEN emit the summary / error, so BOTH
@@ -2417,13 +2729,16 @@ export async function withHoistedAltScreen(
     // DECRST-1049 restore (the Step-4b-3 Opus-review regression: the rebuild-failure `chat-resume <id>` hint vanished
     // once alt became the default). `restore()` is idempotent — the `onProcessExit` net may also have fired. Remove
     // the nets so they cannot outlive the loop.
-    opts.beforeTerminalRestore?.();
-    alt.restore();
+    if (opts.terminalOwner !== undefined) await opts.terminalOwner.close();
+    else {
+      opts.beforeTerminalRestore?.();
+      alt.restore();
+    }
     removeExitNet();
     removeSignalNet();
     removeInterruptNet();
-    if (result.summaryText !== undefined) opts.writeOut(`${result.summaryText}\n`);
-    if (result.errorText !== undefined) opts.writeErr(result.errorText);
+    if (result.summaryText !== undefined) await opts.writeOut(`${result.summaryText}\n`);
+    if (result.errorText !== undefined) await opts.writeErr(result.errorText);
   }
 }
 
@@ -2478,46 +2793,101 @@ export async function runReplLoop(
     noMouseFlag: deps.global.noMouse === true,
     configMouse: wiring.mouse,
   });
+  const terminalOwner =
+    deps.chatLifetime === undefined || !chatIsInteractive(deps.io, deps.global)
+      ? undefined
+      : new SessionChatTerminal({
+          lifetime: deps.chatLifetime,
+          io: deps.io,
+          active: altActive,
+          mouse: mouseEnabled,
+        });
   const writeControl =
+    terminalOwner?.writeControl ??
     deps.writeControl ??
     ((sequence: string): void => {
-      process.stdout.write(sequence);
+      if (deps.chatLifetime === undefined) process.stdout.write(sequence);
+      else {
+        if (deps.io.nativeStdout === undefined) throw new CliError('cli_internal', '');
+        deps.io.nativeStdout.write(sequence);
+      }
     });
 
   // ONE suspend port for the whole REPL: ink remounts per session (a `/clear` / reseat re-drive), and each mount
   // re-attaches. The hatch ports read the terminal facts at CALL time — `alt.isEntered()` rather than the resolved
   // `altActive`, because a hatch must reflect the buffer's LIVE state, not the mode we resolved at startup.
-  const suspendPort = deps.hatchPorts?.suspendPort ?? createSuspendPort();
-  const hatchPorts: Omit<HatchDeps, 'transcript' | 'note'> = deps.hatchPorts ?? {
-    suspendPort,
-    writeControl,
-    // The factory's NAME says which surface it is for; `inkOwnsAltScreen` is decided there, once, never at a call site.
-    // Both predicates read the hoisted controller LIVE, so a hatch reflects the terminal's real state — not the startup
-    // decision. `mouseActive` is asked separately from `altActive` because `--no-mouse` decouples them (Step 5e).
-    terminal: hoistedTerminal(
-      () => altScreenController?.isEntered() ?? false,
-      () => altScreenController?.isMouseEnabled() ?? false,
-      () => process.stdout.columns,
-    ),
-    dump: {
-      writeOut: nodeWriteOut(process.stdout),
-      waitForContinue: nodeWaitForContinue(process.stdin),
-    },
-    // `/copy` writes OSC 52 through the SAME control sink the alt-buffer and mouse toggles use.
-    clipboard: (text: string) => copyToClipboard({ writeControl, env: deps.io.env }, text),
-    editor: {
-      env: deps.io.env,
-      spawnEditor: nodeSpawnEditor,
-      createTempDocument: nodeCreateTempDocument,
-      onDisposeFailed: (path, error) => {
-        deps.io.writeErr(
-          `warning: transcript temp file teardown failed (${path}): ${
-            error instanceof Error ? error.message : String(error)
-          }\n`,
-        );
-      },
-    },
-  };
+  const suspendPort =
+    deps.chatLifetime?.suspendPort ?? deps.hatchPorts?.suspendPort ?? createSuspendPort();
+  const hatchPorts: Omit<HatchDeps, 'transcript' | 'note'> =
+    deps.hatchPorts === undefined
+      ? {
+          suspendPort,
+          writeControl,
+          // The factory's NAME says which surface it is for; `inkOwnsAltScreen` is decided there, once, never at a call site.
+          // Both predicates read the hoisted controller LIVE, so a hatch reflects the terminal's real state — not the startup
+          // decision. `mouseActive` is asked separately from `altActive` because `--no-mouse` decouples them (Step 5e).
+          terminal: hoistedTerminal(
+            () => altScreenController?.isEntered() ?? false,
+            () => altScreenController?.isMouseEnabled() ?? false,
+            () =>
+              deps.chatLifetime === undefined
+                ? process.stdout.columns
+                : deps.io.nativeStdout?.columns,
+          ),
+          dump: {
+            writeOut:
+              deps.chatLifetime === undefined
+                ? nodeWriteOut(process.stdout)
+                : (text) => deps.io.writeOutAcknowledged(text),
+            waitForContinue:
+              deps.chatLifetime === undefined
+                ? nodeWaitForContinue(process.stdin)
+                : () => {
+                    if (deps.io.nativeStdin === undefined) throw new CliError('cli_internal', '');
+                    return nodeWaitForContinue(
+                      deps.io.nativeStdin,
+                      process,
+                      deps.chatLifetime?.surface.work.signal,
+                    )();
+                  },
+          },
+          // `/copy` writes OSC 52 through the SAME control sink the alt-buffer and mouse toggles use.
+          clipboard: (text: string) => copyToClipboard({ writeControl, env: deps.io.env }, text),
+          editor: {
+            env: deps.io.env,
+            spawnEditor: createNodeSpawnEditor(
+              nativeProcessesForInvocation(deps.invocation),
+              deps.chatLifetime?.surface.work.failure,
+            ),
+            createTempDocument: (contents) =>
+              nodeCreateTempDocument(
+                contents,
+                deps.chatLifetime?.surface.work.failure,
+                deps.chatLifetime?.surface.work.cleanupUncertain,
+              ),
+            onDisposeFailed: (path, error) => {
+              if (deps.chatLifetime !== undefined) {
+                const work = deps.chatLifetime.surface.work;
+                work.cleanupUncertain(error);
+                if (work.invocation.registry.budget.remainingMs() !== 0)
+                  void work.work
+                    .retainWork(() =>
+                      deps.io.writeErrAcknowledged(
+                        'warning: transcript temporary cleanup could not be acknowledged.\n',
+                      ),
+                    )
+                    .catch(work.failure);
+                return;
+              }
+              deps.io.writeErr(
+                `warning: transcript temp file teardown failed (${path}): ${
+                  error instanceof Error ? error.message : String(error)
+                }\n`,
+              );
+            },
+          },
+        }
+      : { ...deps.hatchPorts, suspendPort };
   // The hoisted controller, captured so `hatchPorts.terminal()` can read the LIVE buffer state (it is created inside
   // `withHoistedAltScreen` below, after `hatchPorts` is built — hence the mutable binding read lazily).
   let altScreenController: AltScreenController | undefined;
@@ -2531,7 +2901,12 @@ export async function runReplLoop(
     mouseEnabled,
     configCopyOnSelect: wiring.copyOnSelect,
   });
-  const replDeps: ChatReplDeps = { ...deps, hatchPorts, copyOnSelect };
+  const replDeps: ChatReplDeps = {
+    ...deps,
+    hatchPorts,
+    copyOnSelect,
+    ...(terminalOwner === undefined ? {} : { adoptTerminalMount: terminalOwner.adoptMount }),
+  };
 
   try {
     await withHoistedAltScreen(
@@ -2540,48 +2915,83 @@ export async function runReplLoop(
         mouse: mouseEnabled,
         write: writeControl,
         lifecycle: deps.lifecycle ?? defaultReplLifecycle,
-        writeOut: (text) => deps.io.writeOut(text),
-        writeErr: (text) => deps.io.writeErr(text),
+        writeOut: (text) =>
+          terminalOwner === undefined ? deps.io.writeOut(text) : terminalOwner.publishOut(text),
+        writeErr: (text) =>
+          terminalOwner === undefined ? deps.io.writeErr(text) : terminalOwner.publishErr(text),
         beforeTerminalRestore: () => disposeJobControl(),
         suspendPort,
+        ...(deps.chatLifetime === undefined ? {} : { externallyOwnedSignals: true }),
+        ...(terminalOwner === undefined ? {} : { terminalOwner }),
       },
       async (alt): Promise<HoistedLoopResult> => {
         altScreenController = alt; // so `hatchPorts.terminal()` reads the LIVE buffer state, not the startup decision
         // The raw-mode Ink surface needs job control even in inline render mode; only plain/non-TTY drivers omit
         // these listeners. During a `/clear`/reseat gap there is no Ink tree, so the hoisted controller supplies its
         // reversible 1049/mouse release instead of calling its FINAL `restore()`.
-        const jobControl = chatIsInteractive(deps.io, deps.global)
-          ? wireJobControl({
-              suspendPort,
-              lifecycle: deps.jobControlLifecycle ?? defaultJobControlLifecycle,
-              run: (suspendTerminal, waitForContinue) =>
-                suspendFullScreen(
-                  {
-                    suspendTerminal,
-                    writeControl,
-                    inkOwnsAltScreen: false,
-                    altActive: alt.isEntered(),
-                    mouseActive: alt.isMouseEnabled(),
-                  },
-                  waitForContinue,
-                ),
-              releaseWithoutInk: () => alt.releaseForSuspend(),
-              reclaimWithoutInk: () => alt.reclaimAfterSuspend(),
-            })
-          : undefined;
-        disposeJobControl = jobControl?.dispose ?? (() => undefined);
-        const sessionDeps =
-          jobControl === undefined
-            ? replDeps
-            : { ...replDeps, onSuspend: jobControl.requestSuspend };
+        const createJobControl = () =>
+          chatIsInteractive(deps.io, deps.global)
+            ? wireJobControl({
+                suspendPort,
+                ...(terminalOwner === undefined
+                  ? {}
+                  : {
+                      adopt: terminalOwner.adoptJob,
+                      onFailure: (cause: unknown) =>
+                        deps.chatLifetime?.surface.work.cleanupUncertain(cause),
+                    }),
+                lifecycle: deps.jobControlLifecycle ?? defaultJobControlLifecycle,
+                run: (suspendTerminal, waitForContinue) =>
+                  suspendFullScreen(
+                    {
+                      suspendTerminal,
+                      writeControl,
+                      inkOwnsAltScreen: false,
+                      altActive: alt.isEntered(),
+                      mouseActive: alt.isMouseEnabled(),
+                    },
+                    waitForContinue,
+                  ),
+                releaseWithoutInk: () => alt.releaseForSuspend(),
+                reclaimWithoutInk: () => alt.reclaimAfterSuspend(),
+                ...(terminalOwner === undefined
+                  ? {}
+                  : {
+                      releaseWithoutInkAcknowledged: terminalOwner.releaseForSuspend,
+                      reclaimWithoutInkAcknowledged: terminalOwner.reclaimAfterSuspend,
+                    }),
+              })
+            : undefined;
+        let jobControl = createJobControl();
+        disposeJobControl = () => jobControl?.dispose();
         try {
           let current = wiring;
           let summaryText: string | undefined; // the final `/exit` summary, printed after the single alt-exit
           for (;;) {
+            const mountedJob = jobControl;
+            const afterTerminalRelease = async (): Promise<void> => {
+              await mountedJob?.finish();
+              // Install gap custody BEFORE driveOneSession waits on host receipts/MCP cleanup.
+              // A terminating invocation never creates a new native signal registration.
+              if (deps.chatLifetime?.surface.invocation.registry.termination !== undefined) return;
+              deps.chatLifetime?.surface.work.assertAdmitting();
+              jobControl = createJobControl();
+            };
+            const sessionDeps =
+              mountedJob === undefined
+                ? replDeps
+                : {
+                    ...replDeps,
+                    onSuspend: mountedJob.requestSuspend,
+                    ...(terminalOwner === undefined
+                      ? {}
+                      : { finishJobControl: mountedJob.finish, afterTerminalRelease }),
+                  };
             const outcome = await driveOneSession(current, sessionDeps);
             // The end-of-session summary is LIFTED out of driveInk (ADR-0068 §c): the wrapper prints it after the single
             // alt-exit, on the PRIMARY buffer. Only a final `'exit'` carries one; a `/clear` / reseat swap carries none.
             if (outcome.kind === 'exit') summaryText = outcome.summaryText;
+            if (deps.chatLifetime?.interrupted === true) return { summaryText };
             // The old session is ALREADY torn down (driveOneSession's finally fired its terminal → the row is 'ended' +
             // resumable). Resolve the rebuild for this swap kind, or `undefined` to END the REPL (see resolveSwapRebuild).
             const oldSessionId = current.built.sessionId;
@@ -2605,18 +3015,28 @@ export async function runReplLoop(
             try {
               current = await next();
             } catch (err) {
+              if (deps.chatLifetime !== undefined) {
+                deps.chatLifetime.surface.work.failure(err);
+                if (toUserFacing(err).exitCode === EXIT_CODES.infrastructureFailed) throw err;
+              }
               const errorText =
                 // Sanitize the error text too (not just the id beside it) — a rebuild fault can rethrow an unclassified
                 // message verbatim (session-host.ts), which could carry an ANSI/OSC escape from a spawned MCP server's
                 // error text; strip it exactly as the id + every other display string on this surface is stripped.
                 `could not start a new session after ${outcome.kind === 'reseat' ? 'a model switch' : '/clear'}: ` +
-                `${sanitizeInline(err instanceof Error ? err.message : String(err))}. ` +
+                `${sanitizeInline(
+                  deps.chatLifetime === undefined
+                    ? err instanceof Error
+                      ? err.message
+                      : String(err)
+                    : toUserFacing(err).message,
+                )}. ` +
                 `Your previous conversation is saved — resume it with \`relavium chat-resume ${sanitizeInline(oldSessionId)}\`.\n`;
               return { summaryText, errorText };
             }
           }
         } finally {
-          jobControl?.dispose();
+          if (terminalOwner === undefined) jobControl?.dispose();
           disposeJobControl = (): void => undefined;
         }
       },
@@ -2624,7 +3044,8 @@ export async function runReplLoop(
   } finally {
     // The shared db closes exactly once, AFTER the alt-exit + summary — never per-swap (that would strand the next
     // session), never skipped (best-effort; a close fault warns rather than masking the loop outcome).
-    closeQuietly(deps.io, 'session store', () => opened.close());
+    if (deps.chatLifetime === undefined)
+      closeQuietly(deps.io, 'session store', () => opened.close());
   }
   // `/exit`, `/cancel`, an input EOF, and a `/clear` whose rebuild failed all END the chat — the canonical code.
   return EXIT_CODES.chatEnded;
@@ -2635,46 +3056,76 @@ export async function runReplLoop(
  * TTY is attached (a pipe / CI without `--json`, which is 2.Q); the TTY ink driver overrides `deps.drive`.
  */
 export async function drivePlain(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
-  const unsubscribe = ctx.handle.subscribe(
-    makePlainPrinter(ctx.io, true, ctx.store.getSnapshot().state.memoryPolicy),
-  );
-  const rl = createInterface({ input: ctx.io.stdin, terminal: false });
-  const lines = rl[Symbol.asyncIterator](); // buffer piped lines before any awaited activation can yield.
-  // Ctrl-C (cooked mode here, unlike the raw-mode ink path) closes the input so the loop ends and the
-  // command's finally runs cancelOnce() + close() — the session is marked 'ended', never left orphaned 'active'.
-  let active = true;
-  const isActive = (): boolean => active && !ctx.shouldStop();
-  let interrupt: () => void = () => undefined;
-  const interrupted = new Promise<void>((resolve) => {
-    interrupt = resolve;
-  });
-  const onSigint = (): void => {
-    active = false;
-    interrupt();
-    rl.close();
-  };
-  process.once('SIGINT', onSigint);
-  try {
-    ctx.io.writeOut(`${ctx.intro ?? 'relavium chat — type a message, or /exit to quit.'}\n`);
-    ctx.startSession(); // subscription wired above ⇒ session:started is observed (fresh), or a no-op (resume)
-    // A full output pipe must not hold cancellation/teardown hostage. The race observes late
-    // delivery failures; the permanently disarmed activity predicate prevents a late sweep.
-    if (isActive()) await Promise.race([ctx.onActivated?.(isActive), interrupted]);
-    if (isActive()) {
-      for await (const line of lines) {
-        if (!isActive()) break;
-        await ctx.processLine(line);
-        if (ctx.shouldStop()) break;
+  const io = ownSessionOutput(ctx.io, ctx.workOwner);
+  return withSessionReadline(
+    ctx.io.stdin,
+    ctx.workOwner,
+    () =>
+      ctx.handle.subscribe(
+        ownSessionSubscriber(
+          ctx.workOwner,
+          makePlainPrinter(io, true, ctx.store.getSnapshot().state.memoryPolicy),
+        ),
+      ),
+    async (rl, closeInput) => {
+      const lines = rl[Symbol.asyncIterator](); // buffer piped lines before any awaited activation can yield.
+      // Ctrl-C (cooked mode here, unlike the raw-mode ink path) closes the input so the loop ends and the
+      // command's finally runs cancelOnce() + close() — the session is marked 'ended', never left orphaned 'active'.
+      let active = true;
+      const isActive = (): boolean => active && !ctx.shouldStop();
+      let interrupt: () => void = () => undefined;
+      const interrupted = new Promise<void>((resolve) => {
+        interrupt = resolve;
+      });
+      const stopInput = (): void => {
+        active = false;
+        interrupt();
+        closeInput();
+      };
+      const onSigint = (): void => {
+        if (!active) {
+          ctx.workOwner?.invocation.finiteExit.cooperativeCancel(EXIT_CODES.chatEnded);
+          return;
+        }
+        stopInput();
+        ctx.finalize?.();
+      };
+      let removeInterrupt = (): void => undefined;
+      try {
+        removeInterrupt =
+          ctx.subscribeInterrupt === undefined
+            ? (() => {
+                process.once('SIGINT', onSigint);
+                return () => {
+                  process.removeListener('SIGINT', onSigint);
+                };
+              })()
+            : ctx.subscribeInterrupt(onSigint);
+        ctx.workOwner?.signal.addEventListener('abort', stopInput, { once: true });
+        if (ctx.workOwner?.signal.aborted === true) stopInput();
+        io.writeOut(`${ctx.intro ?? 'relavium chat — type a message, or /exit to quit.'}\n`);
+        ctx.workOwner?.assertAdmitting();
+        ctx.startSession(); // subscription wired above ⇒ session:started is observed (fresh), or a no-op (resume)
+        // A full output pipe must not hold cancellation/teardown hostage. The race observes late
+        // delivery failures; the permanently disarmed activity predicate prevents a late sweep.
+        if (isActive()) await Promise.race([ctx.onActivated?.(isActive), interrupted]);
+        if (isActive()) {
+          for await (const line of lines) {
+            if (!isActive()) break;
+            await ctx.processLine(line);
+            if (ctx.shouldStop()) break;
+          }
+        }
+      } finally {
+        active = false;
+        removeInterrupt();
+        ctx.workOwner?.signal.removeEventListener('abort', stopInput);
+        closeInput();
       }
-    }
-  } finally {
-    active = false;
-    process.removeListener('SIGINT', onSigint);
-    rl.close();
-    unsubscribe();
-  }
-  // A plain (non-TTY) session is not interactive, so `/clear` is gated off — `stopReason()` is always `'exit'`.
-  return { kind: ctx.stopReason() };
+      // A plain (non-TTY) session is not interactive, so `/clear` is gated off — `stopReason()` is always `'exit'`.
+      return { kind: ctx.stopReason() };
+    },
+  );
 }
 
 /**
@@ -2686,46 +3137,75 @@ export async function drivePlain(ctx: ChatDriveContext): Promise<ChatDriveOutcom
  * (exit code 4, like the REPL). No banner — the first line is the `session:started` event.
  */
 export async function driveJson(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
-  const unsubscribe = ctx.handle.subscribe((event) =>
-    ctx.io.writeOut(`${stringifyJsonLine(event)}\n`),
-  );
-  const rl = createInterface({ input: ctx.io.stdin, terminal: false });
-  const lines = rl[Symbol.asyncIterator]();
-  let active = true;
-  const isActive = (): boolean => active && !ctx.shouldStop();
-  let interrupt: () => void = () => undefined;
-  const interrupted = new Promise<void>((resolve) => {
-    interrupt = resolve;
-  });
-  const onSigint = (): void => {
-    active = false;
-    interrupt();
-    rl.close();
-  };
-  process.once('SIGINT', onSigint);
-  try {
-    ctx.startSession(); // subscription wired above ⇒ the synchronous session:started is the first NDJSON line
-    // Keep terminal finalization and resource teardown independent of a blocked diagnostic sink.
-    // Late activation settlement stays observed and cannot recover this driver's activity.
-    if (isActive()) await Promise.race([ctx.onActivated?.(isActive), interrupted]);
-    if (isActive()) {
-      for await (const line of lines) {
-        if (!isActive()) break;
-        await ctx.processLine(line);
-        if (ctx.shouldStop()) break;
+  const io = ownSessionOutput(ctx.io, ctx.workOwner);
+  return withSessionReadline(
+    ctx.io.stdin,
+    ctx.workOwner,
+    () =>
+      ctx.handle.subscribe(
+        ownSessionSubscriber(ctx.workOwner, (event) =>
+          io.writeOut(`${stringifyJsonLine(event)}\n`),
+        ),
+      ),
+    async (rl, closeInput) => {
+      const lines = rl[Symbol.asyncIterator]();
+      let active = true;
+      const isActive = (): boolean => active && !ctx.shouldStop();
+      let interrupt: () => void = () => undefined;
+      const interrupted = new Promise<void>((resolve) => {
+        interrupt = resolve;
+      });
+      const stopInput = (): void => {
+        active = false;
+        interrupt();
+        closeInput();
+      };
+      const onSigint = (): void => {
+        if (!active) {
+          ctx.workOwner?.invocation.finiteExit.cooperativeCancel(EXIT_CODES.chatEnded);
+          return;
+        }
+        stopInput();
+        ctx.finalize?.();
+      };
+      let removeInterrupt = (): void => undefined;
+      try {
+        removeInterrupt =
+          ctx.subscribeInterrupt === undefined
+            ? (() => {
+                process.once('SIGINT', onSigint);
+                return () => {
+                  process.removeListener('SIGINT', onSigint);
+                };
+              })()
+            : ctx.subscribeInterrupt(onSigint);
+        ctx.workOwner?.signal.addEventListener('abort', stopInput, { once: true });
+        if (ctx.workOwner?.signal.aborted === true) stopInput();
+        ctx.workOwner?.assertAdmitting();
+        ctx.startSession(); // subscription wired above ⇒ the synchronous session:started is the first NDJSON line
+        // Keep terminal finalization and resource teardown independent of a blocked diagnostic sink.
+        // Late activation settlement stays observed and cannot recover this driver's activity.
+        if (isActive()) await Promise.race([ctx.onActivated?.(isActive), interrupted]);
+        if (isActive()) {
+          for await (const line of lines) {
+            if (!isActive()) break;
+            await ctx.processLine(line);
+            if (ctx.shouldStop()) break;
+          }
+        }
+      } finally {
+        active = false;
+        removeInterrupt();
+        ctx.workOwner?.signal.removeEventListener('abort', stopInput);
+        closeInput();
+        // Flush session:cancelled BEFORE unsubscribing, so the NDJSON stream includes its sole terminal event.
+        ctx.finalize?.();
       }
-    }
-  } finally {
-    active = false;
-    process.removeListener('SIGINT', onSigint);
-    rl.close();
-    // Flush session:cancelled BEFORE unsubscribing, so the NDJSON stream includes its sole terminal event.
-    ctx.finalize?.();
-    unsubscribe();
-  }
-  // `--json` is a machine stream, not interactive, so `/clear` is gated off — `stopReason()` is always `'exit'`
-  // (one stdout stream stays one session lifecycle, ADR-0049).
-  return { kind: ctx.stopReason() };
+      // `--json` is a machine stream, not interactive, so `/clear` is gated off — `stopReason()` is always `'exit'`
+      // (one stdout stream stays one session lifecycle, ADR-0049).
+      return { kind: ctx.stopReason() };
+    },
+  );
 }
 
 /**

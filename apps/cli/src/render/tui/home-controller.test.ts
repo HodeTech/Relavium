@@ -125,6 +125,105 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     vi.restoreAllMocks();
   });
 
+  it.each(['resolve', 'reject'] as const)(
+    'drops a late turn %s after Home teardown seals publication',
+    async (outcome) => {
+      let finish: () => void = () => undefined;
+      let fail: (cause: Error) => void = () => undefined;
+      const held = new Promise<void>((resolve, reject) => {
+        finish = resolve;
+        fail = reject;
+      });
+      const made = makeSession({ onProcess: () => held });
+      const c = createHomeController({
+        doctorProbes: STUB_DOCTOR_PROBES,
+        startChat: () => Promise.resolve(made.session),
+        homeStore,
+        onExit: vi.fn(),
+        onError: vi.fn(),
+      });
+      type(c, 'hello');
+      c.handleKey('', ENTER);
+      await flush();
+      expect(made.lines).toEqual(['hello']);
+      expect(c.getSnapshot().submitBusy).toBe(true);
+      await c.teardownActive();
+      const sealed = c.getSnapshot();
+      const changed = vi.fn();
+      const unsubscribe = c.subscribe(changed);
+      if (outcome === 'resolve') finish();
+      else fail(new Error('late turn fault'));
+      await flush();
+      expect(changed, 'HOME_TURN_RESULT_AFTER_SEAL').not.toHaveBeenCalled();
+      expect(c.getSnapshot()).toBe(sealed);
+      unsubscribe();
+    },
+  );
+
+  it('reports an unexpected snapshot failure after chat teardown instead of returning a healthy Home', async () => {
+    let stopped = false;
+    const made = makeSession({ stop: () => stopped });
+    const failure = new Error('PRIVATE_HOME_SNAPSHOT_FAILURE');
+    const onError = vi.fn();
+    const onExit = vi.fn();
+    const read = vi.fn(() => EMPTY);
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat: () => Promise.resolve(made.session),
+      homeStore: { read },
+      onExit,
+      onError,
+    });
+    type(c, 'hello');
+    c.handleKey('', ENTER);
+    await flush();
+    expect(c.getSnapshot().mode).toBe('chat');
+    read.mockImplementation(() => {
+      throw failure;
+    });
+    stopped = true;
+    type(c, '/exit');
+    c.handleKey('', ENTER);
+    await flush();
+    expect(made.teardown).toHaveBeenCalledOnce();
+    expect(onError, 'HOME_POST_CHAT_SNAPSHOT_FAILURE_IS_OBSERVED').toHaveBeenCalledExactlyOnceWith(
+      failure,
+    );
+    expect(onExit).not.toHaveBeenCalled();
+  });
+
+  it('does not refresh the Home snapshot after terminating during a held chat teardown', async () => {
+    let stopped = false;
+    let release = (): void => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const made = makeSession({ stop: () => stopped });
+    made.teardown.mockReturnValue(held);
+    const onError = vi.fn();
+    const read = vi.fn(() => EMPTY);
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat: () => Promise.resolve(made.session),
+      homeStore: { read },
+      onExit: vi.fn(),
+      onError,
+    });
+    type(c, 'hello');
+    c.handleKey('', ENTER);
+    await flush();
+    stopped = true;
+    type(c, '/exit');
+    c.handleKey('', ENTER);
+    await flush();
+    const terminating = c.teardownActive();
+    release();
+    await terminating;
+    await flush();
+    expect(read).toHaveBeenCalledOnce();
+    expect(onError).not.toHaveBeenCalled();
+  });
+
   it('types into the buffer and reflects it in the snapshot', () => {
     const c = createHomeController({
       doctorProbes: STUB_DOCTOR_PROBES,
@@ -1813,6 +1912,27 @@ describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () =>
     c.handleKey('', ENTER); // run the highlighted /models → homeReplCtx.openModels → the picker opens
     return c;
   }
+
+  it('drops a model refresh rejection after Home teardown sealed publication', async () => {
+    let rejectRefresh: (cause: Error) => void = () => undefined;
+    const { port } = makeModelsPort({
+      refreshIfStale: () =>
+        new Promise((_resolve, reject) => {
+          rejectRefresh = reject;
+        }),
+    });
+    const c = openPicker(port);
+    const changed = vi.fn();
+    const unsubscribe = c.subscribe(changed);
+    await c.teardownActive();
+    changed.mockClear();
+    const sealed = c.getSnapshot();
+    rejectRefresh(new Error('owner stopped'));
+    await flush();
+    expect(changed, 'HOME_REJECTED_REFRESH_AFTER_SEAL').not.toHaveBeenCalled();
+    expect(c.getSnapshot()).toBe(sealed);
+    unsubscribe();
+  });
 
   it('opens over the merged catalog and kicks a TTL-bounded background refresh', async () => {
     const { port, load, refreshIfStale } = makeModelsPort({ refreshedAt: 1000 });

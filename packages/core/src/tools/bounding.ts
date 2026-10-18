@@ -88,102 +88,401 @@ function redactInlineMediaForText(value: unknown, seen: WeakSet<object>): unknow
     return '[cyclic]';
   }
   seen.add(value);
-  if (Array.isArray(value)) {
-    return value.map((item) => redactInlineMediaForText(item, seen));
+  try {
+    if (Array.isArray(value)) {
+      return value.map((item) => redactInlineMediaForText(item, seen));
+    }
+    if (isBinaryBuffer(value)) {
+      return '[binary buffer omitted]'; // a raw Uint8Array/ArrayBuffer — never JSON the decimal byte values
+    }
+    if (!isPlainObject(value)) {
+      return value; // Date/RegExp/Map/Set/class instance — leave for JSON.stringify's native handling
+    }
+    if (isCanonicalBase64Source(value)) {
+      const data = value['data'];
+      // Report the base64 CHARACTER length (≈1.33× the byte count), not "bytes" — observability only.
+      return { kind: 'base64', base64Length: typeof data === 'string' ? data.length : 0 };
+    }
+    const out: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value)) {
+      // Preserve an own data key such as __proto__; assignment would invoke an inherited setter.
+      Object.defineProperty(out, key, {
+        value: redactInlineMediaForText(item, seen),
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
+    }
+    return out;
+  } finally {
+    // Only an ancestor is cyclic; a completed sibling can legitimately share this object.
+    seen.delete(value);
   }
-  if (isBinaryBuffer(value)) {
-    return '[binary buffer omitted]'; // a raw Uint8Array/ArrayBuffer — never JSON the decimal byte values
+}
+
+// One definition builds both the complete matcher and its necessary-prefix preflight. Prefixes
+// have bounded width: testing their absence must never run the unbounded JWT/body alternatives.
+// One alternation still preserves outer spans when credential families overlap. Bounded lookaheads
+// enforce minimum lengths before simple runs; no admitted-size repeated groups use the regex stack.
+const STANDALONE_CREDENTIAL_FRAGMENTS: readonly {
+  readonly prefix: RegExp;
+  readonly body: RegExp;
+}[] = [
+  { prefix: /sk-/, body: /(?=[\w-]{16})[\w-]+/ },
+  { prefix: /sk_(?:live|test)_/, body: /(?=[A-Za-z0-9]{16})[A-Za-z0-9]+/ },
+  { prefix: /A[KSB]IA/, body: /[0-9A-Z]{16}/ },
+  { prefix: /gh[pousr]_/, body: /(?=[A-Za-z0-9]{20})[A-Za-z0-9]+/ },
+  { prefix: /github_pat_/, body: /(?=\w{20})\w+/ },
+  { prefix: /glpat-/, body: /(?=[\w-]{16})[\w-]+/ },
+  { prefix: /xox[baprs]-/, body: /(?=[A-Za-z0-9-]{10})[A-Za-z0-9-]+/ },
+  { prefix: /AIza/, body: /(?=[\w-]{30})[\w-]+/ },
+  { prefix: /ya29\./, body: /(?=[\w-]{20})[\w-]+/ },
+  { prefix: /hf_/, body: /(?=[A-Za-z0-9]{20})[A-Za-z0-9]+/ },
+  { prefix: /npm_/, body: /(?=[A-Za-z0-9]{20})[A-Za-z0-9]+/ },
+  {
+    prefix: /eyJ/,
+    body: /(?=[\w-]{10})[\w-]+\.(?=[\w-]{10})[\w-]+\.(?=[\w-]{6})[\w-]+/,
+  },
+];
+const STANDALONE_CREDENTIAL = new RegExp(
+  '\\b(?:' +
+    STANDALONE_CREDENTIAL_FRAGMENTS.map(
+      (fragment) => fragment.prefix.source + fragment.body.source,
+    ).join('|') +
+    ')',
+  'g',
+);
+const STANDALONE_CREDENTIAL_PREFIX = new RegExp(
+  STANDALONE_CREDENTIAL_FRAGMENTS.map((fragment) => fragment.prefix.source).join('|'),
+);
+// The joined probe checks its boundary in the ORIGINAL text. Removing LF/TAB must not erase
+// a legitimate boundary or manufacture one inside a public word. The source uses the same fragments.
+const JOINED_STANDALONE_CREDENTIAL = new RegExp(STANDALONE_CREDENTIAL.source.slice(2), 'y');
+
+const SCHEME_CREDENTIAL =
+  /\b(b[\n\t]*e[\n\t]*a[\n\t]*r[\n\t]*e[\n\t]*r|b[\n\t]*a[\n\t]*s[\n\t]*i[\n\t]*c|t[\n\t]*o[\n\t]*k[\n\t]*e[\n\t]*n)\s+(?=[\w.~+/-]{8})[\w.~+/-]+={0,2}/gi;
+
+type SecretSpanVisitor = (start: number, end: number, replacement: string) => void;
+
+/**
+ * A failed JWT probe must not rescan an admitted-size token run at every original boundary,
+ * including LF/TAB joins and raw hyphen-separated words.
+ * Probe the SAME canonical matcher with at most three dot-separated runs (JWT's maximum), keeping
+ * the first 64 characters of each run. The largest minimum acceptance window in the literal is
+ * 34 characters (AIza + 30); all other prefixes/minima fit, including JWT's 13/10/6 and ya29's two
+ * runs. Truncating a longer [\w-] run therefore preserves acceptance for every current family.
+ * Only accepted probes run the full greedy matcher, whose consumed span is then skipped.
+ *
+ * Candidate starts increase monotonically. Cache the three lookahead run ends so many original
+ * boundaries inside one joined run share one delimiter scan; no per-character index is retained.
+ */
+function joinedCredentialProbe(joined: string): (start: number) => string {
+  const delimiter = /[^\w-]/g;
+  const runs: { start: number; end: number }[] = [];
+  function runEnd(start: number): number {
+    const cached = runs.find((run) => run.start <= start && start < run.end);
+    if (cached !== undefined) return cached.end;
+    delimiter.lastIndex = start;
+    const end = delimiter.exec(joined)?.index ?? joined.length;
+    if (end > start) {
+      runs.push({ start, end });
+      if (runs.length > 3) runs.shift();
+    }
+    return end;
   }
-  if (!isPlainObject(value)) {
-    return value; // Date/RegExp/Map/Set/class instance — leave for JSON.stringify's native handling
-  }
-  if (isCanonicalBase64Source(value)) {
-    const data = value['data'];
-    // Report the base64 CHARACTER length (≈1.33× the byte count), not "bytes" — observability only.
-    return { kind: 'base64', base64Length: typeof data === 'string' ? data.length : 0 };
-  }
-  const out: Record<string, unknown> = {};
-  for (const [key, item] of Object.entries(value)) {
-    out[key] = redactInlineMediaForText(item, seen);
-  }
-  return out;
+  return (start) => {
+    let preview = '';
+    for (let index = 0; index < 3; index += 1) {
+      const end = runEnd(start);
+      preview += joined.slice(start, Math.min(end, start + 64));
+      if (end === start || joined[end] !== '.') break;
+      preview += '.';
+      start = end + 1;
+    }
+    return preview;
+  };
 }
 
 /**
- * Redact secret-SHAPED substrings from a text projection bound for an **observability field** (the event
- * `outputSummary` / `toolInput`) — NOT the model-facing value (the model must still see the real tool result
+ * Select valid ORIGINAL starts before matching: a rejected embedded prefix cannot consume them.
+ * Every prefix in the canonical literal starts with an ASCII letter; the prefilter only omits
+ * impossible starts. It does not decide which family matches or where that credential ends.
+ * The views can also be the same raw text; only an actual joined view skips original LF/TAB.
+ */
+function visitJoinedStandaloneCredentials(
+  original: string,
+  joined: string,
+  mask: SecretSpanVisitor,
+): void {
+  // Absence only: a present prefix still needs the original boundary and bounded canonical probe.
+  if (!STANDALONE_CREDENTIAL_PREFIX.test(joined)) return;
+  const preview = joinedCredentialProbe(joined);
+  const candidates = /(^|[^\w])([A-Za-z])/g;
+  const separators = /[\n\t]+/g;
+  let next = original === joined ? null : separators.exec(original);
+  let removed = 0;
+  let matchedUntil = 0;
+  for (
+    let candidate = candidates.exec(original);
+    candidate !== null;
+    candidate = candidates.exec(original)
+  ) {
+    const originalStart = candidate.index + candidate[0].length - 1;
+    while (next !== null && next.index < originalStart) {
+      removed += next[0].length;
+      next = separators.exec(original);
+    }
+    const start = originalStart - removed;
+    if (start < matchedUntil) continue;
+    JOINED_STANDALONE_CREDENTIAL.lastIndex = 0;
+    if (!JOINED_STANDALONE_CREDENTIAL.test(preview(start))) continue;
+    JOINED_STANDALONE_CREDENTIAL.lastIndex = start;
+    const match = JOINED_STANDALONE_CREDENTIAL.exec(joined);
+    if (match === null) continue;
+    matchedUntil = JOINED_STANDALONE_CREDENTIAL.lastIndex;
+    mask(start, matchedUntil, '[redacted]');
+  }
+}
+
+function redactStandaloneCredentials(text: string): string {
+  const parts: string[] = [];
+  let copied = 0;
+  visitJoinedStandaloneCredentials(text, text, (start, end, replacement) => {
+    parts.push(text.slice(copied, start), replacement);
+    copied = end;
+  });
+  if (parts.length === 0) return text;
+  parts.push(text.slice(copied));
+  return parts.join('');
+}
+
+/**
+ * The finite header-label literal is the sole joined-header authority. Check ORIGINAL boundaries
+ * before matching, so an embedded x-api-key/x-goog-api-key cannot consume an inner api-key start.
+ * Labels are bounded; trailing whitespace cannot contain another label, so failed scans are linear.
+ */
+function visitJoinedHeaderLabels(original: string, joined: string, mask: SecretSpanVisitor): void {
+  if (!joined.includes(':')) return;
+  const header = /(?:authorization|(?:x-)?api-key|x-goog-api-key)["']?\s*:/iy;
+  const candidates = /(^|[^A-Za-z0-9_-])([A-Za-z])/g;
+  const separators = /[\n\t]+/g;
+  let next = separators.exec(original);
+  let removed = 0;
+  let matchedUntil = 0;
+  for (
+    let candidate = candidates.exec(original);
+    candidate !== null;
+    candidate = candidates.exec(original)
+  ) {
+    const originalStart = candidate.index + candidate[0].length - 1;
+    while (next !== null && next.index < originalStart) {
+      removed += next[0].length;
+      next = separators.exec(original);
+    }
+    const start = originalStart - removed;
+    if (start < matchedUntil) continue;
+    header.lastIndex = start;
+    const match = header.exec(joined);
+    if (match === null) continue;
+    matchedUntil = header.lastIndex;
+    mask(start, matchedUntil, match[0]);
+  }
+}
+
+/**
+ * LF/TAB may split finite credential shapes. Map recognized spans back onto the original text;
+ * ordinary spaces remain boundaries and public text is never globally normalized for identity.
+ * Token-character continuations after LF/TAB are intentionally part of a recognized credential.
+ * The two cursors advance monotonically, with no per-character offset array or recursive matcher.
+ */
+function redactJoinedCredentialSpans(
+  text: string,
+  visit: (joined: string, mask: SecretSpanVisitor) => void,
+  boundary?: RegExp,
+): string {
+  if (!/[\n\t]/.test(text)) return text;
+  const joined = text.replace(/[\n\t]+/g, '');
+  const parts: string[] = [];
+  const separators = /[\n\t]+/g;
+  let next = separators.exec(text);
+  let removed = 0;
+  let copied = 0;
+  function advance(target: number, includeAtBoundary = false): number {
+    while (
+      next !== null &&
+      (next.index - removed < target || (includeAtBoundary && next.index - removed === target))
+    ) {
+      removed += next[0].length;
+      next = separators.exec(text);
+    }
+    return target + removed;
+  }
+  visit(joined, (start, end, replacement) => {
+    const originalStart = advance(start, true);
+    const originalEnd = advance(end);
+    if (boundary?.test(text[originalStart - 1] ?? '')) return;
+    if (!/[\n\t]/.test(text.slice(originalStart, originalEnd))) return;
+    parts.push(text.slice(copied, originalStart), replacement);
+    copied = originalEnd;
+  });
+  if (parts.length === 0) return text;
+  parts.push(text.slice(copied));
+  return parts.join('');
+}
+
+function redactSplitCredentials(text: string): string {
+  if (!/[\n\t]/.test(text)) return text;
+  const urls = redactJoinedCredentialSpans(text, visitUrlUserinfo);
+  const keys = redactJoinedCredentialSpans(
+    urls,
+    (joined, mask) => {
+      visitJoinedStandaloneCredentials(urls, joined, mask);
+    },
+    /\w/,
+  );
+  const schemes = keys.replace(SCHEME_CREDENTIAL, '$1 [redacted]');
+  return redactJoinedCredentialSpans(
+    schemes,
+    (joined, mask) => {
+      visitJoinedHeaderLabels(schemes, joined, mask);
+    },
+    /[A-Za-z0-9_-]/,
+  );
+}
+
+/**
+ * Redact secret-SHAPED substrings from observability and journal projections — NOT the model-facing value
+ * (the model must still see the real tool result
  * and its own args). A model can put a live credential in an `http_request` header/body, and a tool result can
  * carry one (a `read_clipboard`, an egress response body, a `.env` read); either would otherwise ride the
  * `--json` machine stream (ADR-0049) / a log verbatim. High-recall and deliberately conservative (a false
- * positive redacts a non-secret in a DISPLAY field only — never the model's copy): it targets `Authorization`
+ * positive changes the projection, never the model/dispatch copy). Journal consumers deliberately treat
+ * recognized credential projections as equal; see effect-journal.md §11. It targets `Authorization`
  * schemes, `…secret…=value` pairs, and well-known token shapes (OpenAI/AWS/GitHub/Slack/Google/JWT). Every
- * pattern is LINEAR — bounded repetition + single character classes, no nested quantifiers — per the engine's
+ * pattern uses bounded context or disjoint character runs, with no ambiguous nested repetition — per the engine's
  * no-backtracking-RegExp / no-ReDoS posture.
  */
 export function redactSecretShapedText(text: string): string {
-  return (
-    text
-      // **URL userinfo — `scheme://user:pass@host`.** The single most common shape a real credential takes in a
-      // tool argument: a database connection string, a Redis URL, a webhook with an embedded token. It has no
-      // `key=value` and no well-known prefix, so every other pattern here misses it — a review REPRODUCED the
-      // gap by recovering a stored `run_effects` digest from guessed plaintext. That matters more since
-      // ADR-0080: the same projection now feeds a durable, never-swept digest, which is a permanent offline
-      // oracle rather than a line in an ephemeral event stream. The host is deliberately KEPT — it is the
-      // diagnostic half, and it is not the secret.
-      .replace(
-        /([a-z][\w+.-]{0,31}:\/\/)[^/@\s:"',}\]]{0,256}:[^/@\s"',}\]]{1,256}@/gi,
-        '$1[redacted]@',
-      )
-      // …and the COLON-LESS form — `scheme://TOKEN@host`. A webhook with an embedded bearer, a Stripe-style
-      // key-as-username (`https://sk_live_…:@api.stripe.com`, whose password half is empty), `curl -u tok:`.
-      // The rule above cannot see any of them: it requires a `:` with a non-empty right side. The `{16,}`
-      // floor is what keeps `https://example.com` and a short vanity handle out — a credential in this
-      // position is long, and a userinfo short enough to fall under the floor carries little to recover.
-      .replace(/([a-z][\w+.-]{0,31}:\/\/)[^/@\s"',}\]]{16,256}@/gi, '$1[redacted]@')
-      // …and a token in a URL QUERY. `?token=…` is already caught by the `key=value` rule below, but the
-      // SIGNED-URL shape — a long opaque value under an unrecognised parameter name — is not, and a
-      // pre-signed S3 URL or a webhook `?t=<token>` is exactly that. Bounded to a long value so an ordinary
-      // `?limit=10` or `?q=cats` is untouched; the parameter NAME is kept as the diagnostic half.
-      .replace(/([?&][\w.-]{1,64}=)[^\s&"',}\]]{24,512}/g, '$1[redacted]')
-      // A PEM private-key block (multi-line, space-separated markers the `private_key` key-pattern can't see).
-      // The body span is bounded (`{0,20000}?`, lazy) so an unterminated block can't drive an unbounded scan.
-      .replace(
-        /-----BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY-----[\s\S]{0,20000}?-----END [A-Z0-9 ]{0,40}PRIVATE KEY-----/g,
-        '[redacted]',
-      )
-      // An `Authorization`-style scheme + its token: `Bearer <t>` / `Basic <t>` / `Token <t>`. The token class
-      // `[\w.~+/-]` is base64url + padding (`\w` folds `[A-Za-z0-9_]`).
-      .replace(/\b(bearer|basic|token)\s+[\w.~+/-]{8,}={0,2}/gi, '$1 [redacted]')
-      // A secret-ish key (bounded wrappers keep this ReDoS-safe) + `=`/`:` + its value. The optional `["']?`
-      // BEFORE the separator catches the JSON `"access_token":"…"` shape (an OAuth/egress response body). The
-      // value has two branches: a QUOTED value consumes lazily through the FIRST matching closing quote (so a
-      // passphrase with interior spaces — `"hunter2 dragon"` — is redacted whole, however long, not just up to
-      // the first space), bounded by the line (`[^\r\n]`); an UNQUOTED value runs to the next whitespace/
-      // delimiter. Lazy `*?` with a single-class body + a fixed backref is linear (finds the first close) ⇒
-      // ReDoS-safe. Kept a single analyzable LITERAL (not composed via `new RegExp`) so Sonar's static
-      // super-linear-runtime (S5852) check still covers this security-critical pattern; its keyword-alternation
-      // breadth is deliberate (and `apikey` is dropped — `api[_-]?key` already subsumes it).
-      .replace(
-        /\b[\w-]{0,32}(?:password|passwd|secret|token|api[_-]?key|authorization|access[_-]?key|private[_-]?key|client[_-]?secret)[\w-]{0,16}["']?\s*[=:]\s*(?:(["'])[^\r\n]*?\1|[^\s"',;&]{6,})/gi,
-        '[redacted]',
-      )
-      // Well-known standalone credential shapes (OpenAI, Stripe, AWS incl. STS ASIA/ABIA, GitHub token + PAT,
-      // GitLab PAT, Slack, Google API + OAuth, HuggingFace, npm, JWT). Kept as ONE alternation ON PURPOSE: a
-      // single leftmost-longest scan is required so two ADJACENT / EMBEDDED credential shapes (e.g. a JWT whose
-      // signature segment contains an `sk-` run, or a `xox…-glpat-…` run) are covered by the outer greedy match
-      // as a single span. A per-family MULTI-PASS split is NOT equivalent — an earlier pass inserting `[redacted]`
-      // (a non-word `[`) truncates a later family's greedy match and can leave a trailing secret-shaped substring
-      // EXPOSED (a real redaction regression, pinned in bounding.test.ts). So this stays a single analyzable
-      // LITERAL and its Sonar per-regex complexity is a deliberate, documented exception — the same trade-off as
-      // the key=value pattern above: correctness of a security redactor + Sonar's static ReDoS (S5852) coverage
-      // outrank the metric. `\w` / `[\w-]` fold only the classes that are EXACTLY `[A-Za-z0-9_]` / `[A-Za-z0-9_-]`;
-      // the tighter `[A-Za-z0-9]` / `[A-Za-z0-9-]` families keep their narrower class (no `_`).
-      .replace(
-        // NOSONAR — the per-regex complexity is the deliberate, documented exception explained above
-        /\b(?:sk-[A-Za-z0-9]{16,}|sk_(?:live|test)_[A-Za-z0-9]{16,}|A[KSB]IA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_\w{20,}|glpat-[\w-]{16,}|xox[baprs]-[A-Za-z0-9-]{10,}|AIza[\w-]{30,}|ya29\.[\w-]{20,}|hf_[A-Za-z0-9]{20,}|npm_[A-Za-z0-9]{20,}|eyJ[\w-]{10,}\.[\w-]{10,}\.[\w-]{6,})/g,
-        '[redacted]',
-      )
-  );
+  const projected = redactOpaqueQueryValues(redactUrlUserinfo(redactSplitCredentials(text)))
+    // A PEM private-key block (multi-line, space-separated markers the `private_key` key-pattern can't see).
+    // The body span is bounded (`{0,20000}?`, lazy) so an unterminated block can't drive an unbounded scan.
+    .replace(
+      /-----BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY-----[\s\S]{0,20000}?-----END [A-Z0-9 ]{0,40}PRIVATE KEY-----/g,
+      '[redacted]',
+    )
+    // An `Authorization`-style scheme + its token: `Bearer <t>` / `Basic <t>` / `Token <t>`. The token class
+    // `[\w.~+/-]` is base64url + padding (`\w` folds `[A-Za-z0-9_]`).
+    // For every open-ended token minimum below, a bounded lookahead enforces the same floor before
+    // one simple greedy run. V8 can exhaust its RegExp stack on an admitted-scale `{N,}` run; the
+    // equivalent `(?=class{N})class+` form keeps the whole value instead of clipping a credential.
+    .replace(SCHEME_CREDENTIAL, '$1 [redacted]')
+    // A secret-ish key (bounded wrappers keep this ReDoS-safe) + `=`/`:` + its value. The optional `["']?`
+    // BEFORE the separator catches the JSON `"access_token":"…"` shape (an OAuth/egress response body). The
+    // value has QUOTED and UNQUOTED branches. A quoted value ends at the first UNESCAPED matching quote,
+    // including JSON's escaped quotes/backslashes; otherwise a valid password such as `a\"secret-tail`
+    // left its tail exposed. The two alternatives inside each repetition are disjoint: a backslash
+    // consumes exactly the following non-newline character, while the ordinary class excludes it.
+    // No ambiguous nested repetition/backref is needed. Unquoted values retain their delimiter and
+    // minimum-length policy. Kept a single analyzable LITERAL (not composed via `new RegExp`) so Sonar's static
+    // super-linear-runtime (S5852) check still covers this security-critical pattern; its keyword-alternation
+    // breadth is deliberate (and `apikey` is dropped — `api[_-]?key` already subsumes it).
+    .replace(
+      /\b[\w-]{0,32}(?:password|passwd|secret|token|api[_-]?key|authorization|access[_-]?key|private[_-]?key|client[_-]?secret)[\w-]{0,16}["']?\s*[=:]\s*(?:"(?:[^"\\\r\n]|\\[^\r\n])*"|'(?:[^'\\\r\n]|\\[^\r\n])*'|(?=[^\s"',;&]{6})[^\s"',;&]+)/gi,
+      '[redacted]',
+    );
+  // Well-known standalone credential shapes (OpenAI, Stripe, AWS incl. STS ASIA/ABIA, GitHub token + PAT,
+  // GitLab PAT, Slack, Google API + OAuth, HuggingFace, npm, JWT). Kept as ONE alternation ON PURPOSE: a
+  // single leftmost-longest scan is required so two ADJACENT / EMBEDDED credential shapes (e.g. a JWT whose
+  // signature segment contains an `sk-` run, or a `xox…-glpat-…` run) are covered by the outer greedy match
+  // as a single span. A per-family MULTI-PASS split is NOT equivalent — an earlier pass inserting `[redacted]`
+  // (a non-word `[`) truncates a later family's greedy match and can leave a trailing secret-shaped substring
+  // EXPOSED (a real redaction regression, pinned in bounding.test.ts). The canonical fragments therefore
+  // construct one complete alternation, with a separate bounded prefix-absence preflight. Failed probes
+  // use the bounded preview before the full greedy matcher; overlap and admitted-size tests pin that path.
+  // `\w` / `[\w-]` fold only the classes that are EXACTLY `[A-Za-z0-9_]` / `[A-Za-z0-9_-]`;
+  // the tighter `[A-Za-z0-9]` / `[A-Za-z0-9-]` families keep their narrower class (no `_`).
+  return redactStandaloneCredentials(projected);
+}
+
+/**
+ * Signed-URL/webhook values can be opaque credentials under an unrecognised query key.
+ * Preserve short values, parameter names and public delimiters/fragments. Once recognized,
+ * mask the whole value: a fixed-length prefix leaves a permanent credential equality oracle.
+ * Scan delimiters separately instead of matching a multi-megabyte repeated value in V8's
+ * RegExp stack. Both cursors advance; short unrecognized values add only bounded overlap.
+ */
+function redactOpaqueQueryValues(text: string): string {
+  if (!text.includes('?') && !text.includes('&')) return text;
+  const prefix = /[?&][\w.-]{1,64}=/g;
+  const delimiter = /[\s&#"',}\]]/g;
+  const parts: string[] = [];
+  let cursor = 0;
+  for (let match = prefix.exec(text); match !== null; match = prefix.exec(text)) {
+    const valueStart = prefix.lastIndex;
+    delimiter.lastIndex = valueStart;
+    const valueEnd = delimiter.exec(text)?.index ?? text.length;
+    if (valueEnd - valueStart < 24) continue;
+    parts.push(text.slice(cursor, valueStart), '[redacted]');
+    cursor = valueEnd;
+    prefix.lastIndex = valueEnd;
+  }
+  if (parts.length === 0) return text;
+  parts.push(text.slice(cursor));
+  return parts.join('');
+}
+
+/**
+ * One whole authority, with its last `@` separating userinfo from the host. Prefix-only
+ * matches can mask the first password fragment and leave another `@` plus a credential
+ * tail in the durable digest. Paths and JSON delimiters stop the scan; queries/fragments
+ * after an existing userinfo separator remain public. Before that separator, raw ?/# in a
+ * colon-bearing password are masked, except an explicit public host:port prefix; a short colonless vanity handle retains the existing non-secret policy.
+ */
+function isPublicHostPort(text: string): boolean {
+  const colon = text.lastIndexOf(':');
+  if (colon < 0 || !/^\d{1,5}$/.test(text.slice(colon + 1))) return false;
+  const hostname = text.slice(0, colon);
+  return hostname.includes('.') || hostname === 'localhost' || /^\[[\da-f:]+\]$/i.test(hostname);
+}
+
+function visitUrlUserinfo(text: string, mask: SecretSpanVisitor): void {
+  if (!text.includes('://')) return;
+  const scheme = /[a-z][\w+.-]{0,31}:\/\//gi;
+  const delimiter = /[/\s"',}\]]/g;
+  for (let match = scheme.exec(text); match !== null; match = scheme.exec(text)) {
+    const start = scheme.lastIndex;
+    delimiter.lastIndex = start;
+    const end = delimiter.exec(text)?.index ?? text.length;
+    const authority = text.slice(start, end);
+    const firstQuery = authority.search(/[?#]/);
+    const authorityAt = firstQuery < 0 ? -1 : authority.lastIndexOf('@', firstQuery - 1);
+    const at = authorityAt >= 0 ? authorityAt : authority.lastIndexOf('@');
+    if (at < 0) continue;
+    const userinfo = authority.slice(0, at);
+    const colon = userinfo.indexOf(':');
+    const query = userinfo.search(/[?#]/);
+    // Raw ?/# can belong to a malformed password. An explicit host:port prefix instead
+    // introduces a public query/fragment; its contact values must not become userinfo.
+    if (query >= 0 && (colon < 0 || colon > query || isPublicHostPort(userinfo.slice(0, query))))
+      continue;
+    const hasPassword = colon >= 0 && colon < userinfo.length - 1;
+    if (!hasPassword && userinfo.length < 16) continue;
+    mask(start, start + at, '[redacted]');
+    // Skip the recognized userinfo without hiding a later scheme in the public host/tail.
+    scheme.lastIndex = start + at + 1;
+  }
+}
+
+function redactUrlUserinfo(text: string): string {
+  const parts: string[] = [];
+  let cursor = 0;
+  visitUrlUserinfo(text, (start, end, replacement) => {
+    parts.push(text.slice(cursor, start), replacement);
+    cursor = end;
+  });
+  if (parts.length === 0) return text;
+  parts.push(text.slice(cursor));
+  return parts.join('');
 }
 
 /**
@@ -192,7 +491,7 @@ export function redactSecretShapedText(text: string): string {
  * model-set credential in a header VALUE / body / url-query never rides the observability stream. Object KEYS
  * are scrubbed with the SAME detector as values (a normal header name — `Authorization`, `X-Trace` — is not
  * secret-SHAPED, so it passes through unchanged; only a model that placed a live-token-shaped string in a KEY
- * position is redacted, closing that leak path too). Cycle-safe; display-only.
+ * position is redacted, closing that leak path too). Cycle-safe; model/dispatch values stay unchanged.
  */
 export function redactSecretShapedValue(value: unknown): unknown {
   return redactSecretShapedWalk(value, new WeakSet<object>());
@@ -281,29 +580,46 @@ const KEY_QUALIFIERS: ReadonlySet<string> = new Set([
  */
 function redactArgVector(items: readonly unknown[], seen: WeakSet<object>): unknown[] {
   const out: unknown[] = [];
-  let redactNext = false;
+  let redactNext: string | undefined;
   for (const item of items) {
-    if (redactNext && typeof item === 'string') {
-      // A port is not a credential, however password-shaped its flag was.
-      out.push(looksLikePort(item) ? redactSecretShapedWalk(item, seen) : '[redacted]');
-      redactNext = false;
+    if (redactNext !== undefined) {
+      out.push(redactCredentialArgument(redactNext, item));
+      redactNext = undefined;
       continue;
     }
-    redactNext = typeof item === 'string' && isSecretishFlag(item);
+    if (typeof item === 'string') {
+      const separator = item.indexOf('=');
+      const flag = separator > 0 ? item.slice(0, separator) : '';
+      if (isSecretishFlag(flag)) {
+        const value = item.slice(separator + 1);
+        out.push(`${flag}=${redactCredentialArgument(flag, value)}`);
+        continue;
+      }
+      if (isSecretishFlag(item)) redactNext = item;
+    }
     out.push(redactSecretShapedWalk(item, seen));
   }
   return out;
 }
 
+/** One credential-value rule for both argv spellings; only ambiguous -p may name a public port. */
+function redactCredentialArgument(flag: string, value: unknown): string {
+  if (flag.toLowerCase() === '-p' && typeof value === 'string' && looksLikePort(value)) {
+    return value;
+  }
+  return '[redacted]';
+}
+
 /**
- * A CLI flag that introduces a credential — `--token`, `--password`, `-p`. (`--password=…` is the text
- * rule's job, since flag and value are one string there.)
+ * A CLI flag that introduces a credential — `--token`, `--password`, `-p`.
  *
  * `-p` is deliberately kept AND deliberately qualified. It really is the password flag for `mysql` and
  * `psql`, and dropping it would leak those verbatim — but it is also the port flag for `ssh` and the
  * port-mapping flag for `docker run`, and a review caught this destroying `ssh -p 2222` and
- * `docker run -p 8080:80`. The value shape settles it: a port is digits, optionally `host:container`, and a
- * password never is. See {@link looksLikePort}.
+ * `docker run -p 8080:80`. A port is digits, optionally `host:container`. Only the
+ * `-p` ambiguity retains that exception; explicitly named credential flags do not. Both separate and
+ * `--password=…` argument spellings use the entire value, rather than a partial text-pattern match.
+ * See {@link looksLikePort}.
  */
 /**
  * The flag names, as one anchored alternation.
@@ -319,7 +635,7 @@ function isSecretishFlag(item: string): boolean {
   return SECRETISH_FLAG.test(item);
 }
 
-/** `2222`, `8080:80`, `127.0.0.1:8080:80` — a port or a port mapping, never a credential. */
+/** Port-shaped values disambiguate `-p`; an explicit credential flag has no port exception. */
 function looksLikePort(value: string): boolean {
   return /^(?:[\d.]{1,15}:)?\d{1,5}(?::\d{1,5})?(?:\/(?:tcp|udp))?$/i.test(value);
 }
@@ -327,17 +643,26 @@ function looksLikePort(value: string): boolean {
 /**
  * One member of an object, redacted with its KEY taken into account.
  *
- * The shape scrub runs first and WINS when it fires, so `{"Authorization": "Bearer tok…"}` keeps its
- * diagnostic scheme (`Bearer [redacted]`) rather than collapsing to a bare `[redacted]` — the scheme is not
- * the secret, and knowing which auth scheme a call used is exactly the sort of thing a stored row is for.
- * The wholesale redaction is the FALLBACK, for the case the shape scrub structurally cannot see: an opaque
- * value with no recognisable prefix, a nested object, an array, or a number.
+ * A recognized credential key owns the WHOLE value. An inner shape match does not establish that the
+ * remaining text is public. Do not traverse a credential container or carry any partially scrubbed value
+ * into the journal. Only an anchored, known auth scheme may survive as a fixed diagnostic label.
  */
 function redactUnderKey(key: string, item: unknown, seen: WeakSet<object>): unknown {
-  const walked = redactSecretShapedWalk(item, seen);
-  if (!isSecretishKey(key) || item === null || item === undefined) return walked;
-  // The shape scrub already fired on this string — keep its more informative output.
-  if (typeof item === 'string' && walked !== item) return walked;
+  if (!isSecretishKey(key) || item === null || item === undefined)
+    return redactSecretShapedWalk(item, seen);
+  if (typeof item === 'string') {
+    // Match only the bounded label and the start of a nonempty remainder, never return that remainder.
+    // Canonical labels also keep caller-controlled casing out of the credential projection.
+    const scheme = /^(bearer|basic|token)[ \t]+\S/i.exec(item)?.[1]?.toLowerCase();
+    switch (scheme) {
+      case 'bearer':
+        return 'Bearer [redacted]';
+      case 'basic':
+        return 'Basic [redacted]';
+      case 'token':
+        return 'Token [redacted]';
+    }
+  }
   return '[redacted]';
 }
 
@@ -346,19 +671,28 @@ function redactSecretShapedWalk(value: unknown, seen: WeakSet<object>): unknown 
   if (typeof value !== 'object' || value === null) return value;
   if (seen.has(value)) return '[cyclic]'; // break the cycle (mirrors redactInlineMedia) — never re-emit the ref
   seen.add(value);
-  if (Array.isArray(value)) return redactArgVector(value, seen);
-  if (!isPlainObject(value)) return value; // Date/RegExp/Map/… — leave for native handling
-  const out: Record<string, unknown> = {};
-  // Scrub the KEY too (a secret-shaped key is redacted; a normal name is unchanged — see the doc above). A
-  // display-only field, so a rare collision of two keys both redacting to `[redacted]` losing one is acceptable.
-  for (const [key, item] of Object.entries(value)) {
-    // **The key decides, whatever the value's shape.** Checked BEFORE the walk, because the walk only
-    // inspects strings by shape — so a numeric PIN, a nested credential object, or a high-entropy opaque
-    // token with no recognisable prefix all survive it. `null`/`undefined` are left alone so an absent
-    // field does not become a phantom `[redacted]` in a diagnostic.
-    out[redactSecretShapedText(key)] = redactUnderKey(key, item, seen);
+  try {
+    if (Array.isArray(value)) return redactArgVector(value, seen);
+    if (!isPlainObject(value)) return value; // Date/RegExp/Map/… — leave for native handling
+    const out: Record<string, unknown> = {};
+    // Scrub the KEY too (a secret-shaped key is redacted; a normal name is unchanged — see the doc above). A
+    // Recognized credentials deliberately share a redacted projection; raw invocation keys stay unchanged.
+    for (const [key, item] of Object.entries(value)) {
+      // **The key decides, whatever the value's shape.** Checked BEFORE the walk, because the walk only
+      // inspects strings by shape — so a numeric PIN, a nested credential object, or a high-entropy opaque
+      // token with no recognisable prefix all survive it. `null`/`undefined` are left alone so an absent
+      // field does not become a phantom `[redacted]` in a diagnostic.
+      Object.defineProperty(out, redactSecretShapedText(key), {
+        value: redactUnderKey(key, item, seen),
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
+    }
+    return out;
+  } finally {
+    seen.delete(value);
   }
-  return out;
 }
 
 /** Render any result to the text the model would see (a string is itself; else compact JSON). Inline
@@ -385,12 +719,9 @@ function toText(result: unknown): string {
 }
 
 function makeSummary(text: string): string {
-  // Cap the scanned input so the whitespace-collapse never runs over an oversized result (the summary
-  // is bounded to SUMMARY_MAX regardless). Scrub secret-shaped substrings BEFORE the length cap so a
-  // credential in the result (a read_clipboard, an egress body, a `.env` read) never rides `outputSummary`
-  // to the `--json` stream / a log (the model-facing value is untouched — this is the observability copy).
-  const slice = text.length > SUMMARY_MAX * 8 ? text.slice(0, SUMMARY_MAX * 8) : text;
-  const oneLine = redactSecretShapedText(slice.replace(/\s+/g, ' ').trim());
+  // Recognize LF/TAB-split shapes in the complete materialized text before one-line normalization. Clip only after recognition: a closing quote or URL
+  // authority separator can be beyond the preview. Raw model/spill text stays unchanged.
+  const oneLine = redactSecretShapedText(redactSplitCredentials(text).replace(/\s+/g, ' ').trim());
   return oneLine.length <= SUMMARY_MAX ? oneLine : `${oneLine.slice(0, SUMMARY_MAX)}…`;
 }
 

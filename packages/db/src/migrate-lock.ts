@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3';
+import { withOwnedSqlite } from './storage-failure-facts.js';
 
 /**
  * Cross-process serialization for the `runMigrations` batch
@@ -64,6 +65,8 @@ export function withMigrationLock<T>(
     readonly openLock?: (path: string) => Database.Database;
     /** Acquisition timeout override — tests drive the refused-acquisition branch without a real 10 s wait. */
     readonly timeoutMs?: number;
+    /** Transfer this separate native connection to the original acquisition before setup can fail. */
+    readonly captureClose?: (close: () => void) => void;
   } = {},
 ): T {
   if (dbPath === undefined || dbPath === ':memory:') {
@@ -77,8 +80,15 @@ export function withMigrationLock<T>(
     // The lock file cannot be opened at all (a read-only directory). Reconciling beats refusing to start.
     return runReconciling(run);
   }
-  try {
-    lock.pragma(`busy_timeout = ${deps.timeoutMs ?? LOCK_TIMEOUT_MS}`);
+  const close = (): void => {
+    if (lock.open) lock.close();
+  };
+  const runLocked = (): T => {
+    deps.captureClose?.(close);
+    const configureTimeout = (): unknown =>
+      lock.pragma(`busy_timeout = ${deps.timeoutMs ?? LOCK_TIMEOUT_MS}`);
+    if (deps.openLock === undefined) withOwnedSqlite(configureTimeout);
+    else configureTimeout();
     try {
       // The acquisition. `BEGIN EXCLUSIVE` is the only statement here that can block or fail on contention.
       lock.exec('BEGIN EXCLUSIVE');
@@ -90,14 +100,33 @@ export function withMigrationLock<T>(
       return run();
     } finally {
       // Release. A throw here must not mask the migration's own outcome, and `close()` below releases the OS
-      // lock regardless — so this is best-effort by design, not a swallowed failure.
+      // lock on successful close — that release is independently checked below.
       try {
         lock.exec('COMMIT');
       } catch {
-        /* the close below releases the OS lock either way */
+        /* Native close below owns release; its failure is reported separately. */
       }
     }
-  } finally {
-    lock.close();
+  };
+  let outcome:
+    | { readonly kind: 'value'; readonly value: T }
+    | { readonly kind: 'failure'; readonly cause: unknown };
+  try {
+    outcome = { kind: 'value', value: runLocked() };
+  } catch (cause) {
+    outcome = { kind: 'failure', cause };
   }
+  try {
+    close();
+  } catch (cleanupCause) {
+    // Failed native release is infrastructure, never an operational SQLite-origin fact.
+    // The original acquisition retains the same capability for its actual settlement.
+    throw new AggregateError(
+      outcome.kind === 'value' ? [cleanupCause] : [outcome.cause, cleanupCause],
+      'Migration lock cleanup failed.',
+      { cause: outcome.kind === 'value' ? cleanupCause : outcome.cause },
+    );
+  }
+  if (outcome.kind === 'failure') throw outcome.cause;
+  return outcome.value;
 }

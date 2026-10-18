@@ -405,7 +405,8 @@ Per [ADR-0026](../../decisions/0026-session-export-to-workflow.md), a session ex
 - parallel / conditional / loop structure is **not** auto-inferred — the author adds it on the canvas.
 
 Successful CLI `chat-export` writes a fixed continuity/review notice to stderr, including
-in JSON mode. Live `/export` renders the same notice in the interactive chat/Home transcript
+in JSON mode. It also warns that historical agent snapshots may need edits to pass current
+authored validation before running. Live `/export` renders the same notice in the interactive chat/Home transcript
 and uses stderr on plain/JSON drivers; the machine event stream is unchanged. A scaffold does not recreate the
 session's working context: summarised, trimmed or omitted context may not transfer, and no raw
 model-issued tool arguments/results are available to restore. Historical persisted turns and
@@ -419,7 +420,7 @@ desktop "Export to Canvas" affordance and the CLI `relavium chat-export` both dr
 
 **Precise mapping (1.Z).** Given a loaded `AgentSessionRecord` + its ordered `SessionMessage[]`, the
 exporter builds a `WorkflowDefinition` deterministically (no wall-clock / randomness, so the artifact is
-reproducible and round-trips):
+reproducible; snapshots satisfying current authored validation round-trip):
 
 - **Nodes** — a single `input` node (`id: input`), then **one `agent` node per COMPLETED logical turn** in
   `sequenceNumber` order (`id: turn-1`, `turn-2`, … — 1-based), then one `output` node (`id: output`). A
@@ -444,7 +445,11 @@ reproducible and round-trips):
   and renameable, not guaranteed unique: normalisation and truncation can collide. Full original identity
   stays in metadata; the default export filename still uses the session id, not the generated workflow id.
 - **`agents`** — the session's frozen `agentSnapshot` (an inline `Agent`) is emitted as the sole `agents[]`
-  entry so `agent_ref` resolves; when no snapshot was captured, `agents` is omitted and `agent_ref` resolves
+  entry so `agent_ref` resolves. Historical snapshots retain their ordered fallback entries and attempt
+  budgets even when current [authored admission](agent-yaml-spec.md#retry-vs-fallback) rejects them
+  (for example, repeated model/provider tuples). Such a scaffold requires deliberate author repair
+  before it parses/runs; export never silently deduplicates the frozen agent or rewrites history.
+  When no snapshot was captured, `agents` is omitted and `agent_ref` resolves
   against the workspace agent registry at author time (the file still parses — `agent_ref` resolution is the
   engine's job, not the schema's).
 - **`metadata`** — the full persisted transcript, including content-free tool structure, under a single reserved key: `metadata.relaviumExport = { source:

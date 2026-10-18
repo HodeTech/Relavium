@@ -232,3 +232,13 @@ preparation evidence. The bounded driver requires the actual worker and targeted
 under each worker PID, rejects loader-thread or opposite-root witnesses, joins current copied
 bytes to the outer variant manifest, and rechecks source/dependency bytes after worker closure.
 Frozen archive/supplement identities and the portable/native provenance limits above remain intact.
+
+The loader admits the exact supported shared/LLM/core pure leaves as well as the
+existing root/adapters entries. Every alias still requires membership in its own
+producer or frozen manifest; recognizing a name never borrows the other mode's
+bytes. The actual producer worker checks all five leaves and root/leaf constructor
+or function identities. The predecessor checks its historical terminal-safe leaf,
+refuses the four later absent leaves, and both workers refuse an unknown subpath.
+Required module-body witnesses include the loaded leaves. These controls add no
+replay prefix or positive-control count and do not replace the actual old-engine
+refusal cohort.

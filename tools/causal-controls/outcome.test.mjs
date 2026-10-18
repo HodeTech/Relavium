@@ -20,6 +20,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { digest } from '../usage-coverage-controls/source-graph.mjs';
 import RuntimeReporter from './runtime-reporter.mjs';
+import { mutations as secretsControls } from '../secrets-controls/mutations.mjs';
 const mechanism = {
   id: 'boundary',
   target: 'named regression',
@@ -91,6 +92,48 @@ function checkOutcome(data, child, control, phase, graph) {
 test('complete named assertion failure certifies its specific removal', () => {
   const { data, child } = sample();
   assert.doesNotThrow(() => checkOutcome(data, child, mechanism, 'mutated', '/graph'));
+});
+test('the complete reader workload still requires both native and structural removal witnesses', () => {
+  const control = secretsControls.find((entry) => entry.id === 'run-default-secret-reader');
+  assert.ok(control);
+  const { data, child } = sample();
+  data.testResults[0].name = `/graph/${control.files[0]}`;
+  data.testResults[0].assertionResults = [
+    ...Array.from({ length: 82 }, (_, index) => ({
+      fullName: `preserved reader workload ${index}`,
+      status: 'passed',
+      failureMessages: [],
+    })),
+    ...[
+      'uses the real native default reader once and suppresses an injected gate selector',
+      'uses the real structural default reader once and suppresses an injected gate selector',
+    ].map((fullName) => ({
+      fullName,
+      status: 'failed',
+      failureMessages: ['AssertionError: SECRETS_CAUSAL_RUN_DEFAULT_READER expected one read'],
+    })),
+  ];
+  data.numTotalTests = 84;
+  data.numPassedTests = 82;
+  data.numFailedTests = 2;
+  const check = (candidate = data, declaration = control) =>
+    checkOutcome(candidate, child, declaration, 'mutated', '/graph');
+  assert.doesNotThrow(() => check());
+  const missing = globalThis.structuredClone(data);
+  missing.testResults[0].assertionResults.shift();
+  missing.numTotalTests = 83;
+  missing.numPassedTests = 81;
+  assert.throws(() => check(missing), /Declared workload drift/);
+  assert.throws(() => check(data, { ...control, expectedTests: 83 }), /Declared workload drift/);
+  const altered = globalThis.structuredClone(data);
+  altered.testResults[0].assertionResults[83].fullName = 'unrelated failure';
+  assert.throws(() => check(altered), /missing additional named assertion/);
+  const passing = globalThis.structuredClone(data);
+  passing.testResults[0].assertionResults[83].status = 'passed';
+  passing.testResults[0].assertionResults[83].failureMessages = [];
+  passing.numPassedTests = 83;
+  passing.numFailedTests = 1;
+  assert.throws(() => check(passing), /missing additional named assertion/);
 });
 test('a native assertion prefix retains the same named semantic authority', () => {
   const { data, child } = sample();

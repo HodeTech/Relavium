@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import {
   existsSync,
+  chmodSync,
   linkSync,
   mkdirSync,
   mkdtempSync,
@@ -21,6 +22,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 import { FilesystemMediaStore } from './media-store.js';
 import { MediaStoreFilesystemError } from './media-store-paths.js';
+import { isOwnedStorageFailure } from './storage-failure-facts.js';
 
 const hooks = vi.hoisted(() => ({
   afterOpen: vi.fn<(file: FileHandle, path: string) => void>(),
@@ -46,6 +48,28 @@ type Scope = 'maintenance' | 'recovery';
 const scopes: ReadonlyArray<Scope> = ['maintenance', 'recovery'];
 const absentPid = 2147483647;
 const bytes = new Uint8Array([1, 2]);
+
+it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+  'retains real marker deletion permission failure with private storage origin',
+  async () => {
+    const store = new FilesystemMediaStore(root);
+    hooks.beforeUnlink.mockImplementation((path) => {
+      if (marker('maintenance', path)) chmodSync(root, 0o500);
+    });
+    try {
+      const error: unknown = await store
+        .pruneLegacyTemporaries({ legacyOffline: true, force: true })
+        .catch((cause: unknown) => cause);
+      expect(error).toBeInstanceOf(MediaStoreFilesystemError);
+      expect(isOwnedStorageFailure(error), 'DB_ORIGIN_MEDIA_DELETE_BOUNDARY').toBe(true);
+      expect(
+        readdirSync(root).filter((name) => name.startsWith('media-maintenance-v1.')),
+      ).toHaveLength(1);
+    } finally {
+      chmodSync(root, 0o700);
+    }
+  },
+);
 let base: string;
 let root: string;
 

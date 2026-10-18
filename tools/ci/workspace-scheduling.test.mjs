@@ -1,6 +1,14 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -10,6 +18,39 @@ import { fileURLToPath } from 'node:url';
 const root = new URL('../../', import.meta.url);
 const packageJson = JSON.parse(readFileSync(new URL('package.json', root), 'utf8'));
 const command = packageJson.scripts['ci:workspaces'];
+
+test('actual enforced coverage entry keeps all cases in one file worker and propagates failure', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relavium-coverage-scheduling-'));
+  try {
+    const entry = join(directory, 'tools', 'coverage-gate', 'run.mjs');
+    const dependency = join(directory, 'node_modules', 'vitest');
+    mkdirSync(join(directory, 'tools', 'coverage-gate'), { recursive: true });
+    mkdirSync(dependency, { recursive: true });
+    writeFileSync(join(directory, 'package.json'), '{}');
+    writeFileSync(entry, readFileSync(new URL('tools/coverage-gate/run.mjs', root)));
+    writeFileSync(
+      join(dependency, 'package.json'),
+      JSON.stringify({ name: 'vitest', bin: { vitest: 'entry.cjs' } }),
+    );
+    writeFileSync(
+      join(dependency, 'entry.cjs'),
+      `console.log(JSON.stringify({args:process.argv.slice(2),enforced:process.env.RELAVIUM_COVERAGE_ENFORCED_ONLY}));process.exit(37);`,
+    );
+    const result = spawnSync(process.execPath, [entry], {
+      encoding: 'utf8',
+      timeout: 10_000,
+    });
+    assert.equal(result.error, undefined);
+    assert.equal(result.status, 37);
+    assert.equal(result.stderr, '');
+    assert.deepEqual(JSON.parse(result.stdout), {
+      args: ['run', '--coverage', '--maxWorkers=1'],
+      enforced: '1',
+    });
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 for (const [lintCode, testCode, expectedCode, calls] of [
   [0, 0, 0, ['lint typecheck', 'test --concurrency=1']],
@@ -77,7 +118,7 @@ test('required and local CI share all workspace tasks and uncached per-invocatio
   assert.equal(workspace.run, 'pnpm ci:workspaces');
   assert.equal(workspace.if, undefined);
   assert.equal(workspace['continue-on-error'], undefined);
-  assert.equal(ci['timeout-minutes'], 15);
+  assert.equal(ci['timeout-minutes'], 25);
   const variable = 'RELAVIUM_DB_NATIVE_DIAGNOSTICS';
   assert.deepEqual(turbo.config.tasks['@relavium/db#test'].env, [variable]);
   assert.deepEqual(turbo.config.tasks['@relavium/db#test'].dependsOn, [
@@ -144,14 +185,19 @@ test('required and local CI share all workspace tasks and uncached per-invocatio
     rmSync(temporary, { recursive: true, force: true });
   }
   const floor = workflow.jobs['floor-check'];
-  assert.equal(floor['timeout-minutes'], 15);
+  assert.equal(floor['timeout-minutes'], 25);
+  assert.equal(workflow.jobs.coverage['timeout-minutes'], 30);
+  assert.equal(
+    workflow.jobs.coverage.steps.find((step) => step.run === 'pnpm coverage:enforced')?.name,
+    'Engine coverage floor (>=90% line+branch — llm, mcp enforced; core measured)',
+  );
   assert.deepEqual(floor.env, { TURBO_TOKEN: '', TURBO_TEAM: '' });
   const floorCommand = floor.steps.find(
     (step) => step.name === 'Typecheck, test, build on the exact floor',
   );
   assert.deepEqual(floorCommand.run.trim().split('\n'), [
     'pnpm turbo run typecheck --force',
-    'pnpm turbo run test --concurrency=1 --force',
+    'pnpm turbo run test --concurrency=1 --force -- --maxWorkers=1',
     'pnpm turbo run build --force',
   ]);
   assert.equal(floorCommand['continue-on-error'], undefined);

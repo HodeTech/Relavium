@@ -12,6 +12,8 @@ import {
 } from '../secrets/keychain.js';
 import type { ProviderKeyValidation } from '../engine/providers.js';
 import { isProviderKeyless, runOnboardingWizard, type ClackOnboardingDeps } from './wizard.js';
+import { invocationFixture } from '../process/invocation.test-support.js';
+import { SessionWorkOwner } from '../chat/session-work-owner.js';
 
 const CANCEL = Symbol('clack-cancel');
 
@@ -113,6 +115,7 @@ const stubResolver: ProviderResolver = {
 const io: CliIo = {
   writeOut: () => undefined,
   writeErr: () => undefined,
+  writeOutAcknowledged: () => Promise.resolve(),
   writeErrAcknowledged: () => Promise.resolve(),
   env: {},
   stdoutIsTty: true,
@@ -154,6 +157,53 @@ describe('runOnboardingWizard', () => {
   });
   const store = (): ReturnType<typeof createProviderStore> =>
     createProviderStore(client.db, { uuid: () => 'id-fixed', now: () => 1 });
+
+  it.each(['select', 'password', 'validation'] as const)(
+    'a stop during %s prevents the next prompt, key write and config write',
+    async (point) => {
+      const f = invocationFixture();
+      const owner = new SessionWorkOwner(f.invocation, 'home', {
+        cancel: () => undefined,
+        cleanup: () => Promise.resolve(),
+      });
+      const keychain = memKeychain();
+      const writeDefaultModel = vi.fn();
+      const fixture = scriptedPrompter({ provider: 'anthropic', key: 'synthetic-wizard-key' });
+      const prompter = {
+        ...fixture.prompter,
+        select: () => {
+          if (point === 'select') owner.stop();
+          return Promise.resolve('anthropic');
+        },
+        password: () => {
+          if (point === 'password') owner.stop();
+          return Promise.resolve('synthetic-wizard-key');
+        },
+      };
+      const validate = vi.fn(() => {
+        if (point === 'validation') owner.stop();
+        return Promise.resolve({ ok: true, detail: 'ok', reason: 'ok' } as const);
+      });
+      await expect(
+        runOnboardingWizard({
+          workOwner: owner,
+          io,
+          store: store(),
+          keychain,
+          resolver: stubResolver,
+          prompter,
+          validate,
+          writeDefaultModel,
+        }),
+      ).rejects.toThrow('Session operation stopped.');
+      await owner.close();
+      expect(keychain.store.size, 'ONBOARDING_STOP_PREVENTS_CREDENTIAL_WRITE').toBe(0);
+      expect(writeDefaultModel).not.toHaveBeenCalled();
+      if (point !== 'validation') expect(validate).not.toHaveBeenCalled();
+      expect(fixture.outros).toEqual([]);
+      expect(f.registry.activeOwners).toBe(0);
+    },
+  );
 
   it("stores the pasted key + registers the provider row + sets the chosen provider's starter model (secret-free)", async () => {
     const keychain = memKeychain();

@@ -381,7 +381,10 @@ export interface ToolDispatchContext {
   readonly config: ToolNodeConfig;
   /** The resolved workflow tool policy — `allowedCommands` / `allowedCommandGlobs` / `allowedDomains`. */
   readonly toolPolicy: import('@relavium/shared').ToolPolicy;
-  /** The active filesystem scope tier (built-in-tools.md). */
+  /**
+   * Describes the host's captured filesystem tier (built-in-tools.md), not a per-call grant.
+   * The host capability's immutable policy owns access; changing this metadata grants none.
+   */
   readonly fsScope: FsScopeTier;
   /** A human-gate decision is present for this dispatch (1.Q) — required by `git_commit`. */
   readonly gateApproved: boolean;
@@ -391,7 +394,11 @@ export interface ToolDispatchContext {
    * `confirm` decision, and an absent `confirm` is fail-closed → denied. ABSENT ⇒ the workflow author-trust path, unchanged.
    */
   readonly approval?: ToolApprovalContext;
-  /** Names of effective-arg keys that are secret-tainted (ADR-0029(c)) — rejected from non-credential args. */
+  /**
+   * External effective-arg taint metadata (ADR-0029(c)); absent means unverified, not clean.
+   * No live authored mapping producer exists. A future mapped path must supply final effective-key
+   * provenance before approval/effects, including top-level parents of tainted nested values.
+   */
   readonly secretArgKeys?: ReadonlySet<string>;
   /** Engine delegate for `invoke_agent` — pure orchestration, not a ToolHost I/O capability. */
   readonly invokeAgent?: (nodeId: string, input: unknown) => Promise<unknown>;

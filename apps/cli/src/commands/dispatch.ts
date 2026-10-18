@@ -1,3 +1,4 @@
+import type { LocalDbNoticeContext } from '../db/checkpoint-notice.js';
 import { randomUUID } from 'node:crypto';
 
 import {
@@ -22,15 +23,17 @@ import { openHistoryStore } from '../history/open.js';
 import { openSessionStore } from '../history/session-open.js';
 import { refreshCatalog, type CatalogRefreshResult } from '../engine/catalog-refresh.js';
 import { persistCatalogToDb, syncCatalogFromDb } from '../engine/catalog-metadata.js';
-import { CliError } from '../process/errors.js';
+import { CliError, toCliError } from '../process/errors.js';
 import { type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
-import type { GlobalOptions } from '../process/options.js';
 import { selectChatDriver } from '../render/tui/chat-ink.js';
 import type { KeychainStore } from '../secrets/keychain.js';
 import { createMcpSecretResolver } from '../secrets/mcp-secret.js';
 import { createOsKeychainStore } from '../secrets/os-keychain.js';
 import { readSecretFromStdin } from '../secrets/read-secret.js';
+import { Readable } from 'node:stream';
+import { acquireCommandResource, withCommandLifetime } from '../process/command-lifetime.js';
+import { withSynchronousResource } from '../process/synchronous-resource.js';
 import { agentRunCommand, type AgentRunCommandArgs } from './agent-run.js';
 import { chatCommand, chatResumeCommand, type ChatCommandArgs } from './chat.js';
 import { chatExportCommand, type ChatExportCommandArgs } from './chat-export.js';
@@ -57,43 +60,32 @@ import {
 } from './provider.js';
 import { runCommand, type RunCommandArgs } from './run.js';
 import { statusCommand } from './status.js';
-import { pruneTemporariesCommand, type MediaPruneArgs } from './media.js';
+import { pruneTemporariesCommand } from './media.js';
+import { buildMediaPruneArgs } from './media-input.js';
 
 /**
  * The shared **command dispatch table** ([ADR-0056](../../../../docs/decisions/0056-cli-in-app-slash-command-system-and-manifest.md),
- * 2.5.C). Every surface — the `commander` actions ([specs.ts](specs.ts)), and (later in 2.5.C) the `/` palette
- * and the in-REPL slash commands — calls {@link executeCommand} keyed by the manifest id, so the per-command
- * dependency wiring (keychain, provider resolver, the durable stores) lives in exactly ONE place and the surfaces
- * can never diverge. Each entry is a {@link CommandExecutor} that turns a uniform {@link CommandInput} into the
+ * 2.5.C). Commander actions ([specs.ts](specs.ts)) call {@link executeCommand} with stable descriptor executor
+ * ids. Per-command dependency wiring (keychain, provider resolver, durable stores) lives here; the in-REPL
+ * registry remains separate. Each entry is a {@link CommandExecutor} that turns a uniform {@link CommandInput} into the
  * command core's typed args (the pure `build*Args` functions — unit-tested) and assembles its production deps.
  *
  * The `build*Args` extraction is the only behaviour-sensitive change vs the old inline `register*` bodies, so it
  * is kept pure and exhaustively tested; the dep assembly below is copied verbatim from those bodies.
  */
 
-/** A parsed option value as a surface hands it in — a string, a boolean flag, a repeatable list, or absent. */
-export type CommandOptionValue = string | boolean | readonly string[] | undefined;
-
-/**
- * The uniform, surface-agnostic parsed input a command executor consumes (commander argv, or a slash line). It is
- * deliberately LOW-LEVEL: an option value is just a string / boolean / repeatable list, with no per-command
- * schema. Each command's pure `build*Args` extractor below owns the interpretation; a slash/palette surface
- * (2.5.C) builds a `CommandInput` against the manifest's arg shapes, so option arity (a repeatable `--input` vs a
- * single `--out`) is resolved from the manifest, never guessed from this shape.
- */
-export interface CommandInput {
-  readonly positionals: readonly string[];
-  readonly options: Readonly<Record<string, CommandOptionValue>>;
-}
-
-/** The runtime channels a command needs; the boundary reads the returned {@link ExitCode}. */
-export interface DispatchContext {
-  readonly io: CliIo;
-  readonly global: GlobalOptions;
-}
-
-/** One command's executor — uniform input + context in, an exit code out. */
-export type CommandExecutor = (input: CommandInput, ctx: DispatchContext) => Promise<ExitCode>;
+import type {
+  CommandExecutor,
+  CommandInput,
+  CommandOptionValue,
+  DispatchContext,
+} from './input.js';
+export type {
+  CommandExecutor,
+  CommandInput,
+  CommandOptionValue,
+  DispatchContext,
+} from './input.js';
 
 // ── input extractors (pure) ─────────────────────────────────────────────────
 
@@ -392,12 +384,12 @@ function storeAwareResolver(
     cwd: ctx.global.cwd,
     configPath: ctx.global.configPath,
   });
-  const { db, close } = openLocalDb(homeDir);
-  try {
-    return fromDb(db);
-  } finally {
-    close();
-  }
+  return withSynchronousResource(
+    ctx.invocation,
+    (captureClose) =>
+      openLocalDb(homeDir, undefined, captureClose, { io: ctx.io, invocation: ctx.invocation }),
+    ({ db }) => fromDb(db),
+  );
 }
 
 /** One native keychain accessor, shared by the key resolver (2.C) + the MCP named-secret resolver (2.R §6). */
@@ -419,6 +411,7 @@ const executeRun: CommandExecutor = (input, ctx) =>
   runCommand(buildRunArgs(input), {
     io: ctx.io,
     global: ctx.global,
+    ...(ctx.invocation === undefined ? {} : { invocation: ctx.invocation }),
     openRunStore: openHistoryStore,
     // ADR-0107: construct native credential services only after complete input admission.
     resolveKeys: () => keyResolvers(ctx),
@@ -428,6 +421,7 @@ const executeChat: CommandExecutor = (input, ctx) =>
   chatCommand(buildChatArgs(input), {
     io: ctx.io,
     global: ctx.global,
+    ...(ctx.invocation === undefined ? {} : { invocation: ctx.invocation }),
     resolveKeys: (db) => keyResolvers(ctx, db),
     openSessionStore,
     drive: selectChatDriver,
@@ -439,6 +433,7 @@ const executeChatResume: CommandExecutor = (input, ctx) =>
     {
       io: ctx.io,
       global: ctx.global,
+      ...(ctx.invocation === undefined ? {} : { invocation: ctx.invocation }),
       resolveKeys: (db) => keyResolvers(ctx, db),
       openSessionStore,
       drive: selectChatDriver,
@@ -446,19 +441,18 @@ const executeChatResume: CommandExecutor = (input, ctx) =>
   );
 
 const executeChatList: CommandExecutor = (_input, ctx) =>
-  Promise.resolve(chatListCommand({ io: ctx.io, global: ctx.global, openSessionStore }));
+  Promise.resolve(chatListCommand({ ...ctx, openSessionStore }));
 
 const executeChatExport: CommandExecutor = (input, ctx) =>
   Promise.resolve(
     chatExportCommand(buildChatExportArgs(input), {
-      io: ctx.io,
-      global: ctx.global,
+      ...ctx,
       openSessionStore,
     }),
   );
 
 const executeCreate: CommandExecutor = (input, ctx) =>
-  createCommand({ force: boolFlag(input.options['force']) }, { io: ctx.io, global: ctx.global });
+  createCommand({ force: boolFlag(input.options['force']) }, ctx);
 
 const executeExport: CommandExecutor = (input, ctx) =>
   Promise.resolve(exportCommand(buildExportArgs(input), { io: ctx.io, global: ctx.global }));
@@ -470,6 +464,7 @@ const executeAgentRun: CommandExecutor = (input, ctx) =>
   agentRunCommand(buildAgentRunArgs(input), {
     io: ctx.io,
     global: ctx.global,
+    ...(ctx.invocation === undefined ? {} : { invocation: ctx.invocation }),
     resolveKeys: () => keyResolvers(ctx),
   });
 
@@ -477,6 +472,7 @@ const executeGate: CommandExecutor = (input, ctx) =>
   gateCommand(buildGateArgs(input), {
     io: ctx.io,
     global: ctx.global,
+    ...(ctx.invocation === undefined ? {} : { invocation: ctx.invocation }),
     resolveKeys: (db) => keyResolvers(ctx, db),
   });
 
@@ -484,28 +480,22 @@ const executeBudget: CommandExecutor = (input, ctx) =>
   budgetCommand(buildBudgetArgs(input), {
     io: ctx.io,
     global: ctx.global,
+    ...(ctx.invocation === undefined ? {} : { invocation: ctx.invocation }),
     resolveKeys: (db) => keyResolvers(ctx, db),
   });
 
 const executeGateList: CommandExecutor = (input, ctx) => {
   const runId = optPositional(input, 0);
-  return Promise.resolve(
-    gateListCommand(runId === undefined ? {} : { runId }, { io: ctx.io, global: ctx.global }),
-  );
+  return Promise.resolve(gateListCommand(runId === undefined ? {} : { runId }, ctx));
 };
 
 const executeList: CommandExecutor = (input, ctx) =>
-  Promise.resolve(
-    listCommand({ agents: boolFlag(input.options['agents']) }, { io: ctx.io, global: ctx.global }),
-  );
+  Promise.resolve(listCommand({ agents: boolFlag(input.options['agents']) }, ctx));
 
 const executeLogs: CommandExecutor = (input, ctx) =>
-  Promise.resolve(
-    logsCommand({ runId: reqPositional(input, 0, 'runId') }, { io: ctx.io, global: ctx.global }),
-  );
+  Promise.resolve(logsCommand({ runId: reqPositional(input, 0, 'runId') }, ctx));
 
-const executeStatus: CommandExecutor = (_input, ctx) =>
-  statusCommand({ io: ctx.io, global: ctx.global });
+const executeStatus: CommandExecutor = (_input, ctx) => statusCommand(ctx);
 
 /**
  * The lazy `llm_providers`-UUID → provider-slug (e.g. `anthropic`) resolver the `models` list path uses for its
@@ -532,7 +522,11 @@ export function createProviderSlugResolver(
  * touching the real `history.db` or loading the native keychain.
  */
 export interface ModelsDbPorts {
-  readonly openDb: (homeDir: string) => OpenedDb;
+  readonly openDb: (
+    homeDir: string,
+    captureClose?: (close: () => void) => void,
+    noticeContext?: LocalDbNoticeContext,
+  ) => OpenedDb;
   /** Build the key resolver over the models db — the `providerStore` (from the SAME db) makes it store-aware so a
    *  custom `base_url` lists models over the SSRF-validated hop (2.5.G S9, ADR-0065 §4). A test stub may ignore it. */
   readonly makeResolver: (
@@ -548,15 +542,17 @@ export interface ModelsDbPorts {
   readonly refreshCatalog: (
     homeDir: string,
     persist?: (catalog: Readonly<Record<string, CatalogModel>>) => void,
+    lifecycle?: { readonly signal: AbortSignal; readonly assertAdmitting: () => void },
   ) => Promise<CatalogRefreshResult>;
 }
 
 const PRODUCTION_MODELS_PORTS: ModelsDbPorts = {
-  openDb: openLocalDb,
+  openDb: (homeDir, captureClose, noticeContext) =>
+    openLocalDb(homeDir, undefined, captureClose, noticeContext),
   makeResolver: (io, providerStore) =>
     createProviderResolver(io.env, createOsKeychainStore(), { providerStore }),
-  refreshCatalog: (homeDir, persist) =>
-    refreshCatalog({ homeDir, ...(persist === undefined ? {} : { persist }) }),
+  refreshCatalog: (homeDir, persist, lifecycle) =>
+    refreshCatalog({ homeDir, ...(persist === undefined ? {} : { persist }), ...lifecycle }),
 };
 
 /**
@@ -570,11 +566,23 @@ export async function withModelsDeps(
   args: ModelsCommandArgs,
   ports: ModelsDbPorts = PRODUCTION_MODELS_PORTS,
 ): Promise<ExitCode> {
+  return withCommandLifetime(ctx, (owned) => withModelsDepsOwned(owned, args, ports));
+}
+
+async function withModelsDepsOwned(
+  ctx: DispatchContext,
+  args: ModelsCommandArgs,
+  ports: ModelsDbPorts,
+): Promise<ExitCode> {
+  const owner = ctx.commandLifetime?.work;
+  owner?.assertAdmitting();
   const { homeDir, config } = loadResolvedConfig({
     cwd: ctx.global.cwd,
     configPath: ctx.global.configPath,
   });
-  const { db, close } = ports.openDb(homeDir);
+  const { db, close } = acquireCommandResource(ctx.commandLifetime, (captureClose) =>
+    ports.openDb(homeDir, captureClose, { io: ctx.io, invocation: ctx.invocation }),
+  );
   try {
     const storeDeps = { uuid: () => randomUUID(), now: () => Date.now() };
     // The `models` command prices, and it holds the db — so make the DB the catalog's authoritative backing here
@@ -586,12 +594,25 @@ export async function withModelsDeps(
     // The refresh's DB persist hook — mirror a fresh models.dev fetch into `model_metadata` over THIS open db.
     const metadataStore = createModelMetadataStore(db, storeDeps);
     const persistCatalog = (catalog: Readonly<Record<string, CatalogModel>>): void => {
-      persistCatalogToDb(metadataStore, catalog, storeDeps.now());
+      owner?.assertAdmitting();
+      try {
+        persistCatalogToDb(metadataStore, catalog, storeDeps.now());
+      } catch (cause) {
+        owner?.failure(cause);
+        throw cause;
+      }
     };
     const providerStore = createProviderStore(db, storeDeps);
     const resolver = ports.makeResolver(ctx.io, providerStore); // store-aware ⇒ a custom base_url is used (S9)
     const catalogStore = createModelCatalogStore(db, storeDeps);
-    const refreshService = createModelRefreshService({
+    const service = createModelRefreshService({
+      ...(owner === undefined
+        ? {}
+        : {
+            assertAdmitting: owner.assertAdmitting,
+            onHostFailure: owner.failure,
+            invocationOptions: owner.work,
+          }),
       resolveProvider: resolver.resolveProvider,
       keyFor: resolver.keyFor,
       providerStore,
@@ -600,6 +621,16 @@ export async function withModelsDeps(
       knownProviders: KNOWN_PROVIDERS,
       now: () => Date.now(),
     });
+    const refreshService =
+      owner === undefined
+        ? service
+        : {
+            ...service,
+            refresh: () => {
+              owner.assertAdmitting();
+              return owner.work.retainWork(() => service.refresh({ signal: owner.signal }));
+            },
+          };
     return await modelsCommand(args, {
       io: ctx.io,
       global: ctx.global,
@@ -608,13 +639,24 @@ export async function withModelsDeps(
       // ADR-0071 §4a: the catalog half. The command holds a THUNK, not a socket — so a test drives it with a fake
       // fetch, and the pure `@relavium/llm` catalog keeps taking data as an argument rather than reaching out itself.
       // `persistCatalog` (ADR-0072) mirrors the fetch into `model_metadata` over this command's open db.
-      refreshCatalog: () => ports.refreshCatalog(homeDir, persistCatalog),
+      refreshCatalog: () => {
+        owner?.assertAdmitting();
+        const fetch = () =>
+          ports.refreshCatalog(
+            homeDir,
+            persistCatalog,
+            owner === undefined
+              ? undefined
+              : { signal: owner.signal, assertAdmitting: owner.assertAdmitting },
+          );
+        return owner === undefined ? fetch() : owner.work.retainWork(fetch);
+      },
       // Default OFF (ADR-0071 §4): absent config ⇒ no standing egress, and the shipped snapshot answers everything.
       ...(config.catalogAutoRefresh ? { autoRefreshCatalog: true } : {}),
       providerSlug: createProviderSlugResolver(providerStore),
     });
   } finally {
-    close();
+    if (ctx.commandLifetime === undefined) close();
   }
 }
 
@@ -648,7 +690,9 @@ const executeModelsPricing: CommandExecutor = (input, ctx) => {
     cwd: ctx.global.cwd,
     configPath: ctx.global.configPath,
   });
-  const { db, close } = openLocalDb(homeDir);
+  const { db, close } = acquireCommandResource(ctx.commandLifetime, (captureClose) =>
+    openLocalDb(homeDir, undefined, captureClose, { io: ctx.io, invocation: ctx.invocation }),
+  );
   try {
     const storeDeps = { uuid: () => randomUUID(), now: () => Date.now() };
     return Promise.resolve(
@@ -660,7 +704,7 @@ const executeModelsPricing: CommandExecutor = (input, ctx) => {
       }),
     );
   } finally {
-    close();
+    if (ctx.commandLifetime === undefined) close();
   }
 };
 
@@ -669,11 +713,22 @@ async function withProviderDeps(
   ctx: DispatchContext,
   fn: (deps: ProviderCommandDeps) => Promise<ExitCode>,
 ): Promise<ExitCode> {
+  return withCommandLifetime(ctx, (owned) => withProviderDepsOwned(owned, fn));
+}
+
+async function withProviderDepsOwned(
+  ctx: DispatchContext,
+  fn: (deps: ProviderCommandDeps) => Promise<ExitCode>,
+): Promise<ExitCode> {
+  const owner = ctx.commandLifetime?.work;
+  owner?.assertAdmitting();
   const { homeDir } = loadResolvedConfig({
     cwd: ctx.global.cwd,
     configPath: ctx.global.configPath,
   });
-  const { db, close } = openLocalDb(homeDir);
+  const { db, close } = acquireCommandResource(ctx.commandLifetime, (captureClose) =>
+    openLocalDb(homeDir, undefined, captureClose, { io: ctx.io, invocation: ctx.invocation }),
+  );
   try {
     const keychain = createOsKeychainStore(); // one native accessor, shared by the store-ref writes + the resolver
     const store = createProviderStore(db, { uuid: () => randomUUID(), now: () => Date.now() });
@@ -683,12 +738,23 @@ async function withProviderDeps(
       keychain,
       // Store-aware so `provider test` pings a custom `base_url` provider at its CUSTOM endpoint (2.5.G S9).
       resolver: createProviderResolver(ctx.io.env, keychain, { providerStore: store }),
-      readSecret: readSecretFromStdin,
+      readSecret:
+        owner === undefined
+          ? readSecretFromStdin
+          : () => {
+              owner.assertAdmitting();
+              if (!(ctx.io.stdin instanceof Readable)) throw new CliError('cli_internal', '');
+              return readSecretFromStdin(undefined, ctx.io.stdin, {
+                signal: owner.signal,
+                onFailure: owner.failure,
+              });
+            },
+      ...(owner === undefined ? {} : { workOwner: owner, assertAdmitting: owner.assertAdmitting }),
       global: ctx.global, // for `provider list --json` (2.5.G S11, ADR-0049)
     };
     return await fn(deps);
   } finally {
-    close();
+    if (ctx.commandLifetime === undefined) close();
   }
 }
 
@@ -702,19 +768,7 @@ function providerExecutor(build: (input: CommandInput) => ProviderCommandArgs): 
   };
 }
 
-export function buildMediaPruneArgs(input: CommandInput): MediaPruneArgs {
-  if (
-    input.positionals.length !== 0 ||
-    input.options['legacyOffline'] !== true ||
-    input.options['force'] !== true
-  ) {
-    throw new CliError(
-      'invalid_invocation',
-      'Temporary maintenance requires --legacy-offline and --force.',
-    );
-  }
-  return { legacyOffline: true, force: true };
-}
+export { buildMediaPruneArgs } from './media-input.js';
 
 // ── the dispatch table ───────────────────────────────────────────────────────
 
@@ -773,6 +827,18 @@ export async function executeCommand(
   input: CommandInput,
   ctx: DispatchContext,
 ): Promise<ExitCode> {
+  try {
+    return await executeRuntimeCommand(id, input, ctx);
+  } catch (cause) {
+    throw toCliError(cause);
+  }
+}
+
+async function executeRuntimeCommand(
+  id: string,
+  input: CommandInput,
+  ctx: DispatchContext,
+): Promise<ExitCode> {
   const executor = COMMAND_EXECUTORS.get(id);
   if (executor === undefined) {
     throw new CliError('invalid_invocation', 'unknown command.');
@@ -786,5 +852,7 @@ export async function executeCommand(
       '--allow-fs-root applies only to Home, chat, chat-resume and agent run.',
     );
   }
-  return executor(input, ctx);
+  if (['run', 'chat', 'chat-resume', 'agent.run', 'gate', 'budget.resume'].includes(id))
+    return executor(input, ctx);
+  return withCommandLifetime(ctx, (owned) => executor(input, owned));
 }

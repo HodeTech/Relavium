@@ -1,3 +1,5 @@
+import { WorkflowLifetime } from './workflow-lifetime.js';
+import { invocationFixture } from '../process/invocation.test-support.js';
 import {
   EngineStateError,
   createInMemoryHost,
@@ -64,14 +66,21 @@ describe('driveRun — interactive gate', () => {
     const { renderer, events } = recordingRenderer();
     const prompter = prompterReturning({ decision: 'approved', decidedBy: 'cli' });
     const { io } = captureIo();
+    const lifetime = new WorkflowLifetime(
+      invocationFixture().invocation,
+      io,
+      () => () => undefined,
+    );
 
     const outcome = await driveRun({
+      lifetime,
       engine,
       handle,
       makeRenderer: () => renderer,
       gatePrompter: prompter,
       io,
     });
+    await lifetime.finish();
 
     expect(outcome).toBe('completed');
     expect(prompter.prompt).toHaveBeenCalledTimes(1);
@@ -86,14 +95,21 @@ describe('driveRun — interactive gate', () => {
     const { engine, handle } = await startGatedRun();
     const { renderer, events } = recordingRenderer();
     const { io } = captureIo();
+    const lifetime = new WorkflowLifetime(
+      invocationFixture().invocation,
+      io,
+      () => () => undefined,
+    );
 
     await driveRun({
+      lifetime,
       engine,
       handle,
       makeRenderer: () => renderer,
       gatePrompter: prompterReturning({ decision: 'rejected', decidedBy: 'cli', comment: 'no' }),
       io,
     });
+    await lifetime.finish();
 
     const resumed = events.find((e) => e.type === 'human_gate:resumed');
     expect(resumed).toMatchObject({ decision: 'rejected', decidedBy: 'cli' });
@@ -103,20 +119,27 @@ describe('driveRun — interactive gate', () => {
     const { engine, handle } = await startGatedRun();
     const { renderer, events } = recordingRenderer();
     const { io } = captureIo();
+    const lifetime = new WorkflowLifetime(
+      invocationFixture().invocation,
+      io,
+      () => () => undefined,
+    );
 
     const outcome = await driveRun({
+      lifetime,
       engine,
       handle,
       makeRenderer: () => renderer,
       gatePrompter: prompterReturning(null),
       io,
     });
+    await lifetime.finish();
 
     expect(outcome).toBe('cancelled');
     expect(events.at(-1)?.type).toBe('run:cancelled');
   });
 
-  it('re-mounts the TUI even if the prompt throws (finally), cancels the live run, then the error unwinds', async () => {
+  it('seals remount and summary on an unknown prompt failure, cancels the run, and preserves its cause', async () => {
     const { engine, handle } = await startGatedRun();
     const { renderer } = recordingRenderer();
     const prompter: GatePrompter = {
@@ -125,15 +148,34 @@ describe('driveRun — interactive gate', () => {
     const { io } = captureIo();
     const cancelSpy = vi.spyOn(handle, 'cancel');
 
+    const lifetime = new WorkflowLifetime(
+      invocationFixture().invocation,
+      io,
+      () => () => undefined,
+    );
     await expect(
-      driveRun({ engine, handle, makeRenderer: () => renderer, gatePrompter: prompter, io }),
+      driveRun({
+        lifetime,
+        engine,
+        handle,
+        makeRenderer: () => renderer,
+        gatePrompter: prompter,
+        io,
+      }),
     ).rejects.toThrow('prompt boom');
-    expect(renderer.resume).toHaveBeenCalledTimes(1); // the suspend/prompt/resume finally restored the view
-    expect(renderer.finalize).toHaveBeenCalledTimes(1); // driveRun's finally still finalized
+    expect(renderer.resume).not.toHaveBeenCalled(); // The infrastructure fault seals future native entry.
+    expect(renderer.finalize).not.toHaveBeenCalled(); // Actual release is joined independently of summary.
     expect(cancelSpy).toHaveBeenCalledTimes(1); // ...and cancelled the still-live run (abnormal-unwind guard)
+    let retired = false;
+    void lifetime.finish().then(() => {
+      retired = true;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(retired).toBe(false); // A rejected prompt never proves terminal release.
+    expect(lifetime.invocation.registry.activeOwners).toBe(1);
   });
 
-  it('a renderer.resume() throw does NOT mask the prompt error (logs the resume failure to stderr)', async () => {
+  it('never enters a faulty remount after a prompt infrastructure failure or echoes either private cause', async () => {
     const { engine, handle } = await startGatedRun();
     const renderer: RunRenderer = {
       onEvent: () => {},
@@ -148,17 +190,44 @@ describe('driveRun — interactive gate', () => {
     };
     const { io, err } = captureIo();
 
+    const lifetime = new WorkflowLifetime(
+      invocationFixture().invocation,
+      io,
+      () => () => undefined,
+    );
     await expect(
-      driveRun({ engine, handle, makeRenderer: () => renderer, gatePrompter: prompter, io }),
+      driveRun({
+        lifetime,
+        engine,
+        handle,
+        makeRenderer: () => renderer,
+        gatePrompter: prompter,
+        io,
+      }),
     ).rejects.toThrow('prompt boom'); // the PROMPT error survives — the resume throw did not replace it
-    expect(err()).toContain('failed to restore the live view'); // the resume failure went to stderr instead
+    expect(renderer.resume).not.toHaveBeenCalled();
+    expect(err()).not.toContain('prompt boom');
+    expect(err()).not.toContain('resume boom');
+    let retired = false;
+    void lifetime.finish().then(() => {
+      retired = true;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(retired).toBe(false); // A rejected prompt never proves terminal release.
+    expect(lifetime.invocation.registry.activeOwners).toBe(1);
   });
 
   it('without a prompter, a gate pause stops the loop (→ paused, exit 3)', async () => {
     const { engine, handle } = await startGatedRun();
     const { renderer } = recordingRenderer();
     const { io } = captureIo();
-    const outcome = await driveRun({ engine, handle, makeRenderer: () => renderer, io });
+    const lifetime = new WorkflowLifetime(
+      invocationFixture().invocation,
+      io,
+      () => () => undefined,
+    );
+    const outcome = await driveRun({ lifetime, engine, handle, makeRenderer: () => renderer, io });
+    await lifetime.finish();
     expect(outcome).toBe('paused');
   });
 
@@ -166,6 +235,11 @@ describe('driveRun — interactive gate', () => {
     const { engine, handle } = await startGatedRun();
     const { renderer } = recordingRenderer();
     const { io } = captureIo();
+    const lifetime = new WorkflowLifetime(
+      invocationFixture().invocation,
+      io,
+      () => () => undefined,
+    );
     // The SIGINT-during-prompt race: the prompt cooperatively cancels the run (→ run:cancelled), then returns
     // a decision the engine now refuses with run_already_terminal. driveRun must swallow that and drain to the
     // cancelled terminal — never surface it as a generic "unexpected internal error".
@@ -182,12 +256,14 @@ describe('driveRun — interactive gate', () => {
     };
 
     const outcome = await driveRun({
+      lifetime,
       engine,
       handle,
       makeRenderer: () => renderer,
       gatePrompter: prompter,
       io,
     });
+    await lifetime.finish();
 
     expect(resumeSpy).toHaveBeenCalledTimes(1); // the race path WAS taken...
     expect(outcome).toBe('cancelled'); // ...and resolved cleanly to the cancelled terminal, no throw

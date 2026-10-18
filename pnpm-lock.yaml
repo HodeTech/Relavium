@@ -207,6 +207,9 @@ importers:
       '@relavium/shared':
         specifier: workspace:*
         version: link:../../packages/shared
+      '@types/better-sqlite3':
+        specifier: 'catalog:'
+        version: 7.6.13
       '@types/node':
         specifier: 'catalog:'
         version: 22.19.19

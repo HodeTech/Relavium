@@ -1,4 +1,5 @@
 import type { FsCapability } from '@relavium/core';
+import { byCodeUnit } from '@relavium/shared';
 
 import { dropLastCodePoint } from './chat-input.js';
 import { compileIgnore, type IgnoreMatcher } from './gitignore.js';
@@ -268,7 +269,7 @@ export function createMentionReader(fs: FsCapability): MentionReader {
       // Directories first, then case-insensitive by name — a stable, glanceable order.
       const sorted = [...candidates].sort((a, b) => {
         if (a.type !== b.type) return a.type === 'directory' ? -1 : 1;
-        return a.name.toLowerCase().localeCompare(b.name.toLowerCase());
+        return byCodeUnit(a.name.toLowerCase(), b.name.toLowerCase());
       });
       // Below the workspace root, offer a synthetic `..` ascend row at the very top (dir-navigation is first-class,
       // ADR-0061) — it descends to the parent (which only ever climbs toward `''`, never above the jailed root).
