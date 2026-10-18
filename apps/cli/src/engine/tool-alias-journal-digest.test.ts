@@ -31,7 +31,7 @@ const EXPECTED_CANONICAL = {
 };
 
 function sha256(text: string): string {
-  return `v4:${createHash('sha256').update(text).digest('hex')}`;
+  return `v5:${createHash('sha256').update(text).digest('hex')}`;
 }
 
 function registryFixture(effects: EffectDispatchPort) {
@@ -84,6 +84,97 @@ const METADATA = [
   { name: 'nonempty', keys: new Set(['confidentialNote']) },
 ];
 
+describe.each(METADATA)('native MCP own public data with $name metadata', ({ keys }) => {
+  it.each(['scalar', 'record'] as const)(
+    'PHYSICAL_OWN_DATA retains %s data in the digest, replays equality and refuses a changed value',
+    async (mode) => {
+      const client = createClient(':memory:');
+      try {
+        runMigrations(client.db);
+        let ids = 0;
+        const store = createEffectJournalStore(client.db, {
+          uuid: () => `own-${++ids}`,
+          now: () => 6,
+        });
+        const effects = recordingPort(
+          createEffectJournalPort(
+            store,
+            { kind: 'run', runId: 'r-own', nodeId: 'n', attempt: 1 },
+            { providerAttempt: 1, toolCallId: 'own-call' },
+          ),
+        );
+        const received: unknown[] = [];
+        const callMcp = vi.fn((input: Parameters<NonNullable<ToolHost['mcp']>['call']>[0]) => {
+          received.push(input.args);
+          return Promise.resolve({ receipt: 'published' });
+        });
+        const registry = createToolRegistry({
+          tools: BUILTIN_TOOLS,
+          host: { mcp: { call: callMcp } },
+        });
+        const context: ToolDispatchContext = {
+          nodeId: 'n',
+          grantedToolIds: new Set(['mcp_call']),
+          config: {},
+          toolPolicy: {},
+          fsScope: 'sandboxed',
+          gateApproved: false,
+          effects,
+          effectSlot: 0,
+          ...(keys === undefined ? {} : { secretArgKeys: keys }),
+        };
+        const value = mode === 'scalar' ? 'public-value' : { label: 'public-value' };
+        const payload = { ['__proto__']: value, confidentialNote: 'SYNTHETIC_NOTE' };
+        const request = (args: unknown) =>
+          ({
+            type: 'tool_call',
+            id: 'own-call',
+            name: 'mcp_call',
+            args: { server: 'offline', tool: 'publish', args },
+          }) as const;
+        const firstAttempt = await registry.dispatch(request(payload), context).then(
+          (result) => ({ result }),
+          (failure: unknown) => ({ failure }),
+        );
+        expect(firstAttempt, 'PHYSICAL_OWN_DATA_ADMISSION').not.toHaveProperty('failure');
+        if ('failure' in firstAttempt) throw firstAttempt.failure;
+        const first = firstAttempt.result;
+        const replay = await registry.dispatch(request(payload), context);
+        expect(replay.output).toEqual(first.output);
+        expect(callMcp).toHaveBeenCalledOnce();
+        expect(received[0]).toBe(payload);
+        const valueBytes = mode === 'scalar' ? '"public-value"' : '{"label":"public-value"}';
+        const noteBytes =
+          keys?.has('confidentialNote') === true ? '' : ',"confidentialNote":"SYNTHETIC_NOTE"';
+        const canonical = `{"args":{"__proto__":${valueBytes}${noteBytes}},"server":"offline","tool":"publish"}`;
+        const expected: unknown = JSON.parse(canonical);
+        expect(first.events.call.toolInput, 'PHYSICAL_OWN_DATA_EVENT').toEqual(expected);
+        expect(effects.prepare.mock.calls[0]?.[3], 'PHYSICAL_OWN_DATA_PREPARE').toEqual(expected);
+        const rows = PhysicalRowsSchema.parse(
+          client.sqlite
+            .prepare('SELECT slot, state, args_digest FROM run_effects ORDER BY slot')
+            .all(),
+        );
+        expect(rows, 'PHYSICAL_OWN_DATA_DIGEST').toEqual([
+          { slot: 0, state: 'committed', args_digest: sha256(canonical) },
+        ]);
+        const changed = { ...payload, ['__proto__']: 'changed-public-value' };
+        await expect(
+          registry.dispatch(request(changed), context),
+          'PHYSICAL_OWN_DATA_CONFLICT',
+        ).rejects.toMatchObject({ name: 'ToolEffectConflictError', retryable: false });
+        expect(callMcp).toHaveBeenCalledOnce();
+        await registry.dispatch(request(changed), { ...context, effectSlot: 1 });
+        expect(callMcp).toHaveBeenCalledTimes(2);
+        expect(received[1]).toBe(changed);
+        expect(Object.getPrototypeOf(payload)).toBe(Object.prototype);
+      } finally {
+        client.sqlite.close();
+      }
+    },
+  );
+});
+
 describe.each(METADATA)(
   'W3S5 #94 public registry and native SQLite with $name external metadata',
   ({ keys }) => {
@@ -116,7 +207,7 @@ describe.each(METADATA)(
         );
         expect(rows).toHaveLength(2);
         expect(rows.map((row) => row.state)).toEqual(['committed', 'committed']);
-        for (const row of rows) expect(row.args_digest).toMatch(/^v4:[0-9a-f]{64}$/);
+        for (const row of rows) expect(row.args_digest).toMatch(/^v5:[0-9a-f]{64}$/);
         expect(rows[0]?.args_digest, 'PHYSICAL_ALIAS_DIGEST_DISTINCT').not.toBe(
           rows[1]?.args_digest,
         );
@@ -485,7 +576,7 @@ describe.each(CREDENTIAL_CASES)('PR #95 complete recognized credential: $name', 
     }
   });
 
-  it.each(['v2:', 'v3:'])(
+  it.each(['v2:', 'v3:', 'v4:'])(
     'PHYSICAL_LEGACY_PROJECTION_REFUSAL refuses a current literal in the %s digest domain',
     async (prefix) => {
       const client = createClient(':memory:');

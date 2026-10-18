@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   boundForModel,
+  redactInlineMedia,
   redactSecretShapedText,
   redactSecretShapedValue,
   utf8ByteLength,
@@ -11,6 +12,30 @@ import type { ToolHost, ToolResultLimits } from './types.js';
 
 const BIG: ToolResultLimits = { maxBytes: 50_000, maxLines: 2000 };
 const TINY: ToolResultLimits = { maxBytes: 20, maxLines: 3 };
+
+describe.each([redactInlineMedia, redactSecretShapedValue])(
+  'own public data projection %s',
+  (project) => {
+    it.each(['public-value', { label: 'public-value' }])(
+      'OWN_PUBLIC_KEY preserves an own __proto__ data value %j without changing the prototype',
+      (value) => {
+        const input = {
+          ['__proto__']: value,
+          constructor: 'public-constructor',
+          prototype: 'public-prototype',
+        };
+        const output = project(input);
+        expect(JSON.stringify(output), 'OWN_PUBLIC_KEY').toBe(JSON.stringify(input));
+        expect(Object.getPrototypeOf(output)).toBe(Object.prototype);
+        expect(Object.getOwnPropertyDescriptor(output, '__proto__')).toMatchObject({
+          value,
+          enumerable: true,
+        });
+        expect(Object.getPrototypeOf(input)).toBe(Object.prototype);
+      },
+    );
+  },
+);
 
 describe('utf8ByteLength', () => {
   it('counts ASCII, 2-byte, 3-byte, and surrogate-pair (4-byte) code points', () => {

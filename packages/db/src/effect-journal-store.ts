@@ -642,6 +642,7 @@ function coerceEffectTier(value: number): EffectTier {
  */
 function digestOf(redactedArgs: unknown): string {
   // Unversioned digests may describe a lossy display preview; v2/v3 may include a partially redacted
-  // credential. A current literal can equal an old projection, so none is a replay authority.
-  return `v4:${createHash('sha256').update(canonicalJson(redactedArgs)).digest('hex')}`;
+  // credential, while v4 may omit own public data keys. A current literal can equal an old
+  // projection, so none is a replay authority.
+  return `v5:${createHash('sha256').update(canonicalJson(redactedArgs)).digest('hex')}`;
 }

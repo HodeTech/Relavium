@@ -351,15 +351,19 @@ unencrypted at rest. "A digest, not the bytes" is therefore not by itself a suff
 contract does not make it. The hash is SHA-256 over a canonical JSON serialization (sorted keys, no insignificant
 whitespace) of the redacted projection, using a vetted implementation — never a hand-rolled one.
 
-The current persisted form is `v4:` followed by the SHA-256 hex digest. The version
+The current persisted form is `v5:` followed by the SHA-256 hex digest. The version
 prefix is outside the hash and separates current full-value projections from legacy
-unversioned digests and `v2:`/`v3:` projections with incomplete credential masks; a JSON
-wrapper alone could itself equal arbitrary old tool args.
+unversioned digests, `v2:`/`v3:` projections with incomplete credential masks and
+`v4:` projections that could omit own public data keys; a JSON wrapper alone could
+itself equal arbitrary old tool args.
 The digest consumes the full surviving non-secret values, including long string tails.
-The bounded `toolInput` display preview is not a journal input: equal-length values can
-differ beyond its retained prefix. Every unversioned, `v2:` or `v3:` legacy row refuses matching prepare,
-including unchanged small arguments: its original projection cannot be proven from the
-digest alone. There is no fallback to the old digest or automatic retry permission. Secret and
+Nested own enumerable data keys, including `__proto__`, remain data members in the
+projection rather than invoking inherited setters. Top-level tool-argument admission
+exclusions remain unchanged. The bounded `toolInput` display preview is not a journal
+input: equal-length values can differ beyond its retained prefix. Every unversioned,
+`v2:`, `v3:` or `v4:` legacy row refuses matching prepare, including unchanged small
+arguments: its original projection cannot be proven from the digest alone. There is
+no fallback to the old digest or automatic retry permission. Secret and
 inline-media redaction remain deliberate projection equality; raw credential bytes are never
 added to the digest to distinguish calls.
 

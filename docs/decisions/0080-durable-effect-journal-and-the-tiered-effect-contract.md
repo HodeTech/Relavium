@@ -385,3 +385,17 @@ existing §11 requirement; current details remain in its
 [canonical contract](../reference/shared-core/effect-journal.md#11-secrets-what-a-row-may-hold).
 Fresh independent reviews, a complete separate security sitting and corrected-source
 publication checks are still required.
+
+### PR #95 own-data projection correction — 2026-10-18
+
+The next complete separate security sitting and library review at `c837cd41`
+confirm a pre-existing own-data copying defect in the changed projection paths.
+Assignment into an ordinary object could invoke an inherited setter instead of
+retaining a nested public data member, causing different raw calls to share a
+journal identity. Projection copies now define own enumerable data properties.
+Declared-secret and media exclusions, top-level argument admission and raw host
+dispatch are unchanged. The corrected persisted domain refuses earlier ambiguous
+rows without rewriting history or granting retry authority. This restores the
+existing different-args refusal; exact representation remains in
+[effect-journal.md §11](../reference/shared-core/effect-journal.md#11-secrets-what-a-row-may-hold).
+Fresh independent acceptance and source-pinned publication checks remain separate.

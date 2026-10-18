@@ -138,6 +138,37 @@ describe('PR #95 journal identity retains long redacted arguments', () => {
 describe.each(METADATA)(
   'W3S5 #94 actual registry joins with $name external metadata',
   ({ keys, omitDeclared }) => {
+    it.each(['public-value', { label: 'public-value' }])(
+      'REGISTRY_OWN_DATA preserves nested own data %j in both sinks and refuses a changed value',
+      async (value) => {
+        const h = harness();
+        const context = { ...h.context, ...(keys === undefined ? {} : { secretArgKeys: keys }) };
+        const payload = { ['__proto__']: value, confidentialNote: 'SYNTHETIC_NOTE' };
+        const outcome = await h.registry.dispatch(call(payload), context);
+        const expected = {
+          payload: {
+            ['__proto__']: value,
+            ...(omitDeclared ? {} : { confidentialNote: 'SYNTHETIC_NOTE' }),
+          },
+        };
+        for (const projected of [
+          outcome.events.call.toolInput,
+          vi.mocked(h.effects.prepare).mock.calls[0]?.[3],
+        ]) {
+          expect(JSON.stringify(projected), 'REGISTRY_OWN_DATA').toBe(JSON.stringify(expected));
+        }
+        const replay = await h.registry.dispatch(call(payload), context);
+        expect(replay.output).toEqual(outcome.output);
+        expect(h.received).toEqual([payload]);
+        expect(h.received[0]).toBe(payload);
+        await expect(
+          h.registry.dispatch(call({ ...payload, ['__proto__']: 'changed-public-value' }), context),
+          'REGISTRY_OWN_DATA_CONFLICT',
+        ).rejects.toMatchObject({ name: 'ToolEffectConflictError', retryable: false });
+        expect(h.received).toHaveLength(1);
+      },
+    );
+
     it('REGISTRY_SELECTION preserves selected value in event and prepare copies without changing dispatch identity', async () => {
       const h = harness();
       const context = { ...h.context, ...(keys === undefined ? {} : { secretArgKeys: keys }) };

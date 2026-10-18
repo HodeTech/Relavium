@@ -105,7 +105,13 @@ function redactInlineMediaForText(value: unknown, seen: WeakSet<object>): unknow
     }
     const out: Record<string, unknown> = {};
     for (const [key, item] of Object.entries(value)) {
-      out[key] = redactInlineMediaForText(item, seen);
+      // Preserve an own data key such as __proto__; assignment would invoke an inherited setter.
+      Object.defineProperty(out, key, {
+        value: redactInlineMediaForText(item, seen),
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
     }
     return out;
   } finally {
@@ -433,7 +439,12 @@ function redactSecretShapedWalk(value: unknown, seen: WeakSet<object>): unknown 
       // inspects strings by shape — so a numeric PIN, a nested credential object, or a high-entropy opaque
       // token with no recognisable prefix all survive it. `null`/`undefined` are left alone so an absent
       // field does not become a phantom `[redacted]` in a diagnostic.
-      out[redactSecretShapedText(key)] = redactUnderKey(key, item, seen);
+      Object.defineProperty(out, redactSecretShapedText(key), {
+        value: redactUnderKey(key, item, seen),
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
     }
     return out;
   } finally {

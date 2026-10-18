@@ -8516,3 +8516,41 @@ it introduces no admission, dispatch, compatibility or policy change. The later
 source requires two NEW complete cumulative clean rounds and a complete separate
 defensive security code review. Neither the clean R5 nor earlier remote results
 are relabeled as execution or acceptance of that refactor.
+
+### PR #95 own-data projection correction — 2026-10-18
+
+At `c837cd41`, R6 library is **COMPLETE NONCLEAN** for its 20 paths / 58
+ordered hunks; CLI is **COMPLETE CLEAN** for its 43/93. Tooling/docs has not
+started in that round, so R6 is not a complete 99-path acceptance. The NEW
+separate defensive security sitting is **COMPLETE NONCLEAN**, covering all 39
+assigned paths / 93 hunks. Its 533 existing Vitest and 52 Node cases pass, but
+source review identifies a pre-existing nested own-data projection defect. No
+new crafted probe or live provider request is used in that sitting. The library
+review independently confirms the same code path and passes 727 existing cases;
+those overlapping executions are not added into a unique total.
+
+The correction preserves own public data members in all four object-copy paths,
+while leaving raw dispatch, declared-secret removal and media projection intact.
+The persisted domain refuses earlier ambiguous rows; no historical erasure,
+automatic retry, new dependency or authority is introduced. Permanent public-data
+regressions use projection helpers, the reference registry and the built-in MCP
+registry with actual native SQLite. The canonical
+[effect-journal contract](../../reference/shared-core/effect-journal.md#11-secrets-what-a-row-may-hold)
+owns representation and compatibility. Two NEW complete cumulative clean rounds,
+a NEW complete separate clean security sitting and corrected-source publication
+checks remain required. Steps 9–19 remain unstarted and outside PR #95.
+
+The source-bound Sonar analysis at `c837cd41` passes. It records 231 issues in
+90 files: 55 false positives, 86 accepted, 11 fixed and 79 open suggestions. The
+private argv-helper complexity suggestion is now FIXED. The two valid regex
+maintainability suggestions remain open with reasoned comments; no quality
+threshold or rule is weakened. This snapshot does not certify later source.
+
+Author checks pass 201 focused cases. Removing each of the four own-data copy
+protections and the prior-domain barrier produces 79 specific assertion failures
+across five controls; every restored complete target batch passes all 201 cases.
+The committed runner reporter records zero unhandled errors in these runs, and
+all edited source bytes are restored exactly. A preliminary author control that
+encountered an unwrapped product refusal is retained as preparation evidence, not
+counted as an accepted assertion control. Fresh workspace/publication results and
+independent acceptance remain separate.

@@ -341,7 +341,7 @@ describe('the effect journal store', () => {
     const port = (): ReturnType<typeof createEffectJournalPort> =>
       createEffectJournalPort(store, RUN, ATTEMPT);
 
-    it.each(['', 'v2:', 'v3:'])(
+    it.each(['', 'v2:', 'v3:', 'v4:'])(
       'refuses unchanged small legacy args in the %j digest domain',
       async (prefix) => {
         const legacy =

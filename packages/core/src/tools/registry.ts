@@ -1128,7 +1128,14 @@ function boundArgsForDisplay(
     const proto: unknown = Object.getPrototypeOf(value);
     if (proto !== Object.prototype && proto !== null) return value;
     const out: Record<string, unknown> = {};
-    for (const [key, item] of Object.entries(value)) out[key] = boundArgsForDisplay(item, seen);
+    for (const [key, item] of Object.entries(value)) {
+      Object.defineProperty(out, key, {
+        value: boundArgsForDisplay(item, seen),
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
+    }
     return out;
   } finally {
     seen.delete(value);
@@ -1163,7 +1170,12 @@ function dropSecretKeysDeep(
     const out: Record<string, unknown> = {};
     for (const [key, item] of Object.entries(value)) {
       if (secretArgKeys.has(key)) continue;
-      out[key] = dropSecretKeysDeep(item, secretArgKeys, seen);
+      Object.defineProperty(out, key, {
+        value: dropSecretKeysDeep(item, secretArgKeys, seen),
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
     }
     return out;
   } finally {
