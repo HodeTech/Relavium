@@ -8870,3 +8870,22 @@ All 57 anchors occur exactly once and every declared mutant syntax-parses;
 336 named witnesses remain required. An anchor check is not physical causal
 execution, and the prior source's passing full capture is not promoted to the
 new source. Current-source review, security and publication gates remain open.
+
+The tenth cumulative round at `3d276489` is **COMPLETE NONCLEAN, LOW ONLY**:
+all 104 corrective paths / 265 ordered hunks are independently reconciled and read
+within their explicit ordinary-review modes. CLI and tooling/documentation are
+clean. Libraries/native finds one stale implementation comment that still calls
+the now-composed matcher a literal and claims static-analysis coverage. The
+comment is corrected to describe actual construction and bounded runtime evidence;
+no executable policy changes. Two NEW complete cumulative clean rounds and the
+NEW separate security/publication gates remain required.
+
+Fresh local ordinary bare coverage passes 748 files / 15,970 cases / 21 established
+local skips in 714.41 seconds, including all three engine line/branch floors.
+The dense-public control passes at 768 ms under instrumentation. Package, test
+and configuration bytes are unchanged during the control-anchor/history-only
+`7b39a5ef` → `3d276489` delta; these gates do not certify control-family execution.
+The current-source selected modern-alphabet coordinator separately passes three
+phases / 426 executions / four required witnesses / twelve marked removal
+failures, zero recorded unhandled errors and exact restoration. Its bounded
+physical evidence is independently inspected; it is not a full-family capture.

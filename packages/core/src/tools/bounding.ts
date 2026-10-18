@@ -396,10 +396,10 @@ export function redactSecretShapedText(text: string): string {
   // signature segment contains an `sk-` run, or a `xox…-glpat-…` run) are covered by the outer greedy match
   // as a single span. A per-family MULTI-PASS split is NOT equivalent — an earlier pass inserting `[redacted]`
   // (a non-word `[`) truncates a later family's greedy match and can leave a trailing secret-shaped substring
-  // EXPOSED (a real redaction regression, pinned in bounding.test.ts). So this stays a single analyzable
-  // LITERAL and its Sonar per-regex complexity is a deliberate, documented exception — the same trade-off as
-  // the key=value pattern above: correctness of a security redactor + Sonar's static ReDoS (S5852) coverage
-  // outrank the metric. `\w` / `[\w-]` fold only the classes that are EXACTLY `[A-Za-z0-9_]` / `[A-Za-z0-9_-]`;
+  // EXPOSED (a real redaction regression, pinned in bounding.test.ts). The canonical fragments therefore
+  // construct one complete alternation, with a separate bounded prefix-absence preflight. Failed probes
+  // use the bounded preview before the full greedy matcher; overlap and admitted-size tests pin that path.
+  // `\w` / `[\w-]` fold only the classes that are EXACTLY `[A-Za-z0-9_]` / `[A-Za-z0-9_-]`;
   // the tighter `[A-Za-z0-9]` / `[A-Za-z0-9-]` families keep their narrower class (no `_`).
   return redactStandaloneCredentials(projected);
 }
