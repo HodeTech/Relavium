@@ -120,12 +120,43 @@ function redactInlineMediaForText(value: unknown, seen: WeakSet<object>): unknow
   }
 }
 
-// One alternation preserves outer spans when credential families overlap. Bounded lookaheads
+// One definition builds both the complete matcher and its necessary-prefix preflight. Prefixes
+// have bounded width: testing their absence must never run the unbounded JWT/body alternatives.
+// One alternation still preserves outer spans when credential families overlap. Bounded lookaheads
 // enforce minimum lengths before simple runs; no admitted-size repeated groups use the regex stack.
-const STANDALONE_CREDENTIAL =
-  /\b(?:sk-(?=[\w-]{16})[\w-]+|sk_(?:live|test)_(?=[A-Za-z0-9]{16})[A-Za-z0-9]+|A[KSB]IA[0-9A-Z]{16}|gh[pousr]_(?=[A-Za-z0-9]{20})[A-Za-z0-9]+|github_pat_(?=\w{20})\w+|glpat-(?=[\w-]{16})[\w-]+|xox[baprs]-(?=[A-Za-z0-9-]{10})[A-Za-z0-9-]+|AIza(?=[\w-]{30})[\w-]+|ya29\.(?=[\w-]{20})[\w-]+|hf_(?=[A-Za-z0-9]{20})[A-Za-z0-9]+|npm_(?=[A-Za-z0-9]{20})[A-Za-z0-9]+|eyJ(?=[\w-]{10})[\w-]+\.(?=[\w-]{10})[\w-]+\.(?=[\w-]{6})[\w-]+)/g; // NOSONAR — finite credential families, see the projection policy below
+const STANDALONE_CREDENTIAL_FRAGMENTS: readonly {
+  readonly prefix: RegExp;
+  readonly body: RegExp;
+}[] = [
+  { prefix: /sk-/, body: /(?=[\w-]{16})[\w-]+/ },
+  { prefix: /sk_(?:live|test)_/, body: /(?=[A-Za-z0-9]{16})[A-Za-z0-9]+/ },
+  { prefix: /A[KSB]IA/, body: /[0-9A-Z]{16}/ },
+  { prefix: /gh[pousr]_/, body: /(?=[A-Za-z0-9]{20})[A-Za-z0-9]+/ },
+  { prefix: /github_pat_/, body: /(?=\w{20})\w+/ },
+  { prefix: /glpat-/, body: /(?=[\w-]{16})[\w-]+/ },
+  { prefix: /xox[baprs]-/, body: /(?=[A-Za-z0-9-]{10})[A-Za-z0-9-]+/ },
+  { prefix: /AIza/, body: /(?=[\w-]{30})[\w-]+/ },
+  { prefix: /ya29\./, body: /(?=[\w-]{20})[\w-]+/ },
+  { prefix: /hf_/, body: /(?=[A-Za-z0-9]{20})[A-Za-z0-9]+/ },
+  { prefix: /npm_/, body: /(?=[A-Za-z0-9]{20})[A-Za-z0-9]+/ },
+  {
+    prefix: /eyJ/,
+    body: /(?=[\w-]{10})[\w-]+\.(?=[\w-]{10})[\w-]+\.(?=[\w-]{6})[\w-]+/,
+  },
+];
+const STANDALONE_CREDENTIAL = new RegExp(
+  '\\b(?:' +
+    STANDALONE_CREDENTIAL_FRAGMENTS.map(
+      (fragment) => fragment.prefix.source + fragment.body.source,
+    ).join('|') +
+    ')',
+  'g',
+);
+const STANDALONE_CREDENTIAL_PREFIX = new RegExp(
+  STANDALONE_CREDENTIAL_FRAGMENTS.map((fragment) => fragment.prefix.source).join('|'),
+);
 // The joined probe checks its boundary in the ORIGINAL text. Removing LF/TAB must not erase
-// a legitimate boundary or manufacture one inside a public word. The source is the literal above.
+// a legitimate boundary or manufacture one inside a public word. The source uses the same fragments.
 const JOINED_STANDALONE_CREDENTIAL = new RegExp(STANDALONE_CREDENTIAL.source.slice(2), 'y');
 
 const SCHEME_CREDENTIAL =
@@ -183,6 +214,8 @@ function visitJoinedStandaloneCredentials(
   joined: string,
   mask: SecretSpanVisitor,
 ): void {
+  // Absence only: a present prefix still needs the original boundary and bounded canonical probe.
+  if (!STANDALONE_CREDENTIAL_PREFIX.test(joined)) return;
   const preview = joinedCredentialProbe(joined);
   const candidates = /(^|[^\w])([A-Za-z])/g;
   const separators = /[\n\t]+/g;
