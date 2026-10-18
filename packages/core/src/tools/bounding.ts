@@ -126,12 +126,79 @@ const STANDALONE_CREDENTIAL =
   /\b(?:sk-(?=[\w-]{16})[\w-]+|sk_(?:live|test)_(?=[A-Za-z0-9]{16})[A-Za-z0-9]+|A[KSB]IA[0-9A-Z]{16}|gh[pousr]_(?=[A-Za-z0-9]{20})[A-Za-z0-9]+|github_pat_(?=\w{20})\w+|glpat-(?=[\w-]{16})[\w-]+|xox[baprs]-(?=[A-Za-z0-9-]{10})[A-Za-z0-9-]+|AIza(?=[\w-]{30})[\w-]+|ya29\.(?=[\w-]{20})[\w-]+|hf_(?=[A-Za-z0-9]{20})[A-Za-z0-9]+|npm_(?=[A-Za-z0-9]{20})[A-Za-z0-9]+|eyJ(?=[\w-]{10})[\w-]+\.(?=[\w-]{10})[\w-]+\.(?=[\w-]{6})[\w-]+)/g; // NOSONAR — finite credential families, see the projection policy below
 // The joined probe checks its boundary in the ORIGINAL text. Removing LF/TAB must not erase
 // a legitimate boundary or manufacture one inside a public word. The source is the literal above.
-const JOINED_STANDALONE_CREDENTIAL = new RegExp(STANDALONE_CREDENTIAL.source.slice(2), 'g');
+const JOINED_STANDALONE_CREDENTIAL = new RegExp(STANDALONE_CREDENTIAL.source.slice(2), 'y');
 
 const SCHEME_CREDENTIAL =
   /\b(b[\n\t]*e[\n\t]*a[\n\t]*r[\n\t]*e[\n\t]*r|b[\n\t]*a[\n\t]*s[\n\t]*i[\n\t]*c|t[\n\t]*o[\n\t]*k[\n\t]*e[\n\t]*n)\s+(?=[\w.~+/-]{8})[\w.~+/-]+={0,2}/gi;
 
 type SecretSpanVisitor = (start: number, end: number, replacement: string) => void;
+
+/**
+ * A failed JWT probe must not rescan an admitted-size token run at every original LF/TAB boundary.
+ * Probe the SAME canonical matcher with at most three dot-separated runs (JWT's maximum), keeping
+ * the first 64 characters of each run. The largest minimum acceptance window in the literal is
+ * 34 characters (AIza + 30); all other prefixes/minima fit, including JWT's 13/10/6 and ya29's two
+ * runs. Truncating a longer [\w-] run therefore preserves acceptance for every current family.
+ * Only accepted probes run the full greedy matcher, whose consumed span is then skipped.
+ *
+ * Candidate starts increase monotonically. Cache the three lookahead run ends so many original
+ * boundaries inside one joined run share one delimiter scan; no per-character index is retained.
+ */
+function joinedCredentialProbe(joined: string): (start: number) => string {
+  const delimiter = /[^\w-]/g;
+  const runs: { start: number; end: number }[] = [];
+  function runEnd(start: number): number {
+    const cached = runs.find((run) => run.start <= start && start < run.end);
+    if (cached !== undefined) return cached.end;
+    delimiter.lastIndex = start;
+    const end = delimiter.exec(joined)?.index ?? joined.length;
+    if (end > start) {
+      runs.push({ start, end });
+      if (runs.length > 3) runs.shift();
+    }
+    return end;
+  }
+  return (start) => {
+    let preview = '';
+    for (let index = 0; index < 3; index += 1) {
+      const end = runEnd(start);
+      preview += joined.slice(start, Math.min(end, start + 64));
+      if (end === start || joined[end] !== '.') break;
+      preview += '.';
+      start = end + 1;
+    }
+    return preview;
+  };
+}
+
+/**
+ * Select valid ORIGINAL starts before matching: a rejected embedded prefix cannot consume them.
+ * Every prefix in the canonical literal starts with an ASCII letter; the prefilter only omits
+ * impossible starts. It does not decide which family matches or where that credential ends.
+ */
+function visitJoinedStandaloneCredentials(
+  original: string,
+  joined: string,
+  mask: SecretSpanVisitor,
+): void {
+  const preview = joinedCredentialProbe(joined);
+  let joinedOffset = 0;
+  let matchedUntil = 0;
+  for (let originalOffset = 0; originalOffset < original.length; originalOffset += 1) {
+    const char = original[originalOffset];
+    if (char === '\n' || char === '\t') continue;
+    const start = joinedOffset++;
+    if (start < matchedUntil || !/[A-Za-z]/.test(char ?? '')) continue;
+    if (/\w/.test(original[originalOffset - 1] ?? '')) continue;
+    JOINED_STANDALONE_CREDENTIAL.lastIndex = 0;
+    if (!JOINED_STANDALONE_CREDENTIAL.test(preview(start))) continue;
+    JOINED_STANDALONE_CREDENTIAL.lastIndex = start;
+    const match = JOINED_STANDALONE_CREDENTIAL.exec(joined);
+    if (match === null) continue;
+    matchedUntil = JOINED_STANDALONE_CREDENTIAL.lastIndex;
+    mask(start, matchedUntil, '[redacted]');
+  }
+}
 
 /**
  * LF/TAB may split finite credential shapes. Map recognized spans back onto the original text;
@@ -177,9 +244,7 @@ function redactSplitCredentials(text: string): string {
   const keys = redactJoinedCredentialSpans(
     urls,
     (joined, mask) => {
-      for (const match of joined.matchAll(JOINED_STANDALONE_CREDENTIAL)) {
-        mask(match.index, match.index + match[0].length, '[redacted]');
-      }
+      visitJoinedStandaloneCredentials(urls, joined, mask);
     },
     /\w/,
   );

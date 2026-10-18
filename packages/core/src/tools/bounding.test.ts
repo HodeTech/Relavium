@@ -971,6 +971,90 @@ describe('PR95 B2 finite split-credential projections', () => {
 });
 
 describe('PR95 B2 projection boundaries and admitted-scale controls', () => {
+  it.each([
+    ['sk-proj-', '\n'],
+    ['sk-proj-', '\t'],
+    ['AIza', '\n'],
+    ['AIza', '\t'],
+  ])(
+    'keeps the original boundary after an embedded greedy prefix %s (%j)',
+    async (prefix, separator) => {
+      const publicPrefix = `word${prefix}${'A'.repeat(32)}${separator}`;
+      for (const publicTail of ['A', 'B']) {
+        const input = `${publicPrefix}${prefix}${'B'.repeat(32)}${separator}${'C'.repeat(32)}; public=${publicTail}`;
+        const expected = `${publicPrefix}[redacted]; public=${publicTail}`;
+        expect(redactSecretShapedText(input), 'SECRETS_B2_ORIGINAL_BOUNDARY').toBe(expected);
+        expect(redactSecretShapedValue({ body: input }), 'SECRETS_B2_ORIGINAL_BOUNDARY').toEqual({
+          body: expected,
+        });
+        expect((await boundForModel(input, BIG, {})).summary, 'SECRETS_B2_ORIGINAL_BOUNDARY').toBe(
+          expected.replace(/\s+/g, ' '),
+        );
+      }
+    },
+  );
+
+  it('preserves canonical family acceptance through bounded joined probes', () => {
+    const credentials = [
+      `sk-${'A'.repeat(16)}`,
+      `sk_live_${'A'.repeat(16)}`,
+      `sk_test_${'A'.repeat(16)}`,
+      ...['AKIA', 'ASIA', 'ABIA'].map((prefix) => `${prefix}${'A'.repeat(16)}`),
+      ...['ghp_', 'gho_', 'ghu_', 'ghs_', 'ghr_', 'github_pat_', 'hf_', 'npm_'].map(
+        (prefix) => `${prefix}${'A'.repeat(20)}`,
+      ),
+      `glpat-${'A'.repeat(16)}`,
+      ...['xoxb-', 'xoxa-', 'xoxp-', 'xoxr-', 'xoxs-'].map(
+        (prefix) => `${prefix}${'A'.repeat(10)}`,
+      ),
+      `AIza${'A'.repeat(30)}`,
+      `ya29.${'A'.repeat(20)}`,
+      `eyJ${'A'.repeat(10)}.${'B'.repeat(10)}.${'C'.repeat(6)}`,
+    ];
+    for (const credential of credentials) {
+      for (const padding of [0, 63, 64, 65, 128]) {
+        const raw = `${credential}${'D'.repeat(padding)}; public=A`;
+        for (const separator of ['\n', '\t']) {
+          const split = raw.slice(0, 1) + separator + raw.slice(1);
+          // The unchanged raw canonical matcher is the preservation oracle, not a second grammar.
+          expect(redactSecretShapedText(split), 'SECRETS_B2_BOUNDED_PROBE').toBe(
+            redactSecretShapedText(raw),
+          );
+        }
+      }
+    }
+    for (const length of [63, 64, 65, 128]) {
+      const jwt = `eyJ${'A'.repeat(length)}\n.${'B'.repeat(length)}\t.${'C'.repeat(length)}-sk-${'D'.repeat(32)}\nTAIL`;
+      expect(redactSecretShapedText(`${jwt}; public=A`), 'SECRETS_B2_BOUNDED_PROBE').toBe(
+        '[redacted]; public=A',
+      );
+    }
+  });
+
+  it('bounds admitted-size repeated invalid JWT starts without losing later valid spans', () => {
+    const fragment = `eyJ${'A'.repeat(61)}\n`;
+    const publicPrefix = fragment.repeat(Math.floor((8 * 1024 * 1024 - 256) / fragment.length));
+    const started = performance.now();
+    // No dot, or a huge second run with no second dot: both full JWT attempts would scan to EOF.
+    for (const suffix of ['', `.${'B'.repeat(128)}`]) {
+      const input = `${publicPrefix}${suffix}; sk-proj-${'C'.repeat(32)}\t${'D'.repeat(32)}; public=A`;
+      const expected = `${publicPrefix}${suffix}; [redacted]; public=A`;
+      const output = redactSecretShapedText(input);
+      expect(output.length, 'SECRETS_B2_BOUNDED_PROBE').toBe(expected.length);
+      expect(output === expected, 'SECRETS_B2_BOUNDED_PROBE').toBe(true);
+    }
+    expect(performance.now() - started, 'SECRETS_B2_BOUNDED_PROBE').toBeLessThan(5_000);
+  });
+
+  it('preserves dense admitted-size public boundaries with bounded preparation', () => {
+    const started = performance.now();
+    for (const fragment of ['a\n', 'a ']) {
+      const input = `${fragment.repeat(4 * 1024 * 1024 - 1)}\n`;
+      expect(redactSecretShapedText(input) === input, 'SECRETS_B2_BOUNDED_PROBE').toBe(true);
+    }
+    expect(performance.now() - started, 'SECRETS_B2_BOUNDED_PROBE').toBeLessThan(5_000);
+  });
+
   it('retains prefix evidence inside a header and preserves the same public tail after multiple masks', () => {
     const credential = `sk-proj-${'A'.repeat(24)}\n${'B'.repeat(24)}`;
     const result = redactSecretShapedText(
