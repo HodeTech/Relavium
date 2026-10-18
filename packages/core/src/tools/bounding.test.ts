@@ -63,6 +63,11 @@ describe('boundForModel', () => {
       summary: '[redacted]; public-tail',
     },
     {
+      name: 'multiline quoted credential',
+      text: `password="SYNTHETIC_VISIBLE_HEAD_${'Q'.repeat(10 * 1024)}\n${'Q'.repeat(10 * 1024)}"; public-tail`,
+      summary: '[redacted]; public-tail',
+    },
+    {
       name: 'URL userinfo',
       text: `https://user:SYNTHETIC_VISIBLE_HEAD_${'Q'.repeat(20 * 1024)}@service.invalid/path`,
       summary: 'https://[redacted]@service.invalid/path',

@@ -8584,3 +8584,32 @@ bootstrap controls and finite 25-output closure pass after clearing stale local
 generated chunks through that normal build. Lint/typecheck passes 17/17 (11
 cache hits). These checks establish author evidence only, without inheriting
 previous clean reviews or remote results.
+
+### PR #95 summary normalization correction — 2026-10-18
+
+R8 at local `0fa599fb` is **INCOMPLETE NONCLEAN**. Library is complete for
+20 paths / 64 ordered hunks and reports one High normalization-order regression,
+with 413 existing cases passing. Tooling/docs completes 37/55 with no additional
+independent finding; its 209 tooling, 157 run/gate and 46 adjacent caller cases
+pass without being added to a new whole-repository unique total. CLI verifies
+all 43/93 hashes and changed hunks but reads only 39/43 full bodies; the exact
+remaining four legacy-test ranges are retained as incomplete. Its 562 cases
+and in-memory emitted runtime comparisons (220 library and 25 CLI outputs) pass.
+Neither a partial review nor passing tests override the confirmed defect.
+
+The correction preserves the existing one-line diagnostic semantics by
+normalizing the complete materialized result text before credential recognition,
+then clipping. A permanent multiline quoted-value case pins the previously
+missing combination of normalization and a closing delimiter beyond the preview.
+The journal projection/domain, raw model/spill values and historical replay
+contract are unchanged. This is not arbitrary sensitive-content detection or
+retroactive cleanup. Fresh complete clean cumulative rounds and a separate clean
+security sitting remain required; the next CLI scope is split between the five
+large legacy test bodies and the other 38 paths so every current body can be read.
+
+Author verification passes 208 focused cases. Eight causal removals produce 89
+specific assertion failures, with byte-exact restoration and all 208 targets
+passing after every removal. Runner receipts record zero unhandled errors. A
+forced clean build, all 177 bootstrap controls, finite closure and lint/typecheck
+(17/17, 11 cache hits) pass. These author checks do not supply the required fresh
+independent acceptance or final-source remote publication evidence.

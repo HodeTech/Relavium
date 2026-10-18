@@ -412,3 +412,13 @@ The finite diagnostic policy lives in
 [tool-registry.md](../reference/shared-core/tool-registry.md#result-bounding-and-spill-to-file);
 this does not promise removal of arbitrary sensitive content. Fresh acceptance
 and publication checks remain source-scoped.
+
+### PR #95 summary normalization correction — 2026-10-18
+
+A subsequent independent review identifies a regression in the diagnostic-order
+correction: masking raw text before whitespace collapse loses the existing
+recognition of multiline quoted values in one-line summaries. Summary generation
+now normalizes the complete materialized text, recognizes complete spans, then
+clips. The full journal projection, raw result/spill and recorded replay contract
+are unchanged. The [canonical diagnostic contract](../reference/shared-core/tool-registry.md#result-bounding-and-spill-to-file)
+owns this finite behavior; no historical-content rewrite is introduced.

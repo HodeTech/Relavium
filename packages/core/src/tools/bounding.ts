@@ -476,12 +476,10 @@ function toText(result: unknown): string {
 }
 
 function makeSummary(text: string): string {
-  // Recognize complete spans before clipping: a closing quote or authority separator can be beyond
-  // the preview. The result is already materialized for byte/line bounding; raw model/spill text stays
-  // unchanged. Bound the subsequent whitespace-collapse and diagnostic independently.
-  const redacted = redactSecretShapedText(text);
-  const slice = redacted.length > SUMMARY_MAX * 8 ? redacted.slice(0, SUMMARY_MAX * 8) : redacted;
-  const oneLine = slice.replace(/\s+/g, ' ').trim();
+  // Normalize the complete materialized text before recognition, preserving the one-line diagnostic
+  // policy even for quoted multiline values. Clip only after recognition: a closing quote or URL
+  // authority separator can be beyond the preview. Raw model/spill text stays unchanged.
+  const oneLine = redactSecretShapedText(text.replace(/\s+/g, ' ').trim());
   return oneLine.length <= SUMMARY_MAX ? oneLine : `${oneLine.slice(0, SUMMARY_MAX)}…`;
 }
 
