@@ -788,6 +788,37 @@ receipt, native-close or safe-store-close ACK. The
 [source-review completion register](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#pr-95-second-corrective-source-review-completion--2026-10-18)
 separately owns publication criteria and Steps 9–19 remaining unstarted.
 
+### Sitting: PR #95 supplemental native test fixtures (2026-10-18)
+
+Two NEW separate scoped witness sittings are **CLEAN**: owned Home preparation
+at `154d832d` (three paths / three U3 hunks), and native concurrency at `1c7aec25`
+(two paths / twelve U3 hunks). They cover their complete changed fixture bodies,
+actual native/runner callers and all affected historical clauses. Root verifies
+body, diff, ordered-hunk and retained-log identities. Preparation report SHA-256:
+`f7d66bba60fa2cfbf22c2f999a826c75ba965e9e0010e1c2fd7a5e9b5766ec37`;
+native report SHA-256:
+`0f6d1b46035dcebe8a55fc91cb618d85bfde9dd658b65d03a48e57cde55a253b`.
+These are separate from the earlier 108-path security sitting and from each
+increment's two NEW complete ordinary reviews; no whole-PR review is inferred.
+
+Independent execution passes twelve preparation cases and nine native cases,
+respectively, with zero skips. The sittings verify captured fixture observations,
+retained real Home import and post-await admission; creation-owned positive PID
+signalling; the real ENOENT safely-spied negative; runner/scenario cancellation
+and actual raw/native-close joins. The finite 30-second native functional case
+budget does not change product/native-busy policy or mint an acknowledgement.
+JavaScript timers do not preempt synchronous migration. The selected preparation
+coordinator is inspected with `complete:false`; the manual native PID-guard probe
+is not a committed runtime-reporter receipt. Ordinary Vitest output is not
+promoted to a bound zero-unhandled-error certificate.
+
+No product, configuration, dependency, build or CI byte changes from `ec0f3e10`.
+No live provider, keychain, paid call, GPG, full CI/coverage, operator TTY, other-OS
+execution or complete physical control family is performed by these sittings.
+The [supplemental source register](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#pr-95-supplemental-native-fixture-source-acceptance--2026-10-18)
+retains both actual failed Windows attempts and final-head publication criteria.
+Steps 9–19 remain unstarted; the PR owns the final live results.
+
 ## Sandbox and tool policy (`run_command`, node tools, secret inputs)
 
 This is the **binding home** for the tool-policy rules; the rationale is

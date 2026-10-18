@@ -9095,3 +9095,41 @@ witness check are required, alongside actual final-head PR/push/native/platform/
 physical publication results. The two earlier preparation reviews retain their
 exact `154d832d` scope. The failed Windows attempt remains retained; neither a
 successful retry nor full publication is inferred. Steps 9–19 remain unstarted.
+
+### PR #95 supplemental native fixture source acceptance — 2026-10-18
+
+The two later test-only increments now have their own independent acceptance.
+The owned Home-preparation increment at `154d832d` has two NEW complete clean
+ordinary reviews of all **three paths / three U3 hunks**, plus a NEW separate
+scoped clean security-witness sitting. Its twelve complete admission cases pass
+independently. The native-concurrency increment at `1c7aec25` has two NEW complete
+clean ordinary reviews of all **two paths / twelve U3 hunks** (eleven test hunks
+and one phase-record hunk), plus a NEW separate scoped clean security sitting.
+Each native reviewer independently executes all nine cases, with zero skips.
+Root verifies complete body/diff/ordered-hunk and retained-log identities; code
+bodies are read in full and historical documents use explicit neighboring and
+all-affected semantic-clause modes. No earlier verdict or read flags replace either review.
+
+The native functional runner allowance is finite at 30 seconds per case; all
+eight original native cases remain and the real failed-spawn safeguard is additive.
+Runner/scenario signal composition and actual raw/native joins preserve the
+synchronous-migration qualification recorded above. This is not a product deadline,
+performance guarantee, new acknowledgement, whole-PR review or new full 108-path
+review. The [supplemental security index](../../standards/security-review.md#sitting-pr-95-supplemental-native-test-fixtures-2026-10-18)
+owns the separate witness scopes and exclusions. Detailed ledgers remain local
+and Git-ignored.
+
+All production, configuration, dependency, build and CI bytes remain identical to
+accepted corrective source `ec0f3e10`. The exact differences are the two private
+test files and three documentation files; all other **1,764 tracked entries**
+remain identical. R14/R15 and their security sitting retain their exact earlier
+source. The final documentation-only closing delta is checked separately and
+does not inherit a full-source review or execution claim.
+
+Both failed Windows attempts remain retained, with their distinct actual traces.
+Final pushed-head PR/push CI, coverage, SonarCloud, all four same-archive consumers
+and physical filesystem/secrets/usage/wire checks are required publication
+criteria; [PR #95](https://github.com/HodeTech/Relavium/pull/95) owns their live
+result. Source acceptance does not assert a green retry or completed publication.
+Steps **9–19 have NOT STARTED**. No merge, release, new user decision or deferral
+is claimed.

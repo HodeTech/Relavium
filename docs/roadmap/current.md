@@ -141,9 +141,11 @@ independent acceptance. The initial publication checkpoint is
 [PR #95](https://github.com/HodeTech/Relavium/pull/95). A second maintainer systematic
 review at `a5a5d45e` reopened corrective work; its
 [current correction register](phases/phase-2.5.5-hardening-and-remediation.md#pr-95-second-systematic-review-corrections--2026-10-18)
-owns dispositions and remaining gates. New corrections are pending independent
-review and publication checks. Steps 9–19 have not started; check the PR status
-before extending its scope with Step 9. See the [Wave 3 queue](#wave-3--clear-the-ground).
+owns dispositions and remaining gates. Corrective source reviews are complete;
+the two later native test-fixture increments have [separate scoped acceptance](phases/phase-2.5.5-hardening-and-remediation.md#pr-95-supplemental-native-fixture-source-acceptance--2026-10-18).
+Final pushed-head publication checks remain required, with their live results on
+PR #95. Steps 9–19 have not started; check the PR status before extending its scope
+with Step 9. See the [Wave 3 queue](#wave-3--clear-the-ground).
 
 ## Historical W7 implementation checkpoints
 
@@ -1131,7 +1133,9 @@ required publication criteria; PR #95 owns their live result. Source review does
 not imply merge or whole-wave acceptance. The later
 [native Windows admission preparation](phases/phase-2.5.5-hardening-and-remediation.md#pr-95-native-windows-admission-preparation--2026-10-18)
 retains the failed advisory attempt and separate test-preparation review scope;
-production runtime is unchanged and PR #95 owns final publication results.
+production runtime is unchanged. The later [supplemental fixture acceptance](phases/phase-2.5.5-hardening-and-remediation.md#pr-95-supplemental-native-fixture-source-acceptance--2026-10-18)
+records both owned-preparation and native-concurrency review scopes, including
+both failed Windows attempts. PR #95 owns final pushed-head publication results.
 Steps 9–19 have **NOT STARTED** and whole-wave acceptance remains Step 19. Check PR #95 before later implementation commits,
 which extend its review scope. No new decision, credential, billing or provider
 capture gate is introduced.
