@@ -8498,3 +8498,21 @@ cumulative clean rounds, a NEW complete clean security sitting and fresh correct
 CI/coverage/Sonar/platform evidence remain required. The successful `63d8de41`
 same-tarball consumers and Sonar analysis retain their earlier source attribution.
 Steps 9–19 remain unstarted and outside PR #95.
+
+The subsequent general R5 at `8d1e931c` is **COMPLETE CLEAN** for the same
+99 corrective paths / **205** ordered hunks (library 20/58, CLI 43/93,
+tooling/docs 36/54). Independent execution includes 661 library tests,
+562 CLI tests, and 599 tooling plus 157 run/gate cases; overlapping suites are
+not added into a new unique total. Historical document bodies receive identity,
+structure/link/status checks and full semantic review of changed/current clauses,
+not a new historical whole-wave certification. Separate security and fresh
+publication gates remain distinct.
+
+Sonar analysis at that source passes its quality gate but identifies a new
+maintainability recommendation in the argument-vector projector. The duplicate
+credential-value/port decision is extracted into one private helper shared by
+both argv spellings. This preserves the existing redacted bytes and `v4:` domain;
+it introduces no admission, dispatch, compatibility or policy change. The later
+source requires two NEW complete cumulative clean rounds and a complete separate
+defensive security code review. Neither the clean R5 nor earlier remote results
+are relabeled as execution or acceptance of that refactor.
