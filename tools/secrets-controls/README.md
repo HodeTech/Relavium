@@ -116,7 +116,7 @@ transliteration or uniqueness of generated IDs.
 
 Two independent CLI notice controls remove the successful standalone command and
 live `/export` notice sites. Each requires named human and JSON witnesses in
-the complete 17-case command-export or 133-case chat file. The live control also
+the complete 18-case command-export or 133-case chat file. The live control also
 requires its actual interactive transcript/Ink-frame witness. A third control
 restores raw stderr delivery only for the live notice: human/JSON positive cases
 still pass, while the interactive witness must fail with its named assertion marker.
@@ -180,7 +180,7 @@ left-boundary check, split API-header recognition and raw-password recognition.
 Every core phase executes the complete 142-case bounding file; every new LLM phase
 executes the complete 89-case scrubber file. Independent ordinary tooling tests pin
 these inventories, the 277-case overlap cohort, 179-case CLI diagnostic cohort and
-17-case command-export cohort. Actual collection still has to match in every phase.
+18-case command-export cohort. Actual collection still has to match in every phase.
 
 The boundary controls preserve an embedded public-word key-shaped run containing an
 internal LF as well as recognizing a real key after an LF boundary. This makes the
@@ -257,7 +257,7 @@ previous-word prefilter and the rule's own boundary predicate; retaining either
 would leave the tested policy active. Header/key recovery removals still change
 their original-rule boundary only, and all removals retain the same canonical
 matchers and bounded raw/joined standalone visitors. Current collection is 25
-complete files / 1,319 cases, with each control's exact workload and named target
+complete files / 1,320 cases, with each control's exact workload and named target
 checked separately. These are updated declarations and author checks, not new
 physical causal captures or a clean review round. R3 is preserved as NONCLEAN;
 later corrective acceptance belongs to the owning phase register. Prior selected
