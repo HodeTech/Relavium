@@ -972,6 +972,46 @@ describe('PR95 B2 finite split-credential projections', () => {
 
 describe('PR95 B2 projection boundaries and admitted-scale controls', () => {
   it.each([
+    ['x-', '\n', '\t'],
+    ['x-', '\t', '\n'],
+    ['x-goog-', '\n', '\t'],
+    ['x-goog-', '\t', '\n'],
+  ])(
+    'recovers the original finite header boundary after embedded %s (%j)',
+    async (prefix, boundary, split) => {
+      for (const publicTail of ['A', 'B']) {
+        const input = `word${prefix}${boundary}api-${split}key: opaque-Z29; public=${publicTail}`;
+        const expected = `word${prefix}${boundary}[redacted]; public=${publicTail}`;
+        expect(redactSecretShapedText(input), 'SECRETS_B2_HEADER_ORIGINAL_BOUNDARY').toBe(expected);
+        expect(
+          redactSecretShapedValue({ body: input }),
+          'SECRETS_B2_HEADER_ORIGINAL_BOUNDARY',
+        ).toEqual({
+          body: expected,
+        });
+        expect(
+          (await boundForModel(input, BIG, {})).summary,
+          'SECRETS_B2_HEADER_ORIGINAL_BOUNDARY',
+        ).toBe(expected.replace(/\s+/g, ' '));
+        const embedded = `word${prefix}api-${split}key: opaque-Z29; public=${publicTail}`;
+        expect(redactSecretShapedText(embedded), 'SECRETS_B2_HEADER_ORIGINAL_BOUNDARY').toBe(
+          embedded,
+        );
+      }
+    },
+  );
+
+  it('bounds admitted-size failed finite header preparation', () => {
+    const fragment = 'wordx-\tapi-\nkey ';
+    const input = fragment.repeat(Math.floor((8 * 1024 * 1024 - 256) / fragment.length));
+    const started = performance.now();
+    const output = redactSecretShapedText(input);
+    expect(output.length, 'SECRETS_B2_HEADER_PREPARATION').toBe(input.length);
+    expect(output === input, 'SECRETS_B2_HEADER_PREPARATION').toBe(true);
+    expect(performance.now() - started, 'SECRETS_B2_HEADER_PREPARATION').toBeLessThan(5_000);
+  });
+
+  it.each([
     ['sk-proj-', '\n'],
     ['sk-proj-', '\t'],
     ['AIza', '\n'],
@@ -1012,11 +1052,14 @@ describe('PR95 B2 projection boundaries and admitted-scale controls', () => {
       `eyJ${'A'.repeat(10)}.${'B'.repeat(10)}.${'C'.repeat(6)}`,
     ];
     for (const credential of credentials) {
+      expect(redactSecretShapedText(`${credential}; public=A`), 'SECRETS_B2_BOUNDED_PROBE').toBe(
+        '[redacted]; public=A',
+      );
       for (const padding of [0, 63, 64, 65, 128]) {
         const raw = `${credential}${'D'.repeat(padding)}; public=A`;
         for (const separator of ['\n', '\t']) {
           const split = raw.slice(0, 1) + separator + raw.slice(1);
-          // The unchanged raw canonical matcher is the preservation oracle, not a second grammar.
+          // The raw canonical projection is the preservation oracle, not a second grammar.
           expect(redactSecretShapedText(split), 'SECRETS_B2_BOUNDED_PROBE').toBe(
             redactSecretShapedText(raw),
           );
@@ -1044,6 +1087,18 @@ describe('PR95 B2 projection boundaries and admitted-scale controls', () => {
       expect(output === expected, 'SECRETS_B2_BOUNDED_PROBE').toBe(true);
     }
     expect(performance.now() - started, 'SECRETS_B2_BOUNDED_PROBE').toBeLessThan(5_000);
+  });
+
+  it('bounds admitted-size raw hyphen-separated invalid JWT starts and masks a later whole key', () => {
+    const fragment = 'eyJAAAAAAAAAA-';
+    const publicPrefix = fragment.repeat(Math.floor((8 * 1024 * 1024 - 256) / fragment.length));
+    const input = `${publicPrefix}sk-proj-${'C'.repeat(32)}-${'D'.repeat(32)}; public=A`;
+    const expected = `${publicPrefix}[redacted]; public=A`;
+    const started = performance.now();
+    const output = redactSecretShapedText(input);
+    expect(output.length, 'SECRETS_B2_RAW_BOUNDED_PROBE').toBe(expected.length);
+    expect(output === expected, 'SECRETS_B2_RAW_BOUNDED_PROBE').toBe(true);
+    expect(performance.now() - started, 'SECRETS_B2_RAW_BOUNDED_PROBE').toBeLessThan(5_000);
   });
 
   it('preserves dense admitted-size public boundaries with bounded preparation', () => {
