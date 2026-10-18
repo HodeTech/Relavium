@@ -184,15 +184,23 @@ function visitJoinedStandaloneCredentials(
   mask: SecretSpanVisitor,
 ): void {
   const preview = joinedCredentialProbe(joined);
-  const joining = original !== joined;
-  let joinedOffset = 0;
+  const candidates = /(^|[^\w])([A-Za-z])/g;
+  const separators = /[\n\t]+/g;
+  let next = original === joined ? null : separators.exec(original);
+  let removed = 0;
   let matchedUntil = 0;
-  for (let originalOffset = 0; originalOffset < original.length; originalOffset += 1) {
-    const char = original[originalOffset];
-    if (joining && (char === '\n' || char === '\t')) continue;
-    const start = joinedOffset++;
-    if (start < matchedUntil || !/[A-Za-z]/.test(char ?? '')) continue;
-    if (/\w/.test(original[originalOffset - 1] ?? '')) continue;
+  for (
+    let candidate = candidates.exec(original);
+    candidate !== null;
+    candidate = candidates.exec(original)
+  ) {
+    const originalStart = candidate.index + candidate[0].length - 1;
+    while (next !== null && next.index < originalStart) {
+      removed += next[0].length;
+      next = separators.exec(original);
+    }
+    const start = originalStart - removed;
+    if (start < matchedUntil) continue;
     JOINED_STANDALONE_CREDENTIAL.lastIndex = 0;
     if (!JOINED_STANDALONE_CREDENTIAL.test(preview(start))) continue;
     JOINED_STANDALONE_CREDENTIAL.lastIndex = start;
@@ -221,15 +229,25 @@ function redactStandaloneCredentials(text: string): string {
  * Labels are bounded; trailing whitespace cannot contain another label, so failed scans are linear.
  */
 function visitJoinedHeaderLabels(original: string, joined: string, mask: SecretSpanVisitor): void {
+  if (!joined.includes(':')) return;
   const header = /(?:authorization|(?:x-)?api-key|x-goog-api-key)["']?\s*:/iy;
-  let joinedOffset = 0;
+  const candidates = /(^|[^A-Za-z0-9_-])([A-Za-z])/g;
+  const separators = /[\n\t]+/g;
+  let next = separators.exec(original);
+  let removed = 0;
   let matchedUntil = 0;
-  for (let originalOffset = 0; originalOffset < original.length; originalOffset += 1) {
-    const char = original[originalOffset];
-    if (char === '\n' || char === '\t') continue;
-    const start = joinedOffset++;
-    if (start < matchedUntil || !/[A-Za-z]/.test(char ?? '')) continue;
-    if (/[A-Za-z0-9_-]/.test(original[originalOffset - 1] ?? '')) continue;
+  for (
+    let candidate = candidates.exec(original);
+    candidate !== null;
+    candidate = candidates.exec(original)
+  ) {
+    const originalStart = candidate.index + candidate[0].length - 1;
+    while (next !== null && next.index < originalStart) {
+      removed += next[0].length;
+      next = separators.exec(original);
+    }
+    const start = originalStart - removed;
+    if (start < matchedUntil) continue;
     header.lastIndex = start;
     const match = header.exec(joined);
     if (match === null) continue;
@@ -252,19 +270,22 @@ function redactJoinedCredentialSpans(
   if (!/[\n\t]/.test(text)) return text;
   const joined = text.replace(/[\n\t]+/g, '');
   const parts: string[] = [];
-  let originalOffset = 0;
-  let joinedOffset = 0;
+  const separators = /[\n\t]+/g;
+  let next = separators.exec(text);
+  let removed = 0;
   let copied = 0;
-  function advance(target: number): number {
-    while (joinedOffset < target && originalOffset < text.length) {
-      const char = text[originalOffset++];
-      if (char !== '\n' && char !== '\t') joinedOffset += 1;
+  function advance(target: number, includeAtBoundary = false): number {
+    while (
+      next !== null &&
+      (next.index - removed < target || (includeAtBoundary && next.index - removed === target))
+    ) {
+      removed += next[0].length;
+      next = separators.exec(text);
     }
-    return originalOffset;
+    return target + removed;
   }
   visit(joined, (start, end, replacement) => {
-    let originalStart = advance(start);
-    while (text[originalStart] === '\n' || text[originalStart] === '\t') originalStart += 1;
+    const originalStart = advance(start, true);
     const originalEnd = advance(end);
     if (boundary?.test(text[originalStart - 1] ?? '')) return;
     if (!/[\n\t]/.test(text.slice(originalStart, originalEnd))) return;

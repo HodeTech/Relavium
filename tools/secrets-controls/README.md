@@ -246,6 +246,12 @@ independent and retains its required witnesses. Its removal now skips the actual
 remaining-span loop: the new outer raw scrubber can already mask ordinary matches,
 so the former conditional early-return mutation would leave this policy active.
 
+Core candidate and separator runs now use native scans while retaining the same
+canonical matcher and bounded JWT preview. The original-boundary removals target
+the actual native candidate guards; the combined removal also drops the mapper
+guard. An LLM native absence preflight derives from the existing canonical rule,
+so it adds no second credential grammar or acceptance authority.
+
 The LLM original-boundary removal now removes both the numeric coarse
 previous-word prefilter and the rule's own boundary predicate; retaining either
 would leave the tested policy active. Header/key recovery removals still change
@@ -253,9 +259,9 @@ their original-rule boundary only, and all removals retain the same canonical
 matchers and bounded raw/joined standalone visitors. Current collection is 25
 complete files / 1,319 cases, with each control's exact workload and named target
 checked separately. These are updated declarations and author checks, not new
-physical causal captures or a clean review round. R3 remains NONCLEAN until its
-corrections receive new independent acceptance; prior selected `7e9096a8` captures
-retain their older source/workload attribution.
+physical causal captures or a clean review round. R3 is preserved as NONCLEAN;
+later corrective acceptance belongs to the owning phase register. Prior selected
+`7e9096a8` captures retain their older source/workload attribution.
 
 The current 57-control / 171-phase full declaration projects 1,033 retained files
 (57 × 18 + 7) under the unchanged 2,000-file / 64-MiB export bounds. This is a capacity
@@ -265,6 +271,11 @@ acceptance.
 
 The thin entry point uses the same coordinator, outcome and bounded process join
 as the filesystem family in [causal-controls](../causal-controls/README.md).
+The provider-header diagnostic control pins the store's fixed throwable message
+as well as the separately sanitized rendered bytes. Its named assertion also
+owns the store-message check: a native accessor-backed `Error.stack` is correctly
+unread by the safe renderer, so public masking alone cannot certify the store's
+content-free failure boundary. The control identity, cases and witnesses remain.
 Source manifests physically capture both the shared tooling and this family,
 including helpers and declarations. Exact file membership/hashes, installed
 dependencies, HEAD/index, target body evaluations, inventories and restoration are

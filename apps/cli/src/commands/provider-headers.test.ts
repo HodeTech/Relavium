@@ -304,7 +304,11 @@ describe('ADR-0108 provider-header command projections', () => {
             assertNoLegacy(rendered.err(), 'FS_CAUSAL_PROVIDER_HEADER_DIAGNOSTIC');
             expect(isProviderHeaderPolicyError(error)).toBe(policy);
             expect(error.name).toBe(policy ? 'ProviderHeaderPolicyError' : 'TypeError');
-            expect(error.message).toBe(policy ? POLICY_MESSAGE : CORRUPT_MESSAGE);
+            // Pin the store boundary even when native Error.stack is an accessor and the
+            // safe fixed renderer correctly declines to read it. Both boundaries must hold.
+            expect(error.message, 'FS_CAUSAL_PROVIDER_HEADER_DIAGNOSTIC').toBe(
+              policy ? POLICY_MESSAGE : CORRUPT_MESSAGE,
+            );
             expect(Object.hasOwn(error, 'cause')).toBe(false);
             const ownProperties = Object.getOwnPropertyNames(error).map((key) => {
               const value: unknown = Object.getOwnPropertyDescriptor(error, key)?.value;

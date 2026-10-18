@@ -111,6 +111,10 @@ function hasSplitCredential(text: string, joined: string, rule: SecretRule): boo
   if (rule.boundary === undefined) return false;
   const canonical = rule.joinedPattern ?? rule.pattern;
   const source = rule.joinedPattern === undefined ? canonical.source.slice(2) : canonical.source;
+  // Absence under the same boundary-free canonical matcher proves there is no joined
+  // candidate. Presence still requires the original-boundary and split checks below.
+  // Native scanning avoids a JS/coverage branch for every byte of unrelated large text.
+  if (!new RegExp(source, canonical.flags).test(joined)) return false;
   const pattern = new RegExp(source, canonical.flags.replace('g', 'y'));
   let originalOffset = 0;
   let joinedOffset = 0;
