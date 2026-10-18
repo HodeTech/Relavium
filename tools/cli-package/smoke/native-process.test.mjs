@@ -37,7 +37,7 @@ function observedGroupRefusal() {
       signal: null,
       stdout: '{"type":"session:cancelled"}\n',
       stderr:
-        '{"type":"error","code":"cli_internal","message":"An unexpected CLI failure occurred. Use --verbose for safe diagnostics. Inspect existing work before repeating paid or effectful operations."}\n',
+        '{"type":"error","code":"cli_internal","message":"An unexpected CLI failure occurred. Inspect existing work before repeating paid or effectful operations."}\n',
     },
     observed: [
       { operation: 'native-target-spawn', pid: 40, detached: true, exitCallbacksBeforeEntry: 1 },
@@ -374,7 +374,7 @@ for (const [mode, code, message] of [
   [
     'bootstrap-fatal',
     'cli_internal',
-    'An unexpected CLI failure occurred. Use --verbose for safe diagnostics. Inspect existing work before repeating paid or effectful operations.',
+    'An unexpected CLI failure occurred. Inspect existing work before repeating paid or effectful operations.',
   ],
   [
     'bootstrap-output',

@@ -28,7 +28,10 @@ or escaping tar entries, unbundled internal imports, undeclared external package
 and unanalyzable runtime loading unless explicitly reviewed/allowlisted.
 Chunk layout must preserve real installed `../drizzle` resolution. Runtime files,
 migrations, package metadata and existing documented license/changelog assets
-form an explicit public allowlist. Only the entry has its source hashbang and executable mode 0755; runtime chunks
+form an explicit public allowlist. Public package validation independently pins
+`bin.relavium` to `./dist/index.js` and `engines.node` to the [ADR-0067](../../decisions/0067-node-supported-floor-22-reaffirm-better-sqlite3.md)
+public floor `>=22`; copying the source manifest into a receipt is insufficient. Archive
+validation checks those fields against the same fixed contract. Only the entry has its source hashbang and executable mode 0755; runtime chunks
 have no hashbang and mode 0644. Remove the global tsup banner before emission,
 not a first-line rewrite after mapping. Validate tar modes and every output.
 No source TS/tree, map, private inventory,
@@ -125,8 +128,19 @@ the finalized JS and canonical migrations. Its exact public allowlist and native
 tar-header checks apply on every consumer platform. The consumer installs those
 verified bytes outside the workspace with pinned pnpm and the existing lifecycle
 allowlist, verifies installed public files, and records actual dependency versions.
+It invokes the installed `node_modules/.bin/relavium` command for `--help` and
+`--version` (the platform command wrapper on Windows), checking successful output.
+These checks exercise the package's declared executable installation. The deeper
+untouched-entry smoke remains a distinct behavioral control. A consumer success
+receipt requires `installedCommand.help` and `installedCommand.version` both true.
 Dependency installation uses the public registry; provider transport and keychain
 API controls use synthetic data and refusals.
+
+The second PR #95 review adds these executable/engine pins and installed-command
+controls. Prior receipts, including `a5a5d45e`-era evidence, retain their historical
+source and schema attribution; they do not prove the new controls. Corrected-source
+same-archive platform execution and independent acceptance remain pending in the
+[second correction register](../../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#pr-95-second-systematic-review-corrections--2026-10-18).
 
 Installed native smoke and SQLite reads run in an owned bounded child. The
 installation cleanup owner joins actual child closure before removing the tree;

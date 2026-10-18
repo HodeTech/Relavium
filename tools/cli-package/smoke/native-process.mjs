@@ -140,7 +140,7 @@ export function assertObservedGroupRefusal({ platform, mode, result, observed, r
       type: 'error',
       code: 'cli_internal',
       message:
-        'An unexpected CLI failure occurred. Use --verbose for safe diagnostics. Inspect existing work before repeating paid or effectful operations.',
+        'An unexpected CLI failure occurred. Inspect existing work before repeating paid or effectful operations.',
     },
   ]);
   assert.equal(
@@ -267,7 +267,7 @@ export function assertNativeBootstrapDiagnostic(diagnostics, mode) {
       type: 'error',
       code: 'cli_internal',
       message:
-        'An unexpected CLI failure occurred. Use --verbose for safe diagnostics. Inspect existing work before repeating paid or effectful operations.',
+        'An unexpected CLI failure occurred. Inspect existing work before repeating paid or effectful operations.',
     },
     'bootstrap-output': {
       type: 'error',
@@ -594,7 +594,8 @@ export async function assertInstalledNativeProcesses(context, { bootstrap = fals
           );
           const closed = observed.find((item) => item.operation === 'native-target-actual-close');
           assert.ok(closed);
-          assert.equal(nativePidGone(started[0].pid), true);
+          assert.equal(closed.pid, started[0].pid);
+          // Actual close joins this creation. Probing the retired PID number could sample a reused PID.
           if (mode === 'leader-exit')
             assert.equal(
               closed.code,
@@ -634,7 +635,10 @@ export async function assertInstalledNativeProcesses(context, { bootstrap = fals
               0,
               'The actual verified taskkill request failed',
             );
-            assert.equal(nativePidGone(helpers[0].pid), true);
+            assert.equal(
+              observed.find((item) => item.operation === 'native-helper-actual-close').pid,
+              helpers[0].pid,
+            );
           } else assert.equal(helpers.length, 0, 'Finite exit cleanup must not start a helper');
         }
         Object.assign(outcome, {

@@ -39,7 +39,9 @@ export async function withFixture(run) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'relavium-bootstrap-')));
   try {
     const home = join(root, 'home'),
-      workspace = join(root, 'workspace');
+      workspace = join(root, 'workspace'),
+      temporary = join(root, 'temporary');
+    mkdirSync(temporary);
     for (const dir of [join(home, '.relavium', 'catalog'), join(workspace, '.relavium')])
       mkdirSync(dir, { recursive: true });
     const poison = 'synthetic-bootstrap-file-canary-5631\n[[invalid TOML JSON YAML';
@@ -52,12 +54,13 @@ export async function withFixture(run) {
     ])
       writeFileSync(path, poison);
     const absentRoot = join(root, 'absent-grant');
-    const protectedRoots = [home, workspace, absentRoot];
-    const before = protectedRoots.slice(0, 2).map(snapshot);
+    const protectedRoots = [home, workspace, temporary, absentRoot];
+    const before = protectedRoots.slice(0, 3).map(snapshot);
     const fixture = {
       root,
       home,
       workspace,
+      temporary,
       absentRoot,
       async child(args, { failRuntimeUrl, debug = false, bounds } = {}) {
         const witness = join(root, `witness-${fixture.count++}.ndjson`);
@@ -67,6 +70,9 @@ export async function withFixture(run) {
           USERPROFILE: home,
           XDG_CONFIG_HOME: home,
           XDG_CACHE_HOME: home,
+          TMPDIR: temporary,
+          TMP: temporary,
+          TEMP: temporary,
           NO_COLOR: '1',
           RELAVIUM_BOOTSTRAP_WITNESS_OPTIONS: JSON.stringify({
             witness,
@@ -74,7 +80,7 @@ export async function withFixture(run) {
             failRuntimeUrl,
           }),
         };
-        for (const key of ['PATH', 'SystemRoot', 'WINDIR', 'TEMP', 'TMP'])
+        for (const key of ['PATH', 'SystemRoot', 'WINDIR'])
           if (process.env[key] !== undefined) env[key] = process.env[key];
         if (debug) env.RELAVIUM_DEBUG = '1';
         const result = await spawnBounded(
@@ -100,7 +106,7 @@ export async function withFixture(run) {
     };
     const result = await run(fixture);
     assert.deepEqual(
-      protectedRoots.slice(0, 2).map(snapshot),
+      protectedRoots.slice(0, 3).map(snapshot),
       before,
       'application files or directories changed',
     );

@@ -5,7 +5,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { performance } from 'node:perf_hooks';
 import { createHash } from 'node:crypto';
 import { withFixture, toEntryUrl } from './child.mjs';
-import { metaCases, grammarCases, BOOTSTRAP_CONTROL_COUNT } from './inventory.mjs';
+import { metaCases, grammarCases, controlName, BOOTSTRAP_CONTROL_COUNT } from './inventory.mjs';
 import { assertWitness, importFailureCanary } from './policy.mjs';
 
 const repository = fileURLToPath(new URL('../../', import.meta.url));
@@ -79,7 +79,7 @@ export async function runBootstrap(packageRoot = join(repository, 'apps/cli')) {
             `${name}: global flags changed existing human meta bytes`,
           );
           records.push({
-            name,
+            name: controlName(name, json, rootGrant),
             json,
             absentAbsoluteRoot: rootGrant,
             exitCode: result.code,
@@ -99,7 +99,7 @@ export async function runBootstrap(packageRoot = join(repository, 'apps/cli')) {
         assert.notEqual(result.stderr, '', name);
         if (nonEcho !== undefined)
           assert.ok(!result.stderr.includes(nonEcho), `${name}: unsafe argument echoed`);
-        records.push({ name, json, exitCode: result.code });
+        records.push({ name: controlName(name, json), json, exitCode: result.code });
       }
     }
 
@@ -157,7 +157,12 @@ export async function runBootstrap(packageRoot = join(repository, 'apps/cli')) {
           0,
           name,
         );
-        records.push({ name, json, exitCode: result.code, refusedUrl: failRuntimeUrl });
+        records.push({
+          name: controlName(name, json),
+          json,
+          exitCode: result.code,
+          refusedUrl: failRuntimeUrl,
+        });
       }
     }
   });
@@ -167,6 +172,11 @@ export async function runBootstrap(packageRoot = join(repository, 'apps/cli')) {
     'compiled graph changed during bootstrap controls',
   );
   assert.equal(records.length, BOOTSTRAP_CONTROL_COUNT, 'complete bootstrap control inventory');
+  assert.equal(
+    new Set(records.map(({ name }) => name)).size,
+    BOOTSTRAP_CONTROL_COUNT,
+    'unique bootstrap control names',
+  );
   return {
     kind: 'compiled-cli-bootstrap',
     node: process.version,

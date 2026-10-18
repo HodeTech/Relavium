@@ -1,10 +1,10 @@
 # Secrets causal controls
 
 `pnpm check:secrets-mutations` runs the declared Step 3 secrets foundation,
-Step 4 first-run input matrix, Step 5 snapshot/export and Step 7 provider-header controls on physical source
+Step 4 first-run input matrix, Step 5 snapshot/export, Step 7 provider-header and PR #95 B2 redaction controls on physical source
 copies. `--mechanism <declared-id>`
 supports diagnosis only; selected runs retain `complete: false`. The current manifest
-declares **41 independent controls and 277 required named assertion witnesses**.
+declares **51 independent controls and 302 required named assertion witnesses**.
 These counts describe the workload; a declaration is not evidence that its removal
 passed. Actual fixed/removal/restored results belong to the coordinator's summary.
 
@@ -28,8 +28,11 @@ Ordinary diagnostics without a residual credential retain their in-place redacti
 and benign text.
 
 The prefix-before-redaction control removes the shared scrubber's whitespace join
-from each rule's original diagnostic probe, leaving split key and URL-userinfo
-evidence vulnerable to overlapping query redaction. It requires 58 named assertion
+from each rule's remaining diagnostic spans, leaving space-separated incomplete key
+and URL-userinfo evidence vulnerable to overlapping query redaction. The separate
+LF/TAB probe stays active. Its pre-scrubbed verbose-stack witness exercises LF, TAB
+and space/CR/LF/TAB forms so the broader residual mechanism remains independently
+load-bearing. It requires 58 named assertion
 witnesses: eight LLM query-family cases, both CLI
 sanitizer functions for all eight families, four actual human/JSON renderer modes
 and an isolated verbose stack already passed through the shared scrubber, plus 29
@@ -45,10 +48,10 @@ other replacement erases its evidence, followed by the finite query replacement.
 The views include the canonical terminal-normalized text and a whitespace-joined
 residual view. The split literal query name remains an independent CLI obligation.
 Across the thirteen Step 3 controls, 191 named assertion witnesses are required. The shared
-overlap controls collect 259 tests across the LLM, CLI sanitizer and renderer files.
-When a long prefix was already completely masked, its following suffix remains an
-existing classification ambiguity; this adds no universal secret-detection claim or
-new deferral.
+overlap controls collect 261 tests across the LLM, CLI sanitizer and renderer files.
+The B2 controls below pin the conservative LF/TAB continuation rule when a first
+fragment already meets a key-length floor. Broader whitespace residual checks retain
+their finite scope; neither mechanism claims universal secret detection.
 
 The eleven Step 4 controls remove separate production mechanisms:
 
@@ -113,7 +116,7 @@ transliteration or uniqueness of generated IDs.
 
 Two independent CLI notice controls remove the successful standalone command and
 live `/export` notice sites. Each requires named human and JSON witnesses in
-the complete 16-case command-export or 133-case chat file. The live control also
+the complete 17-case command-export or 133-case chat file. The live control also
 requires its actual interactive transcript/Ink-frame witness. A third control
 restores raw stderr delivery only for the live notice: human/JSON positive cases
 still pass, while the interactive witness must fail with its named assertion marker.
@@ -167,6 +170,33 @@ their fixed-error and own-property checks. These controls cover factory composit
 command core and rendering, not full top-level parser/native composition. Legacy
 plaintext remains sensitive in SQLite/WAL/backups; logical empty-map clearing proves
 neither physical erasure nor functional keychain-reference headers.
+
+The ten PR #95 B2 controls require 25 additional named assertions and retain all
+41 previous control identities and their required witnesses. Six core controls remove
+modern `sk-` body characters, joined-span application, the original-text left-boundary
+check, split scheme labels, split API-header labels and raw `?`/`#` password recognition
+independently. Four LLM controls remove the before-masking LF/TAB probe, its original
+left-boundary check, split API-header recognition and raw-password recognition.
+Every core phase executes the complete 129-case bounding file; every new LLM phase
+executes the complete 79-case scrubber file. Independent ordinary tooling tests pin
+these inventories, the 261-case overlap cohort, 163-case CLI diagnostic cohort and
+17-case command-export cohort. Actual collection still has to match in every phase.
+
+The boundary controls preserve an embedded public-word key-shaped run containing an
+internal LF as well as recognizing a real key after an LF boundary. This makes the
+original-text boundary check load-bearing rather than relying on a no-split case that
+would survive its removal. Other witnesses require complete recognized spans and
+retain public tails, host contacts and the full-value identity policy. The finite
+LF/TAB continuation and malformed-userinfo policy is documented in the canonical
+[effect-journal contract](../../docs/reference/shared-core/effect-journal.md#11-secrets-what-a-row-may-hold).
+An eight-MiB permanent fixture checks completion and whole-span behavior without a
+machine-speed threshold; these controls do not certify arbitrary obfuscation.
+
+The current 51-control / 153-phase full declaration projects 925 retained files
+(51 × 18 + 7) under the unchanged 2,000-file / 64-MiB export bounds. This is a capacity
+calculation, not a measured full capture. Historical 41-control captures retain their
+original source and cohort attribution; selected B2 captures are not full-family
+acceptance.
 
 The thin entry point uses the same coordinator, outcome and bounded process join
 as the filesystem family in [causal-controls](../causal-controls/README.md).

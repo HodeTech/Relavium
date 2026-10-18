@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { Buffer } from 'node:buffer';
-import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { delimiter, extname, isAbsolute, join } from 'node:path';
 import { clearTimeout, setTimeout } from 'node:timers';
 
@@ -141,4 +141,31 @@ export function runCommand(command, args, options = {}) {
 export async function runPnpm(args, options) {
   const pnpm = resolvePnpm();
   return runCommand(pnpm.command, [...pnpm.prefix, ...args], options);
+}
+
+/** Exercise the package manager's actual POSIX/Windows command shim in the owned installation. */
+export async function exerciseInstalledCommand(home, version) {
+  const shim = join(
+    home,
+    'node_modules',
+    '.bin',
+    process.platform === 'win32' ? 'relavium.cmd' : 'relavium',
+  );
+  const stat = lstatSync(shim);
+  assert.ok(stat.isFile() || stat.isSymbolicLink(), 'PACKED_CLI_INSTALLED_COMMAND_MISSING');
+  const options = {
+    cwd: home,
+    env: isolatedEnvironment(home),
+    timeoutMs: 30_000,
+    maxBytes: 128 * 1024,
+  };
+  // pnpm exec supports the actual POSIX/Windows shim without substituting node <entry>.
+  // The absolute shim path prevents an ambient PATH command from filling a broken installation.
+  const actualVersion = await runPnpm(['exec', shim, '--version'], options);
+  assert.equal(actualVersion.stdout, `${version}\n`, 'PACKED_CLI_INSTALLED_COMMAND_VERSION');
+  assert.equal(actualVersion.stderr, '', 'PACKED_CLI_INSTALLED_COMMAND_VERSION_STDERR');
+  const help = await runPnpm(['exec', shim, '--help'], options);
+  assert.match(help.stdout, /^Usage: relavium/u, 'PACKED_CLI_INSTALLED_COMMAND_HELP');
+  assert.equal(help.stderr, '', 'PACKED_CLI_INSTALLED_COMMAND_HELP_STDERR');
+  return { help: true, version: true };
 }

@@ -20,6 +20,9 @@ observes one actual prepack build-start record, checks the emitted graph, and
 independently inspects the produced gzip/USTAR bytes. The inspector never extracts
 the archive. Every JS and migration byte must match the finalized build and
 canonical migrations; package metadata must match pnpm's publication transform.
+Both receipt and archive validation independently pin the public `bin.relavium`
+entry to `dist/index.js` and the ADR-0067 published `engines.node` floor to `>=22`.
+The producer's own current Node major follows `.nvmrc`.
 An exact public allowlist, checksums, modes, hashbangs, byte ceilings and negative
 controls exclude links, traversal, duplicates, extra files, maps and private build
 inventories. This deliberately supports the pinned packer's dialect, not general tar.
@@ -37,6 +40,10 @@ public registry packages; runtime provider responses are synthetic and keychain 
 access is refused. No workspace install, product build, repack, provider request or
 credential is used by a consumer. Actual installed dependency versions and metadata
 digests are recorded; a workspace resolution is never substituted.
+The consumer also executes the actual installed command shim through `pnpm exec`
+for `--version` and `--help`, including the generated `.cmd` entry on Windows.
+Missing or broken shims and wrong output refuse; both passes are required in the
+public consumer receipt independently of the direct-entry behavior cases.
 
 Each consumer repeats the 177 untouched-entry bootstrap controls and the ten
 [installed behavior cases](smoke/README.md). Detailed local reports remain in the
@@ -87,6 +94,9 @@ Required PR/push consumers use current `.nvmrc` Linux/macOS/Windows and exact No
 matching receipts plus successful pack/matrix jobs. Missing, failed, skipped,
 cancelled, duplicate, wrong-runtime or mismatched evidence refuses. The required
 `ci` job also checks the aggregate's success under `always()`.
+CI pack, consumer and aggregate jobs clear inherited remote-cache credentials.
+The aggregate explicitly checks pack and matrix outcomes before artifact downloads,
+so a failed pack cannot turn an absent artifact name into an unrelated layout error.
 
 Artifacts are named by originating run and pack attempt. A failed-consumer retry
 reuses that original tarball and preserves successful same-artifact receipts; it

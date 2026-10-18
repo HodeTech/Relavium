@@ -10,6 +10,7 @@ const expectedPackage = {
   version: '0.1.1',
   type: 'module',
   bin: { relavium: 'dist/index.js' },
+  engines: { node: '>=22' },
   dependencies: { commander: '^14.0.0' },
   devDependencies: { '@relavium/core': '0.0.0' },
 };
@@ -339,6 +340,35 @@ test('manifest rejects runtime drift and unresolved/private runtime dependencies
     );
   }
 });
+
+for (const [changed, code] of [
+  ...[
+    undefined,
+    {},
+    'dist/index.js',
+    { relavium: './dist/missing.js' },
+    { relavium: '../dist/index.js' },
+    { relavium: './dist/../dist/index.js' },
+    { relavium: './dist/index.js', other: './dist/index.js' },
+  ].map((bin) => [{ bin }, 'MANIFEST_BIN']),
+  ...[undefined, {}, { node: '>=20' }, { node: '>=24' }, { node: '>=22.1' }].map((engines) => [
+    { engines },
+    'MANIFEST_NODE_FLOOR',
+  ]),
+])
+  test(`archive independently refuses public command/floor drift: ${JSON.stringify(changed)}`, () => {
+    const badPackage = JSON.parse(JSON.stringify({ ...expectedPackage, ...changed }));
+    const files = inventory();
+    files.set('package/package.json', Buffer.from(JSON.stringify(badPackage)));
+    assert.throws(
+      () =>
+        inspectPackageArchive(gzipSync(tar(files)), {
+          expectedFiles: files,
+          expectedPackage: badPackage,
+        }),
+      (error) => error instanceof PackageArchiveError && error.code === code,
+    );
+  });
 
 test('portable install paths refuse Windows device names and case aliases', () => {
   const aliases = inventory();

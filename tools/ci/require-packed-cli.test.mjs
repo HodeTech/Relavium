@@ -13,6 +13,7 @@ const reportsDirectory = '${{ runner.temp }}/packed-cli-reports';
 const packCommand = `node tools/cli-package/pack.mjs "${artifactDirectory}"`;
 const consumeCommand = `node tools/cli-package/consume.mjs "${artifactDirectory}" "${reportDirectory}"`;
 const aggregateCommand = `node tools/cli-package/aggregate.mjs "${artifactDirectory}" "${reportsDirectory}"`;
+const outcomesCommand = `node --input-type=module -e "import { requirePackageJobResults } from './tools/cli-package/binding.mjs'; requirePackageJobResults(JSON.parse(process.env.RELAVIUM_PACKAGE_JOB_RESULTS ?? 'null'));"`;
 const actions = {
   checkout: 'actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5',
   pnpm: 'pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320',
@@ -97,7 +98,7 @@ function checkAggregate(job, packId, consumerId) {
   });
   assert.deepEqual(
     job.steps.filter((step) => step.run).map((step) => step.run),
-    [aggregateCommand],
+    packId === 'pack-cli' ? [outcomesCommand, aggregateCommand] : [aggregateCommand],
   );
   const validator = job.steps.find((step) => step.run === aggregateCommand);
   assert.deepEqual(validator.env, {
@@ -117,7 +118,62 @@ function checkAggregate(job, packId, consumerId) {
     ],
   );
   assert.ok(downloads.every((step) => job.steps.indexOf(step) < job.steps.indexOf(validator)));
+  if (packId === 'pack-cli') {
+    const outcomes = job.steps.find((step) => step.run === outcomesCommand);
+    assert.deepEqual(outcomes.env, { RELAVIUM_PACKAGE_JOB_RESULTS: '${{ toJSON(needs) }}' });
+    assert.ok(downloads.every((step) => job.steps.indexOf(outcomes) < job.steps.indexOf(step)));
+  }
 }
+
+function checkUnprivilegedPackageJobs(workflow) {
+  for (const id of ['pack-cli', 'packed-cli-consumer', 'packed-cli']) {
+    const job = workflow.jobs[id];
+    for (const key of ['TURBO_TOKEN', 'TURBO_TEAM']) {
+      assert.equal(job.env?.[key], '', `${id} must clear inherited ${key}`);
+      for (const step of job.steps)
+        if (Object.hasOwn(step.env ?? {}, key))
+          assert.equal(step.env[key], '', `${id} step reintroduced ${key}`);
+    }
+  }
+}
+
+test('all PR-controlled installed-package jobs clear inherited remote-cache credentials', () => {
+  checkUnprivilegedPackageJobs(readWorkflow('ci'));
+});
+
+for (const id of ['pack-cli', 'packed-cli-consumer', 'packed-cli'])
+  for (const key of ['TURBO_TOKEN', 'TURBO_TEAM'])
+    for (const value of [undefined, '${{ secrets.REMOTE_CACHE_CREDENTIAL }}'])
+      test(`package privilege guard refuses ${id} ${key}: ${String(value)}`, () => {
+        const workflow = readWorkflow('ci');
+        workflow.jobs[id].env[key] = value;
+        assert.throws(() => checkUnprivilegedPackageJobs(workflow));
+      });
+
+for (const [name, mutate] of [
+  ['removed outcome gate', (job, gate) => job.steps.splice(job.steps.indexOf(gate), 1)],
+  [
+    'outcome gate after downloads',
+    (job, gate) => {
+      job.steps.splice(job.steps.indexOf(gate), 1);
+      job.steps.push(gate);
+    },
+  ],
+  [
+    'disabled outcome gate',
+    (_job, gate) => {
+      gate.if = '${{ false }}';
+    },
+  ],
+])
+  test(`aggregate refuses ${name}`, () => {
+    const job = readWorkflow('ci').jobs['packed-cli'];
+    mutate(
+      job,
+      job.steps.find((step) => step.run === outcomesCommand),
+    );
+    assert.throws(() => checkAggregate(job, 'pack-cli', 'packed-cli-consumer'));
+  });
 
 for (const [name, packId, consumerId] of [
   ['ci', 'pack-cli', 'packed-cli-consumer'],

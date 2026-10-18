@@ -164,6 +164,13 @@ function manifest(bytes, expected) {
   ) {
     refuse('MANIFEST_RUNTIME');
   }
+  if (
+    !isRecord(parsed.bin) ||
+    Object.keys(parsed.bin).length !== 1 ||
+    (parsed.bin.relavium !== 'dist/index.js' && parsed.bin.relavium !== './dist/index.js')
+  )
+    refuse('MANIFEST_BIN');
+  if (!isRecord(parsed.engines) || parsed.engines.node !== '>=22') refuse('MANIFEST_NODE_FLOOR');
   for (const field of ['dependencies', 'optionalDependencies', 'peerDependencies']) {
     const dependencies = parsed[field];
     if (dependencies === undefined) continue;

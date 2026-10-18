@@ -48,6 +48,51 @@ const nativeModes = ['human', '--verbose', '--json', '--json --verbose'];
 const nativeSuccess = (mode) =>
   `delivers one verbatim default-stdin read through real engine start and persists only masks (${mode})`;
 
+const coreProjection = 'packages/core/src/tools/bounding.ts';
+const coreProjectionCases = ['packages/core/src/tools/bounding.test.ts'];
+const coreProjectionMarker = 'SECRETS_B2_CORE_PROJECTION';
+const diagnosticMarker = 'SECRETS_B2_LLM_DIAGNOSTIC';
+const splitCoreHeaders = ['\n', '\t'].map(
+  (separator) =>
+    `masks split schemes, finite header names and URL userinfo (${JSON.stringify(separator)})`,
+);
+const corePasswords = ['?', '#'].map(
+  (separator) => `masks raw ${separator} within password userinfo and preserves contact queries`,
+);
+const diagnosticPasswords = ['?', '#'].map(
+  (separator) => `masks raw ${separator} in userinfo while retaining host contact queries`,
+);
+const rawPasswordAssignments = ['?', '#'].map(
+  (separator) =>
+    `preserves public ${separator} tails after userinfo and masks raw password assignments`,
+);
+function coreProjectionControl(id, before, after, targets) {
+  return control(
+    id,
+    coreProjection,
+    before,
+    after,
+    coreProjectionCases,
+    129,
+    targets[0],
+    coreProjectionMarker,
+    targets.slice(1).map((target) => ({ target, marker: coreProjectionMarker })),
+  );
+}
+function diagnosticControl(id, before, after, targets) {
+  return control(
+    id,
+    scrubSecretsLeaf,
+    before,
+    after,
+    ['packages/llm/src/scrub-secrets.test.ts'],
+    79,
+    targets[0],
+    diagnosticMarker,
+    targets.slice(1).map((target) => ({ target, marker: diagnosticMarker })),
+  );
+}
+
 export const mutations = [
   control(
     'stdin-cap',
@@ -163,7 +208,7 @@ export const mutations = [
     `  const scrubbed = scrubSecrets(normalized);
   if (scrubbed !== normalized) return scrubbed;`,
     ['apps/cli/src/render/sanitize.test.ts', 'apps/cli/src/process/render-error.test.ts'],
-    161,
+    163,
     "SECRETS_CAUSAL_RESIDUAL_SCRUB protects 'client_secret' beside a split credential: 'multiline'",
     'SECRETS_CAUSAL_RESIDUAL_SCRUB',
     [
@@ -198,14 +243,14 @@ export const mutations = [
   control(
     'prefix-before-redaction',
     scrubSecretsLeaf,
-    "    const joined = remaining.replace(/\\s+/g, '');",
-    '    const joined = remaining;',
+    "    const residual = remaining.replace(/\\s+/g, '');",
+    '    const residual = remaining;',
     [
       'packages/llm/src/llm-error.test.ts',
       'apps/cli/src/render/sanitize.test.ts',
       'apps/cli/src/process/render-error.test.ts',
     ],
-    259,
+    261,
     'SECRETS_CAUSAL_PREFIX_ORDER protects client_secret before overlapping query redaction',
     'SECRETS_CAUSAL_PREFIX_ORDER',
     [
@@ -254,7 +299,7 @@ export const mutations = [
     '  return stripTerminalControls(text);',
     '  return text;',
     overlapFiles,
-    259,
+    261,
     `${overlapMarker} protects client_secret normalized key before query redaction`,
     overlapMarker,
     overlapWitnesses('normalized key').filter(
@@ -269,7 +314,7 @@ export const mutations = [
     '  return scrubQuerySecrets(scrubNonQuerySecrets(text));',
     '  return scrubNonQuerySecrets(scrubQuerySecrets(text));',
     overlapFiles,
-    259,
+    261,
     `${overlapMarker} protects client_secret Bearer before query redaction`,
     overlapMarker,
     [
@@ -510,7 +555,7 @@ export const mutations = [
     '    deps.io.writeErr(SESSION_EXPORT_REVIEW_NOTICE);\n',
     '',
     ['apps/cli/src/commands/chat-export.test.ts'],
-    16,
+    17,
     "reports fixed continuity and review notice on stderr after successful 'human' export",
     'W2_EXPORT_COMMAND_NOTICE',
     [
@@ -708,5 +753,75 @@ export const mutations = [
         marker: 'FS_CAUSAL_PROVIDER_HEADER_DIAGNOSTIC',
       },
     ],
+  ),
+  // PR #95 B2: independent modern-prefix, joined-view, boundary and malformed-userinfo sites.
+  coreProjectionControl(
+    'core-modern-key-alphabet',
+    String.raw`sk-(?=[\w-]{16})[\w-]+`,
+    String.raw`sk-(?=[A-Za-z0-9]{16})[A-Za-z0-9]+`,
+    ['sk-proj-', 'sk-svcacct-', 'sk-ant-', 'sk-AAAA'].map(
+      (prefix) => `masks the complete modern provider shape ${prefix}`,
+    ),
+  ),
+  coreProjectionControl(
+    'core-joined-credential-spans',
+    '  visit(joined, (start, end, replacement) => {',
+    "  visit('', (start, end, replacement) => {",
+    [
+      'masks every LF/TAB split without losing the surrounding public identity',
+      ...splitCoreHeaders,
+    ],
+  ),
+  coreProjectionControl(
+    'core-joined-original-boundary',
+    "    if (boundary?.test(text[originalStart - 1] ?? '')) return;",
+    '',
+    ['keeps the original left boundary when LF/TAB occurs elsewhere or immediately before a key'],
+  ),
+  coreProjectionControl(
+    'core-split-scheme-label',
+    String.raw`/\b(b[\n\t]*e[\n\t]*a[\n\t]*r[\n\t]*e[\n\t]*r|b[\n\t]*a[\n\t]*s[\n\t]*i[\n\t]*c|t[\n\t]*o[\n\t]*k[\n\t]*e[\n\t]*n)\s+(?=[\w.~+/-]{8})[\w.~+/-]+={0,2}/gi`,
+    String.raw`/\b(bearer|basic|token)\s+(?=[\w.~+/-]{8})[\w.~+/-]+={0,2}/gi`,
+    splitCoreHeaders,
+  ),
+  coreProjectionControl(
+    'core-split-header-label',
+    '        mask(match.index, match.index + match[0].length, match[0]);',
+    '        void match;',
+    splitCoreHeaders,
+  ),
+  coreProjectionControl(
+    'core-raw-password-userinfo',
+    String.raw`const delimiter = /[/\s"',}\]]/g;`,
+    String.raw`const delimiter = /[/\s?#"',}\]]/g;`,
+    [...corePasswords, ...rawPasswordAssignments],
+  ),
+  diagnosticControl(
+    'diagnostic-joined-before-masking',
+    "    if (joined !== undefined && hasSplitCredential(normalized, joined, rule)) return '[REDACTED]';",
+    '',
+    [
+      'masks every LF/TAB split including a complete-looking first key fragment',
+      'masks each split position in the finite API header names',
+      'treats LF/TAB token-character continuations as credential material even after a complete first fragment',
+    ],
+  ),
+  diagnosticControl(
+    'diagnostic-joined-original-boundary',
+    "    if (rule.boundary.test(text[start - 1] ?? '')) continue;",
+    '',
+    ['does not invent a key boundary in a public word with a separate newline'],
+  ),
+  diagnosticControl(
+    'diagnostic-split-header-label',
+    String.raw`joinedPattern: /(?:(?:x-)?api-key|x-goog-api-key)["']?\s*:/gi,`,
+    'joinedPattern: /a^/g,',
+    ['masks each split position in the finite API header names'],
+  ),
+  diagnosticControl(
+    'diagnostic-raw-password-userinfo',
+    String.raw`pattern: /\b(?:https?|wss?|ftps?):\/\/[^/\s]*@/gi,`,
+    String.raw`pattern: /\b(?:https?|wss?|ftps?):\/\/[^/\s?#]*@/gi,`,
+    [...diagnosticPasswords, ...rawPasswordAssignments],
   ),
 ];

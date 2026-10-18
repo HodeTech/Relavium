@@ -27,7 +27,10 @@ comparison; this is not a measurement of a previous revision.
 The native `--import` preload installs Node 22.0-compatible `module.register`
 hooks before importing the entry. It records and refuses native/provider/MCP/TUI/
 schema/config-parser imports, protects poisoned temporary HOME/workspace/grant
-paths, and refuses network/subprocess dispatch. Node's module/package loader FS
+paths, and refuses network/subprocess dispatch, including global WebSocket.
+Copy, hard-link and symlink APIs guard both operands in callback, synchronous and
+promise forms, including Buffer/file-URL paths and relative symlink targets.
+Node's module/package loader FS
 reads outside those application roots remain allowed and recorded. The main
 witness writer retains an open descriptor and primitive write function, avoiding
 the patched FS wrappers. Native `realpath[Sync].native` is preserved and guarded.
@@ -36,12 +39,14 @@ Positive controls execute the real compiled chat grant-admission path and refuse
 real deferred entry/dispatcher chunk loads. Import failures must reach the fixed
 diagnostics without the arbitrary synthetic error canary or stack. Their current
 native exit 9 and single fixed human/JSON diagnostic are pinned. The complete
-177-control inventory is shared with installed-package binding.
+177-control inventory is shared with installed-package binding. Every variant has
+a unique stable name, including nested commands and retained single-command aliases.
 
 Each scenario uses a fresh sanitized child environment and a finite deadline,
 with a combined UTF-8 output-byte cap. POSIX children own a process group which
 is killed and joined; product subprocess dispatch is forbidden on every OS.
-Fixture snapshots prove poisoned application files/directories remain unchanged,
+All three temporary-directory environment selectors point into an owned, guarded
+fixture directory. Fixture snapshots prove temporary and poisoned application files/directories remain unchanged,
 including on passing controls. Cleanup removes only the exact owned mkdtemp root.
 
 These controls establish selected-artifact behavior on the runtime/OS that

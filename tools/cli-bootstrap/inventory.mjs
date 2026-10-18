@@ -41,10 +41,18 @@ export const metaCases = Object.freeze([
     ['logs'],
     ['status'],
     ['init'],
-  ].map((path) => [`${path.join('-')}-help`, [...path, '--help']]),
+  ].map((path) => [
+    `${path.join('-')}${path.length > 1 ? '-subcommand' : ''}-help`,
+    [...path, '--help'],
+  ]),
   ['help-command-subtree', ['help', 'provider']],
   ['help-command-root', ['help']],
 ]);
+
+/** Each variant has a distinct stable name, including nested commands and retained aliases. */
+export function controlName(name, json, rootGrant) {
+  return `${name}-${json ? 'json' : 'human'}${rootGrant === undefined ? '' : rootGrant ? '-root' : '-no-root'}`;
+}
 
 export function grammarCases(absentRoot) {
   return [

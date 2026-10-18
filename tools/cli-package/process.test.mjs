@@ -3,7 +3,13 @@ import { test } from 'node:test';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { isolatedEnvironment, resolvePnpm, runCommand } from './process.mjs';
+import {
+  exerciseInstalledCommand,
+  isolatedEnvironment,
+  resolvePnpm,
+  runCommand,
+  runPnpm,
+} from './process.mjs';
 
 test('installer receives an explicit credential/config/preload-free environment', () => {
   const home = join(tmpdir(), 'synthetic-installer-home');
@@ -100,4 +106,52 @@ test('installer rejects and joins a real deadline violation', async () => {
     }),
     /CHILD_TIMEOUT/,
   );
+});
+
+test('actual pnpm install command shim runs help/version and a broken or absent shim refuses', async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'relavium-installed-command-test-')));
+  try {
+    const home = join(root, 'consumer'),
+      source = join(root, 'package');
+    mkdirSync(home);
+    mkdirSync(source);
+    writeFileSync(
+      join(home, 'package.json'),
+      JSON.stringify({ private: true, packageManager: 'pnpm@9.12.3' }),
+    );
+    writeFileSync(
+      join(source, 'package.json'),
+      JSON.stringify({
+        name: 'relavium',
+        version: '0.0.0',
+        bin: { relavium: './index.cjs' },
+      }),
+    );
+    writeFileSync(
+      join(source, 'index.cjs'),
+      '#!/usr/bin/env node\nconsole.log(process.argv[2] === "--version" ? "0.0.0" : "Usage: relavium synthetic");\n',
+    );
+    await runPnpm(
+      ['add', '--offline', '--ignore-scripts', '--ignore-workspace', `file:${source}`],
+      {
+        cwd: home,
+        env: isolatedEnvironment(home),
+        timeoutMs: 30_000,
+      },
+    );
+    assert.deepEqual(await exerciseInstalledCommand(home, '0.0.0'), { help: true, version: true });
+    await assert.rejects(exerciseInstalledCommand(home, '0.0.1'), /INSTALLED_COMMAND_VERSION/);
+    const shim = join(
+      home,
+      'node_modules',
+      '.bin',
+      process.platform === 'win32' ? 'relavium.cmd' : 'relavium',
+    );
+    writeFileSync(shim, process.platform === 'win32' ? '@exit /b 17\r\n' : '#!/bin/sh\nexit 17\n');
+    await assert.rejects(exerciseInstalledCommand(home, '0.0.0'), /CHILD_FAILED/);
+    rmSync(shim);
+    await assert.rejects(exerciseInstalledCommand(home, '0.0.0'), { code: 'ENOENT' });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

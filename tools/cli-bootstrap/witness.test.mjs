@@ -2,12 +2,12 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { withFixture, toEntryUrl } from './child.mjs';
 import { assertWitness, importFailureCanary, servicePackages } from './policy.mjs';
 import { spawnBounded } from './process.mjs';
-import { BOOTSTRAP_CONTROL_COUNT } from './inventory.mjs';
+import { BOOTSTRAP_CONTROL_COUNT, controlName, grammarCases, metaCases } from './inventory.mjs';
 import ts from 'typescript';
 
 // Pinned independently of the policy so deleting a boundary cannot delete its own control.
@@ -91,6 +91,20 @@ for (const [path, markers] of [
 
 test('package binding expects the complete human/JSON native-failure cohort', () => {
   assert.equal(BOOTSTRAP_CONTROL_COUNT, 177);
+  const names = metaCases.flatMap(([name]) =>
+    [false, true].flatMap((json) => [false, true].map((root) => controlName(name, json, root))),
+  );
+  names.push(
+    ...grammarCases('/synthetic-absent').flatMap(([name]) =>
+      [false, true].map((json) => controlName(name, json)),
+    ),
+    'real-execution-fs-before-service',
+    ...['entry-runtime-load-failure', 'dispatcher-load-failure'].flatMap((name) =>
+      [false, true].map((json) => controlName(name, json)),
+    ),
+  );
+  assert.equal(names.length, 177);
+  assert.equal(new Set(names).size, 177);
 });
 
 function fixtureModule(fixture, body, name = 'fixture.mjs') {
@@ -162,6 +176,95 @@ test('CommonJS require cannot bypass the native ESM service witness', async () =
     assert.ok(
       result.events.some(
         (event) => event.kind === 'require' && event.specifier === 'better-sqlite3' && event.denied,
+      ),
+    );
+    assert.throws(() => assertWitness(result.events, toEntryUrl(entry)), /guarded boundaries/);
+  });
+});
+
+test('copy/link APIs protect both operands in callback, sync and promise forms, including Buffer paths', async () => {
+  await withFixture(async (fixture) => {
+    const protectedPath = join(fixture.home, '.relavium', 'config.toml');
+    const siblingPath = join(fixture.root, 'sibling-config.toml');
+    writeFileSync(siblingPath, 'synthetic-sibling');
+    const scenarios = ['cp', 'symlink', 'link'].flatMap((method) =>
+      ['callback', 'sync', 'promise'].flatMap((form) =>
+        ['string', 'buffer', 'url'].flatMap((format) => [
+          { method, form, format, paths: [siblingPath, protectedPath] },
+          { method, form, format, paths: [protectedPath, siblingPath] },
+        ]),
+      ),
+    );
+    const entry = fixtureModule(
+      fixture,
+      `
+      import fs from 'node:fs';
+      import promises from 'node:fs/promises';
+      import { Buffer } from 'node:buffer';
+      import { pathToFileURL } from 'node:url';
+      for (const {method, form, format, paths} of ${JSON.stringify(scenarios)}) {
+        const args = paths.map(path => format === 'buffer' ? Buffer.from(path) : format === 'url' ? pathToFileURL(path) : path);
+        try {
+          if (form === 'sync') fs[method + 'Sync'](...args);
+          else if (form === 'promise') await promises[method](...args);
+          else await new Promise((resolve, reject) => fs[method](...args, error => error ? reject(error) : resolve()));
+        } catch {}
+      }
+      try { fs.readFileSync(Buffer.from(${JSON.stringify(relative(fixture.workspace, protectedPath))})); } catch {}
+      try { fs.symlinkSync('../home/.relavium/config.toml', ${JSON.stringify(join(fixture.root, 'links', 'ref'))}); } catch {}
+    `,
+    );
+    const result = await fixture.child([entry]);
+    assert.equal(result.code, 0, result.stderr);
+    const refused = result.events.filter((event) => event.kind === 'fs' && event.denied);
+    assert.equal(refused.length, scenarios.length + 2);
+    assert.deepEqual(
+      refused.slice(0, scenarios.length).map((event) => event.paths),
+      scenarios.map(({ paths }) => paths),
+    );
+    assert.deepEqual(refused.at(-2).paths, [protectedPath]);
+    assert.equal(refused.at(-1).paths[0], protectedPath);
+    assert.throws(() => assertWitness(result.events, toEntryUrl(entry)), /guarded boundaries/);
+  });
+});
+
+test('bootstrap denies WebSocket construction even when the refusal is swallowed', async () => {
+  await withFixture(async (fixture) => {
+    const entry = fixtureModule(
+      fixture,
+      "try { new WebSocket('wss://synthetic.invalid'); } catch {}",
+    );
+    const result = await fixture.child([entry]);
+    assert.equal(result.code, 0, result.stderr);
+    assert.deepEqual(
+      result.events.filter((event) => event.kind === 'service'),
+      [{ kind: 'service', category: 'websocket', method: 'WebSocket', denied: true }],
+    );
+    assert.throws(() => assertWitness(result.events, toEntryUrl(entry)), /guarded boundaries/);
+  });
+});
+
+test('all child temporary-directory selectors stay in a protected owned fixture', async () => {
+  await withFixture(async (fixture) => {
+    const entry = fixtureModule(
+      fixture,
+      `
+      import { tmpdir } from 'node:os';
+      import { writeFileSync } from 'node:fs';
+      import { join } from 'node:path';
+      console.log(JSON.stringify([tmpdir(), process.env.TMPDIR, process.env.TMP, process.env.TEMP]));
+      try { writeFileSync(join(tmpdir(), 'forbidden-bootstrap-temporary'), 'synthetic'); } catch {}
+    `,
+    );
+    const result = await fixture.child([entry]);
+    assert.equal(result.code, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), Array(4).fill(fixture.temporary));
+    assert.ok(
+      result.events.some(
+        (event) =>
+          event.kind === 'fs' &&
+          event.denied &&
+          event.paths[0] === join(fixture.temporary, 'forbidden-bootstrap-temporary'),
       ),
     );
     assert.throws(() => assertWitness(result.events, toEntryUrl(entry)), /guarded boundaries/);

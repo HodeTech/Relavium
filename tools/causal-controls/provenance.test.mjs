@@ -267,20 +267,58 @@ test('every declared filesystem and secrets anchor matches current production so
 });
 
 test('secrets workload corrections retain independent complete-count and reader-witness pins', () => {
-  assert.equal(secretsControls.length, 41);
+  assert.equal(secretsControls.length, 51);
   assert.equal(
     secretsControls.reduce((count, control) => count + 1 + (control.witnesses ?? []).length, 0),
-    277,
+    302,
   );
   for (const [id, file, expectedTests] of [
     ['run-default-secret-reader', 'apps/cli/src/commands/run.test.ts', 84],
     ['snapshot-run-warning', 'apps/cli/src/commands/run.test.ts', 84],
     ['gate-consumed-stdin-prompt-authority', 'apps/cli/src/commands/gate.test.ts', 73],
+    ['export-command-review-notice', 'apps/cli/src/commands/chat-export.test.ts', 17],
   ]) {
     const control = secretsControls.find((entry) => entry.id === id);
     assert.ok(control, `${id}: missing control`);
     assert.deepEqual(control.files, [file]);
     assert.equal(control.expectedTests, expectedTests, `${id}: complete workload drift`);
+  }
+  for (const [id, files, expectedTests] of [
+    [
+      'diagnostic-residual-scrub',
+      ['apps/cli/src/render/sanitize.test.ts', 'apps/cli/src/process/render-error.test.ts'],
+      163,
+    ],
+    ...['prefix-before-redaction', 'normalized-secret-probe', 'non-query-before-query'].map(
+      (id) => [
+        id,
+        [
+          'packages/llm/src/llm-error.test.ts',
+          'apps/cli/src/render/sanitize.test.ts',
+          'apps/cli/src/process/render-error.test.ts',
+        ],
+        261,
+      ],
+    ),
+    ...[
+      'core-modern-key-alphabet',
+      'core-joined-credential-spans',
+      'core-joined-original-boundary',
+      'core-split-scheme-label',
+      'core-split-header-label',
+      'core-raw-password-userinfo',
+    ].map((id) => [id, ['packages/core/src/tools/bounding.test.ts'], 129]),
+    ...[
+      'diagnostic-joined-before-masking',
+      'diagnostic-joined-original-boundary',
+      'diagnostic-split-header-label',
+      'diagnostic-raw-password-userinfo',
+    ].map((id) => [id, ['packages/llm/src/scrub-secrets.test.ts'], 79]),
+  ]) {
+    const selected = secretsControls.find((entry) => entry.id === id);
+    assert.ok(selected, `${id}: missing redaction control`);
+    assert.deepEqual(selected.files, files);
+    assert.equal(selected.expectedTests, expectedTests, `${id}: complete workload drift`);
   }
   const reader = secretsControls.find((entry) => entry.id === 'run-default-secret-reader');
   assert.equal(

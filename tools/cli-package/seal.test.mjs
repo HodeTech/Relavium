@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
-import { finalizedPublicFiles } from './seal.mjs';
+import { finalizedPublicFiles, producerNodeMajor } from './seal.mjs';
 
 function withFinalizedFixture(body) {
   const root = mkdtempSync(join(tmpdir(), 'relavium-seal-fixture-'));
@@ -28,6 +28,19 @@ function withFinalizedFixture(body) {
     rmSync(root, { recursive: true, force: true });
   }
 }
+
+test('producer runtime follows the declared toolchain independently of the fixed public Node floor', () => {
+  withFinalizedFixture(({ root, write }) => {
+    for (const major of [22, 24, 26]) {
+      write('.nvmrc', `${major}\n`);
+      assert.equal(producerNodeMajor(root), major);
+    }
+    for (const invalid of ['', '20', 'v24', '24.0.0', '24\n26', '101']) {
+      write('.nvmrc', invalid);
+      assert.throws(() => producerNodeMajor(root), /INVALID_PRODUCER_NODE/);
+    }
+  });
+});
 
 test('finalized seal inventory contains exact graph bytes, canonical migrations and public documents', () => {
   withFinalizedFixture(({ root }) => {

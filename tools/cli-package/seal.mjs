@@ -11,6 +11,17 @@ import { isolatedEnvironment, runCommand } from './process.mjs';
 
 const repository = fileURLToPath(new URL('../../', import.meta.url));
 
+export function producerNodeMajor(root = repository) {
+  const declared = readOrdinaryFile(join(root, '.nvmrc'), 20).toString('utf8').trim();
+  assert.match(declared, /^[1-9]\d*$/u, 'PACKED_CLI_INVALID_PRODUCER_NODE');
+  const major = Number(declared);
+  assert.ok(
+    Number.isSafeInteger(major) && major >= 22 && major <= 100,
+    'PACKED_CLI_INVALID_PRODUCER_NODE',
+  );
+  return major;
+}
+
 export function expectedPackManifest(root = repository) {
   const require = createRequire(join(root, 'apps/cli/package.json'));
   const { parse } = require('yaml');
@@ -102,7 +113,7 @@ export async function sealPackage(artifactDirectory) {
   validatePackageReceipt(receipt, {
     source,
     origin,
-    nodeMajor: 24,
+    nodeMajor: producerNodeMajor(),
     allowLocal: origin.kind === 'local',
   });
   writeFileSync(

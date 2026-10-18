@@ -192,6 +192,10 @@ function publicPackage(value) {
   )
     refuse('PACKAGE');
   version(manifest.version);
+  const bin = exact(manifest.bin, ['relavium']);
+  if (bin.relavium !== 'dist/index.js' && bin.relavium !== './dist/index.js') refuse('PACKAGE_BIN');
+  // ADR-0067's public floor is independent of the source manifest and producer runtime.
+  if (record(manifest.engines).node !== '>=22') refuse('PACKAGE_NODE_FLOOR');
   const dependencies = record(manifest.dependencies);
   if (Object.keys(dependencies).length < 1 || Object.keys(dependencies).length > 100)
     refuse('PACKAGE');
@@ -283,6 +287,7 @@ export function validateConsumerRecord(value, receiptValue, expected) {
     'arch',
     'success',
     'bootstrap',
+    'installedCommand',
     'installedFiles',
     'smoke',
     'packageVersion',
@@ -348,6 +353,9 @@ export function validateConsumerRecord(value, receiptValue, expected) {
   const entry = receipt.files.find((file) => file.path === 'package/dist/index.js');
   if (bootstrap.controls !== BOOTSTRAP_CONTROL_COUNT || bootstrap.entrySha256 !== entry?.sha256)
     refuse('BOOTSTRAP');
+  const installedCommand = exact(consumer.installedCommand, ['help', 'version']);
+  if (installedCommand.help !== true || installedCommand.version !== true)
+    refuse('INSTALLED_COMMAND');
   const smoke = exact(consumer.smoke, ['success', 'cases']);
   if (
     smoke.success !== true ||

@@ -22,7 +22,7 @@ import {
   validateConsumerRecord,
 } from './binding.mjs';
 import { installedInventory, oneTarball, readOrdinaryFile, sha256 } from './files.mjs';
-import { isolatedEnvironment, runCommand, runPnpm } from './process.mjs';
+import { exerciseInstalledCommand, isolatedEnvironment, runCommand, runPnpm } from './process.mjs';
 import { runInstalledSmoke } from './smoke/index.mjs';
 import { completeConsumer } from './consumer-lifetime.mjs';
 
@@ -143,6 +143,7 @@ await completeConsumer({
       join(reportDirectory, 'bootstrap-details.json'),
       JSON.stringify(bootstrap, null, 2),
     );
+    const installedCommand = await exerciseInstalledCommand(home, receipt.packageVersion);
     const smoke = await runInstalledSmoke({
       packageRoot,
       supportRoot: reportDirectory,
@@ -166,6 +167,7 @@ await completeConsumer({
       arch: process.arch,
       success: true,
       bootstrap: { controls: bootstrap.controls, entrySha256: bootstrap.entrySha256 },
+      installedCommand,
       installedFiles: before,
       dependencies,
       smoke: { success: true, cases: smoke.cases.map(({ id, passed }) => ({ id, passed })) },

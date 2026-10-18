@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import fsPromises from 'node:fs/promises';
 import Module, { register, syncBuiltinESMExports } from 'node:module';
-import { resolve, relative, isAbsolute, sep } from 'node:path';
+import { dirname, resolve, relative, isAbsolute, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Buffer } from 'node:buffer';
 import net from 'node:net';
@@ -32,10 +32,10 @@ function record(event) {
 // Node 22.0 supports this async loader API; registerHooks is deliberately not used.
 register(new URL('./loader.mjs', import.meta.url), { data: options });
 
-function pathValue(value) {
+function pathValue(value, base = process.cwd()) {
   if (value instanceof URL && value.protocol === 'file:') return fileURLToPath(value);
-  if (Buffer.isBuffer(value)) return value.toString();
-  return typeof value === 'string' ? resolve(value) : null;
+  if (Buffer.isBuffer(value)) return resolve(base, value.toString());
+  return typeof value === 'string' ? resolve(base, value) : null;
 }
 function inside(root, candidate) {
   const suffix = relative(root, candidate);
@@ -45,11 +45,16 @@ function inside(root, candidate) {
 }
 function guard(method, args) {
   const paths = args
-    .slice(0, method.startsWith('rename') || method.startsWith('copyFile') ? 2 : 1)
-    .map(pathValue)
-    .filter((path) => path !== null);
-  const denied = paths.some((path) => options.protectedRoots.some((root) => inside(root, path)));
-  record({ kind: 'fs', method, paths, denied });
+    .slice(0, /^(?:rename|copyFile|cp|symlink|link)(?:Sync)?$/u.test(method) ? 2 : 1)
+    .map((value) => pathValue(value));
+  // A relative symlink target is interpreted from the link's parent, not cwd.
+  if (method.startsWith('symlink') && paths[1] !== null && paths[1] !== undefined)
+    paths[0] = pathValue(args[0], dirname(paths[1]));
+  const observedPaths = paths.filter((path) => path !== null);
+  const denied = observedPaths.some((path) =>
+    options.protectedRoots.some((root) => inside(root, path)),
+  );
+  record({ kind: 'fs', method, paths: observedPaths, denied });
   if (denied) throw new Error('synthetic bootstrap application filesystem access refused');
 }
 // Only protected application paths are refused. Loader/module/package reads elsewhere are
@@ -63,6 +68,7 @@ const operations = [
   'cp',
   'exists',
   'lstat',
+  'link',
   'mkdir',
   'mkdtemp',
   'open',
@@ -75,6 +81,7 @@ const operations = [
   'rm',
   'rmdir',
   'stat',
+  'symlink',
   'truncate',
   'unlink',
   'watch',
@@ -120,6 +127,10 @@ Module._load = function (specifier, ...args) {
 globalThis.fetch = async () => {
   record({ kind: 'fetch', denied: true });
   throw new Error('synthetic bootstrap fetch refused');
+};
+globalThis.WebSocket = function () {
+  record({ kind: 'service', category: 'websocket', method: 'WebSocket', denied: true });
+  throw new Error('synthetic bootstrap WebSocket refused');
 };
 for (const [owner, names, category] of [
   [net, ['connect', 'createConnection', 'createServer'], 'net'],

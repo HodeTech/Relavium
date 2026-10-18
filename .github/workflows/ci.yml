@@ -281,7 +281,7 @@ jobs:
   secrets-mutations:
     name: Wave 2 secrets causal controls
     # The historical 35-control, three-phase capture exceeded the former aggregate budget.
-    # The current cohort is 41 controls (2026-10-15); this comment does not certify its execution.
+    # The current cohort is 51 controls (2026-10-18); this comment does not certify its execution.
     # Per-phase, case/hook, output and retained-evidence bounds remain unchanged.
     timeout-minutes: 30
     runs-on: ubuntu-latest
@@ -648,6 +648,9 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: read
+    env:
+      TURBO_TOKEN: ''
+      TURBO_TEAM: ''
     steps:
       # Only the test runner and fixtures use this checkout. No workspace dependencies or build.
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -694,6 +697,9 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
+    env:
+      TURBO_TOKEN: ''
+      TURBO_TEAM: ''
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
@@ -702,6 +708,10 @@ jobs:
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .nvmrc
+      - name: Require successful pack and every consumer before artifact downloads
+        env:
+          RELAVIUM_PACKAGE_JOB_RESULTS: ${{ toJSON(needs) }}
+        run: node --input-type=module -e "import { requirePackageJobResults } from './tools/cli-package/binding.mjs'; requirePackageJobResults(JSON.parse(process.env.RELAVIUM_PACKAGE_JOB_RESULTS ?? 'null'));"
       - name: Download the exact packed CLI
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
