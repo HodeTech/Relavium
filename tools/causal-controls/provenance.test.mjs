@@ -267,10 +267,10 @@ test('every declared filesystem and secrets anchor matches current production so
 });
 
 test('secrets workload corrections retain independent complete-count and reader-witness pins', () => {
-  assert.equal(secretsControls.length, 53);
+  assert.equal(secretsControls.length, 55);
   assert.equal(
     secretsControls.reduce((count, control) => count + 1 + (control.witnesses ?? []).length, 0),
-    310,
+    318,
   );
   for (const [id, file, expectedTests] of [
     ['run-default-secret-reader', 'apps/cli/src/commands/run.test.ts', 84],
@@ -308,14 +308,16 @@ test('secrets workload corrections retain independent complete-count and reader-
       'core-split-header-label',
       'core-raw-password-userinfo',
       'core-joined-original-boundary-recovery',
-    ].map((id) => [id, ['packages/core/src/tools/bounding.test.ts'], 136]),
+      'core-header-original-boundary-recovery',
+    ].map((id) => [id, ['packages/core/src/tools/bounding.test.ts'], 142]),
     ...[
       'diagnostic-joined-before-masking',
       'diagnostic-joined-original-boundary',
       'diagnostic-split-header-label',
       'diagnostic-raw-password-userinfo',
       'diagnostic-joined-original-boundary-recovery',
-    ].map((id) => [id, ['packages/llm/src/scrub-secrets.test.ts'], 84]),
+      'diagnostic-header-original-boundary-recovery',
+    ].map((id) => [id, ['packages/llm/src/scrub-secrets.test.ts'], 89]),
   ]) {
     const selected = secretsControls.find((entry) => entry.id === id);
     assert.ok(selected, `${id}: missing redaction control`);
@@ -339,6 +341,26 @@ test('secrets workload corrections retain independent complete-count and reader-
       ),
     );
     assert.ok(recovery.witnesses.every(({ marker }) => marker === 'SECRETS_B2_ORIGINAL_BOUNDARY'));
+  }
+  for (const id of [
+    'core-header-original-boundary-recovery',
+    'diagnostic-header-original-boundary-recovery',
+  ]) {
+    const recovery = secretsControls.find((entry) => entry.id === id);
+    assert.ok(recovery, `${id}: missing original finite-header boundary recovery`);
+    assert.equal(recovery.marker, 'SECRETS_B2_HEADER_ORIGINAL_BOUNDARY');
+    assert.deepEqual(
+      [recovery.target, ...recovery.witnesses.map((witness) => witness.target)],
+      ['x-', 'x-goog-'].flatMap((prefix) =>
+        ['\n', '\t'].map(
+          (separator) =>
+            `recovers the original finite header boundary after embedded ${prefix} (${JSON.stringify(separator)})`,
+        ),
+      ),
+    );
+    assert.ok(
+      recovery.witnesses.every(({ marker }) => marker === 'SECRETS_B2_HEADER_ORIGINAL_BOUNDARY'),
+    );
   }
   const reader = secretsControls.find((entry) => entry.id === 'run-default-secret-reader');
   assert.equal(

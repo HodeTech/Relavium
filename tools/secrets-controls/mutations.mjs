@@ -73,6 +73,13 @@ const originalBoundaryCases = ['sk-proj-', 'AIza'].flatMap((prefix) =>
       `keeps the original boundary after an embedded greedy prefix ${prefix} (${JSON.stringify(separator)})`,
   ),
 );
+const headerOriginalBoundaryMarker = 'SECRETS_B2_HEADER_ORIGINAL_BOUNDARY';
+const headerOriginalBoundaryCases = ['x-', 'x-goog-'].flatMap((prefix) =>
+  ['\n', '\t'].map(
+    (separator) =>
+      `recovers the original finite header boundary after embedded ${prefix} (${JSON.stringify(separator)})`,
+  ),
+);
 // Both scanner admission and mapper admission enforce one original-boundary law. Remove both
 // exact checks together; removing only the late mapper guard would leave its new prefilter intact.
 const coreOriginalBoundary = String.raw`    if (/\w/.test(original[originalOffset - 1] ?? '')) continue;
@@ -83,6 +90,41 @@ const coreOriginalBoundary = String.raw`    if (/\w/.test(original[originalOffse
     if (match === null) continue;
     matchedUntil = JOINED_STANDALONE_CREDENTIAL.lastIndex;
     mask(start, matchedUntil, '[redacted]');
+  }
+}
+
+function redactStandaloneCredentials(text: string): string {
+  const parts: string[] = [];
+  let copied = 0;
+  visitJoinedStandaloneCredentials(text, text, (start, end, replacement) => {
+    parts.push(text.slice(copied, start), replacement);
+    copied = end;
+  });
+  if (parts.length === 0) return text;
+  parts.push(text.slice(copied));
+  return parts.join('');
+}
+
+/**
+ * The finite header-label literal is the sole joined-header authority. Check ORIGINAL boundaries
+ * before matching, so an embedded x-api-key/x-goog-api-key cannot consume an inner api-key start.
+ * Labels are bounded; trailing whitespace cannot contain another label, so failed scans are linear.
+ */
+function visitJoinedHeaderLabels(original: string, joined: string, mask: SecretSpanVisitor): void {
+  const header = /(?:authorization|(?:x-)?api-key|x-goog-api-key)["']?\s*:/iy;
+  let joinedOffset = 0;
+  let matchedUntil = 0;
+  for (let originalOffset = 0; originalOffset < original.length; originalOffset += 1) {
+    const char = original[originalOffset];
+    if (char === '\n' || char === '\t') continue;
+    const start = joinedOffset++;
+    if (start < matchedUntil || !/[A-Za-z]/.test(char ?? '')) continue;
+    if (/[A-Za-z0-9_-]/.test(original[originalOffset - 1] ?? '')) continue;
+    header.lastIndex = start;
+    const match = header.exec(joined);
+    if (match === null) continue;
+    matchedUntil = header.lastIndex;
+    mask(start, matchedUntil, match[0]);
   }
 }
 
@@ -125,7 +167,7 @@ function coreProjectionControl(id, before, after, targets, marker = coreProjecti
     before,
     after,
     coreProjectionCases,
-    136,
+    142,
     targets[0],
     marker,
     targets.slice(1).map((target) => ({ target, marker })),
@@ -138,7 +180,7 @@ function diagnosticControl(id, before, after, targets, marker = diagnosticMarker
     before,
     after,
     ['packages/llm/src/scrub-secrets.test.ts'],
-    84,
+    89,
     targets[0],
     marker,
     targets.slice(1).map((target) => ({ target, marker })),
@@ -838,8 +880,8 @@ export const mutations = [
   ),
   coreProjectionControl(
     'core-split-header-label',
-    '        mask(match.index, match.index + match[0].length, match[0]);',
-    '        void match;',
+    '    mask(start, matchedUntil, match[0]);',
+    '    void match;',
     splitCoreHeaders,
   ),
   coreProjectionControl(
@@ -860,7 +902,7 @@ export const mutations = [
   ),
   diagnosticControl(
     'diagnostic-joined-original-boundary',
-    "if (/[A-Za-z]/.test(char ?? '') && !rule.boundary?.test(text[originalOffset - 1] ?? '')) {",
+    "if (/[A-Za-z]/.test(char ?? '') && !rule.boundary.test(text[originalOffset - 1] ?? '')) {",
     "if (/[A-Za-z]/.test(char ?? '')) {",
     ['does not invent a key boundary in a public word with a separate newline'],
   ),
@@ -886,9 +928,24 @@ export const mutations = [
   ),
   diagnosticControl(
     'diagnostic-joined-original-boundary-recovery',
-    '  if (rule.joinedToken === true) return hasSplitToken(text, joined, rule);\n',
-    '',
+    "!rule.boundary.test(text[originalOffset - 1] ?? '')",
+    "!rule.boundary.test((rule.joinedPattern === undefined ? joined[joinedOffset - 1] : text[originalOffset - 1]) ?? '')",
     originalBoundaryCases,
     originalBoundaryMarker,
+  ),
+  // R2-LN-F1: retain a valid inner header start after a rejected embedded outer label.
+  coreProjectionControl(
+    'core-header-original-boundary-recovery',
+    "    if (/[A-Za-z0-9_-]/.test(original[originalOffset - 1] ?? '')) continue;\n",
+    '',
+    headerOriginalBoundaryCases,
+    headerOriginalBoundaryMarker,
+  ),
+  diagnosticControl(
+    'diagnostic-header-original-boundary-recovery',
+    "!rule.boundary.test(text[originalOffset - 1] ?? '')",
+    "!rule.boundary.test((rule.joinedPattern !== undefined ? joined[joinedOffset - 1] : text[originalOffset - 1]) ?? '')",
+    headerOriginalBoundaryCases,
+    headerOriginalBoundaryMarker,
   ),
 ];

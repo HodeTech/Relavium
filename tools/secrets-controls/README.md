@@ -4,7 +4,7 @@
 Step 4 first-run input matrix, Step 5 snapshot/export, Step 7 provider-header and PR #95 B2 redaction controls on physical source
 copies. `--mechanism <declared-id>`
 supports diagnosis only; selected runs retain `complete: false`. The current manifest
-declares **53 independent controls and 310 required named assertion witnesses**.
+declares **55 independent controls and 318 required named assertion witnesses**.
 These counts describe the workload; a declaration is not evidence that its removal
 passed. Actual fixed/removal/restored results belong to the coordinator's summary.
 
@@ -177,8 +177,8 @@ modern `sk-` body characters, joined-span application, the original-text left-bo
 check, split scheme labels, split API-header labels and raw `?`/`#` password recognition
 independently. Four LLM controls remove the before-masking LF/TAB probe, its original
 left-boundary check, split API-header recognition and raw-password recognition.
-Every core phase executes the complete 136-case bounding file; every new LLM phase
-executes the complete 84-case scrubber file. Independent ordinary tooling tests pin
+Every core phase executes the complete 142-case bounding file; every new LLM phase
+executes the complete 89-case scrubber file. Independent ordinary tooling tests pin
 these inventories, the 261-case overlap cohort, 163-case CLI diagnostic cohort and
 17-case command-export cohort. Actual collection still has to match in every phase.
 
@@ -195,20 +195,44 @@ machine-speed threshold; these controls do not certify arbitrary obfuscation.
 Two R1 original-boundary recovery controls add eight named assertions, retaining all
 51 prior identities and required witnesses. The core removal admits embedded-word
 starts while retaining the mapper's late refusal and bounded probe; the rejected
-candidate consumes the later valid start. The LLM removal restores the old
-non-overlapping discovery for its bounded single-run token families. All four
+candidate consumes the later valid start. The LLM removal replaces original-boundary checks with joined-boundary checks only
+for the non-header rules in its unified scanner, preserving the finite-header path. All four
 OpenAI/Google × LF/TAB poisoned-prefix cases must then fail with
 `SECRETS_B2_ORIGINAL_BOUNDARY`;
 public embedded-word preservation and the later complete split credential are
 asserted together. The earlier core boundary control removes both scanner and
 mapper boundary checks as one policy; removing the late mapper check alone leaves
 the new scanner prefilter active. The LLM boundary control removes its actual early
-token-boundary predicate. Their existing named witnesses remain required. These
+original-boundary predicate. Their existing named witnesses remain required. These
 are declared controls; actual final-source fixed/removal/restored evidence remains
 separate from the older eleven selected captures and independent acceptance.
 
-The current 53-control / 159-phase full declaration projects 961 retained files
-(53 × 18 + 7) under the unchanged 2,000-file / 64-MiB export bounds. This is a capacity
+Two R2 finite-header recovery controls add eight named assertions while preserving
+all 53 prior control identities, paths, targets, markers and witness arrays. Four
+`x-`/`x-goog-` × swapped LF/TAB witnesses per package require
+`SECRETS_B2_HEADER_ORIGINAL_BOUNDARY`. The core removal admits an embedded outer
+label but retains the mapper's late boundary refusal, reproducing consumption of
+the valid inner label. The LLM removal substitutes joined-boundary checks only for
+its finite-header rule; other rules still use original boundaries. Neither removal
+disables bounded JWT probing or replaces canonical matcher authority. The earlier
+split-header-label control now removes the header helper's actual mask delivery.
+Core and LLM stress cases check bounded preparation with length/Boolean assertions,
+so a regression cannot serialize an admitted-size value into failure metadata.
+
+A separately confirmed raw-path failed-JWT preparation defect is covered by a
+permanent admitted-size raw-path regression. All declared removals retain the
+bounded canonical visitor used by both raw and joined standalone-key passes.
+Reverting that protection would make timeout an invalid substitute for semantic
+failure; there is no declared raw-scanner timeout control or retrospective R2
+review claim for this later author correction.
+
+Earlier eleven-control author captures and the four selected `ce6df268` captures
+retain their own source/workload attribution. Declaration maintenance and fresh
+collection do not recertify them as current-source or full-55 execution. Actual
+fixed/removal/restored evidence and independent acceptance remain separate.
+
+The current 55-control / 165-phase full declaration projects 997 retained files
+(55 × 18 + 7) under the unchanged 2,000-file / 64-MiB export bounds. This is a capacity
 calculation, not a measured full capture. Historical 41-control captures retain their
 original source and cohort attribution; selected B2 or original-boundary recovery captures are not full-family
 acceptance.
