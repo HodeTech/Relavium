@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -15,7 +15,7 @@ import {
   type DbClient,
 } from '@relavium/db';
 import { RunEventSchema, type AgentSessionRecord, type SessionMessage } from '@relavium/shared';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { runCommand } from '../commands/run.js';
 import { buildEngine } from '../engine/build-engine.js';
@@ -87,6 +87,7 @@ const message = (sessionId: string, seq: number): SessionMessage => ({
 });
 
 interface SpawnedChild {
+  readonly native: ChildProcessWithoutNullStreams;
   /** Positive initialization ACK; the parent must not hold the write lock during child startup. */
   readonly opened: Promise<void>;
   /** Positive first-write handshake. Early exit rejects rather than impersonating readiness. */
@@ -99,10 +100,11 @@ interface SpawnedChild {
 }
 
 /** Spawn once and retain its actual close even if setup, the test body or readiness fails. */
-function runChild(args: readonly string[]): SpawnedChild {
-  const child = spawn(process.execPath, [CHILD_SCRIPT, ...args], {
+function runChild(args: readonly string[], executable = process.execPath): SpawnedChild {
+  const child = spawn(executable, [CHILD_SCRIPT, ...args], {
     stdio: ['pipe', 'pipe', 'pipe'],
   });
+  const pid = child.pid;
   let stdout = '';
   let stderr = '';
   let closed = false;
@@ -151,6 +153,7 @@ function runChild(args: readonly string[]): SpawnedChild {
   void observedOpened.catch(() => undefined);
   void observedReady.catch(() => undefined);
   return {
+    native: child,
     opened: observedOpened,
     ready: observedReady,
     done,
@@ -158,7 +161,7 @@ function runChild(args: readonly string[]): SpawnedChild {
       child.stdin.end('START\n');
     },
     stop: () => {
-      if (!closed) child.kill();
+      if (!closed && pid !== undefined && Number.isSafeInteger(pid) && pid > 0) child.kill();
     },
     isClosed: () => closed,
   };
@@ -513,6 +516,26 @@ async function crossProcessCase(signal: AbortSignal, ports: CrossProcessPorts): 
 }
 
 describe('concurrency e2e (2.5.I S3) — a run and a chat share one history.db', () => {
+  it('fixture integrity: a PID-less failed native spawn never receives stop signalling', async () => {
+    const child = runChild([], join(tmpdir(), `relavium-missing-executable-${randomUUID()}`));
+    rawCase = child.done.then(() => undefined);
+    const kill = vi.spyOn(child.native, 'kill').mockReturnValue(false);
+    try {
+      expect(child.native.pid).toBeUndefined();
+      expect(child.isClosed()).toBe(false);
+      child.stop();
+      expect(kill, 'NATIVE_FIXTURE_PIDLESS_STOP').not.toHaveBeenCalled();
+      const result = await child.done;
+      expect(result.spawnError).toMatchObject({ code: 'ENOENT' });
+      expect(child.isClosed()).toBe(true);
+      await expect(child.opened).rejects.toThrow('Concurrent writer closed before its handshake');
+      await expect(child.ready).rejects.toThrow('Concurrent writer closed before its handshake');
+    } finally {
+      await child.done;
+      kill.mockRestore();
+    }
+  });
+
   it('an already-aborted fixture wait still observes the raw child-phase rejection', async () => {
     const controller = new AbortController();
     const reason = new Error('synthetic case already stopped');
@@ -560,7 +583,9 @@ describe('concurrency e2e (2.5.I S3) — a run and a chat share one history.db',
     }
   });
 
-  it('case abort seals a held real build and joins writers before native cleanup', async () => {
+  it('case abort seals a held real build and joins writers before native cleanup', async ({
+    signal,
+  }) => {
     const controller = new AbortController();
     const reason = new Error('synthetic case abort');
     const clients: DbClient[] = [];
@@ -577,7 +602,7 @@ describe('concurrency e2e (2.5.I S3) — a run and a chat share one history.db',
       | { readonly code: number; readonly stdout: string; readonly stderr: string }
       | undefined;
     let settled = false;
-    const work = startCoexistenceCase(controller.signal, {
+    const work = startCoexistenceCase(AbortSignal.any([signal, controller.signal]), {
       onClient: (client) => clients.push(client),
       onDirectory: (path) => {
         directory = path;
@@ -696,13 +721,13 @@ describe('concurrency e2e (2.5.I S3) — a run and a chat share one history.db',
 
   it.skipIf(!existsSync(DB_DIST_PATH))(
     'case abort after child initialization joins both native closes before releasing fixture custody',
-    async () => {
+    async ({ signal }) => {
       const controller = new AbortController();
       const reason = new Error('synthetic cross-process abort');
       const children: SpawnedChild[] = [];
       let directory: string | undefined;
       await expect(
-        startCrossProcessCase(controller.signal, {
+        startCrossProcessCase(AbortSignal.any([signal, controller.signal]), {
           onChild: (child) => children.push(child),
           onDirectory: (path) => {
             directory = path;
@@ -719,4 +744,4 @@ describe('concurrency e2e (2.5.I S3) — a run and a chat share one history.db',
       expect(directory !== undefined && existsSync(directory)).toBe(false);
     },
   );
-});
+}, 30_000); // Functional native-file lifecycle, matching session-chain; not a five-second latency contract.

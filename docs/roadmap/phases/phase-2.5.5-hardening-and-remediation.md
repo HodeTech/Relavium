@@ -9044,3 +9044,54 @@ Earlier R14/R15 and their metadata checks retain their exact sources and do not
 claim to read this later test change. The final PR record owns actual current
 results, including the failed attempt; no green retry is inferred here. Steps
 9–19 remain unstarted and the PR remains open for maintainer review.
+
+### PR #95 native concurrency fixture budget — 2026-10-18
+
+At `154d832d`, the PR-side Windows native advisory passes the twelve prepared
+workspace-admission cases, including the original bare-Home failure. It fails a
+**different** functional cross-process cancellation case at Vitest's default
+five-second case bound. The retained trace shows parent migration completing at
+5,795 ms, children opened at 6,477 ms, both actual closes joined at 6,494 ms and
+fixture removal at 6,495 ms, with zero cleanup faults. Those timings identify
+pre-child native preparation consuming the case budget; they do not establish
+why Windows delayed the migration or prove a product runtime defect.
+
+The native concurrency suite receives the existing neighboring session-chain
+suite's **finite 30-second functional native-file case budget**. This covers
+migration, two actual OS children and their real closure/removal, rather than
+claiming a five-second disk/process latency guarantee. The eight existing cases
+retain their assertions and handshake semantics. The existing native SQLite
+five-second busy handler and its independent deterministic retry/contention controls remain.
+No product or benchmark deadline changes, and no timeout supplies a native-close,
+receipt or fixture-cleanup acknowledgement.
+
+The two synthetic-cancellation scenarios now combine their runner signal with
+the scenario controller. An already-delivered abort is observed by the existing
+post-migration check before child creation. JavaScript timers do not preempt a
+synchronous native migration; a later delivered abort still stops the awaited
+child phase. Pending raw work and actual cleanup remain joined by the fixture's
+existing after-each owner. Both signals can stop admission, while an ordinary scenario still preserves its
+original synthetic reason and held-native assertions. This is a separate native
+test-harness correction after the accepted preparation increment; all production,
+build, dependency and CI bytes remain unchanged.
+
+The touched native fixture's stop path also now requires its captured positive
+PID. A real missing-executable regression spies on the actual child's kill method
+before same-tick stop, retains its actual close, and confirms failed readiness;
+no dangerous OS signal is delivered by the negative test. This repairs a private
+fixture safeguard, not a newly reported production caller. The eight existing
+cases remain and this explicit fixture-integrity case is additive.
+
+Author execution passes all nine complete concurrency cases, then both affected
+native/admission files together: 21 passes, zero skips. CLI typecheck, focused lint,
+format and diff checks pass. A temporary PID-guard removal fails the exact marked
+negative case while the actual kill method is safely spied; eight other cases
+are deliberately unselected in that probe. Byte-exact restoration passes the full
+nine-case file. This author probe is not a committed-coordinator runtime receipt
+or a claim of independent zero-unhandled-error acceptance.
+
+Two NEW complete independent reviews of this increment and a NEW scoped security
+witness check are required, alongside actual final-head PR/push/native/platform/
+physical publication results. The two earlier preparation reviews retain their
+exact `154d832d` scope. The failed Windows attempt remains retained; neither a
+successful retry nor full publication is inferred. Steps 9–19 remain unstarted.
