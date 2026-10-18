@@ -8800,3 +8800,37 @@ correction. The earlier head's ordinary coverage passes 748 files / 15,953 tests
 corrections. Two NEW complete cumulative clean rounds, a NEW separate security
 sitting and corrected-source publication evidence remain required. Steps 9–19
 remain unstarted; no merge, release or whole-wave acceptance is claimed.
+
+The sixth cumulative round at `aec2d793` is **COMPLETE NONCLEAN**: independent
+lanes read all 102 corrective paths / 256 ordered hunks, with root-reconciled
+body/hunk identities and no missing or repeated assignment. Libraries/native and
+tooling/documentation are clean. The CLI lane reproduces a real Home preference
+writer fault that synchronously seals the invocation, followed by a new picker
+hint from its recovery catch. `4efb42c0` checks the permanent seal before failed
+or successful write-result publication. The production writer regression records
+post-seal subscriber notifications; the original faulty source fails while the
+classified live-refusal control passes. All three affected Home files pass 174
+cases after correction. This is author evidence, not a clean cumulative round.
+
+The source-bound PR coverage run at that head fails five admitted-size preparation
+checks under instrumentation; the unchanged five-second bounds remain enforced.
+The complete serialized Node 22.13 compatibility job separately exhausts its
+fifteen-minute whole-job budget before CLI completion. The correction uses native
+candidate/separator-run scans in core and a necessary-evidence preflight derived
+from the LLM's **existing canonical matcher**. Neither changes the credential
+families, original-boundary checks, full-value projection or bounded JWT preview.
+The coverage runner serializes file workers; its cases, thresholds and explicit
+native concurrency remain. Whole coverage and compatibility jobs have finite
+25-minute budgets for the complete suites; per-case bounds are unchanged.
+
+The full secrets capture also correctly refuses acceptance when a declared
+provider-header diagnostic witness lacks its named assertion. On the recorded
+Node 24 runtime, the safe renderer declines to invoke the native stack accessor;
+eight removal cases instead fail the store's existing fixed-message assertion.
+That unchanged assertion now carries the diagnostic marker as well. Public-output
+checks, all 57 control identities / 336 required witnesses and the complete
+workloads remain; no missing witness is waived or inferred from a generic failure.
+The native core boundary controls are retargeted to their actual candidate guards,
+with both scanner and mapping checks removed for the combined boundary control.
+Fresh complete causal execution, two NEW complete cumulative clean rounds, a NEW
+separate security sitting and corrected-source publication gates remain required.
