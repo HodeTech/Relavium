@@ -238,6 +238,46 @@ describe('PR95 B2 split provider/header and malformed userinfo diagnostics', () 
 
 describe('PR95 B2 finite joined-view boundaries', () => {
   it.each([
+    ['x-', '\n', '\t'],
+    ['x-', '\t', '\n'],
+    ['x-goog-', '\n', '\t'],
+    ['x-goog-', '\t', '\n'],
+  ])(
+    'recovers the original finite header boundary after embedded %s (%j)',
+    (prefix, boundary, split) => {
+      for (const publicTail of ['A', 'B']) {
+        const input = `word${prefix}${boundary}api-${split}key: opaque-Z29; public=${publicTail}`;
+        expect(scrubSecrets(input), 'SECRETS_B2_HEADER_ORIGINAL_BOUNDARY').toBe('[REDACTED]');
+        const error = makeLlmError({
+          provider: 'openai',
+          kind: 'auth',
+          message: input,
+          code: input,
+        });
+        expect(error.message, 'SECRETS_B2_HEADER_ORIGINAL_BOUNDARY').toBe('[REDACTED]');
+        expect(error.code, 'SECRETS_B2_HEADER_ORIGINAL_BOUNDARY').toBe('[REDACTED]');
+        const embedded = `word${prefix}api-${split}key: opaque-Z29; public=${publicTail}`;
+        expect(scrubSecrets(embedded), 'SECRETS_B2_HEADER_ORIGINAL_BOUNDARY').toBe(embedded);
+        expect(
+          scrubSecrets(`api-key: opaque-Z29; public=${publicTail}`),
+          'SECRETS_B2_HEADER_ORIGINAL_BOUNDARY',
+        ).toBe(`api-key: [REDACTED]; public=${publicTail}`);
+      }
+    },
+  );
+
+  it('bounds admitted-size failed header and URL preparation', () => {
+    const started = performance.now();
+    for (const fragment of ['wordx-\tapi-\nkey ', 'https:\n//provider.invalid/']) {
+      const input = fragment.repeat(Math.floor((8 * 1024 * 1024 - 256) / fragment.length));
+      const output = scrubSecrets(input);
+      expect(output.length, 'SECRETS_B2_HEADER_PREPARATION').toBe(input.length);
+      expect(output === input, 'SECRETS_B2_HEADER_PREPARATION').toBe(true);
+    }
+    expect(performance.now() - started, 'SECRETS_B2_HEADER_PREPARATION').toBeLessThan(5_000);
+  });
+
+  it.each([
     ['sk-proj-', '\n'],
     ['sk-proj-', '\t'],
     ['AIza', '\n'],

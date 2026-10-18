@@ -24,8 +24,6 @@ interface SecretRule {
   readonly replacement: string | ((match: string) => string);
   readonly joinedPattern?: RegExp;
   readonly boundary?: RegExp;
-  /** A prefixed single token run: select original boundaries before its greedy joined match. */
-  readonly joinedToken?: boolean;
 }
 
 /** One private authority per existing credential family, shared by probes and output masking. */
@@ -35,13 +33,11 @@ const NON_QUERY_SECRET_RULES: readonly SecretRule[] = [
     pattern: /\bsk-(?=[\w-]{16})[\w-]+/g,
     replacement: '[REDACTED]',
     boundary: /\w/,
-    joinedToken: true,
   },
   {
     pattern: /\bAIza(?=[\w-]{20})[\w-]+/g,
     replacement: '[REDACTED]',
     boundary: /\w/,
-    joinedToken: true,
   },
   // Finite authority schemes, not URL validation. Raw ?/# before the first @ may belong
   // to a password; after an existing @ they begin public query/fragment text.
@@ -95,19 +91,27 @@ function maskUrlUserinfo(match: string): string {
 }
 
 function applyRule(text: string, rule: SecretRule): string {
-  return typeof rule.replacement === 'string'
-    ? text.replace(rule.pattern, rule.replacement)
-    : text.replace(rule.pattern, rule.replacement);
+  const replacement = rule.replacement;
+  return typeof replacement === 'string'
+    ? text.replace(rule.pattern, replacement)
+    : text.replace(rule.pattern, (match) => replacement(match));
 }
 
 /**
- * Probe only eligible original starts, so an embedded public prefix cannot greedily hide a later
- * LF/TAB start. These rules have one token run after a bounded prefix/minimum: failures are bounded,
- * and successful matches advance both cursors over the whole run. No rejected full-run rescans.
- * Their canonical prefixes start with ASCII letters; that prefilter skips only impossible starts.
+ * Probe LF/TAB joins at eligible ORIGINAL starts before a greedy match can hide a later boundary.
+ * All boundary-bearing rules use this scanner and their canonical matcher (or finite header-label
+ * override). Prefixes start with ASCII letters; that prefilter skips only impossible starts.
+ * Keys have one token run after a bounded prefix/minimum. Header labels are bounded and their
+ * trailing whitespace cannot contain another label. URL authority excludes slash, so a later URL
+ * prefix delimits a failed authority scan. Successful matches advance both cursors over their span;
+ * no failed candidate rescans an admitted-size run at every LF/TAB boundary.
+ * Opaque Bearer/Basic values and literal query names keep their established delimiter policy.
  */
-function hasSplitToken(text: string, joined: string, rule: SecretRule): boolean {
-  const pattern = new RegExp(rule.pattern.source.slice(2), rule.pattern.flags.replace('g', 'y'));
+function hasSplitCredential(text: string, joined: string, rule: SecretRule): boolean {
+  if (rule.boundary === undefined) return false;
+  const canonical = rule.joinedPattern ?? rule.pattern;
+  const source = rule.joinedPattern === undefined ? canonical.source.slice(2) : canonical.source;
+  const pattern = new RegExp(source, canonical.flags.replace('g', 'y'));
   let originalOffset = 0;
   let joinedOffset = 0;
   while (originalOffset < text.length) {
@@ -116,7 +120,7 @@ function hasSplitToken(text: string, joined: string, rule: SecretRule): boolean 
       originalOffset += 1;
       continue;
     }
-    if (/[A-Za-z]/.test(char ?? '') && !rule.boundary?.test(text[originalOffset - 1] ?? '')) {
+    if (/[A-Za-z]/.test(char ?? '') && !rule.boundary.test(text[originalOffset - 1] ?? '')) {
       pattern.lastIndex = joinedOffset;
       const match = pattern.exec(joined);
       if (match !== null) {
@@ -126,45 +130,17 @@ function hasSplitToken(text: string, joined: string, rule: SecretRule): boolean 
           const next = text[originalOffset++];
           if (next !== '\n' && next !== '\t') joinedOffset += 1;
         }
-        if (originalOffset - start > joinedOffset - joinedStart) return true;
+        if (
+          originalOffset - start > joinedOffset - joinedStart &&
+          // A malformed URL candidate may actually be a public contact query.
+          (typeof rule.replacement !== 'function' || rule.replacement(match[0]) !== match[0])
+        )
+          return true;
         continue;
       }
     }
     originalOffset += 1;
     joinedOffset += 1;
-  }
-  return false;
-}
-
-/**
- * Probe LF/TAB joins before any masking can destroy the prefix. Ordinary spaces remain boundaries.
- * Check the left boundary against the original string: a join must neither erase an existing
- * boundary nor invent a match inside a public word. Only finite prefix/header/URL families join;
- * opaque Bearer/Basic values and literal query names keep their established delimiter policy.
- */
-function hasSplitCredential(text: string, joined: string, rule: SecretRule): boolean {
-  if (rule.boundary === undefined) return false;
-  if (rule.joinedToken === true) return hasSplitToken(text, joined, rule);
-  const pattern =
-    rule.joinedPattern ?? new RegExp(rule.pattern.source.slice(2), rule.pattern.flags);
-  let originalOffset = 0;
-  let joinedOffset = 0;
-  function advance(target: number): number {
-    while (joinedOffset < target && originalOffset < text.length) {
-      const char = text[originalOffset++];
-      if (char !== '\n' && char !== '\t') joinedOffset += 1;
-    }
-    return originalOffset;
-  }
-  for (const match of joined.matchAll(pattern)) {
-    let start = advance(match.index);
-    while (text[start] === '\n' || text[start] === '\t') start += 1;
-    const end = advance(match.index + match[0].length);
-    if (rule.boundary.test(text[start - 1] ?? '')) continue;
-    if (!/[\n\t]/.test(text.slice(start, end))) continue;
-    // A malformed URL candidate may actually be a public contact query.
-    if (typeof rule.replacement === 'function' && rule.replacement(match[0]) === match[0]) continue;
-    return true;
   }
   return false;
 }
