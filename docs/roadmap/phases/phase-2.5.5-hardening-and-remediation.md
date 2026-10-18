@@ -8834,3 +8834,29 @@ The native core boundary controls are retargeted to their actual candidate guard
 with both scanner and mapping checks removed for the combined boundary control.
 Fresh complete causal execution, two NEW complete cumulative clean rounds, a NEW
 separate security sitting and corrected-source publication gates remain required.
+
+The seventh and eighth ordinary cumulative reviews inspect `9af49d30`: each
+accounts for all 104 corrective paths / 265 ordered hunks, with independently
+reconciled body/hunk identities and no missing or repeated assignment. No new
+source finding is confirmed. The NEW separate security sitting at that source is
+clean for its explicit security scope, with 480 independently executed passing
+cases; its partial reading modes, selected tests and platform limits are retained.
+Neither review nor that sitting establishes successful publication. Required PR
+coverage subsequently fails the existing dense-public preparation control at
+8,487 ms against its unchanged five-second bound. All other cases pass
+(748 files / 15,968 passing cases / one failure / 22 established CI skips).
+The push Windows advisory separately records a cold argv-admission case timeout;
+the same-source PR Windows job passes. Neither result is hidden or relabeled.
+
+`0c0956d4` derives a bounded necessary-prefix preflight from the **same canonical
+fragment definition** that builds the complete core matcher. Its absence avoids
+millions of impossible public-text probes. Prefix presence grants no matching
+authority: original boundaries, bounded JWT previews and full canonical matching
+remain required. The composed canonical matcher source is unchanged; a private
+prototype agrees on 5,155 differential cases and eight admitted-size comparisons.
+Author execution passes all 142 complete bounding cases, including the unchanged
+dense-public control at 483 ms, plus core lint/typecheck. These local measurements
+are not Linux instrumentation acceptance. Two NEW complete cumulative clean
+rounds, a NEW separate security sitting and current-source publication gates
+remain required after this material performance correction. Steps 9–19 remain
+unstarted; no merge or whole-wave acceptance is claimed.
