@@ -407,7 +407,9 @@ jobs:
   floor-check:
     name: node 22-line floor (22.13.0) · typecheck · test · build (advisory)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # The complete serialized compatibility suite includes native DB waits; the former
+    # fifteen-minute budget expired before CLI completion. Per-case limits stay unchanged.
+    timeout-minutes: 25
     # Fully isolate this job from the shared Turbo remote cache. Turbo's task hash does NOT include the
     # runtime Node version, so floor-check (Node 22) and the required `ci` job (Node 24) share a hash —
     # either could replay the other's cached result and mask a version-specific failure. `--force` (below)
@@ -468,7 +470,9 @@ jobs:
   coverage:
     name: engine coverage floor (llm, mcp)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # One file worker isolates unchanged admitted-size case budgets from instrumentation
+    # contention. Keep a finite whole-suite budget for all files and native DB waits.
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:

@@ -28,7 +28,9 @@ try {
   process.exit(1);
 }
 
-const result = spawnSync(process.execPath, [vitestEntry, 'run', '--coverage'], {
+// Coverage instrumentation and unrelated file workers must not compete for the admitted-size
+// controls' unchanged case budgets. All files, thresholds and explicit native concurrency remain.
+const result = spawnSync(process.execPath, [vitestEntry, 'run', '--coverage', '--maxWorkers=1'], {
   cwd: repoRoot,
   stdio: 'inherit',
   env: { ...process.env, RELAVIUM_COVERAGE_ENFORCED_ONLY: '1' },
