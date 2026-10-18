@@ -8901,3 +8901,50 @@ Windows budgets are unchanged; all cases, instrumentation, per-case bounds,
 coverage thresholds and required-job dependencies remain. No current-source
 failure or success is inferred from that historical job. Final-source clean
 cumulative reviews, security and publication gates remain required.
+
+The twelfth cumulative ordinary round at `cec30b9e` is **COMPLETE CLEAN**;
+the thirteenth at that same source is **COMPLETE NONCLEAN**. Both independently
+account for all 104 corrective paths / 265 ordered hunks, with root-verified
+body/hunk identities and no gaps or duplicate assignments. The thirteenth CLI
+lane enters the actual session store with native `query_only = ON`: export
+writes its scaffold, but the metadata update's raw `SQLITE_READONLY` lacks owned
+storage provenance. The new storage-only warning branch therefore propagates
+`cli_internal` instead of publishing the already-written export's successful
+result. Its positive permanent test had injected a preclassified `CliError`,
+which did not exercise that native path. This is a verified defect in the
+correction, not a retained limitation.
+
+The repair validates and snapshots session-update input outside the native-origin
+boundary, then grants storage facts only around the fixed transaction/write on
+an actually owned SQLite client. No message heuristic, public constructor,
+arbitrary callback or cause-tree classification is introduced. Real readonly
+failure/recovery, foreign-client and throwing-record negative controls pin that
+boundary. Human and JSON exports now use real SQLite refusal tests; the unknown
+metadata-fault control still propagates its original error and preserves the
+written scaffold. Before the repair, the three positive native cases fail; both negative origin
+controls pass within the run's 28 passing cases.
+After the repair and actual DB rebuild, all three complete affected files pass
+92 cases. An initial author typecheck catches a callback return annotation;
+its failed preparation is retained and corrected before acceptance.
+
+The thirteenth round's separate comment advisory is also corrected: Home refresh
+and validation comments describe owned rejection and retained real work, and
+export distinguishes classified storage degradation from an unexpected fault.
+Those edits change comments only. The previous clean corrective security sitting
+at `cec30b9e` retains its explicit reading modes, 814 distinct executed Vitest
+assertions, 195 tooling assertions, 177 existing-dist bootstrap controls and
+Corepack-path qualifications; it does not accept this later storage-boundary
+repair. Two NEW complete cumulative clean ordinary rounds, a NEW separate
+security sitting and current-source publication checks remain required after
+the final material fix. Steps 9–19 remain unstarted.
+
+The real native export matrix adds one command-file case (18 total). Its existing
+secrets control and independent tooling pin both retain the complete workload;
+all 57 control identities / 336 witness obligations remain unchanged. The first
+acceptance-tool preparation correctly rejects the stale independent 17-case pin;
+that failed run is retained, the pin and live cohort documentation are reconciled,
+and no missing case or witness is waived. Historical 17-case captures retain
+their source attribution. Fresh full workspace lint/typecheck/test/build passes
+24/24 forced tasks with zero cache hits: 748 files / 15,974 passing tests /
+21 established local skips. These author results are not independent review or
+final-source remote CI acceptance.
