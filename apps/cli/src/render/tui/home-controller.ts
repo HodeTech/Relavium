@@ -830,6 +830,8 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     try {
       port.writeDefault(modelId, provider, reasoningEffort);
     } catch {
+      // An owned unexpected writer fault may have synchronously sealed Home before rethrowing.
+      if (exiting) return;
       // A generic save-failure hint — the actual write target may be a `--config` override, not the canonical
       // `~/.relavium/config.toml`, so don't name a path the user may not be using.
       const open = state.modelPicker;
@@ -843,6 +845,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       }
       return;
     }
+    if (exiting) return;
     set({
       modelPicker: undefined,
       notice: defaultWriteNotice(port.currentDefault(), modelId, displayName, reasoningEffort),

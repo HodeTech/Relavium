@@ -724,6 +724,11 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
         props.controller.handleKey('', ENTER);
         await flush();
         expect(props.controller.getSnapshot().modelPicker?.entries.length).toBeGreaterThan(0);
+        const postSealHints: Array<string | undefined> = [];
+        const unsubscribe = props.controller.subscribe(() => {
+          if (props.inputEnabled?.() === false)
+            postSealHints.push(props.controller.getSnapshot().modelPicker?.hint);
+        });
         if (mode === 'unexpected') {
           // This native entry is before the real writer's filesystem catch; no errno or arbitrary
           // error message is granted configuration-refusal provenance.
@@ -742,7 +747,11 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
           ).toBe(9);
           expect(f.registry.budget.deadline()).toBe(3000);
           expect(await drive).toBe(9);
+          unsubscribe();
+          expect(postSealHints, 'HOME_DEFAULT_WRITE_NO_POSTSEAL_PUBLICATION').toEqual([]);
         } else {
+          unsubscribe();
+          expect(postSealHints).toEqual([]);
           expect(props.controller.getSnapshot().modelPicker?.hint).toContain('could not save');
           expect(f.registry.termination).toBeUndefined();
           props.controller.handleKey('', { escape: true });
