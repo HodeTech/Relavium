@@ -9124,7 +9124,15 @@ accepted corrective source `ec0f3e10`. The exact differences are the two private
 test files and three documentation files; all other **1,764 tracked entries**
 remain identical. R14/R15 and their security sitting retain their exact earlier
 source. The final documentation-only closing delta is checked separately and
-does not inherit a full-source review or execution claim.
+does not inherit a full-source review or execution claim. Its first two metadata
+checks at `a1e956f1` are NONCLEAN: both verify that the index incorrectly attributes
+the twelve preparation tests to the security sitting. The correction explicitly
+names ordinary reviewer R2 as executor and the preparation sitting as inspection
+only; the native security sitting retains its actual nine-case execution. Fresh
+limited checks own the corrected metadata source. An older mutable progress-state
+JSON no longer matches its review-time hash; it is not treated as an immutable
+snapshot or reconstructed. Actual raw logs and package receipts remain separate
+historical evidence.
 
 Both failed Windows attempts remain retained, with their distinct actual traces.
 Final pushed-head PR/push CI, coverage, SonarCloud, all four same-archive consumers

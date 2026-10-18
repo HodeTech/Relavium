@@ -801,8 +801,10 @@ native report SHA-256:
 These are separate from the earlier 108-path security sitting and from each
 increment's two NEW complete ordinary reviews; no whole-PR review is inferred.
 
-Independent execution passes twelve preparation cases and nine native cases,
-respectively, with zero skips. The sittings verify captured fixture observations,
+The ordinary preparation reviewer R2 independently passes twelve cases, with
+zero skips; the preparation security sitting inspects that evidence and executes
+no tests. The native security sitting independently passes nine cases, zero
+skips. The scoped security checks verify captured fixture observations,
 retained real Home import and post-await admission; creation-owned positive PID
 signalling; the real ENOENT safely-spied negative; runner/scenario cancellation
 and actual raw/native-close joins. The finite 30-second native functional case
